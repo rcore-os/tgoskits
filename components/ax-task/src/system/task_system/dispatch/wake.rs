@@ -2,6 +2,136 @@
 
 use super::*;
 
+#[cfg(test)]
+static WAKE_BEFORE_THREAD_LOCK_RACE_ARMED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static WAKE_BEFORE_THREAD_LOCK_RACE_SYSTEM: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static WAKE_BEFORE_THREAD_LOCK_RACE_THREAD: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static WAKE_BEFORE_THREAD_LOCK_RACE_ENTERED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static WAKE_BEFORE_THREAD_LOCK_RACE_COMPLETED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+static WAKE_DURING_FINAL_PARK_PUBLICATION_ARMED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static WAKE_DURING_FINAL_PARK_PUBLICATION_SYSTEM: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static WAKE_DURING_FINAL_PARK_PUBLICATION_THREAD: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static WAKE_DURING_FINAL_PARK_PUBLICATION_ENTERED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static WAKE_DURING_FINAL_PARK_PUBLICATION_COMPLETED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub(in crate::system::task_system) fn arm_wake_before_thread_lock_race(
+    system: &TaskSystem,
+    thread: ThreadId,
+) {
+    use core::sync::atomic::Ordering;
+
+    WAKE_BEFORE_THREAD_LOCK_RACE_ENTERED.store(false, Ordering::Release);
+    WAKE_BEFORE_THREAD_LOCK_RACE_COMPLETED.store(false, Ordering::Release);
+    assert!(
+        !WAKE_BEFORE_THREAD_LOCK_RACE_ARMED.swap(true, Ordering::AcqRel),
+        "only one deterministic pre-lock wake race may be armed"
+    );
+    WAKE_BEFORE_THREAD_LOCK_RACE_SYSTEM.store(
+        (system as *const TaskSystem).expose_provenance(),
+        Ordering::Release,
+    );
+    WAKE_BEFORE_THREAD_LOCK_RACE_THREAD.store(thread.as_u64(), Ordering::Release);
+}
+
+#[cfg(test)]
+pub(in crate::system::task_system) fn wake_before_thread_lock_race_entered() -> bool {
+    WAKE_BEFORE_THREAD_LOCK_RACE_ENTERED.load(core::sync::atomic::Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(in crate::system::task_system) fn complete_wake_before_thread_lock_race() {
+    WAKE_BEFORE_THREAD_LOCK_RACE_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
+fn wake_before_thread_lock_race_hook(system: &TaskSystem, thread: ThreadId) {
+    use core::sync::atomic::Ordering;
+
+    if WAKE_BEFORE_THREAD_LOCK_RACE_SYSTEM.load(Ordering::Acquire)
+        != (system as *const TaskSystem).expose_provenance()
+        || WAKE_BEFORE_THREAD_LOCK_RACE_THREAD.load(Ordering::Acquire) != thread.as_u64()
+    {
+        return;
+    }
+    if !WAKE_BEFORE_THREAD_LOCK_RACE_ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    WAKE_BEFORE_THREAD_LOCK_RACE_ENTERED.store(true, Ordering::Release);
+    while !WAKE_BEFORE_THREAD_LOCK_RACE_COMPLETED.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+pub(in crate::system::task_system) fn arm_wake_during_final_park_publication(
+    system: &TaskSystem,
+    thread: ThreadId,
+) {
+    use core::sync::atomic::Ordering;
+
+    WAKE_DURING_FINAL_PARK_PUBLICATION_ENTERED.store(false, Ordering::Release);
+    WAKE_DURING_FINAL_PARK_PUBLICATION_COMPLETED.store(false, Ordering::Release);
+    assert!(
+        !WAKE_DURING_FINAL_PARK_PUBLICATION_ARMED.swap(true, Ordering::AcqRel),
+        "only one deterministic final-park wake race may be armed"
+    );
+    WAKE_DURING_FINAL_PARK_PUBLICATION_SYSTEM.store(
+        (system as *const TaskSystem).expose_provenance(),
+        Ordering::Release,
+    );
+    WAKE_DURING_FINAL_PARK_PUBLICATION_THREAD.store(thread.as_u64(), Ordering::Release);
+}
+
+#[cfg(test)]
+pub(in crate::system::task_system) fn wake_during_final_park_publication_entered() -> bool {
+    WAKE_DURING_FINAL_PARK_PUBLICATION_ENTERED.load(core::sync::atomic::Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(in crate::system::task_system) fn complete_wake_during_final_park_publication() {
+    WAKE_DURING_FINAL_PARK_PUBLICATION_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
+fn wake_during_final_park_publication_hook(system: &TaskSystem, thread: ThreadId) {
+    use core::sync::atomic::Ordering;
+
+    if WAKE_DURING_FINAL_PARK_PUBLICATION_SYSTEM.load(Ordering::Acquire)
+        != (system as *const TaskSystem).expose_provenance()
+        || WAKE_DURING_FINAL_PARK_PUBLICATION_THREAD.load(Ordering::Acquire) != thread.as_u64()
+    {
+        return;
+    }
+    if !WAKE_DURING_FINAL_PARK_PUBLICATION_ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    WAKE_DURING_FINAL_PARK_PUBLICATION_ENTERED.store(true, Ordering::Release);
+    while !WAKE_DURING_FINAL_PARK_PUBLICATION_COMPLETED.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+}
+
 impl TaskSystem {
     fn consume_wake_locked(
         core: &Arc<ThreadCore>,
@@ -59,17 +189,10 @@ impl TaskSystem {
         let Some(_activity) = core.try_scheduler_activity() else {
             return WakeResult::Exited;
         };
-        if core.state() == ThreadState::Parking {
-            // The park winner is the atomic wake publication itself. It must
-            // not acquire p->pi_lock and then wait for rq while the owner is in
-            // the rq-locked block transaction. The owner rechecks this bit
-            // while holding the task control lock before committing Blocked.
-            return if core.publish_wake() {
-                WakeResult::AlreadyPending
-            } else {
-                WakeResult::Notified
-            };
-        }
+        #[cfg(test)]
+        wake_during_final_park_publication_hook(self, core.id());
+        #[cfg(test)]
+        wake_before_thread_lock_race_hook(self, core.id());
         let mut sched = core.sched().lock();
         if sched.lifecycle.state() == ThreadState::Exited {
             return WakeResult::Exited;
@@ -83,13 +206,13 @@ impl TaskSystem {
         }
         if matches!(
             sched.lifecycle.state(),
-            ThreadState::Ready | ThreadState::Running | ThreadState::Waking
+            ThreadState::Parking | ThreadState::Ready | ThreadState::Running | ThreadState::Waking
         ) {
-            // Match Linux's runnable/current fast path: the task is already
-            // eligible or completing an earlier wake, so no activation and
-            // no rq ownership transfer is legal. Keep the notification for
-            // the next prepare_park() instead of dereferencing task-owned
-            // policy state which a Ready task has transferred to its rq.
+            // Parking and its final transition to Blocked are serialized by
+            // this task lock, matching Linux try_to_wake_up() under p->pi_lock.
+            // If the parker still owns the task, the sticky notification is
+            // the complete transaction; otherwise the Blocked path below
+            // performs the no-fail runnable publication.
             return WakeResult::Notified;
         }
         let preferred = preferred
@@ -125,6 +248,109 @@ impl TaskSystem {
             }
             WakeTransition::DeferredUntilSwitchTail => {
                 task_runtime::fatal_invariant(0x574b_0004, core.id().as_u64() as usize)
+            }
+        }
+    }
+
+    /// Delivers one wait-queue notification to the exact park generation that
+    /// published its waiter.
+    ///
+    /// Selection is owned by the wait-queue lock. This scheduler transaction
+    /// publishes `Delivered` only after every recoverable placement step has
+    /// succeeded and immediately before the no-fail runnable publication.
+    pub(crate) fn wake_wait_claim_direct(
+        &self,
+        core: Arc<ThreadCore>,
+        claim: &WaitWakeClaim,
+    ) -> WaitWakeDelivery {
+        if claim.thread() != core.id() {
+            claim.cancel_selected();
+            return WaitWakeDelivery::Cancelled;
+        }
+        if core.state() == ThreadState::Exited {
+            claim.cancel_selected();
+            return WaitWakeDelivery::Exited;
+        }
+        let Some(_activity) = core.try_scheduler_activity() else {
+            claim.cancel_selected();
+            return WaitWakeDelivery::Exited;
+        };
+        let mut sched = core.sched().lock();
+        if core.park_generation() != claim.park_generation() {
+            claim.cancel_selected();
+            return WaitWakeDelivery::Cancelled;
+        }
+        match sched.lifecycle.state() {
+            ThreadState::Parking => {
+                if !claim.deliver_selected() {
+                    return WaitWakeDelivery::Cancelled;
+                }
+                // No rq placement is required while the owner is still in the
+                // park transaction. Publishing the sticky park bit is the
+                // final, infallible step that prevents Blocked publication.
+                let _already_pending = core.publish_wake();
+                WaitWakeDelivery::Delivered
+            }
+            ThreadState::Blocked if sched.placement.on_cpu().is_some() => {
+                if !claim.deliver_selected() {
+                    return WaitWakeDelivery::Cancelled;
+                }
+                // Switch-tail owns the already committed execution endpoint.
+                // Once Waking is published it must activate the task and treats
+                // any missing target as a scheduler invariant failure.
+                let _already_pending = core.publish_wake();
+                match Self::consume_wake_locked(&core, &mut sched) {
+                    Ok(WakeTransition::DeferredUntilSwitchTail) => WaitWakeDelivery::Delivered,
+                    Ok(WakeTransition::Notified | WakeTransition::Activate) | Err(_) => {
+                        task_runtime::fatal_invariant(0x574b_000a, core.id().as_u64() as usize)
+                    }
+                }
+            }
+            ThreadState::Blocked => {
+                let preferred = sched
+                    .placement
+                    .assigned_cpu()
+                    .or_else(|| core.wake_cpu_hint());
+                let policy = sched.policy.active().policy();
+                let queued_entity = sched.policy.active().entity().clone();
+                let Some(target) =
+                    self.select_wake_target(&sched, policy, queued_entity, preferred)
+                else {
+                    claim.cancel_selected();
+                    return WaitWakeDelivery::Unavailable;
+                };
+                let Some(publication) = self.cpu_remotes[target.as_usize()].begin_publication()
+                else {
+                    claim.cancel_selected();
+                    return WaitWakeDelivery::Unavailable;
+                };
+                if !claim.deliver_selected() {
+                    return WaitWakeDelivery::Cancelled;
+                }
+                let _already_pending = core.publish_wake();
+                let transition =
+                    Self::consume_wake_locked(&core, &mut sched).unwrap_or_else(|_| {
+                        task_runtime::fatal_invariant(0x574b_000b, core.id().as_u64() as usize)
+                    });
+                if transition != WakeTransition::Activate {
+                    task_runtime::fatal_invariant(0x574b_000c, core.id().as_u64() as usize);
+                }
+                let result = self.activate_waking_thread_locked(&core, sched, target, publication);
+                if result != WakeResult::Notified {
+                    task_runtime::fatal_invariant(0x574b_000d, core.id().as_u64() as usize);
+                }
+                WaitWakeDelivery::Delivered
+            }
+            ThreadState::Exited => {
+                claim.cancel_selected();
+                WaitWakeDelivery::Exited
+            }
+            ThreadState::New | ThreadState::Ready | ThreadState::Running | ThreadState::Waking => {
+                // Another wake source or a later park generation owns the
+                // runnable state. Do not leave a notification for its next
+                // park attempt.
+                claim.cancel_selected();
+                WaitWakeDelivery::Cancelled
             }
         }
     }

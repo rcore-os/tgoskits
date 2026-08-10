@@ -22,6 +22,22 @@ static PARK_COMMIT_WAKE_RACE_COMPLETED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
+static PARK_AFTER_FINAL_WAKE_CHECK_ARMED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static PARK_AFTER_FINAL_WAKE_CHECK_SYSTEM: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static PARK_AFTER_FINAL_WAKE_CHECK_THREAD: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static PARK_AFTER_FINAL_WAKE_CHECK_ENTERED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static PARK_AFTER_FINAL_WAKE_CHECK_COMPLETED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
 pub(super) fn arm_park_commit_wake_race(system: &TaskSystem, thread: ThreadId) {
     PARK_COMMIT_WAKE_RACE_ENTERED.store(false, Ordering::Release);
     PARK_COMMIT_WAKE_RACE_COMPLETED.store(false, Ordering::Release);
@@ -59,6 +75,48 @@ fn park_commit_wake_race_hook(system: &TaskSystem, thread: ThreadId) {
     }
     PARK_COMMIT_WAKE_RACE_ENTERED.store(true, Ordering::Release);
     while !PARK_COMMIT_WAKE_RACE_COMPLETED.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+pub(super) fn arm_park_after_final_wake_check(system: &TaskSystem, thread: ThreadId) {
+    PARK_AFTER_FINAL_WAKE_CHECK_ENTERED.store(false, Ordering::Release);
+    PARK_AFTER_FINAL_WAKE_CHECK_COMPLETED.store(false, Ordering::Release);
+    assert!(
+        !PARK_AFTER_FINAL_WAKE_CHECK_ARMED.swap(true, Ordering::AcqRel),
+        "only one deterministic post-check park race may be armed"
+    );
+    PARK_AFTER_FINAL_WAKE_CHECK_SYSTEM.store(
+        (system as *const TaskSystem).expose_provenance(),
+        Ordering::Release,
+    );
+    PARK_AFTER_FINAL_WAKE_CHECK_THREAD.store(thread.as_u64(), Ordering::Release);
+}
+
+#[cfg(test)]
+pub(super) fn park_after_final_wake_check_entered() -> bool {
+    PARK_AFTER_FINAL_WAKE_CHECK_ENTERED.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(super) fn complete_park_after_final_wake_check() {
+    PARK_AFTER_FINAL_WAKE_CHECK_COMPLETED.store(true, Ordering::Release);
+}
+
+#[cfg(test)]
+fn park_after_final_wake_check_hook(system: &TaskSystem, thread: ThreadId) {
+    if PARK_AFTER_FINAL_WAKE_CHECK_SYSTEM.load(Ordering::Acquire)
+        != (system as *const TaskSystem).expose_provenance()
+        || PARK_AFTER_FINAL_WAKE_CHECK_THREAD.load(Ordering::Acquire) != thread.as_u64()
+    {
+        return;
+    }
+    if !PARK_AFTER_FINAL_WAKE_CHECK_ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    PARK_AFTER_FINAL_WAKE_CHECK_ENTERED.store(true, Ordering::Release);
+    while !PARK_AFTER_FINAL_WAKE_CHECK_COMPLETED.load(Ordering::Acquire) {
         core::hint::spin_loop();
     }
 }
@@ -146,6 +204,8 @@ impl TaskSystem {
             .current_core()
             .filter(|core| core.id() == token.thread())
             .ok_or(TaskError::StaleThreadId)?;
+        #[cfg(test)]
+        park_commit_wake_race_hook(self, previous_core_hint.id());
         let mut previous_sched = previous_core_hint.sched().lock();
         // SAFETY: propagated from the selected entry contract.
         let mut transaction = unsafe { rq_entry.begin(self, &remote) };
@@ -187,8 +247,6 @@ impl TaskSystem {
         let previous_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x504b_1102, previous_core.id().as_u64() as usize)
         });
-        #[cfg(test)]
-        park_commit_wake_race_hook(self, previous_core.id());
         let resumed = {
             let placement = previous_core.sched().placement();
             let sched = &mut *previous_sched;
@@ -208,6 +266,8 @@ impl TaskSystem {
                     });
                 true
             } else {
+                #[cfg(test)]
+                park_after_final_wake_check_hook(self, previous_core.id());
                 if sched.lifecycle.state() != ThreadState::Parking
                     || placement.execution_cpu() != Some(cpu.owner())
                     || placement.on_cpu() != Some(cpu.owner())

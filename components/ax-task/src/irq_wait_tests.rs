@@ -40,6 +40,76 @@ fn irq_wakes_the_single_registered_thread() {
 }
 
 #[test]
+fn unavailable_wake_remains_pending_for_the_next_registration() {
+    let cell = IrqWaitCell::new();
+    let unavailable =
+        IrqWaitRegistration::new_test(IrqWakeHandle::from_fn(|| crate::WakeResult::Unavailable));
+    let token = expect_registered(cell.register(&unavailable));
+
+    assert_eq!(cell.notify(), IrqNotifyResult::Pending);
+    token.detach().try_finish().unwrap();
+    assert!(cell.is_pending());
+
+    let replacement = TestRegistration::new();
+    assert!(matches!(
+        cell.register(replacement.registration()),
+        IrqRegisterResult::ConsumedPending
+    ));
+}
+
+#[test]
+fn already_pending_wake_is_a_successful_delivery() {
+    let cell = IrqWaitCell::new();
+    let registration =
+        IrqWaitRegistration::new_test(IrqWakeHandle::from_fn(|| crate::WakeResult::AlreadyPending));
+    let token = expect_registered(cell.register(&registration));
+
+    assert_eq!(cell.notify(), IrqNotifyResult::Notified);
+    token.detach().try_finish().unwrap();
+    assert!(!cell.is_pending());
+}
+
+#[test]
+fn exited_waiter_leaves_the_event_for_a_replacement() {
+    let cell = IrqWaitCell::new();
+    let exited =
+        IrqWaitRegistration::new_test(IrqWakeHandle::from_fn(|| crate::WakeResult::Exited));
+    let token = expect_registered(cell.register(&exited));
+
+    assert_eq!(cell.notify(), IrqNotifyResult::Pending);
+    token.detach().try_finish().unwrap();
+
+    let replacement = TestRegistration::new();
+    assert!(matches!(
+        cell.register(replacement.registration()),
+        IrqRegisterResult::ConsumedPending
+    ));
+}
+
+#[test]
+fn bounded_notify_fallback_preserves_a_concurrent_service_pass() {
+    let cell = IrqWaitCell::new();
+    let registration = TestRegistration::new();
+    let token = expect_registered(cell.register(registration.registration()));
+    cell.forced_notify_contention
+        .store(IRQ_NOTIFY_CAS_BUDGET, Ordering::Release);
+
+    assert_eq!(cell.notify(), IrqNotifyResult::Notified);
+    assert_eq!(registration.wake_count(), 1);
+    assert!(
+        cell.is_pending(),
+        "the contention fallback must retain the sticky bit because another IRQ may have \
+         coalesced after its swap"
+    );
+    token.detach().try_finish().unwrap();
+
+    assert!(matches!(
+        cell.register(registration.registration()),
+        IrqRegisterResult::ConsumedPending
+    ));
+}
+
+#[test]
 fn rejects_a_second_waiter_without_scanning() {
     let cell = IrqWaitCell::new();
     let first = TestRegistration::new();
@@ -116,6 +186,7 @@ fn detached_registration_is_not_quiescent_until_irq_wake_returns() {
             core::hint::spin_loop();
         }
         wake_state.completed.store(1, Ordering::Release);
+        crate::WakeResult::Notified
     });
     let registration = IrqWaitRegistration::new_test(wake);
     let token = expect_registered(cell.register(&registration));
@@ -161,6 +232,7 @@ fn second_irq_during_registration_wake_remains_pending() {
         while wake_state.release.load(Ordering::Acquire) == 0 {
             core::hint::spin_loop();
         }
+        crate::WakeResult::Notified
     });
     let registration = IrqWaitRegistration::new_test(wake);
     cell.pause_after_register_publish
@@ -212,6 +284,45 @@ fn second_irq_during_registration_wake_remains_pending() {
         consumed_by_next_registration,
         "the next registration must consume the second IRQ"
     );
+}
+
+#[test]
+fn registration_cannot_replace_a_waiter_while_its_wake_is_in_flight() {
+    struct BlockingWake {
+        entered: AtomicUsize,
+        release: AtomicUsize,
+    }
+
+    let cell = IrqWaitCell::new();
+    let state = Arc::new(BlockingWake {
+        entered: AtomicUsize::new(0),
+        release: AtomicUsize::new(0),
+    });
+    let wake_state = Arc::clone(&state);
+    let registration = IrqWaitRegistration::new_test(IrqWakeHandle::from_fn(move || {
+        wake_state.entered.store(1, Ordering::Release);
+        while wake_state.release.load(Ordering::Acquire) == 0 {
+            core::hint::spin_loop();
+        }
+        crate::WakeResult::Notified
+    }));
+    let token = expect_registered(cell.register(&registration));
+    let replacement = TestRegistration::new();
+
+    std::thread::scope(|scope| {
+        let notifier = scope.spawn(|| cell.notify());
+        while state.entered.load(Ordering::Acquire) == 0 {
+            std::thread::yield_now();
+        }
+        assert!(matches!(
+            cell.register(replacement.registration()),
+            IrqRegisterResult::Occupied
+        ));
+        state.release.store(1, Ordering::Release);
+        assert_eq!(notifier.join().unwrap(), IrqNotifyResult::Notified);
+    });
+
+    token.detach().try_finish().unwrap();
 }
 
 #[test]
@@ -268,6 +379,7 @@ impl TestRegistration {
         let wake_counter = Arc::clone(&wakes);
         let wake = IrqWakeHandle::from_fn(move || {
             wake_counter.fetch_add(1, Ordering::Relaxed);
+            crate::WakeResult::Notified
         });
         Self {
             registration: IrqWaitRegistration::new_test(wake),

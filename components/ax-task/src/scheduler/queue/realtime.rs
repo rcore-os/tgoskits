@@ -10,6 +10,32 @@ const RT_PRIORITY_LEVELS: usize = 99;
 const FIXED_PRIORITY_LEVELS: usize = RT_PRIORITY_LEVELS;
 const RT_PRIORITY_BITMAP: u128 = (1_u128 << RT_PRIORITY_LEVELS) - 1;
 
+#[cfg(test)]
+std::thread_local! {
+    static REALTIME_ACTIVE_ITER_VISITS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
+    static REALTIME_PUSHABLE_ITER_VISITS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
+}
+
+#[cfg(test)]
+pub(super) fn reset_realtime_queue_visits() {
+    REALTIME_ACTIVE_ITER_VISITS.set(0);
+    REALTIME_PUSHABLE_ITER_VISITS.set(0);
+}
+
+#[cfg(test)]
+pub(super) fn realtime_active_iter_visits() -> usize {
+    REALTIME_ACTIVE_ITER_VISITS.get()
+}
+
+#[cfg(test)]
+pub(super) fn realtime_pushable_iter_visits() -> usize {
+    REALTIME_PUSHABLE_ITER_VISITS.get()
+}
+
 /// Per-thread RT linkage prepared during thread construction.
 #[derive(Debug)]
 pub(crate) struct RealtimeNode {
@@ -50,6 +76,7 @@ impl RealtimeNode {
 #[derive(Debug)]
 pub(crate) struct RealtimePushableNode {
     thread: ThreadId,
+    active: Option<NonNull<RealtimeNode>>,
     next: Option<Box<RealtimePushableNode>>,
 }
 
@@ -57,15 +84,38 @@ impl RealtimePushableNode {
     pub(crate) fn empty() -> Box<Self> {
         Box::new(Self {
             thread: ThreadId::from_parts(0, 0),
+            active: None,
             next: None,
         })
     }
 
-    fn reset(&mut self, thread: ThreadId) {
+    fn reset(&mut self, thread: ThreadId, active: NonNull<RealtimeNode>) {
         self.thread = thread;
+        self.active = Some(active);
         self.next = None;
     }
+
+    fn active(&self) -> &RealtimeNode {
+        let active = self
+            .active
+            .expect("linked RT pushable node must identify its active node");
+        unsafe {
+            // SAFETY: both nodes are linked and accessed under the same owner
+            // rq lock. The active node is Box-stable, and dequeue always
+            // removes this pushable node before returning the active storage.
+            active.as_ref()
+        }
+    }
+
+    fn clear_active(&mut self) {
+        self.active = None;
+    }
 }
+
+// SAFETY: a non-null active link exists only while both task-owned nodes are
+// linked to the same owner rq. Placement and the rq lock serialize every
+// access, and the link is cleared before the node returns to task storage.
+unsafe impl Send for RealtimePushableNode {}
 
 #[derive(Debug)]
 struct RealtimeLevel {
@@ -193,7 +243,7 @@ impl RealtimePushableLevel {
     }
 
     fn position(&self, thread: ThreadId) -> Option<usize> {
-        self.iter().position(|candidate| candidate == thread)
+        self.iter().position(|candidate| candidate.thread == thread)
     }
 
     fn remove_at(&mut self, position: usize) -> Option<Box<RealtimePushableNode>> {
@@ -240,13 +290,15 @@ struct RealtimePushableIter<'queue> {
     next: Option<&'queue RealtimePushableNode>,
 }
 
-impl Iterator for RealtimePushableIter<'_> {
-    type Item = ThreadId;
+impl<'queue> Iterator for RealtimePushableIter<'queue> {
+    type Item = &'queue RealtimePushableNode;
 
     fn next(&mut self) -> Option<Self::Item> {
         let node = self.next?;
         self.next = node.next.as_deref();
-        Some(node.thread)
+        #[cfg(test)]
+        REALTIME_PUSHABLE_ITER_VISITS.set(REALTIME_PUSHABLE_ITER_VISITS.get().saturating_add(1));
+        Some(node)
     }
 }
 
@@ -256,6 +308,8 @@ impl<'queue> Iterator for RealtimeIter<'queue> {
     fn next(&mut self) -> Option<Self::Item> {
         let node = self.next?;
         self.next = node.next.as_deref();
+        #[cfg(test)]
+        REALTIME_ACTIVE_ITER_VISITS.set(REALTIME_ACTIVE_ITER_VISITS.get().saturating_add(1));
         Some(node.thread())
     }
 }
@@ -301,6 +355,10 @@ impl RealtimeRunQueue {
         self.pushable_bitmap & RT_PRIORITY_BITMAP != 0
     }
 
+    pub(super) fn pushable_count(&self) -> usize {
+        self.pushable.iter().map(|level| level.len).sum()
+    }
+
     pub(super) fn refresh_pushable(
         &mut self,
         thread: ThreadId,
@@ -311,7 +369,7 @@ impl RealtimeRunQueue {
         let Some(position) = self.active[index].position(thread) else {
             return;
         };
-        let (should_be_pushable, is_pushable, core) = {
+        let (should_be_pushable, is_pushable, core, active) = {
             let node = self.active[index]
                 .head
                 .as_deref()
@@ -321,6 +379,7 @@ impl RealtimeRunQueue {
                 node.thread().migration_capable && current != Some(thread),
                 node.pushable,
                 Arc::clone(&node.thread().core),
+                NonNull::from(node),
             )
         };
         match (is_pushable, should_be_pushable) {
@@ -330,7 +389,7 @@ impl RealtimeRunQueue {
                     // lock serializes its independent pushable membership.
                     core.runqueue_nodes().take_realtime_pushable()
                 };
-                node.reset(thread);
+                node.reset(thread, active);
                 self.pushable[index].push_back(node);
                 self.active[index]
                     .head
@@ -343,20 +402,23 @@ impl RealtimeRunQueue {
                 let pushable_position = self.pushable[index]
                     .position(thread)
                     .expect("RT pushable flag must match its priority list");
-                let node = self.pushable[index]
+                let mut node = self.pushable[index]
                     .remove_at(pushable_position)
                     .expect("RT pushable position must remain linked");
-                unsafe {
-                    // SAFETY: the node is detached from the pushable list
-                    // before it returns to task-owned storage.
-                    core.runqueue_nodes().return_realtime_pushable(node);
-                }
+                debug_assert_eq!(node.active, Some(active));
+                node.clear_active();
                 self.active[index]
                     .head
                     .as_deref_mut()
                     .and_then(|head| nth_node_mut(head, position))
                     .expect("RT position must remain stable under the rq lock")
                     .pushable = false;
+                unsafe {
+                    // SAFETY: the node is detached from the pushable list
+                    // and no longer contains an active-node link before it
+                    // returns to task-owned storage.
+                    core.runqueue_nodes().return_realtime_pushable(node);
+                }
             }
             _ => {}
         }
@@ -445,15 +507,21 @@ impl RealtimeRunQueue {
             .take(RT_PRIORITY_LEVELS)
             .rev()
             .find_map(|(index, level)| {
-                level
-                    .iter()
-                    .find_map(|thread| {
-                        self.active[index]
-                            .iter()
-                            .find(|candidate| candidate.id == thread)
-                            .filter(|entry| predicate(entry))
-                    })
-                    .map(QueuedThreadSnapshot::from)
+                level.iter().find_map(|pushable| {
+                    let active = pushable.active();
+                    debug_assert_eq!(active.thread().id, pushable.thread);
+                    debug_assert_eq!(
+                        active
+                            .thread()
+                            .active
+                            .policy()
+                            .rt_priority()
+                            .expect("RT active node must retain a fixed priority")
+                            .get() as usize,
+                        index + 1,
+                    );
+                    predicate(active.thread()).then(|| QueuedThreadSnapshot::from(active.thread()))
+                })
             })
     }
 

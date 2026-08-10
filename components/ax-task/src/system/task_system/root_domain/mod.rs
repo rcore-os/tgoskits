@@ -792,6 +792,61 @@ mod tests {
     }
 
     #[test]
+    fn successful_push_republishes_the_same_overloaded_source() {
+        crate::test_runtime::reset_irq_state();
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
+        let config = TaskSystemConfig::new(2);
+        let runqueues = (0..2)
+            .map(|index| CpuRemote::create(CpuId::new(index), config))
+            .collect::<Vec<_>>();
+        for remote in &runqueues {
+            assert!(remote.mark_online());
+        }
+        let root = RootDomain::new(config, runqueues);
+        let source = CpuId::new(0);
+        root.overload.publish(source, true, false);
+
+        root.request_rt_deadline_push(RootDomainPushClass::Realtime, CpuId::new(1));
+        let first = root.claim_rt_deadline_push(source).unwrap();
+        root.finish_rt_deadline_push(first, true);
+        assert_eq!(
+            root.realtime_push.state.lock().phase,
+            RootDomainPushPhase::Published(source),
+            "a productive owner must keep draining its overloaded RT rq"
+        );
+
+        let second = root.claim_rt_deadline_push(source).unwrap();
+        root.overload.publish(source, false, false);
+        root.finish_rt_deadline_push(second, false);
+        assert_eq!(
+            root.realtime_push.state.lock().phase,
+            RootDomainPushPhase::Idle
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "root-domain push completion must match the claimed scan generation")]
+    fn push_iterator_rejects_a_stale_claim_generation() {
+        crate::test_runtime::reset_irq_state();
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
+        let config = TaskSystemConfig::new(2);
+        let runqueues = (0..2)
+            .map(|index| CpuRemote::create(CpuId::new(index), config))
+            .collect::<Vec<_>>();
+        for remote in &runqueues {
+            assert!(remote.mark_online());
+        }
+        let root = RootDomain::new(config, runqueues);
+        let source = CpuId::new(0);
+        root.overload.publish(source, true, false);
+
+        root.request_rt_deadline_push(RootDomainPushClass::Realtime, CpuId::new(1));
+        let mut claim = root.claim_rt_deadline_push(source).unwrap();
+        claim.generation = claim.generation.checked_add(1).unwrap();
+        root.finish_rt_deadline_push(claim, false);
+    }
+
+    #[test]
     #[should_panic(expected = "root-domain push generation exhausted")]
     fn push_iterator_generation_exhaustion_is_not_reused() {
         crate::test_runtime::reset_irq_state();

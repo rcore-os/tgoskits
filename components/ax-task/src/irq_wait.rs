@@ -5,7 +5,7 @@
 
 use alloc::sync::Arc;
 #[cfg(test)]
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, AtomicUsize};
 use core::{
     ptr,
     sync::atomic::{AtomicPtr, AtomicU64, Ordering},
@@ -36,12 +36,32 @@ const fn registration_generation(state: u64) -> u64 {
 }
 
 #[repr(align(8))]
-struct PendingWaiterSentinel;
+struct WaiterSentinel {
+    _tag: u8,
+}
 
-static PENDING_WAITER_SENTINEL: PendingWaiterSentinel = PendingWaiterSentinel;
+static PENDING_WAITER_SENTINEL: WaiterSentinel = WaiterSentinel { _tag: 1 };
+static NOTIFYING_WAITER_SENTINEL: WaiterSentinel = WaiterSentinel { _tag: 2 };
+static NOTIFYING_PENDING_WAITER_SENTINEL: WaiterSentinel = WaiterSentinel { _tag: 3 };
+
+fn waiter_sentinel(sentinel: &'static WaiterSentinel) -> *mut IrqWaitNode {
+    ptr::from_ref(sentinel).cast_mut().cast()
+}
 
 fn pending_waiter() -> *mut IrqWaitNode {
-    ptr::from_ref(&PENDING_WAITER_SENTINEL).cast_mut().cast()
+    waiter_sentinel(&PENDING_WAITER_SENTINEL)
+}
+
+fn notifying_waiter() -> *mut IrqWaitNode {
+    waiter_sentinel(&NOTIFYING_WAITER_SENTINEL)
+}
+
+fn notifying_pending_waiter() -> *mut IrqWaitNode {
+    waiter_sentinel(&NOTIFYING_PENDING_WAITER_SENTINEL)
+}
+
+fn is_notification_sentinel(waiter: *mut IrqWaitNode) -> bool {
+    waiter == notifying_waiter() || waiter == notifying_pending_waiter()
 }
 
 fn registration_phase(state: u64) -> RegistrationPhase {
@@ -58,19 +78,19 @@ fn registration_phase(state: u64) -> RegistrationPhase {
 /// coverage.
 #[cfg(test)]
 struct IrqWakeHandle {
-    wake: Arc<dyn Fn() + Send + Sync>,
+    wake: Arc<dyn Fn() -> crate::WakeResult + Send + Sync>,
 }
 
 #[cfg(test)]
 impl IrqWakeHandle {
-    fn from_fn(wake: impl Fn() + Send + Sync + 'static) -> Self {
+    fn from_fn(wake: impl Fn() -> crate::WakeResult + Send + Sync + 'static) -> Self {
         Self {
             wake: Arc::new(wake),
         }
     }
 
-    fn wake(&self) {
-        (self.wake)();
+    fn wake(&self) -> crate::WakeResult {
+        (self.wake)()
     }
 }
 
@@ -97,14 +117,12 @@ enum WakeContext {
 }
 
 impl IrqWaitWake {
-    fn wake(&self, context: WakeContext) {
+    fn wake(&self, context: WakeContext) -> crate::WakeResult {
         match self {
-            Self::Thread(wake) => {
-                let _result = match context {
-                    WakeContext::HardIrq => wake.wake(),
-                    WakeContext::Task => wake.wake_from_task(),
-                };
-            }
+            Self::Thread(wake) => match context {
+                WakeContext::HardIrq => wake.wake(),
+                WakeContext::Task => wake.wake_from_task(),
+            },
             #[cfg(test)]
             Self::Test(wake) => wake.wake(),
         }
@@ -386,8 +404,12 @@ pub enum IrqRegisterResult<'cell> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IrqNotifyResult {
     /// One stable direct waiter was removed and woken.
+    ///
+    /// A scheduler wake already retained by the target park transition also
+    /// counts as delivered.
     Notified,
-    /// No waiter was present; one coalesced pending bit was published.
+    /// No waiter was present, or direct delivery failed; one coalesced pending
+    /// bit was published.
     Pending,
 }
 
@@ -403,6 +425,8 @@ pub struct IrqWaitCell {
     detach_generation_checked: AtomicBool,
     #[cfg(test)]
     pause_after_detach_generation_check: AtomicBool,
+    #[cfg(test)]
+    forced_notify_contention: AtomicUsize,
 }
 
 impl IrqWaitCell {
@@ -418,6 +442,8 @@ impl IrqWaitCell {
             detach_generation_checked: AtomicBool::new(false),
             #[cfg(test)]
             pause_after_detach_generation_check: AtomicBool::new(false),
+            #[cfg(test)]
+            forced_notify_contention: AtomicUsize::new(0),
         }
     }
 
@@ -548,12 +574,42 @@ impl IrqWaitCell {
 
     fn notify_with_context(&self, context: WakeContext) -> IrqNotifyResult {
         let pending = pending_waiter();
+        let notifying = notifying_waiter();
+        let notifying_pending = notifying_pending_waiter();
         let mut observed = self.waiter.load(Ordering::Acquire);
         for _ in 0..IRQ_NOTIFY_CAS_BUDGET {
+            #[cfg(test)]
+            if self
+                .forced_notify_contention
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                observed = self.waiter.load(Ordering::Acquire);
+                continue;
+            }
             if observed == pending {
                 match self.waiter.compare_exchange(
                     pending,
                     pending,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return IrqNotifyResult::Pending,
+                    Err(current) => {
+                        observed = current;
+                        continue;
+                    }
+                }
+            }
+            if observed == notifying_pending {
+                return IrqNotifyResult::Pending;
+            }
+            if observed == notifying {
+                match self.waiter.compare_exchange(
+                    notifying,
+                    notifying_pending,
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 ) {
@@ -580,7 +636,7 @@ impl IrqWaitCell {
             }
             match self.waiter.compare_exchange(
                 observed,
-                ptr::null_mut(),
+                notifying,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
@@ -588,8 +644,9 @@ impl IrqWaitCell {
                     // SAFETY: the successful CAS transferred the cell-owned
                     // raw reference to this notifier.
                     let registration = unsafe { take_cell_owner(waiter) };
-                    Self::notify_registration(&registration, context);
-                    return IrqNotifyResult::Notified;
+                    let result = Self::notify_registration(&registration, context);
+                    self.finish_notification(result);
+                    return Self::notification_result(result);
                 }
                 Err(current) => observed = current,
             }
@@ -599,14 +656,14 @@ impl IrqWaitCell {
         // Keeping the sentinel after displacing a waiter may cause one
         // task-context recheck, but it cannot lose the notification.
         let waiter = self.waiter.swap(pending, Ordering::AcqRel);
-        if waiter.is_null() || waiter == pending {
+        if waiter.is_null() || waiter == pending || is_notification_sentinel(waiter) {
             return IrqNotifyResult::Pending;
         }
         // SAFETY: swap transferred the displaced cell-owned raw reference to
         // this notifier; null and the sentinel were rejected above.
         let registration = unsafe { take_cell_owner(waiter) };
-        Self::notify_registration(&registration, context);
-        IrqNotifyResult::Notified
+        let result = Self::notify_registration(&registration, context);
+        Self::notification_result(result)
     }
 
     /// Wakes the sole registered thread from ordinary task context.
@@ -624,13 +681,57 @@ impl IrqWaitCell {
 
     /// Reports whether an IRQ is coalesced for the next registration.
     pub fn is_pending(&self) -> bool {
-        self.waiter.load(Ordering::Acquire) == pending_waiter()
+        matches!(
+            self.waiter.load(Ordering::Acquire),
+            waiter if waiter == pending_waiter() || waiter == notifying_pending_waiter()
+        )
     }
 
-    fn notify_registration(registration: &IrqWaitNode, context: WakeContext) {
+    fn notify_registration(registration: &IrqWaitNode, context: WakeContext) -> crate::WakeResult {
         let generation = registration.begin_notification();
-        registration.wake.wake(context);
+        let result = registration.wake.wake(context);
         registration.finish_notification(generation);
+        result
+    }
+
+    fn finish_notification(&self, result: crate::WakeResult) {
+        let pending = pending_waiter();
+        let notifying = notifying_waiter();
+        let notifying_pending = notifying_pending_waiter();
+        let delivered = matches!(
+            result,
+            crate::WakeResult::Notified | crate::WakeResult::AlreadyPending
+        );
+        let mut observed = self.waiter.load(Ordering::Acquire);
+        loop {
+            let next = if observed == notifying {
+                if delivered { ptr::null_mut() } else { pending }
+            } else if observed == notifying_pending {
+                pending
+            } else if observed == pending {
+                return;
+            } else {
+                panic!("IRQ wait cell notification ownership changed while wake was in flight");
+            };
+            match self.waiter.compare_exchange_weak(
+                observed,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(current) => observed = current,
+            }
+        }
+    }
+
+    const fn notification_result(result: crate::WakeResult) -> IrqNotifyResult {
+        match result {
+            crate::WakeResult::Notified | crate::WakeResult::AlreadyPending => {
+                IrqNotifyResult::Notified
+            }
+            crate::WakeResult::Exited | crate::WakeResult::Unavailable => IrqNotifyResult::Pending,
+        }
     }
 }
 
@@ -640,6 +741,10 @@ impl Drop for IrqWaitCell {
         if waiter.is_null() || waiter == pending_waiter() {
             return;
         }
+        assert!(
+            !is_notification_sentinel(waiter),
+            "exclusive IRQ wait cell teardown found an in-flight notifier",
+        );
 
         // SAFETY: exclusive cell teardown removes the sole cell-owned raw
         // reference, and safe Rust prevents a concurrent notifier borrow.

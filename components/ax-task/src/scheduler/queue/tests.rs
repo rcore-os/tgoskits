@@ -600,10 +600,10 @@ fn fair_pushable_summary_uses_wrapped_runqueue_order() {
     }
 
     assert!(queue.has_pushable_fair());
-    let epoch = queue.begin_balance_scan();
+    let mut scan = queue.begin_balance_scan(Some(SchedulingClass::Fair));
     assert_eq!(
         queue
-            .next_balance_candidate(epoch, None, |_| true)
+            .next_balance_candidate(&mut scan, |_| true)
             .expect("one Fair candidate must be movable")
             .id,
         ThreadId::from_parts(1, 1),
@@ -678,6 +678,192 @@ fn pushable_membership_tracks_each_non_idle_scheduler_class() {
     queue.dequeue(fair_id).unwrap();
     assert!(!queue.has_pushable_fair());
     assert_eq!(queue.dequeue(idle_id).unwrap().id, idle_id);
+}
+
+#[test]
+fn realtime_pushable_selection_does_not_rescan_the_active_fifo() {
+    let mut queue = RunQueue::new();
+    let policy = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
+    for slot in 0..64 {
+        queue
+            .enqueue_test(
+                ThreadId::from_parts(slot, 1),
+                policy,
+                SchedulingEntity::new(policy, 1_000, 0),
+                0,
+                EnqueueReason::Wake,
+            )
+            .unwrap();
+    }
+
+    super::realtime::reset_realtime_queue_visits();
+    let mut scan = queue.begin_balance_scan(Some(SchedulingClass::Realtime));
+    let candidate = queue
+        .next_balance_candidate(&mut scan, |thread| thread.id != ThreadId::from_parts(0, 1))
+        .expect("the second RT task must remain pushable");
+
+    assert_eq!(candidate.id, ThreadId::from_parts(1, 1));
+    assert_eq!(
+        super::realtime::realtime_pushable_iter_visits(),
+        2,
+        "rejecting the first candidate should inspect two pushable links"
+    );
+    assert_eq!(
+        super::realtime::realtime_active_iter_visits(),
+        0,
+        "pushable selection must not rescan the active RT FIFO"
+    );
+}
+
+#[test]
+fn balance_scan_does_not_expand_past_its_entry_candidate_set() {
+    let mut queue = RunQueue::new();
+    let policy = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
+    let first = ThreadId::from_parts(0, 1);
+    queue
+        .enqueue_test(
+            first,
+            policy,
+            SchedulingEntity::new(policy, 1_000, 0),
+            0,
+            EnqueueReason::Wake,
+        )
+        .unwrap();
+
+    let mut scan = queue.begin_balance_scan(Some(SchedulingClass::Realtime));
+    assert_eq!(
+        queue
+            .next_balance_candidate(&mut scan, |_| true)
+            .unwrap()
+            .id,
+        first
+    );
+
+    let arrived_after_entry = ThreadId::from_parts(1, 1);
+    queue
+        .enqueue_test(
+            arrived_after_entry,
+            policy,
+            SchedulingEntity::new(policy, 1_000, 0),
+            0,
+            EnqueueReason::Wake,
+        )
+        .unwrap();
+    assert!(
+        queue.next_balance_candidate(&mut scan, |_| true).is_none(),
+        "one owner safe-point must be bounded by its entry candidate count"
+    );
+}
+
+#[test]
+fn rt_and_deadline_pushable_membership_tracks_migration_capability() {
+    let mut queue = RunQueue::new();
+    let rt = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
+    let deadline =
+        SchedulePolicy::deadline(DeadlinePolicy::new(1, 2, 4, DeadlineFlags::NONE).unwrap());
+    let rt_id = ThreadId::from_parts(0, 1);
+    let deadline_id = ThreadId::from_parts(1, 1);
+    let mut deadline_entity = SchedulingEntity::new(deadline, 1, 0);
+    deadline_entity.activate_deadline(0);
+    queue
+        .enqueue_test(
+            rt_id,
+            rt,
+            SchedulingEntity::new(rt, 1, 0),
+            0,
+            EnqueueReason::Wake,
+        )
+        .unwrap();
+    queue
+        .enqueue_test(
+            deadline_id,
+            deadline,
+            deadline_entity,
+            0,
+            EnqueueReason::Wake,
+        )
+        .unwrap();
+
+    for id in [rt_id, deadline_id] {
+        assert!(queue.update_migration_capability(id, false));
+    }
+    assert!(!queue.has_pushable_realtime());
+    assert!(!queue.has_pushable_deadline());
+
+    for id in [rt_id, deadline_id] {
+        assert!(queue.update_migration_capability(id, true));
+    }
+    assert!(queue.has_pushable_realtime());
+    assert!(queue.has_pushable_deadline());
+    let mut scan = queue.begin_balance_scan(None);
+    assert_eq!(
+        queue
+            .next_balance_candidate(&mut scan, |_| true)
+            .unwrap()
+            .id,
+        deadline_id
+    );
+    assert_eq!(
+        queue
+            .next_balance_candidate(&mut scan, |_| true)
+            .unwrap()
+            .id,
+        rt_id
+    );
+}
+
+#[test]
+fn realtime_put_prev_restores_a_box_stable_pushable_link() {
+    let mut queue = RunQueue::new();
+    let policy = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
+    let running = ThreadId::from_parts(0, 1);
+    queue
+        .enqueue_test(
+            running,
+            policy,
+            SchedulingEntity::new(policy, 1, 0),
+            0,
+            EnqueueReason::Wake,
+        )
+        .unwrap();
+
+    assert_eq!(pick_linked_current(&mut queue), running);
+    assert!(!queue.has_pushable_realtime());
+    queue.put_prev_task(running, EnqueueReason::Yield).unwrap();
+    assert!(queue.has_pushable_realtime());
+    let mut scan = queue.begin_balance_scan(Some(SchedulingClass::Realtime));
+    assert_eq!(
+        queue
+            .next_balance_candidate(&mut scan, |_| true)
+            .unwrap()
+            .id,
+        running
+    );
+}
+
+#[test]
+fn realtime_pushable_storage_is_reusable_after_dequeue() {
+    let mut queue = RunQueue::new();
+    let policy = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
+    let thread = ThreadId::from_parts(0, 1);
+    queue
+        .enqueue_test(
+            thread,
+            policy,
+            SchedulingEntity::new(policy, 1, 0),
+            0,
+            EnqueueReason::Wake,
+        )
+        .unwrap();
+
+    let detached = queue.dequeue(thread).unwrap();
+    assert!(!queue.has_pushable_realtime());
+    queue
+        .enqueue_task(detached, EnqueueReason::Wake, None)
+        .unwrap();
+    assert!(queue.has_pushable_realtime());
+    assert_eq!(queue.dequeue(thread).unwrap().id, thread);
+    assert!(!queue.has_pushable_realtime());
 }
 
 #[test]

@@ -1,9 +1,105 @@
 //! Generation-checked thread park handshake.
 
+use core::sync::atomic::{AtomicU8, Ordering};
+
 use crate::{
     ScheduleDecision, ThreadId,
     timer::{TaskDeadlineRegistration, TaskDeadlineToken},
 };
+
+const WAIT_WAKE_QUEUED: u8 = 0;
+const WAIT_WAKE_SELECTED: u8 = 1;
+const WAIT_WAKE_DELIVERED: u8 = 2;
+const WAIT_WAKE_CANCELLED: u8 = 3;
+
+/// One queue notification claim bound to an exact park attempt.
+///
+/// The wait-queue lock owns selection. The scheduler owns delivery after all
+/// fallible placement preparation, while timeout cleanup may cancel a selected
+/// claim before that delivery point.
+#[derive(Debug)]
+pub(crate) struct WaitWakeClaim {
+    thread: ThreadId,
+    park_generation: u64,
+    state: AtomicU8,
+}
+
+impl WaitWakeClaim {
+    pub(crate) const fn new(thread: ThreadId, park_generation: u64) -> Self {
+        Self {
+            thread,
+            park_generation,
+            state: AtomicU8::new(WAIT_WAKE_QUEUED),
+        }
+    }
+
+    pub(crate) const fn thread(&self) -> ThreadId {
+        self.thread
+    }
+
+    pub(crate) const fn park_generation(&self) -> u64 {
+        self.park_generation
+    }
+
+    pub(crate) fn state(&self) -> WaitWakeClaimState {
+        match self.state.load(Ordering::Acquire) {
+            WAIT_WAKE_QUEUED => WaitWakeClaimState::Queued,
+            WAIT_WAKE_SELECTED => WaitWakeClaimState::Selected,
+            WAIT_WAKE_DELIVERED => WaitWakeClaimState::Delivered,
+            WAIT_WAKE_CANCELLED => WaitWakeClaimState::Cancelled,
+            _ => unreachable!("wait-wake claim state must be one of four closed states"),
+        }
+    }
+
+    pub(crate) fn select(&self) -> bool {
+        self.state
+            .compare_exchange(
+                WAIT_WAKE_QUEUED,
+                WAIT_WAKE_SELECTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    pub(crate) fn deliver_selected(&self) -> bool {
+        self.state
+            .compare_exchange(
+                WAIT_WAKE_SELECTED,
+                WAIT_WAKE_DELIVERED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    pub(crate) fn cancel_selected(&self) -> bool {
+        self.state
+            .compare_exchange(
+                WAIT_WAKE_SELECTED,
+                WAIT_WAKE_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WaitWakeClaimState {
+    Queued,
+    Selected,
+    Delivered,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WaitWakeDelivery {
+    Delivered,
+    Cancelled,
+    Exited,
+    Unavailable,
+}
 
 /// Move-only ownership of one park attempt and its optional timeout deadline.
 ///

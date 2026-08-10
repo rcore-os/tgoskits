@@ -1,13 +1,14 @@
 //! Task-context wait queues built on the generation-checked park handshake.
 
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, sync::Arc};
 use core::{
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use crate::{
-    CurrentParkStart, TaskError, ThreadId, ThreadWakeHandle,
+    CurrentParkStart, TaskError, ThreadId, ThreadWakeHandle, WaitWakeClaim, WaitWakeClaimState,
+    WaitWakeDelivery,
     facade::{acquire_blocking_permit, begin_current_park_with_permit},
     lock::PreemptTicketLock,
     runtime::{MonotonicDeadline, task_runtime},
@@ -164,14 +165,60 @@ impl WaitQueue {
     /// [`crate::IrqWaitCell`] to wake one fixed service thread.
     pub fn notify_one(&self) -> bool {
         assert_task_context_notification();
-        let Some(waiter) = self.pop_front_task_context() else {
-            return false;
+        let (notification_generation, mut selected) = {
+            let mut waiters = self.waiters.lock();
+            let previous_generation = self
+                .notification_generation
+                .try_update(Ordering::Release, Ordering::Relaxed, |generation| {
+                    generation.checked_add(1)
+                })
+                .unwrap_or_else(|_| panic!("wait-queue notification generation exhausted"));
+            let notification_generation = previous_generation + 1;
+            let selected = select_waiter(&mut waiters, notification_generation);
+            (notification_generation, selected)
         };
-        let _result = waiter.wake.wake_from_task();
-        true
+        loop {
+            let Some((thread, wake, claim)) = selected else {
+                return false;
+            };
+
+            let delivery = wake.deliver_wait_claim_from_task(&claim);
+            let mut waiters = self.waiters.lock();
+            let index = waiters
+                .iter()
+                .position(|waiter| waiter.thread == thread && waiter.owns_claim(&claim));
+            match delivery {
+                WaitWakeDelivery::Delivered => {
+                    assert_eq!(
+                        claim.state(),
+                        WaitWakeClaimState::Delivered,
+                        "scheduler delivery must publish the claim before returning"
+                    );
+                    if let Some(index) = index {
+                        waiters.remove(index);
+                    }
+                    return true;
+                }
+                WaitWakeDelivery::Cancelled | WaitWakeDelivery::Exited => {
+                    if let Some(index) = index {
+                        waiters.remove(index);
+                    }
+                }
+                WaitWakeDelivery::Unavailable => {
+                    if let Some(index) = index {
+                        waiters[index].requeue_after_unavailable(&claim);
+                    }
+                }
+            }
+            selected = select_waiter(&mut waiters, notification_generation);
+        }
     }
 
-    /// Wakes every waiter, releasing the queue lock before each direct wake.
+    /// Wakes every waiter.
+    ///
+    /// Each direct scheduler wake runs outside the queue's preemption-disabling
+    /// publication lock. A generation-bearing selection token serializes wake
+    /// completion against timeout cleanup.
     pub fn notify_all(&self) {
         while self.notify_one() {}
     }
@@ -220,7 +267,7 @@ impl WaitQueue {
                 CurrentParkStart::Prepared(park) => park,
             };
             let thread = park.thread_id();
-            waiters.push_back(Waiter::new(thread, park.wake_handle()));
+            waiters.push_back(Waiter::new(thread, park.generation(), park.wake_handle()));
             if let Some(deadline) = deadline
                 && let Err(error) = park.arm_deadline(deadline)
             {
@@ -236,22 +283,10 @@ impl WaitQueue {
             remove_waiter(&mut self.waiters.lock(), thread);
             return Err(error);
         }
-        let removed = remove_waiter(&mut self.waiters.lock(), thread);
-        Ok(if removed {
-            WaitOutcome::OtherWake
-        } else {
-            WaitOutcome::Notified
+        Ok(match remove_waiter(&mut self.waiters.lock(), thread) {
+            WaiterRemoval::OtherWake => WaitOutcome::OtherWake,
+            WaiterRemoval::Missing | WaiterRemoval::Delivered => WaitOutcome::Notified,
         })
-    }
-
-    fn pop_front_task_context(&self) -> Option<Waiter> {
-        let mut waiters = self.waiters.lock();
-        self.notification_generation
-            .try_update(Ordering::Release, Ordering::Relaxed, |generation| {
-                generation.checked_add(1)
-            })
-            .unwrap_or_else(|_| panic!("wait-queue notification generation exhausted"));
-        waiters.pop_front()
     }
 }
 
@@ -272,12 +307,69 @@ impl Default for WaitQueue {
 struct Waiter {
     thread: ThreadId,
     wake: ThreadWakeHandle,
+    park_generation: u64,
+    claim: Arc<WaitWakeClaim>,
+    last_attempted_by: u64,
 }
 
 impl Waiter {
-    fn new(thread: ThreadId, wake: ThreadWakeHandle) -> Self {
-        Self { thread, wake }
+    fn new(thread: ThreadId, park_generation: u64, wake: ThreadWakeHandle) -> Self {
+        Self {
+            thread,
+            wake,
+            park_generation,
+            claim: Arc::new(WaitWakeClaim::new(thread, park_generation)),
+            last_attempted_by: 0,
+        }
     }
+
+    fn can_select(&self, notification_generation: u64) -> bool {
+        self.claim.state() == WaitWakeClaimState::Queued
+            && self.last_attempted_by != notification_generation
+    }
+
+    fn select(
+        &mut self,
+        notification_generation: u64,
+    ) -> (ThreadId, ThreadWakeHandle, Arc<WaitWakeClaim>) {
+        assert!(
+            self.can_select(notification_generation),
+            "waiter selection must be unique within one notification"
+        );
+        assert!(
+            self.claim.select(),
+            "queue lock must own the unique Queued-to-Selected transition"
+        );
+        self.last_attempted_by = notification_generation;
+        (self.thread, self.wake.clone(), Arc::clone(&self.claim))
+    }
+
+    fn owns_claim(&self, claim: &Arc<WaitWakeClaim>) -> bool {
+        Arc::ptr_eq(&self.claim, claim)
+    }
+
+    fn requeue_after_unavailable(&mut self, claim: &Arc<WaitWakeClaim>) {
+        assert!(
+            self.owns_claim(claim),
+            "only the selected waiter may be requeued"
+        );
+        assert_eq!(
+            claim.state(),
+            WaitWakeClaimState::Cancelled,
+            "an unavailable scheduler delivery must cancel its old claim"
+        );
+        self.claim = Arc::new(WaitWakeClaim::new(self.thread, self.park_generation));
+    }
+}
+
+fn select_waiter(
+    waiters: &mut VecDeque<Waiter>,
+    notification_generation: u64,
+) -> Option<(ThreadId, ThreadWakeHandle, Arc<WaitWakeClaim>)> {
+    waiters
+        .iter_mut()
+        .find(|waiter| waiter.can_select(notification_generation))
+        .map(|waiter| waiter.select(notification_generation))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -287,12 +379,37 @@ enum WaitOutcome {
     OtherWake,
 }
 
-fn remove_waiter(waiters: &mut VecDeque<Waiter>, thread: ThreadId) -> bool {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WaiterRemoval {
+    Missing,
+    OtherWake,
+    Delivered,
+}
+
+fn remove_waiter(waiters: &mut VecDeque<Waiter>, thread: ThreadId) -> WaiterRemoval {
     let Some(index) = waiters.iter().position(|waiter| waiter.thread == thread) else {
-        return false;
+        return WaiterRemoval::Missing;
     };
-    waiters.remove(index);
-    true
+    let waiter = waiters
+        .remove(index)
+        .expect("located wait-queue entry must remain present under its lock");
+    match waiter.claim.state() {
+        WaitWakeClaimState::Queued | WaitWakeClaimState::Cancelled => WaiterRemoval::OtherWake,
+        WaitWakeClaimState::Delivered => WaiterRemoval::Delivered,
+        WaitWakeClaimState::Selected => {
+            if waiter.claim.cancel_selected() {
+                WaiterRemoval::OtherWake
+            } else {
+                match waiter.claim.state() {
+                    WaitWakeClaimState::Delivered => WaiterRemoval::Delivered,
+                    WaitWakeClaimState::Cancelled => WaiterRemoval::OtherWake,
+                    WaitWakeClaimState::Queued | WaitWakeClaimState::Selected => {
+                        unreachable!("selected claim cancellation must choose one terminal state")
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -375,19 +492,47 @@ mod tests {
     }
 
     #[test]
-    fn notification_removal_wins_the_timeout_cleanup_race() {
+    fn delivered_claim_wins_timeout_cleanup() {
         let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
         let thread = system
             .create_thread(ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
+        let mut waiter = Waiter::new(
+            thread.id(),
+            thread.core.park_generation(),
+            thread.wake_handle(),
+        );
+        let (_, _, claim) = waiter.select(1);
+        assert!(claim.deliver_selected());
         let queue = WaitQueue::new();
-        queue
-            .waiters
-            .lock()
-            .push_back(Waiter::new(thread.id(), thread.wake_handle()));
+        queue.waiters.lock().push_back(waiter);
 
-        assert!(queue.notify_one());
-        assert!(!remove_waiter(&mut queue.waiters.lock(), thread.id()));
+        assert_eq!(
+            remove_waiter(&mut queue.waiters.lock(), thread.id()),
+            WaiterRemoval::Delivered
+        );
+    }
+
+    #[test]
+    fn unavailable_delivery_requeues_the_same_park_generation() {
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let thread = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        let park_generation = thread.core.park_generation();
+        let mut waiter = Waiter::new(thread.id(), park_generation, thread.wake_handle());
+        let (_, _, claim) = waiter.select(1);
+        assert!(claim.cancel_selected());
+        waiter.requeue_after_unavailable(&claim);
+        let queue = WaitQueue::new();
+        queue.waiters.lock().push_back(waiter);
+
+        assert_eq!(queue.waiters.lock().len(), 1);
+        let mut waiters = queue.waiters.lock();
+        let waiter = waiters.front_mut().unwrap();
+        assert_eq!(waiter.claim.park_generation(), park_generation);
+        assert!(!waiter.can_select(1));
+        assert!(waiter.can_select(2));
     }
 
     #[test]
@@ -397,13 +542,39 @@ mod tests {
             .create_thread(ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
         let queue = WaitQueue::new();
-        queue
-            .waiters
-            .lock()
-            .push_back(Waiter::new(thread.id(), thread.wake_handle()));
+        queue.waiters.lock().push_back(Waiter::new(
+            thread.id(),
+            thread.core.park_generation(),
+            thread.wake_handle(),
+        ));
 
-        assert!(remove_waiter(&mut queue.waiters.lock(), thread.id()));
+        assert_eq!(
+            remove_waiter(&mut queue.waiters.lock(), thread.id()),
+            WaiterRemoval::OtherWake
+        );
         assert!(!queue.notify_one());
+    }
+
+    #[test]
+    fn timeout_cleanup_does_not_treat_selection_as_delivery() {
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let thread = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        let mut waiter = Waiter::new(
+            thread.id(),
+            thread.core.park_generation(),
+            thread.wake_handle(),
+        );
+        let _selection = waiter.select(1);
+        let queue = WaitQueue::new();
+        queue.waiters.lock().push_back(waiter);
+
+        assert_eq!(
+            remove_waiter(&mut queue.waiters.lock(), thread.id()),
+            WaiterRemoval::OtherWake,
+            "selection without scheduler delivery must not report notification success"
+        );
     }
 
     #[test]

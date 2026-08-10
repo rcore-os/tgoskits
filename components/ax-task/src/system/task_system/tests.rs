@@ -2,7 +2,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::*;
-use crate::{FairEntity, PiMutexAcquire, PiMutexCore, PiMutexLockResult};
+use crate::{FairEntity, PiMutexAcquire, PiMutexClaimOutcome, PiMutexCore, PiMutexLockResult};
 
 trait TaskSystemClockTestExt {
     fn enqueue_at(
@@ -4777,6 +4777,55 @@ fn deadline_runqueue_ledger_tracks_policy_replacement() {
 }
 
 #[test]
+fn queued_rt_deadline_reclassification_preserves_pushable_membership() {
+    crate::test_runtime::reset_irq_state();
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+    let rt = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
+    let thread = system.create_thread(ThreadSpec::new(rt)).unwrap();
+    system.make_ready(thread.id()).unwrap();
+    system.enqueue_at(cpu0.as_mut(), thread.id(), 0).unwrap();
+    {
+        let run_queue = cpu0.lock_run_queue();
+        assert_eq!(run_queue.nr_running(), 1);
+        assert!(run_queue.has_pushable_realtime());
+        assert!(!run_queue.has_pushable_deadline());
+    }
+
+    let deadline =
+        SchedulePolicy::deadline(DeadlinePolicy::new(1, 4, 10, DeadlineFlags::NONE).unwrap());
+    system.set_thread_policy(thread.id(), deadline).unwrap();
+    {
+        let run_queue = cpu0.lock_run_queue();
+        assert_eq!(run_queue.nr_running(), 1);
+        assert!(!run_queue.has_pushable_realtime());
+        assert!(run_queue.has_pushable_deadline());
+        assert_eq!(
+            run_queue.queued_thread(thread.id()).unwrap().policy(),
+            deadline
+        );
+    }
+
+    system.set_thread_policy(thread.id(), rt).unwrap();
+    let run_queue = cpu0.lock_run_queue();
+    assert_eq!(run_queue.nr_running(), 1);
+    assert!(run_queue.has_pushable_realtime());
+    assert!(!run_queue.has_pushable_deadline());
+    assert_eq!(run_queue.queued_thread(thread.id()).unwrap().policy(), rt);
+}
+
+#[test]
 fn blocked_affinity_update_completes_after_switch_tail() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -5526,6 +5575,54 @@ fn pi_release_atomically_selects_and_preserves_the_wait_transaction() {
 }
 
 #[test]
+fn pi_claim_retries_when_a_more_urgent_waiter_wins_the_ownerless_window() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = create_online_pi_cpu(&system);
+    let owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let first = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(80).unwrap(),
+        )))
+        .unwrap();
+    let later = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(99).unwrap(),
+        )))
+        .unwrap();
+    place_pi_owner(&system, cpu.as_mut(), &owner);
+    let lock = PiMutexCore::new();
+    let first_token = commit_pi_wait(&system, &lock, first.id(), owner.id()).unwrap();
+
+    system
+        .pi_mutex_release(lock.mutex_ref().unwrap(), owner.id())
+        .unwrap();
+    assert!(first_token.can_claim());
+    let later_token = match system
+        .pi_mutex_lock_slow(lock.mutex_ref().unwrap(), later.id(), later.id().as_u64())
+        .unwrap()
+    {
+        PiMutexLockResult::Waiting(token) => token,
+        PiMutexLockResult::Acquired => panic!("ownerless PI handoff must retain its waiter tree"),
+    };
+    assert!(later_token.can_claim());
+    assert!(!first_token.can_claim());
+
+    assert_eq!(
+        system.pi_mutex_claim(&first_token).unwrap(),
+        PiMutexClaimOutcome::Retry,
+        "losing a Linux rtmutex-style ownerless claim race must request a retry"
+    );
+    assert_eq!(
+        system.pi_mutex_claim(&later_token).unwrap(),
+        PiMutexClaimOutcome::Claimed
+    );
+    system.pi_wait_cancel(first_token).unwrap();
+    assert!(release_pi_for_thread(&lock, later.id()).unwrap());
+}
+
+#[test]
 fn pi_release_wakes_the_selected_waiter_before_returning() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -5816,6 +5913,47 @@ fn wake_during_parking_cancels_schedule_out() {
 }
 
 #[test]
+fn wake_that_observes_running_before_parking_rechecks_under_the_thread_lock() {
+    let system = Arc::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let running = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+
+    dispatch::arm_wake_before_thread_lock_race(system.as_ref().get_ref(), running.id());
+    let wake_system = Pin::clone(&system);
+    let wake_core = Arc::clone(&running.core);
+    let waker = std::thread::spawn(move || {
+        wake_system
+            .as_ref()
+            .get_ref()
+            .wake_thread_direct(wake_core, Some(CpuId::new(0)))
+    });
+    while !dispatch::wake_before_thread_lock_race_entered() {
+        core::hint::spin_loop();
+    }
+
+    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
+        panic!("fresh park must publish PARKING");
+    };
+    dispatch::complete_wake_before_thread_lock_race();
+
+    assert_eq!(waker.join().unwrap(), crate::WakeResult::Notified);
+    assert!(matches!(
+        system
+            .commit_park_at_for_test(cpu.as_mut(), &mut ticket, 0)
+            .unwrap(),
+        ParkCommit::Notified
+    ));
+    assert_eq!(
+        system.thread_state(running.id()).unwrap(),
+        ThreadState::Running
+    );
+}
+
+#[test]
 fn wake_between_park_check_and_block_transition_cancels_schedule_out() {
     let system = Arc::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -5860,6 +5998,79 @@ fn wake_between_park_check_and_block_transition_cancels_schedule_out() {
     assert_eq!(
         system.thread_state(running.id()).unwrap(),
         ThreadState::Running
+    );
+}
+
+#[test]
+fn wake_after_final_park_check_serializes_with_blocked_publication() {
+    use std::{sync::mpsc, time::Duration};
+
+    let system = Arc::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let running = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let _idle = system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
+        panic!("fresh park must publish PARKING");
+    };
+    drop(runtime_handles);
+
+    park_exit::arm_park_after_final_wake_check(system.as_ref().get_ref(), running.id());
+    let commit_system = Pin::clone(&system);
+    let commit = std::thread::spawn(move || {
+        let mut cpu = cpu;
+        let _runtime_handles = InstalledTaskHandles::new(commit_system.as_ref(), cpu.as_mut());
+        let result = commit_system
+            .commit_park_at_for_test(cpu.as_mut(), &mut ticket, 0)
+            .unwrap();
+        (cpu, result)
+    });
+    while !park_exit::park_after_final_wake_check_entered() {
+        core::hint::spin_loop();
+    }
+
+    dispatch::arm_wake_during_final_park_publication(system.as_ref().get_ref(), running.id());
+    let wake_system = Pin::clone(&system);
+    let wake_core = Arc::clone(&running.core);
+    let (wake_result_tx, wake_result_rx) = mpsc::sync_channel(1);
+    let waker = std::thread::spawn(move || {
+        let result = wake_system
+            .as_ref()
+            .get_ref()
+            .wake_thread_direct(wake_core, Some(CpuId::new(0)));
+        wake_result_tx.send(result).unwrap();
+    });
+    while !dispatch::wake_during_final_park_publication_entered() {
+        core::hint::spin_loop();
+    }
+    dispatch::complete_wake_during_final_park_publication();
+
+    let wake_escaped_locked_park = wake_result_rx.recv_timeout(Duration::from_millis(250)).ok();
+    park_exit::complete_park_after_final_wake_check();
+    let (mut cpu, commit_result) = commit.join().unwrap();
+    let wake_result = wake_escaped_locked_park.unwrap_or_else(|| wake_result_rx.recv().unwrap());
+    waker.join().unwrap();
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+
+    assert!(
+        wake_escaped_locked_park.is_none(),
+        "a wake after the final park check must wait for the task lock instead of publishing a \
+         lockless bit that Blocked can overtake"
+    );
+    assert!(matches!(commit_result, ParkCommit::Blocked(_)));
+    assert_eq!(wake_result, crate::WakeResult::Notified);
+    assert_eq!(
+        system.thread_state(running.id()).unwrap(),
+        ThreadState::Ready
     );
 }
 

@@ -9,10 +9,12 @@ use std::{
             ax_hal::{self, irq::CpuId, percpu::this_cpu_id},
             ax_ipi,
         },
+        task::WaitQueue,
     },
     println,
     sync::Arc,
     thread,
+    time::Duration,
     vec::Vec,
 };
 
@@ -20,6 +22,7 @@ const MAX_SENDER_CPUS: usize = 3;
 const CALLBACKS_PER_SENDER: usize = 16;
 const TEST_ROUNDS: usize = 2;
 const IDLE_WAKE_POLLS: usize = 100_000;
+const POST_IPI_WAITER_COUNT: usize = 16;
 
 static TARGET_CPU: AtomicUsize = AtomicUsize::new(0);
 static SENT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
@@ -28,6 +31,11 @@ static EXECUTED_HARD_CALLS: AtomicUsize = AtomicUsize::new(0);
 static IDLE_TARGET_MASKED: AtomicBool = AtomicBool::new(false);
 static IDLE_IPI_PUBLISHED: AtomicBool = AtomicBool::new(false);
 static IDLE_IPI_ACKNOWLEDGED: AtomicBool = AtomicBool::new(false);
+static POST_IPI_WAITERS: WaitQueue = WaitQueue::new();
+static POST_IPI_COMPLETED: WaitQueue = WaitQueue::new();
+static POST_IPI_STARTED_COUNT: AtomicUsize = AtomicUsize::new(0);
+static POST_IPI_COMPLETED_COUNT: AtomicUsize = AtomicUsize::new(0);
+static POST_IPI_START: AtomicBool = AtomicBool::new(false);
 
 fn pin_current_to_cpu(cpu_id: usize) {
     assert!(
@@ -146,6 +154,54 @@ fn exercise_irq_masked_idle_wake(target_cpu: usize, sender_cpu: usize) {
     target.join().unwrap();
 }
 
+fn verify_wait_queue_deadlines_during_ipi(target_cpu: usize) {
+    POST_IPI_STARTED_COUNT.store(0, Ordering::Release);
+    POST_IPI_COMPLETED_COUNT.store(0, Ordering::Release);
+    POST_IPI_START.store(false, Ordering::Release);
+    let mut waiters = Vec::new();
+    for _ in 0..POST_IPI_WAITER_COUNT {
+        waiters.push(thread::spawn(|| {
+            while !POST_IPI_START.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            POST_IPI_STARTED_COUNT.fetch_add(1, Ordering::Release);
+            let timed_out =
+                POST_IPI_WAITERS.wait_timeout_until(Duration::from_millis(50), || false);
+            assert!(
+                timed_out,
+                "post-IPI waiter must complete through its deadline"
+            );
+            POST_IPI_COMPLETED_COUNT.fetch_add(1, Ordering::Release);
+            POST_IPI_COMPLETED.notify_one();
+        }));
+    }
+    POST_IPI_START.store(true, Ordering::Release);
+    while POST_IPI_STARTED_COUNT.load(Ordering::Acquire) != POST_IPI_WAITER_COUNT {
+        thread::yield_now();
+    }
+    let calls_before = EXECUTED_HARD_CALLS.load(Ordering::Relaxed);
+    // SAFETY: call_on_cpu is synchronous and the argument remains borrowed
+    // until the bounded hard-IRQ callback completes.
+    unsafe {
+        ax_ipi::call_on_cpu(
+            CpuId(target_cpu),
+            counting_hard_call,
+            core::ptr::from_ref(&target_cpu).cast_mut().cast(),
+        )
+    }
+    .expect("deadline-overlap hard call failed");
+    assert_eq!(
+        EXECUTED_HARD_CALLS.load(Ordering::Relaxed),
+        calls_before + 1,
+        "hard call must complete while deadline waiters are active"
+    );
+    POST_IPI_COMPLETED
+        .wait_until(|| POST_IPI_COMPLETED_COUNT.load(Ordering::Acquire) == POST_IPI_WAITER_COUNT);
+    for waiter in waiters {
+        waiter.join().unwrap();
+    }
+}
+
 pub fn run() -> crate::TestResult {
     let cpu_num = thread::available_parallelism().unwrap().get();
     if cpu_num < 2 {
@@ -229,6 +285,7 @@ pub fn run() -> crate::TestResult {
     }
     .expect("failed to execute IPI hard call");
     assert_eq!(EXECUTED_HARD_CALLS.load(Ordering::Relaxed), 1);
+    verify_wait_queue_deadlines_during_ipi(target_cpu);
 
     Ok(())
 }

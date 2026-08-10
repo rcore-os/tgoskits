@@ -326,6 +326,10 @@ impl DeadlineRunQueue {
         !self.pushable.is_empty()
     }
 
+    pub(super) const fn pushable_count(&self) -> usize {
+        self.pushable.len()
+    }
+
     pub(super) fn refresh_pushable(&mut self, thread: ThreadId, current: Option<ThreadId>) {
         let queued = self
             .keys

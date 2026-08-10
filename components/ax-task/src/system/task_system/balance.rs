@@ -48,6 +48,9 @@ std::thread_local! {
     static FAIL_BALANCE_TRANSFER_PUBLICATION_RESERVATION: core::cell::Cell<bool> = const {
         core::cell::Cell::new(false)
     };
+    static FAIL_BALANCE_TRANSFER_AFTER_PREPARE: core::cell::Cell<bool> = const {
+        core::cell::Cell::new(false)
+    };
 }
 
 #[cfg(test)]
@@ -83,6 +86,11 @@ pub(super) fn owner_balance_passes() -> usize {
 #[cfg(test)]
 fn fail_next_balance_transfer_publication_reservation() {
     FAIL_BALANCE_TRANSFER_PUBLICATION_RESERVATION.set(true);
+}
+
+#[cfg(test)]
+fn fail_next_balance_transfer_after_prepare() {
+    FAIL_BALANCE_TRANSFER_AFTER_PREPARE.set(true);
 }
 
 impl TaskSystem {
@@ -176,12 +184,12 @@ impl TaskSystem {
         mut select_target: impl FnMut(&QueuedThreadSnapshot, &ThreadSchedState) -> Option<CpuId>,
     ) -> Option<OwnerBalanceSelection> {
         let source = cpu.owner();
-        let (current_policy, scan_epoch) = {
+        let (current_policy, mut scan) = {
             let mut transaction = OwnerRqTxn::begin(self, cpu.remote());
             let current_policy = transaction.current().map(CurrentDispatch::schedule_policy);
-            let scan_epoch = transaction.begin_balance_scan();
+            let scan = transaction.begin_balance_scan(class_filter);
             transaction.commit();
-            (current_policy, scan_epoch)
+            (current_policy, scan)
         };
         loop {
             let candidate = {
@@ -189,79 +197,77 @@ impl TaskSystem {
                 let queued_top_rt = transaction.highest_rt_priority();
                 let top_rt_count =
                     queued_top_rt.map_or(0, |priority| transaction.rt_count_at_priority(priority));
-                let candidate =
-                    transaction.next_balance_candidate(scan_epoch, class_filter, |candidate| {
-                        #[cfg(test)]
-                        BALANCE_CANDIDATE_VISITS
-                            .set(BALANCE_CANDIDATE_VISITS.get().saturating_add(1));
-                        let class_allowed = match reason {
-                            BalanceReason::IdlePull => !matches!(
-                                candidate.policy(),
-                                SchedulePolicy::Fair {
-                                    mode: FairMode::Idle,
-                                    ..
-                                }
-                            ),
-                            BalanceReason::RtDeadlinePush => matches!(
-                                candidate.policy(),
-                                SchedulePolicy::Deadline(_)
-                                    | SchedulePolicy::Fifo { .. }
-                                    | SchedulePolicy::RoundRobin { .. }
-                            ),
-                            BalanceReason::FairPeriodic => matches!(
-                                candidate.policy(),
-                                SchedulePolicy::Fair {
-                                    mode: FairMode::Normal | FairMode::Batch,
-                                    ..
-                                }
-                            ),
-                        };
-                        let matches_filter = class_filter.is_none_or(|class| match class {
-                            SchedulingClass::Deadline => {
-                                matches!(candidate.policy(), SchedulePolicy::Deadline(_))
+                let candidate = transaction.next_balance_candidate(&mut scan, |candidate| {
+                    #[cfg(test)]
+                    BALANCE_CANDIDATE_VISITS.set(BALANCE_CANDIDATE_VISITS.get().saturating_add(1));
+                    let class_allowed = match reason {
+                        BalanceReason::IdlePull => !matches!(
+                            candidate.policy(),
+                            SchedulePolicy::Fair {
+                                mode: FairMode::Idle,
+                                ..
                             }
-                            SchedulingClass::Realtime => matches!(
-                                candidate.policy(),
-                                SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
-                            ),
-                            SchedulingClass::Fair => matches!(
-                                candidate.policy(),
-                                SchedulePolicy::Fair {
-                                    mode: FairMode::Normal | FairMode::Batch,
-                                    ..
-                                }
-                            ),
-                            SchedulingClass::Idle => matches!(
-                                candidate.policy(),
-                                SchedulePolicy::Fair {
-                                    mode: FairMode::Idle,
-                                    ..
-                                }
-                            ),
-                            SchedulingClass::Stop => {
-                                matches!(candidate.policy(), SchedulePolicy::KernelStop)
+                        ),
+                        BalanceReason::RtDeadlinePush => matches!(
+                            candidate.policy(),
+                            SchedulePolicy::Deadline(_)
+                                | SchedulePolicy::Fifo { .. }
+                                | SchedulePolicy::RoundRobin { .. }
+                        ),
+                        BalanceReason::FairPeriodic => matches!(
+                            candidate.policy(),
+                            SchedulePolicy::Fair {
+                                mode: FairMode::Normal | FairMode::Batch,
+                                ..
                             }
-                        });
-                        if !class_allowed || !matches_filter {
-                            return false;
+                        ),
+                    };
+                    let matches_filter = class_filter.is_none_or(|class| match class {
+                        SchedulingClass::Deadline => {
+                            matches!(candidate.policy(), SchedulePolicy::Deadline(_))
                         }
-                        let candidate_priority = match candidate.policy() {
-                            SchedulePolicy::Fifo { priority }
-                            | SchedulePolicy::RoundRobin { priority, .. } => priority.get(),
-                            _ => return true,
-                        };
-                        match current_policy {
-                            Some(SchedulePolicy::Deadline(_)) => true,
-                            Some(SchedulePolicy::Fifo { priority })
-                            | Some(SchedulePolicy::RoundRobin { priority, .. }) => {
-                                candidate_priority <= priority.get()
+                        SchedulingClass::Realtime => matches!(
+                            candidate.policy(),
+                            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+                        ),
+                        SchedulingClass::Fair => matches!(
+                            candidate.policy(),
+                            SchedulePolicy::Fair {
+                                mode: FairMode::Normal | FairMode::Batch,
+                                ..
                             }
-                            _ => queued_top_rt.is_some_and(|top| {
-                                candidate_priority < top
-                                    || (candidate_priority == top && top_rt_count > 1)
-                            }),
+                        ),
+                        SchedulingClass::Idle => matches!(
+                            candidate.policy(),
+                            SchedulePolicy::Fair {
+                                mode: FairMode::Idle,
+                                ..
+                            }
+                        ),
+                        SchedulingClass::Stop => {
+                            matches!(candidate.policy(), SchedulePolicy::KernelStop)
                         }
                     });
+                    if !class_allowed || !matches_filter {
+                        return false;
+                    }
+                    let candidate_priority = match candidate.policy() {
+                        SchedulePolicy::Fifo { priority }
+                        | SchedulePolicy::RoundRobin { priority, .. } => priority.get(),
+                        _ => return true,
+                    };
+                    match current_policy {
+                        Some(SchedulePolicy::Deadline(_)) => true,
+                        Some(SchedulePolicy::Fifo { priority })
+                        | Some(SchedulePolicy::RoundRobin { priority, .. }) => {
+                            candidate_priority <= priority.get()
+                        }
+                        _ => queued_top_rt.is_some_and(|top| {
+                            candidate_priority < top
+                                || (candidate_priority == top && top_rt_count > 1)
+                        }),
+                    }
+                });
                 transaction.commit();
                 candidate
             }?;
@@ -397,6 +403,11 @@ impl TaskSystem {
         };
         #[cfg(test)]
         drop(publication_exit);
+        #[cfg(test)]
+        if FAIL_BALANCE_TRANSFER_AFTER_PREPARE.replace(false) {
+            drop(carrier);
+            return Ok(BalanceTransferOutcome::Retry);
+        }
         let remote = Arc::clone(cpu.remote());
         let mut transaction = OwnerRqTxn::begin(self, &remote);
         let detached = {
@@ -688,5 +699,57 @@ mod tests {
         assert!(!sched.placement.has_pending_migration());
         drop(sched);
         assert_eq!(first.assigned_cpu(), Some(CpuId::new(0)));
+    }
+
+    #[test]
+    fn prepared_migration_rollback_preserves_the_exact_rt_source_queue() {
+        let (system, mut cpu0, mut cpu1) = online_pair();
+        let policy = SchedulePolicy::fifo(RtPriority::new(50).unwrap());
+        let first = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        let second = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        for thread in [&first, &second] {
+            system.make_ready(thread.id()).unwrap();
+            system.enqueue(cpu0.as_mut(), thread.id()).unwrap();
+        }
+
+        fail_next_balance_transfer_after_prepare();
+        assert_eq!(
+            system.transfer_owner_balance_candidate(
+                cpu0.as_mut(),
+                CpuId::new(1),
+                BalanceReason::RtDeadlinePush,
+                Some(SchedulingClass::Realtime),
+            ),
+            Ok(BalanceTransferOutcome::Retry)
+        );
+        {
+            let run_queue = cpu0.lock_run_queue();
+            assert_eq!(run_queue.nr_running(), 2);
+            assert_eq!(run_queue.rt_count_at_priority(50), 2);
+            assert!(run_queue.has_pushable_realtime());
+            assert!(run_queue.queued_thread(first.id()).is_some());
+            assert!(run_queue.queued_thread(second.id()).is_some());
+        }
+        for thread in [&first, &second] {
+            let sched = thread.core.sched().lock();
+            assert_eq!(sched.placement.queued_cpu(), Some(CpuId::new(0)));
+            assert!(!sched.placement.has_pending_migration());
+            drop(sched);
+            assert_eq!(thread.assigned_cpu(), Some(CpuId::new(0)));
+        }
+
+        assert!(matches!(
+            system.transfer_owner_balance_candidate(
+                cpu0.as_mut(),
+                CpuId::new(1),
+                BalanceReason::RtDeadlinePush,
+                Some(SchedulingClass::Realtime),
+            ),
+            Ok(BalanceTransferOutcome::Migrated(_))
+        ));
+        crate::test_runtime::set_scheduler_ns_for_cpu(1, 1);
+        system.drain_owner_control(cpu1.as_mut()).unwrap();
+        assert_eq!(cpu0.runnable_count(), 1);
+        assert_eq!(cpu1.runnable_count(), 1);
     }
 }

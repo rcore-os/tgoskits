@@ -16,6 +16,15 @@ pub enum PiMutexLockResult<'lock> {
     Waiting(PiWaitToken<'lock>),
 }
 
+/// Result of serializing one ownerless PI-mutex claim on its waiter lock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PiMutexClaimOutcome {
+    /// This waiter was still first and became the physical mutex owner.
+    Claimed,
+    /// The live owner or top waiter changed after the caller's optimistic check.
+    Retry,
+}
+
 /// Result of trying to cancel one committed PI waiter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PiWaitCancelOutcome {

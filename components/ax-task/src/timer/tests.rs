@@ -228,6 +228,41 @@ fn cancellation_removes_entry_and_reclaims_capacity_immediately() {
 }
 
 #[test]
+fn cancellation_wins_once_before_expiration() {
+    let node = timer(35);
+    let mut timers = TaskDeadlineQueue::new(1);
+    let registration = timers.arm(node.as_ref(), deadline(10), park(1)).unwrap();
+    let mut expired = [ExpiredTaskDeadline::EMPTY; 1];
+
+    assert!(timers.cancel(&registration));
+    assert!(!timers.cancel(&registration));
+    let batch = timers.expire(TaskDeadlineExpireRequest::new(now(10), 1), &mut expired);
+
+    assert_eq!(batch.processed(), 0);
+    assert_eq!(batch.expired(), 0);
+    assert!(timers.is_empty());
+}
+
+#[test]
+fn expiration_wins_once_before_cancellation() {
+    let node = timer(36);
+    let mut timers = TaskDeadlineQueue::new(1);
+    let registration = timers.arm(node.as_ref(), deadline(10), park(1)).unwrap();
+    let mut expired = [ExpiredTaskDeadline::EMPTY; 1];
+
+    let first = timers.expire(TaskDeadlineExpireRequest::new(now(10), 1), &mut expired);
+    assert_eq!(first.processed(), 1);
+    assert_eq!(first.expired(), 1);
+    assert_eq!(expired[0].token(), registration.token());
+    assert!(!timers.cancel(&registration));
+
+    let second = timers.expire(TaskDeadlineExpireRequest::new(now(10), 1), &mut expired);
+    assert_eq!(second.processed(), 0);
+    assert_eq!(second.expired(), 0);
+    assert!(timers.is_empty());
+}
+
+#[test]
 fn cancellation_transaction_restores_the_exact_registration_and_capacity() {
     let first = timer(12);
     let second = timer(24);

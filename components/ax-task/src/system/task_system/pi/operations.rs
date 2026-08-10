@@ -308,7 +308,10 @@ impl TaskSystem {
     }
 
     /// Claims an ownerless handoff selected for this waiter.
-    pub fn pi_mutex_claim(&self, token: &PiWaitToken<'_>) -> Result<(), TaskError> {
+    pub fn pi_mutex_claim(
+        &self,
+        token: &PiWaitToken<'_>,
+    ) -> Result<PiMutexClaimOutcome, TaskError> {
         let _preempt = PreemptScope::enter();
         let claimant = token.thread_id();
         let lock = token.lock;
@@ -321,7 +324,7 @@ impl TaskSystem {
             lock.core()
         };
         if !mutex_core.owner_snapshot().is_ownerless() {
-            return Err(TaskError::InvalidPiState);
+            return Ok(PiMutexClaimOutcome::Retry);
         }
         let registration = token
             .core
@@ -333,11 +336,13 @@ impl TaskSystem {
                 registration.lock == lock && registration.generation == token.generation
             })
             .ok_or(TaskError::InvalidPiState)?;
-        if lock_state.waiters.first() != Some(registration.key)
-            || !token
-                .core
-                .pi_wait_state()
-                .can_grant(registration.generation)
+        if lock_state.waiters.first() != Some(registration.key) {
+            return Ok(PiMutexClaimOutcome::Retry);
+        }
+        if !token
+            .core
+            .pi_wait_state()
+            .can_grant(registration.generation)
         {
             return Err(TaskError::InvalidPiState);
         }
@@ -363,6 +368,6 @@ impl TaskSystem {
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5049_1214, claimant.as_u64() as usize)
             });
-        Ok(())
+        Ok(PiMutexClaimOutcome::Claimed)
     }
 }

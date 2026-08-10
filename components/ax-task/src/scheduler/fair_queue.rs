@@ -147,6 +147,10 @@ impl FairRunQueue {
         self.migratable_count != 0
     }
 
+    pub(super) const fn migratable_count(&self) -> usize {
+        self.migratable_count
+    }
+
     pub(super) fn total_weight(&self) -> u64 {
         u64::try_from(self.total_weight).expect("fair runqueue weight must remain non-negative")
     }

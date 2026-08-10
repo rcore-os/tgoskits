@@ -40,7 +40,7 @@ pub use outcome::{
     ScheduleDecision, SchedulerOutcome, SwitchInCompletion,
 };
 pub(crate) use park_exit::CurrentExitPermit;
-pub use pi::{PiMutexLockResult, PiWaitCancelOutcome};
+pub use pi::{PiMutexClaimOutcome, PiMutexLockResult, PiWaitCancelOutcome};
 use priority_index::RootDomainPriorityIndex;
 use registry::{
     CpuRegistration, DeadlineCallbackClaim, DetachedThreadRecord, TaskSystemState, ThreadRecord,
@@ -66,7 +66,8 @@ use crate::{
     SchedulerTimestamp, SchedulingClass, SchedulingEntity, SchedulingUrgency, SwitchReason,
     TaskError, TaskSystemConfig, ThreadAffinityChange, ThreadCore, ThreadExtension,
     ThreadExtensionBorrow, ThreadExtensionLease, ThreadExtensionView, ThreadHandle, ThreadId,
-    ThreadResources, ThreadRuntimeSnapshot, ThreadSpec, ThreadState, WakeResult,
+    ThreadResources, ThreadRuntimeSnapshot, ThreadSpec, ThreadState, WaitWakeClaim,
+    WaitWakeDelivery, WakeResult,
     executor::CoroutineHeader,
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, IrqTicketLock, PreemptTicketLock},

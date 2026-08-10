@@ -72,6 +72,10 @@ impl DeadlinePushableTasks {
         self.len == 0
     }
 
+    pub(super) const fn len(&self) -> usize {
+        self.len
+    }
+
     pub(super) fn contains(&self, thread: ThreadId) -> bool {
         self.keys
             .get(thread.slot() as usize)

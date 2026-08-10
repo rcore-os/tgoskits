@@ -230,8 +230,7 @@ impl PlatOp for Plat {
         if cpu_id >= someboot::smp::cpu_count() {
             return Err(IrqError::InvalidCpu);
         }
-        let command =
-            ipi_command::make_ipi_send_value(cpu_id, IPI_VECTOR).ok_or(IrqError::InvalidCpu)?;
+        let command = ipi_command::runtime_ipi_send_value(cpu_id).ok_or(IrqError::InvalidCpu)?;
         // The blocking command waits for transport acceptance, not for prior
         // shared-memory stores. Complete those stores before ringing the IOCSR
         // doorbell so the target cannot observe a stale payload.

@@ -54,6 +54,7 @@ pthread_t pthread_self(void);
 
 int pthread_create(pthread_t *__restrict, const pthread_attr_t *__restrict, void *(*)(void *),
                    void *__restrict);
+int pthread_detach(pthread_t t);
 int pthread_join(pthread_t t, void **res);
 
 int pthread_setcancelstate(int, int *);

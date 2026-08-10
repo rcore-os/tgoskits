@@ -4,10 +4,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_kernel_guard::NoPreempt as PreemptGuard;
 use ax_task::{
-    CurrentThreadToken, PiMutexAcquire, PiMutexCore, PiMutexLockResult, PiMutexOwnedRelease,
-    PiMutexRef, PiWaitCancelOutcome, PiWaitStateError, PiWaitToken, TaskError, ThreadId,
-    current_needs_reschedule_pinned, current_thread_token, pi_mutex_claim, pi_mutex_lock_slow,
-    pi_mutex_release_owned, pi_park_current_once, pi_wait_try_cancel, validate_blocking_context,
+    CurrentThreadToken, PiMutexAcquire, PiMutexClaimOutcome, PiMutexCore, PiMutexLockResult,
+    PiMutexOwnedRelease, PiMutexRef, PiWaitCancelOutcome, PiWaitStateError, PiWaitToken, TaskError,
+    ThreadId, current_needs_reschedule_pinned, current_thread_token, pi_mutex_claim,
+    pi_mutex_lock_slow, pi_mutex_release_owned, pi_park_current_once, pi_wait_try_cancel,
+    validate_blocking_context,
 };
 #[cfg(test)]
 use ax_task::{ThreadHandle, current_thread_handle};
@@ -325,8 +326,10 @@ impl RawMutex {
         if !token.can_claim() {
             return false;
         }
-        task_result(pi_mutex_claim(token, current), "claim ownerless PI mutex");
-        true
+        match task_result(pi_mutex_claim(token, current), "claim ownerless PI mutex") {
+            PiMutexClaimOutcome::Claimed => true,
+            PiMutexClaimOutcome::Retry => false,
+        }
     }
 
     unsafe fn unlock_pi(&self) {

@@ -6,10 +6,10 @@ use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 use crate::{
     CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, CurrentExitPermit, CurrentThreadToken,
     IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWaitToken, ParkCommit, ParkPrepare,
-    PiMutexLockResult, PiMutexRef, PiWaitCancelOutcome, PiWaitToken, RtPriority, ScheduleDecision,
-    SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder, ThreadCore,
-    ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
-    ThreadWakeHandle, WaitQueue, WakeResult,
+    PiMutexClaimOutcome, PiMutexLockResult, PiMutexRef, PiWaitCancelOutcome, PiWaitToken,
+    RtPriority, ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem,
+    ThreadBuilder, ThreadCore, ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot,
+    ThreadState, ThreadWakeHandle, WaitQueue, WaitWakeClaim, WaitWakeDelivery, WakeResult,
     executor::CoroutineHeader,
     inbox::PublishResult,
     lock::PreemptScope,
@@ -54,7 +54,7 @@ use runtime_cpu::{
 };
 pub(crate) use runtime_cpu::{
     RuntimeIrqGuard, current_cpu_remote, runtime_current_cpu_mut, runtime_task_system,
-    wake_thread_direct,
+    wake_thread_direct, wake_wait_claim_direct,
 };
 #[cfg(test)]
 use scheduling::prepare_next_address_space;

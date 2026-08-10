@@ -86,7 +86,7 @@ pub unsafe fn pi_mutex_release_owned(
 pub fn pi_mutex_claim(
     token: &PiWaitToken<'_>,
     current: &CurrentThreadToken,
-) -> Result<(), TaskError> {
+) -> Result<PiMutexClaimOutcome, TaskError> {
     if current.id() != token.thread_id() {
         return Err(TaskError::InvalidPiState);
     }

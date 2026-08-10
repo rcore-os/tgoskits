@@ -65,11 +65,15 @@ fn ktimer_service_loop(owner: CpuId) -> Result<(), TaskError> {
     remote.finish_ktimer_worker_install(current.id());
 
     loop {
-        if service_current_ktimer_pass(owner)? {
-            let _decision = yield_current_cpu()?;
+        let Some(claim) = remote.claim_ktimer_work() else {
+            waiter.wait(remote.ktimer_event())?;
             continue;
+        };
+        let pass = service_current_ktimer_pass(owner);
+        remote.complete_ktimer_work(claim);
+        if pass? {
+            let _decision = yield_current_cpu()?;
         }
-        waiter.wait(remote.ktimer_event())?;
     }
 }
 

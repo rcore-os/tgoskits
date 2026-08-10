@@ -35,8 +35,9 @@ fn assert_irq_enabled_and_disabled() {
 fn test_yielding() {
     static FINISHED: AtomicUsize = AtomicUsize::new(0);
     FINISHED.store(0, Ordering::Release);
+    let mut workers = std::vec::Vec::new();
     for _ in 0..NUM_TASKS {
-        thread::spawn(move || {
+        workers.push(thread::spawn(move || {
             assert_irq_enabled();
             for _ in 0..NUM_TIMES {
                 assert_irq_enabled();
@@ -44,12 +45,15 @@ fn test_yielding() {
                 assert_irq_enabled_and_disabled();
             }
             FINISHED.fetch_add(1, Ordering::Release);
-        });
+        }));
     }
 
     while FINISHED.load(Ordering::Acquire) < NUM_TASKS {
         thread::yield_now();
         assert_irq_enabled_and_disabled();
+    }
+    for worker in workers {
+        worker.join().unwrap();
     }
 }
 
@@ -61,19 +65,23 @@ fn test_sleep() {
     thread::sleep(Duration::from_millis(100));
     assert_irq_enabled_and_disabled();
 
+    let mut workers = std::vec::Vec::new();
     for _ in 0..NUM_TASKS {
-        thread::spawn(move || {
+        workers.push(thread::spawn(move || {
             for _ in 0..2 {
                 assert_irq_enabled();
                 thread::sleep(Duration::from_millis(100));
                 assert_irq_enabled_and_disabled();
             }
             FINISHED.fetch_add(1, Ordering::Release);
-        });
+        }));
     }
 
     while FINISHED.load(Ordering::Acquire) < NUM_TASKS {
         thread::sleep(Duration::from_millis(10));
+    }
+    for worker in workers {
+        worker.join().unwrap();
     }
 }
 
@@ -89,8 +97,9 @@ fn test_wait_queue() {
     COUNTER.store(0, Ordering::Release);
     GO.store(false, Ordering::Release);
 
+    let mut workers = std::vec::Vec::new();
     for _ in 0..NUM_TASKS {
-        thread::spawn(move || {
+        workers.push(thread::spawn(move || {
             assert_irq_enabled();
             WQ3.wait_timeout_until(Duration::from_millis(50), || false);
             assert_irq_enabled_and_disabled();
@@ -101,7 +110,7 @@ fn test_wait_queue() {
             assert_irq_enabled_and_disabled();
             COUNTER.fetch_sub(1, Ordering::Release);
             WQ1.notify_one();
-        });
+        }));
     }
 
     assert_irq_enabled();
@@ -112,6 +121,9 @@ fn test_wait_queue() {
     assert_irq_enabled();
     WQ1.wait_until(|| COUNTER.load(Ordering::Acquire) == 0);
     assert_irq_enabled_and_disabled();
+    for worker in workers {
+        worker.join().unwrap();
+    }
 }
 
 pub fn run() -> crate::TestResult {

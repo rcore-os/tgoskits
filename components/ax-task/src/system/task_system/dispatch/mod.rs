@@ -59,3 +59,10 @@ mod bandwidth;
 mod current;
 mod policy;
 mod wake;
+
+#[cfg(test)]
+pub(super) use wake::{
+    arm_wake_before_thread_lock_race, arm_wake_during_final_park_publication,
+    complete_wake_before_thread_lock_race, complete_wake_during_final_park_publication,
+    wake_before_thread_lock_race_entered, wake_during_final_park_publication_entered,
+};

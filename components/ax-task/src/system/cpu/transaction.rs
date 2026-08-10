@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    EnqueueReason, FairEntity, PickedThread, QueuedThreadSnapshot, RtEligibility,
+    BalanceScan, EnqueueReason, FairEntity, PickedThread, QueuedThreadSnapshot, RtEligibility,
     system::task_system::{SwitchEndpoint, TaskSystem},
 };
 
@@ -338,18 +338,17 @@ impl<'a> OwnerRqTxn<'a> {
             .update_base_deadline_entity(thread, entity)
     }
 
-    pub(crate) fn begin_balance_scan(&mut self) -> u64 {
-        self.scheduler_queue_mut().begin_balance_scan()
+    pub(crate) fn begin_balance_scan(&mut self, class: Option<SchedulingClass>) -> BalanceScan {
+        self.scheduler_queue_mut().begin_balance_scan(class)
     }
 
     pub(crate) fn next_balance_candidate(
         &mut self,
-        scan_epoch: u64,
-        class: Option<SchedulingClass>,
+        scan: &mut BalanceScan,
         may_migrate: impl FnMut(&QueuedThread) -> bool,
     ) -> Option<QueuedThreadSnapshot> {
         self.scheduler_queue_mut()
-            .next_balance_candidate(scan_epoch, class, may_migrate)
+            .next_balance_candidate(scan, may_migrate)
     }
 
     pub(crate) fn detach_for_transfer(

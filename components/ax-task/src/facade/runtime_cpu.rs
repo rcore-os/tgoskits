@@ -10,6 +10,17 @@ pub(crate) fn wake_thread_direct(
     system.wake_thread_direct(Arc::clone(core), preferred)
 }
 
+pub(crate) fn wake_wait_claim_direct(
+    core: &Arc<ThreadCore>,
+    claim: &WaitWakeClaim,
+) -> WaitWakeDelivery {
+    let Ok(system) = runtime_task_system() else {
+        claim.cancel_selected();
+        return WaitWakeDelivery::Unavailable;
+    };
+    system.wake_wait_claim_direct(Arc::clone(core), claim)
+}
+
 pub(crate) fn runtime_task_system() -> Result<&'static TaskSystem, TaskError> {
     // SAFETY: the linked TaskRuntime provider is the platform trust root and
     // must publish only the pinned, shutdown-lifetime TaskSystem it owns.

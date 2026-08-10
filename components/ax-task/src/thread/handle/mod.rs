@@ -228,6 +228,13 @@ impl ThreadWakeHandle {
         self.core.wake()
     }
 
+    pub(crate) fn deliver_wait_claim_from_task(
+        &self,
+        claim: &crate::WaitWakeClaim,
+    ) -> crate::WaitWakeDelivery {
+        crate::facade::wake_wait_claim_direct(&self.core, claim)
+    }
+
     /// Returns the thread that owns this wake header.
     pub fn thread_id(&self) -> ThreadId {
         self.core.id

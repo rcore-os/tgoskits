@@ -13,6 +13,7 @@ mod membership;
 mod realtime;
 mod task;
 
+pub(crate) use balance::BalanceScan;
 pub(crate) use class::{SchedulerClass, wakeup_preempts};
 use deadline::{DeadlineQueueKey, DeadlineRunQueue};
 use realtime::RealtimeRunQueue;

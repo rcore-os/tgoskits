@@ -1,5 +1,12 @@
 use super::*;
 
+/// One owner-safe-point scan with an entry-bounded candidate budget.
+pub(crate) struct BalanceScan {
+    epoch: u64,
+    class: Option<SchedulingClass>,
+    remaining: usize,
+}
+
 impl RunQueue {
     /// Updates the configured-policy Deadline server retained inside a task.
     ///
@@ -97,23 +104,32 @@ impl RunQueue {
         true
     }
 
-    pub(crate) fn begin_balance_scan(&mut self) -> u64 {
+    pub(crate) fn begin_balance_scan(&mut self, class: Option<SchedulingClass>) -> BalanceScan {
         self.balance_scan_epoch = self
             .balance_scan_epoch
             .checked_add(1)
             .expect("runqueue balance scan epoch must not wrap");
-        self.balance_scan_epoch
+        BalanceScan {
+            epoch: self.balance_scan_epoch,
+            class,
+            remaining: self.balance_candidate_count(class),
+        }
     }
 
     pub(crate) fn next_balance_candidate(
         &mut self,
-        scan_epoch: u64,
-        class: Option<SchedulingClass>,
+        scan: &mut BalanceScan,
         mut may_migrate: impl FnMut(&QueuedThread) -> bool,
     ) -> Option<QueuedThreadSnapshot> {
-        let mut eligible =
-            |thread: &QueuedThread| thread.balance_scan_epoch != scan_epoch && may_migrate(thread);
-        let candidate = match class {
+        if scan.remaining == 0 {
+            return None;
+        }
+        let mut eligible = |thread: &QueuedThread| {
+            thread.balance_scan_epoch != scan.epoch
+                && thread.migration_capable
+                && may_migrate(thread)
+        };
+        let candidate = match scan.class {
             Some(SchedulingClass::Deadline) => {
                 self.deadline.find_first_pushable_matching(&mut eligible)
             }
@@ -126,8 +142,23 @@ impl RunQueue {
                 .or_else(|| self.rt.find_first_pushable_matching(&mut eligible))
                 .or_else(|| self.fair.find_first_matching(&mut eligible)),
         }?;
-        self.mark_balance_candidate(candidate.id, scan_epoch);
+        scan.remaining -= 1;
+        self.mark_balance_candidate(candidate.id, scan.epoch);
         Some(candidate)
+    }
+
+    fn balance_candidate_count(&self, class: Option<SchedulingClass>) -> usize {
+        match class {
+            Some(SchedulingClass::Deadline) => self.deadline.pushable_count(),
+            Some(SchedulingClass::Realtime) => self.rt.pushable_count(),
+            Some(SchedulingClass::Fair) => self.fair.migratable_count(),
+            Some(SchedulingClass::Stop | SchedulingClass::Idle) => 0,
+            None => self
+                .deadline
+                .pushable_count()
+                .saturating_add(self.rt.pushable_count())
+                .saturating_add(self.fair.migratable_count()),
+        }
     }
 
     pub(crate) fn queued_thread(&self, id: ThreadId) -> Option<QueuedThreadSnapshot> {
