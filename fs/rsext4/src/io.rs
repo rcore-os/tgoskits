@@ -53,6 +53,10 @@ impl DeviceGeometry {
 }
 
 /// Optional durability and maintenance operations provided by a device.
+///
+/// Setting `fua` requires [`BlockIo::write_with_flags`] to implement
+/// [`WriteFlags::FUA`]. A device that cannot do so must leave `fua` clear; the
+/// filesystem-block adapter may then emulate FUA with an advertised `flush`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DeviceCapabilities {
     pub read_only: bool,
@@ -85,6 +89,10 @@ pub trait BlockIo {
     fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()>;
 
     /// Writes with an explicit durability requirement.
+    ///
+    /// Implementations that advertise [`DeviceCapabilities::fua`] must honor
+    /// [`WriteFlags::FUA`] here. The default deliberately rejects FUA instead
+    /// of reporting false durability.
     fn write_with_flags(
         &mut self,
         buffer: &[u8],

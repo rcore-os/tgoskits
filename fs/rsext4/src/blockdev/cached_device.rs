@@ -15,7 +15,7 @@ use super::{FilesystemBlockIo, buffer::BlockBuffer};
 use crate::{
     bmalloc::AbsoluteBN,
     error::{Ext4Error, Ext4Result},
-    io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId},
+    io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, WriteFlags},
 };
 
 /// Number of cached filesystem blocks.
@@ -195,7 +195,9 @@ impl<B: BlockIo> BlockDev<B> {
         count: u32,
     ) -> Ext4Result<()> {
         let block_size = self.filesystem_block_size;
-        let required_size = block_size * count as usize;
+        let required_size = block_size
+            .checked_mul(count as usize)
+            .ok_or_else(Ext4Error::overflow)?;
 
         if buffer.len() < required_size {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
@@ -213,20 +215,51 @@ impl<B: BlockIo> BlockDev<B> {
         block_id: AbsoluteBN,
         count: u32,
     ) -> Ext4Result<()> {
+        self.write_blocks_with_flags(buffer, block_id, count, WriteFlags::empty())
+    }
+
+    fn write_blocks_with_flags(
+        &mut self,
+        buffer: &[u8],
+        block_id: AbsoluteBN,
+        count: u32,
+        flags: WriteFlags,
+    ) -> Ext4Result<()> {
         if self.capabilities.read_only {
             return Err(Ext4Error::read_only());
         }
 
         let block_size = self.filesystem_block_size;
-        let required_size = block_size * count as usize;
+        let required_size = block_size
+            .checked_mul(count as usize)
+            .ok_or_else(Ext4Error::overflow)?;
 
         if buffer.len() < required_size {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
+        if count > 0 {
+            block_id.checked_add(count - 1)?;
+        }
 
         let (sector, sector_count, _) = self.filesystem_io(block_id, count)?;
-        self.dev
-            .write(&buffer[..required_size], sector, sector_count)?;
+        let fallback_flush = if flags.contains(WriteFlags::FUA) && !self.capabilities.fua {
+            if !self.capabilities.flush {
+                return Err(Ext4Error::unsupported_capability("block_io:fua_or_flush"));
+            }
+            let mut fallback_flags = flags;
+            fallback_flags.remove(WriteFlags::FUA);
+            self.dev.write_with_flags(
+                &buffer[..required_size],
+                sector,
+                sector_count,
+                fallback_flags,
+            )?;
+            Some(self.dev.flush())
+        } else {
+            self.dev
+                .write_with_flags(&buffer[..required_size], sector, sector_count, flags)?;
+            None
+        };
 
         for off in 0..count {
             let target = block_id.checked_add(off)?;
@@ -243,6 +276,10 @@ impl<B: BlockIo> BlockDev<B> {
                     entry.referenced = true;
                 }
             }
+        }
+
+        if let Some(result) = fallback_flush {
+            result?;
         }
 
         Ok(())
@@ -514,6 +551,16 @@ impl<B: BlockIo> FilesystemBlockIo for BlockDev<B> {
         self.write_blocks(buffer, block, count)
     }
 
+    fn write_with_flags(
+        &mut self,
+        buffer: &[u8],
+        block: AbsoluteBN,
+        count: u32,
+        flags: WriteFlags,
+    ) -> Ext4Result<()> {
+        self.write_blocks_with_flags(buffer, block, count, flags)
+    }
+
     fn flush(&mut self) -> Ext4Result<()> {
         self.flush()
     }
@@ -529,6 +576,14 @@ mod tests {
 
     struct StrictSectorDevice {
         data: Vec<u8>,
+    }
+
+    struct DurabilityDevice {
+        data: Vec<u8>,
+        capabilities: DeviceCapabilities,
+        last_write: Option<(u64, u32, WriteFlags)>,
+        flushes: usize,
+        fail_flush: bool,
     }
 
     impl BlockIo for StrictSectorDevice {
@@ -565,6 +620,53 @@ mod tests {
 
         fn flush(&mut self) -> Ext4Result<()> {
             Ok(())
+        }
+    }
+
+    impl BlockIo for DurabilityDevice {
+        fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+            self.write_with_flags(buffer, sector, count, WriteFlags::empty())
+        }
+
+        fn write_with_flags(
+            &mut self,
+            buffer: &[u8],
+            sector: SectorId,
+            count: u32,
+            flags: WriteFlags,
+        ) -> Ext4Result<()> {
+            let required = SECTOR_SIZE * count as usize;
+            if buffer.len() != required {
+                return Err(Ext4Error::invalid_block_size(buffer.len(), required));
+            }
+            let start = sector.as_usize()? * SECTOR_SIZE;
+            self.data[start..start + required].copy_from_slice(buffer);
+            self.last_write = Some((sector.raw(), count, flags));
+            Ok(())
+        }
+
+        fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+            let required = SECTOR_SIZE * count as usize;
+            let start = sector.as_usize()? * SECTOR_SIZE;
+            buffer.copy_from_slice(&self.data[start..start + required]);
+            Ok(())
+        }
+
+        fn geometry(&self) -> DeviceGeometry {
+            DeviceGeometry::new(SECTOR_SIZE as u32, (self.data.len() / SECTOR_SIZE) as u64)
+        }
+
+        fn capabilities(&self) -> DeviceCapabilities {
+            self.capabilities
+        }
+
+        fn flush(&mut self) -> Ext4Result<()> {
+            self.flushes += 1;
+            if self.fail_flush {
+                Err(Ext4Error::io())
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -623,5 +725,137 @@ mod tests {
         dev.read_block(target).unwrap();
 
         assert!(dev.buffer().iter().all(|byte| *byte == 0x5a));
+    }
+
+    #[test]
+    fn filesystem_fua_write_preserves_one_multi_sector_request() {
+        let device = DurabilityDevice {
+            data: vec![0; 16 * crate::config::BLOCK_SIZE],
+            capabilities: DeviceCapabilities {
+                flush: true,
+                fua: true,
+                ..DeviceCapabilities::default()
+            },
+            last_write: None,
+            flushes: 0,
+            fail_flush: false,
+        };
+        let mut dev = BlockDev::new(device);
+        let block = AbsoluteBN::new(2);
+        let buffer = vec![0x5a; crate::config::BLOCK_SIZE];
+
+        FilesystemBlockIo::write_with_flags(
+            &mut dev,
+            &buffer,
+            block,
+            1,
+            WriteFlags::METADATA | WriteFlags::FUA,
+        )
+        .expect("write one durable filesystem block");
+
+        let inner = dev.into_inner();
+        assert_eq!(
+            inner.last_write,
+            Some((
+                2 * (crate::config::BLOCK_SIZE / SECTOR_SIZE) as u64,
+                (crate::config::BLOCK_SIZE / SECTOR_SIZE) as u32,
+                WriteFlags::METADATA | WriteFlags::FUA,
+            ))
+        );
+        assert_eq!(inner.flushes, 0);
+    }
+
+    #[test]
+    fn filesystem_fua_falls_back_to_write_then_flush() {
+        let device = DurabilityDevice {
+            data: vec![0; 16 * crate::config::BLOCK_SIZE],
+            capabilities: DeviceCapabilities {
+                flush: true,
+                fua: false,
+                ..DeviceCapabilities::default()
+            },
+            last_write: None,
+            flushes: 0,
+            fail_flush: false,
+        };
+        let mut dev = BlockDev::new(device);
+        let buffer = vec![0xa5; crate::config::BLOCK_SIZE];
+
+        FilesystemBlockIo::write_with_flags(
+            &mut dev,
+            &buffer,
+            AbsoluteBN::new(1),
+            1,
+            WriteFlags::METADATA | WriteFlags::FUA,
+        )
+        .expect("emulate FUA with an explicit flush");
+
+        let inner = dev.into_inner();
+        assert_eq!(
+            inner.last_write,
+            Some((
+                (crate::config::BLOCK_SIZE / SECTOR_SIZE) as u64,
+                (crate::config::BLOCK_SIZE / SECTOR_SIZE) as u32,
+                WriteFlags::METADATA,
+            ))
+        );
+        assert_eq!(inner.flushes, 1);
+    }
+
+    #[test]
+    fn filesystem_fua_requires_fua_or_flush_capability() {
+        let device = DurabilityDevice {
+            data: vec![0; 16 * crate::config::BLOCK_SIZE],
+            capabilities: DeviceCapabilities::default(),
+            last_write: None,
+            flushes: 0,
+            fail_flush: false,
+        };
+        let mut dev = BlockDev::new(device);
+        let buffer = vec![0xa5; crate::config::BLOCK_SIZE];
+
+        let error = FilesystemBlockIo::write_with_flags(
+            &mut dev,
+            &buffer,
+            AbsoluteBN::new(1),
+            1,
+            WriteFlags::FUA,
+        )
+        .expect_err("durability cannot be fabricated without FUA or flush");
+
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::UnsupportedCapability);
+        let inner = dev.into_inner();
+        assert_eq!(inner.last_write, None);
+        assert_eq!(inner.flushes, 0);
+    }
+
+    #[test]
+    fn filesystem_fua_fallback_flush_error_keeps_cache_coherent() {
+        let device = DurabilityDevice {
+            data: vec![0; 16 * crate::config::BLOCK_SIZE],
+            capabilities: DeviceCapabilities {
+                flush: true,
+                fua: false,
+                ..DeviceCapabilities::default()
+            },
+            last_write: None,
+            flushes: 0,
+            fail_flush: true,
+        };
+        let mut dev = BlockDev::new(device);
+        let target = AbsoluteBN::new(1);
+        dev.read_block(target).expect("prime the cached target");
+        let buffer = vec![0x5a; crate::config::BLOCK_SIZE];
+
+        let error =
+            FilesystemBlockIo::write_with_flags(&mut dev, &buffer, target, 1, WriteFlags::FUA)
+                .expect_err("fallback flush failure must propagate");
+
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+        dev.read_block(target)
+            .expect("read the coherent cached target");
+        assert!(dev.buffer().iter().all(|byte| *byte == 0x5a));
+        let inner = dev.into_inner();
+        assert_eq!(inner.flushes, 1);
     }
 }
