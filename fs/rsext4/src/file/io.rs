@@ -159,7 +159,7 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
     }
 
     // Non-extent files currently support only the 12 direct block pointers.
-    if new_blocks > 12 {
+    if new_blocks > 12 || old_blocks > 12 {
         return Err(Ext4Error::unsupported());
     }
 
@@ -245,13 +245,13 @@ fn read_symlink_target<B: BlockIo>(
         }
     } else {
         for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(fs, device, inode_num, inode, lbn as u32)? {
-                Some(b) => b,
-                None => break,
-            };
-            let cached = fs.datablock_cache.get_or_load(device, phys)?;
-            let data = &cached.data;
-            buf.extend_from_slice(data);
+            match resolve_inode_block(fs, device, inode_num, inode, lbn as u32)? {
+                Some(phys) => {
+                    let cached = fs.datablock_cache.get_or_load(device, phys)?;
+                    buf.extend_from_slice(&cached.data);
+                }
+                None => append_zero_block(&mut buf, block_bytes)?,
+            }
         }
     }
 
@@ -337,14 +337,13 @@ fn read_file_follow<B: BlockIo + crate::runtime::Clock>(
         }
     } else {
         for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(fs, device, inode_num, &mut inode, lbn as u32)? {
-                Some(b) => b,
-                None => break,
-            };
-
-            let cached = fs.datablock_cache.get_or_load(device, phys)?;
-            let data = &cached.data;
-            buf.extend_from_slice(data);
+            match resolve_inode_block(fs, device, inode_num, &mut inode, lbn as u32)? {
+                Some(phys) => {
+                    let cached = fs.datablock_cache.get_or_load(device, phys)?;
+                    buf.extend_from_slice(&cached.data);
+                }
+                None => append_zero_block(&mut buf, block_bytes)?,
+            }
         }
     }
 
@@ -353,6 +352,15 @@ fn read_file_follow<B: BlockIo + crate::runtime::Clock>(
     fs.touch_inode_atime_if_needed(device, inode_num)?;
 
     Ok(buf)
+}
+
+fn append_zero_block(buffer: &mut Vec<u8>, block_bytes: usize) -> Ext4Result<()> {
+    let new_len = buffer
+        .len()
+        .checked_add(block_bytes)
+        .ok_or_else(Ext4Error::overflow)?;
+    buffer.resize(new_len, 0);
+    Ok(())
 }
 
 /// Read the whole file at `path`.

@@ -1,0 +1,704 @@
+//! Checked legacy direct and indirect block mapping.
+
+use alloc::{collections::BTreeMap, vec::Vec};
+use core::mem::size_of;
+
+use crate::{
+    BlockIo, Ext4FileSystem, Jbd2Dev,
+    bmalloc::{AbsoluteBN, InodeNumber},
+    disknode::Ext4Inode,
+    endian::read_u32_le,
+    error::{Ext4Error, Ext4Result},
+    superblock::Ext4Superblock,
+};
+
+const DIRECT_BLOCKS: usize = 12;
+const SINGLE_INDIRECT_SLOT: usize = 12;
+const DOUBLE_INDIRECT_SLOT: usize = 13;
+const TRIPLE_INDIRECT_SLOT: usize = 14;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct IndirectPath {
+    offsets: [usize; 4],
+    depth: usize,
+}
+
+impl IndirectPath {
+    fn direct(offset: usize) -> Self {
+        Self {
+            offsets: [offset, 0, 0, 0],
+            depth: 1,
+        }
+    }
+
+    fn nested(offsets: &[usize]) -> Self {
+        let mut path = Self {
+            offsets: [0; 4],
+            depth: offsets.len(),
+        };
+        path.offsets[..offsets.len()].copy_from_slice(offsets);
+        path
+    }
+}
+
+/// Resolves one logical block through the ext2/ext3 direct/indirect layout.
+pub(crate) fn resolve_legacy_inode_block<B: BlockIo>(
+    filesystem: &Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    inode_number: InodeNumber,
+    inode: &Ext4Inode,
+    logical_block: u32,
+) -> Ext4Result<Option<AbsoluteBN>> {
+    if is_fast_symlink(filesystem, inode) {
+        return Ok(None);
+    }
+
+    let path = block_to_path(filesystem.block_size(), logical_block)?;
+    let mut reader = LegacyBlockReader::new(filesystem, device, inode_number)?;
+    reader.resolve_path(inode, path)
+}
+
+/// Materializes all data mappings reachable below the inode's file size.
+pub(crate) fn resolve_legacy_inode_blocks<B: BlockIo>(
+    filesystem: &Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    inode_number: InodeNumber,
+    inode: &Ext4Inode,
+) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
+    let mut mappings = BTreeMap::new();
+    if inode.size() == 0 || is_fast_symlink(filesystem, inode) {
+        return Ok(mappings);
+    }
+
+    let block_size = filesystem.block_size();
+    let logical_blocks = inode.size().div_ceil(block_size as u64);
+    let mut reader = LegacyBlockReader::new(filesystem, device, inode_number)?;
+    if logical_blocks > reader.maximum_logical_blocks()? {
+        return Err(Ext4Error::file_too_large().with_operation("indirect:file_size"));
+    }
+
+    let direct_limit = logical_blocks.min(DIRECT_BLOCKS as u64) as usize;
+    for logical in 0..direct_limit {
+        let pointer = inode.i_block[logical];
+        if pointer != 0 {
+            let physical = AbsoluteBN::from(pointer);
+            reader.validate_data_block(physical)?;
+            mappings.insert(logical as u32, physical);
+        }
+    }
+
+    let pointers = reader.pointers_per_block;
+    let double_capacity = pointers
+        .checked_mul(pointers)
+        .ok_or_else(Ext4Error::overflow)?;
+    let roots = [
+        (SINGLE_INDIRECT_SLOT, 1usize, DIRECT_BLOCKS as u64, 1u64),
+        (
+            DOUBLE_INDIRECT_SLOT,
+            2,
+            DIRECT_BLOCKS as u64 + pointers,
+            pointers,
+        ),
+        (
+            TRIPLE_INDIRECT_SLOT,
+            3,
+            DIRECT_BLOCKS as u64 + pointers + double_capacity,
+            double_capacity,
+        ),
+    ];
+    for (slot, depth, logical_base, stride) in roots {
+        if logical_base >= logical_blocks {
+            break;
+        }
+        let pointer = inode.i_block[slot];
+        if pointer != 0 {
+            reader.collect_subtree(
+                AbsoluteBN::from(pointer),
+                depth,
+                logical_base,
+                logical_blocks,
+                stride,
+                &mut mappings,
+            )?;
+        }
+    }
+    Ok(mappings)
+}
+
+/// Returns whether a legacy inode owns indirect metadata blocks.
+pub(crate) fn has_legacy_indirect_mapping(filesystem: &Ext4FileSystem, inode: &Ext4Inode) -> bool {
+    !inode.uses_extents()
+        && !is_fast_symlink(filesystem, inode)
+        && inode.i_block[DIRECT_BLOCKS..]
+            .iter()
+            .any(|&block| block != 0)
+}
+
+struct LegacyBlockReader<'fs, 'dev, B: BlockIo> {
+    filesystem: &'fs Ext4FileSystem,
+    device: &'dev mut Jbd2Dev<B>,
+    inode_number: InodeNumber,
+    pointers_per_block: u64,
+    metadata_path: Vec<AbsoluteBN>,
+}
+
+impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
+    fn new(
+        filesystem: &'fs Ext4FileSystem,
+        device: &'dev mut Jbd2Dev<B>,
+        inode_number: InodeNumber,
+    ) -> Ext4Result<Self> {
+        let block_size = filesystem.block_size();
+        if block_size < size_of::<u32>() || !block_size.is_multiple_of(size_of::<u32>()) {
+            return Err(Ext4Error::bad_superblock().with_operation("indirect:pointers_per_block"));
+        }
+        Ok(Self {
+            filesystem,
+            device,
+            inode_number,
+            pointers_per_block: (block_size / size_of::<u32>()) as u64,
+            metadata_path: Vec::with_capacity(3),
+        })
+    }
+
+    fn maximum_logical_blocks(&self) -> Ext4Result<u64> {
+        let double = self
+            .pointers_per_block
+            .checked_mul(self.pointers_per_block)
+            .ok_or_else(Ext4Error::overflow)?;
+        let triple = double
+            .checked_mul(self.pointers_per_block)
+            .ok_or_else(Ext4Error::overflow)?;
+        (DIRECT_BLOCKS as u64)
+            .checked_add(self.pointers_per_block)
+            .and_then(|blocks| blocks.checked_add(double))
+            .and_then(|blocks| blocks.checked_add(triple))
+            .ok_or_else(Ext4Error::overflow)
+    }
+
+    fn resolve_path(
+        &mut self,
+        inode: &Ext4Inode,
+        path: IndirectPath,
+    ) -> Ext4Result<Option<AbsoluteBN>> {
+        let mut pointer = inode.i_block[path.offsets[0]];
+        if pointer == 0 {
+            return Ok(None);
+        }
+
+        for &offset in &path.offsets[1..path.depth] {
+            let metadata = AbsoluteBN::from(pointer);
+            self.enter_metadata_block(metadata)?;
+            pointer = self.read_pointer(metadata, offset)?;
+            if pointer == 0 {
+                return Ok(None);
+            }
+        }
+
+        let data = AbsoluteBN::from(pointer);
+        self.validate_data_block(data)?;
+        Ok(Some(data))
+    }
+
+    fn collect_subtree(
+        &mut self,
+        metadata: AbsoluteBN,
+        depth: usize,
+        logical_base: u64,
+        logical_limit: u64,
+        stride: u64,
+        mappings: &mut BTreeMap<u32, AbsoluteBN>,
+    ) -> Ext4Result<()> {
+        self.enter_metadata_block(metadata)?;
+        let pointers = self.read_pointer_block(metadata)?;
+        for (index, pointer) in pointers.into_iter().enumerate() {
+            let logical = logical_base
+                .checked_add(
+                    u64::try_from(index)
+                        .map_err(|_| Ext4Error::overflow())?
+                        .checked_mul(stride)
+                        .ok_or_else(Ext4Error::overflow)?,
+                )
+                .ok_or_else(Ext4Error::overflow)?;
+            if logical >= logical_limit {
+                break;
+            }
+            if pointer == 0 {
+                continue;
+            }
+
+            let physical = AbsoluteBN::from(pointer);
+            if depth == 1 {
+                self.validate_data_block(physical)?;
+                let logical = u32::try_from(logical).map_err(|_| Ext4Error::overflow())?;
+                if mappings.insert(logical, physical).is_some() {
+                    return Err(
+                        Ext4Error::corrupted().with_operation("indirect:duplicate_logical_block")
+                    );
+                }
+            } else {
+                let next_stride = stride
+                    .checked_div(self.pointers_per_block)
+                    .ok_or_else(Ext4Error::overflow)?;
+                self.collect_subtree(
+                    physical,
+                    depth - 1,
+                    logical,
+                    logical_limit,
+                    next_stride,
+                    mappings,
+                )?;
+            }
+        }
+        self.metadata_path.pop();
+        Ok(())
+    }
+
+    fn enter_metadata_block(&mut self, block: AbsoluteBN) -> Ext4Result<()> {
+        self.validate_physical_block(block)?;
+        if self.metadata_path.contains(&block) {
+            return Err(Ext4Error::corrupted().with_operation("indirect:cycle"));
+        }
+        self.metadata_path.push(block);
+        Ok(())
+    }
+
+    fn validate_data_block(&self, block: AbsoluteBN) -> Ext4Result<()> {
+        self.validate_physical_block(block)?;
+        if self.metadata_path.contains(&block) {
+            return Err(Ext4Error::corrupted().with_operation("indirect:cycle"));
+        }
+        Ok(())
+    }
+
+    fn validate_physical_block(&self, block: AbsoluteBN) -> Ext4Result<()> {
+        let raw = block.raw();
+        let limit = self
+            .filesystem
+            .superblock
+            .blocks_count()
+            .min(self.device.total_blocks());
+        if raw <= u64::from(self.filesystem.superblock.s_first_data_block) || raw >= limit {
+            return Err(Ext4Error::corrupted().with_operation("indirect:physical_range"));
+        }
+        if !self.filesystem.system_zones.is_empty()
+            && !self
+                .filesystem
+                .system_zones
+                .allows_range(raw, 1, self.inode_number)
+        {
+            return Err(Ext4Error::corrupted().with_operation("indirect:system_metadata"));
+        }
+        Ok(())
+    }
+
+    fn read_pointer(&mut self, metadata: AbsoluteBN, index: usize) -> Ext4Result<u32> {
+        self.read_pointer_block(metadata)?
+            .get(index)
+            .copied()
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("indirect:pointer_offset"))
+    }
+
+    fn read_pointer_block(&mut self, metadata: AbsoluteBN) -> Ext4Result<Vec<u32>> {
+        self.device.read_block(metadata)?;
+        let pointers: Vec<u32> = self
+            .device
+            .buffer()
+            .as_chunks::<{ size_of::<u32>() }>()
+            .0
+            .iter()
+            .map(|bytes| read_u32_le(bytes))
+            .collect();
+
+        // Linux validates every non-zero entry when an indirect block is
+        // read, not only the entry selected by the current lookup. Otherwise
+        // latent corruption can be hidden behind a hole or the current inode
+        // size and become visible only after a later mutation.
+        for &pointer in &pointers {
+            if pointer != 0 {
+                self.validate_physical_block(AbsoluteBN::from(pointer))?;
+            }
+        }
+        Ok(pointers)
+    }
+}
+
+fn block_to_path(block_size: usize, logical_block: u32) -> Ext4Result<IndirectPath> {
+    if block_size < size_of::<u32>() || !block_size.is_multiple_of(size_of::<u32>()) {
+        return Err(Ext4Error::bad_superblock().with_operation("indirect:pointers_per_block"));
+    }
+    let pointers = (block_size / size_of::<u32>()) as u64;
+    let direct = DIRECT_BLOCKS as u64;
+    let logical = u64::from(logical_block);
+    if logical < direct {
+        return Ok(IndirectPath::direct(logical as usize));
+    }
+
+    let mut relative = logical - direct;
+    if relative < pointers {
+        return Ok(IndirectPath::nested(&[
+            SINGLE_INDIRECT_SLOT,
+            relative as usize,
+        ]));
+    }
+
+    relative -= pointers;
+    let double = pointers
+        .checked_mul(pointers)
+        .ok_or_else(Ext4Error::overflow)?;
+    if relative < double {
+        return Ok(IndirectPath::nested(&[
+            DOUBLE_INDIRECT_SLOT,
+            (relative / pointers) as usize,
+            (relative % pointers) as usize,
+        ]));
+    }
+
+    relative -= double;
+    let triple = double
+        .checked_mul(pointers)
+        .ok_or_else(Ext4Error::overflow)?;
+    if relative < triple {
+        return Ok(IndirectPath::nested(&[
+            TRIPLE_INDIRECT_SLOT,
+            (relative / double) as usize,
+            ((relative / pointers) % pointers) as usize,
+            (relative % pointers) as usize,
+        ]));
+    }
+
+    Err(Ext4Error::file_too_large().with_operation("indirect:logical_block"))
+}
+
+fn is_fast_symlink(filesystem: &Ext4FileSystem, inode: &Ext4Inode) -> bool {
+    let huge_file = filesystem
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+    inode.is_symlink()
+        && inode.size() <= 60
+        && inode.blocks_count(filesystem.block_size() as u32, huge_file) == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+    use core::{cell::Cell, mem::size_of};
+
+    use super::{
+        DIRECT_BLOCKS, DOUBLE_INDIRECT_SLOT, IndirectPath, SINGLE_INDIRECT_SLOT,
+        TRIPLE_INDIRECT_SLOT, block_to_path, has_legacy_indirect_mapping,
+    };
+    use crate::{
+        BLOCK_SIZE, BlockIo, DeviceCapabilities, DeviceGeometry, ErrorContext, Ext4Error,
+        Ext4ErrorKind, Ext4FileSystem, Ext4Result, Ext4Timestamp, Jbd2Dev, SectorId,
+        bmalloc::{AbsoluteBN, InodeNumber},
+        disknode::Ext4Inode,
+        endian::write_u32_le,
+        ext4::{mkfs, mount},
+        loopfile::{resolve_inode_block, resolve_inode_blocks},
+    };
+
+    struct MemBlockDevice {
+        bytes: alloc::vec::Vec<u8>,
+        block_count: u64,
+        now: Cell<i64>,
+    }
+
+    impl MemBlockDevice {
+        fn new(block_count: u64) -> Self {
+            Self {
+                bytes: vec![0; block_count as usize * BLOCK_SIZE],
+                block_count,
+                now: Cell::new(1_700_000_000),
+            }
+        }
+    }
+
+    impl BlockIo for MemBlockDevice {
+        fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+            let required = BLOCK_SIZE * count as usize;
+            let start = sector.as_usize()? * BLOCK_SIZE;
+            let end = start
+                .checked_add(required)
+                .ok_or_else(Ext4Error::overflow)?;
+            let source = self
+                .bytes
+                .get(start..end)
+                .ok_or_else(Ext4Error::invalid_input)?;
+            let provided = buffer.len();
+            buffer
+                .get_mut(..required)
+                .ok_or_else(|| Ext4Error::buffer_too_small(provided, required))?
+                .copy_from_slice(source);
+            Ok(())
+        }
+
+        fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+            let required = BLOCK_SIZE * count as usize;
+            let start = sector.as_usize()? * BLOCK_SIZE;
+            let end = start
+                .checked_add(required)
+                .ok_or_else(Ext4Error::overflow)?;
+            let target = self
+                .bytes
+                .get_mut(start..end)
+                .ok_or_else(Ext4Error::invalid_input)?;
+            target.copy_from_slice(
+                buffer
+                    .get(..required)
+                    .ok_or_else(|| Ext4Error::buffer_too_small(buffer.len(), required))?,
+            );
+            Ok(())
+        }
+
+        fn geometry(&self) -> DeviceGeometry {
+            DeviceGeometry::new(BLOCK_SIZE as u32, self.block_count)
+        }
+
+        fn capabilities(&self) -> DeviceCapabilities {
+            DeviceCapabilities {
+                flush: true,
+                ..DeviceCapabilities::default()
+            }
+        }
+
+        fn flush(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+    }
+
+    impl crate::Clock for MemBlockDevice {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
+            let seconds = self.now.get();
+            self.now.set(seconds + 1);
+            Ok(Ext4Timestamp::new(seconds, 0))
+        }
+    }
+
+    fn setup_filesystem() -> (Jbd2Dev<MemBlockDevice>, Ext4FileSystem) {
+        let device = MemBlockDevice::new(16 * 1024);
+        let mut device = Jbd2Dev::initial_jbd2dev(0, device, false);
+        mkfs(&mut device).unwrap();
+        let filesystem = mount(&mut device).unwrap();
+        (device, filesystem)
+    }
+
+    fn set_inode_size(inode: &mut Ext4Inode, blocks: u64) {
+        let size = blocks * BLOCK_SIZE as u64;
+        inode.i_size_lo = size as u32;
+        inode.i_size_high = (size >> 32) as u32;
+    }
+
+    fn write_pointer(
+        device: &mut Jbd2Dev<MemBlockDevice>,
+        metadata: AbsoluteBN,
+        index: usize,
+        target: AbsoluteBN,
+    ) {
+        device.read_block(metadata).unwrap();
+        device.buffer_mut().fill(0);
+        let start = index * size_of::<u32>();
+        write_u32_le(
+            target.to_u32().unwrap(),
+            &mut device.buffer_mut()[start..start + size_of::<u32>()],
+        );
+        device.write_block(metadata, true).unwrap();
+    }
+
+    #[test]
+    fn resolves_legacy_direct_block() {
+        let (mut device, mut filesystem) = setup_filesystem();
+        let physical = filesystem.alloc_block(&mut device).unwrap();
+        let inode_number = InodeNumber::new(12).unwrap();
+        let mut inode = Ext4Inode::default();
+        inode.i_size_lo = BLOCK_SIZE as u32;
+        inode.i_block[0] = physical.to_u32().unwrap();
+
+        let resolved = resolve_inode_block(&filesystem, &mut device, inode_number, &mut inode, 0)
+            .expect("legacy direct pointer should resolve");
+
+        assert_eq!(resolved, Some(physical));
+    }
+
+    #[test]
+    fn block_to_path_covers_single_double_and_triple_boundaries() {
+        let pointers = BLOCK_SIZE / size_of::<u32>();
+        let double = pointers * pointers;
+
+        assert_eq!(
+            block_to_path(BLOCK_SIZE, 11).unwrap(),
+            IndirectPath::direct(11)
+        );
+        assert_eq!(
+            block_to_path(BLOCK_SIZE, 12).unwrap(),
+            IndirectPath::nested(&[SINGLE_INDIRECT_SLOT, 0])
+        );
+        assert_eq!(
+            block_to_path(BLOCK_SIZE, (12 + pointers) as u32).unwrap(),
+            IndirectPath::nested(&[DOUBLE_INDIRECT_SLOT, 0, 0])
+        );
+        assert_eq!(
+            block_to_path(BLOCK_SIZE, (12 + pointers + double) as u32).unwrap(),
+            IndirectPath::nested(&[TRIPLE_INDIRECT_SLOT, 0, 0, 0])
+        );
+        let maximum = 12u64 + pointers as u64 + double as u64 + double as u64 * pointers as u64;
+        assert_eq!(
+            block_to_path(BLOCK_SIZE, maximum as u32)
+                .unwrap_err()
+                .kind(),
+            Ext4ErrorKind::FileTooLarge
+        );
+    }
+
+    #[test]
+    fn resolves_and_collects_all_legacy_indirect_levels() {
+        let (mut device, mut filesystem) = setup_filesystem();
+        let inode_number = InodeNumber::new(12).unwrap();
+        let pointers = BLOCK_SIZE / size_of::<u32>();
+        let single_lbn = DIRECT_BLOCKS as u32;
+        let double_lbn = (DIRECT_BLOCKS + pointers) as u32;
+        let triple_lbn = (DIRECT_BLOCKS + pointers + pointers * pointers) as u32;
+
+        let direct_data = filesystem.alloc_block(&mut device).unwrap();
+        let single_root = filesystem.alloc_block(&mut device).unwrap();
+        let single_data = filesystem.alloc_block(&mut device).unwrap();
+        let double_root = filesystem.alloc_block(&mut device).unwrap();
+        let double_leaf = filesystem.alloc_block(&mut device).unwrap();
+        let double_data = filesystem.alloc_block(&mut device).unwrap();
+        let triple_root = filesystem.alloc_block(&mut device).unwrap();
+        let triple_middle = filesystem.alloc_block(&mut device).unwrap();
+        let triple_leaf = filesystem.alloc_block(&mut device).unwrap();
+        let triple_data = filesystem.alloc_block(&mut device).unwrap();
+
+        write_pointer(&mut device, single_root, 0, single_data);
+        write_pointer(&mut device, double_root, 0, double_leaf);
+        write_pointer(&mut device, double_leaf, 0, double_data);
+        write_pointer(&mut device, triple_root, 0, triple_middle);
+        write_pointer(&mut device, triple_middle, 0, triple_leaf);
+        write_pointer(&mut device, triple_leaf, 0, triple_data);
+
+        let mut inode = Ext4Inode::default();
+        inode.i_block[0] = direct_data.to_u32().unwrap();
+        inode.i_block[SINGLE_INDIRECT_SLOT] = single_root.to_u32().unwrap();
+        inode.i_block[DOUBLE_INDIRECT_SLOT] = double_root.to_u32().unwrap();
+        inode.i_block[TRIPLE_INDIRECT_SLOT] = triple_root.to_u32().unwrap();
+        set_inode_size(&mut inode, u64::from(triple_lbn) + 1);
+
+        for (logical, expected) in [
+            (0, direct_data),
+            (single_lbn, single_data),
+            (double_lbn, double_data),
+            (triple_lbn, triple_data),
+        ] {
+            assert_eq!(
+                resolve_inode_block(&filesystem, &mut device, inode_number, &mut inode, logical,)
+                    .unwrap(),
+                Some(expected)
+            );
+        }
+
+        let mappings =
+            resolve_inode_blocks(&mut filesystem, &mut device, inode_number, &mut inode).unwrap();
+        assert_eq!(mappings.len(), 4);
+        assert_eq!(mappings.get(&0), Some(&direct_data));
+        assert_eq!(mappings.get(&single_lbn), Some(&single_data));
+        assert_eq!(mappings.get(&double_lbn), Some(&double_data));
+        assert_eq!(mappings.get(&triple_lbn), Some(&triple_data));
+    }
+
+    #[test]
+    fn rejects_invalid_or_cyclic_legacy_pointers_and_preserves_holes() {
+        let (mut device, mut filesystem) = setup_filesystem();
+        let inode_number = InodeNumber::new(12).unwrap();
+        let mut inode = Ext4Inode::default();
+        set_inode_size(&mut inode, 13);
+
+        let single_root = filesystem.alloc_block(&mut device).unwrap();
+        inode.i_block[SINGLE_INDIRECT_SLOT] = single_root.to_u32().unwrap();
+        assert_eq!(
+            resolve_inode_block(
+                &filesystem,
+                &mut device,
+                inode_number,
+                &mut inode,
+                DIRECT_BLOCKS as u32,
+            )
+            .unwrap(),
+            None
+        );
+
+        inode.i_block[0] = filesystem.group_descs[0].block_bitmap() as u32;
+        let system_error =
+            resolve_inode_block(&filesystem, &mut device, inode_number, &mut inode, 0).unwrap_err();
+        assert_eq!(
+            system_error.context(),
+            Some(ErrorContext::Operation {
+                op: "indirect:system_metadata",
+            })
+        );
+
+        inode.i_block[0] = u32::MAX;
+        let range_error =
+            resolve_inode_block(&filesystem, &mut device, inode_number, &mut inode, 0).unwrap_err();
+        assert_eq!(
+            range_error.context(),
+            Some(ErrorContext::Operation {
+                op: "indirect:physical_range",
+            })
+        );
+
+        write_pointer(&mut device, single_root, 0, single_root);
+        inode.i_block[0] = 0;
+        let cycle_error = resolve_inode_block(
+            &filesystem,
+            &mut device,
+            inode_number,
+            &mut inode,
+            DIRECT_BLOCKS as u32,
+        )
+        .unwrap_err();
+        assert_eq!(
+            cycle_error.context(),
+            Some(ErrorContext::Operation {
+                op: "indirect:cycle",
+            })
+        );
+
+        assert!(has_legacy_indirect_mapping(&filesystem, &inode));
+    }
+
+    #[test]
+    fn rejects_invalid_sibling_in_indirect_block() {
+        let (mut device, mut filesystem) = setup_filesystem();
+        let inode_number = InodeNumber::new(12).unwrap();
+        let single_root = filesystem.alloc_block(&mut device).unwrap();
+        let single_data = filesystem.alloc_block(&mut device).unwrap();
+        write_pointer(&mut device, single_root, 0, single_data);
+
+        device.read_block(single_root).unwrap();
+        write_u32_le(
+            u32::MAX,
+            &mut device.buffer_mut()[size_of::<u32>()..2 * size_of::<u32>()],
+        );
+        device.write_block(single_root, true).unwrap();
+
+        let mut inode = Ext4Inode::default();
+        inode.i_block[SINGLE_INDIRECT_SLOT] = single_root.to_u32().unwrap();
+        set_inode_size(&mut inode, 13);
+
+        let error = resolve_inode_block(
+            &filesystem,
+            &mut device,
+            inode_number,
+            &mut inode,
+            DIRECT_BLOCKS as u32,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.context(),
+            Some(ErrorContext::Operation {
+                op: "indirect:physical_range",
+            })
+        );
+    }
+}
