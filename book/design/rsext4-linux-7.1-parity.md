@@ -315,3 +315,25 @@ RSEXT4_BENCH_SUMMARY commit=5bcde9da75af753dee5cd496a021f320465a74fd arch=x86_64
 sync median 增加约 19.1%，但该指标不是吞吐/IOPS workload，sync latency 的
 硬门槛按 p95 判定；因此本检查点满足冻结的 host 性能门槛。7.9 的 legacy
 allocator sync p95 红项仍独立保留，未被本检查点覆盖或改判。
+
+### 7.11 JBD2 handle credits 检查点
+
+采集时间：2026-08-11；被测实现 commit 为
+`5e143a8302dd441188c7cfe35e603414a00bc0ee`，环境与 7.8 相同。该检查点在
+当前 in-memory running queue 上为 bulk metadata write 建立私有 handle：按不同
+home block 计 credit，开始 operation 前预留 queue 空间，handle 内禁止 auto
+commit，并在 operation error 时恢复 queue snapshot。它尚不包含 filesystem
+cache/bitmap/inode undo、revoke、abort state 或 Linux 的多 transaction 状态机。
+
+正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-jbd2-handle-credits.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=5e143a8302dd441188c7cfe35e603414a00bc0ee arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=7035652 write_p95_ns=7129911 read_median_ns=6662757 read_p95_ns=6768021 sync_median_ns=39193 sync_p95_ns=41800
+```
+
+相对 dev 基线，write median 回退约 3.1%，仍在 5% 上限内；read median 改善
+约 7.7%，write/read p95 分别改善约 2.8% 和 20.2%。sync p95 回退约 8.2%，
+仍在 10% latency 上限内。sync median 增加约 51.8%，但 sync latency 硬门槛按
+p95 判定；因此本检查点满足冻结的 host 门槛。7.9 的 legacy allocator sync p95
+红项仍独立保留。
