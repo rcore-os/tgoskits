@@ -2,6 +2,12 @@ use axvirtio_common::VirtioResult;
 
 /// Trait for block device backends
 pub trait BlockBackend: Send + Sync {
+    /// Returns whether queue processing must be deferred to a pollable runtime
+    /// context because backend operations can block.
+    fn requires_deferred_processing(&self) -> bool {
+        false
+    }
+
     /// Read data from the device
     ///
     /// # Arguments

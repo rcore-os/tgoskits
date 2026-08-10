@@ -76,6 +76,9 @@ pub const VIRTIO_BLK_T_FLUSH: u32 = 4;
 /// Block request status: Success
 pub const VIRTIO_BLK_S_OK: isize = 0;
 
+/// Block request status: I/O error
+pub const VIRTIO_BLK_S_IOERR: isize = 1;
+
 /// Block request status: Unsupported request
 pub const VIRTIO_BLK_S_UNSUPP: isize = 2;
 

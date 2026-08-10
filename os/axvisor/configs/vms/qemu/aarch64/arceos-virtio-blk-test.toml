@@ -23,5 +23,5 @@ disabled = []
 [[devices.virtual]]
 id = "virtblk0"
 model = "virtio-blk"
-capacity_sectors = 4096
-
+backend = "ramdisk"
+capacity = "2MiB"

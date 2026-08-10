@@ -59,6 +59,8 @@ anyhow.workspace = true
 log = "0.4"
 
 # System dependent modules provided by ArceOS.
+ax-api.workspace = true
+ax-sync.workspace = true
 ax-std = { workspace = true, default-features = false, features = [
   "alloc",
   "fd",

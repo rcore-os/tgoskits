@@ -1551,9 +1551,11 @@ name = "axvisor"
 version = "0.5.24"
 dependencies = [
  "anyhow",
+ "ax-api",
  "ax-driver",
  "ax-hal",
  "ax-std",
+ "ax-sync",
  "ax-task",
  "axbacktrace",
  "axbuild",
