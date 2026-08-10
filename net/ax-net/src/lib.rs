@@ -502,15 +502,15 @@ pub fn request_poll() {
     });
 }
 
-/// Synchronously drive the interface poll until idle.
+/// Drains queued socket egress through the interface poller before returning.
 ///
 /// [`request_poll`] only wakes the poll worker; the actual dispatch happens
-/// later. A socket that is closed in the same breath as its last send would
-/// otherwise be torn down before the worker runs, discarding the datagram still
-/// queued in its TX buffer. Draining egress here mirrors Linux, where a sent
-/// datagram already sits in the peer's receive buffer and `close()` cannot
-/// unsend it. Must not be called while holding `SOCKET_SET.inner`.
-pub(crate) fn flush_egress() {
+/// later. This is useful for short-lived bare-metal applications that send a
+/// final datagram and immediately transition state. Long-running applications
+/// should normally rely on [`request_poll`] and the background poll worker.
+///
+/// Must not be called while holding `SOCKET_SET.inner`.
+pub fn flush_egress() {
     poll_until_idle(PollOwnership::Required);
 }
 
