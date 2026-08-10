@@ -46,6 +46,8 @@ impl CachedBlock {
 /// through an exclusive borrow.
 pub struct DataBlockCache {
     cache: BTreeMap<BlockCacheKey, CachedBlock>,
+    /// Unique block numbers ordered from least to most recently used.
+    lru_order: Vec<AbsoluteBN>,
     max_entries: usize,
     access_counter: u64,
     block_size: usize,
@@ -56,6 +58,7 @@ impl DataBlockCache {
     pub fn new(max_entries: usize, block_size: usize) -> Self {
         Self {
             cache: BTreeMap::new(),
+            lru_order: Vec::with_capacity(max_entries),
             max_entries,
             access_counter: 0,
             block_size,
@@ -106,6 +109,7 @@ impl DataBlockCache {
         self.evict_lru_if_full(block_dev)?;
         self.cache
             .insert(block_num, CachedBlock::new(data, block_num));
+        self.lru_order.push(block_num);
         Ok(())
     }
 
@@ -114,19 +118,13 @@ impl DataBlockCache {
             return Ok(());
         }
 
-        let Some(victim_num) = self.lru_block() else {
+        let Some(&victim_num) = self.lru_order.first() else {
             return Ok(());
         };
         self.write_back_if_dirty(block_dev, victim_num)?;
         self.cache.remove(&victim_num);
+        self.lru_order.remove(0);
         Ok(())
-    }
-
-    fn lru_block(&self) -> Option<AbsoluteBN> {
-        self.cache
-            .iter()
-            .min_by_key(|(_, cached)| cached.last_access)
-            .map(|(block_num, _)| *block_num)
     }
 
     fn touch(&mut self, block_num: AbsoluteBN) {
@@ -134,6 +132,28 @@ impl DataBlockCache {
         if let Some(cached) = self.cache.get_mut(&block_num) {
             cached.last_access = self.access_counter;
             cached.generation = cached.generation.saturating_add(1);
+            self.record_mru(block_num);
+        }
+    }
+
+    fn record_mru(&mut self, block_num: AbsoluteBN) {
+        if let Some(index) = self
+            .lru_order
+            .iter()
+            .position(|cached_num| *cached_num == block_num)
+        {
+            self.lru_order.remove(index);
+        }
+        self.lru_order.push(block_num);
+    }
+
+    fn remove_from_lru(&mut self, block_num: AbsoluteBN) {
+        if let Some(index) = self
+            .lru_order
+            .iter()
+            .position(|cached_num| *cached_num == block_num)
+        {
+            self.lru_order.remove(index);
         }
     }
 
@@ -172,6 +192,7 @@ impl DataBlockCache {
             // A failed replacement writeback leaves the old incarnation intact.
             self.write_back_if_dirty(block_dev, block_num)?;
             self.cache.remove(&block_num);
+            self.remove_from_lru(block_num);
         } else {
             self.evict_lru_if_full(block_dev)?;
         }
@@ -181,6 +202,7 @@ impl DataBlockCache {
         self.access_counter = self.access_counter.saturating_add(1);
         cached.last_access = self.access_counter;
         self.cache.insert(block_num, cached);
+        self.lru_order.push(block_num);
         self.cache
             .get(&block_num)
             .cloned()
@@ -333,6 +355,7 @@ impl DataBlockCache {
     ) -> Ext4Result<()> {
         self.write_back_if_dirty(block_dev, block_num)?;
         self.cache.remove(&block_num);
+        self.remove_from_lru(block_num);
         Ok(())
     }
 
@@ -383,11 +406,13 @@ impl DataBlockCache {
     /// Invalidates one cached block without flushing it.
     pub fn invalidate(&mut self, block_num: AbsoluteBN) {
         self.cache.remove(&block_num);
+        self.remove_from_lru(block_num);
     }
 
     /// Clears the cache without flushing.
     pub fn clear(&mut self) {
         self.cache.clear();
+        self.lru_order.clear();
     }
 
     /// Returns cache statistics.
