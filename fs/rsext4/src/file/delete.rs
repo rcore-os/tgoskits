@@ -7,12 +7,20 @@ pub(crate) struct ParentDirEntry {
     pub file_type: u8,
 }
 
+fn ensure_inode_free_is_supported(fs: &Ext4FileSystem, inode: &Ext4Inode) -> Ext4Result<()> {
+    if crate::indirect::has_legacy_indirect_mapping(fs, inode) {
+        return Err(Ext4Error::unsupported().with_operation("indirect:free"));
+    }
+    Ok(())
+}
+
 pub fn free_inode<B: BlockIo + crate::runtime::Clock>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<()> {
+    ensure_inode_free_is_supported(fs, inode)?;
     let mut used_blocks: Vec<AbsoluteBN> = resolve_inode_blocks(fs, block_dev, inode_num, inode)?
         .into_values()
         .collect();
@@ -86,8 +94,13 @@ pub fn unlink<B: BlockIo + crate::runtime::Clock>(
         return Err(Ext4Error::is_dir());
     }
 
-    // Drop the link count on the target inode first.
+    // Capability preconditions must be checked before publishing the link
+    // count. Recursive legacy-indirect freeing is a later transaction
+    // milestone, so a final unlink of such an inode remains unsupported.
     let new_links = target_inode.decremented_links_count()?;
+    if new_links == 0 {
+        ensure_inode_free_is_supported(fs, &target_inode)?;
+    }
     fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
 
     // When the final link disappears, free blocks and inode through the shared
@@ -576,6 +589,9 @@ pub fn delete_file<B: BlockIo + crate::runtime::Clock>(
     }
 
     let new_links = target_inode.decremented_links_count()?;
+    if new_links == 0 {
+        ensure_inode_free_is_supported(fs, &target_inode)?;
+    }
     fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
     if new_links == 0 {
         free_inode(fs, block_dev, entry.ino, &mut target_inode)?;

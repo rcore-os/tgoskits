@@ -12,6 +12,7 @@ use crate::{
     ext4::*,
     extents_tree::*,
     hashtree::*,
+    indirect::{resolve_legacy_inode_block, resolve_legacy_inode_blocks},
 };
 
 /// Resolves a logical block number to an absolute physical block number.
@@ -49,7 +50,7 @@ pub fn resolve_inode_block<B: BlockIo>(
         }
         Ok(None)
     } else {
-        Err(Ext4Error::unsupported())
+        resolve_legacy_inode_block(fs, block_dev, inode_num, inode, logical_block)
     }
 }
 
@@ -64,7 +65,7 @@ pub fn resolve_inode_blocks<B: BlockIo>(
     inode: &mut Ext4Inode,
 ) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
     if !inode.uses_extents() {
-        return Ok(BTreeMap::new());
+        return resolve_legacy_inode_blocks(fs, block_dev, inode_num, inode);
     }
 
     let mut tree = ExtentTree::with_filesystem(inode, fs, inode_num);

@@ -2591,11 +2591,10 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     ax_assert_eq!(mapped_blocks.len(), 2);
 
     let mut non_extent_inode = Ext4Inode::default();
-    ax_assert_eq!(
+    ax_assert!(
         resolve_inode_block(&fs, &mut device, file_ino, &mut non_extent_inode, 0)
-            .unwrap_err()
-            .kind(),
-        Ext4ErrorKind::Unsupported
+            .unwrap()
+            .is_none()
     );
     ax_assert!(
         resolve_inode_blocks(&mut fs, &mut device, file_ino, &mut non_extent_inode)

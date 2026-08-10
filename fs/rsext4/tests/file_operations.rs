@@ -521,6 +521,130 @@ mod file_functional_tests {
         );
     }
 
+    #[test]
+    fn unsupported_legacy_indirect_unlink_preserves_link_count() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/legacy-indirect", None, None)
+            .expect("file creation failed");
+        let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-indirect")
+            .unwrap()
+            .unwrap()
+            .0;
+        let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
+        fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_block[12] = indirect_root.to_u32().unwrap();
+        })
+        .unwrap();
+
+        let error = unlink(&mut fs, &mut jbd2_dev, "/legacy-indirect")
+            .expect_err("indirect-tree deletion is not implemented yet");
+        assert_eq!(error.kind(), Ext4ErrorKind::Unsupported);
+
+        let (_, inode) = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-indirect")
+            .unwrap()
+            .expect("failed unlink must preserve the directory entry");
+        assert_eq!(inode.i_links_count, 1);
+    }
+
+    #[test]
+    fn unsupported_legacy_indirect_delete_preserves_link_count() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/legacy-delete", None, None).expect("file creation failed");
+        let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-delete")
+            .unwrap()
+            .unwrap()
+            .0;
+        let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
+        fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_block[12] = indirect_root.to_u32().unwrap();
+        })
+        .unwrap();
+
+        let error = delete_file(&mut fs, &mut jbd2_dev, "/legacy-delete")
+            .expect_err("indirect-tree deletion is not implemented yet");
+        assert_eq!(error.kind(), Ext4ErrorKind::Unsupported);
+
+        let (_, inode) = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-delete")
+            .unwrap()
+            .expect("failed delete must preserve the directory entry");
+        assert_eq!(inode.i_links_count, 1);
+    }
+
+    #[test]
+    fn deleting_fast_symlink_does_not_treat_inline_bytes_as_indirect_blocks() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let target = "/abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";
+        assert!(target.len() > 48 && target.len() < 60);
+        mkfile(&mut jbd2_dev, &mut fs, target, None, None).expect("target creation failed");
+        create_symbol_link(&mut jbd2_dev, &mut fs, target, "/fast-link")
+            .expect("symlink creation failed");
+
+        delete_file(&mut fs, &mut jbd2_dev, "/fast-link")
+            .expect("fast symlink deletion must not inspect inline bytes as block pointers");
+        assert!(
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/fast-link")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn legacy_sparse_read_zero_fills_holes_and_continues() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/legacy-sparse", None, None).expect("file creation failed");
+        let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-sparse")
+            .unwrap()
+            .unwrap()
+            .0;
+        let first = fs.alloc_block(&mut jbd2_dev).unwrap();
+        let third = fs.alloc_block(&mut jbd2_dev).unwrap();
+        for (block, value) in [(first, 0x31), (third, 0x33)] {
+            jbd2_dev.read_block(block).unwrap();
+            jbd2_dev.buffer_mut().fill(value);
+            jbd2_dev.write_block(block, false).unwrap();
+        }
+        fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_block[0] = first.to_u32().unwrap();
+            inode.i_block[2] = third.to_u32().unwrap();
+            let size = 3 * BLOCK_SIZE as u64;
+            inode.i_size_lo = size as u32;
+            inode.i_size_high = (size >> 32) as u32;
+        })
+        .unwrap();
+
+        let data = read_file(&mut jbd2_dev, &mut fs, "/legacy-sparse").unwrap();
+        assert_eq!(data.len(), 3 * BLOCK_SIZE);
+        assert!(data[..BLOCK_SIZE].iter().all(|&byte| byte == 0x31));
+        assert!(
+            data[BLOCK_SIZE..2 * BLOCK_SIZE]
+                .iter()
+                .all(|&byte| byte == 0)
+        );
+        assert!(data[2 * BLOCK_SIZE..].iter().all(|&byte| byte == 0x33));
+    }
+
     /// Verifies symbolic-link resolution by reading the target through the link path.
     #[test]
     fn test_symbolic_link() {

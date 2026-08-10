@@ -68,6 +68,7 @@ pub mod ext4;
 pub mod extents_tree;
 pub mod file;
 pub mod hashtree;
+mod indirect;
 pub mod io;
 pub mod jbd2;
 pub mod loopfile;
