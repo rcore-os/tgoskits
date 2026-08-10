@@ -280,7 +280,38 @@ fn test_fallback_to_linear_search() {
     dir_inode.write_extend_header();
     dir_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
 
-    let result =
-        manager.fallback_to_linear_search(&mut fs, &mut mock_dev, &dir_inode, b"nonexistent.txt");
+    let dir_ino = fs.root_inode;
+    let result = manager.fallback_to_linear_search(
+        &mut fs,
+        &mut mock_dev,
+        dir_ino,
+        &dir_inode,
+        b"nonexistent.txt",
+    );
     assert!(matches!(result, Err(HashTreeError::EntryNotFound)));
+}
+
+#[test]
+fn linear_fallback_preserves_extent_codec_error() {
+    let mut fs = create_test_fs();
+    let manager = create_hash_tree_manager(&fs);
+    let mut dir_inode = create_test_dir_inode();
+    dir_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
+    dir_inode.i_block[0] = 0;
+
+    let mock_device = MockBlockDevice::new(1024 * 1024);
+    let mut mock_dev = Jbd2Dev::initial_jbd2dev(0, mock_device, false);
+    let result = manager.fallback_to_linear_search(
+        &mut fs,
+        &mut mock_dev,
+        InodeNumber::new(2).unwrap(),
+        &dir_inode,
+        b"nonexistent.txt",
+    );
+
+    assert!(matches!(
+        result,
+        Err(HashTreeError::Filesystem(error))
+            if error.kind() == crate::error::Ext4ErrorKind::Corrupted
+    ));
 }

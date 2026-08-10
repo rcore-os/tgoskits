@@ -133,10 +133,12 @@ impl Ext4FileSystem {
     fn journal_blocks<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
+        journal_inode_num: InodeNumber,
         journal_inode: &mut Ext4Inode,
     ) -> Ext4Result<Vec<AbsoluteBN>> {
         let journal_block_count = journal_inode.size().div_ceil(self.block_size() as u64);
-        let journal_block_map = resolve_inode_blocks(self, block_dev, journal_inode)?;
+        let journal_block_map =
+            resolve_inode_blocks(self, block_dev, journal_inode_num, journal_inode)?;
         let mut journal_blocks = Vec::new();
         for logical in 0..journal_block_count {
             let logical = u32::try_from(logical).map_err(|_| Ext4Error::corrupted())?;
@@ -289,10 +291,11 @@ impl Ext4FileSystem {
                 // By this point the journal inode must exist, so resolve its
                 // first data block and hand the loaded journal superblock to
                 // `Jbd2Dev`.
-                let mut j_inode =
-                    fs.get_inode_by_num(block_dev, InodeNumber::new(JOURNAL_FILE_INODE as u32)?)?;
+                let journal_inode_num = InodeNumber::new(JOURNAL_FILE_INODE as u32)?;
+                let mut j_inode = fs.get_inode_by_num(block_dev, journal_inode_num)?;
 
-                let journal_blocks = fs.journal_blocks(block_dev, &mut j_inode)?;
+                let journal_blocks =
+                    fs.journal_blocks(block_dev, journal_inode_num, &mut j_inode)?;
                 let journal_first_block = journal_blocks
                     .first()
                     .copied()

@@ -230,7 +230,7 @@ fn large_sequential_write_uses_one_contiguous_extent() {
     );
 
     let mut inode = find_file(&mut fs, &mut jbd2_dev, "/large/run.bin").expect("find failed");
-    let tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+    let tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, fs.root_inode);
     match tree.load_root_from_inode().expect("extent root") {
         ExtentNode::Leaf { entries, .. } => {
             assert_eq!(entries.len(), 1);

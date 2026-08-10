@@ -843,7 +843,8 @@ fn mount_uses_valid_lost_found_hint_without_root_path_scan() {
     let mut inspect_dev = new_jbd2_dev(device.clone());
     let mut fs = mount(&mut inspect_dev).expect("mount failed");
     let mut root = fs.get_root(&mut inspect_dev).expect("root inode");
-    let root_block = resolve_inode_block(&mut inspect_dev, &mut root, 0)
+    let root_ino = fs.root_inode;
+    let root_block = resolve_inode_block(&fs, &mut inspect_dev, root_ino, &mut root, 0)
         .expect("resolve root block")
         .expect("root directory block")
         .raw();

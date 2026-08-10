@@ -11,12 +11,69 @@ pub struct ExtentTree<'a> {
     pub(super) block_size: usize,
     inode_num: Option<InodeNumber>,
     generation: u32,
-    checksum_seed: Option<u32>,
+    pub(super) checksum_seed: Option<u32>,
+    first_data_block: u64,
+    filesystem_blocks: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+    use crate::endian::DiskFormat;
+
+    #[test]
+    fn extent_checksum_tail_follows_eh_max_for_two_kib_nodes() {
+        let mut superblock = Ext4Superblock {
+            s_log_block_size: 1,
+            s_feature_ro_compat: Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM,
+            s_uuid: [0x42; 16],
+            ..Ext4Superblock::default()
+        };
+        superblock.s_blocks_count_lo = 1024;
+        let mut inode = Ext4Inode::default();
+        let generation = 0x1234_5678;
+        inode.i_generation = generation;
+        let inode_num = InodeNumber::new(12).unwrap();
+        let tree = ExtentTree::with_checksum(&mut inode, &superblock, inode_num);
+
+        let mut block = vec![0u8; 2048];
+        let header = Ext4ExtentHeader {
+            eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+            eh_entries: 0,
+            eh_max: ((block.len() - Ext4ExtentHeader::disk_size()) / Ext4Extent::disk_size())
+                as u16,
+            eh_depth: 0,
+            eh_generation: 0,
+        };
+        header.to_disk_bytes(&mut block[..Ext4ExtentHeader::disk_size()]);
+        tree.update_extent_block_checksum(&mut block, &header)
+            .unwrap();
+
+        let tail = ExtentTree::extent_block_checksum_offset(block.len(), &header).unwrap();
+        assert_eq!(tail, 2040);
+        let stored = u32::from_le_bytes(block[tail..tail + 4].try_into().unwrap());
+        let expected = crate::checksum::ext4_metadata_csum32(
+            ext4_crc32c_seed_from_superblock(&superblock),
+            &[
+                &inode_num.raw().to_le_bytes(),
+                &generation.to_le_bytes(),
+                &block[..tail],
+            ],
+        );
+        assert_eq!(stored, expected);
+        assert_eq!(&block[tail + 4..], &[0; 4]);
+    }
 }
 
 impl<'a> ExtentTree<'a> {
-    /// Creates an extent-tree handle backed by the given inode.
-    pub fn new(inode: &'a mut Ext4Inode, block_size: usize) -> Self {
+    /// Creates a geometry-free extent-tree handle for in-crate tests.
+    ///
+    /// Production paths must use [`Self::with_checksum`] so physical-range and
+    /// metadata-checksum validation always carry mounted filesystem context.
+    #[cfg(any(test, axtest))]
+    pub(crate) fn new(inode: &'a mut Ext4Inode, block_size: usize) -> Self {
         let generation = inode.i_generation;
         Self {
             inode,
@@ -24,6 +81,8 @@ impl<'a> ExtentTree<'a> {
             inode_num: None,
             generation,
             checksum_seed: None,
+            first_data_block: 0,
+            filesystem_blocks: u64::MAX,
         }
     }
 
@@ -41,7 +100,171 @@ impl<'a> ExtentTree<'a> {
             generation,
             checksum_seed: ext4_superblock_has_metadata_csum(superblock)
                 .then(|| ext4_crc32c_seed_from_superblock(superblock)),
+            first_data_block: u64::from(superblock.s_first_data_block),
+            filesystem_blocks: superblock.blocks_count(),
         }
+    }
+
+    pub(super) fn bind_geometry(&mut self, superblock: &Ext4Superblock) {
+        self.block_size = superblock.block_size() as usize;
+        self.first_data_block = u64::from(superblock.s_first_data_block);
+        self.filesystem_blocks = superblock.blocks_count();
+    }
+
+    fn physical_block_limit(&self, device_blocks: u64) -> u64 {
+        self.filesystem_blocks.min(device_blocks)
+    }
+
+    pub(super) fn validate_physical_range(
+        &self,
+        start: u64,
+        len: u64,
+        device_blocks: u64,
+    ) -> Ext4Result<()> {
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:physical_overflow"))?;
+        if start <= self.first_data_block || end > self.physical_block_limit(device_blocks) {
+            return Err(Ext4Error::corrupted().with_operation("extent:physical_range"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_node(
+        &self,
+        node: &ExtentNode,
+        expected_depth: Option<u16>,
+        parent_key: Option<u32>,
+        device_blocks: u64,
+        inline_root: bool,
+    ) -> Ext4Result<()> {
+        let header = node.header();
+        if expected_depth.is_some_and(|depth| header.eh_depth != depth) {
+            return Err(Ext4Error::corrupted().with_operation("extent:depth_mismatch"));
+        }
+        if header.eh_depth > Self::MAX_DEPTH || header.eh_magic != Ext4ExtentHeader::EXT4_EXT_MAGIC
+        {
+            return Err(Ext4Error::corrupted().with_operation("extent:header"));
+        }
+
+        let max_entries = if inline_root {
+            (self.inode.i_block.len() * core::mem::size_of::<u32>() - Ext4ExtentHeader::disk_size())
+                / Ext4Extent::disk_size()
+        } else {
+            usize::from(self.calc_block_eh_max())
+        };
+        let actual_entries = match node {
+            ExtentNode::Leaf { entries, .. } => entries.len(),
+            ExtentNode::Index { entries, .. } => entries.len(),
+        };
+        if header.eh_max == 0
+            || usize::from(header.eh_max) > max_entries
+            || usize::from(header.eh_entries) != actual_entries
+            || actual_entries > usize::from(header.eh_max)
+        {
+            return Err(Ext4Error::corrupted().with_operation("extent:node_capacity"));
+        }
+
+        match node {
+            ExtentNode::Leaf { entries, .. } => {
+                Self::validate_leaf_entries(entries)?;
+                if let (Some(expected), Some(first)) =
+                    (parent_key, entries.first().map(|extent| extent.ee_block))
+                    && first != expected
+                {
+                    return Err(Ext4Error::corrupted().with_operation("extent:parent_key"));
+                }
+                for extent in entries {
+                    self.validate_physical_range(
+                        extent.start_block(),
+                        u64::from(extent.len()),
+                        device_blocks,
+                    )?;
+                }
+            }
+            ExtentNode::Index { entries, .. } => {
+                if entries.is_empty() {
+                    return Err(Ext4Error::corrupted().with_operation("extent:empty_index"));
+                }
+                Self::validate_index_entries(entries)?;
+                if parent_key.is_some_and(|expected| entries[0].ei_block != expected) {
+                    return Err(Ext4Error::corrupted().with_operation("extent:parent_key"));
+                }
+                for index in entries {
+                    self.validate_physical_range(
+                        ((index.ei_leaf_hi as u64) << 32) | u64::from(index.ei_leaf_lo),
+                        1,
+                        device_blocks,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn extent_block_checksum_offset(
+        bytes_len: usize,
+        header: &Ext4ExtentHeader,
+    ) -> Ext4Result<usize> {
+        let offset = usize::from(header.eh_max)
+            .checked_mul(Ext4Extent::disk_size())
+            .and_then(|entries| entries.checked_add(Ext4ExtentHeader::disk_size()))
+            .ok_or_else(Ext4Error::overflow)?;
+        let end = offset
+            .checked_add(core::mem::size_of::<u32>())
+            .ok_or_else(Ext4Error::overflow)?;
+        if end > bytes_len {
+            return Err(Ext4Error::corrupted().with_operation("extent:checksum_tail"));
+        }
+        Ok(offset)
+    }
+
+    fn verify_extent_block_checksum(
+        &self,
+        bytes: &[u8],
+        header: &Ext4ExtentHeader,
+    ) -> Ext4Result<()> {
+        let (Some(seed), Some(inode_num)) = (self.checksum_seed, self.inode_num) else {
+            return Ok(());
+        };
+        let tail = Self::extent_block_checksum_offset(bytes.len(), header)?;
+        let stored = u32::from_le_bytes(
+            bytes[tail..tail + core::mem::size_of::<u32>()]
+                .try_into()
+                .map_err(|_| Ext4Error::corrupted().with_operation("extent:checksum_tail"))?,
+        );
+        let inode_le = inode_num.raw().to_le_bytes();
+        let generation_le = self.generation.to_le_bytes();
+        let computed = crate::checksum::ext4_metadata_csum32(
+            seed,
+            &[&inode_le, &generation_le, &bytes[..tail]],
+        );
+        if stored != computed {
+            return Err(Ext4Error::checksum().with_operation("extent:block_checksum"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn read_child_node<B: BlockIo>(
+        &self,
+        dev: &mut Jbd2Dev<B>,
+        index: &Ext4ExtentIdx,
+        expected_depth: u16,
+    ) -> Ext4Result<ExtentNode> {
+        let child_block =
+            AbsoluteBN::new(((index.ei_leaf_hi as u64) << 32) | u64::from(index.ei_leaf_lo));
+        self.validate_physical_range(child_block.raw(), 1, dev.total_blocks())?;
+        dev.read_block(child_block)?;
+        let child = Self::parse_node_from_bytes(dev.buffer())?;
+        self.validate_node(
+            &child,
+            Some(expected_depth),
+            Some(index.ei_block),
+            dev.total_blocks(),
+            false,
+        )?;
+        self.verify_extent_block_checksum(dev.buffer(), child.header())?;
+        Ok(child)
     }
 
     fn huge_file_feature(fs: &Ext4FileSystem) -> bool {
@@ -108,27 +331,25 @@ impl<'a> ExtentTree<'a> {
         &self,
         dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<Vec<AbsoluteBN>> {
-        let Some(root) = self.load_root_from_inode() else {
-            return Ok(Vec::new());
-        };
+        let root = self.load_root_from_inode()?;
+        self.validate_node(&root, None, None, dev.total_blocks(), true)?;
 
         fn walk<B: BlockIo>(
+            tree: &ExtentTree<'_>,
             dev: &mut Jbd2Dev<B>,
             node: &ExtentNode,
             out: &mut Vec<AbsoluteBN>,
         ) -> Ext4Result<()> {
             match node {
                 ExtentNode::Leaf { .. } => Ok(()),
-                ExtentNode::Index { entries, .. } => {
+                ExtentNode::Index { header, entries } => {
                     for idx in entries {
                         let child = AbsoluteBN::new(
                             ((idx.ei_leaf_hi as u64) << 32) | idx.ei_leaf_lo as u64,
                         );
                         out.push(child);
-                        dev.read_block(child)?;
-                        let child_node =
-                            ExtentTree::parse_node(dev.buffer()).ok_or(Ext4Error::corrupted())?;
-                        walk(dev, &child_node, out)?;
+                        let child_node = tree.read_child_node(dev, idx, header.eh_depth - 1)?;
+                        walk(tree, dev, &child_node, out)?;
                     }
                     Ok(())
                 }
@@ -136,14 +357,14 @@ impl<'a> ExtentTree<'a> {
         }
 
         let mut blocks = Vec::new();
-        walk(dev, &root, &mut blocks)?;
+        walk(self, dev, &root, &mut blocks)?;
         blocks.sort_unstable();
         blocks.dedup();
         Ok(blocks)
     }
 
     /// Parses the inline extent root from `inode.i_block`.
-    pub fn load_root_from_inode(&self) -> Option<ExtentNode> {
+    pub fn load_root_from_inode(&self) -> Ext4Result<ExtentNode> {
         // `inode.i_block` holds 15 little-endian words, which is exactly enough
         // for one inline extent node.
         let iblocks = &self.inode.i_block;
@@ -160,7 +381,8 @@ impl<'a> ExtentTree<'a> {
     }
 
     /// Serializes the root node back into `inode.i_block`.
-    pub fn store_root_to_inode(&mut self, node: &ExtentNode) {
+    pub fn store_root_to_inode(&mut self, node: &ExtentNode) -> Ext4Result<()> {
+        self.validate_node(node, None, None, self.filesystem_blocks, true)?;
         let hdr_size = Ext4ExtentHeader::disk_size();
 
         match node {
@@ -173,9 +395,6 @@ impl<'a> ExtentTree<'a> {
                 let et_size = Ext4Extent::disk_size();
                 for (i, e) in entries.iter().enumerate() {
                     let off = hdr_size + i * et_size;
-                    if off + et_size > buf.len() {
-                        break;
-                    }
                     e.to_disk_bytes(&mut buf[off..off + et_size]);
                 }
 
@@ -196,9 +415,6 @@ impl<'a> ExtentTree<'a> {
                 let idx_size = Ext4ExtentIdx::disk_size();
                 for (i, idx) in entries.iter().enumerate() {
                     let off = hdr_size + i * idx_size;
-                    if off + idx_size > buf.len() {
-                        break;
-                    }
                     idx.to_disk_bytes(&mut buf[off..off + idx_size]);
                 }
 
@@ -210,24 +426,26 @@ impl<'a> ExtentTree<'a> {
                 }
             }
         }
+        Ok(())
     }
 
     /// Writes an extent node to an absolute physical block.
-    fn update_extent_block_checksum(&self, buf: &mut [u8]) {
+    fn update_extent_block_checksum(
+        &self,
+        buf: &mut [u8],
+        header: &Ext4ExtentHeader,
+    ) -> Ext4Result<()> {
         let (Some(seed), Some(inode_num)) = (self.checksum_seed, self.inode_num) else {
-            return;
+            return Ok(());
         };
-        if buf.len() < 4 {
-            return;
-        }
 
-        let tail = buf.len() - 4;
-        buf[tail..].fill(0);
+        let tail = Self::extent_block_checksum_offset(buf.len(), header)?;
         let inode_le = inode_num.raw().to_le_bytes();
         let generation_le = self.generation.to_le_bytes();
         let checksum =
             crate::checksum::ext4_metadata_csum32(seed, &[&inode_le, &generation_le, &buf[..tail]]);
-        buf[tail..].copy_from_slice(&checksum.to_le_bytes());
+        buf[tail..tail + core::mem::size_of::<u32>()].copy_from_slice(&checksum.to_le_bytes());
+        Ok(())
     }
 
     pub(super) fn write_node_to_block<B: BlockIo>(
@@ -245,6 +463,7 @@ impl<'a> ExtentTree<'a> {
         if entry_count > usize::from(block_eh_max) {
             return Err(Ext4Error::corrupted().with_operation("extent:node_capacity"));
         }
+        self.validate_node(node, None, None, dev.total_blocks(), false)?;
         // Load the target block before overwriting the node payload.
         dev.read_block(block_id)?;
         let buf = dev.buffer_mut();
@@ -279,7 +498,8 @@ impl<'a> ExtentTree<'a> {
                 }
             }
         }
-        self.update_extent_block_checksum(buf);
+        let disk_header = Ext4ExtentHeader::from_disk_bytes(&buf[..hdr_size]);
+        self.update_extent_block_checksum(buf, &disk_header)?;
         // Mark the metadata block dirty and write it back.
         dev.write_block(block_id, true)?;
         Ok(())

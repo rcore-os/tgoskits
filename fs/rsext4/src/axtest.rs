@@ -222,9 +222,9 @@ fn rsext4_inode_extent_timestamp_rules_hold() {
     ax_assert_eq!(inode.i_crtime, 0);
     inode.write_extend_header();
     inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
-    ax_assert!(inode.have_extend_header_and_use_extend());
+    ax_assert!(inode.uses_extents());
     inode.i_block[0] = 0;
-    ax_assert!(!inode.have_extend_header_and_use_extend());
+    ax_assert!(inode.uses_extents());
 
     let flags = Ext4Inode::EXT4_DIRSYNC_FL | Ext4Inode::EXT4_TOPDIR_FL | Ext4Inode::EXT4_NOATIME_FL;
     ax_assert_eq!(
@@ -647,6 +647,8 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
         disknode::{Ext4Inode, Ext4Timestamp},
         endian::DiskFormat,
         entries::Ext4DirEntryTail,
+        io::SectorId,
+        runtime::Clock,
         superblock::Ext4Superblock,
     };
 
@@ -840,7 +842,7 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
         }
 
         fn geometry(&self) -> crate::io::DeviceGeometry {
-            crate::io::DeviceGeometry::new({ 512 }, { 99 })
+            crate::io::DeviceGeometry::new(512, 99)
         }
 
         fn capabilities(&self) -> crate::io::DeviceCapabilities {
@@ -868,10 +870,10 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
     ax_assert_eq!(dev.geometry().block_count, 99);
     dev.flush().unwrap();
     let mut buf = [0_u8; 4];
-    dev.read(&mut buf, AbsoluteBN::new(0), 1).unwrap();
+    dev.read(&mut buf, SectorId::new(0), 1).unwrap();
     ax_assert_eq!(buf, [0x5a; 4]);
     ax_assert_eq!(
-        dev.write(&buf, AbsoluteBN::new(0), 1).unwrap_err().kind(),
+        dev.write(&buf, SectorId::new(0), 1).unwrap_err().kind(),
         Ext4ErrorKind::ReadOnly
     );
     ax_assert_eq!(dev.now().unwrap(), Ext4Timestamp::new(12, 34));
@@ -887,7 +889,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
 
     use rsext4::{
         BLOCK_SIZE, BlockIo, Ext4Result, Jbd2Dev, bmalloc::AbsoluteBN, disknode::Ext4Timestamp,
-        jbd2::jbdstruct::JournalSuperBllockS,
+        jbd2::jbdstruct::JournalSuperBllockS, runtime::Clock,
     };
 
     struct JournalMemoryDevice {
@@ -960,7 +962,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
         }
 
         fn geometry(&self) -> crate::io::DeviceGeometry {
-            crate::io::DeviceGeometry::new({ BLOCK_SIZE as u32 }, {
+            crate::io::DeviceGeometry::new(BLOCK_SIZE as u32, {
                 (self.blocks.len() / BLOCK_SIZE) as u64
             })
         }
@@ -1078,6 +1080,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
 #[axtest]
 fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
     use rsext4::{
+        BLOCK_SIZE,
         bmalloc::AbsoluteBN,
         disknode::{Ext4Extent, Ext4ExtentHeader, Ext4ExtentIdx, Ext4Inode},
         endian::DiskFormat,
@@ -1098,8 +1101,8 @@ fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
         eh_generation: 1,
     };
     leaf_header.to_disk_bytes(&mut leaf_bytes[0..12]);
-    Ext4Extent::new(8, 200, 2).to_disk_bytes(&mut leaf_bytes[12..24]);
-    Ext4Extent::new(3, 100, 4).to_disk_bytes(&mut leaf_bytes[24..36]);
+    Ext4Extent::new(3, 100, 4).to_disk_bytes(&mut leaf_bytes[12..24]);
+    Ext4Extent::new(8, 200, 2).to_disk_bytes(&mut leaf_bytes[24..36]);
 
     let leaf = ExtentTree::parse_node(&leaf_bytes).unwrap();
     ax_assert!(leaf.is_leaf());
@@ -1122,16 +1125,16 @@ fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
     };
     index_header.to_disk_bytes(&mut index_bytes[0..12]);
     Ext4ExtentIdx {
-        ei_block: 9,
-        ei_leaf_lo: 0x2222_3333,
-        ei_leaf_hi: 0x1111,
+        ei_block: 1,
+        ei_leaf_lo: 0x5555_6666,
+        ei_leaf_hi: 0x4444,
         ei_unused: 0,
     }
     .to_disk_bytes(&mut index_bytes[12..24]);
     Ext4ExtentIdx {
-        ei_block: 1,
-        ei_leaf_lo: 0x5555_6666,
-        ei_leaf_hi: 0x4444,
+        ei_block: 9,
+        ei_leaf_lo: 0x2222_3333,
+        ei_leaf_hi: 0x1111,
         ei_unused: 0,
     }
     .to_disk_bytes(&mut index_bytes[24..36]);
@@ -1147,25 +1150,25 @@ fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
 
     let mut bad = leaf_bytes;
     bad[0] = 0;
-    ax_assert!(ExtentTree::parse_node(&bad).is_none());
+    ax_assert!(ExtentTree::parse_node(&bad).is_err());
     let mut overflow = leaf_bytes;
     overflow[2..4].copy_from_slice(&5_u16.to_le_bytes());
     overflow[4..6].copy_from_slice(&4_u16.to_le_bytes());
-    ax_assert!(ExtentTree::parse_node(&overflow).is_none());
-    ax_assert!(ExtentTree::parse_node(&leaf_bytes[..20]).is_none());
+    ax_assert!(ExtentTree::parse_node(&overflow).is_err());
+    ax_assert!(ExtentTree::parse_node(&leaf_bytes[..20]).is_err());
 
     let mut inode = Ext4Inode::empty_for_reuse(32);
     inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
     {
-        let mut tree = ExtentTree::new(&mut inode);
-        tree.store_root_to_inode(&leaf);
+        let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+        tree.store_root_to_inode(&leaf).unwrap();
         let mut loaded = tree.load_root_from_inode().unwrap();
         ax_assert!(loaded.is_leaf());
         let header = loaded.header_mut();
         header.eh_generation = 99;
         ax_assert_eq!(loaded.header().eh_generation, 99);
     }
-    ax_assert!(inode.have_extend_header_and_use_extend());
+    ax_assert!(inode.uses_extents());
 
     let run = ExtentRun {
         logical_start: 3,
@@ -1687,7 +1690,6 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
         disknode::{Ext4Extent, Ext4ExtentHeader, Ext4ExtentIdx, Ext4Inode, Ext4Timestamp},
         endian::DiskFormat,
         extents_tree::{ExtentNode, ExtentTree},
-        loopfile::resolve_inode_block,
     };
 
     struct MemoryBlockDevice {
@@ -1748,7 +1750,7 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
         }
 
         fn geometry(&self) -> crate::io::DeviceGeometry {
-            crate::io::DeviceGeometry::new({ BLOCK_SIZE as u32 }, {
+            crate::io::DeviceGeometry::new(BLOCK_SIZE as u32, {
                 (self.blocks.len() / BLOCK_SIZE) as u64
             })
         }
@@ -1774,7 +1776,7 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
         }
     }
 
-    fn store_leaf(inode: &mut Ext4Inode, extents: &[Ext4Extent]) {
+    fn store_leaf(inode: &mut Ext4Inode, extents: &[Ext4Extent]) -> Ext4Result<()> {
         let header = Ext4ExtentHeader {
             eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
             eh_entries: extents.len() as u16,
@@ -1786,7 +1788,7 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
             header,
             entries: extents.to_vec(),
         };
-        ExtentTree::new(inode).store_root_to_inode(&node);
+        ExtentTree::new(inode, BLOCK_SIZE).store_root_to_inode(&node)
     }
 
     fn write_leaf_block(
@@ -1811,16 +1813,17 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
         dev.write_blocks(&bytes, block, 1, false).unwrap();
     }
 
-    let mut dev = Jbd2Dev::initial_jbd2dev(0, MemoryBlockDevice::new(8), false);
+    let mut dev = Jbd2Dev::initial_jbd2dev(0, MemoryBlockDevice::new(1024), false);
     let mut inode = Ext4Inode::default();
+    inode.write_extend_header();
     ax_assert_eq!(
-        ExtentTree::new(&mut inode)
+        ExtentTree::new(&mut inode, BLOCK_SIZE)
             .initialized_runs_in_range(&mut dev, 5, 4)
             .unwrap(),
         Vec::new()
     );
     ax_assert!(
-        ExtentTree::new(&mut inode)
+        ExtentTree::new(&mut inode, BLOCK_SIZE)
             .find_extent(&mut dev, 1)
             .unwrap()
             .is_none()
@@ -1839,9 +1842,10 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
                 ee_start_lo: 300,
             },
         ],
-    );
+    )
+    .unwrap();
 
-    let mut tree = ExtentTree::new(&mut inode);
+    let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
     ax_assert!(tree.find_extent(&mut dev, 9).unwrap().is_none());
     ax_assert_eq!(
         tree.find_extent(&mut dev, 10)
@@ -1866,28 +1870,19 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
     ax_assert_eq!(runs[1].logical_start, 20);
     ax_assert_eq!(runs[1].physical_start, AbsoluteBN::new(200));
     ax_assert_eq!(runs[1].len, 2);
-    ax_assert_eq!(
-        resolve_inode_block(&mut dev, &mut inode, 11)
-            .unwrap()
-            .unwrap(),
-        AbsoluteBN::new(101)
-    );
-
     let mut zero_len_inode = Ext4Inode::empty_for_reuse(32);
     zero_len_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
-    store_leaf(
-        &mut zero_len_inode,
-        &[Ext4Extent {
-            ee_block: 4,
-            ee_len: 0,
-            ee_start_hi: 0,
-            ee_start_lo: 400,
-        }],
-    );
     ax_assert!(
-        resolve_inode_block(&mut dev, &mut zero_len_inode, 4)
-            .unwrap()
-            .is_none()
+        store_leaf(
+            &mut zero_len_inode,
+            &[Ext4Extent {
+                ee_block: 4,
+                ee_len: 0,
+                ee_start_hi: 0,
+                ee_start_lo: 400,
+            }],
+        )
+        .is_err()
     );
 
     let mut unwritten_inode = Ext4Inode::empty_for_reuse(32);
@@ -1900,11 +1895,14 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
             ee_start_hi: 0,
             ee_start_lo: 700,
         }],
-    );
+    )
+    .unwrap();
     ax_assert!(
-        resolve_inode_block(&mut dev, &mut unwritten_inode, 7)
+        ExtentTree::new(&mut unwritten_inode, BLOCK_SIZE)
+            .find_extent(&mut dev, 7)
             .unwrap()
-            .is_none()
+            .unwrap()
+            .is_unwritten()
     );
 
     write_leaf_block(
@@ -1942,9 +1940,11 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
             },
         ],
     };
-    ExtentTree::new(&mut indexed_inode).store_root_to_inode(&index_root);
+    ExtentTree::new(&mut indexed_inode, BLOCK_SIZE)
+        .store_root_to_inode(&index_root)
+        .unwrap();
 
-    let mut tree = ExtentTree::new(&mut indexed_inode);
+    let mut tree = ExtentTree::new(&mut indexed_inode, BLOCK_SIZE);
     ax_assert_eq!(
         tree.find_extent(&mut dev, 6)
             .unwrap()
@@ -2177,7 +2177,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         }
 
         fn geometry(&self) -> crate::io::DeviceGeometry {
-            crate::io::DeviceGeometry::new({ BLOCK_SIZE as u32 }, {
+            crate::io::DeviceGeometry::new(BLOCK_SIZE as u32, {
                 (self.blocks.len() / BLOCK_SIZE) as u64
             })
         }
@@ -2585,19 +2585,20 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         &mut device,
     )
     .unwrap();
-    ax_assert!(mapped_inode.have_extend_header_and_use_extend());
-    let mapped_blocks = resolve_inode_blocks(&mut fs, &mut device, &mut mapped_inode).unwrap();
+    ax_assert!(mapped_inode.uses_extents());
+    let mapped_blocks =
+        resolve_inode_blocks(&mut fs, &mut device, file_ino, &mut mapped_inode).unwrap();
     ax_assert_eq!(mapped_blocks.len(), 2);
 
     let mut non_extent_inode = Ext4Inode::default();
     ax_assert_eq!(
-        resolve_inode_block(&mut device, &mut non_extent_inode, 0)
+        resolve_inode_block(&fs, &mut device, file_ino, &mut non_extent_inode, 0)
             .unwrap_err()
             .kind(),
         Ext4ErrorKind::Unsupported
     );
     ax_assert!(
-        resolve_inode_blocks(&mut fs, &mut device, &mut non_extent_inode)
+        resolve_inode_blocks(&mut fs, &mut device, file_ino, &mut non_extent_inode)
             .unwrap()
             .is_empty()
     );
@@ -2605,7 +2606,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     empty_extent_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
     empty_extent_inode.write_extend_header();
     ax_assert!(
-        resolve_inode_block(&mut device, &mut empty_extent_inode, 0)
+        resolve_inode_block(&fs, &mut device, file_ino, &mut empty_extent_inode, 0)
             .unwrap()
             .is_none()
     );
@@ -2634,12 +2635,13 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             },
         ],
     };
-    ExtentTree::new(&mut skipped_extent_inode).store_root_to_inode(&skipped_node);
     ax_assert!(
-        resolve_inode_blocks(&mut fs, &mut device, &mut skipped_extent_inode)
-            .unwrap()
-            .is_empty()
+        ExtentTree::new(&mut skipped_extent_inode, BLOCK_SIZE)
+            .store_root_to_inode(&skipped_node)
+            .is_err()
     );
+    let saved_ro_compat = fs.superblock.s_feature_ro_compat;
+    fs.superblock.s_feature_ro_compat &= !Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM;
     let leaf_a = fs.alloc_block(&mut device).unwrap();
     let leaf_b = fs.alloc_block(&mut device).unwrap();
     for (leaf, extent) in [
@@ -2686,11 +2688,14 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             },
         ],
     };
-    ExtentTree::new(&mut indexed_resolve_inode).store_root_to_inode(&indexed_root);
+    ExtentTree::new(&mut indexed_resolve_inode, BLOCK_SIZE)
+        .store_root_to_inode(&indexed_root)
+        .unwrap();
     let indexed_blocks =
-        resolve_inode_blocks(&mut fs, &mut device, &mut indexed_resolve_inode).unwrap();
+        resolve_inode_blocks(&mut fs, &mut device, file_ino, &mut indexed_resolve_inode).unwrap();
     ax_assert_eq!(indexed_blocks.get(&0).copied(), Some(AbsoluteBN::new(800)));
     ax_assert_eq!(indexed_blocks.get(&9).copied(), Some(AbsoluteBN::new(901)));
+    fs.superblock.s_feature_ro_compat = saved_ro_compat;
 
     mkdir(&mut device, &mut fs, "/cov/other").unwrap();
     mkdir(&mut device, &mut fs, "/cov/other/child").unwrap();

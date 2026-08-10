@@ -27,9 +27,10 @@ impl HashTreeManager {
         &self,
         fs: &mut crate::ext4::Ext4FileSystem,
         block_dev: &mut crate::blockdev::Jbd2Dev<B>,
+        dir_ino: crate::bmalloc::InodeNumber,
         dir_inode: &crate::disknode::Ext4Inode,
         target_name: &[u8],
     ) -> Result<crate::hashtree::HashTreeSearchResult, crate::hashtree::HashTreeError> {
-        super::lookup::lookup(self, fs, block_dev, dir_inode, target_name)
+        super::lookup::lookup(self, fs, block_dev, dir_ino, dir_inode, target_name)
     }
 }

@@ -1,31 +1,29 @@
 //! Hash tree error types.
 
+use crate::error::Ext4Error;
+
 /// Errors returned by hash tree parsing and lookup helpers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum HashTreeError {
     /// The directory does not contain a valid hash tree layout.
+    #[error("Invalid hash tree format")]
     InvalidHashTree,
     /// The on-disk hash version is not supported.
+    #[error("Unsupported hash version")]
     UnsupportedHashVersion,
     /// The hash tree metadata is corrupted.
+    #[error("Corrupted hash tree")]
     CorruptedHashTree,
     /// A referenced data block is out of range.
+    #[error("Block number out of range")]
     BlockOutOfRange,
     /// The provided buffer is too small to contain the expected structure.
+    #[error("Buffer too small")]
     BufferTooSmall,
     /// The requested entry does not exist.
+    #[error("Entry not found")]
     EntryNotFound,
-}
-
-impl core::fmt::Display for HashTreeError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            HashTreeError::InvalidHashTree => write!(f, "Invalid hash tree format"),
-            HashTreeError::UnsupportedHashVersion => write!(f, "Unsupported hash version"),
-            HashTreeError::CorruptedHashTree => write!(f, "Corrupted hash tree"),
-            HashTreeError::BlockOutOfRange => write!(f, "Block number out of range"),
-            HashTreeError::BufferTooSmall => write!(f, "Buffer too small"),
-            HashTreeError::EntryNotFound => write!(f, "Entry not found"),
-        }
-    }
+    /// An extent, cache, or block-device operation failed during lookup.
+    #[error(transparent)]
+    Filesystem(#[from] Ext4Error),
 }

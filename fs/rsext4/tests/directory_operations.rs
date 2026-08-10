@@ -202,7 +202,7 @@ mod directory_functional_tests {
                     .expect("lookup after mkdir should succeed")
                     .expect("created directory should exist")
             });
-        let dir_block = resolve_inode_block(&mut jbd2_dev, &mut dir_inode, 0)
+        let dir_block = resolve_inode_block(&fs, &mut jbd2_dev, dir_ino, &mut dir_inode, 0)
             .expect("resolve directory block failed")
             .expect("directory should have a first block");
         let cached = fs

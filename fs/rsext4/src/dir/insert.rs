@@ -51,7 +51,7 @@ pub fn insert_dir_entry<B: BlockIo + crate::runtime::Clock>(
     let mut modified_phys: Option<AbsoluteBN> = None;
 
     // Try to satisfy the insertion inside already mapped directory blocks first.
-    let blocks = resolve_inode_blocks(fs, device, parent_inode)?;
+    let blocks = resolve_inode_blocks(fs, device, parent_ino_num, parent_inode)?;
 
     for lbn in 0..total_blocks {
         if modified_phys.is_some() {
@@ -174,9 +174,7 @@ pub fn insert_dir_entry<B: BlockIo + crate::runtime::Clock>(
         total_size.div_ceil(block_bytes)
     };
     let new_lbn = old_blocks as u32;
-    if (!fs.superblock.has_extents() || !parent_inode.have_extend_header_and_use_extend())
-        && old_blocks >= 12
-    {
+    if (!fs.superblock.has_extents() || !parent_inode.uses_extents()) && old_blocks >= 12 {
         return Err(Ext4Error::unsupported());
     }
 
@@ -199,7 +197,7 @@ pub fn insert_dir_entry<B: BlockIo + crate::runtime::Clock>(
     parent_inode.i_size_high = ((new_size as u64) >> 32) as u32;
     parent_inode.set_blocks_count(newv, block_bytes as u32, huge_file_feature)?;
 
-    if fs.superblock.has_extents() && parent_inode.have_extend_header_and_use_extend() {
+    if fs.superblock.has_extents() && parent_inode.uses_extents() {
         let new_ext = Ext4Extent::new(new_lbn, new_block.raw(), 1);
         let mut tree = ExtentTree::with_checksum(parent_inode, &fs.superblock, parent_ino_num);
         tree.insert_extent(fs, new_ext, device)?;
