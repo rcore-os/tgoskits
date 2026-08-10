@@ -147,6 +147,13 @@ impl CloneArgs {
         if flags.contains(CloneFlags::NEWNS | CloneFlags::FS) {
             return Err(AxError::InvalidInput);
         }
+        // A thread must remain in the PID namespace of its thread group.
+        // CLONE_PARENT only changes parentage, so Linux permits it with
+        // CLONE_NEWPID. clone3 separately requires a zero exit signal when
+        // CLONE_PARENT is present.
+        if flags.contains(CloneFlags::NEWPID | CloneFlags::THREAD) {
+            return Err(AxError::InvalidInput);
+        }
 
         Ok(())
     }
@@ -594,6 +601,19 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
     }
     .validate()
     .is_err();
+    let thread_with_newpid_rejected = CloneArgs {
+        flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND | CloneFlags::NEWPID,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let legacy_parent_newpid_allowed = CloneArgs {
+        flags: CloneFlags::PARENT | CloneFlags::NEWPID,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    }
+    .validate()
+    .is_ok();
     // Cover the remaining validation arms to keep the full state machine under
     // axtest coverage (the host `#[cfg(test)]` mod below mirrors these but does
     // not execute during the kernel coverage run).
@@ -643,6 +663,8 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
         && thread_signal_rejected
         && sighand_without_vm_rejected
         && newns_with_fs_rejected
+        && thread_with_newpid_rejected
+        && legacy_parent_newpid_allowed
         && thread_without_vm_sighand_rejected
         && vfork_with_thread_rejected
         && pidfd_with_detached_rejected
@@ -677,5 +699,26 @@ mod tests {
         };
 
         assert!(args.validate().is_err());
+    }
+
+    #[test]
+    fn clone_thread_rejects_new_pid_namespace() {
+        let args = CloneArgs {
+            flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND | CloneFlags::NEWPID,
+            ..Default::default()
+        };
+
+        assert!(args.validate().is_err());
+    }
+
+    #[test]
+    fn legacy_clone_parent_allows_new_pid_namespace() {
+        let args = CloneArgs {
+            flags: CloneFlags::PARENT | CloneFlags::NEWPID,
+            exit_signal: SIGCHLD as u64,
+            ..Default::default()
+        };
+
+        assert!(args.validate().is_ok());
     }
 }
