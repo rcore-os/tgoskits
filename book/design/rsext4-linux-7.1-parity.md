@@ -267,3 +267,28 @@ RSEXT4_BENCH_SUMMARY commit=2ebb481ceefa1d9669d5cd890b81e948ff977f4b arch=x86_64
 相对 dev 基线，write/read median 分别改善约 8.3% 和 15.7%，对应 p95 分别
 改善约 6.1% 和 15.8%；sync p95 改善约 10.7%。sync median 增加约 10.3%，
 但 p95 latency 未回退，全部现有 workload 满足 host 性能门槛。
+
+### 7.9 legacy indirect allocation 检查点
+
+采集时间：2026-08-10；被测实现 commit 为
+`dad8b5da29364b0a5d1b85c9aaec912645c72b42`，环境与 7.8 相同。该检查点为
+legacy inode 增加 direct/single/double/triple sparse branch 分配、data 与 metadata
+block 的 checked `i_blocks` accounting，以及 publish/finalize 失败的反向恢复。
+extent 顺序 workload 只经过 inode-format 分支，不进入 legacy allocator。
+
+两次 20-run 探测都原样判为未通过：第一次 write/read p95 分别为 9.130 ms 和
+9.978 ms，超过 dev p95 10% 上限；第二次 write/read 均通过，但 sync p95 为
+45.740 us，超过 42.508 us 上限。随后扩大为 50 次测量以降低单个离群值对 p95
+的支配，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-10-legacy-indirect-allocation.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=dad8b5da29364b0a5d1b85c9aaec912645c72b42 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6395663 write_p95_ns=7102484 read_median_ns=6319891 read_p95_ns=7474386 sync_median_ns=31184 sync_p95_ns=47367
+```
+
+相对 dev 基线，write/read median 分别改善约 6.3% 和 12.5%，write p95 改善约
+3.2%，read p95 改善约 11.9%，因此 data workload 通过。sync median/p95 分别
+回退约 20.8% 和 22.6%，该检查点整体仍登记为性能红项，不放宽断言或选择性
+丢弃样本。同机对上一实现点 `bbecc4873` 的 50-run 对照得到 sync median/p95
+31.568/41.513 us，说明新增 allocator 没有造成 median 固定开销，但当前 harness
+的微秒级 sync 尾延迟仍未满足冻结 dev 基线；在门槛恢复前不得把本项标记为绿。
