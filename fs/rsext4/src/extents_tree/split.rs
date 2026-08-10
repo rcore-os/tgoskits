@@ -10,10 +10,10 @@ pub(super) struct SplitInfo {
 
 impl<'a> ExtentTree<'a> {
     /// Returns the maximum number of entries that fit in one metadata block.
-    pub(super) fn calc_block_eh_max() -> u16 {
+    pub(super) fn calc_block_eh_max(&self) -> u16 {
         let hdr_size = Ext4ExtentHeader::disk_size();
         let entry_size = Ext4Extent::disk_size(); // Index and extent entries are both 12 bytes.
-        (BLOCK_SIZE.saturating_sub(hdr_size) / entry_size) as u16
+        (self.block_size.saturating_sub(hdr_size) / entry_size) as u16
     }
 
     /// Returns the first logical block covered by a node.

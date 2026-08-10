@@ -5,7 +5,7 @@ use super::*;
 use crate::{
     blockdev::{BlockIo, Jbd2Dev},
     bmalloc::{AbsoluteBN, BlockAllocator, InodeAllocator, InodeNumber},
-    config::DEFAULT_INODE_SIZE,
+    config::GOOD_OLD_INODE_SIZE,
     disknode::{Ext4Inode, Ext4Timestamp},
     error::Ext4Error,
     ext4::Ext4FileSystem,
@@ -115,7 +115,7 @@ fn create_test_fs() -> Ext4FileSystem {
     };
 
     let inode_size = match superblock.s_inode_size {
-        0 => DEFAULT_INODE_SIZE as usize,
+        0 => GOOD_OLD_INODE_SIZE as usize,
         n => n as usize,
     };
 

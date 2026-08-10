@@ -186,7 +186,7 @@ fn collect_extents(
     }
 
     let mut out = Vec::new();
-    let tree = ExtentTree::new(inode);
+    let tree = ExtentTree::new(inode, BLOCK_SIZE);
     if let Some(root) = tree.load_root_from_inode() {
         walk(dev, &root, &mut out);
     }
@@ -198,7 +198,7 @@ fn build_mapped_inode(fs: &mut Ext4FileSystem, dev: &mut Jbd2Dev<CompatBlockDevi
     let mut inode = new_extent_inode();
     let first = alloc_contiguous(fs, dev, 2);
     let second = alloc_contiguous(fs, dev, 1);
-    let mut tree = ExtentTree::new(&mut inode);
+    let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
     tree.insert_extent(fs, Ext4Extent::new(0, first.raw(), 2), dev)
         .expect("insert first extent");
     tree.insert_extent(fs, Ext4Extent::new(4, second.raw(), 1), dev)
@@ -345,13 +345,18 @@ fn remove_extend_matches_remove_extent() {
         let mut inode = new_extent_inode();
         let base = alloc_contiguous(&mut fs, &mut dev, 4);
         let inserted = Ext4Extent::new(0, base.raw(), 4);
-        ExtentTree::new(&mut inode)
+        ExtentTree::new(&mut inode, BLOCK_SIZE)
             .insert_extent(&mut fs, inserted, &mut dev)
             .expect("insert extent");
 
         let deleted = Ext4Extent::new(1, 0, 2);
-        remove(&mut ExtentTree::new(&mut inode), &mut fs, deleted, &mut dev)
-            .expect("remove extent");
+        remove(
+            &mut ExtentTree::new(&mut inode, BLOCK_SIZE),
+            &mut fs,
+            deleted,
+            &mut dev,
+        )
+        .expect("remove extent");
 
         let allocated = [
             base,

@@ -126,7 +126,7 @@ pub fn read_at<B: BlockIo + crate::runtime::Clock>(
         return Err(Ext4Error::unsupported());
     }
 
-    let block_bytes = BLOCK_SIZE as u64;
+    let block_bytes = fs.block_size() as u64;
     let start_off = file.offset;
     let end_off = start_off + to_read; // exclusive
 

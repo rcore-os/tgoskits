@@ -100,11 +100,12 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 | `domain-error-no-errno` | core 公开并按 Linux `Errno` 分支 | typed domain error，errno 仅由 adapter 映射 | portable core skeleton | 绿：core 已无 `Errno`；`ax-fs-ng` 集中映射 |
 | `feature-gate-strict` | unknown incompat、ENCRYPT、RW QUOTA 均被接受 | incompat 拒绝；未实现 RO_COMPAT 只允许 RO | codec/feature negotiation | 绿：四项确定性单测完成红绿验证 |
 | `device-sector-map` | filesystem block number 被直接作为 device sector，512-byte 设备只读一个 sector | typed `SectorId` + private filesystem-block mapper | portable I/O core | 绿：512-byte sector 聚合与 byte-offset superblock 红绿回归通过 |
-| `filesystem-block-dynamic` | core 算法仍大量引用 4 KiB 常量 | 1/2/4 KiB geometry、cache、JBD2 与 codec 全部按 mount 派生 | codec/geometry | 红：Linux 镜像 round-trip 在 512-byte sector 上 1 KiB 报 checksum mismatch、2 KiB 报 corrupted，4 KiB 通过 |
+| `filesystem-block-dynamic` | core 算法仍大量引用 4 KiB 常量 | 1/2/4 KiB geometry、cache、JBD2 与 codec 全部按 mount 派生 | codec/geometry | 绿：Linux 与 rsext4 各自创建的 1/2/4 KiB 镜像均在 512-byte sector 上完成跨块写入、rename、remount 与 `e2fsck -fn`；cache、extent 与 JBD2 buffer 均按 mount geometry 分配 |
 | `linux-default-rocompat-rw` | Linux mkfs 默认设置 `HUGE_FILE`、`DIR_NLINK` | 完整读写语义后纳入 writable mask | inode/namespace lifecycle | 红：4 个 `linux_image_repro` 测试由严格 gate 拒绝 `0x28` |
 | `linux-map-complete` | 仅有 subsystem mapping，缺少逐区间清单 | every source line classified | design/traceability | 红：尚未加入逐区间 manifest |
 | `journal-no-direct-fallback` | uninitialized JBD2 performs home write | typed journal-aborted error | JBD2 rewrite | 绿：确定性红绿回归已覆盖 write/umount |
-| `extent-empty-index` | crafted empty internal node can panic | corruption error, no mutation | mapping rewrite | 红：待 mapping rewrite |
+| `jbd2-csum-v3-write-replay` | writer emits legacy tags while accepted CSUM_V3/64BIT journals require tag3/high block numbers | Linux-compatible descriptor tags and checksum followed by self/Linux replay | JBD2 rewrite | 红：writer 与 parser feature 分支尚未统一 |
+| `extent-empty-index` | crafted empty or malformed internal child can panic | corruption error, no mutation | mapping rewrite | 红：`insert_recursive` 仍对 child parse 使用 `expect`，待 mapping rewrite |
 | `io-failure-no-panic` | mount/commit paths contain `expect` | all errors propagated | codec/JBD2 rewrite | 进行中：mount/JBD2 关键路径已移除，剩余生产路径待审计 |
 | `legacy-indirect-13-blocks` | non-extent path is unsupported | Linux-compatible mapping | mapping rewrite | 红：仅完成 12 个 direct block 编码 |
 
@@ -158,3 +159,17 @@ RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns=6220509 write_p95_ns=62
 
 相对 dev 基线，write median 改善约 8.9%，read median 改善约 16.7%，sync
 median 改善约 20.0%；三个 p95 均未回退，满足当前 host 硬门槛。
+
+### 7.3 dynamic filesystem block geometry 检查点
+
+采集时间：2026-08-10；固定 CPU 2，其他参数与 7.1 相同。该检查点将
+filesystem block 与 device sector 分离，并让 mount、cache、extent、mkfs 与
+JBD2 buffer 从 superblock 派生 1/2/4 KiB block geometry：
+
+```text
+RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns=6292630 write_p95_ns=6763865 read_median_ns=6329181 read_p95_ns=7140698 sync_median_ns=20449 sync_p95_ns=25356
+```
+
+相对 dev 基线，write median 改善约 7.8%，read median 改善约 12.3%，sync
+median 改善约 20.8%；write/read/sync p95 分别改善约 7.8%、15.8%、34.4%，
+满足当前 host 硬门槛。

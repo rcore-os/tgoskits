@@ -8,6 +8,7 @@ use crate::{
 /// Extent-tree view bound to a single inode.
 pub struct ExtentTree<'a> {
     pub inode: &'a mut Ext4Inode,
+    pub(super) block_size: usize,
     inode_num: Option<InodeNumber>,
     generation: u32,
     checksum_seed: Option<u32>,
@@ -15,10 +16,11 @@ pub struct ExtentTree<'a> {
 
 impl<'a> ExtentTree<'a> {
     /// Creates an extent-tree handle backed by the given inode.
-    pub fn new(inode: &'a mut Ext4Inode) -> Self {
+    pub fn new(inode: &'a mut Ext4Inode, block_size: usize) -> Self {
         let generation = inode.i_generation;
         Self {
             inode,
+            block_size,
             inode_num: None,
             generation,
             checksum_seed: None,
@@ -34,6 +36,7 @@ impl<'a> ExtentTree<'a> {
         let generation = inode.i_generation;
         Self {
             inode,
+            block_size: superblock.block_size() as usize,
             inode_num: Some(inode_num),
             generation,
             checksum_seed: ext4_superblock_has_metadata_csum(superblock)
@@ -42,7 +45,7 @@ impl<'a> ExtentTree<'a> {
     }
 
     pub(super) fn add_inode_sectors_for_block(&mut self) {
-        let add_sectors = (BLOCK_SIZE / 512) as u64;
+        let add_sectors = (self.block_size / 512) as u64;
         let cur = ((self.inode.l_i_blocks_high as u64) << 32) | (self.inode.i_blocks_lo as u64);
         let newv = cur.saturating_add(add_sectors);
         self.inode.i_blocks_lo = (newv & 0xFFFF_FFFF) as u32;
@@ -50,7 +53,7 @@ impl<'a> ExtentTree<'a> {
     }
 
     pub(super) fn sub_inode_sectors_for_block(&mut self) {
-        let sub_sectors = (BLOCK_SIZE / 512) as u64;
+        let sub_sectors = (self.block_size / 512) as u64;
         let cur = ((self.inode.l_i_blocks_high as u64) << 32) | (self.inode.i_blocks_lo as u64);
         let newv = cur.saturating_sub(sub_sectors);
         self.inode.i_blocks_lo = (newv & 0xFFFF_FFFF) as u32;
@@ -191,7 +194,14 @@ impl<'a> ExtentTree<'a> {
         node: &ExtentNode,
     ) -> Ext4Result<()> {
         let hdr_size = Ext4ExtentHeader::disk_size();
-        let block_eh_max = Self::calc_block_eh_max();
+        let block_eh_max = self.calc_block_eh_max();
+        let entry_count = match node {
+            ExtentNode::Leaf { entries, .. } => entries.len(),
+            ExtentNode::Index { entries, .. } => entries.len(),
+        };
+        if entry_count > usize::from(block_eh_max) {
+            return Err(Ext4Error::corrupted().with_operation("extent:node_capacity"));
+        }
         // Load the target block before overwriting the node payload.
         dev.read_block(block_id)?;
         let buf = dev.buffer_mut();

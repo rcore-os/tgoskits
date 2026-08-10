@@ -12,6 +12,7 @@ use crate::{bmalloc::AbsoluteBN, error::Ext4Result};
 
 /// Private filesystem-block I/O used by ext4 and JBD2 after sector mapping.
 pub(crate) trait FilesystemBlockIo {
+    fn block_size(&self) -> usize;
     fn read(&mut self, buffer: &mut [u8], block: AbsoluteBN, count: u32) -> Ext4Result<()>;
     fn write(&mut self, buffer: &[u8], block: AbsoluteBN, count: u32) -> Ext4Result<()>;
     fn flush(&mut self) -> Ext4Result<()>;

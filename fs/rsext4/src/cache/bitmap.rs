@@ -123,7 +123,7 @@ impl BitmapCache {
         }
 
         // Read first so a read failure cannot evict a valid cached entry.
-        let mut data = alloc::vec![0u8; crate::config::BLOCK_SIZE];
+        let mut data = alloc::vec![0u8; block_dev.block_size() as usize];
         block_dev.read_blocks(&mut data, block_num, 1)?;
 
         if self.cache.len() >= self.max_entries
@@ -284,7 +284,7 @@ impl BitmapCache {
         block_num: AbsoluteBN,
         data: &[u8],
     ) -> Ext4Result<()> {
-        let block_size = crate::config::BLOCK_SIZE;
+        let block_size = block_dev.block_size() as usize;
         let mut buffer = alloc::vec![0u8; block_size];
         block_dev.read_blocks(&mut buffer, block_num, 1)?;
         let len = core::cmp::min(data.len(), block_size);

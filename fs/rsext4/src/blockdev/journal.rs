@@ -1,17 +1,22 @@
 //! JBD2-aware block device facade.
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 
 use super::{FilesystemBlockIo, cached_device::BlockDev};
 use crate::{
     bmalloc::AbsoluteBN,
-    config::{BLOCK_SIZE, JBD2_BUFFER_MAX},
+    checksum::jbd2_superblock_csum32,
+    config::JBD2_BUFFER_MAX,
     disknode::Ext4Timestamp,
     error::{Ext4Error, Ext4Result},
     io::BlockIo,
     jbd2::{
         jbd2::ReplayStatus,
-        jbdstruct::{JBD2DEVSYSTEM, Jbd2Update, JournalSuperBllockS},
+        jbdstruct::{
+            JBD2_BLOCKTYPE_SUPERBLOCK_V2, JBD2_CRC32C_CHKSUM, JBD2_FEATURE_INCOMPAT_64BIT,
+            JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_MAGIC, JBD2DEVSYSTEM, Jbd2Update,
+            JournalSuperBllockS,
+        },
     },
     runtime::Clock,
 };
@@ -33,6 +38,49 @@ pub struct Jbd2Dev<B: BlockIo> {
 }
 
 impl<B: BlockIo> Jbd2Dev<B> {
+    fn validate_journal_superblock(
+        &self,
+        super_block: &JournalSuperBllockS,
+        mapped_blocks: usize,
+    ) -> Ext4Result<()> {
+        if super_block.s_header.h_magic != JBD2_MAGIC
+            || super_block.s_header.h_blocktype != JBD2_BLOCKTYPE_SUPERBLOCK_V2
+        {
+            return Err(Ext4Error::corrupted().with_operation("jbd2:superblock_header"));
+        }
+        if super_block.s_blocksize != self.inner.block_size() {
+            return Err(Ext4Error::bad_superblock().with_operation("jbd2:block_size"));
+        }
+        let mapped_blocks = u32::try_from(mapped_blocks).map_err(|_| Ext4Error::overflow())?;
+        if super_block.s_maxlen == 0
+            || super_block.s_maxlen > mapped_blocks
+            || super_block.s_first == 0
+            || super_block.s_first >= super_block.s_maxlen
+            || (super_block.s_start != 0
+                && (super_block.s_start < super_block.s_first
+                    || super_block.s_start >= super_block.s_maxlen))
+        {
+            return Err(Ext4Error::corrupted().with_operation("jbd2:ring_geometry"));
+        }
+        let supported_incompat = JBD2_FEATURE_INCOMPAT_64BIT | JBD2_FEATURE_INCOMPAT_CSUM_V3;
+        if super_block.s_feature_incompat & !supported_incompat != 0 {
+            return Err(Ext4Error::unsupported().with_operation("jbd2:features"));
+        }
+        match super_block.s_checksum_type {
+            0 => {}
+            JBD2_CRC32C_CHKSUM => {
+                if super_block.s_checksum != jbd2_superblock_csum32(super_block) {
+                    return Err(Ext4Error::checksum().with_operation("jbd2:superblock_checksum"));
+                }
+            }
+            _ => return Err(Ext4Error::unsupported().with_operation("jbd2:checksum_type")),
+        }
+        if super_block.s_errno != 0 {
+            return Err(Ext4Error::journal_aborted().with_operation("jbd2:recorded_error"));
+        }
+        Ok(())
+    }
+
     fn enqueue_journal_update<D: FilesystemBlockIo>(
         system: &mut JBD2DEVSYSTEM,
         block_dev: &mut D,
@@ -154,6 +202,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             self.system = None;
             return Err(Ext4Error::corrupted());
         };
+        self.validate_journal_superblock(&super_block, journal_blocks.len())?;
         self.journal_blocks = journal_blocks;
         self.system = Some(Self::make_system(super_block, journal_start_block));
         Ok(())
@@ -183,9 +232,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return self.inner.write_block(block_id);
         }
 
-        let meta_vec = self.inner.buffer();
-        let mut new_buf = Box::new([0; BLOCK_SIZE]);
-        new_buf[..].copy_from_slice(meta_vec);
+        let new_buf = self.inner.buffer().to_vec().into_boxed_slice();
         let updates = Jbd2Update(block_id, new_buf);
 
         let Some(system) = self.system.as_mut() else {
@@ -235,7 +282,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return self.inner.read_blocks(buf, block_id, count);
         }
 
-        let required = BLOCK_SIZE * count as usize;
+        let block_size = self.inner.block_size() as usize;
+        let required = block_size * count as usize;
         if buf.len() < required {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
@@ -248,8 +296,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
         for i in 0..count {
             let bid = block_id.checked_add(i)?;
             if let Some(update) = system.commit_queue.iter().find(|queued| queued.0 == bid) {
-                let off = (i as usize) * BLOCK_SIZE;
-                buf[off..off + BLOCK_SIZE].copy_from_slice(&update.1[..BLOCK_SIZE]);
+                if update.1.len() != block_size {
+                    return Err(Ext4Error::corrupted().with_operation("jbd2:update_block_size"));
+                }
+                let off = (i as usize) * block_size;
+                buf[off..off + block_size].copy_from_slice(&update.1);
             }
         }
         Ok(())
@@ -270,16 +321,16 @@ impl<B: BlockIo> Jbd2Dev<B> {
         let Some(system) = self.system.as_mut() else {
             return Err(Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"));
         };
-        let required = count as usize * BLOCK_SIZE;
+        let block_size = self.inner.block_size() as usize;
+        let required = count as usize * block_size;
         if buf.len() < required {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
 
         let mut committed_any = false;
         for i in 0..count {
-            let off = (i as usize) * BLOCK_SIZE;
-            let mut boxbuf = Box::new([0; BLOCK_SIZE]);
-            boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
+            let off = (i as usize) * block_size;
+            let boxbuf = buf[off..off + block_size].to_vec().into_boxed_slice();
             let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
 
             committed_any |= Self::enqueue_journal_update(
@@ -328,6 +379,7 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+    use crate::config::BLOCK_SIZE;
 
     struct MemBlockDev {
         data: Vec<u8>,
@@ -487,6 +539,32 @@ mod tests {
             .expect_err("journal-enabled unmount cannot claim a successful commit without state");
 
         assert_eq!(error.kind(), crate::Ext4ErrorKind::JournalAborted);
+    }
+
+    #[test]
+    fn journal_superblock_must_match_filesystem_block_size() {
+        let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
+        let mut superblock = JournalSuperBllockS::default();
+        superblock.s_blocksize = 1024;
+
+        let error = dev
+            .validate_journal_superblock(&superblock, superblock.s_maxlen as usize)
+            .expect_err("journal and filesystem block sizes must match");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::BadSuperblock);
+    }
+
+    #[test]
+    fn journal_superblock_checksum_is_verified_before_use() {
+        let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
+        let mut superblock = JournalSuperBllockS::default();
+        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
+        crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
+        superblock.s_checksum ^= 1;
+
+        let error = dev
+            .validate_journal_superblock(&superblock, superblock.s_maxlen as usize)
+            .expect_err("damaged journal checksum must be rejected");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::ChecksumMismatch);
     }
 
     #[test]

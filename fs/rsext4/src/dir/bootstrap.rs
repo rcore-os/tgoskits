@@ -1,6 +1,6 @@
 //! Root directory bootstrap helpers.
 use crate::{
-    blockdev::*, bmalloc::BGIndex, checksum::update_ext4_dirblock_csum32, config::*,
+    blockdev::*, bmalloc::BGIndex, checksum::update_ext4_dirblock_csum32,
     crc32c::ext4_superblock_has_metadata_csum, dir::insert_dir_entry, disknode::*,
     endian::DiskFormat, entries::*, error::*, ext4::*, file::*, metadata::Ext4InodeMetadataUpdate,
     superblock::Ext4Superblock,
@@ -18,12 +18,14 @@ pub fn create_root_directory_entry<B: BlockIo + crate::runtime::Clock>(
     let root_inode_num = fs.root_inode;
     let data_block = fs.alloc_block(block_dev)?;
     let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
+    let filesystem_block_size = fs.block_size();
     let root_gen = fs.get_root(block_dev)?.i_generation;
 
     // Format the initial root directory block through modify_new so
     // mutations are persisted in the cache entry rather than on a clone.
     fs.datablock_cache
         .modify_new(block_dev, data_block, |data| {
+            let block_size = data.len();
             let dot_name = b".";
             let dot_rec_len = Ext4DirEntry2::entry_len(dot_name.len() as u8);
             let dot = Ext4DirEntry2::new(
@@ -35,11 +37,11 @@ pub fn create_root_directory_entry<B: BlockIo + crate::runtime::Clock>(
 
             let dotdot_name = b"..";
             let dotdot_rec_len = if has_checksum {
-                (BLOCK_SIZE as u16)
+                (block_size as u16)
                     .saturating_sub(dot_rec_len)
                     .saturating_sub(Ext4DirEntryTail::TAIL_LEN)
             } else {
-                (BLOCK_SIZE as u16).saturating_sub(dot_rec_len)
+                (block_size as u16).saturating_sub(dot_rec_len)
             };
             let dotdot = Ext4DirEntry2::new(
                 root_inode_num.raw(),
@@ -59,7 +61,7 @@ pub fn create_root_directory_entry<B: BlockIo + crate::runtime::Clock>(
 
             if has_checksum {
                 let tail = Ext4DirEntryTail::new();
-                let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+                let tail_offset = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
                 tail.to_disk_bytes(
                     &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
                 );
@@ -72,9 +74,9 @@ pub fn create_root_directory_entry<B: BlockIo + crate::runtime::Clock>(
     let mut inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
     inode.i_generation = root_gen;
     inode.i_links_count = 2;
-    inode.i_size_lo = BLOCK_SIZE as u32;
+    inode.i_size_lo = filesystem_block_size as u32;
     inode.i_size_high = 0;
-    inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
+    inode.i_blocks_lo = (filesystem_block_size / 512) as u32;
     inode.l_i_blocks_high = 0;
     build_file_block_mapping_with_inode_num(
         fs,
@@ -116,6 +118,7 @@ pub fn create_lost_found_directory<B: BlockIo + crate::runtime::Clock>(
     let root_inode_num = fs.root_inode;
     let mut root_inode = fs.get_root(block_dev)?;
     let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
+    let filesystem_block_size = fs.block_size();
 
     let lost_ino = fs.alloc_inode(block_dev)?;
 
@@ -126,6 +129,7 @@ pub fn create_lost_found_directory<B: BlockIo + crate::runtime::Clock>(
     // mutations are persisted in the cache entry rather than on a clone.
     fs.datablock_cache
         .modify_new(block_dev, data_block, |data| {
+            let block_size = data.len();
             let dot_name = b".";
             let dot_rec_len = Ext4DirEntry2::entry_len(dot_name.len() as u8);
             let dot = Ext4DirEntry2::new(
@@ -137,11 +141,11 @@ pub fn create_lost_found_directory<B: BlockIo + crate::runtime::Clock>(
 
             let dotdot_name = b"..";
             let dotdot_rec_len = if has_checksum {
-                (BLOCK_SIZE as u16)
+                (block_size as u16)
                     .saturating_sub(dot_rec_len)
                     .saturating_sub(Ext4DirEntryTail::TAIL_LEN)
             } else {
-                (BLOCK_SIZE as u16).saturating_sub(dot_rec_len)
+                (block_size as u16).saturating_sub(dot_rec_len)
             };
             let dotdot = Ext4DirEntry2::new(
                 root_inode_num.raw(),
@@ -161,7 +165,7 @@ pub fn create_lost_found_directory<B: BlockIo + crate::runtime::Clock>(
 
             if has_checksum {
                 let tail = Ext4DirEntryTail::new();
-                let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+                let tail_offset = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
                 tail.to_disk_bytes(
                     &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
                 );
@@ -174,9 +178,9 @@ pub fn create_lost_found_directory<B: BlockIo + crate::runtime::Clock>(
     let mut lost_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
     lost_inode.i_generation = lost_gen;
     lost_inode.i_links_count = 2;
-    lost_inode.i_size_lo = BLOCK_SIZE as u32;
+    lost_inode.i_size_lo = filesystem_block_size as u32;
     lost_inode.i_size_high = 0;
-    lost_inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
+    lost_inode.i_blocks_lo = (filesystem_block_size / 512) as u32;
     lost_inode.l_i_blocks_high = 0;
     lost_inode.i_flags =
         Ext4Inode::mask_flags_for_mode(dir_mode, root_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED);

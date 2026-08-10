@@ -29,6 +29,7 @@ impl Ext4FileSystem {
             return Err(Ext4Error::invalid_magic());
         }
         superblock.verify_superblock()?;
+        superblock.validate_geometry()?;
         Ok(superblock.s_state & Ext4Superblock::EXT4_ERROR_FS != 0)
     }
 
@@ -49,7 +50,7 @@ impl Ext4FileSystem {
 
     fn inode_cache_size(superblock: &Ext4Superblock) -> usize {
         match superblock.s_inode_size {
-            0 => DEFAULT_INODE_SIZE as usize,
+            0 => GOOD_OLD_INODE_SIZE as usize,
             n => n as usize,
         }
     }
@@ -58,7 +59,7 @@ impl Ext4FileSystem {
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
-        self.group_count = self.superblock.block_groups_count();
+        self.group_count = self.superblock.checked_block_groups_count()?;
         self.group_descs =
             Self::load_group_descriptors(block_dev, &self.superblock, self.group_count)?;
         self.block_allocator = BlockAllocator::new(&self.superblock);
@@ -66,7 +67,7 @@ impl Ext4FileSystem {
         self.bitmap_cache = BitmapCache::create_default();
         self.inodetable_cache =
             InodeCache::new(INODE_CACHE_MAX, Self::inode_cache_size(&self.superblock));
-        self.datablock_cache = DataBlockCache::new(DATABLOCK_CACHE_MAX, BLOCK_SIZE);
+        self.datablock_cache = DataBlockCache::new(DATABLOCK_CACHE_MAX, self.block_size());
         Ok(())
     }
 
@@ -77,6 +78,7 @@ impl Ext4FileSystem {
     ) -> Ext4Result<()> {
         self.superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
         self.superblock.verify_superblock()?;
+        self.superblock.validate_geometry()?;
         if !read_only {
             Self::dirty_for_mount(&mut self.superblock);
         }
@@ -133,7 +135,7 @@ impl Ext4FileSystem {
         block_dev: &mut Jbd2Dev<B>,
         journal_inode: &mut Ext4Inode,
     ) -> Ext4Result<Vec<AbsoluteBN>> {
-        let journal_block_count = journal_inode.size().div_ceil(BLOCK_SIZE as u64);
+        let journal_block_count = journal_inode.size().div_ceil(self.block_size() as u64);
         let journal_block_map = resolve_inode_blocks(self, block_dev, journal_inode)?;
         let mut journal_blocks = Vec::new();
         for logical in 0..journal_block_count {
@@ -203,6 +205,10 @@ impl Ext4FileSystem {
             return Err(Ext4Error::invalid_magic());
         }
         superblock.verify_superblock()?;
+        superblock.validate_geometry()?;
+        if superblock.blocks_count() > block_dev.total_blocks() {
+            return Err(Ext4Error::bad_superblock().with_operation("superblock:device_capacity"));
+        }
         Self::check_mount_features(&superblock, options.readonly, observer)?;
 
         // Continue mounting even for an error-state filesystem so higher layers
@@ -216,7 +222,7 @@ impl Ext4FileSystem {
             Self::dirty_for_mount(&mut superblock);
         }
 
-        let group_count = superblock.block_groups_count();
+        let group_count = superblock.checked_block_groups_count()?;
 
         let group_descs = Self::load_group_descriptors(block_dev, &superblock, group_count)?;
 
@@ -230,7 +236,8 @@ impl Ext4FileSystem {
         // (e.g. /dev becomes mode=0, then VFS mount fails with ENOTDIR).
         let inode_cache = InodeCache::new(INODE_CACHE_MAX, Self::inode_cache_size(&superblock));
 
-        let datablock_cache = DataBlockCache::new(DATABLOCK_CACHE_MAX, BLOCK_SIZE);
+        let filesystem_block_size = superblock.checked_block_size()? as usize;
+        let datablock_cache = DataBlockCache::new(DATABLOCK_CACHE_MAX, filesystem_block_size);
 
         let mut fs = Self {
             superblock,
@@ -299,6 +306,9 @@ impl Ext4FileSystem {
                     .clone();
 
                 let j_sb = JournalSuperBllockS::from_disk_bytes(&journal_data);
+                if j_sb.s_uuid != fs.superblock.s_uuid {
+                    return Err(Ext4Error::corrupted().with_operation("jbd2:uuid"));
+                }
 
                 block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks)?;
 
@@ -451,7 +461,8 @@ impl Ext4FileSystem {
         group_count: u32,
     ) -> Result<Vec<Ext4GroupDesc>, Ext4Error> {
         let mut group_descs = Vec::new();
-        let gdt_base: u64 = BLOCK_SIZE as u64;
+        let gdt_base = superblock.primary_gdt_byte_offset()?;
+        let block_size_u64 = u64::from(superblock.checked_block_size()?);
 
         // Cache the currently loaded GDT block to avoid rereading the same
         // block for neighboring descriptors.
@@ -461,7 +472,6 @@ impl Ext4FileSystem {
 
         for group_id in 0..group_count {
             let byte_offset = gdt_base + group_id as u64 * desc_size as u64;
-            let block_size_u64 = BLOCK_SIZE as u64;
             let block_num = AbsoluteBN::new(byte_offset / block_size_u64);
             let in_block = (byte_offset % block_size_u64) as usize;
 

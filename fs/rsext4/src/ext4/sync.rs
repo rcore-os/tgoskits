@@ -66,8 +66,8 @@ impl Ext4FileSystem {
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
         let desc_size = self.superblock.get_desc_size() as usize;
-        let gdt_base: u64 = BLOCK_SIZE as u64;
-        let block_size_u64 = BLOCK_SIZE as u64;
+        let gdt_base = self.superblock.primary_gdt_byte_offset()?;
+        let block_size_u64 = self.block_size() as u64;
 
         let mut current_block: Option<AbsoluteBN> = None;
         let mut buffer_snapshot_block: Option<AbsoluteBN> = None;

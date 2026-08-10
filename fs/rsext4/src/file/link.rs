@@ -79,7 +79,7 @@ pub fn link<B: BlockIo + crate::runtime::Clock>(
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let data = &cached.data[..BLOCK_SIZE];
+            let data = &cached.data;
             let iter = DirEntryIterator::new(data);
             for (entry, _) in iter {
                 if entry.inode == 0 {

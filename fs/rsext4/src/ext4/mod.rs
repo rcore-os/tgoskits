@@ -30,6 +30,9 @@ mod sync;
 
 pub use fs::{Ext4FileSystem, FileSystemStats};
 pub use lookup::{file_entry_exisr, file_entry_exist, find_file};
-pub use mkfs::{BlcokGroupLayout, BlockGroupLayout, FsLayoutInfo, compute_fs_layout, mkfs};
+pub use mkfs::{
+    BlcokGroupLayout, BlockGroupLayout, FsLayoutInfo, MkfsOptions, compute_fs_layout, mkfs,
+    mkfs_with_options,
+};
 pub use mount::{MountOptions, mount, mount_with_options, mount_with_options_and_observer};
 pub use sync::umount;

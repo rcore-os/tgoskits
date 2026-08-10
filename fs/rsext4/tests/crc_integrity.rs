@@ -17,7 +17,7 @@ use rsext4::{
     bmalloc::{AbsoluteBN, InodeNumber},
     checksum::{
         ext4_block_bitmap_csum32, ext4_group_desc_csum16, ext4_inode_bitmap_csum32,
-        ext4_superblock_csum32,
+        ext4_superblock_csum32, jbd2_update_superblock_checksum,
     },
     endian::DiskFormat,
     error::{Ext4Error, Ext4Result},
@@ -207,6 +207,7 @@ fn write_journal_start(device: &SharedCrcDevice, journal_block: u64, start: u32)
     let mut bytes = device.read_block_bytes(journal_block);
     let mut journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
     journal_sb.s_start = start;
+    jbd2_update_superblock_checksum(&mut journal_sb);
     journal_sb.to_disk_bytes(&mut bytes);
     device.write_block_bytes(journal_block, &bytes);
 }

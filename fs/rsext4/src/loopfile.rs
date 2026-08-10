@@ -6,7 +6,6 @@ use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
     checksum::{verify_ext4_dirblock_checksum, verify_ext4_dx_checksum},
-    config::*,
     disknode::*,
     entries::*,
     error::*,
@@ -22,7 +21,7 @@ pub fn resolve_inode_block<B: BlockIo>(
     logical_block: u32,
 ) -> Ext4Result<Option<AbsoluteBN>> {
     if inode.have_extend_header_and_use_extend() {
-        let mut tree = ExtentTree::new(inode);
+        let mut tree = ExtentTree::new(inode, block_dev.block_size() as usize);
         if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
             let len = ext.len();
             if len == 0 {
@@ -53,7 +52,7 @@ pub fn resolve_inode_block<B: BlockIo>(
 /// The helper walks the entire extent tree, materializes every mapped block,
 /// and returns the final map sorted by logical block number.
 pub fn resolve_inode_blocks<B: BlockIo>(
-    _fs: &mut Ext4FileSystem,
+    fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
@@ -102,7 +101,7 @@ pub fn resolve_inode_blocks<B: BlockIo>(
         }
     }
 
-    let tree = ExtentTree::new(inode);
+    let tree = ExtentTree::new(inode, fs.block_size());
     let root = match tree.load_root_from_inode() {
         Some(n) => n,
         None => return Ok(BTreeMap::new()),
@@ -179,12 +178,11 @@ pub fn get_file_inode<B: BlockIo>(
                     Some(InodeNumber::new(result.entry.inode).map_err(|_| Ext4Error::corrupted())?);
             }
             Err(_) => {
-                let block_bytes = BLOCK_SIZE;
                 let blocks = resolve_inode_blocks(fs, block_dev, &mut current_inode)?;
 
                 for phys in &blocks {
                     let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys.1)?;
-                    let block_data = &cached_block.data[..block_bytes];
+                    let block_data = &cached_block.data;
 
                     let checksum_ok = if current_inode.is_htree_indexed() {
                         verify_ext4_dx_checksum(

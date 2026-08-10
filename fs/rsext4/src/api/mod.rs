@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use crate::{BLOCK_SIZE, blockdev::*, dir::*, error::*, ext4::*, file::*, loopfile::*, *};
+use crate::{blockdev::*, dir::*, error::*, ext4::*, file::*, loopfile::*, *};
 
 mod file_handle;
 mod fs;
