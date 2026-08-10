@@ -91,7 +91,7 @@ pub fn unlink<B: BlockIo + crate::runtime::Clock>(
     }
 
     // Drop the link count on the target inode first.
-    let new_links = target_inode.i_links_count.saturating_sub(1);
+    let new_links = target_inode.decremented_links_count()?;
     fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
 
     // When the final link disappears, free blocks and inode through the shared
@@ -412,7 +412,7 @@ pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
                 Ext4Inode,
                 alloc::string::String,
             )> = Vec::new();
-            let mut removed_child_dirs: u16 = 0;
+            let mut removed_child_dirs: u32 = 0;
 
             for &phys in dir_blocks.values() {
                 // Collect child entries first to avoid nested mutable borrows of
@@ -455,16 +455,17 @@ pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
                         continue;
                     }
 
-                    removed_child_dirs = removed_child_dirs.saturating_add(1);
+                    removed_child_dirs = removed_child_dirs
+                        .checked_add(1)
+                        .ok_or_else(Ext4Error::overflow)?;
                     to_descend.push((child_path, child_ino, child_inode, child_name));
                 }
             }
 
             if removed_child_dirs != 0 {
                 let current_inode = fs.get_inode_by_num(block_dev, frame.ino_num)?;
-                let new_links = current_inode
-                    .i_links_count
-                    .saturating_sub(removed_child_dirs);
+                let new_links =
+                    current_inode.links_count_after_removing_directories(removed_child_dirs)?;
                 fs.set_inode_links_count(block_dev, frame.ino_num, new_links)?;
             }
 
@@ -498,7 +499,7 @@ pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
 
             let (pino, parent_inode) =
                 get_inode_with_num(fs, block_dev, pp)?.ok_or(Ext4Error::corrupted())?;
-            let parent_new_links = parent_inode.i_links_count.saturating_sub(1);
+            let parent_new_links = parent_inode.decremented_links_count()?;
             fs.set_inode_links_count(block_dev, pino, parent_new_links)?;
         }
 
@@ -579,7 +580,7 @@ pub fn delete_file<B: BlockIo + crate::runtime::Clock>(
         return Err(Ext4Error::is_dir());
     }
 
-    let new_links = target_inode.i_links_count.saturating_sub(1);
+    let new_links = target_inode.decremented_links_count()?;
     fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
     if new_links == 0 {
         free_inode(fs, block_dev, entry.ino, &mut target_inode)?;

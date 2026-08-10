@@ -44,20 +44,63 @@ impl<'a> ExtentTree<'a> {
         }
     }
 
-    pub(super) fn add_inode_sectors_for_block(&mut self) {
-        let add_sectors = (self.block_size / 512) as u64;
-        let cur = ((self.inode.l_i_blocks_high as u64) << 32) | (self.inode.i_blocks_lo as u64);
-        let newv = cur.saturating_add(add_sectors);
-        self.inode.i_blocks_lo = (newv & 0xFFFF_FFFF) as u32;
-        self.inode.l_i_blocks_high = ((newv >> 32) & 0xFFFF) as u16;
+    fn huge_file_feature(fs: &Ext4FileSystem) -> bool {
+        fs.superblock
+            .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE)
     }
 
-    pub(super) fn sub_inode_sectors_for_block(&mut self) {
+    pub(super) fn can_add_inode_sectors_for_block(&self, fs: &Ext4FileSystem) -> Ext4Result<()> {
+        let mut inode = *self.inode;
+        let add_sectors = (self.block_size / 512) as u64;
+        let huge_file_feature = Self::huge_file_feature(fs);
+        let current = inode.blocks_count(self.block_size as u32, huge_file_feature);
+        let next = current
+            .checked_add(add_sectors)
+            .ok_or_else(Ext4Error::overflow)?;
+        inode.set_blocks_count(next, self.block_size as u32, huge_file_feature)
+    }
+
+    pub(super) fn add_inode_sectors_for_block(&mut self, fs: &Ext4FileSystem) -> Ext4Result<()> {
+        let add_sectors = (self.block_size / 512) as u64;
+        let huge_file_feature = Self::huge_file_feature(fs);
+        let current = self
+            .inode
+            .blocks_count(self.block_size as u32, huge_file_feature);
+        let next = current
+            .checked_add(add_sectors)
+            .ok_or_else(Ext4Error::overflow)?;
+        self.inode
+            .set_blocks_count(next, self.block_size as u32, huge_file_feature)
+    }
+
+    pub(super) fn sub_inode_sectors_for_block(&mut self, fs: &Ext4FileSystem) -> Ext4Result<()> {
         let sub_sectors = (self.block_size / 512) as u64;
-        let cur = ((self.inode.l_i_blocks_high as u64) << 32) | (self.inode.i_blocks_lo as u64);
-        let newv = cur.saturating_sub(sub_sectors);
-        self.inode.i_blocks_lo = (newv & 0xFFFF_FFFF) as u32;
-        self.inode.l_i_blocks_high = ((newv >> 32) & 0xFFFF) as u16;
+        let huge_file_feature = Self::huge_file_feature(fs);
+        let current = self
+            .inode
+            .blocks_count(self.block_size as u32, huge_file_feature);
+        let next = current
+            .checked_sub(sub_sectors)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:sub_inode_blocks"))?;
+        self.inode
+            .set_blocks_count(next, self.block_size as u32, huge_file_feature)
+    }
+
+    pub(super) fn can_sub_inode_sectors_for_blocks(
+        &self,
+        fs: &Ext4FileSystem,
+        blocks: u64,
+    ) -> Ext4Result<()> {
+        let mut inode = *self.inode;
+        let huge_file_feature = Self::huge_file_feature(fs);
+        let sub_sectors = blocks
+            .checked_mul((self.block_size / 512) as u64)
+            .ok_or_else(Ext4Error::overflow)?;
+        let current = inode.blocks_count(self.block_size as u32, huge_file_feature);
+        let next = current
+            .checked_sub(sub_sectors)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:sub_inode_blocks"))?;
+        inode.set_blocks_count(next, self.block_size as u32, huge_file_feature)
     }
 
     /// Walks all extent-tree blocks that live outside the inode's inline root.

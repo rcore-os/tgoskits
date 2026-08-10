@@ -138,6 +138,7 @@ pub fn mv<B: BlockIo + crate::runtime::Clock>(
     )?;
     let src_ino = old_entry.ino;
     let src_ft = old_entry.file_type;
+    let mut moved_inode = fs.get_inode_by_num(block_dev, src_ino)?;
 
     // Destination parent directory must exist and be a directory.
     let (new_pino, new_parent_inode) =
@@ -155,6 +156,18 @@ pub fn mv<B: BlockIo + crate::runtime::Clock>(
     if old_norm == "/" {
         return Err(Ext4Error::invalid_input());
     }
+
+    let cross_parent_directory_links = if moved_inode.is_dir() && old_pino != new_pino {
+        let dir_nlink_feature = fs
+            .superblock
+            .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_DIR_NLINK);
+        Some((
+            old_parent_inode.decremented_links_count()?,
+            new_parent_inode.incremented_links_count(dir_nlink_feature)?,
+        ))
+    } else {
+        None
+    };
 
     // Publish the source inode under its new parent/name first.
     let mut new_parent_inode_copy = new_parent_inode;
@@ -176,23 +189,10 @@ pub fn mv<B: BlockIo + crate::runtime::Clock>(
 
     // Directory moves across parents must fix both parents' link counts and the
     // moved directory's `..` entry.
-    let mut moved_inode = match fs.get_inode_by_num(block_dev, src_ino) {
-        Ok(v) => v,
-        Err(e) => {
-            return Err(e);
-        }
-    };
     if moved_inode.is_dir() {
         // Only cross-parent moves need link-count and `..` adjustments.
-        let (old_pino, _) =
-            get_inode_with_num(fs, block_dev, &old_parent)?.ok_or_else(Ext4Error::not_found)?;
-        if old_pino != new_pino {
-            let old_parent_inode = fs.get_inode_by_num(block_dev, old_pino)?;
-            let old_links = old_parent_inode.i_links_count.saturating_sub(1);
+        if let Some((old_links, new_links)) = cross_parent_directory_links {
             fs.set_inode_links_count(block_dev, old_pino, old_links)?;
-
-            let new_parent_inode = fs.get_inode_by_num(block_dev, new_pino)?;
-            let new_links = new_parent_inode.i_links_count.saturating_add(1);
             fs.set_inode_links_count(block_dev, new_pino, new_links)?;
 
             // Rewrite the `..` entry inside the moved directory's first block.

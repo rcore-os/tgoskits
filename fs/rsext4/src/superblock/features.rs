@@ -16,6 +16,8 @@ const SUPPORTED_INCOMPAT_FEATURES: u32 = Ext4Superblock::EXT4_FEATURE_INCOMPAT_F
 
 const SUPPORTED_RO_COMPAT_FEATURES: u32 = Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER
     | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_LARGE_FILE
+    | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE
+    | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_DIR_NLINK
     | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE
     | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM
     | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT;
@@ -197,6 +199,17 @@ mod tests {
             s_feature_compat: UNKNOWN_HIGH_BIT,
             s_feature_incompat: 0,
             s_feature_ro_compat: 0,
+            ..Default::default()
+        };
+
+        sb.check_features(false).unwrap();
+    }
+
+    #[test]
+    fn huge_file_and_dir_nlink_are_supported_for_read_write_mounts() {
+        let sb = Ext4Superblock {
+            s_feature_ro_compat: Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE
+                | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_DIR_NLINK,
             ..Default::default()
         };
 

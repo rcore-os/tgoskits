@@ -12,6 +12,7 @@ use crate::{
     extents_tree::*,
     loopfile::*,
     metadata::Ext4InodeMetadataUpdate,
+    superblock::Ext4Superblock,
 };
 
 /// Inserts a child entry into a parent directory, extending the directory if needed.
@@ -166,9 +167,6 @@ pub fn insert_dir_entry<B: BlockIo + crate::runtime::Clock>(
         return Ok(());
     }
 
-    // No existing record could host the child, so append a fresh directory block.
-    let new_block = fs.alloc_block(device)?;
-
     let block_bytes = fs.block_size();
     let old_blocks = if total_size == 0 {
         0
@@ -176,26 +174,38 @@ pub fn insert_dir_entry<B: BlockIo + crate::runtime::Clock>(
         total_size.div_ceil(block_bytes)
     };
     let new_lbn = old_blocks as u32;
+    if (!fs.superblock.has_extents() || !parent_inode.have_extend_header_and_use_extend())
+        && old_blocks >= 12
+    {
+        return Err(Ext4Error::unsupported());
+    }
+
+    let new_size = total_size
+        .checked_add(block_bytes)
+        .ok_or_else(Ext4Error::overflow)?;
+    let huge_file_feature = fs
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+    let cur = parent_inode.blocks_count(block_bytes as u32, huge_file_feature);
+    let newv = cur
+        .checked_add(block_bytes as u64 / 512)
+        .ok_or_else(Ext4Error::overflow)?;
+    let mut accounting_check = *parent_inode;
+    accounting_check.set_blocks_count(newv, block_bytes as u32, huge_file_feature)?;
+
+    // No existing record could host the child, so append a fresh directory block.
+    let new_block = fs.alloc_block(device)?;
+    parent_inode.i_size_lo = new_size as u32;
+    parent_inode.i_size_high = ((new_size as u64) >> 32) as u32;
+    parent_inode.set_blocks_count(newv, block_bytes as u32, huge_file_feature)?;
 
     if fs.superblock.has_extents() && parent_inode.have_extend_header_and_use_extend() {
         let new_ext = Ext4Extent::new(new_lbn, new_block.raw(), 1);
         let mut tree = ExtentTree::with_checksum(parent_inode, &fs.superblock, parent_ino_num);
         tree.insert_extent(fs, new_ext, device)?;
     } else {
-        if old_blocks >= 12 {
-            return Err(Ext4Error::unsupported());
-        }
         parent_inode.i_block[old_blocks] = new_block.to_u32()?;
     }
-
-    let new_size = total_size + block_bytes;
-    parent_inode.i_size_lo = new_size as u32;
-    parent_inode.i_size_high = ((new_size as u64) >> 32) as u32;
-    let cur = parent_inode.blocks_count();
-    let add_sectors = block_bytes as u64 / 512;
-    let newv = cur.saturating_add(add_sectors);
-    parent_inode.i_blocks_lo = (newv & 0xffff_ffff) as u32;
-    parent_inode.l_i_blocks_high = ((newv >> 32) & 0xffff) as u16;
 
     fs.datablock_cache.modify(device, new_block, |data| {
         for b in data.iter_mut() {

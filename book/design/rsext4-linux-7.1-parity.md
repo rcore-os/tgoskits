@@ -101,16 +101,25 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 | `feature-gate-strict` | unknown incompat、ENCRYPT、RW QUOTA 均被接受 | incompat 拒绝；未实现 RO_COMPAT 只允许 RO | codec/feature negotiation | 绿：四项确定性单测完成红绿验证 |
 | `device-sector-map` | filesystem block number 被直接作为 device sector，512-byte 设备只读一个 sector | typed `SectorId` + private filesystem-block mapper | portable I/O core | 绿：512-byte sector 聚合与 byte-offset superblock 红绿回归通过 |
 | `filesystem-block-dynamic` | core 算法仍大量引用 4 KiB 常量 | 1/2/4 KiB geometry、cache、JBD2 与 codec 全部按 mount 派生 | codec/geometry | 绿：Linux 与 rsext4 各自创建的 1/2/4 KiB 镜像均在 512-byte sector 上完成跨块写入、rename、remount 与 `e2fsck -fn`；cache、extent 与 JBD2 buffer 均按 mount geometry 分配 |
-| `linux-default-rocompat-rw` | Linux mkfs 默认设置 `HUGE_FILE`、`DIR_NLINK` | 完整读写语义后纳入 writable mask | inode/namespace lifecycle | 红：3 个 extent/namespace `linux_image_repro` 测试由严格 gate 拒绝 `0x28` |
+| `linux-default-rocompat-rw` | Linux mkfs 默认设置 `HUGE_FILE`、`DIR_NLINK` | 完整读写语义后纳入 writable mask | inode/namespace lifecycle | 绿：`HUGE_FILE` 统一按 Linux 的 32-bit sector、48-bit sector、filesystem-block 三级 codec 读写，所有 block accounting mutation 使用 checked 状态转换；`DIR_NLINK` 覆盖 65000 到 sentinel 1、连续 mutation 保持 sentinel、无 feature 时分配前返回 `EMLINK`；Linux 默认 feature 的 1/2/4 KiB round-trip、extent/JBD2 replay 与 `e2fsck -fn` 全部通过 |
 | `linux-map-complete` | 仅有 subsystem mapping，缺少逐区间清单 | every source line classified | design/traceability | 红：尚未加入逐区间 manifest |
 | `journal-no-direct-fallback` | uninitialized JBD2 performs home write | typed journal-aborted error | JBD2 rewrite | 绿：确定性红绿回归已覆盖 write/umount |
 | `jbd2-csum-v3-write-replay` | writer emits legacy tags while accepted CSUM_V3/64BIT journals require tag3/high block numbers | Linux-compatible descriptor tags and checksum followed by self/Linux replay | JBD2 rewrite | 绿：writer 生成 tag3/64-bit block number、escaped payload CRC32C、descriptor/commit checksum；replay 在任何 home write 前校验 commit 与全部非 revoke payload，并校验 descriptor/revoke tail；Linux `debugfs` 多块事务与逐边界损坏测试通过；mkfs 将 ext4 `metadata_csum`/`64bit` 映射为对应 JBD2 feature |
 | `extent-empty-index` | crafted empty or malformed internal child can panic | corruption error, no mutation | mapping rewrite | 红：`insert_recursive` 仍对 child parse 使用 `expect`，待 mapping rewrite |
+| `extent-mutation-rollback` | split/remove 的 metadata write 或 bitmap I/O 失败可留下泄漏、部分释放或不可达节点 | plan/validate/journal persist，任一失败保持旧树与 bitmap/i_blocks 一致 | mapping rewrite | 红：HUGE_FILE checked accounting 已在分配/释放前预检；跨多个 metadata/bitmap I/O 的完整事务回滚仍待 extent 整体重写 |
+| `mkdir-mutation-rollback` | child inode 初始化后，父 link/group accounting 或目录项插入失败可留下孤儿 inode、泄漏块或部分发布的计数 | mkdir 的 inode、block、父目录项、父 link count 与 group stats 属于同一可回滚 transaction | namespace/JBD2 rewrite | 红：link 上限已在分配前预检；目录项插入及其后续 I/O 失败的整体回滚仍待 namespace transaction 重写 |
+| `rename-mutation-rollback` | 跨父目录 rename 在新项、旧项、父 link count 或 `..` 更新任一步失败时可留下部分状态 | rename 的全部目录项、link count、`..` 与被替换 inode 更新崩溃原子且可回滚 | namespace/JBD2 rewrite | 红：link count 算术已在发布前预检；多对象 mutation 仍待 journal transaction 整体重写 |
 | `io-failure-no-panic` | mount/commit paths contain `expect` | all errors propagated | codec/JBD2 rewrite | 进行中：mount/JBD2 关键路径已移除，剩余生产路径待审计 |
 | `legacy-indirect-13-blocks` | non-extent path is unsupported | Linux-compatible mapping | mapping rewrite | 红：仅完成 12 个 direct block 编码 |
 
 Draft 期间这些测试可以保持失败，但测试本身不得 `ignore`、弱化断言或伪造成功。
 PR 转 Ready 前本表必须为空。
+
+当前 core 尚未实现 HTree，因此会在插入时清除 `EXT4_INDEX_FL`。在进入
+`DIR_NLINK` sentinel 1 后，core 暂时把这个持久值作为“目录已经进入不精确链接
+计数模式”的事实来源，即使 flag 已被降级也继续保持 1；否则下一次 mkdir 会把
+计数错误恢复为 2。HTree 阶段必须移除这一过渡差异，并按 Linux `is_dx()` 与
+`ext4_inc_count()` 的边界完成同镜像 differential。
 
 ## 7. 性能门槛
 
@@ -188,3 +197,16 @@ RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns=6289508 write_p95_ns=64
 相对 dev 基线，write/read median 分别改善约 7.9% 和 11.5%，对应 p95 分别
 改善约 12.7% 和 21.3%；sync p95 改善约 14.1%。sync median 因新增完整 journal
 checksum 从 25.8 µs 增至 28.6 µs，但 latency 硬门槛按 p95 判定，未发生回退。
+
+### 7.5 `HUGE_FILE` 与 `DIR_NLINK` 检查点
+
+采集时间：2026-08-10；固定 CPU 2，其他参数与 7.1 相同。该检查点将 Linux
+默认 RO_COMPAT `0x28` 纳入可写 feature mask，所有 inode block accounting
+改为 checked codec，并将目录链接数更新统一为 Linux sentinel 状态转换：
+
+```text
+RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns=6215992 write_p95_ns=6353502 read_median_ns=6441608 read_p95_ns=6894968 sync_median_ns=33375 sync_p95_ns=35413
+```
+
+相对 dev 基线，write/read median 分别改善约 9.0% 和 10.8%，对应 p95 分别
+改善约 13.4% 和 18.7%；sync p95 改善约 8.4%，满足当前 host 硬门槛。

@@ -24,6 +24,8 @@ pub enum Ext4ErrorKind {
     NoSpace,
     #[error("quota limit exceeded")]
     QuotaExceeded,
+    #[error("link count limit exceeded")]
+    TooManyLinks,
     #[error("journal is aborted")]
     JournalAborted,
     #[error("permission precondition was not satisfied")]
@@ -136,6 +138,10 @@ impl Ext4Error {
 
     pub const fn no_space() -> Self {
         Self::new(Ext4ErrorKind::NoSpace)
+    }
+
+    pub const fn too_many_links() -> Self {
+        Self::new(Ext4ErrorKind::TooManyLinks)
     }
 
     pub const fn read_only() -> Self {

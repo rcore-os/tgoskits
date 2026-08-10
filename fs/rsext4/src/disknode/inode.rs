@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::{Ext4Error, Ext4Result};
 
 /// On-disk ext4 inode layout.
 ///
@@ -113,9 +114,112 @@ impl Ext4Inode {
         (self.i_size_high as u64) << 32 | self.i_size_lo as u64
     }
 
-    /// Returns the full 48-bit block count.
-    pub fn blocks_count(&self) -> u64 {
-        (self.l_i_blocks_high as u64) << 32 | self.i_blocks_lo as u64
+    /// Maximum link count persisted by ext4 before directory sentinel handling.
+    pub const EXT4_LINK_MAX: u16 = 65_000;
+
+    const MAX_RAW_BLOCK_COUNT: u64 = (1_u64 << 48) - 1;
+
+    /// Decodes `i_blocks` into Linux's 512-byte sector units.
+    pub fn blocks_count(&self, block_size: u32, huge_file_feature: bool) -> u64 {
+        if !huge_file_feature {
+            return u64::from(self.i_blocks_lo);
+        }
+
+        let raw = (u64::from(self.l_i_blocks_high) << 32) | u64::from(self.i_blocks_lo);
+        if self.i_flags & Self::EXT4_HUGE_FILE_FL != 0 {
+            raw * u64::from(block_size / 512)
+        } else {
+            raw
+        }
+    }
+
+    /// Encodes a Linux `i_blocks` value expressed in 512-byte sectors.
+    pub fn set_blocks_count(
+        &mut self,
+        sectors: u64,
+        block_size: u32,
+        huge_file_feature: bool,
+    ) -> Ext4Result<()> {
+        if block_size < 512 || !block_size.is_multiple_of(512) {
+            return Err(Ext4Error::invalid_input().with_operation("inode:set_blocks_count"));
+        }
+
+        let (raw, huge_file_inode) = if sectors <= u64::from(u32::MAX) {
+            (sectors, false)
+        } else if !huge_file_feature {
+            return Err(Ext4Error::corrupted().with_operation("inode:set_blocks_count"));
+        } else if sectors <= Self::MAX_RAW_BLOCK_COUNT {
+            (sectors, false)
+        } else {
+            let sectors_per_block = u64::from(block_size / 512);
+            if !sectors.is_multiple_of(sectors_per_block) {
+                return Err(Ext4Error::corrupted().with_operation("inode:set_blocks_count"));
+            }
+            let filesystem_blocks = sectors / sectors_per_block;
+            if filesystem_blocks > Self::MAX_RAW_BLOCK_COUNT {
+                return Err(Ext4Error::file_too_large().with_operation("inode:set_blocks_count"));
+            }
+            (filesystem_blocks, true)
+        };
+
+        self.i_blocks_lo = raw as u32;
+        self.l_i_blocks_high = (raw >> 32) as u16;
+        if huge_file_inode {
+            self.i_flags |= Self::EXT4_HUGE_FILE_FL;
+        } else {
+            self.i_flags &= !Self::EXT4_HUGE_FILE_FL;
+        }
+        Ok(())
+    }
+
+    /// Computes the link count after adding one name or subdirectory.
+    pub fn incremented_links_count(&self, dir_nlink_feature: bool) -> Ext4Result<u16> {
+        // `i_links_count == 1` is the durable DIR_NLINK sentinel. Keep it even
+        // if this core downgraded a stale HTree to linear lookup after mutation.
+        if dir_nlink_feature && self.is_dir() && self.i_links_count == 1 {
+            return Ok(1);
+        }
+        let indexed_directory = self.is_dir() && self.i_flags & Self::EXT4_INDEX_FL != 0;
+        if self.i_links_count >= Self::EXT4_LINK_MAX {
+            return if dir_nlink_feature && indexed_directory {
+                Ok(1)
+            } else {
+                Err(Ext4Error::too_many_links())
+            };
+        }
+
+        let incremented = self
+            .i_links_count
+            .checked_add(1)
+            .ok_or_else(Ext4Error::too_many_links)?;
+        if dir_nlink_feature && indexed_directory && incremented == 2 {
+            Ok(1)
+        } else {
+            Ok(incremented)
+        }
+    }
+
+    /// Computes the link count after removing one name or subdirectory.
+    pub fn decremented_links_count(&self) -> Ext4Result<u16> {
+        if self.is_dir() && self.i_links_count <= 2 {
+            return Ok(self.i_links_count);
+        }
+        self.i_links_count
+            .checked_sub(1)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:decrement_links"))
+    }
+
+    /// Applies repeated directory-child removals without changing sentinel values.
+    pub fn links_count_after_removing_directories(&self, removed: u32) -> Ext4Result<u16> {
+        if !self.is_dir() {
+            return Err(Ext4Error::corrupted().with_operation("inode:remove_directory_links"));
+        }
+        if self.i_links_count <= 2 {
+            return Ok(self.i_links_count);
+        }
+        let remaining = u32::from(self.i_links_count).saturating_sub(removed).max(2);
+        u16::try_from(remaining)
+            .map_err(|_| Ext4Error::corrupted().with_operation("inode:remove_directory_links"))
     }
 
     /// Returns the merged 32-bit UID.

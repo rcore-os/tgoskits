@@ -21,6 +21,7 @@ pub fn link<B: BlockIo + crate::runtime::Clock>(
     if target_inode.is_dir() {
         return Err(Ext4Error::permission_denied());
     }
+    let new_links = target_inode.incremented_links_count(false)?;
 
     // Destination entry must not already exist.
     if get_file_inode(fs, block_dev, &link_norm)
@@ -108,7 +109,7 @@ pub fn link<B: BlockIo + crate::runtime::Clock>(
 
     // `insert_dir_entry` recalculates name length and record length for the new
     // entry automatically.
-    if insert_dir_entry(
+    insert_dir_entry(
         fs,
         block_dev,
         parent_ino,
@@ -116,20 +117,12 @@ pub fn link<B: BlockIo + crate::runtime::Clock>(
         target_ino,
         &child_name,
         file_type,
-    )
-    .is_err()
-    {
-        return Err(Ext4Error::corrupted());
-    }
+    )?;
 
     // Update the target link count and roll back the inserted entry on failure.
-    let new_links = target_inode.i_links_count.saturating_add(1);
-    if fs
-        .set_inode_links_count(block_dev, target_ino, new_links)
-        .is_err()
-    {
+    if let Err(error) = fs.set_inode_links_count(block_dev, target_ino, new_links) {
         let _ = remove_inodeentry_from_parentdir(fs, block_dev, &parent_path, &child_name);
-        return Err(Ext4Error::corrupted());
+        return Err(error);
     }
 
     Ok(())

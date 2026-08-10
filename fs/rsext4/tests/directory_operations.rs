@@ -127,6 +127,66 @@ mod directory_functional_tests {
     }
 
     #[test]
+    fn indexed_directory_link_count_uses_dir_nlink_sentinel_at_linux_limit() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        fs.superblock.s_feature_ro_compat |=
+            rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_DIR_NLINK;
+        fs.superblock.s_feature_compat |=
+            rsext4::superblock::Ext4Superblock::EXT4_FEATURE_COMPAT_DIR_INDEX;
+        let root = fs.root_inode;
+        fs.modify_inode(&mut jbd2_dev, root, |inode| {
+            inode.i_flags |= Ext4Inode::EXT4_INDEX_FL;
+            inode.i_links_count = 65_000;
+        })
+        .expect("prepare indexed root at the Linux link limit");
+
+        mkdir(&mut jbd2_dev, &mut fs, "/dir-nlink-sentinel").expect("mkdir failed");
+        let root_inode = fs
+            .get_inode_by_num(&mut jbd2_dev, root)
+            .expect("reload root inode");
+        assert_eq!(root_inode.i_links_count, 1);
+
+        mkdir(&mut jbd2_dev, &mut fs, "/dir-nlink-stays-sentinel")
+            .expect("mkdir after the HTree index is downgraded");
+        let root_inode = fs
+            .get_inode_by_num(&mut jbd2_dev, root)
+            .expect("reload root inode after second mkdir");
+        assert_eq!(root_inode.i_links_count, 1);
+    }
+
+    #[test]
+    fn directory_link_limit_without_dir_nlink_fails_before_allocation() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        fs.superblock.s_feature_ro_compat &=
+            !rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_DIR_NLINK;
+        let root = fs.root_inode;
+        fs.modify_inode(&mut jbd2_dev, root, |inode| {
+            inode.i_flags |= Ext4Inode::EXT4_INDEX_FL;
+            inode.i_links_count = Ext4Inode::EXT4_LINK_MAX;
+        })
+        .expect("prepare root at the Linux link limit");
+        let free_inodes_before = fs.superblock.s_free_inodes_count;
+        let free_blocks_before = fs.superblock.free_blocks_count();
+
+        let error = mkdir(&mut jbd2_dev, &mut fs, "/must-not-allocate").unwrap_err();
+
+        assert_eq!(error.kind(), rsext4::Ext4ErrorKind::TooManyLinks);
+        assert_eq!(fs.superblock.s_free_inodes_count, free_inodes_before);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        assert!(
+            rsext4::dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/must-not-allocate")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn created_directory_block_checksum_matches_persisted_inode_generation() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);

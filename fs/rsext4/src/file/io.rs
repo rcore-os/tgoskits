@@ -39,6 +39,9 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
     }
 
     let block_bytes = fs.block_size() as u64;
+    let huge_file_feature = fs
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
     let old_blocks = if old_size == 0 {
         0u64
     } else {
@@ -140,9 +143,11 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
         let extent_tree_blocks = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num)
             .external_node_blocks(device)?
             .len() as u64;
-        let iblocks_used = alloc_blocks.saturating_add(extent_tree_blocks) * (block_bytes / 512);
-        inode.i_blocks_lo = (iblocks_used & 0xffff_ffff) as u32;
-        inode.l_i_blocks_high = ((iblocks_used >> 32) & 0xffff) as u16;
+        let iblocks_used = alloc_blocks
+            .checked_add(extent_tree_blocks)
+            .and_then(|blocks| blocks.checked_mul(block_bytes / 512))
+            .ok_or_else(Ext4Error::overflow)?;
+        inode.set_blocks_count(iblocks_used, block_bytes as u32, huge_file_feature)?;
 
         fs.finalize_inode_update(
             device,
@@ -185,9 +190,10 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
 
     inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
     inode.i_size_high = (truncate_size >> 32) as u32;
-    let iblocks_used = new_blocks.saturating_mul(block_bytes / 512);
-    inode.i_blocks_lo = (iblocks_used & 0xffff_ffff) as u32;
-    inode.l_i_blocks_high = ((iblocks_used >> 32) & 0xffff) as u16;
+    let iblocks_used = new_blocks
+        .checked_mul(block_bytes / 512)
+        .ok_or_else(Ext4Error::overflow)?;
+    inode.set_blocks_count(iblocks_used, block_bytes as u32, huge_file_feature)?;
 
     fs.finalize_inode_update(
         device,
@@ -211,7 +217,10 @@ fn read_symlink_target<B: BlockIo>(
 
     // Fast symlinks consume no data blocks. Length alone is insufficient:
     // e2fsprogs stores a 60-byte target in a regular data block.
-    if size <= 60 && inode.blocks_count() == 0 {
+    let huge_file_feature = fs
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+    if size <= 60 && inode.blocks_count(fs.block_size() as u32, huge_file_feature) == 0 {
         let mut raw = [0u8; 60];
         for (i, word) in inode.i_block.iter().take(15).enumerate() {
             raw[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
@@ -492,12 +501,20 @@ pub fn write_file<B: BlockIo + crate::runtime::Clock>(
     write_inode_data(device, fs, inode_num, offset, data)
 }
 
-fn add_inode_data_blocks(inode: &mut Ext4Inode, blocks: u64, block_size: u64) {
-    let sectors = blocks.saturating_mul(block_size / 512);
-    let current = inode.blocks_count();
-    let next = current.saturating_add(sectors);
-    inode.i_blocks_lo = (next & 0xffff_ffff) as u32;
-    inode.l_i_blocks_high = ((next >> 32) & 0xffff) as u16;
+fn add_inode_data_blocks(
+    inode: &mut Ext4Inode,
+    blocks: u64,
+    block_size: u32,
+    huge_file_feature: bool,
+) -> Ext4Result<()> {
+    let sectors = blocks
+        .checked_mul(u64::from(block_size / 512))
+        .ok_or_else(Ext4Error::overflow)?;
+    let current = inode.blocks_count(block_size, huge_file_feature);
+    let next = current
+        .checked_add(sectors)
+        .ok_or_else(Ext4Error::overflow)?;
+    inode.set_blocks_count(next, block_size, huge_file_feature)
 }
 
 struct WriteSlice<'a> {
@@ -698,9 +715,28 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
                     };
                     let requested = core::cmp::min(missing_len, Ext4Extent::EXT_INIT_MAX_LEN as u64)
                         .min(u32::MAX as u64) as u32;
+                    let huge_file_feature = fs
+                        .superblock
+                        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+                    let mut accounting_check = inode;
+                    add_inode_data_blocks(
+                        &mut accounting_check,
+                        u64::from(requested),
+                        block_bytes as u32,
+                        huge_file_feature,
+                    )?;
                     let blocks = alloc_contiguous_run_best_effort(device, fs, requested)?;
                     let first_phys = *blocks.first().ok_or(Ext4Error::no_space())?;
                     let run_len = u32::try_from(blocks.len()).map_err(|_| Ext4Error::overflow())?;
+
+                    // Account data before tree mutation so checked encoding
+                    // cannot fail after an extent has become reachable.
+                    add_inode_data_blocks(
+                        &mut inode,
+                        u64::from(run_len),
+                        block_bytes as u32,
+                        huge_file_feature,
+                    )?;
 
                     {
                         let mut tree =
@@ -708,7 +744,6 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
                         let ext = Ext4Extent::new(lbn as u32, first_phys.raw(), run_len as u16);
                         tree.insert_extent(fs, ext, device)?;
                     }
-                    add_inode_data_blocks(&mut inode, u64::from(run_len), block_bytes);
 
                     let run_start = lbn.saturating_mul(block_bytes);
                     let run_end = run_start.saturating_add(u64::from(run_len) * block_bytes);

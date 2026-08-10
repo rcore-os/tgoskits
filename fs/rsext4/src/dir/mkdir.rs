@@ -92,6 +92,11 @@ fn mkdir_internal<B: BlockIo + crate::runtime::Clock>(
         return find_file(fs, device, "/lost+found");
     }
 
+    let dir_nlink_feature = fs
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_DIR_NLINK);
+    let parent_new_links = parent_inode.incremented_links_count(dir_nlink_feature)?;
+
     // Allocate the child inode and its first directory block only after parent validation.
     let new_dir_ino = fs.alloc_inode(device)?;
     let data_block = fs.alloc_block(device)?;
@@ -178,7 +183,6 @@ fn mkdir_internal<B: BlockIo + crate::runtime::Clock>(
     fs.finalize_inode_update(device, new_dir_ino, &mut new_inode, create_update)?;
 
     // Publish the new directory: bump link accounting, group stats, then insert the name.
-    let parent_new_links = parent_inode.i_links_count.saturating_add(1);
     fs.set_inode_links_count(device, parent_ino_num, parent_new_links)?;
 
     if let Some(desc) = fs.get_group_desc_mut(group_idx) {
