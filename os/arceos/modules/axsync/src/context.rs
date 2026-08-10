@@ -217,7 +217,7 @@ impl Drop for PreemptIrqSaveGuard {
     }
 }
 
-#[cfg(feature = "host-test")]
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
 mod host {
     use std::cell::{Cell, RefCell};
 
@@ -260,12 +260,12 @@ mod host {
         }
     }
 
-    #[cfg(all(test, feature = "host-test"))]
+    #[cfg(all(test, feature = "host-test", not(target_os = "none")))]
     pub(super) fn snapshot() -> (usize, bool) {
         (PREEMPT_DEPTH.get(), IRQ_ENABLED.get())
     }
 
-    #[cfg(all(test, feature = "host-test"))]
+    #[cfg(all(test, feature = "host-test", not(target_os = "none")))]
     pub(super) fn take_events() -> std::vec::Vec<&'static str> {
         EVENTS.take()
     }
@@ -276,18 +276,18 @@ mod host {
 }
 
 /// Returns the preemption depth tracked by the host critical-section provider.
-#[cfg(feature = "host-test")]
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
 #[doc(hidden)]
 pub fn host_preempt_depth() -> usize {
     host::preempt_depth()
 }
 
-#[cfg(all(test, feature = "host-test"))]
+#[cfg(all(test, feature = "host-test", not(target_os = "none")))]
 pub(crate) fn host_context_snapshot() -> (usize, bool) {
     host::snapshot()
 }
 
-#[cfg(all(test, feature = "host-test"))]
+#[cfg(all(test, feature = "host-test", not(target_os = "none")))]
 mod tests {
     use super::{IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard, host};
 

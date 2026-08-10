@@ -8,7 +8,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
-#[cfg(any(test, doctest, feature = "host-test"))]
+#[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
 extern crate std;
 
 #[cfg(all(axtest, feature = "axtest"))]
@@ -52,7 +52,7 @@ pub const fn set_lockdep_trace_enabled(_enabled: bool) {}
 #[cfg(not(feature = "lockdep"))]
 /// No-op trace dump for builds without lockdep.
 pub const fn dump_lockdep_trace() {}
-#[cfg(feature = "host-test")]
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
 #[doc(hidden)]
 pub use self::context::host_preempt_depth;
 pub use self::context::{CriticalSectionOps, IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard};

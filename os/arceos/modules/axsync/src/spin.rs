@@ -377,7 +377,7 @@ impl<T: fmt::Debug> fmt::Debug for SpinRwLock<T> {
     }
 }
 
-#[cfg(all(test, feature = "host-test"))]
+#[cfg(all(test, feature = "host-test", not(target_os = "none")))]
 mod tests {
     use std::{
         sync::{Arc, mpsc},

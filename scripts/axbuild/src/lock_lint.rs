@@ -17,6 +17,8 @@ const HOST_PROVIDER_PATHS: &[&str] = &[
     "os/arceos/modules/axsync/src/context.rs",
     "os/arceos/modules/axsync/src/mutex.rs",
 ];
+const HOST_PROVIDER_CFG: &str =
+    "#[cfg(all(feature = \"host-test\", not(target_os = \"none\")))]\nmod host {";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Finding {
@@ -396,12 +398,13 @@ fn check_provider_cfgs(workspace_root: &Path, findings: &mut Vec<Finding>) -> an
         }
         let contents = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        if !contents.contains("#[cfg(feature = \"host-test\")]\nmod host {") {
+        if !contents.contains(HOST_PROVIDER_CFG) {
             findings.push(Finding::new(
                 &path,
                 "host provider cfg",
-                "ax-sync host provider is not restricted to the host-test feature",
-                "gate the host provider module with feature = \"host-test\" instead of target_os",
+                "ax-sync host provider is not restricted to host-test on std-capable targets",
+                "gate the host provider with all(feature = \"host-test\", not(target_os = \
+                 \"none\"))",
             ));
         }
     }
@@ -746,7 +749,25 @@ mod host {
         assert!(findings.iter().any(|finding| {
             finding
                 .message
-                .contains("not restricted to the host-test feature")
+                .contains("not restricted to host-test on std-capable targets")
         }));
+    }
+
+    #[test]
+    fn accepts_target_aware_host_provider_selection() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        for relative in HOST_PROVIDER_PATHS {
+            write_file(
+                root.path(),
+                relative,
+                r#"
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+mod host {}
+"#,
+            );
+        }
+
+        assert!(lint_workspace(root.path()).unwrap().is_empty());
     }
 }

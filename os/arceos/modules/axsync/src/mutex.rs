@@ -363,7 +363,7 @@ impl<T: ?Sized> LockdepMutexExt<T> for Mutex<T> {
     }
 }
 
-#[cfg(feature = "host-test")]
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
 mod host {
     use core::{
         panic::Location,
@@ -507,7 +507,7 @@ mod host {
     }
 }
 
-#[cfg(all(test, feature = "host-test"))]
+#[cfg(all(test, feature = "host-test", not(target_os = "none")))]
 mod tests {
     use std::{sync::Arc, thread};
 

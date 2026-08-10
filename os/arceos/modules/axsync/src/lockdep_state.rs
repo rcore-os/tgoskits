@@ -5,10 +5,10 @@ use core::{
     ptr,
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
 };
-#[cfg(any(test, doctest, feature = "host-test"))]
+#[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
 use std::cell::RefCell;
 
-#[cfg(not(any(test, doctest, feature = "host-test")))]
+#[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
 use ax_crate_interface::call_interface;
 
 const MAX_LOCK_CLASSES: usize = 1024;
@@ -319,7 +319,7 @@ impl fmt::Display for HeldLockStackDisplay<'_> {
     }
 }
 
-#[cfg(any(test, doctest, feature = "host-test"))]
+#[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
 std::thread_local! {
     static HELD_LOCKS: RefCell<HeldLockStack> = const { RefCell::new(HeldLockStack::new()) };
 }
@@ -538,13 +538,13 @@ struct GraphState {
 unsafe impl Sync for GraphState {}
 
 struct GraphGuard {
-    #[cfg(not(any(test, doctest, feature = "host-test")))]
+    #[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
     irq_state: usize,
 }
 
 impl GraphGuard {
     fn acquire() -> Self {
-        #[cfg(not(any(test, doctest, feature = "host-test")))]
+        #[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
         let irq_state = call_interface!(LockdepOps::irq_save_and_disable);
         while GRAPH_STATE
             .lock
@@ -556,7 +556,7 @@ impl GraphGuard {
             }
         }
         Self {
-            #[cfg(not(any(test, doctest, feature = "host-test")))]
+            #[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
             irq_state,
         }
     }
@@ -565,7 +565,7 @@ impl GraphGuard {
 impl Drop for GraphGuard {
     fn drop(&mut self) {
         GRAPH_STATE.lock.store(false, Ordering::Release);
-        #[cfg(not(any(test, doctest, feature = "host-test")))]
+        #[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
         call_interface!(LockdepOps::irq_restore, self.irq_state);
     }
 }
@@ -679,47 +679,47 @@ fn class_key_to_location(class_key: *const Location<'static>) -> &'static Locati
     unsafe { &*class_key }
 }
 
-#[cfg(any(test, doctest, feature = "host-test"))]
+#[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
 fn with_current_task_held_locks<R>(f: impl FnOnce(&HeldLockStack) -> R) -> R {
     HELD_LOCKS.with(|held_locks| f(&held_locks.borrow()))
 }
 
-#[cfg(any(test, doctest, feature = "host-test"))]
+#[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
 fn with_current_task_held_locks_mut<R>(f: impl FnOnce(&mut HeldLockStack) -> R) -> R {
     HELD_LOCKS.with(|held_locks| f(&mut held_locks.borrow_mut()))
 }
 
-#[cfg(not(any(test, doctest, feature = "host-test")))]
+#[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
 fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot) {
     call_interface!(LockdepOps::collect_current_task_held_locks, snapshot);
 }
 
-#[cfg(any(test, doctest, feature = "host-test"))]
+#[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
 fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot) {
     with_current_task_held_locks(|stack| snapshot.extend(stack));
 }
 
-#[cfg(not(any(test, doctest, feature = "host-test")))]
+#[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
 fn push_current_task_held_lock(held: HeldLock) {
     call_interface!(LockdepOps::push_current_task_held_lock, held);
 }
 
-#[cfg(any(test, doctest, feature = "host-test"))]
+#[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
 fn push_current_task_held_lock(held: HeldLock) {
     with_current_task_held_locks_mut(|stack| stack.push(held));
 }
 
-#[cfg(not(any(test, doctest, feature = "host-test")))]
+#[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
 fn pop_current_task_held_lock(lock_addr: usize) {
     call_interface!(LockdepOps::pop_current_task_held_lock, lock_addr);
 }
 
-#[cfg(any(test, doctest, feature = "host-test"))]
+#[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
 fn pop_current_task_held_lock(lock_addr: usize) {
     with_current_task_held_locks_mut(|stack| stack.pop_checked(lock_addr));
 }
 
-#[cfg(not(any(test, doctest, feature = "host-test")))]
+#[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
 fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
     let _oops_guard = axpanic::enter_oops();
 
@@ -740,7 +740,7 @@ fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
 }
 
 #[cfg(all(
-    not(any(test, doctest, feature = "host-test")),
+    not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))),
     target_arch = "riscv64"
 ))]
 fn emergency_write_str(s: &str) {
@@ -753,14 +753,14 @@ fn emergency_write_str(s: &str) {
 }
 
 #[cfg(all(
-    not(any(test, doctest, feature = "host-test")),
+    not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))),
     not(target_arch = "riscv64")
 ))]
 fn emergency_write_str(s: &str) {
     call_interface!(LockdepOps::console_write_str, s);
 }
 
-#[cfg(any(test, doctest, feature = "host-test"))]
+#[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
 fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
     panic!("{message}")
 }
