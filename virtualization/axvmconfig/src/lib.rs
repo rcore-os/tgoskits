@@ -252,6 +252,31 @@ pub struct VMBaseConfig {
     ///
     ///   It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
     pub phys_cpu_sets: Option<Vec<usize>>,
+    /// Per-vCPU CFS nice values in the Linux range `-20..=19`.
+    pub vcpu_priorities: Option<Vec<i32>>,
+}
+
+impl VMBaseConfig {
+    fn validate(&self) -> AxVmConfigResult {
+        let Some(priorities) = &self.vcpu_priorities else {
+            return Ok(());
+        };
+        if priorities.len() != self.cpu_num {
+            return Err(AxVmConfigError::InvalidVcpuPriorityCount {
+                expected: self.cpu_num,
+                actual: priorities.len(),
+            });
+        }
+        if let Some((vcpu_id, priority)) = priorities
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, priority)| !(-20..=19).contains(priority))
+        {
+            return Err(AxVmConfigError::InvalidVcpuPriority { vcpu_id, priority });
+        }
+        Ok(())
+    }
 }
 
 /// The configuration structure for the guest VM kernel.
@@ -647,6 +672,7 @@ impl GuestConfig {
     /// Deserialize and validate a guest TOML configuration.
     pub fn from_toml(raw_cfg_str: &str) -> AxVmConfigResult<Self> {
         let mut config: Self = toml::from_str(raw_cfg_str)?;
+        config.base.validate()?;
         config.kernel.validate_boot_config()?;
         config.devices.validate()?;
         config.kernel.configured_memory_region_count = config.kernel.memory_regions.len();

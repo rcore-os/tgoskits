@@ -1,0 +1,37 @@
+# Vm base info configs — RT smoke guest (pulled ArceOS image) for AxVisor CI.
+#
+# Uses the standard memory-loaded ArceOS QEMU image bundle (`cargo xtask image pull qemu-aarch64`).
+#
+[base]
+id = 2
+name = "arceos-rt-qemu"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [3]
+vcpu_priorities = [-20]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "../../../../images/qemu-aarch64/arceos/arceos-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+
+memory_regions = [
+  [0x8000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+passthrough_devices = [
+  ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = [
+    ["/pcie@10000000"],
+]
+
+emu_devices = []

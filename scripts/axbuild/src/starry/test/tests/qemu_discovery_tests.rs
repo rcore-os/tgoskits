@@ -1,12 +1,13 @@
 use super::*;
 
 #[test]
-fn starry_grouped_cases_install_profile_autorun() {
+fn starry_grouped_cases_do_not_install_profile_autorun() {
     let config = starry_case_asset_config();
 
-    assert_eq!(
-        config.grouped_runner.autorun_profile_script.as_deref(),
-        Some("99-starry-run-case-tests.sh")
+    assert!(
+        config.grouped_runner.autorun_profile_script.is_none(),
+        "grouped tests should be triggered by the QEMU harness shell_init_cmd, not profile.d \
+         autorun"
     );
 }
 

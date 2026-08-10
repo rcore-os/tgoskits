@@ -1,0 +1,42 @@
+# Linux 2vCPU on RK3588 — AI / stress domain (Task 1 board mixed partition)
+#
+# pCPU layout (MPIDR): 0x000 host, 0x100/0x200 Linux, 0x700 RT
+#
+[base]
+id = 1
+name = "linux-orangepi-smp2"
+vm_type = 1
+cpu_num = 2
+phys_cpu_ids = [0x100, 0x200]
+vcpu_priorities = [10, 10]
+
+[kernel]
+entry_point = 0x2_4008_0000
+image_location = "fs"
+kernel_path = "/guest/linux/orangepi-5-plus"
+kernel_load_addr = 0x2_4008_0000
+dtb_load_addr = 0x2_4000_0000
+ramdisk_path = "/guest/linux/initramfs.cpio"
+ramdisk_load_addr = 0xc000_0000
+
+memory_regions = [
+    [0xb000_0000, 0x1000_0000, 0x7, 2],
+    [0xc000_0000, 0x3000_0000, 0x7, 2],
+    [0x2_4000_0000, 0x8000_0000, 0x7, 1],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+emu_devices = [
+  ["gppt-gicd", 0xfe60_0000, 0x1_0000, 0, 0x21, []],
+  ["gppt-gicr", 0xfe68_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 0]],
+]
+
+passthrough_devices = [
+    ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = []

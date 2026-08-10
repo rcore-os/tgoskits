@@ -1,0 +1,2111 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.27s
+     Running `target/debug/tg-xtask axvisor test qemu --arch aarch64 -c task3-pid-compare`
+[2026-08-02T01:43:11Z INFO  axbuild::context] Workspace root: /home/allen/codes/os/tgoskits
+running axvisor qemu tests for arch: aarch64 (target: aarch64-unknown-none-softfloat, cases: 1)
+[2026-08-02T01:43:11Z INFO  axbuild::context] Workspace member dir for axvisor: /home/allen/codes/os/tgoskits/os/axvisor
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml
+[2026-08-02T01:43:11Z INFO  ostool::run::qemu] Using QEMU config file: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/qemu-aarch64.toml
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml
+file already exists and passed checksum verification
+image archive verified at /home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img.tar.xz
+image already extracted and up to date at /home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml
+[axbuild] cargo build package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml ...
+sh -c /home/allen/codes/os/tgoskits/tmp/axbuild/std/prebuild/prebuild-aarch64-unknown-linux-musl-25757cc8233f29c6.sh
+AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+AXVISOR_VM_CONFIGS=/home/allen/codes/os/tgoskits/os/axvisor/configs/vms/qemu/aarch64/linux-net-a.toml:/home/allen/codes/os/tgoskits/os/axvisor/configs/vms/qemu/aarch64/linux-net-b.toml
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_musl=--target=aarch64-linux-musl --sysroot=/home/allen/tools/aarch64-linux-musl-cross/bin/../aarch64-linux-musl --gcc-toolchain=/home/allen/tools/aarch64-linux-musl-cross -isystem /home/allen/tools/aarch64-linux-musl-cross/bin/../aarch64-linux-musl/include -isystem /home/allen/tools/aarch64-linux-musl-cross/lib/gcc/aarch64-linux-musl/11.2.1/include -mgeneral-regs-only
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+CC_aarch64_unknown_linux_musl=aarch64-linux-musl-cc
+CFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only
+CXXFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only
+cargo build --config /home/allen/codes/os/tgoskits/tmp/axbuild/std/config-aarch64-unknown-linux-musl-dynamic.toml -p axvisor --target scripts/targets/std/pie/aarch64-unknown-linux-musl.json -Z unstable-options --target-dir /home/allen/codes/os/tgoskits/target --features ax-std/fs,ax-std/sched-cfs,ax-std/smp,ax-std/std-compat,ax-std/virtio-blk,fs,sched-cfs,log/release_max_level_info -Z json-target-spec --bin axvisor --release --message-format json-render-diagnostics
+warning: function `set_fdt_addr_phys_if_valid` is never used
+  --> platforms/someboot/src/fdt/mod.rs:32:15
+   |
+32 | pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling axvisor v0.5.21 (/home/allen/codes/os/tgoskits/os/axvisor)
+warning: `someboot` (lib) generated 1 warning
+warning: function `set_pending_irq` is never used
+  --> virtualization/axvm/src/host/gic.rs:61:15
+   |
+61 | pub(crate) fn set_pending_irq(intid: usize) {
+   |               ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `axvm` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 1.31s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/allen/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.2
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Converting ELF to BIN format...
+  elf: /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor
+  bin: /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor.bin
+/home/allen/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor.bin
+[axbuild] cargo build package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml ... done (1.70s)
+[axbuild] cargo build elf=/home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor
+[axbuild] cargo build artifact_dir=/home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release
+[1/1] axvisor qemu task3-pid-compare
+AXBUILD_TIMING: scope=qemu-asset case=task3-pid-compare phase=resolve-pipeline elapsed_s=0.000
+AXBUILD_TIMING: scope=qemu-asset case=task3-pid-compare phase=plain-rootfs pipeline=plain elapsed_s=0.000
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml
+  prepare assets: 14.27ms (pipeline=plain, cache=miss)
+  qemu config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/qemu-aarch64.toml (timeout=600s)
+  rootfs: /home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
+[axbuild] qemu run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json ...
+qemu-system-aarch64 -nographic -cpu cortex-a72 -machine virt,virtualization=on,gic-version=3 -smp 4 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=/home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img -append root=/dev/vda rw init=/bin/sh -m 8g -snapshot -kernel /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor.bin
+root=/dev/vda rw init=/bin/sh
+VM Load @0x40200000
+VM Load Offset: 0xffff0000c0200000
+Memory Map:
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000040600000 (4 MiB)
+  Free   0x00000040600000 - 0x00000240000000 (7.99 GiB)
+Initialize RAM allocator: 0x40600000..0x240000000
+Initializing per-CPU data
+Per-CPU data one cpu size: 0x43000 bytes
+Total per-CPU data size for secondary CPUs: 0x10c000 bytes (4 CPUs)
+Flushed RAM used range to memory map: 0x40600000..0x40700000, current: 0x40700000
+Flushed RAM used range to memory map: 0x40700000..0x4080c000, current: 0x4080c000
+Per-CPU data allocated at 0x40700000 - 0x4080c000
+Initializing per-CPU RAM for CPU0 - hard id 0x0 @ 0x40700000
+Initializing per-CPU RAM for CPU1 - hard id 0x1 @ 0x40743000
+Initializing per-CPU RAM for CPU2 - hard id 0x2 @ 0x40786000
+Initializing per-CPU RAM for CPU3 - hard id 0x3 @ 0x407c9000
+CPU0 - hard id 0x0, stack top @0x40743000, stack top virt @0xff0040743000, entry virt @0xffff8017a3c8
+CPU1 - hard id 0x1, stack top @0x40786000, stack top virt @0xff0040786000, entry virt @0xffff8017a3c8
+CPU2 - hard id 0x2, stack top @0x407c9000, stack top virt @0xff00407c9000, entry virt @0xffff8017a3c8
+CPU3 - hard id 0x3, stack top @0x4080c000, stack top virt @0xff004080c000, entry virt @0xffff8017a3c8
+EL: 2
+Mapping early memory regions...
+Ram                 : [0x0000000040000000, 0x0000000240000000) -> [0x0000000040000000, 0x0000000240000000) (8 GiB)
+KImage              : [0x0000ffff80000000, 0x0000ffff80400000) -> [0x0000000040200000, 0x0000000040600000) (4 MiB)
+PerCpu              : [0x0000ff0040700000, 0x0000ff004080c000) -> [0x0000000040700000, 0x000000004080c000) (1.05 MiB)
+Debug serial        : [0x0000000009000000, 0x0000000009001000) -> [0x0000000009000000, 0x0000000009001000) (4 KiB)
+Boot page table at physical address: 0x4080c000
+Setting up table registers...
+MMU Entry point at physical address: 0x40375688
+Trap vector at 0xffff80179800
+Memory Map:
+  MMIO   0x00000004000000 - 0x00000008010000 (64.06 MiB)
+  MMIO   0x00000008080000 - 0x00000009001000 (15.5 MiB)
+  MMIO   0x00000009010000 - 0x00000009011000 (4 KiB)
+  MMIO   0x00000009020000 - 0x00000009021000 (4 KiB)
+  MMIO   0x00000009030000 - 0x00000009031000 (4 KiB)
+  MMIO   0x0000000a000000 - 0x0000000a004000 (16 KiB)
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000040600000 (4 MiB)
+  Rsv    0x00000040600000 - 0x00000040700000 (1 MiB)
+  PerCPU 0x00000040700000 - 0x0000004080c000 (1.05 MiB)
+  Rsv    0x0000004080c000 - 0x00000040816000 (40 KiB)
+  Free   0x00000040816000 - 0x00000240000000 (7.99 GiB)
+  MMIO   0x00004010000000 - 0x00004020000000 (256 MiB)
+Jumping to main entry point at 0xffff8015f194 with SP 0x0000ff0040743000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = linux,dummy-virt
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 4
+
+[37m[  0.073689 ax_runtime:211] [32mLogging is enabled.[m
+[m[37m[  0.074155 ax_runtime:212] [32mPrimary CPU 0 started, arg = 0x40600000.[m
+[m[37m[  0.074255 ax_runtime:214] [32mFound physcial memory regions:[m
+[m[37m[  0.075337 ax_runtime:216] [32m  [PA:0x4000000, PA:0x8010000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.075581 ax_runtime:216] [32m  [PA:0x8080000, PA:0x9001000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.075686 ax_runtime:216] [32m  [PA:0x9010000, PA:0x9011000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.075788 ax_runtime:216] [32m  [PA:0x9020000, PA:0x9021000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.075893 ax_runtime:216] [32m  [PA:0x9030000, PA:0x9031000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.075996 ax_runtime:216] [32m  [PA:0xa000000, PA:0xa004000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.076100 ax_runtime:216] [32m  [PA:0x40000000, PA:0x40200000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.076236 ax_runtime:216] [32m  [PA:0x40200000, PA:0x40600000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.076352 ax_runtime:216] [32m  [PA:0x40600000, PA:0x40700000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.076463 ax_runtime:216] [32m  [PA:0x40700000, PA:0x4080c000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.076572 ax_runtime:216] [32m  [PA:0x4080c000, PA:0x40816000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.076684 ax_runtime:216] [32m  [PA:0x40816000, PA:0x240000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.076785 ax_runtime:216] [32m  [PA:0x4010000000, PA:0x4020000000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.076919 ax_runtime:358] [32mInitialize global memory allocator...[m
+[m[37m[  0.077020 ax_runtime:359] [32m  use buddy-slab-allocator allocator.[m
+[m[37m[  0.077267 ax_alloc::buddy_slab:150] [32mInitialize global memory allocator, start_vaddr: 0x40816000, size: 0x1ff7ea000[m
+[m[37m[  0.086288 ax_alloc::buddy_slab:399] [32mglobal allocator initialized[m
+[m[37m[  0.086541 ax_alloc::buddy_slab:160] [32mAdd memory region, start_vaddr: 0x40000000, size: 0x200000[m
+[m[37m[  0.086709 buddy_slab_allocator::global:143] [32mGlobalAllocator: skip region 0x40000000+0x200000, no allocator-visible memory after 2097152 alignment[m
+[m[37m[  0.087097 ax_runtime:251] [32mkernel aspace: [VA:0x0, VA:0xffffffffffffffff)[m
+[m[37m[  0.087247 ax_mm:112] [32mInitialize virtual memory management...[m
+[m[37m[  0.723889 ax_runtime:263] [32mInitialize platform devices...[m
+[m[37m[  0.731941 someboot::arch::power:23] [32mPower management method : SMC[m
+[m[37m[  0.732138 somehal::driver:5] [32mInitializing rdrive with FDT at 0x40600000[m
+[m[37m[  0.761574 ax_task::api:146] [32mInitialize scheduling...[m
+[m[37m[  0.762978 ax_task::api:151] [32m  use Completely Fair scheduler.[m
+[m[37m[  0.763090 ax_runtime:289] [32mInitialize interrupt handlers...[m
+[m[37m[  0.766624 ax_runtime::devices:2] [32mProbe platform devices...[m
+[m[37m[  0.771951 virtio_drivers::device::blk:63] [32mfound a block device of size 2097152KB[m
+[m[37m[  0.772934 ax_driver::virtio::block:91] [32mregistered virtio block device[m
+[m[37m[  0.821377 ax_runtime::irq:120] [32mregistered virtio-blk/0 irq IrqId { domain: IrqDomainId(7), hwirq: HwIrq(79) }[m
+[m[37m[  0.822084 ax_fs_ng::block::runtime::device:1359] [33mrdif filesystem block device virtio-blk registered with IRQ-driven completion[m
+[m[37m[  0.822280 ax_fs_ng::block::runtime::device:1361] [32mregistered rdif filesystem block device virtio-blk[m
+[m[37m[  0.830595 ax_fs_ng::root:249] [32m    raw device fs=Some(Ext4)[m
+[m[37m[  0.830864 ax_fs_ng::root:280] [32m  block device 0 (virtio-blk) has no usable partition table; treating the whole disk as a candidate[m
+[m[37m[  0.831379 ax_fs_ng::root:389] [32m  matched root by raw device path on disk0 raw device[m
+[m[37m[  0.831666 ax_fs_ng:75] [32mInitialize filesystem subsystem...[m
+[m[37m[  0.831759 ax_fs_ng:76] [32m  selected root device: disk0 raw device[m
+[m[37m[  0.863243 rsext4::ext4::mount:340] [32m/lost+found exists (path resolution, repaired hint inode=11)[m
+[m[37m[  0.864868 rsext4::ext4::mount:462] [32mExt4 filesystem mounted[m
+[m[37m[  0.864976 rsext4::ext4::mount:463] [32m  - block size: 4096 bytes[m
+[m[37m[  0.865092 rsext4::ext4::mount:464] [32m  - total blocks: 524288[m
+[m[37m[  0.865187 rsext4::ext4::mount:465] [32m  - free blocks: 113690[m
+[m[37m[  0.865283 rsext4::ext4::mount:466] [32m  - total inodes: 131072[m
+[m[37m[  0.865375 rsext4::ext4::mount:467] [32m  - free inodes: 125267[m
+[m[37m[  0.865488 rsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[m[37m[  0.872022 rsext4::ext4::mount:546] [32mExt4 filesystem mounted[m
+[m[37m[  0.872664 ax_fs_ng:88] [32m  filesystem type: "ext4"[m
+[m[37m[  0.876186 ax_runtime::mp:79] [32mSecondary CPU 1 started.[m
+[m[37m[  0.878510 ax_runtime::mp:79] [32mSecondary CPU 2 started.[m
+[m[37m[  0.879236 ax_runtime::mp:107] [32mSecondary CPU 1 init OK.[m
+[m[37m[  0.881543 ax_runtime::mp:79] [32mSecondary CPU 3 started.[m
+[m[37m[  0.881598 ax_runtime:334] [32mPrimary CPU 0 init OK.[m
+[m[37m[  0.881742 ax_runtime::mp:107] [32mSecondary CPU 2 init OK.[m
+[m[37m[  0.885616 ax_runtime::mp:107] [32mSecondary CPU 3 init OK.[m
+[m
+
+       d8888            888     888  d8b
+      d88888            888     888  Y8P
+     d88P888            888     888
+    d88P 888  888  888  Y88b   d88P  888  .d8888b    .d88b.   888d888
+   d88P  888  `Y8bd8P'   Y88b d88P   888  88K       d88""88b  888P"
+  d88P   888    X88K      Y88o88P    888  "Y8888b.  888  888  888
+ d8888888888  .d8""8b.     Y888P     888       X88  Y88..88P  888
+d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
+
+
+by AxVisor Team
+
+[37m[  0.888761 0:2 axvisor::task:17] [32mAxVisor management task pinned to pCPU0[m
+[m[37m[  0.888923 0:2 axvisor:59] [32mStarting virtualization...[m
+[m[37m[  0.889089 0:2 axvm::host::arceos:331] [32mEnabling hardware virtualization support on all cores...[m
+[m[37m[  0.889264 0:2 axvm::host::arceos:337] [32mCore 0 is initializing hardware virtualization support...[m
+[m[37m[  0.889479 0:2 axvm::timer:132] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.889812 0:2 axvm::host::arceos:339] [32mHardware virtualization support enabled on core 0[m
+[m[37m[  0.891664 1:11 axvm::host::arceos:349] [32mCore 1 is initializing hardware virtualization support...[m
+[m[37m[  0.891896 2:12 axvm::host::arceos:349] [32mCore 2 is initializing hardware virtualization support...[m
+[m[37m[  0.891971 1:11 axvm::timer:132] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.892164 2:12 axvm::timer:132] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.892396 1:11 axvm::host::arceos:352] [32mHardware virtualization support enabled on core 1[m
+[m[37m[  0.892481 2:12 axvm::host::arceos:352] [32mHardware virtualization support enabled on core 2[m
+[m[37m[  0.894026 0:2 axvm::host::arceos:365] [32mWaiting for all cores to enable hardware virtualization...[m
+[m[37m[  0.894048 3:13 axvm::host::arceos:349] [32mCore 3 is initializing hardware virtualization support...[m
+[m[37m[  0.894293 3:13 axvm::timer:132] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.894413 3:13 axvm::host::arceos:352] [32mHardware virtualization support enabled on core 3[m
+[m[37m[  0.894590 0:2 axvm::host::arceos:381] [32mAll cores have enabled hardware virtualization support.[m
+[m[37m[  0.899391 0:2 axvisor::manager:125] [32mNOT find dir: /guest/vm_default in filesystem[m
+[m[37m[  0.899658 0:2 axvisor::config:107] [32mUsing static VM configs.[m
+[m[37m[  0.931257 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@0, node_id: 0x0, guest_cpu_id: 0x0[m
+[m[37m[  0.931504 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@1, node_id: 0x1, guest_cpu_id: 0x1[m
+[m[37m[  0.931690 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@2, node_id: 0x2, guest_cpu_id: 0x2[m
+[m[37m[  0.931865 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@3, node_id: 0x3, guest_cpu_id: 0x3[m
+[m[37m[  0.932120 0:2 axvm::boot::fdt::parser:397] [32mFound 4 host CPU nodes[m
+[m[37m[  0.932515 0:2 axvm::boot::fdt:163] [32mVM[1] DTB not found, generating based on the configuration file.[m
+[m[37m[  0.951878 0:2 axvm::boot::fdt::device:96] [32mFound excluded devices: ["/pcie@10000000"][m
+[m[37m[  0.952465 0:2 axvm::boot::fdt::device:107] [32mExcluding device: /pcie@10000000[m
+[m[37m[  0.968658 0:2 axvm::boot::fdt::tree:182] [32mPatched /virtio_mmio@a000000 interrupts -> SPI 48 (INTID 80)[m
+[m[37m[  0.994889 0:2 axvisor::config:161] [32mCreating VM[1] "linux-qemu-net-a"[m
+[m[37m[  0.995186 0:2 axvm::vm:407] [32mVM created: id=1[m
+[m[37m[  1.601970 0:2 axvisor::config:172] [32mVM[1] created success, loading images...[m
+[m[37m[  1.602283 0:2 axvm::boot::images::fs:792] [32mLoading VM images from filesystem[m
+[m[37m[  6.205149 0:2 axvm::boot::fdt::tree:182] [32mPatched /virtio_mmio@a000000 interrupts -> SPI 48 (INTID 80)[m
+[m[37m[  6.209919 0:2 axdevice::virtio_net::factory:65] [32mvirtio-net 'virtio-net0' @ 0xa000000 len=0x1000 irq=48 vm=1 port=Some(PortId(1)) mac=02:00:00:00:00:02[m
+[m[37m[  6.210847 0:2 axdevice::device:1203] [32mAxVmDevices: registered device id=0[m
+[m[37m[  6.211168 0:2 axvm::vm::prepare::devices:96] [33mFailed to assign SPIs: No VGicD found in device list[m
+[m[37m[  6.215727 0:2 axvm::vm::prepare:95] [32mVM setup: id=1[m
+[m[37m[  6.224436 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@0, node_id: 0x0, guest_cpu_id: 0x0[m
+[m[37m[  6.224590 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@1, node_id: 0x1, guest_cpu_id: 0x1[m
+[m[37m[  6.224729 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@2, node_id: 0x2, guest_cpu_id: 0x2[m
+[m[37m[  6.224863 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@3, node_id: 0x3, guest_cpu_id: 0x3[m
+[m[37m[  6.225036 0:2 axvm::boot::fdt::parser:397] [32mFound 4 host CPU nodes[m
+[m[37m[  6.225127 0:2 axvm::boot::fdt:163] [32mVM[2] DTB not found, generating based on the configuration file.[m
+[m[37m[  6.237165 0:2 axvm::boot::fdt::device:96] [32mFound excluded devices: ["/pcie@10000000"][m
+[m[37m[  6.237295 0:2 axvm::boot::fdt::device:107] [32mExcluding device: /pcie@10000000[m
+[m[37m[  6.237714 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a000200[m
+[m[37m[  6.237943 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a000400[m
+[m[37m[  6.238084 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a000600[m
+[m[37m[  6.238201 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a000800[m
+[m[37m[  6.238315 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a000a00[m
+[m[37m[  6.238430 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a000c00[m
+[m[37m[  6.238550 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a000e00[m
+[m[37m[  6.238678 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a001000[m
+[m[37m[  6.238798 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a001200[m
+[m[37m[  6.238921 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a001400[m
+[m[37m[  6.239042 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a001600[m
+[m[37m[  6.239162 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a001800[m
+[m[37m[  6.239370 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a001a00[m
+[m[37m[  6.239494 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a001c00[m
+[m[37m[  6.239621 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a001e00[m
+[m[37m[  6.239743 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a002000[m
+[m[37m[  6.239867 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a002200[m
+[m[37m[  6.239989 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a002400[m
+[m[37m[  6.240110 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a002600[m
+[m[37m[  6.240233 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a002800[m
+[m[37m[  6.240356 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a002a00[m
+[m[37m[  6.240481 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a002c00[m
+[m[37m[  6.240604 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a002e00[m
+[m[37m[  6.240726 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a003000[m
+[m[37m[  6.240847 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a003200[m
+[m[37m[  6.240968 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a003400[m
+[m[37m[  6.241089 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a003600[m
+[m[37m[  6.241211 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a003800[m
+[m[37m[  6.241331 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a003a00[m
+[m[37m[  6.241451 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a003c00[m
+[m[37m[  6.241570 0:2 axvm::boot::fdt::device:133] [32mExcluding host virtio-mmio (initramfs guest): /virtio_mmio@a003e00[m
+[m[37m[  6.244355 0:2 axvm::boot::fdt::tree:182] [32mPatched /virtio_mmio@a000000 interrupts -> SPI 49 (INTID 81)[m
+[m[37m[  6.259234 0:2 axvisor::config:161] [32mCreating VM[2] "linux-qemu-net-b"[m
+[m[37m[  6.259405 0:2 axvm::vm:407] [32mVM created: id=2[m
+[m[37m[  6.909086 0:2 axvisor::config:172] [32mVM[2] created success, loading images...[m
+[m[37m[  6.909250 0:2 axvm::boot::images::fs:792] [32mLoading VM images from filesystem[m
+[m[37m[  9.965442 0:2 axvm::boot::images:681] [32mLoading ramdisk image from filesystem /guest/linux/peer-initramfs.cpio (189440 bytes) into GPA @0x84000000[m
+[m[37m[  9.982659 0:2 axvm::boot::fdt::tree:182] [32mPatched /virtio_mmio@a000000 interrupts -> SPI 49 (INTID 81)[m
+[m[37m[  9.984640 0:2 axdevice::virtio_net::factory:65] [32mvirtio-net 'virtio-net0' @ 0xa000000 len=0x1000 irq=49 vm=2 port=Some(PortId(2)) mac=02:00:00:00:00:03[m
+[m[37m[  9.984842 0:2 axdevice::device:1203] [32mAxVmDevices: registered device id=0[m
+[m[37m[  9.984940 0:2 axvm::vm::prepare::devices:96] [33mFailed to assign SPIs: No VGicD found in device list[m
+[m[37m[  9.986802 0:2 axvm::vm::prepare:95] [32mVM setup: id=2[m
+[m[37m[  9.987206 0:2 axvm::runtime:44] [32mInitializing VMM...[m
+[m[37m[  9.987324 0:2 axvm::runtime:49] [32mVMM starting, booting VMs...[m
+[m[37m[  9.987637 0:2 axvm::vm:599] [32mStarting VM[1][m
+[m[37m[  9.988673 0:2 axvm::runtime::vcpus:290] [32mSpawning task for VM[1] VCpu[0][m
+[m[37m[  9.989110 0:2 axvm::runtime::vcpus:307] [32mVCpu task Task(14, "VM[1]-VCpu[0]") created cpumask: [1, ][m
+[m[37m[  9.989535 0:2 axvm::runtime::vcpus:271] [32mVM[1] VCpu[0] host nice set to 10[m
+[m[37m[  9.990105 0:2 axvm::runtime:55] [32mVM[1] boot success[m
+[m[37m[  9.990191 0:2 axvm::vm:599] [32mStarting VM[2][m
+[m[37m[  9.990270 0:2 axvm::runtime::vcpus:290] [32mSpawning task for VM[2] VCpu[0][m
+[m[37m[  9.999672 1:14 axvm::runtime::vcpus:362] [32mVM[1] VCpu[0] waiting for running[m
+[m[37m[ 10.000068 1:14 axvm::runtime::vcpus:365] [32mVM[1] VCpu[0] running...[m
+[m[37m[ 10.004372 0:2 axvm::runtime::vcpus:307] [32mVCpu task Task(15, "VM[2]-VCpu[0]") created cpumask: [3, ][m
+[m[37m[ 10.004551 0:2 axvm::runtime::vcpus:271] [32mVM[2] VCpu[0] host nice set to 10[m
+[m[37m[ 10.004712 0:2 axvm::runtime:55] [32mVM[2] boot success[m
+[m[37m[ 10.005690 3:15 axvm::runtime::vcpus:362] [32mVM[2] VCpu[0] waiting for running[m
+[m[37m[ 10.005814 3:15 axvm::runtime::vcpus:365] [32mVM[2] VCpu[0] running...[m
+[m[    0.000000] Booting Linux on physical CPU 0x0000000003 [0x410fd083]
+[    0.000000] Linux version 7.1.0-rc2-g74fe02ce122a-dirty (runner@s1lqc) (aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #1 SMP PREEMPT Fri Jul 24 05:32:39 UTC 2026
+[    0.000000] KASLR enabled
+[    0.000000] random: crng init done
+[    0.000000] Machine model: linux,dummy-virt
+[    0.000000] efi: UEFI not found.
+[    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[    0.000000] NUMA: Faking a node at [mem 0x0000000080000000-0x000000008fffffff]
+[    0.000000] NODE_DATA(0) allocated [mem 0x8ff86a80-0x8ff8917f]
+[    0.000000] cma: Reserved 32 MiB at 0x000000008de00000
+[    0.000000] psci: probing for conduit method from DT.
+[    0.000000] psci: PSCIv1.1 detected in firmware.
+[    0.000000] psci: Using standard PSCI v0.2 function IDs
+[    0.000000] psci: Trusted OS migration not required
+[    0.000000] psci: SMC Calling Convention v1.0
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000080000000-0x000000008fffffff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000080000000-0x000000008fffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000080000000-0x000000008fffffff]
+[    0.000000] percpu: Embedded 26 pages/cpu s66584 r8192 d31720 u106496
+[    0.000000] Detected PIPT I-cache on CPU0
+[    0.000000] CPU features: detected: GICv3 CPU interface
+[    0.000000] CPU features: detected: Spectre-v2
+[    0.000000] CPU features: detected: Spectre-v3a
+[    0.000000] CPU features: detected: Spectre-v4
+[    0.000000] CPU features: detected: Spectre-BHB
+[    0.000000] CPU features: kernel page table isolation forced ON by KASLR
+[    0.000000] CPU features: detected: Kernel page table isolation (KPTI)
+[    0.000000] CPU features: detected: ARM erratum 1742098
+[    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Kernel command line: rdinit=/init console=ttyAMA0
+[    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.000000] Dentry cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[    0.000000] software IO TLB: area num 1.
+[    0.000000] software IO TLB: mapped [mem 0x000000008feb6000-0x000000008fef6000] (0MB)
+[    0.000000] Fallback order for Node 0: 0 
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 65536
+[    0.000000] Policy zone: DMA
+[    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[    0.000000] rcu: 	RCU event tracing is enabled.
+[    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=1.
+[    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[    0.000000] 	Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.000000] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] GICv3: 256 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs
+[    0.000000] GICv3: GICD_CTLR.DS=1, SCR_EL3.FIQ=0
+[    0.000000] GICv3: CPU0: found redistributor 3 region 0:0x0000000008100000
+[    0.000000] ITS [mem 0x08080000-0x0809ffff]
+[    0.000000] ITS@0x0000000008080000: allocated 8192 Devices @83850000 (indirect, esz 8, psz 64K, shr 1)
+[    0.000000] ITS@0x0000000008080000: allocated 8192 Interrupt Collections @83860000 (flat, esz 8, psz 64K, shr 1)
+[    0.000000] GICv3: Expected reserved range [0x000000023f100000:0x000000023f10ffff], not found
+[    0.000000] GICv3: using LPI property table @0x0000000083870000
+[    0.000000] GICv3: CPU0: Booted with LPIs enabled, memory probably corrupted
+[    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000083880000
+[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.000000] arch_timer: cp15 timer running at 62.50MHz (virt).
+[    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+[    0.000078] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+[    0.010389] Console: colour dummy device 80x25
+[    0.018995] Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=250000)
+[    0.019124] pid_max: default: 32768 minimum: 301
+[    0.023974] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.024021] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.033299] VFS: Finished mounting rootfs on nullfs
+[    0.058299] /cpus/cpu-map/socket0/cluster0/core0: Can't get CPU for leaf core
+[    0.059559] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[    0.070677] rcu: Hierarchical SRCU implementation.
+[    0.070727] rcu: 	Max phase no-delay instances is 1000.
+[    0.073768] fsl-mc MSI: its@8080000 domain created
+[    0.075134] EFI services will not be available.
+[    0.075641] smp: Bringing up secondary CPUs ...
+[    0.076444] smp: Brought up 1 node, 1 CPU
+[    0.076469] SMP: Total of 1 processors activated.
+[    0.076499] CPU: All CPU(s) started at EL1
+[    0.076782] CPU features: detected: 32-bit EL0 Support
+[    0.076796] CPU features: detected: 32-bit EL1 Support
+[    0.076859] CPU features: detected: CRC32 instructions
+[    0.077048] CPU features: detected: PMUv3
+[    0.087044] alternatives: applying system-wide alternatives
+[    0.115899] Memory: 169784K/262144K available (18688K kernel code, 5242K rwdata, 14480K rodata, 12672K init, 718K bss, 57704K reserved, 32768K cma-reserved)
+[    0.145165] devtmpfs: initialized
+[    0.170275] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    0.170860] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[    0.171161] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[    0.174515] 2G module region forced by RANDOMIZE_MODULE_REGION_FULL
+[    0.174584] 0 pages in range for non-PLT usage
+[    0.174623] 511264 pages in range for PLT usage
+[    0.187987] DMI: not present or invalid.
+[    0.213838] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.226147] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    0.226507] audit: initializing netlink subsys (disabled)
+[    0.231072] audit: type=2000 audit(0.204:1): state=initialized audit_enabled=0 res=1
+[    0.234074] thermal_sys: Registered thermal governor 'step_wise'
+[    0.234107] thermal_sys: Registered thermal governor 'power_allocator'
+[    0.234481] cpuidle: using governor menu
+[    0.235687] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[    0.236075] ASID allocator initialised with 32768 entries
+[    0.241768] Serial: AMBA PL011 UART driver
+[    0.269612] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+[    0.272024] printk: console [ttyAMA0] enabled
+[    0.306754] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.307055] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.307279] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[    0.307483] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[    0.307676] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.307873] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.308052] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[    0.308248] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[    0.316125] ACPI: Interpreter disabled.
+[    0.320839] iommu: Default domain type: Translated
+[    0.321115] iommu: DMA domain TLB invalidation policy: strict mode
+[    0.322815] SCSI subsystem initialized
+[    0.325304] usbcore: registered new interface driver usbfs
+[    0.325962] usbcore: registered new interface driver hub
+[    0.326295] usbcore: registered new device driver usb
+[    0.327502] pps_core: LinuxPPS API ver. 1 registered
+[    0.327707] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.328039] PTP clock support registered
+[    0.328518] EDAC MC: Ver: 3.0.0
+[    0.330033] scmi_core: SCMI protocol bus registered
+[    0.332229] FPGA manager framework
+[    0.342721] vgaarb: loaded
+[    0.344923] clocksource: Switched to clocksource arch_sys_counter
+[    0.348048] VFS: Disk quotas dquot_6.6.0
+[    0.348383] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[    0.356042] pnp: PnP ACPI: disabled
+[    0.374546] NET: Registered PF_INET protocol family
+[    0.376100] IP idents hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.380093] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[    0.380702] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.381059] TCP established hash table entries: 2048 (order: 2, 16384 bytes, linear)
+[    0.381503] TCP bind hash table entries: 2048 (order: 4, 65536 bytes, linear)
+[    0.381892] TCP: Hash tables configured (established 2048 bind 2048)
+[    0.383418] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[    0.385061] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.388079] RPC: Registered named UNIX socket transport module.
+[    0.388382] RPC: Registered udp transport module.
+[    0.388562] RPC: Registered tcp transport module.
+[    0.388795] RPC: Registered tcp-with-tls transport module.
+[    0.388984] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[    0.389305] PCI: CLS 0 bytes, default 64
+[    0.393181] kvm [1]: HYP mode not available
+[    0.398207] Unpacking initramfs...
+[    0.398462] Initialise system trusted keyrings
+[    0.401008] workingset: timestamp_bits=42 (anon: 38) max_order=16 bucket_order=0 (anon: 0)
+[    0.404144] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[    0.413821] NFS: Registering the id_resolver key type
+[    0.414435] Key type id_resolver registered
+[    0.414499] Key type id_legacy registered
+[    0.414910] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[    0.415042] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[    0.416613] 9p: Installing v9fs 9p2000 file system support
+[    0.418952] Key type asymmetric registered
+[    0.420805] Asymmetric key parser 'x509' registered
+[    0.421285] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[    0.424971] io scheduler mq-deadline registered
+[    0.425250] io scheduler kyber registered
+[    0.425783] io scheduler bfq registered
+[    0.429602] Freeing initrd memory: 184K
+[    0.443550] pl061_gpio 9030000.pl061: PL061 GPIO chip registered
+[    0.446234] ledtrig-cpu: registered to indicate activity on CPUs
+[    0.489144] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[    0.496514] msm_serial: driver initialized
+[    0.497755] SuperH (H)SCI(F) driver initialized
+[    0.498098] STM32 USART driver initialized
+[    0.518448] loop: module loaded
+[    0.520530] megasas: 07.734.00.00-rc1
+[    0.524834] physmap-flash 0.flash: physmap platform flash device: [mem 0x00000000-0x03ffffff]
+[    0.526978] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[    0.527897] Intel/Sharp Extended Query Table at 0x0031
+[    0.529003] Using buffer write method
+[    0.529863] physmap-flash 0.flash: physmap platform flash device: [mem 0x04000000-0x07ffffff]
+[    0.530648] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[    0.531153] Intel/Sharp Extended Query Table at 0x0031
+[    0.531813] Using buffer write method
+[    0.532166] Concatenating MTD devices:
+[    0.532330] (0): "0.flash"
+[    0.532463] (1): "0.flash"
+[    0.532585] into device "0.flash"
+[    0.562594] tun: Universal TUN/TAP device driver, 1.6
+[    0.582537] thunder_xcv, ver 1.0
+[    0.582912] thunder_bgx, ver 1.0
+[    0.583141] nicpf, ver 1.0
+[    0.585530] e1000: Intel(R) PRO/1000 Network Driver
+[    0.585724] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[    0.585978] e1000e: Intel(R) PRO/1000 Network Driver
+[    0.586120] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[    0.586351] igb: Intel(R) Gigabit Ethernet Network Driver
+[    0.586497] igb: Copyright (c) 2007-2014 Intel Corporation.
+[    0.586722] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[    0.586944] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[    0.587505] sky2: driver version 1.30
+[    0.589483] VFIO - User Level meta-driver version: 0.3
+[    0.595821] usbcore: registered new interface driver usb-storage
+[    0.605172] rtc-pl031 9010000.pl031: registered as rtc0
+[    0.605966] rtc-pl031 9010000.pl031: setting system clock to 2026-08-02T01:43:26 UTC (1785635006)
+[    0.607523] i2c_dev: i2c /dev entries driver
+[    0.623100] usbcore: registered new interface driver usbhid
+[    0.623368] usbhid: USB HID core driver
+[    0.629860] hw perfevents: enabled with armv8_pmuv3 PMU driver, 7 (0,8000003f) counters available
+[    0.638290] NET: Registered PF_INET6 protocol family
+[    0.645841] Segment Routing with IPv6
+[    0.646203] In-situ OAM (IOAM) with IPv6
+[    0.646769] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.649696] NET: Registered PF_PACKET protocol family
+[    0.651171] 9pnet: Installing 9P2000 support
+[    0.651610] Key type dns_resolver registered
+[    0.674966] registered taskstats version 1
+[    0.677044] Loading compiled-in X.509 certificates
+[    0.692230] Demotion targets for Node 0: null
+[    0.702311] input: gpio-keys as /devices/platform/gpio-keys/input/input0
+[    0.709096] clk: Disabling unused clocks
+[    0.709484] PM: genpd: Disabling unused power domains
+[    0.808998] Freeing unused kernel memory: 12672K
+[    0.810586] Run /init as init process
+ICPC_PEER_START
+ICPC_PEER_MOUNTED
+ICPC_PEER_MOUNTED
+ICPC_PEER_READY
+ICPC_PEER_READY
+[    0.000000] Booting Linux on physical CPU 0x0000000001 [0x410fd083]
+[    0.000000] Linux version 7.1.0-rc2-g74fe02ce122a-dirty (runner@s1lqc) (aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #1 SMP PREEMPT Fri Jul 24 05:32:39 UTC 2026
+[    0.000000] KASLR enabled
+[    0.000000] random: crng init done
+[    0.000000] Machine model: linux,dummy-virt
+[    0.000000] efi: UEFI not found.
+[    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[    0.000000] NUMA: Faking a node at [mem 0x0000000222000000-0x0000000231ffffff]
+[    0.000000] NODE_DATA(0) allocated [mem 0x231f80980-0x231f8307f]
+[    0.000000] cma: Reserved 32 MiB at 0x0000000225400000
+[    0.000000] psci: probing for conduit method from DT.
+[    0.000000] psci: PSCIv1.1 detected in firmware.
+[    0.000000] psci: Using standard PSCI v0.2 function IDs
+[    0.000000] psci: Trusted OS migration not required
+[    0.000000] psci: SMC Calling Convention v1.0
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000222000000-0x0000000231ffffff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000222000000-0x0000000231ffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000222000000-0x0000000231ffffff]
+[    0.000000] On node 0, zone DMA: 8192 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA: 24576 pages in unavailable ranges
+[    0.000000] percpu: Embedded 26 pages/cpu s66584 r8192 d31720 u106496
+[    0.000000] Detected PIPT I-cache on CPU0
+[    0.000000] CPU features: detected: GICv3 CPU interface
+[    0.000000] CPU features: detected: Spectre-v2
+[    0.000000] CPU features: detected: Spectre-v3a
+[    0.000000] CPU features: detected: Spectre-v4
+[    0.000000] CPU features: detected: Spectre-BHB
+[    0.000000] CPU features: kernel page table isolation forced ON by KASLR
+[    0.000000] CPU features: detected: Kernel page table isolation (KPTI)
+[    0.000000] CPU features: detected: ARM erratum 1742098
+[    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Kernel command line: root=/dev/vda rw init=/bin/sh fsck.repair=yes
+[    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.000000] Dentry cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[    0.000000] software IO TLB: area num 1.
+[    0.000000] software IO TLB: mapped [mem 0x0000000231eb0000-0x0000000231ef0000] (0MB)
+[    0.000000] Fallback order for Node 0: 0 
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 65536
+[    0.000000] Policy zone: DMA
+[    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[    0.000000] rcu: 	RCU event tracing is enabled.
+[    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=1.
+[    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[    0.000000] 	Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.000000] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] GICv3: 256 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs
+[    0.000000] GICv3: GICD_CTLR.DS=1, SCR_EL3.FIQ=0
+[    0.000000] GICv3: CPU0: found redistributor 1 region 0:0x00000000080c0000
+[    0.000000] ITS [mem 0x08080000-0x0809ffff]
+[    0.000000] ITS@0x0000000008080000: allocated 8192 Devices @227450000 (indirect, esz 8, psz 64K, shr 1)
+[    0.000000] ITS@0x0000000008080000: allocated 8192 Interrupt Collections @227460000 (flat, esz 8, psz 64K, shr 1)
+[    0.000000] GICv3: Expected reserved range [0x000000023f100000:0x000000023f10ffff], not found
+[    0.000000] GICv3: using LPI property table @0x0000000227470000
+[    0.000000] GICv3: CPU0: Booted with LPIs enabled, memory probably corrupted
+[    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000227480000
+[    0.000000] ITS queue not draining
+[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.000000] arch_timer: cp15 timer running at 62.50MHz (virt).
+[    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+[    0.000080] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+[    0.013542] Console: colour dummy device 80x25
+[    0.014104] printk: legacy console [tty0] enabled
+[    0.019243] Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=250000)
+[    0.019450] pid_max: default: 32768 minimum: 301
+[    0.024411] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.024505] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.034739] VFS: Finished mounting rootfs on nullfs
+[    0.059089] /cpus/cpu-map/socket0/cluster0/core0: Can't get CPU for leaf core
+[    0.062333] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[    0.073999] rcu: Hierarchical SRCU implementation.
+[    0.074105] rcu: 	Max phase no-delay instances is 1000.
+[    0.077167] fsl-mc MSI: its@8080000 domain created
+[    0.078987] EFI services will not be available.
+[    0.079519] smp: Bringing up secondary CPUs ...
+[    0.082042] smp: Brought up 1 node, 1 CPU
+[    0.082097] SMP: Total of 1 processors activated.
+[    0.082146] CPU: All CPU(s) started at EL1
+[    0.082458] CPU features: detected: 32-bit EL0 Support
+[    0.082494] CPU features: detected: 32-bit EL1 Support
+[    0.082583] CPU features: detected: CRC32 instructions
+[    0.082808] CPU features: detected: PMUv3
+[    0.096361] alternatives: applying system-wide alternatives
+[    0.131204] Memory: 167900K/262144K available (18688K kernel code, 5242K rwdata, 14480K rodata, 12672K init, 718K bss, 59588K reserved, 32768K cma-reserved)
+[    0.166711] devtmpfs: initialized
+[    0.193733] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    0.194413] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[    0.194770] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[    0.198114] 2G module region forced by RANDOMIZE_MODULE_REGION_FULL
+[    0.198231] 0 pages in range for non-PLT usage
+[    0.198288] 511264 pages in range for PLT usage
+[    0.216491] DMI: not present or invalid.
+[    0.250177] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.264954] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    0.265387] audit: initializing netlink subsys (disabled)
+[    0.271992] audit: type=2000 audit(0.232:1): state=initialized audit_enabled=0 res=1
+[    0.283417] thermal_sys: Registered thermal governor 'step_wise'
+[    0.283501] thermal_sys: Registered thermal governor 'power_allocator'
+[    0.284547] cpuidle: using governor menu
+[    0.285950] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[    0.286441] ASID allocator initialised with 32768 entries
+[    0.292497] Serial: AMBA PL011 UART driver
+[    0.345702] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+[    0.349693] printk: console [ttyAMA0] enabled
+[    0.378010] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.378275] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.378462] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[    0.378629] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[    0.378785] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.378948] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.379105] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[    0.379262] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[    0.387225] ACPI: Interpreter disabled.
+[    0.393377] iommu: Default domain type: Translated
+[    0.393627] iommu: DMA domain TLB invalidation policy: strict mode
+[    0.395315] SCSI subsystem initialized
+[    0.397912] usbcore: registered new interface driver usbfs
+[    0.398517] usbcore: registered new interface driver hub
+[    0.398828] usbcore: registered new device driver usb
+[    0.400540] pps_core: LinuxPPS API ver. 1 registered
+[    0.400730] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.401010] PTP clock support registered
+[    0.401531] EDAC MC: Ver: 3.0.0
+[    0.403122] scmi_core: SCMI protocol bus registered
+[    0.405644] FPGA manager framework
+[    0.418542] vgaarb: loaded
+[    0.420776] clocksource: Switched to clocksource arch_sys_counter
+[    0.422341] VFS: Disk quotas dquot_6.6.0
+[    0.423879] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[    0.426828] pnp: PnP ACPI: disabled
+[    0.445383] NET: Registered PF_INET protocol family
+[    0.446884] IP idents hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.450701] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[    0.451186] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.451451] TCP established hash table entries: 2048 (order: 2, 16384 bytes, linear)
+[    0.451819] TCP bind hash table entries: 2048 (order: 4, 65536 bytes, linear)
+[    0.452140] TCP: Hash tables configured (established 2048 bind 2048)
+[    0.453557] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[    0.455006] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.457922] RPC: Registered named UNIX socket transport module.
+[    0.458180] RPC: Registered udp transport module.
+[    0.458326] RPC: Registered tcp transport module.
+[    0.458456] RPC: Registered tcp-with-tls transport module.
+[    0.458595] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[    0.458844] PCI: CLS 0 bytes, default 64
+[    0.461082] kvm [1]: HYP mode not available
+[    0.471979] Initialise system trusted keyrings
+[    0.473631] workingset: timestamp_bits=42 (anon: 38) max_order=16 bucket_order=0 (anon: 0)
+[    0.476463] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[    0.478357] NFS: Registering the id_resolver key type
+[    0.478916] Key type id_resolver registered
+[    0.479089] Key type id_legacy registered
+[    0.479561] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[    0.479851] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[    0.481443] 9p: Installing v9fs 9p2000 file system support
+[    0.483515] Key type asymmetric registered
+[    0.483770] Asymmetric key parser 'x509' registered
+[    0.484147] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[    0.484549] io scheduler mq-deadline registered
+[    0.484759] io scheduler kyber registered
+[    0.485210] io scheduler bfq registered
+[    0.505534] pl061_gpio 9030000.pl061: PL061 GPIO chip registered
+[    0.508810] ledtrig-cpu: registered to indicate activity on CPUs
+[    0.550491] virtio-mmio a000200.virtio_mmio: Wrong magic value 0x00000000!
+[    0.551415] virtio-mmio a000400.virtio_mmio: Wrong magic value 0x00000000!
+[    0.551980] virtio-mmio a000600.virtio_mmio: Wrong magic value 0x00000000!
+[    0.552900] virtio-mmio a000800.virtio_mmio: Wrong magic value 0x00000000!
+[    0.553431] virtio-mmio a000a00.virtio_mmio: Wrong magic value 0x00000000!
+[    0.553972] virtio-mmio a000c00.virtio_mmio: Wrong magic value 0x00000000!
+[    0.554512] virtio-mmio a000e00.virtio_mmio: Wrong magic value 0x00000000!
+[    0.567556] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[    0.575468] msm_serial: driver initialized
+[    0.576707] SuperH (H)SCI(F) driver initialized
+[    0.577330] STM32 USART driver initialized
+[    0.600140] loop: module loaded
+[    0.601312] virtio_blk virtio1: 1/0/0 default/read/poll queues
+[    0.605081] virtio_blk virtio1: [vda] 4194304 512-byte logical blocks (2.15 GB/2.00 GiB)
+[    0.622798] megasas: 07.734.00.00-rc1
+[    0.627473] physmap-flash 0.flash: physmap platform flash device: [mem 0x00000000-0x03ffffff]
+[    0.630561] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[    0.631440] Intel/Sharp Extended Query Table at 0x0031
+[    0.632341] Using buffer write method
+[    0.633254] physmap-flash 0.flash: physmap platform flash device: [mem 0x04000000-0x07ffffff]
+[    0.633965] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[    0.634299] Intel/Sharp Extended Query Table at 0x0031
+[    0.634901] Using buffer write method
+[    0.635212] Concatenating MTD devices:
+[    0.635345] (0): "0.flash"
+[    0.635457] (1): "0.flash"
+[    0.635551] into device "0.flash"
+[    0.662606] tun: Universal TUN/TAP device driver, 1.6
+[    0.677805] thunder_xcv, ver 1.0
+[    0.678148] thunder_bgx, ver 1.0
+[    0.678356] nicpf, ver 1.0
+[    0.680922] e1000: Intel(R) PRO/1000 Network Driver
+[    0.681113] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[    0.681418] e1000e: Intel(R) PRO/1000 Network Driver
+[    0.681564] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[    0.681793] igb: Intel(R) Gigabit Ethernet Network Driver
+[    0.681942] igb: Copyright (c) 2007-2014 Intel Corporation.
+[    0.682171] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[    0.682331] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[    0.682976] sky2: driver version 1.30
+[    0.685395] VFIO - User Level meta-driver version: 0.3
+[    0.691591] usbcore: registered new interface driver usb-storage
+[    0.699763] rtc-pl031 9010000.pl031: registered as rtc0
+[    0.700598] rtc-pl031 9010000.pl031: setting system clock to 2026-08-02T01:43:27 UTC (1785635007)
+[    0.702283] i2c_dev: i2c /dev entries driver
+[    0.721049] usbcore: registered new interface driver usbhid
+[    0.721314] usbhid: USB HID core driver
+[    0.728672] hw perfevents: enabled with armv8_pmuv3 PMU driver, 7 (0,8000003f) counters available
+[    0.736265] NET: Registered PF_INET6 protocol family
+[    0.743066] Segment Routing with IPv6
+[    0.743427] In-situ OAM (IOAM) with IPv6
+[    0.743940] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.746575] NET: Registered PF_PACKET protocol family
+[    0.747947] 9pnet: Installing 9P2000 support
+[    0.748381] Key type dns_resolver registered
+[    0.769120] registered taskstats version 1
+[    0.770790] Loading compiled-in X.509 certificates
+[    0.785035] Demotion targets for Node 0: null
+[    0.797035] input: gpio-keys as /devices/platform/gpio-keys/input/input0
+[    0.802454] clk: Disabling unused clocks
+[    0.803022] PM: genpd: Disabling unused power domains
+[    0.840737] EXT4-fs (vda): recovery complete
+[    0.841924] EXT4-fs (vda): mounted filesystem 60a4282b-9b0a-4994-9e9c-109a16c762f3 r/w with ordered data mode. Quota mode: none.
+[    0.842587] VFS: Mounted root (ext4 filesystem) on device 254:0.
+[    0.844346] devtmpfs: mounted
+[    0.846210] VFS: Pivoted into new rootfs
+[    0.930268] Freeing unused kernel memory: 12672K
+[    0.931655] Run /bin/sh as init process
+/bin/sh: can't access tty; job control turned off
+~ # [6nmount -t proc proc /proc; mount -t sysfs sys /sys; echo 1 > /proc/sys/net/ip
+v6/conf/all/disable_ipv6; ip link set eth0 up; ip addr flush dev eth0; ip addr a
+dd 10.0.9.2/24 dev eth0; sleep 10; /usr/local/bin/task3-ai-loop compare && echo 
+'task3-compare pass' || echo 'task3-compare fail'
+ICPC_PEER_RESET
+ICPC_PEER_RESET
+TASK3_FIXED_LOOP_BEGIN
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+TASK3_LOOP mode=FIXED i=0 t1_ns=13540490000 t2_ns=13548576000 oneway_us=4043 err=73.694 kp=0.500 state=y=26.306,err=73.694,kp=0.500,ki=0.080,kd=0.020,tick=100
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=1 t1_ns=13651120000 t2_ns=13654316000 oneway_us=1598 err=67.692 kp=0.500 state=y=32.308,err=67.692,kp=0.500,ki=0.080,kd=0.020,tick=200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=2 t1_ns=13755096000 t2_ns=13758215000 oneway_us=1559 err=66.082 kp=0.500 state=y=33.918,err=66.082,kp=0.500,ki=0.080,kd=0.020,tick=300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=3 t1_ns=13859026000 t2_ns=13862246000 oneway_us=1610 err=65.450 kp=0.500 state=y=34.550,err=65.450,kp=0.500,ki=0.080,kd=0.020,tick=400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=4 t1_ns=13963147000 t2_ns=13966236000 oneway_us=1544 err=65.039 kp=0.500 state=y=34.961,err=65.039,kp=0.500,ki=0.080,kd=0.020,tick=500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=5 t1_ns=14067071000 t2_ns=14070042000 oneway_us=1485 err=64.678 kp=0.500 state=y=35.322,err=64.678,kp=0.500,ki=0.080,kd=0.020,tick=600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=6 t1_ns=14170827000 t2_ns=14175171000 oneway_us=2172 err=64.330 kp=0.500 state=y=35.670,err=64.330,kp=0.500,ki=0.080,kd=0.020,tick=700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=7 t1_ns=14275912000 t2_ns=14281031000 oneway_us=2559 err=63.986 kp=0.500 state=y=36.014,err=63.986,kp=0.500,ki=0.080,kd=0.020,tick=800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=10 drop=0 err=0
+ICPC_PEER_RX=10 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=8 t1_ns=14381887000 t2_ns=14385025000 oneway_us=1569 err=63.644 kp=0.500 state=y=36.356,err=63.644,kp=0.500,ki=0.080,kd=0.020,tick=900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=9 t1_ns=14485729000 t2_ns=14488790000 oneway_us=1530 err=63.304 kp=0.500 state=y=36.696,err=63.304,kp=0.500,ki=0.080,kd=0.020,tick=1000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=10 t1_ns=14589479000 t2_ns=14593539000 oneway_us=2030 err=62.966 kp=0.500 state=y=37.034,err=62.966,kp=0.500,ki=0.080,kd=0.020,tick=1100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=11 t1_ns=14694192000 t2_ns=14699107000 oneway_us=2457 err=62.630 kp=0.500 state=y=37.370,err=62.630,kp=0.500,ki=0.080,kd=0.020,tick=1200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=12 t1_ns=14800397000 t2_ns=14805959000 oneway_us=2781 err=62.296 kp=0.500 state=y=37.704,err=62.296,kp=0.500,ki=0.080,kd=0.020,tick=1300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=13 t1_ns=14907043000 t2_ns=14911887000 oneway_us=2422 err=61.963 kp=0.500 state=y=38.037,err=61.963,kp=0.500,ki=0.080,kd=0.020,tick=1400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=14 t1_ns=15012876000 t2_ns=15017650000 oneway_us=2387 err=61.632 kp=0.500 state=y=38.368,err=61.632,kp=0.500,ki=0.080,kd=0.020,tick=1500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=15 t1_ns=15118518000 t2_ns=15122657000 oneway_us=2069 err=61.304 kp=0.500 state=y=38.696,err=61.304,kp=0.500,ki=0.080,kd=0.020,tick=1600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=16 t1_ns=15223335000 t2_ns=15227796000 oneway_us=2230 err=60.976 kp=0.500 state=y=39.024,err=60.976,kp=0.500,ki=0.080,kd=0.020,tick=1700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=19 drop=0 err=0
+ICPC_PEER_RX=19 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=17 t1_ns=15328704000 t2_ns=15332251000 oneway_us=1773 err=60.651 kp=0.500 state=y=39.349,err=60.651,kp=0.500,ki=0.080,kd=0.020,tick=1800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=18 t1_ns=15432972000 t2_ns=15436445000 oneway_us=1736 err=60.327 kp=0.500 state=y=39.673,err=60.327,kp=0.500,ki=0.080,kd=0.020,tick=1900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=19 t1_ns=15537110000 t2_ns=15540431000 oneway_us=1660 err=60.005 kp=0.500 state=y=39.995,err=60.005,kp=0.500,ki=0.080,kd=0.020,tick=2000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=20 t1_ns=15641182000 t2_ns=15645322000 oneway_us=2070 err=59.685 kp=0.500 state=y=40.315,err=59.685,kp=0.500,ki=0.080,kd=0.020,tick=2100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=21 t1_ns=15745990000 t2_ns=15750059000 oneway_us=2034 err=59.366 kp=0.500 state=y=40.634,err=59.366,kp=0.500,ki=0.080,kd=0.020,tick=2200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=22 t1_ns=15850886000 t2_ns=15856196000 oneway_us=2655 err=59.049 kp=0.500 state=y=40.951,err=59.049,kp=0.500,ki=0.080,kd=0.020,tick=2300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=23 t1_ns=15956920000 t2_ns=15960546000 oneway_us=1813 err=58.734 kp=0.500 state=y=41.266,err=58.734,kp=0.500,ki=0.080,kd=0.020,tick=2400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=24 t1_ns=16061378000 t2_ns=16064449000 oneway_us=1535 err=58.420 kp=0.500 state=y=41.580,err=58.420,kp=0.500,ki=0.080,kd=0.020,tick=2500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=25 t1_ns=16165187000 t2_ns=16168712000 oneway_us=1762 err=58.109 kp=0.500 state=y=41.891,err=58.109,kp=0.500,ki=0.080,kd=0.020,tick=2600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=26 t1_ns=16269375000 t2_ns=16272791000 oneway_us=1708 err=57.798 kp=0.500 state=y=42.202,err=57.798,kp=0.500,ki=0.080,kd=0.020,tick=2700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=29 drop=0 err=0
+ICPC_PEER_RX=29 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=27 t1_ns=16373583000 t2_ns=16376725000 oneway_us=1571 err=57.490 kp=0.500 state=y=42.510,err=57.490,kp=0.500,ki=0.080,kd=0.020,tick=2800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=28 t1_ns=16477507000 t2_ns=16480600000 oneway_us=1546 err=57.183 kp=0.500 state=y=42.817,err=57.183,kp=0.500,ki=0.080,kd=0.020,tick=2900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=29 t1_ns=16581369000 t2_ns=16584756000 oneway_us=1693 err=56.878 kp=0.500 state=y=43.122,err=56.878,kp=0.500,ki=0.080,kd=0.020,tick=3000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=30 t1_ns=16685516000 t2_ns=16690695000 oneway_us=2589 err=56.574 kp=0.500 state=y=43.426,err=56.574,kp=0.500,ki=0.080,kd=0.020,tick=3100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=31 t1_ns=16791432000 t2_ns=16794866000 oneway_us=1717 err=56.272 kp=0.500 state=y=43.728,err=56.272,kp=0.500,ki=0.080,kd=0.020,tick=3200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=32 t1_ns=16895653000 t2_ns=16898970000 oneway_us=1658 err=55.972 kp=0.500 state=y=44.028,err=55.972,kp=0.500,ki=0.080,kd=0.020,tick=3300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=33 t1_ns=16999804000 t2_ns=17002923000 oneway_us=1559 err=55.673 kp=0.500 state=y=44.327,err=55.673,kp=0.500,ki=0.080,kd=0.020,tick=3400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=34 t1_ns=17103612000 t2_ns=17106827000 oneway_us=1607 err=55.376 kp=0.500 state=y=44.624,err=55.376,kp=0.500,ki=0.080,kd=0.020,tick=3500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=35 t1_ns=17207516000 t2_ns=17210799000 oneway_us=1641 err=55.080 kp=0.500 state=y=44.920,err=55.080,kp=0.500,ki=0.080,kd=0.020,tick=3600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=36 t1_ns=17311578000 t2_ns=17315020000 oneway_us=1721 err=54.786 kp=0.500 state=y=45.214,err=54.786,kp=0.500,ki=0.080,kd=0.020,tick=3700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=39 drop=0 err=0
+ICPC_PEER_RX=39 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=37 t1_ns=17415729000 t2_ns=17419182000 oneway_us=1726 err=54.494 kp=0.500 state=y=45.506,err=54.494,kp=0.500,ki=0.080,kd=0.020,tick=3800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=38 t1_ns=17519945000 t2_ns=17523548000 oneway_us=1801 err=54.203 kp=0.500 state=y=45.797,err=54.203,kp=0.500,ki=0.080,kd=0.020,tick=3900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=39 t1_ns=17624213000 t2_ns=17627488000 oneway_us=1637 err=53.914 kp=0.500 state=y=46.086,err=53.914,kp=0.500,ki=0.080,kd=0.020,tick=4000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=40 t1_ns=17728162000 t2_ns=17731628000 oneway_us=1733 err=53.626 kp=0.500 state=y=46.374,err=53.626,kp=0.500,ki=0.080,kd=0.020,tick=4100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=41 t1_ns=17832368000 t2_ns=17835793000 oneway_us=1712 err=53.340 kp=0.500 state=y=46.660,err=53.340,kp=0.500,ki=0.080,kd=0.020,tick=4200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=42 t1_ns=17936615000 t2_ns=17939929000 oneway_us=1657 err=53.055 kp=0.500 state=y=46.945,err=53.055,kp=0.500,ki=0.080,kd=0.020,tick=4300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=43 t1_ns=18040743000 t2_ns=18044198000 oneway_us=1727 err=52.772 kp=0.500 state=y=47.228,err=52.772,kp=0.500,ki=0.080,kd=0.020,tick=4400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=44 t1_ns=18144904000 t2_ns=18148437000 oneway_us=1766 err=52.490 kp=0.500 state=y=47.510,err=52.490,kp=0.500,ki=0.080,kd=0.020,tick=4500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=45 t1_ns=18249092000 t2_ns=18252501000 oneway_us=1704 err=52.210 kp=0.500 state=y=47.790,err=52.210,kp=0.500,ki=0.080,kd=0.020,tick=4600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=48 drop=0 err=0
+ICPC_PEER_RX=48 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=46 t1_ns=18353268000 t2_ns=18356799000 oneway_us=1765 err=51.931 kp=0.500 state=y=48.069,err=51.931,kp=0.500,ki=0.080,kd=0.020,tick=4700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=47 t1_ns=18457461000 t2_ns=18460851000 oneway_us=1695 err=51.654 kp=0.500 state=y=48.346,err=51.654,kp=0.500,ki=0.080,kd=0.020,tick=4800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=48 t1_ns=18561580000 t2_ns=18565379000 oneway_us=1899 err=51.378 kp=0.500 state=y=48.622,err=51.378,kp=0.500,ki=0.080,kd=0.020,tick=4900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=49 t1_ns=18666333000 t2_ns=18670241000 oneway_us=1954 err=51.104 kp=0.500 state=y=48.896,err=51.104,kp=0.500,ki=0.080,kd=0.020,tick=5000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=50 t1_ns=18771109000 t2_ns=18774275000 oneway_us=1583 err=50.831 kp=0.500 state=y=49.169,err=50.831,kp=0.500,ki=0.080,kd=0.020,tick=5100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=51 t1_ns=18875156000 t2_ns=18879344000 oneway_us=2094 err=50.560 kp=0.500 state=y=49.440,err=50.560,kp=0.500,ki=0.080,kd=0.020,tick=5200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=52 t1_ns=18981193000 t2_ns=18985253000 oneway_us=2030 err=50.290 kp=0.500 state=y=49.710,err=50.290,kp=0.500,ki=0.080,kd=0.020,tick=5300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=53 t1_ns=19086333000 t2_ns=19090882000 oneway_us=2274 err=50.021 kp=0.500 state=y=49.979,err=50.021,kp=0.500,ki=0.080,kd=0.020,tick=5400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+TASK3_LOOP mode=FIXED i=54 t1_ns=19192346000 t2_ns=19197852000 oneway_us=2753 err=49.754 kp=0.500 state=y=50.246,err=49.754,kp=0.500,ki=0.080,kd=0.020,tick=5500
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=55 t1_ns=19298481000 t2_ns=19302995000 oneway_us=2257 err=49.489 kp=0.500 state=y=50.511,err=49.489,kp=0.500,ki=0.080,kd=0.020,tick=5600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=59 drop=0 err=0
+ICPC_PEER_RX=59 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=56 t1_ns=19403955000 t2_ns=19408159000 oneway_us=2102 err=49.225 kp=0.500 state=y=50.775,err=49.225,kp=0.500,ki=0.080,kd=0.020,tick=5700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=57 t1_ns=19508946000 t2_ns=19512455000 oneway_us=1754 err=48.962 kp=0.500 state=y=51.038,err=48.962,kp=0.500,ki=0.080,kd=0.020,tick=5800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=58 t1_ns=19613219000 t2_ns=19616677000 oneway_us=1729 err=48.700 kp=0.500 state=y=51.300,err=48.700,kp=0.500,ki=0.080,kd=0.020,tick=5900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=59 t1_ns=19717361000 t2_ns=19720896000 oneway_us=1767 err=48.441 kp=0.500 state=y=51.559,err=48.441,kp=0.500,ki=0.080,kd=0.020,tick=6000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=60 t1_ns=19821450000 t2_ns=19824741000 oneway_us=1645 err=48.182 kp=0.500 state=y=51.818,err=48.182,kp=0.500,ki=0.080,kd=0.020,tick=6100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=61 t1_ns=19925603000 t2_ns=19928907000 oneway_us=1652 err=47.925 kp=0.500 state=y=52.075,err=47.925,kp=0.500,ki=0.080,kd=0.020,tick=6200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=62 t1_ns=20029606000 t2_ns=20036173000 oneway_us=3283 err=47.669 kp=0.500 state=y=52.331,err=47.669,kp=0.500,ki=0.080,kd=0.020,tick=6300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=63 t1_ns=20136859000 t2_ns=20140934000 oneway_us=2037 err=47.414 kp=0.500 state=y=52.586,err=47.414,kp=0.500,ki=0.080,kd=0.020,tick=6400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=64 t1_ns=20241757000 t2_ns=20245593000 oneway_us=1918 err=47.161 kp=0.500 state=y=52.839,err=47.161,kp=0.500,ki=0.080,kd=0.020,tick=6500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=68 drop=0 err=0
+ICPC_PEER_RX=68 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=65 t1_ns=20346353000 t2_ns=20349634000 oneway_us=1640 err=46.910 kp=0.500 state=y=53.090,err=46.910,kp=0.500,ki=0.080,kd=0.020,tick=6600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=66 t1_ns=20450281000 t2_ns=20453883000 oneway_us=1801 err=46.659 kp=0.500 state=y=53.341,err=46.659,kp=0.500,ki=0.080,kd=0.020,tick=6700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=67 t1_ns=20554742000 t2_ns=20558124000 oneway_us=1691 err=46.410 kp=0.500 state=y=53.590,err=46.410,kp=0.500,ki=0.080,kd=0.020,tick=6800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=68 t1_ns=20658911000 t2_ns=20662179000 oneway_us=1634 err=46.162 kp=0.500 state=y=53.838,err=46.162,kp=0.500,ki=0.080,kd=0.020,tick=6900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=69 t1_ns=20763114000 t2_ns=20766252000 oneway_us=1569 err=45.916 kp=0.500 state=y=54.084,err=45.916,kp=0.500,ki=0.080,kd=0.020,tick=7000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=70 t1_ns=20867433000 t2_ns=20871659000 oneway_us=2113 err=45.671 kp=0.500 state=y=54.329,err=45.671,kp=0.500,ki=0.080,kd=0.020,tick=7100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=71 t1_ns=20973002000 t2_ns=20976669000 oneway_us=1833 err=45.427 kp=0.500 state=y=54.573,err=45.427,kp=0.500,ki=0.080,kd=0.020,tick=7200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=72 t1_ns=21077439000 t2_ns=21080751000 oneway_us=1656 err=45.185 kp=0.500 state=y=54.815,err=45.185,kp=0.500,ki=0.080,kd=0.020,tick=7300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=73 t1_ns=21181475000 t2_ns=21184762000 oneway_us=1643 err=44.943 kp=0.500 state=y=55.057,err=44.943,kp=0.500,ki=0.080,kd=0.020,tick=7400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=74 t1_ns=21285628000 t2_ns=21288928000 oneway_us=1650 err=44.704 kp=0.500 state=y=55.296,err=44.704,kp=0.500,ki=0.080,kd=0.020,tick=7500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=78 drop=0 err=0
+ICPC_PEER_RX=78 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=75 t1_ns=21389586000 t2_ns=21392867000 oneway_us=1640 err=44.465 kp=0.500 state=y=55.535,err=44.465,kp=0.500,ki=0.080,kd=0.020,tick=7600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=76 t1_ns=21493664000 t2_ns=21497691000 oneway_us=2013 err=44.228 kp=0.500 state=y=55.772,err=44.228,kp=0.500,ki=0.080,kd=0.020,tick=7700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=77 t1_ns=21598798000 t2_ns=21602927000 oneway_us=2064 err=43.991 kp=0.500 state=y=56.009,err=43.991,kp=0.500,ki=0.080,kd=0.020,tick=7800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=78 t1_ns=21703999000 t2_ns=21708263000 oneway_us=2132 err=43.757 kp=0.500 state=y=56.243,err=43.757,kp=0.500,ki=0.080,kd=0.020,tick=7900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=79 t1_ns=21809392000 t2_ns=21812761000 oneway_us=1684 err=43.523 kp=0.500 state=y=56.477,err=43.523,kp=0.500,ki=0.080,kd=0.020,tick=8000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=80 t1_ns=21913458000 t2_ns=21916733000 oneway_us=1637 err=43.291 kp=0.500 state=y=56.709,err=43.291,kp=0.500,ki=0.080,kd=0.020,tick=8100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=81 t1_ns=22017436000 t2_ns=22021028000 oneway_us=1796 err=43.060 kp=0.500 state=y=56.940,err=43.060,kp=0.500,ki=0.080,kd=0.020,tick=8200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=82 t1_ns=22121738000 t2_ns=22125004000 oneway_us=1633 err=42.830 kp=0.500 state=y=57.170,err=42.830,kp=0.500,ki=0.080,kd=0.020,tick=8300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=83 t1_ns=22225874000 t2_ns=22229185000 oneway_us=1655 err=42.601 kp=0.500 state=y=57.399,err=42.601,kp=0.500,ki=0.080,kd=0.020,tick=8400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=84 t1_ns=22329975000 t2_ns=22333438000 oneway_us=1731 err=42.374 kp=0.500 state=y=57.626,err=42.374,kp=0.500,ki=0.080,kd=0.020,tick=8500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=88 drop=0 err=0
+ICPC_PEER_RX=88 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=85 t1_ns=22434085000 t2_ns=22437533000 oneway_us=1724 err=42.148 kp=0.500 state=y=57.852,err=42.148,kp=0.500,ki=0.080,kd=0.020,tick=8600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=86 t1_ns=22538210000 t2_ns=22541529000 oneway_us=1659 err=41.923 kp=0.500 state=y=58.077,err=41.923,kp=0.500,ki=0.080,kd=0.020,tick=8700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+TASK3_LOOP mode=FIXED i=87 t1_ns=22642341000 t2_ns=22649675000 oneway_us=3667 err=41.699 kp=0.500 state=y=58.301,err=41.699,kp=0.500,ki=0.080,kd=0.020,tick=8800
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=88 t1_ns=22750755000 t2_ns=22754915000 oneway_us=2080 err=41.476 kp=0.500 state=y=58.524,err=41.476,kp=0.500,ki=0.080,kd=0.020,tick=8900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=FIXED i=89 t1_ns=22856394000 t2_ns=22860733000 oneway_us=2169 err=41.255 kp=0.500 state=y=58.745,err=41.255,kp=0.500,ki=0.080,kd=0.020,tick=9000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+TASK3_METRICS mode=FIXED first_err=73.694 final_err=41.255 final_y=58.745 rmse=53.499 settle_loops=-1 mean_oneway_us=1914 p99_oneway_us=3667
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_RESET
+ICPC_PEER_RESET
+TASK3_AI_LOOP_BEGIN
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=0 t1_ns=23066109000 t2_ns=23069410000 oneway_us=1650 err=73.694 kp=0.500 state=y=26.306,err=73.694,kp=0.500,ki=0.080,kd=0.020,tick=100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=1 t1_ns=23170140000 t2_ns=23173572000 oneway_us=1716 err=48.349 kp=1.177 state=y=51.651,err=48.349,kp=1.177,ki=0.134,kd=0.020,tick=200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=2 t1_ns=23274202000 t2_ns=23277852000 oneway_us=1825 err=38.724 kp=1.563 state=y=61.276,err=38.724,kp=1.563,ki=0.162,kd=0.020,tick=300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=97 drop=0 err=0
+ICPC_PEER_RX=97 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=3 t1_ns=23378668000 t2_ns=23382847000 oneway_us=2089 err=34.171 kp=1.839 state=y=65.829,err=34.171,kp=1.839,ki=0.181,kd=0.020,tick=400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=4 t1_ns=23483817000 t2_ns=23489267000 oneway_us=2725 err=31.259 kp=2.062 state=y=68.741,err=31.259,kp=2.062,ki=0.195,kd=0.020,tick=500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=5 t1_ns=23589972000 t2_ns=23593952000 oneway_us=1990 err=29.119 kp=2.251 state=y=70.881,err=29.119,kp=2.251,ki=0.206,kd=0.020,tick=600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=6 t1_ns=23694710000 t2_ns=23698445000 oneway_us=1867 err=27.436 kp=2.416 state=y=72.564,err=27.436,kp=2.416,ki=0.215,kd=0.020,tick=700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=7 t1_ns=23799085000 t2_ns=23802308000 oneway_us=1611 err=26.061 kp=2.562 state=y=73.939,err=26.061,kp=2.562,ki=0.223,kd=0.020,tick=800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=8 t1_ns=23903049000 t2_ns=23906212000 oneway_us=1581 err=24.928 kp=2.691 state=y=75.072,err=24.928,kp=2.691,ki=0.229,kd=0.020,tick=900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=9 t1_ns=24007255000 t2_ns=24010694000 oneway_us=1719 err=23.959 kp=2.808 state=y=76.041,err=23.959,kp=2.808,ki=0.234,kd=0.020,tick=1000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=10 t1_ns=24111446000 t2_ns=24114903000 oneway_us=1728 err=23.123 kp=2.914 state=y=76.877,err=23.123,kp=2.914,ki=0.238,kd=0.020,tick=1100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=11 t1_ns=24215648000 t2_ns=24219330000 oneway_us=1841 err=22.405 kp=3.009 state=y=77.595,err=22.405,kp=3.009,ki=0.241,kd=0.020,tick=1200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=12 t1_ns=24320224000 t2_ns=24323888000 oneway_us=1832 err=21.769 kp=3.097 state=y=78.231,err=21.769,kp=3.097,ki=0.243,kd=0.020,tick=1300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=107 drop=0 err=0
+ICPC_PEER_RX=107 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=13 t1_ns=24424753000 t2_ns=24428578000 oneway_us=1912 err=21.203 kp=3.177 state=y=78.797,err=21.203,kp=3.177,ki=0.245,kd=0.020,tick=1400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=14 t1_ns=24529434000 t2_ns=24532924000 oneway_us=1745 err=20.700 kp=3.251 state=y=79.300,err=20.700,kp=3.251,ki=0.246,kd=0.020,tick=1500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=15 t1_ns=24633784000 t2_ns=24637122000 oneway_us=1669 err=20.244 kp=3.319 state=y=79.756,err=20.244,kp=3.319,ki=0.247,kd=0.020,tick=1600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=16 t1_ns=24738169000 t2_ns=24741642000 oneway_us=1736 err=19.839 kp=3.382 state=y=80.161,err=19.839,kp=3.382,ki=0.247,kd=0.020,tick=1700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=17 t1_ns=24842330000 t2_ns=24845581000 oneway_us=1625 err=19.461 kp=3.442 state=y=80.539,err=19.461,kp=3.442,ki=0.247,kd=0.020,tick=1800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=18 t1_ns=24946154000 t2_ns=24949360000 oneway_us=1603 err=19.108 kp=3.499 state=y=80.892,err=19.108,kp=3.499,ki=0.247,kd=0.020,tick=1900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=19 t1_ns=25050088000 t2_ns=25053576000 oneway_us=1744 err=18.765 kp=3.556 state=y=81.235,err=18.765,kp=3.556,ki=0.247,kd=0.020,tick=2000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=20 t1_ns=25154342000 t2_ns=25157731000 oneway_us=1694 err=18.441 kp=3.611 state=y=81.559,err=18.441,kp=3.611,ki=0.247,kd=0.020,tick=2100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=21 t1_ns=25258500000 t2_ns=25261819000 oneway_us=1659 err=18.131 kp=3.665 state=y=81.869,err=18.131,kp=3.665,ki=0.247,kd=0.020,tick=2200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=116 drop=0 err=0
+ICPC_PEER_RX=116 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=22 t1_ns=25362627000 t2_ns=25366122000 oneway_us=1747 err=17.836 kp=3.717 state=y=82.164,err=17.836,kp=3.717,ki=0.247,kd=0.020,tick=2300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=23 t1_ns=25466878000 t2_ns=25470049000 oneway_us=1585 err=17.553 kp=3.768 state=y=82.447,err=17.553,kp=3.768,ki=0.247,kd=0.020,tick=2400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=24 t1_ns=25570918000 t2_ns=25574038000 oneway_us=1560 err=17.278 kp=3.819 state=y=82.722,err=17.278,kp=3.819,ki=0.247,kd=0.020,tick=2500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=25 t1_ns=25674951000 t2_ns=25678156000 oneway_us=1602 err=17.017 kp=3.868 state=y=82.983,err=17.017,kp=3.868,ki=0.247,kd=0.020,tick=2600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=26 t1_ns=25778877000 t2_ns=25782612000 oneway_us=1867 err=16.766 kp=3.916 state=y=83.234,err=16.766,kp=3.916,ki=0.247,kd=0.020,tick=2700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=27 t1_ns=25883392000 t2_ns=25886751000 oneway_us=1679 err=16.524 kp=3.963 state=y=83.476,err=16.524,kp=3.963,ki=0.247,kd=0.020,tick=2800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=28 t1_ns=25987564000 t2_ns=25991171000 oneway_us=1803 err=16.291 kp=4.009 state=y=83.709,err=16.291,kp=4.009,ki=0.247,kd=0.020,tick=2900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+TASK3_LOOP mode=AI i=29 t1_ns=26091941000 t2_ns=26097372000 oneway_us=2715 err=16.066 kp=4.054 state=y=83.934,err=16.066,kp=4.054,ki=0.247,kd=0.020,tick=3000
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=30 t1_ns=26198083000 t2_ns=26201550000 oneway_us=1733 err=15.850 kp=4.098 state=y=84.150,err=15.850,kp=4.098,ki=0.247,kd=0.020,tick=3100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=31 t1_ns=26302258000 t2_ns=26305675000 oneway_us=1708 err=15.639 kp=4.142 state=y=84.361,err=15.639,kp=4.142,ki=0.247,kd=0.020,tick=3200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=126 drop=0 err=0
+ICPC_PEER_RX=126 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=32 t1_ns=26406422000 t2_ns=26409888000 oneway_us=1733 err=15.438 kp=4.184 state=y=84.562,err=15.438,kp=4.184,ki=0.247,kd=0.020,tick=3300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=33 t1_ns=26510637000 t2_ns=26513943000 oneway_us=1653 err=15.241 kp=4.226 state=y=84.759,err=15.241,kp=4.226,ki=0.247,kd=0.020,tick=3400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=34 t1_ns=26614634000 t2_ns=26618526000 oneway_us=1946 err=15.051 kp=4.267 state=y=84.949,err=15.051,kp=4.267,ki=0.247,kd=0.020,tick=3500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=35 t1_ns=26719724000 t2_ns=26723871000 oneway_us=2073 err=14.868 kp=4.307 state=y=85.132,err=14.868,kp=4.307,ki=0.247,kd=0.020,tick=3600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=36 t1_ns=26825093000 t2_ns=26828833000 oneway_us=1870 err=14.689 kp=4.347 state=y=85.311,err=14.689,kp=4.347,ki=0.247,kd=0.020,tick=3700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=37 t1_ns=26929674000 t2_ns=26935302000 oneway_us=2814 err=14.515 kp=4.386 state=y=85.485,err=14.515,kp=4.386,ki=0.247,kd=0.020,tick=3800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=38 t1_ns=27036354000 t2_ns=27040621000 oneway_us=2133 err=14.348 kp=4.424 state=y=85.652,err=14.348,kp=4.424,ki=0.247,kd=0.020,tick=3900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=39 t1_ns=27141812000 t2_ns=27146166000 oneway_us=2177 err=14.186 kp=4.461 state=y=85.814,err=14.186,kp=4.461,ki=0.247,kd=0.020,tick=4000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=40 t1_ns=27247134000 t2_ns=27251074000 oneway_us=1970 err=14.027 kp=4.498 state=y=85.973,err=14.027,kp=4.498,ki=0.247,kd=0.020,tick=4100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=41 t1_ns=27351824000 t2_ns=27356799000 oneway_us=2487 err=13.873 kp=4.534 state=y=86.127,err=13.873,kp=4.534,ki=0.247,kd=0.020,tick=4200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=136 drop=0 err=0
+ICPC_PEER_RX=136 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=42 t1_ns=27457569000 t2_ns=27461010000 oneway_us=1720 err=13.725 kp=4.569 state=y=86.275,err=13.725,kp=4.569,ki=0.247,kd=0.020,tick=4300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=43 t1_ns=27561671000 t2_ns=27564931000 oneway_us=1630 err=13.579 kp=4.604 state=y=86.421,err=13.579,kp=4.604,ki=0.247,kd=0.020,tick=4400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=44 t1_ns=27665611000 t2_ns=27668835000 oneway_us=1612 err=13.435 kp=4.639 state=y=86.565,err=13.435,kp=4.639,ki=0.247,kd=0.020,tick=4500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=45 t1_ns=27769515000 t2_ns=27772960000 oneway_us=1722 err=13.299 kp=4.672 state=y=86.701,err=13.299,kp=4.672,ki=0.247,kd=0.020,tick=4600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=46 t1_ns=27873631000 t2_ns=27876932000 oneway_us=1650 err=13.162 kp=4.706 state=y=86.838,err=13.162,kp=4.706,ki=0.247,kd=0.020,tick=4700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=47 t1_ns=27977648000 t2_ns=27980945000 oneway_us=1648 err=13.033 kp=4.738 state=y=86.967,err=13.033,kp=4.738,ki=0.247,kd=0.020,tick=4800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=48 t1_ns=28081719000 t2_ns=28084847000 oneway_us=1564 err=12.905 kp=4.770 state=y=87.095,err=12.905,kp=4.770,ki=0.247,kd=0.020,tick=4900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=49 t1_ns=28185636000 t2_ns=28188787000 oneway_us=1575 err=12.779 kp=4.802 state=y=87.221,err=12.779,kp=4.802,ki=0.247,kd=0.020,tick=5000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=50 t1_ns=28289555000 t2_ns=28292825000 oneway_us=1635 err=12.657 kp=4.833 state=y=87.343,err=12.657,kp=4.833,ki=0.247,kd=0.020,tick=5100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=145 drop=0 err=0
+ICPC_PEER_RX=145 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=51 t1_ns=28393587000 t2_ns=28397069000 oneway_us=1741 err=12.537 kp=4.864 state=y=87.463,err=12.537,kp=4.864,ki=0.247,kd=0.020,tick=5200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=52 t1_ns=28497760000 t2_ns=28501168000 oneway_us=1704 err=12.421 kp=4.894 state=y=87.579,err=12.421,kp=4.894,ki=0.247,kd=0.020,tick=5300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=53 t1_ns=28602023000 t2_ns=28605991000 oneway_us=1984 err=12.308 kp=4.923 state=y=87.692,err=12.308,kp=4.923,ki=0.247,kd=0.020,tick=5400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=54 t1_ns=28706788000 t2_ns=28710018000 oneway_us=1615 err=12.195 kp=4.953 state=y=87.805,err=12.195,kp=4.953,ki=0.247,kd=0.020,tick=5500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=55 t1_ns=28810850000 t2_ns=28814147000 oneway_us=1648 err=12.088 kp=4.981 state=y=87.912,err=12.088,kp=4.981,ki=0.247,kd=0.020,tick=5600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=56 t1_ns=28914821000 t2_ns=28918666000 oneway_us=1922 err=11.980 kp=5.010 state=y=88.020,err=11.980,kp=5.010,ki=0.247,kd=0.020,tick=5700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=57 t1_ns=29019529000 t2_ns=29023357000 oneway_us=1914 err=11.876 kp=5.038 state=y=88.124,err=11.876,kp=5.038,ki=0.247,kd=0.020,tick=5800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=58 t1_ns=29124143000 t2_ns=29128325000 oneway_us=2091 err=11.775 kp=5.065 state=y=88.225,err=11.775,kp=5.065,ki=0.247,kd=0.020,tick=5900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=59 t1_ns=29229085000 t2_ns=29233212000 oneway_us=2063 err=11.675 kp=5.092 state=y=88.325,err=11.675,kp=5.092,ki=0.247,kd=0.020,tick=6000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=60 t1_ns=29334381000 t2_ns=29338532000 oneway_us=2075 err=11.577 kp=5.119 state=y=88.423,err=11.577,kp=5.119,ki=0.247,kd=0.020,tick=6100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=155 drop=0 err=0
+ICPC_PEER_RX=155 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+TASK3_LOOP mode=AI i=61 t1_ns=29439618000 t2_ns=29446138000 oneway_us=3260 err=11.481 kp=5.145 state=y=88.519,err=11.481,kp=5.145,ki=0.247,kd=0.020,tick=6200
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=62 t1_ns=29546915000 t2_ns=29550102000 oneway_us=1593 err=11.387 kp=5.171 state=y=88.613,err=11.387,kp=5.171,ki=0.247,kd=0.020,tick=6300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=63 t1_ns=29651015000 t2_ns=29655174000 oneway_us=2079 err=11.294 kp=5.197 state=y=88.706,err=11.294,kp=5.197,ki=0.247,kd=0.020,tick=6400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=64 t1_ns=29756348000 t2_ns=29760766000 oneway_us=2209 err=11.204 kp=5.222 state=y=88.796,err=11.204,kp=5.222,ki=0.247,kd=0.020,tick=6500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=65 t1_ns=29861958000 t2_ns=29865532000 oneway_us=1787 err=11.115 kp=5.247 state=y=88.885,err=11.115,kp=5.247,ki=0.247,kd=0.020,tick=6600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=66 t1_ns=29966336000 t2_ns=29972003000 oneway_us=2833 err=11.029 kp=5.271 state=y=88.971,err=11.029,kp=5.271,ki=0.247,kd=0.020,tick=6700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=67 t1_ns=30073281000 t2_ns=30077830000 oneway_us=2274 err=10.944 kp=5.295 state=y=89.056,err=10.944,kp=5.295,ki=0.247,kd=0.020,tick=6800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=68 t1_ns=30178912000 t2_ns=30182260000 oneway_us=1674 err=10.860 kp=5.319 state=y=89.140,err=10.860,kp=5.319,ki=0.247,kd=0.020,tick=6900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=69 t1_ns=30283022000 t2_ns=30287242000 oneway_us=2110 err=10.776 kp=5.343 state=y=89.224,err=10.776,kp=5.343,ki=0.247,kd=0.020,tick=7000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=164 drop=0 err=0
+ICPC_PEER_RX=164 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=70 t1_ns=30388341000 t2_ns=30394085000 oneway_us=2872 err=10.696 kp=5.366 state=y=89.304,err=10.696,kp=5.366,ki=0.247,kd=0.020,tick=7100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=71 t1_ns=30495268000 t2_ns=30500160000 oneway_us=2446 err=10.616 kp=5.389 state=y=89.384,err=10.616,kp=5.389,ki=0.247,kd=0.020,tick=7200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=72 t1_ns=30600960000 t2_ns=30604629000 oneway_us=1834 err=10.539 kp=5.411 state=y=89.461,err=10.539,kp=5.411,ki=0.247,kd=0.020,tick=7300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=73 t1_ns=30705367000 t2_ns=30708657000 oneway_us=1645 err=10.462 kp=5.433 state=y=89.538,err=10.462,kp=5.433,ki=0.247,kd=0.020,tick=7400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=74 t1_ns=30809384000 t2_ns=30813977000 oneway_us=2296 err=10.387 kp=5.455 state=y=89.613,err=10.387,kp=5.455,ki=0.247,kd=0.020,tick=7500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=75 t1_ns=30914722000 t2_ns=30917970000 oneway_us=1624 err=10.312 kp=5.477 state=y=89.688,err=10.312,kp=5.477,ki=0.247,kd=0.020,tick=7600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=76 t1_ns=31018762000 t2_ns=31021901000 oneway_us=1569 err=10.240 kp=5.498 state=y=89.760,err=10.240,kp=5.498,ki=0.247,kd=0.020,tick=7700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=77 t1_ns=31122605000 t2_ns=31125682000 oneway_us=1538 err=10.168 kp=5.519 state=y=89.832,err=10.168,kp=5.519,ki=0.247,kd=0.020,tick=7800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=78 t1_ns=31226339000 t2_ns=31229699000 oneway_us=1680 err=10.099 kp=5.539 state=y=89.901,err=10.099,kp=5.539,ki=0.247,kd=0.020,tick=7900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=79 t1_ns=31330454000 t2_ns=31333774000 oneway_us=1660 err=10.028 kp=5.560 state=y=89.972,err=10.028,kp=5.560,ki=0.247,kd=0.020,tick=8000
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_RX=174 drop=0 err=0
+ICPC_PEER_RX=174 drop=0 err=0
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=80 t1_ns=31434506000 t2_ns=31437659000 oneway_us=1576 err=9.960 kp=5.580 state=y=90.040,err=9.960,kp=5.580,ki=0.247,kd=0.020,tick=8100
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=81 t1_ns=31538461000 t2_ns=31541622000 oneway_us=1580 err=9.893 kp=5.600 state=y=90.107,err=9.893,kp=5.600,ki=0.247,kd=0.020,tick=8200
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=82 t1_ns=31642317000 t2_ns=31646461000 oneway_us=2072 err=9.828 kp=5.619 state=y=90.172,err=9.828,kp=5.619,ki=0.247,kd=0.020,tick=8300
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=83 t1_ns=31747119000 t2_ns=31750440000 oneway_us=1660 err=9.762 kp=5.639 state=y=90.238,err=9.762,kp=5.639,ki=0.247,kd=0.020,tick=8400
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=84 t1_ns=31851275000 t2_ns=31854600000 oneway_us=1662 err=9.698 kp=5.658 state=y=90.302,err=9.698,kp=5.658,ki=0.247,kd=0.020,tick=8500
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=85 t1_ns=31955328000 t2_ns=31958454000 oneway_us=1563 err=9.636 kp=5.676 state=y=90.364,err=9.636,kp=5.676,ki=0.247,kd=0.020,tick=8600
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=86 t1_ns=32059147000 t2_ns=32062466000 oneway_us=1659 err=9.573 kp=5.695 state=y=90.427,err=9.573,kp=5.695,ki=0.247,kd=0.020,tick=8700
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=87 t1_ns=32163207000 t2_ns=32166421000 oneway_us=1607 err=9.512 kp=5.713 state=y=90.488,err=9.512,kp=5.713,ki=0.247,kd=0.020,tick=8800
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=88 t1_ns=32267167000 t2_ns=32270304000 oneway_us=1568 err=9.452 kp=5.731 state=y=90.548,err=9.452,kp=5.731,ki=0.247,kd=0.020,tick=8900
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+ICPC_PEER_CTRL
+ICPC_PEER_CTRL
+ICPC_PEER_PID_TUNED
+ICPC_PEER_PID_TUNED
+TASK3_LOOP mode=AI i=89 t1_ns=32370986000 t2_ns=32374053000 oneway_us=1533 err=9.392 kp=5.749 state=y=90.608,err=9.392,kp=5.749,ki=0.247,kd=0.020,tick=9000
+ICPC_PEER_RX=183 drop=0 err=0
+ICPC_PEER_RX=183 drop=0 err=0
+ICPC_PEER_STATE
+ICPC_PEER_STATE
+TASK3_METRICS mode=AI first_err=73.694 final_err=9.392 final_y=90.608 rmse=18.532 settle_loops=-1 mean_oneway_us=1859 p99_oneway_us=2872
+TASK3_COMPARE fixed_rmse=53.499 ai_rmse=18.532 fixed_settle=-1 ai_settle=-1 fixed_final_err=41.255 ai_final_err=9.392 fixed_p99_oneway_us=3667 ai_p99_oneway_us=2872
+=== SUCCESS PATTERN MATCHED: (?m)^TASK3_COMPARE\b ===
+
+task3-compare pass
+task3-compare pass
+~ # [6n[axbuild] qemu run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json ... done (43.82s)
+  qemu run: 43.88s
+ok: task3-pid-compare (43.89s)
+
+axvisor qemu test summary:
+  PASS task3-pid-compare (43.89s)
+result: 1/1 case(s) passed
+total: 47.74s
+all axvisor qemu tests passed

@@ -1,0 +1,36 @@
+# Vm base info configs — Zephyr RTOS guest template (Task 1 bare-metal baseline)
+#
+# Build Zephyr for qemu_cortex_a53, then set kernel_path to the produced zephyr.bin.
+# Used for multi-RTOS comparison (+2 bonus) and native RTOS latency baseline (M3).
+#
+[base]
+id = 1
+name = "zephyr-rt-baseline"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [3]
+vcpu_priorities = [-20]
+
+[kernel]
+entry_point = 0x4000_10b4
+image_location = "memory"
+kernel_path = "../../../../images/qemu-aarch64/zephyr/zephyr-qemu"
+kernel_load_addr = 0x4000_0000
+dtb_load_addr = 0x47e0_0000
+
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+passthrough_devices = [
+    ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = []
+
+emu_devices = []

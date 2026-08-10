@@ -1,0 +1,653 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running `target/debug/tg-xtask axvisor test qemu --arch aarch64 -g stress -c mixed-rt-stress-baseline-strong-short`
+[2026-08-02T02:14:16Z INFO  axbuild::context] Workspace root: /home/allen/codes/os/tgoskits
+running axvisor qemu tests for arch: aarch64 (target: aarch64-unknown-none-softfloat, cases: 1)
+[2026-08-02T02:14:16Z INFO  axbuild::context] Workspace member dir for axvisor: /home/allen/codes/os/tgoskits/os/axvisor
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/stress/mixed-rt-stress-baseline-strong-short/build-aarch64-unknown-none-softfloat.toml
+[2026-08-02T02:14:16Z INFO  ostool::run::qemu] Using QEMU config file: /home/allen/codes/os/tgoskits/test-suit/axvisor/stress/mixed-rt-stress-baseline-strong-short/qemu-aarch64.toml
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/stress/mixed-rt-stress-baseline-strong-short/build-aarch64-unknown-none-softfloat.toml
+file already exists and passed checksum verification
+image archive verified at /home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img.tar.xz
+image already extracted and up to date at /home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/stress/mixed-rt-stress-baseline-strong-short/build-aarch64-unknown-none-softfloat.toml
+[axbuild] cargo build package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/home/allen/codes/os/tgoskits/test-suit/axvisor/stress/mixed-rt-stress-baseline-strong-short/build-aarch64-unknown-none-softfloat.toml ...
+sh -c /home/allen/codes/os/tgoskits/tmp/axbuild/std/prebuild/prebuild-aarch64-unknown-linux-musl-25757cc8233f29c6.sh
+AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+AXVISOR_VM_CONFIGS=/home/allen/codes/os/tgoskits/os/axvisor/configs/vms/qemu/aarch64/linux-smp2.toml:/home/allen/codes/os/tgoskits/os/axvisor/configs/vms/qemu/aarch64/arceos-rt-smp1-baseline-strong.toml
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_musl=--target=aarch64-linux-musl --sysroot=/home/allen/tools/aarch64-linux-musl-cross/bin/../aarch64-linux-musl --gcc-toolchain=/home/allen/tools/aarch64-linux-musl-cross -isystem /home/allen/tools/aarch64-linux-musl-cross/bin/../aarch64-linux-musl/include -isystem /home/allen/tools/aarch64-linux-musl-cross/lib/gcc/aarch64-linux-musl/11.2.1/include -mgeneral-regs-only
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+CC_aarch64_unknown_linux_musl=aarch64-linux-musl-cc
+CFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only
+CXXFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only
+cargo build --config /home/allen/codes/os/tgoskits/tmp/axbuild/std/config-aarch64-unknown-linux-musl-dynamic.toml -p axvisor --target scripts/targets/std/pie/aarch64-unknown-linux-musl.json -Z unstable-options --target-dir /home/allen/codes/os/tgoskits/target --features ax-std/fs,ax-std/smp,ax-std/std-compat,ax-std/virtio-blk,fs,log/release_max_level_info -Z json-target-spec --bin axvisor --release --message-format json-render-diagnostics
+warning: function `set_fdt_addr_phys_if_valid` is never used
+  --> platforms/someboot/src/fdt/mod.rs:32:15
+   |
+32 | pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling axvisor v0.5.21 (/home/allen/codes/os/tgoskits/os/axvisor)
+warning: `someboot` (lib) generated 1 warning
+warning: function `set_pending_irq` is never used
+  --> virtualization/axvm/src/host/gic.rs:61:15
+   |
+61 | pub(crate) fn set_pending_irq(intid: usize) {
+   |               ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `axvm` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 1.23s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/allen/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.2
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Converting ELF to BIN format...
+  elf: /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor
+  bin: /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor.bin
+/home/allen/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor.bin
+[axbuild] cargo build package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/home/allen/codes/os/tgoskits/test-suit/axvisor/stress/mixed-rt-stress-baseline-strong-short/build-aarch64-unknown-none-softfloat.toml ... done (1.57s)
+[axbuild] cargo build elf=/home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor
+[axbuild] cargo build artifact_dir=/home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release
+[1/1] axvisor qemu mixed-rt-stress-baseline-strong-short
+AXBUILD_TIMING: scope=qemu-asset case=mixed-rt-stress-baseline-strong-short phase=resolve-pipeline elapsed_s=0.000
+AXBUILD_TIMING: scope=qemu-asset case=mixed-rt-stress-baseline-strong-short phase=plain-rootfs pipeline=plain elapsed_s=0.000
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/stress/mixed-rt-stress-baseline-strong-short/build-aarch64-unknown-none-softfloat.toml
+  prepare assets: 11.86ms (pipeline=plain, cache=miss)
+  qemu config: /home/allen/codes/os/tgoskits/test-suit/axvisor/stress/mixed-rt-stress-baseline-strong-short/qemu-aarch64.toml (timeout=900s)
+  rootfs: /home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
+[axbuild] qemu run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json ...
+qemu-system-aarch64 -nographic -cpu cortex-a72 -machine virt,virtualization=on,gic-version=3 -smp 4 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=/home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img -append root=/dev/vda rw init=/bin/sh -m 8g -snapshot -kernel /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor.bin
+root=/dev/vda rw init=/bin/sh
+VM Load @0x40200000
+VM Load Offset: 0xffff0000c0200000
+Memory Map:
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000040600000 (4 MiB)
+  Free   0x00000040600000 - 0x00000240000000 (7.99 GiB)
+Initialize RAM allocator: 0x40600000..0x240000000
+Initializing per-CPU data
+Per-CPU data one cpu size: 0x43000 bytes
+Total per-CPU data size for secondary CPUs: 0x10c000 bytes (4 CPUs)
+Flushed RAM used range to memory map: 0x40600000..0x40700000, current: 0x40700000
+Flushed RAM used range to memory map: 0x40700000..0x4080c000, current: 0x4080c000
+Per-CPU data allocated at 0x40700000 - 0x4080c000
+Initializing per-CPU RAM for CPU0 - hard id 0x0 @ 0x40700000
+Initializing per-CPU RAM for CPU1 - hard id 0x1 @ 0x40743000
+Initializing per-CPU RAM for CPU2 - hard id 0x2 @ 0x40786000
+Initializing per-CPU RAM for CPU3 - hard id 0x3 @ 0x407c9000
+CPU0 - hard id 0x0, stack top @0x40743000, stack top virt @0xff0040743000, entry virt @0xffff8017a3c8
+CPU1 - hard id 0x1, stack top @0x40786000, stack top virt @0xff0040786000, entry virt @0xffff8017a3c8
+CPU2 - hard id 0x2, stack top @0x407c9000, stack top virt @0xff00407c9000, entry virt @0xffff8017a3c8
+CPU3 - hard id 0x3, stack top @0x4080c000, stack top virt @0xff004080c000, entry virt @0xffff8017a3c8
+EL: 2
+Mapping early memory regions...
+Ram                 : [0x0000000040000000, 0x0000000240000000) -> [0x0000000040000000, 0x0000000240000000) (8 GiB)
+KImage              : [0x0000ffff80000000, 0x0000ffff80400000) -> [0x0000000040200000, 0x0000000040600000) (4 MiB)
+PerCpu              : [0x0000ff0040700000, 0x0000ff004080c000) -> [0x0000000040700000, 0x000000004080c000) (1.05 MiB)
+Debug serial        : [0x0000000009000000, 0x0000000009001000) -> [0x0000000009000000, 0x0000000009001000) (4 KiB)
+Boot page table at physical address: 0x4080c000
+Setting up table registers...
+MMU Entry point at physical address: 0x40375688
+Trap vector at 0xffff80179800
+Memory Map:
+  MMIO   0x00000004000000 - 0x00000008010000 (64.06 MiB)
+  MMIO   0x00000008080000 - 0x00000009001000 (15.5 MiB)
+  MMIO   0x00000009010000 - 0x00000009011000 (4 KiB)
+  MMIO   0x00000009020000 - 0x00000009021000 (4 KiB)
+  MMIO   0x00000009030000 - 0x00000009031000 (4 KiB)
+  MMIO   0x0000000a000000 - 0x0000000a004000 (16 KiB)
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000040600000 (4 MiB)
+  Rsv    0x00000040600000 - 0x00000040700000 (1 MiB)
+  PerCPU 0x00000040700000 - 0x0000004080c000 (1.05 MiB)
+  Rsv    0x0000004080c000 - 0x00000040816000 (40 KiB)
+  Free   0x00000040816000 - 0x00000240000000 (7.99 GiB)
+  MMIO   0x00004010000000 - 0x00004020000000 (256 MiB)
+Jumping to main entry point at 0xffff8015f194 with SP 0x0000ff0040743000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = linux,dummy-virt
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 4
+
+[37m[  0.067114 ax_runtime:211] [32mLogging is enabled.[m
+[m[37m[  0.067893 ax_runtime:212] [32mPrimary CPU 0 started, arg = 0x40600000.[m
+[m[37m[  0.068086 ax_runtime:214] [32mFound physcial memory regions:[m
+[m[37m[  0.069773 ax_runtime:216] [32m  [PA:0x4000000, PA:0x8010000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.070220 ax_runtime:216] [32m  [PA:0x8080000, PA:0x9001000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.070425 ax_runtime:216] [32m  [PA:0x9010000, PA:0x9011000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.070628 ax_runtime:216] [32m  [PA:0x9020000, PA:0x9021000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.070827 ax_runtime:216] [32m  [PA:0x9030000, PA:0x9031000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.071034 ax_runtime:216] [32m  [PA:0xa000000, PA:0xa004000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.071235 ax_runtime:216] [32m  [PA:0x40000000, PA:0x40200000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.071480 ax_runtime:216] [32m  [PA:0x40200000, PA:0x40600000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.071631 ax_runtime:216] [32m  [PA:0x40600000, PA:0x40700000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.071746 ax_runtime:216] [32m  [PA:0x40700000, PA:0x4080c000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.071860 ax_runtime:216] [32m  [PA:0x4080c000, PA:0x40816000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.071981 ax_runtime:216] [32m  [PA:0x40816000, PA:0x240000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.072088 ax_runtime:216] [32m  [PA:0x4010000000, PA:0x4020000000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.072242 ax_runtime:358] [32mInitialize global memory allocator...[m
+[m[37m[  0.072361 ax_runtime:359] [32m  use buddy-slab-allocator allocator.[m
+[m[37m[  0.072646 ax_alloc::buddy_slab:150] [32mInitialize global memory allocator, start_vaddr: 0x40816000, size: 0x1ff7ea000[m
+[m[37m[  0.081398 ax_alloc::buddy_slab:399] [32mglobal allocator initialized[m
+[m[37m[  0.081688 ax_alloc::buddy_slab:160] [32mAdd memory region, start_vaddr: 0x40000000, size: 0x200000[m
+[m[37m[  0.081875 buddy_slab_allocator::global:143] [32mGlobalAllocator: skip region 0x40000000+0x200000, no allocator-visible memory after 2097152 alignment[m
+[m[37m[  0.082332 ax_runtime:251] [32mkernel aspace: [VA:0x0, VA:0xffffffffffffffff)[m
+[m[37m[  0.082525 ax_mm:112] [32mInitialize virtual memory management...[m
+[m[37m[  0.647761 ax_runtime:263] [32mInitialize platform devices...[m
+[m[37m[  0.654833 someboot::arch::power:23] [32mPower management method : SMC[m
+[m[37m[  0.655004 somehal::driver:5] [32mInitializing rdrive with FDT at 0x40600000[m
+[m[37m[  0.678842 ax_task::api:146] [32mInitialize scheduling...[m
+[m[37m[  0.680008 ax_task::api:151] [32m  use Completely Fair scheduler.[m
+[m[37m[  0.680101 ax_runtime:289] [32mInitialize interrupt handlers...[m
+[m[37m[  0.682968 ax_runtime::devices:2] [32mProbe platform devices...[m
+[m[37m[  0.687370 virtio_drivers::device::blk:63] [32mfound a block device of size 2097152KB[m
+[m[37m[  0.688175 ax_driver::virtio::block:91] [32mregistered virtio block device[m
+[m[37m[  0.728352 ax_runtime::irq:120] [32mregistered virtio-blk/0 irq IrqId { domain: IrqDomainId(7), hwirq: HwIrq(79) }[m
+[m[37m[  0.728967 ax_fs_ng::block::runtime::device:1359] [33mrdif filesystem block device virtio-blk registered with IRQ-driven completion[m
+[m[37m[  0.729151 ax_fs_ng::block::runtime::device:1361] [32mregistered rdif filesystem block device virtio-blk[m
+[m[37m[  0.736485 ax_fs_ng::root:249] [32m    raw device fs=Some(Ext4)[m
+[m[37m[  0.736710 ax_fs_ng::root:280] [32m  block device 0 (virtio-blk) has no usable partition table; treating the whole disk as a candidate[m
+[m[37m[  0.737162 ax_fs_ng::root:389] [32m  matched root by raw device path on disk0 raw device[m
+[m[37m[  0.737406 ax_fs_ng:75] [32mInitialize filesystem subsystem...[m
+[m[37m[  0.737488 ax_fs_ng:76] [32m  selected root device: disk0 raw device[m
+[m[37m[  0.765174 rsext4::ext4::mount:340] [32m/lost+found exists (path resolution, repaired hint inode=11)[m
+[m[37m[  0.766663 rsext4::ext4::mount:462] [32mExt4 filesystem mounted[m
+[m[37m[  0.766764 rsext4::ext4::mount:463] [32m  - block size: 4096 bytes[m
+[m[37m[  0.766858 rsext4::ext4::mount:464] [32m  - total blocks: 524288[m
+[m[37m[  0.766943 rsext4::ext4::mount:465] [32m  - free blocks: 113690[m
+[m[37m[  0.767025 rsext4::ext4::mount:466] [32m  - total inodes: 131072[m
+[m[37m[  0.767104 rsext4::ext4::mount:467] [32m  - free inodes: 125267[m
+[m[37m[  0.767205 rsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[m[37m[  0.773716 rsext4::ext4::mount:546] [32mExt4 filesystem mounted[m
+[m[37m[  0.774265 ax_fs_ng:88] [32m  filesystem type: "ext4"[m
+[m[37m[  0.777363 ax_runtime::mp:79] [32mSecondary CPU 1 started.[m
+[m[37m[  0.779345 ax_runtime::mp:79] [32mSecondary CPU 2 started.[m
+[m[37m[  0.780182 ax_runtime::mp:107] [32mSecondary CPU 1 init OK.[m
+[m[37m[  0.781976 ax_runtime::mp:79] [32mSecondary CPU 3 started.[m
+[m[37m[  0.782019 ax_runtime:334] [32mPrimary CPU 0 init OK.[m
+[m[37m[  0.782232 ax_runtime::mp:107] [32mSecondary CPU 2 init OK.[m
+[m[37m[  0.784741 ax_runtime::mp:107] [32mSecondary CPU 3 init OK.[m
+[m
+
+       d8888            888     888  d8b
+      d88888            888     888  Y8P
+     d88P888            888     888
+    d88P 888  888  888  Y88b   d88P  888  .d8888b    .d88b.   888d888
+   d88P  888  `Y8bd8P'   Y88b d88P   888  88K       d88""88b  888P"
+  d88P   888    X88K      Y88o88P    888  "Y8888b.  888  888  888
+ d8888888888  .d8""8b.     Y888P     888       X88  Y88..88P  888
+d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
+
+
+by AxVisor Team
+
+[37m[  0.787356 0:2 axvisor::task:17] [32mAxVisor management task pinned to pCPU0[m
+[m[37m[  0.787494 0:2 axvisor:59] [32mStarting virtualization...[m
+[m[37m[  0.787643 0:2 axvm::host::arceos:331] [32mEnabling hardware virtualization support on all cores...[m
+[m[37m[  0.787780 0:2 axvm::host::arceos:337] [32mCore 0 is initializing hardware virtualization support...[m
+[m[37m[  0.787937 0:2 axvm::timer:132] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.788220 0:2 axvm::host::arceos:339] [32mHardware virtualization support enabled on core 0[m
+[m[37m[  0.790037 1:11 axvm::host::arceos:349] [32mCore 1 is initializing hardware virtualization support...[m
+[m[37m[  0.790378 1:11 axvm::timer:132] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.790593 1:11 axvm::host::arceos:352] [32mHardware virtualization support enabled on core 1[m
+[m[37m[  0.790729 2:12 axvm::host::arceos:349] [32mCore 2 is initializing hardware virtualization support...[m
+[m[37m[  0.790995 2:12 axvm::timer:132] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.791141 2:12 axvm::host::arceos:352] [32mHardware virtualization support enabled on core 2[m
+[m[37m[  0.791871 0:2 axvm::host::arceos:365] [32mWaiting for all cores to enable hardware virtualization...[m
+[m[37m[  0.791922 3:13 axvm::host::arceos:349] [32mCore 3 is initializing hardware virtualization support...[m
+[m[37m[  0.792097 3:13 axvm::timer:132] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.792184 3:13 axvm::host::arceos:352] [32mHardware virtualization support enabled on core 3[m
+[m[37m[  0.792339 0:2 axvm::host::arceos:381] [32mAll cores have enabled hardware virtualization support.[m
+[m[37m[  0.796576 0:2 axvisor::manager:125] [32mNOT find dir: /guest/vm_default in filesystem[m
+[m[37m[  0.796802 0:2 axvisor::config:107] [32mUsing static VM configs.[m
+[m[37m[  0.823341 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@0, node_id: 0x0, guest_cpu_id: 0x0[m
+[m[37m[  0.823552 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@1, node_id: 0x1, guest_cpu_id: 0x1[m
+[m[37m[  0.823710 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@2, node_id: 0x2, guest_cpu_id: 0x2[m
+[m[37m[  0.823839 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@3, node_id: 0x3, guest_cpu_id: 0x3[m
+[m[37m[  0.824060 0:2 axvm::boot::fdt::parser:397] [32mFound 4 host CPU nodes[m
+[m[37m[  0.824385 0:2 axvm::boot::fdt:163] [32mVM[1] DTB not found, generating based on the configuration file.[m
+[m[37m[  0.834726 0:2 axvm::boot::fdt::device:96] [32mFound excluded devices: [][m
+[m[37m[  0.865050 0:2 axvisor::config:161] [32mCreating VM[1] "linux-qemu-smp2"[m
+[m[37m[  0.865286 0:2 axvm::vm:407] [32mVM created: id=1[m
+[m[37m[  1.169297 0:2 axvisor::config:172] [32mVM[1] created success, loading images...[m
+[m[37m[  1.169673 0:2 axvm::boot::images::fs:792] [32mLoading VM images from filesystem[m
+[m[37m[  5.320063 0:2 axvm::vm::prepare::devices:96] [33mFailed to assign SPIs: No VGicD found in device list[m
+[m[37m[  5.327916 0:2 axvm::vm::prepare:95] [32mVM setup: id=1[m
+[m[37m[  5.332587 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@0, node_id: 0x0, guest_cpu_id: 0x0[m
+[m[37m[  5.332716 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@1, node_id: 0x1, guest_cpu_id: 0x1[m
+[m[37m[  5.332856 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@2, node_id: 0x2, guest_cpu_id: 0x2[m
+[m[37m[  5.332972 0:2 axvm::boot::fdt::parser:390] [32mCPU node: /cpus/cpu@3, node_id: 0x3, guest_cpu_id: 0x3[m
+[m[37m[  5.333118 0:2 axvm::boot::fdt::parser:397] [32mFound 4 host CPU nodes[m
+[m[37m[  5.333232 0:2 axvm::boot::fdt:163] [32mVM[2] DTB not found, generating based on the configuration file.[m
+[m[37m[  5.343916 0:2 axvm::boot::fdt::device:96] [32mFound excluded devices: ["/pcie@10000000"][m
+[m[37m[  5.344228 0:2 axvm::boot::fdt::device:107] [32mExcluding device: /pcie@10000000[m
+[m[37m[  5.366619 0:2 axvisor::config:161] [32mCreating VM[2] "arceos-rt-qemu-baseline-strong"[m
+[m[37m[  5.366724 0:2 axvm::vm:407] [32mVM created: id=2[m
+[m[37m[  5.511544 0:2 axvisor::config:172] [32mVM[2] created success, loading images...[m
+[m[37m[  5.519392 0:2 axvm::vm::prepare::devices:96] [33mFailed to assign SPIs: No VGicD found in device list[m
+[m[37m[  5.520278 0:2 axdevice::device:1203] [32mAxVmDevices: registered device id=0[m
+[m[37m[  5.520608 0:2 axdevice::device:1203] [32mAxVmDevices: registered device id=1[m
+[m[37m[  5.520693 0:2 axdevice::device:1203] [32mAxVmDevices: registered device id=2[m
+[m[37m[  5.522520 0:2 axvm::vm::prepare:95] [32mVM setup: id=2[m
+[m[37m[  5.522889 0:2 axvm::runtime:44] [32mInitializing VMM...[m
+[m[37m[  5.522998 0:2 axvm::runtime:49] [32mVMM starting, booting VMs...[m
+[m[37m[  5.523274 0:2 axvm::vm:599] [32mStarting VM[1][m
+[m[37m[  5.523658 0:2 axvm::runtime::vcpus:290] [32mSpawning task for VM[1] VCpu[0][m
+[m[37m[  5.524040 0:2 axvm::runtime::vcpus:307] [32mVCpu task Task(14, "VM[1]-VCpu[0]") created cpumask: [1, ][m
+[m[37m[  5.524304 0:2 axvm::runtime::vcpus:271] [32mVM[1] VCpu[0] host nice set to 10[m
+[m[37m[  5.524808 0:2 axvm::runtime:55] [32mVM[1] boot success[m
+[m[37m[  5.524903 0:2 axvm::vm:599] [32mStarting VM[2][m
+[m[37m[  5.524973 0:2 axvm::runtime::vcpus:290] [32mSpawning task for VM[2] VCpu[0][m
+[m[37m[  5.525227 0:2 axvm::runtime::vcpus:307] [32mVCpu task Task(15, "VM[2]-VCpu[0]") created cpumask: [2, ][m
+[m[37m[  5.525336 0:2 axvm::runtime::vcpus:271] [32mVM[2] VCpu[0] host nice set to 19[m
+[m[37m[  5.525437 0:2 axvm::runtime:55] [32mVM[2] boot success[m
+[m[37m[  5.530361 1:14 axvm::runtime::vcpus:362] [32mVM[1] VCpu[0] waiting for running[m
+[m[37m[  5.530682 1:14 axvm::runtime::vcpus:365] [32mVM[1] VCpu[0] running...[m
+[m[37m[  5.532293 2:15 axvm::runtime::vcpus:362] [32mVM[2] VCpu[0] waiting for running[m
+[m[37m[  5.532456 2:15 axvm::runtime::vcpus:365] [32mVM[2] VCpu[0] running...[m
+[mroot=/dev/vda rw init=/bin/sh fsck.repair=yes
+VM Load @0x80200000
+VM Load Offset: 0x100200000
+Memory Map:
+  Free   0x00000080000000 - 0x00000080200000 (2 MiB)
+  KImg   0x00000080200000 - 0x00000080400000 (2 MiB)
+  Free   0x00000080400000 - 0x00000088000000 (124 MiB)
+Initialize RAM allocator: 0x80400000..0x88000000
+Initializing per-CPU data
+Per-CPU data one cpu size: 0x41000 bytes
+Total per-CPU data size for secondary CPUs: 0x41000 bytes (1 CPUs)
+Flushed RAM used range to memory map: 0x80400000..0x80402000, current: 0x80402000
+Flushed RAM used range to memory map: 0x80402000..0x80443000, current: 0x80443000
+Per-CPU data allocated at 0x80402000 - 0x80443000
+Initializing per-CPU RAM for CPU0 - hard id 0x2 @ 0x80402000
+CPU0 - hard id 0x2, stack top @0x80443000, stack top virt @0xffffff0080443000, entry virt @0xffffffff800246a4
+EL: 1
+Mapping early memory regions...
+Ram                 : [0xffff000080000000, 0xffff000088000000) -> [0x0000000080000000, 0x0000000088000000) (128 MiB)
+KImage              : [0xffffffff80000000, 0xffffffff80200000) -> [0x0000000080200000, 0x0000000080400000) (2 MiB)
+PerCpu              : [0xffffff0080402000, 0xffffff0080443000) -> [0x0000000080402000, 0x0000000080443000) (260 KiB)
+Debug serial        : [0xffff000009000000, 0xffff000009001000) -> [0x0000000009000000, 0x0000000009001000) (4 KiB)
+Boot page table at physical address: 0x80443000
+Setting up table registers...
+MMU Entry point at physical address: 0x802270fc
+Trap vector at 0xffffffff8002a000
+Memory Map:
+  MMIO   0x00000004000000 - 0x00000008010000 (64.06 MiB)
+  MMIO   0x00000008080000 - 0x00000009001000 (15.5 MiB)
+  MMIO   0x00000009010000 - 0x00000009011000 (4 KiB)
+  MMIO   0x00000009020000 - 0x00000009021000 (4 KiB)
+  MMIO   0x00000009030000 - 0x00000009031000 (4 KiB)
+  MMIO   0x0000000a000000 - 0x0000000a004000 (16 KiB)
+  Free   0x00000080000000 - 0x00000080200000 (2 MiB)
+  KImg   0x00000080200000 - 0x00000080400000 (2 MiB)
+  Rsv    0x00000080400000 - 0x00000080402000 (8 KiB)
+  PerCPU 0x00000080402000 - 0x00000080443000 (260 KiB)
+  Rsv    0x00000080443000 - 0x0000008044d000 (40 KiB)
+  Free   0x0000008044d000 - 0x00000088000000 (123.7 MiB)
+Jumping to main entry point at 0xffffffff80013b34 with SP 0xffffff0080443000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = linux,dummy-virt
+target = aarch64-unknown-none-softfloat
+build_mode = release
+log_level = info
+backtrace = false
+smp = 1
+
+[37m[  0.026252 0 ax_runtime:211] [32mLogging is enabled.[m
+[m[37m[  0.026608 0 ax_runtime:212] [32mPrimary CPU 0 started, arg = 0x80400000.[m
+[m[37m[  0.026699 0 ax_runtime:214] [32mFound physcial memory regions:[m
+[m[37m[  0.027602 0 ax_runtime:216] [32m  [PA:0x4000000, PA:0x8010000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.027833 0 ax_runtime:216] [32m  [PA:0x8080000, PA:0x9001000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.027917 0 ax_runtime:216] [32m  [PA:0x9010000, PA:0x9011000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.028001 0 ax_runtime:216] [32m  [PA:0x9020000, PA:0x9021000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.028083 0 ax_runtime:216] [32m  [PA:0x9030000, PA:0x9031000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.028164 0 ax_runtime:216] [32m  [PA:0xa000000, PA:0xa004000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.028245 0 ax_runtime:216] [32m  [PA:0x80000000, PA:0x80200000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.028353 0 ax_runtime:216] [32m  [PA:0x80200000, PA:0x80400000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.028447 0 ax_runtime:216] [32m  [PA:0x80400000, PA:0x80402000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.028533 0 ax_runtime:216] [32m  [PA:0x80402000, PA:0x80443000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.028620 0 ax_runtime:216] [32m  [PA:0x80443000, PA:0x8044d000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.028710 0 ax_runtime:216] [32m  [PA:0x8044d000, PA:0x88000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.028816 0 ax_runtime:358] [32mInitialize global memory allocator...[m
+[m[37m[  0.028899 0 ax_runtime:359] [32m  use buddy-slab-allocator allocator.[m
+[m[37m[  0.029081 0 ax_alloc::buddy_slab:150] [32mInitialize global memory allocator, start_vaddr: 0xffff00008044d000, size: 0x7bb3000[m
+[m[37m[  0.029576 0 ax_alloc::buddy_slab:399] [32mglobal allocator initialized[m
+[m[37m[  0.029737 0 ax_alloc::buddy_slab:160] [32mAdd memory region, start_vaddr: 0xffff000080000000, size: 0x200000[m
+[m[37m[  0.029876 0 buddy_slab_allocator::global:143] [32mGlobalAllocator: skip region 0xffff000080000000+0x200000, no allocator-visible memory after 2097152 alignment[m
+[m[37m[  0.030148 0 ax_runtime:251] [32mkernel aspace: [VA:0xffff000000000000, VA:0xffffffffffffffff)[m
+[m[37m[  0.030292 0 ax_mm:112] [32mInitialize virtual memory management...[m
+[m[37m[  0.045349 0 ax_runtime:263] [32mInitialize platform devices...[m
+[m[37m[  0.051069 0 someboot::arch::power:23] [32mPower management method : SMC[m
+[m[37m[  0.051286 0 somehal::driver:5] [32mInitializing rdrive with FDT at 0xffff000080400000[m
+[m[37m[  0.072030 0 ax_task::api:146] [32mInitialize scheduling...[m
+[m[37m[  0.072948 0 ax_task::api:151] [32m  use FIFO scheduler.[m
+[m[37m[  0.073059 0 ax_runtime:289] [32mInitialize interrupt handlers...[m
+[m[37m[  0.074951 0 ax_runtime::devices:2] [32mProbe platform devices...[m
+[m[37m[  0.076098 0 ax_runtime:334] [32mPrimary CPU 0 init OK.[m
+[mArceOS test suite run begin: 1 tests
+ARCEOS_TEST_BEGIN feature=rt-latency name=periodic wake-up jitter baseline
+[37m[  5.684895 1:14 axvm::arch:561] [32mVM[1]'s VCpu[0] try to boot target_cpu [2] entry_point=GPA:0x22408158c arg=0x0[m
+[m[37m[  5.685422 1:14 axvm::runtime::vcpus:290] [32mSpawning task for VM[1] VCpu[1][m
+[m[37m[  5.685563 1:14 axvm::runtime::vcpus:307] [32mVCpu task Task(16, "VM[1]-VCpu[1]") created cpumask: [2, ][m
+[m[37m[  5.685699 1:14 axvm::runtime::vcpus:271] [32mVM[1] VCpu[1] host nice set to 10[m
+[m[    0.000000] Booting Linux on physical CPU 0x0000000001 [0x410fd083]
+[    0.000000] Linux version 7.1.0-rc2-g74fe02ce122a-dirty (runner@s1lqc) (aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #1 SMP PREEMPT Fri Jul 24 05:32:39 UTC 2026
+[    0.000000] KASLR enabled
+[    0.000000] random: crng init done
+[    0.000000] Machine model: linux,dummy-virt
+[    0.000000] efi: UEFI not found.
+[    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[    0.000000] NUMA: Faking a node at [mem 0x0000000222000000-0x0000000231ffffff]
+[    0.000000] NODE_DATA(0) allocated [mem 0x231f7ff00-0x231f825ff]
+[    0.000000] cma: Reserved 32 MiB at 0x0000000225400000
+[    0.000000] psci: probing for conduit method from DT.
+[    0.000000] psci: PSCIv1.1 detected in firmware.
+[    0.000000] psci: Using standard PSCI v0.2 function IDs
+[    0.000000] psci: Trusted OS migration not required
+[    0.000000] psci: SMC Calling Convention v1.0
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000222000000-0x0000000231ffffff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000222000000-0x0000000231ffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000222000000-0x0000000231ffffff]
+[    0.000000] On node 0, zone DMA: 8192 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA: 24576 pages in unavailable ranges
+[    0.000000] percpu: Embedded 26 pages/cpu s66584 r8192 d31720 u106496
+[    0.000000] Detected PIPT I-cache on CPU0
+[    0.000000] CPU features: detected: GICv3 CPU interface
+[    0.000000] CPU features: detected: Spectre-v2
+[    0.000000] CPU features: detected: Spectre-v3a
+[    0.000000] CPU features: detected: Spectre-v4
+[    0.000000] CPU features: detected: Spectre-BHB
+[    0.000000] CPU features: kernel page table isolation forced ON by KASLR
+[    0.000000] CPU features: detected: Kernel page table isolation (KPTI)
+[    0.000000] CPU features: detected: ARM erratum 1742098
+[    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Kernel command line: root=/dev/vda rw init=/bin/sh fsck.repair=yes
+[    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.000000] Dentry cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[    0.000000] software IO TLB: area num 2.
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size roundup to 0MB
+[    0.000000] software IO TLB: mapped [mem 0x0000000231e55000-0x0000000231ed5000] (0MB)
+[    0.000000] Fallback order for Node 0: 0 
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 65536
+[    0.000000] Policy zone: DMA
+[    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1
+[    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[    0.000000] rcu: 	RCU event tracing is enabled.
+[    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=2.
+[    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[    0.000000] 	Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2
+[    0.000000] RCU Tasks: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] GICv3: 256 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs
+[    0.000000] GICv3: GICD_CTLR.DS=1, SCR_EL3.FIQ=0
+[    0.000000] GICv3: CPU0: found redistributor 1 region 0:0x00000000080c0000
+[    0.000000] ITS [mem 0x08080000-0x0809ffff]
+[    0.000000] ITS@0x0000000008080000: allocated 8192 Devices @227460000 (indirect, esz 8, psz 64K, shr 1)
+[    0.000000] ITS@0x0000000008080000: allocated 8192 Interrupt Collections @227470000 (flat, esz 8, psz 64K, shr 1)
+[    0.000000] GICv3: Expected reserved range [0x0000000087eb0000:0x0000000087ebffff], not found
+[    0.000000] GICv3: using LPI property table @0x0000000227480000
+[    0.000000] GICv3: CPU0: Booted with LPIs enabled, memory probably corrupted
+[    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000227490000
+[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.000000] arch_timer: cp15 timer running at 62.50MHz (virt).
+[    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+[    0.000063] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+[    0.008158] Console: colour dummy device 80x25
+[    0.008580] printk: legacy console [tty0] enabled
+[    0.013020] Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=250000)
+[    0.013174] pid_max: default: 32768 minimum: 301
+[    0.016996] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.017065] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.024610] VFS: Finished mounting rootfs on nullfs
+[    0.043442] /cpus/cpu-map/socket0/cluster0/core0: Can't get CPU for leaf core
+[    0.044543] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[    0.054461] rcu: Hierarchical SRCU implementation.
+[    0.054539] rcu: 	Max phase no-delay instances is 1000.
+[    0.055429] Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+[    0.057501] fsl-mc MSI: its@8080000 domain created
+[    0.059069] EFI services will not be available.
+[    0.059815] smp: Bringing up secondary CPUs ...
+[    5.275746] CPU1: failed to come online
+[    5.275891] CPU1: failed in unknown state : 0x0
+[    5.278645] smp: Brought up 1 node, 1 CPU
+[    5.278715] SMP: Total of 1 processors activated.
+[    5.278764] CPU: All CPU(s) started at EL1
+[    5.279057] CPU features: detected: 32-bit EL0 Support
+[    5.279093] CPU features: detected: 32-bit EL1 Support
+[    5.279182] CPU features: detected: CRC32 instructions
+[    5.279397] CPU features: detected: PMUv3
+[    5.286163] alternatives: applying system-wide alternatives
+[    5.304601] Memory: 167088K/262144K available (18688K kernel code, 5242K rwdata, 14480K rodata, 12672K init, 718K bss, 59956K reserved, 32768K cma-reserved)
+[    5.325447] devtmpfs: initialized
+[    5.340583] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    5.341055] posixtimers hash table entries: 1024 (order: 2, 16384 bytes, linear)
+[    5.341285] futex hash table entries: 512 (32768 bytes on 1 NUMA nodes, total 32 KiB, linear).
+[    5.343933] 2G module region forced by RANDOMIZE_MODULE_REGION_FULL
+[    5.344008] 0 pages in range for non-PLT usage
+[    5.344045] 511264 pages in range for PLT usage
+[    5.353816] DMI: not present or invalid.
+[    5.370949] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    5.380677] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    5.380994] audit: initializing netlink subsys (disabled)
+[    5.384492] audit: type=2000 audit(5.188:1): state=initialized audit_enabled=0 res=1
+[    5.387173] thermal_sys: Registered thermal governor 'step_wise'
+[    5.387218] thermal_sys: Registered thermal governor 'power_allocator'
+[    5.387492] cpuidle: using governor menu
+[    5.388503] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[    5.388848] ASID allocator initialised with 32768 entries
+[    5.393326] Serial: AMBA PL011 UART driver
+[    5.430380] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+[    5.432180] printk: console [ttyAMA0] enabled
+[    5.456990] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    5.457669] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[    5.457844] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[    5.457999] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[    5.458139] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    5.458286] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[    5.458423] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[    5.458569] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[    5.465202] ACPI: Interpreter disabled.
+[    5.470559] iommu: Default domain type: Translated
+[    5.470771] iommu: DMA domain TLB invalidation policy: strict mode
+[    5.472021] SCSI subsystem initialized
+[    5.474326] usbcore: registered new interface driver usbfs
+[    5.474745] usbcore: registered new interface driver hub
+[    5.475011] usbcore: registered new device driver usb
+[    5.476415] pps_core: LinuxPPS API ver. 1 registered
+[    5.476576] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    5.476814] PTP clock support registered
+[    5.477254] EDAC MC: Ver: 3.0.0
+[    5.478488] scmi_core: SCMI protocol bus registered
+[    5.480514] FPGA manager framework
+[    5.489214] vgaarb: loaded
+[    5.491145] clocksource: Switched to clocksource arch_sys_counter
+[    5.492492] VFS: Disk quotas dquot_6.6.0
+[    5.492715] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[    5.496177] pnp: PnP ACPI: disabled
+[    5.511478] NET: Registered PF_INET protocol family
+[    5.512678] IP idents hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    5.516249] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[    5.516718] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    5.516965] TCP established hash table entries: 2048 (order: 2, 16384 bytes, linear)
+[    5.517425] TCP bind hash table entries: 2048 (order: 4, 65536 bytes, linear)
+[    5.517725] TCP: Hash tables configured (established 2048 bind 2048)
+[    5.518949] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[    5.520219] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    5.522533] RPC: Registered named UNIX socket transport module.
+[    5.523079] RPC: Registered udp transport module.
+[    5.523239] RPC: Registered tcp transport module.
+[    5.523365] RPC: Registered tcp-with-tls transport module.
+[    5.523519] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[    5.523752] PCI: CLS 0 bytes, default 64
+[    5.527318] kvm [1]: HYP mode not available
+[    5.530348] Initialise system trusted keyrings
+[    5.533405] workingset: timestamp_bits=42 (anon: 38) max_order=16 bucket_order=0 (anon: 0)
+[    5.535681] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[    5.537270] NFS: Registering the id_resolver key type
+[    5.537744] Key type id_resolver registered
+[    5.537899] Key type id_legacy registered
+[    5.538316] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[    5.538582] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[    5.539427] 9p: Installing v9fs 9p2000 file system support
+[    5.541195] Key type asymmetric registered
+[    5.541427] Asymmetric key parser 'x509' registered
+[    5.541792] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[    5.542095] io scheduler mq-deadline registered
+[    5.542295] io scheduler kyber registered
+[    5.542688] io scheduler bfq registered
+[    5.561374] pl061_gpio 9030000.pl061: PL061 GPIO chip registered
+[    5.564252] ledtrig-cpu: registered to indicate activity on CPUs
+[    5.567759] pci-host-generic 4010000000.pcie: host bridge /pcie@10000000 ranges:
+[    5.568532] pci-host-generic 4010000000.pcie:       IO 0x003eff0000..0x003effffff -> 0x0000000000
+[    5.569282] pci-host-generic 4010000000.pcie:      MEM 0x0010000000..0x003efeffff -> 0x0010000000
+[    5.569529] pci-host-generic 4010000000.pcie:      MEM 0x8000000000..0xffffffffff -> 0x8000000000
+[    5.570368] pci-host-generic 4010000000.pcie: Memory resource size exceeds max for 32 bits
+[    5.571240] pci-host-generic 4010000000.pcie: ECAM at [mem 0x4010000000-0x401fffffff] for [bus 00-ff]
+[    5.572784] pci-host-generic 4010000000.pcie: PCI host bridge to bus 0000:00
+[    5.573235] pci_bus 0000:00: root bus resource [bus 00-ff]
+[    5.573439] pci_bus 0000:00: root bus resource [io  0x0000-0xffff]
+[    5.573615] pci_bus 0000:00: root bus resource [mem 0x10000000-0x3efeffff]
+[    5.573764] pci_bus 0000:00: root bus resource [mem 0x8000000000-0xffffffffff]
+[    5.575272] pci 0000:00:00.0: [1b36:0008] type 00 class 0x060000 conventional PCI endpoint
+[    5.579445] pci 0000:00:01.0: [1af4:1000] type 00 class 0x020000 conventional PCI endpoint
+[    5.580665] pci 0000:00:01.0: BAR 0 [io  0x0000-0x001f]
+[    5.580936] pci 0000:00:01.0: BAR 1 [mem 0x10000000-0x10000fff]
+[    5.581102] pci 0000:00:01.0: BAR 4 [mem 0x8000000000-0x8000003fff 64bit pref]
+[    5.581344] pci 0000:00:01.0: ROM [mem 0x00000000-0x0007ffff pref]
+[    5.583710] pci 0000:00:01.0: ROM [mem 0x10000000-0x1007ffff pref]: assigned
+[    5.584186] pci 0000:00:01.0: BAR 4 [mem 0x8000000000-0x8000003fff 64bit pref]: assigned
+[    5.584954] pci 0000:00:01.0: BAR 1 [mem 0x10080000-0x10080fff]: assigned
+[    5.585498] pci 0000:00:01.0: BAR 0 [io  0x1000-0x101f]: assigned
+[    5.586229] pci_bus 0000:00: resource 4 [io  0x0000-0xffff]
+[    5.586469] pci_bus 0000:00: resource 5 [mem 0x10000000-0x3efeffff]
+[    5.586618] pci_bus 0000:00: resource 6 [mem 0x8000000000-0xffffffffff]
+[    5.639756] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[    5.647308] msm_serial: driver initialized
+[    5.648407] SuperH (H)SCI(F) driver initialized
+[    5.648830] STM32 USART driver initialized
+[    5.666380] loop: module loaded
+[    5.667383] virtio_blk virtio0: 1/0/0 default/read/poll queues
+[    5.670618] virtio_blk virtio0: [vda] 4194304 512-byte logical blocks (2.15 GB/2.00 GiB)
+[    5.688162] megasas: 07.734.00.00-rc1
+[    5.692167] physmap-flash 0.flash: physmap platform flash device: [mem 0x00000000-0x03ffffff]
+[    5.693624] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[    5.694335] Intel/Sharp Extended Query Table at 0x0031
+[    5.695888] Using buffer write method
+[    5.696619] physmap-flash 0.flash: physmap platform flash device: [mem 0x04000000-0x07ffffff]
+[    5.697167] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[    5.697479] Intel/Sharp Extended Query Table at 0x0031
+[    5.697852] Using buffer write method
+[    5.698120] Concatenating MTD devices:
+[    5.698241] (0): "0.flash"
+[    5.698369] (1): "0.flash"
+[    5.698457] into device "0.flash"
+[    5.724510] tun: Universal TUN/TAP device driver, 1.6
+[    5.741253] thunder_xcv, ver 1.0
+[    5.741548] thunder_bgx, ver 1.0
+[    5.741734] nicpf, ver 1.0
+[    5.744442] e1000: Intel(R) PRO/1000 Network Driver
+[    5.744629] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[    5.744936] e1000e: Intel(R) PRO/1000 Network Driver
+[    5.745066] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[    5.745304] igb: Intel(R) Gigabit Ethernet Network Driver
+[    5.745436] igb: Copyright (c) 2007-2014 Intel Corporation.
+[    5.745636] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[    5.745779] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[    5.746355] sky2: driver version 1.30
+[    5.748546] VFIO - User Level meta-driver version: 0.3
+[    5.754277] usbcore: registered new interface driver usb-storage
+[    5.761504] rtc-pl031 9010000.pl031: registered as rtc0
+[    5.762173] rtc-pl031 9010000.pl031: setting system clock to 2026-08-02T02:14:31 UTC (1785636871)
+[    5.763754] i2c_dev: i2c /dev entries driver
+[    5.781243] usbcore: registered new interface driver usbhid
+[    5.781471] usbhid: USB HID core driver
+[    5.788296] hw perfevents: enabled with armv8_pmuv3 PMU driver, 7 (0,8000003f) counters available
+[    5.795475] NET: Registered PF_INET6 protocol family
+[    5.801399] Segment Routing with IPv6
+[    5.801717] In-situ OAM (IOAM) with IPv6
+[    5.802164] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    5.804490] NET: Registered PF_PACKET protocol family
+[    5.805705] 9pnet: Installing 9P2000 support
+[    5.806088] Key type dns_resolver registered
+[    5.824428] registered taskstats version 1
+[    5.825987] Loading compiled-in X.509 certificates
+[    5.839037] Demotion targets for Node 0: null
+[    5.847320] input: gpio-keys as /devices/platform/gpio-keys/input/input0
+[    5.852217] clk: Disabling unused clocks
+[    5.852564] PM: genpd: Disabling unused power domains
+[    5.882201] EXT4-fs (vda): recovery complete
+[    5.883377] EXT4-fs (vda): mounted filesystem 60a4282b-9b0a-4994-9e9c-109a16c762f3 r/w with ordered data mode. Quota mode: none.
+[    5.883987] VFS: Mounted root (ext4 filesystem) on device 254:0.
+[    5.885610] devtmpfs: mounted
+[    5.887286] VFS: Pivoted into new rootfs
+[    5.964729] Freeing unused kernel memory: 12672K
+[    5.966111] Run /bin/sh as init process
+/bin/sh: can't access tty; job control turned off
+~ # [6nfor i in 1 2 3 4 5 6 7 8; do sh -c 'while true; do :; done' & done; echo TAS
+K1_STRESS_STRONG_STARTED
+TASK1_STRESS_STRONG_STARTED
+~ # [6nRT_LATENCY mode=guest period_ms=1 samples=18000 mean_jitter_ns=89579 p99_jitter_ns=329664 p999_jitter_ns=535200 max_jitter_ns=10098176
+RT_LATENCY mode=guest period_ms=10 samples=18000 mean_jitter_ns=121756 p99_jitter_ns=368848 p999_jitter_ns=621008 max_jitter_ns=9974640
+RT_LATENCY_PASS
+
+=== SUCCESS PATTERN MATCHED: RT_LATENCY_PASS ===
+ARCEOS_TEST_END feature=rt-latency name=periodic wake-up jitter baseline status=pass elapsed_ms=201843
+ArceOS test suite run OK!
+[37m[207.443097 2:15 axvm::arch::aarch64:309] [33mVM[2] run VCpu[0] SystemDown[m
+[m[37m[207.443372 2:15 axvm::vm:664] [32mStopping VM[2]: SystemDown[m
+[m[37m[207.443952 2:15 axvm::runtime::vcpus:404] [33mVM[2] VCpu[0] stopping because of VM stopping[m
+[m[37m[207.444215 2:15 axvm::runtime::vcpus:410] [32mVM[2] VCpu[0] last VCpu exiting, decreasing running VM count[m
+[m[37m[207.444554 2:15 axvm::runtime::vcpus:415] [32mVM[2] state changed to Stopped[m
+[m[37m[207.444840 2:15 axvm::runtime::vcpus:427] [32mVM[2] VCpu[0] exiting...[m
+[m[37m[207.445131 2:16 axvm::runtime::vcpus:362] [32mVM[1] VCpu[1] waiting for running[m
+[m[37m[207.445300 2:16 axvm::runtime::vcpus:365] [32mVM[1] VCpu[1] running...[m
+[m[axbuild] qemu run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json ... done (208.00s)
+  qemu run: 208.06s
+ok: mixed-rt-stress-baseline-strong-short (208.07s)
+
+axvisor qemu test summary:
+  PASS mixed-rt-stress-baseline-strong-short (208.07s)
+result: 1/1 case(s) passed
+total: 211.56s
+all axvisor qemu tests passed

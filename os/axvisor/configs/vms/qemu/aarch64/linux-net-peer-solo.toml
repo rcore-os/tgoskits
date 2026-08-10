@@ -1,0 +1,41 @@
+# Solo bring-up: MAP_ALLOC + initramfs peer (Task 2).
+# Host virtio-mmio (blk) auto-excluded via ramdisk; VirtioNet loopback.
+#
+[base]
+id = 1
+name = "linux-qemu-net-peer-solo"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [1]
+vcpu_priorities = [10]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+ramdisk_path = "/guest/linux/peer-initramfs.cpio"
+ramdisk_load_addr = 0x8400_0000
+cmdline = "rdinit=/init console=ttyAMA0"
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0], # 256M MAP_ALLOC
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+passthrough_devices = [
+    ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = [
+    ["/pcie@10000000"],
+]
+
+emu_devices = [
+  ["virtio-net0", 0xa000000, 0x1000, 48, 0xE2, [0x02, 0x00, 0x00, 0x00, 0x00, 0x03]],
+]

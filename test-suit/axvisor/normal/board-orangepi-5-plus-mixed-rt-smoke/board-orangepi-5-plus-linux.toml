@@ -1,0 +1,10 @@
+board_type = "OrangePi-5-Plus"
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "ARCEOS_TEST_FAIL",
+]
+success_regex = ["RT_LATENCY_PASS"]
+shell_prefix = "~ #"
+shell_init_cmd = "echo TASK1_BOARD_RT_SMOKE_STARTED"
+timeout = 600

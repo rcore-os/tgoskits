@@ -1,0 +1,10 @@
+features = [
+    "ax-driver/virtio-blk",
+    "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+    "os/axvisor/configs/vms/qemu/aarch64/linux-smp2-host-share.toml",
+    "os/axvisor/configs/vms/qemu/aarch64/arceos-rt-smp1-baseline-host-share.toml",
+]

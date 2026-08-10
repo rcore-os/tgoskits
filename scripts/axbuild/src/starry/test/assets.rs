@@ -3,7 +3,9 @@ pub(crate) fn starry_case_asset_config() -> case::CaseAssetConfig {
         grouped_runner: case::GroupedCaseRunnerConfig {
             runner_name: "starry-run-case-tests".to_string(),
             runner_path: "/usr/bin/starry-run-case-tests".to_string(),
-            autorun_profile_script: Some("99-starry-run-case-tests.sh".to_string()),
+            // Let the QEMU harness trigger the runner via shell_init_cmd after
+            // shell_prefix; do not install /etc/profile.d autorun on boot.
+            autorun_profile_script: None,
             begin_marker: "STARRY_GROUPED_TEST_BEGIN".to_string(),
             passed_marker: "STARRY_GROUPED_TEST_PASSED".to_string(),
             failed_marker: "STARRY_GROUPED_TEST_FAILED".to_string(),

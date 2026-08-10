@@ -54,6 +54,23 @@ pub fn new_user_aspace(base: VirtAddr, size: usize) -> AxResult<AddrSpace> {
     Ok(aspace)
 }
 
+/// Returns the kernel direct-map VA for a physical address inside `aspace`.
+fn kernel_direct_map_virt(
+    aspace: &AddrSpace,
+    kernel_base: VirtAddr,
+    paddr: PhysAddr,
+    map_size: usize,
+) -> VirtAddr {
+    let direct = phys_to_virt(paddr);
+    let direct_aligned = direct.align_down_4k();
+    if aspace.contains_range(direct_aligned, map_size) {
+        return direct;
+    }
+
+    let offset = paddr.as_usize() - paddr.align_down_4k().as_usize();
+    VirtAddr::from_usize(kernel_base.as_usize() + paddr.align_down_4k().as_usize()) + offset
+}
+
 /// Creates a new address space for kernel itself.
 pub fn new_kernel_aspace() -> AxResult<AddrSpace> {
     let (base, size) = ax_hal::mem::kernel_aspace();
@@ -64,15 +81,18 @@ pub fn new_kernel_aspace() -> AxResult<AddrSpace> {
         // mapped range should contain the whole region if it is not aligned.
         let start = r.paddr.align_down_4k();
         let end = (r.paddr + r.size).align_up_4k();
-        let vaddr = phys_to_virt(start);
-        let size = end - start;
+        let map_size = end - start;
+        let vaddr = kernel_direct_map_virt(&aspace, base, start, map_size);
 
-        // Some platforms provide a physical direct map outside the
-        // page-table-backed kernel address space. Those ranges must not be
-        // inserted into this address space because their low VA bits can alias
-        // real page-table mappings such as vmap.
-        if aspace.contains_range(vaddr, size) {
-            aspace.map_linear(vaddr, start, size, reg_flag_to_map_flag(r.flags))?;
+        if aspace.contains_range(vaddr.align_down_4k(), map_size) {
+            let flags = reg_flag_to_map_flag(r.flags);
+            if let Err(err) = aspace.map_linear(vaddr, start, map_size, flags) {
+                if matches!(err, AxError::AlreadyExists | AxError::BadState) {
+                    aspace.map_linear_overwrite(vaddr, start, map_size, flags)?;
+                } else {
+                    return Err(err);
+                }
+            }
         }
     }
     aspace
@@ -153,19 +173,18 @@ fn iomap_generic(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
         .as_usize()
         .checked_add(size)
         .ok_or(AxError::InvalidInput)?;
-    let virt = phys_to_virt(addr);
-
-    let virt_aligned = virt.align_down_4k();
     let addr_aligned = addr.align_down_4k();
     let size_aligned = checked_align_up_4k(end)? - addr_aligned;
     let offset = addr - addr_aligned;
 
     let flags = MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE;
     let mut tb = kernel_aspace().lock();
+    let virt_aligned =
+        kernel_direct_map_virt(&tb, tb.base(), addr_aligned, size_aligned).align_down_4k();
 
     let mapped = if tb.contains_range(virt_aligned, size_aligned) {
         match tb.map_linear(virt_aligned, addr_aligned, size_aligned, flags) {
-            Err(AxError::AlreadyExists) => {
+            Err(AxError::AlreadyExists | AxError::BadState) => {
                 tb.map_linear_overwrite(virt_aligned, addr_aligned, size_aligned, flags)?;
             }
             Err(e) => {
@@ -182,7 +201,13 @@ fn iomap_generic(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
         let mapped = tb
             .find_free_area(tb.base(), size_aligned, range)
             .ok_or(AxError::NoMemory)?;
-        tb.map_linear(mapped, addr_aligned, size_aligned, flags)?;
+        tb.map_linear(mapped, addr_aligned, size_aligned, flags)
+            .or_else(|err| match err {
+                AxError::AlreadyExists | AxError::BadState => {
+                    tb.map_linear_overwrite(mapped, addr_aligned, size_aligned, flags)
+                }
+                other => Err(other),
+            })?;
         mapped
     };
 

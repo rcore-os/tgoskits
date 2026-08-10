@@ -9,7 +9,12 @@ use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{
     AXVISOR_NORMAL_GROUP, AxvisorQemuCase,
-    assets::axvisor_case_asset_config,
+    assets::{
+        arceos_x86_64_guest_elf_path, arceos_x86_64_guest_request, axvisor_case_asset_config,
+        build_group_needs_arceos_x86_64_guest, case_needs_arceos_x86_64_guest,
+        ensure_arceos_aarch64_smoke_guest_image, inject_arceos_x86_64_guest_image,
+        vmconfigs_need_arceos_aarch64_smoke_guest,
+    },
     discover_qemu_cases,
     discovery::{
         discover_test_group_names, qemu_list_error_is_ignorable, test_suite_dir, test_suite_root,
@@ -132,6 +137,19 @@ impl Axvisor {
                 self.app.workspace_root(),
             )
             .await?;
+            if vmconfigs_need_arceos_aarch64_smoke_guest(&build_group.request) {
+                ensure_arceos_aarch64_smoke_guest_image(self.app.workspace_root())?;
+            }
+            if build_group_needs_arceos_x86_64_guest(&build_group.request) {
+                self.build_arceos_x86_64_guest_image()
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to build ArceOS guest image for Axvisor qemu build group `{}`",
+                            build_group.group.build_group
+                        )
+                    })?;
+            }
             self.app
                 .build(
                     build_group.cargo.clone(),
@@ -269,7 +287,7 @@ impl Axvisor {
         }
 
         let rootfs_path = rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)?;
-        let prepared_assets = test_case::prepare_case_assets(
+        let mut prepared_assets = test_case::prepare_case_assets(
             self.app.workspace_root(),
             &request.arch,
             &request.target,
@@ -278,6 +296,20 @@ impl Axvisor {
             asset_config.clone(),
         )
         .await?;
+        if case_needs_arceos_x86_64_guest(request, case) {
+            inject_arceos_x86_64_guest_image(
+                self.app.workspace_root(),
+                request,
+                case,
+                &mut prepared_assets,
+            )
+            .with_context(|| {
+                format!(
+                    "failed to prepare ArceOS guest image for Axvisor qemu case `{}`",
+                    case.case.case.name
+                )
+            })?;
+        }
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
         // UEFI needs a writable ESP for firmware variables. Keep the explicit
@@ -313,6 +345,21 @@ impl Axvisor {
             },
         )
         .await
+    }
+
+    async fn build_arceos_x86_64_guest_image(&mut self) -> anyhow::Result<PathBuf> {
+        let request = arceos_x86_64_guest_request()?;
+        let cargo = crate::arceos::build::load_cargo_config(&request)?;
+        self.app
+            .build(cargo.clone(), request.build_info_path.clone())
+            .await?;
+
+        let elf_path = arceos_x86_64_guest_elf_path(self.app.workspace_root(), request.debug);
+        self.app
+            .prepare_elf_artifact(elf_path.clone(), true)
+            .await?;
+
+        Ok(elf_path.with_extension("bin"))
     }
 }
 

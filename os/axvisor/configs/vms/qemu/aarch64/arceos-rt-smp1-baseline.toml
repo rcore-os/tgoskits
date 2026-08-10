@@ -1,0 +1,35 @@
+# Task 1 pre-optimization RT guest — emulated timer, no vCPU priority (改造前基线)
+#
+[base]
+id = 2
+name = "arceos-rt-qemu-baseline"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [3]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "../../../../images/qemu_aarch64_arceos_rt/qemu-aarch64-rt-latency-bench"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+
+memory_regions = [
+  [0x8000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+passthrough_timer = false
+
+passthrough_devices = [
+  ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = [
+  ["/pcie@10000000"],
+]
+
+emu_devices = []

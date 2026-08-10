@@ -34,6 +34,7 @@ mod config;
 mod guest_console;
 mod manager;
 mod shell;
+mod task;
 
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
 fn init_panic_hook() {
@@ -68,6 +69,14 @@ fn main() {
     panic!("axvisor no-backtrace smoke test: panic without backtrace");
 
     banner::print_logo();
+
+    task::init_host_task_affinity();
+
+    #[cfg(feature = "vsw-fault-inject")]
+    {
+        // Deterministic ~50% icpc UDP forward drop for icpc-fault-inject CI.
+        axdevice::configure_vsw_fault_inject(2);
+    }
 
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()

@@ -1,0 +1,46 @@
+# Linux Guest B — Task 2 dual-guest peer (10.0.9.3)
+#
+# pCPU3, VirtioNet port 2 on global vsw.
+# Boots from a private initramfs (no shared virtio-blk with Guest A).
+# Host virtio-mmio slots are auto-excluded because ramdisk is configured.
+#
+[base]
+id = 2
+name = "linux-qemu-net-b"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [3]
+vcpu_priorities = [10]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+ramdisk_path = "/guest/linux/peer-initramfs.cpio"
+ramdisk_load_addr = 0x8400_0000
+cmdline = "rdinit=/init console=ttyAMA0"
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0], # 256M MAP_ALLOC
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+passthrough_devices = [
+    ["/"],
+]
+
+passthrough_addresses = []
+
+# Keep host disk exclusive to Guest A. Share UART briefly for bring-up visibility.
+excluded_devices = [
+    ["/pcie@10000000"],
+]
+
+# mac 02:00:00:00:00:03, vsw port 2
+emu_devices = [
+  ["virtio-net0", 0xa000000, 0x1000, 49, 0xE2, [0x02, 0x00, 0x00, 0x00, 0x00, 0x03, 2]],
+]

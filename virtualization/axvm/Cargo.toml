@@ -45,6 +45,7 @@ ax-std = { workspace = true, default-features = false, features = [
     "smp",
     "hv",
     "ipi",
+    "sched-cfs",
 ] }
 ax-timer-list = { workspace = true }
 irq-framework = { workspace = true }

@@ -14,12 +14,10 @@ printf "Use \033[1m\033[3mapk\033[0m to install packages.\n"
 echo
 
 # Do your initialization here!
-
-if [ -f /usr/bin/starry-run-case-tests ]; then
-    echo "STARRY_GROUPED_AUTORUN_INIT"
-    export AXBUILD_GROUPED_AUTORUN_DONE=1
-    sh /usr/bin/starry-run-case-tests
-fi
+#
+# QEMU grouped tests install /usr/bin/starry-run-case-tests into the staging
+# rootfs. Run it manually, or let `cargo xtask starry test qemu` drive it via
+# shell_init_cmd after the login prompt — init does not autorun tests.
 
 # Pre-populate /run/udev/data/ so libudev considers our devices
 # "initialized" (otherwise libinput silently skips every input device
@@ -50,6 +48,11 @@ if [ -x /test_runner.sh ]; then
     echo "[init] /test_runner.sh detected, launching visual scenario"
     setsid /test_runner.sh </dev/null >/dev/console 2>&1 &
     echo "[init] /test_runner.sh started pid=$!"
+fi
+
+mkdir -p /run/sshd
+if [ -x /usr/sbin/sshd ]; then
+    /usr/sbin/sshd -D -e >/tmp/sshd.log 2>&1 &
 fi
 
 cd "$HOME" || cd /

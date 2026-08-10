@@ -68,6 +68,12 @@ pub enum AxVmConfigError {
     /// A model option attempts to specify a framework-owned numeric resource.
     #[error("virtual device {id} cannot configure framework-owned resource option {option}")]
     ForbiddenVirtualDeviceResourceOption { id: String, option: String },
+    /// The per-vCPU priority list does not match the configured vCPU count.
+    #[error("vcpu_priorities has {actual} entries, but cpu_num is {expected}")]
+    InvalidVcpuPriorityCount { expected: usize, actual: usize },
+    /// A CFS nice value is outside the supported Linux range.
+    #[error("vcpu priority at index {vcpu_id} is {priority}, expected a value in -20..=19")]
+    InvalidVcpuPriority { vcpu_id: usize, priority: i32 },
 }
 
 impl From<toml::de::Error> for AxVmConfigError {

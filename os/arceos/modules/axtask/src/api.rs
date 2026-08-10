@@ -318,6 +318,14 @@ pub fn set_priority(prio: isize) -> bool {
     current_run_queue::<NoPreemptIrqSave>().set_current_priority(prio)
 }
 
+/// Sets the scheduler priority for the given task.
+///
+/// The priority range depends on the active scheduler. On CFS this is the
+/// Linux nice value in `[-20, 19]`.
+pub fn set_task_priority(task: &AxTaskRef, prio: isize) -> bool {
+    select_run_queue::<NoPreemptIrqSave>(task).set_task_priority(task, prio)
+}
+
 /// Set the affinity for the current task.
 /// [`AxCpuMask`] is used to specify the CPU affinity.
 /// Returns `true` if the affinity is set successfully.

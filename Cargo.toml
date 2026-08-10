@@ -30,6 +30,7 @@ members = [
     "components/axklib",
     "components/axpanic",
     "components/axpoll",
+    "components/icpc",
     "components/axsched",
     "components/cpumask",
     "components/crate_interface",
@@ -195,6 +196,7 @@ axhvc = { version = "0.4.13", path = "virtualization/axhvc" }
 axklib = { version = "0.7.8", path = "components/axklib" }
 axplat-dyn = { version = "0.7.15", path = "platforms/axplat-dyn", default-features = false }
 axpoll = { version = "0.5.4", path = "components/axpoll" }
+icpc = { version = "0.1.0", path = "components/icpc" }
 axvisor = { version = "0.5.24", path = "os/axvisor" }
 axvm = { version = "0.5.26", path = "virtualization/axvm", default-features = false }
 axvm-types = { version = "0.7.3", path = "virtualization/axvm-types" }

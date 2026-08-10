@@ -1,0 +1,38 @@
+# Vm base info configs — RT / control-domain ArceOS guest for Task 1
+#
+# Single vCPU pinned to pCPU3 (exclusive real-time partition).
+# Pair with linux-smp2.toml in mixed-guest scenarios.
+#
+[base]
+id = 2
+name = "arceos-rt-qemu"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [3]
+vcpu_priorities = [-20]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "../../../../images/qemu_aarch64_arceos_rt/qemu-aarch64-rt-latency-bench"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+
+memory_regions = [
+  [0x8000_0000, 0x0800_0000, 0x7, 0], # 128M MAP_ALLOC (RTOS domain, standard ArceOS load layout)
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+passthrough_devices = [
+  ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = [
+    ["/pcie@10000000"],
+]
+
+emu_devices = []

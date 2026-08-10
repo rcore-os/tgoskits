@@ -1,0 +1,14 @@
+features = [
+    "rt-latency",
+    "rt-latency-guest",
+]
+log = "Info"
+max_cpu_num = 4
+# Memory-loaded AxVisor guests must be built via:
+#   os/axvisor/scripts/task1/build-arceos-rt-guest.sh
+# (bare-metal make path). This config is kept for local `cargo xtask arceos test`
+# runs on QEMU with virtio-blk, not for AxVisor kernel loading.
+
+[env]
+BACKTRACE = "y"
+DWARF = "y"

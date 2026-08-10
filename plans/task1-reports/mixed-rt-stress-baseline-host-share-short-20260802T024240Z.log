@@ -1,0 +1,45 @@
+   Compiling serde_core v1.0.228
+   Compiling rustversion v1.0.22
+   Compiling num-traits v0.2.19
+   Compiling generic-array v0.14.7
+   Compiling synstructure v0.13.2
+   Compiling thiserror-impl v2.0.18
+   Compiling tokio-macros v2.7.0
+   Compiling zerovec-derive v0.11.3
+   Compiling cmake v0.1.58
+   Compiling displaydoc v0.2.6
+   Compiling futures-macro v0.3.32
+   Compiling serde_derive v1.0.228
+   Compiling tracing-attributes v0.1.31
+   Compiling ring v0.17.14
+   Compiling darling_core v0.23.0
+   Compiling libz-sys v1.1.29
+   Compiling signal-hook v0.3.18
+   Compiling strum_macros v0.28.0
+   Compiling miniz_oxide v0.8.9
+   Compiling anstream v1.0.0
+   Compiling unicode-truncate v2.0.1
+   Compiling darling_core v0.21.3
+   Compiling unicase v2.9.0
+error: couldn't read `/tmp/cursor-sandbox-cache/b7f6f6c584b1096ea43d3e66a7a63db3/cargo-target/debug/build/rustversion-1aa62060b018d449/out/version.expr`: No such file or directory (os error 2)
+   --> /home/allen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.22/src/lib.rs:217:30
+    |
+217 | const RUSTVERSION: Version = include!(concat!(env!("OUT_DIR"), "/version.expr"));
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `rustversion` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: couldn't read `/tmp/cursor-sandbox-cache/b7f6f6c584b1096ea43d3e66a7a63db3/cargo-target/debug/build/serde_core-a9fe4c106d36228c/out/private.rs`: No such file or directory (os error 2)
+   --> /home/allen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/crate_root.rs:165:9
+    |
+165 |         include!(concat!(env!("OUT_DIR"), "/private.rs"));
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/allen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/lib.rs:111:1
+    |
+111 | crate_root!();
+    | ------------- in this macro invocation
+    |
+    = note: this error originates in the macro `include` which comes from the expansion of the macro `crate_root` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: could not compile `serde_core` (lib) due to 1 previous error

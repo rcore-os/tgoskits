@@ -337,7 +337,22 @@ pub(crate) fn vcpu_on(
 }
 #[allow(dead_code)]
 pub(crate) fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
-    crate::host::task::spawn_task(build_vcpu_task(vm, vcpu))
+    spawn_vcpu_task(vm, vcpu)
+}
+
+pub(crate) fn spawn_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
+    let vcpu_id = vcpu.id();
+    let priority = vcpu.host_sched_priority();
+    let task = crate::host::task::spawn_task(build_vcpu_task(vm, vcpu));
+    if let Some(priority) = priority
+        && !crate::host::task::set_task_priority(&task, priority as isize)
+    {
+        warn!(
+            "VM[{}] vCPU[{vcpu_id}] rejected host scheduler priority {priority}",
+            vm.id()
+        );
+    }
+    task
 }
 
 fn spawn_deferred_reset_task(vm_id: usize) {

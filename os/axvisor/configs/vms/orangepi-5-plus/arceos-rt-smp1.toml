@@ -1,0 +1,33 @@
+# Task 1 RT guest — OrangePi-5-Plus optimized profile (pCPU7 / MPIDR 0x700)
+#
+[base]
+id = 2
+name = "arceos-rt-orangepi"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [0x700]
+vcpu_priorities = [-20]
+
+[kernel]
+entry_point = 0x4008_0000
+image_location = "fs"
+kernel_path = "/guest/arceos/orangepi-5-plus-rt-latency"
+kernel_load_addr = 0x4008_0000
+dtb_load_addr = 0x4000_0000
+
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 1],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+passthrough_devices = [
+    ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = []
+
+emu_devices = []

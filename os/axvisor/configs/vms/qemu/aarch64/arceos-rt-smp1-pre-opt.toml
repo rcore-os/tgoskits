@@ -1,0 +1,36 @@
+# Vm base info configs — RT guest profile without vCPU priority tuning (Task 1 pre-opt baseline)
+#
+# Same layout as arceos-rt-smp1.toml but omits vcpu_priorities for before/after comparison.
+#
+[base]
+id = 2
+name = "arceos-rt-qemu-pre-opt"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [3]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "../../../../images/qemu_aarch64_arceos_rt/qemu-aarch64-rt-latency-bench"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+
+memory_regions = [
+  [0x8000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+passthrough_devices = [
+  ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = [
+  ["/pcie@10000000"],
+]
+
+emu_devices = []

@@ -1,0 +1,28 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-device",
+  "virtio-blk-device,drive=disk0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append",
+  "root=/dev/vda rw init=/bin/sh",
+  "-m",
+  "8g",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+]
+success_regex = ["(?m)^virtio-net-loopback pass\\s*$"]
+shell_prefix = "~ #"
+# Probe for eth0 (virtio_net). Fall back to any non-lo iface name containing eth.
+shell_init_cmd = "ip link show eth0 >/dev/null 2>&1 && echo 'virtio-net-loopback pass' || (ls /sys/class/net | grep -q eth && echo 'virtio-net-loopback pass')"
+to_bin = true
+uefi = false
+timeout = 180

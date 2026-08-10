@@ -1,0 +1,35 @@
+# Linux 2vCPU with vCPU1 colocated on pCPU3 (Task 1 contended baseline)
+#
+# Used with arceos-rt-smp1-baseline-contended.toml so Linux stress perturbs RT.
+#
+[base]
+id = 1
+name = "linux-qemu-smp2-contended"
+vm_type = 1
+cpu_num = 2
+phys_cpu_ids = [1, 3]
+vcpu_priorities = [10, 10]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 1],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+passthrough_devices = [
+    ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = []
+
+emu_devices = []

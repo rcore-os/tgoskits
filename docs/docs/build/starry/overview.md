@@ -83,4 +83,16 @@ cargo xtask starry app qemu --all
 cargo xtask starry kmod build --all
 ```
 
+## 6. Orange Pi 5 Plus
+
+RK3588 实板使用 checked-in build config 和独立的远程运行配置：
+
+```bash
+cargo xtask starry defconfig orangepi-5-plus
+cargo xtask starry board \
+  --board-config os/StarryOS/configs/board/orangepi-5-plus-board.toml
+```
+
+串口、DTB、U-Boot 及刷写步骤详见 [实板刷写参考](../../../os/StarryOS/doc/board-flash-rk3588-visionfive2.md)。
+
 深入内容见 [构建](./build)、[运行](./runtime)、[测试](./test)、[应用运行](./app)、[性能剖析](./perf) 和 [内核模块](./kmod)。

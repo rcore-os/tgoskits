@@ -1,0 +1,34 @@
+# Vm base info configs — RT-Thread QEMU virt guest (generic 1 vCPU template)
+#
+# Task 1 RT partition uses rtthread-rt-baseline.toml (pCPU3, nice=-20).
+#
+[base]
+id = 1
+name = "rtthread-qemu"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [0]
+
+[kernel]
+entry_point = 0x4008_0000
+image_location = "memory"
+kernel_path = "../../../../images/qemu_aarch64_rtthread/qemu-aarch64-rtthread-bench"
+kernel_load_addr = 0x4008_0000
+dtb_load_addr = 0x47e0_0000
+
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+passthrough_devices = [
+  ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = []
+
+emu_devices = []

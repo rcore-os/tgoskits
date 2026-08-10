@@ -1,10 +1,44 @@
-# Runtime U-Boot config template for booting StarryOS on Orange Pi 5 Plus.
-# This file is consumed by ostool's U-Boot runner, not by cargo build itself.
+# Local U-Boot runtime config for StarryOS on Orange Pi 5 Plus (hand board).
+# Consumed by ostool's U-Boot runner via `cargo xtask starry uboot --uboot-config ...`.
+#
+# Orange Pi stock U-Boot does not provide `loady` (serial Ymodem). Use `[net]` TFTP
+# boot instead, matching CI `.github/workflows/uboot.toml` and remote board flow.
+#
+# Prerequisites:
+# - 3-pin debug UART @ 1500000 (see board-flash-rk3588-visionfive2.md §0.2)
+# - Ethernet: board and PC on the same L2 network (or direct link + static IP below)
 serial = "/dev/ttyUSB0"
 baud_rate = "1500000"
 dtb_file = "os/StarryOS/configs/board/orangepi-5-plus.dtb"
 
-success_regex = []
+# The recovered stock U-Boot does not consistently expose the standard
+# kernel_addr_r/loadaddr variables. These values were reported by the same
+# board before recovery and keep the FIT image away from the kernel entry.
+kernel_load_addr = "0x400000"
+fit_load_addr = "0x5480000"
+bootm_addr = "0x5480000"
+
+# Ostool 0.24 only sets serverip after a successful `net list`, which this
+# older U-Boot does not implement.
+uboot_cmd = ["setenv serverip 192.168.6.192"]
+
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "echo STARRY_ORANGEPI_BOOT_OK"
+success_regex = ["(?m)^STARRY_ORANGEPI_BOOT_OK\\s*$"]
 fail_regex = [
-  "panicked at",
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  "exit with code: 139",
 ]
+timeout = 600
+
+[net]
+# PC NIC facing the board or switch; discover with: ip -br link
+interface = "enp3s0"
+# This stock U-Boot lacks `net list`; static mode lets ostool issue `tftp`
+# directly instead of incorrectly falling back to `loady`.
+board_ip = "192.168.6.100"
+netmask = "255.255.255.0"
+# Leave tftp_dir unset so ostool installs/configures and verifies tftpd-hpa,
+# then stages image.fit under its actual TFTP root (normally /srv/tftp).

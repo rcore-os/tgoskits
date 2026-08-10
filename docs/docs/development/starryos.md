@@ -413,7 +413,10 @@ app/integration、stress、K230、visual/golden 类用例迁到 `apps/starry/`�
 | `qemu-smp1/system` | 单核 QEMU 聚合测试（syscall, bugfix, DRM, evdev, USB 等） |
 | `qemu-smp4/system` | 多核 QEMU 聚合测试（affinity, futex, clone, shm 等） |
 | `board-orangepi-5-plus/` | OrangePi-5-Plus 物理板测试（net-smoke, npu-yolov8, pcie-enumerate） |
+| `board-visionfive2/` | VisionFive 2 物理板启动测试 |
 | `board-licheerv-nano-sg2002/` | LicheeRV Nano SG2002 物理板启动测试 |
+
+实板刷写步骤（RK3588 / VisionFive 2）见 [StarryOS 实板刷写参考](../../../os/StarryOS/doc/board-flash-rk3588-visionfive2.md)。
 
 **`apps/starry/`** — app/integration 与重型测试：
 

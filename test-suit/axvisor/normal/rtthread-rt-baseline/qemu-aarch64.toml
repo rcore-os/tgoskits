@@ -1,0 +1,23 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-m",
+  "8g",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "ZEPHYR FATAL ERROR",
+]
+success_regex = [
+  "VM\\[1\\] boot success",
+  "Booting RT-Thread",
+]
+to_bin = true
+uefi = false
+timeout = 120

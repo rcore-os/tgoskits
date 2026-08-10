@@ -1,0 +1,31 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-device",
+  "virtio-blk-device,drive=disk0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append",
+  "root=/dev/vda rw init=/bin/sh",
+  "-m",
+  "8g",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "ICPC_PEER_ETH_FAIL",
+  "reliability: .* failed",
+  "(?m)^icpc-fault-inject fail\\s*$",
+]
+success_regex = ["(?m)^icpc-fault-inject pass\\s*$"]
+shell_prefix = "~ #"
+# vsw drops ~50% of icpc UDP frames (vsw-fault-inject feature); client retries.
+shell_init_cmd = "echo ICPC_FAULT_INJECT_BEGIN; mount -t proc proc /proc; mount -t sysfs sys /sys; echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6; ip link set eth0 up; ip addr flush dev eth0; ip addr add 10.0.9.2/24 dev eth0; sleep 10; /usr/local/bin/icpc-reliability && echo 'icpc-fault-inject pass' || echo 'icpc-fault-inject fail'"
+to_bin = true
+uefi = false
+timeout = 180

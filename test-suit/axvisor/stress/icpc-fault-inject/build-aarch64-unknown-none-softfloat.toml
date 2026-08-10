@@ -1,0 +1,12 @@
+features = [
+    "ax-driver/virtio-blk",
+    "fs",
+    "sched-cfs",
+    "vsw-fault-inject",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+    "os/axvisor/configs/vms/qemu/aarch64/linux-net-a.toml",
+    "os/axvisor/configs/vms/qemu/aarch64/linux-net-b.toml",
+]

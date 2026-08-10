@@ -1,0 +1,13 @@
+features = [
+    "ax-driver/virtio-blk",
+    "fs",
+    "sched-cfs",
+    "sdmmc",
+    "rockchip-soc",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+    "os/axvisor/configs/vms/orangepi-5-plus/linux-smp2.toml",
+    "os/axvisor/configs/vms/orangepi-5-plus/arceos-rt-smp1-baseline.toml",
+]

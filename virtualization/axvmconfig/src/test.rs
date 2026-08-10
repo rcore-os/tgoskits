@@ -74,6 +74,51 @@ fn parses_structured_guest_config() {
 }
 
 #[test]
+fn validates_per_vcpu_priorities() {
+    let valid = GuestConfig::from_toml(
+        r#"
+[base]
+cpu_num = 2
+vcpu_priorities = [-20, 19]
+"#,
+    )
+    .unwrap();
+    assert_eq!(valid.base.vcpu_priorities, Some(vec![-20, 19]));
+
+    let wrong_count = GuestConfig::from_toml(
+        r#"
+[base]
+cpu_num = 2
+vcpu_priorities = [0]
+"#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        wrong_count,
+        AxVmConfigError::InvalidVcpuPriorityCount {
+            expected: 2,
+            actual: 1,
+        }
+    );
+
+    let out_of_range = GuestConfig::from_toml(
+        r#"
+[base]
+cpu_num = 1
+vcpu_priorities = [-21]
+"#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        out_of_range,
+        AxVmConfigError::InvalidVcpuPriority {
+            vcpu_id: 0,
+            priority: -21,
+        }
+    );
+}
+
+#[test]
 fn parses_open_virtual_device_options() {
     let config = GuestConfig::from_toml(
         r#"

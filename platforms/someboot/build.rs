@@ -110,6 +110,7 @@ impl Build {
             self.uspace = true;
             self.kernel_vaddr = 0xffff_ffff_8000_0000;
         }
+        self.kernel_paddr = env_u64("SOMEBOOT_AARCH64_KERNEL_LOAD_PADDR").unwrap_or(0x8020_0000);
 
         if std::env::var("CARGO_FEATURE_EFI").is_ok() {
             println!("cargo:rustc-cfg=efi");

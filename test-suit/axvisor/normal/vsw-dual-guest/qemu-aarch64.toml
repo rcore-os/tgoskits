@@ -1,0 +1,28 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-device",
+  "virtio-blk-device,drive=disk0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append",
+  "root=/dev/vda rw init=/bin/sh",
+  "-m",
+  "8g",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+]
+success_regex = ["(?m)^vsw-dual-guest pass\\s*$"]
+shell_prefix = "~ #"
+# Wait for peer eth0 (initramfs), then ping + UDP echo on icpc port 9527.
+shell_init_cmd = "mount -t proc proc /proc; mount -t sysfs sys /sys; echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6; ip link set eth0 up; ip addr flush dev eth0; ip addr add 10.0.9.2/24 dev eth0; sleep 1; ping -c 3 -W 2 10.0.9.3 >/tmp/vsw-ping.out 2>&1; echo ping_rc=$?; cat /tmp/vsw-ping.out; /usr/local/bin/icpc-udp-probe >/tmp/vsw-udp.out 2>/tmp/vsw-udp.err; echo udp_rc=$?; cat /tmp/vsw-udp.out; cat /tmp/vsw-udp.err; grep -E '[1-9][0-9]* packets transmitted, [1-9]' /tmp/vsw-ping.out >/dev/null && grep -q 'ICPC_PROBE' /tmp/vsw-udp.out && echo 'vsw-dual-guest pass' || echo 'vsw-dual-guest fail'"
+to_bin = true
+uefi = false
+timeout = 90

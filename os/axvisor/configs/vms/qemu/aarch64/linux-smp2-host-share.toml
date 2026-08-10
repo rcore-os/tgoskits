@@ -1,0 +1,33 @@
+# Linux 2vCPU on pCPU1-2 while RT shares host pCPU0 (Task 1 host-share baseline)
+#
+[base]
+id = 1
+name = "linux-qemu-smp2-host-share"
+vm_type = 1
+cpu_num = 2
+phys_cpu_ids = [1, 2]
+vcpu_priorities = [10, 10]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 1],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+passthrough_devices = [
+    ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = []
+
+emu_devices = []

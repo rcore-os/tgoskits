@@ -1,5 +1,7 @@
 //! Host task type facade for AxVM's ArceOS-backed runtime.
 
+use ax_std::os::arceos::modules;
+
 use super::arceos;
 
 pub(crate) type AxTaskExt = arceos::ArceOsAxTaskExt;
@@ -16,6 +18,10 @@ pub(crate) fn current_task() -> CurrentTask {
 
 pub(crate) fn spawn_task(task: TaskInner) -> AxTaskRef {
     arceos::spawn_task(task)
+}
+
+pub(crate) fn set_task_priority(task: &AxTaskRef, prio: isize) -> bool {
+    modules::ax_task::set_task_priority(task, prio)
 }
 
 pub(crate) fn yield_now() {

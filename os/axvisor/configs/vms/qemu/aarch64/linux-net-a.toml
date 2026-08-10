@@ -1,0 +1,41 @@
+# Linux Guest A — Task 2 dual-guest IP (10.0.9.2)
+#
+# pCPU1-2, VirtioNet port 1 on global vsw
+#
+[base]
+id = 1
+name = "linux-qemu-net-a"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [1]
+vcpu_priorities = [10]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+
+# Guest A needs host virtio-blk; identical RAM mapping for reliable rootfs boot.
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 1],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+passthrough_devices = [
+    ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = [
+    ["/pcie@10000000"],
+]
+
+# mac 02:00:00:00:00:02, vsw port 1
+emu_devices = [
+  ["virtio-net0", 0xa000000, 0x1000, 48, 0xE2, [0x02, 0x00, 0x00, 0x00, 0x00, 0x02, 1]],
+]
