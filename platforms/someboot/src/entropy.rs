@@ -30,7 +30,9 @@ pub(crate) fn capture() {
         None => warn!("No trusted boot entropy source is available"),
     }
 
-    BOOT_ENTROPY.init(entropy);
+    // SAFETY: primary_init_early runs once on the boot CPU before secondary
+    // CPUs start, and this publication occurs before the MMU is enabled.
+    unsafe { BOOT_ENTROPY.init_single_core(entropy) };
 }
 
 /// Returns the firmware-provided seed captured for this boot.
