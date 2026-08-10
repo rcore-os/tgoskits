@@ -8,6 +8,7 @@ description = "ArceOS hardware abstraction layer, provides unified APIs for plat
 license.workspace = true
 
 [features]
+axtest = ["dep:axtest", "irq"]
 smp = [
     "axplat-dyn/smp",
     "ax-plat/smp",
@@ -40,6 +41,7 @@ default = []
 ipi = ["irq"]
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }
 ax-cpu.workspace = true
 cpu-local.workspace = true
@@ -59,3 +61,6 @@ spin.workspace = true
 
 [build-dependencies]
 quote = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
