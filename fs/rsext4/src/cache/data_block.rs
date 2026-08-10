@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use crate::{blockdev::*, bmalloc::AbsoluteBN, config::*, error::*};
+use crate::{blockdev::*, bmalloc::AbsoluteBN, config::USE_MULTILEVEL_CACHE, error::*};
 
 /// Cache key for one physical data block.
 pub type BlockCacheKey = AbsoluteBN;
@@ -63,11 +63,6 @@ impl DataBlockCache {
             access_counter: 0,
             block_size,
         }
-    }
-
-    /// Creates a data block cache with default settings.
-    pub fn create_default() -> Self {
-        Self::new(64, BLOCK_SIZE)
     }
 
     /// Loads one block from disk using a caller-provided buffer.
@@ -497,7 +492,7 @@ pub struct DataBlockCacheStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::disknode::Ext4Timestamp;
+    use crate::{config::BLOCK_SIZE, disknode::Ext4Timestamp};
 
     struct TestBlockDevice {
         data: Vec<u8>,

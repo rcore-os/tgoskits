@@ -2,6 +2,8 @@ use super::*;
 
 /// Derived filesystem geometry used only during mkfs planning.
 pub struct FsLayoutInfo {
+    /// Filesystem block size in bytes.
+    block_size: u32,
     /// Total filesystem blocks.
     total_blocks: u64,
     /// Blocks per group.
@@ -53,8 +55,18 @@ pub struct BlcokGroupLayout {
 /// Correctly spelled alias for [`BlcokGroupLayout`].
 pub type BlockGroupLayout = BlcokGroupLayout;
 
-pub fn compute_fs_layout(inode_size: u16, total_blocks: u64) -> FsLayoutInfo {
-    let block_size: u32 = 1024u32 << LOG_BLOCK_SIZE;
+/// Derives the on-disk layout for a new filesystem without writing the device.
+///
+/// # Errors
+///
+/// Returns an error when the requested geometry is invalid, overflows the
+/// supported on-disk fields, or cannot hold group-zero metadata.
+pub fn compute_fs_layout(
+    inode_size: u16,
+    total_blocks: u64,
+    block_size: u32,
+) -> Ext4Result<FsLayoutInfo> {
+    validate_mkfs_geometry(inode_size, block_size)?;
 
     // ext4 defaults to `8 * block_size` blocks per group.
     let blocks_per_group: u32 = 8 * block_size;
@@ -63,7 +75,15 @@ pub fn compute_fs_layout(inode_size: u16, total_blocks: u64) -> FsLayoutInfo {
     let inodes_per_group: u32 = blocks_per_group / 4;
 
     // Round up so the last partial group is still represented.
-    let groups: u32 = total_blocks.div_ceil(blocks_per_group as u64) as u32;
+    let first_data_block = u32::from(block_size == 1024);
+    let data_blocks = total_blocks
+        .checked_sub(u64::from(first_data_block))
+        .ok_or_else(Ext4Error::bad_superblock)?;
+    if data_blocks == 0 {
+        return Err(Ext4Error::bad_superblock().with_operation("mkfs:empty_filesystem"));
+    }
+    let groups = u32::try_from(data_blocks.div_ceil(u64::from(blocks_per_group)))
+        .map_err(|_| Ext4Error::overflow())?;
 
     // Prefer the 64-bit descriptor format unless the feature set explicitly
     // falls back to the legacy 32-bit layout.
@@ -97,24 +117,42 @@ pub fn compute_fs_layout(inode_size: u16, total_blocks: u64) -> FsLayoutInfo {
 
     // ext4 uses `s_first_data_block = 0` for block sizes above 1 KiB, and `1`
     // for 1 KiB filesystems.
-    let first_data_block: u32 = if block_size > 1024 { 0 } else { 1 };
-
     // Reserve extra GDT space for potential future resize support.
     let reserved_gdt_blocks: u32 = RESERVED_GDT_BLOCKS;
 
     // Group 0 hosts the primary superblock and primary GDT, so its bitmaps and
     // inode table start after the reserved GDT area.
     let group0_start: u32 = first_data_block;
-    let reserved_gdt_start: u32 = group0_start + 2; // boot/super + primary GDT
-    let group0_block_bitmap: u32 = reserved_gdt_start + reserved_gdt_blocks;
-    let group0_inode_bitmap: u32 = group0_block_bitmap + 1;
-    let group0_inode_table: u32 = group0_inode_bitmap + 1;
-    let group0_metadata_blocks: u32 = (group0_inode_table + inode_table_blocks) - group0_start;
+    let reserved_gdt_start = group0_start
+        .checked_add(1)
+        .and_then(|block| block.checked_add(gdt_blocks))
+        .ok_or_else(Ext4Error::overflow)?;
+    let group0_block_bitmap = reserved_gdt_start
+        .checked_add(reserved_gdt_blocks)
+        .ok_or_else(Ext4Error::overflow)?;
+    let group0_inode_bitmap = group0_block_bitmap
+        .checked_add(1)
+        .ok_or_else(Ext4Error::overflow)?;
+    let group0_inode_table = group0_inode_bitmap
+        .checked_add(1)
+        .ok_or_else(Ext4Error::overflow)?;
+    let group0_metadata_end = group0_inode_table
+        .checked_add(inode_table_blocks)
+        .ok_or_else(Ext4Error::overflow)?;
+    let group0_metadata_blocks = group0_metadata_end
+        .checked_sub(group0_start)
+        .ok_or_else(Ext4Error::overflow)?;
 
     // Reserve roughly 5% of blocks for privileged recovery space.
     let reserved_blocks: u64 = total_blocks / 20;
 
-    FsLayoutInfo {
+    let group0_blocks = data_blocks.min(u64::from(blocks_per_group)) as u32;
+    if group0_metadata_blocks > group0_blocks {
+        return Err(Ext4Error::no_space().with_operation("mkfs:group0_metadata"));
+    }
+
+    Ok(FsLayoutInfo {
+        block_size,
         total_blocks,
         blocks_per_group,
         inodes_per_group,
@@ -131,11 +169,24 @@ pub fn compute_fs_layout(inode_size: u16, total_blocks: u64) -> FsLayoutInfo {
         group0_inode_table,
         group0_metadata_blocks,
         reserved_blocks,
+    })
+}
+
+fn validate_mkfs_geometry(inode_size: u16, block_size: u32) -> Ext4Result<()> {
+    if !(MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size)
+        || !block_size.is_power_of_two()
+        || inode_size < GOOD_OLD_INODE_SIZE
+        || !inode_size.is_power_of_two()
+        || u32::from(inode_size) > block_size
+    {
+        return Err(Ext4Error::bad_superblock().with_operation("mkfs:geometry"));
     }
+    Ok(())
 }
 
 fn group_blocks_count(layout: &FsLayoutInfo, group_id: u32) -> u32 {
-    let group_start = u64::from(group_id) * u64::from(layout.blocks_per_group);
+    let group_start = u64::from(layout.first_data_block)
+        + u64::from(group_id) * u64::from(layout.blocks_per_group);
     if group_start >= layout.total_blocks {
         return 0;
     }
@@ -163,75 +214,118 @@ fn mark_block_bitmap_padding(bitmap: &mut [u8], layout: &FsLayoutInfo, group_id:
     mark_bitmap_range_allocated(bitmap, valid_blocks, layout.blocks_per_group);
 }
 
+/// Geometry selected when creating a new ext4 filesystem.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MkfsOptions {
+    /// Filesystem block size in bytes.
+    pub block_size: u32,
+    /// On-disk inode size in bytes.
+    pub inode_size: u16,
+}
+
+impl Default for MkfsOptions {
+    fn default() -> Self {
+        Self {
+            block_size: BLOCK_SIZE_U32,
+            inode_size: DEFAULT_INODE_SIZE,
+        }
+    }
+}
+
 pub fn mkfs<B: BlockIo + crate::runtime::Clock>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+    mkfs_with_options(block_dev, MkfsOptions::default())
+}
+
+/// Creates a fresh ext4 filesystem using the requested on-disk geometry.
+///
+/// # Errors
+///
+/// Returns an error when the geometry is unsupported, the device is too small,
+/// or any metadata write, bootstrap mount, or durability operation fails.
+pub fn mkfs_with_options<B: BlockIo + crate::runtime::Clock>(
+    block_dev: &mut Jbd2Dev<B>,
+    options: MkfsOptions,
+) -> Ext4Result<()> {
+    validate_mkfs_geometry(options.inode_size, options.block_size)?;
+
+    let previous_block_size = block_dev.block_size() as usize;
+    block_dev.set_filesystem_block_size(options.block_size as usize)?;
+    let total_blocks = block_dev.total_blocks();
+    let layout = match compute_fs_layout(options.inode_size, total_blocks, options.block_size) {
+        Ok(layout) => layout,
+        Err(error) => {
+            if previous_block_size != options.block_size as usize {
+                block_dev.set_filesystem_block_size(previous_block_size)?;
+            }
+            return Err(error);
+        }
+    };
+
     let old_journal_use = block_dev.is_use_journal();
     // Disable journaling while laying out the initial filesystem image. The
     // journal inode and journal superblock do not exist yet at this stage.
-    block_dev.set_journal_use(false);
+    let result = (|| {
+        block_dev.set_journal_use(false);
+        let total_groups = layout.groups;
 
-    // Compute the full mkfs layout before any on-disk write happens.
-    let total_blocks = block_dev.total_blocks();
-    let layout = compute_fs_layout(DEFAULT_INODE_SIZE, total_blocks);
-    let total_groups = layout.groups;
+        // Write the primary superblock and any sparse backups first so every later
+        // descriptor/bitmap write can assume a valid superblock image exists.
+        let superblock = build_superblock(total_blocks, &layout);
+        write_superblock(block_dev, &superblock)?;
 
-    // Write the primary superblock and any sparse backups first so every later
-    // descriptor/bitmap write can assume a valid superblock image exists.
-    let superblock = build_superblock(total_blocks, &layout);
-    write_superblock(block_dev, &superblock)?;
+        write_superblock_redundant_backup(block_dev, &superblock, total_groups, &layout)?;
 
-    write_superblock_redundant_backup(block_dev, &superblock, total_groups, &layout)?;
-
-    let mut descs: VecDeque<Ext4GroupDesc> = VecDeque::new();
-    // Seed all group descriptors before initializing individual bitmaps.
-    for group_id in 0..total_groups {
-        let mut desc = build_uninit_group_desc(&superblock, group_id, &layout);
-        write_group_desc(block_dev, group_id, &mut desc)?;
-        descs.push_back(desc);
-    }
-    write_gdt_redundant_backup(block_dev, &descs, &superblock, total_groups, &layout)?;
-
-    // Group 0 is initialized eagerly because mkfs immediately creates the root
-    // directory inside it.
-    initialize_group_0(block_dev, &layout)?;
-
-    // Other groups start with only metadata blocks allocated.
-    initialize_other_groups_bitmaps(block_dev, &layout, &superblock)?;
-
-    let mut initialized_descs: VecDeque<Ext4GroupDesc> = VecDeque::new();
-    for group_id in 0..total_groups {
-        let mut desc = build_uninit_group_desc(&superblock, group_id, &layout);
-        if group_id == 0 {
-            desc.bg_flags = Ext4GroupDesc::EXT4_BG_INODE_ZEROED;
+        let mut descs: VecDeque<Ext4GroupDesc> = VecDeque::new();
+        // Seed all group descriptors before initializing individual bitmaps.
+        for group_id in 0..total_groups {
+            let mut desc = build_uninit_group_desc(&superblock, group_id, &layout);
+            write_group_desc(block_dev, group_id, &mut desc)?;
+            descs.push_back(desc);
         }
-        write_group_desc(block_dev, group_id, &mut desc)?;
-        initialized_descs.push_back(desc);
-    }
-    write_gdt_redundant_backup(
-        block_dev,
-        &initialized_descs,
-        &superblock,
-        total_groups,
-        &layout,
-    )?;
+        write_gdt_redundant_backup(block_dev, &descs, &superblock, total_groups, &layout)?;
 
-    // Reuse the normal mount/bootstrap path to create root and lost+found so
-    // mkfs and mount share the same initialization logic.
-    {
-        let mut fs = Ext4FileSystem::mount(block_dev).expect("Mount Failed!");
-        fs.umount(block_dev)?;
-    }
+        // Group 0 is initialized eagerly because mkfs immediately creates the root
+        // directory inside it.
+        initialize_group_0(block_dev, &layout)?;
 
-    // Final sanity check: read back the superblock and validate the magic.
-    let verify_sb = read_superblock(block_dev)?;
+        // Other groups start with only metadata blocks allocated.
+        initialize_other_groups_bitmaps(block_dev, &layout, &superblock)?;
 
-    // Restore the previous journal setting for the caller.
+        let mut initialized_descs: VecDeque<Ext4GroupDesc> = VecDeque::new();
+        for group_id in 0..total_groups {
+            let mut desc = build_uninit_group_desc(&superblock, group_id, &layout);
+            if group_id == 0 {
+                desc.bg_flags = Ext4GroupDesc::EXT4_BG_INODE_ZEROED;
+            }
+            write_group_desc(block_dev, group_id, &mut desc)?;
+            initialized_descs.push_back(desc);
+        }
+        write_gdt_redundant_backup(
+            block_dev,
+            &initialized_descs,
+            &superblock,
+            total_groups,
+            &layout,
+        )?;
+
+        // Reuse the normal mount/bootstrap path to create root and lost+found so
+        // mkfs and mount share the same initialization logic.
+        {
+            let mut fs = Ext4FileSystem::mount(block_dev)?;
+            fs.umount(block_dev)?;
+        }
+
+        // Final sanity check: read back the superblock and validate the magic.
+        let verify_sb = read_superblock(block_dev)?;
+
+        if verify_sb.s_magic == EXT4_SUPER_MAGIC {
+            Ok(())
+        } else {
+            Err(Ext4Error::corrupted())
+        }
+    })();
     block_dev.set_journal_use(old_journal_use);
-
-    if verify_sb.s_magic == EXT4_SUPER_MAGIC {
-        Ok(())
-    } else {
-        Err(Ext4Error::corrupted())
-    }
+    result
 }
 
 /// Builds the in-memory superblock used by mkfs.
@@ -240,8 +334,8 @@ fn build_superblock(total_blocks: u64, layout: &FsLayoutInfo) -> Ext4Superblock 
         s_magic: EXT4_SUPER_MAGIC,
         s_blocks_count_lo: (total_blocks & 0xFFFFFFFF) as u32,
         s_blocks_count_hi: (total_blocks >> 32) as u32,
-        s_log_block_size: LOG_BLOCK_SIZE,
-        s_log_cluster_size: LOG_BLOCK_SIZE,
+        s_log_block_size: layout.block_size.trailing_zeros() - 10,
+        s_log_cluster_size: layout.block_size.trailing_zeros() - 10,
         s_blocks_per_group: layout.blocks_per_group,
         s_inodes_per_group: layout.inodes_per_group,
         s_clusters_per_group: layout.blocks_per_group,
@@ -386,9 +480,7 @@ fn write_superblock_redundant_backup<B: BlockIo>(
             );
             if need_redundant_backup(gid) {
                 let super_blocks = group_layout.group_start_block;
-                block_dev
-                    .read_block(AbsoluteBN::new(super_blocks))
-                    .expect("Superblock read failed!");
+                block_dev.read_block(AbsoluteBN::new(super_blocks))?;
                 let buffer = block_dev.buffer_mut();
                 sb.to_disk_bytes(&mut buffer[0..SUPERBLOCK_SIZE]);
                 block_dev.write_block(AbsoluteBN::new(super_blocks), true)?;
@@ -507,9 +599,9 @@ fn write_group_desc<B: BlockIo>(
 
     // Convert the descriptor's byte offset inside the GDT into a physical block
     // number plus an offset within that block.
-    let gdt_base: u64 = BLOCK_SIZE as u64;
+    let gdt_base = superblock.primary_gdt_byte_offset()?;
     let byte_offset = gdt_base + group_id as u64 * desc_size as u64;
-    let block_size_u64 = BLOCK_SIZE as u64;
+    let block_size_u64 = u64::from(superblock.checked_block_size()?);
     let block_num = byte_offset / block_size_u64;
     let in_block = (byte_offset % block_size_u64) as usize;
     let end = in_block + desc_size;
@@ -569,7 +661,7 @@ fn initialize_group_0<B: BlockIo>(
         }
 
         // Mark bitmap padding bits allocated so they are never handed out.
-        let bits_per_group = BLOCK_SIZE_U32 * 8;
+        let bits_per_group = layout.block_size * 8;
         for i in layout.inodes_per_group..bits_per_group {
             let byte_idx: usize = (i / 8) as usize;
             let bit_idx = i % 8;
@@ -643,7 +735,7 @@ fn initialize_other_groups_bitmaps<B: BlockIo>(
             let buffer = block_dev.buffer_mut();
             buffer.fill(0);
 
-            let bits_per_group = BLOCK_SIZE_U32 * 8;
+            let bits_per_group = layout.block_size * 8;
             for i in layout.inodes_per_group..bits_per_group {
                 let byte_idx: usize = (i / 8) as usize;
                 let bit_idx = i % 8;
@@ -654,4 +746,92 @@ fn initialize_other_groups_bitmaps<B: BlockIo>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TinyDevice;
+
+    impl BlockIo for TinyDevice {
+        fn read(
+            &mut self,
+            _buffer: &mut [u8],
+            _sector: crate::SectorId,
+            _count: u32,
+        ) -> Ext4Result<()> {
+            Err(Ext4Error::io())
+        }
+
+        fn write(
+            &mut self,
+            _buffer: &[u8],
+            _sector: crate::SectorId,
+            _count: u32,
+        ) -> Ext4Result<()> {
+            Err(Ext4Error::io())
+        }
+
+        fn geometry(&self) -> crate::DeviceGeometry {
+            crate::DeviceGeometry::new(512, 20)
+        }
+
+        fn capabilities(&self) -> crate::DeviceCapabilities {
+            crate::DeviceCapabilities::default()
+        }
+
+        fn flush(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+    }
+
+    impl crate::Clock for TinyDevice {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
+            Ok(Ext4Timestamp::new(0, 0))
+        }
+    }
+
+    #[test]
+    fn group_zero_bitmaps_follow_the_complete_primary_gdt() {
+        let blocks_per_group = 8 * BLOCK_SIZE_U32;
+        let descs_per_block = BLOCK_SIZE_U32 / u32::from(GROUP_DESC_SIZE);
+        let total_blocks = u64::from(blocks_per_group) * u64::from(descs_per_block + 1);
+
+        let layout = compute_fs_layout(DEFAULT_INODE_SIZE, total_blocks, BLOCK_SIZE_U32)
+            .expect("multi-block GDT layout must be representable");
+
+        assert!(layout.gdt_blocks > 1);
+        assert_eq!(
+            layout.group0_block_bitmap,
+            layout.first_data_block + 1 + layout.gdt_blocks + layout.reserved_gdt_blocks
+        );
+    }
+
+    #[test]
+    fn partial_group_zero_must_fit_all_mkfs_metadata() {
+        let result = compute_fs_layout(DEFAULT_INODE_SIZE, 10, BLOCK_SIZE_U32);
+
+        assert!(matches!(
+            result,
+            Err(error) if error.kind() == crate::error::Ext4ErrorKind::NoSpace
+        ));
+    }
+
+    #[test]
+    fn rejected_mkfs_layout_restores_previous_block_geometry() {
+        let mut device = Jbd2Dev::initial_jbd2dev(0, TinyDevice, false);
+
+        let error = mkfs_with_options(
+            &mut device,
+            MkfsOptions {
+                block_size: 1024,
+                ..MkfsOptions::default()
+            },
+        )
+        .expect_err("ten 1 KiB blocks cannot hold group-zero metadata");
+
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::NoSpace);
+        assert_eq!(device.block_size(), BLOCK_SIZE_U32);
+    }
 }

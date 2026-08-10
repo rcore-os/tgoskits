@@ -6,7 +6,6 @@ use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
     checksum::jbd2_update_superblock_checksum,
-    config::*,
     crc32c::crc32c::ext4_superblock_has_metadata_csum,
     disknode::*,
     endian::*,
@@ -129,15 +128,16 @@ impl JBD2DEVSYSTEM {
         }
     }
 
-    fn parse_replay_tags(&self, desc_buf: &[u8; BLOCK_SIZE]) -> Option<Vec<ReplayTag>> {
+    fn parse_replay_tags(&self, desc_buf: &[u8]) -> Option<Vec<ReplayTag>> {
         let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
         let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
+        let block_size = desc_buf.len();
         let mut tags = Vec::new();
         let mut off = JBD2_DESCRIPTOR_HEADER_SIZE;
 
-        while off < BLOCK_SIZE {
+        while off < block_size {
             let parsed = if has_csum_v3 {
-                if off + JBD2_TAG3_SIZE > BLOCK_SIZE {
+                if off + JBD2_TAG3_SIZE > block_size {
                     return None;
                 }
                 let tag = JournalBlockTag3S::from_disk_bytes(&desc_buf[off..off + JBD2_TAG3_SIZE]);
@@ -149,7 +149,7 @@ impl JBD2DEVSYSTEM {
                 off += JBD2_TAG3_SIZE;
                 (block, tag.t_flags, all_zero)
             } else {
-                if off + JBD2_TAG_SIZE > BLOCK_SIZE {
+                if off + JBD2_TAG_SIZE > block_size {
                     return None;
                 }
                 let tag = JournalBlockTagS::from_disk_bytes(&desc_buf[off..off + JBD2_TAG_SIZE]);
@@ -157,7 +157,7 @@ impl JBD2DEVSYSTEM {
 
                 let mut block_high = 0u32;
                 if has_64bit {
-                    if off + JBD2_TAG_BLOCKNR_HIGH_SIZE > BLOCK_SIZE {
+                    if off + JBD2_TAG_BLOCKNR_HIGH_SIZE > block_size {
                         return None;
                     }
                     block_high = u32::from_be_bytes(
@@ -189,7 +189,7 @@ impl JBD2DEVSYSTEM {
             });
 
             if !same_uuid {
-                if off + JBD2_UUID_SIZE > BLOCK_SIZE {
+                if off + JBD2_UUID_SIZE > block_size {
                     return None;
                 }
                 off += JBD2_UUID_SIZE;
@@ -202,10 +202,13 @@ impl JBD2DEVSYSTEM {
         Some(tags)
     }
 
-    fn parse_revoke_blocks(&self, revoke_buf: &[u8; BLOCK_SIZE]) -> Option<Vec<AbsoluteBN>> {
+    fn parse_revoke_blocks(&self, revoke_buf: &[u8]) -> Option<Vec<AbsoluteBN>> {
+        if revoke_buf.len() < 16 {
+            return None;
+        }
         let revoke = Jbd2JournalRevokeHeadS::from_disk_bytes(&revoke_buf[0..16]);
         let count = usize::try_from(revoke.r_count).ok()?;
-        if !(16..=BLOCK_SIZE).contains(&count) {
+        if !(16..=revoke_buf.len()).contains(&count) {
             return None;
         }
 
@@ -241,7 +244,11 @@ impl JBD2DEVSYSTEM {
         journal_blocks: &[AbsoluteBN],
     ) -> Ext4Result<()> {
         let sb_block = self.journal_phys_block(journal_blocks, 0)?;
-        let mut sb_data = [0u8; BLOCK_SIZE];
+        let block_size = block_dev.block_size();
+        if block_size < 1024 {
+            return Err(Ext4Error::corrupted().with_operation("jbd2:small_block"));
+        }
+        let mut sb_data = vec![0u8; block_size];
         block_dev.read(&mut sb_data, sb_block, 1)?;
         jbd2_update_superblock_checksum(&mut self.jbd2_super_block);
         self.jbd2_super_block.to_disk_bytes(&mut sb_data[0..1024]);
@@ -304,7 +311,8 @@ impl JBD2DEVSYSTEM {
             return Ok(false);
         }
 
-        let mut desc_buffer = vec![0; BLOCK_SIZE];
+        let block_size = block_dev.block_size();
+        let mut desc_buffer = vec![0; block_size];
 
         // Build the descriptor block in memory first.
         let new_jbd_header = JournalHeaderS {
@@ -318,6 +326,9 @@ impl JBD2DEVSYSTEM {
         let mut first_tag = true;
         // Emit one tag per metadata block queued for this transaction.
         for (idx, update) in self.commit_queue.iter().enumerate() {
+            if update.1.len() != block_size || update.1.len() < 4 {
+                return Err(Ext4Error::corrupted().with_operation("jbd2:update_block_size"));
+            }
             // Metadata blocks that begin with the journal magic must be escaped
             // so replay never mistakes them for journal headers.
             let mut tag = JournalBlockTagS {
@@ -338,6 +349,13 @@ impl JBD2DEVSYSTEM {
                 tag.t_flags |= JBD2_FLAG_SAME_UUID;
             }
 
+            let uuid_len = if first_tag { JBD2_UUID_SIZE } else { 0 };
+            let tag_end = current_offset
+                .checked_add(JBD2_TAG_SIZE + uuid_len)
+                .ok_or_else(Ext4Error::overflow)?;
+            if tag_end > block_size {
+                return Err(Ext4Error::no_space().with_operation("jbd2:descriptor_full"));
+            }
             tag.to_disk_bytes(&mut desc_buffer[current_offset..current_offset + JBD2_TAG_SIZE]);
             current_offset += JBD2_TAG_SIZE;
 
@@ -354,10 +372,9 @@ impl JBD2DEVSYSTEM {
 
         block_dev.write(&desc_buffer, block_id, 1)?;
 
-        let mut no_escape: Vec<(AbsoluteBN, [u8; BLOCK_SIZE])> = Vec::new();
+        let mut no_escape: Vec<(AbsoluteBN, Vec<u8>)> = Vec::new();
         for update in self.commit_queue.iter() {
-            let mut check_data: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
-            check_data.copy_from_slice(&*update.1);
+            let mut check_data = update.1.to_vec();
             let magic = u32::from_le_bytes(check_data[0..4].try_into().unwrap());
             if magic == JBD2_MAGIC {
                 check_data[0..4].fill(0);
@@ -378,7 +395,7 @@ impl JBD2DEVSYSTEM {
         // Write the commit block BEFORE checkpointing so that a crash during
         // checkpoint still leaves a valid committed transaction in the journal
         // for replay on the next mount.
-        let mut commit_buffer = [0_u8; BLOCK_SIZE];
+        let mut commit_buffer = vec![0_u8; block_size];
 
         let commit_block = CommitHeader {
             h_header: JournalHeaderS {
@@ -441,7 +458,13 @@ impl JBD2DEVSYSTEM {
                     };
                 }
             };
-            let mut record_buf = [0u8; BLOCK_SIZE];
+            let block_size = block_dev.block_size();
+            if block_size < JBD2_DESCRIPTOR_HEADER_SIZE {
+                return ReplayScan::Incomplete {
+                    restart_rel: start_rel,
+                };
+            }
+            let mut record_buf = vec![0u8; block_size];
             if block_dev.read(&mut record_buf, record_phys, 1).is_err() {
                 return ReplayScan::Incomplete {
                     restart_rel: start_rel,
@@ -511,7 +534,7 @@ impl JBD2DEVSYSTEM {
 
                         let run_len = run_end - run_start;
                         let first_journal = committed[run_start].2;
-                        let mut data = vec![0u8; run_len * BLOCK_SIZE];
+                        let mut data = vec![0u8; run_len * block_size];
                         if block_dev
                             .read(&mut data, first_journal, run_len as u32)
                             .is_err()
@@ -540,14 +563,14 @@ impl JBD2DEVSYSTEM {
                             for rel_idx in write_start..write_end {
                                 let absolute_idx = run_start + rel_idx;
                                 let (_, payload, _) = committed[absolute_idx];
-                                let off = rel_idx * BLOCK_SIZE;
+                                let off = rel_idx * block_size;
                                 if (payload.tag.flags & u32::from(JOURNAL_ESCAPE)) != 0 {
                                     data[off..off + 4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
                                 }
                             }
 
-                            let off = write_start * BLOCK_SIZE;
-                            let bytes = &data[off..write_end * BLOCK_SIZE];
+                            let off = write_start * block_size;
+                            let bytes = &data[off..write_end * block_size];
                             let write_count = write_end - write_start;
                             if block_dev
                                 .write(bytes, first_home, write_count as u32)
@@ -674,11 +697,12 @@ pub fn create_journal_entry<B: BlockIo + crate::runtime::Clock>(
     // Allocate the journal area. Block 0 stores the journal superblock and the
     // remaining blocks hold descriptor/data/commit traffic.
     let journal_inode_num = JOURNAL_FILE_INODE;
-    let free_block = fs.alloc_blocks(block_dev, 4096)?;
+    let block_size = fs.block_size();
+    let free_block = fs.alloc_blocks(block_dev, CREATED_JOURNAL_BLOCK_COUNT)?;
 
     // Ensure journal area starts clean: otherwise old image contents could look like valid
     // descriptor/commit blocks and replay would corrupt filesystem metadata.
-    let zero = [0u8; BLOCK_SIZE];
+    let zero = vec![0u8; block_size];
     for &b in free_block.iter() {
         block_dev.write_blocks(&zero, b, 1, true)?;
     }
@@ -686,7 +710,9 @@ pub fn create_journal_entry<B: BlockIo + crate::runtime::Clock>(
     let mut jour_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
     jour_inode.i_links_count = 1;
 
-    let inode_size: usize = BLOCK_SIZE * free_block.len();
+    let inode_size = block_size
+        .checked_mul(free_block.len())
+        .ok_or_else(Ext4Error::overflow)?;
     jour_inode.i_size_lo = inode_size as u32;
     jour_inode.i_size_high = 0;
     jour_inode.i_blocks_lo = (inode_size / 512) as u32;
@@ -715,11 +741,11 @@ pub fn create_journal_entry<B: BlockIo + crate::runtime::Clock>(
         jbd2_sb.s_checksum_type = 0;
     }
 
-    // The first allocated block stores the journal superblock itself, so the
-    // usable log length excludes that block and starts at relative block 1.
-    jbd2_sb.s_maxlen = (free_block.len() - 1) as u32;
+    // The first allocated block stores the journal superblock itself. JBD2
+    // counts it in `s_maxlen` and starts log traffic at relative block 1.
+    jbd2_sb.s_maxlen = u32::try_from(free_block.len()).map_err(|_| Ext4Error::overflow())?;
     jbd2_sb.s_start = 0;
-    jbd2_sb.s_blocksize = BLOCK_SIZE_U32;
+    jbd2_sb.s_blocksize = u32::try_from(block_size).map_err(|_| Ext4Error::overflow())?;
     jbd2_sb.s_sequence = 1;
     jbd2_sb.s_first = 1;
     jbd2_sb.s_uuid = fs.superblock.s_uuid;

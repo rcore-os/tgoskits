@@ -107,7 +107,7 @@ impl InodeCache {
         block_num: AbsoluteBN,
         offset: usize,
     ) -> Ext4Result<Ext4Inode> {
-        let mut buffer = alloc::vec![0u8; crate::config::BLOCK_SIZE];
+        let mut buffer = alloc::vec![0u8; block_dev.block_size() as usize];
         block_dev.read_blocks(&mut buffer, block_num, 1)?;
         let end = offset
             .checked_add(self.inode_size)
@@ -354,7 +354,7 @@ impl InodeCache {
         offset: usize,
         data: &[u8],
     ) -> Ext4Result<()> {
-        let mut buffer = alloc::vec![0u8; crate::config::BLOCK_SIZE];
+        let mut buffer = alloc::vec![0u8; block_dev.block_size() as usize];
         block_dev.read_blocks(&mut buffer, block_num, 1)?;
         let end = offset
             .checked_add(data.len())
@@ -371,7 +371,7 @@ impl InodeCache {
         let mut index = 0;
         while index < dirty.len() {
             let block_num = dirty[index].1;
-            let mut buffer = alloc::vec![0u8; crate::config::BLOCK_SIZE];
+            let mut buffer = alloc::vec![0u8; block_dev.block_size() as usize];
             block_dev.read_blocks(&mut buffer, block_num, 1)?;
 
             while index < dirty.len() && dirty[index].1 == block_num {

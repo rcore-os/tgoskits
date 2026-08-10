@@ -81,16 +81,18 @@ pub fn calc_group_layout(
 ) -> BlockGroupLayout {
     if gid == 0 {
         return BlockGroupLayout {
-            group_start_block: 0,
+            group_start_block: u64::from(sb.s_first_data_block),
             group_blcok_bitmap_startblocks: group0_block_bitmap as u64,
             group_inode_bitmap_startblocks: group0_inode_bitmap as u64,
             group_inode_table_startblocks: group0_inode_table as u64,
-            metadata_blocks_in_group: (group0_inode_table + inode_table_blocks),
+            metadata_blocks_in_group: (group0_inode_table + inode_table_blocks)
+                .saturating_sub(sb.s_first_data_block),
         };
     }
 
     // Non-zero groups place their metadata relative to the group's first block.
-    let group_start = gid * blocks_per_group;
+    let group_start = u64::from(sb.s_first_data_block)
+        .saturating_add(u64::from(gid).saturating_mul(u64::from(blocks_per_group)));
 
     // Sparse-super decides whether this group carries backup metadata.
     let sparse_feature =
@@ -99,7 +101,7 @@ pub fn calc_group_layout(
     let has_backup = sparse_feature && need_redundant_backup(gid);
 
     let (block_bitmap, inode_bitmap, inode_table, meta_blocks) = if has_backup {
-        let bb = group_start + 1 + gdt_blocks;
+        let bb = group_start + 1 + u64::from(gdt_blocks);
         let ib = bb + 1;
         let it = ib + 1;
         let meta = 1 + gdt_blocks + 1 + 1 + inode_table_blocks;
@@ -113,10 +115,10 @@ pub fn calc_group_layout(
     };
 
     BlockGroupLayout {
-        group_start_block: group_start as u64,
-        group_blcok_bitmap_startblocks: block_bitmap as u64,
-        group_inode_bitmap_startblocks: inode_bitmap as u64,
-        group_inode_table_startblocks: inode_table as u64,
+        group_start_block: group_start,
+        group_blcok_bitmap_startblocks: block_bitmap,
+        group_inode_bitmap_startblocks: inode_bitmap,
+        group_inode_table_startblocks: inode_table,
         metadata_blocks_in_group: meta_blocks,
     }
 }

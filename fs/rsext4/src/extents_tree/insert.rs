@@ -201,7 +201,7 @@ impl<'a> ExtentTree<'a> {
                 let right_header = Ext4ExtentHeader {
                     eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
                     eh_entries: right_entries.len() as u16,
-                    eh_max: Self::calc_block_eh_max(),
+                    eh_max: self.calc_block_eh_max(),
                     eh_depth: 0,
                     eh_generation: 0,
                 };
@@ -305,7 +305,7 @@ impl<'a> ExtentTree<'a> {
                     let right_header = Ext4ExtentHeader {
                         eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
                         eh_entries: right_entries.len() as u16,
-                        eh_max: Self::calc_block_eh_max(),
+                        eh_max: self.calc_block_eh_max(),
                         eh_depth: header.eh_depth,
                         eh_generation: 0,
                     };

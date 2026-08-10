@@ -6,7 +6,6 @@ use crate::{
     alloc::string::ToString,
     blockdev::*,
     checksum::update_ext4_dirblock_csum32,
-    config::*,
     crc32c::ext4_superblock_has_metadata_csum,
     dir::{create_lost_found_directory, get_inode_with_num, insert_dir_entry, normalize_path},
     disknode::*,
@@ -34,6 +33,7 @@ fn mkdir_internal<B: BlockIo + crate::runtime::Clock>(
     gid: u32,
 ) -> Ext4Result<Ext4Inode> {
     let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
+    let filesystem_block_size = fs.block_size();
     let norm_path = normalize_path(path);
     // Resolve trivial and already-existing paths before allocating anything.
     if norm_path.is_empty() {
@@ -100,6 +100,7 @@ fn mkdir_internal<B: BlockIo + crate::runtime::Clock>(
     // Initialize `.` and `..` through modify_new so mutations are persisted
     // in the cache entry rather than on a detached clone.
     fs.datablock_cache.modify_new(device, data_block, |data| {
+        let block_size = data.len();
         let dot_name = b".";
         let dot_rec_len = Ext4DirEntry2::entry_len(dot_name.len() as u8);
         let dot = Ext4DirEntry2::new(
@@ -111,11 +112,11 @@ fn mkdir_internal<B: BlockIo + crate::runtime::Clock>(
 
         let dotdot_name = b"..";
         let dotdot_rec_len = if has_checksum {
-            (BLOCK_SIZE as u16)
+            (block_size as u16)
                 .saturating_sub(dot_rec_len)
                 .saturating_sub(Ext4DirEntryTail::TAIL_LEN)
         } else {
-            (BLOCK_SIZE as u16).saturating_sub(dot_rec_len)
+            (block_size as u16).saturating_sub(dot_rec_len)
         };
         let dotdot = Ext4DirEntry2::new(
             parent_ino_num.raw(),
@@ -135,7 +136,7 @@ fn mkdir_internal<B: BlockIo + crate::runtime::Clock>(
 
         if has_checksum {
             let tail = Ext4DirEntryTail::new();
-            let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+            let tail_offset = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
             tail.to_disk_bytes(
                 &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
             );
@@ -149,9 +150,9 @@ fn mkdir_internal<B: BlockIo + crate::runtime::Clock>(
     let mut new_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
     new_inode.i_generation = new_dir_gen;
     new_inode.i_links_count = 2;
-    new_inode.i_size_lo = BLOCK_SIZE as u32;
+    new_inode.i_size_lo = filesystem_block_size as u32;
     new_inode.i_size_high = 0;
-    new_inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
+    new_inode.i_blocks_lo = (filesystem_block_size / 512) as u32;
     new_inode.l_i_blocks_high = 0;
     new_inode.i_flags = Ext4Inode::mask_flags_for_mode(
         dir_mode,

@@ -7,7 +7,9 @@ use crate::{bmalloc::AbsoluteBN, config::*, endian::*};
 pub const JOURNAL_FILE_INODE: u64 = 8;
 /// ext4 reserves inode 8 for the journal file.
 pub const JBD2_MAGIC: u32 = 0xC03B_3998u32; // jbd2 magic number (on-disk big-endian)
-pub const JOURNAL_BLOCK_COUNT: u32 = 32 * 1024 * 1024 / BLOCK_SIZE_U32;
+pub const DEFAULT_JOURNAL_SIZE_BYTES: u32 = 32 * 1024 * 1024;
+pub const CREATED_JOURNAL_BLOCK_COUNT: u32 = 4096;
+pub const JOURNAL_BLOCK_COUNT: u32 = DEFAULT_JOURNAL_SIZE_BYTES / BLOCK_SIZE_U32;
 pub const JOURNAL_ESCAPE: u16 = 0x1;
 pub const JBD2_FLAG_SAME_UUID: u16 = 0x2;
 pub const JBD2_FLAG_LAST_TAG: u16 = 0x8;
@@ -25,7 +27,7 @@ pub const JBD2_FEATURE_INCOMPAT_64BIT: u32 = 0x0000_0002;
 pub const JBD2_FEATURE_INCOMPAT_CSUM_V3: u32 = 0x0000_0010;
 #[repr(C)]
 /// One journaled metadata update: `(target physical block, serialized block)`.
-pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8; BLOCK_SIZE]>);
+pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8]>);
 #[repr(C)]
 pub struct JBD2DEVSYSTEM {
     pub jbd2_super_block: JournalSuperBllockS,

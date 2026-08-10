@@ -8,7 +8,6 @@ use super::{
 use crate::{
     blockdev::{BlockIo, Jbd2Dev},
     bmalloc::AbsoluteBN,
-    config::BLOCK_SIZE,
     disknode::Ext4Inode,
     entries::{DirEntryIterator, Ext4DirEntryInfo, Ext4DxEntry, classic_dir, htree_dir},
     ext4::Ext4FileSystem,
@@ -180,7 +179,7 @@ impl HashTreeManager {
         target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
         let total_size = dir_inode.size() as usize;
-        let block_bytes = BLOCK_SIZE;
+        let block_bytes = fs.block_size();
         let total_blocks = if total_size == 0 {
             0
         } else {
@@ -205,7 +204,7 @@ impl HashTreeManager {
                     Err(_) => return Err(HashTreeError::BlockOutOfRange),
                 };
 
-                let block_data = &cached_block.data[..block_bytes];
+                let block_data = &cached_block.data;
                 if let Some(entry) = classic_dir::find_entry(block_data, target_name) {
                     return Ok(HashTreeSearchResult {
                         entry: unsafe {

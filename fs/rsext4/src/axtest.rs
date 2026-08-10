@@ -650,7 +650,7 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
         superblock::Ext4Superblock,
     };
 
-    let mut block_buffer = BlockBuffer::new();
+    let mut block_buffer = BlockBuffer::new(BLOCK_SIZE);
     ax_assert_eq!(block_buffer.len(), BLOCK_SIZE);
     ax_assert!(!block_buffer.is_empty());
     ax_assert!(block_buffer.as_slice().iter().all(|byte| *byte == 0));

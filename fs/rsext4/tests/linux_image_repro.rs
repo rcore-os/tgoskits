@@ -304,6 +304,70 @@ fn linux_image_geometry_round_trip(filesystem_block_size: u32) {
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
 }
 
+fn rsext4_mkfs_geometry_round_trip(filesystem_block_size: u32) {
+    for tool in ["e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let temp_dir = std::env::temp_dir().join(format!(
+        "rsext4-mkfs-dynamic-geometry-{filesystem_block_size}-{}",
+        std::process::id()
+    ));
+    if temp_dir.exists() {
+        fs::remove_dir_all(&temp_dir).expect("remove stale temp dir");
+    }
+    fs::create_dir(&temp_dir).expect("create temp dir");
+    let image = temp_dir.join("fs.img");
+    run_command(
+        {
+            let mut command = Command::new("truncate");
+            command.args(["-s", "64M"]).arg(&image);
+            command
+        },
+        "truncate rsext4 mkfs image",
+    );
+
+    {
+        let dev = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, false);
+        mkfs_with_options(
+            &mut dev,
+            MkfsOptions {
+                block_size: filesystem_block_size,
+                ..MkfsOptions::default()
+            },
+        )
+        .expect("format image with dynamic filesystem geometry");
+    }
+
+    e2fsck_readonly_clean(
+        &image,
+        &format!("rsext4 mkfs {filesystem_block_size}-byte geometry"),
+    );
+
+    {
+        let dev = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("mount rsext4-created geometry image");
+        mkfile(&mut dev, &mut fs, "/mkfs-geometry.bin", None, None)
+            .expect("create file on rsext4-created image");
+        let payload = vec![0xa5; filesystem_block_size as usize + 19];
+        write_file(&mut dev, &mut fs, "/mkfs-geometry.bin", 0, &payload)
+            .expect("write dynamic mkfs payload");
+        assert_eq!(
+            read_file(&mut dev, &mut fs, "/mkfs-geometry.bin").expect("read dynamic mkfs payload"),
+            payload
+        );
+        umount(fs, &mut dev).expect("unmount rsext4-created image");
+    }
+
+    e2fsck_readonly_clean(
+        &image,
+        &format!("rsext4 mkfs {filesystem_block_size}-byte round trip"),
+    );
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
 #[test]
 fn linux_image_round_trip_with_1k_filesystem_blocks() {
     linux_image_geometry_round_trip(1024);
@@ -317,6 +381,21 @@ fn linux_image_round_trip_with_2k_filesystem_blocks() {
 #[test]
 fn linux_image_round_trip_with_4k_filesystem_blocks() {
     linux_image_geometry_round_trip(4096);
+}
+
+#[test]
+fn rsext4_mkfs_round_trip_with_1k_filesystem_blocks() {
+    rsext4_mkfs_geometry_round_trip(1024);
+}
+
+#[test]
+fn rsext4_mkfs_round_trip_with_2k_filesystem_blocks() {
+    rsext4_mkfs_geometry_round_trip(2048);
+}
+
+#[test]
+fn rsext4_mkfs_round_trip_with_4k_filesystem_blocks() {
+    rsext4_mkfs_geometry_round_trip(4096);
 }
 
 fn assert_debugfs_path_exists(image: &Path, path: &str) {

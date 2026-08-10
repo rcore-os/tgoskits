@@ -26,7 +26,9 @@ impl<'a> ExtentTree<'a> {
 
         let entries = header.eh_entries as usize;
         let max = header.eh_max as usize;
-        if entries > max {
+        let entry_size = Ext4Extent::disk_size();
+        let capacity = bytes.len().saturating_sub(hdr_size) / entry_size;
+        if entries > max || max > capacity || entries > capacity {
             return None;
         }
 
@@ -217,6 +219,7 @@ mod tests {
     use crate::{
         blockdev::{BlockIo, Jbd2Dev},
         bmalloc::AbsoluteBN,
+        config::BLOCK_SIZE,
         disknode::Ext4Timestamp,
         error::{Ext4Error, Ext4Result},
         ext4::{mkfs, mount},
@@ -334,12 +337,12 @@ mod tests {
         let mut inode = new_extent_inode();
         let base = alloc_contiguous(&mut fs, &mut dev, 10);
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.insert_extent(&mut fs, Ext4Extent::new(10, base.raw(), 10), &mut dev)
                 .unwrap();
         }
 
-        let mut tree = ExtentTree::new(&mut inode);
+        let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
         let runs = tree.initialized_runs_in_range(&mut dev, 12, 15).unwrap();
 
         assert_eq!(
@@ -359,14 +362,14 @@ mod tests {
         let base1 = alloc_contiguous(&mut fs, &mut dev, 2);
         let base2 = alloc_contiguous(&mut fs, &mut dev, 2);
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.insert_extent(&mut fs, Ext4Extent::new(0, base1.raw(), 2), &mut dev)
                 .unwrap();
             tree.insert_extent(&mut fs, Ext4Extent::new(4, base2.raw(), 2), &mut dev)
                 .unwrap();
         }
 
-        let mut tree = ExtentTree::new(&mut inode);
+        let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
         let runs = tree.initialized_runs_in_range(&mut dev, 1, 4).unwrap();
 
         assert_eq!(

@@ -1,7 +1,7 @@
 //! Multi-block cached block device wrapper.
 //!
-//! Wraps a [`BlockIo`] with a fixed-size LRU cache (clock algorithm)
-//! of `CACHE_ENTRIES` blocks (4 blocks = 16 KiB with 4 KiB blocks).
+//! Wraps a [`BlockIo`] with a fixed-entry LRU cache (clock algorithm).
+//! Each entry is resized when mount derives the filesystem block geometry.
 //! Each cache hit eliminates one QEMU virtio round-trip, which is the
 //! dominant cost on virtualized block devices.
 //!
@@ -18,7 +18,7 @@ use crate::{
     io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId},
 };
 
-/// Number of cached blocks. 4 blocks × 4 KiB = 16 KiB cache.
+/// Number of cached filesystem blocks.
 ///
 /// Limited to 4 entries: larger caches (≥5) cause stale metadata blocks to
 /// persist across journal replay and mount operations, triggering EUCLEAN
@@ -33,17 +33,17 @@ struct CacheLine {
     dirty: bool,
     /// Clock eviction reference bit.
     referenced: bool,
-    /// The 4 KiB block buffer.
+    /// One runtime-sized filesystem block.
     buffer: BlockBuffer,
 }
 
 impl CacheLine {
-    fn new() -> Self {
+    fn new(block_size: usize) -> Self {
         Self {
             block_id: None,
             dirty: false,
             referenced: false,
-            buffer: BlockBuffer::new(),
+            buffer: BlockBuffer::new(block_size),
         }
     }
 
@@ -76,7 +76,7 @@ impl<B: BlockIo> BlockDev<B> {
             geometry,
             capabilities,
             filesystem_block_size: crate::config::BLOCK_SIZE,
-            entries: core::array::from_fn(|_| CacheLine::new()),
+            entries: core::array::from_fn(|_| CacheLine::new(crate::config::BLOCK_SIZE)),
             active: 0,
             clock: 0,
         }
@@ -96,7 +96,9 @@ impl<B: BlockIo> BlockDev<B> {
         }
         for entry in &mut self.entries {
             entry.block_id = None;
+            entry.dirty = false;
             entry.referenced = false;
+            entry.buffer = BlockBuffer::new(block_size);
         }
         self.active = 0;
         self.clock = 0;
@@ -118,11 +120,9 @@ impl<B: BlockIo> BlockDev<B> {
 
     /// Creates a cached block device wrapper with a caller-provided buffer.
     pub fn _with_buffer(dev: B, buffer: BlockBuffer) -> Ext4Result<Self> {
-        if buffer.len() < 512 {
-            return Err(Ext4Error::buffer_too_small(buffer.len(), 512));
-        }
-
+        let block_size = buffer.len();
         let mut slf = Self::new(dev);
+        slf.set_filesystem_block_size(block_size)?;
         slf.entries[0].buffer = buffer;
         Ok(slf)
     }
@@ -236,6 +236,8 @@ impl<B: BlockIo> BlockDev<B> {
                     entry
                         .buffer
                         .as_mut_slice()
+                        .get_mut(..block_size)
+                        .ok_or_else(Ext4Error::corrupted)?
                         .copy_from_slice(&buffer[start..start + block_size]);
                     entry.dirty = false;
                     entry.referenced = true;
@@ -392,7 +394,8 @@ impl<B: BlockIo> BlockDev<B> {
         let logical_sector_size = self.geometry.logical_block_size as usize;
         if logical_sector_size == 0
             || !logical_sector_size.is_power_of_two()
-            || !(1024..=crate::config::BLOCK_SIZE).contains(&block_size)
+            || !(crate::config::MIN_BLOCK_SIZE as usize..=crate::config::MAX_BLOCK_SIZE as usize)
+                .contains(&block_size)
             || !block_size.is_power_of_two()
             || !block_size.is_multiple_of(logical_sector_size)
         {
@@ -499,6 +502,10 @@ impl<B: BlockIo> BlockDev<B> {
 }
 
 impl<B: BlockIo> FilesystemBlockIo for BlockDev<B> {
+    fn block_size(&self) -> usize {
+        self.filesystem_block_size
+    }
+
     fn read(&mut self, buffer: &mut [u8], block: AbsoluteBN, count: u32) -> Ext4Result<()> {
         self.read_blocks(buffer, block, count)
     }

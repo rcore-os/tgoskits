@@ -99,6 +99,7 @@ pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
 
     let target_bytes = src_path.as_bytes();
     let target_len = target_bytes.len();
+    let block_size = fs.block_size();
     let size_lo = (target_len as u64 & 0xffffffff) as u32;
     let size_hi = ((target_len as u64) >> 32) as u32;
     let symlink_mode = Ext4Inode::S_IFLNK | 0o777;
@@ -151,7 +152,7 @@ pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
                     return Err(error);
                 }
             };
-            let write_len = core::cmp::min(remaining, BLOCK_SIZE);
+            let write_len = core::cmp::min(remaining, block_size);
             if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
                 for b in data.iter_mut() {
                     *b = 0;
@@ -174,7 +175,7 @@ pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
         }
 
         let used_datablocks = data_blocks.len() as u64;
-        let iblocks_used = used_datablocks.saturating_mul(BLOCK_SIZE as u64 / 512) as u32;
+        let iblocks_used = used_datablocks.saturating_mul(block_size as u64 / 512) as u32;
         new_inode.i_blocks_lo = iblocks_used;
         new_inode.l_i_blocks_high = 0; // iblocks_used is u32, so high part is 0
 
@@ -287,6 +288,7 @@ pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
     let new_file_ino = fs.alloc_inode(device)?;
 
     // Materialize the initial file payload block by block.
+    let block_size = fs.block_size();
     let mut data_blocks: Vec<AbsoluteBN> = Vec::new();
     let mut total_written: usize = 0;
     if let Some(buf) = initial_data {
@@ -314,7 +316,7 @@ pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
                 }
             };
 
-            let write_len = core::cmp::min(remaining, BLOCK_SIZE);
+            let write_len = core::cmp::min(remaining, block_size);
 
             // Zero-fill each new block and copy the live payload prefix into it.
             if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
@@ -374,7 +376,7 @@ pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
     if !data_blocks.is_empty() {
         // File starts with allocated data blocks.
         let used_databyte = data_blocks.len() as u64;
-        let iblocks_used = used_databyte.saturating_mul(BLOCK_SIZE as u64 / 512);
+        let iblocks_used = used_databyte.saturating_mul(block_size as u64 / 512);
         let used_blocks_lo = iblocks_used as u32;
         new_inode.i_size_lo = size_lo;
         new_inode.i_size_high = size_hi;

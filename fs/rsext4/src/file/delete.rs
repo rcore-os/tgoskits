@@ -114,7 +114,7 @@ pub fn unlink<B: BlockIo + crate::runtime::Clock>(
 }
 
 fn find_dentry_in_dir_block(data: &[u8], name_bytes: &[u8]) -> Option<(u32, u8)> {
-    let block_bytes = BLOCK_SIZE;
+    let block_bytes = data.len();
     let mut offset: usize = 0;
     while offset + 8 <= block_bytes {
         let inode = u32::from_le_bytes([
@@ -153,7 +153,7 @@ fn remove_dentry_in_dir_block(
     data: &mut [u8],
     name_bytes: &[u8],
 ) -> bool {
-    let block_bytes = BLOCK_SIZE;
+    let block_bytes = data.len();
     let mut offset: usize = 0;
     while offset + 8 <= block_bytes {
         let inode = u32::from_le_bytes([
@@ -231,7 +231,7 @@ fn parent_dir_data_blocks<B: BlockIo>(
                 .collect()
         } else {
             let total_size = parent_inode.size() as usize;
-            let block_bytes = BLOCK_SIZE;
+            let block_bytes = fs.block_size();
             let total_blocks = if total_size == 0 {
                 0
             } else {
@@ -281,7 +281,7 @@ pub(crate) fn find_named_entry_in_parent<B: BlockIo>(
             Ok(v) => v,
             Err(_) => continue,
         };
-        let data = &cached.data[..BLOCK_SIZE];
+        let data = &cached.data;
         if let Some((inode, file_type)) = find_dentry_in_dir_block(data, name_bytes) {
             let ino = InodeNumber::new(inode).map_err(|_| Ext4Error::corrupted())?;
             return Ok(ParentDirEntry {
@@ -404,8 +404,6 @@ pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
         // Stage 0 scans children and pushes subdirectories for a depth-first
         // traversal.
         if frame.stage == 0 {
-            let block_bytes = BLOCK_SIZE;
-
             let dir_blocks = resolve_inode_blocks(fs, block_dev, &mut frame.inode)?;
 
             let mut to_descend: Vec<(
@@ -422,7 +420,7 @@ pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
                 let mut child_entries: Vec<(InodeNumber, alloc::string::String)> = Vec::new();
                 {
                     let cached = fs.datablock_cache.get_or_load(block_dev, phys)?;
-                    let data = &cached.data[..block_bytes];
+                    let data = &cached.data;
                     let iter = DirEntryIterator::new(data);
                     for (entry, _) in iter {
                         if entry.is_dot() || entry.is_dotdot() {
@@ -530,7 +528,7 @@ pub fn is_dir_empty<B: BlockIo>(
     let dir_blocks = resolve_inode_blocks(fs, block_dev, inode)?;
     for &phys in dir_blocks.values() {
         let cached = fs.datablock_cache.get_or_load(block_dev, phys)?;
-        let data = &cached.data[..BLOCK_SIZE];
+        let data = &cached.data;
         let iter = DirEntryIterator::new(data);
         for (entry, _) in iter {
             if !entry.is_dot() && !entry.is_dotdot() {

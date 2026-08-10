@@ -1,30 +1,28 @@
-//! Fixed-size block buffer utilities.
+//! Runtime-sized filesystem block buffer utilities.
 
-use alloc::boxed::Box;
-
-use crate::config::BLOCK_SIZE;
+use alloc::{boxed::Box, vec};
 
 /// Single-block scratch buffer used by the cached block device wrapper.
 pub struct BlockBuffer {
-    buffer: Box<[u8; BLOCK_SIZE]>,
+    buffer: Box<[u8]>,
 }
 
 impl BlockBuffer {
     /// Creates a zero-initialized block buffer.
-    pub fn new() -> Self {
+    pub fn new(block_size: usize) -> Self {
         Self {
-            buffer: Box::new([0; BLOCK_SIZE]),
+            buffer: vec![0; block_size].into_boxed_slice(),
         }
     }
 
     /// Returns the buffer as an immutable byte slice.
     pub fn as_slice(&self) -> &[u8] {
-        &*self.buffer
+        &self.buffer
     }
 
     /// Returns the buffer as a mutable byte slice.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut *self.buffer
+        &mut self.buffer
     }
 
     /// Returns the number of bytes in the buffer.
@@ -40,11 +38,5 @@ impl BlockBuffer {
     /// Fills the buffer with zeros.
     pub fn clear(&mut self) {
         self.buffer.fill(0);
-    }
-}
-
-impl Default for BlockBuffer {
-    fn default() -> Self {
-        Self::new()
     }
 }

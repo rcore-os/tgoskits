@@ -204,7 +204,7 @@ pub fn mv<B: BlockIo + crate::runtime::Clock>(
             };
             let mut valid_parent_entry = true;
             fs.datablock_cache.modify(block_dev, first_blk, |data| {
-                let block_bytes = BLOCK_SIZE;
+                let block_bytes = data.len();
                 if block_bytes < 24 {
                     valid_parent_entry = false;
                     return;

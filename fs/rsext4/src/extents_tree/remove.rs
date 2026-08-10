@@ -616,6 +616,7 @@ mod tests {
         blockdev::{BlockIo, Jbd2Dev},
         bmalloc::AbsoluteBN,
         cache::bitmap::CacheKey,
+        config::BLOCK_SIZE,
         error::{Ext4Error, Ext4Result},
         ext4::{mkfs, mount},
     };
@@ -759,7 +760,7 @@ mod tests {
         inode: &mut Ext4Inode,
         n: u32,
     ) -> std::vec::Vec<Ext4Extent> {
-        let mut tree = ExtentTree::new(inode);
+        let mut tree = ExtentTree::new(inode, BLOCK_SIZE);
         let mut out = std::vec::Vec::new();
         for lbn in 0..n {
             let phys = alloc_data_block(fs, dev);
@@ -810,7 +811,7 @@ mod tests {
             }
         }
 
-        let tree = ExtentTree::new(inode);
+        let tree = ExtentTree::new(inode, BLOCK_SIZE);
         let root = tree.load_root_from_inode().unwrap();
         let mut out = std::vec::Vec::new();
         walk(dev, &root, &mut out);
@@ -825,11 +826,11 @@ mod tests {
 
         let exts = insert_n_extents_with_phys_gaps(&mut fs, &mut dev, &mut inode, 2);
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.remove_extent(&mut fs, exts[0], &mut dev).unwrap();
         }
 
-        let tree = ExtentTree::new(&mut inode);
+        let tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
         let root = tree.load_root_from_inode().unwrap();
         match root {
             ExtentNode::Leaf { header, entries } => {
@@ -848,11 +849,11 @@ mod tests {
 
         let exts = insert_n_extents_with_phys_gaps(&mut fs, &mut dev, &mut inode, 1);
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.remove_extent(&mut fs, exts[0], &mut dev).unwrap();
         }
 
-        let tree = ExtentTree::new(&mut inode);
+        let tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
         let root = tree.load_root_from_inode().unwrap();
         match root {
             ExtentNode::Leaf { header, entries } => {
@@ -871,7 +872,7 @@ mod tests {
         let exts = insert_n_extents_with_phys_gaps(&mut fs, &mut dev, &mut inode, 5);
 
         {
-            let tree = ExtentTree::new(&mut inode);
+            let tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             let root = tree.load_root_from_inode().unwrap();
             match root {
                 ExtentNode::Index { header, .. } => assert!(header.eh_depth > 0),
@@ -880,13 +881,13 @@ mod tests {
         }
 
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.remove_extent(&mut fs, exts[2], &mut dev).unwrap();
             tree.remove_extent(&mut fs, exts[3], &mut dev).unwrap();
             tree.remove_extent(&mut fs, exts[4], &mut dev).unwrap();
         }
 
-        let tree = ExtentTree::new(&mut inode);
+        let tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
         let root = tree.load_root_from_inode().unwrap();
         match root {
             ExtentNode::Leaf { header, entries } => {
@@ -906,14 +907,14 @@ mod tests {
         let exts = insert_n_extents_with_phys_gaps(&mut fs, &mut dev, &mut inode, 5);
 
         for ext in exts {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.remove_extent(&mut fs, ext, &mut dev).unwrap();
 
-            let tree2 = ExtentTree::new(&mut inode);
+            let tree2 = ExtentTree::new(&mut inode, BLOCK_SIZE);
             assert!(tree2.load_root_from_inode().is_some());
         }
 
-        let tree = ExtentTree::new(&mut inode);
+        let tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
         let root = tree.load_root_from_inode().unwrap();
         match root {
             ExtentNode::Leaf { header, entries } => {
@@ -934,12 +935,12 @@ mod tests {
 
         let ext = Ext4Extent::new(0, phys.raw(), 1);
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.insert_extent(&mut fs, ext, &mut dev).unwrap();
         }
 
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.remove_extent(&mut fs, ext, &mut dev).unwrap();
         }
 
@@ -954,13 +955,13 @@ mod tests {
         let base = alloc_contiguous(&mut fs, &mut dev, 4);
         let ext = Ext4Extent::new(0, base.raw(), 4);
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.insert_extent(&mut fs, ext, &mut dev).unwrap();
         }
 
         let del = Ext4Extent::new(1, 0, 2);
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.remove_extent(&mut fs, del, &mut dev).unwrap();
         }
 
@@ -1005,13 +1006,13 @@ mod tests {
         let base = alloc_contiguous(&mut fs, &mut dev, 2);
         let ext = Ext4Extent::new(0, base.raw(), 2);
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.insert_extent(&mut fs, ext, &mut dev).unwrap();
         }
 
         let del = Ext4Extent::new(0, 0, 2);
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.remove_extent(&mut fs, del, &mut dev).unwrap();
         }
 
@@ -1036,7 +1037,7 @@ mod tests {
         let base2 = alloc_contiguous(&mut fs, &mut dev, 2);
 
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.insert_extent(&mut fs, Ext4Extent::new(0, base1.raw(), 2), &mut dev)
                 .unwrap();
             tree.insert_extent(&mut fs, Ext4Extent::new(4, base2.raw(), 2), &mut dev)
@@ -1045,7 +1046,7 @@ mod tests {
 
         // delete 3 allocated blocks starting at lbn=1: deletes lbn=1, then skips hole [2..4), then deletes lbn=4 and lbn=5
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.remove_extent(&mut fs, Ext4Extent::new(1, 0, 3), &mut dev)
                 .unwrap();
         }
@@ -1081,7 +1082,7 @@ mod tests {
         let base1 = alloc_contiguous(&mut fs, &mut dev, 2);
         let base2 = alloc_contiguous(&mut fs, &mut dev, 1);
         {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.insert_extent(&mut fs, Ext4Extent::new(0, base1.raw(), 2), &mut dev)
                 .unwrap();
             tree.insert_extent(&mut fs, Ext4Extent::new(10, base2.raw(), 1), &mut dev)
@@ -1098,7 +1099,7 @@ mod tests {
         assert!(bitmap_block_is_allocated(&mut fs, &mut dev, base2));
 
         let res = {
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
             tree.remove_extent(&mut fs, Ext4Extent::new(0, 0, 10), &mut dev)
         };
         assert!(res.is_err());

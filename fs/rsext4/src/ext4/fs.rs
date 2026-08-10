@@ -30,6 +30,11 @@ pub struct Ext4FileSystem {
 }
 
 impl Ext4FileSystem {
+    /// Returns the validated filesystem block size for this mount.
+    pub(crate) fn block_size(&self) -> usize {
+        self.superblock.block_size() as usize
+    }
+
     pub(crate) fn sync_group_descriptor_if_needed<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
@@ -45,10 +50,11 @@ impl Ext4FileSystem {
         }
 
         let desc_size = self.superblock.get_desc_size() as usize;
-        let gdt_base = BLOCK_SIZE as u64;
+        let block_size = self.block_size() as u64;
+        let gdt_base = self.superblock.primary_gdt_byte_offset()?;
         let byte_offset = gdt_base + idx as u64 * desc_size as u64;
-        let block_num = AbsoluteBN::new(byte_offset / BLOCK_SIZE as u64);
-        let in_block = (byte_offset % BLOCK_SIZE as u64) as usize;
+        let block_num = AbsoluteBN::new(byte_offset / block_size);
+        let in_block = (byte_offset % block_size) as usize;
         let end = in_block + desc_size;
 
         let mut desc = self.group_descs[idx];
@@ -151,7 +157,7 @@ impl Ext4FileSystem {
             inode_num,
             self.superblock.s_inodes_per_group,
             AbsoluteBN::new(inode_table_start),
-            BLOCK_SIZE,
+            self.block_size(),
         )?;
 
         let sb = self.superblock;
@@ -187,7 +193,7 @@ impl Ext4FileSystem {
             inode_num,
             self.superblock.s_inodes_per_group,
             AbsoluteBN::new(inode_table_start),
-            BLOCK_SIZE,
+            self.block_size(),
         )?;
 
         let cached = self
