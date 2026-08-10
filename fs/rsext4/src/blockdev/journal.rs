@@ -11,7 +11,7 @@ use crate::{
     error::{Ext4Error, Ext4Result},
     io::BlockIo,
     jbd2::{
-        jbd2::ReplayStatus,
+        jbd2::{ReplayFailure, ReplayStatus},
         jbdstruct::{
             JBD2_BLOCKTYPE_SUPERBLOCK_V2, JBD2_CRC32C_CHKSUM, JBD2_DESCRIPTOR_HEADER_SIZE,
             JBD2_FEATURE_INCOMPAT_64BIT, JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_MAGIC,
@@ -19,7 +19,7 @@ use crate::{
             JBD2DEVSYSTEM, Jbd2Update, JournalSuperBllockS,
         },
     },
-    runtime::Clock,
+    runtime::{Clock, JournalReplayPhase},
 };
 
 /// Runtime state of the journal proxy.
@@ -36,6 +36,7 @@ struct ActiveJournalHandle {
 
 struct JournalAbortState {
     cause: Ext4Error,
+    replay_failure: Option<ReplayFailure>,
     persistence_error: Option<Ext4Error>,
 }
 
@@ -275,6 +276,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
         self.abort_state = Some(JournalAbortState {
             cause,
+            replay_failure: None,
             persistence_error: None,
         });
 
@@ -337,28 +339,42 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// writes when the filesystem advertises a journal but no journal state was
     /// installed.
     pub(crate) fn journal_replay_checked(&mut self) -> ReplayStatus {
-        if self.abort_state.is_some() {
-            return ReplayStatus::Incomplete;
+        if let Some(state) = self.abort_state.as_ref() {
+            return ReplayStatus::Incomplete(state.replay_failure.unwrap_or_else(|| {
+                ReplayFailure::without_restart(JournalReplayPhase::Initialize, state.cause)
+            }));
         }
         if !self.journal_use {
             return ReplayStatus::Complete;
         }
 
         let Some(jbd_sys) = self.system.as_mut() else {
-            self.abort_journal(
+            let failure = ReplayFailure::without_restart(
+                JournalReplayPhase::Initialize,
                 Ext4Error::journal_aborted().with_operation("jbd2:replay_without_state"),
             );
-            return ReplayStatus::Incomplete;
+            self.abort_journal(failure.cause());
+            if let Some(state) = self.abort_state.as_mut() {
+                state.replay_failure = Some(failure);
+            }
+            return ReplayStatus::Incomplete(failure);
         };
 
         let status = jbd_sys.replay_with_mapping(&mut self.inner, &self.journal_blocks);
-        if status == ReplayStatus::Incomplete {
-            self.abort_journal(Ext4Error::corrupted().with_operation("jbd2:replay"));
+        if let ReplayStatus::Incomplete(failure) = status {
+            self.abort_journal(failure.cause());
+            if let Some(state) = self.abort_state.as_mut() {
+                state.replay_failure = Some(failure);
+            }
             return status;
         }
         if let Err(error) = self.inner.invalidate_cache() {
-            self.abort_journal(error);
-            return ReplayStatus::Incomplete;
+            let failure = ReplayFailure::without_restart(JournalReplayPhase::Cache, error);
+            self.abort_journal(failure.cause());
+            if let Some(state) = self.abort_state.as_mut() {
+                state.replay_failure = Some(failure);
+            }
+            return ReplayStatus::Incomplete(failure);
         }
         status
     }
@@ -684,6 +700,8 @@ mod tests {
         data: Vec<u8>,
         fail_flush: bool,
         fail_fua: bool,
+        fail_read_sector: Option<u64>,
+        fail_write_sector: Option<u64>,
         fua_writes: usize,
     }
 
@@ -693,6 +711,8 @@ mod tests {
                 data: vec![0; blocks * BLOCK_SIZE],
                 fail_flush: false,
                 fail_fua: false,
+                fail_read_sector: None,
+                fail_write_sector: None,
                 fua_writes: 0,
             }
         }
@@ -702,6 +722,8 @@ mod tests {
                 data: vec![0; blocks * BLOCK_SIZE],
                 fail_flush: true,
                 fail_fua: false,
+                fail_read_sector: None,
+                fail_write_sector: None,
                 fua_writes: 0,
             }
         }
@@ -711,8 +733,27 @@ mod tests {
                 data: vec![0; blocks * BLOCK_SIZE],
                 fail_flush: true,
                 fail_fua: true,
+                fail_read_sector: None,
+                fail_write_sector: None,
                 fua_writes: 0,
             }
+        }
+
+        fn sector_for_filesystem_block(&self, block: AbsoluteBN) -> u64 {
+            let sector_size = self.geometry().logical_block_size as usize;
+            assert!(BLOCK_SIZE.is_multiple_of(sector_size));
+            block
+                .raw()
+                .checked_mul((BLOCK_SIZE / sector_size) as u64)
+                .expect("test filesystem block must map to a device sector")
+        }
+
+        fn fail_next_read_at_block(&mut self, block: AbsoluteBN) {
+            self.fail_read_sector = Some(self.sector_for_filesystem_block(block));
+        }
+
+        fn fail_next_write_at_block(&mut self, block: AbsoluteBN) {
+            self.fail_write_sector = Some(self.sector_for_filesystem_block(block));
         }
     }
 
@@ -806,7 +847,7 @@ mod tests {
         dev.set_journal_superblock_with_mapping(superblock, journal_blocks)
             .expect("install csum-v3 journal");
         let status = dev.journal_replay_checked();
-        if status == ReplayStatus::Incomplete {
+        if status.failure().is_some() {
             let error = dev
                 .set_journal_use(false)
                 .expect_err("incomplete replay must latch the journal abort");
@@ -828,6 +869,10 @@ mod tests {
             block_id: crate::io::SectorId,
             _count: u32,
         ) -> Ext4Result<()> {
+            if self.fail_read_sector == Some(block_id.raw()) {
+                self.fail_read_sector = None;
+                return Err(Ext4Error::io());
+            }
             let start = block_id.as_usize()? * BLOCK_SIZE;
             let end = start + buffer.len();
             buffer.copy_from_slice(&self.data[start..end]);
@@ -840,6 +885,10 @@ mod tests {
             block_id: crate::io::SectorId,
             _count: u32,
         ) -> Ext4Result<()> {
+            if self.fail_write_sector == Some(block_id.raw()) {
+                self.fail_write_sector = None;
+                return Err(Ext4Error::io());
+            }
             let start = block_id.as_usize()? * BLOCK_SIZE;
             let end = start + buffer.len();
             self.data[start..end].copy_from_slice(buffer);
@@ -1153,11 +1202,151 @@ mod tests {
         );
     }
 
+    #[test]
+    fn replay_descriptor_read_failure_preserves_io_cause() {
+        let (mut inner, superblock, _) = committed_csum_v3_fixture();
+        inner.fail_next_read_at_block(AbsoluteBN::new(129));
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        dev.set_journal_superblock_with_mapping(
+            superblock,
+            (128..192).map(AbsoluteBN::new).collect(),
+        )
+        .expect("install writer-produced csum-v3 journal");
+
+        let failure = dev
+            .journal_replay_checked()
+            .failure()
+            .expect("replay must stop when the descriptor cannot be read");
+        assert_eq!(failure.phase(), JournalReplayPhase::Scan);
+        assert_eq!(failure.restart_rel(), Some(superblock.s_first));
+        assert_eq!(failure.cause().kind(), crate::Ext4ErrorKind::Io);
+        assert_eq!(failure.persistence_error(), None);
+        let state = dev.abort_state.as_ref().expect("replay must abort journal");
+        assert_eq!(
+            state.cause.kind(),
+            crate::Ext4ErrorKind::Io,
+            "device I/O must not be collapsed into corruption"
+        );
+    }
+
+    #[test]
+    fn replay_payload_read_and_home_write_failures_keep_replay_phase() {
+        let (mut inner, superblock, _) = committed_csum_v3_fixture();
+        inner.fail_next_read_at_block(AbsoluteBN::new(130));
+        let mut read_failure_dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        read_failure_dev
+            .set_journal_superblock_with_mapping(
+                superblock,
+                (128..192).map(AbsoluteBN::new).collect(),
+            )
+            .expect("install replay fixture for payload read fault");
+
+        let read_failure = read_failure_dev
+            .journal_replay_checked()
+            .failure()
+            .expect("payload read fault must stop replay");
+        assert_eq!(read_failure.phase(), JournalReplayPhase::Replay);
+        assert_eq!(read_failure.cause().kind(), crate::Ext4ErrorKind::Io);
+
+        let (mut inner, superblock, target) = committed_csum_v3_fixture();
+        inner.fail_next_write_at_block(target);
+        let mut write_failure_dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        write_failure_dev
+            .set_journal_superblock_with_mapping(
+                superblock,
+                (128..192).map(AbsoluteBN::new).collect(),
+            )
+            .expect("install replay fixture for home write fault");
+
+        let write_failure = write_failure_dev
+            .journal_replay_checked()
+            .failure()
+            .expect("home write fault must stop replay");
+        assert_eq!(write_failure.phase(), JournalReplayPhase::Replay);
+        assert_eq!(write_failure.cause().kind(), crate::Ext4ErrorKind::Io);
+        let inner = write_failure_dev.into_inner();
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert!(
+            inner.data[target_start..target_start + BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+    }
+
+    #[test]
+    fn replay_persist_failure_is_typed_after_successful_home_write() {
+        let (mut inner, superblock, target) = committed_csum_v3_fixture();
+        inner.fail_flush = true;
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        dev.set_journal_superblock_with_mapping(
+            superblock,
+            (128..192).map(AbsoluteBN::new).collect(),
+        )
+        .expect("install replay fixture with persist fault");
+
+        let failure = dev
+            .journal_replay_checked()
+            .failure()
+            .expect("final replay flush fault must fail recovery");
+        assert_eq!(failure.phase(), JournalReplayPhase::Persist);
+        assert_eq!(failure.cause().kind(), crate::Ext4ErrorKind::Io);
+        assert_eq!(failure.persistence_error(), None);
+        let inner = dev.into_inner();
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert!(
+            inner.data[target_start..target_start + BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0xa5)
+        );
+    }
+
+    #[test]
+    fn replay_failure_keeps_primary_checksum_over_progress_flush_error() {
+        let (mut inner, superblock, target) = committed_csum_v3_fixture();
+        inner.data[130 * BLOCK_SIZE - 1] ^= 1;
+        inner.fail_flush = true;
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        dev.set_journal_superblock_with_mapping(
+            superblock,
+            (128..192).map(AbsoluteBN::new).collect(),
+        )
+        .expect("install corrupt replay fixture with persist fault");
+
+        let failure = dev
+            .journal_replay_checked()
+            .failure()
+            .expect("checksum and persist faults must fail replay");
+        assert_eq!(failure.phase(), JournalReplayPhase::Scan);
+        assert_eq!(
+            failure.cause().kind(),
+            crate::Ext4ErrorKind::ChecksumMismatch
+        );
+        assert_eq!(
+            failure.persistence_error().map(Ext4Error::kind),
+            Some(crate::Ext4ErrorKind::Io)
+        );
+        let state = dev.abort_state.as_ref().expect("replay must abort journal");
+        assert_eq!(state.cause.kind(), crate::Ext4ErrorKind::ChecksumMismatch);
+        assert_eq!(state.replay_failure, Some(failure));
+
+        let inner = dev.into_inner();
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert!(
+            inner.data[target_start..target_start + BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+    }
+
     fn assert_csum_v3_corruption_is_rejected(corrupt: impl FnOnce(&mut Vec<u8>)) {
         let (mut inner, superblock, target) = committed_csum_v3_fixture();
         corrupt(&mut inner.data);
         let (status, _) = replay_csum_v3_fixture(inner, superblock, target);
-        assert_eq!(status, ReplayStatus::Incomplete);
+        let failure = status.failure().expect("corruption must stop replay");
+        assert_eq!(
+            failure.cause().kind(),
+            crate::Ext4ErrorKind::ChecksumMismatch
+        );
     }
 
     #[test]
@@ -1197,7 +1386,12 @@ mod tests {
         inner.data[131 * BLOCK_SIZE..132 * BLOCK_SIZE].copy_from_slice(&revoke);
 
         let (status, _) = replay_csum_v3_fixture(inner, superblock, target);
-        assert_eq!(status, ReplayStatus::Incomplete);
+        let failure = status.failure().expect("corrupt revoke must stop replay");
+        assert_eq!(failure.phase(), JournalReplayPhase::Revoke);
+        assert_eq!(
+            failure.cause().kind(),
+            crate::Ext4ErrorKind::ChecksumMismatch
+        );
     }
 
     #[test]
@@ -1231,10 +1425,7 @@ mod tests {
                 (128..192).map(AbsoluteBN::new).collect(),
             )
             .expect("install csum-v3 journal");
-        assert_eq!(
-            replay_dev.journal_replay_checked(),
-            ReplayStatus::Incomplete
-        );
+        assert!(replay_dev.journal_replay_checked().failure().is_some());
         let inner = replay_dev.into_inner();
         assert!(
             inner.data[first_home..first_home + BLOCK_SIZE]
@@ -1399,11 +1590,12 @@ mod tests {
     fn replay_without_journal_state_latches_abort() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
 
-        assert_eq!(
-            dev.journal_replay_checked(),
-            ReplayStatus::Incomplete,
-            "replay cannot proceed without installed journal state"
-        );
+        let failure = dev
+            .journal_replay_checked()
+            .failure()
+            .expect("replay cannot proceed without installed journal state");
+        assert_eq!(failure.phase(), JournalReplayPhase::Initialize);
+        assert_eq!(failure.cause().kind(), crate::Ext4ErrorKind::JournalAborted);
         let error = dev
             .set_journal_use(false)
             .expect_err("an incomplete replay must latch the journal abort");

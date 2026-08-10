@@ -1,6 +1,9 @@
 //! OS-independent runtime capabilities used by the ext4 core.
 
-use crate::{disknode::Ext4Timestamp, error::Ext4Result};
+use crate::{
+    disknode::Ext4Timestamp,
+    error::{Ext4Error, Ext4Result},
+};
 
 /// Wall-clock capability used for on-disk inode timestamps.
 pub trait Clock {
@@ -107,9 +110,23 @@ pub enum JournalEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JournalReplayPhase {
+    Initialize,
+    Scan,
+    Revoke,
+    Replay,
+    Persist,
+    Cache,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryEvent {
     Required,
-    ReplayIncomplete,
+    ReplayFailed {
+        phase: JournalReplayPhase,
+        cause: Ext4Error,
+        persistence_error: Option<Ext4Error>,
+    },
     JournalMissing,
 }
 

@@ -18,6 +18,7 @@ use crate::{
     io::WriteFlags,
     jbd2::jbdstruct::*,
     metadata::Ext4InodeMetadataUpdate,
+    runtime::JournalReplayPhase,
 };
 
 /// Two's-complement JBD2 on-disk representation of a generic I/O abort.
@@ -39,15 +40,74 @@ struct ReplayPayload {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReplayFailure {
+    phase: JournalReplayPhase,
+    cause: Ext4Error,
+    restart_rel: Option<u32>,
+    persistence_error: Option<Ext4Error>,
+}
+
+impl ReplayFailure {
+    fn at(phase: JournalReplayPhase, cause: Ext4Error, restart_rel: u32) -> Self {
+        Self {
+            phase,
+            cause,
+            restart_rel: Some(restart_rel),
+            persistence_error: None,
+        }
+    }
+
+    pub(crate) const fn without_restart(phase: JournalReplayPhase, cause: Ext4Error) -> Self {
+        Self {
+            phase,
+            cause,
+            restart_rel: None,
+            persistence_error: None,
+        }
+    }
+
+    pub(crate) const fn phase(self) -> JournalReplayPhase {
+        self.phase
+    }
+
+    pub(crate) const fn cause(self) -> Ext4Error {
+        self.cause
+    }
+
+    pub(crate) const fn restart_rel(self) -> Option<u32> {
+        self.restart_rel
+    }
+
+    pub(crate) const fn persistence_error(self) -> Option<Ext4Error> {
+        self.persistence_error
+    }
+
+    fn with_persistence_error(mut self, error: Ext4Error) -> Self {
+        self.persistence_error = Some(error);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReplayStatus {
     Complete,
-    Incomplete,
+    Incomplete(ReplayFailure),
+}
+
+impl ReplayStatus {
+    #[cfg(test)]
+    pub(crate) const fn failure(self) -> Option<ReplayFailure> {
+        match self {
+            Self::Complete => None,
+            Self::Incomplete(failure) => Some(failure),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReplayScan {
     CleanEnd,
-    Incomplete { restart_rel: u32 },
+    Incomplete(ReplayFailure),
     Applied { next_rel: u32, next_seq: u32 },
 }
 
@@ -138,16 +198,24 @@ impl JBD2DEVSYSTEM {
         }
     }
 
-    fn parse_replay_tags(&self, desc_buf: &[u8]) -> Option<Vec<ReplayTag>> {
+    fn parse_replay_tags(&self, desc_buf: &[u8]) -> Ext4Result<Vec<ReplayTag>> {
         let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
         let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
         let block_size = desc_buf.len();
         let descriptor_end = if has_csum_v3 {
-            let checksum_offset = block_size.checked_sub(4)?;
-            let stored = u32::from_be_bytes(desc_buf[checksum_offset..].try_into().ok()?);
-            let computed = jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, desc_buf)?;
+            let checksum_offset = block_size.checked_sub(4).ok_or_else(|| {
+                Ext4Error::corrupted().with_operation("jbd2:replay_descriptor_size")
+            })?;
+            let stored =
+                u32::from_be_bytes(desc_buf[checksum_offset..].try_into().map_err(|_| {
+                    Ext4Error::corrupted().with_operation("jbd2:replay_descriptor_checksum_field")
+                })?);
+            let computed = jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, desc_buf)
+                .ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("jbd2:replay_descriptor_checksum_size")
+                })?;
             if stored != computed {
-                return None;
+                return Err(Ext4Error::checksum().with_operation("jbd2:replay_descriptor_checksum"));
             }
             checksum_offset
         } else {
@@ -158,35 +226,45 @@ impl JBD2DEVSYSTEM {
 
         while off < descriptor_end {
             let parsed = if has_csum_v3 {
-                if off + JBD2_TAG3_SIZE > descriptor_end {
-                    return None;
+                let tag_end = off
+                    .checked_add(JBD2_TAG3_SIZE)
+                    .ok_or_else(Ext4Error::overflow)?;
+                if tag_end > descriptor_end {
+                    return Err(Ext4Error::corrupted().with_operation("jbd2:replay_tag3_truncated"));
                 }
-                let tag = JournalBlockTag3S::from_disk_bytes(&desc_buf[off..off + JBD2_TAG3_SIZE]);
+                let tag = JournalBlockTag3S::from_disk_bytes(&desc_buf[off..tag_end]);
                 let block = (u64::from(tag.t_blocknr_high) << 32) | u64::from(tag.t_blocknr);
                 let all_zero = tag.t_blocknr == 0
                     && tag.t_flags == 0
                     && tag.t_blocknr_high == 0
                     && tag.t_checksum == 0;
-                off += JBD2_TAG3_SIZE;
+                off = tag_end;
                 (block, tag.t_flags, Some(tag.t_checksum), all_zero)
             } else {
-                if off + JBD2_TAG_SIZE > descriptor_end {
-                    return None;
+                let tag_end = off
+                    .checked_add(JBD2_TAG_SIZE)
+                    .ok_or_else(Ext4Error::overflow)?;
+                if tag_end > descriptor_end {
+                    return Err(Ext4Error::corrupted().with_operation("jbd2:replay_tag_truncated"));
                 }
-                let tag = JournalBlockTagS::from_disk_bytes(&desc_buf[off..off + JBD2_TAG_SIZE]);
-                off += JBD2_TAG_SIZE;
+                let tag = JournalBlockTagS::from_disk_bytes(&desc_buf[off..tag_end]);
+                off = tag_end;
 
                 let mut block_high = 0u32;
                 if has_64bit {
-                    if off + JBD2_TAG_BLOCKNR_HIGH_SIZE > descriptor_end {
-                        return None;
+                    let high_end = off
+                        .checked_add(JBD2_TAG_BLOCKNR_HIGH_SIZE)
+                        .ok_or_else(Ext4Error::overflow)?;
+                    if high_end > descriptor_end {
+                        return Err(
+                            Ext4Error::corrupted().with_operation("jbd2:replay_tag_high_truncated")
+                        );
                     }
-                    block_high = u32::from_be_bytes(
-                        desc_buf[off..off + JBD2_TAG_BLOCKNR_HIGH_SIZE]
-                            .try_into()
-                            .ok()?,
-                    );
-                    off += JBD2_TAG_BLOCKNR_HIGH_SIZE;
+                    block_high =
+                        u32::from_be_bytes(desc_buf[off..high_end].try_into().map_err(|_| {
+                            Ext4Error::corrupted().with_operation("jbd2:replay_tag_high_field")
+                        })?);
+                    off = high_end;
                 }
 
                 let block = (u64::from(block_high) << 32) | u64::from(tag.t_blocknr);
@@ -211,38 +289,49 @@ impl JBD2DEVSYSTEM {
             });
 
             if !same_uuid {
-                if off + JBD2_UUID_SIZE > descriptor_end {
-                    return None;
+                let uuid_end = off
+                    .checked_add(JBD2_UUID_SIZE)
+                    .ok_or_else(Ext4Error::overflow)?;
+                if uuid_end > descriptor_end {
+                    return Err(Ext4Error::corrupted().with_operation("jbd2:replay_uuid_truncated"));
                 }
-                off += JBD2_UUID_SIZE;
+                off = uuid_end;
             }
             if last {
                 break;
             }
         }
 
-        Some(tags)
+        Ok(tags)
     }
 
-    fn parse_revoke_blocks(&self, revoke_buf: &[u8]) -> Option<Vec<AbsoluteBN>> {
+    fn parse_revoke_blocks(&self, revoke_buf: &[u8]) -> Ext4Result<Vec<AbsoluteBN>> {
         if revoke_buf.len() < 16 {
-            return None;
+            return Err(Ext4Error::corrupted().with_operation("jbd2:replay_revoke_header"));
         }
         let record_end = if self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3) {
-            let checksum_offset = revoke_buf.len().checked_sub(4)?;
-            let stored = u32::from_be_bytes(revoke_buf[checksum_offset..].try_into().ok()?);
-            let computed = jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, revoke_buf)?;
+            let checksum_offset = revoke_buf.len().checked_sub(4).ok_or_else(|| {
+                Ext4Error::corrupted().with_operation("jbd2:replay_revoke_checksum_size")
+            })?;
+            let stored =
+                u32::from_be_bytes(revoke_buf[checksum_offset..].try_into().map_err(|_| {
+                    Ext4Error::corrupted().with_operation("jbd2:replay_revoke_checksum_field")
+                })?);
+            let computed = jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, revoke_buf)
+                .ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("jbd2:replay_revoke_checksum_size")
+                })?;
             if stored != computed {
-                return None;
+                return Err(Ext4Error::checksum().with_operation("jbd2:replay_revoke_checksum"));
             }
             checksum_offset
         } else {
             revoke_buf.len()
         };
         let revoke = Jbd2JournalRevokeHeadS::from_disk_bytes(&revoke_buf[0..16]);
-        let count = usize::try_from(revoke.r_count).ok()?;
+        let count = usize::try_from(revoke.r_count).map_err(|_| Ext4Error::overflow())?;
         if !(16..=record_end).contains(&count) {
-            return None;
+            return Err(Ext4Error::corrupted().with_operation("jbd2:replay_revoke_count"));
         }
 
         let entry_size = if self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT) {
@@ -253,22 +342,29 @@ impl JBD2DEVSYSTEM {
         let mut blocks = Vec::new();
         let mut off = 16usize;
         while off < count {
-            if off + entry_size > count {
-                return None;
+            let entry_end = off
+                .checked_add(entry_size)
+                .ok_or_else(Ext4Error::overflow)?;
+            if entry_end > count {
+                return Err(Ext4Error::corrupted().with_operation("jbd2:replay_revoke_entry"));
             }
 
             let block = if entry_size == 8 {
-                u64::from_be_bytes(revoke_buf[off..off + 8].try_into().ok()?)
+                u64::from_be_bytes(revoke_buf[off..entry_end].try_into().map_err(|_| {
+                    Ext4Error::corrupted().with_operation("jbd2:replay_revoke_entry64")
+                })?)
             } else {
                 u64::from(u32::from_be_bytes(
-                    revoke_buf[off..off + 4].try_into().ok()?,
+                    revoke_buf[off..entry_end].try_into().map_err(|_| {
+                        Ext4Error::corrupted().with_operation("jbd2:replay_revoke_entry32")
+                    })?,
                 ))
             };
             blocks.push(AbsoluteBN::new(block));
-            off += entry_size;
+            off = entry_end;
         }
 
-        Some(blocks)
+        Ok(blocks)
     }
 
     fn write_journal_superblock_with_mapping<D: FilesystemBlockIo>(
@@ -557,28 +653,44 @@ impl JBD2DEVSYSTEM {
         let mut record_rel = start_rel;
         let mut payloads: Vec<ReplayPayload> = Vec::new();
         let mut revoked_blocks = BTreeSet::new();
-        let max_records = ring.last_rel - ring.first_rel + 1;
+        let Some(max_records) = ring
+            .last_rel
+            .checked_sub(ring.first_rel)
+            .and_then(|records| records.checked_add(1))
+        else {
+            return ReplayScan::Incomplete(ReplayFailure::at(
+                JournalReplayPhase::Initialize,
+                Ext4Error::corrupted().with_operation("jbd2:replay_ring_geometry"),
+                start_rel,
+            ));
+        };
+        let block_size = block_dev.block_size();
+        if block_size < JBD2_DESCRIPTOR_HEADER_SIZE {
+            return ReplayScan::Incomplete(ReplayFailure::at(
+                JournalReplayPhase::Initialize,
+                Ext4Error::corrupted().with_operation("jbd2:replay_block_size"),
+                start_rel,
+            ));
+        }
 
         for _ in 0..max_records {
             let record_phys = match ring.phys(record_rel) {
                 Ok(block) => block,
-                Err(_) => {
-                    return ReplayScan::Incomplete {
-                        restart_rel: start_rel,
-                    };
+                Err(error) => {
+                    return ReplayScan::Incomplete(ReplayFailure::at(
+                        JournalReplayPhase::Scan,
+                        error,
+                        start_rel,
+                    ));
                 }
             };
-            let block_size = block_dev.block_size();
-            if block_size < JBD2_DESCRIPTOR_HEADER_SIZE {
-                return ReplayScan::Incomplete {
-                    restart_rel: start_rel,
-                };
-            }
             let mut record_buf = vec![0u8; block_size];
-            if block_dev.read(&mut record_buf, record_phys, 1).is_err() {
-                return ReplayScan::Incomplete {
-                    restart_rel: start_rel,
-                };
+            if let Err(error) = block_dev.read(&mut record_buf, record_phys, 1) {
+                return ReplayScan::Incomplete(ReplayFailure::at(
+                    JournalReplayPhase::Scan,
+                    error,
+                    start_rel,
+                ));
             }
 
             let hdr = JournalHeaderS::from_disk_bytes(&record_buf[0..JBD2_DESCRIPTOR_HEADER_SIZE]);
@@ -590,21 +702,24 @@ impl JBD2DEVSYSTEM {
             match hdr.h_blocktype {
                 JBD2_BLOCKTYPE_DESCRIPTOR => {
                     let tags = match self.parse_replay_tags(&record_buf) {
-                        Some(tags) if !tags.is_empty() => tags,
-                        Some(tags) => tags,
-                        None => {
-                            return ReplayScan::Incomplete {
-                                restart_rel: start_rel,
-                            };
+                        Ok(tags) => tags,
+                        Err(error) => {
+                            return ReplayScan::Incomplete(ReplayFailure::at(
+                                JournalReplayPhase::Scan,
+                                error,
+                                start_rel,
+                            ));
                         }
                     };
 
                     for tag in tags {
                         ring.advance(&mut record_rel);
-                        if ring.phys(record_rel).is_err() {
-                            return ReplayScan::Incomplete {
-                                restart_rel: start_rel,
-                            };
+                        if let Err(error) = ring.phys(record_rel) {
+                            return ReplayScan::Incomplete(ReplayFailure::at(
+                                JournalReplayPhase::Scan,
+                                error,
+                                start_rel,
+                            ));
                         }
                         payloads.push(ReplayPayload {
                             tag,
@@ -618,9 +733,11 @@ impl JBD2DEVSYSTEM {
                         let computed =
                             jbd2_commit_block_csum32(&self.jbd2_super_block.s_uuid, &record_buf);
                         if computed != Some(commit.h_chksum[0]) {
-                            return ReplayScan::Incomplete {
-                                restart_rel: start_rel,
-                            };
+                            return ReplayScan::Incomplete(ReplayFailure::at(
+                                JournalReplayPhase::Replay,
+                                Ext4Error::checksum().with_operation("jbd2:replay_commit_checksum"),
+                                start_rel,
+                            ));
                         }
                     }
 
@@ -635,25 +752,32 @@ impl JBD2DEVSYSTEM {
 
                         let meta_phys = match ring.phys(payload.journal_rel) {
                             Ok(block) => block,
-                            Err(_) => {
-                                return ReplayScan::Incomplete {
-                                    restart_rel: start_rel,
-                                };
+                            Err(error) => {
+                                return ReplayScan::Incomplete(ReplayFailure::at(
+                                    JournalReplayPhase::Replay,
+                                    error,
+                                    start_rel,
+                                ));
                             }
                         };
                         let mut data = vec![0u8; block_size];
-                        if block_dev.read(&mut data, meta_phys, 1).is_err() {
-                            return ReplayScan::Incomplete {
-                                restart_rel: start_rel,
-                            };
+                        if let Err(error) = block_dev.read(&mut data, meta_phys, 1) {
+                            return ReplayScan::Incomplete(ReplayFailure::at(
+                                JournalReplayPhase::Replay,
+                                error,
+                                start_rel,
+                            ));
                         }
                         if let Some(stored) = payload.tag.checksum
                             && jbd2_tag_csum32(&self.jbd2_super_block.s_uuid, expect_seq, &data)
                                 != stored
                         {
-                            return ReplayScan::Incomplete {
-                                restart_rel: start_rel,
-                            };
+                            return ReplayScan::Incomplete(ReplayFailure::at(
+                                JournalReplayPhase::Replay,
+                                Ext4Error::checksum()
+                                    .with_operation("jbd2:replay_payload_checksum"),
+                                start_rel,
+                            ));
                         }
                         committed.push((payload, data));
                     }
@@ -671,7 +795,17 @@ impl JBD2DEVSYSTEM {
 
                         let run_len = run_end - run_start;
                         let first_home = committed[run_start].0.tag.block;
-                        let mut data = Vec::with_capacity(run_len * block_size);
+                        let run_bytes = match run_len.checked_mul(block_size) {
+                            Some(bytes) => bytes,
+                            None => {
+                                return ReplayScan::Incomplete(ReplayFailure::at(
+                                    JournalReplayPhase::Replay,
+                                    Ext4Error::overflow(),
+                                    start_rel,
+                                ));
+                            }
+                        };
+                        let mut data = Vec::with_capacity(run_bytes);
                         for (payload, payload_data) in &committed[run_start..run_end] {
                             let offset = data.len();
                             data.extend_from_slice(payload_data);
@@ -679,10 +813,22 @@ impl JBD2DEVSYSTEM {
                                 data[offset..offset + 4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
                             }
                         }
-                        if block_dev.write(&data, first_home, run_len as u32).is_err() {
-                            return ReplayScan::Incomplete {
-                                restart_rel: start_rel,
-                            };
+                        let run_count = match u32::try_from(run_len) {
+                            Ok(count) => count,
+                            Err(_) => {
+                                return ReplayScan::Incomplete(ReplayFailure::at(
+                                    JournalReplayPhase::Replay,
+                                    Ext4Error::overflow(),
+                                    start_rel,
+                                ));
+                            }
+                        };
+                        if let Err(error) = block_dev.write(&data, first_home, run_count) {
+                            return ReplayScan::Incomplete(ReplayFailure::at(
+                                JournalReplayPhase::Replay,
+                                error,
+                                start_rel,
+                            ));
                         }
 
                         pos = run_end;
@@ -697,11 +843,13 @@ impl JBD2DEVSYSTEM {
                 }
                 JBD2_BLOCKTYPE_REVOKE => {
                     let blocks = match self.parse_revoke_blocks(&record_buf) {
-                        Some(blocks) => blocks,
-                        None => {
-                            return ReplayScan::Incomplete {
-                                restart_rel: start_rel,
-                            };
+                        Ok(blocks) => blocks,
+                        Err(error) => {
+                            return ReplayScan::Incomplete(ReplayFailure::at(
+                                JournalReplayPhase::Revoke,
+                                error,
+                                start_rel,
+                            ));
                         }
                     };
                     revoked_blocks.extend(blocks);
@@ -714,9 +862,11 @@ impl JBD2DEVSYSTEM {
             ring.advance(&mut record_rel);
         }
 
-        ReplayScan::Incomplete {
-            restart_rel: start_rel,
-        }
+        ReplayScan::Incomplete(ReplayFailure::at(
+            JournalReplayPhase::Scan,
+            Ext4Error::corrupted().with_operation("jbd2:replay_ring_exhausted"),
+            start_rel,
+        ))
     }
 
     /// Replays committed transactions using the journal inode logical-block map.
@@ -730,20 +880,28 @@ impl JBD2DEVSYSTEM {
             return ReplayStatus::Complete;
         }
 
-        // If s_start points beyond the physical journal extent the on-disk
-        // journal superblock is inconsistent (e.g. corrupted by a crash that
-        // also mangled s_maxlen). There are no valid transactions to replay.
         if !journal_blocks.is_empty() && journal_rel as usize >= journal_blocks.len() {
-            self.jbd2_super_block.s_start = 0;
-            return ReplayStatus::Complete;
+            return ReplayStatus::Incomplete(ReplayFailure::at(
+                JournalReplayPhase::Initialize,
+                Ext4Error::corrupted().with_operation("jbd2:replay_start_mapping"),
+                journal_rel,
+            ));
         }
 
         let maxlen = self.jbd2_super_block.s_maxlen;
         if maxlen == 0 {
-            return ReplayStatus::Incomplete;
+            return ReplayStatus::Incomplete(ReplayFailure::at(
+                JournalReplayPhase::Initialize,
+                Ext4Error::corrupted().with_operation("jbd2:replay_maxlen"),
+                journal_rel,
+            ));
         }
         let Some(ring) = ReplayRing::new(self, journal_blocks) else {
-            return ReplayStatus::Incomplete;
+            return ReplayStatus::Incomplete(ReplayFailure::at(
+                JournalReplayPhase::Initialize,
+                Ext4Error::corrupted().with_operation("jbd2:replay_ring"),
+                journal_rel,
+            ));
         };
         let mut expect_seq = self.jbd2_super_block.s_sequence;
 
@@ -762,32 +920,35 @@ impl JBD2DEVSYSTEM {
                     self.sequence = expect_seq;
                     break ReplayStatus::Complete;
                 }
-                ReplayScan::Incomplete { restart_rel } => {
+                ReplayScan::Incomplete(failure) => {
+                    let restart_rel = failure.restart_rel().unwrap_or(journal_rel);
                     self.jbd2_super_block.s_start = restart_rel;
                     self.jbd2_super_block.s_sequence = expect_seq;
                     self.sequence = expect_seq;
-                    break ReplayStatus::Incomplete;
+                    break ReplayStatus::Incomplete(failure);
                 }
             }
         };
 
         self.head = 0;
 
-        // Write back the updated journal superblock without disturbing the rest
-        // of the containing block.
-        let sb_block = self
-            .journal_phys_block(journal_blocks, 0)
-            .unwrap_or(self.start_block);
-        if sb_block.raw() != 0
-            && self
-                .write_journal_superblock_with_mapping(block_dev, journal_blocks)
-                .and_then(|()| block_dev.flush())
-                .is_err()
+        // Preserve the replay cause if recording progress also fails. The
+        // persistence error is secondary and must not replace the first error.
+        match self
+            .write_journal_superblock_with_mapping(block_dev, journal_blocks)
+            .and_then(|()| block_dev.flush())
         {
-            return ReplayStatus::Incomplete;
+            Ok(()) => status,
+            Err(error) => match status {
+                ReplayStatus::Complete => ReplayStatus::Incomplete(ReplayFailure::without_restart(
+                    JournalReplayPhase::Persist,
+                    error,
+                )),
+                ReplayStatus::Incomplete(failure) => {
+                    ReplayStatus::Incomplete(failure.with_persistence_error(error))
+                }
+            },
         }
-
-        status
     }
 }
 
