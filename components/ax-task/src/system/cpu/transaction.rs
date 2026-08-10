@@ -559,20 +559,15 @@ impl<'a> OwnerRqTxn<'a> {
     }
 
     /// Commits the rq state before acknowledging the scheduler request epoch.
-    /// A producer racing the commit therefore either contributes to the
-    /// claimed epoch or observes the acknowledgement and publishes a new one.
+    ///
+    /// Only a claim explicitly adopted or merged before the scheduler made its
+    /// decision belongs to this acknowledgement. A request published after
+    /// that decision remains a newer generation for the next scheduler pass.
     pub(crate) fn commit_and_acknowledge_scheduler_request(mut self) {
-        // Linux clears TIF_NEED_RESCHED only after update_curr(), put_prev,
-        // pick_next and set_next have completed under rq->lock. Class hooks in
-        // this transaction may therefore publish a new request after the
-        // entry claim. Fold that final owner-local generation into this rq
-        // decision; a producer racing after this claim remains visible as a
-        // newer generation after acknowledgement.
-        self.claim_scheduler_request();
         let claim = self
             .request
             .take()
-            .expect("a scheduler rq transaction must claim before acknowledgement");
+            .expect("a scheduler rq transaction must merge its decision claim");
         let remote = self.remote;
         let run_queue = self
             .run_queue

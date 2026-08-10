@@ -340,6 +340,10 @@ impl TaskSystem {
         }
         cpu.finish_park_preemption(false);
         transaction.take_current();
+        // This branch commits a real switch, so the request generated while
+        // settling the outgoing dispatch belongs to this decision. The
+        // resumed branch above deliberately leaves it for the next pass.
+        transaction.merge_scheduler_request();
         let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, Some(token.thread()));
         let next_core = next.core;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
@@ -540,6 +544,9 @@ impl TaskSystem {
         transaction.adopt_scheduler_request(initial_request);
         transaction.merge_scheduler_request();
         let dispatch_commit = self.commit_owner_current_dispatch_in_rq(&mut transaction);
+        // Exit necessarily selects a replacement, so accounting requests from
+        // the outgoing task are consumed by this decision.
+        transaction.merge_scheduler_request();
         let previous_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x4558_0007, exiting.as_u64() as usize)
         });

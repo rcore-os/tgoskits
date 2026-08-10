@@ -228,6 +228,9 @@ impl TaskSystem {
         transaction.adopt_scheduler_request(initial_request);
         transaction.merge_scheduler_request();
         let dispatch_commit = self.commit_owner_current_dispatch_in_rq(&mut transaction);
+        // Runtime accounting is part of this unconditional scheduling
+        // decision, exactly like Linux update_curr() preceding pick_next.
+        transaction.merge_scheduler_request();
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();
@@ -319,10 +322,12 @@ impl TaskSystem {
         let clock = transaction.clock();
         let now_ns = clock.wall().as_nanos();
         transaction.adopt_scheduler_request(initial_request);
-        let request = transaction.merge_scheduler_request();
         if transaction.current().is_some() {
             let _settled = transaction.settle_current(0);
         }
+        // This claim is the decision boundary: requests published by current
+        // accounting participate in this pass; later generations do not.
+        let request = transaction.merge_scheduler_request();
         if transaction
             .current()
             .map(|dispatch| dispatch.runtime_core_arc().state())
@@ -362,7 +367,7 @@ impl TaskSystem {
                 SchedulerOutcome::Quiescent
             });
         }
-        let dispatch_commit = self.commit_owner_current_dispatch_in_rq(&mut transaction);
+        let dispatch_commit = self.commit_owner_settled_current_dispatch_in_rq(&mut transaction);
         let mut migration = None;
         if let Some(core) = previous_core.as_ref() {
             let schedule_out = self.schedule_out_owner_running_in_rq(
@@ -447,6 +452,9 @@ impl TaskSystem {
         transaction.adopt_scheduler_request(initial_request);
         transaction.merge_scheduler_request();
         let dispatch_commit = self.commit_owner_current_dispatch_in_rq(&mut transaction);
+        // A forced yield consumes a slice-expiration request discovered while
+        // accounting the outgoing task in this same scheduling pass.
+        transaction.merge_scheduler_request();
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();

@@ -34,9 +34,23 @@ impl TaskSystem {
         if transaction.current().is_none() {
             return OwnerDispatchCommit::NONE;
         }
+        let _charge = transaction.settle_current(0);
+        self.commit_owner_settled_current_dispatch_in_rq(transaction)
+    }
+
+    /// Finalizes a current dispatch already settled at this transaction's rq
+    /// clock. The caller must use this form when that accounting participates
+    /// in the scheduler-request decision, so it is not repeated after the
+    /// decision claim has been merged.
+    pub(in crate::system::task_system) fn commit_owner_settled_current_dispatch_in_rq(
+        &self,
+        transaction: &mut OwnerRqTxn<'_>,
+    ) -> OwnerDispatchCommit {
+        if transaction.current().is_none() {
+            return OwnerDispatchCommit::NONE;
+        }
         let current = transaction.current_thread();
         let current_core = transaction.current_core();
-        let _charge = transaction.settle_current(0);
         let task_now_ns = transaction.clock().task().as_nanos();
         let Some(mut dispatch) = transaction.take_current() else {
             task_runtime::fatal_invariant(0x5251_1101, transaction.owner().as_u32() as usize);

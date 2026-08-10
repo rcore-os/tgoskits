@@ -3774,6 +3774,32 @@ fn scheduler_work_without_preemption_preserves_current_dispatch() {
 }
 
 #[test]
+fn rq_commit_preserves_a_request_published_after_the_decision_claim() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+    cpu.request_scheduler_work();
+    let remote = Arc::clone(cpu.remote());
+    let initial_request = remote.claim_scheduler_request();
+    let mut transaction = OwnerRqTxn::begin(&system, &remote);
+    transaction.adopt_scheduler_request(initial_request);
+    let decision_request = transaction.merge_scheduler_request();
+    assert!(!decision_request.preempt_requested());
+
+    remote.request_reschedule();
+    transaction.commit_and_acknowledge_scheduler_request();
+
+    assert!(
+        remote.needs_reschedule(),
+        "a generation published after the scheduler decision must remain pending for the next pass",
+    );
+}
+
+#[test]
 fn running_rt_task_has_one_active_schedule_owner() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
