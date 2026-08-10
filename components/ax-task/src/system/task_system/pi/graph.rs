@@ -408,11 +408,38 @@ impl TaskSystem {
                     PiWaitStateError::ExitedParticipant,
                 ));
             };
-            let blocked_on = current_core.sched().lock().pi.blocked_on;
-            if origin_lock.is_some_and(|origin| {
-                blocked_on.is_some_and(|registration| registration.lock == origin)
-            }) {
-                return Err(TaskError::PiCycle);
+            if depth == 1
+                && let Some(origin) = origin_lock
+            {
+                let _origin_state = unsafe {
+                    // SAFETY: the committed top-task registration keeps the
+                    // origin mutex alive for this complete chain walk.
+                    origin.lock_state()
+                };
+                let origin_owner = unsafe {
+                    // SAFETY: identical lifetime contract to `_origin_state`.
+                    origin.core()
+                }
+                .owner_snapshot()
+                .owner();
+                if origin_owner != Some(current) {
+                    // Linux aborts rt_mutex_adjust_prio_chain() when the
+                    // previous owner released the origin lock after the
+                    // caller dropped wait_lock. It may already be queued on
+                    // that same lock again, which is a new edge, not a cycle.
+                    return Ok(());
+                }
+                let blocked_on = current_core.sched().lock().pi.blocked_on;
+                if blocked_on.is_some_and(|registration| registration.lock == origin) {
+                    return Err(TaskError::PiCycle);
+                }
+            } else {
+                let blocked_on = current_core.sched().lock().pi.blocked_on;
+                if origin_lock.is_some_and(|origin| {
+                    blocked_on.is_some_and(|registration| registration.lock == origin)
+                }) {
+                    return Err(TaskError::PiCycle);
+                }
             }
             let refresh = self.refresh_blocked_waiter_key(&current_core)?;
             if !refresh.changed && origin_lock.is_none() {

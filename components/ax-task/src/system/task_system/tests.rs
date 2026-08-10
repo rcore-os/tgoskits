@@ -5915,6 +5915,53 @@ fn pi_claim_retries_when_a_more_urgent_waiter_wins_the_ownerless_window() {
 }
 
 #[test]
+fn pi_chain_walk_ignores_a_previous_owner_that_requeues_on_the_origin_lock() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = create_online_pi_cpu(&system);
+    let owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let waiter = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    place_pi_owner(&system, cpu.as_mut(), &owner);
+    let lock = PiMutexCore::new();
+    let waiter_token = commit_pi_wait(&system, &lock, waiter.id(), owner.id()).unwrap();
+
+    system
+        .pi_mutex_release(lock.mutex_ref().unwrap(), owner.id())
+        .unwrap();
+    let owner_token = match system
+        .pi_mutex_lock_slow(lock.mutex_ref().unwrap(), owner.id(), u64::MAX)
+        .unwrap()
+    {
+        PiMutexLockResult::Waiting(token) => token,
+        PiMutexLockResult::Acquired => panic!("ownerless handoff must retain its waiter tree"),
+    };
+
+    assert_eq!(
+        system.recompute_pi_chain(
+            owner.id(),
+            Some(lock.mutex_ref().unwrap().raw()),
+            waiter.id(),
+        ),
+        Ok(()),
+        "a released owner may requeue before the original waiter's chain walk resumes"
+    );
+
+    if waiter_token.can_claim() {
+        system.pi_mutex_claim(&waiter_token).unwrap();
+        system.pi_wait_cancel(owner_token).unwrap();
+        assert!(release_pi_for_thread(&lock, waiter.id()).unwrap());
+    } else {
+        assert!(owner_token.can_claim());
+        system.pi_mutex_claim(&owner_token).unwrap();
+        system.pi_wait_cancel(waiter_token).unwrap();
+        assert!(release_pi_for_thread(&lock, owner.id()).unwrap());
+    }
+}
+
+#[test]
 fn pi_release_wakes_the_selected_waiter_before_returning() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
