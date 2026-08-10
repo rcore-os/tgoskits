@@ -20,6 +20,7 @@ fail_regex = [
     "(?i)kernel panic",
     "(?i)unhandled page fault",
     "(?i)page fault",
+    "Failed to initialize guest VM",
     "(?m)^ivshmem bar2 smoke failed:",
     "(?m)^Zephyr ivshmem failed:",
 ]
