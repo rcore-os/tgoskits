@@ -7,6 +7,8 @@
 
 #![no_std]
 
+#[cfg(feature = "selftest")]
+pub mod benchmark;
 mod context;
 mod executor;
 mod mailbox;
@@ -32,4 +34,4 @@ pub use state::{RtState, RtTaskState};
 pub use sync::{RtMutex, RtMutexGuard, RtSemaphore};
 pub use task::{RtStatus, RtTask, RtTaskStatus};
 
-pub(crate) const MAX_RT_TASKS: usize = 12;
+pub(crate) const MAX_RT_TASKS: usize = 20;

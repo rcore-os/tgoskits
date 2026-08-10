@@ -1,0 +1,20 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-m",
+  "512M",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^\\[.*RT .*FAIL",
+  "(?m)^\\[.*RT benchmark\\] timed out",
+]
+success_regex = ["AX_RT_RHEALSTONE_BENCHMARK_PASSED"]
+timeout = 60
+to_bin = true
+uefi = false

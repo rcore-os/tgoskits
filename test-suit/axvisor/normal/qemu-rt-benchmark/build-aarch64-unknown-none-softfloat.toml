@@ -1,0 +1,10 @@
+features = [
+    "rt-selftest",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []
+
+[env]
+AX_RT_CPU = "3"
+SMP = "4"

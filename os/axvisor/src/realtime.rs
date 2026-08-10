@@ -18,8 +18,9 @@
 //! symbol, the CPU ownership partition, the demo service tasks (heartbeat /
 //! watchdog / hello), and the shell mailbox helpers. The reusable RT executor,
 //! primitives, and self-test suite live in [`ax_rt`]; when the `rt-selftest`
-//! feature is enabled, [`ax_rt::selftest`]'s tasks are appended to the RT task
-//! table and driven from [`run_rt_selftests`].
+//! feature is enabled, [`ax_rt::selftest`]'s tasks and [`ax_rt::benchmark`]'s
+//! Rhealstone-style benchmark tasks are appended to the RT task table and driven
+//! from [`run_rt_selftests`].
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -49,7 +50,8 @@ static RT_SAMPLE_MUTEX: RtMutex = RtMutex::new();
 const DEMO_TASK_COUNT: usize = 3;
 
 /// Axvisor demo service tasks. These are the always-present RT workload; the
-/// self-test suite is appended after them when `rt-selftest` is enabled.
+/// self-test and benchmark suites are appended after them when `rt-selftest` is
+/// enabled.
 const DEMO_TASKS: [RtTask; DEMO_TASK_COUNT] = [
     RtTask::with_priority("heartbeat", HEARTBEAT_INTERVAL_NANOS, 10, heartbeat_task),
     RtTask::with_priority("watchdog", WATCHDOG_INTERVAL_NANOS, 5, watchdog_task),
@@ -57,16 +59,21 @@ const DEMO_TASKS: [RtTask; DEMO_TASK_COUNT] = [
 ];
 
 #[cfg(feature = "rt-selftest")]
-static RT_TASKS: [RtTask; DEMO_TASK_COUNT + ax_rt::selftest::SELFTEST_TASKS.len()] =
-    rt_tasks_with_selftest();
+static RT_TASKS: [RtTask;
+    DEMO_TASK_COUNT
+        + ax_rt::selftest::SELFTEST_TASKS.len()
+        + ax_rt::benchmark::BENCHMARK_TASKS.len()] = rt_tasks_with_selftest();
 
 /// Builds the combined RT task table: demo tasks followed by the self-test
 /// suite. `const` so the table stays a single `'static` slice for the executor.
 #[cfg(feature = "rt-selftest")]
-const fn rt_tasks_with_selftest()
--> [RtTask; DEMO_TASK_COUNT + ax_rt::selftest::SELFTEST_TASKS.len()] {
+const fn rt_tasks_with_selftest() -> [RtTask;
+    DEMO_TASK_COUNT
+        + ax_rt::selftest::SELFTEST_TASKS.len()
+        + ax_rt::benchmark::BENCHMARK_TASKS.len()] {
     const SELFTEST: [RtTask; 8] = ax_rt::selftest::SELFTEST_TASKS;
-    let mut out = [DEMO_TASKS[0]; DEMO_TASK_COUNT + SELFTEST.len()];
+    const BENCHMARK: [RtTask; 7] = ax_rt::benchmark::BENCHMARK_TASKS;
+    let mut out = [DEMO_TASKS[0]; DEMO_TASK_COUNT + SELFTEST.len() + BENCHMARK.len()];
     let mut i = 0;
     while i < DEMO_TASK_COUNT {
         out[i] = DEMO_TASKS[i];
@@ -76,6 +83,11 @@ const fn rt_tasks_with_selftest()
     while j < SELFTEST.len() {
         out[DEMO_TASK_COUNT + j] = SELFTEST[j];
         j += 1;
+    }
+    let mut k = 0;
+    while k < BENCHMARK.len() {
+        out[DEMO_TASK_COUNT + SELFTEST.len() + k] = BENCHMARK[k];
+        k += 1;
     }
     out
 }
@@ -156,6 +168,9 @@ pub fn run_rt_selftests() {
     ax_rt::selftest::run_host_checks(&ax_rt::selftest::SelftestConfig {
         time_fn: monotonic_time_nanos,
         report_reverse_doorbell: ax_realtime::report_reverse_doorbell,
+    });
+    ax_rt::benchmark::run_host_benchmarks(&ax_rt::benchmark::BenchmarkConfig {
+        time_fn: monotonic_time_nanos,
     });
 }
 

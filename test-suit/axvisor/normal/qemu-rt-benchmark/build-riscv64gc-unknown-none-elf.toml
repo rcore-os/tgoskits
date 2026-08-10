@@ -1,0 +1,12 @@
+features = [
+    "rt-selftest",
+    "sstc",
+]
+log = "Info"
+target = "riscv64gc-unknown-none-elf"
+vm_configs = []
+max_cpu_num = 4
+
+[env]
+AX_RT_CPU = "3"
+SMP = "4"
