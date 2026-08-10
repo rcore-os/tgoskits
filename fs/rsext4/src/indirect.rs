@@ -61,6 +61,14 @@ pub(crate) fn resolve_legacy_inode_block<B: BlockIo>(
     reader.resolve_path(inode, path)
 }
 
+pub(crate) fn validate_legacy_block_count(block_size: usize, blocks: u64) -> Ext4Result<()> {
+    if blocks == 0 {
+        return Ok(());
+    }
+    let last = u32::try_from(blocks - 1).map_err(|_| Ext4Error::file_too_large())?;
+    block_to_path(block_size, last).map(|_| ())
+}
+
 /// Materializes all data mappings reachable below the inode's file size.
 pub(crate) fn resolve_legacy_inode_blocks<B: BlockIo>(
     filesystem: &Ext4FileSystem,

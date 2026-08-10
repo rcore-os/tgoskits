@@ -158,8 +158,7 @@ mod file_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
-    /// Covers both shrinking and growing a file and documents that growth keeps
-    /// previously stored bytes instead of zero-filling the new range.
+    /// Covers both shrinking and growing a file and requires Linux EOF zeroing.
     #[test]
     fn test_file_truncate() {
         let device = MockBlockDevice::new(100 * 1024 * 1024); // 100MB
@@ -188,17 +187,16 @@ mod file_functional_tests {
             .expect("read_file failed");
         assert_eq!(truncated_data, Vec::from(&original_data[..10]));
 
-        // Grow the file again and check the implementation-specific contents.
+        // Grow the file again. Bytes hidden by the previous shrink must not
+        // become visible again.
         truncate(&mut jbd2_dev, &mut fs, "/truncatetest/truncate_file", 20)
             .expect("truncate expand failed");
 
         let expanded_data = read_file(&mut jbd2_dev, &mut fs, "/truncatetest/truncate_file")
             .expect("read_file failed");
 
-        // Growth currently preserves the bytes that were already present in the
-        // backing blocks instead of returning zero-filled data.
         let mut expected = Vec::from(&original_data[..10]);
-        expected.extend_from_slice(&original_data[10..20]);
+        expected.resize(20, 0);
         assert_eq!(expanded_data, expected);
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
@@ -679,6 +677,118 @@ mod file_functional_tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn growing_legacy_inode_across_triple_boundary_keeps_sparse_holes() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/legacy-sparse-grow", None, None)
+            .expect("file creation failed");
+        let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-sparse-grow")
+            .unwrap()
+            .unwrap()
+            .0;
+        fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_blocks_lo = 0;
+        })
+        .unwrap();
+        let pointers = BLOCK_SIZE / core::mem::size_of::<u32>();
+        let triple_first_lbn = 12usize + pointers + pointers * pointers;
+        let grown_blocks = triple_first_lbn + 2;
+        let grown_size = grown_blocks as u64 * BLOCK_SIZE as u64;
+        let free_blocks_before = fs.superblock.free_blocks_count();
+
+        truncate(&mut jbd2_dev, &mut fs, "/legacy-sparse-grow", grown_size)
+            .expect("legacy sparse growth must not allocate indirect branches");
+
+        let inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+        assert_eq!(inode.size(), grown_size);
+        assert_eq!(inode.i_block, [0; 15]);
+        assert_eq!(inode.i_blocks_lo, 0);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+
+        let mut probe = [0xa5; 64];
+        let offset = triple_first_lbn as u64 * BLOCK_SIZE as u64;
+        let read =
+            read_inode_data_into(&mut jbd2_dev, &mut fs, inode_number, offset, &mut probe).unwrap();
+        assert_eq!(read, probe.len());
+        assert_eq!(probe, [0; 64]);
+
+        truncate(
+            &mut jbd2_dev,
+            &mut fs,
+            "/legacy-sparse-grow",
+            BLOCK_SIZE as u64,
+        )
+        .expect("shrinking an unallocated legacy hole needs no indirect free");
+        let inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+        assert_eq!(inode.size(), BLOCK_SIZE as u64);
+        assert_eq!(inode.i_block, [0; 15]);
+        assert_eq!(inode.i_blocks_lo, 0);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+    }
+
+    #[test]
+    fn shrinking_legacy_inode_with_hidden_indirect_root_is_preflight_only() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/legacy-hidden-root", None, None)
+            .expect("file creation failed");
+        let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-hidden-root")
+            .unwrap()
+            .unwrap()
+            .0;
+        let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
+        fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_block[12] = indirect_root.to_u32().unwrap();
+            inode.i_size_lo = 1;
+            inode.i_size_high = 0;
+            inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
+        })
+        .unwrap();
+        let free_blocks_before = fs.superblock.free_blocks_count();
+
+        let error = truncate(&mut jbd2_dev, &mut fs, "/legacy-hidden-root", 0)
+            .expect_err("recursive indirect shrink remains transaction-gated");
+        assert_eq!(error.kind(), Ext4ErrorKind::Unsupported);
+
+        let inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+        assert_eq!(inode.size(), 1);
+        assert_eq!(inode.i_block[12], indirect_root.to_u32().unwrap());
+        assert_eq!(inode.i_blocks_lo, (BLOCK_SIZE / 512) as u32);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+    }
+
+    #[test]
+    fn growing_extent_inode_keeps_sparse_holes_and_logical_read_order() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/extent-sparse-grow", None, None)
+            .expect("file creation failed");
+        let free_blocks_before = fs.superblock.free_blocks_count();
+        let grown_size = 20 * BLOCK_SIZE as u64;
+
+        truncate(&mut jbd2_dev, &mut fs, "/extent-sparse-grow", grown_size)
+            .expect("extent sparse growth must not allocate blocks");
+
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        let data = read_file(&mut jbd2_dev, &mut fs, "/extent-sparse-grow").unwrap();
+        assert_eq!(data.len(), grown_size as usize);
+        assert!(data.iter().all(|&byte| byte == 0));
     }
 
     #[test]
