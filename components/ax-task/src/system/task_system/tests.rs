@@ -1007,7 +1007,56 @@ fn direct_wake_activates_the_target_runqueue_before_its_owner_safe_point() {
 }
 
 #[test]
-fn task_context_fair_wake_prefers_the_waker_cpu_over_the_sleep_cpu() {
+fn task_context_fair_wake_keeps_the_sleep_cpu_when_the_waker_cpu_is_busier() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+
+    let sleeper = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(sleeper.id()).unwrap();
+    system.enqueue_at(cpu1.as_mut(), sleeper.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule_at(cpu1.as_mut(), 1).unwrap().next(),
+        sleeper.id()
+    );
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+    system.block_current_at(cpu1.as_mut(), 2).unwrap();
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+
+    let mut cpu0_only = CpuSet::empty(2);
+    assert!(cpu0_only.insert(CpuId::new(0)));
+    let waker_peer = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_affinity(cpu0_only))
+        .unwrap();
+    system.make_ready(waker_peer.id()).unwrap();
+    system
+        .enqueue_at(cpu0.as_mut(), waker_peer.id(), 3)
+        .unwrap();
+
+    let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu0.as_mut());
+    assert_eq!(
+        sleeper.wake_handle().wake_from_task(),
+        crate::WakeResult::Notified
+    );
+
+    assert_eq!(
+        sleeper.core.sched().lock().placement.queued_cpu(),
+        Some(CpuId::new(1)),
+        "wake-affine must not move a Fair wakee onto a busier waker CPU"
+    );
+}
+
+#[test]
+fn task_context_fair_wake_keeps_the_sleep_cpu_when_load_is_equal() {
     crate::test_runtime::reset_irq_state();
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -1040,13 +1089,13 @@ fn task_context_fair_wake_prefers_the_waker_cpu_over_the_sleep_cpu() {
 
     assert_eq!(
         sleeper.core.sched().lock().placement.queued_cpu(),
-        Some(CpuId::new(0)),
-        "a Fair wake from task context must use the waker CPU as Linux's wake-affine input"
+        Some(CpuId::new(1)),
+        "equal demand must preserve the sleep CPU instead of causing cache migration"
     );
 }
 
 #[test]
-fn task_context_wait_claim_prefers_the_waker_cpu_over_the_sleep_cpu() {
+fn task_context_fair_wake_uses_the_less_loaded_waker_cpu() {
     crate::test_runtime::reset_irq_state();
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -1071,6 +1120,65 @@ fn task_context_wait_claim_prefers_the_waker_cpu_over_the_sleep_cpu() {
     system.block_current_at(cpu1.as_mut(), 2).unwrap();
     system.complete_context_switch(cpu1.as_mut()).unwrap();
 
+    let mut cpu1_only = CpuSet::empty(2);
+    assert!(cpu1_only.insert(CpuId::new(1)));
+    let sleep_cpu_peer = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_affinity(cpu1_only))
+        .unwrap();
+    system.make_ready(sleep_cpu_peer.id()).unwrap();
+    system
+        .enqueue_at(cpu1.as_mut(), sleep_cpu_peer.id(), 3)
+        .unwrap();
+
+    let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu0.as_mut());
+    assert_eq!(
+        sleeper.wake_handle().wake_from_task(),
+        crate::WakeResult::Notified
+    );
+
+    assert_eq!(
+        sleeper.core.sched().lock().placement.queued_cpu(),
+        Some(CpuId::new(0)),
+        "wake-affine must use a strictly less loaded waker CPU"
+    );
+}
+
+#[test]
+fn task_context_wait_claim_uses_the_less_loaded_waker_cpu() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+
+    let sleeper = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(sleeper.id()).unwrap();
+    system.enqueue_at(cpu1.as_mut(), sleeper.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule_at(cpu1.as_mut(), 1).unwrap().next(),
+        sleeper.id()
+    );
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+    system.block_current_at(cpu1.as_mut(), 2).unwrap();
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+
+    let mut cpu1_only = CpuSet::empty(2);
+    assert!(cpu1_only.insert(CpuId::new(1)));
+    let sleep_cpu_peer = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_affinity(cpu1_only))
+        .unwrap();
+    system.make_ready(sleep_cpu_peer.id()).unwrap();
+    system
+        .enqueue_at(cpu1.as_mut(), sleep_cpu_peer.id(), 3)
+        .unwrap();
+
     let claim = WaitWakeClaim::new(sleeper.id(), sleeper.core.park_generation());
     assert!(claim.select());
     let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu0.as_mut());
@@ -1082,7 +1190,7 @@ fn task_context_wait_claim_prefers_the_waker_cpu_over_the_sleep_cpu() {
     assert_eq!(
         sleeper.core.sched().lock().placement.queued_cpu(),
         Some(CpuId::new(0)),
-        "wait-claim delivery must share the waker-aware placement of ordinary task wakes"
+        "wait-claim delivery must share ordinary Fair wake-affine load comparison"
     );
 }
 

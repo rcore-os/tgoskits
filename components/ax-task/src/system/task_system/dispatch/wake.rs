@@ -164,11 +164,59 @@ impl TaskSystem {
         sched: &ThreadSchedState,
         policy: SchedulePolicy,
         entity: SchedulingEntity,
-        preferred: Option<CpuId>,
+        waker: Option<CpuId>,
+        previous: Option<CpuId>,
     ) -> Option<CpuId> {
         #[cfg(test)]
         WAKE_TARGET_SELECTIONS.set(WAKE_TARGET_SELECTIONS.get().saturating_add(1));
-        self.select_priority_cpu(policy, entity, &sched.affinity.affinity, preferred, None)
+        if matches!(policy, SchedulePolicy::Fair { .. }) {
+            return self.select_fair_wake_cpu(&sched.affinity.affinity, waker, previous);
+        }
+        self.select_priority_cpu(
+            policy,
+            entity,
+            &sched.affinity.affinity,
+            waker.or(previous),
+            None,
+        )
+    }
+
+    /// Selects between the waking and previous CPU using Linux wake-affine's
+    /// conservative load rule.
+    ///
+    /// This scheduler currently exposes one flat root domain and no cache or
+    /// capacity topology. Moving a wakee to the waker is therefore justified
+    /// only when the waker owns strictly less instantaneous demand; a tie
+    /// preserves the previous CPU's cache locality. The facade supplies the
+    /// migration-pinned waker identity but does not own this policy decision.
+    fn select_fair_wake_cpu(
+        &self,
+        affinity: &CpuSet,
+        waker: Option<CpuId>,
+        previous: Option<CpuId>,
+    ) -> Option<CpuId> {
+        let eligible = |cpu: CpuId| {
+            affinity.contains(cpu)
+                && self
+                    .cpu_remotes
+                    .get(cpu.as_usize())
+                    .is_some_and(|remote| remote.accepts_placement())
+        };
+        let waker = waker.filter(|cpu| eligible(*cpu));
+        let previous = previous.filter(|cpu| eligible(*cpu));
+        match (waker, previous) {
+            (Some(waker), Some(previous)) if waker != previous => {
+                let waker_demand = self.cpu_remotes[waker.as_usize()].placement_demand();
+                let previous_demand = self.cpu_remotes[previous.as_usize()].placement_demand();
+                if waker_demand < previous_demand {
+                    Some(waker)
+                } else {
+                    Some(previous)
+                }
+            }
+            (Some(cpu), _) | (_, Some(cpu)) => Some(cpu),
+            (None, None) => self.select_fair_active_cpu(affinity, None),
+        }
     }
 
     /// Activates a blocked thread directly under its target runqueue lock.
@@ -179,7 +227,7 @@ impl TaskSystem {
     pub(crate) fn wake_thread_direct(
         &self,
         core: Arc<ThreadCore>,
-        preferred: Option<CpuId>,
+        waker: Option<CpuId>,
     ) -> WakeResult {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_direct_wake_attempt();
@@ -215,8 +263,9 @@ impl TaskSystem {
             // performs the no-fail runnable publication.
             return WakeResult::Notified;
         }
-        let preferred = preferred
-            .or_else(|| sched.placement.assigned_cpu())
+        let previous = sched
+            .placement
+            .assigned_cpu()
             .or_else(|| core.wake_cpu_hint());
         if sched.lifecycle.state() == ThreadState::Blocked && sched.placement.on_cpu().is_some() {
             match Self::consume_wake_locked(&core, &mut sched) {
@@ -228,7 +277,7 @@ impl TaskSystem {
         }
         let policy = sched.policy.active().policy();
         let queued_entity = sched.policy.active().entity().clone();
-        let target = self.select_wake_target(&sched, policy, queued_entity, preferred);
+        let target = self.select_wake_target(&sched, policy, queued_entity, waker, previous);
         let Some(target) = target else {
             core.discard_failed_wake();
             return WakeResult::Unavailable;
@@ -262,7 +311,7 @@ impl TaskSystem {
         &self,
         core: Arc<ThreadCore>,
         claim: &WaitWakeClaim,
-        preferred: Option<CpuId>,
+        waker: Option<CpuId>,
     ) -> WaitWakeDelivery {
         if claim.thread() != core.id() {
             claim.cancel_selected();
@@ -308,13 +357,14 @@ impl TaskSystem {
                 }
             }
             ThreadState::Blocked => {
-                let preferred = preferred
-                    .or_else(|| sched.placement.assigned_cpu())
+                let previous = sched
+                    .placement
+                    .assigned_cpu()
                     .or_else(|| core.wake_cpu_hint());
                 let policy = sched.policy.active().policy();
                 let queued_entity = sched.policy.active().entity().clone();
                 let Some(target) =
-                    self.select_wake_target(&sched, policy, queued_entity, preferred)
+                    self.select_wake_target(&sched, policy, queued_entity, waker, previous)
                 else {
                     claim.cancel_selected();
                     return WaitWakeDelivery::Unavailable;
@@ -510,12 +560,12 @@ impl TaskSystem {
         }
         let policy = sched.policy.active().policy();
         let entity = sched.policy.active().entity().clone();
-        let preferred = sched
+        let previous = sched
             .placement
             .assigned_cpu()
             .or_else(|| core.wake_cpu_hint());
         let target = self
-            .select_wake_target(&sched, policy, entity, preferred)
+            .select_wake_target(&sched, policy, entity, None, previous)
             .unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x574b_0008, core.id().as_u64() as usize)
             });
