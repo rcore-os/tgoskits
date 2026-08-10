@@ -7,7 +7,7 @@
 
 ## Primitives
 
-- **Mutex**: A compatibility alias of the non-sleeping `ax_kspin::SpinNoIrq` lock.
+- **SpinMutex**: A non-sleeping, IRQ-safe `ax_kspin::SpinNoIrq` lock.
 - **PiMutex**: With `multitask`, an urgency-ordered sleeping mutex with targeted ownership handoff. It reports ownership and wait edges to `ax-task`, which owns transitive donation, scheduler requeue, and Deadline donor-budget semantics.
 - **spin**: Re-export of the [ax-kspin](https://crates.io/crates/ax-kspin) crate (spinlocks).
 

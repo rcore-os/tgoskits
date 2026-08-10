@@ -30,6 +30,14 @@ fn imports_ambiguous_mutex(compact_source: &str) -> bool {
     false
 }
 
+fn compact_source(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
 #[test]
 fn starry_mutexes_name_pi_or_spin_semantics() {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -59,5 +67,21 @@ fn starry_mutexes_name_pi_or_spin_semantics() {
         "Starry locks must use explicit PiMutex or SpinMutex semantics; ambiguous ax_sync::Mutex \
          in: {}",
         violations.join(", ")
+    );
+}
+
+#[test]
+fn tty_blocking_ownership_uses_pi_mutexes() {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let tty = compact_source(&source_root.join("pseudofs/dev/tty/mod.rs"));
+    let line_discipline = compact_source(&source_root.join("pseudofs/dev/tty/terminal/ldisc.rs"));
+
+    assert!(
+        tty.contains("ldisc:PiMutex<LineDiscipline<R,W>>"),
+        "the tty line-discipline owner crosses backend waits and must use PiMutex"
+    );
+    assert!(
+        line_discipline.contains("InterruptDriven(Arc<PiMutex<InputReader<R,W>>>)"),
+        "the interrupt-driven reader owner crosses backend waits and must use PiMutex"
     );
 }
