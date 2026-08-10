@@ -114,7 +114,7 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 | `mkdir-mutation-rollback` | child inode 初始化后，父 link/group accounting 或目录项插入失败可留下孤儿 inode、泄漏块或部分发布的计数 | mkdir 的 inode、block、父目录项、父 link count 与 group stats 属于同一可回滚 transaction | namespace/JBD2 rewrite | 红：link 上限已在分配前预检；目录项插入及其后续 I/O 失败的整体回滚仍待 namespace transaction 重写 |
 | `rename-mutation-rollback` | 跨父目录 rename 在新项、旧项、父 link count 或 `..` 更新任一步失败时可留下部分状态 | rename 的全部目录项、link count、`..` 与被替换 inode 更新崩溃原子且可回滚 | namespace/JBD2 rewrite | 红：link count 算术已在发布前预检；多对象 mutation 仍待 journal transaction 整体重写 |
 | `io-failure-no-panic` | mount/commit paths contain `expect` | all errors propagated | codec/JBD2 rewrite | 进行中：mount/JBD2 与 extent root/child traversal 已移除 panic/静默失败，剩余生产路径待审计 |
-| `legacy-indirect-13-blocks` | non-extent path is unsupported | Linux-compatible mapping | mapping rewrite | 红：仅完成 12 个 direct block 编码 |
+| `legacy-indirect-13-blocks` | non-extent path is unsupported | Linux-compatible mapping | mapping rewrite | 进行中：checked read decoder 已覆盖 direct/single/double/triple、hole、整块 pointer validity、system zone 与 cycle，whole-file sparse read 已转绿；indirect tree 分配、recursive truncate/free 与事务回滚仍为红项，当前在任何 inode/link mutation 前返回 typed unsupported |
 
 Draft 期间这些测试可以保持失败，但测试本身不得 `ignore`、弱化断言或伪造成功。
 PR 转 Ready 前本表必须为空。
@@ -244,3 +244,26 @@ RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns=6300969 write_p95_ns=64
 相对 dev 基线，write/read median 分别改善约 7.7% 和 14.8%，对应 p95 分别
 改善约 12.3% 和 26.3%；sync p95 改善约 22.3%。sync median 增加约 9.5%，
 但 p95 latency 未回退，全部现有 workload 仍满足 host 性能门槛。
+
+### 7.8 legacy indirect checked read 检查点
+
+采集时间：2026-08-10；被测实现 commit 为
+`2ebb481ceefa1d9669d5cd890b81e948ff977f4b`，固定 CPU 2、x86_64 memory
+backend、4 KiB block、`metadata_csum+64bit+journal`，workload 和计时边界与
+7.1 相同。该检查点加入 direct/single/double/triple checked decoder，并按 Linux
+`ext4_check_indirect_blockref()` 校验读入块的全部非零 pointer；extent 热路径不
+经过新增 decoder。
+
+10-run 探测曾出现一个 81.253 us sync 离群值；同配置立即复测的 sync p95 为
+37.816 us。为避免 10 个样本时 p95 退化为最大值，正式检查点扩展为 3 次预热加
+20 次测量，并保留全部原始样本于
+`book/design/data/rsext4-perf/2026-08-10-legacy-indirect.csv`。harness marker 同时补齐
+commit、arch、backend 与 feature 字段，但没有改变 workload 或计时区间：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=2ebb481ceefa1d9669d5cd890b81e948ff977f4b arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6258062 write_p95_ns=6887763 read_median_ns=6088048 read_p95_ns=7145268 sync_median_ns=28479 sync_p95_ns=34506
+```
+
+相对 dev 基线，write/read median 分别改善约 8.3% 和 15.7%，对应 p95 分别
+改善约 6.1% 和 15.8%；sync p95 改善约 10.7%。sync median 增加约 10.3%，
+但 p95 latency 未回退，全部现有 workload 满足 host 性能门槛。
