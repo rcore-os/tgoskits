@@ -14,6 +14,18 @@ fn ensure_inode_free_is_supported(fs: &Ext4FileSystem, inode: &Ext4Inode) -> Ext
     Ok(())
 }
 
+fn preflight_inode_free<B: BlockIo>(
+    fs: &Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    inode_num: InodeNumber,
+    inode: &Ext4Inode,
+) -> Ext4Result<()> {
+    if !inode.uses_extents() {
+        crate::indirect::collect_legacy_inode_ownership(fs, block_dev, inode_num, inode)?;
+    }
+    ensure_inode_free_is_supported(fs, inode)
+}
+
 pub fn free_inode<B: BlockIo + crate::runtime::Clock>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
@@ -21,9 +33,14 @@ pub fn free_inode<B: BlockIo + crate::runtime::Clock>(
     inode: &mut Ext4Inode,
 ) -> Ext4Result<()> {
     ensure_inode_free_is_supported(fs, inode)?;
-    let mut used_blocks: Vec<AbsoluteBN> = resolve_inode_blocks(fs, block_dev, inode_num, inode)?
-        .into_values()
-        .collect();
+    let mut used_blocks: Vec<AbsoluteBN> = if inode.uses_extents() {
+        resolve_inode_blocks(fs, block_dev, inode_num, inode)?
+            .into_values()
+            .collect()
+    } else {
+        crate::indirect::collect_legacy_inode_ownership(fs, block_dev, inode_num, inode)?
+            .into_data_blocks()
+    };
     if inode.uses_extents() {
         used_blocks.extend(
             ExtentTree::with_filesystem(inode, fs, inode_num).external_node_blocks(block_dev)?,
@@ -99,7 +116,7 @@ pub fn unlink<B: BlockIo + crate::runtime::Clock>(
     // milestone, so a final unlink of such an inode remains unsupported.
     let new_links = target_inode.decremented_links_count()?;
     if new_links == 0 {
-        ensure_inode_free_is_supported(fs, &target_inode)?;
+        preflight_inode_free(fs, block_dev, entry.ino, &target_inode)?;
     }
     fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
 
@@ -590,7 +607,7 @@ pub fn delete_file<B: BlockIo + crate::runtime::Clock>(
 
     let new_links = target_inode.decremented_links_count()?;
     if new_links == 0 {
-        ensure_inode_free_is_supported(fs, &target_inode)?;
+        preflight_inode_free(fs, block_dev, entry.ino, &target_inode)?;
     }
     fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
     if new_links == 0 {
