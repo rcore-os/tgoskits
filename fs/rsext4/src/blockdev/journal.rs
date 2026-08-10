@@ -4,16 +4,18 @@ use alloc::{boxed::Box, vec::Vec};
 
 use log::{error, trace, warn};
 
-use super::{cached_device::BlockDev, traits::BlockDevice};
+use super::cached_device::BlockDev;
 use crate::{
     bmalloc::AbsoluteBN,
     config::{BLOCK_SIZE, JBD2_BUFFER_MAX},
     disknode::Ext4Timestamp,
     error::{Ext4Error, Ext4Result},
+    io::BlockIo,
     jbd2::{
         jbd2::ReplayStatus,
         jbdstruct::{JBD2DEVSYSTEM, Jbd2Update, JournalSuperBllockS},
     },
+    runtime::Clock,
 };
 
 /// Runtime state of the journal proxy.
@@ -23,7 +25,7 @@ pub enum Jbd2RunState {
 }
 
 /// Block device proxy that optionally routes metadata writes through JBD2.
-pub struct Jbd2Dev<B: BlockDevice> {
+pub struct Jbd2Dev<B: BlockIo> {
     _mode: u8,
     inner: BlockDev<B>,
     journal_use: bool,
@@ -32,7 +34,7 @@ pub struct Jbd2Dev<B: BlockDevice> {
     journal_blocks: Vec<AbsoluteBN>,
 }
 
-impl<B: BlockDevice> Jbd2Dev<B> {
+impl<B: BlockIo> Jbd2Dev<B> {
     fn enqueue_journal_update(
         system: &mut JBD2DEVSYSTEM,
         raw_dev: &mut B,
@@ -320,10 +322,11 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     pub fn block_size(&self) -> u32 {
         self.inner.block_size()
     }
+}
 
-    /// Returns the current timestamp from the underlying device.
-    pub fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
-        self.inner._device().current_time()
+impl<B: BlockIo + Clock> Clock for Jbd2Dev<B> {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
+        self.inner._device().now()
     }
 }
 
@@ -365,7 +368,7 @@ mod tests {
         }
     }
 
-    impl BlockDevice for MemBlockDev {
+    impl BlockIo for MemBlockDev {
         fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
             let start = block_id.as_usize()? * BLOCK_SIZE;
             let end = start + buffer.len();
@@ -383,22 +386,6 @@ mod tests {
             Ok(())
         }
 
-        fn open(&mut self) -> Ext4Result<()> {
-            Ok(())
-        }
-
-        fn close(&mut self) -> Ext4Result<()> {
-            Ok(())
-        }
-
-        fn total_blocks(&self) -> u64 {
-            (self.data.len() / BLOCK_SIZE) as u64
-        }
-
-        fn block_size(&self) -> u32 {
-            BLOCK_SIZE as u32
-        }
-
         fn flush(&mut self) -> Ext4Result<()> {
             if self.fail_flush {
                 Err(Ext4Error::io())
@@ -407,7 +394,25 @@ mod tests {
             }
         }
 
-        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+        fn geometry(&self) -> crate::io::DeviceGeometry {
+            crate::io::DeviceGeometry::new(BLOCK_SIZE as u32, {
+                (self.data.len() / BLOCK_SIZE) as u64
+            })
+        }
+
+        fn capabilities(&self) -> crate::io::DeviceCapabilities {
+            crate::io::DeviceCapabilities {
+                read_only: { false },
+
+                flush: true,
+
+                ..crate::io::DeviceCapabilities::default()
+            }
+        }
+    }
+
+    impl crate::runtime::Clock for MemBlockDev {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
             Ok(Ext4Timestamp::new(0, 0))
         }
     }

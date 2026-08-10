@@ -6,7 +6,7 @@ pub fn lseek(file: &mut OpenFile, location: u64) -> Ext4Result<()> {
     Ok(())
 }
 
-fn refresh_open_file_inode<B: BlockDevice>(
+fn refresh_open_file_inode<B: BlockIo>(
     dev: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     file: &mut OpenFile,
@@ -20,7 +20,7 @@ fn refresh_open_file_inode<B: BlockDevice>(
 }
 
 /// Open a file by path.
-pub fn open<B: BlockDevice>(
+pub fn open<B: BlockIo + crate::runtime::Clock>(
     dev: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -58,7 +58,7 @@ pub fn open<B: BlockDevice>(
 }
 
 /// Writes data at the current file offset.
-pub fn write_at<B: BlockDevice>(
+pub fn write_at<B: BlockIo + crate::runtime::Clock>(
     dev: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     file: &mut OpenFile,
@@ -80,7 +80,7 @@ pub fn write_at<B: BlockDevice>(
 }
 
 /// Read a whole file into memory.
-pub fn read<B: BlockDevice>(
+pub fn read<B: BlockIo + crate::runtime::Clock>(
     dev: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -92,7 +92,7 @@ pub fn read<B: BlockDevice>(
 ///
 /// The helper refreshes the inode view, clamps the request to EOF, resolves the
 /// mapped extent blocks, and returns zero-filled data for sparse holes.
-pub fn read_at<B: BlockDevice>(
+pub fn read_at<B: BlockIo + crate::runtime::Clock>(
     dev: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     file: &mut OpenFile,

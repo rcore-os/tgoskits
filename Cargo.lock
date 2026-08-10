@@ -7024,7 +7024,7 @@ dependencies = [
 
 [[package]]
 name = "rsext4"
-version = "0.7.8"
+version = "0.8.0"
 dependencies = [
  "axtest",
  "bitflags 2.13.1",

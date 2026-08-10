@@ -36,7 +36,7 @@ impl FileBlockDevice {
     }
 }
 
-impl BlockDevice for FileBlockDevice {
+impl BlockIo for FileBlockDevice {
     fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
         let required = self.block_size as usize * count as usize;
         if buffer.len() < required {
@@ -65,27 +65,27 @@ impl BlockDevice for FileBlockDevice {
             .map_err(|_| Ext4Error::io())
     }
 
-    fn open(&mut self) -> Ext4Result<()> {
-        Ok(())
-    }
-
-    fn close(&mut self) -> Ext4Result<()> {
-        self.flush()
-    }
-
     fn flush(&mut self) -> Ext4Result<()> {
         self.file.sync_all().map_err(|_| Ext4Error::io())
     }
 
-    fn total_blocks(&self) -> u64 {
-        self.total_blocks
+    fn geometry(&self) -> rsext4::DeviceGeometry {
+        rsext4::DeviceGeometry::new(self.block_size, self.total_blocks)
     }
 
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
+    fn capabilities(&self) -> rsext4::DeviceCapabilities {
+        rsext4::DeviceCapabilities {
+            read_only: { false },
 
-    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+            flush: true,
+
+            ..rsext4::DeviceCapabilities::default()
+        }
+    }
+}
+
+impl rsext4::Clock for FileBlockDevice {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
         let sec = self.now.get();
         self.now.set(sec + 1);
         Ok(Ext4Timestamp::new(sec, 0))

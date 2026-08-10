@@ -2,7 +2,7 @@ use super::{split::SplitInfo, *};
 
 impl<'a> ExtentTree<'a> {
     /// Inserts a new extent into the inode's extent tree.
-    pub fn insert_extent<B: BlockDevice>(
+    pub fn insert_extent<B: BlockIo>(
         &mut self,
         fs: &mut Ext4FileSystem,
         new_ext: Ext4Extent,
@@ -121,7 +121,7 @@ impl<'a> ExtentTree<'a> {
     /// Recursive insert worker.
     ///
     /// `phy_block == None` means the current node is the inline inode root.
-    fn insert_recursive<B: BlockDevice>(
+    fn insert_recursive<B: BlockIo>(
         &mut self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,

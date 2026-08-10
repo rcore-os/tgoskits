@@ -8,7 +8,7 @@ use std::{
 };
 
 use rsext4::{
-    BLOCK_SIZE, BlockDevice, Ext4Error, Ext4Result, Ext4Timestamp, Jbd2Dev, bmalloc::AbsoluteBN,
+    BLOCK_SIZE, BlockIo, Ext4Error, Ext4Result, Ext4Timestamp, Jbd2Dev, bmalloc::AbsoluteBN,
     mkfile, mkfs, mount, read_file, umount, write_file,
 };
 
@@ -31,10 +31,10 @@ impl MemoryDevice {
     }
 }
 
-impl BlockDevice for MemoryDevice {
+impl BlockIo for MemoryDevice {
     fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
         let start = block_id.as_usize()? * BLOCK_SIZE;
-        let total_blocks = self.total_blocks();
+        let total_blocks = self.geometry().block_count;
         let end = start
             .checked_add(buffer.len())
             .ok_or_else(Ext4Error::invalid_input)?;
@@ -47,7 +47,7 @@ impl BlockDevice for MemoryDevice {
 
     fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
         let start = block_id.as_usize()? * BLOCK_SIZE;
-        let total_blocks = self.total_blocks();
+        let total_blocks = self.geometry().block_count;
         let end = start
             .checked_add(buffer.len())
             .ok_or_else(Ext4Error::invalid_input)?;
@@ -58,28 +58,30 @@ impl BlockDevice for MemoryDevice {
         Ok(())
     }
 
-    fn open(&mut self) -> Ext4Result<()> {
-        Ok(())
-    }
-
-    fn close(&mut self) -> Ext4Result<()> {
-        Ok(())
-    }
-
-    fn total_blocks(&self) -> u64 {
-        (self.bytes.len() / BLOCK_SIZE) as u64
-    }
-
-    fn block_size(&self) -> u32 {
-        BLOCK_SIZE as u32
-    }
-
     fn flush(&mut self) -> Ext4Result<()> {
         black_box(&self.bytes);
         Ok(())
     }
 
-    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+    fn geometry(&self) -> rsext4::DeviceGeometry {
+        rsext4::DeviceGeometry::new(BLOCK_SIZE as u32, {
+            (self.bytes.len() / BLOCK_SIZE) as u64
+        })
+    }
+
+    fn capabilities(&self) -> rsext4::DeviceCapabilities {
+        rsext4::DeviceCapabilities {
+            read_only: { false },
+
+            flush: true,
+
+            ..rsext4::DeviceCapabilities::default()
+        }
+    }
+}
+
+impl rsext4::Clock for MemoryDevice {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
         let seconds = self.now.get();
         self.now.set(seconds + 1);
         Ok(Ext4Timestamp::new(seconds, 0))

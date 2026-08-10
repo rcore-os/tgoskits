@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 pub use fs::*;
 pub use inode::*;
 use rsext4::{
-    BlockDevice,
+    BlockIo, DeviceCapabilities, DeviceGeometry,
     bmalloc::AbsoluteBN,
     config::BLOCK_SIZE,
     disknode::Ext4Timestamp,
@@ -24,7 +24,7 @@ impl Ext4Disk {
     }
 }
 
-impl BlockDevice for Ext4Disk {
+impl BlockIo for Ext4Disk {
     fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
         let dev_block = self.0.block_size();
         if !BLOCK_SIZE.is_multiple_of(dev_block) {
@@ -57,29 +57,33 @@ impl BlockDevice for Ext4Disk {
             .map_err(|_| Ext4Error::io())
     }
 
-    fn open(&mut self) -> Ext4Result<()> {
-        Ok(())
+    fn geometry(&self) -> DeviceGeometry {
+        let device_bytes = self
+            .0
+            .num_blocks()
+            .saturating_mul(self.0.block_size() as u64);
+        DeviceGeometry::new(BLOCK_SIZE as u32, device_bytes / BLOCK_SIZE as u64)
     }
 
-    fn close(&mut self) -> Ext4Result<()> {
-        self.flush()
-    }
-
-    fn total_blocks(&self) -> u64 {
-        let dev_block = self.0.block_size() as u64;
-        let total_bytes = self.0.num_blocks().saturating_mul(dev_block);
-        total_bytes / BLOCK_SIZE as u64
-    }
-
-    fn block_size(&self) -> u32 {
-        BLOCK_SIZE as u32
+    fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities {
+            flush: true,
+            barrier: true,
+            ..DeviceCapabilities::default()
+        }
     }
 
     fn flush(&mut self) -> Ext4Result<()> {
         self.0.flush().map_err(|_| Ext4Error::io())
     }
 
-    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+    fn barrier(&mut self) -> Ext4Result<()> {
+        self.flush()
+    }
+}
+
+impl rsext4::Clock for Ext4Disk {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
         let dur = crate::os::wall_time();
         Ok(Ext4Timestamp::new(dur.as_secs() as i64, dur.subsec_nanos()))
     }

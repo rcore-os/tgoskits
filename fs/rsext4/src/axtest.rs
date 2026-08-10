@@ -647,7 +647,7 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
         BLOCK_SIZE, Errno, Ext4Error,
         api::OpenFile,
         bitmap::bitmap_utils::set_bit,
-        blockdev::{BlockBuffer, BlockDevice},
+        blockdev::{BlockBuffer, BlockIo},
         blockgroup_description::{BlockGroupDescTable, BlockGroupDescTableMut, Ext4GroupDesc},
         bmalloc::{AbsoluteBN, BGIndex, InodeNumber, RelativeBN, RelativeInodeIndex},
         disknode::{Ext4Inode, Ext4Timestamp},
@@ -822,7 +822,7 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
     ax_assert_eq!(file.offset, 1234);
 
     struct ReadonlyDevice;
-    impl BlockDevice for ReadonlyDevice {
+    impl BlockIo for ReadonlyDevice {
         fn write(
             &mut self,
             _buffer: &[u8],
@@ -842,32 +842,33 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
             Ok(())
         }
 
-        fn open(&mut self) -> rsext4::Ext4Result<()> {
+        fn geometry(&self) -> crate::io::DeviceGeometry {
+            crate::io::DeviceGeometry::new({ 512 }, { 99 })
+        }
+
+        fn capabilities(&self) -> crate::io::DeviceCapabilities {
+            crate::io::DeviceCapabilities {
+                read_only: { true },
+                flush: true,
+                ..crate::io::DeviceCapabilities::default()
+            }
+        }
+
+        fn flush(&mut self) -> crate::Ext4Result<()> {
             Ok(())
         }
+    }
 
-        fn close(&mut self) -> rsext4::Ext4Result<()> {
-            Ok(())
-        }
-
-        fn total_blocks(&self) -> u64 {
-            99
-        }
-
-        fn current_time(&self) -> rsext4::Ext4Result<Ext4Timestamp> {
+    impl crate::runtime::Clock for ReadonlyDevice {
+        fn now(&self) -> rsext4::Ext4Result<Ext4Timestamp> {
             Ok(Ext4Timestamp::new(12, 34))
-        }
-
-        fn is_readonly(&self) -> bool {
-            true
         }
     }
 
     let mut dev = ReadonlyDevice;
-    ax_assert_eq!(dev.block_size(), 512);
-    ax_assert!(dev.is_open());
-    ax_assert!(dev.is_readonly());
-    ax_assert_eq!(dev.total_blocks(), 99);
+    ax_assert_eq!(dev.geometry().logical_block_size, 512);
+    ax_assert!(dev.capabilities().read_only);
+    ax_assert_eq!(dev.geometry().block_count, 99);
     dev.flush().unwrap();
     let mut buf = [0_u8; 4];
     dev.read(&mut buf, AbsoluteBN::new(0), 1).unwrap();
@@ -876,7 +877,7 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
         dev.write(&buf, AbsoluteBN::new(0), 1).unwrap_err().code,
         Errno::EROFS
     );
-    ax_assert_eq!(dev.current_time().unwrap(), Ext4Timestamp::new(12, 34));
+    ax_assert_eq!(dev.now().unwrap(), Ext4Timestamp::new(12, 34));
 
     let mut bitmap = [0_u8; 2];
     ax_assert!(set_bit(&mut bitmap, 15));
@@ -888,7 +889,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
     use core::cell::Cell;
 
     use rsext4::{
-        BLOCK_SIZE, BlockDevice, Ext4Result, Jbd2Dev, bmalloc::AbsoluteBN, disknode::Ext4Timestamp,
+        BLOCK_SIZE, BlockIo, Ext4Result, Jbd2Dev, bmalloc::AbsoluteBN, disknode::Ext4Timestamp,
         jbd2::jbdstruct::JournalSuperBllockS,
     };
 
@@ -916,7 +917,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
         }
     }
 
-    impl BlockDevice for JournalMemoryDevice {
+    impl BlockIo for JournalMemoryDevice {
         fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
@@ -927,7 +928,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
             if end > self.blocks.len() {
                 return Err(rsext4::Ext4Error::block_out_of_range(
                     block_id.raw().min(u64::from(u32::MAX)) as u32,
-                    self.total_blocks(),
+                    self.geometry().block_count,
                 ));
             }
             self.blocks[start..end].copy_from_slice(&buffer[..required]);
@@ -944,37 +945,39 @@ fn rsext4_journal_device_overlay_rules_hold() {
             if end > self.blocks.len() {
                 return Err(rsext4::Ext4Error::block_out_of_range(
                     block_id.raw().min(u64::from(u32::MAX)) as u32,
-                    self.total_blocks(),
+                    self.geometry().block_count,
                 ));
             }
             buffer[..required].copy_from_slice(&self.blocks[start..end]);
             Ok(())
         }
 
-        fn open(&mut self) -> Ext4Result<()> {
+        fn geometry(&self) -> crate::io::DeviceGeometry {
+            crate::io::DeviceGeometry::new({ BLOCK_SIZE as u32 }, {
+                (self.blocks.len() / BLOCK_SIZE) as u64
+            })
+        }
+
+        fn capabilities(&self) -> crate::io::DeviceCapabilities {
+            crate::io::DeviceCapabilities {
+                read_only: { self.readonly },
+
+                flush: true,
+
+                ..crate::io::DeviceCapabilities::default()
+            }
+        }
+
+        fn flush(&mut self) -> crate::Ext4Result<()> {
             Ok(())
         }
+    }
 
-        fn close(&mut self) -> Ext4Result<()> {
-            Ok(())
-        }
-
-        fn total_blocks(&self) -> u64 {
-            (self.blocks.len() / BLOCK_SIZE) as u64
-        }
-
-        fn block_size(&self) -> u32 {
-            BLOCK_SIZE as u32
-        }
-
-        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+    impl crate::runtime::Clock for JournalMemoryDevice {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
             let sec = self.now.get();
             self.now.set(sec + 1);
             Ok(Ext4Timestamp::new(sec, 0))
-        }
-
-        fn is_readonly(&self) -> bool {
-            self.readonly
         }
     }
 
@@ -984,10 +987,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
     dev.journal_replay();
     ax_assert_eq!(dev.total_blocks(), 32);
     ax_assert_eq!(dev.block_size(), BLOCK_SIZE as u32);
-    ax_assert_eq!(
-        dev.current_time().unwrap(),
-        Ext4Timestamp::new(1_900_000_000, 0)
-    );
+    ax_assert_eq!(dev.now().unwrap(), Ext4Timestamp::new(1_900_000_000, 0));
 
     dev.read_block(AbsoluteBN::new(1)).unwrap();
     dev.buffer_mut()[0] = 0x11;
@@ -1050,7 +1050,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
     );
     dev.flush().unwrap();
     let inner = dev.into_inner();
-    ax_assert_eq!(inner.total_blocks(), 32);
+    ax_assert_eq!(inner.geometry().block_count, 32);
 
     let mut readonly_dev = Jbd2Dev::initial_jbd2dev(0, JournalMemoryDevice::new_readonly(8), false);
     readonly_dev.read_block(AbsoluteBN::new(1)).unwrap();
@@ -1672,7 +1672,7 @@ fn rsext4_blockgroup_table_and_stats_rules_hold() {
 #[axtest]
 fn rsext4_extent_tree_lookup_and_run_rules_hold() {
     use rsext4::{
-        BLOCK_SIZE, BlockDevice, Ext4Result, Jbd2Dev,
+        BLOCK_SIZE, BlockIo, Ext4Result, Jbd2Dev,
         bmalloc::AbsoluteBN,
         disknode::{Ext4Extent, Ext4ExtentHeader, Ext4ExtentIdx, Ext4Inode, Ext4Timestamp},
         endian::DiskFormat,
@@ -1692,7 +1692,7 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
         }
     }
 
-    impl BlockDevice for MemoryBlockDevice {
+    impl BlockIo for MemoryBlockDevice {
         fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
@@ -1703,7 +1703,7 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
             if end > self.blocks.len() {
                 return Err(rsext4::Ext4Error::block_out_of_range(
                     block_id.raw().min(u64::from(u32::MAX)) as u32,
-                    self.total_blocks(),
+                    self.geometry().block_count,
                 ));
             }
             self.blocks[start..end].copy_from_slice(&buffer[..required]);
@@ -1720,30 +1720,36 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
             if end > self.blocks.len() {
                 return Err(rsext4::Ext4Error::block_out_of_range(
                     block_id.raw().min(u64::from(u32::MAX)) as u32,
-                    self.total_blocks(),
+                    self.geometry().block_count,
                 ));
             }
             buffer[..required].copy_from_slice(&self.blocks[start..end]);
             Ok(())
         }
 
-        fn open(&mut self) -> Ext4Result<()> {
+        fn geometry(&self) -> crate::io::DeviceGeometry {
+            crate::io::DeviceGeometry::new({ BLOCK_SIZE as u32 }, {
+                (self.blocks.len() / BLOCK_SIZE) as u64
+            })
+        }
+
+        fn capabilities(&self) -> crate::io::DeviceCapabilities {
+            crate::io::DeviceCapabilities {
+                read_only: { false },
+
+                flush: true,
+
+                ..crate::io::DeviceCapabilities::default()
+            }
+        }
+
+        fn flush(&mut self) -> crate::Ext4Result<()> {
             Ok(())
         }
+    }
 
-        fn close(&mut self) -> Ext4Result<()> {
-            Ok(())
-        }
-
-        fn total_blocks(&self) -> u64 {
-            (self.blocks.len() / BLOCK_SIZE) as u64
-        }
-
-        fn block_size(&self) -> u32 {
-            BLOCK_SIZE as u32
-        }
-
-        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+    impl crate::runtime::Clock for MemoryBlockDevice {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
             Ok(Ext4Timestamp::new(42, 0))
         }
     }
@@ -2075,7 +2081,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     use core::cell::Cell;
 
     use rsext4::{
-        BLOCK_SIZE, BlockDevice, Errno, Ext4Result, Jbd2Dev,
+        BLOCK_SIZE, BlockIo, Errno, Ext4Result, Jbd2Dev,
         bmalloc::AbsoluteBN,
         create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file,
         dir::get_inode_with_num,
@@ -2111,7 +2117,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         }
     }
 
-    impl BlockDevice for MemoryBlockDevice {
+    impl BlockIo for MemoryBlockDevice {
         fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
@@ -2133,37 +2139,39 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             if end > self.blocks.len() {
                 return Err(rsext4::Ext4Error::block_out_of_range(
                     block_id.raw().min(u64::from(u32::MAX)) as u32,
-                    self.total_blocks(),
+                    self.geometry().block_count,
                 ));
             }
             buffer[..required].copy_from_slice(&self.blocks[start..end]);
             Ok(())
         }
 
-        fn open(&mut self) -> Ext4Result<()> {
+        fn geometry(&self) -> crate::io::DeviceGeometry {
+            crate::io::DeviceGeometry::new({ BLOCK_SIZE as u32 }, {
+                (self.blocks.len() / BLOCK_SIZE) as u64
+            })
+        }
+
+        fn capabilities(&self) -> crate::io::DeviceCapabilities {
+            crate::io::DeviceCapabilities {
+                read_only: { self.readonly },
+
+                flush: true,
+
+                ..crate::io::DeviceCapabilities::default()
+            }
+        }
+
+        fn flush(&mut self) -> crate::Ext4Result<()> {
             Ok(())
         }
+    }
 
-        fn close(&mut self) -> Ext4Result<()> {
-            Ok(())
-        }
-
-        fn total_blocks(&self) -> u64 {
-            (self.blocks.len() / BLOCK_SIZE) as u64
-        }
-
-        fn block_size(&self) -> u32 {
-            BLOCK_SIZE as u32
-        }
-
-        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+    impl crate::runtime::Clock for MemoryBlockDevice {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
             let sec = self.now.get();
             self.now.set(sec + 1);
             Ok(Ext4Timestamp::new(sec, 0))
-        }
-
-        fn is_readonly(&self) -> bool {
-            self.readonly
         }
     }
 

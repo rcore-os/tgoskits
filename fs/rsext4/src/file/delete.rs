@@ -7,7 +7,7 @@ pub(crate) struct ParentDirEntry {
     pub file_type: u8,
 }
 
-pub fn free_inode<B: BlockDevice>(
+pub fn free_inode<B: BlockIo + crate::runtime::Clock>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
@@ -49,7 +49,7 @@ pub fn free_inode<B: BlockDevice>(
 }
 
 /// Remove a non-directory link from its parent directory.
-pub fn unlink<B: BlockDevice>(
+pub fn unlink<B: BlockIo + crate::runtime::Clock>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     link_path: &str,
@@ -202,7 +202,7 @@ fn remove_dentry_in_dir_block(
     false
 }
 
-fn try_remove_dentry_in_block<B: BlockDevice>(
+fn try_remove_dentry_in_block<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     parent_ino_num: InodeNumber,
@@ -219,7 +219,7 @@ fn try_remove_dentry_in_block<B: BlockDevice>(
     Ok(removed)
 }
 
-fn parent_dir_data_blocks<B: BlockDevice>(
+fn parent_dir_data_blocks<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     parent_inode: &mut Ext4Inode,
@@ -251,7 +251,7 @@ fn parent_dir_data_blocks<B: BlockDevice>(
 }
 
 /// Finds a child name in `parent_inode` with one directory scan (htree or linear).
-pub(crate) fn find_named_entry_in_parent<B: BlockDevice>(
+pub(crate) fn find_named_entry_in_parent<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     _parent_ino: InodeNumber,
@@ -296,7 +296,7 @@ pub(crate) fn find_named_entry_in_parent<B: BlockDevice>(
 }
 
 /// Removes a dentry on a block returned by [`find_named_entry_in_parent`].
-pub(crate) fn remove_named_entry_at<B: BlockDevice>(
+pub(crate) fn remove_named_entry_at<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     parent_ino: InodeNumber,
@@ -311,7 +311,7 @@ pub(crate) fn remove_named_entry_at<B: BlockDevice>(
     }
 }
 
-pub fn remove_inodeentry_from_parentdir<B: BlockDevice>(
+pub fn remove_inodeentry_from_parentdir<B: BlockIo + crate::runtime::Clock>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     parent_path: &str,
@@ -346,7 +346,7 @@ pub fn remove_inodeentry_from_parentdir<B: BlockDevice>(
 }
 
 /// Remove a directory tree.
-pub fn delete_dir<B: BlockDevice>(
+pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     path: &str,
@@ -541,7 +541,7 @@ pub fn delete_dir<B: BlockDevice>(
 /// Check whether a directory inode is empty (contains only `.` and `..`).
 ///
 /// Returns `Ok(true)` if the directory has no real children, `Ok(false)` otherwise.
-pub fn is_dir_empty<B: BlockDevice>(
+pub fn is_dir_empty<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
@@ -561,7 +561,7 @@ pub fn is_dir_empty<B: BlockDevice>(
 }
 
 /// Remove a non-directory inode from its parent directory.
-pub fn delete_file<B: BlockDevice>(
+pub fn delete_file<B: BlockIo + crate::runtime::Clock>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     path: &str,

@@ -279,7 +279,7 @@ impl JBD2DEVSYSTEM {
         Some(blocks)
     }
 
-    fn write_journal_superblock_with_mapping<B: BlockDevice>(
+    fn write_journal_superblock_with_mapping<B: BlockIo>(
         &mut self,
         block_dev: &mut B,
         journal_blocks: &[AbsoluteBN],
@@ -294,15 +294,12 @@ impl JBD2DEVSYSTEM {
     }
 
     /// Returns the next writable journal block, handling wrap-around.
-    pub fn set_next_log_block<B: BlockDevice>(
-        &mut self,
-        block_dev: &mut B,
-    ) -> Ext4Result<AbsoluteBN> {
+    pub fn set_next_log_block<B: BlockIo>(&mut self, block_dev: &mut B) -> Ext4Result<AbsoluteBN> {
         self.set_next_log_block_with_mapping(block_dev, &[])
     }
 
     /// Returns the next writable journal block using the journal inode mapping.
-    pub(crate) fn set_next_log_block_with_mapping<B: BlockDevice>(
+    pub(crate) fn set_next_log_block_with_mapping<B: BlockIo>(
         &mut self,
         block_dev: &mut B,
         journal_blocks: &[AbsoluteBN],
@@ -352,12 +349,12 @@ impl JBD2DEVSYSTEM {
         }
     }
     /// Commits the currently queued metadata updates as one transaction.
-    pub fn commit_transaction<B: BlockDevice>(&mut self, block_dev: &mut B) -> Ext4Result<bool> {
+    pub fn commit_transaction<B: BlockIo>(&mut self, block_dev: &mut B) -> Ext4Result<bool> {
         self.commit_transaction_with_mapping(block_dev, &[])
     }
 
     /// Commits the currently queued metadata updates using the journal inode mapping.
-    pub(crate) fn commit_transaction_with_mapping<B: BlockDevice>(
+    pub(crate) fn commit_transaction_with_mapping<B: BlockIo>(
         &mut self,
         block_dev: &mut B,
         journal_blocks: &[AbsoluteBN],
@@ -512,7 +509,7 @@ impl JBD2DEVSYSTEM {
         Ok(true)
     }
 
-    fn replay_one_transaction<B: BlockDevice>(
+    fn replay_one_transaction<B: BlockIo>(
         &self,
         block_dev: &mut B,
         ring: &ReplayRing<'_>,
@@ -735,7 +732,7 @@ impl JBD2DEVSYSTEM {
     }
 
     /// Replays committed transactions using the journal inode logical-block map.
-    pub(crate) fn replay_with_mapping<B: BlockDevice>(
+    pub(crate) fn replay_with_mapping<B: BlockIo>(
         &mut self,
         block_dev: &mut B,
         journal_blocks: &[AbsoluteBN],
@@ -869,7 +866,7 @@ impl JBD2DEVSYSTEM {
 }
 
 /// Debug helper that dumps the journal inode and journal superblock.
-pub fn dump_journal_inode<B: BlockDevice>(fs: &mut Ext4FileSystem, block_dev: &mut Jbd2Dev<B>) {
+pub fn dump_journal_inode<B: BlockIo>(fs: &mut Ext4FileSystem, block_dev: &mut Jbd2Dev<B>) {
     let journal_ino = InodeNumber::new(8).expect("valid journal inode number");
     let mut indo = fs
         .get_inode_by_num(block_dev, journal_ino)
@@ -889,7 +886,7 @@ pub fn dump_journal_inode<B: BlockDevice>(fs: &mut Ext4FileSystem, block_dev: &m
 }
 
 /// Creates the journal inode and writes its initial journal superblock.
-pub fn create_journal_entry<B: BlockDevice>(
+pub fn create_journal_entry<B: BlockIo + crate::runtime::Clock>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
 ) -> Ext4Result<()> {

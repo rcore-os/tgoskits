@@ -3,8 +3,8 @@
 mod buffer;
 mod cached_device;
 mod journal;
-mod traits;
 
 pub use buffer::BlockBuffer;
 pub use journal::{Jbd2Dev, Jbd2RunState};
-pub use traits::{BlockDevice, INeedBlockdevToWrite};
+
+pub use crate::io::BlockIo;

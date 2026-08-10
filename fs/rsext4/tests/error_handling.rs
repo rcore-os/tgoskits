@@ -16,8 +16,6 @@ struct ErrorMockDevice {
     data: Vec<u8>,
     block_size: u32,
     // Failure injection toggles.
-    fail_on_open: bool,
-    fail_on_close: bool,
     fail_on_read: bool,
     fail_on_write: bool,
     fail_on_specific_block: Option<AbsoluteBN>,
@@ -31,8 +29,6 @@ impl ErrorMockDevice {
         Self {
             data: vec![0; size],
             block_size: rsext4::BLOCK_SIZE as u32,
-            fail_on_open: false,
-            fail_on_close: false,
             fail_on_read: false,
             fail_on_write: false,
             fail_on_specific_block: None,
@@ -43,7 +39,7 @@ impl ErrorMockDevice {
     }
 }
 
-impl BlockDevice for ErrorMockDevice {
+impl BlockIo for ErrorMockDevice {
     fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
         if self.fail_on_read {
             return Err(Ext4Error::io());
@@ -97,29 +93,29 @@ impl BlockDevice for ErrorMockDevice {
         Ok(())
     }
 
-    fn open(&mut self) -> Ext4Result<()> {
-        if self.fail_on_open {
-            return Err(Ext4Error::badf());
+    fn geometry(&self) -> rsext4::DeviceGeometry {
+        rsext4::DeviceGeometry::new(self.block_size, {
+            (self.data.len() / self.block_size as usize) as u64
+        })
+    }
+
+    fn capabilities(&self) -> rsext4::DeviceCapabilities {
+        rsext4::DeviceCapabilities {
+            read_only: { false },
+
+            flush: true,
+
+            ..rsext4::DeviceCapabilities::default()
         }
+    }
+
+    fn flush(&mut self) -> rsext4::Ext4Result<()> {
         Ok(())
     }
+}
 
-    fn close(&mut self) -> Ext4Result<()> {
-        if self.fail_on_close {
-            return Err(Ext4Error::badf());
-        }
-        Ok(())
-    }
-
-    fn total_blocks(&self) -> u64 {
-        (self.data.len() / self.block_size as usize) as u64
-    }
-
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
-
-    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+impl rsext4::Clock for ErrorMockDevice {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
         let sec = self.now.get();
         self.now.set(sec + 1);
         Ok(Ext4Timestamp::new(sec, 0))

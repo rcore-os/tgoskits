@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Resolves a logical block number to an absolute physical block number.
-pub fn resolve_inode_block<B: BlockDevice>(
+pub fn resolve_inode_block<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
     logical_block: u32,
@@ -55,7 +55,7 @@ pub fn resolve_inode_block<B: BlockDevice>(
 ///
 /// The helper walks the entire extent tree, materializes every mapped block,
 /// and returns the final map sorted by logical block number.
-pub fn resolve_inode_blocks<B: BlockDevice>(
+pub fn resolve_inode_blocks<B: BlockIo>(
     _fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
@@ -79,7 +79,7 @@ pub fn resolve_inode_blocks<B: BlockDevice>(
         }
     }
 
-    fn walk_node<B: BlockDevice>(
+    fn walk_node<B: BlockIo>(
         dev: &mut Jbd2Dev<B>,
         node: &ExtentNode,
         out: &mut Vec<(u32, AbsoluteBN)>,
@@ -124,7 +124,7 @@ pub fn resolve_inode_blocks<B: BlockDevice>(
 }
 
 /// Builds a logical-block map using the original misspelled API name.
-pub fn resolve_inode_block_allextend<B: BlockDevice>(
+pub fn resolve_inode_block_allextend<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
@@ -136,7 +136,7 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
 ///
 /// The path walk tries hash-tree lookup first for each component and falls back
 /// to a linear directory scan when the indexed lookup cannot answer the query.
-pub fn get_file_inode<B: BlockDevice>(
+pub fn get_file_inode<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     path: &str,

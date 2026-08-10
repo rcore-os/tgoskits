@@ -71,7 +71,7 @@ impl DataBlockCache {
     }
 
     /// Loads one block from disk using a caller-provided buffer.
-    fn load_block<B: BlockDevice>(
+    fn load_block<B: BlockIo>(
         &self,
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
@@ -82,7 +82,7 @@ impl DataBlockCache {
     }
 
     /// Returns a cached block, loading it from disk on demand.
-    pub fn get_or_load<B: BlockDevice>(
+    pub fn get_or_load<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
@@ -95,7 +95,7 @@ impl DataBlockCache {
             .ok_or(Ext4Error::corrupted())
     }
 
-    fn ensure_loaded<B: BlockDevice>(
+    fn ensure_loaded<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
@@ -113,7 +113,7 @@ impl DataBlockCache {
         Ok(())
     }
 
-    fn evict_lru_if_full<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+    fn evict_lru_if_full<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         if self.cache.len() < self.max_entries {
             return Ok(());
         }
@@ -157,7 +157,7 @@ impl DataBlockCache {
         }
     }
 
-    fn write_back_if_dirty<B: BlockDevice>(
+    fn write_back_if_dirty<B: BlockIo>(
         &self,
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
@@ -183,7 +183,7 @@ impl DataBlockCache {
     }
 
     /// Creates a brand-new cached block and marks it dirty.
-    pub fn create_new<B: BlockDevice>(
+    pub fn create_new<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
@@ -225,7 +225,7 @@ impl DataBlockCache {
         f: F,
     ) -> Ext4Result<()>
     where
-        B: BlockDevice,
+        B: BlockIo,
         F: FnOnce(&mut [u8]),
     {
         self.ensure_loaded(block_dev, block_num)?;
@@ -260,7 +260,7 @@ impl DataBlockCache {
         f: F,
     ) -> Ext4Result<()>
     where
-        B: BlockDevice,
+        B: BlockIo,
         F: FnOnce(&mut [u8]),
     {
         self.create_new(block_dev, block_num)?;
@@ -269,7 +269,7 @@ impl DataBlockCache {
 
     /// Writes a contiguous initialized data-block run directly and refreshes
     /// any cached entries that overlap the run.
-    pub fn write_run<B: BlockDevice>(
+    pub fn write_run<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         start_block: AbsoluteBN,
@@ -313,7 +313,7 @@ impl DataBlockCache {
     /// Reads a contiguous initialized data-block run and overlays any cached
     /// entries that overlap the run. Dirty cache entries therefore remain the
     /// source of truth even when the disk still contains older data.
-    pub fn read_run<B: BlockDevice>(
+    pub fn read_run<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         start_block: AbsoluteBN,
@@ -348,7 +348,7 @@ impl DataBlockCache {
 
     /// Evicts one cached block. A failed dirty writeback keeps the entry dirty
     /// and resident so the caller can retry without losing data.
-    pub fn evict<B: BlockDevice>(
+    pub fn evict<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
@@ -360,7 +360,7 @@ impl DataBlockCache {
     }
 
     /// Flushes all dirty cached blocks to disk.
-    pub fn flush_all<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+    pub fn flush_all<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         let dirty_blocks = self.dirty_blocks_for_flush();
         if dirty_blocks.is_empty() {
             return Ok(());
@@ -379,7 +379,7 @@ impl DataBlockCache {
     }
 
     /// Flushes one cached block to disk.
-    pub fn flush<B: BlockDevice>(
+    pub fn flush<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
@@ -438,7 +438,7 @@ impl DataBlockCache {
     }
 
     /// Writes one block to disk.
-    fn write_block_static<B: BlockDevice>(
+    fn write_block_static<B: BlockIo>(
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
         data: &[u8],
@@ -452,7 +452,7 @@ impl DataBlockCache {
         Ok(())
     }
 
-    fn write_dirty_runs<B: BlockDevice>(
+    fn write_dirty_runs<B: BlockIo>(
         block_dev: &mut Jbd2Dev<B>,
         dirty_blocks: &[(AbsoluteBN, u64, Vec<u8>)],
         block_size: usize,
@@ -521,7 +521,7 @@ mod tests {
         }
     }
 
-    impl BlockDevice for TestBlockDevice {
+    impl BlockIo for TestBlockDevice {
         fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
             let start = block_id.as_usize()? * BLOCK_SIZE;
             let end = start + buffer.len();
@@ -539,23 +539,29 @@ mod tests {
             Ok(())
         }
 
-        fn open(&mut self) -> Ext4Result<()> {
+        fn geometry(&self) -> crate::io::DeviceGeometry {
+            crate::io::DeviceGeometry::new(BLOCK_SIZE as u32, {
+                (self.data.len() / BLOCK_SIZE) as u64
+            })
+        }
+
+        fn capabilities(&self) -> crate::io::DeviceCapabilities {
+            crate::io::DeviceCapabilities {
+                read_only: { false },
+
+                flush: true,
+
+                ..crate::io::DeviceCapabilities::default()
+            }
+        }
+
+        fn flush(&mut self) -> crate::Ext4Result<()> {
             Ok(())
         }
+    }
 
-        fn close(&mut self) -> Ext4Result<()> {
-            Ok(())
-        }
-
-        fn total_blocks(&self) -> u64 {
-            (self.data.len() / BLOCK_SIZE) as u64
-        }
-
-        fn block_size(&self) -> u32 {
-            BLOCK_SIZE as u32
-        }
-
-        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+    impl crate::runtime::Clock for TestBlockDevice {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
             Ok(Ext4Timestamp::new(0, 0))
         }
     }

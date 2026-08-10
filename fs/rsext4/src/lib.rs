@@ -18,7 +18,7 @@ extern crate std;
 // Re-export shared configuration constants for external callers.
 // Re-export the most frequently used public APIs.
 pub use api::{lseek, open, read_at, write_at};
-pub use blockdev::{BlockDevice, Jbd2Dev};
+pub use blockdev::Jbd2Dev;
 pub use config::{
     BITMAP_CACHE_MAX, BLOCK_SIZE, BLOCK_SIZE_U32, DATABLOCK_CACHE_MAX, DEFAULT_FEATURE_COMPAT,
     DEFAULT_FEATURE_INCOMPAT, DEFAULT_FEATURE_RO_COMPAT, DEFAULT_INODE_SIZE, DIRNAME_LEN,
@@ -37,7 +37,12 @@ pub use file::{
     remove_inodeentry_from_parentdir, rename, truncate, truncate_inode, unlink, write_file,
     write_inode_data,
 };
+pub use io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, WriteFlags};
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};
+pub use runtime::{
+    Clock, CryptoOperation, CryptoProvider, DigestAlgorithm, EncryptionAlgorithm, EntropySource,
+    Event, KeyDescriptor, KeyProvider, KeyPurpose, MountServices, NoopObserver, Observer,
+};
 
 pub mod api;
 #[cfg(all(axtest, feature = "axtest"))]
@@ -60,8 +65,10 @@ pub mod ext4;
 pub mod extents_tree;
 pub mod file;
 pub mod hashtree;
+pub mod io;
 pub mod jbd2;
 pub mod loopfile;
 pub mod metadata;
+pub mod runtime;
 pub mod superblock;
 pub mod tool;

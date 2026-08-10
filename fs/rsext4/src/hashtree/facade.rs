@@ -2,7 +2,7 @@
 
 use super::{HashTreeError, HashTreeManager, HashTreeSearchResult};
 use crate::{
-    blockdev::{BlockDevice, Jbd2Dev},
+    blockdev::{BlockIo, Jbd2Dev},
     disknode::Ext4Inode,
     ext4::Ext4FileSystem,
 };
@@ -17,7 +17,7 @@ pub fn create_hash_tree_manager(fs: &Ext4FileSystem) -> HashTreeManager {
 }
 
 /// Looks up a directory entry through the hash tree path.
-pub fn lookup_directory_entry<B: BlockDevice>(
+pub fn lookup_directory_entry<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     dir_inode: &Ext4Inode,

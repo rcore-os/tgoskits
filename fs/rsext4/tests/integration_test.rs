@@ -16,7 +16,6 @@ use rsext4::{
 struct TestBlockDevice {
     data: Vec<u8>,
     block_size: u32,
-    is_open: bool,
     now: Cell<i64>,
 }
 
@@ -25,13 +24,12 @@ impl TestBlockDevice {
         Self {
             data: vec![0; size],
             block_size: rsext4::BLOCK_SIZE as u32, // Match the ext4 block size used by the crate.
-            is_open: false,
             now: Cell::new(1_700_000_000),
         }
     }
 }
 
-impl BlockDevice for TestBlockDevice {
+impl BlockIo for TestBlockDevice {
     fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
         let start = block_id.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
@@ -58,25 +56,29 @@ impl BlockDevice for TestBlockDevice {
         Ok(())
     }
 
-    fn open(&mut self) -> Ext4Result<()> {
-        self.is_open = true;
+    fn geometry(&self) -> rsext4::DeviceGeometry {
+        rsext4::DeviceGeometry::new(self.block_size, {
+            (self.data.len() / self.block_size as usize) as u64
+        })
+    }
+
+    fn capabilities(&self) -> rsext4::DeviceCapabilities {
+        rsext4::DeviceCapabilities {
+            read_only: { false },
+
+            flush: true,
+
+            ..rsext4::DeviceCapabilities::default()
+        }
+    }
+
+    fn flush(&mut self) -> rsext4::Ext4Result<()> {
         Ok(())
     }
+}
 
-    fn close(&mut self) -> Ext4Result<()> {
-        self.is_open = false;
-        Ok(())
-    }
-
-    fn total_blocks(&self) -> u64 {
-        (self.data.len() / self.block_size as usize) as u64
-    }
-
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
-
-    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+impl rsext4::Clock for TestBlockDevice {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
         let sec = self.now.get();
         self.now.set(sec + 1);
         Ok(Ext4Timestamp::new(sec, 0))
