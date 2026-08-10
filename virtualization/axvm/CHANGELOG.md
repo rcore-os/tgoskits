@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.27](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.26...axvm-v0.5.27) - 2026-08-10
+
+### Fixed
+
+- *(aarch64)* restore RK3588 guest cpufreq and SCMI support ([#1919](https://github.com/rcore-os/tgoskits/pull/1919))
+
+### Other
+
+- *(axvm)* layer RISC-V SBI IPI routing ([#1920](https://github.com/rcore-os/tgoskits/pull/1920))
+- *(axvisor)* validate x86 OVMF ACPI on VMX and SVM ([#1931](https://github.com/rcore-os/tgoskits/pull/1931))
+
 ## [0.5.26](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.25...axvm-v0.5.26) - 2026-08-09
 
 ### Added

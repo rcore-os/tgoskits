@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.8...someboot-v0.3.9) - 2026-08-10
+
+### Other
+
+- updated the following local packages: some-serial
+
 ## [0.3.8](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.7...someboot-v0.3.8) - 2026-08-09
 
 ### Fixed

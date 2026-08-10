@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.19...arm_vcpu-v0.5.20) - 2026-08-10
+
+### Fixed
+
+- *(aarch64)* restore RK3588 guest cpufreq and SCMI support ([#1919](https://github.com/rcore-os/tgoskits/pull/1919))
+
 ## [0.5.19](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.18...arm_vcpu-v0.5.19) - 2026-08-09
 
 ### Other

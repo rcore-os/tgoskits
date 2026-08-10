@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.4](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.3...ax-driver-v0.12.4) - 2026-08-10
+
+### Other
+
+- updated the following local packages: rdif-serial, some-serial
+
 ## [0.12.3](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.2...ax-driver-v0.12.3) - 2026-08-09
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.8](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.7...ax-net-v0.12.8) - 2026-08-10
+
+### Fixed
+
+- *(starry-kernel)* support IPv4 ping syscall paths ([#1896](https://github.com/rcore-os/tgoskits/pull/1896))
+
 ## [0.12.7](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.6...ax-net-v0.12.7) - 2026-08-09
 
 ### Fixed

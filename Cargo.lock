@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "arm_vcpu"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.7.7"
+version = "0.7.8"
 dependencies = [
  "ax-alloc",
  "ax-display",
@@ -777,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "ax-display"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
@@ -788,7 +788,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "ahci-driver",
  "aic8800",
@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "ax-errno",
  "ax-io",
@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.5.31"
+version = "0.5.32"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -914,7 +914,7 @@ dependencies = [
 
 [[package]]
 name = "ax-input"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.5.30"
+version = "0.5.31"
 dependencies = [
  "ax-hal",
  "ax-kspin",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "ax-libc"
-version = "0.5.31"
+version = "0.5.32"
 dependencies = [
  "ax-driver",
  "ax-errno",
@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.5.31"
+version = "0.5.32"
 dependencies = [
  "ax-alloc",
  "ax-errno",
@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.12.7"
+version = "0.12.8"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.5.32"
+version = "0.5.33"
 dependencies = [
  "ax-alloc",
  "ax-errno",
@@ -1174,7 +1174,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.10.7"
+version = "0.10.8"
 dependencies = [
  "aic8800",
  "ax-alloc",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.5.31"
+version = "0.5.32"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "ax-sync"
-version = "0.5.31"
+version = "0.5.32"
 dependencies = [
  "ax-kspin",
  "ax-lockdep",
@@ -1259,7 +1259,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "ax-alloc",
  "ax-cpumask",
@@ -1321,7 +1321,7 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "addr2line 0.26.1",
  "anyhow",
@@ -1470,7 +1470,7 @@ version = "0.1.1"
 
 [[package]]
 name = "axplat-dyn"
-version = "0.7.15"
+version = "0.7.16"
 dependencies = [
  "anyhow",
  "ax-cpu",
@@ -1573,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor"
-version = "0.5.24"
+version = "0.5.25"
 dependencies = [
  "anyhow",
  "ax-driver",
@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.5.26"
+version = "0.5.27"
 dependencies = [
  "aarch64-cpu-ext",
  "acpi_tables",
@@ -5887,9 +5887,9 @@ dependencies = [
 
 [[package]]
 name = "portable-atomic"
-version = "1.14.0"
+version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d20d5497ef88037a52ff98267d066e7f11fcc5e99bbfbd58a42336193aacec3"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "portable-atomic-util"
@@ -6591,7 +6591,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-serial"
-version = "0.9.3"
+version = "0.10.0"
 dependencies = [
  "axtest",
  "bitflags 2.13.1",
@@ -6867,7 +6867,7 @@ checksum = "07aac72f95e774476db82916d79f2d303191310393830573c1ab5c821b21660a"
 
 [[package]]
 name = "riscv_vcpu"
-version = "0.5.20"
+version = "0.5.21"
 dependencies = [
  "bitflags 2.13.1",
  "log",
@@ -7744,7 +7744,7 @@ dependencies = [
 
 [[package]]
 name = "some-serial"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "bitflags 2.13.1",
  "enum_dispatch",
@@ -7758,7 +7758,7 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -7802,7 +7802,7 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
@@ -7897,7 +7897,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.7.7"
+version = "0.7.8"
 dependencies = [
  "ax-alloc",
  "ax-cgroup",
@@ -8051,7 +8051,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.28"
+version = "0.5.29"
 dependencies = [
  "anyhow",
  "ax-driver",
@@ -9992,9 +9992,9 @@ dependencies = [
 
 [[package]]
 name = "zbus"
-version = "5.18.0"
+version = "5.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe18fb60dc696039e738717b76eaea21e7a4489bbb1885020b43c94236d7e98a"
+checksum = "5db4be7c075cb421e4b7ee645541604239bd243ba7c357511f4ff3a74b555907"
 dependencies = [
  "async-broadcast",
  "async-executor",
@@ -10038,14 +10038,14 @@ dependencies = [
 
 [[package]]
 name = "zbus_macros"
-version = "5.18.0"
+version = "5.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe96480bed92df2b442a1a30df364e12d08eed03aeb061f2b8dc6afb2be91119"
+checksum = "2990635d09ade6df1868f72f8cac69a876a90981e8bd3c40b1be413f8dc88f40"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
  "zbus_names",
  "zvariant",
  "zvariant_utils",
@@ -10060,6 +10060,15 @@ dependencies = [
  "serde",
  "winnow 1.0.4",
  "zvariant",
+]
+
+[[package]]
+name = "zcheapstr"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "769381976ea05c1f0abde0ca527b02e415bccbdbad148534a2b0c1901c9ab934"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -10165,40 +10174,41 @@ dependencies = [
 
 [[package]]
 name = "zvariant"
-version = "5.13.1"
+version = "5.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bee2a0bcd2a907786a456fff45aaaaf54c9ba5f50b71ae9ec1a4edd200c94911"
+checksum = "b5e28c25bd8bb8da5a1f3e7065d0c156b9ee9a7973adf78b0e35eaefdf3b1b5c"
 dependencies = [
  "endi",
  "enumflags2",
  "serde",
  "winnow 1.0.4",
+ "zcheapstr",
  "zvariant_derive",
  "zvariant_utils",
 ]
 
 [[package]]
 name = "zvariant_derive"
-version = "5.13.1"
+version = "5.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38a708216a18780796770bfe3f4739c7c83a3e8f789b755534bbbc06e4e23e12"
+checksum = "d496a145685283b67e232bd9e47377f6b60ad9d51e3601b23867f77c42477f96"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
  "zvariant_utils",
 ]
 
 [[package]]
 name = "zvariant_utils"
-version = "3.5.0"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90cb9383f9b45290407a1258b202d3f8f01db719eb60b4e4055c6375af4fc7c7"
+checksum = "629d80ece222cad20fe0e8741be493c4ab166acf3b85341bdc2cdbcfd8f3c2d6"
 dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "syn 2.0.119",
+ "syn 3.0.3",
  "winnow 1.0.4",
 ]

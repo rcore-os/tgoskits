@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.5.20...riscv_vcpu-v0.5.21) - 2026-08-10
+
+### Other
+
+- *(axvm)* layer RISC-V SBI IPI routing ([#1920](https://github.com/rcore-os/tgoskits/pull/1920))
+
 ## [0.5.20](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.5.19...riscv_vcpu-v0.5.20) - 2026-08-09
 
 ### Fixed

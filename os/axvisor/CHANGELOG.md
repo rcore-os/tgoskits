@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.25](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.24...axvisor-v0.5.25) - 2026-08-10
+
+### Fixed
+
+- *(axvisor)* improve multi-VM guest console multiplexing ([#1912](https://github.com/rcore-os/tgoskits/pull/1912))
+
+### Other
+
+- *(axvm)* layer RISC-V SBI IPI routing ([#1920](https://github.com/rcore-os/tgoskits/pull/1920))
+
 ## [0.5.24](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.23...axvisor-v0.5.24) - 2026-08-09
 
 ### Added

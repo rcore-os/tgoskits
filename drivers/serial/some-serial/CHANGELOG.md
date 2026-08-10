@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.3...some-serial-v0.7.4) - 2026-08-10
+
+### Fixed
+
+- *(tty)* handle input flush and wakeups ([#1922](https://github.com/rcore-os/tgoskits/pull/1922))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.2...some-serial-v0.7.3) - 2026-08-09
 
 ### Other

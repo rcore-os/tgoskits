@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.8](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.7...starry-kernel-v0.7.8) - 2026-08-10
+
+### Fixed
+
+- *(tty)* handle input flush and wakeups ([#1922](https://github.com/rcore-os/tgoskits/pull/1922))
+- *(starry-kernel)* support IPv4 ping syscall paths ([#1896](https://github.com/rcore-os/tgoskits/pull/1896))
+
 ## [0.7.7](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.6...starry-kernel-v0.7.7) - 2026-08-09
 
 ### Fixed
