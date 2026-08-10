@@ -21,7 +21,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 ax-errno = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
-ax-sync = { workspace = true }
+ax-lazyinit.workspace = true
+ax-sync = { workspace = true, features = ["sleep"] }
 bitflags = "2.10"
 cfg-if = { workspace = true }
 chrono = { workspace = true }
@@ -33,7 +34,6 @@ lru = "0.16"
 rdif-block = { workspace = true }
 scope-local = { workspace = true }
 slab = { version = "0.4", default-features = false }
-spin = { workspace = true }
 
 [dependencies.rsext4]
 workspace = true

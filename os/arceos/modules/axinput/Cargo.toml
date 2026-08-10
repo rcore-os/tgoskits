@@ -10,7 +10,7 @@ categories.workspace = true
 license.workspace = true
 
 [dependencies]
-ax-sync = { workspace = true }
+ax-sync = { workspace = true, features = ["sleep"] }
 
 ax-lazyinit = { workspace = true }
 log = { workspace = true }

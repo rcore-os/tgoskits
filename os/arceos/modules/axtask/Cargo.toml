@@ -22,7 +22,6 @@ multitask = [
   "dep:ax-lazyinit",
   "dep:ax-memory-addr",
   "dep:ax-percpu",
-  "dep:spin",
 ]
 preempt = ["irq"]
 smp = ["ax-sync/smp"]
@@ -78,7 +77,6 @@ futures-util = {version = "0.3", default-features = false, optional = true, feat
   "async-await-macro",
 ]}
 log.workspace = true
-spin = {workspace = true, optional = true}
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-hal = { workspace = true, features = ["fp-simd"] }

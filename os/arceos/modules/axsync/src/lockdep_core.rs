@@ -3,14 +3,14 @@ mod state;
 #[path = "lockdep_trace.rs"]
 mod trace;
 
+#[cfg(feature = "sleep")]
+pub use self::state::prepare_acquire_with_snapshot_nested_with_sleep;
 pub use self::{
     state::{
         DEFAULT_LOCK_SUBCLASS, HeldLock, HeldLockKind, HeldLockSnapshot, HeldLockStack,
-        LockSubclass, LockdepCheckError, LockdepMap, LockdepOps, PreparedAcquire,
-        current_task_held_lock_snapshot, finish_acquire_task, finish_acquire_with_stack,
-        force_release_task, prepare_acquire_with_snapshot, prepare_acquire_with_snapshot_checked,
-        prepare_acquire_with_snapshot_checked_nested, prepare_acquire_with_snapshot_nested,
-        prepare_acquire_with_snapshot_nested_with_sleep, release_from_stack, release_task,
+        LockSubclass, LockdepMap, LockdepOps, PreparedAcquire, current_task_held_lock_snapshot,
+        finish_acquire_task, force_release_task, prepare_acquire_with_snapshot_nested,
+        release_task,
     },
     trace::{dump_trace_buffer, set_trace_enabled},
 };
@@ -43,11 +43,6 @@ impl Lockdep {
     #[inline(always)]
     pub fn finish(&self, acquired: bool) {
         trace::trace_lock_finish(self.kind, self.addr, self.is_try, acquired, self.detail);
-    }
-
-    #[inline(always)]
-    pub fn lock_addr(&self) -> usize {
-        self.addr
     }
 
     #[inline(always)]

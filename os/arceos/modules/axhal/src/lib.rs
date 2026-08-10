@@ -161,7 +161,7 @@ pub fn init_early_secondary(cpu_id: usize) {
 pub fn cpu_num() -> usize {
     #[cfg(feature = "smp")]
     {
-        use spin::LazyLock;
+        use ax_lazyinit::LazyLock;
 
         /// The number of CPUs in the system. Based on the number declared by the
         /// platform crate and limited by the configured maximum CPU number.

@@ -372,7 +372,7 @@ pub struct Card0 {
     /// only one allocation lands in `system_blobs`.
     system_blobs_init: Mutex<()>,
     /// Registered virtio-gpu IRQ action, when the display backend advertises one.
-    irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
+    irq_handle: ax_lazyinit::OnceLock<ax_runtime::hal::irq::IrqHandle>,
 }
 
 impl Card0 {
@@ -397,7 +397,7 @@ impl Card0 {
             system_blobs: Mutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
             system_blobs_init: Mutex::new(()),
-            irq_handle: spin::Once::new(),
+            irq_handle: ax_lazyinit::OnceLock::new(),
         });
         card.register_irq();
         card

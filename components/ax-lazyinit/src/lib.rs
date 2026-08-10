@@ -363,7 +363,11 @@ impl<T: fmt::Debug, F: FnOnce() -> T> fmt::Debug for LazyLock<T, F> {
 
 #[cfg(test)]
 mod tests {
-    use std::{thread, time::Duration};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        thread,
+        time::Duration,
+    };
 
     use super::*;
 
@@ -440,5 +444,39 @@ mod tests {
         let v = unsafe { value.get_mut_unchecked() };
         *v += 3;
         assert_eq!(*v, 126);
+    }
+
+    #[test]
+    fn once_lock_returns_the_first_value() {
+        static VALUE: OnceLock<u32> = OnceLock::new();
+
+        assert_eq!(*VALUE.call_once(|| 123), 123);
+        assert_eq!(*VALUE.call_once(|| 456), 123);
+        assert_eq!(VALUE.get(), Some(&123));
+        assert!(VALUE.is_initialized());
+    }
+
+    #[test]
+    fn once_lock_retries_after_initializer_panic() {
+        static VALUE: OnceLock<u32> = OnceLock::new();
+
+        assert!(
+            std::panic::catch_unwind(|| VALUE.call_once(|| panic!("initializer failed"))).is_err()
+        );
+        assert!(!VALUE.is_initialized());
+        assert_eq!(*VALUE.call_once(|| 789), 789);
+    }
+
+    #[test]
+    fn lazy_lock_initializes_once() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        static VALUE: LazyLock<u32> = LazyLock::new(|| {
+            CALLS.fetch_add(1, Ordering::Relaxed);
+            42
+        });
+
+        assert_eq!(*VALUE, 42);
+        assert_eq!(*VALUE, 42);
+        assert_eq!(CALLS.load(Ordering::Relaxed), 1);
     }
 }

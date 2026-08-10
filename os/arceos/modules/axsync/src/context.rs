@@ -140,16 +140,13 @@ impl GuardState for PreemptIrqSaveState {
 }
 
 /// An RAII guard which disables kernel preemption while it is alive.
-pub struct PreemptGuard {
-    state: <PreemptState as GuardState>::State,
-}
+pub struct PreemptGuard;
 
 impl PreemptGuard {
     /// Disables preemption and creates a guard which restores it on drop.
     pub fn new() -> Self {
-        Self {
-            state: PreemptState::acquire(),
-        }
+        PreemptState::acquire();
+        Self
     }
 }
 
@@ -161,7 +158,7 @@ impl Default for PreemptGuard {
 
 impl Drop for PreemptGuard {
     fn drop(&mut self) {
-        PreemptState::release(self.state);
+        PreemptState::release(());
     }
 }
 
@@ -220,15 +217,16 @@ impl Drop for PreemptIrqSaveGuard {
     }
 }
 
-#[cfg(feature = "host-test")]
+#[cfg(not(target_os = "none"))]
 mod host {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     use super::CriticalSectionOps;
 
     std::thread_local! {
         static PREEMPT_DEPTH: Cell<usize> = const { Cell::new(0) };
         static IRQ_ENABLED: Cell<bool> = const { Cell::new(true) };
+        static EVENTS: RefCell<std::vec::Vec<&'static str>> = const { RefCell::new(std::vec::Vec::new()) };
     }
 
     struct HostCriticalSectionOps;
@@ -236,10 +234,12 @@ mod host {
     #[ax_crate_interface::impl_interface]
     impl CriticalSectionOps for HostCriticalSectionOps {
         fn disable_preempt() {
+            EVENTS.with_borrow_mut(|events| events.push("preempt-disable"));
             PREEMPT_DEPTH.set(PREEMPT_DEPTH.get() + 1);
         }
 
         fn enable_preempt() {
+            EVENTS.with_borrow_mut(|events| events.push("preempt-enable"));
             PREEMPT_DEPTH.set(
                 PREEMPT_DEPTH
                     .get()
@@ -249,20 +249,92 @@ mod host {
         }
 
         fn irq_save_and_disable() -> usize {
+            EVENTS.with_borrow_mut(|events| events.push("irq-disable"));
             let was_enabled = IRQ_ENABLED.replace(false);
             usize::from(was_enabled)
         }
 
         fn irq_restore(state: usize) {
+            EVENTS.with_borrow_mut(|events| events.push("irq-restore"));
             IRQ_ENABLED.set(state != 0);
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn snapshot() -> (usize, bool) {
+    #[cfg(all(test, feature = "host-test"))]
+    pub(super) fn snapshot() -> (usize, bool) {
         (PREEMPT_DEPTH.get(), IRQ_ENABLED.get())
+    }
+
+    #[cfg(all(test, feature = "host-test"))]
+    pub(super) fn take_events() -> std::vec::Vec<&'static str> {
+        EVENTS.take()
+    }
+
+    pub(super) fn preempt_depth() -> usize {
+        PREEMPT_DEPTH.get()
     }
 }
 
+/// Returns the preemption depth tracked by the host critical-section provider.
+#[cfg(not(target_os = "none"))]
+#[doc(hidden)]
+pub fn host_preempt_depth() -> usize {
+    host::preempt_depth()
+}
+
 #[cfg(all(test, feature = "host-test"))]
-pub(crate) use host::snapshot as host_context_snapshot;
+pub(crate) fn host_context_snapshot() -> (usize, bool) {
+    host::snapshot()
+}
+
+#[cfg(all(test, feature = "host-test"))]
+mod tests {
+    use super::{IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard, host};
+
+    #[test]
+    fn preempt_guard_nests_and_restores_depth() {
+        assert_eq!(host::snapshot(), (0, true));
+        let outer = PreemptGuard::new();
+        assert_eq!(host::snapshot(), (1, true));
+        {
+            let _inner = PreemptGuard::new();
+            assert_eq!(host::snapshot(), (2, true));
+        }
+        assert_eq!(host::snapshot(), (1, true));
+        drop(outer);
+        assert_eq!(host::snapshot(), (0, true));
+    }
+
+    #[test]
+    fn irq_save_guard_preserves_nested_disabled_state() {
+        assert_eq!(host::snapshot(), (0, true));
+        let outer = IrqSaveGuard::new();
+        assert_eq!(host::snapshot(), (0, false));
+        {
+            let _inner = IrqSaveGuard::new();
+            assert_eq!(host::snapshot(), (0, false));
+        }
+        assert_eq!(host::snapshot(), (0, false));
+        drop(outer);
+        assert_eq!(host::snapshot(), (0, true));
+    }
+
+    #[test]
+    fn combined_guard_restores_irq_before_preempt_context() {
+        assert_eq!(host::snapshot(), (0, true));
+        let _ = host::take_events();
+        let guard = PreemptIrqSaveGuard::new();
+        assert_eq!(host::snapshot(), (1, false));
+        drop(guard);
+        assert_eq!(host::snapshot(), (0, true));
+        assert_eq!(
+            host::take_events(),
+            [
+                "preempt-disable",
+                "irq-disable",
+                "irq-restore",
+                "preempt-enable"
+            ]
+        );
+    }
+}

@@ -50,7 +50,6 @@ fs = [
   "dep:ax-fs-ng",
   "ax-fs-ng/vfs",
   "dep:axfs-ng-vfs",
-  "dep:spin",
   "dep:rdif-block",
   "ax-driver/block",
 ]
@@ -63,7 +62,6 @@ net = [
   "paging",
   "dep:ax-net",
   "dep:rd-net",
-  "dep:spin",
   "ax-driver/net",
 ]
 # SG2002 AIC8800 SoftAP Wi-Fi. Pulls the FDT probe into ax-driver and installs
@@ -82,7 +80,6 @@ serial = [
   "dep:ax-errno",
   "dep:axpoll",
   "dep:rdif-serial",
-  "dep:spin",
 ]
 
 [dependencies]
@@ -122,7 +119,6 @@ rdif-intc = { workspace = true, optional = true }
 rdif-serial = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
-spin = {workspace = true, optional = true}
 
 [build-dependencies]
 quote = { workspace = true }

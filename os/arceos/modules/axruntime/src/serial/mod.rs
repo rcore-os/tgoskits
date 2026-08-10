@@ -15,11 +15,11 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ax_driver::serial::SerialDevice;
 pub use ax_driver::serial::SerialDeviceInfo;
 use ax_errno::{AxError, AxResult};
+use ax_lazyinit::OnceLock;
 use ax_sync::SpinLock;
 use ax_task::{AxCpuMask, IrqNotify, TaskInner, WaitQueue};
 use axpoll::{IoEvents, PollSet};
 pub use rdif_serial::{Config, ConfigError, DataBits, Parity, RxFlag, StopBits};
-use spin::Once;
 pub use state::SerialStats;
 
 use self::{
@@ -35,7 +35,7 @@ const PANIC_TX_READY_SPINS: usize = 100_000;
 const IRQ_RX_CAPACITY: usize = 16_384;
 const SUBSCRIPTION_RX_CAPACITY: usize = 4_096;
 
-static SERIAL_RUNTIMES: Once<Box<[SerialRuntimeHandle]>> = Once::new();
+static SERIAL_RUNTIMES: OnceLock<Box<[SerialRuntimeHandle]>> = OnceLock::new();
 static ACTIVE_CONSOLE: AtomicUsize = AtomicUsize::new(NO_ACTIVE_CONSOLE);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,7 +85,7 @@ struct RuntimeShared {
     rx_progress: WaitQueue,
     tx_progress: WaitQueue,
     started: AtomicBool,
-    irq_handle: Once<ax_hal::irq::IrqHandle>,
+    irq_handle: OnceLock<ax_hal::irq::IrqHandle>,
 }
 
 impl RuntimeShared {
@@ -436,7 +436,7 @@ fn build_runtime(
         rx_progress: WaitQueue::new(),
         tx_progress: WaitQueue::new(),
         started: AtomicBool::new(false),
-        irq_handle: Once::new(),
+        irq_handle: OnceLock::new(),
     });
 
     let worker = SerialWorker::new(shared.clone(), irq_rx_consumer, rx_output_producer);

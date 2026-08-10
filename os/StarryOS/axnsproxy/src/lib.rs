@@ -40,6 +40,11 @@ impl<T> IrqMutex<T> {
         self.0.lock_irqsave()
     }
 
+    /// Acquires this IRQ-save mutex using a lockdep subclass.
+    pub fn lock_nested(&self, subclass: u32) -> IrqMutexGuard<'_, T> {
+        self.0.lock_irqsave_nested(subclass)
+    }
+
     pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
         self.0.try_lock_irqsave()
     }

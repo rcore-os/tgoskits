@@ -263,26 +263,6 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
         self.state.load(Ordering::Acquire) & WRITER != 0
     }
 
-    /// Returns the current reader count.
-    ///
-    /// This is only a heuristic; the value can change immediately after it is
-    /// loaded and must not be used for synchronization.
-    #[inline(always)]
-    pub fn reader_count(&self) -> usize {
-        // sync-lint: ignore suspicious_relaxed_mixed_ordering
-        self.state.load(Ordering::Relaxed) & !(WRITER | MAX_READER)
-    }
-
-    /// Returns the current writer count, which can only be 0 or 1.
-    ///
-    /// This is only a heuristic; the value can change immediately after it is
-    /// loaded and must not be used for synchronization.
-    #[inline(always)]
-    pub fn writer_count(&self) -> usize {
-        // sync-lint: ignore suspicious_relaxed_mixed_ordering
-        usize::from(self.state.load(Ordering::Relaxed) & WRITER != 0)
-    }
-
     /// Force decrement the reader count.
     ///
     /// # Safety
@@ -321,23 +301,6 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
                 Err(observed) => state = observed,
             }
         }
-    }
-
-    /// Force unlock exclusive write access.
-    ///
-    /// # Safety
-    ///
-    /// This is unsafe if called without a corresponding leaked write guard or
-    /// while readers are present.
-    #[inline(always)]
-    pub unsafe fn force_write_unlock(&self) {
-        debug_assert_eq!(self.state.load(Ordering::Relaxed), WRITER);
-        #[cfg(feature = "lockdep")]
-        {
-            let _lockdep_irq_guard = IrqSaveGuard::new();
-            crate::spin_lockdep::release_kind::<G>("spin-rwlock", self.lock_addr());
-        }
-        self.state.fetch_and(!WRITER, Ordering::Release);
     }
 
     /// Returns a mutable reference to the underlying data.

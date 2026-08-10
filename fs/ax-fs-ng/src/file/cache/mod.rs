@@ -33,8 +33,8 @@ type CachedFileKey = (usize, u64);
 type InodeCacheIndex = BTreeMap<CachedFileKey, Weak<CachedFileShared>>;
 
 #[cfg(feature = "ext4")]
-static CACHED_FILE_BY_INODE: spin::LazyLock<Mutex<InodeCacheIndex>> =
-    spin::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static CACHED_FILE_BY_INODE: ax_lazyinit::LazyLock<Mutex<InodeCacheIndex>> =
+    ax_lazyinit::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 /// Eviction listener callback. Returns `true` if the listener successfully
 /// invalidated all mappings for the evicted page.

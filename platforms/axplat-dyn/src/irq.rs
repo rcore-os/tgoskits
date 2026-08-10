@@ -166,11 +166,11 @@ fn is_loongarch_guest_forwardable(irq: IrqId) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use ax_lazyinit::OnceLock;
     use ax_plat::irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqId};
-    use spin::Once;
 
     fn plic_irq(hwirq: u32) -> IrqId {
-        static PLIC_DOMAIN: Once<somehal::irq::IrqDomainId> = Once::new();
+        static PLIC_DOMAIN: OnceLock<somehal::irq::IrqDomainId> = OnceLock::new();
 
         let domain = *PLIC_DOMAIN.call_once(|| {
             somehal::irq::domain_by_kind(somehal::irq::IrqDomainKind::RiscvPlic)

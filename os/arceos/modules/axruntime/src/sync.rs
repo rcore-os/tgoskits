@@ -1,13 +1,14 @@
 //! ArceOS runtime providers for `ax-sync` capabilities.
 
-#[cfg(feature = "multitask")]
+#[cfg(all(feature = "multitask", target_os = "none"))]
 use alloc::boxed::Box;
-#[cfg(feature = "multitask")]
+#[cfg(all(feature = "multitask", target_os = "none"))]
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
+#[cfg(target_os = "none")]
 struct RuntimeCriticalSectionOps;
 
-#[cfg(not(feature = "host-test"))]
+#[cfg(target_os = "none")]
 #[ax_crate_interface::impl_interface]
 impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {
     fn disable_preempt() {
@@ -35,10 +36,10 @@ impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {
     }
 }
 
-#[cfg(all(feature = "multitask", not(feature = "host-test")))]
+#[cfg(all(feature = "multitask", target_os = "none"))]
 struct RuntimeMutexOps;
 
-#[cfg(all(feature = "multitask", not(feature = "host-test")))]
+#[cfg(all(feature = "multitask", target_os = "none"))]
 #[ax_crate_interface::impl_interface]
 impl ax_sync::MutexRuntimeOps for RuntimeMutexOps {
     fn might_sleep() {
@@ -76,7 +77,7 @@ impl ax_sync::MutexRuntimeOps for RuntimeMutexOps {
     }
 }
 
-#[cfg(all(feature = "multitask", not(feature = "host-test")))]
+#[cfg(all(feature = "multitask", target_os = "none"))]
 fn ensure_wait_queue(slot: &AtomicPtr<()>) -> &ax_task::WaitQueue {
     let existing = slot.load(Ordering::Acquire).cast::<ax_task::WaitQueue>();
     if !existing.is_null() {
@@ -104,10 +105,10 @@ fn ensure_wait_queue(slot: &AtomicPtr<()>) -> &ax_task::WaitQueue {
     }
 }
 
-#[cfg(all(feature = "lockdep", not(feature = "host-test")))]
+#[cfg(all(feature = "lockdep", target_os = "none"))]
 struct RuntimeLockdepOps;
 
-#[cfg(all(feature = "lockdep", not(feature = "host-test")))]
+#[cfg(all(feature = "lockdep", target_os = "none"))]
 #[ax_crate_interface::impl_interface]
 impl ax_sync::LockdepOps for RuntimeLockdepOps {
     fn irq_save_and_disable() -> usize {

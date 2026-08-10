@@ -1,18 +1,33 @@
-# axsync
+# ax-sync
 
-[![Crates.io](https://img.shields.io/crates/v/axsync)](https://crates.io/crates/axsync)
-[![Docs.rs](https://docs.rs/axsync/badge.svg)](https://docs.rs/axsync)
-
-[ArceOS](https://github.com/arceos-org/arceos) synchronization primitives.
+OS-independent synchronization interfaces for TGOSKits kernels and reusable
+components.
 
 ## Primitives
 
-- **Mutex**: A mutual exclusion primitive. With the `multitask` feature, it uses task-aware locking; otherwise it is an alias of `ax_kspin::SpinNoIrq`.
-- **spin**: Re-export of the [ax-kspin](https://crates.io/crates/ax-kspin) crate (spinlocks).
+- `SpinLock<T>` and `SpinRwLock<T>` select execution-context policy at each
+  acquisition: ordinary methods disable preemption, `*_irqsave` methods also
+  save and disable local interrupts, and `unsafe *_raw` methods leave context
+  management to the caller.
+- `Mutex<T>` is always a non-poisoning sleepable mutex. It is available only
+  with the `sleep` feature and never aliases a spin lock.
+- `PreemptGuard`, `IrqSaveGuard`, and `PreemptIrqSaveGuard` provide explicit
+  critical-section guards.
+- With `lockdep`, all lock types share lock-class, held-lock, ordering, and
+  diagnostic support.
+
+The crate declares runtime capabilities through `ax-crate-interface`.
+ArceOS implements the production providers in `ax-runtime`; host tests use the
+`host-test` providers in this crate.
 
 ## Features
 
-- `multitask`: Enable multi-threaded support. When enabled, `Mutex` uses blocking that cooperates with the task scheduler; when disabled, `Mutex` is a spinlock.
+- `smp`: enable atomic multi-CPU exclusion.
+- `sleep`: enable the sleepable mutex interface.
+- `lockdep`: enable held-lock and ordering diagnostics.
+- `lock-api`: enable the IRQ-save raw mutex adapter required by `lock_api`.
+- `host-test`: install deterministic host-side runtime providers.
+- `axtest`: expose bare-metal coverage tests.
 
 ## License
 

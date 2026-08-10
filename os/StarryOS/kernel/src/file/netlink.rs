@@ -33,6 +33,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
+use ax_lazyinit::LazyLock;
 use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -41,7 +42,6 @@ use linux_raw_sys::{
     net::AF_NETLINK,
     netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE, sockaddr_nl},
 };
-use spin::LazyLock;
 
 use crate::{
     file::{FileLike, IoDst, IoSrc},

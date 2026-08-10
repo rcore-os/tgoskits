@@ -540,7 +540,7 @@ impl X86InterruptDomain {
         unsafe { self.inputs.lock_raw() }
     }
 
-    pub(super) fn forwarding(&self) -> RawSpinLockGuard<'_, irq::X86IoApicForwardingState> {
+    fn forwarding(&self) -> RawSpinLockGuard<'_, irq::X86IoApicForwardingState> {
         // SAFETY: forwarding state is accessed only from guest-entry and host
         // IRQ paths that exclude same-CPU re-entry.
         unsafe { self.forwarding.lock_raw() }

@@ -7,12 +7,12 @@ extern crate log;
 
 use core::ptr::NonNull;
 
+use ax_lazyinit::OnceLock;
 // The registry is not hard-IRQ safe, but it is also used by runtime discovery
 // paths that must not trigger task preemption hooks on lock release.
 use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
 pub use fdt_edit::{Fdt, Phandle};
 use register::{DriverRegister, ProbeLevel, ProbePriority};
-use spin::Once;
 
 mod descriptor;
 pub mod driver;
@@ -39,7 +39,7 @@ pub use rdrive_macros::*;
 
 use crate::{error::DriverError, probe::OnProbeError};
 
-static CONTAINER: Once<Mutex<Manager>> = Once::new();
+static CONTAINER: OnceLock<Mutex<Manager>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub enum Platform {

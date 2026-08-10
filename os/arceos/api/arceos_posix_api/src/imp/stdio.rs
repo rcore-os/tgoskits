@@ -1,8 +1,9 @@
 use ax_errno::AxResult;
 use ax_io::{BufReader, prelude::*};
-use ax_sync::Mutex;
 #[cfg(feature = "fd")]
 use {alloc::sync::Arc, ax_errno::LinuxError, ax_errno::LinuxResult, ax_io::PollState};
+
+use crate::sync::Mutex;
 
 fn console_read_bytes(buf: &mut [u8]) -> AxResult<usize> {
     let len = ax_hal::console::read_bytes(buf);
@@ -95,7 +96,8 @@ impl Write for Stdout {
 
 /// Constructs a new handle to the standard input of the current process.
 pub fn stdin() -> Stdin {
-    static INSTANCE: spin::Once<Mutex<BufReader<StdinRaw>>> = spin::Once::new();
+    static INSTANCE: ax_lazyinit::OnceLock<Mutex<BufReader<StdinRaw>>> =
+        ax_lazyinit::OnceLock::new();
     Stdin {
         inner: INSTANCE.call_once(|| Mutex::new(BufReader::new(StdinRaw))),
     }

@@ -13,13 +13,13 @@ use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 
 use ax_io::{Read, Write};
+use ax_lazyinit::OnceLock;
 #[cfg(feature = "vfs")]
 use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
     Location, Metadata, NodePermission, NodeType, VfsError, VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
-use spin::Once;
 
 use crate::{
     file::File,
@@ -30,7 +30,7 @@ use crate::{
 pub const SYMLINKS_MAX: usize = 40;
 
 /// Global root filesystem context, initialized once during [`init_filesystems`](crate::init_filesystems).
-pub static ROOT_FS_CONTEXT: Once<FsContext> = Once::new();
+pub static ROOT_FS_CONTEXT: OnceLock<FsContext> = OnceLock::new();
 
 /// Registry of all live `FsContext` instances (weak references).
 ///

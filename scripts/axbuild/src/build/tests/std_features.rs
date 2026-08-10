@@ -54,7 +54,7 @@ fn axfs_vfs_enables_sleepable_mutexes() {
         vfs_features
             .iter()
             .filter_map(toml::Value::as_str)
-            .any(|feature| feature == "ax-sync/multitask"),
+            .any(|feature| feature == "ax-sync/sleep"),
         "{} must keep filesystem I/O locks sleepable for channel-backed block completion",
         manifest_path.display()
     );

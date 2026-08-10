@@ -11,21 +11,6 @@ use std::{
 use ctor::ctor;
 use scope_local::{ActiveScope, Scope, scope_local};
 
-struct CriticalSectionOpsImpl;
-
-#[ax_crate_interface::impl_interface]
-impl ax_sync::CriticalSectionOps for CriticalSectionOpsImpl {
-    fn enable_preempt() {}
-
-    fn disable_preempt() {}
-
-    fn irq_save_and_disable() -> usize {
-        1
-    }
-
-    fn irq_restore(_state: usize) {}
-}
-
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 static UNUSED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static PINNED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);

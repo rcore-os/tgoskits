@@ -260,6 +260,18 @@ impl<T: ?Sized> Mutex<T> {
         self.raw.try_lock().then(|| MutexGuard::new(self))
     }
 
+    /// Releases a lock whose guard has deliberately been leaked.
+    ///
+    /// # Safety
+    ///
+    /// The current task must own exactly one live guard returned by this
+    /// mutex, the guard must never subsequently be dropped, and no references
+    /// derived from it may remain live after this call.
+    #[doc(hidden)]
+    pub unsafe fn force_unlock(&self) {
+        unsafe { self.raw.force_unlock() };
+    }
+
     /// Returns whether the mutex appears locked.
     pub fn is_locked(&self) -> bool {
         self.raw.is_locked()
@@ -350,7 +362,7 @@ impl<T: ?Sized> LockdepMutexExt<T> for Mutex<T> {
     }
 }
 
-#[cfg(feature = "host-test")]
+#[cfg(not(target_os = "none"))]
 mod host {
     use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
     use std::{
@@ -381,13 +393,16 @@ mod host {
 
     std::thread_local! {
         static TASK_ID: Cell<u64> = const { Cell::new(0) };
+        static MIGHT_SLEEP_CALLS: Cell<usize> = const { Cell::new(0) };
     }
 
     struct HostMutexRuntimeOps;
 
     #[ax_crate_interface::impl_interface]
     impl MutexRuntimeOps for HostMutexRuntimeOps {
-        fn might_sleep() {}
+        fn might_sleep() {
+            MIGHT_SLEEP_CALLS.set(MIGHT_SLEEP_CALLS.get() + 1);
+        }
 
         fn current_task_id() -> u64 {
             TASK_ID.with(|task_id| match task_id.get() {
@@ -418,7 +433,9 @@ mod host {
             if !queue.is_null() {
                 // SAFETY: installed queue pointers stay valid until mutex drop,
                 // which safe Rust cannot race with a live waiter reference.
-                unsafe { &*queue }.condvar.notify_one();
+                let queue = unsafe { &*queue };
+                let _state = queue.state.lock().expect("host wait queue poisoned");
+                queue.condvar.notify_one();
             }
         }
 
@@ -464,13 +481,23 @@ mod host {
     const fn ptr_to_unit(pointer: *mut HostWaitQueue) -> *mut () {
         pointer.cast::<()>()
     }
+
+    #[cfg(test)]
+    pub(super) fn reset_might_sleep_calls() {
+        MIGHT_SLEEP_CALLS.set(0);
+    }
+
+    #[cfg(test)]
+    pub(super) fn might_sleep_calls() -> usize {
+        MIGHT_SLEEP_CALLS.get()
+    }
 }
 
 #[cfg(all(test, feature = "host-test"))]
 mod tests {
     use std::{sync::Arc, thread};
 
-    use super::Mutex;
+    use super::{Mutex, host};
 
     #[test]
     fn contended_mutex_wakes_waiters_without_lost_wakeups() {
@@ -497,7 +524,23 @@ mod tests {
     #[test]
     fn try_lock_is_nonblocking() {
         let mutex = Mutex::new(1usize);
+        host::reset_might_sleep_calls();
+        assert!(
+            mutex
+                .raw
+                .wait_queue
+                .load(core::sync::atomic::Ordering::Acquire)
+                .is_null()
+        );
         let guard = mutex.try_lock().expect("uncontended try_lock failed");
+        assert_eq!(host::might_sleep_calls(), 0);
+        assert!(
+            mutex
+                .raw
+                .wait_queue
+                .load(core::sync::atomic::Ordering::Acquire)
+                .is_null()
+        );
         #[cfg(feature = "lockdep")]
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mutex.try_lock())).is_err()
@@ -506,5 +549,43 @@ mod tests {
         assert!(mutex.try_lock().is_none());
         drop(guard);
         assert!(mutex.try_lock().is_some());
+        assert_eq!(host::might_sleep_calls(), 0);
+        assert!(
+            mutex
+                .raw
+                .wait_queue
+                .load(core::sync::atomic::Ordering::Acquire)
+                .is_null()
+        );
+    }
+
+    #[test]
+    fn leaked_guard_can_be_released_by_owner_wrapper() {
+        let mutex = Mutex::new(());
+        core::mem::forget(mutex.lock());
+
+        // SAFETY: the current task owns the one leaked guard and no references
+        // derived from it remain live.
+        unsafe { mutex.force_unlock() };
+        assert!(mutex.try_lock().is_some());
+    }
+
+    #[test]
+    fn wrong_owner_force_unlock_is_rejected() {
+        let mutex = Arc::new(Mutex::new(()));
+        let guard = mutex.lock();
+        let other = mutex.clone();
+        let result = thread::spawn(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // SAFETY: intentionally violates the owner contract to verify
+                // that the runtime diagnostic rejects the operation.
+                unsafe { other.force_unlock() };
+            }))
+        })
+        .join()
+        .expect("owner diagnostic thread panicked outside catch_unwind");
+
+        assert!(result.is_err());
+        drop(guard);
     }
 }

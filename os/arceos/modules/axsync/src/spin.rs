@@ -63,6 +63,16 @@ impl<T: ?Sized> SpinLock<T> {
         self.with_state::<PreemptState>().lock()
     }
 
+    /// Acquires the lock after disabling preemption, using a lockdep subclass.
+    ///
+    /// This is intended for structurally nested acquisitions of different
+    /// locks with the same class. Without `lockdep`, `subclass` has no effect.
+    #[inline(always)]
+    #[track_caller]
+    pub fn lock_nested(&self, subclass: u32) -> SpinLockGuard<'_, T> {
+        self.with_state::<PreemptState>().lock_nested(subclass)
+    }
+
     /// Attempts to acquire the lock after disabling kernel preemption.
     #[inline(always)]
     #[track_caller]
@@ -75,6 +85,18 @@ impl<T: ?Sized> SpinLock<T> {
     #[track_caller]
     pub fn lock_irqsave(&self) -> SpinLockIrqSaveGuard<'_, T> {
         self.with_state::<PreemptIrqSaveState>().lock()
+    }
+
+    /// Acquires the lock after disabling preemption and saving/disabling IRQs,
+    /// using a lockdep subclass.
+    ///
+    /// This is intended for structurally nested acquisitions of different
+    /// locks with the same class. Without `lockdep`, `subclass` has no effect.
+    #[inline(always)]
+    #[track_caller]
+    pub fn lock_irqsave_nested(&self, subclass: u32) -> SpinLockIrqSaveGuard<'_, T> {
+        self.with_state::<PreemptIrqSaveState>()
+            .lock_nested(subclass)
     }
 
     /// Attempts to acquire the lock after disabling preemption and IRQs.
@@ -352,5 +374,111 @@ impl<T: fmt::Debug> fmt::Debug for SpinRwLock<T> {
                 .field("data", &"<write locked>")
                 .finish(),
         }
+    }
+}
+
+#[cfg(all(test, feature = "host-test"))]
+mod tests {
+    use std::{
+        sync::{Arc, mpsc},
+        thread,
+    };
+
+    use super::{SpinLock, SpinRwLock};
+    use crate::context::host_context_snapshot;
+
+    #[test]
+    fn spin_lock_acquisition_method_selects_context_policy() {
+        let lock = SpinLock::new(());
+        assert_eq!(host_context_snapshot(), (0, true));
+
+        let guard = lock.lock();
+        assert_eq!(host_context_snapshot(), (1, true));
+        drop(guard);
+        assert_eq!(host_context_snapshot(), (0, true));
+
+        let guard = lock.lock_irqsave();
+        assert_eq!(host_context_snapshot(), (1, false));
+        drop(guard);
+        assert_eq!(host_context_snapshot(), (0, true));
+
+        let guard = lock.lock_irqsave_nested(1);
+        assert_eq!(host_context_snapshot(), (1, false));
+        drop(guard);
+        assert_eq!(host_context_snapshot(), (0, true));
+    }
+
+    #[test]
+    fn spin_rwlock_acquisition_method_selects_context_policy() {
+        let lock = SpinRwLock::new(());
+
+        let reader = lock.read();
+        assert_eq!(host_context_snapshot(), (1, true));
+        drop(reader);
+        assert_eq!(host_context_snapshot(), (0, true));
+
+        let writer = lock.write_irqsave();
+        assert_eq!(host_context_snapshot(), (1, false));
+        drop(writer);
+        assert_eq!(host_context_snapshot(), (0, true));
+    }
+
+    #[test]
+    fn failed_spin_lock_try_modes_restore_context() {
+        let lock = Arc::new(SpinLock::new(()));
+        let holder_lock = Arc::clone(&lock);
+        let (held_sender, held_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let holder = thread::spawn(move || {
+            // SAFETY: this thread owns the raw guard and the channel protocol
+            // keeps it alive until the contending thread finishes its tries.
+            let held = unsafe { holder_lock.lock_raw() };
+            held_sender.send(()).unwrap();
+            release_receiver.recv().unwrap();
+            drop(held);
+        });
+        held_receiver.recv().unwrap();
+
+        assert!(lock.try_lock().is_none());
+        assert_eq!(host_context_snapshot(), (0, true));
+        assert!(lock.try_lock_irqsave().is_none());
+        assert_eq!(host_context_snapshot(), (0, true));
+        assert!(unsafe { lock.try_lock_raw() }.is_none());
+        assert_eq!(host_context_snapshot(), (0, true));
+
+        release_sender.send(()).unwrap();
+        holder.join().unwrap();
+    }
+
+    #[test]
+    fn failed_spin_rwlock_try_modes_restore_context() {
+        let lock = Arc::new(SpinRwLock::new(()));
+        let holder_lock = Arc::clone(&lock);
+        let (held_sender, held_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let holder = thread::spawn(move || {
+            // SAFETY: this thread owns the raw writer and the channel protocol
+            // keeps it alive until the contending thread finishes its tries.
+            let held = unsafe { holder_lock.write_raw() };
+            held_sender.send(()).unwrap();
+            release_receiver.recv().unwrap();
+            drop(held);
+        });
+        held_receiver.recv().unwrap();
+
+        assert!(lock.try_read().is_none());
+        assert_eq!(host_context_snapshot(), (0, true));
+        assert!(lock.try_write().is_none());
+        assert_eq!(host_context_snapshot(), (0, true));
+        assert!(lock.try_read_irqsave().is_none());
+        assert_eq!(host_context_snapshot(), (0, true));
+        assert!(lock.try_write_irqsave().is_none());
+        assert_eq!(host_context_snapshot(), (0, true));
+        assert!(unsafe { lock.try_read_raw() }.is_none());
+        assert!(unsafe { lock.try_write_raw() }.is_none());
+        assert_eq!(host_context_snapshot(), (0, true));
+
+        release_sender.send(()).unwrap();
+        holder.join().unwrap();
     }
 }

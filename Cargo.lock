@@ -461,7 +461,6 @@ dependencies = [
  "aarch64_sysreg",
  "log",
  "numeric-enum-macro",
- "spin",
 ]
 
 [[package]]
@@ -475,7 +474,6 @@ dependencies = [
  "axvm-types",
  "bitmaps",
  "log",
- "spin",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
 ]
@@ -853,7 +851,6 @@ dependencies = [
  "sdmmc-protocol",
  "sg200x-bsp",
  "some-serial",
- "spin",
  "starfive-jh7110-dwmmc",
  "tock-registers 0.10.1",
  "virtio-drivers",
@@ -876,6 +873,7 @@ version = "0.8.7"
 dependencies = [
  "ax-errno",
  "ax-io",
+ "ax-lazyinit",
  "ax-sync",
  "axfs-ng-vfs",
  "bitflags 2.13.1",
@@ -890,7 +888,6 @@ dependencies = [
  "rsext4",
  "scope-local",
  "slab",
- "spin",
  "starry-fatfs",
 ]
 
@@ -900,6 +897,7 @@ version = "0.5.31"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
+ "ax-lazyinit",
  "ax-memory-addr",
  "ax-percpu",
  "ax-plat",
@@ -914,7 +912,6 @@ dependencies = [
  "page-table-generic",
  "quote",
  "rdrive",
- "spin",
 ]
 
 [[package]]
@@ -1026,6 +1023,7 @@ dependencies = [
  "ax-errno",
  "ax-hal",
  "ax-io",
+ "ax-lazyinit",
  "ax-sync",
  "ax-task",
  "axpoll",
@@ -1041,7 +1039,6 @@ dependencies = [
  "rdif-vsock",
  "ringbuf",
  "smoltcp",
- "spin",
 ]
 
 [[package]]
@@ -1051,7 +1048,6 @@ dependencies = [
  "ax-lazyinit",
  "ax-percpu-macros",
  "cpu-local",
- "spin",
  "thiserror 2.0.20",
 ]
 
@@ -1100,6 +1096,7 @@ dependencies = [
  "ax-fs-ng",
  "ax-hal",
  "ax-io",
+ "ax-lazyinit",
  "ax-log",
  "ax-net",
  "ax-runtime",
@@ -1109,7 +1106,6 @@ dependencies = [
  "bindgen 0.72.1",
  "flatten_objects",
  "scope-local",
- "spin",
 ]
 
 [[package]]
@@ -1160,7 +1156,6 @@ dependencies = [
  "rdif-serial",
  "rdrive",
  "sdhci-cv1800",
- "spin",
 ]
 
 [[package]]
@@ -1188,8 +1183,6 @@ dependencies = [
  "ax-task",
  "axbacktrace",
  "libc",
- "lock_api",
- "spin",
 ]
 
 [[package]]
@@ -1228,7 +1221,6 @@ dependencies = [
  "futures-util",
  "log",
  "quote",
- "spin",
 ]
 
 [[package]]
@@ -1255,13 +1247,13 @@ name = "axbacktrace"
 version = "0.4.8"
 dependencies = [
  "addr2line 0.26.1",
+ "ax-lazyinit",
  "axpanic",
  "axtest",
  "cfg-if",
  "gimli 0.33.0",
  "log",
  "paste",
- "spin",
 ]
 
 [[package]]
@@ -1351,7 +1343,6 @@ dependencies = [
 name = "axfs-ng-vfs"
 version = "0.5.8"
 dependencies = [
- "ax-crate-interface",
  "ax-errno",
  "ax-sync",
  "axtest",
@@ -1401,11 +1392,11 @@ version = "0.3.4"
 dependencies = [
  "ax-cgroup",
  "ax-errno",
+ "ax-lazyinit",
  "ax-sync",
  "linux-raw-sys 0.12.1",
  "log",
  "quote",
- "spin",
 ]
 
 [[package]]
@@ -1420,6 +1411,7 @@ dependencies = [
  "ax-cpu",
  "ax-driver",
  "ax-errno",
+ "ax-lazyinit",
  "ax-memory-addr",
  "ax-percpu",
  "ax-plat",
@@ -1430,19 +1422,18 @@ dependencies = [
  "rdrive",
  "someboot",
  "somehal",
- "spin",
 ]
 
 [[package]]
 name = "axpoll"
 version = "0.5.4"
 dependencies = [
+ "ax-lazyinit",
  "ax-sync",
  "axtest",
  "bitflags 2.13.1",
  "futures",
  "linux-raw-sys 0.12.1",
- "spin",
  "tokio",
 ]
 
@@ -1519,8 +1510,8 @@ dependencies = [
 name = "axvirtio-common"
 version = "0.1.0"
 dependencies = [
- "ax-kspin",
  "ax-memory-addr",
+ "ax-sync",
  "axaddrspace",
  "axvm-types",
  "log",
@@ -1530,8 +1521,8 @@ dependencies = [
 name = "axvirtio-net"
 version = "0.1.0"
 dependencies = [
- "ax-kspin",
  "ax-memory-addr",
+ "ax-sync",
  "axaddrspace",
  "axdevice_base",
  "axvirtio-common",
@@ -3010,6 +3001,7 @@ name = "driver-tests"
 version = "0.1.0"
 dependencies = [
  "ax-driver",
+ "ax-lazyinit",
  "ax-sync",
  "axklib",
  "eth-intel",
@@ -3021,7 +3013,6 @@ dependencies = [
  "rdrive",
  "rockchip-soc",
  "some-serial",
- "spin",
 ]
 
 [[package]]
@@ -4947,7 +4938,6 @@ dependencies = [
  "bitflags 2.13.1",
  "cpu-local",
  "log",
- "spin",
  "tock-registers 0.10.1",
 ]
 
@@ -5419,7 +5409,6 @@ dependencies = [
  "mbarrier",
  "mmio-api",
  "rdif-block",
- "spin",
  "tock-registers 0.10.1",
 ]
 
@@ -6597,6 +6586,7 @@ name = "rdrive"
 version = "0.23.9"
 dependencies = [
  "acpi",
+ "ax-lazyinit",
  "ax-sync",
  "axtest",
  "fdt-edit",
@@ -6612,7 +6602,6 @@ dependencies = [
  "rdif-power",
  "rdif-reset",
  "rdrive-macros",
- "spin",
  "thiserror 2.0.20",
  "x86",
 ]
@@ -6934,7 +6923,6 @@ dependencies = [
  "mbarrier",
  "num-align",
  "rdif-base",
- "spin",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
 ]
@@ -7257,7 +7245,6 @@ dependencies = [
 name = "scope-local"
 version = "0.4.5"
 dependencies = [
- "ax-crate-interface",
  "ax-lazyinit",
  "ax-percpu",
  "ax-sync",
@@ -7762,7 +7749,6 @@ dependencies = [
  "smccc",
  "some-serial",
  "somehal-macros",
- "spin",
  "syn 3.0.3",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
@@ -7795,7 +7781,6 @@ dependencies = [
  "sbi-rt",
  "someboot",
  "somehal-macros",
- "spin",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
  "x2apic",
@@ -7810,15 +7795,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
-]
-
-[[package]]
-name = "spin"
-version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8abadc99fd9c7bbb7d0ca2b31d72a067d0c0dcd7aad25ab8cac71ba91417694b"
-dependencies = [
- "lock_api",
 ]
 
 [[package]]
@@ -7965,7 +7941,6 @@ dependencies = [
  "sg200x-jpu",
  "slab",
  "some-serial",
- "spin",
  "starry-process",
  "starry-signal",
  "starry-vm",
@@ -9089,7 +9064,6 @@ dependencies = [
  "futures",
  "log",
  "num_enum",
- "spin",
  "thiserror 2.0.20",
 ]
 

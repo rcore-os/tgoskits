@@ -47,6 +47,7 @@ ax-alloc = { workspace = true, optional = true }
 ax-cpu.workspace = true
 cpu-local.workspace = true
 ax-plat.workspace = true
+ax-lazyinit.workspace = true
 cfg-if.workspace = true
 fdt-parser = "0.4"
 heapless = "0.9"
@@ -57,7 +58,6 @@ ax-percpu.workspace = true
 axplat-dyn = { workspace = true, default-features = false }
 page-table-generic = { workspace = true, optional = true }
 rdrive.workspace = true
-spin.workspace = true
 
 [build-dependencies]
 quote = { workspace = true }

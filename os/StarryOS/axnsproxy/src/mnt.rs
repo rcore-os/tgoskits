@@ -5,8 +5,8 @@ use crate::IrqMutex;
 
 /// The initial root mount namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWNS)` or `clone(CLONE_NEWNS)`.
-pub static ROOT_MNT_NS: spin::LazyLock<Arc<IrqMutex<MntNamespace>>> =
-    spin::LazyLock::new(|| Arc::new(IrqMutex::new(MntNamespace::new_root())));
+pub static ROOT_MNT_NS: ax_lazyinit::LazyLock<Arc<IrqMutex<MntNamespace>>> =
+    ax_lazyinit::LazyLock::new(|| Arc::new(IrqMutex::new(MntNamespace::new_root())));
 
 static MNT_NS_ID: AtomicU64 = AtomicU64::new(1);
 

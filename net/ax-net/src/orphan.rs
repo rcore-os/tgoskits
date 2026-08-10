@@ -24,13 +24,13 @@
 
 use alloc::vec::Vec;
 
+use ax_lazyinit::LazyLock;
 use ax_sync::Mutex;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp,
     time::Instant,
 };
-use spin::LazyLock;
 
 /// Orphaned TCP socket awaiting final cleanup.
 struct OrphanSocket {

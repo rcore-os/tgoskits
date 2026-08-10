@@ -2,7 +2,7 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_sync::SpinLock as Mutex;
 use axaddrspace::GuestMemoryAccessor;
 use axvirtio_common::{
     DescriptorChain, MmioReadOutcome, MmioWriteAction, VirtioMmioState, VirtioQueue, VirtioResult,
@@ -109,7 +109,7 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
     fn config_image(&self) -> [u8; 12] {
         let mut img = [0u8; 12];
         img[0..6].copy_from_slice(&self.mac);
-        let status = self.link.lock().status_bits();
+        let status = self.link.lock_irqsave().status_bits();
         img[6..8].copy_from_slice(&status.to_le_bytes());
         img[8..10].copy_from_slice(&1u16.to_le_bytes()); // one RX/TX pair
         let mtu = self.mtu.unwrap_or(DEFAULT_MTU);
@@ -285,7 +285,7 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
         if !self.state.is_driver_ok() {
             return Err(NetError::NotReady);
         }
-        if *self.link.lock() == LinkStatus::Down {
+        if *self.link.lock_irqsave() == LinkStatus::Down {
             return Err(NetError::LinkDown);
         }
         if frame.len() > MAX_FRAME_SIZE {
@@ -384,7 +384,7 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
     /// Change the link status. Bumps config generation and raises the
     /// config-change interrupt bit so a watching driver re-reads config space.
     pub fn set_link_status(&self, link: LinkStatus) -> DeviceEvent {
-        *self.link.lock() = link;
+        *self.link.lock_irqsave() = link;
         self.state.bump_config_generation();
         self.state.set_interrupt(vc::VIRTIO_MMIO_INT_CONFIG);
         DeviceEvent::InterruptPending

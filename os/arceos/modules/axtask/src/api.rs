@@ -35,8 +35,8 @@ pub type AxTaskRef = Arc<AxTask>;
 pub type WeakAxTaskRef = Weak<AxTask>;
 
 #[cfg(feature = "multitask")]
-static TASK_REGISTRY: spin::LazyLock<ax_sync::SpinRwLock<BTreeMap<u64, WeakAxTaskRef>>> =
-    spin::LazyLock::new(|| ax_sync::SpinRwLock::new(BTreeMap::new()));
+static TASK_REGISTRY: ax_lazyinit::LazyLock<ax_sync::SpinRwLock<BTreeMap<u64, WeakAxTaskRef>>> =
+    ax_lazyinit::LazyLock::new(|| ax_sync::SpinRwLock::new(BTreeMap::new()));
 
 /// The wrapper type for [`ax_cpumask::CpuMask`] with SMP configuration.
 pub type AxCpuMask = ax_cpumask::CpuMask<{ crate::build_info::CPU_CAPACITY }>;
@@ -146,7 +146,7 @@ pub fn init_scheduler() {
 }
 
 pub(crate) fn cpu_mask_full() -> AxCpuMask {
-    use spin::LazyLock;
+    use ax_lazyinit::LazyLock;
 
     static CPU_MASK_FULL: LazyLock<AxCpuMask> = LazyLock::new(|| {
         let cpu_num = ax_hal::cpu_num();
@@ -457,7 +457,15 @@ impl AtomicContextSnapshot {
         let preempt_count = {
             #[cfg(feature = "preempt")]
             {
-                current.as_ref().map_or(0, |curr| curr.preempt_count())
+                let task_depth = current.as_ref().map_or(0, |curr| curr.preempt_count());
+                #[cfg(target_os = "none")]
+                {
+                    task_depth
+                }
+                #[cfg(not(target_os = "none"))]
+                {
+                    task_depth + ax_sync::host_preempt_depth()
+                }
             }
             #[cfg(not(feature = "preempt"))]
             {

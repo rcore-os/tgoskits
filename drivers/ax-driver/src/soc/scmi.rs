@@ -112,7 +112,7 @@ fn clock_protocol_child(
 
 pub fn clock_rate(phandle: Phandle, clock_id: u32) -> Option<u64> {
     let provider = clock_provider(phandle)?;
-    let provider = provider.lock_irqsave().ok()?;
+    let provider = provider.lock().ok()?;
     provider
         .get_rate(rdif_clk::ClockId::from(clock_id as usize))
         .map_err(|error| {
@@ -125,7 +125,7 @@ pub fn clock_rate(phandle: Phandle, clock_id: u32) -> Option<u64> {
 
 pub fn enable_clock(phandle: Phandle, clock_id: u32) -> Option<()> {
     let provider = clock_provider(phandle)?;
-    let mut provider = provider.lock_irqsave().ok()?;
+    let mut provider = provider.lock().ok()?;
     provider
         .enable(rdif_clk::ClockId::from(clock_id as usize))
         .map_err(|error| {
@@ -138,7 +138,7 @@ pub fn enable_clock(phandle: Phandle, clock_id: u32) -> Option<()> {
 
 pub fn set_clock_rate(phandle: Phandle, clock_id: u32, rate: u64) -> Option<()> {
     let provider = clock_provider(phandle)?;
-    let mut provider = provider.lock_irqsave().ok()?;
+    let mut provider = provider.lock().ok()?;
     provider
         .set_rate(rdif_clk::ClockId::from(clock_id as usize), rate)
         .map_err(|error| {

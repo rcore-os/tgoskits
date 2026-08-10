@@ -42,7 +42,7 @@ cargo arceos qemu --package arceos-httpserver   # 同上
 | `cargo xtask ktest` | 在 QEMU 或板卡运行 harness=false 内核 axtest | [内核测试](./ktest) |
 | `cargo xtask clippy` | workspace clippy（feature × target 矩阵） | [Clippy 检查](./clippy) |
 | `cargo xtask sync-lint` | 可疑 `Relaxed` 原子序检查 | [Sync Lint](./sync_lint) |
-| `cargo xtask spin-lint` | vendored `spin` 迁移守护 | [Spin Lint](./spin_lint) |
+| `cargo xtask lock-lint` | 统一锁依赖与 runtime provider 边界检查 | [Lock Lint](./lock_lint) |
 | **辅助工具** | | |
 | `cargo xtask board` | 远程板卡管理（ls/connect/config） | [板卡管理](./board) |
 | `cargo xtask backtrace` | host 端 backtrace 符号化 | [Backtrace 符号化](./backtrace) |
@@ -117,13 +117,14 @@ cargo xtask sync-lint --since origin/main # 增量
 
 ### 3.5 依赖检查
 
-守护 vendored `spin` 迁移结果，禁止外部 `spin` 与 `spin::RwLock`。无参数。
+守护统一锁边界，禁止已移除锁 crate、第一方直接 `spin`、Starry/Axvisor facade 绕过和
+重复 runtime provider。无参数。
 
 ```bash
-cargo xtask spin-lint
+cargo xtask lock-lint
 ```
 
-详见 [Spin Lint](./spin_lint)。
+详见 [Lock Lint](./lock_lint)。
 
 ---
 

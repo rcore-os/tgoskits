@@ -1077,42 +1077,11 @@ mod tests {
     use alloc::string::ToString;
     use core::{
         any::Any,
-        cell::Cell,
         sync::atomic::{AtomicUsize, Ordering},
     };
 
     use super::*;
     use crate::StatFs;
-
-    std::thread_local! {
-        static PREEMPT_DEPTH: Cell<usize> = const { Cell::new(0) };
-    }
-
-    struct CriticalSectionOpsImpl;
-
-    #[ax_crate_interface::impl_interface]
-    impl ax_sync::CriticalSectionOps for CriticalSectionOpsImpl {
-        fn enable_preempt() {
-            PREEMPT_DEPTH.with(|depth| {
-                depth.set(
-                    depth
-                        .get()
-                        .checked_sub(1)
-                        .expect("preemption depth must be balanced"),
-                );
-            });
-        }
-
-        fn disable_preempt() {
-            PREEMPT_DEPTH.with(|depth| depth.set(depth.get() + 1));
-        }
-
-        fn irq_save_and_disable() -> usize {
-            1
-        }
-
-        fn irq_restore(_state: usize) {}
-    }
 
     struct MockFs;
     struct ContextCheckingFs;
@@ -1146,13 +1115,11 @@ mod tests {
         }
 
         fn root_dir(&self) -> DirEntry {
-            PREEMPT_DEPTH.with(|depth| {
-                assert_eq!(
-                    depth.get(),
-                    0,
-                    "filesystem callbacks must run outside the mount topology guard"
-                );
-            });
+            assert_eq!(
+                ax_sync::host_preempt_depth(),
+                0,
+                "filesystem callbacks must run outside the mount topology guard"
+            );
             make_dir_entry("mounted-root")
         }
 

@@ -510,6 +510,7 @@ impl LockGraph {
         }
     }
 
+    #[cfg(test)]
     fn record_acquire(
         &mut self,
         held_before: &HeldLockSnapshot,
@@ -537,6 +538,7 @@ struct GraphState {
 unsafe impl Sync for GraphState {}
 
 struct GraphGuard {
+    #[cfg(target_os = "none")]
     irq_state: usize,
 }
 
@@ -544,9 +546,6 @@ impl GraphGuard {
     fn acquire() -> Self {
         #[cfg(target_os = "none")]
         let irq_state = call_interface!(LockdepOps::irq_save_and_disable);
-        #[cfg(not(target_os = "none"))]
-        let irq_state = 0;
-
         while GRAPH_STATE
             .lock
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -556,7 +555,10 @@ impl GraphGuard {
                 core::hint::spin_loop();
             }
         }
-        Self { irq_state }
+        Self {
+            #[cfg(target_os = "none")]
+            irq_state,
+        }
     }
 }
 
@@ -687,7 +689,7 @@ fn with_current_task_held_locks_mut<R>(f: impl FnOnce(&mut HeldLockStack) -> R) 
     HELD_LOCKS.with(|held_locks| f(&mut held_locks.borrow_mut()))
 }
 
-#[cfg(all(target_os = "none", target_os = "none", not(any(test, doctest))))]
+#[cfg(all(target_os = "none", not(any(test, doctest))))]
 fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot) {
     call_interface!(LockdepOps::collect_current_task_held_locks, snapshot);
 }
@@ -697,7 +699,7 @@ fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot) {
     with_current_task_held_locks(|stack| snapshot.extend(stack));
 }
 
-#[cfg(all(target_os = "none", target_os = "none", not(any(test, doctest))))]
+#[cfg(all(target_os = "none", not(any(test, doctest))))]
 fn push_current_task_held_lock(held: HeldLock) {
     call_interface!(LockdepOps::push_current_task_held_lock, held);
 }
@@ -707,7 +709,7 @@ fn push_current_task_held_lock(held: HeldLock) {
     with_current_task_held_locks_mut(|stack| stack.push(held));
 }
 
-#[cfg(all(target_os = "none", target_os = "none", not(any(test, doctest))))]
+#[cfg(all(target_os = "none", not(any(test, doctest))))]
 fn pop_current_task_held_lock(lock_addr: usize) {
     call_interface!(LockdepOps::pop_current_task_held_lock, lock_addr);
 }
@@ -717,7 +719,7 @@ fn pop_current_task_held_lock(lock_addr: usize) {
     with_current_task_held_locks_mut(|stack| stack.pop_checked(lock_addr));
 }
 
-#[cfg(all(target_os = "none", target_os = "none", not(any(test, doctest))))]
+#[cfg(all(target_os = "none", not(any(test, doctest))))]
 fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
     let _oops_guard = axpanic::enter_oops();
 
@@ -767,23 +769,6 @@ pub fn current_task_held_lock_snapshot() -> HeldLockSnapshot {
     snapshot
 }
 
-pub fn prepare_acquire_with_snapshot(
-    map: &LockdepMap,
-    lock_kind: &'static str,
-    addr: usize,
-    caller: &'static Location<'static>,
-    held_before: HeldLockSnapshot,
-) -> PreparedAcquire {
-    prepare_acquire_with_snapshot_nested(
-        map,
-        lock_kind,
-        addr,
-        caller,
-        held_before,
-        DEFAULT_LOCK_SUBCLASS,
-    )
-}
-
 pub fn prepare_acquire_with_snapshot_nested(
     map: &LockdepMap,
     lock_kind: &'static str,
@@ -826,6 +811,7 @@ pub fn prepare_acquire_with_snapshot_nested_with_sleep(
     })
 }
 
+#[cfg(test)]
 pub fn prepare_acquire_with_snapshot_checked(
     map: &LockdepMap,
     _lock_kind: &'static str,
@@ -843,6 +829,7 @@ pub fn prepare_acquire_with_snapshot_checked(
     )
 }
 
+#[cfg(test)]
 pub fn prepare_acquire_with_snapshot_checked_nested(
     map: &LockdepMap,
     _lock_kind: &'static str,
@@ -956,6 +943,7 @@ fn conflicting_held_lock(
     lockdep_fatal(format_args!("{empty_message}"))
 }
 
+#[cfg(test)]
 pub fn finish_acquire_with_stack(
     prepared: PreparedAcquire,
     addr: usize,
@@ -975,6 +963,7 @@ pub fn finish_acquire_task(prepared: PreparedAcquire, addr: usize) {
     });
 }
 
+#[cfg(test)]
 pub fn release_from_stack(lock_addr: usize, held_locks: &mut HeldLockStack) {
     held_locks.pop_checked(lock_addr);
 }

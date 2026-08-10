@@ -124,8 +124,8 @@ impl SyslogState {
     }
 }
 
-static SYSLOG_STATE: spin::LazyLock<Mutex<SyslogState>> =
-    spin::LazyLock::new(|| Mutex::new(SyslogState::new()));
+static SYSLOG_STATE: ax_lazyinit::LazyLock<Mutex<SyslogState>> =
+    ax_lazyinit::LazyLock::new(|| Mutex::new(SyslogState::new()));
 
 pub fn sys_reboot(magic: u32, magic2: u32, cmd: u32, _arg: usize) -> AxResult<isize> {
     if !current().as_thread().cred().has_cap_sys_boot() {

@@ -15,10 +15,10 @@ use core::{
     task::{Context, Waker},
 };
 
+use ax_lazyinit::OnceLock;
 use ax_sync::SpinLock;
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
-use spin::Once;
 
 bitflags! {
     /// I/O events.
@@ -174,7 +174,7 @@ impl Drop for Inner {
 }
 
 /// A data structure for waking up tasks that are waiting for I/O events.
-pub struct PollSet(Once<SpinLock<Inner>>);
+pub struct PollSet(OnceLock<SpinLock<Inner>>);
 
 impl Default for PollSet {
     fn default() -> Self {
@@ -185,7 +185,7 @@ impl Default for PollSet {
 impl PollSet {
     /// Creates a new empty [`PollSet`].
     pub const fn new() -> Self {
-        Self(Once::new())
+        Self(OnceLock::new())
     }
 
     /// Registers a waker for the requested I/O events.

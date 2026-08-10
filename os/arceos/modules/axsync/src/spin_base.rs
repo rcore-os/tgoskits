@@ -3,7 +3,7 @@
 //! Waiting threads hammer an atomic variable until it becomes available. Best-case latency is low, but worst-case
 //! latency is theoretically infinite.
 //!
-//! Based on [`spin::Mutex`](https://docs.rs/spin/latest/src/spin/mutex/spin.rs.html).
+//! The atomic algorithm derives from the upstream `spin` crate's mutex.
 
 #[cfg(feature = "smp")]
 use core::sync::atomic::{AtomicBool, Ordering};

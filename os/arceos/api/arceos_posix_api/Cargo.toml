@@ -47,10 +47,10 @@ ax-task = { workspace = true, optional = true }
 # Other crates
 ax-errno.workspace = true
 ax-io.workspace = true
+ax-lazyinit.workspace = true
 axpoll.workspace = true
 flatten_objects = "0.2"
 scope-local = { workspace = true, optional = true }
-spin.workspace = true
 
 [build-dependencies]
 bindgen.workspace = true

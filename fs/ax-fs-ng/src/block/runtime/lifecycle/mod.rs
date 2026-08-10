@@ -16,6 +16,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_lazyinit::OnceLock;
 use controller::{ControllerPort, run_controller};
 use device::CpuSubmissionChannel;
 use irq_framework::IrqId;
@@ -27,7 +28,6 @@ use rdif_block::{
     GroupControllerUpdate, HardwareQueue, IrqEndpoint, OwnedRequest, OwnedRequestBatch, QueueInfo,
     RequestOp, SharedIrqEndpoint, SubmitError, validate_owned_request,
 };
-use spin::Once;
 
 use super::{
     channel::{BoundedChannel, SendError},
@@ -53,7 +53,7 @@ const DEVICE_READY: u8 = 1;
 const DEVICE_FAILED: u8 = 2;
 const DEVICE_STOPPED: u8 = 3;
 
-static BLOCK_RUNTIME: Once<Arc<BlockRuntime>> = Once::new();
+static BLOCK_RUNTIME: OnceLock<Arc<BlockRuntime>> = OnceLock::new();
 static BLOCK_READS: AtomicU64 = AtomicU64::new(0);
 static BLOCK_SECTORS_READ: AtomicU64 = AtomicU64::new(0);
 static BLOCK_WRITES: AtomicU64 = AtomicU64::new(0);

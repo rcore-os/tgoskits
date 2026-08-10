@@ -11,21 +11,6 @@ use std::{
 
 use scope_local::scope_local;
 
-struct CriticalSectionOpsImpl;
-
-#[ax_crate_interface::impl_interface]
-impl ax_sync::CriticalSectionOps for CriticalSectionOpsImpl {
-    fn enable_preempt() {}
-
-    fn disable_preempt() {}
-
-    fn irq_save_and_disable() -> usize {
-        1
-    }
-
-    fn irq_restore(_state: usize) {}
-}
-
 static INITIALIZER_ENTERED: OnceLock<Barrier> = OnceLock::new();
 static RELEASE_INITIALIZER: OnceLock<Barrier> = OnceLock::new();
 static WAITER_READY: OnceLock<Barrier> = OnceLock::new();

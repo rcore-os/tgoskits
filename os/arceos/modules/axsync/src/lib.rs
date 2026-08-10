@@ -8,7 +8,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
-#[cfg(any(test, feature = "host-test", not(target_os = "none")))]
+#[cfg(any(test, not(target_os = "none")))]
 extern crate std;
 
 #[cfg(all(axtest, feature = "axtest"))]
@@ -46,11 +46,18 @@ pub use self::spin_lockdep::{
     PreparedAcquire, current_task_held_lock_snapshot, dump_lockdep_trace,
     set_lockdep_trace_enabled,
 };
-pub use self::{
-    context::{CriticalSectionOps, IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard},
-    spin::{
-        RawSpinLockGuard, RawSpinRwLockReadGuard, RawSpinRwLockWriteGuard, SpinLock, SpinLockGuard,
-        SpinLockIrqSaveGuard, SpinRwLock, SpinRwLockIrqSaveReadGuard, SpinRwLockIrqSaveWriteGuard,
-        SpinRwLockReadGuard, SpinRwLockWriteGuard,
-    },
+#[cfg(not(feature = "lockdep"))]
+/// No-op trace switch for builds without lockdep.
+pub const fn set_lockdep_trace_enabled(_enabled: bool) {}
+#[cfg(not(feature = "lockdep"))]
+/// No-op trace dump for builds without lockdep.
+pub const fn dump_lockdep_trace() {}
+#[cfg(not(target_os = "none"))]
+#[doc(hidden)]
+pub use self::context::host_preempt_depth;
+pub use self::context::{CriticalSectionOps, IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard};
+pub use crate::spin::{
+    RawSpinLockGuard, RawSpinRwLockReadGuard, RawSpinRwLockWriteGuard, SpinLock, SpinLockGuard,
+    SpinLockIrqSaveGuard, SpinRwLock, SpinRwLockIrqSaveReadGuard, SpinRwLockIrqSaveWriteGuard,
+    SpinRwLockReadGuard, SpinRwLockWriteGuard,
 };

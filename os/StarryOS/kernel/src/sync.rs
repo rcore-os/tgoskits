@@ -5,7 +5,6 @@
 
 pub(crate) use ax_sync::{
     LockdepMutexExt, Mutex, MutexGuard, PreemptIrqSaveGuard, RawIrqSaveMutex as RawSpinNoIrq,
-    SpinLock as NoPreemptMutex, SpinLockGuard as NoPreemptMutexGuard, SpinRwLock as RwLock,
-    SpinRwLockReadGuard as RwLockReadGuard, SpinRwLockWriteGuard as RwLockWriteGuard,
+    SpinLock, SpinLock as NoPreemptMutex, SpinRwLock as RwLock,
 };
-pub(crate) use axnsproxy::{IrqMutex, IrqMutexGuard};
+pub(crate) use axnsproxy::IrqMutex;

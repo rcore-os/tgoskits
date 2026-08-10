@@ -129,7 +129,7 @@ pub struct EventDev {
     waiters: PollSet,
     /// IRQ domain id the runtime resolved for the underlying driver.
     irq: Option<IrqId>,
-    irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
+    irq_handle: ax_lazyinit::OnceLock<ax_runtime::hal::irq::IrqHandle>,
     /// Monotonic timestamp (ns) of the last successful IRQ drain.
     /// When this is recent, IRQ delivery is considered healthy and the
     /// polling fallback stays at low frequency even with active waiters.
@@ -198,7 +198,7 @@ impl EventDev {
             }),
             waiters: PollSet::new(),
             irq,
-            irq_handle: spin::Once::new(),
+            irq_handle: ax_lazyinit::OnceLock::new(),
             last_irq_event: AtomicU64::new(0),
             polling_requested: AtomicBool::new(false),
             ev_bits,

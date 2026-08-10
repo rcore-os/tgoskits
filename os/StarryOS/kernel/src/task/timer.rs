@@ -3,13 +3,13 @@
 use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap, sync::Arc};
 use core::{mem, time::Duration};
 
+use ax_lazyinit::LazyLock;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_task::{
     WeakAxTaskRef, current,
     future::{block_on, timeout_at_wall},
 };
 use event_listener::{Event, listener};
-use spin::LazyLock;
 use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;

@@ -5,8 +5,8 @@ use crate::IrqMutex;
 
 /// The initial root PID namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWPID)` or `clone(CLONE_NEWPID)`.
-pub static ROOT_PID_NS: spin::LazyLock<Arc<IrqMutex<PidNamespace>>> =
-    spin::LazyLock::new(|| Arc::new(IrqMutex::new(PidNamespace::new_root())));
+pub static ROOT_PID_NS: ax_lazyinit::LazyLock<Arc<IrqMutex<PidNamespace>>> =
+    ax_lazyinit::LazyLock::new(|| Arc::new(IrqMutex::new(PidNamespace::new_root())));
 
 static NEXT_PID_NS_ID: AtomicU64 = AtomicU64::new(1);
 

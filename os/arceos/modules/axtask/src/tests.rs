@@ -1,4 +1,6 @@
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+#[cfg(feature = "irq")]
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "irq")]
 use std::sync::{Arc, Barrier};
 use std::{

@@ -62,7 +62,12 @@ paging = ["alloc", "ax-runtime/paging"]
 tls = ["ax-runtime/tls"]
 
 # Multi-threading and scheduler
-multitask = ["ax-api/multitask", "ax-posix-api/multitask", "ax-runtime/multitask"]
+multitask = [
+    "ax-api/multitask",
+    "ax-posix-api/multitask",
+    "ax-runtime/multitask",
+    "ax-sync/sleep",
+]
 lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep", "ax-sync/lockdep"]
 task-ext = ["ax-task/task-ext"]
 tracepoint-hooks = ["ax-task/tracepoint-hooks"]
@@ -141,5 +146,3 @@ ax-posix-api.workspace = true
 ax-runtime.workspace = true
 ax-task.workspace = true
 libc.workspace = true
-lock_api.workspace = true
-spin.workspace = true

@@ -14,7 +14,7 @@ use starry_vm::VmMutPtr;
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, close_file_like},
     mm::copy_from_kernel,
-    sync::IrqMutex,
+    sync::SpinLock,
     task::{AsThread, ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task},
 };
 
@@ -260,9 +260,11 @@ impl CloneArgs {
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
                 old_proc_data.signal.actions()
             } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
-                Arc::new(IrqMutex::new(Default::default()))
+                Arc::new(SpinLock::new(Default::default()))
             } else {
-                Arc::new(IrqMutex::new(old_proc_data.signal.actions().lock().clone()))
+                Arc::new(SpinLock::new(
+                    old_proc_data.signal.actions().lock_irqsave().clone(),
+                ))
             };
 
             let proc_data = ProcessData::new(

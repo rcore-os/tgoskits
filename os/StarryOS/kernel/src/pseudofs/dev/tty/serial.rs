@@ -2,6 +2,7 @@ use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxResult};
+use ax_lazyinit::LazyLock;
 use ax_runtime::{
     hal::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
     serial::{
@@ -10,7 +11,6 @@ use ax_runtime::{
     },
 };
 use rdrive::DeviceId as RDriveDeviceId;
-use spin::LazyLock;
 use starry_process::Process;
 
 use super::{

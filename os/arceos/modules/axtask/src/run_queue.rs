@@ -7,7 +7,14 @@ use ax_hal::percpu::{PreviousThreadBinding, this_cpu_id};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_sched::BaseScheduler;
-use ax_sync::{GuardState, RawState, SpinLock, SpinLockIrqSaveGuard};
+#[cfg(all(
+    feature = "smp",
+    feature = "ipi",
+    feature = "preempt",
+    not(feature = "host-test")
+))]
+use ax_sync::RawState;
+use ax_sync::{GuardState, SpinLock, SpinLockIrqSaveGuard};
 
 use crate::{
     AxCpuMask, AxTaskRef, Scheduler, TaskInner, WaitQueue,
@@ -466,6 +473,7 @@ mod rr_tests {
     use core::{marker::PhantomData, ptr::NonNull};
 
     use ax_sched::BaseScheduler;
+    use ax_sync::RawState;
 
     use super::{AxRunQueue, AxRunQueueRef, RunQueueAccess, Scheduler, SpinLock, TaskInner};
     use crate::task::TaskState;

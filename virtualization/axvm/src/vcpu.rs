@@ -17,7 +17,7 @@
 use std::{cell::UnsafeCell, format, mem::MaybeUninit};
 
 use ax_std::os::arceos::{
-    guard::NoPreempt,
+    guard::PreemptGuard,
     percpu::{self as ax_percpu, CpuAreaRef, CpuPin},
     sync::IrqSafeMutex as Mutex,
 };
@@ -301,7 +301,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     where
         F: FnOnce() -> T,
     {
-        let _guard = NoPreempt::new();
+        let _guard = PreemptGuard::new();
         // SAFETY: the guard prevents migration through the backend operation,
         // guest run, restoration check, and publication withdrawal.
         unsafe {
@@ -446,7 +446,7 @@ fn set_current_vcpu<A: VmArchVcpuOps>(vcpu: &AxVCpu<A>, pin: &CpuPin<'_>) {
 pub(crate) fn with_current_vcpu<A: VmArchVcpuOps, R>(
     operation: impl FnOnce(Option<&AxVCpu<A>>) -> R,
 ) -> R {
-    let _guard = NoPreempt::new();
+    let _guard = PreemptGuard::new();
     // SAFETY: the guard prevents migration through the closure.
     unsafe { ax_std::os::arceos::percpu::with_cpu_pin(|pin| operation(get_current_vcpu(pin))) }
         .expect("current vCPU lookup requires an installed CPU-local area")

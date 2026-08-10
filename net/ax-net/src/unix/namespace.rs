@@ -32,7 +32,7 @@ pub trait UnixNamespace: Send + Sync {
     fn unbind(&self, path: &str) -> AxResult<()>;
 }
 
-static UNIX_NS: spin::Once<Box<dyn UnixNamespace>> = spin::Once::new();
+static UNIX_NS: ax_lazyinit::OnceLock<Box<dyn UnixNamespace>> = ax_lazyinit::OnceLock::new();
 
 /// Register Unix namespace provider.
 ///

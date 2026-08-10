@@ -50,7 +50,7 @@ pub(crate) use self::{
     seccomp::seccomp_bpf_constants_hold_for_test,
     timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
 };
-use crate::sync::{IrqMutex, Mutex, PreemptIrqSaveGuard, RwLock};
+use crate::sync::{IrqMutex, Mutex, PreemptIrqSaveGuard, RwLock, SpinLock};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyscallTraceState {
@@ -967,7 +967,7 @@ impl ProcessData {
         proc: Arc<Process>,
         image: ProcessImage,
         aspace: Arc<Mutex<AddrSpace>>,
-        signal_actions: Arc<IrqMutex<SignalActions>>,
+        signal_actions: Arc<SpinLock<SignalActions>>,
         exit_signal: Option<Signo>,
         wait_parent_tid: Pid,
         vm_aspace_shared: bool,
