@@ -66,6 +66,13 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if super_block.s_feature_incompat & !supported_incompat != 0 {
             return Err(Ext4Error::unsupported().with_operation("jbd2:features"));
         }
+        if super_block.s_feature_compat != 0 || super_block.s_feature_ro_compat != 0 {
+            return Err(Ext4Error::unsupported().with_operation("jbd2:features"));
+        }
+        let has_csum_v3 = super_block.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0;
+        if has_csum_v3 != (super_block.s_checksum_type == JBD2_CRC32C_CHKSUM) {
+            return Err(Ext4Error::unsupported().with_operation("jbd2:checksum_features"));
+        }
         match super_block.s_checksum_type {
             0 => {}
             JBD2_CRC32C_CHKSUM => {
@@ -379,7 +386,14 @@ mod tests {
     use alloc::vec;
 
     use super::*;
-    use crate::config::BLOCK_SIZE;
+    use crate::{
+        config::BLOCK_SIZE,
+        endian::DiskFormat,
+        jbd2::jbdstruct::{
+            CommitHeader, JBD2_BLOCKTYPE_REVOKE, JBD2_DESCRIPTOR_HEADER_SIZE, JBD2_TAG3_SIZE,
+            JBD2_UUID_SIZE, Jbd2JournalRevokeHeadS, JournalBlockTag3S, JournalHeaderS,
+        },
+    };
 
     struct MemBlockDev {
         data: Vec<u8>,
@@ -400,6 +414,96 @@ mod tests {
                 fail_flush: true,
             }
         }
+    }
+
+    fn reference_crc32c(mut crc: u32, bytes: &[u8]) -> u32 {
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0x82f6_3b78
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        crc
+    }
+
+    fn reference_jbd2_seed(uuid: &[u8; JBD2_UUID_SIZE]) -> u32 {
+        reference_crc32c(u32::MAX, uuid)
+    }
+
+    fn reference_jbd2_tag_checksum(
+        uuid: &[u8; JBD2_UUID_SIZE],
+        sequence: u32,
+        payload: &[u8],
+    ) -> u32 {
+        let checksum = reference_crc32c(reference_jbd2_seed(uuid), &sequence.to_be_bytes());
+        reference_crc32c(checksum, payload)
+    }
+
+    fn reference_jbd2_block_checksum(
+        uuid: &[u8; JBD2_UUID_SIZE],
+        block: &[u8],
+        checksum_offset: usize,
+    ) -> u32 {
+        let checksum = reference_crc32c(reference_jbd2_seed(uuid), &block[..checksum_offset]);
+        let checksum = reference_crc32c(checksum, &[0; 4]);
+        reference_crc32c(checksum, &block[checksum_offset + 4..])
+    }
+
+    fn csum_v3_superblock() -> JournalSuperBllockS {
+        let mut superblock = JournalSuperBllockS::default();
+        superblock.s_maxlen = 64;
+        superblock.s_feature_incompat = JBD2_FEATURE_INCOMPAT_64BIT | JBD2_FEATURE_INCOMPAT_CSUM_V3;
+        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
+        superblock.s_uuid = [0x5a; JBD2_UUID_SIZE];
+        crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
+        superblock
+    }
+
+    fn committed_csum_v3_fixture() -> (MemBlockDev, JournalSuperBllockS, AbsoluteBN) {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        let superblock = csum_v3_superblock();
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128));
+
+        let target = AbsoluteBN::new(10);
+        let payload = vec![0xa5; BLOCK_SIZE];
+        dev.write_blocks(&payload, target, 1, true)
+            .expect("queue csum-v3 metadata");
+        dev.umount_commit().expect("commit csum-v3 metadata");
+
+        let mut inner = dev.into_inner();
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        inner.data[target_start..target_start + BLOCK_SIZE].fill(0);
+
+        let mut replay_superblock = superblock;
+        replay_superblock.s_start = replay_superblock.s_first;
+        replay_superblock.s_sequence = 1;
+        crate::checksum::jbd2_update_superblock_checksum(&mut replay_superblock);
+        replay_superblock.to_disk_bytes(&mut inner.data[128 * BLOCK_SIZE..][..1024]);
+
+        (inner, replay_superblock, target)
+    }
+
+    fn replay_csum_v3_fixture(
+        inner: MemBlockDev,
+        superblock: JournalSuperBllockS,
+        target: AbsoluteBN,
+    ) -> (ReplayStatus, MemBlockDev) {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        let journal_blocks = (128..192).map(AbsoluteBN::new).collect();
+        dev.set_journal_superblock_with_mapping(superblock, journal_blocks)
+            .expect("install csum-v3 journal");
+        let status = dev.journal_replay_checked();
+        let inner = dev.into_inner();
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[target_start..target_start + BLOCK_SIZE],
+            vec![0; BLOCK_SIZE]
+        );
+        (status, inner)
     }
 
     impl BlockIo for MemBlockDev {
@@ -540,6 +644,7 @@ mod tests {
     fn journal_superblock_checksum_is_verified_before_use() {
         let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
         let mut superblock = JournalSuperBllockS::default();
+        superblock.s_feature_incompat |= JBD2_FEATURE_INCOMPAT_CSUM_V3;
         superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
         crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
         superblock.s_checksum ^= 1;
@@ -548,6 +653,173 @@ mod tests {
             .validate_journal_superblock(&superblock, superblock.s_maxlen as usize)
             .expect_err("damaged journal checksum must be rejected");
         assert_eq!(error.kind(), crate::Ext4ErrorKind::ChecksumMismatch);
+    }
+
+    #[test]
+    fn journal_superblock_requires_csum_v3_and_crc32c_together() {
+        let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
+        let mut missing_type = JournalSuperBllockS::default();
+        missing_type.s_feature_incompat |= JBD2_FEATURE_INCOMPAT_CSUM_V3;
+        let error = dev
+            .validate_journal_superblock(&missing_type, missing_type.s_maxlen as usize)
+            .expect_err("csum-v3 requires CRC32C journal superblock checksums");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Unsupported);
+
+        let mut missing_feature = JournalSuperBllockS::default();
+        missing_feature.s_checksum_type = JBD2_CRC32C_CHKSUM;
+        crate::checksum::jbd2_update_superblock_checksum(&mut missing_feature);
+        let error = dev
+            .validate_journal_superblock(&missing_feature, missing_feature.s_maxlen as usize)
+            .expect_err("CRC32C journal superblock checksums require csum-v3 support");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn csum_v3_commit_emits_linux_tag_and_block_checksums() {
+        let (inner, superblock, target) = committed_csum_v3_fixture();
+        let descriptor = &inner.data[129 * BLOCK_SIZE..130 * BLOCK_SIZE];
+        let tag = JournalBlockTag3S::from_disk_bytes(
+            &descriptor[JBD2_DESCRIPTOR_HEADER_SIZE..JBD2_DESCRIPTOR_HEADER_SIZE + JBD2_TAG3_SIZE],
+        );
+        assert_eq!(tag.t_blocknr, target.raw() as u32);
+        assert_eq!(tag.t_blocknr_high, 0);
+        assert_eq!(
+            tag.t_checksum,
+            reference_jbd2_tag_checksum(
+                &superblock.s_uuid,
+                1,
+                &inner.data[130 * BLOCK_SIZE..131 * BLOCK_SIZE],
+            )
+        );
+        let descriptor_checksum =
+            u32::from_be_bytes(descriptor[BLOCK_SIZE - 4..].try_into().unwrap());
+        assert_eq!(
+            descriptor_checksum,
+            reference_jbd2_block_checksum(&superblock.s_uuid, descriptor, BLOCK_SIZE - 4,)
+        );
+
+        let commit_bytes = &inner.data[131 * BLOCK_SIZE..132 * BLOCK_SIZE];
+        let commit = CommitHeader::from_disk_bytes(commit_bytes);
+        assert_eq!(commit.h_chksum_type, 0);
+        assert_eq!(commit.h_chksum_size, 0);
+        assert_eq!(
+            commit.h_chksum[0],
+            reference_jbd2_block_checksum(&superblock.s_uuid, commit_bytes, 16)
+        );
+    }
+
+    #[test]
+    fn csum_v3_writer_transaction_replays_after_checkpoint_loss() {
+        let (inner, superblock, target) = committed_csum_v3_fixture();
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        dev.set_journal_superblock_with_mapping(
+            superblock,
+            (128..192).map(AbsoluteBN::new).collect(),
+        )
+        .expect("install writer-produced csum-v3 journal");
+
+        assert_eq!(dev.journal_replay_checked(), ReplayStatus::Complete);
+        let inner = dev.into_inner();
+        assert!(
+            inner.data[target_start..target_start + BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0xa5)
+        );
+    }
+
+    fn assert_csum_v3_corruption_is_rejected(corrupt: impl FnOnce(&mut Vec<u8>)) {
+        let (mut inner, superblock, target) = committed_csum_v3_fixture();
+        corrupt(&mut inner.data);
+        let (status, _) = replay_csum_v3_fixture(inner, superblock, target);
+        assert_eq!(status, ReplayStatus::Incomplete);
+    }
+
+    #[test]
+    fn csum_v3_replay_rejects_descriptor_payload_and_commit_corruption_before_home_write() {
+        assert_csum_v3_corruption_is_rejected(|data| {
+            data[130 * BLOCK_SIZE - 1] ^= 1;
+        });
+        assert_csum_v3_corruption_is_rejected(|data| {
+            data[130 * BLOCK_SIZE + 64] ^= 1;
+        });
+        assert_csum_v3_corruption_is_rejected(|data| {
+            data[131 * BLOCK_SIZE + 16] ^= 1;
+        });
+    }
+
+    #[test]
+    fn csum_v3_replay_rejects_corrupt_revoke_tail_before_home_write() {
+        let (mut inner, superblock, target) = committed_csum_v3_fixture();
+        inner
+            .data
+            .copy_within(131 * BLOCK_SIZE..132 * BLOCK_SIZE, 132 * BLOCK_SIZE);
+
+        let mut revoke = vec![0u8; BLOCK_SIZE];
+        Jbd2JournalRevokeHeadS {
+            r_header: JournalHeaderS {
+                h_magic: JBD2_MAGIC,
+                h_blocktype: JBD2_BLOCKTYPE_REVOKE,
+                h_sequence: 1,
+            },
+            r_count: 16,
+        }
+        .to_disk_bytes(&mut revoke);
+        let checksum = crate::checksum::jbd2_descriptor_block_csum32(&superblock.s_uuid, &revoke)
+            .expect("revoke checksum");
+        revoke[BLOCK_SIZE - 4..].copy_from_slice(&checksum.to_be_bytes());
+        revoke[BLOCK_SIZE - 1] ^= 1;
+        inner.data[131 * BLOCK_SIZE..132 * BLOCK_SIZE].copy_from_slice(&revoke);
+
+        let (status, _) = replay_csum_v3_fixture(inner, superblock, target);
+        assert_eq!(status, ReplayStatus::Incomplete);
+    }
+
+    #[test]
+    fn csum_v3_replay_validates_all_payloads_before_any_home_write() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        let superblock = csum_v3_superblock();
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128));
+        let first_target = AbsoluteBN::new(10);
+        let second_target = AbsoluteBN::new(11);
+        dev.write_blocks(&vec![0xa5; BLOCK_SIZE * 2], first_target, 2, true)
+            .expect("queue two csum-v3 metadata blocks");
+        dev.umount_commit().expect("commit csum-v3 metadata");
+
+        let mut inner = dev.into_inner();
+        let first_home = first_target.as_usize().unwrap() * BLOCK_SIZE;
+        let second_home = second_target.as_usize().unwrap() * BLOCK_SIZE;
+        inner.data[first_home..first_home + BLOCK_SIZE].fill(0);
+        inner.data[second_home..second_home + BLOCK_SIZE].fill(0);
+        inner.data[131 * BLOCK_SIZE + 64] ^= 1;
+        let mut replay_superblock = superblock;
+        replay_superblock.s_start = replay_superblock.s_first;
+        replay_superblock.s_sequence = 1;
+        crate::checksum::jbd2_update_superblock_checksum(&mut replay_superblock);
+        replay_superblock.to_disk_bytes(&mut inner.data[128 * BLOCK_SIZE..][..1024]);
+
+        let mut replay_dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        replay_dev
+            .set_journal_superblock_with_mapping(
+                replay_superblock,
+                (128..192).map(AbsoluteBN::new).collect(),
+            )
+            .expect("install csum-v3 journal");
+        assert_eq!(
+            replay_dev.journal_replay_checked(),
+            ReplayStatus::Incomplete
+        );
+        let inner = replay_dev.into_inner();
+        assert!(
+            inner.data[first_home..first_home + BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        assert!(
+            inner.data[second_home..second_home + BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
     }
 
     #[test]

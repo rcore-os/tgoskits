@@ -6,9 +6,9 @@ use crate::superblock::Ext4Superblock;
 
 const POLY: u32 = 0x82F63B78;
 
-// Build the CRC lookup table at compile time instead of embedding a large literal.
-const fn generate_table() -> [u32; 256] {
-    let mut table = [0u32; 256];
+// Build slicing-by-8 lookup tables at compile time instead of embedding literals.
+const fn generate_tables() -> [[u32; 256]; 8] {
+    let mut tables = [[0u32; 256]; 8];
     let mut i = 0;
     while i < 256 {
         let mut crc = i as u32;
@@ -21,13 +21,24 @@ const fn generate_table() -> [u32; 256] {
             }
             j += 1;
         }
-        table[i] = crc;
+        tables[0][i] = crc;
         i += 1;
     }
-    table
+
+    let mut table = 1;
+    while table < tables.len() {
+        let mut index = 0;
+        while index < 256 {
+            let previous = tables[table - 1][index];
+            tables[table][index] = tables[0][(previous & 0xff) as usize] ^ (previous >> 8);
+            index += 1;
+        }
+        table += 1;
+    }
+    tables
 }
 
-static CRC32C_TABLE: [u32; 256] = generate_table();
+static CRC32C_TABLES: [[u32; 256]; 8] = generate_tables();
 
 // Metadata checksum verification is feature-gated by the superblock.
 #[inline]
@@ -37,8 +48,30 @@ pub fn ext4_superblock_has_metadata_csum(sb: &Ext4Superblock) -> bool {
 
 #[inline]
 fn crc32c_update(mut crc: u32, data: &[u8]) -> u32 {
-    for &byte in data {
-        crc = CRC32C_TABLE[((crc ^ (byte as u32)) & 0xFF) as usize] ^ (crc >> 8);
+    let mut remaining = data;
+    while remaining.len() >= 8 {
+        let word = u64::from_le_bytes([
+            remaining[0],
+            remaining[1],
+            remaining[2],
+            remaining[3],
+            remaining[4],
+            remaining[5],
+            remaining[6],
+            remaining[7],
+        ]) ^ u64::from(crc);
+        crc = CRC32C_TABLES[7][(word & 0xff) as usize]
+            ^ CRC32C_TABLES[6][((word >> 8) & 0xff) as usize]
+            ^ CRC32C_TABLES[5][((word >> 16) & 0xff) as usize]
+            ^ CRC32C_TABLES[4][((word >> 24) & 0xff) as usize]
+            ^ CRC32C_TABLES[3][((word >> 32) & 0xff) as usize]
+            ^ CRC32C_TABLES[2][((word >> 40) & 0xff) as usize]
+            ^ CRC32C_TABLES[1][((word >> 48) & 0xff) as usize]
+            ^ CRC32C_TABLES[0][(word >> 56) as usize];
+        remaining = &remaining[8..];
+    }
+    for &byte in remaining {
+        crc = CRC32C_TABLES[0][((crc ^ u32::from(byte)) & 0xff) as usize] ^ (crc >> 8);
     }
     crc
 }
@@ -88,6 +121,20 @@ pub fn ext4_crc32c_seed_from_superblock(sb: &Ext4Superblock) -> u32 {
 mod tests {
     use super::*;
 
+    fn crc32c_update_bitwise(mut crc: u32, data: &[u8]) -> u32 {
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ POLY
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        crc
+    }
+
     fn metadata_csum_superblock() -> Ext4Superblock {
         let mut sb = Ext4Superblock::default();
         sb.s_feature_ro_compat |= Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM;
@@ -124,6 +171,24 @@ mod tests {
         let inc = crc32c_finalize(crc);
 
         assert_eq!(inc, crc32c(data));
+    }
+
+    #[test]
+    fn slicing_by_eight_matches_bytewise_for_all_tail_lengths() {
+        let mut data = [0u8; 257];
+        for (index, byte) in data.iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_mul(31).wrapping_add(7);
+        }
+
+        for seed in [0, crc32c_init(), 0x1234_5678] {
+            for len in 0..=data.len() {
+                assert_eq!(
+                    crc32c_update(seed, &data[..len]),
+                    crc32c_update_bitwise(seed, &data[..len]),
+                    "length={len} seed={seed:#x}"
+                );
+            }
+        }
     }
 
     #[test]

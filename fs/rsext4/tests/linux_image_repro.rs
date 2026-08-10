@@ -534,7 +534,9 @@ fn replay_csum_v3_multi_block_journal_from_debugfs() {
     run_command(
         {
             let mut command = Command::new("mkfs.ext4");
-            command.args(["-F", "-q", "-b", "4096"]).arg(&image);
+            command
+                .args(["-F", "-q", "-b", "4096", "-O", "^huge_file,^dir_nlink"])
+                .arg(&image);
             command
         },
         "mkfs.ext4 test image",
