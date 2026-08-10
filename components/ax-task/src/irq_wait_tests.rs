@@ -215,6 +215,42 @@ fn detached_registration_is_not_quiescent_until_irq_wake_returns() {
 }
 
 #[test]
+fn registration_drain_waits_for_the_cell_notification_transaction() {
+    let cell = IrqWaitCell::new();
+    let registration = TestRegistration::new();
+    let token = expect_registered(cell.register(registration.registration()));
+    cell.pause_after_notification_wake
+        .store(true, Ordering::Release);
+
+    let (was_quiescent, drain) = std::thread::scope(|scope| {
+        let notifier = scope.spawn(|| cell.notify());
+        while !cell.notification_wake_returned.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+
+        let drain = token.detach();
+        let was_quiescent = drain.is_quiescent();
+        let drain = drain.try_finish().err();
+
+        cell.pause_after_notification_wake
+            .store(false, Ordering::Release);
+        assert_eq!(notifier.join().unwrap(), IrqNotifyResult::Notified);
+        (was_quiescent, drain)
+    });
+
+    assert!(
+        !was_quiescent,
+        "a registration cannot become reusable while its cell still publishes the notifying \
+         sentinel"
+    );
+    let drain = drain.expect("the cell notification transaction must keep the drain active");
+    drain.try_finish().unwrap();
+
+    let next = expect_registered(cell.register(registration.registration()));
+    next.detach().try_finish().unwrap();
+}
+
+#[test]
 fn second_irq_during_registration_wake_remains_pending() {
     struct BlockingWake {
         entered: AtomicUsize,

@@ -318,9 +318,9 @@ impl IrqWaitToken<'_> {
     /// Stops publication of this generation and enters its drain lifetime.
     ///
     /// This operation never waits. If a notifier already removed the waiter,
-    /// the returned drain observes that notifier until its direct wake has
-    /// finished. Task context may poll the drain; hard-IRQ teardown must defer
-    /// it to a task worker.
+    /// the returned drain observes that notifier until its direct wake and cell
+    /// ownership publication have both finished. Task context may poll the
+    /// drain; hard-IRQ teardown must defer it to a task worker.
     pub fn detach(self) -> IrqWaitDrain {
         let cell = self.cell;
         cell.detach(self)
@@ -341,11 +341,12 @@ impl core::fmt::Debug for IrqWaitToken<'_> {
     }
 }
 
-/// Revoked IRQ registration waiting for its in-flight notifier grace period.
+/// Revoked IRQ registration waiting for its in-flight notification transaction.
 ///
 /// A drain no longer retains the cell: publication admission for its generation
 /// is already closed. It retains the reference-owned node until the hard-IRQ
-/// reader has left the trusted direct-wake operation.
+/// reader has left the trusted direct-wake operation and completed the cell's
+/// notification ownership transition.
 #[must_use = "an IRQ wait drain must finish before registration storage is reused"]
 pub struct IrqWaitDrain {
     registration: Arc<IrqWaitNode>,
@@ -426,6 +427,10 @@ pub struct IrqWaitCell {
     #[cfg(test)]
     pause_after_detach_generation_check: AtomicBool,
     #[cfg(test)]
+    notification_wake_returned: AtomicBool,
+    #[cfg(test)]
+    pause_after_notification_wake: AtomicBool,
+    #[cfg(test)]
     forced_notify_contention: AtomicUsize,
 }
 
@@ -442,6 +447,10 @@ impl IrqWaitCell {
             detach_generation_checked: AtomicBool::new(false),
             #[cfg(test)]
             pause_after_detach_generation_check: AtomicBool::new(false),
+            #[cfg(test)]
+            notification_wake_returned: AtomicBool::new(false),
+            #[cfg(test)]
+            pause_after_notification_wake: AtomicBool::new(false),
             #[cfg(test)]
             forced_notify_contention: AtomicUsize::new(0),
         }
@@ -644,8 +653,15 @@ impl IrqWaitCell {
                     // SAFETY: the successful CAS transferred the cell-owned
                     // raw reference to this notifier.
                     let registration = unsafe { take_cell_owner(waiter) };
-                    let result = Self::notify_registration(&registration, context);
+                    let (generation, result) = Self::wake_registration(&registration, context);
+                    #[cfg(test)]
+                    self.pause_after_notification_wake();
+                    // The direct wake may make the service thread runnable
+                    // immediately. Keep its registration in Notifying until
+                    // the cell sentinel is gone, so quiescence is the single
+                    // edge after which that thread may register again.
                     self.finish_notification(result);
+                    registration.finish_notification(generation);
                     return Self::notification_result(result);
                 }
                 Err(current) => observed = current,
@@ -662,7 +678,10 @@ impl IrqWaitCell {
         // SAFETY: swap transferred the displaced cell-owned raw reference to
         // this notifier; null and the sentinel were rejected above.
         let registration = unsafe { take_cell_owner(waiter) };
-        let result = Self::notify_registration(&registration, context);
+        let (generation, result) = Self::wake_registration(&registration, context);
+        #[cfg(test)]
+        self.pause_after_notification_wake();
+        registration.finish_notification(generation);
         Self::notification_result(result)
     }
 
@@ -687,11 +706,22 @@ impl IrqWaitCell {
         )
     }
 
-    fn notify_registration(registration: &IrqWaitNode, context: WakeContext) -> crate::WakeResult {
+    fn wake_registration(
+        registration: &IrqWaitNode,
+        context: WakeContext,
+    ) -> (u64, crate::WakeResult) {
         let generation = registration.begin_notification();
         let result = registration.wake.wake(context);
-        registration.finish_notification(generation);
-        result
+        (generation, result)
+    }
+
+    #[cfg(test)]
+    fn pause_after_notification_wake(&self) {
+        self.notification_wake_returned
+            .store(true, Ordering::Release);
+        while self.pause_after_notification_wake.load(Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
     }
 
     fn finish_notification(&self, result: crate::WakeResult) {
