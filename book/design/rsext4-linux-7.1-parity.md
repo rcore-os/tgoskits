@@ -362,3 +362,24 @@ RSEXT4_BENCH_SUMMARY commit=4bba3dc12d0c05b5deec3a8558cdaa02d91d944f arch=x86_64
 改善约 1.5% 和 13.6%；sync p95 改善约 1.9%。sync median 增加约 21.6%，但
 sync latency 门槛按 p95 判定；因此本检查点满足冻结的 host 门槛。7.9 的 legacy
 allocator sync p95 红项仍独立保留。
+
+### 7.13 JBD2 sticky abort 检查点
+
+采集时间：2026-08-11；被测实现 commit 为
+`b55692634f4b888ef83f9bb3f666dd230108883b`，环境与 7.8 相同。该检查点将所有
+auto-commit、handle precommit 与 unmount commit 收口到单一 owner：首次失败
+锁存原始 cause，之后的 write、handle、flush、unmount、mode change 与 state
+reinstall 均返回 typed abort。`set_journal_use` 同时改为 fallible state transition，
+禁止 active handle 或 pending queue 被关闭 journal 后绕过。
+
+正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-jbd2-sticky-abort.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=b55692634f4b888ef83f9bb3f666dd230108883b arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6312878 write_p95_ns=6917725 read_median_ns=6221041 read_p95_ns=6873813 sync_median_ns=29124 sync_p95_ns=37816
+```
+
+相对 dev 基线，write/read median 分别改善约 7.5% 和 13.8%，对应 p95 分别
+改善约 5.7% 和 19.0%；sync p95 改善约 2.1%。sync median 增加约 12.8%，但
+sync latency 门槛按 p95 判定；因此本检查点满足冻结的 host 门槛。7.9 的 legacy
+allocator sync p95 红项仍独立保留，未被本检查点覆盖或改判。
