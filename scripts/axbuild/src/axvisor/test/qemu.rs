@@ -9,10 +9,7 @@ use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{
     AXVISOR_NORMAL_GROUP, AxvisorQemuCase,
-    assets::{
-        axvisor_case_asset_config, case_needs_arceos_x86_64_guest,
-        inject_arceos_x86_64_guest_image, inject_linux_ivshmem_assets,
-    },
+    assets::axvisor_case_asset_config,
     discover_qemu_cases,
     discovery::{
         discover_test_group_names, qemu_list_error_is_ignorable, test_suite_dir, test_suite_root,
@@ -272,7 +269,7 @@ impl Axvisor {
         }
 
         let rootfs_path = rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)?;
-        let mut prepared_assets = test_case::prepare_case_assets(
+        let prepared_assets = test_case::prepare_case_assets(
             self.app.workspace_root(),
             &request.arch,
             &request.target,
@@ -281,32 +278,6 @@ impl Axvisor {
             asset_config.clone(),
         )
         .await?;
-        if case_needs_arceos_x86_64_guest(request, case) {
-            inject_arceos_x86_64_guest_image(
-                self.app.workspace_root(),
-                request,
-                case,
-                &mut prepared_assets,
-            )
-            .with_context(|| {
-                format!(
-                    "failed to prepare ArceOS guest image for Axvisor qemu case `{}`",
-                    case.case.case.name
-                )
-            })?;
-        }
-        inject_linux_ivshmem_assets(
-            self.app.workspace_root(),
-            request,
-            case,
-            &mut prepared_assets,
-        )
-        .with_context(|| {
-            format!(
-                "failed to prepare Linux ivshmem assets for Axvisor qemu case `{}`",
-                case.case.case.name
-            )
-        })?;
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
         // UEFI needs a writable ESP for firmware variables. Keep the explicit
