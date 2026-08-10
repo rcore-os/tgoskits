@@ -410,10 +410,10 @@ impl CloneArgs {
         if flags.contains(CloneFlags::NEWNS | CloneFlags::FS) {
             return Err(AxError::InvalidInput);
         }
-        // Linux rejects a new PID namespace only when the child remains in the
-        // caller's thread group. Legacy clone permits NEWPID together with
-        // PARENT; clone3's distinct PARENT/exit-signal rule is enforced while
-        // converting Clone3Args.
+        // A thread must remain in the PID namespace of its thread group.
+        // CLONE_PARENT only changes parentage, so Linux permits it with
+        // CLONE_NEWPID. clone3 separately requires a zero exit signal when
+        // CLONE_PARENT is present.
         if flags.contains(CloneFlags::NEWPID | CloneFlags::THREAD) {
             return Err(AxError::InvalidInput);
         }
@@ -974,6 +974,12 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
     }
     .validate()
     .is_err();
+    let thread_with_newpid_rejected = CloneArgs {
+        flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND | CloneFlags::NEWPID,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
     let legacy_parent_newpid_allowed = CloneArgs {
         flags: CloneFlags::PARENT | CloneFlags::NEWPID,
         exit_signal: SIGCHLD as u64,
@@ -1030,6 +1036,7 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
         && thread_signal_rejected
         && sighand_without_vm_rejected
         && newns_with_fs_rejected
+        && thread_with_newpid_rejected
         && legacy_parent_newpid_allowed
         && thread_without_vm_sighand_rejected
         && vfork_with_thread_rejected

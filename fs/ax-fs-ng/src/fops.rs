@@ -1,8 +1,9 @@
 use alloc::{string::String, vec::Vec};
+use core::time::Duration;
 
 use ax_errno::{AxError, AxResult};
 use ax_io::{Seek, SeekFrom};
-use axfs_ng_vfs::{Metadata, NodePermission, NodeType};
+use axfs_ng_vfs::{Metadata, MetadataUpdate, NodePermission, NodeType};
 
 use crate::highlevel::{File as CoreFile, OpenOptions as CoreOpenOptions, current_fs_context};
 
@@ -206,6 +207,20 @@ impl File {
 
     pub fn get_attr(&self) -> AxResult<FileAttr> {
         self.inner.location().metadata()
+    }
+
+    /// Updates the access and modification times selected by non-`None` values.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying filesystem error when metadata cannot be updated.
+    pub fn set_times(&self, atime: Option<Duration>, mtime: Option<Duration>) -> AxResult {
+        self.inner.location().update_metadata(MetadataUpdate {
+            atime,
+            mtime,
+            ..MetadataUpdate::default()
+        })?;
+        Ok(())
     }
 }
 
