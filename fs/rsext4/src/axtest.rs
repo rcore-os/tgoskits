@@ -823,7 +823,7 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
         fn write(
             &mut self,
             _buffer: &[u8],
-            _block_id: AbsoluteBN,
+            _block_id: crate::io::SectorId,
             _count: u32,
         ) -> rsext4::Ext4Result<()> {
             Err(Ext4Error::read_only())
@@ -832,7 +832,7 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
         fn read(
             &mut self,
             buffer: &mut [u8],
-            _block_id: AbsoluteBN,
+            _block_id: crate::io::SectorId,
             _count: u32,
         ) -> rsext4::Ext4Result<()> {
             buffer.fill(0x5a);
@@ -915,7 +915,12 @@ fn rsext4_journal_device_overlay_rules_hold() {
     }
 
     impl BlockIo for JournalMemoryDevice {
-        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+        fn write(
+            &mut self,
+            buffer: &[u8],
+            block_id: crate::io::SectorId,
+            count: u32,
+        ) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
                 return Err(rsext4::Ext4Error::buffer_too_small(buffer.len(), required));
@@ -932,7 +937,12 @@ fn rsext4_journal_device_overlay_rules_hold() {
             Ok(())
         }
 
-        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+        fn read(
+            &mut self,
+            buffer: &mut [u8],
+            block_id: crate::io::SectorId,
+            count: u32,
+        ) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
                 return Err(rsext4::Ext4Error::buffer_too_small(buffer.len(), required));
@@ -1693,7 +1703,12 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
     }
 
     impl BlockIo for MemoryBlockDevice {
-        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+        fn write(
+            &mut self,
+            buffer: &[u8],
+            block_id: crate::io::SectorId,
+            count: u32,
+        ) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
                 return Err(rsext4::Ext4Error::buffer_too_small(buffer.len(), required));
@@ -1710,7 +1725,12 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
             Ok(())
         }
 
-        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+        fn read(
+            &mut self,
+            buffer: &mut [u8],
+            block_id: crate::io::SectorId,
+            count: u32,
+        ) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
                 return Err(rsext4::Ext4Error::buffer_too_small(buffer.len(), required));
@@ -2118,7 +2138,12 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     }
 
     impl BlockIo for MemoryBlockDevice {
-        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+        fn write(
+            &mut self,
+            buffer: &[u8],
+            block_id: crate::io::SectorId,
+            count: u32,
+        ) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
                 return Err(rsext4::Ext4Error::buffer_too_small(buffer.len(), required));
@@ -2129,7 +2154,12 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             Ok(())
         }
 
-        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+        fn read(
+            &mut self,
+            buffer: &mut [u8],
+            block_id: crate::io::SectorId,
+            count: u32,
+        ) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
                 return Err(rsext4::Ext4Error::buffer_too_small(buffer.len(), required));

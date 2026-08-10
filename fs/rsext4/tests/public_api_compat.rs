@@ -39,16 +39,16 @@ impl CompatBlockDevice {
 }
 
 impl BlockIo for CompatBlockDevice {
-    fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+    fn read(&mut self, buffer: &mut [u8], sector: rsext4::SectorId, count: u32) -> Ext4Result<()> {
         let required = self.block_size as usize * count as usize;
         if buffer.len() < required {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required));
         }
-        let start = block_id.as_usize()? * self.block_size as usize;
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + required;
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 self.geometry().block_count,
             ));
         }
@@ -56,16 +56,16 @@ impl BlockIo for CompatBlockDevice {
         Ok(())
     }
 
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+    fn write(&mut self, buffer: &[u8], sector: rsext4::SectorId, count: u32) -> Ext4Result<()> {
         let required = self.block_size as usize * count as usize;
         if buffer.len() < required {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required));
         }
-        let start = block_id.as_usize()? * self.block_size as usize;
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + required;
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 self.geometry().block_count,
             ));
         }

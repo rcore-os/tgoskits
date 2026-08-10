@@ -521,14 +521,24 @@ mod tests {
     }
 
     impl BlockIo for TestBlockDevice {
-        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+        fn read(
+            &mut self,
+            buffer: &mut [u8],
+            block_id: crate::io::SectorId,
+            _count: u32,
+        ) -> Ext4Result<()> {
             let start = block_id.as_usize()? * BLOCK_SIZE;
             let end = start + buffer.len();
             buffer.copy_from_slice(&self.data[start..end]);
             Ok(())
         }
 
-        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+        fn write(
+            &mut self,
+            buffer: &[u8],
+            block_id: crate::io::SectorId,
+            _count: u32,
+        ) -> Ext4Result<()> {
             if self.fail_writes {
                 return Err(Ext4Error::io());
             }

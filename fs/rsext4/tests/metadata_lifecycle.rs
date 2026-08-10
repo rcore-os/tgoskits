@@ -6,7 +6,6 @@
 use std::cell::Cell;
 
 use rsext4::{
-    bmalloc::AbsoluteBN,
     disknode::Ext4Inode,
     error::{Ext4Error, Ext4Result},
     superblock::Ext4Superblock,
@@ -33,12 +32,12 @@ impl TimedBlockDevice {
 }
 
 impl BlockIo for TimedBlockDevice {
-    fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-        let start = block_id.as_usize()? * self.block_size as usize;
+    fn read(&mut self, buffer: &mut [u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 (self.data.len() / self.block_size as usize) as u64,
             ));
         }
@@ -46,12 +45,12 @@ impl BlockIo for TimedBlockDevice {
         Ok(())
     }
 
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-        let start = block_id.as_usize()? * self.block_size as usize;
+    fn write(&mut self, buffer: &[u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 (self.data.len() / self.block_size as usize) as u64,
             ));
         }

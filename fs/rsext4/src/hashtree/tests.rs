@@ -29,7 +29,12 @@ impl MockBlockDevice {
 }
 
 impl BlockIo for MockBlockDevice {
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Result<(), Ext4Error> {
+    fn write(
+        &mut self,
+        buffer: &[u8],
+        block_id: crate::io::SectorId,
+        count: u32,
+    ) -> Result<(), Ext4Error> {
         if !self.is_open {
             return Err(Ext4Error::badf());
         }
@@ -50,7 +55,7 @@ impl BlockIo for MockBlockDevice {
     fn read(
         &mut self,
         buffer: &mut [u8],
-        block_id: AbsoluteBN,
+        block_id: crate::io::SectorId,
         count: u32,
     ) -> Result<(), Ext4Error> {
         if !self.is_open {
