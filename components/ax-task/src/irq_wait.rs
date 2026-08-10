@@ -5,10 +5,10 @@
 
 use alloc::sync::Arc;
 #[cfg(test)]
-use core::sync::atomic::{AtomicBool, AtomicUsize};
+use core::sync::atomic::AtomicUsize;
 use core::{
     ptr,
-    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
 };
 
 use crate::ThreadWakeHandle;
@@ -134,6 +134,7 @@ impl IrqWaitWake {
 struct IrqWaitNode {
     wake: IrqWaitWake,
     state: AtomicU64,
+    drain_wake_requested: AtomicBool,
     #[cfg(test)]
     drain_observed_in_flight: AtomicBool,
 }
@@ -143,6 +144,7 @@ impl IrqWaitNode {
         Self {
             wake,
             state: AtomicU64::new(registration_state(0, RegistrationPhase::Detached)),
+            drain_wake_requested: AtomicBool::new(false),
             #[cfg(test)]
             drain_observed_in_flight: AtomicBool::new(false),
         }
@@ -201,7 +203,7 @@ impl IrqWaitNode {
         generation
     }
 
-    fn finish_notification(&self, generation: u64) {
+    fn finish_notification(&self, generation: u64, context: WakeContext) {
         self.state
             .compare_exchange(
                 registration_state(generation, RegistrationPhase::Notifying),
@@ -210,6 +212,9 @@ impl IrqWaitNode {
                 Ordering::Acquire,
             )
             .expect("IRQ wait notification generation changed while in flight");
+        if self.drain_wake_requested.swap(false, Ordering::AcqRel) {
+            let _ = self.wake.wake(context);
+        }
     }
 
     fn is_attached(&self, generation: u64) -> bool {
@@ -252,6 +257,15 @@ impl IrqWaitNode {
                 }
             }
         }
+    }
+
+    fn request_drain_wake(&self, generation: u64) {
+        debug_assert_eq!(
+            registration_generation(self.state.load(Ordering::Acquire)),
+            generation,
+            "only the active IRQ wait generation may request its drain wake"
+        );
+        self.drain_wake_requested.store(true, Ordering::Release);
     }
 }
 
@@ -367,28 +381,25 @@ impl IrqWaitDrain {
         self.registration.is_quiescent(self.generation)
     }
 
-    /// Consumes a completed drain, or returns it while an IRQ wake is in flight.
+    /// Consumes a completed drain, or requests a completion wake and returns it
+    /// while an IRQ notification is in flight.
     ///
-    /// This method never waits. Task-context callers may yield and retry; hard
-    /// IRQ paths must defer reclamation instead.
+    /// This method never waits. A caller that receives the drain back must use
+    /// a generation-checked task park before retrying. Hard-IRQ paths must
+    /// defer reclamation instead.
     pub fn try_finish(self) -> Result<(), Self> {
         if self.registration.finish_drain(self.generation) {
             Ok(())
         } else {
-            Err(self)
-        }
-    }
-
-    /// Acquires the end of the trusted direct-wake notification transaction.
-    ///
-    /// The notifier retains this registration only across its bounded wake and
-    /// cell-state publication. This is the lock-free equivalent of a Linux
-    /// waiter reacquiring the wait-queue raw spin lock after it wakes: task
-    /// context waits for the notifier's short critical-section tail directly,
-    /// without turning that tail into a scheduler transaction.
-    pub(crate) fn finish_task_context(self) {
-        while !self.registration.finish_drain(self.generation) {
-            core::hint::spin_loop();
+            self.registration.request_drain_wake(self.generation);
+            if self.registration.finish_drain(self.generation) {
+                self.registration
+                    .drain_wake_requested
+                    .store(false, Ordering::Release);
+                Ok(())
+            } else {
+                Err(self)
+            }
         }
     }
 }
@@ -682,7 +693,7 @@ impl IrqWaitCell {
                     // the cell sentinel is gone, so quiescence is the single
                     // edge after which that thread may register again.
                     self.finish_notification(result);
-                    registration.finish_notification(generation);
+                    registration.finish_notification(generation, context);
                     return Self::notification_result(result);
                 }
                 Err(current) => observed = current,
@@ -702,7 +713,7 @@ impl IrqWaitCell {
         let (generation, result) = Self::wake_registration(&registration, context);
         #[cfg(test)]
         self.pause_after_notification_wake();
-        registration.finish_notification(generation);
+        registration.finish_notification(generation, context);
         Self::notification_result(result)
     }
 

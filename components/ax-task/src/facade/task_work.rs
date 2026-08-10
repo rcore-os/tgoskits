@@ -120,17 +120,39 @@ pub(super) fn service_task_work_pass(
 
 /// Detaches one IRQ waiter and acquires the end of every in-flight notification.
 ///
-/// Linux wait queues hold their raw spin lock across the wake callback, and a
-/// resumed waiter reacquires that lock before removing or reusing its wait
-/// entry. The IRQ cell uses its `Notifying -> Draining` release edge for the
-/// same grace period. Callers wait on that bounded notifier tail directly;
-/// they must not enter the scheduler merely to observe it.
+/// Linux PREEMPT_RT waits for non-hard irq-work completion through a sleepable
+/// completion edge. The IRQ cell follows the same ownership rule: a waiter
+/// that observes `Notifying` prepares a generation-checked scheduler park, and
+/// the notifier publishes `Draining` before issuing the completion wake. Only
+/// the hard notifier remains bounded and non-sleeping.
 ///
 /// Callers must invoke this in task context before reusing or releasing storage
 /// reachable through the matching [`IrqWaitRegistration`]. Hard-IRQ teardown
 /// must instead move the token or its drain state to a task-context worker.
 pub fn quiesce_irq_wait(token: IrqWaitToken<'_>) -> Result<(), TaskError> {
     validate_task_context()?;
-    token.detach().finish_task_context();
-    Ok(())
+    let mut drain = token.detach();
+    loop {
+        if drain.is_quiescent() {
+            drain
+                .try_finish()
+                .expect("a quiescent IRQ wait drain must finish");
+            return Ok(());
+        }
+
+        let park = match begin_current_park()? {
+            CurrentParkStart::Notified => continue,
+            CurrentParkStart::Prepared(park) => park,
+        };
+        match drain.try_finish() {
+            Ok(()) => {
+                park.cancel()?;
+                return Ok(());
+            }
+            Err(in_flight) => {
+                drain = in_flight;
+                let _resume = park.commit()?;
+            }
+        }
+    }
 }
