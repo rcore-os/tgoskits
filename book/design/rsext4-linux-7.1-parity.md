@@ -101,10 +101,10 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 | `feature-gate-strict` | unknown incompat、ENCRYPT、RW QUOTA 均被接受 | incompat 拒绝；未实现 RO_COMPAT 只允许 RO | codec/feature negotiation | 绿：四项确定性单测完成红绿验证 |
 | `device-sector-map` | filesystem block number 被直接作为 device sector，512-byte 设备只读一个 sector | typed `SectorId` + private filesystem-block mapper | portable I/O core | 绿：512-byte sector 聚合与 byte-offset superblock 红绿回归通过 |
 | `filesystem-block-dynamic` | core 算法仍大量引用 4 KiB 常量 | 1/2/4 KiB geometry、cache、JBD2 与 codec 全部按 mount 派生 | codec/geometry | 绿：Linux 与 rsext4 各自创建的 1/2/4 KiB 镜像均在 512-byte sector 上完成跨块写入、rename、remount 与 `e2fsck -fn`；cache、extent 与 JBD2 buffer 均按 mount geometry 分配 |
-| `linux-default-rocompat-rw` | Linux mkfs 默认设置 `HUGE_FILE`、`DIR_NLINK` | 完整读写语义后纳入 writable mask | inode/namespace lifecycle | 红：4 个 `linux_image_repro` 测试由严格 gate 拒绝 `0x28` |
+| `linux-default-rocompat-rw` | Linux mkfs 默认设置 `HUGE_FILE`、`DIR_NLINK` | 完整读写语义后纳入 writable mask | inode/namespace lifecycle | 红：3 个 extent/namespace `linux_image_repro` 测试由严格 gate 拒绝 `0x28` |
 | `linux-map-complete` | 仅有 subsystem mapping，缺少逐区间清单 | every source line classified | design/traceability | 红：尚未加入逐区间 manifest |
 | `journal-no-direct-fallback` | uninitialized JBD2 performs home write | typed journal-aborted error | JBD2 rewrite | 绿：确定性红绿回归已覆盖 write/umount |
-| `jbd2-csum-v3-write-replay` | writer emits legacy tags while accepted CSUM_V3/64BIT journals require tag3/high block numbers | Linux-compatible descriptor tags and checksum followed by self/Linux replay | JBD2 rewrite | 红：writer 与 parser feature 分支尚未统一 |
+| `jbd2-csum-v3-write-replay` | writer emits legacy tags while accepted CSUM_V3/64BIT journals require tag3/high block numbers | Linux-compatible descriptor tags and checksum followed by self/Linux replay | JBD2 rewrite | 绿：writer 生成 tag3/64-bit block number、escaped payload CRC32C、descriptor/commit checksum；replay 在任何 home write 前校验 commit 与全部非 revoke payload，并校验 descriptor/revoke tail；Linux `debugfs` 多块事务与逐边界损坏测试通过；mkfs 将 ext4 `metadata_csum`/`64bit` 映射为对应 JBD2 feature |
 | `extent-empty-index` | crafted empty or malformed internal child can panic | corruption error, no mutation | mapping rewrite | 红：`insert_recursive` 仍对 child parse 使用 `expect`，待 mapping rewrite |
 | `io-failure-no-panic` | mount/commit paths contain `expect` | all errors propagated | codec/JBD2 rewrite | 进行中：mount/JBD2 关键路径已移除，剩余生产路径待审计 |
 | `legacy-indirect-13-blocks` | non-extent path is unsupported | Linux-compatible mapping | mapping rewrite | 红：仅完成 12 个 direct block 编码 |
@@ -173,3 +173,18 @@ RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns=6292630 write_p95_ns=67
 相对 dev 基线，write median 改善约 7.8%，read median 改善约 12.3%，sync
 median 改善约 20.8%；write/read/sync p95 分别改善约 7.8%、15.8%、34.4%，
 满足当前 host 硬门槛。
+
+### 7.4 JBD2 CSUM_V3 检查点
+
+采集时间：2026-08-10；固定 CPU 2，其他参数与 7.1 相同。该检查点让默认
+`metadata_csum`/`64bit` 文件系统创建对应 JBD2 feature，并在 commit/replay
+路径计算与验证 tag、payload、descriptor、revoke 和 commit CRC32C。软件
+CRC32C fallback 同时改为经过逐长度对照验证的 slicing-by-8：
+
+```text
+RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns=6289508 write_p95_ns=6401087 read_median_ns=6389148 read_p95_ns=6676132 sync_median_ns=28617 sync_p95_ns=33200
+```
+
+相对 dev 基线，write/read median 分别改善约 7.9% 和 11.5%，对应 p95 分别
+改善约 12.7% 和 21.3%；sync p95 改善约 14.1%。sync median 因新增完整 journal
+checksum 从 25.8 µs 增至 28.6 µs，但 latency 硬门槛按 p95 判定，未发生回退。

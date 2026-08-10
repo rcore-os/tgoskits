@@ -22,9 +22,10 @@ use rsext4::{
     endian::DiskFormat,
     error::{Ext4Error, Ext4Result},
     jbd2::jbdstruct::{
-        JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_BLOCKTYPE_REVOKE, JBD2_FLAG_LAST_TAG, JBD2_FLAG_SAME_UUID,
-        JBD2_MAGIC, JBD2_UUID_SIZE, JOURNAL_FILE_INODE, JournalBlockTagS, JournalHeaderS,
-        JournalSuperBllockS,
+        JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_BLOCKTYPE_REVOKE, JBD2_CRC32C_CHKSUM,
+        JBD2_FEATURE_INCOMPAT_64BIT, JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_FLAG_LAST_TAG,
+        JBD2_FLAG_SAME_UUID, JBD2_MAGIC, JBD2_UUID_SIZE, JOURNAL_FILE_INODE, JournalBlockTag3S,
+        JournalBlockTagS, JournalHeaderS, JournalSuperBllockS,
     },
     loopfile::resolve_inode_block,
     superblock::Ext4Superblock,
@@ -212,6 +213,37 @@ fn write_journal_start(device: &SharedCrcDevice, journal_block: u64, start: u32)
     device.write_block_bytes(journal_block, &bytes);
 }
 
+fn reference_crc32c(mut crc: u32, bytes: &[u8]) -> u32 {
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x82f6_3b78
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc
+}
+
+fn jbd2_tag_checksum(journal_sb: &JournalSuperBllockS, payload: &[u8]) -> u32 {
+    let checksum = reference_crc32c(u32::MAX, &journal_sb.s_uuid);
+    let checksum = reference_crc32c(checksum, &journal_sb.s_sequence.to_be_bytes());
+    reference_crc32c(checksum, payload)
+}
+
+fn seal_jbd2_control_block(journal_sb: &JournalSuperBllockS, block: &mut [u8]) {
+    if journal_sb.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 == 0 {
+        return;
+    }
+    let checksum_offset = block.len() - 4;
+    block[checksum_offset..].fill(0);
+    let checksum = reference_crc32c(u32::MAX, &journal_sb.s_uuid);
+    let checksum = reference_crc32c(checksum, block);
+    block[checksum_offset..].copy_from_slice(&checksum.to_be_bytes());
+}
+
 fn write_incomplete_journal_descriptor(device: &SharedCrcDevice, journal_block: u64) {
     let bytes = device.read_block_bytes(journal_block);
     let journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
@@ -223,6 +255,7 @@ fn write_incomplete_journal_descriptor(device: &SharedCrcDevice, journal_block: 
         h_sequence: journal_sb.s_sequence,
     }
     .to_disk_bytes(&mut descriptor);
+    seal_jbd2_control_block(&journal_sb, &mut descriptor);
     device.write_block_bytes(journal_block + 1, &descriptor);
 }
 
@@ -235,6 +268,9 @@ fn write_uncommitted_journal_update(
     let bytes = device.read_block_bytes(journal_block);
     let journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
 
+    let mut metadata = vec![0u8; BLOCK_SIZE];
+    metadata[..payload.len()].copy_from_slice(payload);
+
     let mut descriptor = vec![0u8; BLOCK_SIZE];
     JournalHeaderS {
         h_magic: JBD2_MAGIC,
@@ -242,17 +278,26 @@ fn write_uncommitted_journal_update(
         h_sequence: journal_sb.s_sequence,
     }
     .to_disk_bytes(&mut descriptor);
-    JournalBlockTagS {
-        t_blocknr: target_block as u32,
-        t_checksum: 0,
-        t_flags: JBD2_FLAG_LAST_TAG,
+    if journal_sb.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0 {
+        JournalBlockTag3S {
+            t_blocknr: target_block as u32,
+            t_flags: u32::from(JBD2_FLAG_LAST_TAG),
+            t_blocknr_high: (target_block >> 32) as u32,
+            t_checksum: jbd2_tag_checksum(&journal_sb, &metadata),
+        }
+        .to_disk_bytes(&mut descriptor[12..28]);
+        descriptor[28..28 + JBD2_UUID_SIZE].copy_from_slice(&journal_sb.s_uuid);
+    } else {
+        JournalBlockTagS {
+            t_blocknr: target_block as u32,
+            t_checksum: 0,
+            t_flags: JBD2_FLAG_LAST_TAG,
+        }
+        .to_disk_bytes(&mut descriptor[12..20]);
+        descriptor[20..20 + JBD2_UUID_SIZE].copy_from_slice(&journal_sb.s_uuid);
     }
-    .to_disk_bytes(&mut descriptor[12..20]);
-    descriptor[20..20 + JBD2_UUID_SIZE].copy_from_slice(&journal_sb.s_uuid);
+    seal_jbd2_control_block(&journal_sb, &mut descriptor);
     device.write_block_bytes(journal_block + 1, &descriptor);
-
-    let mut metadata = vec![0u8; BLOCK_SIZE];
-    metadata[..payload.len()].copy_from_slice(payload);
     device.write_block_bytes(journal_block + 2, &metadata);
 }
 
@@ -268,6 +313,7 @@ fn write_invalid_journal_revoke(device: &SharedCrcDevice, journal_block: u64) {
     }
     .to_disk_bytes(&mut revoke);
     revoke[12..16].copy_from_slice(&((BLOCK_SIZE as u32) + 1).to_be_bytes());
+    seal_jbd2_control_block(&journal_sb, &mut revoke);
     device.write_block_bytes(journal_block + 1, &revoke);
 }
 
@@ -282,13 +328,25 @@ fn write_repeating_journal_descriptors(device: &SharedCrcDevice, journal_block: 
         h_sequence: journal_sb.s_sequence,
     }
     .to_disk_bytes(&mut descriptor);
-    JournalBlockTagS {
-        t_blocknr: (journal_block - 1) as u32,
-        t_checksum: 0,
-        t_flags: JBD2_FLAG_LAST_TAG,
+    if journal_sb.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0 {
+        JournalBlockTag3S {
+            t_blocknr: (journal_block - 1) as u32,
+            t_flags: u32::from(JBD2_FLAG_LAST_TAG),
+            t_blocknr_high: ((journal_block - 1) >> 32) as u32,
+            t_checksum: 0,
+        }
+        .to_disk_bytes(&mut descriptor[12..28]);
+        descriptor[28..28 + JBD2_UUID_SIZE].copy_from_slice(&journal_sb.s_uuid);
+    } else {
+        JournalBlockTagS {
+            t_blocknr: (journal_block - 1) as u32,
+            t_checksum: 0,
+            t_flags: JBD2_FLAG_LAST_TAG,
+        }
+        .to_disk_bytes(&mut descriptor[12..20]);
+        descriptor[20..20 + JBD2_UUID_SIZE].copy_from_slice(&journal_sb.s_uuid);
     }
-    .to_disk_bytes(&mut descriptor[12..20]);
-    descriptor[20..20 + JBD2_UUID_SIZE].copy_from_slice(&journal_sb.s_uuid);
+    seal_jbd2_control_block(&journal_sb, &mut descriptor);
 
     for rel in journal_sb.s_first..journal_sb.s_maxlen {
         device.write_block_bytes(journal_block + u64::from(rel), &descriptor);
@@ -302,6 +360,16 @@ fn write_uncommitted_journal_updates(
 ) {
     let bytes = device.read_block_bytes(journal_block);
     let journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
+
+    let metadata_blocks: Vec<Vec<u8>> = target_blocks
+        .iter()
+        .enumerate()
+        .map(|(idx, _)| {
+            let mut metadata = vec![0u8; BLOCK_SIZE];
+            metadata[..8].copy_from_slice(&(idx as u64).to_le_bytes());
+            metadata
+        })
+        .collect();
 
     let mut descriptor = vec![0u8; BLOCK_SIZE];
     JournalHeaderS {
@@ -320,23 +388,33 @@ fn write_uncommitted_journal_updates(
         if idx == target_blocks.len() - 1 {
             flags |= JBD2_FLAG_LAST_TAG;
         }
-        JournalBlockTagS {
-            t_blocknr: *target as u32,
-            t_checksum: 0,
-            t_flags: flags,
+        if journal_sb.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0 {
+            JournalBlockTag3S {
+                t_blocknr: *target as u32,
+                t_flags: u32::from(flags),
+                t_blocknr_high: (*target >> 32) as u32,
+                t_checksum: jbd2_tag_checksum(&journal_sb, &metadata_blocks[idx]),
+            }
+            .to_disk_bytes(&mut descriptor[offset..offset + 16]);
+            offset += 16;
+        } else {
+            JournalBlockTagS {
+                t_blocknr: *target as u32,
+                t_checksum: 0,
+                t_flags: flags,
+            }
+            .to_disk_bytes(&mut descriptor[offset..offset + 8]);
+            offset += 8;
         }
-        .to_disk_bytes(&mut descriptor[offset..offset + 8]);
-        offset += 8;
         if idx == 0 {
             descriptor[offset..offset + JBD2_UUID_SIZE].copy_from_slice(&journal_sb.s_uuid);
             offset += JBD2_UUID_SIZE;
         }
     }
+    seal_jbd2_control_block(&journal_sb, &mut descriptor);
     device.write_block_bytes(journal_block + 1, &descriptor);
 
-    for (idx, _) in target_blocks.iter().enumerate() {
-        let mut metadata = vec![0u8; BLOCK_SIZE];
-        metadata[..8].copy_from_slice(&(idx as u64).to_le_bytes());
+    for (idx, metadata) in metadata_blocks.iter().enumerate() {
         device.write_block_bytes(journal_block + 2 + idx as u64, &metadata);
     }
 }
@@ -377,6 +455,27 @@ fn checksums_are_persisted_and_clean_remount_preserves_the_written_file() {
     let read_back = read_file(&mut remount_dev, &mut fs, "/crc.txt").expect("read_file failed");
     assert_eq!(read_back, payload);
     umount(fs, &mut remount_dev).expect("umount failed");
+}
+
+#[test]
+fn mkfs_maps_ext4_metadata_checksum_and_64bit_features_to_jbd2() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut dev = new_jbd2_dev(device.clone());
+    mkfs(&mut dev).expect("mkfs failed");
+    let fs = mount(&mut dev).expect("mount failed");
+    let journal_block = fs
+        .journal_sb_block_start
+        .expect("journal superblock should be mapped")
+        .raw();
+    let journal = JournalSuperBllockS::from_disk_bytes(&device.read_block_bytes(journal_block));
+
+    assert_ne!(
+        journal.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3,
+        0
+    );
+    assert_ne!(journal.s_feature_incompat & JBD2_FEATURE_INCOMPAT_64BIT, 0);
+    assert_eq!(journal.s_checksum_type, JBD2_CRC32C_CHKSUM);
+    umount(fs, &mut dev).expect("umount failed");
 }
 
 #[test]

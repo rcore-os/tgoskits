@@ -3,8 +3,11 @@
 use crate::{
     crc32c::{crc32c_append, crc32c_init},
     endian::DiskFormat,
-    jbd2::jbdstruct::{JBD2_CRC32C_CHKSUM, JournalSuperBllockS},
+    jbd2::jbdstruct::{JBD2_CRC32C_CHKSUM, JBD2_UUID_SIZE, JournalSuperBllockS},
 };
+
+const JBD2_BLOCK_TAIL_SIZE: usize = 4;
+const JBD2_COMMIT_CHECKSUM_OFFSET: usize = 16;
 
 /// Computes the checksum stored in the JBD2 journal superblock.
 pub fn jbd2_superblock_csum32(jsb: &JournalSuperBllockS) -> u32 {
@@ -22,4 +25,45 @@ pub fn jbd2_update_superblock_checksum(jsb: &mut JournalSuperBllockS) {
     } else if jsb.s_checksum_type == 0 {
         jsb.s_checksum = 0;
     }
+}
+
+/// Derives the raw CRC32C accumulator used by JBD2 metadata checksums.
+pub(crate) fn jbd2_checksum_seed(uuid: &[u8; JBD2_UUID_SIZE]) -> u32 {
+    crc32c_append(crc32c_init(), uuid)
+}
+
+/// Computes the checksum stored in a CSUM_V3 descriptor tag.
+pub(crate) fn jbd2_tag_csum32(
+    uuid: &[u8; JBD2_UUID_SIZE],
+    sequence: u32,
+    journal_data: &[u8],
+) -> u32 {
+    let seed = jbd2_checksum_seed(uuid);
+    let checksum = crc32c_append(seed, &sequence.to_be_bytes());
+    crc32c_append(checksum, journal_data)
+}
+
+/// Computes the checksum stored in the final four bytes of a descriptor or revoke block.
+pub(crate) fn jbd2_descriptor_block_csum32(
+    uuid: &[u8; JBD2_UUID_SIZE],
+    block: &[u8],
+) -> Option<u32> {
+    let checksum_offset = block.len().checked_sub(JBD2_BLOCK_TAIL_SIZE)?;
+    checksum_with_zeroed_u32(jbd2_checksum_seed(uuid), block, checksum_offset)
+}
+
+/// Computes the checksum stored in `commit_header.h_chksum[0]`.
+pub(crate) fn jbd2_commit_block_csum32(uuid: &[u8; JBD2_UUID_SIZE], block: &[u8]) -> Option<u32> {
+    checksum_with_zeroed_u32(jbd2_checksum_seed(uuid), block, JBD2_COMMIT_CHECKSUM_OFFSET)
+}
+
+fn checksum_with_zeroed_u32(seed: u32, block: &[u8], offset: usize) -> Option<u32> {
+    let checksum_end = offset.checked_add(4)?;
+    if checksum_end > block.len() {
+        return None;
+    }
+
+    let checksum = crc32c_append(seed, &block[..offset]);
+    let checksum = crc32c_append(checksum, &[0; 4]);
+    Some(crc32c_append(checksum, &block[checksum_end..]))
 }

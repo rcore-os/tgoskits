@@ -5,7 +5,10 @@ use alloc::{collections::BTreeSet, vec, vec::Vec};
 use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
-    checksum::jbd2_update_superblock_checksum,
+    checksum::{
+        jbd2_commit_block_csum32, jbd2_descriptor_block_csum32, jbd2_tag_csum32,
+        jbd2_update_superblock_checksum,
+    },
     crc32c::crc32c::ext4_superblock_has_metadata_csum,
     disknode::*,
     endian::*,
@@ -20,6 +23,7 @@ use crate::{
 struct ReplayTag {
     block: AbsoluteBN,
     flags: u32,
+    checksum: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,12 +136,23 @@ impl JBD2DEVSYSTEM {
         let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
         let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
         let block_size = desc_buf.len();
+        let descriptor_end = if has_csum_v3 {
+            let checksum_offset = block_size.checked_sub(4)?;
+            let stored = u32::from_be_bytes(desc_buf[checksum_offset..].try_into().ok()?);
+            let computed = jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, desc_buf)?;
+            if stored != computed {
+                return None;
+            }
+            checksum_offset
+        } else {
+            block_size
+        };
         let mut tags = Vec::new();
         let mut off = JBD2_DESCRIPTOR_HEADER_SIZE;
 
-        while off < block_size {
+        while off < descriptor_end {
             let parsed = if has_csum_v3 {
-                if off + JBD2_TAG3_SIZE > block_size {
+                if off + JBD2_TAG3_SIZE > descriptor_end {
                     return None;
                 }
                 let tag = JournalBlockTag3S::from_disk_bytes(&desc_buf[off..off + JBD2_TAG3_SIZE]);
@@ -147,9 +162,9 @@ impl JBD2DEVSYSTEM {
                     && tag.t_blocknr_high == 0
                     && tag.t_checksum == 0;
                 off += JBD2_TAG3_SIZE;
-                (block, tag.t_flags, all_zero)
+                (block, tag.t_flags, Some(tag.t_checksum), all_zero)
             } else {
-                if off + JBD2_TAG_SIZE > block_size {
+                if off + JBD2_TAG_SIZE > descriptor_end {
                     return None;
                 }
                 let tag = JournalBlockTagS::from_disk_bytes(&desc_buf[off..off + JBD2_TAG_SIZE]);
@@ -157,13 +172,13 @@ impl JBD2DEVSYSTEM {
 
                 let mut block_high = 0u32;
                 if has_64bit {
-                    if off + JBD2_TAG_BLOCKNR_HIGH_SIZE > block_size {
+                    if off + JBD2_TAG_BLOCKNR_HIGH_SIZE > descriptor_end {
                         return None;
                     }
                     block_high = u32::from_be_bytes(
                         desc_buf[off..off + JBD2_TAG_BLOCKNR_HIGH_SIZE]
                             .try_into()
-                            .unwrap(),
+                            .ok()?,
                     );
                     off += JBD2_TAG_BLOCKNR_HIGH_SIZE;
                 }
@@ -173,11 +188,11 @@ impl JBD2DEVSYSTEM {
                     && tag.t_checksum == 0
                     && tag.t_flags == 0
                     && block_high == 0;
-                (block, u32::from(tag.t_flags), all_zero)
+                (block, u32::from(tag.t_flags), None, all_zero)
             };
 
-            let (block, flags, all_zero) = parsed;
-            if all_zero && desc_buf[off..].iter().all(|b| *b == 0) {
+            let (block, flags, checksum, all_zero) = parsed;
+            if all_zero && desc_buf[off..descriptor_end].iter().all(|b| *b == 0) {
                 break;
             }
 
@@ -186,10 +201,11 @@ impl JBD2DEVSYSTEM {
             tags.push(ReplayTag {
                 block: AbsoluteBN::new(block),
                 flags,
+                checksum,
             });
 
             if !same_uuid {
-                if off + JBD2_UUID_SIZE > block_size {
+                if off + JBD2_UUID_SIZE > descriptor_end {
                     return None;
                 }
                 off += JBD2_UUID_SIZE;
@@ -206,9 +222,20 @@ impl JBD2DEVSYSTEM {
         if revoke_buf.len() < 16 {
             return None;
         }
+        let record_end = if self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3) {
+            let checksum_offset = revoke_buf.len().checked_sub(4)?;
+            let stored = u32::from_be_bytes(revoke_buf[checksum_offset..].try_into().ok()?);
+            let computed = jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, revoke_buf)?;
+            if stored != computed {
+                return None;
+            }
+            checksum_offset
+        } else {
+            revoke_buf.len()
+        };
         let revoke = Jbd2JournalRevokeHeadS::from_disk_bytes(&revoke_buf[0..16]);
         let count = usize::try_from(revoke.r_count).ok()?;
-        if !(16..=revoke_buf.len()).contains(&count) {
+        if !(16..=record_end).contains(&count) {
             return None;
         }
 
@@ -225,10 +252,10 @@ impl JBD2DEVSYSTEM {
             }
 
             let block = if entry_size == 8 {
-                u64::from_be_bytes(revoke_buf[off..off + 8].try_into().unwrap())
+                u64::from_be_bytes(revoke_buf[off..off + 8].try_into().ok()?)
             } else {
                 u64::from(u32::from_be_bytes(
-                    revoke_buf[off..off + 4].try_into().unwrap(),
+                    revoke_buf[off..off + 4].try_into().ok()?,
                 ))
             };
             blocks.push(AbsoluteBN::new(block));
@@ -328,42 +355,85 @@ impl JBD2DEVSYSTEM {
         };
         new_jbd_header.to_disk_bytes(&mut desc_buffer[0..JournalHeaderS::disk_size()]);
 
-        let mut current_offset = JBD2_DESCRIPTOR_HEADER_SIZE;
-        let mut first_tag = true;
-        // Emit one tag per metadata block queued for this transaction.
-        for (idx, update) in self.commit_queue.iter().enumerate() {
+        let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
+        let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
+        let descriptor_end = if has_csum_v3 {
+            block_size
+                .checked_sub(4)
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:descriptor_size"))?
+        } else {
+            block_size
+        };
+
+        let mut journal_payloads: Vec<(AbsoluteBN, Vec<u8>, bool)> = Vec::new();
+        for update in &self.commit_queue {
             if update.1.len() != block_size || update.1.len() < 4 {
                 return Err(Ext4Error::corrupted().with_operation("jbd2:update_block_size"));
             }
-            // Metadata blocks that begin with the journal magic must be escaped
-            // so replay never mistakes them for journal headers.
-            let mut tag = JournalBlockTagS {
-                t_blocknr: update.0.to_u32()?,
-                t_checksum: 0,
-                t_flags: 0,
+            let mut journal_data = update.1.to_vec();
+            let escaped = journal_data.starts_with(&JBD2_MAGIC.to_be_bytes());
+            if escaped {
+                journal_data[0..4].fill(0);
+            }
+            journal_payloads.push((update.0, journal_data, escaped));
+        }
+
+        let mut current_offset = JBD2_DESCRIPTOR_HEADER_SIZE;
+        let mut first_tag = true;
+        // Emit one tag per metadata block queued for this transaction.
+        for (idx, (target, journal_data, escaped)) in journal_payloads.iter().enumerate() {
+            let target_raw = target.raw();
+            let block_high = (target_raw >> 32) as u32;
+            if !has_64bit && block_high != 0 {
+                return Err(Ext4Error::unsupported().with_operation("jbd2:64bit_block_number"));
+            }
+            let mut flags = if *escaped {
+                u32::from(JOURNAL_ESCAPE)
+            } else {
+                0
             };
-            let magic: u32 = u32::from_le_bytes(update.1[0..4].try_into().unwrap());
-            if magic == JBD2_MAGIC {
-                tag.t_flags |= JOURNAL_ESCAPE;
+            if idx == journal_payloads.len() - 1 {
+                flags |= u32::from(JBD2_FLAG_LAST_TAG);
             }
-
-            if idx == self.commit_queue.len() - 1 {
-                tag.t_flags |= JBD2_FLAG_LAST_TAG;
-            }
-
             if !first_tag {
-                tag.t_flags |= JBD2_FLAG_SAME_UUID;
+                flags |= u32::from(JBD2_FLAG_SAME_UUID);
             }
 
+            let tag_size = if has_csum_v3 {
+                JBD2_TAG3_SIZE
+            } else {
+                JBD2_TAG_SIZE + usize::from(has_64bit) * JBD2_TAG_BLOCKNR_HIGH_SIZE
+            };
             let uuid_len = if first_tag { JBD2_UUID_SIZE } else { 0 };
             let tag_end = current_offset
-                .checked_add(JBD2_TAG_SIZE + uuid_len)
+                .checked_add(tag_size + uuid_len)
                 .ok_or_else(Ext4Error::overflow)?;
-            if tag_end > block_size {
+            if tag_end > descriptor_end {
                 return Err(Ext4Error::no_space().with_operation("jbd2:descriptor_full"));
             }
-            tag.to_disk_bytes(&mut desc_buffer[current_offset..current_offset + JBD2_TAG_SIZE]);
-            current_offset += JBD2_TAG_SIZE;
+
+            if has_csum_v3 {
+                JournalBlockTag3S {
+                    t_blocknr: target_raw as u32,
+                    t_flags: flags,
+                    t_blocknr_high: block_high,
+                    t_checksum: jbd2_tag_csum32(&self.jbd2_super_block.s_uuid, tid, journal_data),
+                }
+                .to_disk_bytes(&mut desc_buffer[current_offset..current_offset + JBD2_TAG3_SIZE]);
+            } else {
+                JournalBlockTagS {
+                    t_blocknr: target_raw as u32,
+                    t_checksum: 0,
+                    t_flags: flags as u16,
+                }
+                .to_disk_bytes(&mut desc_buffer[current_offset..current_offset + JBD2_TAG_SIZE]);
+                if has_64bit {
+                    let high_offset = current_offset + JBD2_TAG_SIZE;
+                    desc_buffer[high_offset..high_offset + JBD2_TAG_BLOCKNR_HIGH_SIZE]
+                        .copy_from_slice(&block_high.to_be_bytes());
+                }
+            }
+            current_offset += tag_size;
 
             if first_tag {
                 desc_buffer[current_offset..current_offset + JBD2_UUID_SIZE]
@@ -373,23 +443,22 @@ impl JBD2DEVSYSTEM {
             }
         }
 
+        if has_csum_v3 {
+            let checksum =
+                jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, &desc_buffer)
+                    .ok_or_else(|| {
+                        Ext4Error::corrupted().with_operation("jbd2:descriptor_checksum")
+                    })?;
+            desc_buffer[descriptor_end..].copy_from_slice(&checksum.to_be_bytes());
+        }
+
         // Persist the descriptor first.
         let block_id = self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
 
         block_dev.write(&desc_buffer, block_id, 1)?;
 
-        let mut no_escape: Vec<(AbsoluteBN, Vec<u8>)> = Vec::new();
-        for update in self.commit_queue.iter() {
-            let mut check_data = update.1.to_vec();
-            let magic = u32::from_le_bytes(check_data[0..4].try_into().unwrap());
-            if magic == JBD2_MAGIC {
-                check_data[0..4].fill(0);
-            }
-            no_escape.push((update.0, check_data));
-        }
-
         // Then write the journaled metadata payload blocks.
-        for up in &no_escape {
+        for up in &journal_payloads {
             let metadata_journal_block_id =
                 self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
 
@@ -403,7 +472,7 @@ impl JBD2DEVSYSTEM {
         // for replay on the next mount.
         let mut commit_buffer = vec![0_u8; block_size];
 
-        let commit_block = CommitHeader {
+        let mut commit_block = CommitHeader {
             h_header: JournalHeaderS {
                 h_magic: JBD2_MAGIC,
                 h_blocktype: JBD2_BLOCKTYPE_COMMIT,
@@ -418,11 +487,17 @@ impl JBD2DEVSYSTEM {
         };
 
         commit_block.to_disk_bytes(&mut commit_buffer);
+        if has_csum_v3 {
+            let checksum = jbd2_commit_block_csum32(&self.jbd2_super_block.s_uuid, &commit_buffer)
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:commit_checksum"))?;
+            commit_block.h_chksum[0] = checksum;
+            commit_block.to_disk_bytes(&mut commit_buffer);
+        }
         let commit_block_id = self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
 
         block_dev.write(&commit_buffer, commit_block_id, 1)?;
         block_dev.flush()?;
-        self.sequence += 1;
+        self.sequence = self.sequence.wrapping_add(1);
 
         // Checkpoint: write metadata back to home blocks now that the commit
         // record is safely on disk. If the system crashes here the journal
@@ -509,10 +584,23 @@ impl JBD2DEVSYSTEM {
                     }
                 }
                 JBD2_BLOCKTYPE_COMMIT => {
-                    let mut committed: Vec<(usize, ReplayPayload, AbsoluteBN)> = Vec::new();
-                    for (idx, payload) in payloads.iter().copied().enumerate() {
-                        let phys = payload.tag.block;
-                        if revoked_blocks.contains(&phys) {
+                    if self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3) {
+                        let commit = CommitHeader::from_disk_bytes(&record_buf);
+                        let computed =
+                            jbd2_commit_block_csum32(&self.jbd2_super_block.s_uuid, &record_buf);
+                        if computed != Some(commit.h_chksum[0]) {
+                            return ReplayScan::Incomplete {
+                                restart_rel: start_rel,
+                            };
+                        }
+                    }
+
+                    // Validate every payload in the committed transaction before
+                    // issuing the first home-block write. A later corrupt payload
+                    // must not leave a partially replayed transaction behind.
+                    let mut committed: Vec<(ReplayPayload, Vec<u8>)> = Vec::new();
+                    for payload in payloads.iter().copied() {
+                        if revoked_blocks.contains(&payload.tag.block) {
                             continue;
                         }
 
@@ -524,7 +612,21 @@ impl JBD2DEVSYSTEM {
                                 };
                             }
                         };
-                        committed.push((idx, payload, meta_phys));
+                        let mut data = vec![0u8; block_size];
+                        if block_dev.read(&mut data, meta_phys, 1).is_err() {
+                            return ReplayScan::Incomplete {
+                                restart_rel: start_rel,
+                            };
+                        }
+                        if let Some(stored) = payload.tag.checksum
+                            && jbd2_tag_csum32(&self.jbd2_super_block.s_uuid, expect_seq, &data)
+                                != stored
+                        {
+                            return ReplayScan::Incomplete {
+                                restart_rel: start_rel,
+                            };
+                        }
+                        committed.push((payload, data));
                     }
 
                     let mut pos = 0usize;
@@ -532,61 +634,26 @@ impl JBD2DEVSYSTEM {
                         let run_start = pos;
                         let mut run_end = pos + 1;
                         while run_end < committed.len()
-                            && committed[run_end].2.raw()
-                                == committed[run_end - 1].2.raw().saturating_add(1)
+                            && committed[run_end].0.tag.block.raw()
+                                == committed[run_end - 1].0.tag.block.raw().saturating_add(1)
                         {
                             run_end += 1;
                         }
 
                         let run_len = run_end - run_start;
-                        let first_journal = committed[run_start].2;
-                        let mut data = vec![0u8; run_len * block_size];
-                        if block_dev
-                            .read(&mut data, first_journal, run_len as u32)
-                            .is_err()
-                        {
+                        let first_home = committed[run_start].0.tag.block;
+                        let mut data = Vec::with_capacity(run_len * block_size);
+                        for (payload, payload_data) in &committed[run_start..run_end] {
+                            let offset = data.len();
+                            data.extend_from_slice(payload_data);
+                            if (payload.tag.flags & u32::from(JOURNAL_ESCAPE)) != 0 {
+                                data[offset..offset + 4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+                            }
+                        }
+                        if block_dev.write(&data, first_home, run_len as u32).is_err() {
                             return ReplayScan::Incomplete {
                                 restart_rel: start_rel,
                             };
-                        }
-
-                        let mut write_start = 0usize;
-                        while write_start < run_len {
-                            let first = run_start + write_start;
-                            let first_home = committed[first].1.tag.block;
-                            let mut write_end = write_start + 1;
-                            while write_end < run_len {
-                                let prev = run_start + write_end - 1;
-                                let next = run_start + write_end;
-                                let prev_home = committed[prev].1.tag.block.raw();
-                                let next_home = committed[next].1.tag.block.raw();
-                                if next_home != prev_home.saturating_add(1) {
-                                    break;
-                                }
-                                write_end += 1;
-                            }
-
-                            for rel_idx in write_start..write_end {
-                                let absolute_idx = run_start + rel_idx;
-                                let (_, payload, _) = committed[absolute_idx];
-                                let off = rel_idx * block_size;
-                                if (payload.tag.flags & u32::from(JOURNAL_ESCAPE)) != 0 {
-                                    data[off..off + 4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
-                                }
-                            }
-
-                            let off = write_start * block_size;
-                            let bytes = &data[off..write_end * block_size];
-                            let write_count = write_end - write_start;
-                            if block_dev
-                                .write(bytes, first_home, write_count as u32)
-                                .is_err()
-                            {
-                                return ReplayScan::Incomplete {
-                                    restart_rel: start_rel,
-                                };
-                            }
-                            write_start = write_end;
                         }
 
                         pos = run_end;
@@ -740,7 +807,14 @@ pub fn create_journal_entry<B: BlockIo + crate::runtime::Clock>(
 
     let mut jbd2_sb = JournalSuperBllockS::default();
 
+    if fs
+        .superblock
+        .has_feature_incompat(crate::superblock::Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT)
+    {
+        jbd2_sb.s_feature_incompat |= JBD2_FEATURE_INCOMPAT_64BIT;
+    }
     if ext4_superblock_has_metadata_csum(&fs.superblock) {
+        jbd2_sb.s_feature_incompat |= JBD2_FEATURE_INCOMPAT_CSUM_V3;
         jbd2_sb.s_checksum_type = JBD2_CRC32C_CHKSUM;
     } else {
         jbd2_sb.s_checksum_type = 0;
