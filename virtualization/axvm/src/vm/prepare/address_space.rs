@@ -8,6 +8,8 @@ use axvm_types::HostDeviceAssignment;
 
 use super::super::*;
 
+const IVSHMEM_BAR2_SLOT: &str = "bar2";
+
 impl AxVMResources {
     pub(crate) fn prepare_guest_address_space(
         &mut self,
@@ -38,23 +40,36 @@ impl AxVMResources {
         owned_regions: &[GuestOwnedRegion],
     ) -> AxVmResult {
         let graph = self.planned_devices().graph();
-        let emulated_resources = graph
-            .nodes()
-            .filter(|node| {
-                matches!(
-                    node.kind(),
-                    DeviceNodeKind::Virtual | DeviceNodeKind::HostReplacement
-                )
-            })
-            .map(|node| graph.resources_for(node.id()))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flat_map(|resolved| {
-                resolved
-                    .mmio_ranges()
-                    .map(|(_, base, size)| Resource::MmioRange { base, size })
-            })
-            .collect::<Vec<_>>();
+        let mut shared_mappings = Vec::new();
+        let mut emulated_resources = Vec::new();
+        for node in graph.nodes().filter(|node| {
+            matches!(
+                node.kind(),
+                DeviceNodeKind::Virtual | DeviceNodeKind::HostReplacement
+            )
+        }) {
+            let resolved = graph.resources_for(node.id())?;
+            for (slot, base, size) in resolved.mmio_ranges() {
+                if node.id().as_str().contains("ivshmem") {
+                    if slot.as_str() == IVSHMEM_BAR2_SLOT {
+                        shared_mappings.push(HostDeviceAssignment {
+                            name: std::string::String::new(),
+                            base_gpa: usize::try_from(base).map_err(|_| {
+                                AxVmError::invalid_config("ivshmem BAR2 GPA does not fit usize")
+                            })?,
+                            base_hpa: usize::try_from(base).map_err(|_| {
+                                AxVmError::invalid_config("ivshmem BAR2 HPA does not fit usize")
+                            })?,
+                            length: usize::try_from(size).map_err(|_| {
+                                AxVmError::invalid_config("ivshmem BAR2 size does not fit usize")
+                            })?,
+                        });
+                        continue;
+                    }
+                }
+                emulated_resources.push(Resource::MmioRange { base, size });
+            }
+        }
         let passthrough_devices = graph
             .host_mappings()
             .map(|mapping| {
@@ -72,11 +87,12 @@ impl AxVMResources {
                 })
             })
             .collect::<AxVmResult<Vec<_>>>()?;
+        shared_mappings.extend(passthrough_devices);
         let address_layout = build_address_layout(
             self.config.address_space_policy(),
             VM_ASPACE_BASE,
             stage2_guest_address_space_size(self.nested_paging.gpa_bits),
-            &passthrough_devices,
+            &shared_mappings,
             &[],
             owned_regions,
             &emulated_resources,

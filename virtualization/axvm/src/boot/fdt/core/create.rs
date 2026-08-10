@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{ptr::NonNull, string::String, vec::Vec};
+use std::{format, ptr::NonNull, string::String, vec::Vec};
 
 use ax_memory_addr::MemoryAddr;
-use axvmconfig::GuestConfig;
+use axvmconfig::{GuestConfig, VirtualDeviceRequest};
 use fdt_edit::{Fdt, Node, NodeId, Property};
+use fdt_raw::RegInfo;
 
-use super::tree::{FdtTree, GuestMemorySpec};
+use super::tree::{FdtTree, GuestMemorySpec, prop_empty, prop_string, prop_u32_list};
 use crate::{
     AxVMRef, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err_type,
     boot::images::load_vm_image_from_memory,
@@ -54,6 +55,7 @@ pub fn create_guest_fdt(
         )
     })?;
     prune_dangling_interrupts_extended(fdt, &mut guest_tree)?;
+    guest_tree.add_virtual_pci_host_nodes(crate_config)?;
     Ok(guest_tree.finish())
 }
 
@@ -345,6 +347,7 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     let mut tree = FdtTree::from_bytes(fdt_bytes)?;
     let memory_specs = guest_memory_specs(memory_regions, crate_config);
     tree.rebuild_memory_nodes(&memory_specs)?;
+    tree.add_virtual_pci_host_nodes(crate_config)?;
     if create_chosen
         || initrd_start_size.is_some()
         || crate_config.kernel.cmdline.is_some()
@@ -368,6 +371,295 @@ pub(crate) fn patch_guest_fdt_for_runtime(
         ax_err_type!(InvalidData, std::format!("invalid patched FDT: {error:?}"))
     })?;
     Ok(bytes)
+}
+
+struct VirtualPciFdtConfig {
+    base_gpa: usize,
+    length: usize,
+    irq_id: usize,
+    bus: u32,
+    pci_mem_base: u64,
+    pci_mem_size: u64,
+}
+
+struct InterruptParent {
+    phandle: u32,
+    address_cells: u32,
+}
+
+impl FdtTree {
+    fn add_virtual_pci_host_nodes(&mut self, config: &GuestConfig) -> AxVmResult {
+        for request in &config.devices.virtual_devices {
+            if !matches!(request.model.as_str(), "virtual-pci-host" | "ivshmem-pci") {
+                continue;
+            }
+            self.add_virtual_pci_host_node(request)?;
+        }
+        Ok(())
+    }
+
+    fn add_virtual_pci_host_node(&mut self, request: &VirtualDeviceRequest) -> AxVmResult {
+        let config = virtual_pci_fdt_config(request)?;
+        let node_path = format!("/pcie@{:x}", config.base_gpa);
+        let node_id = self.ensure_path(&node_path)?;
+
+        info!("Adding guest virtual PCI host FDT node {node_path}");
+        self.set_property(node_id, prop_string("compatible", "pci-host-ecam-generic"))?;
+        self.set_property(node_id, prop_string("device_type", "pci"))?;
+        self.set_property(node_id, prop_string("status", "okay"))?;
+        self.set_property(node_id, prop_u32_list("#address-cells", &[3]))?;
+        self.set_property(node_id, prop_u32_list("#size-cells", &[2]))?;
+        self.set_property(node_id, prop_u32_list("#interrupt-cells", &[1]))?;
+        self.set_property(
+            node_id,
+            prop_u32_list("bus-range", &[config.bus, config.bus]),
+        )?;
+        self.set_property(node_id, prop_empty("dma-coherent"))?;
+        self.set_property(
+            node_id,
+            self.vpci_ranges_property(config.pci_mem_base, config.pci_mem_size),
+        )?;
+        self.add_vpci_interrupt_map(node_id, config.irq_id)?;
+
+        self.inner_mut()
+            .view_typed_mut(node_id)
+            .ok_or_else(|| ax_err_type!(InvalidData, "new virtual PCI host node is missing"))?
+            .set_regs(&[RegInfo::new(
+                config.base_gpa as u64,
+                Some(config.length as u64),
+            )]);
+        Ok(())
+    }
+
+    fn vpci_ranges_property(&self, mem_base: u64, mem_size: u64) -> fdt_edit::Property {
+        const PCI_RANGE_MEM32: u32 = 0x0200_0000;
+
+        let mut cells = Vec::new();
+        cells.push(PCI_RANGE_MEM32);
+        cells.push((mem_base >> 32) as u32);
+        cells.push(mem_base as u32);
+        push_u64_cells(&mut cells, mem_base, self.root_cells("#address-cells", 2));
+        push_u64_cells(&mut cells, mem_size, 2);
+        prop_u32_list("ranges", &cells)
+    }
+
+    fn add_vpci_interrupt_map(&mut self, node_id: NodeId, irq_id: usize) -> AxVmResult {
+        if irq_id == 0 {
+            return Ok(());
+        }
+        let gic_parent = self.primary_gic_interrupt_parent()?.ok_or_else(|| {
+            ax_err_type!(
+                InvalidInput,
+                "vPCI IRQ requires a GIC interrupt-controller node in guest FDT"
+            )
+        })?;
+        let Some(gic_spi) = (irq_id as u32).checked_sub(32) else {
+            return Err(ax_err_type!(
+                InvalidInput,
+                "vPCI IRQ must be a GIC SPI interrupt"
+            ));
+        };
+
+        self.set_property(
+            node_id,
+            prop_u32_list("interrupt-map-mask", &[0, 0, 0, 0x7]),
+        )?;
+
+        let mut cells = Vec::new();
+        cells.extend_from_slice(&[0, 0, 0, 1, gic_parent.phandle]);
+        cells.extend(std::iter::repeat_n(0, gic_parent.address_cells as usize));
+        cells.extend_from_slice(&[0, gic_spi, 4]);
+        self.set_property(node_id, prop_u32_list("interrupt-map", &cells))
+    }
+
+    fn primary_gic_interrupt_parent(&mut self) -> AxVmResult<Option<InterruptParent>> {
+        let gic_node_id = self
+            .inner()
+            .iter_node_ids()
+            .find(|node_id| self.node_is_gic_interrupt_controller(*node_id));
+        let Some(node_id) = gic_node_id else {
+            return Ok(None);
+        };
+        let address_cells = self
+            .inner()
+            .node(node_id)
+            .and_then(|node| node.get_property("#address-cells"))
+            .and_then(|prop| prop.get_u32())
+            .unwrap_or(0);
+        if let Some(phandle) = self
+            .inner()
+            .node(node_id)
+            .and_then(|node| node.get_property("phandle"))
+            .and_then(|prop| prop.get_u32())
+        {
+            return Ok(Some(InterruptParent {
+                phandle,
+                address_cells,
+            }));
+        }
+
+        let phandle = self.next_phandle();
+        self.set_property(node_id, prop_u32_list("phandle", &[phandle]))?;
+        Ok(Some(InterruptParent {
+            phandle,
+            address_cells,
+        }))
+    }
+
+    fn node_is_gic_interrupt_controller(&self, node_id: NodeId) -> bool {
+        self.inner().node(node_id).is_some_and(|node| {
+            node.get_property("interrupt-controller").is_some()
+                && node
+                    .get_property("#interrupt-cells")
+                    .and_then(|prop| prop.get_u32())
+                    == Some(3)
+                && node
+                    .get_property("compatible")
+                    .and_then(|prop| prop.as_str())
+                    .is_some_and(|compatible| compatible.contains("gic"))
+        })
+    }
+
+    fn next_phandle(&self) -> u32 {
+        const AXIVC_PHANDLE_BASE: u32 = 0xa11c_0000;
+
+        self.inner()
+            .iter_node_ids()
+            .filter_map(|id| self.inner().node(id))
+            .flat_map(|node| {
+                [
+                    node.get_property("phandle").and_then(|prop| prop.get_u32()),
+                    node.get_property("linux,phandle")
+                        .and_then(|prop| prop.get_u32()),
+                ]
+            })
+            .flatten()
+            .filter(|phandle| *phandle >= AXIVC_PHANDLE_BASE)
+            .max()
+            .and_then(|phandle| phandle.checked_add(1))
+            .unwrap_or(AXIVC_PHANDLE_BASE)
+    }
+
+    fn root_cells(&self, property: &str, fallback: u32) -> u32 {
+        self.inner()
+            .node(self.inner().root_id())
+            .and_then(|node| node.get_property(property))
+            .and_then(|prop| prop.get_u32())
+            .unwrap_or(fallback)
+    }
+}
+
+fn virtual_pci_fdt_config(request: &VirtualDeviceRequest) -> AxVmResult<VirtualPciFdtConfig> {
+    let base_gpa = option_usize(request, "ecam_base")?;
+    let length = option_usize(request, "ecam_size")?;
+    let irq_id = option_usize_default(request, "legacy_irq", 0)?;
+    let cfg_list = option_usize_array(request, "cfg_list")?;
+    let bus = cfg_list.first().copied().unwrap_or(0) as u32;
+    let pci_mem_base = cfg_list
+        .get(5)
+        .copied()
+        .map(|value| value as u64)
+        .unwrap_or_else(|| align_up_u64(base_gpa as u64 + length as u64, 0x10_0000));
+    let pci_mem_size = cfg_list
+        .get(6)
+        .copied()
+        .map(|value| value as u64)
+        .unwrap_or(0x10_0000);
+    Ok(VirtualPciFdtConfig {
+        base_gpa,
+        length,
+        irq_id,
+        bus,
+        pci_mem_base,
+        pci_mem_size,
+    })
+}
+
+fn option_usize(request: &VirtualDeviceRequest, key: &'static str) -> AxVmResult<usize> {
+    option_usize_default(request, key, usize::MAX).and_then(|value| {
+        if value == usize::MAX && !request.options.contains_key(key) {
+            Err(ax_err_type!(
+                InvalidInput,
+                format!("virtual device '{}' requires option '{key}'", request.id)
+            ))
+        } else {
+            Ok(value)
+        }
+    })
+}
+
+fn option_usize_default(
+    request: &VirtualDeviceRequest,
+    key: &'static str,
+    default: usize,
+) -> AxVmResult<usize> {
+    let Some(value) = request.options.get(key) else {
+        return Ok(default);
+    };
+    value
+        .as_integer()
+        .map(|value| value as usize)
+        .ok_or_else(|| {
+            ax_err_type!(
+                InvalidInput,
+                format!(
+                    "virtual device '{}' option '{key}' must be an integer",
+                    request.id
+                )
+            )
+        })
+}
+
+fn option_usize_array(request: &VirtualDeviceRequest, key: &'static str) -> AxVmResult<Vec<usize>> {
+    let Some(value) = request.options.get(key) else {
+        return Ok(Vec::new());
+    };
+    value
+        .as_array()
+        .ok_or_else(|| {
+            ax_err_type!(
+                InvalidInput,
+                format!(
+                    "virtual device '{}' option '{key}' must be an array",
+                    request.id
+                )
+            )
+        })?
+        .iter()
+        .map(|value| {
+            value
+                .as_integer()
+                .map(|value| value as usize)
+                .ok_or_else(|| {
+                    ax_err_type!(
+                        InvalidInput,
+                        format!(
+                            "virtual device '{}' option '{key}' must contain only integers",
+                            request.id
+                        )
+                    )
+                })
+        })
+        .collect()
+}
+
+fn align_up_u64(value: u64, align: u64) -> u64 {
+    debug_assert!(align.is_power_of_two());
+    (value + align - 1) & !(align - 1)
+}
+
+fn push_u64_cells(cells: &mut Vec<u32>, value: u64, cell_count: u32) {
+    match cell_count {
+        0 => {}
+        1 => cells.push(value as u32),
+        _ => {
+            cells.push((value >> 32) as u32);
+            cells.push(value as u32);
+            for _ in 2..cell_count {
+                cells.push(0);
+            }
+        }
+    }
 }
 
 pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResult<GuestPhysAddr> {
@@ -418,6 +710,16 @@ mod tests {
         let mut prop = Property::new(name, std::vec![]);
         prop.set_u32_ls(&[value]);
         prop
+    }
+
+    fn prop_string(name: &str, value: &str) -> Property {
+        let mut prop = Property::new(name, alloc::vec![]);
+        prop.set_string(value);
+        prop
+    }
+
+    fn prop_empty(name: &str) -> Property {
+        Property::new(name, alloc::vec![])
     }
 
     fn test_fdt(dts: &str) -> Fdt {
@@ -543,6 +845,63 @@ mod tests {
         let reparsed = Fdt::from_bytes(&patched).unwrap();
 
         assert!(reparsed.get_by_path_id("/chosen").is_some());
+    }
+
+    #[test]
+    fn runtime_patch_adds_ivc_channel_node() {
+        let fdt = Fdt::new();
+        let dtb = fdt.encode().as_ref().to_vec();
+        let cfg = AxVMCrateConfig {
+            devices: axvmconfig::VMDevicesConfig {
+                emu_devices: alloc::vec![axvmconfig::EmulatedDeviceConfig {
+                    name: "ivc-channel".into(),
+                    base_gpa: 0xbff0_0000,
+                    length: 0x1_0000,
+                    irq_id: 0,
+                    emu_type: axvmconfig::EmulatedDeviceType::IVCChannel,
+                    cfg_list: alloc::vec![60],
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let patched = super::patch_guest_fdt_for_runtime(&dtb, &[], &cfg, None, false).unwrap();
+        let reparsed = Fdt::from_bytes(&patched).unwrap();
+        let node_id = reparsed.get_by_path_id("/ivc-channel@bff00000").unwrap();
+        let node = reparsed.node(node_id).unwrap();
+        let typed_node = reparsed.view_typed(node_id).unwrap();
+
+        assert_eq!(
+            node.get_property("compatible").unwrap().as_str(),
+            Some("axvisor,ivc-channel")
+        );
+        assert_eq!(typed_node.regs()[0].address, 0xbff0_0000);
+        assert_eq!(typed_node.regs()[0].size, Some(0x1_0000));
+        assert_eq!(
+            node.get_property("axvisor,notify-irq").unwrap().get_u32(),
+            Some(60)
+        );
+
+        let shm_id = reparsed
+            .get_by_path_id("/reserved-memory/axivc-shm@bff00000")
+            .unwrap();
+        let shm_node = reparsed.node(shm_id).unwrap();
+        let shm_typed_node = reparsed.view_typed(shm_id).unwrap();
+        let shm_phandle = shm_node.get_property("phandle").unwrap().get_u32();
+
+        assert_eq!(
+            shm_node.get_property("compatible").unwrap().as_str(),
+            Some("shared-dma-pool")
+        );
+        assert!(shm_node.get_property("no-map").is_some());
+        assert_eq!(shm_typed_node.regs()[0].address, 0xbff0_0000);
+        assert_eq!(shm_typed_node.regs()[0].size, Some(0x1_0000));
+        assert_eq!(
+            node.get_property("memory-region").unwrap().get_u32(),
+            shm_phandle
+        );
+        assert!(node.get_property("dma-coherent").is_some());
     }
 
     #[test]

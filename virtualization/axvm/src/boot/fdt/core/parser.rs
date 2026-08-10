@@ -215,6 +215,37 @@ fn node_regs(fdt: &Fdt, node_id: usize) -> Vec<fdt_edit::RegFixed> {
         .unwrap_or_default()
 }
 
+fn node_phandle(node: &Node) -> Option<u32> {
+    node.get_property("phandle")
+        .and_then(|prop| prop.get_u32())
+        .or_else(|| {
+            node.get_property("linux,phandle")
+                .and_then(|prop| prop.get_u32())
+        })
+}
+
+fn ivc_memory_region_phandles(fdt: &Fdt) -> BTreeSet<u32> {
+    let mut phandles = BTreeSet::new();
+    for node_id in fdt.iter_node_ids() {
+        let Some(node) = fdt.node(node_id) else {
+            continue;
+        };
+        if !node
+            .compatibles()
+            .any(|compatible| compatible == "axvisor,ivc-channel")
+        {
+            continue;
+        }
+        if let Some(phandle) = node
+            .get_property("memory-region")
+            .and_then(|prop| prop.get_u32())
+        {
+            phandles.insert(phandle);
+        }
+    }
+    phandles
+}
+
 fn node_pci_ranges(fdt: &Fdt, node_id: usize) -> Vec<PciRange> {
     match fdt.view_typed(node_id) {
         Some(NodeType::Pci(pci)) => pci.ranges().unwrap_or_default(),
@@ -380,11 +411,18 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut GuestConfig, dtb: &[u8]) ->
         )
     })?;
     let default_flags = (MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE).bits();
+    let ivc_memory_regions = ivc_memory_region_phandles(&fdt);
 
     let mut added_count = 0usize;
     for node_id in fdt.iter_node_ids() {
         let node_path = fdt.path_of(node_id);
         if !is_reserved_memory_path(&node_path) {
+            continue;
+        }
+        let Some(node) = fdt.node(node_id) else {
+            continue;
+        };
+        if node_phandle(node).is_some_and(|phandle| ivc_memory_regions.contains(&phandle)) {
             continue;
         }
 
@@ -556,6 +594,22 @@ fn add_pci_ranges_config(vm_cfg: &mut AxVMConfig, node_name: &str, range: &PciRa
         return;
     }
 
+    let addr_end = base_address.saturating_add(size);
+    if let Some(virtual_range) = overlapping_virtual_pci_range(vm_cfg, base_address, size) {
+        debug!(
+            "Skipping passthrough PCI range for node {} [{:#x}~{:#x}] because it overlaps virtual \
+             device {} {} [{:#x}~{:#x}]",
+            node_name,
+            base_address,
+            addr_end,
+            virtual_range.device,
+            virtual_range.name,
+            virtual_range.base,
+            virtual_range.base.saturating_add(virtual_range.size),
+        );
+        return;
+    }
+
     let prefix = match range.space {
         PciSpace::IO => "io",
         PciSpace::Memory32 => "mem32",
@@ -620,6 +674,10 @@ pub fn parse_passthrough_devices_address(
         }
 
         let node_name = node.name().to_string();
+        if is_virtual_pci_host_node(vm_cfg, &fdt, node_id, &node_name) {
+            debug!("Skipping virtual PCI host node {node_path} in passthrough address parsing");
+            continue;
+        }
         if node_name.starts_with("pcie@") || node_name.contains("pci") {
             for (index, range) in node_pci_ranges(&fdt, node_id).iter().enumerate() {
                 add_pci_ranges_config(vm_cfg, &node_name, range, index);
@@ -649,6 +707,112 @@ pub fn parse_passthrough_devices_address(
         }
     }
     Ok(())
+}
+
+fn is_virtual_pci_host_node(
+    vm_cfg: &AxVMConfig,
+    fdt: &Fdt,
+    node_id: usize,
+    node_name: &str,
+) -> bool {
+    if !(node_name.starts_with("pcie@") || node_name.contains("pci")) {
+        return false;
+    }
+    node_regs(fdt, node_id).iter().any(|reg| {
+        overlapping_virtual_pci_range(vm_cfg, reg.address as usize, reg.size.unwrap_or(0) as usize)
+            .is_some_and(|range| range.name == "ecam")
+    })
+}
+
+struct VirtualPciRange {
+    device: String,
+    name: &'static str,
+    base: usize,
+    size: usize,
+}
+
+fn overlapping_virtual_pci_range(
+    vm_cfg: &AxVMConfig,
+    base_address: usize,
+    size: usize,
+) -> Option<VirtualPciRange> {
+    vm_cfg
+        .virtual_device_requests()
+        .iter()
+        .filter(|request| matches!(request.model.as_str(), "virtual-pci-host" | "ivshmem-pci"))
+        .flat_map(virtual_pci_ranges)
+        .find(|range| ranges_overlap(base_address, size, range.base, range.size))
+}
+
+fn virtual_pci_ranges(
+    request: &axvmconfig::VirtualDeviceRequest,
+) -> impl Iterator<Item = VirtualPciRange> {
+    let cfg_list = virtual_option_usize_array(request, "cfg_list").unwrap_or_default();
+    let ecam = virtual_option_usize(request, "ecam_base")
+        .zip(virtual_option_usize(request, "ecam_size"))
+        .map(|(base, size)| VirtualPciRange {
+            device: request.id.clone(),
+            name: "ecam",
+            base,
+            size,
+        });
+    let bar0 = cfg_list
+        .get(7)
+        .copied()
+        .or_else(|| cfg_list.get(5).copied())
+        .zip(cfg_list.get(8).copied())
+        .map(|(base, size)| VirtualPciRange {
+            device: request.id.clone(),
+            name: "bar0",
+            base,
+            size,
+        });
+    let bar2 = cfg_list
+        .get(13)
+        .copied()
+        .zip(cfg_list.get(14).copied())
+        .map(|(base, size)| VirtualPciRange {
+            device: request.id.clone(),
+            name: "bar2",
+            base,
+            size,
+        });
+    [ecam, bar0, bar2].into_iter().flatten()
+}
+
+fn ranges_overlap(
+    left_base: usize,
+    left_size: usize,
+    right_base: usize,
+    right_size: usize,
+) -> bool {
+    let left_end = left_base.saturating_add(left_size);
+    let right_end = right_base.saturating_add(right_size);
+    left_size != 0 && right_size != 0 && left_base < right_end && right_base < left_end
+}
+
+fn virtual_option_usize(
+    request: &axvmconfig::VirtualDeviceRequest,
+    key: &'static str,
+) -> Option<usize> {
+    request
+        .options
+        .get(key)
+        .and_then(|value| value.as_integer())
+        .map(|value| value as usize)
+}
+
+fn virtual_option_usize_array(
+    request: &axvmconfig::VirtualDeviceRequest,
+    key: &'static str,
+) -> Option<Vec<usize>> {
+    request.options.get(key)?.as_array().map(|values| {
+        values
+            .iter()
+            .filter_map(|value| value.as_integer())
+            .map(|value| value as usize)
+            .collect()
+    })
 }
 
 pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxVmResult {
@@ -730,6 +894,12 @@ mod tests {
     fn prop_u32_list(name: &str, values: &[u32]) -> fdt_edit::Property {
         let mut prop = fdt_edit::Property::new(name, std::vec![]);
         prop.set_u32_ls(values);
+        prop
+    }
+
+    fn prop_string(name: &str, value: &str) -> fdt_edit::Property {
+        let mut prop = fdt_edit::Property::new(name, alloc::vec![]);
+        prop.set_string(value);
         prop
     }
 
@@ -862,6 +1032,51 @@ mod tests {
                 .unwrap()
                 .set_regs(&[RegInfo::new(base, Some(0x1000))]);
         }
+
+        fdt.encode().as_ref().to_vec()
+    }
+
+    fn fdt_with_ivc_and_regular_reserved_memory() -> Vec<u8> {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+
+        let reserved = fdt.add_node(root, Node::new("reserved-memory"));
+        fdt.node_mut(reserved)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(reserved)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+
+        let ivc_shm = fdt.add_node(reserved, Node::new("axivc-shm@bff00000"));
+        fdt.node_mut(ivc_shm)
+            .unwrap()
+            .set_property(prop_string("compatible", "shared-dma-pool"));
+        fdt.node_mut(ivc_shm)
+            .unwrap()
+            .set_property(prop_u32("phandle", 0xa11c_0000));
+        fdt.view_typed_mut(ivc_shm)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0xbff0_0000, Some(0x200_0000))]);
+
+        let regular = fdt.add_node(reserved, Node::new("regular@90000000"));
+        fdt.view_typed_mut(regular)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x9000_0000, Some(0x1000))]);
+
+        let ivc = fdt.add_node(root, Node::new("ivc-channel@bff00000"));
+        fdt.node_mut(ivc)
+            .unwrap()
+            .set_property(prop_string("compatible", "axvisor,ivc-channel"));
+        fdt.node_mut(ivc)
+            .unwrap()
+            .set_property(prop_u32("memory-region", 0xa11c_0000));
 
         fdt.encode().as_ref().to_vec()
     }

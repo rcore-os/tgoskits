@@ -175,6 +175,12 @@ impl ConfiguredDeviceCatalog {
                 .insert(registration.model.into(), *registration);
             debug_assert!(previous.is_none());
         }
+        for registration in VPCI_REGISTRATIONS {
+            let previous = catalog
+                .registrations
+                .insert(registration.model.into(), *registration);
+            debug_assert!(previous.is_none());
+        }
         catalog
     }
 
@@ -260,4 +266,97 @@ fn validate_model_name(name: &str) -> Result<(), ConfiguredDeviceError> {
     } else {
         Err(ConfiguredDeviceError::InvalidModelName { model: name.into() })
     }
+}
+
+const VPCI_REGISTRATIONS: &[ConfiguredModelRegistration] = &[
+    ConfiguredModelRegistration {
+        model: "virtual-pci-host",
+        create: create_virtual_pci_host,
+    },
+    ConfiguredModelRegistration {
+        model: "ivshmem-pci",
+        create: create_ivshmem_pci,
+    },
+];
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VirtualPciOptions {
+    ecam_base: usize,
+    ecam_size: usize,
+    #[serde(default)]
+    legacy_irq: usize,
+    #[serde(default)]
+    cfg_list: Vec<usize>,
+}
+
+fn create_virtual_pci_host(
+    id: DeviceNodeId,
+    request: &VirtualDeviceRequest,
+    _context: &DeviceInstantiationContext,
+) -> Result<DeviceNodeSpec, ConfiguredDeviceError> {
+    let options = vpci_options(request)?;
+    let model = VirtualPciHostModel::from_cfg_list(
+        request.id.clone(),
+        GuestPhysAddr::from(options.ecam_base),
+        options.ecam_size,
+        &options.cfg_list,
+    )
+    .map_err(|error| ConfiguredDeviceError::Instantiation {
+        device: request.id.clone(),
+        model: request.model.clone(),
+        detail: error.to_string(),
+    })?;
+    Ok(DeviceNodeSpec::virtual_device(id, Arc::new(model)))
+}
+
+fn create_ivshmem_pci(
+    id: DeviceNodeId,
+    request: &VirtualDeviceRequest,
+    context: &DeviceInstantiationContext,
+) -> Result<DeviceNodeSpec, ConfiguredDeviceError> {
+    let options = vpci_options(request)?;
+    let irq = if options.legacy_irq == 0 {
+        None
+    } else {
+        let controller = context.default_wired_controller().ok_or_else(|| {
+            ConfiguredDeviceError::Instantiation {
+                device: request.id.clone(),
+                model: request.model.clone(),
+                detail: "architecture has no default wired interrupt domain".into(),
+            }
+        })?;
+        Some((controller, ControllerInputId::new(options.legacy_irq)))
+    };
+    let model = VirtualPciHostModel::ivshmem_from_cfg_list(
+        request.id.clone(),
+        GuestPhysAddr::from(options.ecam_base),
+        options.ecam_size,
+        irq,
+        &options.cfg_list,
+    )
+    .map_err(|error| ConfiguredDeviceError::Instantiation {
+        device: request.id.clone(),
+        model: request.model.clone(),
+        detail: error.to_string(),
+    })?;
+    let mut node = DeviceNodeSpec::virtual_device(id, Arc::new(model));
+    if irq.is_some()
+        && let Some(controller_node) = context.default_wired_controller_node()
+    {
+        node = node.with_dependency(controller_node.clone());
+    }
+    Ok(node)
+}
+
+fn vpci_options(
+    request: &VirtualDeviceRequest,
+) -> Result<VirtualPciOptions, ConfiguredDeviceError> {
+    request
+        .deserialize_options::<VirtualPciOptions>()
+        .map_err(|error| ConfiguredDeviceError::InvalidOptions {
+            device: request.id.clone(),
+            model: request.model.clone(),
+            detail: error.to_string(),
+        })
 }
