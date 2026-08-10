@@ -13,6 +13,10 @@ const REMOVED_LOCK_IMPORTS: &[&str] = &["ax_kspin", "ax_kernel_guard", "ax_lockd
 const DIRECT_SPIN_PATTERNS: &[&str] = &["use spin", "extern crate spin"];
 const PROVIDER_TRAITS: &[&str] = &["CriticalSectionOps", "MutexRuntimeOps", "LockdepOps"];
 const RUNTIME_PROVIDER_PATH: &str = "os/arceos/modules/axruntime/src/sync.rs";
+const HOST_PROVIDER_PATHS: &[&str] = &[
+    "os/arceos/modules/axsync/src/context.rs",
+    "os/arceos/modules/axsync/src/mutex.rs",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Finding {
@@ -363,6 +367,44 @@ fn check_runtime_providers(
             ));
         }
     }
+    check_provider_cfgs(workspace_root, findings)?;
+    Ok(())
+}
+
+fn check_provider_cfgs(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow::Result<()> {
+    let runtime_path = workspace_root.join(RUNTIME_PROVIDER_PATH);
+    if runtime_path.exists() {
+        let contents = fs::read_to_string(&runtime_path)
+            .with_context(|| format!("failed to read {}", runtime_path.display()))?;
+        if contents.contains("target_os = \"none\"")
+            || !contents.contains("not(feature = \"host-test\")")
+        {
+            findings.push(Finding::new(
+                &runtime_path,
+                "provider cfg",
+                "ax-runtime providers are not selected by the explicit host-test boundary",
+                "gate production providers with not(feature = \"host-test\"); custom std targets \
+                 are still ArceOS production builds",
+            ));
+        }
+    }
+
+    for relative in HOST_PROVIDER_PATHS {
+        let path = workspace_root.join(relative);
+        if !path.exists() {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if !contents.contains("#[cfg(feature = \"host-test\")]\nmod host {") {
+            findings.push(Finding::new(
+                &path,
+                "host provider cfg",
+                "ax-sync host provider is not restricted to the host-test feature",
+                "gate the host provider module with feature = \"host-test\" instead of target_os",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -511,8 +553,11 @@ edition = "2024"
             root,
             RUNTIME_PROVIDER_PATH,
             r#"
+#[cfg(not(feature = "host-test"))]
 impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {}
+#[cfg(not(feature = "host-test"))]
 impl ax_sync::MutexRuntimeOps for RuntimeMutexOps {}
+#[cfg(not(feature = "host-test"))]
 impl ax_sync::LockdepOps for RuntimeLockdepOps {}
 "#,
         );
@@ -665,5 +710,43 @@ ax-sync = "0.1"
                 .iter()
                 .any(|finding| finding.message.contains("outside ax-runtime"))
         );
+    }
+
+    #[test]
+    fn rejects_target_os_based_provider_selection() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            RUNTIME_PROVIDER_PATH,
+            r#"
+#[cfg(target_os = "none")]
+impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {}
+impl ax_sync::MutexRuntimeOps for RuntimeMutexOps {}
+impl ax_sync::LockdepOps for RuntimeLockdepOps {}
+"#,
+        );
+        write_file(
+            root.path(),
+            HOST_PROVIDER_PATHS[0],
+            r#"
+#[cfg(not(target_os = "none"))]
+mod host {
+    impl CriticalSectionOps for HostCriticalSectionOps {}
+}
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|finding| { finding.message.contains("explicit host-test boundary") })
+        );
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("not restricted to the host-test feature")
+        }));
     }
 }

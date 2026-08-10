@@ -38,8 +38,9 @@ ax-task ────────> ax-sync <──────── drivers / fs
   `ax-runtime`。
 - `ax-task` 使用 `ax-sync`，但不提供同步算法。
 - `ax-runtime` 是 ArceOS 生产环境唯一的能力 provider。
-- 非裸机 host 构建由 `ax-sync` 内置的 std provider 支持，`host-test` feature 额外开放
-  确定性测试探针；其他 OS 必须提供自己的 provider。
+- 显式启用 `host-test` 时由 `ax-sync` 内置的 std provider 支持，并开放确定性测试探针；
+  不能用 target triple 的 `target_os` 推断 provider，因为 ArceOS 的 std 兼容目标仍是
+  生产内核。其他 OS 必须提供自己的 provider。
 - StarryOS kernel 只从 `crate::sync` 导入锁。该 facade 收口 task scope、kprobe、
   namespace 和 POSIX 所需的特殊 adapter。
 - Axvisor/AxVM 的普通任务状态使用 `std::sync`；IRQ、guest-entry 或禁止抢占路径只从
@@ -110,9 +111,9 @@ IRQ state 是逐次保存的，因此嵌套 IRQ-save guard 不会错误地提前
   fatal 诊断。
 
 ArceOS 的实现位于 `ax-runtime/src/sync.rs`。`lock-lint` 要求三个生产 provider 在该
-文件中各出现一次，并只允许 `ax-sync` 在非裸机目标内置 host provider。当前仓库中的
-其他生产 OS 不能另行注册 provider；若未来新增独立 runtime，必须同时扩展构建边界和
-lint 规则。
+文件中各出现一次，并要求生产与 host provider 分别由 `not(feature = "host-test")` 和
+`feature = "host-test"` 选择。当前仓库中的其他生产 OS 不能另行注册 provider；若未来
+新增独立 runtime，必须同时扩展构建边界和 lint 规则。
 
 ## 5. Lockdep 内聚
 

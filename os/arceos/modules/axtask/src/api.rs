@@ -458,11 +458,11 @@ impl AtomicContextSnapshot {
             #[cfg(feature = "preempt")]
             {
                 let task_depth = current.as_ref().map_or(0, |curr| curr.preempt_count());
-                #[cfg(target_os = "none")]
+                #[cfg(not(feature = "host-test"))]
                 {
                     task_depth
                 }
-                #[cfg(not(target_os = "none"))]
+                #[cfg(feature = "host-test")]
                 {
                     task_depth + ax_sync::host_preempt_depth()
                 }

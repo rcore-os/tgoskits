@@ -217,7 +217,7 @@ impl Drop for PreemptIrqSaveGuard {
     }
 }
 
-#[cfg(not(target_os = "none"))]
+#[cfg(feature = "host-test")]
 mod host {
     use std::cell::{Cell, RefCell};
 
@@ -276,7 +276,7 @@ mod host {
 }
 
 /// Returns the preemption depth tracked by the host critical-section provider.
-#[cfg(not(target_os = "none"))]
+#[cfg(feature = "host-test")]
 #[doc(hidden)]
 pub fn host_preempt_depth() -> usize {
     host::preempt_depth()

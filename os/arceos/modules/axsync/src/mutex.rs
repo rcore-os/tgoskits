@@ -362,7 +362,7 @@ impl<T: ?Sized> LockdepMutexExt<T> for Mutex<T> {
     }
 }
 
-#[cfg(not(target_os = "none"))]
+#[cfg(feature = "host-test")]
 mod host {
     use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
     use std::{
