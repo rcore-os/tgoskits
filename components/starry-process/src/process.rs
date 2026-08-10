@@ -154,7 +154,7 @@ impl Process {
         }
 
         let new_session = Session::new(self.pid);
-        let new_group = ProcessGroup::new(self.pid, &new_session);
+        let new_group = ProcessGroup::get_or_create(self.pid, &new_session);
         self.set_group(&new_group);
 
         Some((new_session, new_group))
@@ -174,7 +174,7 @@ impl Process {
             return None;
         }
 
-        let new_group = ProcessGroup::new(self.pid, &self.group.lock().session);
+        let new_group = ProcessGroup::get_or_create(self.pid, &self.group.lock().session);
         self.set_group(&new_group);
 
         Some(new_group)
@@ -360,7 +360,7 @@ impl Process {
         let group = parent.map_or_else(
             || {
                 let session = Session::new(pid);
-                ProcessGroup::new(pid, &session)
+                ProcessGroup::get_or_create(pid, &session)
             },
             |p| p.group(),
         );
