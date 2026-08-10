@@ -1,6 +1,9 @@
 //! Checked legacy direct and indirect block mapping.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 use core::mem::size_of;
 
 use crate::{
@@ -123,6 +126,61 @@ pub(crate) fn resolve_legacy_inode_blocks<B: BlockIo>(
         }
     }
     Ok(mappings)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct LegacyInodeOwnership {
+    data_blocks: Vec<AbsoluteBN>,
+    metadata_blocks: Vec<AbsoluteBN>,
+}
+
+impl LegacyInodeOwnership {
+    pub(crate) fn into_data_blocks(self) -> Vec<AbsoluteBN> {
+        self.data_blocks
+    }
+}
+
+/// Validates and collects every physical block owned by a legacy inode.
+pub(crate) fn collect_legacy_inode_ownership<B: BlockIo>(
+    filesystem: &Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    inode_number: InodeNumber,
+    inode: &Ext4Inode,
+) -> Ext4Result<LegacyInodeOwnership> {
+    if inode.uses_extents() {
+        return Err(Ext4Error::unsupported().with_operation("indirect:collect_extent_inode"));
+    }
+    let mut ownership = LegacyInodeOwnership {
+        data_blocks: Vec::new(),
+        metadata_blocks: Vec::new(),
+    };
+    if is_fast_symlink(filesystem, inode) {
+        return Ok(ownership);
+    }
+
+    let mut reader = LegacyBlockReader::new(filesystem, device, inode_number)?;
+    let mut claimed = BTreeSet::new();
+    for &pointer in &inode.i_block[..DIRECT_BLOCKS] {
+        if pointer != 0 {
+            reader.collect_owned_data(AbsoluteBN::from(pointer), &mut ownership, &mut claimed)?;
+        }
+    }
+    for (slot, depth) in [
+        (SINGLE_INDIRECT_SLOT, 1),
+        (DOUBLE_INDIRECT_SLOT, 2),
+        (TRIPLE_INDIRECT_SLOT, 3),
+    ] {
+        let pointer = inode.i_block[slot];
+        if pointer != 0 {
+            reader.collect_owned_subtree(
+                AbsoluteBN::from(pointer),
+                depth,
+                &mut ownership,
+                &mut claimed,
+            )?;
+        }
+    }
+    Ok(ownership)
 }
 
 /// Returns whether a legacy inode owns indirect metadata blocks.
@@ -638,6 +696,51 @@ impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
         Ok(())
     }
 
+    fn collect_owned_subtree(
+        &mut self,
+        metadata: AbsoluteBN,
+        depth: usize,
+        ownership: &mut LegacyInodeOwnership,
+        claimed: &mut BTreeSet<AbsoluteBN>,
+    ) -> Ext4Result<()> {
+        self.enter_metadata_block(metadata)?;
+        Self::claim_owned_block(claimed, metadata)?;
+        let pointers = self.read_pointer_block(metadata)?;
+        for pointer in pointers {
+            if pointer == 0 {
+                continue;
+            }
+            let physical = AbsoluteBN::from(pointer);
+            if depth == 1 {
+                self.collect_owned_data(physical, ownership, claimed)?;
+            } else {
+                self.collect_owned_subtree(physical, depth - 1, ownership, claimed)?;
+            }
+        }
+        self.metadata_path.pop();
+        ownership.metadata_blocks.push(metadata);
+        Ok(())
+    }
+
+    fn collect_owned_data(
+        &self,
+        data: AbsoluteBN,
+        ownership: &mut LegacyInodeOwnership,
+        claimed: &mut BTreeSet<AbsoluteBN>,
+    ) -> Ext4Result<()> {
+        self.validate_data_block(data)?;
+        Self::claim_owned_block(claimed, data)?;
+        ownership.data_blocks.push(data);
+        Ok(())
+    }
+
+    fn claim_owned_block(claimed: &mut BTreeSet<AbsoluteBN>, block: AbsoluteBN) -> Ext4Result<()> {
+        if !claimed.insert(block) {
+            return Err(Ext4Error::corrupted().with_operation("indirect:duplicate_physical_block"));
+        }
+        Ok(())
+    }
+
     fn enter_metadata_block(&mut self, block: AbsoluteBN) -> Ext4Result<()> {
         self.validate_physical_block(block)?;
         if self.metadata_path.contains(&block) {
@@ -771,7 +874,7 @@ mod tests {
     use super::{
         DIRECT_BLOCKS, DOUBLE_INDIRECT_SLOT, IndirectPath, SINGLE_INDIRECT_SLOT,
         TRIPLE_INDIRECT_SLOT, allocate_legacy_inode_block, block_to_path,
-        has_legacy_indirect_mapping,
+        collect_legacy_inode_ownership, has_legacy_indirect_mapping,
     };
     use crate::{
         BLOCK_SIZE, BlockIo, DeviceCapabilities, DeviceGeometry, ErrorContext, Ext4Error,
@@ -989,6 +1092,103 @@ mod tests {
         assert_eq!(mappings.get(&single_lbn), Some(&single_data));
         assert_eq!(mappings.get(&double_lbn), Some(&double_data));
         assert_eq!(mappings.get(&triple_lbn), Some(&triple_data));
+    }
+
+    #[test]
+    fn collects_complete_legacy_ownership_beyond_inode_size() {
+        let (mut device, mut filesystem) = setup_filesystem();
+        let inode_number = InodeNumber::new(12).unwrap();
+
+        let direct_data = filesystem.alloc_block(&mut device).unwrap();
+        let single_root = filesystem.alloc_block(&mut device).unwrap();
+        let single_data = filesystem.alloc_block(&mut device).unwrap();
+        let double_root = filesystem.alloc_block(&mut device).unwrap();
+        let double_leaf = filesystem.alloc_block(&mut device).unwrap();
+        let double_data = filesystem.alloc_block(&mut device).unwrap();
+        let triple_root = filesystem.alloc_block(&mut device).unwrap();
+        let triple_middle = filesystem.alloc_block(&mut device).unwrap();
+        let triple_leaf = filesystem.alloc_block(&mut device).unwrap();
+        let triple_data = filesystem.alloc_block(&mut device).unwrap();
+
+        write_pointer(&mut device, single_root, 1, single_data);
+        write_pointer(&mut device, double_root, 1, double_leaf);
+        write_pointer(&mut device, double_leaf, 2, double_data);
+        write_pointer(&mut device, triple_root, 1, triple_middle);
+        write_pointer(&mut device, triple_middle, 2, triple_leaf);
+        write_pointer(&mut device, triple_leaf, 3, triple_data);
+
+        let mut inode = Ext4Inode::default();
+        inode.i_block[0] = direct_data.to_u32().unwrap();
+        inode.i_block[SINGLE_INDIRECT_SLOT] = single_root.to_u32().unwrap();
+        inode.i_block[DOUBLE_INDIRECT_SLOT] = double_root.to_u32().unwrap();
+        inode.i_block[TRIPLE_INDIRECT_SLOT] = triple_root.to_u32().unwrap();
+        set_inode_size(&mut inode, 1);
+
+        let ownership =
+            collect_legacy_inode_ownership(&filesystem, &mut device, inode_number, &inode).unwrap();
+        assert_eq!(
+            ownership.data_blocks,
+            vec![direct_data, single_data, double_data, triple_data]
+        );
+        assert_eq!(
+            ownership.metadata_blocks,
+            vec![
+                single_root,
+                double_leaf,
+                double_root,
+                triple_leaf,
+                triple_middle,
+                triple_root,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_physical_blocks_in_legacy_ownership() {
+        let (mut device, mut filesystem) = setup_filesystem();
+        let inode_number = InodeNumber::new(12).unwrap();
+        let single_root = filesystem.alloc_block(&mut device).unwrap();
+        let shared_data = filesystem.alloc_block(&mut device).unwrap();
+        write_pointer(&mut device, single_root, 0, shared_data);
+
+        let mut inode = Ext4Inode::default();
+        inode.i_block[0] = shared_data.to_u32().unwrap();
+        inode.i_block[SINGLE_INDIRECT_SLOT] = single_root.to_u32().unwrap();
+        set_inode_size(&mut inode, 1);
+
+        let error = collect_legacy_inode_ownership(&filesystem, &mut device, inode_number, &inode)
+            .unwrap_err();
+        assert_eq!(
+            error.context(),
+            Some(ErrorContext::Operation {
+                op: "indirect:duplicate_physical_block",
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_legacy_ownership_beyond_inode_size() {
+        let (mut device, mut filesystem) = setup_filesystem();
+        let inode_number = InodeNumber::new(12).unwrap();
+        let single_root = filesystem.alloc_block(&mut device).unwrap();
+
+        device.read_block(single_root).unwrap();
+        device.buffer_mut().fill(0);
+        write_u32_le(u32::MAX, &mut device.buffer_mut()[0..size_of::<u32>()]);
+        device.write_block(single_root, true).unwrap();
+
+        let mut inode = Ext4Inode::default();
+        inode.i_block[SINGLE_INDIRECT_SLOT] = single_root.to_u32().unwrap();
+        set_inode_size(&mut inode, 1);
+
+        let error = collect_legacy_inode_ownership(&filesystem, &mut device, inode_number, &inode)
+            .unwrap_err();
+        assert_eq!(
+            error.context(),
+            Some(ErrorContext::Operation {
+                op: "indirect:physical_range",
+            })
+        );
     }
 
     #[test]
