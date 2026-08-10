@@ -134,6 +134,8 @@ impl IrqWaitWake {
 struct IrqWaitNode {
     wake: IrqWaitWake,
     state: AtomicU64,
+    #[cfg(test)]
+    drain_observed_in_flight: AtomicBool,
 }
 
 impl IrqWaitNode {
@@ -141,6 +143,8 @@ impl IrqWaitNode {
         Self {
             wake,
             state: AtomicU64::new(registration_state(0, RegistrationPhase::Detached)),
+            #[cfg(test)]
+            drain_observed_in_flight: AtomicBool::new(false),
         }
     }
 
@@ -230,7 +234,11 @@ impl IrqWaitNode {
             }
             match registration_phase(state) {
                 RegistrationPhase::Detached => return true,
-                RegistrationPhase::Attached | RegistrationPhase::Notifying => return false,
+                RegistrationPhase::Attached | RegistrationPhase::Notifying => {
+                    #[cfg(test)]
+                    self.drain_observed_in_flight.store(true, Ordering::Release);
+                    return false;
+                }
                 RegistrationPhase::Draining => {
                     match self.state.compare_exchange_weak(
                         state,
@@ -368,6 +376,19 @@ impl IrqWaitDrain {
             Ok(())
         } else {
             Err(self)
+        }
+    }
+
+    /// Acquires the end of the trusted direct-wake notification transaction.
+    ///
+    /// The notifier retains this registration only across its bounded wake and
+    /// cell-state publication. This is the lock-free equivalent of a Linux
+    /// waiter reacquiring the wait-queue raw spin lock after it wakes: task
+    /// context waits for the notifier's short critical-section tail directly,
+    /// without turning that tail into a scheduler transaction.
+    pub(crate) fn finish_task_context(self) {
+        while !self.registration.finish_drain(self.generation) {
+            core::hint::spin_loop();
         }
     }
 }

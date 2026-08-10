@@ -251,6 +251,43 @@ fn registration_drain_waits_for_the_cell_notification_transaction() {
 }
 
 #[test]
+fn task_quiescence_does_not_require_a_scheduler_for_the_notifier_tail() {
+    let cell = IrqWaitCell::new();
+    let registration = TestRegistration::new();
+    let token = expect_registered(cell.register(registration.registration()));
+    cell.pause_after_notification_wake
+        .store(true, Ordering::Release);
+
+    let result = std::thread::scope(|scope| {
+        let notifier = scope.spawn(|| cell.notify());
+        while !cell.notification_wake_returned.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+
+        let quiescer = scope.spawn(move || crate::quiesce_irq_wait(token));
+        while !registration
+            .registration
+            .node
+            .drain_observed_in_flight
+            .load(Ordering::Acquire)
+        {
+            std::thread::yield_now();
+        }
+
+        cell.pause_after_notification_wake
+            .store(false, Ordering::Release);
+        assert_eq!(notifier.join().unwrap(), IrqNotifyResult::Notified);
+        quiescer.join().unwrap()
+    });
+
+    assert!(
+        result.is_ok(),
+        "a waiter must acquire the IRQ notification tail directly instead of entering a full \
+         scheduler transaction"
+    );
+}
+
+#[test]
 fn second_irq_during_registration_wake_remains_pending() {
     struct BlockingWake {
         entered: AtomicUsize,

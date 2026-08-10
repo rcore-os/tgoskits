@@ -118,22 +118,19 @@ pub(super) fn service_task_work_pass(
     }
 }
 
-/// Detaches one IRQ waiter and yields until every in-flight notifier has
-/// stopped reading its registration and wake payload.
+/// Detaches one IRQ waiter and acquires the end of every in-flight notification.
 ///
-/// Callers must invoke this in schedulable task context before reusing or
-/// releasing storage reachable through the matching
-/// [`IrqWaitRegistration`]. Hard-IRQ teardown must instead move the token or its
-/// drain state to a task-context worker.
+/// Linux wait queues hold their raw spin lock across the wake callback, and a
+/// resumed waiter reacquires that lock before removing or reusing its wait
+/// entry. The IRQ cell uses its `Notifying -> Draining` release edge for the
+/// same grace period. Callers wait on that bounded notifier tail directly;
+/// they must not enter the scheduler merely to observe it.
+///
+/// Callers must invoke this in task context before reusing or releasing storage
+/// reachable through the matching [`IrqWaitRegistration`]. Hard-IRQ teardown
+/// must instead move the token or its drain state to a task-context worker.
 pub fn quiesce_irq_wait(token: IrqWaitToken<'_>) -> Result<(), TaskError> {
-    let mut drain = token.detach();
-    loop {
-        match drain.try_finish() {
-            Ok(()) => return Ok(()),
-            Err(in_flight) => {
-                drain = in_flight;
-                let _decision = yield_current_cpu()?;
-            }
-        }
-    }
+    validate_task_context()?;
+    token.detach().finish_task_context();
+    Ok(())
 }
