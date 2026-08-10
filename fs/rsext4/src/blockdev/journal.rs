@@ -702,6 +702,10 @@ mod tests {
         fail_fua: bool,
         fail_read_sector: Option<u64>,
         fail_write_sector: Option<u64>,
+        fail_write_call: Option<usize>,
+        fail_flush_call: Option<usize>,
+        write_calls: usize,
+        flush_calls: usize,
         fua_writes: usize,
     }
 
@@ -713,6 +717,10 @@ mod tests {
                 fail_fua: false,
                 fail_read_sector: None,
                 fail_write_sector: None,
+                fail_write_call: None,
+                fail_flush_call: None,
+                write_calls: 0,
+                flush_calls: 0,
                 fua_writes: 0,
             }
         }
@@ -724,6 +732,10 @@ mod tests {
                 fail_fua: false,
                 fail_read_sector: None,
                 fail_write_sector: None,
+                fail_write_call: None,
+                fail_flush_call: None,
+                write_calls: 0,
+                flush_calls: 0,
                 fua_writes: 0,
             }
         }
@@ -735,6 +747,10 @@ mod tests {
                 fail_fua: true,
                 fail_read_sector: None,
                 fail_write_sector: None,
+                fail_write_call: None,
+                fail_flush_call: None,
+                write_calls: 0,
+                flush_calls: 0,
                 fua_writes: 0,
             }
         }
@@ -754,6 +770,18 @@ mod tests {
 
         fn fail_next_write_at_block(&mut self, block: AbsoluteBN) {
             self.fail_write_sector = Some(self.sector_for_filesystem_block(block));
+        }
+
+        fn with_failing_write_call(blocks: usize, call: usize) -> Self {
+            let mut device = Self::new(blocks);
+            device.fail_write_call = Some(call);
+            device
+        }
+
+        fn with_failing_flush_call(blocks: usize, call: usize) -> Self {
+            let mut device = Self::new(blocks);
+            device.fail_flush_call = Some(call);
+            device
         }
     }
 
@@ -885,6 +913,11 @@ mod tests {
             block_id: crate::io::SectorId,
             _count: u32,
         ) -> Ext4Result<()> {
+            self.write_calls += 1;
+            if self.fail_write_call == Some(self.write_calls) {
+                self.fail_write_call = None;
+                return Err(Ext4Error::io());
+            }
             if self.fail_write_sector == Some(block_id.raw()) {
                 self.fail_write_sector = None;
                 return Err(Ext4Error::io());
@@ -912,6 +945,11 @@ mod tests {
         }
 
         fn flush(&mut self) -> Ext4Result<()> {
+            self.flush_calls += 1;
+            if self.fail_flush_call == Some(self.flush_calls) {
+                self.fail_flush_call = None;
+                return Err(Ext4Error::io());
+            }
             if core::mem::take(&mut self.fail_flush) {
                 Err(Ext4Error::io())
             } else {
@@ -1301,6 +1339,35 @@ mod tests {
     }
 
     #[test]
+    fn replay_superblock_write_failure_is_a_persist_error() {
+        let (mut inner, superblock, target) = committed_csum_v3_fixture();
+        inner.fail_next_write_at_block(AbsoluteBN::new(128));
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        dev.set_journal_superblock_with_mapping(
+            superblock,
+            (128..192).map(AbsoluteBN::new).collect(),
+        )
+        .expect("install replay fixture with superblock write fault");
+
+        let failure = dev
+            .journal_replay_checked()
+            .failure()
+            .expect("replay superblock write fault must fail recovery");
+        assert_eq!(failure.phase(), JournalReplayPhase::Persist);
+        assert_eq!(failure.cause().kind(), crate::Ext4ErrorKind::Io);
+        assert_eq!(failure.persistence_error(), None);
+        assert_eq!(dev.inner._device().fua_writes, 1);
+
+        let inner = dev.into_inner();
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert!(
+            inner.data[target_start..target_start + BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0xa5)
+        );
+    }
+
+    #[test]
     fn replay_failure_keeps_primary_checksum_over_progress_flush_error() {
         let (mut inner, superblock, target) = committed_csum_v3_fixture();
         inner.data[130 * BLOCK_SIZE - 1] ^= 1;
@@ -1452,6 +1519,73 @@ mod tests {
             .expect_err("unmount commit must propagate the device error");
 
         assert_eq!(error, Ext4Error::io());
+    }
+
+    fn assert_commit_stage_fault_aborts_journal(device: MemBlockDev, stage: &str) {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+        dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
+            .expect("install checksummed journal");
+        dev.write_block(AbsoluteBN::new(10), true)
+            .expect("queue metadata update");
+
+        let first_error = match dev.umount_commit() {
+            Ok(()) => panic!("{stage} fault must fail commit"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            first_error.kind(),
+            crate::Ext4ErrorKind::Io,
+            "{stage} must preserve the device I/O error"
+        );
+        let state = dev
+            .abort_state
+            .as_ref()
+            .expect("stage fault must abort journal");
+        assert_eq!(state.cause.kind(), crate::Ext4ErrorKind::Io, "{stage}");
+        assert_eq!(state.persistence_error, None, "{stage}");
+        assert_eq!(dev.inner._device().fua_writes, 1, "{stage}");
+        assert_eq!(dev.inner._device().fail_write_call, None, "{stage}");
+        assert_eq!(dev.inner._device().fail_flush_call, None, "{stage}");
+
+        let later_error = dev
+            .write_block(AbsoluteBN::new(11), true)
+            .expect_err("stage fault must make abort sticky");
+        assert_eq!(
+            later_error.kind(),
+            crate::Ext4ErrorKind::JournalAborted,
+            "{stage}"
+        );
+    }
+
+    #[test]
+    fn commit_fault_matrix_aborts_at_every_write_and_flush_boundary() {
+        let write_stages = [
+            "open-superblock",
+            "descriptor",
+            "payload",
+            "commit",
+            "checkpoint",
+            "close-superblock",
+        ];
+        for (index, stage) in write_stages.iter().enumerate() {
+            assert_commit_stage_fault_aborts_journal(
+                MemBlockDev::with_failing_write_call(256, index + 1),
+                stage,
+            );
+        }
+
+        let flush_stages = [
+            "descriptor-payload-barrier",
+            "commit-barrier",
+            "checkpoint-barrier",
+            "superblock-barrier",
+        ];
+        for (index, stage) in flush_stages.iter().enumerate() {
+            assert_commit_stage_fault_aborts_journal(
+                MemBlockDev::with_failing_flush_call(256, index + 1),
+                stage,
+            );
+        }
     }
 
     #[test]
