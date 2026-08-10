@@ -27,6 +27,12 @@ pub enum Jbd2RunState {
     Replay,
 }
 
+struct ActiveJournalHandle {
+    credits: usize,
+    touched_blocks: Vec<AbsoluteBN>,
+    queue_snapshot: Vec<Jbd2Update>,
+}
+
 /// Block device proxy that optionally routes metadata writes through JBD2.
 pub struct Jbd2Dev<B: BlockIo> {
     _mode: u8,
@@ -35,6 +41,7 @@ pub struct Jbd2Dev<B: BlockIo> {
     _state: Jbd2RunState,
     system: Option<JBD2DEVSYSTEM>,
     journal_blocks: Vec<AbsoluteBN>,
+    active_handle: Option<ActiveJournalHandle>,
 }
 
 impl<B: BlockIo> Jbd2Dev<B> {
@@ -93,7 +100,27 @@ impl<B: BlockIo> Jbd2Dev<B> {
         block_dev: &mut D,
         journal_blocks: &[AbsoluteBN],
         update: Jbd2Update,
+        active_handle: Option<&mut ActiveJournalHandle>,
     ) -> Ext4Result<bool> {
+        if let Some(handle) = active_handle {
+            if !handle.touched_blocks.contains(&update.0) {
+                if handle.touched_blocks.len() >= handle.credits {
+                    return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
+                }
+                handle.touched_blocks.push(update.0);
+            }
+            if let Some(existing) = system
+                .commit_queue
+                .iter_mut()
+                .find(|queued| queued.0 == update.0)
+            {
+                *existing = update;
+            } else {
+                system.commit_queue.push(update);
+            }
+            return Ok(false);
+        }
+
         if let Some(existing) = system
             .commit_queue
             .iter_mut()
@@ -111,6 +138,13 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
         system.commit_queue.push(update);
         Ok(committed)
+    }
+
+    fn clone_commit_queue(queue: &[Jbd2Update]) -> Vec<Jbd2Update> {
+        queue
+            .iter()
+            .map(|update| Jbd2Update(update.0, update.1.to_vec().into_boxed_slice()))
+            .collect()
     }
 
     fn make_system(
@@ -137,6 +171,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             _state: Jbd2RunState::Commit,
             system: None,
             journal_blocks: Vec::new(),
+            active_handle: None,
         }
     }
 
@@ -220,6 +255,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if !self.journal_use {
             return Ok(());
         }
+        if self.active_handle.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:commit_with_active_handle"));
+        }
 
         if let Some(system) = self.system.as_mut() {
             let committed =
@@ -231,6 +269,89 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return Err(Ext4Error::journal_aborted().with_operation("jbd2:commit_without_state"));
         }
         Ok(())
+    }
+
+    /// Runs one metadata operation with a bounded number of queue credits.
+    ///
+    /// The handle joins this implementation's current in-memory journal queue.
+    /// It prevents an automatic commit from splitting the operation and
+    /// restores queued metadata images if the operation returns an error. This
+    /// is not yet a complete Linux JBD2 handle: the filesystem transaction
+    /// owner must also restore its caches and allocation state.
+    fn with_journal_handle<T>(
+        &mut self,
+        credits: usize,
+        operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
+    ) -> Ext4Result<T> {
+        if !self.journal_use {
+            return operation(self);
+        }
+        if credits == 0 {
+            return Err(Ext4Error::invalid_input().with_operation("jbd2:handle_credits"));
+        }
+        if credits > JBD2_BUFFER_MAX {
+            return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
+        }
+        if self.active_handle.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:nested_handle"));
+        }
+
+        let committed = {
+            let Some(system) = self.system.as_mut() else {
+                return Err(
+                    Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
+                );
+            };
+            let reserved = system
+                .commit_queue
+                .len()
+                .checked_add(credits)
+                .ok_or_else(Ext4Error::overflow)?;
+            if reserved > JBD2_BUFFER_MAX {
+                system.commit_transaction_with_mapping(&mut self.inner, &self.journal_blocks)?
+            } else {
+                false
+            }
+        };
+        if committed {
+            self.inner.invalidate_cache()?;
+        }
+
+        let queue_snapshot = {
+            let system = self.system.as_ref().ok_or_else(|| {
+                Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
+            })?;
+            Self::clone_commit_queue(&system.commit_queue)
+        };
+        self.active_handle = Some(ActiveJournalHandle {
+            credits,
+            touched_blocks: Vec::with_capacity(credits),
+            queue_snapshot,
+        });
+
+        match operation(self) {
+            Ok(value) => {
+                self.active_handle = None;
+                Ok(value)
+            }
+            Err(operation_error) => {
+                let handle = self.active_handle.take().ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("jbd2:missing_active_handle")
+                })?;
+                let Some(system) = self.system.as_mut() else {
+                    return Err(
+                        Ext4Error::journal_aborted().with_operation("jbd2:abort_without_state")
+                    );
+                };
+                system.commit_queue = handle.queue_snapshot;
+                match self.inner.invalidate_cache() {
+                    Ok(()) => Err(operation_error),
+                    Err(rollback_error) => {
+                        Err(rollback_error.with_operation("rollback:jbd2_handle"))
+                    }
+                }
+            }
+        }
     }
 
     /// Writes the current internal block buffer.
@@ -245,7 +366,13 @@ impl<B: BlockIo> Jbd2Dev<B> {
         let Some(system) = self.system.as_mut() else {
             return Err(Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"));
         };
-        if Self::enqueue_journal_update(system, &mut self.inner, &self.journal_blocks, updates)? {
+        if Self::enqueue_journal_update(
+            system,
+            &mut self.inner,
+            &self.journal_blocks,
+            updates,
+            self.active_handle.as_mut(),
+        )? {
             self.inner.invalidate_cache()?;
         }
 
@@ -336,14 +463,24 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return self.inner.write_blocks(buf, block_id, count);
         }
 
-        let Some(system) = self.system.as_mut() else {
-            return Err(Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"));
-        };
         let block_size = self.inner.block_size() as usize;
-        let required = count as usize * block_size;
+        let required = usize::try_from(count)
+            .map_err(|_| Ext4Error::overflow())?
+            .checked_mul(block_size)
+            .ok_or_else(Ext4Error::overflow)?;
         if buf.len() < required {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
+        let credits = usize::try_from(count).map_err(|_| Ext4Error::overflow())?;
+        if self.active_handle.is_none() && credits > 1 && credits <= JBD2_BUFFER_MAX {
+            return self.with_journal_handle(credits, |device| {
+                device.write_blocks(buf, block_id, count, is_metadata)
+            });
+        }
+
+        let Some(system) = self.system.as_mut() else {
+            return Err(Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"));
+        };
 
         let mut committed_any = false;
         for i in 0..count {
@@ -356,6 +493,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 &mut self.inner,
                 &self.journal_blocks,
                 updates,
+                self.active_handle.as_mut(),
             )?;
         }
         if committed_any {
@@ -845,5 +983,189 @@ mod tests {
             .expect_err("unmount commit must propagate the device error");
 
         assert_eq!(error, Ext4Error::io());
+    }
+
+    #[test]
+    fn journal_handle_credit_overrun_restores_queued_updates() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        let target = AbsoluteBN::new(10);
+        let updates = vec![0x5a; BLOCK_SIZE * 2];
+
+        let error = dev
+            .with_journal_handle(1, |dev| dev.write_blocks(&updates, target, 2, true))
+            .expect_err("one credit cannot journal two distinct metadata blocks");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::NoSpace);
+
+        dev.umount_commit().expect("aborted handle left no updates");
+        let inner = dev.into_inner();
+        for block in [target, target.checked_add(1).unwrap()] {
+            let start = block.as_usize().unwrap() * BLOCK_SIZE;
+            assert!(
+                inner.data[start..start + BLOCK_SIZE]
+                    .iter()
+                    .all(|&byte| byte == 0)
+            );
+        }
+    }
+
+    #[test]
+    fn failed_journal_handle_restores_replaced_pending_update() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        let target = AbsoluteBN::new(10);
+        dev.write_blocks(&vec![0x11; BLOCK_SIZE], target, 1, true)
+            .expect("queue previous transaction update");
+
+        let error = dev
+            .with_journal_handle(1, |dev| {
+                dev.write_blocks(&vec![0x22; BLOCK_SIZE], target, 1, true)?;
+                Err::<(), _>(Ext4Error::io())
+            })
+            .expect_err("operation failure must abort the handle updates");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+
+        let mut observed = vec![0; BLOCK_SIZE];
+        dev.read_blocks(&mut observed, target, 1)
+            .expect("read restored pending update");
+        assert_eq!(observed, vec![0x11; BLOCK_SIZE]);
+        dev.umount_commit().expect("commit restored pending update");
+        let inner = dev.into_inner();
+        let start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[start..start + BLOCK_SIZE],
+            &vec![0x11; BLOCK_SIZE]
+        );
+    }
+
+    #[test]
+    fn journal_handle_reserves_space_before_operation_without_auto_split() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        let older_target = AbsoluteBN::new(10);
+        let older_updates = vec![0x11; (JBD2_BUFFER_MAX - 1) * BLOCK_SIZE];
+        dev.write_blocks(
+            &older_updates,
+            older_target,
+            (JBD2_BUFFER_MAX - 1) as u32,
+            true,
+        )
+        .expect("queue older running-transaction updates");
+        let sequence_before = dev.journal_sequence().unwrap();
+
+        let new_target = AbsoluteBN::new(32);
+        let new_updates = vec![0x22; 2 * BLOCK_SIZE];
+        let sequence_inside = dev
+            .with_journal_handle(2, |dev| {
+                let sequence_after_reservation = dev.journal_sequence().unwrap();
+                dev.write_blocks(&new_updates, new_target, 2, true)?;
+                assert_eq!(dev.journal_sequence(), Some(sequence_after_reservation));
+                Ok(sequence_after_reservation)
+            })
+            .expect("reserved handle must keep one operation in the running transaction");
+
+        assert_eq!(sequence_inside, sequence_before.wrapping_add(1));
+        assert_eq!(dev.journal_sequence(), Some(sequence_inside));
+        dev.umount_commit().expect("commit handle updates");
+        assert_eq!(
+            dev.journal_sequence(),
+            Some(sequence_inside.wrapping_add(1))
+        );
+    }
+
+    #[test]
+    fn invalid_bulk_buffer_does_not_precommit_older_updates() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.write_blocks(
+            &vec![0x11; (JBD2_BUFFER_MAX - 1) * BLOCK_SIZE],
+            AbsoluteBN::new(10),
+            (JBD2_BUFFER_MAX - 1) as u32,
+            true,
+        )
+        .expect("queue older updates");
+        let sequence = dev.journal_sequence();
+
+        let error = dev
+            .write_blocks(&vec![0x22; BLOCK_SIZE], AbsoluteBN::new(32), 2, true)
+            .expect_err("short input cannot satisfy a two-block write");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::InvalidInput);
+        assert_eq!(dev.journal_sequence(), sequence);
+    }
+
+    #[test]
+    fn journal_handle_charges_one_credit_per_distinct_block() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        let target = AbsoluteBN::new(10);
+
+        dev.with_journal_handle(1, |dev| {
+            dev.write_blocks(&vec![0x11; BLOCK_SIZE], target, 1, true)?;
+            dev.write_blocks(&vec![0x22; BLOCK_SIZE], target, 1, true)
+        })
+        .expect("replacing one metadata block consumes one credit");
+
+        let mut observed = vec![0; BLOCK_SIZE];
+        dev.read_blocks(&mut observed, target, 1)
+            .expect("read final queued update");
+        assert_eq!(observed, vec![0x22; BLOCK_SIZE]);
+        dev.umount_commit().expect("commit final queued update");
+        let inner = dev.into_inner();
+        let start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[start..start + BLOCK_SIZE],
+            &vec![0x22; BLOCK_SIZE]
+        );
+    }
+
+    #[test]
+    fn nested_journal_handle_is_busy_without_poisoning_outer_handle() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        let target = AbsoluteBN::new(10);
+
+        dev.with_journal_handle(1, |dev| {
+            let error = dev
+                .with_journal_handle(1, |_| Ok(()))
+                .expect_err("nested journal handles are not supported");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
+            dev.write_blocks(&vec![0x5a; BLOCK_SIZE], target, 1, true)
+        })
+        .expect("outer handle remains usable after nested rejection");
+
+        dev.umount_commit().expect("commit outer handle update");
+        let inner = dev.into_inner();
+        let start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[start..start + BLOCK_SIZE],
+            &vec![0x5a; BLOCK_SIZE]
+        );
+    }
+
+    #[test]
+    fn active_journal_handle_rejects_unmount_commit_without_state_change() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        let target = AbsoluteBN::new(10);
+        let sequence = dev.journal_sequence();
+
+        dev.with_journal_handle(1, |dev| {
+            let error = dev
+                .umount_commit()
+                .expect_err("unmount cannot commit an active operation");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
+            assert_eq!(dev.journal_sequence(), sequence);
+            dev.write_blocks(&vec![0x5a; BLOCK_SIZE], target, 1, true)
+        })
+        .expect("handle remains active after rejected unmount");
+
+        assert_eq!(dev.journal_sequence(), sequence);
+        dev.umount_commit().expect("commit after handle completion");
+        let inner = dev.into_inner();
+        let start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[start..start + BLOCK_SIZE],
+            &vec![0x5a; BLOCK_SIZE]
+        );
     }
 }
