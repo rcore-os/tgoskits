@@ -1070,32 +1070,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ax-page-table-entry"
-version = "0.8.12"
-dependencies = [
- "aarch64-cpu 11.2.0",
- "ax-memory-addr",
- "axtest",
- "bitflags 2.13.1",
- "x86_64",
-]
-
-[[package]]
-name = "ax-page-table-multiarch"
-version = "0.8.15"
-dependencies = [
- "arrayvec",
- "ax-errno",
- "ax-memory-addr",
- "ax-page-table-entry",
- "bitmaps",
- "log",
- "rand 0.10.2",
- "riscv",
- "x86",
-]
-
-[[package]]
 name = "ax-percpu"
 version = "0.4.17"
 dependencies = [

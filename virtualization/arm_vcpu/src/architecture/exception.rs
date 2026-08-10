@@ -299,16 +299,23 @@ fn handle_psci_call(ctx: &TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
 /// This function will judge if the SMC call is a PSCI call, if so, it will handle it as a PSCI call.
 /// Otherwise, it will forward the SMC call to the ATF directly.
 fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
+    const PSCI_VERSION_32: u64 = 0x8400_0000;
+
     // Is this a psci call?
-    if let Some(result) = handle_psci_call(ctx) {
-        result
-    } else {
-        // We just forward the SMC call to the ATF directly.
-        // The args are from lower EL, so it is safe to call the ATF.
-        (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
-            unsafe { super::smc::smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) };
-        Ok(ArmVmExit::Nothing)
+    // Keep virtual CPU lifecycle calls inside AxVisor, but expose the physical
+    // firmware's PSCI version to SMC guests. Linux uses that version to decide
+    // whether it may query the SMCCC version needed by SCMI.
+    if ctx.gpr[0] != PSCI_VERSION_32
+        && let Some(result) = handle_psci_call(ctx)
+    {
+        return result;
     }
+
+    // We just forward the SMC call to the ATF directly.
+    // The args are from lower EL, so it is safe to call the ATF.
+    (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
+        unsafe { super::smc::smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) };
+    Ok(ArmVmExit::Nothing)
 }
 
 /// Handles IRQ exceptions that occur from the current exception level.

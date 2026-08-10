@@ -73,13 +73,12 @@ ax-io
 ax-kspin
 irq-framework
 memory_addr
-page_table_entry
 rsext4
 scope-local
 ...
 ```
 
-当前白名单包含约 50 个 crate，覆盖架构寄存器、错误码、I/O 抽象、锁原语、内存地址、页表项、文件系统、调度器、中断框架等可在 host 端独立测试的组件。
+当前白名单包含约 50 个 crate，覆盖架构寄存器、错误码、I/O 抽象、锁原语、内存地址、文件系统、调度器、中断框架等可在 host 端独立测试的组件。
 
 ### 3.1 解析校验
 

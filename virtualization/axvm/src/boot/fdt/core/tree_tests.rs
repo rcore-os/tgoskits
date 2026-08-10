@@ -233,6 +233,10 @@ fn clone_filtered_preserves_root_sibling_order() {
 fn clone_filtered_drops_guest_cpu_power_management_props() {
     let mut source = Fdt::new();
     let root = source.root_id();
+    source
+        .node_mut(root)
+        .unwrap()
+        .set_property(prop_str("compatible", "rockchip,rk3568-firefly-roc-pc-se"));
 
     let cpus = source.add_node(root, Node::new("cpus"));
     source
@@ -266,4 +270,50 @@ fn clone_filtered_drops_guest_cpu_power_management_props() {
     assert!(cpu_node.get_property("#cooling-cells").is_none());
     assert!(cpu_node.get_property("dynamic-power-coefficient").is_none());
     assert!(cpu_node.get_property("cpu-supply").is_none());
+}
+
+#[test]
+fn clone_filtered_preserves_guest_cpu_power_management_props_on_rk3588() {
+    let mut source = Fdt::new();
+    let root = source.root_id();
+    source
+        .node_mut(root)
+        .unwrap()
+        .set_property(prop_str("compatible", "rockchip,rk3588-orangepi-5-plus"));
+
+    let cpus = source.add_node(root, Node::new("cpus"));
+    let cpu = source.add_node(cpus, Node::new("cpu@0"));
+    let cpu_node = source.node_mut(cpu).unwrap();
+    cpu_node.set_property(prop_u32("operating-points-v2", 3));
+    cpu_node.set_property(prop_u32("#cooling-cells", 2));
+    cpu_node.set_property(prop_u32("dynamic-power-coefficient", 0xbb));
+    cpu_node.set_property(prop_u32("cpu-supply", 5));
+
+    let tree = FdtTree::clone_filtered(&source, |_, _, _| true).unwrap();
+    let bytes = tree.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+    let cpu_node = reparsed.get_by_path("/cpus/cpu@0").unwrap().as_node();
+
+    assert_eq!(
+        cpu_node
+            .get_property("operating-points-v2")
+            .unwrap()
+            .get_u32(),
+        Some(3)
+    );
+    assert_eq!(
+        cpu_node.get_property("#cooling-cells").unwrap().get_u32(),
+        Some(2)
+    );
+    assert_eq!(
+        cpu_node
+            .get_property("dynamic-power-coefficient")
+            .unwrap()
+            .get_u32(),
+        Some(0xbb)
+    );
+    assert_eq!(
+        cpu_node.get_property("cpu-supply").unwrap().get_u32(),
+        Some(5)
+    );
 }
