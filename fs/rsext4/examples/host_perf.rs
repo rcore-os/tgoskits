@@ -102,6 +102,18 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn marker_value(name: &str, default: &str) -> String {
+    let value = env::var(name).unwrap_or_else(|_| default.to_string());
+    assert!(
+        !value.is_empty()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:+".contains(&byte)),
+        "{name} must be a non-empty marker token"
+    );
+    value
+}
+
 fn run_once(payload: &[u8]) -> Sample {
     let device = MemoryDevice::new();
     let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
@@ -156,6 +168,10 @@ fn main() {
     let bytes = env_usize("RSEXT4_BENCH_BYTES", DEFAULT_BYTES);
     let warmups = env_usize("RSEXT4_BENCH_WARMUPS", DEFAULT_WARMUPS);
     let runs = env_usize("RSEXT4_BENCH_RUNS", DEFAULT_RUNS);
+    let commit = marker_value("RSEXT4_BENCH_COMMIT", "unknown");
+    let arch = marker_value("RSEXT4_BENCH_ARCH", env::consts::ARCH);
+    let backend = marker_value("RSEXT4_BENCH_BACKEND", "memory");
+    let feature = marker_value("RSEXT4_BENCH_FEATURE", "metadata_csum+64bit+journal");
     assert!(bytes > 0 && bytes.is_multiple_of(BLOCK_SIZE));
     assert!(runs > 0);
 
@@ -165,8 +181,9 @@ fn main() {
     }
 
     println!(
-        "RSEXT4_BENCH_CONFIG workload=sequential bytes={bytes} warmups={warmups} runs={runs} \
-         block_size={BLOCK_SIZE} journal=true"
+        "RSEXT4_BENCH_CONFIG commit={commit} arch={arch} backend={backend} feature={feature} \
+         workload=sequential bytes={bytes} warmups={warmups} runs={runs} block_size={BLOCK_SIZE} \
+         journal=true"
     );
 
     for _ in 0..warmups {
@@ -177,7 +194,8 @@ fn main() {
     for run in 0..runs {
         let sample = run_once(&payload);
         println!(
-            "RSEXT4_BENCH_RESULT run={run} write_ns={} read_ns={} sync_ns={}",
+            "RSEXT4_BENCH_RESULT commit={commit} arch={arch} backend={backend} feature={feature} \
+             workload=sequential run={run} write_ns={} read_ns={} sync_ns={}",
             sample.write.as_nanos(),
             sample.read.as_nanos(),
             sample.sync.as_nanos()
@@ -199,8 +217,9 @@ fn main() {
         .collect::<Vec<_>>();
 
     println!(
-        "RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns={} write_p95_ns={} \
-         read_median_ns={} read_p95_ns={} sync_median_ns={} sync_p95_ns={}",
+        "RSEXT4_BENCH_SUMMARY commit={commit} arch={arch} backend={backend} feature={feature} \
+         workload=sequential write_median_ns={} write_p95_ns={} read_median_ns={} read_p95_ns={} \
+         sync_median_ns={} sync_p95_ns={}",
         percentile(&write, 1, 2),
         percentile(&write, 95, 100),
         percentile(&read, 1, 2),
