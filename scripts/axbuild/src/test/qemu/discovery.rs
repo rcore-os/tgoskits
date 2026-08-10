@@ -611,6 +611,7 @@ pub(super) fn build_wrapper_name(
 
 pub(super) fn case_name_for_wrapper_variant(name: String, variant: Option<&str>) -> String {
     match variant {
+        Some(variant) if name == variant => name,
         Some(variant) => format!("{name}-{variant}"),
         None => name,
     }

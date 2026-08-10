@@ -16,6 +16,9 @@ pub(super) fn register_devices(
     ivc::register(catalog)?;
     virtio_blk::register(catalog)?;
     virtio_net::register(catalog)?;
+    for registration in super::VPCI_REGISTRATIONS {
+        catalog.register(module_path!(), *registration)?;
+    }
     #[cfg(feature = "vpci-test-device")]
     vpci_test::register(catalog)?;
     Ok(())

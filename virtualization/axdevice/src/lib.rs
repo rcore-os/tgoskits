@@ -49,6 +49,7 @@ mod resources;
 mod runtime_resources;
 mod serial;
 mod service;
+mod vpci;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
@@ -110,6 +111,10 @@ pub use serial::{
     Uart16550, build_16550_mmio, build_16550_port, build_pl011_mmio,
 };
 pub use service::{DeviceServices, ServiceCardinality, ServiceKey};
+pub use vpci::{
+    IvshmemPciConfig, VirtualPciEndpointConfig, VirtualPciEndpointKind, VirtualPciHost,
+    VirtualPciHostModel,
+};
 #[cfg(target_arch = "x86_64")]
 // Reusable x86 device models and narrow typed services. These are target-gated
 // device packages, not part of the architecture-neutral framework core.

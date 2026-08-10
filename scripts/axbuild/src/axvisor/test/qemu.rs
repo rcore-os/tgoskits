@@ -13,7 +13,10 @@ use sha2::Digest;
 
 use super::{
     AXVISOR_NORMAL_GROUP, AxvisorQemuCase,
-    assets::axvisor_case_asset_config,
+    assets::{
+        axvisor_case_asset_config, case_needs_arceos_x86_64_guest,
+        inject_arceos_x86_64_guest_image, inject_linux_ivshmem_assets,
+    },
     discover_qemu_cases,
     discovery::{
         discover_test_group_names, qemu_list_error_is_ignorable, test_suite_dir, test_suite_root,
@@ -389,7 +392,7 @@ impl Axvisor {
             self.app.target_dir(),
             None,
         )?;
-        let prepared_assets = test_case::prepare_case_assets(
+        let mut prepared_assets = test_case::prepare_case_assets(
             self.app.target_dir(),
             &request.arch,
             &request.target,
@@ -398,6 +401,32 @@ impl Axvisor {
             asset_config.clone(),
         )
         .await?;
+        if case_needs_arceos_x86_64_guest(request, case) {
+            inject_arceos_x86_64_guest_image(
+                self.app.workspace_root(),
+                request,
+                case,
+                &mut prepared_assets,
+            )
+            .with_context(|| {
+                format!(
+                    "failed to prepare ArceOS guest image for Axvisor qemu case `{}`",
+                    case.case.case.name
+                )
+            })?;
+        }
+        inject_linux_ivshmem_assets(
+            self.app.workspace_root(),
+            request,
+            case,
+            &mut prepared_assets,
+        )
+        .with_context(|| {
+            format!(
+                "failed to prepare Linux ivshmem assets for Axvisor qemu case `{}`",
+                case.case.case.name
+            )
+        })?;
         if !rootfs::diskless_explicit_qemu(&qemu, true, false) {
             rootfs::patch_qemu_rootfs_path(
                 &mut qemu,

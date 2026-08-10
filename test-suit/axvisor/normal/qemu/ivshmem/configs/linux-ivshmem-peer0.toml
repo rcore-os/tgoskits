@@ -1,0 +1,55 @@
+# Vm base info configs
+#
+[base]
+# Guest vm id.
+id = 1
+# Guest vm name.
+name = "linux-ivshmem-peer0"
+# Virtualization type.
+guest_type = "virtualized"
+# The number of virtual CPUs.
+cpu_num = 1
+# Guest vm physical cpu ids.
+phys_cpu_ids = [0]
+
+#
+# Vm kernel configs
+#
+[kernel]
+# The entry point of the kernel image.
+entry_point = 0x8020_0000
+# The location of image: "memory" | "fs".
+image_location = "fs"
+# The file path of the kernel image.
+kernel_path = "/guest/linux/linux-qemu"
+# The load address of the kernel image.
+kernel_load_addr = 0x8020_0000
+# The load address of the device tree blob (DTB).
+dtb_load_addr = 0x8000_0000
+# The file path of the initramfs image.
+ramdisk_path = "/guest/linux/ivshmem-bar2-initramfs.cpio"
+# The load address of the initramfs image.
+ramdisk_load_addr = 0x8800_0000
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
+memory_regions = [
+    [0x8000_0000, 0x1000_0000, 0x7, 0], # System RAM 256M MAP_ALLOC
+]
+
+#
+# Device specifications.
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "ivshmem-pci"
+model = "ivshmem-pci"
+ecam_base = 0x5000_0000
+ecam_size = 0x10_0000
+legacy_irq = 0
+# [bus, device, function, vendor_id, device_id, pci_mem_base, pci_mem_size,
+#  bar0_base, bar0_size, link_id, peer_id, peers, feature_flags,
+#  bar2_base, bar2_size, bar2_host_backing].
+cfg_list = [0, 5, 0, 0x1af4, 0x1110, 0x5010_0000, 0x30_0000, 0x5010_0000, 0x1000, 1, 0, 2, 0, 0x5020_0000, 0x20_0000, 0]
