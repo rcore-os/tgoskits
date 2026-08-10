@@ -20,16 +20,25 @@ struct FileBlockDevice {
 
 impl FileBlockDevice {
     fn open(path: PathBuf) -> Self {
+        Self::open_with_sector_size(path, BLOCK_SIZE as u32)
+    }
+
+    fn open_with_sector_size(path: PathBuf, sector_size: u32) -> Self {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(&path)
             .expect("open image");
         let len = file.metadata().expect("image metadata").len();
+        assert_eq!(
+            len % u64::from(sector_size),
+            0,
+            "image length must be aligned to the device sector size"
+        );
         Self {
             file,
-            block_size: BLOCK_SIZE as u32,
-            total_blocks: len / BLOCK_SIZE as u64,
+            block_size: sector_size,
+            total_blocks: len / u64::from(sector_size),
             now: Cell::new(1_700_000_000),
         }
     }
@@ -204,6 +213,110 @@ fn create_ext4_test_image(prefix: &str, size: &str) -> (PathBuf, PathBuf) {
     );
 
     (temp_dir, image)
+}
+
+fn create_ext4_geometry_image(
+    prefix: &str,
+    size: &str,
+    filesystem_block_size: u32,
+) -> (PathBuf, PathBuf) {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "{prefix}-{filesystem_block_size}-{}",
+        std::process::id()
+    ));
+    if temp_dir.exists() {
+        fs::remove_dir_all(&temp_dir).expect("remove stale temp dir");
+    }
+    fs::create_dir(&temp_dir).expect("create temp dir");
+    let image = temp_dir.join("fs.img");
+
+    run_command(
+        {
+            let mut command = Command::new("truncate");
+            command.args(["-s", size]).arg(&image);
+            command
+        },
+        "truncate geometry test image",
+    );
+    run_command(
+        {
+            let mut command = Command::new("mkfs.ext4");
+            command
+                .args([
+                    "-F",
+                    "-q",
+                    "-b",
+                    &filesystem_block_size.to_string(),
+                    "-O",
+                    "^huge_file,^dir_nlink",
+                ])
+                .arg(&image);
+            command
+        },
+        "mkfs.ext4 geometry test image",
+    );
+
+    (temp_dir, image)
+}
+
+fn linux_image_geometry_round_trip(filesystem_block_size: u32) {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_geometry_image(
+        "rsext4-dynamic-block-geometry",
+        "64M",
+        filesystem_block_size,
+    );
+    let payload = vec![0x5a; filesystem_block_size as usize + 37];
+
+    {
+        let dev = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("mount Linux-created geometry image");
+
+        mkdir(&mut dev, &mut fs, "/geometry").expect("create geometry directory");
+        mkfile(&mut dev, &mut fs, "/geometry/source.bin", None, None)
+            .expect("create geometry file");
+        write_file(&mut dev, &mut fs, "/geometry/source.bin", 0, &payload)
+            .expect("write across a filesystem block boundary");
+        rename(
+            &mut dev,
+            &mut fs,
+            "/geometry/source.bin",
+            "/geometry/renamed.bin",
+        )
+        .expect("rename geometry file");
+        assert_eq!(
+            read_file(&mut dev, &mut fs, "/geometry/renamed.bin")
+                .expect("read renamed geometry file"),
+            payload
+        );
+
+        umount(fs, &mut dev).expect("umount geometry image");
+    }
+
+    e2fsck_readonly_clean(
+        &image,
+        &format!("{filesystem_block_size}-byte filesystem block round trip"),
+    );
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn linux_image_round_trip_with_1k_filesystem_blocks() {
+    linux_image_geometry_round_trip(1024);
+}
+
+#[test]
+fn linux_image_round_trip_with_2k_filesystem_blocks() {
+    linux_image_geometry_round_trip(2048);
+}
+
+#[test]
+fn linux_image_round_trip_with_4k_filesystem_blocks() {
+    linux_image_geometry_round_trip(4096);
 }
 
 fn assert_debugfs_path_exists(image: &Path, path: &str) {
