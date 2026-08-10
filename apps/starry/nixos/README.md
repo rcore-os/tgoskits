@@ -46,8 +46,7 @@ From the repository root:
 
 ```bash
 apps/starry/nixos/build-rootfs.sh --self-test
-TMPDIR="$PWD/.ci-cache/tmp" \
-  cargo xtask starry app qemu -t nixos --arch x86_64
+cargo xtask starry app qemu -t nixos --arch x86_64
 ```
 
 After a native Nix/Lix build has published a valid image and manifest, a CI
@@ -55,16 +54,16 @@ container may reuse it without installing Nix. Reuse is explicit and rechecks
 the ext4 image, flake-lock hash, closure identity, target, and image hash:
 
 ```bash
-TMPDIR="$PWD/.ci-cache/tmp" \
 STARRY_NIXOS_REUSE_ROOTFS=1 \
   cargo xtask starry app qemu -t nixos --arch x86_64
 ```
 
 Use the repository's pinned Rust toolchain and install the host prerequisites
-listed above. Do not rebuild or switch the host NixOS system. Keep optional
-repository-local tool state limited to `.ci-cache/cargo`,
-`.ci-cache/rustup`, and `.ci-cache/tmp`; build output remains in the
-repository's normal `target` and `tmp/axbuild` locations.
+listed above. Do not rebuild or switch the host NixOS system. The commands do
+not require a repository-local temporary or cache directory; optional host-side
+caches are developer-local accelerators and must not contain required inputs.
+Build output remains in the repository's normal `target` and `tmp/axbuild`
+locations.
 
 Axbuild invokes the same builder automatically through the explicit
 `AppOwned` rootfs contract. Builder failure, a target mismatch, a missing or

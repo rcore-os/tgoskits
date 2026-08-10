@@ -167,14 +167,12 @@ target 和镜像哈希。该模式不会回退到 Alpine，也不会接受缺失
 从仓库根目录运行：
 
 ```bash
-TMPDIR="$PWD/.ci-cache/tmp" \
-STARRY_NIXOS_REUSE_ROOTFS=1 \
-  cargo xtask starry app qemu -t nixos --arch x86_64
+cargo xtask starry app qemu -t nixos --arch x86_64
 ```
 
 使用仓库锁定的 Rust 工具链，并确保宿主已安装 Nix/Lix、QEMU 和 ext4 检查工具；
-不要重建或切换宿主 NixOS 系统。仓库内可选工具缓存仅使用
-`.ci-cache/cargo`、`.ci-cache/rustup` 和 `.ci-cache/tmp`。验收成功必须
+不要重建或切换宿主 NixOS 系统。该命令不依赖仓库内未跟踪的临时目录或缓存；宿主侧
+缓存只能用于加速，不能包含验收所需输入。验收成功必须
 依次出现 `pid1`、`activation`、`systemd`、`marker` 四个 phase，最后出现
 `STARRY_NIXOS_SYSTEM_PASSED`；具体兼容性例外和回滚边界见
 `apps/starry/nixos/README.md` 与 `compatibility.md`，架构和验收契约见
