@@ -70,6 +70,25 @@ fn already_pending_wake_is_a_successful_delivery() {
 }
 
 #[test]
+fn task_notification_keeps_the_notifier_nonpreemptible_until_publication_finishes() {
+    crate::test_runtime::reset_preempt_state();
+    let cell = IrqWaitCell::new();
+    let registration = IrqWaitRegistration::new_test(IrqWakeHandle::from_fn(|| {
+        assert_eq!(
+            crate::test_runtime::active_preempt_guards(),
+            1,
+            "a same-CPU waiter must not preempt the notifier before its drain state is published"
+        );
+        crate::WakeResult::Notified
+    }));
+    let token = expect_registered(cell.register(&registration));
+
+    assert_eq!(cell.notify_from_task(), IrqNotifyResult::Notified);
+    assert_eq!(crate::test_runtime::active_preempt_guards(), 0);
+    token.detach().try_finish().unwrap();
+}
+
+#[test]
 fn exited_waiter_leaves_the_event_for_a_replacement() {
     let cell = IrqWaitCell::new();
     let exited =

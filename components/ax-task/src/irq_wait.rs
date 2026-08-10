@@ -716,6 +716,12 @@ impl IrqWaitCell {
             !crate::runtime::task_runtime::in_hard_irq(),
             "task IRQ-cell notification is not valid in hard IRQ context"
         );
+        // Linux keeps the waiter metadata owner non-preemptible until the
+        // wake callback and wake-queue publication are both complete. Without
+        // the same boundary here, a same-CPU direct wake can run the waiter
+        // while this registration is still `Notifying`; that waiter then spins
+        // in its drain path waiting for the notifier it just preempted.
+        let _preempt = crate::lock::PreemptScope::enter();
         self.notify_with_context(WakeContext::Task)
     }
 
