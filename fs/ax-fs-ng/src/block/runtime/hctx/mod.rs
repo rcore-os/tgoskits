@@ -150,10 +150,14 @@ impl Hctx {
             name,
             cpu,
             Box::new(move || {
-                let queue = worker_queue_slot
-                    .lock()
-                    .take()
-                    .expect("new hctx worker owns its startup queue");
+                let queue = {
+                    let mut slot = worker_queue_slot.lock();
+                    let queue = slot.take().expect("new hctx worker owns its startup queue");
+                    // The maintenance loop sleeps while idle, so the IRQ-save
+                    // startup guard must be gone before entering it.
+                    drop(slot);
+                    queue
+                };
                 run_hctx(queue, state, observer, controller);
             }),
         ) {

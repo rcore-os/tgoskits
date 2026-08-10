@@ -267,16 +267,21 @@ impl CloneArgs {
                 ))
             };
 
+            // RwLock read guards used as nested call arguments live until the
+            // outer statement ends. Build the plain image first so all six
+            // preemption guards are gone before `ProcessData::new` acquires
+            // the sleepable address-space mutex.
+            let process_image = ProcessImage::new(
+                old_proc_data.exe_path.read().clone(),
+                old_proc_data.cmdline.read().clone(),
+                old_proc_data.envp.read().clone(),
+                old_proc_data.auxv.read().clone(),
+                old_proc_data.root_path.read().clone(),
+                old_proc_data.cwd_path.read().clone(),
+            );
             let proc_data = ProcessData::new(
                 proc,
-                ProcessImage::new(
-                    old_proc_data.exe_path.read().clone(),
-                    old_proc_data.cmdline.read().clone(),
-                    old_proc_data.envp.read().clone(),
-                    old_proc_data.auxv.read().clone(),
-                    old_proc_data.root_path.read().clone(),
-                    old_proc_data.cwd_path.read().clone(),
-                ),
+                process_image,
                 aspace,
                 signal_actions,
                 exit_signal,

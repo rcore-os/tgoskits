@@ -335,17 +335,17 @@ impl<T: ?Sized> SpinRwLock<T> {
         self.with_state_mut::<RawState>().get_mut()
     }
 
-    /// Removes one leaked preemption-mode read guard from the reader count.
+    /// Removes one deliberately leaked raw read guard from the reader count.
     ///
     /// # Safety
     ///
     /// The caller must own a deliberately forgotten guard returned by
-    /// [`Self::read`] and must prove that no live reference from it remains.
+    /// [`Self::read_raw`] and must prove that no live reference from it remains.
     #[doc(hidden)]
     #[inline(always)]
-    pub unsafe fn force_read_decrement(&self) {
+    pub unsafe fn force_read_decrement_raw(&self) {
         unsafe {
-            self.with_state::<PreemptState>().force_read_decrement();
+            self.with_state::<RawState>().force_read_decrement();
         }
     }
 }

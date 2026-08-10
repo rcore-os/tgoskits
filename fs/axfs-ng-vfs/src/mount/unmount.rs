@@ -94,7 +94,11 @@ impl UnmountPlan {
         }
         for target in &self.targets {
             target.mountpoint.leave_propagation_relations_locked();
-            target.mountpoint.lifetime_guard.lock().take();
+            let lifetime_guard = {
+                let mut guard = target.mountpoint.lifetime_guard.lock();
+                guard.take()
+            };
+            drop(lifetime_guard);
         }
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
         Ok(())
@@ -221,12 +225,17 @@ impl Mountpoint {
         let Some(location) = self.location.lock().clone() else {
             return Err(VfsError::InvalidInput);
         };
-        location
-            .mountpoint
-            .children
-            .lock()
-            .remove(&location.entry.key());
-        *self.location.lock() = None;
+        let removed_child = {
+            let mut children = location.mountpoint.children.lock();
+            children.remove(&location.entry.key())
+        };
+        drop(removed_child);
+
+        let old_location = {
+            let mut current_location = self.location.lock();
+            current_location.take()
+        };
+        drop(old_location);
         Ok(())
     }
 }

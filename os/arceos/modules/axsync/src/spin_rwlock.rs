@@ -459,14 +459,16 @@ mod tests {
     }
 
     #[test]
-    fn force_read_decrement_releases_leaked_reader() {
+    fn force_read_decrement_raw_releases_leaked_reader_without_changing_context() {
         let lock = RwLock::new(());
-        let guard = lock.read();
+        let guard = unsafe { lock.read_raw() };
         core::mem::forget(guard);
 
         assert!(lock.try_write().is_none());
+        assert_eq!(crate::host_preempt_depth(), 0);
 
-        unsafe { lock.force_read_decrement() };
+        unsafe { lock.force_read_decrement_raw() };
+        assert_eq!(crate::host_preempt_depth(), 0);
         assert!(lock.try_write().is_some());
     }
 

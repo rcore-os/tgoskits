@@ -16,7 +16,7 @@ lockdep = ["ax-sync/lockdep"]
 
 [dependencies]
 ax-errno = { workspace = true }
-ax-sync = { workspace = true }
+ax-sync = { workspace = true, features = ["sleep"] }
 axtest = { workspace = true, optional = true }
 bitflags = "2.10"
 cfg-if = "1"

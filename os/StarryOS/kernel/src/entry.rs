@@ -5,13 +5,14 @@ use alloc::{
 
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{AxTaskExt, spawn_task_with};
+use flatten_objects::FlattenObjects;
 use starry_process::{Pid, Process};
 
 use crate::{
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty},
-    sync::{Mutex, PreemptIrqSaveGuard},
+    sync::{Mutex, PreemptIrqSaveGuard, RwLock},
     task::{ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
     tracepoint::tracepoint_init,
 };
@@ -102,8 +103,9 @@ pub fn init(args: &[String], envs: &[String]) {
         .expect("Failed to attach init process to cgroup root");
 
     let mut scope = scope_local::Scope::new();
-    crate::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
-        .expect("Failed to add stdio");
+    let mut fd_table = FlattenObjects::new();
+    crate::file::add_stdio(&mut fd_table).expect("Failed to add stdio");
+    *FD_TABLE.scope_mut(&mut scope) = Arc::new(RwLock::new(fd_table));
 
     let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default(), scope);
     *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));

@@ -264,7 +264,11 @@ impl DirNode {
             let user_data = node.user_data().clone();
             *entry.user_data() = user_data;
             if self.ops.is_cacheable() {
-                self.cache.lock().insert(name.to_owned(), entry.clone());
+                let previous = {
+                    let mut cache = self.cache.lock();
+                    cache.insert(name.to_owned(), entry.clone())
+                };
+                drop(previous);
                 self.bump_cache_generation();
             }
         })
@@ -302,7 +306,11 @@ impl DirNode {
     ) -> VfsResult<DirEntry> {
         let entry = self.ops.create(name, node_type, permission, uid, gid)?;
         if self.ops.is_cacheable() {
-            self.cache.lock().insert(name.to_owned(), entry.clone());
+            let previous = {
+                let mut cache = self.cache.lock();
+                cache.insert(name.to_owned(), entry.clone())
+            };
+            drop(previous);
             self.bump_cache_generation();
         }
         Ok(entry)

@@ -68,16 +68,20 @@ impl CviJpu {
     }
 
     pub fn decode_camera_to_user(&self, jpeg: &[u8], destination: *mut u8) -> VfsResult<usize> {
-        let mut state = self.state.lock();
-        if state.vdec_owned {
-            return Err(AxError::ResourceBusy);
-        }
-        let result = state
-            .decoder()?
-            .decode(jpeg)
-            .map_err(|error| map_decode_error(&error))?;
-        vm_write_slice(destination, result.yuv_data)?;
-        Ok(result.yuv_data.len())
+        let yuv_data = {
+            let mut state = self.state.lock();
+            if state.vdec_owned {
+                return Err(AxError::ResourceBusy);
+            }
+            state
+                .decoder()?
+                .decode(jpeg)
+                .map_err(|error| map_decode_error(&error))?
+                .yuv_data
+                .to_vec()
+        };
+        vm_write_slice(destination, &yuv_data)?;
+        Ok(yuv_data.len())
     }
 
     pub fn decode_vdec(&self, jpeg: &[u8], scale: JpuScale) -> VfsResult<DecodedJpuFrame> {

@@ -1,6 +1,6 @@
 //! BPF map file-like wrapper and mmap glue. Ported from
 //! `Starry-OS/StarryOS:ebpf-kmod` (`kernel/src/bpf/map.rs`); imports adapted
-//! to tgoskits' `ax_hal` / `ax_kspin` / `ax_errno` / `ax_alloc` package
+//! to tgoskits' `ax_hal` / `ax_sync` / `ax_errno` / `ax_alloc` package
 //! names per `crate-fork-audit.md §6`.
 
 use alloc::{borrow::Cow, sync::Arc, vec::Vec};

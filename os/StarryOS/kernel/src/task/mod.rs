@@ -50,7 +50,7 @@ pub(crate) use self::{
     seccomp::seccomp_bpf_constants_hold_for_test,
     timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
 };
-use crate::sync::{IrqMutex, Mutex, PreemptIrqSaveGuard, RwLock, SpinLock};
+use crate::sync::{ContextSwitchRwLock, IrqMutex, Mutex, PreemptIrqSaveGuard, RwLock, SpinLock};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyscallTraceState {
@@ -139,7 +139,7 @@ pub struct Thread {
     /// Each thread owns its scope while individual entries may still point to
     /// shared objects such as an fd table or filesystem context. Keeping the
     /// association here lets `unshare(CLONE_FILES)` detach only its caller.
-    pub(crate) scope: RwLock<Scope>,
+    pub(crate) scope: ContextSwitchRwLock<Scope>,
 
     /// The clear thread tid field
     ///
@@ -259,7 +259,7 @@ impl Thread {
                 signal_mask,
             ),
             proc_data,
-            scope: RwLock::new(scope),
+            scope: ContextSwitchRwLock::new(scope),
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
             time: AssumeSync(RefCell::new(TimeManager::new())),
@@ -300,11 +300,11 @@ impl Thread {
     pub(crate) fn with_current_scope_mut<R>(&self, f: impl FnOnce(&mut Scope) -> R) -> R {
         let _guard = PreemptIrqSaveGuard::new();
         ActiveScope::set_global();
-        unsafe { self.scope.force_read_decrement() };
+        unsafe { self.scope.release_context_switch_reader() };
         let mut scope = self.scope.write();
         let ret = f(&mut scope);
         drop(scope);
-        let scope = self.scope.read();
+        let scope = unsafe { self.scope.read_for_context_switch() };
         unsafe { ActiveScope::set(&scope) };
         core::mem::forget(scope);
         ret
@@ -594,7 +594,7 @@ impl Thread {
 #[extern_trait]
 impl TaskExt for Box<Thread> {
     fn on_enter(&self) {
-        let scope = self.scope.read();
+        let scope = unsafe { self.scope.read_for_context_switch() };
         unsafe { ActiveScope::set(&scope) };
         core::mem::forget(scope);
         // Program any per-task perf counters onto HW for this slice. Runs with
@@ -610,7 +610,7 @@ impl TaskExt for Box<Thread> {
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_out(self);
         ActiveScope::set_global();
-        unsafe { self.scope.force_read_decrement() };
+        unsafe { self.scope.release_context_switch_reader() };
     }
 }
 

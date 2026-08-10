@@ -10,7 +10,7 @@
 //! loading an empty module).
 //!
 //! Package-name imports adapted to tgoskits (`axhal` → `ax_runtime::hal`,
-//! `axalloc` → `ax_alloc`, `axmm` → `ax_mm`, `kspin` → `ax_kspin`) per
+//! `axalloc` → `ax_alloc`, `axmm` → `ax_mm`, `kspin` → `ax_sync`) per
 //! `crate-fork-audit.md §6`. KALLSYMS lookup goes through the in-kernel
 //! `.kallsyms` blob (`crate::pseudofs::proc::KALLSYMS`), the same table
 //! `perf::kprobe` resolves names against.
