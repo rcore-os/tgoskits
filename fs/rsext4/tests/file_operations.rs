@@ -225,7 +225,7 @@ mod file_functional_tests {
         // The old path must disappear after rename.
         let old_err = read_file(&mut jbd2_dev, &mut fs, "/renametest/oldname")
             .expect_err("old path should not exist");
-        assert_eq!(old_err.code, Errno::ENOENT);
+        assert_eq!(old_err.kind(), Ext4ErrorKind::NotFound);
 
         // The new path should expose the exact original content.
         let new_data =
@@ -318,7 +318,7 @@ mod file_functional_tests {
         assert_eq!(data, updated.to_vec());
 
         let temp_err = read_file(&mut jbd2_dev, &mut fs, "/tmp/temp.txt").expect_err("temp gone");
-        assert_eq!(temp_err.code, Errno::ENOENT);
+        assert_eq!(temp_err.kind(), Ext4ErrorKind::NotFound);
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
@@ -391,7 +391,7 @@ mod file_functional_tests {
         // The source entry should be removed after the move.
         let old_err = read_file(&mut jbd2_dev, &mut fs, "/sourcedir/movefile")
             .expect_err("old path should not exist");
-        assert_eq!(old_err.code, Errno::ENOENT);
+        assert_eq!(old_err.kind(), Ext4ErrorKind::NotFound);
 
         // The destination should still resolve to the original file contents.
         let new_data =
@@ -433,7 +433,7 @@ mod file_functional_tests {
         // The deleted path must no longer be readable.
         let deleted_err = read_file(&mut jbd2_dev, &mut fs, "/deletetest/deletefile")
             .expect_err("deleted path should not exist");
-        assert_eq!(deleted_err.code, Errno::ENOENT);
+        assert_eq!(deleted_err.kind(), Ext4ErrorKind::NotFound);
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
@@ -529,7 +529,7 @@ mod file_functional_tests {
         // Missing paths should return `ENOENT`.
         let non_existent = read_file(&mut jbd2_dev, &mut fs, "/nonexistent/file")
             .expect_err("missing file should fail");
-        assert_eq!(non_existent.code, Errno::ENOENT);
+        assert_eq!(non_existent.kind(), Ext4ErrorKind::NotFound);
 
         // The current implementation auto-creates parent directories for `mkfile`.
         let result = mkfile(
@@ -547,7 +547,7 @@ mod file_functional_tests {
         // The path must still resolve as missing afterwards.
         let non_existent = read_file(&mut jbd2_dev, &mut fs, "/nonexistent/file")
             .expect_err("deleted file should fail");
-        assert_eq!(non_existent.code, Errno::ENOENT);
+        assert_eq!(non_existent.kind(), Ext4ErrorKind::NotFound);
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }

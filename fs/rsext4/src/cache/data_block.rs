@@ -283,7 +283,7 @@ impl DataBlockCache {
         let required = self
             .block_size
             .checked_mul(count as usize)
-            .ok_or_else(|| Ext4Error::from(Errno::EOVERFLOW))?;
+            .ok_or_else(Ext4Error::overflow)?;
         if data.len() < required {
             return Err(Ext4Error::buffer_too_small(data.len(), required));
         }
@@ -327,7 +327,7 @@ impl DataBlockCache {
         let required = self
             .block_size
             .checked_mul(count as usize)
-            .ok_or_else(|| Ext4Error::from(Errno::EOVERFLOW))?;
+            .ok_or_else(Ext4Error::overflow)?;
         if dst.len() < required {
             return Err(Ext4Error::buffer_too_small(dst.len(), required));
         }
@@ -477,8 +477,7 @@ impl DataBlockCache {
                 buf.extend_from_slice(&dirty_blocks[idx + off].2);
             }
 
-            let run_len_u32 =
-                u32::try_from(run_len).map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?;
+            let run_len_u32 = u32::try_from(run_len).map_err(|_| Ext4Error::overflow())?;
             block_dev.write_blocks(&buf, start_block, run_len_u32, false)?;
             idx += run_len;
         }
@@ -531,7 +530,7 @@ mod tests {
 
         fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
             if self.fail_writes {
-                return Err(Ext4Error::from(Errno::EIO));
+                return Err(Ext4Error::io());
             }
             let start = block_id.as_usize()? * BLOCK_SIZE;
             let end = start + buffer.len();
@@ -660,7 +659,7 @@ mod tests {
         let error = cache
             .create_new(&mut jbd2_dev, replacement)
             .expect_err("dirty eviction must report the device write error");
-        assert_eq!(error.code, Errno::EIO);
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
 
         let cached = cache.get(victim).expect("failed writeback keeps victim");
         assert!(cached.dirty);

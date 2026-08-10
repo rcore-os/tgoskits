@@ -163,7 +163,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 self.inner.invalidate_cache()?;
             }
         } else {
-            return Err(Ext4Error::corrupted().with_operation("jbd2:commit_without_state"));
+            return Err(Ext4Error::journal_aborted().with_operation("jbd2:commit_without_state"));
         }
         Ok(())
     }
@@ -180,7 +180,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         let updates = Jbd2Update(block_id, new_buf);
 
         let Some(system) = self.system.as_mut() else {
-            return Err(Ext4Error::corrupted().with_operation("jbd2:write_without_state"));
+            return Err(Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"));
         };
         let raw_dev = self.inner.device_mut();
 
@@ -261,7 +261,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
 
         let Some(system) = self.system.as_mut() else {
-            return Err(Ext4Error::corrupted().with_operation("jbd2:write_without_state"));
+            return Err(Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"));
         };
         let raw_dev = self.inner.device_mut();
         let required = count as usize * BLOCK_SIZE;
@@ -435,7 +435,7 @@ mod tests {
         let error = dev
             .write_block(target, true)
             .expect_err("metadata write must require initialized journal state");
-        assert_eq!(error.code, crate::Errno::EUCLEAN);
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::JournalAborted);
 
         let inner = dev.into_inner();
         assert_eq!(inner.data[target.as_usize().unwrap() * BLOCK_SIZE], 0);
@@ -448,7 +448,7 @@ mod tests {
             .umount_commit()
             .expect_err("journal-enabled unmount cannot claim a successful commit without state");
 
-        assert_eq!(error.code, crate::Errno::EUCLEAN);
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::JournalAborted);
     }
 
     #[test]

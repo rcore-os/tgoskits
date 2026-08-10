@@ -73,11 +73,38 @@ impl Ext4FileSystem {
     fn reload_after_journal_replay<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
+        read_only: bool,
     ) -> Ext4Result<()> {
         self.superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
         self.superblock.verify_superblock()?;
-        Self::dirty_for_mount(&mut self.superblock);
+        if !read_only {
+            Self::dirty_for_mount(&mut self.superblock);
+        }
         self.reset_runtime_from_superblock(block_dev)
+    }
+
+    fn check_mount_features<O: crate::runtime::Observer>(
+        superblock: &Ext4Superblock,
+        read_only: bool,
+        observer: &mut O,
+    ) -> Ext4Result<()> {
+        use crate::runtime::{Event, FeatureEvent};
+
+        let unsupported_incompat = superblock.unsupported_incompat_features();
+        if unsupported_incompat != 0 {
+            observer.event(Event::Feature(FeatureEvent::UnsupportedIncompat(
+                unsupported_incompat,
+            )));
+        }
+
+        let unsupported_ro_compat = superblock.unsupported_ro_compat_features();
+        if unsupported_ro_compat != 0 {
+            observer.event(Event::Feature(FeatureEvent::ReadOnlyCompat(
+                unsupported_ro_compat,
+            )));
+        }
+
+        superblock.check_features(read_only)
     }
 
     fn clear_recovery_state(&mut self) {
@@ -176,6 +203,7 @@ impl Ext4FileSystem {
             return Err(Ext4Error::invalid_magic());
         }
         superblock.verify_superblock()?;
+        Self::check_mount_features(&superblock, options.readonly, observer)?;
 
         // Continue mounting even for an error-state filesystem so higher layers
         // can inspect or attempt repair.
@@ -296,7 +324,8 @@ impl Ext4FileSystem {
                     // descriptors, bitmaps, inode table, and directory blocks.
                     // Drop all metadata read before replay and continue
                     // mounting from the recovered on-disk state.
-                    fs.reload_after_journal_replay(block_dev)?;
+                    fs.reload_after_journal_replay(block_dev, options.readonly)?;
+                    Self::check_mount_features(&fs.superblock, options.readonly, observer)?;
                     fs.clear_recovery_state();
                 } else if !options.readonly && block_dev.is_use_journal() {
                     fs.set_recovery_state();

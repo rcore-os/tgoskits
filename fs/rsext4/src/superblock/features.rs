@@ -1,6 +1,24 @@
 //! Feature flags and feature tests for the ext4 superblock.
 
 use super::Ext4Superblock;
+use crate::error::{Ext4Error, Ext4Result, FeatureSet};
+
+// These masks describe features whose read-write semantics are implemented by
+// the current core. They are deliberately narrower than Linux's masks: known
+// on-disk bits must not be advertised as writable before their state
+// transitions and recovery rules exist here.
+const SUPPORTED_INCOMPAT_FEATURES: u32 = Ext4Superblock::EXT4_FEATURE_INCOMPAT_FILETYPE
+    | Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER
+    | Ext4Superblock::EXT4_FEATURE_INCOMPAT_EXTENTS
+    | Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT
+    | Ext4Superblock::EXT4_FEATURE_INCOMPAT_FLEX_BG
+    | Ext4Superblock::EXT4_FEATURE_INCOMPAT_CSUM_SEED;
+
+const SUPPORTED_RO_COMPAT_FEATURES: u32 = Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER
+    | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_LARGE_FILE
+    | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE
+    | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM
+    | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT;
 
 impl Ext4Superblock {
     pub const EXT4_FEATURE_COMPAT_DIR_PREALLOC: u32 = 0x0001;
@@ -78,5 +96,110 @@ impl Ext4Superblock {
     /// Returns whether the journal feature is enabled.
     pub fn has_journal(&self) -> bool {
         self.has_feature_compat(Self::EXT4_FEATURE_COMPAT_HAS_JOURNAL)
+    }
+
+    pub(crate) fn unsupported_incompat_features(&self) -> u32 {
+        self.s_feature_incompat & !SUPPORTED_INCOMPAT_FEATURES
+    }
+
+    pub(crate) fn unsupported_ro_compat_features(&self) -> u32 {
+        self.s_feature_ro_compat & !SUPPORTED_RO_COMPAT_FEATURES
+    }
+
+    /// Checks whether this core can safely mount the advertised feature set.
+    pub(crate) fn check_features(&self, read_only: bool) -> Ext4Result<()> {
+        let unsupported_incompat = self.unsupported_incompat_features();
+        if unsupported_incompat != 0 {
+            return Err(Ext4Error::unsupported_feature(
+                FeatureSet::Incompatible,
+                unsupported_incompat,
+            ));
+        }
+
+        let unsupported_ro_compat = self.unsupported_ro_compat_features();
+        if !read_only && unsupported_ro_compat != 0 {
+            return Err(Ext4Error::unsupported_feature(
+                FeatureSet::ReadOnlyCompatible,
+                unsupported_ro_compat,
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ErrorContext, Ext4ErrorKind, FeatureSet};
+
+    const UNKNOWN_HIGH_BIT: u32 = 1 << 31;
+
+    #[test]
+    fn unknown_incompat_feature_is_rejected_even_read_only() {
+        let sb = Ext4Superblock {
+            s_feature_incompat: UNKNOWN_HIGH_BIT,
+            ..Default::default()
+        };
+
+        let err = sb.check_features(true).unwrap_err();
+        assert_eq!(err.kind(), Ext4ErrorKind::UnsupportedFeature);
+        assert_eq!(
+            err.context(),
+            Some(ErrorContext::Feature {
+                set: FeatureSet::Incompatible,
+                bits: UNKNOWN_HIGH_BIT,
+            })
+        );
+    }
+
+    #[test]
+    fn known_but_unimplemented_incompat_feature_is_rejected() {
+        let sb = Ext4Superblock {
+            s_feature_incompat: Ext4Superblock::EXT4_FEATURE_INCOMPAT_ENCRYPT,
+            ..Default::default()
+        };
+
+        let err = sb.check_features(false).unwrap_err();
+        assert_eq!(err.kind(), Ext4ErrorKind::UnsupportedFeature);
+        assert_eq!(
+            err.context(),
+            Some(ErrorContext::Feature {
+                set: FeatureSet::Incompatible,
+                bits: Ext4Superblock::EXT4_FEATURE_INCOMPAT_ENCRYPT,
+            })
+        );
+    }
+
+    #[test]
+    fn unimplemented_ro_compat_feature_requires_read_only_mount() {
+        let bits = Ext4Superblock::EXT4_FEATURE_RO_COMPAT_QUOTA | UNKNOWN_HIGH_BIT;
+        let sb = Ext4Superblock {
+            s_feature_ro_compat: bits,
+            ..Default::default()
+        };
+
+        let err = sb.check_features(false).unwrap_err();
+        assert_eq!(err.kind(), Ext4ErrorKind::UnsupportedFeature);
+        assert_eq!(
+            err.context(),
+            Some(ErrorContext::Feature {
+                set: FeatureSet::ReadOnlyCompatible,
+                bits,
+            })
+        );
+        sb.check_features(true).unwrap();
+    }
+
+    #[test]
+    fn unknown_compat_feature_does_not_block_mount() {
+        let sb = Ext4Superblock {
+            s_feature_compat: UNKNOWN_HIGH_BIT,
+            s_feature_incompat: 0,
+            s_feature_ro_compat: 0,
+            ..Default::default()
+        };
+
+        sb.check_features(false).unwrap();
     }
 }

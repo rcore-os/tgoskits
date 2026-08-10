@@ -266,7 +266,7 @@ mod error_handling_tests {
 
         // Reads against the deleted path should fail with `ENOENT`.
         let result = read_file(&mut jbd2_dev, &mut fs, file_path).expect_err("deleted file");
-        assert_eq!(result.code, Errno::ENOENT);
+        assert_eq!(result.kind(), Ext4ErrorKind::NotFound);
 
         // Recreating the same name should succeed and expose the new payload.
         mkfile(
