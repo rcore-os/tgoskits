@@ -262,6 +262,7 @@ impl TaskSystem {
         &self,
         core: Arc<ThreadCore>,
         claim: &WaitWakeClaim,
+        preferred: Option<CpuId>,
     ) -> WaitWakeDelivery {
         if claim.thread() != core.id() {
             claim.cancel_selected();
@@ -307,9 +308,8 @@ impl TaskSystem {
                 }
             }
             ThreadState::Blocked => {
-                let preferred = sched
-                    .placement
-                    .assigned_cpu()
+                let preferred = preferred
+                    .or_else(|| sched.placement.assigned_cpu())
                     .or_else(|| core.wake_cpu_hint());
                 let policy = sched.policy.active().policy();
                 let queued_entity = sched.policy.active().entity().clone();

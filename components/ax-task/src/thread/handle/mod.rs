@@ -232,7 +232,7 @@ impl ThreadWakeHandle {
         &self,
         claim: &crate::WaitWakeClaim,
     ) -> crate::WaitWakeDelivery {
-        crate::facade::wake_wait_claim_direct(&self.core, claim)
+        crate::facade::wake_wait_claim_from_task(&self.core, claim)
     }
 
     /// Returns the thread that owns this wake header.
@@ -246,7 +246,7 @@ impl ThreadCore {
         if self.state() == ThreadState::Exited {
             return WakeResult::Exited;
         }
-        crate::facade::wake_thread_direct(self, None)
+        crate::facade::wake_thread_from_current_cpu(self)
     }
 }
 

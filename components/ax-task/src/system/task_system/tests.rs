@@ -974,8 +974,10 @@ fn direct_wake_activates_the_target_runqueue_before_its_owner_safe_point() {
             .unwrap();
         system.bring_cpu_online(cpu.as_mut()).unwrap();
     }
+    let mut cpu1_only = CpuSet::empty(2);
+    assert!(cpu1_only.insert(CpuId::new(1)));
     let sleeper = system
-        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_affinity(cpu1_only))
         .unwrap();
     system.make_ready(sleeper.id()).unwrap();
     system.enqueue_at(cpu1.as_mut(), sleeper.id(), 1).unwrap();
@@ -1001,6 +1003,86 @@ fn direct_wake_activates_the_target_runqueue_before_its_owner_safe_point() {
         cpu1.lock_run_queue().nr_queued(),
         1,
         "the target runqueue must expose the newly runnable thread before the wake returns",
+    );
+}
+
+#[test]
+fn task_context_fair_wake_prefers_the_waker_cpu_over_the_sleep_cpu() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+
+    let sleeper = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(sleeper.id()).unwrap();
+    system.enqueue_at(cpu1.as_mut(), sleeper.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule_at(cpu1.as_mut(), 1).unwrap().next(),
+        sleeper.id()
+    );
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+    system.block_current_at(cpu1.as_mut(), 2).unwrap();
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+
+    let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu0.as_mut());
+    assert_eq!(
+        sleeper.wake_handle().wake_from_task(),
+        crate::WakeResult::Notified
+    );
+
+    assert_eq!(
+        sleeper.core.sched().lock().placement.queued_cpu(),
+        Some(CpuId::new(0)),
+        "a Fair wake from task context must use the waker CPU as Linux's wake-affine input"
+    );
+}
+
+#[test]
+fn task_context_wait_claim_prefers_the_waker_cpu_over_the_sleep_cpu() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+
+    let sleeper = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(sleeper.id()).unwrap();
+    system.enqueue_at(cpu1.as_mut(), sleeper.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule_at(cpu1.as_mut(), 1).unwrap().next(),
+        sleeper.id()
+    );
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+    system.block_current_at(cpu1.as_mut(), 2).unwrap();
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+
+    let claim = WaitWakeClaim::new(sleeper.id(), sleeper.core.park_generation());
+    assert!(claim.select());
+    let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu0.as_mut());
+    assert_eq!(
+        sleeper.wake_handle().deliver_wait_claim_from_task(&claim),
+        WaitWakeDelivery::Delivered
+    );
+
+    assert_eq!(
+        sleeper.core.sched().lock().placement.queued_cpu(),
+        Some(CpuId::new(0)),
+        "wait-claim delivery must share the waker-aware placement of ordinary task wakes"
     );
 }
 

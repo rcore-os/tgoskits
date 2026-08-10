@@ -48,13 +48,15 @@ pub use pi::{
     pi_mutex_claim, pi_mutex_lock_slow, pi_mutex_release_owned, pi_park_current_once,
     pi_wait_cancel, pi_wait_try_cancel,
 };
+#[cfg(test)]
+pub(crate) use runtime_cpu::wake_thread_direct;
 use runtime_cpu::{
     RuntimeCpuPin, RuntimeSchedulerFrameGuard, runtime_current_cpu, validate_schedule_context,
     validate_task_context,
 };
 pub(crate) use runtime_cpu::{
     RuntimeIrqGuard, current_cpu_remote, runtime_current_cpu_mut, runtime_task_system,
-    wake_thread_direct, wake_wait_claim_direct,
+    wake_thread_from_current_cpu, wake_wait_claim_from_task,
 };
 #[cfg(test)]
 use scheduling::prepare_next_address_space;
