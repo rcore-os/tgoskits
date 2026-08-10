@@ -11,6 +11,8 @@ pub(super) enum ControlOp {
     Start(Config),
     Shutdown,
     SetConfig(Config),
+    DiscardRx,
+    DiscardTx,
 }
 
 pub(super) struct ControlCommand {

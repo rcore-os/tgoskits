@@ -27,9 +27,9 @@ use crate::{AxVM, AxVmResult, ax_err_type, irq::model::PendingVcpuInterrupt};
 /// reference. Every [`send`](Self::send) call looks up the current runtime
 /// through the VM, so a VM stop/start/reset cycle cannot leave the sender
 /// pointing at a stale dispatcher.
-#[expect(
-    dead_code,
-    reason = "architecture routers create senders in later modules"
+#[cfg_attr(
+    not(target_arch = "riscv64"),
+    expect(dead_code, reason = "currently consumed by the RISC-V IPI router")
 )]
 #[derive(Clone)]
 pub struct VmInterruptSender {
@@ -38,9 +38,9 @@ pub struct VmInterruptSender {
 
 impl VmInterruptSender {
     /// Constructs a sender from an `AxVMRef` (`Arc<AxVM>`).
-    #[expect(
-        dead_code,
-        reason = "architecture routers create senders in later modules"
+    #[cfg_attr(
+        not(target_arch = "riscv64"),
+        expect(dead_code, reason = "currently consumed by the RISC-V IPI router")
     )]
     pub fn new(vm: &Arc<AxVM>) -> Self {
         Self {
@@ -60,9 +60,9 @@ impl VmInterruptSender {
     ///    missing runtime return `BadState`.
     /// 3. `runtime.dispatch_vcpu_interrupt(vcpu_id, interrupt)` —
     ///    unregistered vCPU task returns `NotFound`.
-    #[expect(
-        dead_code,
-        reason = "architecture interrupt routers call send in later modules"
+    #[cfg_attr(
+        not(target_arch = "riscv64"),
+        expect(dead_code, reason = "currently consumed by the RISC-V IPI router")
     )]
     pub fn send(&self, vcpu_id: usize, interrupt: PendingVcpuInterrupt) -> AxVmResult {
         self.target.send_with(

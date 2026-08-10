@@ -22,17 +22,24 @@ pub type PtyDriver = Tty<PtyReader, PtyWriter>;
 
 type Buffer = Arc<HeapRb<u8>>;
 
-pub struct PtyReader(Cons<Buffer>, Arc<AtomicBool>);
+type SharedConsumer = Arc<SpinNoIrq<Cons<Buffer>>>;
+
+pub struct PtyReader(SharedConsumer, Arc<AtomicBool>);
 
 impl PtyReader {
-    pub fn new(buffer: Buffer, writer_closed: Arc<AtomicBool>) -> Self {
-        Self(Cons::new(buffer), writer_closed)
+    pub fn new(consumer: SharedConsumer, writer_closed: Arc<AtomicBool>) -> Self {
+        Self(consumer, writer_closed)
     }
 }
 
 impl TtyRead for PtyReader {
     fn read(&mut self, buf: &mut [u8]) -> usize {
-        self.0.pop_slice(buf)
+        self.0.lock().pop_slice(buf)
+    }
+
+    fn discard_input(&mut self) -> ax_errno::AxResult<()> {
+        self.0.lock().clear();
+        Ok(())
     }
 
     fn closed(&self) -> bool {
@@ -41,12 +48,23 @@ impl TtyRead for PtyReader {
 }
 
 #[derive(Clone)]
-pub struct PtyWriter(Arc<SpinNoIrq<Prod<Buffer>>>, Arc<PollSet>, Arc<AtomicBool>);
+pub struct PtyWriter(
+    Arc<SpinNoIrq<Prod<Buffer>>>,
+    SharedConsumer,
+    Arc<PollSet>,
+    Arc<AtomicBool>,
+);
 
 impl PtyWriter {
-    pub fn new(buffer: Buffer, poll_rx: Arc<PollSet>, writer_closed: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        buffer: Buffer,
+        consumer: SharedConsumer,
+        poll_rx: Arc<PollSet>,
+        writer_closed: Arc<AtomicBool>,
+    ) -> Self {
         Self(
             Arc::new(SpinNoIrq::new(Prod::new(buffer))),
+            consumer,
             poll_rx,
             writer_closed,
         )
@@ -64,8 +82,14 @@ impl TtyWrite for PtyWriter {
     fn try_write(&self, buf: &[u8]) -> usize {
         let read = self.0.lock().push_slice(buf);
         // PTY bytes are committed before waking the peer reader.
-        unsafe { self.1.wake(IoEvents::IN) };
+        unsafe { self.2.wake(IoEvents::IN) };
         read
+    }
+
+    fn discard_output(&self) -> ax_errno::AxResult<()> {
+        let _producer = self.0.lock();
+        self.1.lock().clear();
+        Ok(())
     }
 
     fn close(&self) {
@@ -74,8 +98,8 @@ impl TtyWrite for PtyWriter {
         // blocked poll()/read() observe the hangup. The peer drains any
         // already-buffered bytes first, then sees hangup on the next poll/read
         // once the buffer is empty.
-        self.2.store(true, Ordering::Release);
-        unsafe { self.1.wake(IoEvents::IN) };
+        self.3.store(true, Ordering::Release);
+        unsafe { self.2.wake(IoEvents::IN) };
     }
 }
 
@@ -88,15 +112,18 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
     // peer reader can observe hangup (POLLHUP / EOF).
     let master_closed = Arc::new(AtomicBool::new(false));
     let slave_closed = Arc::new(AtomicBool::new(false));
+    let master_to_slave_consumer = Arc::new(SpinNoIrq::new(Cons::new(master_to_slave.clone())));
+    let slave_to_master_consumer = Arc::new(SpinNoIrq::new(Cons::new(slave_to_master.clone())));
 
     let terminal = Arc::new(Terminal::default());
 
     let master = Tty::new(
         terminal.clone(),
         TtyConfig {
-            reader: PtyReader::new(slave_to_master.clone(), slave_closed.clone()),
+            reader: PtyReader::new(slave_to_master_consumer.clone(), slave_closed.clone()),
             writer: PtyWriter::new(
                 master_to_slave.clone(),
+                master_to_slave_consumer.clone(),
                 poll_rx_slave.clone(),
                 master_closed.clone(),
             ),
@@ -107,8 +134,13 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
     let slave = Tty::new(
         terminal,
         TtyConfig {
-            reader: PtyReader::new(master_to_slave, master_closed),
-            writer: PtyWriter::new(slave_to_master, poll_rx_master, slave_closed),
+            reader: PtyReader::new(master_to_slave_consumer, master_closed),
+            writer: PtyWriter::new(
+                slave_to_master,
+                slave_to_master_consumer,
+                poll_rx_master,
+                slave_closed,
+            ),
             process_mode: ProcessMode::InterruptDriven {
                 input: poll_rx_slave,
                 output: None,

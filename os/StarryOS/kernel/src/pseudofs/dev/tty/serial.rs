@@ -361,6 +361,10 @@ impl TtyRead for SerialReader {
 
         total
     }
+
+    fn discard_input(&mut self) -> AxResult<()> {
+        self.backend.rx.discard_pending()
+    }
 }
 
 impl TtyWrite for SerialWriter {
@@ -413,6 +417,12 @@ impl TtyWrite for SerialWriter {
 
     fn drain(&self) -> AxResult<()> {
         self.backend.drain_tx()
+    }
+
+    fn discard_output(&self) -> AxResult<()> {
+        self.backend.ensure_started()?;
+        let _guard = self.backend.output_lock.lock();
+        self.backend.tx.discard_pending()
     }
 
     fn termios_changed(&self, old: &Termios2, new: &Termios2) {

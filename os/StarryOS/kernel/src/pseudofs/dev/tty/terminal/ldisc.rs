@@ -1,7 +1,6 @@
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, task::Wake, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
     future::poll_fn,
-    marker::PhantomData,
     ops::Range,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::{Poll, Waker},
@@ -9,6 +8,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
+use ax_sync::Mutex;
 use ax_task::future::block_on;
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
@@ -53,6 +53,12 @@ pub struct TtyConfig<R, W> {
 pub trait TtyRead: Send + Sync + 'static {
     fn read(&mut self, buf: &mut [u8]) -> usize;
 
+    /// Discards bytes already queued by the underlying input source.
+    ///
+    /// Once this returns, a later [`Self::read`] must not expose bytes that
+    /// were observable by this reader before the discard began.
+    fn discard_input(&mut self) -> AxResult<()>;
+
     /// Whether the writer peer has been fully closed (last fd dropped).
     /// Default: never closed. Lets a Passive reader report hangup
     /// (POLLHUP / read EOF) once the writer side is gone.
@@ -90,6 +96,10 @@ pub trait TtyWrite: Send + Sync + 'static {
 
     fn drain(&self) -> AxResult<()> {
         Ok(())
+    }
+
+    fn discard_output(&self) -> AxResult<()> {
+        Err(AxError::Unsupported)
     }
 
     fn termios_changed(&self, _old: &Termios2, _new: &Termios2) {}
@@ -135,13 +145,17 @@ struct InputReader<R, W> {
     line_buf: Vec<u8>,
     line_read: Option<usize>,
     eof_ready: Arc<AtomicBool>,
-    clear_line_buf: Arc<AtomicBool>,
 }
 impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
+    fn discard_input(&mut self) -> AxResult<()> {
+        self.reader.discard_input()?;
+        self.read_range = 0..0;
+        self.line_buf.clear();
+        self.line_read = None;
+        Ok(())
+    }
+
     pub fn drain_source_into_line_buffer(&mut self) -> bool {
-        if self.clear_line_buf.swap(false, Ordering::Relaxed) {
-            self.line_buf.clear();
-        }
         let mut progressed = false;
         if self.read_range.is_empty() {
             let read = self.reader.read(&mut self.read_buf);
@@ -331,6 +345,11 @@ impl<W: TtyWrite> EchoQueue<W> {
         }
     }
 
+    fn discard_pending(&self) {
+        self.queue.lock().clear();
+        self.dropped.store(0, Ordering::Release);
+    }
+
     fn drain_available(&self) -> bool {
         let mut progressed = false;
         loop {
@@ -376,6 +395,10 @@ struct SimpleReader<R> {
     buf_tx: CachingProd<ReadBuf>,
 }
 impl<R: TtyRead> SimpleReader<R> {
+    fn discard_input(&mut self) -> AxResult<()> {
+        self.reader.discard_input()
+    }
+
     pub fn closed(&self) -> bool {
         self.reader.closed()
     }
@@ -392,8 +415,8 @@ impl<R: TtyRead> SimpleReader<R> {
     }
 }
 
-enum Processor<R> {
-    InterruptDriven,
+enum Processor<R, W> {
+    InterruptDriven(Arc<Mutex<InputReader<R, W>>>),
     Passive(Box<SimpleReader<R>>, Arc<PollSet>),
 }
 
@@ -404,29 +427,12 @@ pub struct LineDiscipline<R, W> {
     input_ready: Arc<PollSet>,
     worker_source: Arc<PollSet>,
     eof_ready: Arc<AtomicBool>,
-    clear_line_buf: Arc<AtomicBool>,
-    processor: Processor<R>,
-    _writer: PhantomData<W>,
-}
-
-struct WakeSignal {
-    fired: Arc<AtomicBool>,
-    task: Waker,
-}
-
-impl Wake for WakeSignal {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.fired.store(true, Ordering::Release);
-        self.task.wake_by_ref();
-    }
+    processor: Processor<R, W>,
 }
 
 impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
-    fn drive_input(reader: &mut InputReader<R, W>, input_ready: &PollSet) -> bool {
+    fn drive_input(reader: &Mutex<InputReader<R, W>>, input_ready: &PollSet) -> bool {
+        let mut reader = reader.lock();
         let mut progressed = false;
         progressed |= reader.echo.drain_available();
         while reader.drain_source_into_line_buffer() {
@@ -440,43 +446,28 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     }
 
     fn spawn_interrupt_driven_reader(
-        mut reader: InputReader<R, W>,
+        reader: Arc<Mutex<InputReader<R, W>>>,
         input_source: Arc<PollSet>,
         output_source: Option<Arc<PollSet>>,
         input_ready: Arc<PollSet>,
         worker_source: Arc<PollSet>,
     ) {
         ax_task::spawn_with_name(
-            move || loop {
-                Self::drive_input(&mut reader, input_ready.as_ref());
-
-                let fired = Arc::new(AtomicBool::new(false));
+            move || {
                 block_on(poll_fn(|cx| {
-                    if Self::drive_input(&mut reader, input_ready.as_ref())
-                        || fired.swap(false, Ordering::AcqRel)
-                    {
-                        return Poll::Ready(());
-                    }
-
-                    let waker = Waker::from(Arc::new(WakeSignal {
-                        fired: fired.clone(),
-                        task: cx.waker().clone(),
-                    }));
+                    Self::drive_input(&reader, input_ready.as_ref());
                     // The reader task registers from ordinary task context.
-                    unsafe { input_source.register(&waker, IoEvents::IN) };
+                    unsafe { input_source.register(cx.waker(), IoEvents::IN) };
                     if let Some(output_source) = output_source.as_ref() {
-                        unsafe { output_source.register(&waker, IoEvents::OUT) };
+                        unsafe { output_source.register(cx.waker(), IoEvents::OUT) };
                     }
-                    unsafe { worker_source.register(&waker, IoEvents::OUT) };
+                    unsafe { worker_source.register(cx.waker(), IoEvents::OUT) };
 
-                    if Self::drive_input(&mut reader, input_ready.as_ref())
-                        || fired.swap(false, Ordering::AcqRel)
-                    {
-                        Poll::Ready(())
-                    } else {
-                        Poll::Pending
-                    }
-                }));
+                    // Close the check/register race. block_on's stable AxWaker
+                    // remembers a concurrent source wake before it parks.
+                    Self::drive_input(&reader, input_ready.as_ref());
+                    Poll::<()>::Pending
+                }))
             },
             "tty-reader".into(),
         );
@@ -486,7 +477,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         let (buf_tx, buf_rx) = ReadBuf::default().split();
 
         let eof_ready = Arc::new(AtomicBool::new(false));
-        let clear_line_buf = Arc::new(AtomicBool::new(false));
         let input_ready = Arc::new(PollSet::new());
         let worker_source = Arc::new(PollSet::new());
         let echo = EchoQueue::new(config.writer, worker_source.clone());
@@ -503,19 +493,19 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: eof_ready.clone(),
-            clear_line_buf: clear_line_buf.clone(),
         };
 
         let processor = match config.process_mode {
             ProcessMode::InterruptDriven { input, output } => {
+                let reader = Arc::new(Mutex::new(reader));
                 Self::spawn_interrupt_driven_reader(
-                    reader,
+                    reader.clone(),
                     input,
                     output,
                     input_ready.clone(),
                     worker_source.clone(),
                 );
-                Processor::InterruptDriven
+                Processor::InterruptDriven(reader)
             }
             ProcessMode::Passive(poll_rx) => {
                 let InputReader { reader, buf_tx, .. } = reader;
@@ -536,17 +526,34 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             input_ready,
             worker_source,
             eof_ready,
-            clear_line_buf,
             processor,
-            _writer: PhantomData,
         }
     }
 
-    pub fn drain_input(&mut self) {
-        self.buf_rx.clear();
+    pub fn drain_input(&mut self) -> AxResult<()> {
+        match &mut self.processor {
+            Processor::InterruptDriven(reader) => {
+                let mut reader = reader.lock();
+                reader.discard_input()?;
+                self.buf_rx.clear();
+            }
+            Processor::Passive(reader, _) => {
+                reader.discard_input()?;
+                self.buf_rx.clear();
+            }
+        }
         self.injected_input.clear();
         self.eof_ready.store(false, Ordering::Release);
-        self.clear_line_buf.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn discard_output(&self, writer: &W) -> AxResult<()> {
+        if let Processor::InterruptDriven(reader) = &self.processor {
+            // Synchronize with the input worker so echo generated before this
+            // flush is either pending here or already queued in the backend.
+            reader.lock().echo.discard_pending();
+        }
+        writer.discard_output()
     }
 
     pub fn inject_input(&mut self, input: &[u8]) {
@@ -583,7 +590,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
     pub fn register_rx_waker(&self, waker: &Waker) {
         match &self.processor {
-            Processor::InterruptDriven => {
+            Processor::InterruptDriven(_) => {
                 // Registration happens from tty read poll context.
                 unsafe { self.input_ready.register(waker, IoEvents::IN) };
             }
@@ -707,6 +714,11 @@ mod tests {
             n
         }
 
+        fn discard_input(&mut self) -> AxResult<()> {
+            self.pos = self.data.len();
+            Ok(())
+        }
+
         fn closed(&self) -> bool {
             self.closed
         }
@@ -826,7 +838,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
         (reader, buf_rx)
     }
@@ -888,7 +899,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(reader.drain_source_into_line_buffer());
@@ -922,7 +932,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(reader.drain_source_into_line_buffer());
@@ -953,7 +962,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(reader.drain_source_into_line_buffer());
@@ -986,7 +994,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(reader.drain_source_into_line_buffer());
@@ -1012,7 +1019,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(reader.drain_source_into_line_buffer());

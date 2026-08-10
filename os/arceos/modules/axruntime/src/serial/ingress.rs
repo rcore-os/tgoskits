@@ -103,6 +103,10 @@ impl TxIngress {
         state.idle = true;
     }
 
+    pub(super) fn discard_pending(&self) {
+        self.state.lock().frames.clear();
+    }
+
     pub(super) fn write_room(&self) -> usize {
         let state = self.state.lock();
         if !state.accepting {
@@ -259,6 +263,20 @@ mod tests {
             TX_FRAME_BYTES * TX_FRAME_CAPACITY
         );
         assert_eq!(submit_locked(&mut state, b"x"), 0);
+    }
+
+    #[test]
+    fn discard_pending_drops_queued_frames_without_stopping_ingress() {
+        let ingress = TxIngress::new();
+        ingress.start_accepting();
+        assert_eq!(submit_locked(&mut ingress.state.lock(), b"stale"), 5);
+
+        ingress.discard_pending();
+
+        assert!(!ingress.has_pending());
+        assert_eq!(ingress.write_room(), TX_FRAME_BYTES * TX_FRAME_CAPACITY);
+        assert_eq!(submit_locked(&mut ingress.state.lock(), b"fresh"), 5);
+        assert_eq!(ingress.pop().unwrap().bytes(), b"fresh");
     }
 
     #[test]

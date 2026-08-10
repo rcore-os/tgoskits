@@ -48,6 +48,9 @@ use crate::{
 
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
 const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
+const TCIFLUSH: usize = 0;
+const TCOFLUSH: usize = 1;
+const TCIOFLUSH: usize = 2;
 
 pub(crate) enum TerminalDevice {
     Location(Location),
@@ -228,7 +231,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 };
                 self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF {
-                    self.ldisc.lock().drain_input();
+                    self.ldisc.lock().drain_input()?;
                 }
             }
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
@@ -244,7 +247,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 };
                 self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF2 {
-                    self.ldisc.lock().drain_input();
+                    self.ldisc.lock().drain_input()?;
                 }
             }
             TIOCGPGRP => {
@@ -293,6 +296,16 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 self.writer.drain()?;
                 return Err(AxError::Unsupported);
             }
+            TCFLSH => match arg {
+                TCIFLUSH => self.ldisc.lock().drain_input()?,
+                TCOFLUSH => self.ldisc.lock().discard_output(&self.writer)?,
+                TCIOFLUSH => {
+                    let mut ldisc = self.ldisc.lock();
+                    ldisc.discard_output(&self.writer)?;
+                    ldisc.drain_input()?;
+                }
+                _ => return Err(AxError::InvalidInput),
+            },
             TIOCSPTLCK => {}
             TIOCGPTN => {
                 (arg as *mut u32).vm_write(self.pty_number())?;

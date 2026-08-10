@@ -12,11 +12,13 @@ use ax_memory_addr::VirtAddr;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
 
 use super::*;
-use crate::{AxVmResult, ax_err};
+use crate::{
+    AxVmResult,
+    architecture::cpu_up::{self, CpuUpExit, CpuUpOps},
+    ax_err,
+};
 
 mod capabilities;
-#[path = "../../architecture/cpu_up.rs"]
-mod cpu_up;
 pub(crate) mod fdt;
 mod firmware_plan;
 mod gic;
@@ -34,7 +36,6 @@ pub(crate) use vm_plan::Aarch64VmPlan;
 mod vtimer;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
-use cpu_up::{CpuUpExit, CpuUpOps};
 pub use images::ImageLoader;
 use sysreg::{SysRegReadExit, SysRegWriteExit};
 use vgic::Aarch64VgicRuntimeKey;

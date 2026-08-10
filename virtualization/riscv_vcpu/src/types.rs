@@ -174,6 +174,59 @@ pub struct RiscvNestedPagingConfig {
     pub mode: usize,
 }
 
+/// SBI calling convention used by an IPI request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RiscvIpiAbi {
+    /// Legacy SBI `SEND_IPI` extension.
+    Legacy,
+    /// SBI v0.2 or newer IPI extension.
+    SbiV02,
+}
+
+/// Result of routing an SBI IPI request through the VMM.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RiscvIpiCompletion {
+    /// Every selected hart accepted the virtual software interrupt.
+    Success,
+    /// At least one selected hart was invalid or unavailable to the guest.
+    InvalidParameter,
+    /// Delivery failed after the request had been validated.
+    Failed,
+}
+
+/// Decoded SBI IPI request forwarded to the VMM.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RiscvIpiRequest {
+    hart_mask: usize,
+    hart_mask_base: usize,
+    abi: RiscvIpiAbi,
+}
+
+impl RiscvIpiRequest {
+    pub(crate) const fn new(hart_mask: usize, hart_mask_base: usize, abi: RiscvIpiAbi) -> Self {
+        Self {
+            hart_mask,
+            hart_mask_base,
+            abi,
+        }
+    }
+
+    /// Returns the SBI hart mask bits.
+    pub const fn hart_mask(self) -> usize {
+        self.hart_mask
+    }
+
+    /// Returns the SBI hart mask base.
+    pub const fn hart_mask_base(self) -> usize {
+        self.hart_mask_base
+    }
+
+    /// Returns the SBI calling convention that produced this request.
+    pub const fn abi(self) -> RiscvIpiAbi {
+        self.abi
+    }
+}
+
 impl RiscvNestedPagingConfig {
     /// Creates a nested paging configuration.
     pub const fn new(root_paddr: usize, levels: usize, gpa_bits: usize, mode: usize) -> Self {
@@ -230,6 +283,8 @@ pub enum RiscvVmExit {
         /// Host interrupt vector.
         vector: u64,
     },
+    /// Guest requested supervisor software interrupts for other harts.
+    SendIpi(RiscvIpiRequest),
     /// Guest requested another CPU to start.
     CpuUp {
         /// Target vCPU or hart ID.
@@ -243,19 +298,6 @@ pub enum RiscvVmExit {
     CpuDown {
         /// Guest CPU state value.
         state: u64,
-    },
-    /// Guest requested an IPI.
-    SendIPI {
-        /// Target hart mask for legacy SBI IPI.
-        target_cpu: u64,
-        /// Auxiliary target selector, unused by RISC-V legacy SBI.
-        target_cpu_aux: u64,
-        /// Whether to broadcast to all vCPUs except the sender.
-        send_to_all: bool,
-        /// Whether to target the current vCPU.
-        send_to_self: bool,
-        /// IPI vector.
-        vector: u64,
     },
     /// Guest halted.
     Halt,

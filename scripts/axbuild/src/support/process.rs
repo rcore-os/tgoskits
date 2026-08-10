@@ -36,6 +36,26 @@ pub(crate) fn run_cargo_status_with_env(
     Ok(status.success())
 }
 
+pub(crate) fn find_host_binary_candidates(candidates: &[&str]) -> Result<std::path::PathBuf> {
+    candidates
+        .iter()
+        .find_map(|candidate| find_optional_host_binary(candidate))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "required host binary was not found in PATH; tried: {}",
+                candidates.join(", ")
+            )
+        })
+}
+
+fn find_optional_host_binary(name: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH").and_then(|path_var| {
+        std::env::split_paths(&path_var)
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
 impl ProcessExt for Command {
     fn exec(&mut self) -> Result<()> {
         print_command(self)?;

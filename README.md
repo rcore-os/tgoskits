@@ -37,7 +37,7 @@ tgoskits/
 └── docs/                      # Docusaurus documentation site
 ```
 
-For subtree synchronization, component layering, and development conventions, see [repository structure and collaboration](https://rcore-os.cn/tgoskits/docs/contributing/repo) and the [component development guide](https://rcore-os.cn/tgoskits/docs/development/components).
+For subtree synchronization, component layering, and development conventions, see [repository structure and collaboration](https://rcore-os.cn/tgoskits/docs/contributing/repo) and the [architecture overview](https://rcore-os.cn/tgoskits/docs/architecture/overview).
 
 ## 3. Quick Experience
 

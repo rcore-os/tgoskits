@@ -291,6 +291,13 @@ impl SerialTxSender {
         }
     }
 
+    pub fn discard_pending(&self) -> AxResult {
+        self.shared.ensure_started()?;
+        self.shared
+            .control
+            .submit(ControlOp::DiscardTx, &self.shared.bridge.notify)
+    }
+
     pub fn poll_source(&self) -> Arc<PollSet> {
         self.shared.tx_source.clone()
     }
@@ -336,8 +343,26 @@ impl SerialRxSubscription {
             .ok_or(AxError::BadState)
     }
 
+    pub fn discard_pending(&self) -> AxResult {
+        self.shared.ensure_started()?;
+        self.clear_pending();
+        let result = self
+            .shared
+            .control
+            .submit(ControlOp::DiscardRx, &self.shared.bridge.notify);
+        self.clear_pending();
+        result
+    }
+
     pub fn poll_source(&self) -> Arc<PollSet> {
         self.shared.rx_source.clone()
+    }
+
+    fn clear_pending(&self) {
+        if let Some(consumer) = self.consumer.lock().as_mut() {
+            consumer.clear();
+        }
+        self.shared.bridge.notify.notify();
     }
 }
 

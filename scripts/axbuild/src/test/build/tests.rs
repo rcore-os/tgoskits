@@ -454,6 +454,7 @@ fn cross_compile_spec_maps_supported_arches() {
         cross_compile_spec("aarch64").unwrap(),
         CrossCompileSpec {
             llvm_target: "aarch64-linux-musl",
+            rust_musl_target: "aarch64-unknown-linux-musl",
             cmake_system_processor: "aarch64",
             guest_tool_dir: "usr/aarch64-alpine-linux-musl/bin",
             gnu_tool_prefix: "aarch64-linux-musl",
@@ -464,6 +465,7 @@ fn cross_compile_spec_maps_supported_arches() {
         cross_compile_spec("loongarch64").unwrap(),
         CrossCompileSpec {
             llvm_target: "loongarch64-linux-musl",
+            rust_musl_target: "loongarch64-unknown-linux-musl",
             cmake_system_processor: "loongarch64",
             guest_tool_dir: "usr/loongarch64-alpine-linux-musl/bin",
             gnu_tool_prefix: "loongarch64-linux-musl",

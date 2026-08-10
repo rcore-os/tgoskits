@@ -484,6 +484,11 @@ impl TtyRead for UsbSerialReader {
         }
         self.backend.drain_rx(buf)
     }
+
+    fn discard_input(&mut self) -> AxResult<()> {
+        self.backend.rx_queue.lock().clear();
+        Ok(())
+    }
 }
 
 impl TtyWrite for UsbSerialWriter {
@@ -502,6 +507,12 @@ impl TtyWrite for UsbSerialWriter {
 
     fn try_write(&self, buf: &[u8]) -> usize {
         self.backend.try_queue_bytes(buf)
+    }
+
+    fn discard_output(&self) -> AxResult<()> {
+        let _guard = self.backend.output_lock.lock();
+        self.backend.clear_tx_queue();
+        Ok(())
     }
 
     fn termios_changed(&self, old: &Termios2, new: &Termios2) {

@@ -722,6 +722,17 @@ impl UartPort for Pl011 {
         Pl011::read_rx(self)
     }
 
+    fn discard_rx(&mut self) {
+        while !self.registers().uartfr.is_set(UARTFR::RXFE) {
+            let _ = self.registers().uartdr.get();
+        }
+        self.saved_rx_status = Pl011RxStatus::empty();
+        self.registers().uartrsr_ecr.set(0);
+        self.registers()
+            .uarticr
+            .set(imsc_for_events(SerialEventSet::RX));
+    }
+
     fn write_tx(&mut self, bytes: &[u8]) -> usize {
         let mut written = 0;
         for &byte in bytes {
@@ -732,6 +743,10 @@ impl UartPort for Pl011 {
             written += 1;
         }
         written
+    }
+
+    fn discard_tx(&mut self) -> bool {
+        false
     }
 
     fn tx_idle(&mut self) -> bool {
@@ -1045,6 +1060,36 @@ mod tests {
         assert!(event.events.contains(SerialEventSet::TX_SPACE));
         assert_eq!(parts.port.write_tx(b"x"), 1);
         assert_eq!(regs.uartdr.get() as u8, b'x');
+    }
+
+    #[test]
+    fn discard_rx_clears_saved_status_without_touching_tx_data() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        uart.saved_rx_status = Pl011RxStatus::PARITY;
+        regs.uartdr.set(UARTDR::DATA.val(b'x' as u32).into());
+        write_test_reg(&mut regs, 0x018, UARTFR::RXFE::SET.value);
+
+        UartPort::discard_rx(&mut uart);
+
+        assert!(uart.saved_rx_status.is_empty());
+        assert_eq!(regs.uartdr.get() as u8, b'x');
+        assert_eq!(
+            read_test_reg(&regs, 0x044) & imsc_for_events(SerialEventSet::RX),
+            imsc_for_events(SerialEventSet::RX),
+        );
+    }
+
+    #[test]
+    fn discard_tx_reports_unsupported_without_touching_rx_data() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        regs.uartlcr_h.modify(UARTLCR_H::FEN::SET);
+        regs.uartdr.set(UARTDR::DATA.val(b'r' as u32).into());
+        write_test_reg(&mut regs, 0x018, 0);
+        let lcr_h = regs.uartlcr_h.get();
+
+        assert!(!UartPort::discard_tx(&mut uart));
+        assert_eq!(regs.uartlcr_h.get(), lcr_h);
+        assert_eq!(uart.read_rx().unwrap().byte, Some(b'r'));
     }
 
     #[test]
