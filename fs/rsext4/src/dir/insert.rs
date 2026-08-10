@@ -1,7 +1,4 @@
 //! Directory entry insertion helpers.
-
-use log::{error, warn};
-
 use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
@@ -64,15 +61,11 @@ pub fn insert_dir_entry<B: BlockIo + crate::runtime::Clock>(
         let phys = match blocks.get(&(lbn as u32)) {
             Some(&b) => b,
             None => {
-                error!(
-                    "insert_dir_entry: missing extent mapping for parent_ino={parent_ino_num} \
-                     lbn={lbn} name={child_name:?}"
-                );
                 return Err(Ext4Error::corrupted());
             }
         };
 
-        if let Err(e) = fs.datablock_cache.modify(device, phys, |data| {
+        fs.datablock_cache.modify(device, phys, |data| {
             if inserted {
                 return;
             }
@@ -156,12 +149,7 @@ pub fn insert_dir_entry<B: BlockIo + crate::runtime::Clock>(
                 }
                 offset = entry_end;
             }
-        }) {
-            warn!(
-                "insert_dir_entry: modify block {phys} for parent_ino={parent_ino_num} \
-                 name={child_name:?} failed: {e:?}, trying next block"
-            );
-        }
+        })?;
     }
 
     if let Some(modified_block) = modified_phys {

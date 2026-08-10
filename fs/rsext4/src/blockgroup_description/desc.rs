@@ -1,7 +1,4 @@
 //! Block group descriptor definition and descriptor-local helpers.
-
-use log::error;
-
 use crate::{
     checksum::{ext4_block_bitmap_csum32, ext4_group_desc_csum16, ext4_inode_bitmap_csum32},
     crc32c::crc32c::ext4_superblock_has_metadata_csum,
@@ -106,26 +103,6 @@ impl Ext4GroupDesc {
         desc_for_csum.to_disk_bytes(&mut raw_desc_bytes);
         let expected = ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size]);
         if expected != self.bg_checksum {
-            error!(
-                "Group descriptor checksum mismatch: group={} stored={:#06x} expected={:#06x} \
-                 desc_size={} block_bitmap={} inode_bitmap={} inode_table={} free_blocks={} \
-                 free_inodes={} used_dirs={} itable_unused={} flags={:#x} block_bitmap_csum={:#x} \
-                 inode_bitmap_csum={:#x}",
-                group_id,
-                self.bg_checksum,
-                expected,
-                desc_size,
-                self.block_bitmap(),
-                self.inode_bitmap(),
-                self.inode_table(),
-                self.free_blocks_count(),
-                self.free_inodes_count(),
-                self.used_dirs_count(),
-                self.itable_unused(),
-                self.bg_flags,
-                self.block_bitmap_csum(superblock),
-                self.inode_bitmap_csum(superblock)
-            );
             return Err(Ext4Error::checksum());
         }
         Ok(())

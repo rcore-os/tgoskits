@@ -984,7 +984,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
     let mut dev = Jbd2Dev::initial_jbd2dev(0, JournalMemoryDevice::new(32), false);
     ax_assert!(!dev.is_use_journal());
     ax_assert_eq!(dev.journal_sequence(), None);
-    dev.journal_replay();
+    let _ = dev.journal_replay_checked();
     ax_assert_eq!(dev.total_blocks(), 32);
     ax_assert_eq!(dev.block_size(), BLOCK_SIZE as u32);
     ax_assert_eq!(dev.now().unwrap(), Ext4Timestamp::new(1_900_000_000, 0));
@@ -1002,7 +1002,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
     ax_assert_eq!(dev.buffer()[0], 0x66);
 
     dev.set_journal_use(true);
-    dev.journal_replay();
+    let _ = dev.journal_replay_checked();
     let journal_superblock = JournalSuperBllockS {
         s_sequence: 7,
         s_maxlen: 8,
@@ -2541,7 +2541,8 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     );
 
     let mut mapped_inode = Ext4Inode::empty_for_reuse(32);
-    build_file_block_mapping_with_inode_num(&mut fs, &mut mapped_inode, file_ino, &[], &mut device);
+    build_file_block_mapping_with_inode_num(&mut fs, &mut mapped_inode, file_ino, &[], &mut device)
+        .unwrap();
     ax_assert_eq!(mapped_inode.blocks_count(), 0);
     let map_block_a = fs.alloc_block(&mut device).unwrap();
     let _map_gap = fs.alloc_block(&mut device).unwrap();
@@ -2552,7 +2553,8 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         file_ino,
         &[map_block_a, map_block_b],
         &mut device,
-    );
+    )
+    .unwrap();
     ax_assert!(mapped_inode.have_extend_header_and_use_extend());
     let mapped_blocks = resolve_inode_blocks(&mut fs, &mut device, &mut mapped_inode).unwrap();
     ax_assert_eq!(mapped_blocks.len(), 2);

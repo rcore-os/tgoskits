@@ -2,8 +2,6 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use log::{debug, error};
-
 use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
@@ -46,7 +44,6 @@ pub fn resolve_inode_block<B: BlockIo>(
         }
         Ok(None)
     } else {
-        error!("Only Support Extend mode!");
         Err(Ext4Error::unsupported())
     }
 }
@@ -182,19 +179,10 @@ pub fn get_file_inode<B: BlockIo>(
                     Some(InodeNumber::new(result.entry.inode).map_err(|_| Ext4Error::corrupted())?);
             }
             Err(_) => {
-                debug!("Hash tree lookup failed, falling back to linear search");
-
-                let total_size = current_inode.size() as usize;
                 let block_bytes = BLOCK_SIZE;
                 let blocks = resolve_inode_blocks(fs, block_dev, &mut current_inode)?;
-                debug!(
-                    "Directory inode size: {} bytes, blocks used: {}",
-                    total_size,
-                    blocks.len()
-                );
 
-                for (idx, phys) in blocks.iter().enumerate() {
-                    debug!("Scan dir block idx {} phys {}", idx, phys.1);
+                for phys in &blocks {
                     let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys.1)?;
                     let block_data = &cached_block.data[..block_bytes];
 
@@ -223,10 +211,7 @@ pub fn get_file_inode<B: BlockIo>(
                     };
 
                     if !checksum_ok {
-                        error!(
-                            "dir block checksum mismatch: ino={} blk_idx={} phys={}",
-                            current_ino_num, idx, phys.1
-                        );
+                        return Err(Ext4Error::checksum());
                     }
 
                     if let Some(entry) = classic_dir::find_entry(block_data, target)

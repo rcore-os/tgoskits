@@ -7,7 +7,15 @@ impl Ext4FileSystem {
 
     /// Flushes all filesystem metadata and caches to the backing device.
     pub fn sync_filesystem<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
-        info!("Syncing filesystem...");
+        let mut observer = crate::runtime::NoopObserver;
+        self.sync_filesystem_with_observer(block_dev, &mut observer)
+    }
+
+    pub fn sync_filesystem_with_observer<B: BlockIo, O: crate::runtime::Observer>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        _observer: &mut O,
+    ) -> Ext4Result<()> {
         self.datablock_cache.flush_all(block_dev)?;
         self.inodetable_cache.flush_all(block_dev)?;
         self.bitmap_cache.flush_all(block_dev)?;
@@ -19,25 +27,37 @@ impl Ext4FileSystem {
 
     /// Unmounts the filesystem after flushing all in-memory metadata.
     pub fn umount<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+        let mut observer = crate::runtime::NoopObserver;
+        self.umount_with_observer(block_dev, &mut observer)
+    }
+
+    pub fn umount_with_observer<B: BlockIo, O: crate::runtime::Observer>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        observer: &mut O,
+    ) -> Ext4Result<()> {
+        use crate::runtime::{Event, JournalEvent, MountEvent};
+
         if !self.mounted {
             return Ok(());
         }
 
-        debug!("Unmounting Ext4 filesystem...");
+        observer.event(Event::Mount(MountEvent::UnmountStarted));
 
         // Mark clean in memory first so that sync_filesystem writes the
         // superblock with s_state = EXT4_VALID_FS through the journal.
         self.superblock.s_state = Self::clean_state(&self.superblock);
         self.superblock.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
 
-        self.sync_filesystem(block_dev)?;
+        self.sync_filesystem_with_observer(block_dev, observer)?;
 
         // Commit the journal transaction so all queued metadata (including
         // the superblock with s_state = VALID_FS) is checkpointed to disk.
         block_dev.umount_commit()?;
+        observer.event(Event::Journal(JournalEvent::Committed));
 
         self.mounted = false;
-        info!("Filesystem unmounted cleanly");
+        observer.event(Event::Mount(MountEvent::Unmounted));
         Ok(())
     }
 
@@ -45,15 +65,9 @@ impl Ext4FileSystem {
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
-        let total_desc_count = self.group_descs.len();
         let desc_size = self.superblock.get_desc_size() as usize;
         let gdt_base: u64 = BLOCK_SIZE as u64;
         let block_size_u64 = BLOCK_SIZE as u64;
-
-        debug!(
-            "Writing back group descriptors: {total_desc_count} descriptors, desc_size = \
-             {desc_size} bytes"
-        );
 
         let mut current_block: Option<AbsoluteBN> = None;
         let mut buffer_snapshot_block: Option<AbsoluteBN> = None;
@@ -82,13 +96,6 @@ impl Ext4FileSystem {
 
             let buffer = block_dev.buffer_mut();
             if end > buffer.len() {
-                error!(
-                    "GDT out of range: idx={}, in_block={}, desc_size={}, buffer_len={}",
-                    idx,
-                    in_block,
-                    desc_size,
-                    buffer.len()
-                );
                 return Err(Ext4Error::corrupted());
             }
 
@@ -101,7 +108,6 @@ impl Ext4FileSystem {
             block_dev.write_block(last_block, true)?;
         }
 
-        debug!("Group descriptors written back");
         Ok(())
     }
 

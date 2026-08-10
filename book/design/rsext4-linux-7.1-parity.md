@@ -94,14 +94,14 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 
 ## 6. Draft 红测台账
 
-| ID | 基线失败 | 最终要求 | Owner phase |
-| --- | --- | --- | --- |
-| `boundary-no-os-deps` | `ax-kspin`、`log` direct dependencies | boundary script passes | portable core skeleton |
-| `linux-map-complete` | 仅有 subsystem mapping，缺少逐区间清单 | every source line classified | design/traceability |
-| `journal-no-direct-fallback` | uninitialized JBD2 performs home write | typed journal-aborted error | JBD2 rewrite |
-| `extent-empty-index` | crafted empty internal node can panic | corruption error, no mutation | mapping rewrite |
-| `io-failure-no-panic` | mount/commit paths contain `expect` | all errors propagated | codec/JBD2 rewrite |
-| `legacy-indirect-13-blocks` | non-extent path is unsupported | Linux-compatible mapping | mapping rewrite |
+| ID | 基线失败 | 最终要求 | Owner phase | 当前状态 |
+| --- | --- | --- | --- | --- |
+| `boundary-no-os-deps` | `ax-kspin`、`log` direct dependencies | boundary script passes | portable core skeleton | 绿：`RSEXT4_BOUNDARY_PASSED` |
+| `linux-map-complete` | 仅有 subsystem mapping，缺少逐区间清单 | every source line classified | design/traceability | 红：尚未加入逐区间 manifest |
+| `journal-no-direct-fallback` | uninitialized JBD2 performs home write | typed journal-aborted error | JBD2 rewrite | 绿：确定性红绿回归已覆盖 write/umount |
+| `extent-empty-index` | crafted empty internal node can panic | corruption error, no mutation | mapping rewrite | 红：待 mapping rewrite |
+| `io-failure-no-panic` | mount/commit paths contain `expect` | all errors propagated | codec/JBD2 rewrite | 进行中：mount/JBD2 关键路径已移除，剩余生产路径待审计 |
+| `legacy-indirect-13-blocks` | non-extent path is unsupported | Linux-compatible mapping | mapping rewrite | 红：仅完成 12 个 direct block 编码 |
 
 Draft 期间这些测试可以保持失败，但测试本身不得 `ignore`、弱化断言或伪造成功。
 PR 转 Ready 前本表必须为空。
@@ -140,3 +140,16 @@ RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns=6826987 write_p95_ns=73
 
 该 harness 测的是 rsext4 core 与 memory device，不包含 QEMU、真实控制器或
 Starry page cache；因此只用于 core 重构硬门槛。QEMU 与三架构数据单独报告。
+
+### 7.2 portable capability boundary 检查点
+
+采集时间：2026-08-10；固定 CPU 2，其他参数与 7.1 相同。该检查点已经移除
+core 内部 lock 与全局 logger，并为 mount/recovery/integrity/repair/unmount
+接入 typed `Observer` event：
+
+```text
+RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns=6220509 write_p95_ns=6255444 read_median_ns=6015336 read_p95_ns=6050556 sync_median_ns=20660 sync_p95_ns=23716
+```
+
+相对 dev 基线，write median 改善约 8.9%，read median 改善约 16.7%，sync
+median 改善约 20.0%；三个 p95 均未回退，满足当前 host 硬门槛。

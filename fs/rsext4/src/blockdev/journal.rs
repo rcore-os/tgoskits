@@ -2,8 +2,6 @@
 
 use alloc::{boxed::Box, vec::Vec};
 
-use log::{error, trace, warn};
-
 use super::cached_device::BlockDev;
 use crate::{
     bmalloc::AbsoluteBN,
@@ -100,11 +98,6 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.system.as_ref().map(|s| s.sequence)
     }
 
-    /// Replays the journal if the proxy is configured to use it.
-    pub fn journal_replay(&mut self) {
-        let _ = self.journal_replay_checked();
-    }
-
     /// Replays the journal if JBD2 state is available.
     ///
     /// Returning `Incomplete` here is intentionally conservative: callers that
@@ -113,12 +106,10 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// installed.
     pub(crate) fn journal_replay_checked(&mut self) -> ReplayStatus {
         if !self.journal_use {
-            warn!("journal replay requested while journaling is disabled");
             return ReplayStatus::Complete;
         }
 
         let Some(jbd_sys) = self.system.as_mut() else {
-            error!("journal replay requested before JBD2 state was initialized");
             return ReplayStatus::Incomplete;
         };
 
@@ -162,7 +153,6 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// Commits all buffered journal transactions during unmount.
     pub fn umount_commit(&mut self) -> Ext4Result<()> {
         if !self.journal_use {
-            trace!("Journal disabled, skip commit");
             return Ok(());
         }
 
@@ -173,7 +163,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 self.inner.invalidate_cache()?;
             }
         } else {
-            trace!("Journal enabled but system uninitialized, skip commit");
+            return Err(Ext4Error::corrupted().with_operation("jbd2:commit_without_state"));
         }
         Ok(())
     }
@@ -190,18 +180,14 @@ impl<B: BlockIo> Jbd2Dev<B> {
         let updates = Jbd2Update(block_id, new_buf);
 
         let Some(system) = self.system.as_mut() else {
-            error!(
-                "journal is enabled but JBD2 state is not initialized; writing block {block_id} \
-                 directly"
-            );
-            return self.inner.write_block(block_id);
+            return Err(Ext4Error::corrupted().with_operation("jbd2:write_without_state"));
         };
         let raw_dev = self.inner.device_mut();
 
         if Self::enqueue_journal_update(system, raw_dev, updates)? {
             self.inner.invalidate_cache()?;
         }
-        trace!("[JBD2 buffer] queued metadata block {block_id}");
+
         Ok(())
     }
 
@@ -275,11 +261,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
 
         let Some(system) = self.system.as_mut() else {
-            error!(
-                "journal is enabled but JBD2 state is not initialized; writing {count} block(s) \
-                 starting at {block_id} directly"
-            );
-            return self.inner.write_blocks(buf, block_id, count);
+            return Err(Ext4Error::corrupted().with_operation("jbd2:write_without_state"));
         };
         let raw_dev = self.inner.device_mut();
         let required = count as usize * BLOCK_SIZE;
@@ -441,6 +423,32 @@ mod tests {
             .expect("bulk read pending metadata");
 
         assert_eq!(observed, pending);
+    }
+
+    #[test]
+    fn metadata_write_never_bypasses_uninitialized_journal() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
+        let target = AbsoluteBN::new(3);
+        dev.read_block(target).expect("prime target buffer");
+        dev.buffer_mut()[0] = 0x5a;
+
+        let error = dev
+            .write_block(target, true)
+            .expect_err("metadata write must require initialized journal state");
+        assert_eq!(error.code, crate::Errno::EUCLEAN);
+
+        let inner = dev.into_inner();
+        assert_eq!(inner.data[target.as_usize().unwrap() * BLOCK_SIZE], 0);
+    }
+
+    #[test]
+    fn unmount_commit_requires_initialized_journal() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
+        let error = dev
+            .umount_commit()
+            .expect_err("journal-enabled unmount cannot claim a successful commit without state");
+
+        assert_eq!(error.code, crate::Errno::EUCLEAN);
     }
 
     #[test]

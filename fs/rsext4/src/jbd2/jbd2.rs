@@ -2,8 +2,6 @@
 
 use alloc::{collections::BTreeSet, vec, vec::Vec};
 
-use log::{debug, info, warn};
-
 use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
@@ -16,7 +14,6 @@ use crate::{
     ext4::*,
     file::*,
     jbd2::jbdstruct::*,
-    loopfile::*,
     metadata::Ext4InodeMetadataUpdate,
 };
 
@@ -40,22 +37,9 @@ pub(crate) enum ReplayStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReplayScan {
-    CleanEnd {
-        records: u32,
-    },
-    Incomplete {
-        restart_rel: u32,
-        records: u32,
-    },
-    Applied {
-        next_rel: u32,
-        next_seq: u32,
-        records: u32,
-        payloads: usize,
-        applied_payloads: usize,
-        journal_read_ops: usize,
-        home_write_ops: usize,
-    },
+    CleanEnd,
+    Incomplete { restart_rel: u32 },
+    Applied { next_rel: u32, next_seq: u32 },
 }
 
 struct ReplayRing<'a> {
@@ -131,11 +115,7 @@ impl JBD2DEVSYSTEM {
                 } else {
                     // s_maxlen is 0 or smaller than s_first — it is corrupted.
                     // Fall back to the physical extent length.
-                    warn!(
-                        "[JBD2] s_maxlen={} < s_first={}: journal superblock s_maxlen is corrupt, \
-                         using physical extent length {} instead",
-                        sb_maxlen, self.jbd2_super_block.s_first, len
-                    );
+
                     len
                 }
             }
@@ -149,17 +129,15 @@ impl JBD2DEVSYSTEM {
         }
     }
 
-    fn parse_replay_tags(&self, desc_buf: &[u8; BLOCK_SIZE], tid: u32) -> Option<Vec<ReplayTag>> {
+    fn parse_replay_tags(&self, desc_buf: &[u8; BLOCK_SIZE]) -> Option<Vec<ReplayTag>> {
         let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
         let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
         let mut tags = Vec::new();
         let mut off = JBD2_DESCRIPTOR_HEADER_SIZE;
-        let mut tag_idx = 0usize;
 
         while off < BLOCK_SIZE {
             let parsed = if has_csum_v3 {
                 if off + JBD2_TAG3_SIZE > BLOCK_SIZE {
-                    debug!("[JBD2 replay] descriptor tag3 truncated: tid={tid} tag_idx={tag_idx}");
                     return None;
                 }
                 let tag = JournalBlockTag3S::from_disk_bytes(&desc_buf[off..off + JBD2_TAG3_SIZE]);
@@ -172,7 +150,6 @@ impl JBD2DEVSYSTEM {
                 (block, tag.t_flags, all_zero)
             } else {
                 if off + JBD2_TAG_SIZE > BLOCK_SIZE {
-                    debug!("[JBD2 replay] descriptor tag truncated: tid={tid} tag_idx={tag_idx}");
                     return None;
                 }
                 let tag = JournalBlockTagS::from_disk_bytes(&desc_buf[off..off + JBD2_TAG_SIZE]);
@@ -181,10 +158,6 @@ impl JBD2DEVSYSTEM {
                 let mut block_high = 0u32;
                 if has_64bit {
                     if off + JBD2_TAG_BLOCKNR_HIGH_SIZE > BLOCK_SIZE {
-                        debug!(
-                            "[JBD2 replay] descriptor tag high block truncated: tid={tid} \
-                             tag_idx={tag_idx}"
-                        );
                         return None;
                     }
                     block_high = u32::from_be_bytes(
@@ -208,11 +181,6 @@ impl JBD2DEVSYSTEM {
                 break;
             }
 
-            debug!(
-                "[JBD2 replay] tid={} tag_idx={} block={} flags=0x{:x}",
-                tid, tag_idx, block, flags
-            );
-
             let last = (flags & u32::from(JBD2_FLAG_LAST_TAG)) != 0;
             let same_uuid = (flags & u32::from(JBD2_FLAG_SAME_UUID)) != 0;
             tags.push(ReplayTag {
@@ -222,16 +190,10 @@ impl JBD2DEVSYSTEM {
 
             if !same_uuid {
                 if off + JBD2_UUID_SIZE > BLOCK_SIZE {
-                    debug!(
-                        "[JBD2 replay] descriptor uuid truncated: tid={} tag_idx={}",
-                        tid, tag_idx
-                    );
                     return None;
                 }
                 off += JBD2_UUID_SIZE;
             }
-            tag_idx += 1;
-
             if last {
                 break;
             }
@@ -240,15 +202,10 @@ impl JBD2DEVSYSTEM {
         Some(tags)
     }
 
-    fn parse_revoke_blocks(
-        &self,
-        revoke_buf: &[u8; BLOCK_SIZE],
-        tid: u32,
-    ) -> Option<Vec<AbsoluteBN>> {
+    fn parse_revoke_blocks(&self, revoke_buf: &[u8; BLOCK_SIZE]) -> Option<Vec<AbsoluteBN>> {
         let revoke = Jbd2JournalRevokeHeadS::from_disk_bytes(&revoke_buf[0..16]);
         let count = usize::try_from(revoke.r_count).ok()?;
         if !(16..=BLOCK_SIZE).contains(&count) {
-            debug!("[JBD2 replay] revoke block has invalid count: tid={tid} count={count}");
             return None;
         }
 
@@ -261,7 +218,6 @@ impl JBD2DEVSYSTEM {
         let mut off = 16usize;
         while off < count {
             if off + entry_size > count {
-                debug!("[JBD2 replay] revoke entry truncated: tid={tid} off={off} count={count}");
                 return None;
             }
 
@@ -283,19 +239,13 @@ impl JBD2DEVSYSTEM {
         &mut self,
         block_dev: &mut B,
         journal_blocks: &[AbsoluteBN],
-    ) {
-        let sb_block = self
-            .journal_phys_block(journal_blocks, 0)
-            .expect("journal superblock block is invalid");
+    ) -> Ext4Result<()> {
+        let sb_block = self.journal_phys_block(journal_blocks, 0)?;
         let mut sb_data = [0u8; BLOCK_SIZE];
-        block_dev
-            .read(&mut sb_data, sb_block, 1)
-            .expect("Read journal superblock failed");
+        block_dev.read(&mut sb_data, sb_block, 1)?;
         jbd2_update_superblock_checksum(&mut self.jbd2_super_block);
         self.jbd2_super_block.to_disk_bytes(&mut sb_data[0..1024]);
-        block_dev
-            .write(&sb_data, sb_block, 1)
-            .expect("Write journal superblock failed");
+        block_dev.write(&sb_data, sb_block, 1)
     }
 
     /// Returns the next writable journal block, handling wrap-around.
@@ -316,7 +266,7 @@ impl JBD2DEVSYSTEM {
         // The first commit initializes `s_start` in the journal superblock.
         if self.jbd2_super_block.s_start == 0 {
             self.jbd2_super_block.s_start = self.jbd2_super_block.s_first;
-            self.write_journal_superblock_with_mapping(block_dev, journal_blocks);
+            self.write_journal_superblock_with_mapping(block_dev, journal_blocks)?;
             self.head += 1;
             let mut rel = self
                 .jbd2_super_block
@@ -359,20 +309,8 @@ impl JBD2DEVSYSTEM {
         journal_blocks: &[AbsoluteBN],
     ) -> Ext4Result<bool> {
         let tid = self.sequence;
-        debug!(
-            "[JBD2 commit] begin: tid={} updates_len={} head={} start_block={} max_len={} \
-             seq_in_superblock={} s_start={}",
-            tid,
-            self.commit_queue.len(),
-            self.head,
-            self.start_block,
-            self.max_len,
-            self.jbd2_super_block.s_sequence,
-            self.jbd2_super_block.s_start,
-        );
 
         if self.commit_queue.is_empty() {
-            warn!("no metadata updates queued for journal commit");
             return Ok(false);
         }
 
@@ -400,7 +338,6 @@ impl JBD2DEVSYSTEM {
             let magic: u32 = u32::from_le_bytes(update.1[0..4].try_into().unwrap());
             if magic == JBD2_MAGIC {
                 tag.t_flags |= JOURNAL_ESCAPE;
-                debug!("[JBD2 commit] escaping metadata block that begins with journal magic");
             }
 
             if idx == self.commit_queue.len() - 1 {
@@ -411,10 +348,6 @@ impl JBD2DEVSYSTEM {
                 tag.t_flags |= JBD2_FLAG_SAME_UUID;
             }
 
-            debug!(
-                "[JBD2 commit] tid={} tag_idx={} t_blocknr={} t_flags=0x{:x}",
-                tid, idx, tag.t_blocknr, tag.t_flags,
-            );
             tag.to_disk_bytes(&mut desc_buffer[current_offset..current_offset + JBD2_TAG_SIZE]);
             current_offset += JBD2_TAG_SIZE;
 
@@ -428,7 +361,7 @@ impl JBD2DEVSYSTEM {
 
         // Persist the descriptor first.
         let block_id = self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
-        debug!("[JBD2 commit] tid={tid} descriptor_block_id={block_id} (absolute)");
+
         block_dev.write(&desc_buffer, block_id, 1)?;
 
         let mut no_escape: Vec<(AbsoluteBN, [u8; BLOCK_SIZE])> = Vec::new();
@@ -437,21 +370,16 @@ impl JBD2DEVSYSTEM {
             check_data.copy_from_slice(&*update.1);
             let magic = u32::from_le_bytes(check_data[0..4].try_into().unwrap());
             if magic == JBD2_MAGIC {
-                debug!("[JBD2 commit] zero escaped journal magic in payload copy");
                 check_data[0..4].fill(0);
             }
             no_escape.push((update.0, check_data));
         }
 
         // Then write the journaled metadata payload blocks.
-        for (idx, up) in no_escape.iter().enumerate() {
+        for up in &no_escape {
             let metadata_journal_block_id =
                 self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
-            debug!(
-                "[JBD2 commit] tid={} meta_idx={} journal_block_id={} (absolute) \
-                 target_phys_block={}",
-                tid, idx, metadata_journal_block_id, up.0
-            );
+
             block_dev.write(&up.1, metadata_journal_block_id, 1)?;
         }
 
@@ -478,7 +406,7 @@ impl JBD2DEVSYSTEM {
 
         commit_block.to_disk_bytes(&mut commit_buffer);
         let commit_block_id = self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
-        debug!("[JBD2 commit] tid={tid} commit_block_id={commit_block_id} (absolute)");
+
         block_dev.write(&commit_buffer, commit_block_id, 1)?;
         block_dev.flush()?;
         self.sequence += 1;
@@ -487,23 +415,17 @@ impl JBD2DEVSYSTEM {
         // record is safely on disk. If the system crashes here the journal
         // replay will redo these writes, so partial checkpoints are safe.
         for update in self.commit_queue.iter() {
-            debug!("[JBD2 checkpoint] tid={} home_phys_block={}", tid, update.0);
             block_dev.write(&update.1[..], update.0, 1)?;
         }
         block_dev.flush()?;
 
         self.commit_queue.clear();
-        debug!("[JBD2 buffer] commit queue cleared");
 
         self.jbd2_super_block.s_sequence = self.sequence;
         self.jbd2_super_block.s_start = 0;
         self.head = 0;
-        self.write_journal_superblock_with_mapping(block_dev, journal_blocks);
+        self.write_journal_superblock_with_mapping(block_dev, journal_blocks)?;
         block_dev.flush()?;
-        debug!(
-            "[JBD2 commit] end: tid={} new_sequence={}",
-            tid, self.sequence
-        );
 
         Ok(true)
     }
@@ -519,51 +441,37 @@ impl JBD2DEVSYSTEM {
         let mut payloads: Vec<ReplayPayload> = Vec::new();
         let mut revoked_blocks = BTreeSet::new();
         let max_records = ring.last_rel - ring.first_rel + 1;
-        let mut records = 0u32;
 
         for _ in 0..max_records {
-            records = records.saturating_add(1);
             let record_phys = match ring.phys(record_rel) {
                 Ok(block) => block,
                 Err(_) => {
                     return ReplayScan::Incomplete {
                         restart_rel: start_rel,
-                        records,
                     };
                 }
             };
             let mut record_buf = [0u8; BLOCK_SIZE];
-            if let Err(e) = block_dev.read(&mut record_buf, record_phys, 1) {
-                debug!(
-                    "[JBD2 replay] read record failed at rel_block={record_rel} \
-                     phys_block={record_phys} err={e:?}"
-                );
+            if block_dev.read(&mut record_buf, record_phys, 1).is_err() {
                 return ReplayScan::Incomplete {
                     restart_rel: start_rel,
-                    records,
                 };
             }
 
             let hdr = JournalHeaderS::from_disk_bytes(&record_buf[0..JBD2_DESCRIPTOR_HEADER_SIZE]);
-            debug!(
-                "[JBD2 replay] record: phys_block={} h_magic=0x{:x} h_blocktype={} h_sequence={} \
-                 expect_seq={}",
-                record_phys, hdr.h_magic, hdr.h_blocktype, hdr.h_sequence, expect_seq
-            );
 
             if hdr.h_magic != JBD2_MAGIC || hdr.h_sequence != expect_seq {
-                return ReplayScan::CleanEnd { records };
+                return ReplayScan::CleanEnd;
             }
 
             match hdr.h_blocktype {
                 JBD2_BLOCKTYPE_DESCRIPTOR => {
-                    let tags = match self.parse_replay_tags(&record_buf, expect_seq) {
+                    let tags = match self.parse_replay_tags(&record_buf) {
                         Some(tags) if !tags.is_empty() => tags,
                         Some(tags) => tags,
                         None => {
                             return ReplayScan::Incomplete {
                                 restart_rel: start_rel,
-                                records,
                             };
                         }
                     };
@@ -573,7 +481,6 @@ impl JBD2DEVSYSTEM {
                         if ring.phys(record_rel).is_err() {
                             return ReplayScan::Incomplete {
                                 restart_rel: start_rel,
-                                records,
                             };
                         }
                         payloads.push(ReplayPayload {
@@ -587,10 +494,6 @@ impl JBD2DEVSYSTEM {
                     for (idx, payload) in payloads.iter().copied().enumerate() {
                         let phys = payload.tag.block;
                         if revoked_blocks.contains(&phys) {
-                            debug!(
-                                "[JBD2 replay] tid={expect_seq} skip revoked meta_idx={idx} \
-                                 phys_block={phys}"
-                            );
                             continue;
                         }
 
@@ -599,16 +502,12 @@ impl JBD2DEVSYSTEM {
                             Err(_) => {
                                 return ReplayScan::Incomplete {
                                     restart_rel: start_rel,
-                                    records,
                                 };
                             }
                         };
                         committed.push((idx, payload, meta_phys));
                     }
 
-                    let mut applied_payloads = 0usize;
-                    let mut journal_read_ops = 0usize;
-                    let mut home_write_ops = 0usize;
                     let mut pos = 0usize;
                     while pos < committed.len() {
                         let run_start = pos;
@@ -623,18 +522,14 @@ impl JBD2DEVSYSTEM {
                         let run_len = run_end - run_start;
                         let first_journal = committed[run_start].2;
                         let mut data = vec![0u8; run_len * BLOCK_SIZE];
-                        if let Err(e) = block_dev.read(&mut data, first_journal, run_len as u32) {
-                            debug!(
-                                "[JBD2 replay] read committed meta run failed: start_idx={} \
-                                 phys_block={} count={} err={e:?}",
-                                committed[run_start].0, first_journal, run_len
-                            );
+                        if block_dev
+                            .read(&mut data, first_journal, run_len as u32)
+                            .is_err()
+                        {
                             return ReplayScan::Incomplete {
                                 restart_rel: start_rel,
-                                records,
                             };
                         }
-                        journal_read_ops = journal_read_ops.saturating_add(1);
 
                         let mut write_start = 0usize;
                         while write_start < run_len {
@@ -654,38 +549,24 @@ impl JBD2DEVSYSTEM {
 
                             for rel_idx in write_start..write_end {
                                 let absolute_idx = run_start + rel_idx;
-                                let (idx, payload, _) = committed[absolute_idx];
+                                let (_, payload, _) = committed[absolute_idx];
                                 let off = rel_idx * BLOCK_SIZE;
                                 if (payload.tag.flags & u32::from(JOURNAL_ESCAPE)) != 0 {
                                     data[off..off + 4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
-                                    debug!(
-                                        "[JBD2 replay] restored escaped journal magic for block {}",
-                                        payload.tag.block
-                                    );
                                 }
-                                debug!(
-                                    "[JBD2 replay] tid={expect_seq} apply meta_idx={idx} \
-                                     phys_block={}",
-                                    payload.tag.block
-                                );
                             }
 
                             let off = write_start * BLOCK_SIZE;
                             let bytes = &data[off..write_end * BLOCK_SIZE];
                             let write_count = write_end - write_start;
-                            if let Err(e) = block_dev.write(bytes, first_home, write_count as u32) {
-                                debug!(
-                                    "[JBD2 replay] write meta run failed: start_idx={} \
-                                     home_block={} count={} err={e:?}",
-                                    committed[first].0, first_home, write_count
-                                );
+                            if block_dev
+                                .write(bytes, first_home, write_count as u32)
+                                .is_err()
+                            {
                                 return ReplayScan::Incomplete {
                                     restart_rel: start_rel,
-                                    records,
                                 };
                             }
-                            home_write_ops = home_write_ops.saturating_add(1);
-                            applied_payloads = applied_payloads.saturating_add(write_count);
                             write_start = write_end;
                         }
 
@@ -697,27 +578,21 @@ impl JBD2DEVSYSTEM {
                     return ReplayScan::Applied {
                         next_rel,
                         next_seq: expect_seq.wrapping_add(1),
-                        records,
-                        payloads: payloads.len(),
-                        applied_payloads,
-                        journal_read_ops,
-                        home_write_ops,
                     };
                 }
                 JBD2_BLOCKTYPE_REVOKE => {
-                    let blocks = match self.parse_revoke_blocks(&record_buf, expect_seq) {
+                    let blocks = match self.parse_revoke_blocks(&record_buf) {
                         Some(blocks) => blocks,
                         None => {
                             return ReplayScan::Incomplete {
                                 restart_rel: start_rel,
-                                records,
                             };
                         }
                     };
                     revoked_blocks.extend(blocks);
                 }
                 _ => {
-                    return ReplayScan::CleanEnd { records };
+                    return ReplayScan::CleanEnd;
                 }
             }
 
@@ -726,7 +601,6 @@ impl JBD2DEVSYSTEM {
 
         ReplayScan::Incomplete {
             restart_rel: start_rel,
-            records,
         }
     }
 
@@ -745,12 +619,6 @@ impl JBD2DEVSYSTEM {
         // journal superblock is inconsistent (e.g. corrupted by a crash that
         // also mangled s_maxlen). There are no valid transactions to replay.
         if !journal_blocks.is_empty() && journal_rel as usize >= journal_blocks.len() {
-            warn!(
-                "[JBD2] s_start={} >= journal_blocks.len()={}: journal superblock is \
-                 inconsistent, treating journal as clean",
-                journal_rel,
-                journal_blocks.len()
-            );
             self.jbd2_super_block.s_start = 0;
             return ReplayStatus::Complete;
         }
@@ -764,60 +632,22 @@ impl JBD2DEVSYSTEM {
         };
         let mut expect_seq = self.jbd2_super_block.s_sequence;
 
-        debug!(
-            "[JBD2 replay] begin: journal_sb_phys={} first_rel={} last_rel={} s_start(rel)={} \
-             maxlen={} expect_seq={}",
-            self.start_block, ring.first_rel, ring.last_rel, journal_rel, maxlen, expect_seq,
-        );
-
-        let mut total_transactions = 0usize;
-        let mut total_records = 0u64;
-        let mut total_payloads = 0usize;
-        let mut total_applied_payloads = 0usize;
-        let mut total_journal_read_ops = 0usize;
-        let mut total_home_write_ops = 0usize;
-
         let status = loop {
             match self.replay_one_transaction(block_dev, &ring, journal_rel, expect_seq) {
-                ReplayScan::Applied {
-                    next_rel,
-                    next_seq,
-                    records,
-                    payloads,
-                    applied_payloads,
-                    journal_read_ops,
-                    home_write_ops,
-                } => {
-                    total_transactions = total_transactions.saturating_add(1);
-                    total_records = total_records.saturating_add(u64::from(records));
-                    total_payloads = total_payloads.saturating_add(payloads);
-                    total_applied_payloads =
-                        total_applied_payloads.saturating_add(applied_payloads);
-                    total_journal_read_ops =
-                        total_journal_read_ops.saturating_add(journal_read_ops);
-                    total_home_write_ops = total_home_write_ops.saturating_add(home_write_ops);
+                ReplayScan::Applied { next_rel, next_seq } => {
                     journal_rel = next_rel;
                     expect_seq = next_seq;
                     self.jbd2_super_block.s_start = journal_rel;
                     self.jbd2_super_block.s_sequence = expect_seq;
                     self.sequence = expect_seq;
-                    debug!(
-                        "[JBD2 replay] transaction applied: new_sequence={} new_s_start(rel)={}",
-                        self.jbd2_super_block.s_sequence, self.jbd2_super_block.s_start
-                    );
                 }
-                ReplayScan::CleanEnd { records } => {
-                    total_records = total_records.saturating_add(u64::from(records));
+                ReplayScan::CleanEnd => {
                     self.jbd2_super_block.s_start = 0;
                     self.jbd2_super_block.s_sequence = expect_seq;
                     self.sequence = expect_seq;
                     break ReplayStatus::Complete;
                 }
-                ReplayScan::Incomplete {
-                    restart_rel,
-                    records,
-                } => {
-                    total_records = total_records.saturating_add(u64::from(records));
+                ReplayScan::Incomplete { restart_rel } => {
                     self.jbd2_super_block.s_start = restart_rel;
                     self.jbd2_super_block.s_sequence = expect_seq;
                     self.sequence = expect_seq;
@@ -833,50 +663,17 @@ impl JBD2DEVSYSTEM {
         let sb_block = self
             .journal_phys_block(journal_blocks, 0)
             .unwrap_or(self.start_block);
-        if sb_block.raw() != 0 {
-            debug!(
-                "[JBD2 replay] write journal superblock to block={} (sequence={} s_start={})",
-                sb_block, self.jbd2_super_block.s_sequence, self.jbd2_super_block.s_start
-            );
-            self.write_journal_superblock_with_mapping(block_dev, journal_blocks);
-            let _ = block_dev.flush();
+        if sb_block.raw() != 0
+            && self
+                .write_journal_superblock_with_mapping(block_dev, journal_blocks)
+                .and_then(|()| block_dev.flush())
+                .is_err()
+        {
+            return ReplayStatus::Incomplete;
         }
-        debug!(
-            "[JBD2 replay] end: status={status:?} transactions={} records={} payloads={} \
-             applied_payloads={} journal_read_ops={} home_write_ops={} final_sequence={} \
-             final_s_start={}",
-            total_transactions,
-            total_records,
-            total_payloads,
-            total_applied_payloads,
-            total_journal_read_ops,
-            total_home_write_ops,
-            self.jbd2_super_block.s_sequence,
-            self.jbd2_super_block.s_start
-        );
 
         status
     }
-}
-
-/// Debug helper that dumps the journal inode and journal superblock.
-pub fn dump_journal_inode<B: BlockIo>(fs: &mut Ext4FileSystem, block_dev: &mut Jbd2Dev<B>) {
-    let journal_ino = InodeNumber::new(8).expect("valid journal inode number");
-    let mut indo = fs
-        .get_inode_by_num(block_dev, journal_ino)
-        .expect("journal");
-    let datablock = resolve_inode_block(block_dev, &mut indo, 0)
-        .unwrap()
-        .unwrap();
-    let journal_data = fs
-        .datablock_cache
-        .get_or_load(block_dev, datablock)
-        .unwrap()
-        .data
-        .clone();
-    let sb = JournalSuperBllockS::from_disk_bytes(&journal_data);
-    debug!("Journal Superblock:{sb:?}");
-    debug!("Journal Inode:{indo:?}");
 }
 
 /// Creates the journal inode and writes its initial journal superblock.
@@ -887,9 +684,7 @@ pub fn create_journal_entry<B: BlockIo + crate::runtime::Clock>(
     // Allocate the journal area. Block 0 stores the journal superblock and the
     // remaining blocks hold descriptor/data/commit traffic.
     let journal_inode_num = JOURNAL_FILE_INODE;
-    let free_block = fs
-        .alloc_blocks(block_dev, 4096)
-        .expect("No enough block can alloc out!");
+    let free_block = fs.alloc_blocks(block_dev, 4096)?;
 
     // Ensure journal area starts clean: otherwise old image contents could look like valid
     // descriptor/commit blocks and replay would corrupt filesystem metadata.
@@ -900,10 +695,7 @@ pub fn create_journal_entry<B: BlockIo + crate::runtime::Clock>(
     // Build the journal inode metadata and map the allocated journal blocks.
     let mut jour_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
     jour_inode.i_links_count = 1;
-    debug!(
-        "When creating journal inode: iblock={:?}",
-        jour_inode.i_block
-    );
+
     let inode_size: usize = BLOCK_SIZE * free_block.len();
     jour_inode.i_size_lo = inode_size as u32;
     jour_inode.i_size_high = 0;
@@ -916,18 +708,14 @@ pub fn create_journal_entry<B: BlockIo + crate::runtime::Clock>(
         InodeNumber::new(journal_inode_num as u32)?,
         &free_block,
         block_dev,
-    );
-    debug!(
-        "When creating journal inode: iblock={:?}",
-        jour_inode.i_block
-    );
+    )?;
+
     fs.finalize_inode_update(
         block_dev,
         InodeNumber::new(journal_inode_num as u32)?,
         &mut jour_inode,
         Ext4InodeMetadataUpdate::create(Ext4Inode::S_IFREG | 0o600),
-    )
-    .expect("journal inode creation failed");
+    )?;
 
     let mut jbd2_sb = JournalSuperBllockS::default();
 
@@ -951,6 +739,6 @@ pub fn create_journal_entry<B: BlockIo + crate::runtime::Clock>(
         .modify_new(block_dev, free_block[0], |data| {
             jbd2_sb.to_disk_bytes(data);
         })?;
-    info!("Journal inode created!");
+
     Ok(())
 }

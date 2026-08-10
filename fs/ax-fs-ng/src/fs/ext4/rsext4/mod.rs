@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 pub use fs::*;
 pub use inode::*;
 use rsext4::{
-    BlockIo, DeviceCapabilities, DeviceGeometry,
+    BlockIo, DeviceCapabilities, DeviceGeometry, Event, Observer,
     bmalloc::AbsoluteBN,
     config::BLOCK_SIZE,
     disknode::Ext4Timestamp,
@@ -17,6 +17,15 @@ use rsext4::{
 use crate::block::{BlockRegion, FsBlockDevice, RegionBlockDevice};
 
 pub(crate) struct Ext4Disk(RegionBlockDevice<Box<dyn FsBlockDevice>>);
+
+#[derive(Default)]
+pub(crate) struct Ext4Observer;
+
+impl Observer for Ext4Observer {
+    fn event(&mut self, event: Event) {
+        log::debug!("rsext4 event: {event:?}");
+    }
+}
 
 impl Ext4Disk {
     pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> Self {

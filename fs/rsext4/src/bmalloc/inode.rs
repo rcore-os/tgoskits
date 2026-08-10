@@ -1,5 +1,3 @@
-use log::error;
-
 use super::*;
 use crate::error::{Ext4Error, Ext4Result};
 
@@ -86,7 +84,7 @@ impl InodeAllocator {
         if let Some(resu) = bitmap.is_allocated(inode_in_group.raw()) {
             return Ok(resu);
         }
-        error!("bitmap allocated check failed!");
+
         Err(Ext4Error::invalid_input())
     }
 

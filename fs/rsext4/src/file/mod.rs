@@ -5,8 +5,6 @@ use alloc::{
     vec::Vec,
 };
 
-use log::{debug, error, info, warn};
-
 use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},

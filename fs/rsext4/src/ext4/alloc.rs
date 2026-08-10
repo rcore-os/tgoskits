@@ -11,14 +11,11 @@ impl Ext4FileSystem {
             return Ok(Vec::new());
         }
 
-        trace!("alloc_blocks: request count={count} (will scan groups for free space)");
-
         for (idx, desc) in self.group_descs.iter().enumerate() {
             let group_idx =
                 BGIndex::new(u32::try_from(idx).map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?);
             let free = desc.free_blocks_count();
 
-            trace!("alloc_blocks: inspect group={group_idx} free_blocks={free} need={count}");
             if free < count {
                 continue;
             }
@@ -26,11 +23,6 @@ impl Ext4FileSystem {
             let bitmap_block = AbsoluteBN::new(desc.block_bitmap());
             let cache_key = CacheKey::new_block(group_idx);
             let mut alloc_res: Result<BlockAlloc, Ext4Error> = Err(Ext4Error::no_space());
-
-            debug!(
-                "alloc_blocks: candidate group={group_idx} bitmap_block={bitmap_block} starting \
-                 contiguous allocation of {count} blocks"
-            );
 
             if ext4_superblock_has_metadata_csum(&self.superblock) && !desc.is_block_bitmap_uninit()
             {
@@ -40,12 +32,7 @@ impl Ext4FileSystem {
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_block_bitmap_csum32(&self.superblock, &bm.data);
-                let stored = desc.block_bitmap_csum(&self.superblock);
                 if !desc.block_bitmap_csum_matches(&self.superblock, expected) {
-                    error!(
-                        "alloc_blocks: block bitmap checksum mismatch group={group_idx} \
-                         expected={expected:#x} stored={stored:#x}"
-                    );
                     return Err(Ext4Error::checksum().with_operation("alloc_blocks:block_bitmap"));
                 }
             }
@@ -67,10 +54,6 @@ impl Ext4FileSystem {
             let alloc = match alloc_res {
                 Ok(a) => a,
                 Err(e) if e.code == Errno::ENOSPC => {
-                    warn!(
-                        "alloc_blocks: group={group_idx} descriptor claims {free} free blocks but \
-                         bitmap has none — descriptor/bitmap inconsistency, skipping group"
-                    );
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -96,12 +79,6 @@ impl Ext4FileSystem {
                 desc_mut.bg_free_blocks_count_lo = (new_count & 0xFFFF) as u16;
                 desc_mut.bg_free_blocks_count_hi = (new_count >> 16) as u16;
                 desc_mut.bg_flags &= !Ext4GroupDesc::EXT4_BG_BLOCK_UNINIT;
-
-                debug!(
-                    "alloc_blocks: group={} free_blocks_count change {} -> {} (allocated {} \
-                     blocks starting at global={})",
-                    group_idx, before, new_count, count, alloc.global_block
-                );
             }
             self.sync_group_descriptor_if_needed(block_dev, group_idx)?;
 
@@ -110,26 +87,14 @@ impl Ext4FileSystem {
             self.superblock.s_free_blocks_count_lo = (sb_after & 0xFFFF_FFFF) as u32;
             self.superblock.s_free_blocks_count_hi = (sb_after >> 32) as u32;
 
-            debug!(
-                "alloc_blocks: superblock free_blocks_count change {sb_before} -> {sb_after} \
-                 (delta=-{count})"
-            );
-
             let mut blocks = Vec::with_capacity(count as usize);
             for off in 0..count {
                 blocks.push(alloc.global_block.checked_add(off)?);
             }
 
-            debug!(
-                "Allocated blocks: group={}, first_block_in_group={}, first_global_block={}, \
-                 count={} [bitmap updated, writeback deferred]",
-                alloc.group_idx, alloc.block_in_group, alloc.global_block, count
-            );
-
             return Ok(blocks);
         }
 
-        debug!("alloc_blocks: no group has enough free blocks for request count={count}");
         Err(Ext4Error::no_space())
     }
 
@@ -276,11 +241,6 @@ impl Ext4FileSystem {
                     inode.i_generation = generation;
                 })?;
             }
-
-            debug!(
-                "Allocated inodes: group={}, first_global_inode={}, count={} [delayed write]",
-                group_idx, inodes[0], count
-            );
 
             return Ok(inodes);
         }

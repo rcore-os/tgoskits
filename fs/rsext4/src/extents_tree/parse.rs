@@ -16,28 +16,17 @@ impl<'a> ExtentTree<'a> {
     pub(super) fn parse_node_from_bytes(bytes: &[u8]) -> Option<ExtentNode> {
         let hdr_size = Ext4ExtentHeader::disk_size();
         if bytes.len() < hdr_size {
-            error!(
-                "Extent node buffer too small: {} < {}",
-                bytes.len(),
-                hdr_size
-            );
             return None;
         }
 
         let header = Ext4ExtentHeader::from_disk_bytes(&bytes[..hdr_size]);
         if header.eh_magic != Ext4ExtentHeader::EXT4_EXT_MAGIC {
-            error!(
-                "Invalid extent header magic: {:x} (expect {:x})",
-                header.eh_magic,
-                Ext4ExtentHeader::EXT4_EXT_MAGIC
-            );
             return None;
         }
 
         let entries = header.eh_entries as usize;
         let max = header.eh_max as usize;
         if entries > max {
-            error!("Extent header entries overflow: entries={entries}, max={max}");
             return None;
         }
 
@@ -49,11 +38,6 @@ impl<'a> ExtentTree<'a> {
             let et_size = Ext4Extent::disk_size();
             for _ in 0..entries {
                 if offset + et_size > bytes.len() {
-                    error!(
-                        "Extent leaf truncated: need {} bytes, have {}",
-                        offset + et_size,
-                        bytes.len()
-                    );
                     return None;
                 }
                 let et = Ext4Extent::from_disk_bytes(&bytes[offset..offset + et_size]);
@@ -71,11 +55,6 @@ impl<'a> ExtentTree<'a> {
             let idx_size = Ext4ExtentIdx::disk_size();
             for _ in 0..entries {
                 if offset + idx_size > bytes.len() {
-                    error!(
-                        "Extent index truncated: need {} bytes, have {}",
-                        offset + idx_size,
-                        bytes.len()
-                    );
                     return None;
                 }
                 let idx = Ext4ExtentIdx::from_disk_bytes(&bytes[offset..offset + idx_size]);
@@ -158,8 +137,6 @@ impl<'a> ExtentTree<'a> {
 
                 let child_block =
                     AbsoluteBN::new((chosen.ei_leaf_hi as u64) << 32 | (chosen.ei_leaf_lo as u64));
-
-                debug!("Descending into extent child block {child_block} for lblock {lblock}");
 
                 dev.read_block(child_block)?;
                 let buf = dev.buffer();
