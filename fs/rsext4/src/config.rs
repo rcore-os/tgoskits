@@ -3,12 +3,6 @@
 use crate::superblock::*;
 
 // ============================================================================
-// Journal configuration
-// ============================================================================
-/// Maximum number of in-memory JBD2 update buffers.
-pub const JBD2_BUFFER_MAX: usize = 10;
-
-// ============================================================================
 // Block geometry
 // ============================================================================
 /// Default filesystem block size selected by rsext4 mkfs.
