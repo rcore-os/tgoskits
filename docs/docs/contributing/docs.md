@@ -30,8 +30,6 @@ docs/
 │   ├── architecture/      # 架构设计
 │   ├── build/             # 构建与运行
 │   ├── contributing/      # 贡献
-│   ├── development/       # 开发指南
-│   ├── components/        # 组件库
 │   └── debug/             # 在线调试
 ├── blog/                  # 博客文章
 │   └── 2026/
@@ -106,13 +104,13 @@ const sidebars = {
 
 ```json
 {
-  "label": "组件库",
+  "label": "架构设计",
   "position": 7,
   "link": {
     "type": "generated-index",
-    "title": "组件库",
-    "slug": "/components",
-    "description": "组件概述与各组件文档。"
+    "title": "架构设计",
+    "slug": "/architecture",
+    "description": "系统与组件的架构关系。"
   }
 }
 ```
@@ -184,8 +182,8 @@ Docusaurus 支持三种链接方式：
 
 | 类型 | 格式 | 说明 |
 |------|------|------|
-| 绝对路径 | `[文本](/docs/components/overview)` | 推荐跨章节引用 |
-| 相对路径 | `[文本](../components/overview)` | 同一章节内引用 |
+| 绝对路径 | `[文本](/docs/architecture/overview)` | 推荐跨章节引用 |
+| 相对路径 | `[文本](../architecture/overview)` | 同一章节内引用 |
 | 外部链接 | `[文本](https://...)` | 外部 URL |
 
 ### 5.3 Mermaid 图表

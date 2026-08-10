@@ -37,7 +37,7 @@ tgoskits/
 └── docs/                      # Docusaurus 文档站点
 ```
 
-更多关于 subtree 同步、组件分层和开发约定的说明，请参考 [仓库结构与协作方式](https://rcore-os.cn/tgoskits/docs/contributing/repo) 和 [组件开发指南](https://rcore-os.cn/tgoskits/docs/development/components)。
+更多关于 subtree 同步、组件分层和开发约定的说明，请参考 [仓库结构与协作方式](https://rcore-os.cn/tgoskits/docs/contributing/repo) 和 [架构设计概览](https://rcore-os.cn/tgoskits/docs/architecture/overview)。
 
 ## 3. 快速体验
 

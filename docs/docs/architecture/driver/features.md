@@ -5,7 +5,7 @@ sidebar_label: "构建配置"
 
 # 构建配置
 
-Feature 的职责从“选择 `ax-driver` 子模块和单个 Ax*Device 类型”调整为“选择要链接的 rdrive probe module、driver core、rdif 能力和 runtime wrapper”。构建配置通过 [axbuild](../../components/crates/axbuild.md) 把上层 app/system 的需求映射到具体的 `ax-driver` feature。
+Feature 的职责从“选择 `ax-driver` 子模块和单个 Ax*Device 类型”调整为“选择要链接的 rdrive probe module、driver core、rdif 能力和 runtime wrapper”。构建配置通过 `axbuild` 把上层 app/system 的需求映射到具体的 `ax-driver` feature。
 
 ## Feature 映射
 

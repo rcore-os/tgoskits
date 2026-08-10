@@ -368,14 +368,15 @@ pub fn sys_getsockopt(
     optlen: UserPtr<socklen_t>,
 ) -> AxResult<isize> {
     let optlen_ptr = optlen;
-    let mut optlen = optlen_ptr.read(current)?;
+    let initial_optlen = optlen_ptr.read(current)?;
+    let mut optlen = initial_optlen;
     debug!(
         "sys_getsockopt <= fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
         fd,
         level,
         optname,
         optval.address(),
-        optlen,
+        initial_optlen,
     );
 
     fn write_fixed<T: bytemuck::NoUninit>(
@@ -406,7 +407,6 @@ pub fn sys_getsockopt(
             return Ok(0);
         }
     }
-
     let socket = Socket::from_fd(fd)?;
 
     // SO_TYPE is normally implied by the kernel socket variant. Raw and Unix
