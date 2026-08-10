@@ -25,8 +25,9 @@ impl<'a> ExtentTree<'a> {
             Some(split_info) => {
                 // Root split: promote the old inline root into a real block and
                 // rebuild the inode root as an index node.
+                self.can_add_inode_sectors_for_block(fs)?;
                 let new_left_block = fs.alloc_block(block_dev)?;
-                self.add_inode_sectors_for_block();
+                self.add_inode_sectors_for_block(fs)?;
 
                 // Persist the old root contents into the new left child block.
                 self.write_node_to_block(block_dev, new_left_block, &root)?;
@@ -195,8 +196,9 @@ impl<'a> ExtentTree<'a> {
                 header.eh_entries = entries.len() as u16;
 
                 // Allocate a new metadata block for the right half.
+                self.can_add_inode_sectors_for_block(fs)?;
                 let new_phy_block = fs.alloc_block(block_dev)?;
-                self.add_inode_sectors_for_block();
+                self.add_inode_sectors_for_block(fs)?;
 
                 let right_header = Ext4ExtentHeader {
                     eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
@@ -300,8 +302,9 @@ impl<'a> ExtentTree<'a> {
                     header.eh_entries = entries.len() as u16;
 
                     // Allocate a block for the new right-hand index node.
+                    self.can_add_inode_sectors_for_block(fs)?;
                     let new_phy_block = fs.alloc_block(block_dev)?;
-                    self.add_inode_sectors_for_block();
+                    self.add_inode_sectors_for_block(fs)?;
 
                     let right_header = Ext4ExtentHeader {
                         eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,

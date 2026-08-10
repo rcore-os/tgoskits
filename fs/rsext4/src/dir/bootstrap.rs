@@ -119,6 +119,10 @@ pub fn create_lost_found_directory<B: BlockIo + crate::runtime::Clock>(
     let mut root_inode = fs.get_root(block_dev)?;
     let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
     let filesystem_block_size = fs.block_size();
+    let dir_nlink_feature = fs
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_DIR_NLINK);
+    let root_new_links = root_inode.incremented_links_count(dir_nlink_feature)?;
 
     let lost_ino = fs.alloc_inode(block_dev)?;
 
@@ -219,7 +223,6 @@ pub fn create_lost_found_directory<B: BlockIo + crate::runtime::Clock>(
         Ext4DirEntry2::EXT4_FT_DIR,
     )?;
     // The root gains one more subdirectory link after `lost+found` becomes visible.
-    let root_new_links = root_inode.i_links_count.saturating_add(1);
     fs.set_inode_links_count(block_dev, fs.root_inode, root_new_links)?;
 
     fs.superblock.s_lpf_ino = lost_ino.raw();

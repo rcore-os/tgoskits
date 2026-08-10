@@ -11,7 +11,7 @@ use axfs_ng_vfs::{
     FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
     Reference, VfsError, VfsResult, WeakDirEntry,
 };
-use rsext4::{BLOCK_SIZE, bmalloc::InodeNumber};
+use rsext4::bmalloc::InodeNumber;
 
 use super::{
     Ext4Filesystem,
@@ -135,7 +135,12 @@ impl NodeOps for Inode {
             gid: inode.gid(),
             size: inode.size(),
             block_size: fs.superblock.block_size(),
-            blocks: inode.blocks_count(),
+            blocks: inode.blocks_count(
+                fs.superblock.block_size() as u32,
+                fs.superblock.has_feature_ro_compat(
+                    rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE,
+                ),
+            ),
             rdev: if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
                 decode_ext4_rdev(&inode.i_block)
             } else {
@@ -267,10 +272,15 @@ impl FileNodeOps for Inode {
 
             let target_bytes = target.as_bytes();
             let target_len = target_bytes.len();
+            let block_size = fs.superblock.block_size() as usize;
+            let huge_file_feature = fs.superblock.has_feature_ro_compat(
+                rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE,
+            );
             inode.i_size_lo = (target_len as u64 & 0xffffffff) as u32;
             inode.i_size_high = ((target_len as u64) >> 32) as u32;
-            inode.i_blocks_lo = 0;
-            inode.l_i_blocks_high = 0;
+            inode
+                .set_blocks_count(0, block_size as u32, huge_file_feature)
+                .map_err(into_vfs_err)?;
             inode.i_block = [0; 15];
 
             if target_len == 0 {
@@ -297,7 +307,7 @@ impl FileNodeOps for Inode {
                 let mut src_off = 0usize;
                 while remaining > 0 {
                     let blk = fs.alloc_block(dev).map_err(into_vfs_err)?;
-                    let write_len = core::cmp::min(remaining, BLOCK_SIZE);
+                    let write_len = core::cmp::min(remaining, block_size);
                     fs.datablock_cache
                         .modify_new(dev, blk, |data| {
                             for b in data.iter_mut() {
@@ -313,9 +323,12 @@ impl FileNodeOps for Inode {
                 }
 
                 let used_datablocks = data_blocks.len() as u64;
-                let iblocks_used = used_datablocks.saturating_mul(BLOCK_SIZE as u64 / 512) as u32;
-                inode.i_blocks_lo = iblocks_used;
-                inode.l_i_blocks_high = 0;
+                let iblocks_used = used_datablocks
+                    .checked_mul(block_size as u64 / 512)
+                    .ok_or_else(|| into_vfs_err(rsext4::Ext4Error::overflow()))?;
+                inode
+                    .set_blocks_count(iblocks_used, block_size as u32, huge_file_feature)
+                    .map_err(into_vfs_err)?;
                 rsext4::file::build_file_block_mapping_with_inode_num(
                     fs,
                     &mut inode,
@@ -360,7 +373,7 @@ impl DirNodeOps for Inode {
                 .datablock_cache
                 .get_or_load(dev, phys)
                 .map_err(into_vfs_err)?;
-            let data = &cached.data[..BLOCK_SIZE];
+            let data = &cached.data;
 
             // Manually iterate entries, tracking byte_offset for ALL entries
             // (including inode==0 deleted ones) so offset stays physical.

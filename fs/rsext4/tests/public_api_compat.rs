@@ -348,6 +348,9 @@ fn remove_extend_matches_remove_extent() {
         ExtentTree::new(&mut inode, BLOCK_SIZE)
             .insert_extent(&mut fs, inserted, &mut dev)
             .expect("insert extent");
+        inode
+            .set_blocks_count(4 * (BLOCK_SIZE as u64 / 512), BLOCK_SIZE as u32, true)
+            .expect("account inserted data blocks");
 
         let deleted = Ext4Extent::new(1, 0, 2);
         remove(

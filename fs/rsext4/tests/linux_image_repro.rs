@@ -242,14 +242,7 @@ fn create_ext4_geometry_image(
         {
             let mut command = Command::new("mkfs.ext4");
             command
-                .args([
-                    "-F",
-                    "-q",
-                    "-b",
-                    &filesystem_block_size.to_string(),
-                    "-O",
-                    "^huge_file,^dir_nlink",
-                ])
+                .args(["-F", "-q", "-b", &filesystem_block_size.to_string()])
                 .arg(&image);
             command
         },
@@ -275,6 +268,12 @@ fn linux_image_geometry_round_trip(filesystem_block_size: u32) {
         let dev = FileBlockDevice::open_with_sector_size(image.clone(), 512);
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
         let mut fs = mount(&mut dev).expect("mount Linux-created geometry image");
+        assert!(fs.superblock.has_feature_ro_compat(
+            rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE,
+        ));
+        assert!(fs.superblock.has_feature_ro_compat(
+            rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_DIR_NLINK,
+        ));
 
         mkdir(&mut dev, &mut fs, "/geometry").expect("create geometry directory");
         mkfile(&mut dev, &mut fs, "/geometry/source.bin", None, None)
@@ -534,9 +533,7 @@ fn replay_csum_v3_multi_block_journal_from_debugfs() {
     run_command(
         {
             let mut command = Command::new("mkfs.ext4");
-            command
-                .args(["-F", "-q", "-b", "4096", "-O", "^huge_file,^dir_nlink"])
-                .arg(&image);
+            command.args(["-F", "-q", "-b", "4096"]).arg(&image);
             command
         },
         "mkfs.ext4 test image",

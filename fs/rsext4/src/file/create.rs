@@ -175,9 +175,21 @@ pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
         }
 
         let used_datablocks = data_blocks.len() as u64;
-        let iblocks_used = used_datablocks.saturating_mul(block_size as u64 / 512) as u32;
-        new_inode.i_blocks_lo = iblocks_used;
-        new_inode.l_i_blocks_high = 0; // iblocks_used is u32, so high part is 0
+        let iblocks_used = used_datablocks
+            .checked_mul(block_size as u64 / 512)
+            .ok_or_else(Ext4Error::overflow);
+        let huge_file_feature = fs
+            .superblock
+            .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+        if let Err(error) = iblocks_used.and_then(|sectors| {
+            new_inode.set_blocks_count(sectors, block_size as u32, huge_file_feature)
+        }) {
+            let error = error_after_cleanup(
+                error,
+                discard_unpublished_inode(fs, device, new_ino, &data_blocks),
+            );
+            return Err(error);
+        }
 
         if let Err(error) = build_file_block_mapping_with_inode_num(
             fs,
@@ -376,12 +388,23 @@ pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
     if !data_blocks.is_empty() {
         // File starts with allocated data blocks.
         let used_databyte = data_blocks.len() as u64;
-        let iblocks_used = used_databyte.saturating_mul(block_size as u64 / 512);
-        let used_blocks_lo = iblocks_used as u32;
+        let iblocks_used = used_databyte
+            .checked_mul(block_size as u64 / 512)
+            .ok_or_else(Ext4Error::overflow);
         new_inode.i_size_lo = size_lo;
         new_inode.i_size_high = size_hi;
-        new_inode.i_blocks_lo = used_blocks_lo;
-        new_inode.l_i_blocks_high = (iblocks_used >> 32) as u16;
+        let huge_file_feature = fs
+            .superblock
+            .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+        if let Err(error) = iblocks_used.and_then(|sectors| {
+            new_inode.set_blocks_count(sectors, block_size as u32, huge_file_feature)
+        }) {
+            let error = error_after_cleanup(
+                error,
+                discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+            );
+            return Err(error);
+        }
 
         if let Err(error) = build_file_block_mapping_with_inode_num(
             fs,

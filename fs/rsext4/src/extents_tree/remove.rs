@@ -324,9 +324,10 @@ impl<'a> ExtentTree<'a> {
                 // Free physical blocks first so allocation bitmaps stay consistent with the extent edit.
                 let base = extent_start_phys(&e);
                 let off = within_off as u64;
+                tree.can_sub_inode_sectors_for_blocks(fs, u64::from(cut_len))?;
                 for j in 0..(cut_len as u64) {
                     fs.free_block(dev, AbsoluteBN::new(base + off + j))?;
-                    tree.sub_inode_sectors_for_block();
+                    tree.sub_inode_sectors_for_block(fs)?;
                 }
             }
 
@@ -441,10 +442,11 @@ impl<'a> ExtentTree<'a> {
                         match child_res.kind {
                             StepKind::Deleted => {
                                 if child_res.empty {
+                                    tree.can_sub_inode_sectors_for_blocks(fs, 1)?;
                                     entries.remove(idx_pos);
                                     header.eh_entries = entries.len() as u16;
                                     fs.free_block(dev, child_phy)?;
-                                    tree.sub_inode_sectors_for_block();
+                                    tree.sub_inode_sectors_for_block(fs)?;
                                 } else {
                                     entries[idx_pos].ei_block = child_res.first_key;
                                 }
@@ -577,10 +579,10 @@ impl<'a> ExtentTree<'a> {
                             h
                         };
 
+                        self.can_sub_inode_sectors_for_blocks(fs, 1)?;
                         self.store_root_to_inode(&child_node);
-
                         fs.free_block(block_dev, child_phy)?;
-                        self.sub_inode_sectors_for_block();
+                        self.sub_inode_sectors_for_block(fs)?;
                         return Ok(());
                     }
                 }
@@ -619,6 +621,7 @@ mod tests {
         config::BLOCK_SIZE,
         error::{Ext4Error, Ext4Result},
         ext4::{mkfs, mount},
+        superblock::Ext4Superblock,
     };
 
     struct MemBlockDev {
@@ -731,6 +734,26 @@ mod tests {
         fs.alloc_block(dev).unwrap()
     }
 
+    fn insert_data_extent<B: BlockIo>(
+        fs: &mut Ext4FileSystem,
+        dev: &mut Jbd2Dev<B>,
+        inode: &mut Ext4Inode,
+        extent: Ext4Extent,
+    ) {
+        let data_blocks = u64::from(extent.len());
+        ExtentTree::new(inode, BLOCK_SIZE)
+            .insert_extent(fs, extent, dev)
+            .unwrap();
+        let huge_file_feature = fs
+            .superblock
+            .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+        let current = inode.blocks_count(BLOCK_SIZE as u32, huge_file_feature);
+        let data_sectors = data_blocks * (BLOCK_SIZE as u64 / 512);
+        inode
+            .set_blocks_count(current + data_sectors, BLOCK_SIZE as u32, huge_file_feature)
+            .unwrap();
+    }
+
     fn bitmap_block_is_allocated<B: BlockIo>(
         fs: &mut Ext4FileSystem,
         dev: &mut Jbd2Dev<B>,
@@ -760,13 +783,12 @@ mod tests {
         inode: &mut Ext4Inode,
         n: u32,
     ) -> std::vec::Vec<Ext4Extent> {
-        let mut tree = ExtentTree::new(inode, BLOCK_SIZE);
         let mut out = std::vec::Vec::new();
         for lbn in 0..n {
             let phys = alloc_data_block(fs, dev);
             let _gap = alloc_data_block(fs, dev);
             let ext = Ext4Extent::new(lbn, phys.raw(), 1);
-            tree.insert_extent(fs, ext, dev).unwrap();
+            insert_data_extent(fs, dev, inode, ext);
             out.push(ext);
         }
         out
@@ -840,6 +862,27 @@ mod tests {
             }
             _ => panic!("expected leaf root"),
         }
+    }
+
+    #[test]
+    fn extent_metadata_accounting_preserves_huge_file_units() {
+        let (mut dev, mut fs) = setup_fs(32 * 1024);
+        let mut inode = new_extent_inode();
+        fs.superblock.s_feature_ro_compat |= Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE;
+        let initial_sectors = (1_u64 << 48) + 8;
+        inode
+            .set_blocks_count(initial_sectors, BLOCK_SIZE as u32, true)
+            .unwrap();
+
+        insert_n_extents_with_phys_gaps(&mut fs, &mut dev, &mut inode, 5);
+
+        let metadata_blocks = ExtentTree::new(&mut inode, BLOCK_SIZE)
+            .external_node_blocks(&mut dev)
+            .unwrap()
+            .len() as u64;
+        let expected = initial_sectors + (5 + metadata_blocks) * (BLOCK_SIZE as u64 / 512);
+        assert_eq!(inode.blocks_count(BLOCK_SIZE as u32, true), expected);
+        assert_ne!(inode.i_flags & Ext4Inode::EXT4_HUGE_FILE_FL, 0);
     }
 
     #[test]
@@ -934,10 +977,7 @@ mod tests {
         assert!(bitmap_block_is_allocated(&mut fs, &mut dev, phys));
 
         let ext = Ext4Extent::new(0, phys.raw(), 1);
-        {
-            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
-            tree.insert_extent(&mut fs, ext, &mut dev).unwrap();
-        }
+        insert_data_extent(&mut fs, &mut dev, &mut inode, ext);
 
         {
             let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
@@ -948,16 +988,36 @@ mod tests {
     }
 
     #[test]
+    fn remove_extent_rejects_underaccounted_inode_before_freeing_data() {
+        let (mut dev, mut fs) = setup_fs(16 * 1024);
+        let mut inode = new_extent_inode();
+        let phys = alloc_data_block(&mut fs, &mut dev);
+        let extent = Ext4Extent::new(0, phys.raw(), 1);
+        ExtentTree::new(&mut inode, BLOCK_SIZE)
+            .insert_extent(&mut fs, extent, &mut dev)
+            .unwrap();
+
+        let error = ExtentTree::new(&mut inode, BLOCK_SIZE)
+            .remove_extent(&mut fs, extent, &mut dev)
+            .unwrap_err();
+
+        assert!(error.is_corruption());
+        assert!(bitmap_block_is_allocated(&mut fs, &mut dev, phys));
+        let extents = collect_extents_from_inode(&mut inode, &mut dev);
+        assert_eq!(extents.len(), 1);
+        assert_eq!(extents[0].ee_block, extent.ee_block);
+        assert_eq!(extents[0].ee_len, extent.ee_len);
+        assert_eq!(extents[0].start_block(), extent.start_block());
+    }
+
+    #[test]
     fn remove_extent_partial_delete_splits_extent_and_updates_bitmap() {
         let (mut dev, mut fs) = setup_fs(32 * 1024);
         let mut inode = new_extent_inode();
 
         let base = alloc_contiguous(&mut fs, &mut dev, 4);
         let ext = Ext4Extent::new(0, base.raw(), 4);
-        {
-            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
-            tree.insert_extent(&mut fs, ext, &mut dev).unwrap();
-        }
+        insert_data_extent(&mut fs, &mut dev, &mut inode, ext);
 
         let del = Ext4Extent::new(1, 0, 2);
         {
@@ -1005,10 +1065,7 @@ mod tests {
 
         let base = alloc_contiguous(&mut fs, &mut dev, 2);
         let ext = Ext4Extent::new(0, base.raw(), 2);
-        {
-            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
-            tree.insert_extent(&mut fs, ext, &mut dev).unwrap();
-        }
+        insert_data_extent(&mut fs, &mut dev, &mut inode, ext);
 
         let del = Ext4Extent::new(0, 0, 2);
         {
@@ -1036,13 +1093,18 @@ mod tests {
         let _gap2 = alloc_data_block(&mut fs, &mut dev);
         let base2 = alloc_contiguous(&mut fs, &mut dev, 2);
 
-        {
-            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
-            tree.insert_extent(&mut fs, Ext4Extent::new(0, base1.raw(), 2), &mut dev)
-                .unwrap();
-            tree.insert_extent(&mut fs, Ext4Extent::new(4, base2.raw(), 2), &mut dev)
-                .unwrap();
-        }
+        insert_data_extent(
+            &mut fs,
+            &mut dev,
+            &mut inode,
+            Ext4Extent::new(0, base1.raw(), 2),
+        );
+        insert_data_extent(
+            &mut fs,
+            &mut dev,
+            &mut inode,
+            Ext4Extent::new(4, base2.raw(), 2),
+        );
 
         // delete 3 allocated blocks starting at lbn=1: deletes lbn=1, then skips hole [2..4), then deletes lbn=4 and lbn=5
         {
@@ -1081,13 +1143,18 @@ mod tests {
 
         let base1 = alloc_contiguous(&mut fs, &mut dev, 2);
         let base2 = alloc_contiguous(&mut fs, &mut dev, 1);
-        {
-            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
-            tree.insert_extent(&mut fs, Ext4Extent::new(0, base1.raw(), 2), &mut dev)
-                .unwrap();
-            tree.insert_extent(&mut fs, Ext4Extent::new(10, base2.raw(), 1), &mut dev)
-                .unwrap();
-        }
+        insert_data_extent(
+            &mut fs,
+            &mut dev,
+            &mut inode,
+            Ext4Extent::new(0, base1.raw(), 2),
+        );
+        insert_data_extent(
+            &mut fs,
+            &mut dev,
+            &mut inode,
+            Ext4Extent::new(10, base2.raw(), 1),
+        );
 
         let before_exts = collect_extents_from_inode(&mut inode, &mut dev);
         assert!(bitmap_block_is_allocated(&mut fs, &mut dev, base1));

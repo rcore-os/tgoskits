@@ -2573,7 +2573,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     let mut mapped_inode = Ext4Inode::empty_for_reuse(32);
     build_file_block_mapping_with_inode_num(&mut fs, &mut mapped_inode, file_ino, &[], &mut device)
         .unwrap();
-    ax_assert_eq!(mapped_inode.blocks_count(), 0);
+    ax_assert_eq!(mapped_inode.blocks_count(BLOCK_SIZE as u32, true), 0);
     let map_block_a = fs.alloc_block(&mut device).unwrap();
     let _map_gap = fs.alloc_block(&mut device).unwrap();
     let map_block_b = fs.alloc_block(&mut device).unwrap();

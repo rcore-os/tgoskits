@@ -24,6 +24,7 @@ pub fn into_vfs_err(err: Ext4Error) -> VfsError {
         | Ext4ErrorKind::UnsupportedCapability => ax_errno::LinuxError::EOPNOTSUPP,
         Ext4ErrorKind::Corrupted | Ext4ErrorKind::ChecksumMismatch => ax_errno::LinuxError::EUCLEAN,
         Ext4ErrorKind::QuotaExceeded => ax_errno::LinuxError::EDQUOT,
+        Ext4ErrorKind::TooManyLinks => ax_errno::LinuxError::EMLINK,
         Ext4ErrorKind::Io | Ext4ErrorKind::JournalAborted => ax_errno::LinuxError::EIO,
     };
     VfsError::from(linux_err).canonicalize()
@@ -99,6 +100,10 @@ mod tests {
         assert_eq!(
             into_vfs_err(Ext4Error::journal_aborted()),
             expected(ax_errno::LinuxError::EIO),
+        );
+        assert_eq!(
+            into_vfs_err(Ext4Error::too_many_links()),
+            expected(ax_errno::LinuxError::EMLINK),
         );
     }
 }
