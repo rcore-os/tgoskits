@@ -622,6 +622,67 @@ fn e2fsck_clean_after_sparse_extent_truncate_keeps_tree_blocks_counted() {
 }
 
 #[test]
+fn legacy_write_crosses_direct_single_boundary_and_remounts_cleanly() {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-legacy-single-write", "64M");
+    let path = "/legacy-single.bin";
+    let mut expected = vec![0u8; 14 * BLOCK_SIZE];
+    for (index, byte) in expected.iter_mut().enumerate() {
+        *byte = (index as u8).wrapping_mul(17).wrapping_add(3);
+    }
+
+    {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("mount image");
+        mkfile(&mut dev, &mut fs, path, None, None).expect("create legacy file");
+        let inode_number = dir::get_inode_with_num(&mut fs, &mut dev, path)
+            .expect("lookup legacy file")
+            .expect("legacy file inode")
+            .0;
+        fs.modify_inode(&mut dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+        })
+        .expect("convert empty inode to legacy mapping");
+
+        write_file(&mut dev, &mut fs, path, 0, &expected).expect("write legacy file");
+        let (_, inode) = dir::get_inode_with_num(&mut fs, &mut dev, path)
+            .expect("lookup written legacy file")
+            .expect("written legacy file inode");
+        let huge_file = fs
+            .superblock
+            .has_feature_ro_compat(superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+        assert!(!inode.uses_extents());
+        assert_eq!(
+            inode.blocks_count(BLOCK_SIZE as u32, huge_file),
+            15 * (BLOCK_SIZE / 512) as u64,
+            "14 data blocks plus one single-indirect block must be accounted"
+        );
+        umount(fs, &mut dev).expect("umount legacy image");
+    }
+
+    e2fsck_readonly_clean(&image, "legacy direct-to-single write");
+
+    {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("remount legacy image");
+        assert_eq!(
+            read_file(&mut dev, &mut fs, path).expect("read remounted legacy file"),
+            expected
+        );
+        umount(fs, &mut dev).expect("umount remounted legacy image");
+    }
+
+    e2fsck_readonly_clean(&image, "remounted legacy direct-to-single write");
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
 fn e2fsck_clean_after_deleting_split_extent_file_frees_tree_blocks() {
     for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
         require_tool(tool);

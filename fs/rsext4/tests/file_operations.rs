@@ -3,7 +3,7 @@
 //! The suite focuses on common file workflows and records a few implementation
 //! details that intentionally differ from a fully POSIX-like filesystem.
 
-use std::cell::Cell;
+use std::{cell::Cell, rc::Rc};
 
 use rsext4::{
     error::{Ext4Error, Ext4Result},
@@ -16,6 +16,7 @@ struct MockBlockDevice {
     block_size: u32,
     fail_on_write: bool,
     fail_on_read: bool,
+    fail_after_write_sector: Rc<Cell<Option<u64>>>,
     now: Cell<i64>,
 }
 
@@ -26,8 +27,15 @@ impl MockBlockDevice {
             block_size: rsext4::BLOCK_SIZE as u32,
             fail_on_write: false,
             fail_on_read: false,
+            fail_after_write_sector: Rc::new(Cell::new(None)),
             now: Cell::new(1_700_000_000),
         }
+    }
+
+    fn with_write_failure_handle(size: usize) -> (Self, Rc<Cell<Option<u64>>>) {
+        let device = Self::new(size);
+        let handle = Rc::clone(&device.fail_after_write_sector);
+        (device, handle)
     }
 }
 
@@ -63,7 +71,12 @@ impl BlockIo for MockBlockDevice {
             ));
         }
         self.data[start..end].copy_from_slice(buffer);
-        Ok(())
+        if self.fail_after_write_sector.get() == Some(sector.raw()) {
+            self.fail_after_write_sector.set(None);
+            Err(Ext4Error::io())
+        } else {
+            Ok(())
+        }
     }
 
     fn geometry(&self) -> rsext4::DeviceGeometry {
@@ -703,6 +716,178 @@ mod file_functional_tests {
             &data[12 * BLOCK_SIZE..12 * BLOCK_SIZE + payload.len()],
             payload
         );
+    }
+
+    #[test]
+    fn legacy_sparse_write_allocates_direct_and_all_indirect_levels() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let pointers = BLOCK_SIZE / core::mem::size_of::<u32>();
+        let cases = [
+            ("/legacy-direct", 0u32, 1u64),
+            ("/legacy-single", 12u32, 2u64),
+            ("/legacy-double", (12 + pointers) as u32, 3u64),
+            (
+                "/legacy-triple",
+                (12 + pointers + pointers * pointers) as u32,
+                4u64,
+            ),
+        ];
+
+        for (case_index, (path, logical, allocated_blocks)) in cases.into_iter().enumerate() {
+            mkfile(&mut jbd2_dev, &mut fs, path, None, None).expect("file creation failed");
+            let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, path)
+                .unwrap()
+                .unwrap()
+                .0;
+            fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+                inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+                inode.i_block = [0; 15];
+            })
+            .unwrap();
+
+            let payload = [0xa0 + case_index as u8; 32];
+            write_file(
+                &mut jbd2_dev,
+                &mut fs,
+                path,
+                u64::from(logical) * BLOCK_SIZE as u64,
+                &payload,
+            )
+            .unwrap();
+
+            let (_, mut inode) = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, path)
+                .unwrap()
+                .unwrap();
+            assert!(!inode.uses_extents());
+            let physical = loopfile::resolve_inode_block(
+                &fs,
+                &mut jbd2_dev,
+                inode_number,
+                &mut inode,
+                logical,
+            )
+            .unwrap()
+            .expect("new legacy mapping must be reachable");
+            let cached = fs
+                .datablock_cache
+                .get_or_load(&mut jbd2_dev, physical)
+                .unwrap();
+            assert_eq!(&cached.data[..payload.len()], &payload);
+            let huge_file = fs.superblock.has_feature_ro_compat(
+                superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE,
+            );
+            assert_eq!(
+                inode.blocks_count(BLOCK_SIZE as u32, huge_file),
+                allocated_blocks * (BLOCK_SIZE / 512) as u64
+            );
+        }
+    }
+
+    #[test]
+    fn failed_indirect_parent_publish_restores_pointer_before_freeing_branch() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/legacy-publish", None, None)
+            .expect("file creation failed");
+        let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-publish")
+            .unwrap()
+            .unwrap()
+            .0;
+        let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
+        jbd2_dev.set_journal_use(false);
+        jbd2_dev.read_block(indirect_root).unwrap();
+        jbd2_dev.buffer_mut().fill(0);
+        jbd2_dev.write_block(indirect_root, true).unwrap();
+        fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_block[12] = indirect_root.to_u32().unwrap();
+            inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
+            let size = 13 * BLOCK_SIZE as u64;
+            inode.i_size_lo = size as u32;
+            inode.i_size_high = (size >> 32) as u32;
+        })
+        .unwrap();
+        let free_blocks_before = fs.superblock.free_blocks_count();
+
+        fail_after_write_sector.set(Some(indirect_root.raw()));
+        let error = write_file(
+            &mut jbd2_dev,
+            &mut fs,
+            "/legacy-publish",
+            12 * BLOCK_SIZE as u64,
+            b"publish-failure",
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        jbd2_dev.read_block(indirect_root).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(jbd2_dev.buffer()[..4].try_into().unwrap()),
+            0,
+            "the failed child pointer must be restored before its block is freed"
+        );
+        let (_, inode) = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-publish")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            inode.blocks_count(BLOCK_SIZE as u32, true),
+            (BLOCK_SIZE / 512) as u64
+        );
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+    }
+
+    #[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
+    #[test]
+    fn failed_legacy_inode_finalize_restores_cached_inode_before_freeing_blocks() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/legacy-finalize", None, None)
+            .expect("file creation failed");
+        let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-finalize")
+            .unwrap()
+            .unwrap()
+            .0;
+        jbd2_dev.set_journal_use(false);
+        fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+        })
+        .unwrap();
+        let inode_table = fs.group_descs[0].inode_table();
+        let free_blocks_before = fs.superblock.free_blocks_count();
+
+        fail_after_write_sector.set(Some(inode_table));
+        let error = write_file(
+            &mut jbd2_dev,
+            &mut fs,
+            "/legacy-finalize",
+            0,
+            b"inode-failure",
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        let (_, inode) = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-finalize")
+            .unwrap()
+            .unwrap();
+        assert!(!inode.uses_extents());
+        assert_eq!(inode.i_block, [0; 15]);
+        assert_eq!(inode.size(), 0);
+        assert_eq!(inode.blocks_count(BLOCK_SIZE as u32, true), 0);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
     }
 
     /// Verifies symbolic-link resolution by reading the target through the link path.

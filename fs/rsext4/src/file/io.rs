@@ -646,6 +646,91 @@ fn alloc_contiguous_run_best_effort<B: BlockIo>(
     }
 }
 
+fn rollback_legacy_allocations<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    allocations: Vec<crate::indirect::LegacyBlockAllocation>,
+) -> Ext4Result<()> {
+    let mut first_error = None;
+    for allocation in allocations.into_iter().rev() {
+        if let Err(error) = allocation.rollback(fs, device, inode_num, inode)
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    match first_error {
+        Some(error) => Err(error.with_operation("rollback:legacy_write")),
+        None => Ok(()),
+    }
+}
+
+fn write_legacy_inode_data<B: BlockIo + crate::runtime::Clock>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    mut inode: Ext4Inode,
+    write: WriteSlice<'_>,
+) -> Ext4Result<()> {
+    let original_inode = inode;
+    let old_size = inode.size();
+    let block_bytes = fs.block_size() as u64;
+    let start_lbn = write.offset / block_bytes;
+    let end_lbn = (write.end - 1) / block_bytes;
+    let mut allocations = Vec::new();
+    let mut inode_update_attempted = false;
+    let operation = (|| {
+        for lbn in start_lbn..=end_lbn {
+            let logical = u32::try_from(lbn).map_err(|_| Ext4Error::file_too_large())?;
+            let allocation = crate::indirect::allocate_legacy_inode_block(
+                fs, device, inode_num, &mut inode, logical,
+            )?;
+            let physical = allocation.physical();
+            let newly_allocated = allocation.is_new();
+            if newly_allocated {
+                allocations.push(allocation);
+            }
+            write_inode_block_data(device, fs, physical, lbn, &write, newly_allocated)?;
+        }
+
+        if write.end > old_size {
+            inode.i_size_lo = write.end as u32;
+            inode.i_size_high = (write.end >> 32) as u32;
+        }
+        inode_update_attempted = true;
+        fs.finalize_inode_update(
+            device,
+            inode_num,
+            &mut inode,
+            Ext4InodeMetadataUpdate::write_access(),
+        )
+    })();
+
+    match operation {
+        Ok(()) => Ok(()),
+        Err(operation_error) => {
+            if inode_update_attempted
+                && let Err(restore_error) = fs.modify_inode(device, inode_num, |on_disk| {
+                    *on_disk = original_inode;
+                })
+            {
+                // The inode cache or pending journal update may still expose
+                // the new branch. Retain its blocks unless the old inode image
+                // is known to be restored.
+                return Err(restore_error.with_operation("rollback:legacy_inode_restore"));
+            }
+            let cleanup =
+                rollback_legacy_allocations(device, fs, inode_num, &mut inode, allocations);
+            match cleanup {
+                Ok(()) => Err(operation_error),
+                Err(cleanup_error) => Err(cleanup_error),
+            }
+        }
+    }
+}
+
 pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -662,7 +747,10 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
     let old_size = inode.size();
     let block_bytes = fs.block_size() as u64;
 
-    let end = offset.saturating_add(data.len() as u64);
+    let data_len = u64::try_from(data.len()).map_err(|_| Ext4Error::overflow())?;
+    let end = offset
+        .checked_add(data_len)
+        .ok_or_else(Ext4Error::file_too_large)?;
 
     let start_lbn = offset / block_bytes;
     let end_lbn = (end - 1) / block_bytes;
@@ -670,9 +758,9 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
         return Err(Ext4Error::file_too_large());
     }
 
-    // Non-extent files cannot grow through sparse writes in this implementation.
-    if end > old_size && (!fs.superblock.has_extents() || !inode.uses_extents()) {
-        return Err(Ext4Error::unsupported());
+    let write = WriteSlice { offset, end, data };
+    if !inode.uses_extents() {
+        return write_legacy_inode_data(device, fs, inode_num, inode, write);
     }
 
     let old_blocks = if old_size == 0 {
@@ -680,12 +768,10 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
     } else {
         old_size.div_ceil(block_bytes)
     };
-    let write = WriteSlice { offset, end, data };
     let use_existing_run_map = end <= old_size
         && offset.is_multiple_of(block_bytes)
         && end.is_multiple_of(block_bytes)
-        && start_lbn < end_lbn
-        && inode.uses_extents();
+        && start_lbn < end_lbn;
     let existing_runs = if use_existing_run_map {
         let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
         Some(tree.initialized_runs_in_range(device, start_lbn as u32, end_lbn as u32)?)
@@ -705,74 +791,60 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
             continue;
         }
 
-        let phys = if inode.uses_extents() {
-            match resolve_inode_block(fs, device, inode_num, &mut inode, lbn as u32)? {
-                Some(b) => b,
-                None => {
-                    let missing_len = if lbn >= old_blocks {
-                        end_lbn - lbn + 1
-                    } else {
-                        1
-                    };
-                    let requested = core::cmp::min(missing_len, Ext4Extent::EXT_INIT_MAX_LEN as u64)
-                        .min(u32::MAX as u64) as u32;
-                    let huge_file_feature = fs
-                        .superblock
-                        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
-                    let mut accounting_check = inode;
-                    add_inode_data_blocks(
-                        &mut accounting_check,
-                        u64::from(requested),
-                        block_bytes as u32,
-                        huge_file_feature,
-                    )?;
-                    let blocks = alloc_contiguous_run_best_effort(device, fs, requested)?;
-                    let first_phys = *blocks.first().ok_or(Ext4Error::no_space())?;
-                    let run_len = u32::try_from(blocks.len()).map_err(|_| Ext4Error::overflow())?;
+        let phys = match resolve_inode_block(fs, device, inode_num, &mut inode, lbn as u32)? {
+            Some(b) => b,
+            None => {
+                let missing_len = if lbn >= old_blocks {
+                    end_lbn - lbn + 1
+                } else {
+                    1
+                };
+                let requested = core::cmp::min(missing_len, Ext4Extent::EXT_INIT_MAX_LEN as u64)
+                    .min(u32::MAX as u64) as u32;
+                let huge_file_feature = fs
+                    .superblock
+                    .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+                let mut accounting_check = inode;
+                add_inode_data_blocks(
+                    &mut accounting_check,
+                    u64::from(requested),
+                    block_bytes as u32,
+                    huge_file_feature,
+                )?;
+                let blocks = alloc_contiguous_run_best_effort(device, fs, requested)?;
+                let first_phys = *blocks.first().ok_or(Ext4Error::no_space())?;
+                let run_len = u32::try_from(blocks.len()).map_err(|_| Ext4Error::overflow())?;
 
-                    // Account data before tree mutation so checked encoding
-                    // cannot fail after an extent has become reachable.
-                    add_inode_data_blocks(
-                        &mut inode,
-                        u64::from(run_len),
-                        block_bytes as u32,
-                        huge_file_feature,
-                    )?;
+                // Account data before tree mutation so checked encoding
+                // cannot fail after an extent has become reachable.
+                add_inode_data_blocks(
+                    &mut inode,
+                    u64::from(run_len),
+                    block_bytes as u32,
+                    huge_file_feature,
+                )?;
 
-                    {
-                        let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
-                        let ext = Ext4Extent::new(lbn as u32, first_phys.raw(), run_len as u16);
-                        tree.insert_extent(fs, ext, device)?;
-                    }
-
-                    let run_start = lbn.saturating_mul(block_bytes);
-                    let run_end = run_start.saturating_add(u64::from(run_len) * block_bytes);
-                    let write_start = core::cmp::max(offset, run_start);
-                    let write_end = core::cmp::min(end, run_end);
-                    let covers_full_run = write_start == run_start && write_end == run_end;
-                    if covers_full_run {
-                        write_full_block_run(device, fs, first_phys, lbn, offset, data, run_len)?;
-                    } else {
-                        for (idx, &block) in blocks.iter().enumerate() {
-                            write_inode_block_data(
-                                device,
-                                fs,
-                                block,
-                                lbn + idx as u64,
-                                &write,
-                                true,
-                            )?;
-                        }
-                    }
-
-                    lbn += u64::from(run_len);
-                    continue;
+                {
+                    let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
+                    let ext = Ext4Extent::new(lbn as u32, first_phys.raw(), run_len as u16);
+                    tree.insert_extent(fs, ext, device)?;
                 }
-            }
-        } else {
-            match resolve_inode_block(fs, device, inode_num, &mut inode, lbn as u32)? {
-                Some(b) => b,
-                None => return Err(Ext4Error::unsupported()),
+
+                let run_start = lbn.saturating_mul(block_bytes);
+                let run_end = run_start.saturating_add(u64::from(run_len) * block_bytes);
+                let write_start = core::cmp::max(offset, run_start);
+                let write_end = core::cmp::min(end, run_end);
+                let covers_full_run = write_start == run_start && write_end == run_end;
+                if covers_full_run {
+                    write_full_block_run(device, fs, first_phys, lbn, offset, data, run_len)?;
+                } else {
+                    for (idx, &block) in blocks.iter().enumerate() {
+                        write_inode_block_data(device, fs, block, lbn + idx as u64, &write, true)?;
+                    }
+                }
+
+                lbn += u64::from(run_len);
+                continue;
             }
         };
 
