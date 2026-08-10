@@ -762,6 +762,11 @@ fn fair_service_thread_woken_from_irq_preempts_without_waiting_for_timer() {
         Some(service.id()),
         "an IRQ-woken positive-lag service thread must run at IRQ return, not at a later timer"
     );
+    assert!(
+        !cpu.remote().needs_reschedule(),
+        "put_prev_task must not re-publish the outgoing fair current as a new wakeup: {:?}",
+        cpu.remote().scheduler_request_state_for_test(),
+    );
 }
 
 #[test]

@@ -99,6 +99,22 @@ pub enum EnqueueReason {
     PolicyChanged,
 }
 
+impl EnqueueReason {
+    /// Returns whether this enqueue is allowed to challenge `rq->curr`.
+    ///
+    /// Linux runs `check_preempt_curr()` for a wakeup, replenishment,
+    /// migration, or queued priority change. `put_prev_task()` instead returns
+    /// the outgoing current to its class without treating it as a newly woken
+    /// competitor; doing so would manufacture another reschedule request from
+    /// the scheduling decision that is already in progress.
+    pub(crate) const fn checks_preemption_after_enqueue(self) -> bool {
+        matches!(
+            self,
+            Self::Wake | Self::Replenished | Self::Migrated | Self::PolicyChanged
+        )
+    }
+}
+
 /// Which fixed-priority RT entities are eligible in this owner selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RtEligibility {

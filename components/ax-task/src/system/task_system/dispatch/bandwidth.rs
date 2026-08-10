@@ -64,12 +64,16 @@ impl TaskSystem {
         );
         Self::activate_deadline_bandwidth_locked(core, sched, run_queue, owner);
         run_queue.update_fair_virtual_time(current_fair);
-        let fair_virtual_time = queued_entity
-            .fair()
-            .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
-        let preempts_current = run_queue
-            .wakeup_preempt(core.id(), policy, queued_entity.clone(), fair_virtual_time)
-            .requests_reschedule();
+        let preempts_current = if reason.checks_preemption_after_enqueue() {
+            let fair_virtual_time = queued_entity
+                .fair()
+                .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
+            run_queue
+                .wakeup_preempt(core.id(), policy, queued_entity.clone(), fair_virtual_time)
+                .requests_reschedule()
+        } else {
+            false
+        };
         core.publish_effective_schedule(policy, &queued_entity);
         if sched.placement.on_cpu() == Some(owner) {
             // Fair removes current from its class tree while Linux keeps the
@@ -88,11 +92,7 @@ impl TaskSystem {
         reason: EnqueueReason,
         preempts_current: bool,
     ) {
-        if matches!(
-            reason,
-            EnqueueReason::Wake | EnqueueReason::Replenished | EnqueueReason::Migrated
-        ) && preempts_current
-        {
+        if reason.checks_preemption_after_enqueue() && preempts_current {
             cpu.request_reschedule();
         }
         if cpu.lock_run_queue().has_runnable_rt() {
