@@ -102,13 +102,16 @@ pub(crate) const fn copy_after_rename_failure(kind: ErrorKind) -> bool {
 }
 
 pub(crate) fn touch_file(path: &str) -> io::Result<()> {
+    touch_file_at(path, SystemTime::now())
+}
+
+pub(crate) fn touch_file_at(path: &str, time: SystemTime) -> io::Result<()> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .open(path)?;
-    let now = SystemTime::now();
-    file.set_times(FileTimes::new().set_accessed(now).set_modified(now))
+    file.set_times(FileTimes::new().set_accessed(time).set_modified(time))
 }
 
 pub(crate) fn copy_path(source: &str, destination: &str, mode: CopyMode) -> io::Result<()> {

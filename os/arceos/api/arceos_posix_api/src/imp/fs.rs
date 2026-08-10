@@ -13,6 +13,9 @@ use ax_sync::Mutex;
 use super::fd_ops::{FileLike, get_file_like};
 use crate::{ctypes, utils::char_ptr_to_str};
 
+const UTIME_NOW: i64 = (1 << 30) - 1;
+const UTIME_OMIT: i64 = (1 << 30) - 2;
+
 pub struct File {
     inner: Mutex<ax_fs_ng::fops::File>,
 }
@@ -355,6 +358,64 @@ pub unsafe fn sys_fstat(fd: c_int, buf: *mut ctypes::stat) -> c_int {
     })
 }
 
+/// Update the access and modification times of an open file descriptor.
+///
+/// A null `times` pointer sets both timestamps to the current wall-clock time.
+/// Individual timestamps also support the Linux `UTIME_NOW` and `UTIME_OMIT`
+/// values in `tv_nsec`.
+///
+/// # Safety
+///
+/// When non-null, `times` must point to two readable [`ctypes::timespec`]
+/// values for the duration of this call.
+pub unsafe fn sys_futimens(fd: c_int, times: *const ctypes::timespec) -> c_int {
+    debug!("sys_futimens <= {fd} {:#x}", times as usize);
+    syscall_body!(sys_futimens, {
+        let file = File::from_fd(fd)?;
+        let (atime, mtime) = unsafe { futimens_times(times)? };
+        if atime.is_none() && mtime.is_none() {
+            return Ok(0);
+        }
+        file.inner.lock().set_times(atime, mtime)?;
+        Ok(0)
+    })
+}
+
+unsafe fn futimens_times(
+    times: *const ctypes::timespec,
+) -> LinuxResult<(Option<Duration>, Option<Duration>)> {
+    let now = ax_hal::time::wall_time();
+    if times.is_null() {
+        return Ok((Some(now), Some(now)));
+    }
+
+    let times = unsafe { core::slice::from_raw_parts(times, 2) };
+    Ok((
+        file_time_from_timespec(times[0], now)?,
+        file_time_from_timespec(times[1], now)?,
+    ))
+}
+
+fn file_time_from_timespec(
+    timespec: ctypes::timespec,
+    now: Duration,
+) -> LinuxResult<Option<Duration>> {
+    match timespec.tv_nsec {
+        UTIME_NOW => Ok(Some(now)),
+        UTIME_OMIT => Ok(None),
+        nanoseconds
+            if (0..=u32::MAX as i64).contains(&timespec.tv_sec)
+                && (0..1_000_000_000).contains(&nanoseconds) =>
+        {
+            Ok(Some(Duration::new(
+                timespec.tv_sec as u64,
+                nanoseconds as u32,
+            )))
+        }
+        _ => Err(LinuxError::EINVAL),
+    }
+}
+
 /// Get the metadata of the symbolic link and write into `buf`.
 ///
 /// Return 0 if success.
@@ -448,5 +509,67 @@ mod tests {
         assert_eq!(stat.st_mtime.tv_nsec, 13);
         assert_eq!(stat.st_ctime.tv_sec, 14);
         assert_eq!(stat.st_ctime.tv_nsec, 15);
+    }
+
+    #[test]
+    fn file_time_from_timespec_handles_linux_special_values() {
+        let now = Duration::new(30, 40);
+
+        assert_eq!(
+            file_time_from_timespec(
+                ctypes::timespec {
+                    tv_sec: 0,
+                    tv_nsec: UTIME_NOW as _,
+                },
+                now,
+            ),
+            Ok(Some(now))
+        );
+        assert_eq!(
+            file_time_from_timespec(
+                ctypes::timespec {
+                    tv_sec: 0,
+                    tv_nsec: UTIME_OMIT as _,
+                },
+                now,
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn file_time_from_timespec_rejects_invalid_values() {
+        let now = Duration::ZERO;
+
+        assert_eq!(
+            file_time_from_timespec(
+                ctypes::timespec {
+                    tv_sec: -1,
+                    tv_nsec: 0,
+                },
+                now,
+            ),
+            Err(LinuxError::EINVAL)
+        );
+        assert_eq!(
+            file_time_from_timespec(
+                ctypes::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 1_000_000_000,
+                },
+                now,
+            ),
+            Err(LinuxError::EINVAL)
+        );
+        assert_eq!(
+            file_time_from_timespec(
+                ctypes::timespec {
+                    tv_sec: u32::MAX as i64 + 1,
+                    tv_nsec: 0,
+                },
+                now,
+            ),
+            Err(LinuxError::EINVAL)
+        );
     }
 }
