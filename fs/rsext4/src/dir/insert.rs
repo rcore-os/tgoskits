@@ -199,7 +199,7 @@ pub fn insert_dir_entry<B: BlockIo + crate::runtime::Clock>(
 
     if fs.superblock.has_extents() && parent_inode.uses_extents() {
         let new_ext = Ext4Extent::new(new_lbn, new_block.raw(), 1);
-        let mut tree = ExtentTree::with_checksum(parent_inode, &fs.superblock, parent_ino_num);
+        let mut tree = ExtentTree::with_filesystem(parent_inode, fs, parent_ino_num);
         tree.insert_extent(fs, new_ext, device)?;
     } else {
         parent_inode.i_block[old_blocks] = new_block.to_u32()?;

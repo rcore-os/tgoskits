@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     bmalloc::InodeNumber,
     crc32c::{ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum},
+    ext4::{Ext4FileSystem, SystemZoneMap},
     superblock::Ext4Superblock,
 };
 
@@ -14,6 +15,7 @@ pub struct ExtentTree<'a> {
     pub(super) checksum_seed: Option<u32>,
     first_data_block: u64,
     filesystem_blocks: u64,
+    system_zones: SystemZoneMap,
 }
 
 #[cfg(test)]
@@ -70,8 +72,8 @@ mod tests {
 impl<'a> ExtentTree<'a> {
     /// Creates a geometry-free extent-tree handle for in-crate tests.
     ///
-    /// Production paths must use [`Self::with_checksum`] so physical-range and
-    /// metadata-checksum validation always carry mounted filesystem context.
+    /// Production paths must use [`Self::with_filesystem`] so physical-range,
+    /// system-zone, and metadata-checksum validation carry mounted context.
     #[cfg(any(test, axtest))]
     pub(crate) fn new(inode: &'a mut Ext4Inode, block_size: usize) -> Self {
         let generation = inode.i_generation;
@@ -83,11 +85,12 @@ impl<'a> ExtentTree<'a> {
             checksum_seed: None,
             first_data_block: 0,
             filesystem_blocks: u64::MAX,
+            system_zones: SystemZoneMap::default(),
         }
     }
 
-    /// Creates an extent-tree handle with enough metadata to checksum external nodes.
-    pub fn with_checksum(
+    /// Creates a checksum-aware handle without a mounted system-zone index.
+    fn with_checksum(
         inode: &'a mut Ext4Inode,
         superblock: &Ext4Superblock,
         inode_num: InodeNumber,
@@ -102,7 +105,19 @@ impl<'a> ExtentTree<'a> {
                 .then(|| ext4_crc32c_seed_from_superblock(superblock)),
             first_data_block: u64::from(superblock.s_first_data_block),
             filesystem_blocks: superblock.blocks_count(),
+            system_zones: SystemZoneMap::default(),
         }
+    }
+
+    /// Creates an extent-tree handle bound to all mounted validation context.
+    pub fn with_filesystem(
+        inode: &'a mut Ext4Inode,
+        filesystem: &Ext4FileSystem,
+        inode_num: InodeNumber,
+    ) -> Self {
+        let mut tree = Self::with_checksum(inode, &filesystem.superblock, inode_num);
+        tree.system_zones = filesystem.system_zones.clone();
+        tree
     }
 
     pub(super) fn bind_geometry(&mut self, superblock: &Ext4Superblock) {
@@ -126,6 +141,14 @@ impl<'a> ExtentTree<'a> {
             .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:physical_overflow"))?;
         if start <= self.first_data_block || end > self.physical_block_limit(device_blocks) {
             return Err(Ext4Error::corrupted().with_operation("extent:physical_range"));
+        }
+        if !self.system_zones.is_empty() {
+            let inode_num = self
+                .inode_num
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:missing_inode"))?;
+            if !self.system_zones.allows_range(start, len, inode_num) {
+                return Err(Ext4Error::corrupted().with_operation("extent:system_metadata"));
+            }
         }
         Ok(())
     }

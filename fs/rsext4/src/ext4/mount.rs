@@ -22,6 +22,18 @@ impl MountOptions {
     }
 }
 
+fn validate_recovered_journal_mapping(
+    expected_inode: InodeNumber,
+    expected_blocks: &[AbsoluteBN],
+    recovered_inode: InodeNumber,
+    recovered_blocks: &[AbsoluteBN],
+) -> Ext4Result<()> {
+    if expected_inode != recovered_inode || expected_blocks != recovered_blocks {
+        return Err(Ext4Error::corrupted().with_operation("journal:mapping_changed_during_replay"));
+    }
+    Ok(())
+}
+
 impl Ext4FileSystem {
     pub fn device_has_error_state<B: BlockIo>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<bool> {
         let superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
@@ -62,6 +74,7 @@ impl Ext4FileSystem {
         self.group_count = self.superblock.checked_block_groups_count()?;
         self.group_descs =
             Self::load_group_descriptors(block_dev, &self.superblock, self.group_count)?;
+        self.system_zones = SystemZoneMap::from_layout(&self.superblock, &self.group_descs)?;
         self.block_allocator = BlockAllocator::new(&self.superblock);
         self.inode_allocator = InodeAllocator::new(&self.superblock);
         self.bitmap_cache = BitmapCache::create_default();
@@ -151,6 +164,22 @@ impl Ext4FileSystem {
         Ok(journal_blocks)
     }
 
+    fn protect_journal_blocks<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        journal_inode_num: InodeNumber,
+    ) -> Ext4Result<Vec<AbsoluteBN>> {
+        let mut journal_inode = self.get_inode_by_num(block_dev, journal_inode_num)?;
+        let journal_blocks =
+            self.journal_blocks(block_dev, journal_inode_num, &mut journal_inode)?;
+        self.system_zones = self.system_zones.with_owned_blocks(
+            &self.superblock,
+            journal_inode_num,
+            &journal_blocks,
+        )?;
+        Ok(journal_blocks)
+    }
+
     /// Mounts an ext4 filesystem from the given block device.
     pub fn mount<B: BlockIo + crate::runtime::Clock>(
         block_dev: &mut Jbd2Dev<B>,
@@ -227,6 +256,7 @@ impl Ext4FileSystem {
         let group_count = superblock.checked_block_groups_count()?;
 
         let group_descs = Self::load_group_descriptors(block_dev, &superblock, group_count)?;
+        let system_zones = SystemZoneMap::from_layout(&superblock, &group_descs)?;
 
         let block_allocator = BlockAllocator::new(&superblock);
         let inode_allocator = InodeAllocator::new(&superblock);
@@ -253,7 +283,9 @@ impl Ext4FileSystem {
             group_count,
             mounted: true,
             journal_sb_block_start: None,
+            system_zones,
         };
+        let mut journal_mapping: Option<(InodeNumber, Vec<AbsoluteBN>)> = None;
         // Journal bootstrap has two stages: ensure the journal inode exists,
         // then load its superblock and enable replay on the device wrapper.
         {
@@ -265,7 +297,8 @@ impl Ext4FileSystem {
             }
 
             if fs.superblock.has_journal() {
-                let journal_inode_num = InodeNumber::new(JOURNAL_FILE_INODE as u32)?;
+                let journal_inode_num = InodeNumber::new(fs.superblock.s_journal_inum)
+                    .map_err(|_| Ext4Error::corrupted().with_operation("journal:inode_number"))?;
                 let journal_inode = fs.get_inode_by_num(block_dev, journal_inode_num)?;
                 let journal_exists = journal_inode.i_mode != 0;
 
@@ -278,8 +311,16 @@ impl Ext4FileSystem {
                         observer.event(Event::Recovery(RecoveryEvent::JournalMissing));
                         return Err(Ext4Error::corrupted());
                     }
+                    if journal_inode_num.raw() != JOURNAL_FILE_INODE as u32 {
+                        return Err(
+                            Ext4Error::corrupted().with_operation("journal:missing_custom_inode")
+                        );
+                    }
                     create_journal_entry(&mut fs, block_dev)?;
                 }
+
+                let journal_blocks = fs.protect_journal_blocks(block_dev, journal_inode_num)?;
+                journal_mapping = Some((journal_inode_num, journal_blocks));
             }
             if needs_recovery && options.replay_journal && !fs.superblock.has_journal() {
                 observer.event(Event::Recovery(RecoveryEvent::JournalMissing));
@@ -291,11 +332,9 @@ impl Ext4FileSystem {
                 // By this point the journal inode must exist, so resolve its
                 // first data block and hand the loaded journal superblock to
                 // `Jbd2Dev`.
-                let journal_inode_num = InodeNumber::new(JOURNAL_FILE_INODE as u32)?;
-                let mut j_inode = fs.get_inode_by_num(block_dev, journal_inode_num)?;
-
-                let journal_blocks =
-                    fs.journal_blocks(block_dev, journal_inode_num, &mut j_inode)?;
+                let (expected_journal_ino, journal_blocks) = journal_mapping
+                    .as_ref()
+                    .ok_or_else(|| Ext4Error::corrupted().with_operation("journal:mapping"))?;
                 let journal_first_block = journal_blocks
                     .first()
                     .copied()
@@ -313,7 +352,7 @@ impl Ext4FileSystem {
                     return Err(Ext4Error::corrupted().with_operation("jbd2:uuid"));
                 }
 
-                block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks)?;
+                block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks.clone())?;
 
                 if needs_recovery && options.replay_journal {
                     observer.event(Event::Journal(JournalEvent::ReplayRequested));
@@ -339,6 +378,18 @@ impl Ext4FileSystem {
                     // mounting from the recovered on-disk state.
                     fs.reload_after_journal_replay(block_dev, options.readonly)?;
                     Self::check_mount_features(&fs.superblock, options.readonly, observer)?;
+                    let recovered_journal_ino = InodeNumber::new(fs.superblock.s_journal_inum)
+                        .map_err(|_| {
+                            Ext4Error::corrupted().with_operation("journal:inode_number")
+                        })?;
+                    let recovered_journal_blocks =
+                        fs.protect_journal_blocks(block_dev, recovered_journal_ino)?;
+                    validate_recovered_journal_mapping(
+                        *expected_journal_ino,
+                        journal_blocks,
+                        recovered_journal_ino,
+                        &recovered_journal_blocks,
+                    )?;
                     fs.clear_recovery_state();
                 } else if !options.readonly && block_dev.is_use_journal() {
                     fs.set_recovery_state();
@@ -523,4 +574,30 @@ pub fn mount_with_options_and_observer<
     observer: &mut O,
 ) -> Ext4Result<Ext4FileSystem> {
     Ext4FileSystem::mount_with_options_and_observer(block_dev, options, observer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn journal_mapping_must_not_change_during_replay() {
+        let journal_inode = InodeNumber::new(JOURNAL_FILE_INODE as u32).unwrap();
+        let other_inode = InodeNumber::new(JOURNAL_FILE_INODE as u32 + 1).unwrap();
+        let original = [AbsoluteBN::new(40), AbsoluteBN::new(41)];
+        let moved = [AbsoluteBN::new(40), AbsoluteBN::new(42)];
+
+        assert!(
+            validate_recovered_journal_mapping(journal_inode, &original, other_inode, &original)
+                .is_err()
+        );
+        assert!(
+            validate_recovered_journal_mapping(journal_inode, &original, journal_inode, &moved)
+                .is_err()
+        );
+        assert!(
+            validate_recovered_journal_mapping(journal_inode, &original, journal_inode, &original,)
+                .is_ok()
+        );
+    }
 }
