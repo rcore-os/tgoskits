@@ -94,11 +94,9 @@ fn preemption_low() -> ! {
     rt_exit_current_task();
 }
 
-/*
-    这里的 IRQ Latency 在 ax-rt 里是 RT executor 的 deadline wakeup latency，
-    不是 FreeRTOS guest 里的硬件 timer IRQ 注入延迟；
-    但它是当前实时 executor 语义下对 timer_deadline -> handler/task resumes 的等价可测实现。
-*/
+// In ax-rt, IRQ Latency measures the RT executor's deadline wakeup latency,
+// not the hardware timer IRQ injection latency used by the FreeRTOS guest.
+// This is the closest measurable equivalent for the current RT executor model.
 fn tick_delta_task() -> ! {
     rt_sleep(30_000_000);
     let mut next_deadline = rt_monotonic_nanos().saturating_add(TICK_PERIOD_NANOS);

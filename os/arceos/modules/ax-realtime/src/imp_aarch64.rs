@@ -102,10 +102,7 @@ impl ax_rt::MailboxDoorbell for RtCoreDoorbell {
              {MAILBOX_DOORBELL_SGI_TO_RT})",
             percpu::this_cpu_id()
         );
-        irq::send_ipi(
-            mailbox_doorbell_irq(),
-            irq::IpiTarget::Other { cpu_id: cpu },
-        );
+        irq::send_ipi(mailbox_doorbell_irq(), irq::IpiTarget::Cpu(irq::CpuId(cpu)));
     }
 }
 
@@ -127,7 +124,7 @@ impl ax_rt::MailboxDoorbell for HostCoreDoorbell {
         // core contending on host-owned logging state.
         irq::send_ipi(
             host_mailbox_doorbell_irq(),
-            irq::IpiTarget::Other { cpu_id: target },
+            irq::IpiTarget::Cpu(irq::CpuId(target)),
         );
     }
 }
@@ -160,11 +157,29 @@ fn setup_rt_mailbox_doorbell(cpu_id: usize) {
         warn!("RT mailbox doorbell: request_percpu_irq failed: {err:?}");
         return;
     }
+    disable_rt_core_timer_irq();
     // From now on host_mailbox_send() rings this core instead of relying on the
     // RT task's fallback poll.
     ax_rt::set_rt_doorbell(&RT_CORE_DOORBELL);
     ax_hal::asm::enable_irqs();
     info!("RT mailbox doorbell armed on CPU {cpu_id} (SGI {MAILBOX_DOORBELL_SGI_TO_RT}).");
+}
+
+fn disable_rt_core_timer_irq() {
+    use ax_hal::{irq, time};
+
+    let timer_irq = time::irq_num();
+    if timer_irq.hwirq.0 >= 32 {
+        warn!("RT mailbox doorbell: timer IRQ {timer_irq:?} is not a private GIC interrupt");
+        return;
+    }
+
+    // The reserved RT core does not register axruntime's scheduler timer action.
+    // Keep the local arch timer PPI masked so enabling IRQs exposes only the
+    // dedicated mailbox SGIs on this core.
+    if let Err(err) = irq::set_enable(timer_irq, false) {
+        warn!("RT mailbox doorbell: failed to disable timer IRQ {timer_irq:?}: {err:?}");
+    }
 }
 
 /// Arms interrupt-driven RT→host mailbox notification on the current host core.

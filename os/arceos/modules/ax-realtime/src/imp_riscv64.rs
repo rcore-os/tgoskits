@@ -84,7 +84,7 @@ impl ax_rt::MailboxDoorbell for RtCoreDoorbell {
             "[RT mailbox] doorbell IPI: host CPU{} -> RT CPU{cpu} (SSWI)",
             percpu::this_cpu_id()
         );
-        irq::send_ipi(irq::ipi_irq(), irq::IpiTarget::Other { cpu_id: cpu });
+        irq::send_ipi(irq::ipi_irq(), irq::IpiTarget::Cpu(irq::CpuId(cpu)));
     }
 }
 
