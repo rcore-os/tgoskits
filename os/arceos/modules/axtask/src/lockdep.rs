@@ -1,1 +1,1 @@
-pub use ax_kspin::lockdep::{HeldLock, HeldLockStack};
+pub use ax_sync::{HeldLock, HeldLockStack};

@@ -49,8 +49,7 @@ use core::{
 };
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
-use ax_kspin::SpinRwLock as RwLock;
-use ax_sync::Mutex;
+use ax_sync::{Mutex, SpinRwLock as RwLock};
 use ax_task::WaitQueue;
 use axpoll::IoEvents;
 use smoltcp::{

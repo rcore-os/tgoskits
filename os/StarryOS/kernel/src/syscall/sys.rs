@@ -2,7 +2,6 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
@@ -16,7 +15,10 @@ use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 
 #[cfg(target_arch = "riscv64")]
 use crate::mm::UserPtr;
-use crate::task::{AsThread, SockFilter, SockFprog, get_task, processes};
+use crate::{
+    sync::Mutex,
+    task::{AsThread, SockFilter, SockFprog, get_task, processes},
+};
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
 /// which becomes `u32::MAX` after the `as u32` cast in the dispatch table).

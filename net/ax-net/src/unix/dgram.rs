@@ -30,8 +30,7 @@ use async_trait::async_trait;
 use ax_errno::{AxError, AxResult};
 use ax_hal::time::wall_time;
 use ax_io::{Read, Write};
-use ax_kspin::SpinRwLock as RwLock;
-use ax_sync::Mutex;
+use ax_sync::{Mutex, SpinRwLock as RwLock};
 use axpoll::{IoEvents, PollSet, Pollable};
 
 use crate::{

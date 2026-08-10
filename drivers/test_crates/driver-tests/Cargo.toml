@@ -11,8 +11,7 @@ autotests = false
 
 [dev-dependencies]
 ax-driver = { workspace = true, features = ["serial"] }
-ax-kernel-guard = { workspace = true, features = ["host-test"] }
-ax-kspin.workspace = true
+ax-sync = { workspace = true, features = ["host-test"] }
 axklib.workspace = true
 eth-intel.workspace = true
 fdt-edit.workspace = true

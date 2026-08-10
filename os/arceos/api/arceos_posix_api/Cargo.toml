@@ -21,8 +21,8 @@ default = []
 smp = []
 irq = []
 alloc = ["dep:ax-alloc"]
-multitask = ["alloc", "ax-task/multitask", "ax-sync/multitask"]
-lockdep = ["multitask", "ax-sync/lockdep", "ax-kspin/lockdep"]
+multitask = ["alloc", "ax-task/multitask", "ax-sync/sleep"]
+lockdep = ["multitask", "ax-sync/lockdep"]
 fd = ["alloc", "dep:scope-local"]
 fs = ["dep:ax-fs-ng", "fd"]
 net = ["dep:ax-net", "fd"]
@@ -38,7 +38,6 @@ eventfd = ["fd"]
 ax-alloc = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
-ax-kspin.workspace = true
 ax-log.workspace = true
 ax-net = { workspace = true, optional = true }
 ax-runtime.workspace = true

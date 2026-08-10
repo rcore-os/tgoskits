@@ -19,8 +19,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
 use ax_task::current;
 use axfs_ng_vfs::{Location, NodeFlags};
 use axpoll::{IoEvents, Pollable};
@@ -43,6 +41,7 @@ pub use self::{
 };
 use crate::{
     pseudofs::{Device, DeviceOps},
+    sync::{IrqMutex, Mutex},
     task::{AsThread, get_process_group, send_signal_to_process_group},
 };
 
@@ -94,7 +93,7 @@ pub struct Tty<R, W> {
     writer: W,
     is_ptm: bool,
     open_count: AtomicUsize,
-    binding: SpinNoIrq<Option<Weak<dyn Any + Send + Sync>>>,
+    binding: IrqMutex<Option<Weak<dyn Any + Send + Sync>>>,
 }
 
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
@@ -109,7 +108,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             writer,
             is_ptm,
             open_count: AtomicUsize::new(0),
-            binding: SpinNoIrq::new(None),
+            binding: IrqMutex::new(None),
         })
     }
 }

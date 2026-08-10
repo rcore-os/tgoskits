@@ -1,7 +1,7 @@
 use alloc::{format, string::ToString, sync::Arc};
 
 use arm_scmi_rs::{Scmi, Shmem, Smc};
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_sync::SpinLock as Mutex;
 use fdt_edit::Phandle;
 use log::{info, warn};
 
@@ -112,7 +112,7 @@ fn clock_protocol_child(
 
 pub fn clock_rate(phandle: Phandle, clock_id: u32) -> Option<u64> {
     let provider = clock_provider(phandle)?;
-    let provider = provider.lock().ok()?;
+    let provider = provider.lock_irqsave().ok()?;
     provider
         .get_rate(rdif_clk::ClockId::from(clock_id as usize))
         .map_err(|error| {
@@ -125,7 +125,7 @@ pub fn clock_rate(phandle: Phandle, clock_id: u32) -> Option<u64> {
 
 pub fn enable_clock(phandle: Phandle, clock_id: u32) -> Option<()> {
     let provider = clock_provider(phandle)?;
-    let mut provider = provider.lock().ok()?;
+    let mut provider = provider.lock_irqsave().ok()?;
     provider
         .enable(rdif_clk::ClockId::from(clock_id as usize))
         .map_err(|error| {
@@ -138,7 +138,7 @@ pub fn enable_clock(phandle: Phandle, clock_id: u32) -> Option<()> {
 
 pub fn set_clock_rate(phandle: Phandle, clock_id: u32, rate: u64) -> Option<()> {
     let provider = clock_provider(phandle)?;
-    let mut provider = provider.lock().ok()?;
+    let mut provider = provider.lock_irqsave().ok()?;
     provider
         .set_rate(rdif_clk::ClockId::from(clock_id as usize), rate)
         .map_err(|error| {
@@ -187,7 +187,7 @@ impl rdif_clk::Interface for ScmiClockProvider {
 
     fn enable(&mut self, id: rdif_clk::ClockId) -> Result<(), KError> {
         let clock_id = clock_id(id)?;
-        let agent = self.agent.lock();
+        let agent = self.agent.lock_irqsave();
         agent
             .protocol_clk_no_init()
             .clk_enable(clock_id)
@@ -200,7 +200,7 @@ impl rdif_clk::Interface for ScmiClockProvider {
     fn get_rate(&self, id: rdif_clk::ClockId) -> Result<u64, KError> {
         let clock_id = clock_id(id)?;
         self.agent
-            .lock()
+            .lock_irqsave()
             .clock_rate_get_direct(clock_id)
             .map_err(|error| {
                 warn!("SCMI clock rate get failed: clock_id={clock_id:#x}, {error:?}");
@@ -211,7 +211,7 @@ impl rdif_clk::Interface for ScmiClockProvider {
     fn set_rate(&mut self, id: rdif_clk::ClockId, rate: u64) -> Result<(), KError> {
         let clock_id = clock_id(id)?;
         self.agent
-            .lock()
+            .lock_irqsave()
             .clock_rate_set_direct(clock_id, rate)
             .map_err(|error| {
                 warn!(

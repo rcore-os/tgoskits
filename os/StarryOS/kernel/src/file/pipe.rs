@@ -7,7 +7,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PAGE_SIZE_4K;
-use ax_sync::Mutex;
 use ax_task::{
     current,
     future::{block_on, poll_io},
@@ -27,6 +26,7 @@ use starry_vm::VmMutPtr;
 use super::{FileLike, Kstat};
 use crate::{
     file::{IoDst, IoSrc},
+    sync::Mutex,
     task::{AsThread, send_signal_to_process},
 };
 

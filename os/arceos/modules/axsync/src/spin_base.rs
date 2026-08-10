@@ -14,12 +14,12 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
-use ax_kernel_guard::BaseGuard;
 #[cfg(feature = "lockdep")]
-use ax_kernel_guard::IrqSave;
+use crate::IrqSaveGuard;
+use crate::context::GuardState;
 
 #[cfg(feature = "lockdep")]
-type LockdepAcquire = crate::lockdep::Lockdep;
+type LockdepAcquire = crate::spin_lockdep::Lockdep;
 
 #[cfg(not(feature = "lockdep"))]
 #[derive(Clone, Copy)]
@@ -29,13 +29,13 @@ struct LockdepAcquire;
 impl LockdepAcquire {
     #[inline(always)]
     #[track_caller]
-    fn prepare<G: BaseGuard, T: ?Sized>(_lock: &BaseSpinLock<G, T>, _is_try: bool) -> Self {
+    fn prepare<G: GuardState, T: ?Sized>(_lock: &BaseSpinLock<G, T>, _is_try: bool) -> Self {
         Self
     }
 
     #[inline(always)]
     #[track_caller]
-    fn prepare_nested<G: BaseGuard, T: ?Sized>(
+    fn prepare_nested<G: GuardState, T: ?Sized>(
         _lock: &BaseSpinLock<G, T>,
         _is_try: bool,
         _subclass: u32,
@@ -52,24 +52,25 @@ impl LockdepAcquire {
 /// exclusive access to data.
 ///
 /// This is a base struct, the specific behavior depends on the generic
-/// parameter `G` that implements [`BaseGuard`], such as whether to disable
+/// parameter `G` that implements [`GuardState`], such as whether to disable
 /// local IRQs or kernel preemption before acquiring the lock.
 ///
 /// For single-core environment (without the "smp" feature), we remove the lock
 /// state, CPU can always get the lock if we follow the proper guard in use.
-pub struct BaseSpinLock<G: BaseGuard, T: ?Sized> {
+#[repr(C)]
+pub struct BaseSpinLock<G: GuardState, T: ?Sized> {
     _phantom: PhantomData<G>,
     #[cfg(feature = "smp")]
     lock: AtomicBool,
     #[cfg(feature = "lockdep")]
-    lockdep: crate::lockdep::LockdepMap,
+    lockdep: crate::spin_lockdep::LockdepMap,
     data: UnsafeCell<T>,
 }
 
 /// A guard that provides mutable data access.
 ///
 /// When the guard falls out of scope it will release the lock.
-pub struct BaseSpinLockGuard<'a, G: BaseGuard, T: ?Sized + 'a> {
+pub struct BaseSpinLockGuard<'a, G: GuardState, T: ?Sized + 'a> {
     _phantom: &'a PhantomData<G>,
     irq_state: G::State,
     #[cfg(feature = "lockdep")]
@@ -80,10 +81,10 @@ pub struct BaseSpinLockGuard<'a, G: BaseGuard, T: ?Sized + 'a> {
 }
 
 // Same unsafe impls as `std::sync::Mutex`
-unsafe impl<G: BaseGuard, T: ?Sized + Send> Sync for BaseSpinLock<G, T> {}
-unsafe impl<G: BaseGuard, T: ?Sized + Send> Send for BaseSpinLock<G, T> {}
+unsafe impl<G: GuardState, T: ?Sized + Send> Sync for BaseSpinLock<G, T> {}
+unsafe impl<G: GuardState, T: ?Sized + Send> Send for BaseSpinLock<G, T> {}
 
-impl<G: BaseGuard, T> BaseSpinLock<G, T> {
+impl<G: GuardState, T> BaseSpinLock<G, T> {
     /// Creates a new [`BaseSpinLock`] wrapping the supplied data.
     #[inline(always)]
     #[track_caller]
@@ -94,7 +95,7 @@ impl<G: BaseGuard, T> BaseSpinLock<G, T> {
             #[cfg(feature = "smp")]
             lock: AtomicBool::new(false),
             #[cfg(feature = "lockdep")]
-            lockdep: crate::lockdep::LockdepMap::new(),
+            lockdep: crate::spin_lockdep::LockdepMap::new(),
         }
     }
 
@@ -108,10 +109,10 @@ impl<G: BaseGuard, T> BaseSpinLock<G, T> {
     }
 }
 
-impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
+impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
     #[cfg(feature = "lockdep")]
     #[inline(always)]
-    pub(crate) fn lockdep_map(&self) -> &crate::lockdep::LockdepMap {
+    pub(crate) fn lockdep_map(&self) -> &crate::spin_lockdep::LockdepMap {
         &self.lockdep
     }
 
@@ -120,7 +121,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     fn finish_lockdep_with_irqsave(lockdep: LockdepAcquire) {
         #[cfg(feature = "lockdep")]
         {
-            let _lockdep_irq_guard = IrqSave::new();
+            let _lockdep_irq_guard = IrqSaveGuard::new();
             lockdep.finish(true);
         }
 
@@ -134,7 +135,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     #[cfg(feature = "smp")]
     fn acquire_once_weak(&self, lockdep: LockdepAcquire) -> bool {
         #[cfg(feature = "lockdep")]
-        let _lockdep_irq_guard = IrqSave::new();
+        let _lockdep_irq_guard = IrqSaveGuard::new();
         let acquired = self
             .lock
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -149,7 +150,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     #[cfg(feature = "smp")]
     fn acquire_once_strong(&self, lockdep: LockdepAcquire) -> bool {
         #[cfg(feature = "lockdep")]
-        let _lockdep_irq_guard = IrqSave::new();
+        let _lockdep_irq_guard = IrqSaveGuard::new();
         let acquired = self
             .lock
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -279,11 +280,11 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     #[inline(always)]
     pub unsafe fn force_unlock(&self) {
         #[cfg(feature = "lockdep")]
-        let _lockdep_irq_guard = IrqSave::new();
+        let _lockdep_irq_guard = IrqSaveGuard::new();
         #[cfg(feature = "lockdep")]
         {
             let addr = self as *const _ as *const () as usize;
-            crate::lockdep::force_release::<G>(addr);
+            crate::spin_lockdep::force_release::<G>(addr);
         }
         #[cfg(feature = "smp")]
         self.lock.store(false, Ordering::Release);
@@ -302,14 +303,14 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     }
 }
 
-impl<G: BaseGuard, T: Default> Default for BaseSpinLock<G, T> {
+impl<G: GuardState, T: Default> Default for BaseSpinLock<G, T> {
     #[inline(always)]
     fn default() -> Self {
         Self::new(Default::default())
     }
 }
 
-impl<G: BaseGuard, T: ?Sized + fmt::Debug> fmt::Debug for BaseSpinLock<G, T> {
+impl<G: GuardState, T: ?Sized + fmt::Debug> fmt::Debug for BaseSpinLock<G, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.try_lock() {
             Some(guard) => write!(f, "SpinLock {{ data: ")
@@ -320,7 +321,7 @@ impl<G: BaseGuard, T: ?Sized + fmt::Debug> fmt::Debug for BaseSpinLock<G, T> {
     }
 }
 
-impl<G: BaseGuard, T: ?Sized> Deref for BaseSpinLockGuard<'_, G, T> {
+impl<G: GuardState, T: ?Sized> Deref for BaseSpinLockGuard<'_, G, T> {
     type Target = T;
     #[inline(always)]
     fn deref(&self) -> &T {
@@ -329,7 +330,7 @@ impl<G: BaseGuard, T: ?Sized> Deref for BaseSpinLockGuard<'_, G, T> {
     }
 }
 
-impl<G: BaseGuard, T: ?Sized> DerefMut for BaseSpinLockGuard<'_, G, T> {
+impl<G: GuardState, T: ?Sized> DerefMut for BaseSpinLockGuard<'_, G, T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
         // We know statically that only we are referencing data
@@ -337,23 +338,23 @@ impl<G: BaseGuard, T: ?Sized> DerefMut for BaseSpinLockGuard<'_, G, T> {
     }
 }
 
-impl<G: BaseGuard, T: ?Sized + fmt::Debug> fmt::Debug for BaseSpinLockGuard<'_, G, T> {
+impl<G: GuardState, T: ?Sized + fmt::Debug> fmt::Debug for BaseSpinLockGuard<'_, G, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
 
-impl<G: BaseGuard, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
+impl<G: GuardState, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
     /// The dropping of the [`BaseSpinLockGuard`] will release the lock it was
     /// created from.
     #[inline(always)]
     fn drop(&mut self) {
         {
             #[cfg(feature = "lockdep")]
-            let _lockdep_irq_guard = IrqSave::new();
+            let _lockdep_irq_guard = IrqSaveGuard::new();
 
             #[cfg(feature = "lockdep")]
-            crate::lockdep::release::<G>(self.lock_addr);
+            crate::spin_lockdep::release::<G>(self.lock_addr);
             #[cfg(feature = "smp")]
             self.lock.store(false, Ordering::Release);
         }
@@ -383,7 +384,7 @@ mod tests {
     static mut IRQ_CNT: u32 = 0;
 
     #[cfg(feature = "lockdep")]
-    impl BaseGuard for TestGuardIrq {
+    impl GuardState for TestGuardIrq {
         type State = u32;
 
         fn acquire() -> Self::State {
@@ -407,7 +408,7 @@ mod tests {
     #[cfg(feature = "lockdep")]
     type TestSpinIrq<T> = BaseSpinLock<TestGuardIrq, T>;
 
-    type SpinMutex<T> = crate::SpinRaw<T>;
+    type SpinMutex<T> = crate::SpinLock<T>;
 
     #[cfg(all(not(feature = "smp"), target_pointer_width = "64"))]
     #[test]
@@ -510,7 +511,7 @@ mod tests {
         struct LocalGuard;
         static LOCAL_IRQ_CNT: AtomicU32 = AtomicU32::new(0);
 
-        impl BaseGuard for LocalGuard {
+        impl GuardState for LocalGuard {
             type State = u32;
 
             fn acquire() -> Self::State {
@@ -535,7 +536,7 @@ mod tests {
         struct LocalGuard;
         static LOCAL_IRQ_CNT: AtomicU32 = AtomicU32::new(0);
 
-        impl BaseGuard for LocalGuard {
+        impl GuardState for LocalGuard {
             type State = u32;
 
             fn acquire() -> Self::State {
@@ -701,7 +702,7 @@ mod tests {
         struct LocalGuard;
         static LOCAL_IRQ_CNT: AtomicU32 = AtomicU32::new(0);
 
-        impl BaseGuard for LocalGuard {
+        impl GuardState for LocalGuard {
             type State = u32;
 
             fn acquire() -> Self::State {

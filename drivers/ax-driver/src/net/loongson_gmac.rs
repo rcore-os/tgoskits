@@ -9,7 +9,7 @@ use core::{
     ptr::{NonNull, addr_of_mut},
 };
 
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use log::{debug, info, warn};
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
 use rdrive::{
@@ -497,7 +497,7 @@ impl core::fmt::Display for GmacError {
 }
 
 struct GmacNet {
-    inner: Arc<SpinNoIrq<GmacState>>,
+    inner: Arc<SpinLock<GmacState>>,
     mac_address: [u8; 6],
     irq_enabled: bool,
     tx_created: bool,
@@ -574,7 +574,7 @@ impl GmacNet {
         );
 
         Ok(Self {
-            inner: Arc::new(SpinNoIrq::new(GmacState::new(regs, rings, buffers))),
+            inner: Arc::new(SpinLock::new(GmacState::new(regs, rings, buffers))),
             mac_address,
             irq_enabled: false,
             tx_created: false,
@@ -587,7 +587,7 @@ impl GmacNet {
             return;
         }
 
-        let regs = self.inner.lock().regs;
+        let regs = self.inner.lock_irqsave().regs;
         regs.clear_pending_irq();
         regs.enable_irq();
         self.irq_enabled = true;
@@ -601,12 +601,12 @@ impl DriverGeneric for GmacNet {
 }
 
 struct GmacIrqHandler {
-    inner: Arc<SpinNoIrq<GmacState>>,
+    inner: Arc<SpinLock<GmacState>>,
 }
 
 impl rd_net::InterfaceIrqHandler for GmacIrqHandler {
     fn handle_irq(&mut self) -> Event {
-        let Some(mut inner) = self.inner.try_lock() else {
+        let Some(mut inner) = self.inner.try_lock_irqsave() else {
             return Event::none();
         };
         handle_gmac_irq(&mut inner)
@@ -645,7 +645,7 @@ impl Interface for GmacNet {
     }
 
     fn disable_irq(&mut self) {
-        self.inner.lock().regs.disable_irq();
+        self.inner.lock_irqsave().regs.disable_irq();
         self.irq_enabled = false;
     }
 
@@ -654,7 +654,7 @@ impl Interface for GmacNet {
     }
 
     fn handle_irq(&mut self) -> Event {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock_irqsave();
         handle_gmac_irq(&mut inner)
     }
 
@@ -779,7 +779,7 @@ impl GmacState {
 }
 
 struct GmacTxQueue {
-    inner: Arc<SpinNoIrq<GmacState>>,
+    inner: Arc<SpinLock<GmacState>>,
 }
 
 impl ITxQueue for GmacTxQueue {
@@ -801,7 +801,7 @@ impl ITxQueue for GmacTxQueue {
             return Err(NetError::NotSupported);
         }
 
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock_irqsave();
         if !inner.regs.link_state().up {
             return Err(NetError::Retry);
         }
@@ -869,7 +869,7 @@ impl ITxQueue for GmacTxQueue {
     }
 
     fn reclaim(&mut self) -> Option<u64> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock_irqsave();
         let idx = inner.tx_busy;
         let bus_addr = inner.tx_bus_addrs[idx]?;
         let desc = unsafe { inner.rings.tx.add(idx).read_volatile() };
@@ -915,7 +915,7 @@ impl ITxQueue for GmacTxQueue {
 }
 
 struct GmacRxQueue {
-    inner: Arc<SpinNoIrq<GmacState>>,
+    inner: Arc<SpinLock<GmacState>>,
 }
 
 impl IRxQueue for GmacRxQueue {
@@ -941,7 +941,7 @@ impl IRxQueue for GmacRxQueue {
             return Err(NetError::NotSupported);
         }
 
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock_irqsave();
         let idx = inner.rx_fill;
         if inner.rx_buffers[idx].is_some() {
             warn!("{DEVICE_NAME}: rx ring full at idx={idx}");
@@ -994,7 +994,7 @@ impl IRxQueue for GmacRxQueue {
     }
 
     fn reclaim(&mut self) -> Option<(u64, usize)> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock_irqsave();
         let idx = inner.rx_busy;
         let buffer = inner.rx_buffers[idx]?;
         let desc = unsafe { inner.rings.rx.add(idx).read_volatile() };

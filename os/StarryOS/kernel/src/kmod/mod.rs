@@ -28,13 +28,14 @@ use alloc::{
 #[cfg(target_arch = "loongarch64")]
 use ax_alloc::{UsageKind, global_allocator};
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_kspin::SpinNoPreempt;
 #[cfg(not(target_arch = "loongarch64"))]
 use ax_memory_addr::{MemoryAddr, VirtAddrRange};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 #[cfg(not(target_arch = "loongarch64"))]
 use ax_runtime::hal::paging::MappingFlags;
 use kmod_loader::{KernelModuleHelper, ModuleLoader, ModuleOwner, SectionMemOps};
+
+use crate::sync::NoPreemptMutex;
 
 /// Marker type that satisfies `kmod_loader::KernelModuleHelper`. Stateless —
 /// every operation reaches into the tgoskits subsystems directly.
@@ -249,7 +250,7 @@ impl KernelModuleHelper for KmodHelper {
 type Module = ModuleOwner<KmodHelper>;
 
 /// Registry of currently-loaded modules, keyed by `modinfo` name.
-static MODULES: SpinNoPreempt<BTreeMap<String, Module>> = SpinNoPreempt::new(BTreeMap::new());
+static MODULES: NoPreemptMutex<BTreeMap<String, Module>> = NoPreemptMutex::new(BTreeMap::new());
 
 /// Linux-style `init_module(2)`: take a `.ko` image and an optional
 /// parameter string, perform relocations, run the module's `init`

@@ -13,7 +13,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::Mutex;
 use ax_task::{current, future::block_on, yield_now};
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
@@ -25,6 +24,7 @@ use crate::{
     config::USER_HEAP_BASE,
     file::{ResolveAtResult, memfd::Memfd, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
+    sync::Mutex,
     task::{AsThread, rebind_task_tid, zap_thread},
 };
 

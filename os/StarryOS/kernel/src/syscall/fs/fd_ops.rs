@@ -585,7 +585,7 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> AxResult<isize> {
     debug!("sys_close_range <= fds: [{first}, {last}], flags: {flags:?}");
     if flags.contains(CloseRangeFlags::UNSHARE) {
         let curr = current();
-        let new_files = Arc::new(ax_kspin::SpinRwLock::new(
+        let new_files = Arc::new(crate::sync::RwLock::new(
             crate::file::current_fd_table().read().clone(),
         ));
         curr.as_thread().with_current_scope_mut(|scope| {

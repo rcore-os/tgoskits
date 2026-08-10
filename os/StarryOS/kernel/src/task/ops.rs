@@ -5,7 +5,6 @@ use alloc::{
 use core::ffi::c_long;
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use axpoll::IoEvents;
@@ -22,6 +21,7 @@ use super::{
     publish_zombie, register_process_identity, send_signal_thread_inner, send_signal_to_process,
     send_signal_to_thread,
 };
+use crate::sync::RwLock;
 
 const FUTEX_OWNER_DIED: u32 = 0x40000000;
 const FUTEX_TID_MASK: u32 = 0x3fffffff;

@@ -14,7 +14,7 @@ copy = ["dep:page-table-generic", "page-table-generic/copy-from"]
 ax-alloc = { workspace = true }
 ax-errno.workspace = true
 ax-hal = { workspace = true, features = ["paging"] }
-ax-kspin.workspace = true
+ax-sync.workspace = true
 ax-lazyinit.workspace = true
 log.workspace = true
 ax-memory-addr.workspace = true

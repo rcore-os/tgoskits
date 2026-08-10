@@ -5,8 +5,10 @@ use core::{
 };
 
 #[cfg(any(test, doctest, not(target_arch = "riscv64")))]
+#[path = "lockdep_trace/dummy.rs"]
 mod dummy;
 #[cfg(all(target_arch = "riscv64", not(any(test, doctest))))]
+#[path = "lockdep_trace/riscv64.rs"]
 mod riscv64;
 
 const TRACE_BUFFER_CAP: usize = 65536;

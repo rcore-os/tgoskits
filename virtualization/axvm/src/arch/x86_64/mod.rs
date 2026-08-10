@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use ax_std::os::arceos::sync::RawSpinLock;
+use ax_std::os::arceos::sync::{RawSpinLock, RawSpinLockGuard};
 use axdevice::*;
 use axdevice_base::*;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
@@ -532,6 +532,26 @@ impl ServiceKey for X86InterruptDomainRuntimeKey {
 }
 
 impl X86InterruptDomain {
+    fn inputs(
+        &self,
+    ) -> RawSpinLockGuard<'_, BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>> {
+        // SAFETY: x86 interrupt-domain callers already run with local
+        // preemption/IRQ re-entry excluded by the guest-entry or IRQ path.
+        unsafe { self.inputs.lock_raw() }
+    }
+
+    pub(super) fn forwarding(&self) -> RawSpinLockGuard<'_, irq::X86IoApicForwardingState> {
+        // SAFETY: forwarding state is accessed only from guest-entry and host
+        // IRQ paths that exclude same-CPU re-entry.
+        unsafe { self.forwarding.lock_raw() }
+    }
+
+    fn forwarding_hooks(&self) -> RawSpinLockGuard<'_, std::vec::Vec<host_irq::IrqHandle>> {
+        // SAFETY: hook publication and teardown are serialized by the VM
+        // lifecycle before the raw lock is acquired.
+        unsafe { self.forwarding_hooks.lock_raw() }
+    }
+
     fn new(vm_id: usize, ioapic: Arc<dyn X86IoApicDeviceOps>) -> Self {
         Self {
             wired: Arc::new(X86WiredState {
@@ -564,11 +584,11 @@ impl X86InterruptDomain {
     }
 
     pub(super) fn add_forwarding_hook(&self, hook: host_irq::IrqHandle) {
-        self.forwarding_hooks.lock().push(hook);
+        self.forwarding_hooks().push(hook);
     }
 
     pub(super) fn take_forwarding_hooks(&self) -> std::vec::Vec<host_irq::IrqHandle> {
-        std::mem::take(&mut *self.forwarding_hooks.lock())
+        std::mem::take(&mut *self.forwarding_hooks())
     }
 }
 
@@ -607,7 +627,7 @@ impl VirtualInterruptController for X86InterruptDomain {
                 detail: std::format!("GSI {gsi} is outside 0..{}", irq::IOAPIC_GSI_COUNT),
             });
         }
-        let mut inputs = self.inputs.lock();
+        let mut inputs = self.inputs();
         if let Some((registered_trigger, registered)) = inputs.get(&gsi) {
             if *registered_trigger != trigger {
                 return Err(IrqError::InvalidInput {

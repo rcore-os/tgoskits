@@ -96,7 +96,7 @@ pub(crate) fn next_timer_deadline() -> Option<TimeValue> {
 }
 
 fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
-    let _g = ax_kernel_guard::NoPreemptIrqSave::new();
+    let _g = ax_sync::PreemptIrqSaveGuard::new();
     // SAFETY: the guard excludes migration, IRQ/re-entry, and conflicting
     // access for the complete non-escaping mutable borrow.
     unsafe {

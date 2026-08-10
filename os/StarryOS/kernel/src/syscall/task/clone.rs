@@ -2,7 +2,6 @@ use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FS_CONTEXT;
-use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{AxTaskExt, current, spawn_task_with};
 use bitflags::bitflags;
@@ -15,6 +14,7 @@ use starry_vm::VmMutPtr;
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, close_file_like},
     mm::copy_from_kernel,
+    sync::IrqMutex,
     task::{AsThread, ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task},
 };
 
@@ -260,11 +260,9 @@ impl CloneArgs {
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
                 old_proc_data.signal.actions()
             } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
-                Arc::new(SpinNoIrq::new(Default::default()))
+                Arc::new(IrqMutex::new(Default::default()))
             } else {
-                Arc::new(SpinNoIrq::new(
-                    old_proc_data.signal.actions().lock().clone(),
-                ))
+                Arc::new(IrqMutex::new(old_proc_data.signal.actions().lock().clone()))
             };
 
             let proc_data = ProcessData::new(

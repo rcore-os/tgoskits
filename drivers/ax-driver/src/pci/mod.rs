@@ -2,7 +2,7 @@ use alloc::format;
 #[cfg(virtio_dev)]
 use alloc::sync::Arc;
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
 use heapless::Vec as ArrayVec;
 use mmio_api::MmioOp;
 #[cfg(any(test, virtio_dev))]
@@ -40,6 +40,12 @@ pub use msi::{PciIrqLease, PciMsiTarget, PciMsixAllocation};
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
 #[cfg(virtio_dev)]
 const MAX_TAKEN_ENDPOINT_CONFIGS: usize = 16;
+
+fn raw_lock<T>(lock: &Mutex<T>) -> RawSpinLockGuard<'_, T> {
+    // SAFETY: PCI discovery/configuration excludes same-CPU re-entry around
+    // each transaction; the raw lock serializes concurrent CPUs.
+    unsafe { lock.lock_raw() }
+}
 const PCI_INTX_LINES: usize = 4;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -294,7 +300,7 @@ pub fn prepare_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
         }
 
         let bdf = as_device_function(info.address);
-        let configs = TAKEN_ENDPOINT_CONFIGS.lock();
+        let configs = raw_lock(&TAKEN_ENDPOINT_CONFIGS);
         let config = configs
             .iter()
             .find(|config| config.bdf == bdf)
@@ -327,7 +333,7 @@ pub fn unmask_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
         }
 
         let bdf = as_device_function(info.address);
-        let configs = TAKEN_ENDPOINT_CONFIGS.lock();
+        let configs = raw_lock(&TAKEN_ENDPOINT_CONFIGS);
         let config = configs
             .iter()
             .find(|config| config.bdf == bdf)
@@ -456,15 +462,13 @@ fn select_dynamic_pci_irq_source(has_acpi: bool, has_fdt: bool) -> Option<Dynami
 }
 
 pub fn legacy_irq_for_endpoint(info: PciInfo) -> Option<usize> {
-    LEGACY_IRQ_ROUTES
-        .lock()
+    raw_lock(&LEGACY_IRQ_ROUTES)
         .iter()
         .find_map(|route| route.irq_for(info))
 }
 
 fn native_legacy_binding_for_endpoint(info: PciInfo) -> Option<BindingIrq> {
-    LEGACY_IRQ_ROUTES
-        .lock()
+    raw_lock(&LEGACY_IRQ_ROUTES)
         .iter()
         .find_map(|route| route.native_binding_for(info))
 }
@@ -1047,7 +1051,7 @@ pub fn register_legacy_irq_routes(bus_start: u8, bus_end: u8, irqs: &[usize]) {
         return;
     };
 
-    let mut routes = LEGACY_IRQ_ROUTES.lock();
+    let mut routes = raw_lock(&LEGACY_IRQ_ROUTES);
     if routes
         .iter()
         .any(|route| route.matches_irqs(bus_start, bus_end, irqs))
@@ -1074,7 +1078,7 @@ pub fn register_native_legacy_irq_route(
         return;
     };
 
-    let mut routes = LEGACY_IRQ_ROUTES.lock();
+    let mut routes = raw_lock(&LEGACY_IRQ_ROUTES);
     if routes
         .iter()
         .any(|route| route.matches_legacy_irqs(bus_start, bus_end, core::slice::from_ref(&irq)))
@@ -1140,7 +1144,7 @@ fn take_virtio_transport_with_intx_policy(
 
 #[cfg(virtio_dev)]
 fn remember_taken_endpoint_config(access: &EndpointConfigAccess) {
-    let mut configs = TAKEN_ENDPOINT_CONFIGS.lock();
+    let mut configs = raw_lock(&TAKEN_ENDPOINT_CONFIGS);
     if let Some(config) = configs.iter_mut().find(|config| config.bdf == access.bdf) {
         config.access = access.clone_for_handoff();
         return;
@@ -1239,7 +1243,7 @@ impl EndpointConfigAccess {
     where
         F: FnOnce(CommandRegister) -> CommandRegister,
     {
-        self.endpoint.lock().update_command(f);
+        raw_lock(&self.endpoint).update_command(f);
     }
 }
 
@@ -1247,12 +1251,12 @@ impl EndpointConfigAccess {
 impl ConfigurationAccess for EndpointConfigAccess {
     fn read_word(&self, device_function: DeviceFunction, register_offset: u8) -> u32 {
         self.assert_same_function(device_function);
-        self.endpoint.lock().read(register_offset.into())
+        raw_lock(&self.endpoint).read(register_offset.into())
     }
 
     fn write_word(&mut self, device_function: DeviceFunction, register_offset: u8, data: u32) {
         self.assert_same_function(device_function);
-        self.endpoint.lock().write(register_offset.into(), data);
+        raw_lock(&self.endpoint).write(register_offset.into(), data);
     }
 
     unsafe fn unsafe_clone(&self) -> Self {

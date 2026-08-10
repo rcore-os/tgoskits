@@ -1,28 +1,334 @@
-//! A blocking mutex implementation.
+//! A task-aware, non-poisoning, sleepable mutex.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    cell::UnsafeCell,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+    ptr,
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
+};
 
-use ax_task::{WaitQueue, current, might_sleep};
-
-/// A [`lock_api::RawMutex`] implementation.
+/// Runtime operations required by the sleepable mutex.
 ///
-/// When the mutex is locked, the current task will block and be put into the
-/// wait queue. When the mutex is unlocked, ownership is released before waking
-/// at most one waiting task; the woken task then acquires the mutex with the
-/// normal compare-exchange path.
-pub struct RawMutex {
-    wq: WaitQueue,
-    owner_id: AtomicU64,
-    #[cfg(feature = "lockdep")]
-    pub(crate) lockdep: crate::lockdep::LockdepMap,
+/// The opaque wait-queue pointer is owned by the runtime implementation. A
+/// mutex installs its queue lazily on first contention, so uncontended locks
+/// and [`Mutex::try_lock`] neither allocate nor enter the scheduler.
+#[ax_crate_interface::def_interface]
+pub trait MutexRuntimeOps {
+    /// Checks that the current context is allowed to sleep.
+    fn might_sleep();
+
+    /// Returns the non-zero identifier of the current task.
+    fn current_task_id() -> u64;
+
+    /// Waits until `owner_id` becomes zero.
+    fn wait_until_unlocked(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64);
+
+    /// Wakes at most one waiter if the queue has been initialized.
+    fn wake_one(wait_queue: &AtomicPtr<()>);
+
+    /// Verifies and releases an initialized opaque wait queue.
+    ///
+    /// # Safety
+    ///
+    /// `wait_queue` must have been created by this same runtime provider and
+    /// must no longer be observable by any waiter.
+    fn drop_wait_queue(wait_queue: *mut ());
 }
 
 #[cfg(not(feature = "lockdep"))]
+/// A lockdep subclass identifier when lockdep is disabled.
 pub type LockSubclass = u32;
-#[cfg(feature = "lockdep")]
-pub type LockSubclass = crate::lockdep::LockSubclass;
 
+#[cfg(feature = "lockdep")]
+/// A lockdep subclass identifier.
+pub type LockSubclass = crate::spin_lockdep::LockSubclass;
+
+/// The raw ownership and wait-queue state of a [`Mutex`].
+pub struct RawMutex {
+    wait_queue: AtomicPtr<()>,
+    owner_id: AtomicU64,
+    #[cfg(feature = "lockdep")]
+    pub(crate) lockdep: crate::spin_lockdep::LockdepMap,
+}
+
+impl RawMutex {
+    /// Creates an unlocked raw mutex.
+    #[track_caller]
+    pub const fn new() -> Self {
+        Self {
+            wait_queue: AtomicPtr::new(ptr::null_mut()),
+            owner_id: AtomicU64::new(0),
+            #[cfg(feature = "lockdep")]
+            lockdep: crate::spin_lockdep::LockdepMap::new(),
+        }
+    }
+
+    #[inline(always)]
+    fn current_task_id() -> u64 {
+        let task_id = ax_crate_interface::call_interface!(MutexRuntimeOps::current_task_id);
+        assert_ne!(task_id, 0, "mutex runtime returned the reserved owner id 0");
+        task_id
+    }
+
+    #[inline(always)]
+    fn is_owner(&self, owner_id: u64) -> bool {
+        self.owner_id.load(Ordering::Acquire) == owner_id
+    }
+
+    /// Returns whether the current task owns this mutex.
+    pub fn is_owned_by_current(&self) -> bool {
+        self.is_owner(Self::current_task_id())
+    }
+
+    /// Returns whether some task owns this mutex.
+    pub fn is_locked(&self) -> bool {
+        self.owner_id.load(Ordering::Acquire) != 0
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    fn lock(&self) {
+        #[cfg(feature = "lockdep")]
+        self.lock_nested(crate::spin_lockdep::DEFAULT_LOCK_SUBCLASS);
+
+        #[cfg(not(feature = "lockdep"))]
+        self.lock_plain();
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    #[cfg(not(feature = "lockdep"))]
+    fn lock_plain(&self) {
+        ax_crate_interface::call_interface!(MutexRuntimeOps::might_sleep);
+        self.lock_after_prepare(Self::current_task_id());
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    #[cfg(feature = "lockdep")]
+    fn lock_nested(&self, subclass: LockSubclass) {
+        ax_crate_interface::call_interface!(MutexRuntimeOps::might_sleep);
+        let current_id = Self::current_task_id();
+        let lockdep = crate::mutex_lockdep::LockdepAcquire::prepare_nested(self, false, subclass);
+        self.lock_after_prepare(current_id);
+        lockdep.finish(true);
+    }
+
+    #[inline(always)]
+    fn lock_after_prepare(&self, current_id: u64) {
+        loop {
+            match self.owner_id.compare_exchange_weak(
+                0,
+                current_id,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(owner_id) => {
+                    assert_ne!(
+                        owner_id, current_id,
+                        "task {current_id} tried to recursively acquire a mutex"
+                    );
+                    ax_crate_interface::call_interface!(
+                        MutexRuntimeOps::wait_until_unlocked,
+                        &self.wait_queue,
+                        &self.owner_id
+                    );
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    fn try_lock(&self) -> bool {
+        let current_id = Self::current_task_id();
+
+        #[cfg(feature = "lockdep")]
+        let lockdep = crate::mutex_lockdep::LockdepAcquire::prepare_nested(
+            self,
+            true,
+            crate::spin_lockdep::DEFAULT_LOCK_SUBCLASS,
+        );
+
+        let acquired = self
+            .owner_id
+            .compare_exchange(0, current_id, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok();
+
+        #[cfg(feature = "lockdep")]
+        lockdep.finish(acquired);
+
+        acquired
+    }
+
+    #[inline(always)]
+    unsafe fn unlock(&self) {
+        let owner_id = self.owner_id.load(Ordering::Acquire);
+        let current_id = Self::current_task_id();
+        assert_eq!(
+            owner_id, current_id,
+            "task {current_id} tried to release a mutex owned by task {owner_id}"
+        );
+
+        #[cfg(feature = "lockdep")]
+        crate::mutex_lockdep::release(self);
+
+        self.owner_id.store(0, Ordering::Release);
+        ax_crate_interface::call_interface!(MutexRuntimeOps::wake_one, &self.wait_queue);
+    }
+
+    /// Releases this mutex without consuming a guard.
+    ///
+    /// # Safety
+    ///
+    /// The current task must own exactly one live guard for this mutex, that
+    /// guard must never subsequently be dropped, and no references derived
+    /// from it may remain live after this call.
+    #[doc(hidden)]
+    pub unsafe fn force_unlock(&self) {
+        unsafe { self.unlock() };
+    }
+}
+
+impl Default for RawMutex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for RawMutex {
+    fn drop(&mut self) {
+        assert_eq!(
+            self.owner_id.load(Ordering::Acquire),
+            0,
+            "dropping a locked mutex"
+        );
+        let wait_queue = self.wait_queue.swap(ptr::null_mut(), Ordering::AcqRel);
+        if !wait_queue.is_null() {
+            // SAFETY: mutable access proves the mutex and its wait-handle slot
+            // are no longer observable through safe references.
+            ax_crate_interface::call_interface!(MutexRuntimeOps::drop_wait_queue, wait_queue);
+        }
+    }
+}
+
+/// A sleepable mutual-exclusion primitive.
+///
+/// Unlike spin locks, a contended `Mutex` blocks the current task. It never
+/// implements poisoning: a successful acquisition always returns a guard.
+pub struct Mutex<T: ?Sized> {
+    raw: RawMutex,
+    data: UnsafeCell<T>,
+}
+
+unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
+unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
+
+impl<T> Mutex<T> {
+    /// Creates an unlocked mutex protecting `value`.
+    #[track_caller]
+    pub const fn new(value: T) -> Self {
+        Self {
+            raw: RawMutex::new(),
+            data: UnsafeCell::new(value),
+        }
+    }
+
+    /// Consumes the mutex and returns its protected value.
+    pub fn into_inner(self) -> T {
+        let Self { raw, data } = self;
+        drop(raw);
+        data.into_inner()
+    }
+}
+
+impl<T: ?Sized> Mutex<T> {
+    /// Locks the mutex, blocking the current task when it is contended.
+    #[inline(always)]
+    #[track_caller]
+    pub fn lock(&self) -> MutexGuard<'_, T> {
+        self.raw.lock();
+        MutexGuard::new(self)
+    }
+
+    /// Attempts to lock the mutex without blocking or allocating.
+    #[inline(always)]
+    #[track_caller]
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+        self.raw.try_lock().then(|| MutexGuard::new(self))
+    }
+
+    /// Returns whether the mutex appears locked.
+    pub fn is_locked(&self) -> bool {
+        self.raw.is_locked()
+    }
+
+    /// Returns exclusive access without locking.
+    pub fn get_mut(&mut self) -> &mut T {
+        self.data.get_mut()
+    }
+
+    /// Returns the raw mutex state.
+    ///
+    /// # Safety
+    ///
+    /// The caller must not unlock or otherwise mutate raw ownership state in
+    /// a way that invalidates a live [`MutexGuard`].
+    #[doc(hidden)]
+    pub unsafe fn raw(&self) -> &RawMutex {
+        &self.raw
+    }
+}
+
+impl<T: Default> Default for Mutex<T> {
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+}
+
+/// An RAII guard returned by [`Mutex::lock`] and [`Mutex::try_lock`].
+pub struct MutexGuard<'a, T: ?Sized> {
+    mutex: &'a Mutex<T>,
+    not_send: PhantomData<*mut ()>,
+}
+
+impl<'a, T: ?Sized> MutexGuard<'a, T> {
+    fn new(mutex: &'a Mutex<T>) -> Self {
+        Self {
+            mutex,
+            not_send: PhantomData,
+        }
+    }
+}
+
+impl<T: ?Sized> Deref for MutexGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the raw mutex is held for the lifetime of this guard.
+        unsafe { &*self.mutex.data.get() }
+    }
+}
+
+impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: the raw mutex grants this guard exclusive access.
+        unsafe { &mut *self.mutex.data.get() }
+    }
+}
+
+impl<T: ?Sized> Drop for MutexGuard<'_, T> {
+    fn drop(&mut self) {
+        // SAFETY: this guard represents the matching raw acquisition.
+        unsafe { self.mutex.raw.unlock() };
+    }
+}
+
+/// Lockdep extension for structurally nested sleepable mutex acquisitions.
 pub trait LockdepMutexExt<T: ?Sized> {
+    /// Acquires this mutex using `subclass` for lock-order validation.
     fn lock_nested(&self, subclass: LockSubclass) -> MutexGuard<'_, T>;
 }
 
@@ -38,275 +344,167 @@ impl<T: ?Sized> LockdepMutexExt<T> for Mutex<T> {
 
         #[cfg(feature = "lockdep")]
         {
-            // SAFETY: `raw()` is used only to perform the matching raw lock; the
-            // returned guard owns the corresponding unlock.
-            let raw = unsafe { self.raw() };
-            raw.lock_nested(subclass);
-            // SAFETY: The raw mutex is locked, as required.
-            unsafe { self.make_guard_unchecked() }
+            self.raw.lock_nested(subclass);
+            MutexGuard::new(self)
         }
     }
 }
 
-impl RawMutex {
-    /// Creates a [`RawMutex`].
-    #[inline(always)]
-    #[track_caller]
-    pub const fn new() -> Self {
-        Self {
-            wq: WaitQueue::new(),
-            owner_id: AtomicU64::new(0),
-            #[cfg(feature = "lockdep")]
-            lockdep: crate::lockdep::LockdepMap::new(),
-        }
-    }
-
-    #[inline(always)]
-    fn is_owner(&self, owner_id: u64) -> bool {
-        self.owner_id.load(Ordering::Acquire) == owner_id
-    }
-
-    /// Returns whether the current task already owns this mutex.
-    #[inline(always)]
-    pub fn is_owned_by_current(&self) -> bool {
-        self.is_owner(current().id().as_u64())
-    }
-}
-
-impl Default for RawMutex {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-unsafe impl lock_api::RawMutex for RawMutex {
-    type GuardMarker = lock_api::GuardNoSend;
-
-    /// Initial value for an unlocked mutex.
-    ///
-    /// A “non-constant” const item is a legacy way to supply an initialized
-    /// value to downstream static items. Can hopefully be replaced with
-    /// `const fn new() -> Self` at some point.
-    #[allow(clippy::declare_interior_mutable_const)]
-    const INIT: Self = RawMutex {
-        wq: WaitQueue::new(),
-        owner_id: AtomicU64::new(0),
-        #[cfg(feature = "lockdep")]
-        lockdep: crate::lockdep::LockdepMap::new_dynamic(),
+#[cfg(feature = "host-test")]
+mod host {
+    use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+    use std::{
+        boxed::Box,
+        cell::Cell,
+        sync::{Condvar, Mutex as StdMutex},
     };
 
-    #[inline(always)]
-    #[track_caller]
-    fn lock(&self) {
-        #[cfg(feature = "lockdep")]
-        self.lock_nested(ax_lockdep::DEFAULT_LOCK_SUBCLASS);
+    use super::MutexRuntimeOps;
 
-        #[cfg(not(feature = "lockdep"))]
-        self.lock_plain();
+    struct HostWaitQueue {
+        state: StdMutex<()>,
+        condvar: Condvar,
+        waiters: AtomicUsize,
     }
 
-    #[inline(always)]
-    #[track_caller]
-    fn try_lock(&self) -> bool {
-        #[cfg(feature = "lockdep")]
-        {
-            self.try_lock_nested(ax_lockdep::DEFAULT_LOCK_SUBCLASS)
-        }
-
-        #[cfg(not(feature = "lockdep"))]
-        {
-            self.try_lock_plain()
-        }
-    }
-
-    #[inline(always)]
-    unsafe fn unlock(&self) {
-        let owner_id = self.owner_id.load(Ordering::Acquire);
-        let current_id = current().id().as_u64();
-        assert_eq!(
-            owner_id, current_id,
-            "Thread({current_id}) tried to release mutex it doesn't own",
-        );
-        #[cfg(feature = "lockdep")]
-        crate::lockdep::release(self);
-        self.owner_id.store(0, Ordering::Release);
-        self.wq.notify_one(true);
-    }
-
-    #[inline(always)]
-    fn is_locked(&self) -> bool {
-        self.is_locked_inner()
-    }
-}
-
-impl RawMutex {
-    #[inline(always)]
-    #[track_caller]
-    #[cfg(not(feature = "lockdep"))]
-    fn lock_plain(&self) {
-        might_sleep();
-        let current_id = current().id().as_u64();
-        self.lock_after_prepare(current_id);
-    }
-
-    #[inline(always)]
-    fn lock_after_prepare(&self, current_id: u64) {
-        loop {
-            // Can fail to lock even if the spinlock is not locked. May be more efficient than `try_lock`
-            // when called in a loop.
-            match self.owner_id.compare_exchange_weak(
-                0,
-                current_id,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(owner_id) => {
-                    assert_ne!(
-                        owner_id, current_id,
-                        "Thread({current_id}) tried to acquire mutex it already owns.",
-                    );
-                    // Wait until the lock is released. The woken waiter
-                    // competes through the normal CAS path, avoiding a state
-                    // where the owner id names a task that has not returned a
-                    // guard yet.
-                    self.wq
-                        .wait_until(|| self.is_owner(current_id) || !self.is_locked_inner());
-                    // This check is necessary: some newcomers may race with a wakened one.
-                    if self.is_owner(current_id) {
-                        break;
-                    }
-                }
+    impl HostWaitQueue {
+        fn new() -> Self {
+            Self {
+                state: StdMutex::new(()),
+                condvar: Condvar::new(),
+                waiters: AtomicUsize::new(0),
             }
         }
     }
 
-    #[inline(always)]
-    #[track_caller]
-    #[cfg(feature = "lockdep")]
-    fn lock_nested(&self, subclass: LockSubclass) {
-        might_sleep();
-        let current_id = current().id().as_u64();
+    static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
-        let lockdep = crate::lockdep::LockdepAcquire::prepare_nested(self, false, subclass);
-        self.lock_after_prepare(current_id);
-        lockdep.finish(true);
+    std::thread_local! {
+        static TASK_ID: Cell<u64> = const { Cell::new(0) };
     }
 
-    #[inline(always)]
-    #[track_caller]
-    #[cfg(not(feature = "lockdep"))]
-    fn try_lock_plain(&self) -> bool {
-        // try_lock is a single atomic CAS — it never blocks or sleeps,
-        // so it is safe to call from atomic context (cf. Linux mutex_trylock).
-        let current_id = current().id().as_u64();
-        self.try_lock_after_prepare(current_id)
+    struct HostMutexRuntimeOps;
+
+    #[ax_crate_interface::impl_interface]
+    impl MutexRuntimeOps for HostMutexRuntimeOps {
+        fn might_sleep() {}
+
+        fn current_task_id() -> u64 {
+            TASK_ID.with(|task_id| match task_id.get() {
+                0 => {
+                    let id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
+                    task_id.set(id);
+                    id
+                }
+                id => id,
+            })
+        }
+
+        fn wait_until_unlocked(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64) {
+            let queue = ensure_wait_queue(wait_queue);
+            queue.waiters.fetch_add(1, Ordering::AcqRel);
+            let mut state = queue.state.lock().expect("host wait queue poisoned");
+            while owner_id.load(Ordering::Acquire) != 0 {
+                state = queue
+                    .condvar
+                    .wait(state)
+                    .expect("host wait queue poisoned while waiting");
+            }
+            queue.waiters.fetch_sub(1, Ordering::AcqRel);
+        }
+
+        fn wake_one(wait_queue: &AtomicPtr<()>) {
+            let queue = wait_queue.load(Ordering::Acquire).cast::<HostWaitQueue>();
+            if !queue.is_null() {
+                // SAFETY: installed queue pointers stay valid until mutex drop,
+                // which safe Rust cannot race with a live waiter reference.
+                unsafe { &*queue }.condvar.notify_one();
+            }
+        }
+
+        fn drop_wait_queue(wait_queue: *mut ()) {
+            let queue = wait_queue.cast::<HostWaitQueue>();
+            // SAFETY: guaranteed by the `MutexRuntimeOps` drop contract.
+            let queue = unsafe { Box::from_raw(queue) };
+            assert_eq!(
+                queue.waiters.load(Ordering::Acquire),
+                0,
+                "dropping a host wait queue with active waiters"
+            );
+        }
     }
 
-    #[inline(always)]
-    fn is_locked_inner(&self) -> bool {
-        self.owner_id.load(Ordering::Acquire) != 0
+    fn ensure_wait_queue(slot: &AtomicPtr<()>) -> &HostWaitQueue {
+        let existing = slot.load(Ordering::Acquire).cast::<HostWaitQueue>();
+        if !existing.is_null() {
+            // SAFETY: installed queue pointers remain valid until mutex drop.
+            return unsafe { &*existing };
+        }
+
+        let candidate = Box::into_raw(Box::new(HostWaitQueue::new()));
+        match slot.compare_exchange(
+            core::ptr::null_mut(),
+            ptr_to_unit(candidate),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                // SAFETY: `candidate` is now owned by `slot`.
+                unsafe { &*candidate }
+            }
+            Err(installed) => {
+                // SAFETY: the failed candidate was never published.
+                unsafe { drop(Box::from_raw(candidate)) };
+                // SAFETY: the winning pointer is installed in `slot`.
+                unsafe { &*installed.cast::<HostWaitQueue>() }
+            }
+        }
     }
 
-    #[inline(always)]
-    #[track_caller]
-    #[cfg(feature = "lockdep")]
-    fn try_lock_nested(&self, subclass: LockSubclass) -> bool {
-        // try_lock is a single atomic CAS — it never blocks or sleeps,
-        // so it is safe to call from atomic context.
-        let current_id = current().id().as_u64();
-
-        let lockdep = crate::lockdep::LockdepAcquire::prepare_nested(self, true, subclass);
-        let acquired = self.try_lock_after_prepare(current_id);
-        lockdep.finish(acquired);
-        acquired
-    }
-
-    #[inline(always)]
-    fn try_lock_after_prepare(&self, current_id: u64) -> bool {
-        // The reason for using a strong compare_exchange is explained here:
-        // https://github.com/Amanieu/parking_lot/pull/207#issuecomment-575869107
-        self.owner_id
-            .compare_exchange(0, current_id, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
+    const fn ptr_to_unit(pointer: *mut HostWaitQueue) -> *mut () {
+        pointer.cast::<()>()
     }
 }
 
-/// An alias of [`lock_api::Mutex`].
-pub type Mutex<T> = lock_api::Mutex<RawMutex, T>;
-/// An alias of [`lock_api::MutexGuard`].
-pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutex, T>;
-
-#[cfg(all(test, not(target_os = "none")))]
+#[cfg(all(test, feature = "host-test"))]
 mod tests {
-    use std::sync::{Mutex as StdMutex, Once, OnceLock};
+    use std::{sync::Arc, thread};
 
-    use ax_task as thread;
+    use super::Mutex;
 
-    use crate::Mutex;
+    #[test]
+    fn contended_mutex_wakes_waiters_without_lost_wakeups() {
+        const THREADS: usize = 8;
+        const ITERATIONS: usize = 2_000;
+        let value = Arc::new(Mutex::new(0usize));
+        let mut workers = Vec::new();
 
-    static INIT: Once = Once::new();
-    static TEST_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
-
-    fn init_test_scheduler() {
-        INIT.call_once(thread::init_scheduler);
-    }
-
-    fn lock_test_context() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK
-            .get_or_init(|| StdMutex::new(()))
-            .lock()
-            .expect("test serialization mutex poisoned")
-    }
-
-    fn with_test_context<R>(f: impl FnOnce() -> R) -> R {
-        let _test_guard = lock_test_context();
-        init_test_scheduler();
-        f()
-    }
-
-    fn may_interrupt() {
-        // simulate interrupts
-        if fastrand::u8(0..3) == 0 {
-            thread::yield_now();
+        for _ in 0..THREADS {
+            let value = value.clone();
+            workers.push(thread::spawn(move || {
+                for _ in 0..ITERATIONS {
+                    *value.lock() += 1;
+                }
+            }));
         }
+
+        for worker in workers {
+            worker.join().expect("mutex worker panicked");
+        }
+        assert_eq!(*value.lock(), THREADS * ITERATIONS);
     }
 
     #[test]
-    fn lots_and_lots() {
-        with_test_context(|| {
-            const NUM_TASKS: u32 = 10;
-            const NUM_ITERS: u32 = 10_000;
-            static M: Mutex<u32> = Mutex::new(0);
-
-            fn inc(delta: u32) {
-                for _ in 0..NUM_ITERS {
-                    let mut val = M.lock();
-                    *val += delta;
-                    may_interrupt();
-                    drop(val);
-                    may_interrupt();
-                }
-            }
-
-            for _ in 0..NUM_TASKS {
-                thread::spawn(|| inc(1));
-                thread::spawn(|| inc(2));
-            }
-
-            println!("spawn OK");
-            loop {
-                let val = M.lock();
-                if *val == NUM_ITERS * NUM_TASKS * 3 {
-                    break;
-                }
-                may_interrupt();
-                drop(val);
-                may_interrupt();
-            }
-
-            assert_eq!(*M.lock(), NUM_ITERS * NUM_TASKS * 3);
-            println!("Mutex test OK");
-        });
+    fn try_lock_is_nonblocking() {
+        let mutex = Mutex::new(1usize);
+        let guard = mutex.try_lock().expect("uncontended try_lock failed");
+        #[cfg(feature = "lockdep")]
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mutex.try_lock())).is_err()
+        );
+        #[cfg(not(feature = "lockdep"))]
+        assert!(mutex.try_lock().is_none());
+        drop(guard);
+        assert!(mutex.try_lock().is_some());
     }
 }

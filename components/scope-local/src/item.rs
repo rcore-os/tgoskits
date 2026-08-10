@@ -5,8 +5,8 @@ use core::{
     ptr::{NonNull, addr_of},
 };
 
-use ax_kernel_guard::NoPreempt;
 use ax_percpu::CpuPin;
+use ax_sync::PreemptGuard;
 
 use crate::scope::{ActiveScope, Scope};
 
@@ -86,7 +86,7 @@ impl<T: Send + Sync + 'static> LocalItem<T> {
     pub fn with<R>(&self, operation: impl for<'access> FnOnce(&'access T) -> R) -> R {
         let mut operation = Some(operation);
         loop {
-            let guard = NoPreempt::new();
+            let guard = PreemptGuard::new();
             // SAFETY: `NoPreempt` prevents migration for this complete access.
             let result = unsafe {
                 ax_percpu::with_cpu_pin(|pin| {

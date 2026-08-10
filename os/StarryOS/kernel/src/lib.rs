@@ -32,6 +32,7 @@ mod mm;
 mod perf;
 mod pseudofs;
 mod stop_machine;
+mod sync;
 mod syscall;
 mod task;
 mod time;

@@ -5,16 +5,11 @@ use core::{
     ptr,
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
 };
-#[cfg(any(
-    test,
-    doctest,
-    all(not(target_os = "none"), not(feature = "task-context"))
-))]
+#[cfg(any(test, doctest, not(target_os = "none")))]
 use std::cell::RefCell;
 
-#[cfg(feature = "task-context")]
+#[cfg(target_os = "none")]
 use ax_crate_interface::call_interface;
-use ax_kernel_guard::IrqSave;
 
 const MAX_LOCK_CLASSES: usize = 1024;
 const MAX_HELD_LOCKS: usize = 32;
@@ -324,17 +319,15 @@ impl fmt::Display for HeldLockStackDisplay<'_> {
     }
 }
 
-#[cfg(any(
-    test,
-    doctest,
-    all(not(target_os = "none"), not(feature = "task-context"))
-))]
+#[cfg(any(test, doctest, not(target_os = "none")))]
 std::thread_local! {
     static HELD_LOCKS: RefCell<HeldLockStack> = const { RefCell::new(HeldLockStack::new()) };
 }
 
 #[ax_crate_interface::def_interface]
-pub trait KspinLockdepIf {
+pub trait LockdepOps {
+    fn irq_save_and_disable() -> usize;
+    fn irq_restore(state: usize);
     fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot);
     fn push_current_task_held_lock(held: HeldLock);
     fn pop_current_task_held_lock(lock_addr: usize);
@@ -544,12 +537,16 @@ struct GraphState {
 unsafe impl Sync for GraphState {}
 
 struct GraphGuard {
-    _irq_guard: IrqSave,
+    irq_state: usize,
 }
 
 impl GraphGuard {
     fn acquire() -> Self {
-        let irq_guard = IrqSave::new();
+        #[cfg(target_os = "none")]
+        let irq_state = call_interface!(LockdepOps::irq_save_and_disable);
+        #[cfg(not(target_os = "none"))]
+        let irq_state = 0;
+
         while GRAPH_STATE
             .lock
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -559,15 +556,15 @@ impl GraphGuard {
                 core::hint::spin_loop();
             }
         }
-        Self {
-            _irq_guard: irq_guard,
-        }
+        Self { irq_state }
     }
 }
 
 impl Drop for GraphGuard {
     fn drop(&mut self) {
         GRAPH_STATE.lock.store(false, Ordering::Release);
+        #[cfg(target_os = "none")]
+        call_interface!(LockdepOps::irq_restore, self.irq_state);
     }
 }
 
@@ -680,67 +677,47 @@ fn class_key_to_location(class_key: *const Location<'static>) -> &'static Locati
     unsafe { &*class_key }
 }
 
-#[cfg(any(
-    test,
-    doctest,
-    all(not(target_os = "none"), not(feature = "task-context"))
-))]
+#[cfg(any(test, doctest, not(target_os = "none")))]
 fn with_current_task_held_locks<R>(f: impl FnOnce(&HeldLockStack) -> R) -> R {
     HELD_LOCKS.with(|held_locks| f(&held_locks.borrow()))
 }
 
-#[cfg(any(
-    test,
-    doctest,
-    all(not(target_os = "none"), not(feature = "task-context"))
-))]
+#[cfg(any(test, doctest, not(target_os = "none")))]
 fn with_current_task_held_locks_mut<R>(f: impl FnOnce(&mut HeldLockStack) -> R) -> R {
     HELD_LOCKS.with(|held_locks| f(&mut held_locks.borrow_mut()))
 }
 
-#[cfg(all(feature = "task-context", not(any(test, doctest))))]
+#[cfg(all(target_os = "none", target_os = "none", not(any(test, doctest))))]
 fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot) {
-    call_interface!(KspinLockdepIf::collect_current_task_held_locks, snapshot);
+    call_interface!(LockdepOps::collect_current_task_held_locks, snapshot);
 }
 
-#[cfg(any(
-    test,
-    doctest,
-    all(not(target_os = "none"), not(feature = "task-context"))
-))]
+#[cfg(any(test, doctest, not(target_os = "none")))]
 fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot) {
     with_current_task_held_locks(|stack| snapshot.extend(stack));
 }
 
-#[cfg(all(feature = "task-context", not(any(test, doctest))))]
+#[cfg(all(target_os = "none", target_os = "none", not(any(test, doctest))))]
 fn push_current_task_held_lock(held: HeldLock) {
-    call_interface!(KspinLockdepIf::push_current_task_held_lock, held);
+    call_interface!(LockdepOps::push_current_task_held_lock, held);
 }
 
-#[cfg(any(
-    test,
-    doctest,
-    all(not(target_os = "none"), not(feature = "task-context"))
-))]
+#[cfg(any(test, doctest, not(target_os = "none")))]
 fn push_current_task_held_lock(held: HeldLock) {
     with_current_task_held_locks_mut(|stack| stack.push(held));
 }
 
-#[cfg(all(feature = "task-context", not(any(test, doctest))))]
+#[cfg(all(target_os = "none", target_os = "none", not(any(test, doctest))))]
 fn pop_current_task_held_lock(lock_addr: usize) {
-    call_interface!(KspinLockdepIf::pop_current_task_held_lock, lock_addr);
+    call_interface!(LockdepOps::pop_current_task_held_lock, lock_addr);
 }
 
-#[cfg(any(
-    test,
-    doctest,
-    all(not(target_os = "none"), not(feature = "task-context"))
-))]
+#[cfg(any(test, doctest, not(target_os = "none")))]
 fn pop_current_task_held_lock(lock_addr: usize) {
     with_current_task_held_locks_mut(|stack| stack.pop_checked(lock_addr));
 }
 
-#[cfg(all(feature = "task-context", not(any(test, doctest))))]
+#[cfg(all(target_os = "none", target_os = "none", not(any(test, doctest))))]
 fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
     let _oops_guard = axpanic::enter_oops();
 
@@ -757,14 +734,10 @@ fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
     let _ = fmt::Write::write_fmt(&mut writer, message);
     let _ = fmt::Write::write_str(&mut writer, "\n");
     emergency_write_str("lockdep fatal violation\n");
-    call_interface!(KspinLockdepIf::fatal)
+    call_interface!(LockdepOps::fatal)
 }
 
-#[cfg(all(
-    feature = "task-context",
-    not(any(test, doctest)),
-    target_arch = "riscv64"
-))]
+#[cfg(all(target_os = "none", not(any(test, doctest)), target_arch = "riscv64"))]
 fn emergency_write_str(s: &str) {
     for &byte in s.as_bytes() {
         #[allow(deprecated)]
@@ -775,19 +748,15 @@ fn emergency_write_str(s: &str) {
 }
 
 #[cfg(all(
-    feature = "task-context",
+    target_os = "none",
     not(any(test, doctest)),
     not(target_arch = "riscv64")
 ))]
 fn emergency_write_str(s: &str) {
-    call_interface!(KspinLockdepIf::console_write_str, s);
+    call_interface!(LockdepOps::console_write_str, s);
 }
 
-#[cfg(any(
-    test,
-    doctest,
-    all(not(target_os = "none"), not(feature = "task-context"))
-))]
+#[cfg(any(test, doctest, not(target_os = "none")))]
 fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
     panic!("{message}")
 }

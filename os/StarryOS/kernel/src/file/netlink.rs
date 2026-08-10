@@ -33,7 +33,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_kspin::SpinNoIrq as Mutex;
 use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -46,6 +45,7 @@ use spin::LazyLock;
 
 use crate::{
     file::{FileLike, IoDst, IoSrc},
+    sync::IrqMutex as Mutex,
     syscall::in_root_net_ns,
     task::AsThread,
 };

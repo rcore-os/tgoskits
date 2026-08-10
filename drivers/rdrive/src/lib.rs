@@ -9,7 +9,7 @@ use core::ptr::NonNull;
 
 // The registry is not hard-IRQ safe, but it is also used by runtime discovery
 // paths that must not trigger task preemption hooks on lock release.
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
 pub use fdt_edit::{Fdt, Phandle};
 use register::{DriverRegister, ProbeLevel, ProbePriority};
 use spin::Once;
@@ -65,6 +65,12 @@ pub(crate) fn container() -> &'static Mutex<Manager> {
     CONTAINER.get().expect("rdrive not init")
 }
 
+fn lock_container() -> RawSpinLockGuard<'static, Manager> {
+    // SAFETY: registry operations run in serialized discovery/runtime paths
+    // which preserve the legacy raw-lock exclusion contract.
+    unsafe { container().lock_raw() }
+}
+
 pub fn is_initialized() -> bool {
     CONTAINER.get().is_some()
 }
@@ -108,7 +114,7 @@ pub(crate) fn edit<F, T>(f: F) -> T
 where
     F: FnOnce(&mut Manager) -> T,
 {
-    let mut g = container().lock();
+    let mut g = lock_container();
     f(&mut g)
 }
 
@@ -116,7 +122,7 @@ pub(crate) fn read<F, T>(f: F) -> T
 where
     F: FnOnce(&Manager) -> T,
 {
-    let g = container().lock();
+    let g = lock_container();
     f(&g)
 }
 

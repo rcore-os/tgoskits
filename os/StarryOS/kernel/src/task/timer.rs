@@ -3,7 +3,6 @@
 use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap, sync::Arc};
 use core::{mem, time::Duration};
 
-use ax_kspin::SpinNoIrq as Mutex;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_task::{
     WeakAxTaskRef, current,
@@ -15,7 +14,10 @@ use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
 
-use crate::task::{poll_process_timer, poll_timer};
+use crate::{
+    sync::IrqMutex as Mutex,
+    task::{poll_process_timer, poll_timer},
+};
 
 fn time_value_from_nanos(nanos: usize) -> TimeValue {
     let secs = nanos as u64 / NANOS_PER_SEC;

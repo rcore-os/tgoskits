@@ -12,7 +12,7 @@ version = "0.23.9"
 [dependencies]
 acpi = "6.1.1"
 axtest = { workspace = true, optional = true }
-ax-kspin = { workspace = true }
+ax-sync = { workspace = true }
 fdt-edit.workspace = true
 fdt-raw.workspace = true
 log = "0.4"

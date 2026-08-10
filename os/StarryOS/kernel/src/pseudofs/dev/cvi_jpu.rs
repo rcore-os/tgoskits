@@ -2,7 +2,6 @@
 
 use ax_errno::AxError;
 use ax_memory_addr::PhysAddr;
-use ax_sync::Mutex;
 use axfs_ng_vfs::VfsResult;
 use dma_api::DmaError;
 use sg200x_bsp::soc::TOP_BASE;
@@ -10,6 +9,8 @@ use sg200x_jpu::{
     FrameLayout, FrameLayoutError, JpuCreateError, JpuDecodeError, JpuDecoder, JpuMmio, JpuScale,
 };
 use starry_vm::vm_write_slice;
+
+use crate::sync::Mutex;
 
 const JPU_REG_BASE: usize = 0x0b00_0000;
 const VC_REG_BASE: usize = 0x0b03_0000;

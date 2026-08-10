@@ -15,8 +15,8 @@ impl Drop for ReclaimGuard {
     }
 }
 
-static GLOBAL_CACHED_FILES: ax_kspin::SpinRwLock<Vec<Arc<CachedFileShared>>> =
-    ax_kspin::SpinRwLock::new(Vec::new());
+static GLOBAL_CACHED_FILES: ax_sync::SpinRwLock<Vec<Arc<CachedFileShared>>> =
+    ax_sync::SpinRwLock::new(Vec::new());
 static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// Reclaims clean disk-backed cache pages without holding listener callbacks

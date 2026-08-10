@@ -7,7 +7,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_kernel_guard::NoPreemptIrqSave;
+use ax_sync::PreemptIrqSaveGuard;
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(feature = "pci")]
@@ -134,7 +134,7 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
     }
 
     fn with_task<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> R {
-        let _guard = NoPreemptIrqSave::new();
+        let _guard = PreemptIrqSaveGuard::new();
         let _active = VirtioNetAccessGuard::enter_task(&self.access_active);
         // SAFETY: `access_active` serializes all mutable access to the shared
         // raw transport. Task-side callers also keep local IRQ/preemption off.

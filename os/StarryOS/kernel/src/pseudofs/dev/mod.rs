@@ -48,9 +48,10 @@ use core::{
 };
 
 use ax_errno::AxError;
-use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 use spin::Once;
+
+use crate::sync::Mutex;
 
 #[cfg(feature = "sg2002")]
 pub static ION_DEVICE: Once<Arc<ion::IonDevice>> = Once::new();

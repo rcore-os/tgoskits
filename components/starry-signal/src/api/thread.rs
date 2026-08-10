@@ -7,7 +7,7 @@ use core::{
 
 use ax_cpu::uspace::UserContext;
 use ax_errno::AxResult;
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use starry_vm::{VmMutPtr, VmPtr};
 
 use super::ProcessSignalManager;
@@ -45,13 +45,13 @@ pub struct ThreadSignalManager {
     proc: Arc<ProcessSignalManager>,
 
     /// The pending signals
-    pending: SpinNoIrq<PendingSignals>,
+    pending: SpinLock<PendingSignals>,
     /// The set of signals currently blocked from delivery.
-    blocked: SpinNoIrq<SignalSet>,
+    blocked: SpinLock<SignalSet>,
     /// The stack used by signal handlers
-    stack: SpinNoIrq<SignalStack>,
+    stack: SpinLock<SignalStack>,
     /// Number of active signal handlers currently executing on the alternate stack.
-    stack_active_depth: SpinNoIrq<usize>,
+    stack_active_depth: SpinLock<usize>,
 
     possibly_has_signal: AtomicBool,
 
@@ -62,7 +62,7 @@ pub struct ThreadSignalManager {
     /// a signal via `is_ignore()` when a thread is specifically waiting for it.
     /// Using the actual wait set (instead of a bare boolean) avoids queuing
     /// unrelated signals that happen to be default-ignore.
-    pub sigwait_set: SpinNoIrq<Option<SignalSet>>,
+    pub sigwait_set: SpinLock<Option<SignalSet>>,
 }
 
 impl ThreadSignalManager {
@@ -78,15 +78,17 @@ impl ThreadSignalManager {
         let this = Arc::new(Self {
             proc: proc.clone(),
 
-            pending: SpinNoIrq::new(PendingSignals::default()),
-            blocked: SpinNoIrq::new(blocked),
-            stack: SpinNoIrq::new(SignalStack::default()),
-            stack_active_depth: SpinNoIrq::new(0),
+            pending: SpinLock::new(PendingSignals::default()),
+            blocked: SpinLock::new(blocked),
+            stack: SpinLock::new(SignalStack::default()),
+            stack_active_depth: SpinLock::new(0),
 
             possibly_has_signal: AtomicBool::new(false),
-            sigwait_set: SpinNoIrq::new(None),
+            sigwait_set: SpinLock::new(None),
         });
-        proc.children.lock().push((tid, Arc::downgrade(&this)));
+        proc.children
+            .lock_irqsave()
+            .push((tid, Arc::downgrade(&this)));
         this
     }
 
@@ -94,7 +96,7 @@ impl ThreadSignalManager {
     #[must_use]
     pub fn dequeue_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
         self.pending
-            .lock()
+            .lock_irqsave()
             .dequeue_signal(mask)
             .or_else(|| self.proc.dequeue_signal(mask))
     }
@@ -112,13 +114,13 @@ impl ThreadSignalManager {
     /// lowest-numbered ordering, matching Linux where `dequeue_synchronous_signal`
     /// is never called from the sigwait dequeue.
     fn dequeue_deliverable(&self, mask: &SignalSet) -> Option<SignalInfo> {
-        if let Some(sig) = self.pending.lock().dequeue_synchronous_signal(mask) {
+        if let Some(sig) = self.pending.lock_irqsave().dequeue_synchronous_signal(mask) {
             return Some(sig);
         }
         if let Some(sig) = self.proc.dequeue_synchronous_signal(mask) {
             return Some(sig);
         }
-        if let Some(sig) = self.pending.lock().dequeue_signal(mask) {
+        if let Some(sig) = self.pending.lock_irqsave().dequeue_signal(mask) {
             return Some(sig);
         }
         // The thread-level queue is now drained; mirror the fast-path bookkeeping
@@ -140,7 +142,7 @@ impl ThreadSignalManager {
         debug!("Handle signal: {signo:?}");
         let action = {
             let actions_arc = self.proc.actions();
-            let mut actions = actions_arc.lock();
+            let mut actions = actions_arc.lock_irqsave();
             let action = actions[signo].clone();
             if action.flags.contains(SignalActionFlags::RESETHAND) {
                 actions[signo] = SignalAction::default();
@@ -200,7 +202,7 @@ impl ThreadSignalManager {
         let layout = Layout::new::<SignalFrame>();
         let mut uses_sigaltstack = false;
         let sp = if prepared.use_sigaltstack {
-            let stack = self.stack.lock();
+            let stack = self.stack.lock_irqsave();
             if stack.disabled() {
                 uctx.sp()
             } else if self.stack_active() {
@@ -244,7 +246,7 @@ impl ThreadSignalManager {
         #[cfg(not(target_arch = "x86_64"))]
         uctx.set_ra(prepared.restorer);
 
-        *self.blocked.lock() |= prepared.add_blocked;
+        *self.blocked.lock_irqsave() |= prepared.add_blocked;
         if uses_sigaltstack {
             self.enter_stack();
         }
@@ -261,7 +263,7 @@ impl ThreadSignalManager {
     where
         F: FnMut(&mut UserContext, &SignalInfo, bool),
     {
-        let blocked = self.blocked.lock();
+        let blocked = self.blocked.lock_irqsave();
         let mask = !*blocked;
         let restore_blocked = restore_blocked.unwrap_or_else(|| *blocked);
         drop(blocked);
@@ -327,7 +329,7 @@ impl ThreadSignalManager {
         *uctx = frame.uctx;
         frame.ucontext.mcontext.restore(uctx);
 
-        *self.blocked.lock() = frame.ucontext.sigmask;
+        *self.blocked.lock_irqsave() = frame.ucontext.sigmask;
         if frame.used_sigaltstack {
             self.leave_stack();
         }
@@ -347,7 +349,7 @@ impl ThreadSignalManager {
 
         // Lock by `actions`
         let actions_arc = self.proc.actions();
-        let actions = actions_arc.lock();
+        let actions = actions_arc.lock_irqsave();
         debug!("signal: {signo:?}");
 
         // Skip is_ignore() when the signal is blocked in this thread OR when
@@ -358,12 +360,15 @@ impl ThreadSignalManager {
         // we must apply the same exemption here as ProcessSignalManager does
         // for the process-level path.
         let blocked = self.signal_blocked(signo);
-        let in_sigwait = self.sigwait_set.lock().is_some_and(|s| s.has(signo));
+        let in_sigwait = self
+            .sigwait_set
+            .lock_irqsave()
+            .is_some_and(|s| s.has(signo));
         if !blocked && !in_sigwait && actions[signo].is_ignore(signo) {
             return false;
         }
 
-        if self.pending.lock().put_signal(sig) {
+        if self.pending.lock_irqsave().put_signal(sig) {
             self.possibly_has_signal.store(true, Ordering::Release);
         }
         !self.signal_blocked(signo)
@@ -371,19 +376,19 @@ impl ThreadSignalManager {
 
     /// Gets the blocked signals.
     pub fn blocked(&self) -> SignalSet {
-        *self.blocked.lock()
+        *self.blocked.lock_irqsave()
     }
 
     /// Sets the blocked signals. Return the old value.
     pub fn set_blocked(&self, mut set: SignalSet) -> SignalSet {
         // Lock by `actions`
         let actions_arc = self.proc.actions();
-        let _actions = actions_arc.lock();
+        let _actions = actions_arc.lock_irqsave();
 
         set.remove(Signo::SIGKILL);
         set.remove(Signo::SIGSTOP);
         self.possibly_has_signal.store(true, Ordering::Release);
-        let mut guard = self.blocked.lock();
+        let mut guard = self.blocked.lock_irqsave();
         let old = *guard;
         *guard = set;
         old
@@ -391,12 +396,12 @@ impl ThreadSignalManager {
 
     /// Checks if a signal is blocked.
     pub fn signal_blocked(&self, signo: Signo) -> bool {
-        self.blocked.lock().has(signo)
+        self.blocked.lock_irqsave().has(signo)
     }
 
     /// Gets the signal stack.
     pub fn stack(&self) -> SignalStack {
-        let stack = self.stack.lock().clone();
+        let stack = self.stack.lock_irqsave().clone();
         if self.stack_active() {
             stack.on_stack()
         } else {
@@ -406,31 +411,31 @@ impl ThreadSignalManager {
 
     /// Sets the signal stack.
     pub fn set_stack(&self, stack: SignalStack) {
-        *self.stack.lock() = stack.without_runtime_flags();
+        *self.stack.lock_irqsave() = stack.without_runtime_flags();
     }
 
     pub fn stack_active(&self) -> bool {
-        *self.stack_active_depth.lock() > 0
+        *self.stack_active_depth.lock_irqsave() > 0
     }
 
     fn enter_stack(&self) {
-        *self.stack_active_depth.lock() += 1;
+        *self.stack_active_depth.lock_irqsave() += 1;
     }
 
     fn leave_stack(&self) {
-        let mut depth = self.stack_active_depth.lock();
+        let mut depth = self.stack_active_depth.lock_irqsave();
         *depth = depth.saturating_sub(1);
     }
 
     /// Gets current pending signals.
     pub fn pending(&self) -> SignalSet {
-        self.pending.lock().set | self.proc.pending()
+        self.pending.lock_irqsave().set | self.proc.pending()
     }
 
     /// Resets the alternate signal stack to the default (disabled, addr=0)
     /// across `execve`. The pre-exec stack address pointed into user
     /// memory that no longer exists once the new aspace replaces the old.
     pub fn reset_stack(&self) {
-        *self.stack.lock() = SignalStack::default();
+        *self.stack.lock_irqsave() = SignalStack::default();
     }
 }

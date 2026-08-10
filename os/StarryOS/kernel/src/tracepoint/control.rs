@@ -1,9 +1,9 @@
-use ax_sync::Mutex;
 use axfs_ng_vfs::{VfsError, VfsResult};
 use ktracepoint::{TraceFilterFile, TracePoint, TracePointEnableFile};
 
 use crate::{
     pseudofs::DirectRwFsFileOps,
+    sync::Mutex,
     tracepoint::{KernelExtTracePoint, KernelTraceAux},
 };
 

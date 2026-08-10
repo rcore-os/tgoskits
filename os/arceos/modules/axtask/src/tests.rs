@@ -10,7 +10,7 @@ use std::{
 
 use ax_errno::{AxError, AxResult};
 #[cfg(feature = "preempt")]
-use ax_kernel_guard::NoPreempt;
+use ax_sync::{PreemptGuard, SpinLock};
 use axpoll::{IoEvents, Pollable};
 
 #[cfg(feature = "irq")]
@@ -83,7 +83,7 @@ const RAW_TASK_STACK_SIZE: usize = 0x10000;
 const RAW_TASK_STACK_SIZE: usize = 0x1000;
 
 #[cfg(all(feature = "lockdep", feature = "preempt"))]
-static HELD_LOCK_DIAGNOSTIC_LOCK: ax_kspin::SpinNoPreempt<()> = ax_kspin::SpinNoPreempt::new(());
+static HELD_LOCK_DIAGNOSTIC_LOCK: SpinLock<()> = SpinLock::new(());
 
 #[cfg(feature = "preempt")]
 fn panic_payload_message(payload: &(dyn core::any::Any + Send)) -> &str {
@@ -128,7 +128,7 @@ fn might_sleep_reports_held_lock_stack() {
 fn might_sleep_reports_preempt_disabled_reason() {
     run_in_test_scheduler(|| {
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let _guard = NoPreempt::new();
+            let _guard = PreemptGuard::new();
             ax_task::might_sleep();
         }));
         let panic = result.expect_err("might_sleep should reject preempt-disabled context");

@@ -1,6 +1,6 @@
 use std::vec::Vec;
 
-use ax_std::os::arceos::sync::RawSpinLock as Mutex;
+use ax_std::os::arceos::sync::{RawSpinLock as Mutex, RawSpinLockGuard};
 use axdevice::*;
 use axvm_types::VmArchVcpuOps;
 
@@ -86,6 +86,12 @@ struct HostIrqLease {
 
 static HOST_IRQ_FORWARDING_LEASES: Mutex<Vec<HostIrqLease>> = Mutex::new(Vec::new());
 
+fn host_irq_forwarding_leases() -> RawSpinLockGuard<'static, Vec<HostIrqLease>> {
+    // SAFETY: host IRQ lease changes are serialized by forwarding lifecycle
+    // operations, which exclude local re-entry before reaching this table.
+    unsafe { HOST_IRQ_FORWARDING_LEASES.lock_raw() }
+}
+
 fn should_register_ioapic_gsi_hook(gsi: usize) -> bool {
     gsi < IOAPIC_GSI_COUNT && gsi != PIT_TIMER_GSI && gsi != COM1_GSI
 }
@@ -151,7 +157,7 @@ fn forwarding_route_error(
 
 impl X86InterruptDomain {
     fn set_forwarding_owner(&self, vcpu_id: usize) -> bool {
-        let mut state = self.forwarding.lock();
+        let mut state = self.forwarding();
         if state.enabled {
             return false;
         }
@@ -162,12 +168,12 @@ impl X86InterruptDomain {
 
     #[cfg(test)]
     fn has_registered_forwarding_hooks_for(&self, vcpu_id: usize) -> bool {
-        let state = self.forwarding.lock();
+        let state = self.forwarding();
         state.hooks_registered && state.owner_vcpu_id == Some(vcpu_id)
     }
 
     fn mark_forwarding_hooks_registered(&self) {
-        self.forwarding.lock().hooks_registered = true;
+        self.forwarding().hooks_registered = true;
     }
 
     fn register_forwarding_route(
@@ -181,7 +187,7 @@ impl X86InterruptDomain {
         if !host_irq_is_guest_assignable(host_irq, host_console_irq) {
             return Err(ForwardingRouteError::HostOwnedConsole);
         }
-        let mut state = self.forwarding.lock();
+        let mut state = self.forwarding();
         if guest_gsi >= state.routes.len() {
             return Err(ForwardingRouteError::UnsupportedGsi);
         }
@@ -208,7 +214,7 @@ impl X86InterruptDomain {
         guest_gsi: usize,
         activator: IoApicForwardingActivator,
     ) -> Result<(), ForwardingRouteError> {
-        let mut state = self.forwarding.lock();
+        let mut state = self.forwarding();
         if guest_gsi >= state.routes.len() {
             return Err(ForwardingRouteError::UnsupportedGsi);
         }
@@ -225,8 +231,7 @@ impl X86InterruptDomain {
         host_console_irq: Option<irq::IrqId>,
     ) -> Result<irq::IrqId, ForwardingRouteError> {
         if let Some(host_irq) = self
-            .forwarding
-            .lock()
+            .forwarding()
             .routes
             .get(guest_gsi)
             .and_then(|route| route.host_irq)
@@ -251,7 +256,7 @@ impl X86InterruptDomain {
     }
 
     fn guest_gsi_for_host_irq(&self, host_irq: irq::IrqId) -> Option<usize> {
-        let state = self.forwarding.lock();
+        let state = self.forwarding();
         if let Some((gsi, _)) = state
             .routes
             .iter()
@@ -268,23 +273,21 @@ impl X86InterruptDomain {
     }
 
     fn is_forwarded_host_gsi_level_triggered(&self, gsi: usize) -> bool {
-        self.forwarding
-            .lock()
+        self.forwarding()
             .routes
             .get(gsi)
             .is_some_and(|route| route.level_triggered)
     }
 
     fn forwarded_host_irq_for_registered_gsi(&self, gsi: usize) -> Option<irq::IrqId> {
-        self.forwarding
-            .lock()
+        self.forwarding()
             .routes
             .get(gsi)
             .and_then(|route| route.host_irq)
     }
 
     fn take_pending_forwarded_gsis_for(&self, vcpu_id: usize) -> Option<(usize, usize)> {
-        let mut state = self.forwarding.lock();
+        let mut state = self.forwarding();
         if !state.hooks_registered || state.owner_vcpu_id != Some(vcpu_id) {
             return None;
         }
@@ -298,14 +301,14 @@ impl X86InterruptDomain {
     }
 
     fn retry_pending_forwarded_gsis(&self, pending: usize, pending_level: usize) {
-        let mut state = self.forwarding.lock();
+        let mut state = self.forwarding();
         state.pending |= pending;
         state.pending_level |= pending_level;
     }
 
     fn mark_forwarded_gsi_pending(&self, gsi: usize, level_triggered: bool) {
         let bit = gsi_bit(gsi);
-        let mut state = self.forwarding.lock();
+        let mut state = self.forwarding();
         if !state.enabled || state.owner_vcpu_id.is_none() {
             return;
         }
@@ -319,7 +322,7 @@ impl X86InterruptDomain {
 
     fn set_forwarded_gsi_masked(&self, gsi: usize) -> bool {
         let bit = gsi_bit(gsi);
-        let mut state = self.forwarding.lock();
+        let mut state = self.forwarding();
         if !state.enabled {
             return false;
         }
@@ -331,11 +334,11 @@ impl X86InterruptDomain {
     }
 
     fn clear_forwarded_gsi_masked(&self, gsi: usize) {
-        self.forwarding.lock().masked &= !gsi_bit(gsi);
+        self.forwarding().masked &= !gsi_bit(gsi);
     }
 
     fn forwarding_is_enabled(&self) -> bool {
-        self.forwarding.lock().enabled
+        self.forwarding().enabled
     }
 
     fn clear_forwarded_gsi_state(&self, gsi: usize) -> bool {
@@ -343,7 +346,7 @@ impl X86InterruptDomain {
             return false;
         }
         let bit = gsi_bit(gsi);
-        let mut state = self.forwarding.lock();
+        let mut state = self.forwarding();
         state.pending &= !bit;
         state.pending_level &= !bit;
         let was_masked = state.masked & bit != 0;
@@ -356,7 +359,7 @@ impl X86InterruptDomain {
             return (false, false, false);
         }
         let bit = gsi_bit(gsi);
-        let state = self.forwarding.lock();
+        let state = self.forwarding();
         (
             state.pending & bit != 0,
             state.pending_level & bit != 0,
@@ -370,7 +373,7 @@ impl X86InterruptDomain {
             return;
         }
         let bit = gsi_bit(gsi);
-        let mut state = self.forwarding.lock();
+        let mut state = self.forwarding();
         state.pending |= bit;
         state.pending_level |= bit;
         state.masked |= bit;
@@ -388,7 +391,7 @@ impl X86InterruptDomain {
             return;
         }
         let activator = {
-            let mut state = self.forwarding.lock();
+            let mut state = self.forwarding();
             let activator = state.routes[guest_gsi].activator;
             if state.routes[guest_gsi].host_irq.is_none()
                 || activator.is_none()
@@ -413,7 +416,7 @@ impl X86InterruptDomain {
     }
 
     fn disable_forwarding(&self) -> Vec<irq::IrqId> {
-        let mut state = self.forwarding.lock();
+        let mut state = self.forwarding();
         state.owner_vcpu_id = None;
         state.pending = 0;
         state.pending_level = 0;
@@ -930,7 +933,7 @@ fn ioapic_irq_forwarding_handler(
 }
 
 fn acquire_host_irq_forwarding_lease(host_irq: irq::IrqId, vm_id: usize) -> bool {
-    let mut leases = HOST_IRQ_FORWARDING_LEASES.lock();
+    let mut leases = host_irq_forwarding_leases();
     if leases
         .iter()
         .any(|lease| lease.host_irq == host_irq && lease.vm_id != vm_id)
@@ -947,25 +950,22 @@ fn acquire_host_irq_forwarding_lease(host_irq: irq::IrqId, vm_id: usize) -> bool
 }
 
 fn release_host_irq_forwarding_lease(host_irq: irq::IrqId, vm_id: usize) {
-    HOST_IRQ_FORWARDING_LEASES
-        .lock()
+    host_irq_forwarding_leases()
         .retain(|lease| !(lease.host_irq == host_irq && lease.vm_id == vm_id));
 }
 
 fn release_host_irq_forwarding_leases_for_vm(vm_id: usize) {
-    HOST_IRQ_FORWARDING_LEASES
-        .lock()
-        .retain(|lease| lease.vm_id != vm_id);
+    host_irq_forwarding_leases().retain(|lease| lease.vm_id != vm_id);
 }
 
 #[cfg(test)]
 fn reset_host_irq_forwarding_leases() {
-    HOST_IRQ_FORWARDING_LEASES.lock().clear();
+    host_irq_forwarding_leases().clear();
 }
 
 #[cfg(test)]
 fn host_irq_forwarding_lease_count() -> usize {
-    HOST_IRQ_FORWARDING_LEASES.lock().len()
+    host_irq_forwarding_leases().len()
 }
 
 #[cfg(test)]
@@ -1024,7 +1024,8 @@ mod tests {
     }
 
     fn with_clean_forwarding_routes(test: impl FnOnce()) {
-        let _guard = ROUTE_TEST_LOCK.lock();
+        // SAFETY: this process-wide test lock serializes every raw test access.
+        let _guard = unsafe { ROUTE_TEST_LOCK.lock_raw() };
         reset_forwarding_routes();
         test();
     }

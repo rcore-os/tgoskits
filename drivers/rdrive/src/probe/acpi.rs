@@ -28,7 +28,7 @@ use acpi::{
     },
     sdt::spcr::{Spcr, SpcrInterfaceType},
 };
-use ax_kspin::SpinNoPreempt as Mutex;
+use ax_sync::SpinLock as Mutex;
 pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use spin::Once;
 

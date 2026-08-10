@@ -12,11 +12,9 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoPreempt;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
-use ax_sync::Mutex;
 use ax_task::{IrqNotify, current};
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
@@ -24,6 +22,7 @@ use ktracepoint::*;
 
 use crate::{
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
+    sync::{Mutex, NoPreemptMutex},
     task::AsThread,
 };
 
@@ -38,7 +37,7 @@ const TRACE_CMDLINE_CACHE_SIZE: usize = 4096;
 // "sleeping in atomic context" guard there, so this lock must be a
 // non-sleeping spinlock — the same kind the perf output path (`PERF_FILE`)
 // uses for exactly this reason.
-pub type KernelExtTracePoint = Arc<SpinNoPreempt<ExtTracePoint<KernelTraceAux>>>;
+pub type KernelExtTracePoint = Arc<NoPreemptMutex<ExtTracePoint<KernelTraceAux>>>;
 
 /// Look up a registered tracepoint by its numeric id (as found in
 /// `/sys/kernel/debug/tracing/events/<subsystem>/<event>/id`).
@@ -273,7 +272,7 @@ pub fn tracepoint_init() -> AxResult<()> {
 
     let ext_tps = ext_tps
         .into_iter()
-        .map(|ext_tp| (ext_tp.id(), Arc::new(SpinNoPreempt::new(ext_tp))))
+        .map(|ext_tp| (ext_tp.id(), Arc::new(NoPreemptMutex::new(ext_tp))))
         .collect::<BTreeMap<_, _>>();
 
     ax_println!("Initialized {} tracepoints", tp_map.len());

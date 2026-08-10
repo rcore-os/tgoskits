@@ -11,13 +11,19 @@ use std::{
 
 use scope_local::scope_local;
 
-struct KernelGuardIfImpl;
+struct CriticalSectionOpsImpl;
 
 #[ax_crate_interface::impl_interface]
-impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
+impl ax_sync::CriticalSectionOps for CriticalSectionOpsImpl {
     fn enable_preempt() {}
 
     fn disable_preempt() {}
+
+    fn irq_save_and_disable() -> usize {
+        1
+    }
+
+    fn irq_restore(_state: usize) {}
 }
 
 static INITIALIZER_ENTERED: OnceLock<Barrier> = OnceLock::new();

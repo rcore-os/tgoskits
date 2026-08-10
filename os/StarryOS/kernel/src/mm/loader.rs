@@ -7,7 +7,6 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
-use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;
@@ -17,6 +16,7 @@ use zerocopy::IntoBytes;
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
     mm::aspace::{AddrSpace, Backend},
+    sync::Mutex,
 };
 
 // RISC-V relocation types

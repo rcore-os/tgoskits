@@ -1,7 +1,7 @@
 use alloc::{collections::VecDeque, sync::Arc};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use ax_task::{IrqNotify, WaitQueue};
 use rdif_serial::Config;
 
@@ -27,20 +27,20 @@ impl ControlCommand {
 }
 
 pub(super) struct ControlQueue {
-    commands: SpinNoIrq<VecDeque<ControlCommand>>,
+    commands: SpinLock<VecDeque<ControlCommand>>,
 }
 
 impl ControlQueue {
     pub(super) fn new() -> Self {
         Self {
-            commands: SpinNoIrq::new(VecDeque::with_capacity(CONTROL_QUEUE_CAPACITY)),
+            commands: SpinLock::new(VecDeque::with_capacity(CONTROL_QUEUE_CAPACITY)),
         }
     }
 
     pub(super) fn submit(&self, op: ControlOp, notify: &IrqNotify) -> AxResult {
         let completion = Arc::new(CommandCompletion::new());
         {
-            let mut commands = self.commands.lock();
+            let mut commands = self.commands.lock_irqsave();
             if commands.len() == CONTROL_QUEUE_CAPACITY {
                 return Err(AxError::ResourceBusy);
             }
@@ -54,36 +54,37 @@ impl ControlQueue {
     }
 
     pub(super) fn try_pop(&self) -> Option<ControlCommand> {
-        self.commands.lock().pop_front()
+        self.commands.lock_irqsave().pop_front()
     }
 
     pub(super) fn has_pending(&self) -> bool {
-        !self.commands.lock().is_empty()
+        !self.commands.lock_irqsave().is_empty()
     }
 }
 
 struct CommandCompletion {
-    result: SpinNoIrq<Option<AxResult>>,
+    result: SpinLock<Option<AxResult>>,
     wait: WaitQueue,
 }
 
 impl CommandCompletion {
     fn new() -> Self {
         Self {
-            result: SpinNoIrq::new(None),
+            result: SpinLock::new(None),
             wait: WaitQueue::new(),
         }
     }
 
     fn complete(&self, result: AxResult) {
-        *self.result.lock() = Some(result);
+        *self.result.lock_irqsave() = Some(result);
         self.wait.notify_all(true);
     }
 
     fn wait(&self) -> AxResult {
-        self.wait.wait_until(|| self.result.lock().is_some());
+        self.wait
+            .wait_until(|| self.result.lock_irqsave().is_some());
         self.result
-            .lock()
+            .lock_irqsave()
             .take()
             .expect("serial command completion was published without a result")
     }

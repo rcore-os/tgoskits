@@ -15,7 +15,6 @@ use alloc::{
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, XATTR_CREATE, XATTR_LIST_MAX, XATTR_NAME_MAX,
@@ -27,6 +26,7 @@ use crate::{
     file::{fd_is_path, resolve_at},
     mm::{vm_load_path_string, vm_load_string},
     pseudofs::overlay,
+    sync::Mutex,
 };
 
 type XattrMap = BTreeMap<String, Vec<u8>>;

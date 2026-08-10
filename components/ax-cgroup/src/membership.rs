@@ -1,7 +1,7 @@
 use alloc::{collections::BTreeSet, sync::Arc};
 
-use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
+use ax_sync::SpinLock;
 
 use crate::{CgroupError, CgroupNode, CgroupResult, ProcessId};
 
@@ -21,11 +21,11 @@ struct MembershipState {
     pending_forks: BTreeSet<ProcessId>,
 }
 
-static STATE: LazyInit<SpinNoIrq<MembershipState>> = LazyInit::new();
+static STATE: LazyInit<SpinLock<MembershipState>> = LazyInit::new();
 static PROVIDER: LazyInit<&'static dyn CgroupProvider> = LazyInit::new();
 
 pub(crate) fn init() {
-    STATE.init_once(SpinNoIrq::new(MembershipState {
+    STATE.init_once(SpinLock::new(MembershipState {
         pending_forks: BTreeSet::new(),
     }));
 }
@@ -34,7 +34,7 @@ pub(crate) fn register_provider(provider: &'static dyn CgroupProvider) {
     PROVIDER.init_once(provider);
 }
 
-fn state() -> CgroupResult<&'static SpinNoIrq<MembershipState>> {
+fn state() -> CgroupResult<&'static SpinLock<MembershipState>> {
     STATE.get().ok_or(CgroupError::NotInitialized)
 }
 
@@ -43,7 +43,7 @@ fn provider() -> CgroupResult<&'static dyn CgroupProvider> {
 }
 
 pub(crate) fn attach_initial_process(root: Arc<CgroupNode>, pid: ProcessId) -> CgroupResult<()> {
-    let _state = state()?.lock();
+    let _state = state()?.lock_irqsave();
     root.add_member(pid);
     Ok(())
 }
@@ -67,7 +67,7 @@ impl CgroupForkGuard {
             .get()
             // SAFE-EXPECT: a fork guard can only be created after membership initialization.
             .expect("cgroup membership must be initialized")
-            .lock();
+            .lock_irqsave();
         state.pending_forks.remove(&self.pid);
         self.cgroup.add_member(self.pid);
         self.state = ForkState::Committed;
@@ -79,7 +79,7 @@ impl Drop for CgroupForkGuard {
         if matches!(self.state, ForkState::Pending)
             && let Some(state) = STATE.get()
         {
-            state.lock().pending_forks.remove(&self.pid);
+            state.lock_irqsave().pending_forks.remove(&self.pid);
         }
     }
 }
@@ -88,7 +88,7 @@ pub(crate) fn begin_fork(
     parent: Arc<CgroupNode>,
     child_pid: ProcessId,
 ) -> CgroupResult<CgroupForkGuard> {
-    let mut state = state()?.lock();
+    let mut state = state()?.lock_irqsave();
     if !state.pending_forks.insert(child_pid) {
         return Err(CgroupError::ResourceBusy);
     }
@@ -100,7 +100,7 @@ pub(crate) fn begin_fork(
 }
 
 pub(crate) fn migrate_process(pid: ProcessId, target: Arc<CgroupNode>) -> CgroupResult<()> {
-    let state = state()?.lock();
+    let state = state()?.lock_irqsave();
     if state.pending_forks.contains(&pid) {
         return Err(CgroupError::ResourceBusy);
     }
@@ -125,7 +125,7 @@ pub(crate) fn migrate_process(pid: ProcessId, target: Arc<CgroupNode>) -> Cgroup
 }
 
 pub(crate) fn exit_process(pid: ProcessId) -> CgroupResult<()> {
-    let _state = state()?.lock();
+    let _state = state()?.lock_irqsave();
     let provider = provider()?;
     let cgroup = provider.membership(pid).ok_or(CgroupError::NoSuchProcess)?;
     cgroup.remove_member(pid);
@@ -146,15 +146,15 @@ mod tests {
 
     impl CgroupProvider for MockProvider {
         fn is_zombie(&self, pid: ProcessId) -> bool {
-            self.zombies.lock().unwrap().contains(&pid)
+            self.zombies.lock_irqsave().unwrap().contains(&pid)
         }
 
         fn membership(&self, pid: ProcessId) -> Option<Arc<CgroupNode>> {
-            self.memberships.lock().unwrap().get(&pid).cloned()
+            self.memberships.lock_irqsave().unwrap().get(&pid).cloned()
         }
 
         fn set_membership(&self, pid: ProcessId, cgroup: Arc<CgroupNode>) {
-            self.memberships.lock().unwrap().insert(pid, cgroup);
+            self.memberships.lock_irqsave().unwrap().insert(pid, cgroup);
         }
     }
 
@@ -166,13 +166,13 @@ mod tests {
     static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn setup() -> MutexGuard<'static, ()> {
-        let guard = TEST_LOCK.lock().unwrap();
+        let guard = TEST_LOCK.lock_irqsave().unwrap();
         INIT.call_once(|| {
             crate::init();
             register_provider(&PROVIDER);
         });
-        PROVIDER.memberships.lock().unwrap().clear();
-        PROVIDER.zombies.lock().unwrap().clear();
+        PROVIDER.memberships.lock_irqsave().unwrap().clear();
+        PROVIDER.zombies.lock_irqsave().unwrap().clear();
         guard
     }
 
@@ -185,7 +185,7 @@ mod tests {
         root.add_member(pid);
         PROVIDER
             .memberships
-            .lock()
+            .lock_irqsave()
             .unwrap()
             .insert(pid, root.clone());
 
@@ -205,7 +205,7 @@ mod tests {
         root.add_member(pid);
         PROVIDER
             .memberships
-            .lock()
+            .lock_irqsave()
             .unwrap()
             .insert(pid, root.clone());
 
@@ -225,8 +225,12 @@ mod tests {
             Err(CgroupError::NoSuchProcess)
         );
 
-        PROVIDER.memberships.lock().unwrap().insert(1004, root);
-        PROVIDER.zombies.lock().unwrap().insert(1004);
+        PROVIDER
+            .memberships
+            .lock_irqsave()
+            .unwrap()
+            .insert(1004, root);
+        PROVIDER.zombies.lock_irqsave().unwrap().insert(1004);
         assert_eq!(
             migrate_process(1004, target),
             Err(CgroupError::NoSuchProcess)
@@ -240,7 +244,7 @@ mod tests {
         let pid = 1005;
         PROVIDER
             .memberships
-            .lock()
+            .lock_irqsave()
             .unwrap()
             .insert(pid, root.clone());
 

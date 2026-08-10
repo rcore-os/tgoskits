@@ -11,20 +11,20 @@ use alloc::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::{SpinNoIrq, SpinRwLock as RwLock};
 use ax_task::current;
 use axnsproxy::PidNamespace;
 use axpoll::{IoEvents, PollSet};
 use starry_process::{Pid, Process, ProcessCpuTime, init_proc};
 
 use super::{AsThread, Cred, ProcessData};
+use crate::sync::{IrqMutex, RwLock};
 
 /// Generation-specific identity retained by the PID registry and pidfds.
 pub(crate) struct ProcessIdentity {
     process: Arc<Process>,
-    pid_ns: SpinNoIrq<Option<Arc<SpinNoIrq<PidNamespace>>>>,
+    pid_ns: IrqMutex<Option<Arc<IrqMutex<PidNamespace>>>>,
     exit_event: Arc<PollSet>,
-    state: SpinNoIrq<ProcessIdentityState>,
+    state: IrqMutex<ProcessIdentityState>,
 }
 
 enum ProcessIdentityState {
@@ -57,9 +57,9 @@ impl ProcessIdentity {
     ) -> Arc<Self> {
         Arc::new(Self {
             process,
-            pid_ns: SpinNoIrq::new(None),
+            pid_ns: IrqMutex::new(None),
             exit_event,
-            state: SpinNoIrq::new(ProcessIdentityState::Live(proc_data)),
+            state: IrqMutex::new(ProcessIdentityState::Live(proc_data)),
         })
     }
 
@@ -74,7 +74,7 @@ impl ProcessIdentity {
     }
 
     /// Binds the process PID namespace when this identity is first published.
-    pub(crate) fn bind_pid_ns(&self, pid_ns: Arc<SpinNoIrq<PidNamespace>>) {
+    pub(crate) fn bind_pid_ns(&self, pid_ns: Arc<IrqMutex<PidNamespace>>) {
         let mut bound_pid_ns = self.pid_ns.lock();
         if let Some(bound_pid_ns) = bound_pid_ns.as_ref() {
             assert!(
@@ -86,7 +86,7 @@ impl ProcessIdentity {
         }
     }
 
-    pub(crate) fn pid_ns(&self) -> Arc<SpinNoIrq<PidNamespace>> {
+    pub(crate) fn pid_ns(&self) -> Arc<IrqMutex<PidNamespace>> {
         self.pid_ns
             .lock()
             .clone()

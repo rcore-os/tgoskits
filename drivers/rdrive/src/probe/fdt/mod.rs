@@ -5,7 +5,7 @@ use alloc::{
 };
 use core::ptr::NonNull;
 
-use ax_kspin::SpinNoPreempt as Mutex;
+use ax_sync::SpinLock as Mutex;
 use fdt_edit::Node;
 pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeId, NodeType, Phandle, RegInfo, Status};
 use rdif_pinctrl::{PinctrlDevice, PinctrlError};

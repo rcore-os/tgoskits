@@ -24,5 +24,5 @@ pub use types::*;
 pub type VfsError = ax_errno::AxError;
 pub type VfsResult<T> = Result<T, VfsError>;
 
-pub type Mutex<T> = ax_kspin::SpinNoPreempt<T>;
-pub type MutexGuard<'a, T> = ax_kspin::SpinNoPreemptGuard<'a, T>;
+pub type Mutex<T> = ax_sync::SpinLock<T>;
+pub type MutexGuard<'a, T> = ax_sync::SpinLockGuard<'a, T>;

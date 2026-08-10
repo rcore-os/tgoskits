@@ -15,7 +15,7 @@ std-compat = []
 host-test = [
   "ax-hal/host-test",
   "ax-ipi?/host-test",
-  "ax-kspin?/host-test",
+  "ax-sync/host-test",
   "ax-percpu?/host-test",
   "ax-task?/host-test",
 ]
@@ -27,17 +27,16 @@ wake-ipi = ["irq", "ax-hal/ipi"]
 irq = [
   "ax-hal/irq",
   "ax-task?/irq",
-  "dep:ax-kspin",
   "dep:ax-percpu",
   "dep:rdif-intc",
   "ax-driver/irq",
 ]
-multitask = ["ax-task/multitask"]
+multitask = ["ax-task/multitask", "ax-sync/sleep"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
-smp = ["ax-hal/smp", "ax-task?/smp"]
+smp = ["ax-hal/smp", "ax-task?/smp", "ax-sync/smp"]
 uspace = ["ax-hal/uspace", "ax-task?/uspace"]
-lockdep = ["ax-fs-ng?/lockdep"]
+lockdep = ["multitask", "ax-sync/lockdep", "ax-task?/lockdep", "ax-fs-ng?/lockdep"]
 stack-guard-page = ["ipi", "multitask", "paging", "ax-task?/stack-guard-page"]
 stack-protector = []
 tls = ["ax-hal/tls", "ax-task?/tls"]
@@ -100,7 +99,6 @@ axfs-ng-vfs = {workspace = true, optional = true}
 ax-hal = {workspace = true}
 ax-input = {workspace = true, optional = true}
 ax-ipi = {workspace = true, optional = true}
-ax-kspin = {workspace = true, optional = true}
 ax-lazyinit = {workspace = true}
 ax-log = {workspace = true}
 ax-memory-addr = {workspace = true}
@@ -108,6 +106,7 @@ ax-mm = {workspace = true, optional = true}
 ax-net = {workspace = true, optional = true}
 ax-percpu = {workspace = true, optional = true}
 ax-plat = {workspace = true}
+ax-sync.workspace = true
 ax-task = {workspace = true, optional = true}
 axbacktrace = {workspace = true}
 axpoll = {workspace = true, optional = true}

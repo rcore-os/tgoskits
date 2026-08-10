@@ -6,7 +6,7 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 
 use crate::{CgroupError, CgroupResult, ProcessId};
 
@@ -17,8 +17,8 @@ pub struct CgroupNode {
     id: u64,
     name: String,
     parent: Option<Weak<Self>>,
-    children: SpinNoIrq<BTreeMap<String, Arc<Self>>>,
-    members: SpinNoIrq<BTreeSet<ProcessId>>,
+    children: SpinLock<BTreeMap<String, Arc<Self>>>,
+    members: SpinLock<BTreeSet<ProcessId>>,
     pins: AtomicUsize,
 }
 
@@ -33,8 +33,8 @@ impl CgroupNode {
             id: 1,
             name: String::new(),
             parent: None,
-            children: SpinNoIrq::new(BTreeMap::new()),
-            members: SpinNoIrq::new(BTreeSet::new()),
+            children: SpinLock::new(BTreeMap::new()),
+            members: SpinLock::new(BTreeSet::new()),
             pins: AtomicUsize::new(0),
         })
     }
@@ -60,7 +60,7 @@ impl CgroupNode {
             return Err(CgroupError::InvalidInput);
         }
 
-        let mut children = self.children.lock();
+        let mut children = self.children.lock_irqsave();
         if children.contains_key(name) {
             return Err(CgroupError::AlreadyExists);
         }
@@ -68,8 +68,8 @@ impl CgroupNode {
             id: NEXT_CGROUP_ID.fetch_add(1, Ordering::Relaxed),
             name: name.to_string(),
             parent: Some(Arc::downgrade(self)),
-            children: SpinNoIrq::new(BTreeMap::new()),
-            members: SpinNoIrq::new(BTreeSet::new()),
+            children: SpinLock::new(BTreeMap::new()),
+            members: SpinLock::new(BTreeSet::new()),
             pins: AtomicUsize::new(0),
         });
         children.insert(name.to_string(), Arc::clone(&child));
@@ -79,7 +79,7 @@ impl CgroupNode {
     /// Look up a direct child.
     pub fn lookup_child(&self, name: &str) -> CgroupResult<Arc<Self>> {
         self.children
-            .lock()
+            .lock_irqsave()
             .get(name)
             .cloned()
             .ok_or(CgroupError::NotFound)
@@ -87,17 +87,17 @@ impl CgroupNode {
 
     /// List direct child names.
     pub fn child_names(&self) -> Vec<String> {
-        self.children.lock().keys().cloned().collect()
+        self.children.lock_irqsave().keys().cloned().collect()
     }
 
     /// Remove an empty, unpinned direct child.
     pub fn remove_child(&self, name: &str) -> CgroupResult<()> {
-        let mut children = self.children.lock();
+        let mut children = self.children.lock_irqsave();
         let child = children.get(name).cloned().ok_or(CgroupError::NotFound)?;
-        if !child.children.lock().is_empty() {
+        if !child.children.lock_irqsave().is_empty() {
             return Err(CgroupError::DirectoryNotEmpty);
         }
-        if !child.members.lock().is_empty() || child.pins.load(Ordering::Acquire) != 0 {
+        if !child.members.lock_irqsave().is_empty() || child.pins.load(Ordering::Acquire) != 0 {
             return Err(CgroupError::ResourceBusy);
         }
         children.remove(name);
@@ -106,19 +106,19 @@ impl CgroupNode {
 
     /// Return a sorted snapshot of member process IDs.
     pub fn members(&self) -> Vec<ProcessId> {
-        self.members.lock().iter().copied().collect()
+        self.members.lock_irqsave().iter().copied().collect()
     }
 
     pub(crate) fn add_member(&self, pid: ProcessId) {
-        self.members.lock().insert(pid);
+        self.members.lock_irqsave().insert(pid);
     }
 
     pub(crate) fn remove_member(&self, pid: ProcessId) -> bool {
-        self.members.lock().remove(&pid)
+        self.members.lock_irqsave().remove(&pid)
     }
 
     pub(crate) fn has_member(&self, pid: ProcessId) -> bool {
-        self.members.lock().contains(&pid)
+        self.members.lock_irqsave().contains(&pid)
     }
 
     /// Pin this node as a namespace or mounted hierarchy root.

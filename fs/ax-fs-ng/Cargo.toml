@@ -11,7 +11,7 @@ license.workspace = true
 axtest = []
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
-vfs = ["ax-sync/multitask"]
+vfs = ["ax-sync/sleep"]
 lockdep = ["axfs-ng-vfs/lockdep"]
 
 [lints.rust]
@@ -27,7 +27,6 @@ cfg-if = { workspace = true }
 chrono = { workspace = true }
 dma-api = { workspace = true }
 intrusive-collections = "0.9"
-ax-kspin = { workspace = true }
 irq-framework = { workspace = true }
 log = { workspace = true }
 lru = "0.16"

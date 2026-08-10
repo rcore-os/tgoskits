@@ -33,10 +33,10 @@ display-basic = ["ax-std", "ax-driver/virtio-gpu", "dep:embedded-graphics", "ax-
 eventfd-epoll = ["ax-std", "ax-std/fd"]
 exception-breakpoint = ["ax-std"]
 exception-page-fault = ["ax-std", "ax-std/paging"]
-lockdep-baseline = ["ax-std", "dep:ax-kspin", "dep:axfs-ng-vfs", "ax-std/alloc", "ax-std/multitask"]
+lockdep-baseline = ["ax-std", "dep:ax-sync", "dep:axfs-ng-vfs", "ax-std/alloc", "ax-std/multitask"]
 lockdep-detect = [
     "ax-std",
-    "dep:ax-kspin",
+    "dep:ax-sync",
     "dep:axfs-ng-vfs",
     "axfs-ng-vfs/lockdep",
     "ax-std/alloc",
@@ -70,6 +70,6 @@ ax-hal = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }
-ax-kspin = { workspace = true, optional = true }
+ax-sync = { workspace = true, optional = true }
 embedded-graphics = { version = "0.8", optional = true }
 rand = { version = "0.8", default-features = false, features = ["small_rng"], optional = true }

@@ -14,7 +14,7 @@ pub mod arceos {
 
     /// Guards for ArceOS interrupt and preemption contexts.
     pub mod guard {
-        pub use ax_kernel_guard::{IrqSave, NoOp, NoPreempt, NoPreemptIrqSave};
+        pub use ax_sync::{IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard};
     }
 
     /// Lower-level ArceOS module facade for system components.
@@ -30,24 +30,55 @@ pub mod arceos {
     /// Non-sleeping synchronization for ArceOS kernel contexts.
     pub mod sync {
         /// A mutex that disables preemption and local interrupts while held.
-        pub type IrqSafeMutex<T> = ax_kspin::SpinNoIrq<T>;
+        #[repr(transparent)]
+        pub struct IrqSafeMutex<T: ?Sized>(ax_sync::SpinLock<T>);
+
+        impl<T> IrqSafeMutex<T> {
+            /// Creates an unlocked IRQ-safe mutex.
+            pub const fn new(value: T) -> Self {
+                Self(ax_sync::SpinLock::new(value))
+            }
+
+            /// Acquires the lock after saving and disabling local interrupts.
+            pub fn lock(&self) -> IrqSafeMutexGuard<'_, T> {
+                self.0.lock_irqsave()
+            }
+
+            /// Attempts to acquire the lock with IRQ-save semantics.
+            pub fn try_lock(&self) -> Option<IrqSafeMutexGuard<'_, T>> {
+                self.0.try_lock_irqsave()
+            }
+        }
+
+        impl<T: Default> Default for IrqSafeMutex<T> {
+            fn default() -> Self {
+                Self::new(T::default())
+            }
+        }
+
+        impl<T: core::fmt::Debug> core::fmt::Debug for IrqSafeMutex<T> {
+            fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                self.0.fmt(formatter)
+            }
+        }
+
         /// A guard returned by [`IrqSafeMutex::lock`].
-        pub type IrqSafeMutexGuard<'a, T> = ax_kspin::SpinNoIrqGuard<'a, T>;
+        pub type IrqSafeMutexGuard<'a, T> = ax_sync::SpinLockIrqSaveGuard<'a, T>;
 
         /// A mutex that disables preemption while held.
         ///
         /// Callers must ensure the lock is not used by an interrupt handler.
-        pub type NoPreemptMutex<T> = ax_kspin::SpinNoPreempt<T>;
+        pub type NoPreemptMutex<T> = ax_sync::SpinLock<T>;
         /// A guard returned by [`NoPreemptMutex::lock`].
-        pub type NoPreemptMutexGuard<'a, T> = ax_kspin::SpinNoPreemptGuard<'a, T>;
+        pub type NoPreemptMutexGuard<'a, T> = ax_sync::SpinLockGuard<'a, T>;
 
         /// A raw spin lock that does not alter interrupt or preemption state.
         ///
         /// Callers must disable preemption and local interrupts before taking
         /// this lock, or prove that interrupt handlers never acquire it.
-        pub type RawSpinLock<T> = ax_kspin::SpinRaw<T>;
-        /// A guard returned by [`RawSpinLock::lock`].
-        pub type RawSpinLockGuard<'a, T> = ax_kspin::SpinRawGuard<'a, T>;
+        pub type RawSpinLock<T> = ax_sync::SpinLock<T>;
+        /// A guard returned by [`RawSpinLock::lock_raw`].
+        pub type RawSpinLockGuard<'a, T> = ax_sync::RawSpinLockGuard<'a, T>;
     }
 }
 
@@ -66,10 +97,10 @@ mod tests {
     fn special_locks_support_const_initialization_and_try_lock() {
         *IRQ_SAFE.lock() += 1;
         *NO_PREEMPT.lock() += 1;
-        *RAW.lock() += 1;
+        *unsafe { RAW.lock_raw() } += 1;
 
         assert_eq!(*IRQ_SAFE.try_lock().unwrap(), 1);
         assert_eq!(*NO_PREEMPT.try_lock().unwrap(), 1);
-        assert_eq!(*RAW.try_lock().unwrap(), 1);
+        assert_eq!(*unsafe { RAW.try_lock_raw() }.unwrap(), 1);
     }
 }

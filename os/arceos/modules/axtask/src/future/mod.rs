@@ -9,8 +9,7 @@ use core::{
 };
 
 use ax_errno::AxError;
-use ax_kernel_guard::NoPreemptIrqSave;
-use ax_kspin::SpinNoIrq;
+use ax_sync::{PreemptIrqSaveState, SpinLock};
 
 use crate::{AxTaskRef, WeakAxTaskRef, current, current_run_queue, select_wake_run_queue};
 
@@ -22,14 +21,14 @@ pub use time::*;
 
 struct AxWaker {
     task: WeakAxTaskRef,
-    woke: SpinNoIrq<bool>,
+    woke: SpinLock<bool>,
 }
 
 impl AxWaker {
     fn new(task: &AxTaskRef) -> Arc<Self> {
         Arc::new(AxWaker {
             task: Arc::downgrade(task),
-            woke: SpinNoIrq::new(false),
+            woke: SpinLock::new(false),
         })
     }
 }
@@ -41,8 +40,8 @@ impl Wake for AxWaker {
 
     fn wake_by_ref(self: &Arc<Self>) {
         if let Some(task) = self.task.upgrade() {
-            let mut rq = select_wake_run_queue::<NoPreemptIrqSave>(&task);
-            *self.woke.lock() = true;
+            let mut rq = select_wake_run_queue::<PreemptIrqSaveState>(&task);
+            *self.woke.lock_irqsave() = true;
             rq.unblock_task(task, true);
         }
     }
@@ -82,8 +81,8 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
                     continue;
                 }
 
-                let mut rq = current_run_queue::<NoPreemptIrqSave>();
-                let mut woke = axwaker.woke.lock();
+                let mut rq = current_run_queue::<PreemptIrqSaveState>();
+                let mut woke = axwaker.woke.lock_irqsave();
                 if !*woke {
                     rq.future_blocked_resched(woke);
                 } else {

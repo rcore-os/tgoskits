@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use dma_api::DmaDirection;
 use mbarrier::mb;
 use usb_if::{
@@ -170,7 +170,8 @@ impl Endpoint {
     fn doorbell(&mut self) {
         let mut bell = doorbell::Register::default();
         bell.set_doorbell_target(self.dci.into());
-        self.bell.lock().ring(bell);
+        // SAFETY: endpoint doorbell submission is serialized by the xHCI path.
+        unsafe { self.bell.lock_raw() }.ring(bell);
     }
 
     pub fn ring(&self) -> &SendRing<TransferEvent> {

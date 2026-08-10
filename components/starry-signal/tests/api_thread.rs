@@ -31,7 +31,7 @@ fn handle_signal() {
     let sig = SignalInfo::new_user(signo, 9, 9, 0);
 
     unsafe extern "C" fn test_handler(_: i32) {}
-    proc.actions().lock()[signo].disposition = SignalDisposition::Handler(test_handler);
+    proc.actions().lock_irqsave()[signo].disposition = SignalDisposition::Handler(test_handler);
 
     let initial = UserContext::new(0, initial_sp().into(), 0);
 
@@ -57,7 +57,7 @@ fn block_ignore_send_signal() {
         sig.signo()
     );
 
-    proc.actions().lock()[signo].disposition = SignalDisposition::Ignore;
+    proc.actions().lock_irqsave()[signo].disposition = SignalDisposition::Ignore;
     assert!(!thr.send_signal(sig.clone()));
     assert!(!thr.pending().has(signo));
 
@@ -76,7 +76,7 @@ fn block_ignore_send_signal() {
         signo
     );
 
-    proc.actions().lock()[signo].disposition = SignalDisposition::Default;
+    proc.actions().lock_irqsave()[signo].disposition = SignalDisposition::Default;
     assert!(!thr.send_signal(sig.clone()));
     assert!(thr.pending().has(signo));
 
@@ -114,7 +114,7 @@ fn check_signals_with_reports_restartable_delivery() {
 
     {
         let actions_arc = proc.actions();
-        let mut actions = actions_arc.lock();
+        let mut actions = actions_arc.lock_irqsave();
         actions[signo].disposition = SignalDisposition::Handler(test_handler);
         actions[signo].flags = SignalActionFlags::RESTART;
     }
@@ -140,7 +140,7 @@ fn restore() {
     let sig = SignalInfo::new_user(signo, 0, 1, 0);
 
     unsafe extern "C" fn test_handler(_: i32) {}
-    proc.actions().lock()[signo].disposition = SignalDisposition::Handler(test_handler);
+    proc.actions().lock_irqsave()[signo].disposition = SignalDisposition::Handler(test_handler);
 
     let initial = UserContext::new(0x219, initial_sp().into(), 0);
 
@@ -173,7 +173,7 @@ fn sigaltstack_reports_active_until_restore() {
     unsafe extern "C" fn test_handler(_: i32) {}
     {
         let actions_arc = proc.actions();
-        let mut actions = actions_arc.lock();
+        let mut actions = actions_arc.lock_irqsave();
         actions[signo].disposition = SignalDisposition::Handler(test_handler);
         actions[signo].flags = SignalActionFlags::ONSTACK;
     }

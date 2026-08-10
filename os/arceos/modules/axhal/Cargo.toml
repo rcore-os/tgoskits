@@ -12,11 +12,11 @@ axtest = ["dep:axtest", "irq"]
 smp = [
     "axplat-dyn/smp",
     "ax-plat/smp",
+    "ax-sync/smp",
 ]
 irq = [
     "ax-plat/irq",
     "axplat-dyn/irq",
-    "dep:ax-kspin",
 ]
 fp-simd = [
     "ax-cpu/fp-simd",
@@ -36,7 +36,7 @@ hv = [
     "ax-cpu/exception-table",
     "axplat-dyn/hv",
 ]
-host-test = ["cpu-local/host-test", "ax-cpu/host-test", "ax-percpu/host-test"]
+host-test = ["cpu-local/host-test", "ax-cpu/host-test", "ax-percpu/host-test", "ax-sync/host-test"]
 
 default = []
 ipi = ["irq"]
@@ -46,12 +46,11 @@ axtest = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }
 ax-cpu.workspace = true
 cpu-local.workspace = true
-ax-kspin = { workspace = true, optional = true }
 ax-plat.workspace = true
 cfg-if.workspace = true
 fdt-parser = "0.4"
 heapless = "0.9"
-ax-kernel-guard.workspace = true
+ax-sync.workspace = true
 log.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu.workspace = true

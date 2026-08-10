@@ -61,6 +61,7 @@ pub mod irq;
 mod registers;
 #[cfg(feature = "serial")]
 pub mod serial;
+mod sync;
 
 #[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;

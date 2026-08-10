@@ -21,11 +21,11 @@ use ax_hal::{
     context::{KernelTlsBase, TaskContext},
     percpu::{CurrentContext, CurrentThreadHeader},
 };
-use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 #[cfg(feature = "stack-guard-page")]
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{VirtAddr, align_up_4k};
+use ax_sync::SpinLock;
 use futures_util::task::AtomicWaker;
 
 #[cfg(feature = "lockdep")]
@@ -79,7 +79,7 @@ pub trait TaskExt {
 /// The inner task structure.
 pub struct TaskInner {
     id: TaskId,
-    name: SpinNoIrq<String>,
+    name: SpinLock<String>,
     is_idle: bool,
     is_init: bool,
 
@@ -87,7 +87,7 @@ pub struct TaskInner {
     state: AtomicU8,
 
     /// CPU affinity mask.
-    cpumask: SpinNoIrq<AxCpuMask>,
+    cpumask: SpinLock<AxCpuMask>,
 
     /// Scheduling policy of the task.
     sched_policy: AtomicI32,
@@ -209,12 +209,12 @@ impl TaskInner {
 
     /// Gets the name of the task.
     pub fn name(&self) -> String {
-        self.name.lock().clone()
+        self.name.lock_irqsave().clone()
     }
 
     /// Set the name of the task.
     pub fn set_name(&self, name: &str) {
-        *self.name.lock() = String::from(name);
+        *self.name.lock_irqsave() = String::from(name);
     }
 
     /// Get a combined string of the task ID and name.
@@ -282,7 +282,7 @@ impl TaskInner {
     /// Returns the cpu affinity mask of the task in type [`AxCpuMask`].
     #[inline]
     pub fn cpumask(&self) -> AxCpuMask {
-        *self.cpumask.lock()
+        *self.cpumask.lock_irqsave()
     }
 
     /// Sets the cpu affinity mask of the task.
@@ -291,7 +291,7 @@ impl TaskInner {
     /// `cpumask` - The cpu affinity mask to be set in type [`AxCpuMask`].
     #[inline]
     pub fn set_cpumask(&self, cpumask: AxCpuMask) {
-        *self.cpumask.lock() = cpumask
+        *self.cpumask.lock_irqsave() = cpumask
     }
 
     #[inline]
@@ -382,13 +382,13 @@ impl TaskInner {
     fn new_common(id: TaskId, name: String, kstack: TaskStack) -> Self {
         Self {
             id,
-            name: SpinNoIrq::new(name),
+            name: SpinLock::new(name),
             is_idle: false,
             is_init: false,
             entry: Cell::new(None),
             state: AtomicU8::new(TaskState::Ready as u8),
             // By default, the task is allowed to run on all CPUs.
-            cpumask: SpinNoIrq::new(crate::api::cpu_mask_full()),
+            cpumask: SpinLock::new(crate::api::cpu_mask_full()),
             sched_policy: AtomicI32::new(0),
             sched_priority: AtomicI32::new(0),
             in_wait_queue: AtomicBool::new(false),
@@ -614,7 +614,7 @@ impl TaskInner {
             // enter another preemption check on the interrupted task's stack.
             // The outer IRQ guard turns that chain into successive IRQ exits
             // instead of unbounded scheduler-stack growth.
-            let _irq_guard = ax_kernel_guard::IrqSave::new();
+            let _irq_guard = ax_sync::IrqSaveGuard::new();
             // If current task is pending to be preempted, do rescheduling.
             Self::current_check_preempt_pending();
         }
@@ -622,14 +622,14 @@ impl TaskInner {
 
     #[cfg(feature = "preempt")]
     fn current_check_preempt_pending() {
-        use ax_kernel_guard::NoPreemptIrqSave;
+        use ax_sync::PreemptIrqSaveState;
         let curr = crate::current();
         if (curr.force_resched_pending() || curr.need_resched.load(Ordering::Acquire))
             && curr.can_preempt(0)
         {
             // Note: if we want to print log msg during `preempt_resched`, we have to
             // disable preemption here, because the ax-log may cause preemption.
-            let mut rq = crate::current_run_queue::<NoPreemptIrqSave>();
+            let mut rq = crate::current_run_queue::<PreemptIrqSaveState>();
             if curr.take_force_resched_pending() {
                 rq.force_resched()
             } else if curr.need_resched.load(Ordering::Acquire) {
@@ -915,7 +915,7 @@ fn flush_stack_guard_tlb(vaddr: VirtAddr) {
 
 #[cfg(all(feature = "stack-guard-page", feature = "smp", feature = "ipi"))]
 fn flush_stack_guard_tlb(vaddr: VirtAddr) {
-    let _guard = ax_kernel_guard::NoPreempt::new();
+    let _guard = ax_sync::PreemptGuard::new();
     let current_cpu = ax_hal::percpu::this_cpu_id();
 
     core::sync::atomic::fence(Ordering::SeqCst);

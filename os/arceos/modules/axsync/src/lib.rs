@@ -1,56 +1,56 @@
-//! [ArceOS](https://github.com/arceos-org/arceos) synchronization primitives.
+//! OS-independent synchronization interfaces for TGOSKits kernels and components.
 //!
-//! Currently supported primitives:
-//!
-//! - [`Mutex`]: A mutual exclusion primitive.
-//! - mod [`spin`]: spinlocks imported from the [`ax-kspin`] crate.
-//!
-//! # Cargo Features
-//!
-//! - `multitask`: For use in the multi-threaded environments. If the feature is
-//!   not enabled, [`Mutex`] will be an alias of [`spin::SpinNoIrq`]. This
-//!   feature is enabled by default.
+//! Acquisition methods state the required execution context: ordinary spin
+//! acquisitions disable preemption, `*_irqsave` acquisitions additionally
+//! save and disable local interrupts, and raw acquisitions require an explicit
+//! unsafe contract. [`Mutex`] is always sleepable and never aliases a spin
+//! lock.
 
-#![cfg_attr(any(not(test), target_os = "none"), no_std)]
-#![cfg_attr(all(test, target_os = "none"), no_main)]
-#![cfg_attr(all(test, target_os = "none"), feature(custom_test_frameworks))]
-#![cfg_attr(doc, feature(doc_cfg))]
-#![cfg_attr(
-    all(test, target_os = "none"),
-    test_runner(crate::bare_metal_test_runner)
-)]
+#![cfg_attr(not(test), no_std)]
 
-pub use ax_kspin as spin;
+#[cfg(any(test, feature = "host-test", not(target_os = "none")))]
+extern crate std;
 
-#[cfg(all(test, target_os = "none"))]
-fn bare_metal_test_runner(_tests: &[&dyn Fn()]) {}
+#[cfg(all(axtest, feature = "axtest"))]
+pub mod axtest;
 
-#[cfg(all(test, target_os = "none"))]
-#[unsafe(no_mangle)]
-extern "C" fn _start() -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-#[cfg(all(test, target_os = "none"))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-#[cfg(all(feature = "multitask", feature = "lockdep"))]
-mod lockdep;
-
-#[cfg(feature = "multitask")]
+mod context;
+#[cfg(feature = "lockdep")]
+mod lockdep_core;
+#[cfg(feature = "sleep")]
 mod mutex;
+#[cfg(all(feature = "sleep", feature = "lockdep"))]
+mod mutex_lockdep;
+#[cfg(feature = "lock-api")]
+mod raw_spin;
+mod spin;
+mod spin_base;
+#[cfg(feature = "lockdep")]
+mod spin_lockdep;
+mod spin_rwlock;
 
-#[cfg(not(feature = "multitask"))]
-#[cfg_attr(doc, doc(cfg(not(feature = "multitask"))))]
-pub use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
-
-#[cfg(feature = "multitask")]
-#[cfg_attr(doc, doc(cfg(feature = "multitask")))]
-pub use self::mutex::{LockSubclass, LockdepMutexExt, Mutex, MutexGuard, RawMutex};
+#[doc(hidden)]
+pub use self::context::{
+    GuardState, IrqSaveState, PreemptIrqSaveState, PreemptState, RawState, irq_restore,
+    irq_save_and_disable,
+};
+#[cfg(all(feature = "sleep", not(feature = "lockdep")))]
+pub use self::mutex::LockSubclass;
+#[cfg(feature = "sleep")]
+pub use self::mutex::{LockdepMutexExt, Mutex, MutexGuard, MutexRuntimeOps, RawMutex};
+#[cfg(feature = "lock-api")]
+pub use self::raw_spin::RawIrqSaveMutex;
+#[cfg(feature = "lockdep")]
+pub use self::spin_lockdep::{
+    HeldLock, HeldLockKind, HeldLockSnapshot, HeldLockStack, LockSubclass, LockdepMap, LockdepOps,
+    PreparedAcquire, current_task_held_lock_snapshot, dump_lockdep_trace,
+    set_lockdep_trace_enabled,
+};
+pub use self::{
+    context::{CriticalSectionOps, IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard},
+    spin::{
+        RawSpinLockGuard, RawSpinRwLockReadGuard, RawSpinRwLockWriteGuard, SpinLock, SpinLockGuard,
+        SpinLockIrqSaveGuard, SpinRwLock, SpinRwLockIrqSaveReadGuard, SpinRwLockIrqSaveWriteGuard,
+        SpinRwLockReadGuard, SpinRwLockWriteGuard,
+    },
+};

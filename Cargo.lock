@@ -173,7 +173,7 @@ version = "0.2.7"
 dependencies = [
  "aes",
  "atomic-waker",
- "ax-kspin",
+ "ax-sync",
  "digest 0.10.7",
  "dma-api",
  "hmac",
@@ -393,8 +393,8 @@ version = "0.3.1"
 dependencies = [
  "ax-driver",
  "ax-hal",
- "ax-kspin",
  "ax-std",
+ "ax-sync",
  "axbacktrace",
  "axfs-ng-vfs",
  "embedded-graphics",
@@ -442,7 +442,7 @@ name = "arm-scmi-rs"
 version = "0.1.9"
 dependencies = [
  "aarch64-cpu-ext",
- "ax-kspin",
+ "ax-sync",
  "bitflags 2.13.1",
  "log",
  "mbarrier",
@@ -470,7 +470,7 @@ version = "0.5.6"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
- "ax-kspin",
+ "ax-sync",
  "axdevice_base",
  "axvm-types",
  "bitmaps",
@@ -678,11 +678,10 @@ name = "ax-alloc"
 version = "0.8.15"
 dependencies = [
  "ax-errno",
- "ax-kernel-guard",
- "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
  "ax-plat",
+ "ax-sync",
  "axbacktrace",
  "buddy-slab-allocator",
  "cfg-if",
@@ -724,8 +723,8 @@ dependencies = [
 name = "ax-cgroup"
 version = "0.1.2"
 dependencies = [
- "ax-kspin",
  "ax-lazyinit",
+ "ax-sync",
  "thiserror 2.0.20",
 ]
 
@@ -806,8 +805,7 @@ dependencies = [
  "ax-arm-pl031",
  "ax-crate-interface",
  "ax-errno",
- "ax-kernel-guard",
- "ax-kspin",
+ "ax-sync",
  "axklib",
  "axtest",
  "crab-usb",
@@ -878,7 +876,6 @@ version = "0.8.7"
 dependencies = [
  "ax-errno",
  "ax-io",
- "ax-kspin",
  "ax-sync",
  "axfs-ng-vfs",
  "bitflags 2.13.1",
@@ -903,11 +900,10 @@ version = "0.5.31"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
- "ax-kernel-guard",
- "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
  "ax-plat",
+ "ax-sync",
  "axplat-dyn",
  "axtest",
  "cfg-if",
@@ -947,29 +943,10 @@ name = "ax-ipi"
 version = "0.5.30"
 dependencies = [
  "ax-hal",
- "ax-kspin",
  "ax-lazyinit",
  "ax-percpu",
+ "ax-sync",
  "log",
-]
-
-[[package]]
-name = "ax-kernel-guard"
-version = "0.3.13"
-dependencies = [
- "ax-crate-interface",
- "axtest",
- "cfg-if",
-]
-
-[[package]]
-name = "ax-kspin"
-version = "0.3.17"
-dependencies = [
- "ax-kernel-guard",
- "ax-lockdep",
- "cfg-if",
- "lock_api",
 ]
 
 [[package]]
@@ -987,9 +964,9 @@ dependencies = [
  "ax-errno",
  "ax-hal",
  "ax-io",
- "ax-kspin",
  "ax-posix-api",
  "ax-runtime",
+ "ax-sync",
  "bindgen 0.72.1",
 ]
 
@@ -998,21 +975,11 @@ name = "ax-linked-list-r4l"
 version = "0.5.6"
 
 [[package]]
-name = "ax-lockdep"
-version = "0.2.2"
-dependencies = [
- "ax-crate-interface",
- "ax-kernel-guard",
- "axpanic",
- "sbi-rt",
-]
-
-[[package]]
 name = "ax-log"
 version = "0.5.20"
 dependencies = [
  "ax-crate-interface",
- "ax-kspin",
+ "ax-sync",
  "axpanic",
  "cfg-if",
  "chrono",
@@ -1042,10 +1009,10 @@ dependencies = [
  "ax-alloc",
  "ax-errno",
  "ax-hal",
- "ax-kspin",
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
+ "ax-sync",
  "log",
  "page-table-generic",
 ]
@@ -1059,7 +1026,6 @@ dependencies = [
  "ax-errno",
  "ax-hal",
  "ax-io",
- "ax-kspin",
  "ax-sync",
  "ax-task",
  "axpoll",
@@ -1103,17 +1069,16 @@ name = "ax-plat"
 version = "0.12.3"
 dependencies = [
  "ax-crate-interface",
- "ax-kernel-guard",
- "ax-kspin",
+ "ax-lazyinit",
  "ax-memory-addr",
  "ax-percpu",
  "ax-plat-macros",
+ "ax-sync",
  "bitflags 2.13.1",
  "const-str",
  "irq-framework",
  "rdif-intc",
  "rdrive",
- "spin",
  "thiserror 2.0.20",
 ]
 
@@ -1135,7 +1100,6 @@ dependencies = [
  "ax-fs-ng",
  "ax-hal",
  "ax-io",
- "ax-kspin",
  "ax-log",
  "ax-net",
  "ax-runtime",
@@ -1170,7 +1134,6 @@ dependencies = [
  "ax-hal",
  "ax-input",
  "ax-ipi",
- "ax-kspin",
  "ax-lazyinit",
  "ax-log",
  "ax-memory-addr",
@@ -1178,6 +1141,7 @@ dependencies = [
  "ax-net",
  "ax-percpu",
  "ax-plat",
+ "ax-sync",
  "ax-task",
  "axbacktrace",
  "axfs-ng-vfs",
@@ -1216,12 +1180,11 @@ dependencies = [
  "ax-errno",
  "ax-hal",
  "ax-io",
- "ax-kernel-guard",
- "ax-kspin",
  "ax-lazyinit",
  "ax-percpu",
  "ax-posix-api",
  "ax-runtime",
+ "ax-sync",
  "ax-task",
  "axbacktrace",
  "libc",
@@ -1233,11 +1196,12 @@ dependencies = [
 name = "ax-sync"
 version = "0.5.31"
 dependencies = [
- "ax-kspin",
- "ax-lockdep",
- "ax-task",
- "fastrand",
+ "ax-crate-interface",
+ "axpanic",
+ "axtest",
+ "cfg-if",
  "lock_api",
+ "sbi-rt",
 ]
 
 [[package]]
@@ -1250,14 +1214,12 @@ dependencies = [
  "ax-errno",
  "ax-hal",
  "ax-ipi",
- "ax-kernel-guard",
- "ax-kspin",
  "ax-lazyinit",
- "ax-lockdep",
  "ax-memory-addr",
  "ax-mm",
  "ax-percpu",
  "ax-sched",
+ "ax-sync",
  "ax-timer-list",
  "axpoll",
  "axtest",
@@ -1350,8 +1312,8 @@ dependencies = [
 name = "axdevice"
 version = "0.5.7"
 dependencies = [
- "ax-kspin",
  "ax-memory-addr",
+ "ax-sync",
  "axdevice_base",
  "axvm-types",
  "cfg-if",
@@ -1391,8 +1353,7 @@ version = "0.5.8"
 dependencies = [
  "ax-crate-interface",
  "ax-errno",
- "ax-kernel-guard",
- "ax-kspin",
+ "ax-sync",
  "axtest",
  "bitflags 2.13.1",
  "cfg-if",
@@ -1440,7 +1401,7 @@ version = "0.3.4"
 dependencies = [
  "ax-cgroup",
  "ax-errno",
- "ax-kspin",
+ "ax-sync",
  "linux-raw-sys 0.12.1",
  "log",
  "quote",
@@ -1476,7 +1437,7 @@ dependencies = [
 name = "axpoll"
 version = "0.5.4"
 dependencies = [
- "ax-kspin",
+ "ax-sync",
  "axtest",
  "bitflags 2.13.1",
  "futures",
@@ -1921,7 +1882,7 @@ dependencies = [
 name = "buddy-slab-allocator"
 version = "0.4.8"
 dependencies = [
- "ax-kspin",
+ "ax-sync",
  "axtest",
  "divan",
  "log",
@@ -2392,7 +2353,7 @@ name = "crab-usb"
 version = "0.10.5"
 dependencies = [
  "anyhow",
- "ax-kspin",
+ "ax-sync",
  "bitflags 2.13.1",
  "crossbeam",
  "crossbeam-skiplist",
@@ -3020,7 +2981,7 @@ name = "dma-api"
 version = "0.9.5"
 dependencies = [
  "aarch64-cpu-ext",
- "ax-kspin",
+ "ax-sync",
  "axtest",
  "cfg-if",
  "derive_more",
@@ -3049,8 +3010,7 @@ name = "driver-tests"
 version = "0.1.0"
 dependencies = [
  "ax-driver",
- "ax-kernel-guard",
- "ax-kspin",
+ "ax-sync",
  "axklib",
  "eth-intel",
  "fdt-edit",
@@ -6485,7 +6445,6 @@ dependencies = [
 name = "rdif-block"
 version = "0.11.4"
 dependencies = [
- "ax-kspin",
  "axtest",
  "dma-api",
  "rdif-base",
@@ -6638,7 +6597,7 @@ name = "rdrive"
 version = "0.23.9"
 dependencies = [
  "acpi",
- "ax-kspin",
+ "ax-sync",
  "axtest",
  "fdt-edit",
  "fdt-raw",
@@ -6671,7 +6630,7 @@ dependencies = [
 name = "realtek-rtl8125"
 version = "0.2.12"
 dependencies = [
- "ax-kspin",
+ "ax-sync",
  "dma-api",
  "log",
  "mmio-api",
@@ -6898,7 +6857,7 @@ dependencies = [
 name = "riscv_vplic"
 version = "0.4.23"
 dependencies = [
- "ax-kspin",
+ "ax-sync",
  "axdevice_base",
  "axvm-types",
  "bitmaps",
@@ -7024,7 +6983,7 @@ dependencies = [
 name = "rsext4"
 version = "0.7.8"
 dependencies = [
- "ax-kspin",
+ "ax-sync",
  "axtest",
  "bitflags 2.13.1",
  "log",
@@ -7299,12 +7258,12 @@ name = "scope-local"
 version = "0.4.5"
 dependencies = [
  "ax-crate-interface",
- "ax-kernel-guard",
+ "ax-lazyinit",
  "ax-percpu",
+ "ax-sync",
  "axtest",
  "cpu-local",
  "ctor 0.6.3",
- "spin",
 ]
 
 [[package]]
@@ -7556,8 +7515,8 @@ name = "sg2002-tpu"
 version = "0.3.10"
 dependencies = [
  "ax-errno",
- "ax-kspin",
  "ax-memory-addr",
+ "ax-sync",
  "axklib",
  "dma-api",
  "log",
@@ -7820,8 +7779,8 @@ dependencies = [
  "anyhow",
  "arm-gic-driver",
  "ax-cpu",
- "ax-kspin",
  "ax-riscv-plic",
+ "ax-sync",
  "cpu-local",
  "irq-framework",
  "kernutil",
@@ -7924,8 +7883,6 @@ dependencies = [
  "ax-input",
  "ax-io",
  "ax-ipi",
- "ax-kernel-guard",
- "ax-kspin",
  "ax-lazyinit",
  "ax-log",
  "ax-memory-addr",
@@ -8028,8 +7985,8 @@ dependencies = [
 name = "starry-process"
 version = "0.4.16"
 dependencies = [
- "ax-kspin",
  "ax-lazyinit",
+ "ax-sync",
  "ctor 0.4.3",
  "weak-map",
 ]
@@ -8040,7 +7997,7 @@ version = "0.8.13"
 dependencies = [
  "ax-cpu",
  "ax-errno",
- "ax-kspin",
+ "ax-sync",
  "bitflags 2.13.1",
  "cfg-if",
  "derive_more",

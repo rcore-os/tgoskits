@@ -2,7 +2,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_hal::time::{TimeValue, monotonic_time};
-use ax_kernel_guard::{NoOp, NoPreemptIrqSave};
+use ax_sync::{PreemptIrqSaveGuard, RawState};
 use ax_timer_list::{TimerEvent, TimerList};
 
 #[cfg(feature = "smp")]
@@ -46,15 +46,15 @@ impl TimerEvent for TaskWakeupEvent {
 #[cfg(feature = "smp")]
 fn wake_task_from_timer(task: AxTaskRef) {
     if task.cpumask().get(ax_hal::percpu::this_cpu_id()) {
-        current_run_queue::<NoOp>().unblock_task(task, true);
+        current_run_queue::<RawState>().unblock_task(task, true);
     } else {
-        select_run_queue::<NoOp>(&task).unblock_task(task, true);
+        select_run_queue::<RawState>(&task).unblock_task(task, true);
     }
 }
 
 #[cfg(not(feature = "smp"))]
 fn wake_task_from_timer(task: AxTaskRef) {
-    current_run_queue::<NoOp>().unblock_task(task, true);
+    current_run_queue::<RawState>().unblock_task(task, true);
 }
 
 /// Registers a callback function to be called on each timer tick.
@@ -222,7 +222,7 @@ pub fn check_events(run_callbacks: bool) {
 fn with_local_pin<R>(
     operation: impl for<'scope> FnOnce(&ax_hal::percpu::CpuPin<'scope>) -> R,
 ) -> R {
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     // SAFETY: the guard prevents migration for the complete callback.
     unsafe { ax_hal::percpu::with_cpu_pin(operation) }
         .expect("timer access requires an installed CPU-local area")
@@ -231,7 +231,7 @@ fn with_local_pin<R>(
 fn with_local_exclusive<R>(
     operation: impl for<'exclusive> FnOnce(&ax_hal::percpu::ExclusiveCpu<'exclusive>) -> R,
 ) -> R {
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     // SAFETY: the guard excludes migration, local IRQ/re-entry, and conflicting
     // local access for the complete callback.
     unsafe {

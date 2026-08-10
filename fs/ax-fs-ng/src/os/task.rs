@@ -5,7 +5,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinRwLock as RwLock;
+use ax_sync::SpinRwLock as RwLock;
 
 /// Wait/notify object created and owned by the block runtime.
 pub trait BlockNotification: Send + Sync + 'static {

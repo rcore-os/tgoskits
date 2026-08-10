@@ -8,10 +8,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(not(test))]
-use ax_kspin::SpinNoIrq as Mutex;
-#[cfg(test)]
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use axdevice_base::*;
 use axvm_types::GuestPhysAddr;
 
@@ -151,7 +148,7 @@ impl LoongArchPchPic {
 
     /// Updates a PCH input source level and returns the EIOINTC source to assert, if any.
     pub fn set_irq_level(&self, irq: usize, level: bool) -> Option<usize> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         if irq >= PCH_PIC_IRQ_COUNT {
             return None;
         }
@@ -172,7 +169,7 @@ impl LoongArchPchPic {
 
     /// Returns the pending EIOINTC source for an already-latched PCH source.
     pub fn pending_vector(&self, irq: usize) -> Option<usize> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         if irq >= PCH_PIC_IRQ_COUNT {
             return None;
         }
@@ -184,7 +181,7 @@ impl LoongArchPchPic {
     pub fn drain_output_events(&self, mut f: impl FnMut(PchPicOutputEvent)) {
         loop {
             let event = {
-                let mut state = self.state.lock();
+                let mut state = self.state.lock_irqsave();
                 pop_output_event(&mut state)
             };
             match event {
@@ -195,7 +192,7 @@ impl LoongArchPchPic {
     }
 
     fn take_output_event(&self) -> Option<PchPicOutputEvent> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         pop_output_event(&mut state)
     }
 
@@ -214,7 +211,7 @@ impl LoongArchPchPic {
             });
         }
         let offset = addr.as_usize() - self.base.as_usize();
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         let value = match width {
             AccessWidth::Byte => read_byte(&state, offset),
             AccessWidth::Word => read_split_bytes(&state, offset, 2),
@@ -240,7 +237,7 @@ impl LoongArchPchPic {
             });
         }
         let offset = addr.as_usize() - self.base.as_usize();
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         log_pch_pic_io("write", offset, width, val);
         match width {
             AccessWidth::Byte => write_byte(&mut state, offset, val as u8),

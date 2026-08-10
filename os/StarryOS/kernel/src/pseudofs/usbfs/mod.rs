@@ -16,8 +16,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError, LinuxResult};
-use ax_kspin::SpinNoIrq as Mutex;
-use ax_sync::Mutex as BlockingMutex;
 use axfs_ng_vfs::Filesystem;
 use axpoll::{IoEvents, PollSet, Pollable};
 use crab_usb::usb_if::endpoint::{TransferCompletion, TransferRequest};
@@ -28,6 +26,7 @@ use self::{irq::manager, manager::UsbFsManager, tree::UsbRootDir};
 use crate::{
     file::{File as KernelFile, FileLike, IoDst, IoSrc, Kstat},
     pseudofs::{SimpleDir, SimpleFs},
+    sync::{IrqMutex as Mutex, Mutex as BlockingMutex},
 };
 
 fn create_filesystem(manager: Arc<UsbFsManager>) -> Filesystem {

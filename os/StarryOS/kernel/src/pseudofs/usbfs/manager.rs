@@ -6,9 +6,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_kspin::{SpinNoIrq as Mutex, SpinRwLock as RwLock};
 use ax_runtime::hal::irq::IrqId;
-use ax_sync::Mutex as BlockingMutex;
 use ax_task::IrqNotify;
 use crab_usb::{
     Device, DeviceInfo, Endpoint, ProbedDevice,
@@ -34,6 +32,7 @@ use super::{
     },
     irq::{self, PendingUsbIrqSlot},
 };
+use crate::sync::{IrqMutex as Mutex, Mutex as BlockingMutex, RwLock};
 
 const ROOT_HUB_STABLE_DEVICE_ID: usize = usize::MAX;
 const USB_REQ_GET_DESCRIPTOR: u8 = 0x06;

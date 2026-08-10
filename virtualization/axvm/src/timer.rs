@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use ax_std::os::arceos::{guard::NoPreempt, modules::ax_task::IrqNotify, sync::IrqSafeMutex};
+use ax_std::os::arceos::{guard::PreemptGuard, modules::ax_task::IrqNotify, sync::IrqSafeMutex};
 use ax_timer_list::{TimeValue, TimerEvent, TimerList};
 
 #[cfg(not(test))]
@@ -225,7 +225,7 @@ pub(crate) fn register_timer_handle(
 }
 
 pub(crate) fn cancel_timer_handle(handle: VmTimerHandle) {
-    let _guard = NoPreempt::new();
+    let _guard = PreemptGuard::new();
     let current_cpu = current_cpu_id();
     let next_deadline = with_timer_wheels(|timer_wheels| timer_wheels.cancel_handle(handle));
     if let Some(next_deadline) = next_deadline {
@@ -235,7 +235,7 @@ pub(crate) fn cancel_timer_handle(handle: VmTimerHandle) {
 
 pub(crate) fn cancel_timer(token: usize) {
     let handle = {
-        let _guard = NoPreempt::new();
+        let _guard = PreemptGuard::new();
         with_timer_wheels(|timer_wheels| timer_wheels.handle(token))
     };
     if let Some(handle) = handle {
@@ -344,7 +344,7 @@ fn with_timer_wheels<R>(operation: impl FnOnce(&mut TimerWheels) -> R) -> R {
 }
 
 fn with_current_timer_wheels<R>(operation: impl FnOnce(usize, &mut TimerWheels) -> R) -> R {
-    let _guard = NoPreempt::new();
+    let _guard = PreemptGuard::new();
     let cpu_id = current_cpu_id();
     with_timer_wheels(|timer_wheels| operation(cpu_id, timer_wheels))
 }

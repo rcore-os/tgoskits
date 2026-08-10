@@ -3,9 +3,7 @@ use alloc::{
     sync::Arc,
 };
 
-use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::Mutex;
 use ax_task::{AxTaskExt, spawn_task_with};
 use starry_process::{Pid, Process};
 
@@ -13,6 +11,7 @@ use crate::{
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty},
+    sync::{Mutex, PreemptIrqSaveGuard},
     task::{ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
     tracepoint::tracepoint_init,
 };
@@ -110,7 +109,7 @@ pub fn init(args: &[String], envs: &[String]) {
     *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
     let task = {
-        let _guard = NoPreemptIrqSave::new();
+        let _guard = PreemptIrqSaveGuard::new();
         let task = spawn_task_with(task, add_task_to_table);
         tty::arm_console_irq();
         task

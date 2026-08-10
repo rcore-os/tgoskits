@@ -1088,10 +1088,10 @@ mod tests {
         static PREEMPT_DEPTH: Cell<usize> = const { Cell::new(0) };
     }
 
-    struct KernelGuardIfImpl;
+    struct CriticalSectionOpsImpl;
 
     #[ax_crate_interface::impl_interface]
-    impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
+    impl ax_sync::CriticalSectionOps for CriticalSectionOpsImpl {
         fn enable_preempt() {
             PREEMPT_DEPTH.with(|depth| {
                 depth.set(
@@ -1106,6 +1106,12 @@ mod tests {
         fn disable_preempt() {
             PREEMPT_DEPTH.with(|depth| depth.set(depth.get() + 1));
         }
+
+        fn irq_save_and_disable() -> usize {
+            1
+        }
+
+        fn irq_restore(_state: usize) {}
     }
 
     struct MockFs;

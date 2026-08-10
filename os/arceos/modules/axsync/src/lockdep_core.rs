@@ -1,15 +1,12 @@
-#![cfg_attr(all(not(test), target_os = "none"), no_std)]
-
-#[cfg(any(test, doctest, not(target_os = "none")))]
-extern crate std;
-
+#[path = "lockdep_state.rs"]
 mod state;
+#[path = "lockdep_trace.rs"]
 mod trace;
 
 pub use self::{
     state::{
         DEFAULT_LOCK_SUBCLASS, HeldLock, HeldLockKind, HeldLockSnapshot, HeldLockStack,
-        KspinLockdepIf, LockSubclass, LockdepCheckError, LockdepMap, PreparedAcquire,
+        LockSubclass, LockdepCheckError, LockdepMap, LockdepOps, PreparedAcquire,
         current_task_held_lock_snapshot, finish_acquire_task, finish_acquire_with_stack,
         force_release_task, prepare_acquire_with_snapshot, prepare_acquire_with_snapshot_checked,
         prepare_acquire_with_snapshot_checked_nested, prepare_acquire_with_snapshot_nested,

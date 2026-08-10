@@ -1,7 +1,6 @@
 use alloc::collections::VecDeque;
 
-use ax_kernel_guard::NoPreemptIrqSave;
-use ax_kspin::{SpinNoIrq, SpinNoIrqGuard};
+use ax_sync::{PreemptIrqSaveState, SpinLock, SpinLockIrqSaveGuard};
 
 use crate::{AxTaskRef, CurrentTask, current_run_queue, select_wake_run_queue};
 
@@ -29,10 +28,10 @@ use crate::{AxTaskRef, CurrentTask, current_run_queue, select_wake_run_queue};
 /// assert_eq!(VALUE.load(Ordering::Acquire), 1);
 /// ```
 pub struct WaitQueue {
-    queue: SpinNoIrq<VecDeque<AxTaskRef>>,
+    queue: SpinLock<VecDeque<AxTaskRef>>,
 }
 
-pub(crate) type WaitQueueGuard<'a> = SpinNoIrqGuard<'a, VecDeque<AxTaskRef>>;
+pub(crate) type WaitQueueGuard<'a> = SpinLockIrqSaveGuard<'a, VecDeque<AxTaskRef>>;
 
 impl Default for WaitQueue {
     fn default() -> Self {
@@ -44,8 +43,13 @@ impl WaitQueue {
     /// Creates an empty wait queue.
     pub const fn new() -> Self {
         Self {
-            queue: SpinNoIrq::new(VecDeque::new()),
+            queue: SpinLock::new(VecDeque::new()),
         }
+    }
+
+    /// Returns whether this queue currently contains no blocked tasks.
+    pub fn is_empty(&self) -> bool {
+        self.queue.lock_irqsave().is_empty()
     }
 
     /// Cancel events by removing the task from the wait queue.
@@ -54,7 +58,7 @@ impl WaitQueue {
         // A task can be woken by only one event (timer or `notify()`), so remove it from the other queue.
         if curr.in_wait_queue() {
             // wake up by timer (timeout).
-            self.queue.lock().retain(|t| !curr.ptr_eq(t));
+            self.queue.lock_irqsave().retain(|t| !curr.ptr_eq(t));
             curr.set_in_wait_queue(false);
         }
 
@@ -76,7 +80,7 @@ impl WaitQueue {
     #[track_caller]
     pub fn wait(&self) {
         crate::api::might_sleep();
-        current_run_queue::<NoPreemptIrqSave>().blocked_resched(self.queue.lock());
+        current_run_queue::<PreemptIrqSaveState>().blocked_resched(self.queue.lock_irqsave());
         self.cancel_events(crate::current(), false);
     }
 
@@ -93,8 +97,8 @@ impl WaitQueue {
         crate::api::might_sleep();
         let curr = crate::current();
         loop {
-            let mut rq = current_run_queue::<NoPreemptIrqSave>();
-            let wq = self.queue.lock();
+            let mut rq = current_run_queue::<PreemptIrqSaveState>();
+            let wq = self.queue.lock_irqsave();
             if condition() {
                 break;
             }
@@ -111,7 +115,7 @@ impl WaitQueue {
     #[track_caller]
     pub fn wait_timeout(&self, dur: core::time::Duration) -> bool {
         crate::api::might_sleep();
-        let mut rq = current_run_queue::<NoPreemptIrqSave>();
+        let mut rq = current_run_queue::<PreemptIrqSaveState>();
         let curr = crate::current();
         let deadline = ax_hal::time::monotonic_time() + dur;
         debug!(
@@ -121,7 +125,7 @@ impl WaitQueue {
         );
         let timeout = loop {
             crate::timers::set_alarm_wakeup(deadline, curr.clone());
-            rq.blocked_resched(self.queue.lock());
+            rq.blocked_resched(self.queue.lock_irqsave());
 
             // Still in the wait queue means the timer path woke us. Re-check
             // the monotonic deadline so an early wake cannot truncate sleeps.
@@ -159,11 +163,11 @@ impl WaitQueue {
         );
         let mut timeout = true;
         loop {
-            let mut rq = current_run_queue::<NoPreemptIrqSave>();
+            let mut rq = current_run_queue::<PreemptIrqSaveState>();
             if ax_hal::time::monotonic_time() >= deadline {
                 break;
             }
-            let wq = self.queue.lock();
+            let wq = self.queue.lock_irqsave();
             if condition() {
                 timeout = false;
                 break;
@@ -215,7 +219,7 @@ impl WaitQueue {
         F: Fn(u64),
     {
         let task = {
-            let mut wq = self.queue.lock();
+            let mut wq = self.queue.lock_irqsave();
             match wq.pop_front() {
                 Some(task) => {
                     func(task.id().as_u64());
@@ -258,7 +262,7 @@ impl WaitQueue {
     }
 
     fn pop_front(&self) -> Option<AxTaskRef> {
-        let mut wq = self.queue.lock();
+        let mut wq = self.queue.lock_irqsave();
         let task = wq.pop_front()?;
         task.set_in_wait_queue(false);
         Some(task)
@@ -267,7 +271,7 @@ impl WaitQueue {
 
 fn unblock_one_task(task: AxTaskRef, resched: bool) {
     // Select run queue by the CPU set of the task.
-    select_wake_run_queue::<NoPreemptIrqSave>(&task).unblock_task(task, resched)
+    select_wake_run_queue::<PreemptIrqSaveState>(&task).unblock_task(task, resched)
 }
 
 #[cfg(axtest)]

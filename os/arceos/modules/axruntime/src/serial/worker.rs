@@ -178,12 +178,12 @@ impl SerialWorker {
             return Ok(());
         }
         {
-            let mut port = self.shared.port.lock();
+            let mut port = self.shared.port.lock_irqsave();
             port.startup(config).map_err(map_config_error)?;
             port.mask_all();
         }
         if let Err(err) = self.shared.enable_irq() {
-            let mut port = self.shared.port.lock();
+            let mut port = self.shared.port.lock_irqsave();
             port.mask_all();
             port.shutdown();
             return Err(err);
@@ -204,7 +204,7 @@ impl SerialWorker {
         self.latched_rx_errors = RxErrorFlags::empty();
         self.port_rx_ready = false;
         {
-            let mut port = self.shared.port.lock();
+            let mut port = self.shared.port.lock_irqsave();
             port.mask_all();
             port.shutdown();
         }
@@ -217,7 +217,7 @@ impl SerialWorker {
             return Err(AxError::BadState);
         }
         let result = {
-            let mut port = self.shared.port.lock();
+            let mut port = self.shared.port.lock_irqsave();
             port.mask_all();
             port.set_config(config).map_err(map_config_error)
         };
@@ -241,7 +241,7 @@ impl SerialWorker {
 
     fn discard_tx(&mut self) -> AxResult {
         let hardware_idle = {
-            let mut port = self.shared.port.lock();
+            let mut port = self.shared.port.lock_irqsave();
             if !port.discard_tx() {
                 return Err(AxError::OperationNotSupported);
             }
@@ -270,7 +270,7 @@ impl SerialWorker {
         self.immediate_events.remove(SerialEventSet::RX);
 
         {
-            let mut port = self.shared.port.lock();
+            let mut port = self.shared.port.lock_irqsave();
             discard_rx_sources(&mut **port, &mut self.irq_rx, &self.shared.bridge);
         }
 
@@ -292,7 +292,7 @@ impl SerialWorker {
             } else {
                 let next = match path {
                     RxPath::Irq => self.irq_rx.pop(),
-                    RxPath::Port => self.shared.port.lock().read_rx(),
+                    RxPath::Port => self.shared.port.lock_irqsave().read_rx(),
                 };
                 let Some(sample) = next else {
                     source_drained = true;
@@ -346,7 +346,7 @@ impl SerialWorker {
 
         if path == RxPath::Port && source_drained {
             let ready = {
-                let mut port = self.shared.port.lock();
+                let mut port = self.shared.port.lock_irqsave();
                 rearm_drained_rx(
                     true,
                     self.shared.polling,
@@ -375,7 +375,7 @@ impl SerialWorker {
     fn service_tx(&mut self) -> TxServiceOutcome {
         let mut remaining_budget = TX_BUDGET;
         let mut woke_space = false;
-        let mut port = self.shared.port.lock();
+        let mut port = self.shared.port.lock_irqsave();
 
         while remaining_budget > 0 {
             if self.pending_frame.is_none() {
@@ -425,7 +425,7 @@ impl SerialWorker {
         let hardware_idle = if !self.shared.started() {
             true
         } else {
-            self.shared.port.lock().tx_idle()
+            self.shared.port.lock_irqsave().tx_idle()
         };
         if !hardware_idle && !self.shared.polling {
             self.pending_rearm |= SerialEventSet::TX_SPACE;
@@ -451,7 +451,7 @@ impl SerialWorker {
             return;
         }
 
-        let ready = self.shared.port.lock().rearm(sources);
+        let ready = self.shared.port.lock_irqsave().rearm(sources);
         self.pending_rearm |= ready;
         self.immediate_events |= ready;
     }

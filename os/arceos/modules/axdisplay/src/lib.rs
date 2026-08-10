@@ -11,7 +11,7 @@ pub mod rdif;
 mod types;
 
 use ax_lazyinit::LazyInit;
-use ax_sync::spin::SpinNoIrq as Mutex;
+use ax_sync::SpinLock as Mutex;
 pub use device::{DisplayDevice, DisplayError, DisplayResult, ErasedDisplayDevice};
 pub use types::{DisplayInfo, PixelFormat};
 
@@ -36,31 +36,31 @@ pub fn has_display() -> bool {
 
 /// Gets the framebuffer information.
 pub fn framebuffer_info() -> DisplayInfo {
-    MAIN_DISPLAY.lock().info()
+    MAIN_DISPLAY.lock_irqsave().info()
 }
 
 /// Flushes the framebuffer, i.e. show on the screen.
 pub fn framebuffer_flush() -> bool {
-    MAIN_DISPLAY.lock().flush().is_ok()
+    MAIN_DISPLAY.lock_irqsave().flush().is_ok()
 }
 
 /// Returns the resolved main display IRQ, if the runtime provided one.
 pub fn framebuffer_irq_id() -> Option<irq_framework::IrqId> {
-    MAIN_DISPLAY.lock().irq_id()
+    MAIN_DISPLAY.lock_irqsave().irq_id()
 }
 
 /// Enables IRQ handling in the main display driver.
 pub fn framebuffer_enable_irq() {
-    MAIN_DISPLAY.lock().enable_irq();
+    MAIN_DISPLAY.lock_irqsave().enable_irq();
 }
 
 /// Disables IRQ handling in the main display driver.
 pub fn framebuffer_disable_irq() {
-    MAIN_DISPLAY.lock().disable_irq();
+    MAIN_DISPLAY.lock_irqsave().disable_irq();
 }
 
 /// Acknowledges the main display IRQ source.
 pub fn framebuffer_handle_irq() -> bool {
-    let mut display = MAIN_DISPLAY.lock();
+    let mut display = MAIN_DISPLAY.lock_irqsave();
     display.is_irq_enabled() && display.handle_irq()
 }

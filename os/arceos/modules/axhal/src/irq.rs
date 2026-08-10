@@ -52,9 +52,9 @@ fn with_observed_irq_entry<T>(
     // Keep IRQs disabled until the preemption guard has handed any pending
     // reschedule back to the IRQ-return path. Hardware traps already enter in
     // this state; IrqSave also covers deferred VM-exit dispatchers.
-    let irq_guard = ax_kernel_guard::IrqSave::new();
+    let irq_guard = ax_sync::IrqSaveGuard::new();
     prepare();
-    let preempt_guard = ax_kernel_guard::NoPreempt::new();
+    let preempt_guard = ax_sync::PreemptGuard::new();
     let result = dispatch();
 
     drop(preempt_guard); // rescheduling may occur when preemption is re-enabled.

@@ -4,7 +4,7 @@ use alloc::{
 };
 use core::{any::Any, convert::Infallible, fmt};
 
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use weak_map::WeakMap;
 
 use crate::{Pid, ProcessGroup};
@@ -12,8 +12,8 @@ use crate::{Pid, ProcessGroup};
 /// A [`Session`] is a collection of [`ProcessGroup`]s.
 pub struct Session {
     sid: Pid,
-    pub(crate) process_groups: SpinNoIrq<WeakMap<Pid, Weak<ProcessGroup>>>,
-    terminal: SpinNoIrq<Option<Arc<dyn Any + Send + Sync>>>,
+    pub(crate) process_groups: SpinLock<WeakMap<Pid, Weak<ProcessGroup>>>,
+    terminal: SpinLock<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 impl Session {
@@ -21,8 +21,8 @@ impl Session {
     pub(crate) fn new(sid: Pid) -> Arc<Self> {
         Arc::new(Self {
             sid,
-            process_groups: SpinNoIrq::new(WeakMap::new()),
-            terminal: SpinNoIrq::new(None),
+            process_groups: SpinLock::new(WeakMap::new()),
+            terminal: SpinLock::new(None),
         })
     }
 }
@@ -35,7 +35,7 @@ impl Session {
 
     /// The [`ProcessGroup`]s that belong to this [`Session`].
     pub fn process_groups(&self) -> Vec<Arc<ProcessGroup>> {
-        self.process_groups.lock().values().collect()
+        self.process_groups.lock_irqsave().values().collect()
     }
 
     /// Sets the terminal for this session.
@@ -49,7 +49,7 @@ impl Session {
         &self,
         terminal: impl FnOnce() -> Result<Arc<dyn Any + Send + Sync>, E>,
     ) -> Result<bool, E> {
-        let mut guard = self.terminal.lock();
+        let mut guard = self.terminal.lock_irqsave();
         if guard.is_some() {
             return Ok(false);
         }
@@ -59,7 +59,7 @@ impl Session {
 
     /// Unsets the terminal for this session if it is the given terminal.
     pub fn unset_terminal(&self, term: &Arc<dyn Any + Send + Sync>) -> bool {
-        let mut guard = self.terminal.lock();
+        let mut guard = self.terminal.lock_irqsave();
         if guard.as_ref().is_some_and(|it| Arc::ptr_eq(it, term)) {
             *guard = None;
             true
@@ -70,7 +70,7 @@ impl Session {
 
     /// Gets the terminal for this session, if it exists.
     pub fn terminal(&self) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.terminal.lock().clone()
+        self.terminal.lock_irqsave().clone()
     }
 }
 

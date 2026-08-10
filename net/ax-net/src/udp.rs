@@ -32,8 +32,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
 use ax_io::prelude::*;
-use ax_kspin::SpinRwLock as RwLock;
-use ax_sync::Mutex;
+use ax_sync::{Mutex, SpinRwLock as RwLock};
 use axpoll::{IoEvents, Pollable};
 use smoltcp::{
     iface::SocketHandle,

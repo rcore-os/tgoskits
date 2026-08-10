@@ -7,7 +7,6 @@ use alloc::{
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time_nanos};
-use ax_sync::Mutex;
 use ax_task::current;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
@@ -20,6 +19,7 @@ use super::{
 };
 use crate::{
     mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
+    sync::Mutex,
     task::AsThread,
 };
 

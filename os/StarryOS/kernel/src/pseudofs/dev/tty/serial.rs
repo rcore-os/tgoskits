@@ -9,7 +9,6 @@ use ax_runtime::{
         SerialTxSender, StopBits,
     },
 };
-use ax_sync::Mutex;
 use rdrive::DeviceId as RDriveDeviceId;
 use spin::LazyLock;
 use starry_process::Process;
@@ -22,7 +21,7 @@ use super::{
         termios::{Termios2, TermiosParity},
     },
 };
-use crate::pseudofs::DeviceOps;
+use crate::{pseudofs::DeviceOps, sync::Mutex};
 
 pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 

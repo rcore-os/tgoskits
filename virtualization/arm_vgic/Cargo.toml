@@ -19,11 +19,11 @@ targets = ["aarch64-unknown-none-softfloat"]
 
 [features]
 default = []
-host-test = ["ax-kspin/host-test"]
+host-test = ["ax-sync/host-test"]
 vgicv3 = []
 
 [dependencies]
-ax-kspin.workspace = true
+ax-sync.workspace = true
 axdevice_base = { workspace = true }
 axvm-types = { workspace = true }
 aarch64-cpu = "11.0"
@@ -35,4 +35,4 @@ tock-registers = "0.10"
 thiserror = { workspace = true }
 
 [dev-dependencies]
-ax-kspin = { workspace = true, features = ["host-test"] }
+ax-sync = { workspace = true, features = ["host-test"] }

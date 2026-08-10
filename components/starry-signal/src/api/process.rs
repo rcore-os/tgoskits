@@ -9,7 +9,7 @@ use core::{
 };
 
 use ax_errno::AxResult;
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use linux_raw_sys::general::kernel_sigaction;
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -42,7 +42,7 @@ impl IndexMut<Signo> for SignalActions {
 /// Process-level signal manager.
 pub struct ProcessSignalManager {
     /// The process-level shared pending signals
-    pending: SpinNoIrq<PendingSignals>,
+    pending: SpinLock<PendingSignals>,
 
     /// The signal actions. Held in a swappable slot because `CLONE_SIGHAND`
     /// hands the inner `Arc` to a peer process; `execve` must be able to
@@ -51,25 +51,25 @@ pub struct ProcessSignalManager {
     /// Outside of exec, callers should obtain the current table via
     /// [`Self::actions`] which clones the strong reference under the slot
     /// lock for the duration of one operation.
-    actions_slot: SpinNoIrq<Arc<SpinNoIrq<SignalActions>>>,
+    actions_slot: SpinLock<Arc<SpinLock<SignalActions>>>,
 
     /// The default restorer function.
     pub(crate) default_restorer: usize,
 
     /// Thread-level signal managers.
-    pub(crate) children: SpinNoIrq<Vec<(u32, Weak<ThreadSignalManager>)>>,
+    pub(crate) children: SpinLock<Vec<(u32, Weak<ThreadSignalManager>)>>,
 
     pub(crate) possibly_has_signal: AtomicBool,
 }
 
 impl ProcessSignalManager {
     /// Creates a new process signal manager.
-    pub fn new(actions: Arc<SpinNoIrq<SignalActions>>, default_restorer: usize) -> Self {
+    pub fn new(actions: Arc<SpinLock<SignalActions>>, default_restorer: usize) -> Self {
         Self {
-            pending: SpinNoIrq::new(PendingSignals::default()),
-            actions_slot: SpinNoIrq::new(actions),
+            pending: SpinLock::new(PendingSignals::default()),
+            actions_slot: SpinLock::new(actions),
             default_restorer,
-            children: SpinNoIrq::new(Vec::new()),
+            children: SpinLock::new(Vec::new()),
             possibly_has_signal: AtomicBool::new(false),
         }
     }
@@ -78,12 +78,12 @@ impl ProcessSignalManager {
     /// table. The slot lock is held only for the duration of the clone, so
     /// callers can freely lock the returned inner mutex without blocking
     /// concurrent `execve` swap.
-    pub fn actions(&self) -> Arc<SpinNoIrq<SignalActions>> {
-        self.actions_slot.lock().clone()
+    pub fn actions(&self) -> Arc<SpinLock<SignalActions>> {
+        self.actions_slot.lock_irqsave().clone()
     }
 
     pub(crate) fn dequeue_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
-        let mut guard = self.pending.lock();
+        let mut guard = self.pending.lock_irqsave();
         let result = guard.dequeue_signal(mask);
         if guard.set.is_empty() {
             self.possibly_has_signal.store(false, Ordering::Release);
@@ -96,7 +96,7 @@ impl ProcessSignalManager {
     /// delivery path to give a process-directed fault priority over other
     /// pending signals.
     pub(crate) fn dequeue_synchronous_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
-        let mut guard = self.pending.lock();
+        let mut guard = self.pending.lock_irqsave();
         let result = guard.dequeue_synchronous_signal(mask);
         if guard.set.is_empty() {
             self.possibly_has_signal.store(false, Ordering::Release);
@@ -117,7 +117,7 @@ impl ProcessSignalManager {
         // shared inner `Arc<SignalActions>` (with `CLONE_SIGHAND`) without
         // racing this read.
         let actions_arc = self.actions();
-        let actions = actions_arc.lock();
+        let actions = actions_arc.lock_irqsave();
 
         // Check whether the signal is ignored, but only when it is not blocked
         // in all threads AND no thread is waiting for it via sigwaitinfo.
@@ -128,7 +128,7 @@ impl ProcessSignalManager {
         // In both cases, applying is_ignore() would silently drop the signal
         // and leave sigwaitinfo sleeping forever.
         let (all_blocked, any_sigwait_for_this) = {
-            let children = self.children.lock();
+            let children = self.children.lock_irqsave();
             let all = !children.is_empty()
                 && children
                     .iter()
@@ -136,7 +136,7 @@ impl ProcessSignalManager {
             let any = children.iter().any(|(_, thread)| {
                 thread
                     .upgrade()
-                    .is_some_and(|t| t.sigwait_set.lock().is_some_and(|s| s.has(signo)))
+                    .is_some_and(|t| t.sigwait_set.lock_irqsave().is_some_and(|s| s.has(signo)))
             });
             (all, any)
         };
@@ -148,11 +148,11 @@ impl ProcessSignalManager {
         // potential deadlocks.
         drop(actions);
 
-        if self.pending.lock().put_signal(sig) {
+        if self.pending.lock_irqsave().put_signal(sig) {
             self.possibly_has_signal.store(true, Ordering::Release);
         }
         let mut result = None;
-        self.children.lock().retain(|(tid, thread)| {
+        self.children.lock_irqsave().retain(|(tid, thread)| {
             if let Some(thread) = thread.upgrade() {
                 if result.is_none() && !thread.signal_blocked(signo) {
                     result = Some(*tid);
@@ -167,12 +167,12 @@ impl ProcessSignalManager {
 
     /// Gets currently pending signals.
     pub fn pending(&self) -> SignalSet {
-        self.pending.lock().set
+        self.pending.lock_irqsave().set
     }
 
     /// Resets actions to empty.
     pub fn reset_actions(&self) {
-        *self.actions().lock() = Default::default();
+        *self.actions().lock_irqsave() = Default::default();
     }
 
     /// Resets actions across `execve` per POSIX/Linux semantics.
@@ -196,7 +196,7 @@ impl ProcessSignalManager {
     pub fn reset_actions_for_exec(&self) {
         let mut new_actions = {
             let current = self.actions();
-            current.lock().clone()
+            current.lock_irqsave().clone()
         };
         for signo_idx in 0..64u8 {
             let Some(signo) = Signo::from_repr(signo_idx + 1) else {
@@ -212,14 +212,14 @@ impl ProcessSignalManager {
                 *action = SignalAction::default();
             }
         }
-        *self.actions_slot.lock() = Arc::new(SpinNoIrq::new(new_actions));
+        *self.actions_slot.lock_irqsave() = Arc::new(SpinLock::new(new_actions));
     }
 
     /// Updates a thread's TID in the children registration. Called by
     /// `execve`'s de_thread step so signals targeting the inherited leader
     /// TID resolve to the (renamed) caller thread.
     pub fn rename_child(&self, old_tid: u32, new_tid: u32) {
-        let mut children = self.children.lock();
+        let mut children = self.children.lock_irqsave();
         for entry in children.iter_mut() {
             if entry.0 == old_tid {
                 entry.0 = new_tid;
@@ -245,7 +245,7 @@ impl ProcessSignalManager {
 
         let old_action = {
             let actions_arc = self.actions();
-            let mut actions = actions_arc.lock();
+            let mut actions = actions_arc.lock_irqsave();
             let old = actions[signo].clone();
             if let Some(act) = new_action {
                 actions[signo] = act;

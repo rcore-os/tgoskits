@@ -45,7 +45,6 @@ use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
 use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time};
-use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::bytes_of;
@@ -82,6 +81,7 @@ use super::drm::{
 use crate::{
     file::{FileLike, add_file_like},
     pseudofs::{DeviceMmap, DeviceOps},
+    sync::Mutex,
 };
 
 pub const DRIVER_NAME: &str = "starry-simpledrm";

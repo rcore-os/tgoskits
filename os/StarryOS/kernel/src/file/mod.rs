@@ -31,7 +31,6 @@ use core::{ffi::c_int, time::Duration};
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
-use ax_kspin::SpinRwLock as RwLock;
 use ax_task::{TaskState, current};
 use axfs_ng_vfs::DeviceId;
 use axpoll::Pollable;
@@ -93,6 +92,7 @@ pub use self::{
 };
 use crate::{
     pseudofs::DeviceMmap,
+    sync::RwLock,
     task::{AX_FILE_LIMIT, AsThread, tasks},
 };
 

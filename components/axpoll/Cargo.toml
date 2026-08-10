@@ -13,7 +13,7 @@ axtest = ["dep:axtest"]
 default = []
 
 [dependencies]
-ax-kspin = { workspace = true }
+ax-sync = { workspace = true }
 axtest = { workspace = true, optional = true }
 bitflags = { version = "2.10", default-features = false }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
@@ -26,7 +26,7 @@ spin = { workspace = true }
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dev-dependencies]
-ax-kspin = { workspace = true, features = ["host-test", "smp"] }
+ax-sync = { workspace = true, features = ["host-test", "smp"] }
 tokio = { version = "1.37", features = [
     "rt-multi-thread",
     "macros",

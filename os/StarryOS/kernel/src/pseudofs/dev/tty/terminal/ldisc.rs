@@ -7,8 +7,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
 use ax_task::future::block_on;
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
@@ -21,7 +19,10 @@ use ringbuf::{
 use starry_signal::SignalInfo;
 
 use super::{Terminal, termios::Termios2};
-use crate::task::send_signal_to_process_group;
+use crate::{
+    sync::{IrqMutex, Mutex},
+    task::send_signal_to_process_group,
+};
 
 const BUF_SIZE: usize = 4096;
 const ECHO_QUEUE_CAP: usize = 4096;
@@ -299,7 +300,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
 
 struct EchoQueue<W> {
     writer: W,
-    queue: SpinNoIrq<VecDeque<u8>>,
+    queue: IrqMutex<VecDeque<u8>>,
     wake_source: Arc<PollSet>,
     dropped: AtomicUsize,
 }
@@ -308,7 +309,7 @@ impl<W: TtyWrite> EchoQueue<W> {
     fn new(writer: W, wake_source: Arc<PollSet>) -> Arc<Self> {
         Arc::new(Self {
             writer,
-            queue: SpinNoIrq::new(VecDeque::new()),
+            queue: IrqMutex::new(VecDeque::new()),
             wake_source,
             dropped: AtomicUsize::new(0),
         })

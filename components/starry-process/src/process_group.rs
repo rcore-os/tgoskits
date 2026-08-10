@@ -4,7 +4,7 @@ use alloc::{
 };
 use core::fmt;
 
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use weak_map::WeakMap;
 
 use crate::{Pid, Process, Session};
@@ -13,7 +13,7 @@ use crate::{Pid, Process, Session};
 pub struct ProcessGroup {
     pgid: Pid,
     pub(crate) session: Arc<Session>,
-    pub(crate) processes: SpinNoIrq<WeakMap<Pid, Weak<Process>>>,
+    pub(crate) processes: SpinLock<WeakMap<Pid, Weak<Process>>>,
 }
 
 impl ProcessGroup {
@@ -25,10 +25,10 @@ impl ProcessGroup {
         let group = Arc::new(Self {
             pgid,
             session: session.clone(),
-            processes: SpinNoIrq::new(WeakMap::new()),
+            processes: SpinLock::new(WeakMap::new()),
         });
 
-        let mut groups = session.process_groups.lock();
+        let mut groups = session.process_groups.lock_irqsave();
         if let Some(existing) = groups.get(&pgid) {
             existing
         } else {
@@ -51,7 +51,7 @@ impl ProcessGroup {
 
     /// The [`Process`]es that belong to this [`ProcessGroup`].
     pub fn processes(&self) -> Vec<Arc<Process>> {
-        self.processes.lock().values().collect()
+        self.processes.lock_irqsave().values().collect()
     }
 }
 

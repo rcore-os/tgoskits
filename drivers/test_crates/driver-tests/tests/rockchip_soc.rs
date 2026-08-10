@@ -9,7 +9,7 @@ mod rockchip_soc_pin;
 
 #[bare_test::tests]
 mod tests {
-    use ax_kspin::SpinNoIrq as Mutex;
+    use ax_sync::SpinLock as Mutex;
     use bare_test::mem::iomap;
     use log::info;
     use rockchip_soc::{Cru, SocType};

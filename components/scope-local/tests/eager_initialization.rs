@@ -12,10 +12,10 @@ static PREEMPT_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static EAGER_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static PINNED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-struct KernelGuardIfImpl;
+struct CriticalSectionOpsImpl;
 
 #[ax_crate_interface::impl_interface]
-impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
+impl ax_sync::CriticalSectionOps for CriticalSectionOpsImpl {
     fn enable_preempt() {
         PREEMPT_DEPTH.fetch_sub(1, Ordering::AcqRel);
     }
@@ -23,6 +23,12 @@ impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
     fn disable_preempt() {
         PREEMPT_DEPTH.fetch_add(1, Ordering::AcqRel);
     }
+
+    fn irq_save_and_disable() -> usize {
+        1
+    }
+
+    fn irq_restore(_state: usize) {}
 }
 
 scope_local! {

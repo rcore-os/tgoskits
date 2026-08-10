@@ -5,25 +5,25 @@
 //! plugged into foreign generic code that is parameterised over
 //! `lock_api::RawMutex` (for example the `kprobe` crate's `ProbeManager`).
 //!
-//! The guard semantics still come from a [`BaseGuard`]: acquiring the lock
+//! The guard semantics still come from a [`GuardState`]: acquiring the lock
 //! runs `G::acquire()` (e.g. disabling preemption and local IRQs) *before*
 //! spinning, and releasing it restores that state. This matches the behaviour
-//! of [`SpinNoIrq`](crate::SpinNoIrq) and is what makes the lock safe to take
+//! of [`SpinLock::lock_irqsave`](crate::SpinLock::lock_irqsave) and is what makes the lock safe to take
 //! from contexts that may be re-entered by interrupts or trap handlers.
 
 #[cfg(feature = "smp")]
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{cell::UnsafeCell, marker::PhantomData};
 
-use ax_kernel_guard::{BaseGuard, NoPreemptIrqSave};
+use crate::context::{GuardState, PreemptIrqSaveState};
 
 /// A raw spin lock implementing [`lock_api::RawMutex`], whose critical-section
-/// guard behaviour is determined by the [`BaseGuard`] type parameter `G`.
+/// guard behaviour is determined by the [`GuardState`] type parameter `G`.
 ///
 /// On a single-core build (without the `smp` feature) the atomic flag is
 /// elided, but `G::acquire()`/`G::release()` are still run so preemption and
 /// IRQ state are managed correctly.
-pub struct BaseRawSpinLock<G: BaseGuard> {
+pub struct BaseRawSpinLock<G: GuardState> {
     _phantom: PhantomData<G>,
 
     #[cfg(feature = "smp")]
@@ -37,9 +37,9 @@ pub struct BaseRawSpinLock<G: BaseGuard> {
 
 // The `UnsafeCell<Option<G::State>>` is only ever touched by the thread that
 // owns the lock, so the lock as a whole is `Sync`.
-unsafe impl<G: BaseGuard> Sync for BaseRawSpinLock<G> {}
+unsafe impl<G: GuardState> Sync for BaseRawSpinLock<G> {}
 
-impl<G: BaseGuard> BaseRawSpinLock<G> {
+impl<G: GuardState> BaseRawSpinLock<G> {
     /// Creates a new, unlocked raw spin lock.
     pub const fn new() -> Self {
         Self {
@@ -70,13 +70,13 @@ impl<G: BaseGuard> BaseRawSpinLock<G> {
     }
 }
 
-impl<G: BaseGuard> Default for BaseRawSpinLock<G> {
+impl<G: GuardState> Default for BaseRawSpinLock<G> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-unsafe impl<G: BaseGuard + Send + Sync + 'static> lock_api::RawMutex for BaseRawSpinLock<G> {
+unsafe impl<G: GuardState + Send + Sync + 'static> lock_api::RawMutex for BaseRawSpinLock<G> {
     const INIT: Self = Self::new();
 
     type GuardMarker = lock_api::GuardNoSend;
@@ -133,6 +133,6 @@ unsafe impl<G: BaseGuard + Send + Sync + 'static> lock_api::RawMutex for BaseRaw
 }
 
 /// A raw spin lock that disables kernel preemption and local IRQs while held,
-/// mirroring [`SpinNoIrq`](crate::SpinNoIrq) but exposed as a
+/// mirroring [`SpinLock::lock_irqsave`](crate::SpinLock::lock_irqsave) but exposed as a
 /// [`lock_api::RawMutex`] for use with foreign generic code.
-pub type RawSpinNoIrq = BaseRawSpinLock<NoPreemptIrqSave>;
+pub type RawIrqSaveMutex = BaseRawSpinLock<PreemptIrqSaveState>;

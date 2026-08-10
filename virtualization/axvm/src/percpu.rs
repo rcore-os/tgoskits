@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use ax_std::os::arceos::{guard::NoPreemptIrqSave, percpu as ax_percpu};
+use ax_std::os::arceos::{guard::PreemptIrqSaveGuard, percpu as ax_percpu};
 use axvm_types::VmArchPerCpuOps;
 
 use crate::{
@@ -99,7 +99,7 @@ fn cpu_enabled(cpu_id: usize) -> Option<()> {
 }
 
 fn with_current_percpu_mut<R>(operation: impl FnOnce(&mut AxVMPerCpu) -> R) -> R {
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     // SAFETY: initialization and hardware enable are serialized once per CPU;
     // the guard excludes migration, IRQ/re-entry, and conflicting access.
     unsafe {

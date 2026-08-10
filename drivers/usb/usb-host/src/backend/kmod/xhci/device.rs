@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
 use usb_if::{
