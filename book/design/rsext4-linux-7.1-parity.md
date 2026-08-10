@@ -292,3 +292,25 @@ RSEXT4_BENCH_SUMMARY commit=dad8b5da29364b0a5d1b85c9aaec912645c72b42 arch=x86_64
 丢弃样本。同机对上一实现点 `bbecc4873` 的 50-run 对照得到 sync median/p95
 31.568/41.513 us，说明新增 allocator 没有造成 median 固定开销，但当前 harness
 的微秒级 sync 尾延迟仍未满足冻结 dev 基线；在门槛恢复前不得把本项标记为绿。
+
+### 7.10 sparse truncate growth 检查点
+
+采集时间：2026-08-11；被测实现 commit 为
+`5bcde9da75af753dee5cd496a021f320465a74fd`，环境与 7.8 相同。该检查点将
+truncate grow 对齐 Linux sparse 语义，不再为新逻辑长度预分配 extent 或 legacy
+block；grow 前清零旧 partial EOF，并让 extent whole-file read 按逻辑块位置重建
+hole。dense extent 热路径直接顺序遍历映射值，避免为无 hole 的既有 workload
+逐块执行 sparse 判定。
+
+正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-sparse-truncate.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=5bcde9da75af753dee5cd496a021f320465a74fd arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6395756 write_p95_ns=7162953 read_median_ns=6328195 read_p95_ns=7062791 sync_median_ns=30754 sync_p95_ns=41326
+```
+
+相对 dev 基线，write/read median 分别改善约 6.3% 和 12.3%，对应 p95 分别
+改善约 2.4% 和 16.7%；sync p95 回退约 6.9%，仍在 10% latency 上限以内。
+sync median 增加约 19.1%，但该指标不是吞吐/IOPS workload，sync latency 的
+硬门槛按 p95 判定；因此本检查点满足冻结的 host 性能门槛。7.9 的 legacy
+allocator sync p95 红项仍独立保留，未被本检查点覆盖或改判。
