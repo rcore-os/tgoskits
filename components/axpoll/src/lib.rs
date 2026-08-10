@@ -145,6 +145,24 @@ impl Inner {
         }
         old.cursor = 0;
     }
+
+    fn take_one_ready(&mut self, ready: IoEvents) -> Option<Entry> {
+        let len = self.len();
+        let mut selected = None;
+        let mut keep_len = 0;
+
+        for index in 0..len {
+            let entry = unsafe { self.entries[index].assume_init_read() };
+            if selected.is_none() && entry.interests.intersects(ready) {
+                selected = Some(entry);
+            } else {
+                self.entries[keep_len].write(entry);
+                keep_len += 1;
+            }
+        }
+        self.cursor = keep_len;
+        selected
+    }
 }
 
 impl Drop for Inner {
@@ -211,6 +229,31 @@ impl PollSet {
             entry.wake();
         }
         woke
+    }
+
+    /// Wakes one registered waker whose interests intersect `ready`.
+    ///
+    /// Matching wakers that are not selected remain registered. This is used
+    /// by wait queues with Linux-style exclusive wakeup semantics, where one
+    /// readiness transition should give one waiter a chance to consume work.
+    ///
+    /// # Safety
+    ///
+    /// This method is task/deferred-context only. Callers must not invoke it
+    /// from hard IRQ, NMI, or trap callbacks. The readiness state represented
+    /// by `ready` must be published before this method is called, and callers
+    /// must not hold locks that may be re-entered by waker execution or poll
+    /// wakeup paths.
+    pub unsafe fn wake_one(&self, ready: IoEvents) -> usize {
+        let Some(inner) = self.0.get() else {
+            return 0;
+        };
+        let ready_entry = inner.lock().take_one_ready(ready);
+        let Some(entry) = ready_entry else {
+            return 0;
+        };
+        entry.wake();
+        1
     }
 
     /// Wakes up registered wakers whose interests intersect `ready` from IRQ context.

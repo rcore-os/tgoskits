@@ -8,12 +8,13 @@
  *   4. 信号量模式：read 每次返回 1 并递减
  *   5. 多次写入累积
  *   6. 写 UINT64_MAX → EINVAL
- *   7. 读写缓冲区大小校验（< 8 字节 → EINVAL）
+ *   7. 读写缓冲区大小校验（eventfd 写入必须恰好为 8 字节）
  *   8. 非阻塞模式：空 eventfd 读 → EAGAIN，满 eventfd 写 → EAGAIN
  *   9. 写 0 边界情况
  *  10. 计数器溢出保护：写会使计数超过 UINT64_MAX-1 → EAGAIN
  *  11. 阻塞读：子进程写入后父进程阻塞读被唤醒
  *  12. fork 继承：子进程可以读写父进程创建的 eventfd
+ *  13. poll 返回精确的 Linux readiness mask，并清空负 fd 的 revents
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -21,11 +22,15 @@
 
 #include "test_framework.h"
 #include <errno.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 /* 标准 eventfd 读写辅助函数 */
@@ -35,6 +40,15 @@ static int do_write(int fd, uint64_t val) {
 
 static int do_read(int fd, uint64_t *val) {
     return (int)read(fd, val, sizeof(*val));
+}
+
+static long raw_ppoll(struct pollfd *fds, nfds_t nfds) {
+    const struct timespec timeout = {
+        .tv_sec = 0,
+        .tv_nsec = 0,
+    };
+
+    return syscall(SYS_ppoll, fds, nfds, &timeout, NULL, 0);
 }
 
 /* ─── 1. 基本创建与 flags ─────────────────────────────────── */
@@ -206,6 +220,55 @@ static void test_buffer_size_validation(void) {
         CHECK_RET(do_read(fd, &val64), (ssize_t)sizeof(val64), "read with 8-byte buffer succeeds");
         CHECK(val64 == 1, "read with 8-byte buffer returns initval 1");
 
+        /* eventfd checks count before touching the user pointer. */
+        errno = 0;
+        ret = syscall(SYS_write, fd, (const void *)(uintptr_t)1, 7);
+        CHECK(ret == -1 && errno == EINVAL,
+              "short raw write with invalid pointer returns EINVAL before EFAULT");
+
+        errno = 0;
+        ret = syscall(SYS_write, fd, (const void *)(uintptr_t)1, 9);
+        CHECK(ret == -1 && errno == EINVAL,
+              "oversized raw write with invalid pointer returns EINVAL before EFAULT");
+
+        close(fd);
+    }
+
+    {
+        int fd = eventfd(0, EFD_NONBLOCK);
+        uint8_t oversized[sizeof(uint64_t) + 1];
+        uint64_t written = 17;
+        uint64_t observed = 0;
+
+        CHECK(fd >= 0, "fd for oversized raw write test");
+        memcpy(oversized, &written, sizeof(written));
+        oversized[sizeof(written)] = 0xa5;
+
+        errno = 0;
+        long ret = syscall(SYS_write, fd, oversized, sizeof(oversized));
+        CHECK(ret == -1 && errno == EINVAL,
+              "raw write with 9-byte buffer returns EINVAL");
+        CHECK_ERR(do_read(fd, &observed), EAGAIN,
+                  "rejected oversized raw write leaves the counter unchanged");
+
+        struct iovec oversized_iov = {
+            .iov_base = oversized,
+            .iov_len = sizeof(oversized),
+        };
+        errno = 0;
+        ret = syscall(SYS_writev, fd, &oversized_iov, 1);
+        CHECK(ret == -1 && errno == EINVAL,
+              "raw writev with one 9-byte segment returns EINVAL");
+
+        struct iovec invalid_oversized_iov = {
+            .iov_base = (void *)(uintptr_t)1,
+            .iov_len = sizeof(oversized),
+        };
+        errno = 0;
+        ret = syscall(SYS_writev, fd, &invalid_oversized_iov, 1);
+        CHECK(ret == -1 && errno == EINVAL,
+              "oversized raw writev validates total length before iov_base");
+
         close(fd);
     }
 }
@@ -375,6 +438,27 @@ static void test_fork_inheritance(void) {
     close(fd);
 }
 
+/* ─── 13. poll readiness mask ───────────────────────────── */
+
+static void test_poll_readiness_mask(void) {
+    int fd = eventfd(1, EFD_NONBLOCK);
+    struct pollfd fds[] = {
+        {.fd = fd, .events = INT16_MAX, .revents = (short)0x5a5a},
+        {.fd = -2, .events = INT16_MAX, .revents = (short)0x5a5a},
+        {.fd = -2, .events = POLLIN | POLLOUT, .revents = (short)0x5a5a},
+        {.fd = -2, .events = POLLERR, .revents = (short)0x5a5a},
+    };
+
+    CHECK(fd >= 0, "fd for poll readiness mask test");
+    CHECK_RET(raw_ppoll(fds, sizeof(fds) / sizeof(fds[0])), 1,
+              "poll reports exactly one ready eventfd");
+    CHECK(fds[0].revents == (POLLIN | POLLOUT),
+          "eventfd poll reports only Linux POLLIN|POLLOUT readiness");
+    CHECK(fds[1].revents == 0 && fds[2].revents == 0 && fds[3].revents == 0,
+          "poll ignores negative fds and clears their revents");
+    close(fd);
+}
+
 /* ─── main ────────────────────────────────────────────────── */
 
 int main(void) {
@@ -415,6 +499,9 @@ int main(void) {
 
     printf("\n--- 12. fork inheritance ---\n");
     test_fork_inheritance();
+
+    printf("\n--- 13. poll readiness mask ---\n");
+    test_poll_readiness_mask();
 
     TEST_DONE();
 }

@@ -78,6 +78,27 @@ fn axpoll_wakes_only_matching_interests() {
 }
 
 #[axtest]
+fn axpoll_exclusive_wake_keeps_other_matching_waiters() {
+    let poll_set = PollSet::new();
+    let first_counter = WakeCounter::new();
+    let second_counter = WakeCounter::new();
+    let first_waker = counter_waker(&first_counter);
+    let second_waker = counter_waker(&second_counter);
+
+    unsafe {
+        poll_set.register(&first_waker, IoEvents::IN);
+        poll_set.register(&second_waker, IoEvents::IN);
+    }
+
+    ax_assert_eq!(unsafe { poll_set.wake_one(IoEvents::IN) }, 1);
+    ax_assert_eq!(first_counter.count() + second_counter.count(), 1);
+    ax_assert_eq!(unsafe { poll_set.wake_one(IoEvents::IN) }, 1);
+    ax_assert_eq!(first_counter.count(), 1);
+    ax_assert_eq!(second_counter.count(), 1);
+    ax_assert_eq!(unsafe { poll_set.wake_one(IoEvents::IN) }, 0);
+}
+
+#[axtest]
 fn axpoll_capacity_overwrite_and_drop_rules_hold() {
     let poll_set = PollSet::new();
     let counters = (0..65).map(|_| WakeCounter::new()).collect::<Vec<_>>();
