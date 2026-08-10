@@ -101,19 +101,17 @@ HVIP 的保存副本由 `riscv_vcpu` 独占；只有当前绑定到硬件的 vCP
 `/proc/interrupts` 非零 IPI 计数，最终输出唯一标记 `guest smp ipi pass!`。
 
 最低层行为回归直接编译 RISC-V 生产模块，并通过 RISC-V musl test binary 在
-`qemu-riscv64-static` 中执行。`riscv_vcpu` 用例验证 legacy 与 SBI v0.2 completion
-对 A0/A1 的不同写回；AxVM RISC-V router 用例验证广播、零 mask、目标顺序、hart ID
-溢出、未映射 hart、重复 vCPU 映射，以及运行时投递失败。参数错误用例同时断言完整
-目标集合校验完成前没有发布任何中断；运行时失败用例断言已经发布的前缀不会被伪装成
-可回滚。对应命令为：
+qemu-user 中执行。跨架构 crate test 的 musl target、静态链接、linker 和 qemu-user
+runner 统一由 axbuild 的 `cross-test` 命令解析，不把工具链策略展开到 CI workflow。
+`riscv_vcpu` 用例验证 legacy 与 SBI v0.2 completion 对 A0/A1 的不同写回；AxVM
+RISC-V router 用例验证广播、零 mask、目标顺序、hart ID 溢出、未映射 hart、重复
+vCPU 映射，以及运行时投递失败。参数错误用例同时断言完整目标集合校验完成前没有发布
+任何中断；运行时失败用例断言已经发布的前缀不会被伪装成可回滚。对应命令为：
 
 ```bash
-CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
-  CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_RUNNER=qemu-riscv64-static \
-  RUSTFLAGS='-C target-feature=+crt-static' \
-  cargo test -p riscv_vcpu -p axvm \
-    --target riscv64gc-unknown-linux-musl \
-    --features axvm/host-test --no-default-features --lib ipi
+cargo xtask cross-test --arch riscv64 \
+  --package riscv_vcpu --package axvm \
+  --features axvm/host-test --no-default-features --lib ipi
 ```
 
 该目标相关行为测试保持在 RISC-V 私有模块和 vCPU 协议模块内部，不通过 `#[path]`
