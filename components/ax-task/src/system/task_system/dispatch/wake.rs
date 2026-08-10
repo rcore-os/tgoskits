@@ -176,7 +176,10 @@ impl TaskSystem {
             policy,
             entity,
             &sched.affinity.affinity,
-            waker.or(previous),
+            // Linux enters select_task_rq_{rt,dl} with p->wake_cpu. The
+            // current waker is not an implicit placement override for these
+            // classes; only Fair wake-affine compares the two CPUs.
+            previous.or(waker),
             None,
         )
     }
