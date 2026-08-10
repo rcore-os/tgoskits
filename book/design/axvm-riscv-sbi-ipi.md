@@ -95,9 +95,9 @@ HVIP 的保存副本由 `riscv_vcpu` 独占；只有当前绑定到硬件的 vCP
 
 ## 验证与回滚
 
-回归使用独立的 `linux-smp3-ipi.toml`，不改变 `linux-smp1.toml` 的单核语义。该配置为三核
-新内核提供 128 MiB guest RAM，避免 64 MiB 配置在初始化驱动前只剩约 15 MiB 可用内存而
-失去确定性。QEMU 用例同时检查 `nproc >= 3`、SBI IPI extension 日志和
+回归只保留 `linux-smp3-ipi.toml`，删除不再提供额外覆盖的 RISC-V QEMU 单核配置。三核
+配置为新内核提供 128 MiB guest RAM，避免 64 MiB 配置在初始化驱动前只剩约 15 MiB
+可用内存而失去确定性。QEMU 用例同时检查 `nproc >= 3`、SBI IPI extension 日志和
 `/proc/interrupts` 非零 IPI 计数，最终输出唯一标记 `guest smp ipi pass!`。
 
 最低层行为回归直接编译 RISC-V 生产模块，并通过 RISC-V musl test binary 在
