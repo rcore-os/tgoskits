@@ -7,7 +7,7 @@ use crate::{
     BlockIo, Ext4FileSystem, Jbd2Dev,
     bmalloc::{AbsoluteBN, InodeNumber},
     disknode::Ext4Inode,
-    endian::read_u32_le,
+    endian::{read_u32_le, write_u32_le},
     error::{Ext4Error, Ext4Result},
     superblock::Ext4Superblock,
 };
@@ -134,6 +134,285 @@ pub(crate) fn has_legacy_indirect_mapping(filesystem: &Ext4FileSystem, inode: &E
             .any(|&block| block != 0)
 }
 
+#[derive(Clone, Copy, Debug)]
+enum LegacyPointerOwner {
+    Inode { slot: usize },
+    Indirect { block: AbsoluteBN, index: usize },
+}
+
+#[derive(Debug)]
+struct MissingLegacyBranch {
+    owner: LegacyPointerOwner,
+    metadata_offsets: Vec<usize>,
+}
+
+enum LegacyMappingState {
+    Mapped(AbsoluteBN),
+    Hole(MissingLegacyBranch),
+}
+
+struct LegacyAllocationRollback {
+    owner: LegacyPointerOwner,
+    published_pointer: u32,
+    metadata_blocks: Vec<AbsoluteBN>,
+    data_block: AbsoluteBN,
+    previous_i_blocks_lo: u32,
+    previous_i_blocks_high: u16,
+    previous_huge_file: bool,
+}
+
+/// One existing or newly allocated legacy mapping.
+pub(crate) struct LegacyBlockAllocation {
+    physical: AbsoluteBN,
+    rollback: Option<LegacyAllocationRollback>,
+}
+
+impl LegacyBlockAllocation {
+    pub(crate) fn physical(&self) -> AbsoluteBN {
+        self.physical
+    }
+
+    pub(crate) fn is_new(&self) -> bool {
+        self.rollback.is_some()
+    }
+
+    /// Reverses an allocation that has not been committed by its inode update.
+    pub(crate) fn rollback<B: BlockIo>(
+        mut self,
+        filesystem: &mut Ext4FileSystem,
+        device: &mut Jbd2Dev<B>,
+        inode_number: InodeNumber,
+        inode: &mut Ext4Inode,
+    ) -> Ext4Result<()> {
+        let Some(rollback) = self.rollback.take() else {
+            return Ok(());
+        };
+
+        match rollback.owner {
+            LegacyPointerOwner::Inode { slot } => {
+                if inode.i_block[slot] != rollback.published_pointer {
+                    return Err(
+                        Ext4Error::corrupted().with_operation("indirect:rollback_inode_pointer")
+                    );
+                }
+                inode.i_block[slot] = 0;
+            }
+            LegacyPointerOwner::Indirect { block, index } => {
+                let mut reader = LegacyBlockReader::new(filesystem, device, inode_number)?;
+                reader.replace_pointer(block, index, rollback.published_pointer, 0)?;
+            }
+        }
+
+        inode.i_blocks_lo = rollback.previous_i_blocks_lo;
+        inode.l_i_blocks_high = rollback.previous_i_blocks_high;
+        if rollback.previous_huge_file {
+            inode.i_flags |= Ext4Inode::EXT4_HUGE_FILE_FL;
+        } else {
+            inode.i_flags &= !Ext4Inode::EXT4_HUGE_FILE_FL;
+        }
+
+        discard_unpublished_branch(
+            filesystem,
+            device,
+            rollback.data_block,
+            &rollback.metadata_blocks,
+        )
+    }
+}
+
+/// Allocates a complete missing legacy branch before publishing its first pointer.
+pub(crate) fn allocate_legacy_inode_block<B: BlockIo>(
+    filesystem: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    inode_number: InodeNumber,
+    inode: &mut Ext4Inode,
+    logical_block: u32,
+) -> Ext4Result<LegacyBlockAllocation> {
+    if inode.uses_extents() || is_fast_symlink(filesystem, inode) {
+        return Err(Ext4Error::unsupported().with_operation("indirect:allocate_format"));
+    }
+
+    let path = block_to_path(filesystem.block_size(), logical_block)?;
+    let state = {
+        let mut reader = LegacyBlockReader::new(filesystem, device, inode_number)?;
+        reader.mapping_state(inode, path)?
+    };
+    let missing = match state {
+        LegacyMappingState::Mapped(physical) => {
+            return Ok(LegacyBlockAllocation {
+                physical,
+                rollback: None,
+            });
+        }
+        LegacyMappingState::Hole(missing) => missing,
+    };
+
+    let added_blocks = u64::try_from(missing.metadata_offsets.len())
+        .map_err(|_| Ext4Error::overflow())?
+        .checked_add(1)
+        .ok_or_else(Ext4Error::overflow)?;
+    let block_size = filesystem.block_size() as u32;
+    let huge_file_feature = filesystem
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+    let mut updated_accounting = *inode;
+    let added_sectors = added_blocks
+        .checked_mul(u64::from(block_size / 512))
+        .ok_or_else(Ext4Error::overflow)?;
+    let updated_sectors = inode
+        .blocks_count(block_size, huge_file_feature)
+        .checked_add(added_sectors)
+        .ok_or_else(Ext4Error::overflow)?;
+    updated_accounting.set_blocks_count(updated_sectors, block_size, huge_file_feature)?;
+
+    let mut metadata_blocks = Vec::with_capacity(missing.metadata_offsets.len());
+    for _ in &missing.metadata_offsets {
+        match filesystem.alloc_block(device) {
+            Ok(block) => metadata_blocks.push(block),
+            Err(operation_error) => {
+                let cleanup = discard_unpublished_metadata(filesystem, device, &metadata_blocks);
+                return Err(error_after_legacy_cleanup(operation_error, cleanup));
+            }
+        }
+    }
+    let data_block = match filesystem.alloc_block(device) {
+        Ok(block) => block,
+        Err(operation_error) => {
+            let cleanup = discard_unpublished_metadata(filesystem, device, &metadata_blocks);
+            return Err(error_after_legacy_cleanup(operation_error, cleanup));
+        }
+    };
+
+    let previous_i_blocks_lo = inode.i_blocks_lo;
+    let previous_i_blocks_high = inode.l_i_blocks_high;
+    let previous_huge_file = inode.i_flags & Ext4Inode::EXT4_HUGE_FILE_FL != 0;
+    let prepare_result = (|| {
+        let mut child_pointer = data_block.to_u32()?;
+        filesystem
+            .datablock_cache
+            .modify_new(device, data_block, |data| data.fill(0))?;
+
+        for (&metadata, &offset) in metadata_blocks.iter().zip(&missing.metadata_offsets).rev() {
+            let metadata_pointer = metadata.to_u32()?;
+            device.read_block(metadata)?;
+            device.buffer_mut().fill(0);
+            let start = offset
+                .checked_mul(size_of::<u32>())
+                .ok_or_else(Ext4Error::overflow)?;
+            let end = start
+                .checked_add(size_of::<u32>())
+                .ok_or_else(Ext4Error::overflow)?;
+            let target = device.buffer_mut().get_mut(start..end).ok_or_else(|| {
+                Ext4Error::corrupted().with_operation("indirect:branch_pointer_offset")
+            })?;
+            write_u32_le(child_pointer, target);
+            device.write_block(metadata, true)?;
+            child_pointer = metadata_pointer;
+        }
+        Ok(child_pointer)
+    })();
+
+    let published_pointer = match prepare_result {
+        Ok(pointer) => pointer,
+        Err(operation_error) => {
+            let cleanup =
+                discard_unpublished_branch(filesystem, device, data_block, &metadata_blocks);
+            return Err(error_after_legacy_cleanup(operation_error, cleanup));
+        }
+    };
+
+    match missing.owner {
+        LegacyPointerOwner::Inode { slot } => inode.i_block[slot] = published_pointer,
+        LegacyPointerOwner::Indirect { block, index } => {
+            let publish_result = {
+                let mut reader = LegacyBlockReader::new(filesystem, device, inode_number)?;
+                reader.replace_pointer(block, index, 0, published_pointer)
+            };
+            if let Err(operation_error) = publish_result {
+                let restore_result = {
+                    let mut reader = LegacyBlockReader::new(filesystem, device, inode_number)?;
+                    reader.restore_pointer(block, index, published_pointer, 0)
+                };
+                if let Err(restore_error) = restore_result {
+                    // The parent may still reference the prepared branch. Do
+                    // not free it unless restoring the old pointer succeeds.
+                    return Err(restore_error.with_operation("rollback:indirect_publish_pointer"));
+                }
+                let cleanup =
+                    discard_unpublished_branch(filesystem, device, data_block, &metadata_blocks);
+                return Err(error_after_legacy_cleanup(operation_error, cleanup));
+            }
+        }
+    }
+
+    inode.i_blocks_lo = updated_accounting.i_blocks_lo;
+    inode.l_i_blocks_high = updated_accounting.l_i_blocks_high;
+    if updated_accounting.i_flags & Ext4Inode::EXT4_HUGE_FILE_FL != 0 {
+        inode.i_flags |= Ext4Inode::EXT4_HUGE_FILE_FL;
+    } else {
+        inode.i_flags &= !Ext4Inode::EXT4_HUGE_FILE_FL;
+    }
+
+    Ok(LegacyBlockAllocation {
+        physical: data_block,
+        rollback: Some(LegacyAllocationRollback {
+            owner: missing.owner,
+            published_pointer,
+            metadata_blocks,
+            data_block,
+            previous_i_blocks_lo,
+            previous_i_blocks_high,
+            previous_huge_file,
+        }),
+    })
+}
+
+fn discard_unpublished_branch<B: BlockIo>(
+    filesystem: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    data_block: AbsoluteBN,
+    metadata_blocks: &[AbsoluteBN],
+) -> Ext4Result<()> {
+    filesystem.datablock_cache.invalidate(data_block);
+    let mut first_error = filesystem.free_block(device, data_block).err();
+    if let Err(error) = discard_unpublished_metadata(filesystem, device, metadata_blocks)
+        && first_error.is_none()
+    {
+        first_error = Some(error);
+    }
+    match first_error {
+        Some(error) => Err(error.with_operation("rollback:indirect_branch")),
+        None => Ok(()),
+    }
+}
+
+fn discard_unpublished_metadata<B: BlockIo>(
+    filesystem: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    metadata_blocks: &[AbsoluteBN],
+) -> Ext4Result<()> {
+    let mut first_error = None;
+    for &metadata in metadata_blocks.iter().rev() {
+        device.forget_unpublished_metadata(metadata);
+        if let Err(error) = filesystem.free_block(device, metadata)
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    match first_error {
+        Some(error) => Err(error.with_operation("rollback:indirect_metadata")),
+        None => Ok(()),
+    }
+}
+
+fn error_after_legacy_cleanup(operation_error: Ext4Error, cleanup: Ext4Result<()>) -> Ext4Error {
+    match cleanup {
+        Ok(()) => operation_error,
+        Err(cleanup_error) => cleanup_error,
+    }
+}
+
 struct LegacyBlockReader<'fs, 'dev, B: BlockIo> {
     filesystem: &'fs Ext4FileSystem,
     device: &'dev mut Jbd2Dev<B>,
@@ -174,6 +453,111 @@ impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
             .and_then(|blocks| blocks.checked_add(double))
             .and_then(|blocks| blocks.checked_add(triple))
             .ok_or_else(Ext4Error::overflow)
+    }
+
+    fn mapping_state(
+        &mut self,
+        inode: &Ext4Inode,
+        path: IndirectPath,
+    ) -> Ext4Result<LegacyMappingState> {
+        let root_slot = path.offsets[0];
+        let mut pointer = inode.i_block[root_slot];
+        if pointer == 0 {
+            return Ok(LegacyMappingState::Hole(MissingLegacyBranch {
+                owner: LegacyPointerOwner::Inode { slot: root_slot },
+                metadata_offsets: path.offsets[1..path.depth].to_vec(),
+            }));
+        }
+
+        for path_index in 1..path.depth {
+            let metadata = AbsoluteBN::from(pointer);
+            self.enter_metadata_block(metadata)?;
+            let index = path.offsets[path_index];
+            let pointers = self.read_pointer_block(metadata)?;
+            pointer = *pointers
+                .get(index)
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("indirect:pointer_offset"))?;
+            if pointer == 0 {
+                return Ok(LegacyMappingState::Hole(MissingLegacyBranch {
+                    owner: LegacyPointerOwner::Indirect {
+                        block: metadata,
+                        index,
+                    },
+                    metadata_offsets: path.offsets[path_index + 1..path.depth].to_vec(),
+                }));
+            }
+        }
+
+        let physical = AbsoluteBN::from(pointer);
+        self.validate_data_block(physical)?;
+        Ok(LegacyMappingState::Mapped(physical))
+    }
+
+    fn replace_pointer(
+        &mut self,
+        metadata: AbsoluteBN,
+        index: usize,
+        expected: u32,
+        replacement: u32,
+    ) -> Ext4Result<()> {
+        self.enter_metadata_block(metadata)?;
+        let pointers = self.read_pointer_block(metadata)?;
+        if pointers.get(index).copied() != Some(expected) {
+            return Err(Ext4Error::corrupted().with_operation("indirect:pointer_changed"));
+        }
+        let start = index
+            .checked_mul(size_of::<u32>())
+            .ok_or_else(Ext4Error::overflow)?;
+        let end = start
+            .checked_add(size_of::<u32>())
+            .ok_or_else(Ext4Error::overflow)?;
+        let target = self
+            .device
+            .buffer_mut()
+            .get_mut(start..end)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("indirect:pointer_offset"))?;
+        write_u32_le(replacement, target);
+        self.device.write_block(metadata, true)?;
+        self.metadata_path.pop();
+        Ok(())
+    }
+
+    fn restore_pointer(
+        &mut self,
+        metadata: AbsoluteBN,
+        index: usize,
+        published: u32,
+        previous: u32,
+    ) -> Ext4Result<()> {
+        self.enter_metadata_block(metadata)?;
+        let pointers = self.read_pointer_block(metadata)?;
+        let current = pointers
+            .get(index)
+            .copied()
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("indirect:pointer_offset"))?;
+        if current == previous {
+            self.metadata_path.pop();
+            return Ok(());
+        }
+        if current != published {
+            return Err(Ext4Error::corrupted().with_operation("indirect:restore_pointer_changed"));
+        }
+
+        let start = index
+            .checked_mul(size_of::<u32>())
+            .ok_or_else(Ext4Error::overflow)?;
+        let end = start
+            .checked_add(size_of::<u32>())
+            .ok_or_else(Ext4Error::overflow)?;
+        let target = self
+            .device
+            .buffer_mut()
+            .get_mut(start..end)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("indirect:pointer_offset"))?;
+        write_u32_le(previous, target);
+        self.device.write_block(metadata, true)?;
+        self.metadata_path.pop();
+        Ok(())
     }
 
     fn resolve_path(
@@ -386,7 +770,8 @@ mod tests {
 
     use super::{
         DIRECT_BLOCKS, DOUBLE_INDIRECT_SLOT, IndirectPath, SINGLE_INDIRECT_SLOT,
-        TRIPLE_INDIRECT_SLOT, block_to_path, has_legacy_indirect_mapping,
+        TRIPLE_INDIRECT_SLOT, allocate_legacy_inode_block, block_to_path,
+        has_legacy_indirect_mapping,
     };
     use crate::{
         BLOCK_SIZE, BlockIo, DeviceCapabilities, DeviceGeometry, ErrorContext, Ext4Error,
@@ -699,6 +1084,50 @@ mod tests {
             Some(ErrorContext::Operation {
                 op: "indirect:physical_range",
             })
+        );
+    }
+
+    #[test]
+    fn prepared_legacy_branch_rolls_back_all_blocks_and_accounting() {
+        let (mut device, mut filesystem) = setup_filesystem();
+        let inode_number = InodeNumber::new(12).unwrap();
+        let logical = (DIRECT_BLOCKS + BLOCK_SIZE / size_of::<u32>()) as u32;
+        let mut inode = Ext4Inode::default();
+        let free_blocks_before = filesystem.superblock.free_blocks_count();
+
+        let allocation = allocate_legacy_inode_block(
+            &mut filesystem,
+            &mut device,
+            inode_number,
+            &mut inode,
+            logical,
+        )
+        .unwrap();
+        assert!(allocation.is_new());
+        assert_eq!(
+            inode.blocks_count(BLOCK_SIZE as u32, true),
+            3 * (BLOCK_SIZE / 512) as u64
+        );
+        assert_eq!(
+            resolve_inode_block(&filesystem, &mut device, inode_number, &mut inode, logical,)
+                .unwrap(),
+            Some(allocation.physical())
+        );
+
+        allocation
+            .rollback(&mut filesystem, &mut device, inode_number, &mut inode)
+            .unwrap();
+
+        assert_eq!(inode.i_block, [0; 15]);
+        assert_eq!(inode.blocks_count(BLOCK_SIZE as u32, true), 0);
+        assert_eq!(
+            filesystem.superblock.free_blocks_count(),
+            free_blocks_before
+        );
+        assert_eq!(
+            resolve_inode_block(&filesystem, &mut device, inode_number, &mut inode, logical,)
+                .unwrap(),
+            None
         );
     }
 }

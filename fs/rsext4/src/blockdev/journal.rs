@@ -252,6 +252,17 @@ impl<B: BlockIo> Jbd2Dev<B> {
         Ok(())
     }
 
+    /// Drops an uncommitted update for a newly allocated metadata block.
+    ///
+    /// This is only valid while rolling back a block that has not become
+    /// reachable from durable filesystem metadata. Published blocks require a
+    /// revoke-aware transaction instead of queue removal.
+    pub(crate) fn forget_unpublished_metadata(&mut self, block_id: AbsoluteBN) {
+        if let Some(system) = self.system.as_mut() {
+            system.commit_queue.retain(|update| update.0 != block_id);
+        }
+    }
+
     /// Reads one block through the cached inner device.
     pub fn read_block(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
         if self.journal_use
