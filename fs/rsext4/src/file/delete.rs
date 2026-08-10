@@ -18,8 +18,7 @@ pub fn free_inode<B: BlockIo + crate::runtime::Clock>(
         .collect();
     if inode.uses_extents() {
         used_blocks.extend(
-            ExtentTree::with_checksum(inode, &fs.superblock, inode_num)
-                .external_node_blocks(block_dev)?,
+            ExtentTree::with_filesystem(inode, fs, inode_num).external_node_blocks(block_dev)?,
         );
     }
     used_blocks.sort_unstable();

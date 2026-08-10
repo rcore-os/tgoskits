@@ -187,7 +187,7 @@ fn collect_extents(
     }
 
     let mut out = Vec::new();
-    let tree = ExtentTree::with_checksum(inode, &fs.superblock, fs.root_inode);
+    let tree = ExtentTree::with_filesystem(inode, fs, fs.root_inode);
     if let Ok(root) = tree.load_root_from_inode() {
         walk(dev, &root, &mut out);
     }
@@ -199,7 +199,7 @@ fn build_mapped_inode(fs: &mut Ext4FileSystem, dev: &mut Jbd2Dev<CompatBlockDevi
     let mut inode = new_extent_inode();
     let first = alloc_contiguous(fs, dev, 2);
     let second = alloc_contiguous(fs, dev, 1);
-    let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, fs.root_inode);
+    let mut tree = ExtentTree::with_filesystem(&mut inode, fs, fs.root_inode);
     tree.insert_extent(fs, Ext4Extent::new(0, first.raw(), 2), dev)
         .expect("insert first extent");
     tree.insert_extent(fs, Ext4Extent::new(4, second.raw(), 1), dev)
@@ -348,7 +348,7 @@ fn remove_extend_matches_remove_extent() {
         let mut inode = new_extent_inode();
         let base = alloc_contiguous(&mut fs, &mut dev, 4);
         let inserted = Ext4Extent::new(0, base.raw(), 4);
-        ExtentTree::with_checksum(&mut inode, &fs.superblock, fs.root_inode)
+        ExtentTree::with_filesystem(&mut inode, &fs, fs.root_inode)
             .insert_extent(&mut fs, inserted, &mut dev)
             .expect("insert extent");
         inode
@@ -357,7 +357,7 @@ fn remove_extend_matches_remove_extent() {
 
         let deleted = Ext4Extent::new(1, 0, 2);
         remove(
-            &mut ExtentTree::with_checksum(&mut inode, &fs.superblock, fs.root_inode),
+            &mut ExtentTree::with_filesystem(&mut inode, &fs, fs.root_inode),
             &mut fs,
             deleted,
             &mut dev,

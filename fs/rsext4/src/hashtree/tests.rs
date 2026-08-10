@@ -8,7 +8,7 @@ use crate::{
     config::GOOD_OLD_INODE_SIZE,
     disknode::{Ext4Inode, Ext4Timestamp},
     error::Ext4Error,
-    ext4::Ext4FileSystem,
+    ext4::{Ext4FileSystem, SystemZoneMap},
 };
 
 struct MockBlockDevice {
@@ -131,6 +131,7 @@ fn create_test_fs() -> Ext4FileSystem {
         group_count: 1,
         mounted: true,
         journal_sb_block_start: None,
+        system_zones: SystemZoneMap::default(),
     }
 }
 

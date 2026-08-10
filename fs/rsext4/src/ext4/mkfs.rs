@@ -71,9 +71,6 @@ pub fn compute_fs_layout(
     // ext4 defaults to `8 * block_size` blocks per group.
     let blocks_per_group: u32 = 8 * block_size;
 
-    // Use a simple density heuristic for inode count.
-    let inodes_per_group: u32 = blocks_per_group / 4;
-
     // Round up so the last partial group is still represented.
     let first_data_block = u32::from(block_size == 1024);
     let data_blocks = total_blocks
@@ -107,6 +104,49 @@ pub fn compute_fs_layout(
     } else {
         groups.div_ceil(descs_per_block)
     };
+
+    // Every group stores a complete inode table. Cap the global inode density
+    // so the smallest (normally final) group can contain its own mandatory
+    // metadata instead of publishing descriptor pointers beyond s_blocks_count.
+    let last_group = groups - 1;
+    let last_group_start = u64::from(first_data_block)
+        .checked_add(u64::from(last_group) * u64::from(blocks_per_group))
+        .ok_or_else(Ext4Error::overflow)?;
+    let last_group_blocks = total_blocks
+        .checked_sub(last_group_start)
+        .ok_or_else(Ext4Error::overflow)?
+        .min(u64::from(blocks_per_group));
+    let sparse_super =
+        DEFAULT_FEATURE_RO_COMPAT & Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER != 0;
+    let last_has_backup = sparse_super && need_redundant_backup(last_group);
+    let fixed_metadata_blocks = if last_group == 0 {
+        1u64 + u64::from(gdt_blocks) + u64::from(RESERVED_GDT_BLOCKS) + 2
+    } else if last_has_backup {
+        1u64 + u64::from(gdt_blocks) + 2
+    } else {
+        2
+    };
+    let inode_table_capacity = last_group_blocks
+        .checked_sub(fixed_metadata_blocks)
+        .ok_or_else(|| Ext4Error::no_space().with_operation("mkfs:last_group_metadata"))?;
+    let inodes_per_block = block_size / u32::from(inode_size);
+    let density_target = blocks_per_group / 4;
+    let capacity_inodes = u32::try_from(inode_table_capacity)
+        .map_err(|_| Ext4Error::overflow())?
+        .checked_mul(inodes_per_block)
+        .ok_or_else(Ext4Error::overflow)?;
+    // A single-group image keeps the historical density target: bootstrap
+    // objects and the internal journal need more space than the bare inode
+    // table fit calculation captures. Multi-group images may lower density to
+    // make a partial final group structurally valid.
+    let inodes_per_group = if groups == 1 {
+        density_target
+    } else {
+        density_target.min(capacity_inodes)
+    };
+    if inodes_per_group < RESERVED_INODES {
+        return Err(Ext4Error::no_space().with_operation("mkfs:inode_table"));
+    }
 
     // Each group stores a full inode table contiguous to its bitmaps.
     let inode_table_blocks: u32 = if block_size == 0 {
@@ -345,6 +385,9 @@ fn build_superblock(total_blocks: u64, layout: &FsLayoutInfo) -> Ext4Superblock 
         s_first_data_block: layout.first_data_block,
         s_r_blocks_count_lo: (layout.reserved_blocks & 0xFFFFFFFF) as u32,
         s_r_blocks_count_hi: (layout.reserved_blocks >> 32) as u32,
+        s_feature_compat: DEFAULT_FEATURE_COMPAT,
+        s_feature_incompat: DEFAULT_FEATURE_INCOMPAT,
+        s_feature_ro_compat: DEFAULT_FEATURE_RO_COMPAT,
         ..Default::default()
     };
 
@@ -356,15 +399,15 @@ fn build_superblock(total_blocks: u64, layout: &FsLayoutInfo) -> Ext4Superblock 
     let filesys_uuid = generate_uuid_8();
     sb.s_uuid = filesys_uuid;
 
-    // Initial free-block count equals total blocks minus reserved space and the
-    // metadata consumed by group 0.
-    let metadata_blocks = layout.group0_metadata_blocks as u64;
-    let mut free_blocks = total_blocks
-        .saturating_sub(metadata_blocks)
-        .saturating_sub(layout.reserved_blocks);
-    if free_blocks > total_blocks {
-        free_blocks = 0;
-    }
+    // Reserved blocks remain part of the filesystem's free-block count; the
+    // reserved count only limits which callers may consume them. Derive the
+    // global count from the same per-group layouts published in the GDT so a
+    // partial final group cannot make the two accounting sources disagree.
+    let free_blocks = (0..layout.groups)
+        .map(|group_id| {
+            u64::from(build_uninit_group_desc(&sb, group_id, layout).free_blocks_count())
+        })
+        .sum::<u64>();
     sb.s_free_blocks_count_lo = (free_blocks & 0xFFFFFFFF) as u32;
     sb.s_free_blocks_count_hi = (free_blocks >> 32) as u32;
 
@@ -382,11 +425,6 @@ fn build_superblock(total_blocks: u64, layout: &FsLayoutInfo) -> Ext4Superblock 
     // Advertise Linux dynamic-revision semantics.
     sb.s_creator_os = Ext4Superblock::EXT4_OS_LINUX;
     sb.s_rev_level = Ext4Superblock::EXT4_DYNAMIC_REV;
-
-    // Enable the default feature set chosen for this implementation.
-    sb.s_feature_compat = DEFAULT_FEATURE_COMPAT;
-    sb.s_feature_incompat = DEFAULT_FEATURE_INCOMPAT;
-    sb.s_feature_ro_compat = DEFAULT_FEATURE_RO_COMPAT;
 
     // Descriptor size and checksum type must be finalized before the
     // superblock checksum is computed.
@@ -816,6 +854,49 @@ mod tests {
             result,
             Err(error) if error.kind() == crate::error::Ext4ErrorKind::NoSpace
         ));
+    }
+
+    #[test]
+    fn partial_last_group_must_fit_its_inode_table() {
+        let blocks_per_group = 8 * BLOCK_SIZE_U32;
+        let total_blocks = u64::from(blocks_per_group) + 128;
+        let layout = compute_fs_layout(DEFAULT_INODE_SIZE, total_blocks, BLOCK_SIZE_U32)
+            .expect("partial final group should have a representable layout");
+        let superblock = build_superblock(total_blocks, &layout);
+        let last_group = layout.groups - 1;
+        let group = calc_group_layout(
+            last_group,
+            &superblock,
+            layout.blocks_per_group,
+            layout.inode_table_blocks,
+            layout.group0_block_bitmap,
+            layout.group0_inode_bitmap,
+            layout.group0_inode_table,
+            layout.gdt_blocks,
+        );
+
+        assert!(
+            group.group_inode_table_startblocks + u64::from(layout.inode_table_blocks)
+                <= total_blocks
+        );
+    }
+
+    #[test]
+    fn superblock_free_blocks_match_group_descriptors() {
+        let blocks_per_group = 8 * BLOCK_SIZE_U32;
+        let total_blocks = u64::from(blocks_per_group) + 128;
+        let layout = compute_fs_layout(DEFAULT_INODE_SIZE, total_blocks, BLOCK_SIZE_U32)
+            .expect("partial final group should have a representable layout");
+        let superblock = build_superblock(total_blocks, &layout);
+        let descriptor_free_blocks: u64 = (0..layout.groups)
+            .map(|group_id| {
+                u64::from(
+                    build_uninit_group_desc(&superblock, group_id, &layout).free_blocks_count(),
+                )
+            })
+            .sum();
+
+        assert_eq!(superblock.free_blocks_count(), descriptor_free_blocks);
     }
 
     #[test]

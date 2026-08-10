@@ -254,8 +254,9 @@ mod tests {
         bmalloc::{AbsoluteBN, InodeNumber},
         config::BLOCK_SIZE,
         disknode::Ext4Timestamp,
-        error::{Ext4Error, Ext4Result},
+        error::{ErrorContext, Ext4Error, Ext4Result},
         ext4::{mkfs, mount},
+        loopfile::resolve_inode_block,
     };
 
     struct MemBlockDev {
@@ -518,6 +519,73 @@ mod tests {
     }
 
     #[test]
+    fn traversal_rejects_extent_into_system_metadata() {
+        let (mut dev, fs) = setup_fs(16 * 1024);
+        let inode_num = InodeNumber::new(12).unwrap();
+        let mut inode = new_extent_inode();
+        let block_bitmap = fs.group_descs[0].block_bitmap();
+        let root = ExtentNode::Leaf {
+            header: Ext4ExtentHeader {
+                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+                eh_entries: 1,
+                eh_max: 4,
+                eh_depth: 0,
+                eh_generation: 0,
+            },
+            entries: vec![Ext4Extent::new(0, block_bitmap, 1)],
+        };
+        ExtentTree::new(&mut inode, BLOCK_SIZE)
+            .store_root_to_inode(&root)
+            .unwrap();
+
+        let error = ExtentTree::with_filesystem(&mut inode, &fs, inode_num)
+            .find_extent(&mut dev, 0)
+            .expect_err("ordinary inode must not map the block bitmap");
+        assert_eq!(
+            error.context(),
+            Some(ErrorContext::Operation {
+                op: "extent:system_metadata",
+            })
+        );
+    }
+
+    #[test]
+    fn journal_inode_alone_may_map_its_protected_blocks() {
+        let (mut dev, mut fs) = setup_fs(16 * 1024);
+        let journal_ino = InodeNumber::new(fs.superblock.s_journal_inum).unwrap();
+        let mut journal_inode = fs.get_inode_by_num(&mut dev, journal_ino).unwrap();
+        let journal_first = resolve_inode_block(&fs, &mut dev, journal_ino, &mut journal_inode, 0)
+            .unwrap()
+            .expect("journal must have a first block");
+
+        let ordinary_ino = InodeNumber::new(12).unwrap();
+        let mut ordinary_inode = new_extent_inode();
+        let root = ExtentNode::Leaf {
+            header: Ext4ExtentHeader {
+                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+                eh_entries: 1,
+                eh_max: 4,
+                eh_depth: 0,
+                eh_generation: 0,
+            },
+            entries: vec![Ext4Extent::new(0, journal_first.raw(), 1)],
+        };
+        ExtentTree::new(&mut ordinary_inode, BLOCK_SIZE)
+            .store_root_to_inode(&root)
+            .unwrap();
+
+        let error = ExtentTree::with_filesystem(&mut ordinary_inode, &fs, ordinary_ino)
+            .find_extent(&mut dev, 0)
+            .expect_err("ordinary inode must not reuse an internal-journal block");
+        assert_eq!(
+            error.context(),
+            Some(ErrorContext::Operation {
+                op: "extent:system_metadata",
+            })
+        );
+    }
+
+    #[test]
     fn inline_root_store_rejects_overcapacity_without_mutating_inode() {
         let mut inode = new_extent_inode();
         let original = inode.i_block;
@@ -578,7 +646,7 @@ mod tests {
         };
 
         {
-            let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
+            let mut tree = ExtentTree::with_filesystem(&mut inode, &fs, inode_num);
             tree.write_node_to_block(&mut dev, child_block, &child)
                 .unwrap();
             tree.store_root_to_inode(&root).unwrap();
@@ -595,7 +663,7 @@ mod tests {
         dev.buffer_mut()[BLOCK_SIZE - 1] ^= 0x80;
         dev.write_block(child_block, false).unwrap();
 
-        let error = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num)
+        let error = ExtentTree::with_filesystem(&mut inode, &fs, inode_num)
             .find_extent(&mut dev, 0)
             .expect_err("corrupt external-node checksum must fail before traversal");
         assert_eq!(error.kind(), crate::Ext4ErrorKind::ChecksumMismatch);

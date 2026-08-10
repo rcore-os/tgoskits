@@ -23,7 +23,7 @@ pub fn resolve_inode_block<B: BlockIo>(
     logical_block: u32,
 ) -> Ext4Result<Option<AbsoluteBN>> {
     if inode.uses_extents() {
-        let mut tree = ExtentTree::with_checksum(inode, &fs.superblock, inode_num);
+        let mut tree = ExtentTree::with_filesystem(inode, fs, inode_num);
         if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
             let len = ext.len();
             if len == 0 {
@@ -67,7 +67,7 @@ pub fn resolve_inode_blocks<B: BlockIo>(
         return Ok(BTreeMap::new());
     }
 
-    let mut tree = ExtentTree::with_checksum(inode, &fs.superblock, inode_num);
+    let mut tree = ExtentTree::with_filesystem(inode, fs, inode_num);
     let runs = tree.initialized_runs_in_range(block_dev, 0, u32::MAX)?;
     let mut out = BTreeMap::new();
     for run in runs {

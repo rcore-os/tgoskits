@@ -27,6 +27,7 @@ mod lookup;
 mod mkfs;
 mod mount;
 mod sync;
+mod system_zone;
 
 pub use fs::{Ext4FileSystem, FileSystemStats};
 pub use lookup::{file_entry_exisr, file_entry_exist, find_file};
@@ -36,3 +37,4 @@ pub use mkfs::{
 };
 pub use mount::{MountOptions, mount, mount_with_options, mount_with_options_and_observer};
 pub use sync::umount;
+pub(crate) use system_zone::SystemZoneMap;

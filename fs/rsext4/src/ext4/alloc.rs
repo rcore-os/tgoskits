@@ -574,6 +574,7 @@ mod tests {
             group_count: 1,
             mounted: true,
             journal_sb_block_start: None,
+            system_zones: SystemZoneMap::default(),
         }
     }
 
@@ -616,6 +617,7 @@ mod tests {
             group_count: 2,
             mounted: true,
             journal_sb_block_start: None,
+            system_zones: SystemZoneMap::default(),
         }
     }
 

@@ -27,6 +27,8 @@ pub struct Ext4FileSystem {
     pub mounted: bool,
     /// Physical block containing the externalized journal superblock.
     pub journal_sb_block_start: Option<AbsoluteBN>,
+    /// Immutable index of filesystem metadata blocks protected from file mappings.
+    pub(crate) system_zones: SystemZoneMap,
 }
 
 impl Ext4FileSystem {

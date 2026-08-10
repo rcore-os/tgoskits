@@ -108,7 +108,8 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 | `extent-checked-codec` | raw extent nodes are sorted after parsing and malformed roots/children can be treated as holes | checked structural validation preserves on-disk order and propagates corruption | mapping rewrite | 绿：root/child codec 检查 magic、depth、capacity、非空 index、logical/physical overflow 与 leaf/index ordering；`EXT4_EXTENTS_FL` 是唯一格式判据，坏 magic 不再降级为 legacy/hole；读取、查找、插入、删除、HTree 和 block resolver 均传播 typed error，不再排序或吞错；hard-link parent corruption 完成确定性红绿验证 |
 | `extent-empty-index` | crafted empty or malformed internal child can panic | corruption error, no mutation | mapping rewrite | 绿：root 与 external child 在 mutation 前统一 checked decode；空 index、坏 child 与超过 inline root 容量均返回 corruption，确定性测试验证 inode 不被截断或修改 |
 | `extent-block-checksum` | extent block lookup lacks the inode number required by metadata checksum and assumes the checksum tail is always at the end of the block | every resolver carries typed inode identity and verifies the Linux `eh_max`-derived checksum tail | mapping rewrite | 绿：resolver/HTree/mount/adapter 调用链显式传递 `InodeNumber`；external node 读写按 inode generation/number 校验 CRC32C，2 KiB `eh_max` tail offset 与损坏测试通过 |
-| `extent-system-zone-validity` | physical extents are checked only against filesystem/device bounds | reject overlap with ext4 system metadata zones, with Linux's owning-inode exception | mapping rewrite | 红：已检查 first-data、算术溢出、filesystem/device 上界和 parent/child depth/key；尚未建立 Linux `s_system_blks` 等价索引 |
+| `extent-system-zone-validity` | physical extents are checked only against filesystem/device bounds | reject overlap with ext4 system metadata zones, with Linux's owning-inode exception | mapping rewrite | 绿：mount/replay 后完整构建并一次发布 immutable zone index，覆盖 per-group super/GDT/reserved GDT、bitmap、inode table 与 internal journal blocks；普通 inode 指向 block bitmap 的确定性红绿测试完成，journal inode owner exception 单测通过；first-data、溢出和 filesystem/device 上界继续共同生效 |
+| `mount-option-block-validity` | core did not protect system metadata blocks | default `block_validity` plus Linux-compatible `noblock_validity` mount/remount lifecycle | mount/remount options | 红：默认保护已由 `extent-system-zone-validity` 完成；显式 `noblock_validity` 与 remount 时建立/释放索引尚未实现 |
 | `extent-mutation-rollback` | split/remove 的 metadata write 或 bitmap I/O 失败可留下泄漏、部分释放或不可达节点 | plan/validate/journal persist，任一失败保持旧树与 bitmap/i_blocks 一致 | mapping rewrite | 红：HUGE_FILE checked accounting 已在分配/释放前预检；跨多个 metadata/bitmap I/O 的完整事务回滚仍待 extent 整体重写 |
 | `mkdir-mutation-rollback` | child inode 初始化后，父 link/group accounting 或目录项插入失败可留下孤儿 inode、泄漏块或部分发布的计数 | mkdir 的 inode、block、父目录项、父 link count 与 group stats 属于同一可回滚 transaction | namespace/JBD2 rewrite | 红：link 上限已在分配前预检；目录项插入及其后续 I/O 失败的整体回滚仍待 namespace transaction 重写 |
 | `rename-mutation-rollback` | 跨父目录 rename 在新项、旧项、父 link count 或 `..` 更新任一步失败时可留下部分状态 | rename 的全部目录项、link count、`..` 与被替换 inode 更新崩溃原子且可回滚 | namespace/JBD2 rewrite | 红：link count 算术已在发布前预检；多对象 mutation 仍待 journal transaction 整体重写 |
@@ -227,3 +228,19 @@ RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns=6269685 write_p95_ns=70
 相对 dev 基线，write/read median 分别改善约 8.2% 和 14.0%，对应 p95 分别
 改善约 4.0% 和 16.3%；sync p95 改善约 0.8%。checked traversal 没有越过
 现有 workload 的 host 性能门槛。
+
+### 7.7 system metadata zone 检查点
+
+采集时间：2026-08-10；固定 CPU 2，其他参数与 7.1 相同。该检查点按 Linux
+`s_system_blks` 语义建立 immutable metadata-zone index，保护 super/GDT、
+bitmap、inode table 与 internal journal blocks，并在 replay 后重新校验 journal
+inode mapping；mkfs 同时保证 partial final group 的 inode table 与 free-block
+accounting 保持一致：
+
+```text
+RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns=6300969 write_p95_ns=6432179 read_median_ns=6148506 read_p95_ns=6252651 sync_median_ns=28288 sync_p95_ns=30018
+```
+
+相对 dev 基线，write/read median 分别改善约 7.7% 和 14.8%，对应 p95 分别
+改善约 12.3% 和 26.3%；sync p95 改善约 22.3%。sync median 增加约 9.5%，
+但 p95 latency 未回退，全部现有 workload 仍满足 host 性能门槛。

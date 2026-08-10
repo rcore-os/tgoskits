@@ -53,7 +53,7 @@ pub fn build_file_block_mapping_with_inode_num<B: BlockIo>(
 
         // Insert the computed extents through `ExtentTree` so the inode root
         // receives the same serialized structure as runtime writes.
-        let mut tree = ExtentTree::with_checksum(inode, &fs.superblock, inode_num);
+        let mut tree = ExtentTree::with_filesystem(inode, fs, inode_num);
         for extend in exts_vec {
             tree.insert_extent(fs, extend, block_dev)?;
         }

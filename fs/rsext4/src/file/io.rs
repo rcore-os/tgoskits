@@ -90,7 +90,7 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
 
                 let chunk = core::cmp::min(del_len, Ext4Extent::EXT_INIT_MAX_LEN as u32);
                 {
-                    let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
+                    let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
                     tree.remove_extent(fs, Ext4Extent::new(start_lbn, 0, chunk as u16), device)?;
                 }
             }
@@ -108,7 +108,7 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
                 new_blocks_map.push((lbn, phys));
             }
 
-            let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
+            let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
             if !new_blocks_map.is_empty() {
                 let mut idx = 0usize;
                 while idx < new_blocks_map.len() {
@@ -140,7 +140,7 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
         inode.i_size_high = (truncate_size >> 32) as u32;
         // i_blocks reflects number of allocated blocks, not logical length. Recompute after edits.
         let alloc_blocks = resolve_inode_blocks(fs, device, inode_num, &mut inode)?.len() as u64;
-        let extent_tree_blocks = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num)
+        let extent_tree_blocks = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
             .external_node_blocks(device)?
             .len() as u64;
         let iblocks_used = alloc_blocks
@@ -408,7 +408,7 @@ pub fn read_inode_data_into<B: BlockIo + crate::runtime::Clock>(
 
     let mut copied = 0usize;
     if inode.uses_extents() {
-        let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
+        let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
         let runs = tree.initialized_runs_in_range(device, start_lbn as u32, end_lbn as u32)?;
         let mut lbn = start_lbn;
         let max_run_blocks = (MAX_RUN_IO_BYTES / block_size).max(1) as u32;
@@ -687,7 +687,7 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
         && start_lbn < end_lbn
         && inode.uses_extents();
     let existing_runs = if use_existing_run_map {
-        let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
+        let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
         Some(tree.initialized_runs_in_range(device, start_lbn as u32, end_lbn as u32)?)
     } else {
         None
@@ -740,8 +740,7 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
                     )?;
 
                     {
-                        let mut tree =
-                            ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
+                        let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
                         let ext = Ext4Extent::new(lbn as u32, first_phys.raw(), run_len as u16);
                         tree.insert_extent(fs, ext, device)?;
                     }
