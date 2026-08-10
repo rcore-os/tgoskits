@@ -256,7 +256,7 @@ impl MemoryAccounting {
     pub fn reconcile_fork_charges_from_parent(
         child: &Self,
         parent: &Self,
-        child_pt: &mut ax_runtime::hal::paging::PageTableCursor,
+        child_pt: &mut ax_runtime::hal::paging::PageTable,
     ) -> AxResult<()> {
         use ax_runtime::hal::paging::PagingError;
 

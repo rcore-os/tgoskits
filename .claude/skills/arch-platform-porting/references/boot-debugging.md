@@ -10,7 +10,7 @@ This reference captures project-specific lessons from enabling LoongArch dynamic
 | Build orchestration | `scripts/axbuild/src/{build.rs,context,test/qemu.rs,*}` | arch to target mapping, features, UEFI mode, QEMU command, rootfs image |
 | Test data | `test-suit/{arceos,starryos,axvisor}/**` | runtime TOML, build TOML, regexes, SMP count, firmware mode |
 | Bootloader | `platforms/someboot/src/**` | entry ABI, relocation, memory map, paging, trap, SMP, power |
-| CPU runtime | `components/axcpu/src/<arch>/**` | trap frame layout, context switch, FP/SIMD, user return |
+| CPU runtime | `components/axcpu/src/<arch>/**` | trap frame layout, context switch, FP/SIMD, user return, runtime stage-1 PTE format and TLB semantics |
 | Dynamic platform | `platforms/{axplat-dyn,somehal}/**` | runtime memory/IRQ/timer/power facts from firmware |
 | Drivers | `drivers/**`, `patches/virtio-drivers/**` | MMIO/iomap, DMA, PCI command bits, virtio transport |
 
@@ -47,7 +47,34 @@ For x86 OVMF/BIOS boot, verify graph-fixed PIO windows `0x510..0x512` and
 `0x514..0x51c` are trapped and that fw_cfg publishes `etc/acpi/tables`,
 `etc/acpi/rsdp`, and `etc/table-loader`. A working selector read alone does not
 prove ACPI installation; check table-loader DMA operations and confirm Linux
-sees `DSDT`, `APIC`, `FACP`, and `XSDT` under `/sys/firmware/acpi/tables`.
+uses the XSDT to discover `DSDT`, `APIC`, `FACP`, and `SPCR` under
+`/sys/firmware/acpi/tables` (Linux does not export the root XSDT there).
+
+For the Axvisor x86 nested OVMF validation cases, troubleshoot in this order:
+
+1. List the `normal` group and confirm both `ovmf-acpi-vmx` and
+   `ovmf-acpi-svm` are discovered. Run VMX only on an Intel/VMX KVM host and
+   SVM only on an AMD/SVM KVM host; neither build config may select a backend
+   Cargo feature.
+2. Read the asset-preparation evidence before interpreting firmware output.
+   It records the actual Ostool CODE and VARS paths, byte sizes, SHA-256
+   digests, the split or monolithic layout, and the final 4 MiB guest image.
+   A monolithic CODE image must report the recorded VARS as unused.
+3. Confirm the final guest-image path is the same path selected by
+   `uefi_firmware_path` in the shared guest TOML. Do not confuse this nested
+   firmware with the outer QEMU pflash used to boot the Axvisor host.
+4. Verify fw_cfg publishes the three ACPI files above, then inspect the
+   table-loader allocation, pointer, checksum, and DMA error tests. A selector
+   read or firmware banner is only an intermediate checkpoint.
+5. Require the guest initramfs marker `AXVISOR_X86_OVMF_ACPI_PASSED`. It means
+   OVMF handed off to Linux and Linux accepted DSDT, APIC, FACP, SPCR, ttyS0,
+   and IOAPIC. Preserve the full command, firmware evidence, last reliable
+   state, and first definite error if the marker is absent.
+
+The current nested OVMF cases still receive their Linux kernel, initramfs, and
+command line through fw_cfg. They do not prove a guest PCI boot disk, ESP, or
+Linux EFI-stub boot path, and a failure in those later capabilities must not be
+fixed by changing these validation-only cases.
 
 For AArch64 host replacement, compare every GICR region and stride in the
 immutable firmware plan with the `ArmVgicConfig` passed to the runtime. Do not
@@ -133,6 +160,7 @@ execution and then fail only on traps or vCPU exits, so it is not a valid fallba
 ## Dynamic UEFI Platform Notes
 
 - Dynamic platform means the platform facts come from firmware/runtime discovery through `someboot`, `somehal`, and `axplat-dyn`. It does not remove the need for arch-specific page table, trap, timer, IRQ, and power code.
+- Keep page-table phases separate while debugging: `someboot` owns boot-table formats and the MMU handoff, `ax-cpu` owns runtime stage-1 PTE/TLB semantics, and virtualization components own stage-2 formats. All may use `page-table-generic` as an execution engine, but that crate must not select the active architecture.
 - Match the x86_64 dynamic UEFI path first: firmware disk layout, `to_bin` behavior, pflash/OVMF handling, and handoff expectations.
 - Keep dynamic platform features aligned across `ax-std`, `ax-hal`, `ax-driver`, `axvm`, and the OS package. A partial `plat-dyn` feature set often compiles but fails after device or memory init.
 - For std/musl targets, derive the initial JSON from a known Rust target where possible, then minimally adjust ABI, linker, relocation model, and soft-float. A `none-softfloat` target passing does not prove musl/std ABI correctness.

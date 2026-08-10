@@ -628,6 +628,11 @@ impl Thread {
         drop(previous);
     }
 
+    /// Replaces credentials for this thread only.
+    pub(crate) fn set_thread_cred(&self, new_cred: Cred) {
+        self.set_cred_single(Arc::new(new_cred));
+    }
+
     /// Replaces credentials for every thread in this process.
     pub fn set_cred(&self, new_cred: Cred) {
         let new_arc = Arc::new(new_cred);
@@ -638,6 +643,28 @@ impl Thread {
         for tid in &tids {
             if let Ok(task) = ops::get_task(*tid) {
                 task.as_thread().set_cred_single(new_arc.clone());
+            }
+        }
+    }
+
+    /// Updates every thread from its own credential snapshot.
+    ///
+    /// Process-wide set-ID transitions must preserve thread-local state such
+    /// as `PR_SET_KEEPCAPS` while publishing the shared ID change.
+    pub(crate) fn update_process_creds(&self, update: impl Fn(&Cred) -> Cred) {
+        let old_cred = self.cred();
+        self.set_cred_single(Arc::new(update(&old_cred)));
+
+        let mut tids = self.proc_data.proc.threads();
+        tids.sort_unstable();
+        for tid in &tids {
+            if let Ok(task) = ops::get_task(*tid) {
+                let thread = task.as_thread();
+                if core::ptr::eq(thread, self) {
+                    continue;
+                }
+                let old_cred = thread.cred();
+                thread.set_cred_single(Arc::new(update(&old_cred)));
             }
         }
     }

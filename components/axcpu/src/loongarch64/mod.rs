@@ -9,6 +9,8 @@ mod unaligned;
 pub mod asm;
 pub mod init;
 
+pub(crate) mod paging;
+
 #[cfg(feature = "uspace")]
 pub mod uspace;
 

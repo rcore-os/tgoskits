@@ -45,6 +45,27 @@ impl UartPort for Pl011 {
         Pl011::read_rx(self)
     }
 
+    fn discard_rx(&mut self) {
+        // PL011 has no independent RX FIFO reset bit. The hardware FIFO holds
+        // at most 32 bytes, so consume one fixed-capacity snapshot without
+        // perturbing the TX path or disabling the whole UART.
+        for _ in 0..32 {
+            if self.registers().uartfr.is_set(UARTFR::RXFE) {
+                break;
+            }
+            let _ = self.registers().uartdr.get();
+        }
+        self.registers().uartrsr_ecr.set(0);
+        self.saved_rx_status = Pl011RxStatus::empty();
+    }
+
+    fn discard_tx(&mut self) -> bool {
+        // Clearing FEN or UARTEN would also disturb RX. PL011 cannot flush the
+        // TX FIFO independently, so report the unsupported operation without
+        // changing shared UART state.
+        false
+    }
+
     fn write_tx(&mut self, bytes: &[u8]) -> usize {
         let mut written = 0;
         for &byte in bytes {

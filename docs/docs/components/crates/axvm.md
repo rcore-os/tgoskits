@@ -132,9 +132,9 @@ graph LR
 - `axvmconfig`：提供从配置文件到运行时结构的配置来源。
 - 架构相关 vCPU crate：`x86_vcpu`、`riscv_vcpu`、`arm_vcpu`。
 - `arm_vgic`：在 AArch64 路径上参与虚拟中断控制器与定时设备支持。
+- `page-table-generic`：提供架构无关的嵌套页表执行能力；具体 Stage-2/EPT/NPT 格式由 `axvm` 的架构模块拥有。
 
 ### 间接依赖
-- `ax-page-table-multiarch`、`ax-page-table-entry`：通过地址空间和页表路径参与 VM 内存管理。
 - `ax-memory-set` 等：在地址空间和内存建模路径上间接提供支撑。
 - `axvisor_api` 生态：更多出现在消费者侧，但会影响 `axvm` 的宿主接入方式。
 

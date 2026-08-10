@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/page-table-generic-v0.7.4...page-table-generic-v0.7.5) - 2026-08-09
+
+### Other
+
+- *(memory)* unify page-table execution on page-table-generic ([#1911](https://github.com/rcore-os/tgoskits/pull/1911))
+
 ## [0.7.4](https://github.com/rcore-os/tgoskits/compare/page-table-generic-v0.7.3...page-table-generic-v0.7.4) - 2026-07-07
 
 ### Other

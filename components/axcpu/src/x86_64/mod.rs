@@ -7,6 +7,8 @@ mod local_state;
 pub mod asm;
 pub mod init;
 
+pub(crate) mod paging;
+
 mod trap;
 
 #[cfg(feature = "uspace")]

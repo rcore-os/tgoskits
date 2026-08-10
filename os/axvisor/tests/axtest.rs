@@ -1,8 +1,35 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
 
+extern crate alloc;
+
 use ax_std as _;
 use axvm as _;
+
+mod host {
+    pub(super) fn write_host_bytes(_bytes: &[u8]) {}
+}
+
+mod manager {
+    pub struct AxvmManager;
+
+    impl AxvmManager {
+        pub fn notify_vm(_vm_id: axvm::VMId) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        pub fn vm_by_id(_vm_id: axvm::VMId) -> Option<axvm::AxVMRef> {
+            None
+        }
+
+        pub fn vm_list() -> Vec<axvm::AxVMRef> {
+            Vec::new()
+        }
+    }
+}
+
+#[path = "../src/guest_console/mux/mod.rs"]
+mod guest_console_mux;
 
 #[cfg(feature = "fs")]
 #[path = "../src/shell/command/fs.rs"]

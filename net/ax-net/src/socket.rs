@@ -170,6 +170,8 @@ pub type CMsgData = Box<dyn CMsgPayload>;
 /// IP ancillary data reported through `recvmsg`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpCmsg {
+    /// IPv4 hop limit for `IP_RECVTTL`.
+    Ipv4Ttl(u8),
     /// IPv4 TOS byte for `IP_RECVTOS`.
     Ipv4Tos(u8),
     /// IPv6 traffic-class byte for `IPV6_RECVTCLASS`.

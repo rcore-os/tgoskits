@@ -5,19 +5,24 @@ use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResul
 use riscv_vcpu::{GprIndex as RiscvGprIndex, *};
 
 use super::*;
-use crate::{AxVmResult, StopReason, architecture::ops::*, host::*};
+use crate::{
+    AxVmResult, StopReason,
+    architecture::{
+        cpu_up::{self, CpuUpExit, CpuUpOps},
+        ops::*,
+    },
+    host::*,
+};
 
 mod capabilities;
-#[path = "../../architecture/cpu_up.rs"]
-mod cpu_up;
 pub(crate) mod fdt;
 mod images;
+mod ipi;
 mod irq;
 mod npt;
 mod resource_pools;
 mod vm;
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
-use cpu_up::{CpuUpExit, CpuUpOps};
 pub use images::ImageLoader;
 pub(crate) use vm::RiscvVmPlan;
 
@@ -86,6 +91,18 @@ impl ArchOps for Riscv64Arch {
         });
     }
 
+    fn inject_vcpu_interrupt(
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        interrupt: crate::irq::model::PendingVcpuInterrupt,
+    ) -> AxVmResult {
+        const SCAUSE_INTERRUPT_BIT: usize = 1 << (usize::BITS - 1);
+
+        // VirtualInterruptId carries the RISC-V cause number. The backend
+        // consumes a complete scause value, including its interrupt bit.
+        let vector = SCAUSE_INTERRUPT_BIT | interrupt.id.0 as usize;
+        vcpu.inject_interrupt_with_trigger(vector, interrupt.trigger)
+    }
+
     fn handle_vcpu_exit_bound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -135,6 +152,7 @@ impl ArchOps for Riscv64Arch {
                     },
                 ))
             }
+            RiscvVmExit::SendIpi(request) => ipi::handle(vm, vcpu, request),
             RiscvVmExit::CpuUp {
                 target_cpu,
                 entry_point,
@@ -337,6 +355,10 @@ impl AxvmRiscvVcpu {
     fn sync_bound_vseip(&mut self, asserted: bool) -> AxVmResult {
         riscv_result(self.0.sync_bound_vseip(asserted))
             .map_err(|error| crate::AxVmError::vcpu("synchronize RISC-V VSEIP", error))
+    }
+
+    fn complete_ipi(&mut self, request: RiscvIpiRequest, completion: RiscvIpiCompletion) {
+        self.0.complete_ipi(request, completion);
     }
 }
 

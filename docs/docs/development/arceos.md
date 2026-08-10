@@ -256,7 +256,7 @@ net = ["alloc", "paging", "ax-driver/virtio-net", "dep:ax-net", "ax-runtime/net"
 
 | 改动类型 | 验证命令 | 扩展验证 |
 |----------|---------|---------|
-| 基础 crate（`axerrno`, `kspin`, `page_table_multiarch`） | `cargo test -p <crate>` | `cargo xtask arceos qemu --package arceos-helloworld --arch riscv64` |
+| 基础 crate（`axerrno`, `kspin`, `page-table-generic`） | `cargo test -p <crate>` | `cargo xtask arceos qemu --package arceos-helloworld --arch riscv64` |
 | HAL（`axhal`） | `cargo xtask arceos qemu --package arceos-helloworld --arch aarch64` | 多架构验证 |
 | 调度核心/运行时（`ax-task` / `ax-runtime::task`） | `cargo test -p ax-task` | `cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf` |
 | 网络（`axnet` / `axnet`） | `cargo xtask arceos qemu --package arceos-httpserver --arch aarch64 --net` | 检查 TCP 连接和吞吐 |

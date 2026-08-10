@@ -192,6 +192,7 @@ struct RuntimeShared {
     stats: Arc<SerialStatsAtomic>,
     rx_source: Arc<PollSet>,
     tx_source: Arc<PollSet>,
+    rx_progress: WaitQueue,
     tx_progress: WaitQueue,
     started: AtomicBool,
     irq_handle: Once<ax_hal::irq::IrqHandle>,
@@ -202,9 +203,14 @@ impl RuntimeShared {
         self.started.load(Ordering::Acquire)
     }
 
+    fn ensure_started(&self) -> AxResult {
+        self.started().then_some(()).ok_or(AxError::BadState)
+    }
+
     fn set_started(&self, started: bool) {
         self.started.store(started, Ordering::Release);
         if !started {
+            self.rx_progress.notify_all();
             self.tx_progress.notify_all();
         }
     }
@@ -269,9 +275,8 @@ impl SerialRuntimeHandle {
     pub fn take_rx_subscription(&self) -> Option<SerialRxSubscription> {
         let consumer = self.shared.rx_subscription.lock().take()?;
         Some(SerialRxSubscription {
-            consumer: PiMutex::new(consumer),
-            bridge: self.shared.bridge.clone(),
-            source: self.shared.rx_source.clone(),
+            consumer: PiMutex::new(Some(consumer)),
+            shared: self.shared.clone(),
         })
     }
 
@@ -389,6 +394,13 @@ impl SerialTxSender {
         }
     }
 
+    pub fn discard_pending(&self) -> AxResult {
+        self.shared.ensure_started()?;
+        self.shared
+            .control
+            .submit(ControlOp::DiscardTx, || self.shared.bridge.notify())
+    }
+
     pub fn poll_source(&self) -> Arc<PollSet> {
         self.shared.tx_source.clone()
     }
@@ -396,20 +408,75 @@ impl SerialTxSender {
 
 /// The unique RX consumer for one UART runtime.
 pub struct SerialRxSubscription {
-    consumer: PiMutex<SpscConsumer<RxItem>>,
-    bridge: Arc<RuntimeIrqBridge>,
-    source: Arc<PollSet>,
+    consumer: PiMutex<Option<SpscConsumer<RxItem>>>,
+    shared: Arc<RuntimeShared>,
 }
 
 impl SerialRxSubscription {
     pub fn drain(&self, out: &mut [RxItem]) -> usize {
-        let count = self.consumer.lock().drain(out);
-        notify_drained_space(count, || self.bridge.notify());
+        let count = self
+            .consumer
+            .lock()
+            .as_mut()
+            .map_or(0, |consumer| consumer.drain(out));
+        notify_drained_space(count, || self.shared.bridge.notify());
         count
     }
 
+    /// Blocks until RX data is available or the runtime stops.
+    pub fn wait_readable(&self) -> AxResult {
+        self.shared.ensure_started()?;
+        self.shared.rx_progress.wait_until(|| {
+            self.consumer
+                .lock()
+                .as_ref()
+                .is_some_and(|consumer| !consumer.is_empty())
+                || !self.shared.started()
+        });
+        self.consumer
+            .lock()
+            .as_ref()
+            .is_some_and(|consumer| !consumer.is_empty())
+            .then_some(())
+            .ok_or(AxError::BadState)
+    }
+
+    pub fn discard_pending(&self) -> AxResult {
+        self.shared.ensure_started()?;
+        self.clear_pending();
+        let result = self
+            .shared
+            .control
+            .submit(ControlOp::DiscardRx, || self.shared.bridge.notify());
+        self.clear_pending();
+        result
+    }
+
     pub fn poll_source(&self) -> Arc<PollSet> {
-        self.source.clone()
+        self.shared.rx_source.clone()
+    }
+
+    fn clear_pending(&self) {
+        if let Some(consumer) = self.consumer.lock().as_mut() {
+            consumer.clear();
+        }
+        self.shared.bridge.notify();
+    }
+}
+
+impl Drop for SerialRxSubscription {
+    fn drop(&mut self) {
+        let Some(consumer) = self.consumer.get_mut().take() else {
+            return;
+        };
+        let mut available = self.shared.rx_subscription.lock();
+        debug_assert!(
+            available.is_none(),
+            "serial runtime cannot have two RX consumers"
+        );
+        if available.is_none() {
+            *available = Some(consumer);
+        }
     }
 }
 
@@ -472,6 +539,7 @@ fn build_runtime(
         stats: stats.clone(),
         rx_source: Arc::new(PollSet::new()),
         tx_source: Arc::new(PollSet::new()),
+        rx_progress: WaitQueue::new(),
         tx_progress: WaitQueue::new(),
         started: AtomicBool::new(false),
         irq_handle: Once::new(),

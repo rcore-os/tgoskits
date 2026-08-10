@@ -12,8 +12,10 @@ use ax_io::prelude::*;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
     cpu::{
-        UserAccessError, UserAtomicError, UserAtomicU32Op, asm::user_copy,
-        trap::page_fault_handler, user_atomic_u32, user_read_u32,
+        UserAccessError, UserAtomicError, UserAtomicU32Op,
+        asm::user_copy,
+        trap::{PageFaultFlags, page_fault_handler},
+        user_atomic_u32, user_read_u32,
     },
     paging::MappingFlags,
 };
@@ -22,6 +24,7 @@ use starry_vm::{VmError, VmIo, VmResult};
 
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
+    mm::paging_error_to_ax_error,
     task::{UserTaskRef, might_sleep, try_current_user_task},
 };
 
@@ -451,7 +454,8 @@ static PAGE_FAULT_IDENTITY_FAILURES: AtomicU64 = AtomicU64::new(0);
 const _: fn(&UserTaskRef, &str, usize, usize, MappingFlags) -> VmResult = prepare_user_memory;
 
 #[page_fault_handler]
-fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
+fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
+    debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
     #[cfg(feature = "stack-guard-page")]
     if ax_runtime::task::diagnose_current_stack_guard_page_fault(vaddr) {
         return false;
@@ -719,7 +723,10 @@ where
         move || -> AxResult<()> {
             let mut guard = ax_mm::kernel_aspace().lock();
             if guard.contains_range(aligned_addr, aligned_length) {
-                let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
+                let (_, original_flags, _) = guard
+                    .page_table()
+                    .query(aligned_addr)
+                    .map_err(paging_error_to_ax_error)?;
 
                 guard.protect(
                     aligned_addr,

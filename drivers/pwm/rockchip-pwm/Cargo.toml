@@ -7,7 +7,7 @@ keywords = ["rockchip", "pwm", "driver"]
 license.workspace = true
 name = "rockchip-pwm"
 repository.workspace = true
-version = "0.1.1"
+version = "0.1.2"
 
 [dependencies]
 rdif-base.workspace = true

@@ -8,9 +8,9 @@ phys_cpu_ids = [1]
 [kernel]
 entry_point = 0x8000
 image_location = "memory"
-kernel_path = "../../../../tmp/axbuild/images/qemu-x86_64/linux/linux-qemu"
+kernel_path = "${workspace}/tmp/axbuild/images/qemu-x86_64/linux/linux-qemu"
 kernel_load_addr = 0x20_0000
-ramdisk_path = "../../../../tmp/axbuild/axvisor/qemu-acpi/initramfs-x86_64.cpio.gz"
+ramdisk_path = "${workspace}/tmp/axbuild/axvisor/qemu-acpi/initramfs-x86_64.cpio.gz"
 ramdisk_load_addr = 0x0800_0000
 enable_bios = false
 boot_protocol = "direct"

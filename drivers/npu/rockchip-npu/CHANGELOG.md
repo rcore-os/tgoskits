@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.13](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.12...rockchip-npu-v0.2.13) - 2026-08-09
+
+### Other
+
+- updated the following local packages: dma-api, rdif-base
+
 ## [0.2.12](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.11...rockchip-npu-v0.2.12) - 2026-08-03
 
 ### Fixed

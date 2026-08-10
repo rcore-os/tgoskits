@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.15](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.14...axplat-dyn-v0.7.15) - 2026-08-09
+
+### Fixed
+
+- *(ax-plat)* add corrected scheduler clock source ([#1900](https://github.com/rcore-os/tgoskits/pull/1900))
+
+### Other
+
+- *(ax-ipi)* establish typed IPI publication transport ([#1916](https://github.com/rcore-os/tgoskits/pull/1916))
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.7.14](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.13...axplat-dyn-v0.7.14) - 2026-08-03
 
 ### Fixed

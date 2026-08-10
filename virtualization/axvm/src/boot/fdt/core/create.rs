@@ -85,6 +85,13 @@ fn should_keep_generated_node(
         return true;
     }
 
+    if node
+        .compatibles()
+        .any(|compatible| matches!(compatible, "arm,psci" | "arm,psci-0.2" | "arm,psci-1.0"))
+    {
+        return true;
+    }
+
     passthrough_device_names
         .iter()
         .any(|device_path| device_path == node_path)
@@ -356,7 +363,11 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     for serial in additional_serials {
         super::serial::install_additional_serial(&mut tree, *serial)?;
     }
-    Ok(tree.finish())
+    let bytes = tree.finish();
+    Fdt::from_bytes(&bytes).map_err(|error| {
+        ax_err_type!(InvalidData, std::format!("invalid patched FDT: {error:?}"))
+    })?;
+    Ok(bytes)
 }
 
 pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResult<GuestPhysAddr> {
@@ -399,9 +410,13 @@ mod tests {
     use fdt_raw::RegInfo;
 
     use super::{
-        super::tree::sanitize_bootargs, cpu_node_id, initrd_range_from_image_config, need_cpu_node,
+        super::{device::find_all_passthrough_devices, tree::sanitize_bootargs},
+        cpu_node_id, find_node_by_phandle, initrd_range_from_image_config, need_cpu_node,
     };
-    use crate::{GuestPhysAddr, config::RamdiskInfo};
+    use crate::{
+        GuestPhysAddr,
+        config::{AxVMConfig, AxVMConfigParams, HostDeviceAssignment, PhysCpuList, RamdiskInfo},
+    };
 
     fn prop_u32(name: &str, value: u32) -> Property {
         let mut prop = Property::new(name, std::vec![]);
@@ -553,6 +568,27 @@ mod tests {
     }
 
     #[test]
+    fn generated_fdt_keeps_psci_firmware_node() {
+        let mut fdt = test_fdt("cpu@0=0");
+        let psci = fdt.add_node(fdt.root_id(), Node::new("psci"));
+        let mut compatible = Property::new("compatible", std::vec![]);
+        compatible.set_string("arm,psci-0.2");
+        fdt.node_mut(psci).unwrap().set_property(compatible);
+
+        let cfg = GuestConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(std::vec![0]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let reparsed = Fdt::from_bytes(&dtb).unwrap();
+
+        assert!(reparsed.get_by_path_id("/psci").is_some());
+    }
+
+    #[test]
     fn generated_fdt_keeps_the_host_interrupt_controller_for_a_virtual_machine() {
         let mut fdt = test_fdt("cpu@0=0\ncpu@1=1");
         for (cpu_path, phandle) in [("/cpus/cpu@0", 8), ("/cpus/cpu@1", 6)] {
@@ -615,5 +651,47 @@ mod tests {
                 .collect::<std::vec::Vec<_>>(),
             [8, 11, 8, 9]
         );
+    }
+
+    #[test]
+    fn orangepi_5_plus_guest_fdt_keeps_cpu_power_dependencies_resolvable() {
+        let host = Fdt::from_bytes(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../os/axvisor/configs/board/orangepi-5-plus.dtb"
+        )))
+        .unwrap();
+        let vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            phys_cpu_ls: PhysCpuList::new(1, Some(std::vec![0]), None),
+            pass_through_devices: std::vec![HostDeviceAssignment {
+                name: "/".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let passthrough_devices = find_all_passthrough_devices(&vm_cfg, &host);
+        let cfg = GuestConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(std::vec![0]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let dtb = super::create_guest_fdt(&host, &passthrough_devices, &cfg).unwrap();
+        let guest = Fdt::from_bytes(&dtb).unwrap();
+        let cpu = guest.get_by_path("/cpus/cpu@0").unwrap().as_node();
+
+        assert!(cpu.get_property("#cooling-cells").is_some());
+        assert!(cpu.get_property("dynamic-power-coefficient").is_some());
+        for property_name in ["operating-points-v2", "cpu-supply"] {
+            let phandle = cpu
+                .get_property(property_name)
+                .and_then(Property::get_u32)
+                .unwrap();
+            assert!(
+                find_node_by_phandle(&guest, phandle).is_some(),
+                "{property_name} references missing guest phandle {phandle:#x}"
+            );
+        }
     }
 }

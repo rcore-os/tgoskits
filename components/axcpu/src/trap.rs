@@ -3,9 +3,23 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_memory_addr::VirtAddr;
-pub use ax_page_table_entry::MappingFlags as PageFaultFlags;
 
 pub use crate::{KernelTrapFrame, UserRegisters};
+
+bitflags::bitflags! {
+    /// Access information reported by a CPU page-fault trap.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PageFaultFlags: usize {
+        /// The faulting access was a read.
+        const READ = 1 << 0;
+        /// The faulting access was a write.
+        const WRITE = 1 << 1;
+        /// The faulting access was an instruction fetch.
+        const EXECUTE = 1 << 2;
+        /// The fault came from a less-privileged user context.
+        const USER = 1 << 3;
+    }
+}
 
 /// Privilege domain that owns a saved register image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

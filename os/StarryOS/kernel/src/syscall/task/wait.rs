@@ -278,7 +278,7 @@ pub fn sys_waitpid(
         WaitTarget::Pgid(-pid as _)
     };
 
-    let scan = WaitCandidateScan::new(|| {
+    let candidate_scan = WaitCandidateScan::new(|| {
         waitable_processes(
             proc,
             &target,
@@ -287,13 +287,16 @@ pub fn sys_waitpid(
             WaitChildFilter::from_waitpid_options(&options),
         )
     });
-    if scan.collect().is_empty() {
+    if candidate_scan.collect().is_empty() {
         return Err(AxError::from(LinuxError::ECHILD));
     }
 
     let proc_data = curr.as_thread().proc_data.clone();
     let check_children = || {
-        let children = scan.collect();
+        // Linux rescans the authoritative child and ptrace relationships after
+        // every wake; another thread can publish an eligible child while this
+        // waiter is blocked.
+        let children = candidate_scan.collect();
         if let Some((child, data, stop_tid, signo)) = children.iter().find_map(|child| {
             get_process_data(child.pid()).ok().and_then(|data| {
                 let preferred_tid = target.ptrace_preferred_stop_tid(child);
@@ -442,7 +445,7 @@ pub fn sys_waitid(
 
     info!("sys_waitid <= idtype: {idtype}, id: {id}, options: {options:?}");
 
-    let scan = WaitCandidateScan::new(|| {
+    let candidate_scan = WaitCandidateScan::new(|| {
         waitable_processes(
             proc,
             &target,
@@ -451,13 +454,13 @@ pub fn sys_waitid(
             WaitChildFilter::from_waitid_options(&options),
         )
     });
-    if scan.collect().is_empty() {
+    if candidate_scan.collect().is_empty() {
         return Err(AxError::from(LinuxError::ECHILD));
     }
 
     let proc_data = curr.as_thread().proc_data.clone();
     let check_children = || {
-        let children = scan.collect();
+        let children = candidate_scan.collect();
         if options.contains(WaitIdOptions::WUNTRACED)
             && let Some((child, data, stop_tid, signo)) = children.iter().find_map(|child| {
                 get_process_data(child.pid()).ok().and_then(|data| {

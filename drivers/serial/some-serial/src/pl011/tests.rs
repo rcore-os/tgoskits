@@ -51,6 +51,33 @@ fn started_parts(uart: Pl011) -> SerialParts<Pl011, Pl011Irq, Pl011EmergencyTx> 
 }
 
 #[test]
+fn runtime_discard_tx_is_non_destructive_when_unsupported() {
+    let (regs, mut uart) = pl011_with_registers();
+    regs.uartcr
+        .set((UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET).value);
+    regs.uartlcr_h.set(UARTLCR_H::FEN::SET.value);
+    let control = regs.uartcr.get();
+    let line_control = regs.uartlcr_h.get();
+
+    assert!(!UartPort::discard_tx(&mut uart));
+    assert_eq!(regs.uartcr.get(), control);
+    assert_eq!(regs.uartlcr_h.get(), line_control);
+}
+
+#[test]
+fn runtime_discard_rx_clears_latched_error_state() {
+    let (mut regs, mut uart) = pl011_with_registers();
+    write_test_reg(&mut regs, 0x018, UARTFR::RXFE::SET.value);
+    regs.uartrsr_ecr.set(UARTRSR_ECR::OE::SET.value);
+    uart.saved_rx_status = Pl011RxStatus::OVERRUN;
+
+    UartPort::discard_rx(&mut uart);
+
+    assert!(uart.saved_rx_status.is_empty());
+    assert_eq!(regs.uartrsr_ecr.get(), 0);
+}
+
+#[test]
 fn raw_rx_reports_overrun_instead_of_swallowing_it() {
     let (_regs, mut uart) = pl011_with_overrun_data();
 

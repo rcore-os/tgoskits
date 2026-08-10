@@ -14,15 +14,28 @@ pub(crate) struct CpuUpExit {
     pub(crate) arg: u64,
 }
 
+/// Resolves architecture-visible CPU IDs through the VM-owned topology.
+pub(crate) trait VmArchCpuIdResolver {
+    fn vcpu_id_for_arch_cpu_id(&self, arch_cpu_id: usize) -> Option<usize>;
+}
+
+impl VmArchCpuIdResolver for crate::AxVM {
+    fn vcpu_id_for_arch_cpu_id(&self, arch_cpu_id: usize) -> Option<usize> {
+        self.get_vcpu_affinities_pcpu_ids().into_iter().find_map(
+            |(vcpu_id, _, configured_cpu_id)| (configured_cpu_id == arch_cpu_id).then_some(vcpu_id),
+        )
+    }
+}
+
 pub(crate) trait CpuUpOps: ArchOps {
     fn set_cpu_up_success(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         vcpu.set_gpr(0, 0);
     }
 
     fn target_vcpu_id(vm: &crate::AxVMRef, target_cpu: u64) -> Option<usize> {
-        vm.get_vcpu_affinities_pcpu_ids()
-            .iter()
-            .find_map(|(vcpu_id, _, phys_id)| (*phys_id == target_cpu as usize).then_some(*vcpu_id))
+        usize::try_from(target_cpu)
+            .ok()
+            .and_then(|arch_cpu_id| vm.vcpu_id_for_arch_cpu_id(arch_cpu_id))
     }
 }
 

@@ -261,6 +261,15 @@ impl TxIngress {
         self.publish_activity(true);
     }
 
+    pub(super) fn discard_pending(&self) {
+        let was_accepting = self.accepting.swap(false, Ordering::AcqRel);
+        self.advance_epoch();
+        while self.ring.pop().is_some() {}
+        if was_accepting {
+            self.accepting.store(true, Ordering::Release);
+        }
+    }
+
     pub(super) fn write_room(&self) -> usize {
         if !self.accepting.load(Ordering::Acquire) {
             return 0;
@@ -480,6 +489,20 @@ mod tests {
         assert_eq!(ingress.try_write(b"new", || {}), 3);
 
         assert_eq!(ingress.pop().unwrap().bytes(), b"new");
+        assert!(ingress.pop().is_none());
+    }
+
+    #[test]
+    fn discard_invalidates_an_unpublished_reservation_and_keeps_accepting() {
+        let ingress = started_ingress();
+        let old_epoch = ingress.epoch.load(Ordering::Acquire);
+        let reservation = ingress.ring.reserve(1).expect("one free frame");
+
+        ingress.discard_pending();
+        reservation.publish(0, TxFrame::new(old_epoch, b"stale"));
+        assert_eq!(ingress.try_write(b"fresh", || {}), 5);
+
+        assert_eq!(ingress.pop().unwrap().bytes(), b"fresh");
         assert!(ingress.pop().is_none());
     }
 

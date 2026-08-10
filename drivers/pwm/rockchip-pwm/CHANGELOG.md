@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/rcore-os/tgoskits/compare/rockchip-pwm-v0.1.1...rockchip-pwm-v0.1.2) - 2026-08-09
+
+### Other
+
+- updated the following local packages: rdif-base, rdif-pwm
+
 ## [0.1.1](https://github.com/rcore-os/tgoskits/compare/rockchip-pwm-v0.1.0...rockchip-pwm-v0.1.1) - 2026-08-03
 
 ### Other

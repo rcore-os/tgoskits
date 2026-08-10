@@ -205,23 +205,31 @@ fn starry_kernel_ktest_target_log_features_remain_no_std() {
 }
 
 #[test]
-fn system_x86_64_uefi_kernel_loader_avoids_ostool_ovmf_prebuilt() {
+fn x86_64_uefi_kernel_loader_uses_explicit_cached_pflash() {
     let mut qemu = QemuConfig {
         args: vec!["-nographic".into()],
         uefi: true,
         ..QemuConfig::default()
     };
 
-    apply_system_x86_64_uefi_kernel_loader(
+    apply_x86_64_uefi_kernel_loader(
         &mut qemu,
-        Path::new("/usr/share/OVMF/OVMF_CODE.fd"),
+        Path::new("/cache/ovmf/x64/code.fd"),
         Path::new("/tmp/axtest.vars.fd"),
     );
 
     assert!(!qemu.uefi);
     assert!(qemu.to_bin);
-    assert!(qemu.args.iter().any(|arg| arg.contains("OVMF_CODE.fd")));
-    assert!(qemu.args.iter().any(|arg| arg.contains("axtest.vars.fd")));
+    assert!(
+        qemu.args
+            .iter()
+            .any(|arg| arg.contains("/cache/ovmf/x64/code.fd"))
+    );
+    assert!(
+        qemu.args
+            .iter()
+            .any(|arg| arg.contains("/tmp/axtest.vars.fd"))
+    );
 }
 
 #[test]

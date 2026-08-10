@@ -1,7 +1,7 @@
 use ax_alloc::{UsageKind, global_allocator};
 use ax_hal::{
     mem::{phys_to_virt, virt_to_phys},
-    paging::{MappingFlags, PageSize, PageTable},
+    paging::{MappingFlags, PageTable},
 };
 use ax_memory_addr::{PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr};
 
@@ -50,14 +50,9 @@ impl Backend {
             // allocate all possible physical frames for populated mapping.
             for addr in PageIter4K::new(start, start + size).unwrap() {
                 if let Some(frame) = alloc_frame(true) {
-                    if pt
-                        .cursor()
-                        .map(addr, frame, PageSize::Size4K, flags)
-                        .is_err()
-                    {
+                    if pt.map_page(addr, frame, PAGE_SIZE_4K, flags).is_err() {
                         return false;
                     }
-                    // TLB flush on map is unnecessary, as there are no outdated mappings.
                 } else {
                     return false;
                 }
@@ -66,8 +61,7 @@ impl Backend {
         } else {
             // Map to a empty entry for on-demand mapping.
             let flags = MappingFlags::empty();
-            pt.cursor()
-                .map_region(start, |_| 0.into(), size, flags, false)
+            pt.map_region(start, |_| 0.into(), size, flags, false)
                 .is_ok()
         }
     }
@@ -81,13 +75,12 @@ impl Backend {
     ) -> bool {
         debug!("unmap_alloc: [{:#x}, {:#x})", start, start + size);
         for addr in PageIter4K::new(start, start + size).unwrap() {
-            if let Ok((frame, _, page_size)) = pt.cursor().unmap(addr) {
+            if let Ok((frame, _, page_size)) = pt.unmap_page(addr) {
                 // Deallocate the physical frame if there is a mapping in the
                 // page table.
-                if page_size.is_huge() {
+                if page_size > PAGE_SIZE_4K {
                     return false;
                 }
-                // TLB flush is handled automatically when cursor is dropped.
                 dealloc_frame(frame);
             } else {
                 // Deallocation is needn't if the page is not mapped.
@@ -107,9 +100,7 @@ impl Backend {
             false // Populated mappings should not trigger page faults.
         } else if let Some(frame) = alloc_frame(true) {
             // Allocate a physical frame lazily and map it to the fault address.
-            // `vaddr` does not need to be aligned. It will be automatically
-            // aligned during `pt.cursor().remap` regardless of the page size.
-            pt.cursor().remap(vaddr, frame, orig_flags).is_ok()
+            pt.remap_page(vaddr, frame, orig_flags).is_ok()
         } else {
             false
         }

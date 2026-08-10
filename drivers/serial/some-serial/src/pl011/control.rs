@@ -4,7 +4,7 @@ use super::*;
 pub struct Pl011 {
     pub(super) base: Reg,
     clock_freq: u32,
-    saved_rx_status: Pl011RxStatus,
+    pub(super) saved_rx_status: Pl011RxStatus,
 }
 
 impl Pl011 {

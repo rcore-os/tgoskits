@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.7](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.6...starry-kernel-v0.7.7) - 2026-08-09
+
+### Fixed
+
+- *(starry-cred)* ignore unused capbset drop arguments ([#1906](https://github.com/rcore-os/tgoskits/pull/1906))
+- *(starry-task)* release ptrace stop on SIGKILL ([#1913](https://github.com/rcore-os/tgoskits/pull/1913))
+- *(starry-fs)* complete mount contexts and notifications ([#1902](https://github.com/rcore-os/tgoskits/pull/1902))
+- *(ax-net)* complete Unix socket introspection and credentials ([#1905](https://github.com/rcore-os/tgoskits/pull/1905))
+- *(starry-kernel)* support fstatfs on directories ([#1899](https://github.com/rcore-os/tgoskits/pull/1899))
+- *(starry-kernel)* correct ptrace syscall and exec stops ([#1883](https://github.com/rcore-os/tgoskits/pull/1883))
+- *(starry-kernel)* wake signalfd epoll waiters ([#1848](https://github.com/rcore-os/tgoskits/pull/1848))
+- *(starry-fs)* expose pidfd fdinfo metadata ([#1851](https://github.com/rcore-os/tgoskits/pull/1851))
+- *(starry-kernel)* accept netlink reuse address ([#1846](https://github.com/rcore-os/tgoskits/pull/1846))
+- *(starry-kernel)* expose UTS hostname proc sysctl ([#1847](https://github.com/rcore-os/tgoskits/pull/1847))
+- *(ax-task)* preserve concurrent signal wakeups ([#1857](https://github.com/rcore-os/tgoskits/pull/1857))
+- *(ax-cpu)* handle cross-page unaligned faults ([#1855](https://github.com/rcore-os/tgoskits/pull/1855))
+- *(starry-kernel)* reject unsupported limit sysctl writes ([#1849](https://github.com/rcore-os/tgoskits/pull/1849))
+- *(starry-procfs)* parse oom score adjustments ([#1844](https://github.com/rcore-os/tgoskits/pull/1844))
+- *(starry-kernel)* update existing signalfd masks ([#1850](https://github.com/rcore-os/tgoskits/pull/1850))
+
+### Other
+
+- *(memory)* unify page-table execution on page-table-generic ([#1911](https://github.com/rcore-os/tgoskits/pull/1911))
+- *(ax-ipi)* establish typed IPI publication transport ([#1916](https://github.com/rcore-os/tgoskits/pull/1916))
+- *(repo)* move filesystem crates to fs/ directory ([#1867](https://github.com/rcore-os/tgoskits/pull/1867))
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.7.6](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.5...starry-kernel-v0.7.6) - 2026-08-03
 
 ### Added

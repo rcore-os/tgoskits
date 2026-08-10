@@ -12,7 +12,7 @@ mod backend;
 use ax_errno::{AxError, AxResult};
 use ax_hal::{
     mem::{IomapAttrs, IomapDecision, IomapError, MemRegionFlags, phys_to_virt},
-    paging::MappingFlags,
+    paging::{MappingFlags, PageTableRef, PagingAllocator, PagingError},
 };
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
@@ -47,7 +47,9 @@ fn reg_flag_to_map_flag(f: MemRegionFlags) -> MappingFlags {
 pub fn new_user_aspace(base: VirtAddr, size: usize) -> AxResult<AddrSpace> {
     let mut aspace = AddrSpace::new_empty(base, size)?;
     if ax_hal::mem::user_aspace_needs_kernel_mappings() {
-        aspace.copy_mappings_from(&kernel_aspace().lock())?;
+        // SAFETY: the global kernel address space outlives every user address
+        // space, whose memory areas never cover the shared kernel range.
+        unsafe { aspace.share_mappings_from(&kernel_aspace().lock())? };
     }
     Ok(aspace)
 }
@@ -55,6 +57,8 @@ pub fn new_user_aspace(base: VirtAddr, size: usize) -> AxResult<AddrSpace> {
 /// Creates a new address space for kernel itself.
 pub fn new_kernel_aspace() -> AxResult<AddrSpace> {
     let (base, size) = ax_hal::mem::kernel_aspace();
+    let boot_page_table =
+        PageTableRef::from_paddr(ax_hal::asm::read_kernel_page_table(), PagingAllocator);
     let mut aspace = AddrSpace::new_empty(base, size)?;
     for r in ax_hal::mem::memory_regions() {
         // mapped range should contain the whole region if it is not aligned.
@@ -71,6 +75,13 @@ pub fn new_kernel_aspace() -> AxResult<AddrSpace> {
             aspace.map_linear(vaddr, start, size, reg_flag_to_map_flag(r.flags))?;
         }
     }
+    aspace
+        .page_table_mut()
+        .clone_missing_root_entries_from(&boot_page_table, base, size)
+        .map_err(|err| match err {
+            PagingError::NoMemory => AxError::NoMemory,
+            _ => AxError::BadState,
+        })?;
     Ok(aspace)
 }
 

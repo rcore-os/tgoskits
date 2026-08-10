@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.7](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.7.6...ax-api-v0.7.7) - 2026-08-09
+
+### Other
+
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.7.6](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.7.5...ax-api-v0.7.6) - 2026-08-03
 
 ### Fixed

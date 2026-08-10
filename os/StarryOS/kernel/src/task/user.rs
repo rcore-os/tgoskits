@@ -1,7 +1,7 @@
 use ax_memory_addr::VirtAddr;
-use ax_runtime::hal::{
-    cpu::uspace::{ExceptionKind, ReturnReason, UserContext},
-    paging::MappingFlags,
+use ax_runtime::hal::cpu::{
+    trap::PageFaultFlags,
+    uspace::{ExceptionKind, ReturnReason, UserContext},
 };
 use starry_process::Pid;
 use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
@@ -22,7 +22,7 @@ use crate::{
 fn handle_user_page_fault(
     thread: &Thread,
     address: VirtAddr,
-    flags: MappingFlags,
+    flags: PageFaultFlags,
     context: &UserContext,
 ) {
     // Count every user-mode fault for /proc/vmstat pgfault (mm/vmstat.c

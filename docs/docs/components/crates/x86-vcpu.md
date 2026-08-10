@@ -222,7 +222,6 @@ flowchart TD
 | --- | --- |
 | `axvm-types` | 提供架构无关的 vCPU/VM-exit 协议类型 |
 | `axaddrspace` | EPT 相关地址空间基础类型 |
-| `ax-page-table-entry` | `MappingFlags` 等页表权限语义 |
 | `memory_addr` | 地址类型基础 |
 | `axdevice_base` | 设备读写抽象接口 |
 | `axvisor_api` | VM/VCpu 标识与宿主侧接口 |

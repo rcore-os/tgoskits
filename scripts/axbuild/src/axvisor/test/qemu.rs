@@ -24,6 +24,8 @@ use crate::{
     test::{case as test_case, qemu as test_qemu},
 };
 
+const VCPU_RUNTIME_ERROR: &str = r"VM\[\d+\] run VCpu\[\d+\] get error";
+
 impl Axvisor {
     pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
         if args.list && args.arch.is_none() && args.target.is_none() && args.test_group.is_none() {
@@ -128,7 +130,8 @@ impl Axvisor {
                 &build_group.request,
                 &build_group.cargo,
                 self.app.workspace_root(),
-            )?;
+            )
+            .await?;
             self.app
                 .build(
                     build_group.cargo.clone(),
@@ -233,7 +236,7 @@ impl Axvisor {
         let mut request = request.clone();
         request.build_info_path = build_config_path.to_path_buf();
         let cargo = build::load_cargo_config(&request)?;
-        request.vmconfigs = qemu_group_vmconfigs(&request, &cargo)?;
+        request.vmconfigs = build::vmconfigs_from_cargo(&cargo);
 
         Ok((request, cargo))
     }
@@ -257,6 +260,13 @@ impl Axvisor {
             &asset_config.grouped_execution,
         );
         test_qemu::apply_timeout_scale(&mut qemu);
+        if !qemu
+            .fail_regex
+            .iter()
+            .any(|pattern| pattern == VCPU_RUNTIME_ERROR)
+        {
+            qemu.fail_regex.push(VCPU_RUNTIME_ERROR.to_string());
+        }
 
         let rootfs_path = rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)?;
         let prepared_assets = test_case::prepare_case_assets(
@@ -304,29 +314,6 @@ impl Axvisor {
         )
         .await
     }
-}
-
-fn qemu_group_vmconfigs(
-    request: &ResolvedAxvisorRequest,
-    cargo: &Cargo,
-) -> anyhow::Result<Vec<PathBuf>> {
-    let Some(value) = cargo.env.get("AXVISOR_VM_CONFIGS") else {
-        return Ok(Vec::new());
-    };
-    std::env::split_paths(value)
-        .map(|path| {
-            if path.is_absolute() {
-                Ok(path)
-            } else {
-                Ok(request
-                    .axvisor_dir
-                    .parent()
-                    .and_then(Path::parent)
-                    .unwrap_or(&request.axvisor_dir)
-                    .join(path))
-            }
-        })
-        .collect()
 }
 
 fn axvisor_qemu_test_build_args(arch: &str, config: Option<PathBuf>) -> AxvisorCliArgs {

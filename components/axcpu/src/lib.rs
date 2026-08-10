@@ -23,6 +23,8 @@ pub use task_local::TaskLocalState;
 
 pub mod cap;
 
+pub mod paging;
+
 /// Kernel task-local storage base owned by one execution context.
 ///
 /// This value follows a task across CPUs. It must never be used as a CPU-local

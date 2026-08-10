@@ -334,6 +334,15 @@ impl VmRuntimeHandle {
                 format_args!("vCPU {vcpu_id} thread has no assigned CPU"),
             )
         })?;
+        self.queue_pending_interrupt_for_cpu(vcpu_id, cpu_id, interrupt)
+    }
+
+    pub(crate) fn queue_pending_interrupt_for_cpu(
+        &self,
+        vcpu_id: usize,
+        cpu_id: usize,
+        interrupt: PendingInterrupt,
+    ) -> AxVmResult<usize> {
         self.pending_interrupts
             .lock()
             .entry(vcpu_id)
@@ -363,11 +372,8 @@ impl VmRuntimeHandle {
     /// The dispatcher releases its queue lock before this method notifies
     /// waiters or invokes the host IPI boundary.
     #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "architecture interrupt routers dispatch in later modules"
-        )
+        not(target_arch = "riscv64"),
+        expect(dead_code, reason = "currently consumed by the RISC-V IPI router")
     )]
     pub(crate) fn dispatch_vcpu_interrupt(
         &self,
@@ -961,6 +967,10 @@ impl AxVM {
         f(runtime)
     }
 
+    #[cfg_attr(
+        not(target_arch = "riscv64"),
+        expect(dead_code, reason = "currently consumed by the RISC-V IPI router")
+    )]
     pub(crate) fn current_interrupt_runtime(&self) -> AxVmResult<Arc<VmRuntimeHandle>> {
         let machine = self.machine.lock();
         Ok(machine.interrupt_runtime()?.clone())
@@ -1931,6 +1941,43 @@ mod tests {
         write_guest_bytes_to_chunks(&mut chunks, &[]).unwrap();
 
         assert_eq!(chunk, [7, 7]);
+    }
+
+    fn drain_normal_vectors(runtime: &VmRuntimeHandle, vcpu_id: usize) -> Vec<usize> {
+        runtime
+            .drain_pending_interrupts(vcpu_id)
+            .into_iter()
+            .map(|interrupt| match interrupt {
+                PendingInterrupt::Normal(vector) => vector,
+                PendingInterrupt::External { .. } => {
+                    panic!("unexpected external interrupt in normal queue test")
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn runtime_pending_interrupts_are_per_vcpu_and_drained_once() {
+        let runtime = VmRuntimeHandle::new();
+
+        assert_eq!(
+            runtime
+                .queue_pending_interrupt_for_cpu(0, 3, PendingInterrupt::Normal(2))
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            runtime
+                .queue_pending_interrupt_for_cpu(1, 5, PendingInterrupt::Normal(9))
+                .unwrap(),
+            5
+        );
+
+        assert_eq!(drain_normal_vectors(&runtime, 0), std::vec![2]);
+        assert_eq!(drain_normal_vectors(&runtime, 1), std::vec![9]);
+
+        assert!(drain_normal_vectors(&runtime, 0).is_empty());
+        assert!(drain_normal_vectors(&runtime, 1).is_empty());
     }
 
     #[test]

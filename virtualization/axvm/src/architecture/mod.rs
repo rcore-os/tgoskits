@@ -1,6 +1,8 @@
 //! Architecture-neutral contracts shared by target implementations.
 
 pub(crate) mod capabilities;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) mod cpu_up;
 mod exit;
 pub(crate) mod ops;
 mod types;

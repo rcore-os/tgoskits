@@ -56,8 +56,6 @@ graph LR
 - `ax-crate-interface`
 - `ax-lazyinit`
 - `ax-memory-set`
-- `ax-page-table-entry`
-- `ax-page-table-multiarch`
 - `axvisor_api_proc`
 - `axvmconfig`
 

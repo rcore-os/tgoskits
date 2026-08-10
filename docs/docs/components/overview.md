@@ -139,8 +139,6 @@ flowchart TB
 | `ax-memory-set` | 组件层 | `memory/memory_set` | 2 | 3 | [查看](crates/ax-memory-set) |
 | `ax-mm` | ArceOS 层 | `os/arceos/modules/axmm` | 8 | 4 | [查看](crates/ax-mm) |
 | `ax-net` | 组件层 | `net/ax-net` | 11 | 6 | [查看](crates/ax-net) |
-| `ax-page-table-entry` | 组件层 | `memory/page_table_entry` | 1 | 12 | [查看](crates/ax-page-table-entry) |
-| `ax-page-table-multiarch` | 组件层 | `memory/page_table_multiarch` | 3 | 7 | [查看](crates/ax-page-table-multiarch) |
 | `ax-percpu` | 组件层 | `components/percpu/percpu` | 2 | 17 | [查看](crates/ax-percpu) |
 | `ax-percpu-macros` | 组件层 | `components/percpu/percpu_macros` | 0 | 1 | [查看](crates/ax-percpu-macros) |
 | `ax-plat` | 组件层 | `platforms/ax-plat` | 6 | 15 | [查看](crates/ax-plat) |
@@ -176,6 +174,7 @@ flowchart TB
 | `impl-weak-partial` | 组件层 | `components/crate_interface/test_crates/impl-weak-partial` | 2 | 1 | [查看](crates/impl-weak-partial) |
 | `impl-weak-traits` | 组件层 | `components/crate_interface/test_crates/impl-weak-traits` | 2 | 1 | [查看](crates/impl-weak-traits) |
 | `mingo` | ArceOS 层 | `os/arceos/tools/raspi4/chainloader` | 0 | 0 | [查看](crates/mingo) |
+| `page-table-generic` | 组件层 | `memory/page-table-generic` | 1 | 8 | [查看](crates/page-table-generic) |
 | `riscv-h` | 组件层 | `virtualization/riscv-h` | 0 | 2 | [查看](crates/riscv-h) |
 | `ax-riscv-plic` | 组件层 | `drivers/intc/riscv_plic` | 0 | 1 | [查看](crates/ax-riscv-plic) |
 | `riscv_vcpu` | 组件层 | `virtualization/riscv_vcpu` | 8 | 2 | [查看](crates/riscv-vcpu) |

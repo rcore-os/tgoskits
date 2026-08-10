@@ -304,6 +304,16 @@ fn do_execve(
         |old_memory| crate::mm::release_process_slot(&old_memory.aspace()),
     );
 
+    // PR_SET_KEEPCAPS is deliberately not inherited by a new executable
+    // image. Do this only after crossing the point of no return so a failed
+    // exec leaves the caller's credential state untouched.
+    let old_cred = thr.cred();
+    if old_cred.keep_capabilities() {
+        let mut new_cred = (*old_cred).clone();
+        new_cred.set_keep_capabilities(false);
+        thr.set_cred(new_cred);
+    }
+
     curr.set_name(&new_name);
     proc_data.set_exe_path(new_exe_path);
     proc_data.set_cmdline(Arc::new(args));

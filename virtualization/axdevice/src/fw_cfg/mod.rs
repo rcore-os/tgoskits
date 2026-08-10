@@ -404,34 +404,7 @@ impl FwCfg {
             return Ok(None);
         }
         let offset = addr.as_usize() - self.base.as_usize();
-
-        let mut state = self.state.lock();
-        match (offset - FW_CFG_DMA_OFFSET, width) {
-            (0, AccessWidth::Dword) => {
-                let high = (value as u32).swap_bytes() as u64;
-                state.dma_address = (high << 32) | (state.dma_address & u32::MAX as u64);
-                Ok(None)
-            }
-            (4, AccessWidth::Dword) => {
-                let low = (value as u32).swap_bytes() as u64;
-                state.dma_address = (state.dma_address & !u32::MAX as u64) | low;
-                Ok(Some(GuestPhysAddr::from_usize(state.dma_address as usize)))
-            }
-            (0, AccessWidth::Qword) => {
-                state.dma_address = (value as u64).swap_bytes();
-                Ok(Some(GuestPhysAddr::from_usize(state.dma_address as usize)))
-            }
-            _ => {
-                warn!(
-                    "unsupported fw_cfg DMA address write: offset={:#x}, width={:?}",
-                    offset, width
-                );
-                Err(DeviceManagerError::InvalidInput {
-                    operation: "write fw_cfg DMA address",
-                    detail: format!("offset {offset:#x} does not accept width {width:?}"),
-                })
-            }
-        }
+        self.write_dma_value(offset - FW_CFG_DMA_OFFSET, width, value)
     }
 
     /// Records a PIO DMA address-register write relative to the DMA window.
@@ -450,21 +423,25 @@ impl FwCfg {
         width: AccessWidth,
         value: usize,
     ) -> DeviceManagerResult<Option<GuestPhysAddr>> {
+        const LOW_DWORD_MASK: u64 = u32::MAX as u64;
+
         let mut state = self.state.lock();
         match (offset, width) {
             (0, AccessWidth::Dword) => {
                 let high = (value as u32).swap_bytes() as u64;
-                state.dma_address = (high << 32) | (state.dma_address & u32::MAX as u64);
+                state.dma_address = (high << 32) | (state.dma_address & LOW_DWORD_MASK);
                 Ok(None)
             }
             (4, AccessWidth::Dword) => {
                 let low = (value as u32).swap_bytes() as u64;
-                state.dma_address = (state.dma_address & !u32::MAX as u64) | low;
-                Ok(Some(GuestPhysAddr::from_usize(state.dma_address as usize)))
+                state.dma_address = (state.dma_address & !LOW_DWORD_MASK) | low;
+                let descriptor = core::mem::take(&mut state.dma_address);
+                Ok(Some(GuestPhysAddr::from_usize(descriptor as usize)))
             }
             (0, AccessWidth::Qword) => {
-                state.dma_address = (value as u64).swap_bytes();
-                Ok(Some(GuestPhysAddr::from_usize(state.dma_address as usize)))
+                let descriptor = (value as u64).swap_bytes();
+                state.dma_address = 0;
+                Ok(Some(GuestPhysAddr::from_usize(descriptor as usize)))
             }
             _ => Err(DeviceManagerError::InvalidInput {
                 operation: "write fw_cfg DMA address",
@@ -485,7 +462,14 @@ impl FwCfg {
         W: FnMut(GuestPhysAddr, &[u8]) -> DeviceManagerResult,
     {
         let mut desc = [0u8; FW_CFG_DMA_DESC_SIZE];
-        read_guest(desc_addr, &mut desc)?;
+        if let Err(error) = read_guest(desc_addr, &mut desc) {
+            warn!(
+                "failed to read fw_cfg DMA descriptor at {:#x}: {error}",
+                desc_addr.as_usize()
+            );
+            let _ = write_guest(desc_addr, &FW_CFG_DMA_CTL_ERROR.to_be_bytes());
+            return Ok(());
+        }
 
         let mut control = u32::from_be_bytes(desc[0..4].try_into().unwrap());
         let length = u32::from_be_bytes(desc[4..8].try_into().unwrap()) as usize;
@@ -498,13 +482,24 @@ impl FwCfg {
             &mut read_guest,
             &mut write_guest,
         );
-        control = if result.is_ok() {
-            0
-        } else {
+        control = if let Err(error) = result {
+            warn!(
+                "fw_cfg DMA command failed: descriptor={:#x}, buffer={:#x}, length={length:#x}: \
+                 {error}",
+                desc_addr.as_usize(),
+                buffer_addr.as_usize()
+            );
             FW_CFG_DMA_CTL_ERROR
+        } else {
+            0
         };
-        write_guest(desc_addr, &control.to_be_bytes())?;
-        result
+        if let Err(error) = write_guest(desc_addr, &control.to_be_bytes()) {
+            warn!(
+                "failed to write fw_cfg DMA status at {:#x}: {error}",
+                desc_addr.as_usize()
+            );
+        }
+        Ok(())
     }
 
     fn process_dma_command<R, W>(
