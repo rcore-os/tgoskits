@@ -114,7 +114,7 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 | `mkdir-mutation-rollback` | child inode 初始化后，父 link/group accounting 或目录项插入失败可留下孤儿 inode、泄漏块或部分发布的计数 | mkdir 的 inode、block、父目录项、父 link count 与 group stats 属于同一可回滚 transaction | namespace/JBD2 rewrite | 红：link 上限已在分配前预检；目录项插入及其后续 I/O 失败的整体回滚仍待 namespace transaction 重写 |
 | `rename-mutation-rollback` | 跨父目录 rename 在新项、旧项、父 link count 或 `..` 更新任一步失败时可留下部分状态 | rename 的全部目录项、link count、`..` 与被替换 inode 更新崩溃原子且可回滚 | namespace/JBD2 rewrite | 红：link count 算术已在发布前预检；多对象 mutation 仍待 journal transaction 整体重写 |
 | `io-failure-no-panic` | mount/commit paths contain `expect` | all errors propagated | codec/JBD2 rewrite | 进行中：mount/JBD2 与 extent root/child traversal 已移除 panic/静默失败，剩余生产路径待审计 |
-| `legacy-indirect-13-blocks` | non-extent path is unsupported | Linux-compatible mapping | mapping rewrite | 进行中：checked read decoder 已覆盖 direct/single/double/triple、hole、整块 pointer validity、system zone 与 cycle，whole-file sparse read 已转绿；indirect tree 分配、recursive truncate/free 与事务回滚仍为红项，当前在任何 inode/link mutation 前返回 typed unsupported |
+| `legacy-indirect-13-blocks` | non-extent path is unsupported | Linux-compatible mapping | mapping rewrite | 进行中：checked read decoder 已覆盖 direct/single/double/triple、hole、整块 pointer validity、system zone 与 cycle，whole-file sparse read 与 existing mapping overwrite 已转绿，写入不再把 legacy inode 隐式改成 extent；indirect tree 分配、recursive truncate/free 与事务回滚仍为红项，当前在任何 inode/link mutation 前返回 typed unsupported |
 
 Draft 期间这些测试可以保持失败，但测试本身不得 `ignore`、弱化断言或伪造成功。
 PR 转 Ready 前本表必须为空。

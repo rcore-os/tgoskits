@@ -645,6 +645,66 @@ mod file_functional_tests {
         assert!(data[2 * BLOCK_SIZE..].iter().all(|&byte| byte == 0x33));
     }
 
+    #[test]
+    fn legacy_single_indirect_overwrite_preserves_inode_format_and_mapping() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/legacy-overwrite", None, None)
+            .expect("file creation failed");
+        let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-overwrite")
+            .unwrap()
+            .unwrap()
+            .0;
+        let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
+        let data_block = fs.alloc_block(&mut jbd2_dev).unwrap();
+        jbd2_dev.read_block(indirect_root).unwrap();
+        jbd2_dev.buffer_mut().fill(0);
+        jbd2_dev.buffer_mut()[..4].copy_from_slice(&data_block.to_u32().unwrap().to_le_bytes());
+        jbd2_dev.write_block(indirect_root, true).unwrap();
+        fs.datablock_cache
+            .modify_new(&mut jbd2_dev, data_block, |data| data.fill(0x41))
+            .unwrap();
+        fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_block[12] = indirect_root.to_u32().unwrap();
+            inode.i_blocks_lo = 2 * (BLOCK_SIZE / 512) as u32;
+            inode.l_i_blocks_high = 0;
+            let size = 13 * BLOCK_SIZE as u64;
+            inode.i_size_lo = size as u32;
+            inode.i_size_high = (size >> 32) as u32;
+        })
+        .unwrap();
+
+        let payload = b"legacy-single-indirect";
+        write_file(
+            &mut jbd2_dev,
+            &mut fs,
+            "/legacy-overwrite",
+            12 * BLOCK_SIZE as u64,
+            payload,
+        )
+        .unwrap();
+
+        let (_, inode) = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-overwrite")
+            .unwrap()
+            .unwrap();
+        assert!(!inode.uses_extents());
+        assert_eq!(
+            inode.i_block[12],
+            indirect_root.to_u32().unwrap(),
+            "an overwrite must not replace the legacy root"
+        );
+        let data = read_file(&mut jbd2_dev, &mut fs, "/legacy-overwrite").unwrap();
+        assert_eq!(
+            &data[12 * BLOCK_SIZE..12 * BLOCK_SIZE + payload.len()],
+            payload
+        );
+    }
+
     /// Verifies symbolic-link resolution by reading the target through the link path.
     #[test]
     fn test_symbolic_link() {

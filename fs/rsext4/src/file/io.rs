@@ -662,14 +662,6 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
     let old_size = inode.size();
     let block_bytes = fs.block_size() as u64;
 
-    // Initialize a legacy inode before its first extent operation. An inode
-    // already carrying EXT4_EXTENTS_FL is never repaired here: its on-disk
-    // header must pass the checked codec.
-    if fs.superblock.has_extents() && !inode.uses_extents() {
-        inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
-        inode.write_extend_header();
-    }
-
     let end = offset.saturating_add(data.len() as u64);
 
     let start_lbn = offset / block_bytes;
