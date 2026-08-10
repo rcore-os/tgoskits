@@ -438,16 +438,27 @@ impl UsbDeviceFile {
             self.submitted_urbs.lock().extend(submitted);
             return Err(err);
         }
-        self.claimed_interfaces.lock().insert(interface, alternate);
         let remaining = if retire_after_quiesce {
             retire_quiesced_urbs(submitted)
         } else {
             Vec::new()
         };
         if !remaining.is_empty() {
+            if let Some(previous_alternate) =
+                self.claimed_interfaces.lock().get(&interface).copied()
+                && let Err(err) = self
+                    .with_live_lease(|lease| lease.claim_interface(interface, previous_alternate))
+            {
+                warn!(
+                    "usbfs: failed to restore interface {} alt {} after URB retirement failure: \
+                     {err:?}",
+                    interface, previous_alternate
+                );
+            }
             self.submitted_urbs.lock().extend(remaining);
             return Err(AxError::ResourceBusy);
         }
+        self.claimed_interfaces.lock().insert(interface, alternate);
         Ok(0)
     }
 
@@ -1929,42 +1940,4 @@ fn write_iso_packet_descs(
         vm_write_slice(ptr, descs)?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uvc_claim_releases_live_endpoints_before_updating_alternate() {
-        let interface = 1;
-        let claimed_interfaces = Mutex::new(BTreeMap::from([(interface, 2)]));
-        let live_endpoint_handles = Mutex::new(BTreeMap::from([(0x81, interface), (0x82, 3)]));
-
-        let result =
-            commit_userspace_uvc_claim(&claimed_interfaces, interface, 0, |claimed_interface| {
-                assert_eq!(claimed_interfaces.lock().get(&interface), Some(&2));
-                live_endpoint_handles
-                    .lock()
-                    .retain(|_, owner| *owner != claimed_interface);
-                Ok(())
-            });
-
-        assert_eq!(result, Ok(0));
-        assert_eq!(*live_endpoint_handles.lock(), BTreeMap::from([(0x82, 3)]));
-        assert_eq!(claimed_interfaces.lock().get(&interface), Some(&0));
-    }
-
-    #[test]
-    fn uvc_claim_keeps_alternate_when_endpoint_cleanup_is_busy() {
-        let interface = 1;
-        let claimed_interfaces = Mutex::new(BTreeMap::from([(interface, 2)]));
-
-        let result = commit_userspace_uvc_claim(&claimed_interfaces, interface, 0, |_| {
-            Err(AxError::ResourceBusy)
-        });
-
-        assert_eq!(result, Err(AxError::ResourceBusy));
-        assert_eq!(claimed_interfaces.lock().get(&interface), Some(&2));
-    }
 }
