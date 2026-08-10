@@ -1017,7 +1017,8 @@ fn rsext4_journal_device_overlay_rules_hold() {
         s_maxlen: 8,
         ..Default::default()
     };
-    dev.set_journal_superblock(journal_superblock, AbsoluteBN::new(16));
+    dev.set_journal_superblock(journal_superblock, AbsoluteBN::new(16))
+        .unwrap();
     ax_assert!(dev.is_use_journal());
     ax_assert_eq!(dev.journal_sequence(), Some(7));
 

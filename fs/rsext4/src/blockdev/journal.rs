@@ -1,21 +1,22 @@
 //! JBD2-aware block device facade.
 
 use alloc::vec::Vec;
+use core::mem::size_of;
 
 use super::{FilesystemBlockIo, cached_device::BlockDev};
 use crate::{
     bmalloc::AbsoluteBN,
     checksum::jbd2_superblock_csum32,
-    config::JBD2_BUFFER_MAX,
     disknode::Ext4Timestamp,
     error::{Ext4Error, Ext4Result},
     io::BlockIo,
     jbd2::{
         jbd2::ReplayStatus,
         jbdstruct::{
-            JBD2_BLOCKTYPE_SUPERBLOCK_V2, JBD2_CRC32C_CHKSUM, JBD2_FEATURE_INCOMPAT_64BIT,
-            JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_MAGIC, JBD2DEVSYSTEM, Jbd2Update,
-            JournalSuperBllockS,
+            JBD2_BLOCKTYPE_SUPERBLOCK_V2, JBD2_CRC32C_CHKSUM, JBD2_DESCRIPTOR_HEADER_SIZE,
+            JBD2_FEATURE_INCOMPAT_64BIT, JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_MAGIC,
+            JBD2_TAG_BLOCKNR_HIGH_SIZE, JBD2_TAG_SIZE, JBD2_TAG3_SIZE, JBD2_UUID_SIZE,
+            JBD2DEVSYSTEM, Jbd2Update, JournalSuperBllockS,
         },
     },
     runtime::Clock,
@@ -58,9 +59,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if super_block.s_blocksize != self.inner.block_size() {
             return Err(Ext4Error::bad_superblock().with_operation("jbd2:block_size"));
         }
-        let mapped_blocks = u32::try_from(mapped_blocks).map_err(|_| Ext4Error::overflow())?;
+        let mapped_blocks_u32 = u32::try_from(mapped_blocks).map_err(|_| Ext4Error::overflow())?;
         if super_block.s_maxlen == 0
-            || super_block.s_maxlen > mapped_blocks
+            || super_block.s_maxlen > mapped_blocks_u32
             || super_block.s_first == 0
             || super_block.s_first >= super_block.s_maxlen
             || (super_block.s_start != 0
@@ -92,6 +93,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if super_block.s_errno != 0 {
             return Err(Ext4Error::journal_aborted().with_operation("jbd2:recorded_error"));
         }
+        Self::transaction_capacity(super_block, self.inner.block_size() as usize, mapped_blocks)?;
         Ok(())
     }
 
@@ -101,6 +103,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         journal_blocks: &[AbsoluteBN],
         update: Jbd2Update,
         active_handle: Option<&mut ActiveJournalHandle>,
+        transaction_capacity: usize,
     ) -> Ext4Result<bool> {
         if let Some(handle) = active_handle {
             if !handle.touched_blocks.contains(&update.0) {
@@ -131,7 +134,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
 
         let mut committed = false;
-        if system.commit_queue.len() >= JBD2_BUFFER_MAX {
+        if system.commit_queue.len() >= transaction_capacity {
             system.commit_transaction_with_mapping(block_dev, journal_blocks)?;
             committed = true;
         }
@@ -145,6 +148,47 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .iter()
             .map(|update| Jbd2Update(update.0, update.1.to_vec().into_boxed_slice()))
             .collect()
+    }
+
+    fn transaction_capacity(
+        superblock: &JournalSuperBllockS,
+        block_size: usize,
+        mapped_blocks: usize,
+    ) -> Ext4Result<usize> {
+        let has_csum_v3 = superblock.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0;
+        let has_64bit = superblock.s_feature_incompat & JBD2_FEATURE_INCOMPAT_64BIT != 0;
+        let descriptor_tail = usize::from(has_csum_v3) * size_of::<u32>();
+        let descriptor_end = block_size
+            .checked_sub(descriptor_tail)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:descriptor_capacity"))?;
+        let fixed_descriptor_bytes = JBD2_DESCRIPTOR_HEADER_SIZE
+            .checked_add(JBD2_UUID_SIZE)
+            .ok_or_else(Ext4Error::overflow)?;
+        let tag_bytes = if has_csum_v3 {
+            JBD2_TAG3_SIZE
+        } else {
+            JBD2_TAG_SIZE + usize::from(has_64bit) * JBD2_TAG_BLOCKNR_HIGH_SIZE
+        };
+        let descriptor_capacity = descriptor_end
+            .checked_sub(fixed_descriptor_bytes)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:descriptor_capacity"))?
+            / tag_bytes;
+
+        let declared_blocks =
+            usize::try_from(superblock.s_maxlen).map_err(|_| Ext4Error::overflow())?;
+        let first = usize::try_from(superblock.s_first).map_err(|_| Ext4Error::overflow())?;
+        let ring_records = declared_blocks
+            .min(mapped_blocks)
+            .checked_sub(first)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:ring_capacity"))?;
+        let ring_capacity = ring_records
+            .checked_sub(2)
+            .ok_or_else(|| Ext4Error::no_space().with_operation("jbd2:ring_capacity"))?;
+        let capacity = descriptor_capacity.min(ring_capacity);
+        if capacity == 0 {
+            return Err(Ext4Error::no_space().with_operation("jbd2:transaction_capacity"));
+        }
+        Ok(capacity)
     }
 
     fn make_system(
@@ -197,6 +241,26 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.system.as_ref().map(|s| s.sequence)
     }
 
+    fn journal_transaction_capacity(&self) -> Ext4Result<usize> {
+        let system = self.system.as_ref().ok_or_else(|| {
+            Ext4Error::journal_aborted().with_operation("jbd2:capacity_without_state")
+        })?;
+        let mapped_blocks = if self.journal_blocks.is_empty() {
+            let available = self
+                .total_blocks()
+                .checked_sub(system.start_block.raw())
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:mapping_capacity"))?;
+            usize::try_from(available).map_err(|_| Ext4Error::overflow())?
+        } else {
+            self.journal_blocks.len()
+        };
+        Self::transaction_capacity(
+            &system.jbd2_super_block,
+            self.inner.block_size() as usize,
+            mapped_blocks,
+        )
+    }
+
     /// Replays the journal if JBD2 state is available.
     ///
     /// Returning `Incomplete` here is intentionally conservative: callers that
@@ -229,9 +293,16 @@ impl<B: BlockIo> Jbd2Dev<B> {
         &mut self,
         super_block: JournalSuperBllockS,
         journal_start_block: AbsoluteBN,
-    ) {
+    ) -> Ext4Result<()> {
+        let available = self
+            .total_blocks()
+            .checked_sub(journal_start_block.raw())
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:mapping_capacity"))?;
+        let mapped_blocks = usize::try_from(available).map_err(|_| Ext4Error::overflow())?;
+        self.validate_journal_superblock(&super_block, mapped_blocks)?;
         self.journal_blocks.clear();
         self.system = Some(Self::make_system(super_block, journal_start_block));
+        Ok(())
     }
 
     pub(crate) fn set_journal_superblock_with_mapping(
@@ -289,7 +360,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if credits == 0 {
             return Err(Ext4Error::invalid_input().with_operation("jbd2:handle_credits"));
         }
-        if credits > JBD2_BUFFER_MAX {
+        let transaction_capacity = self.journal_transaction_capacity()?;
+        if credits > transaction_capacity {
             return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
         }
         if self.active_handle.is_some() {
@@ -307,7 +379,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 .len()
                 .checked_add(credits)
                 .ok_or_else(Ext4Error::overflow)?;
-            if reserved > JBD2_BUFFER_MAX {
+            if reserved > transaction_capacity {
                 system.commit_transaction_with_mapping(&mut self.inner, &self.journal_blocks)?
             } else {
                 false
@@ -362,6 +434,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
         let new_buf = self.inner.buffer().to_vec().into_boxed_slice();
         let updates = Jbd2Update(block_id, new_buf);
+        let transaction_capacity = self.journal_transaction_capacity()?;
 
         let Some(system) = self.system.as_mut() else {
             return Err(Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"));
@@ -372,6 +445,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             &self.journal_blocks,
             updates,
             self.active_handle.as_mut(),
+            transaction_capacity,
         )? {
             self.inner.invalidate_cache()?;
         }
@@ -472,7 +546,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
         let credits = usize::try_from(count).map_err(|_| Ext4Error::overflow())?;
-        if self.active_handle.is_none() && credits > 1 && credits <= JBD2_BUFFER_MAX {
+        let transaction_capacity = self.journal_transaction_capacity()?;
+        if self.active_handle.is_none() && credits > 1 && credits <= transaction_capacity {
             return self.with_journal_handle(credits, |device| {
                 device.write_blocks(buf, block_id, count, is_metadata)
             });
@@ -494,6 +569,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 &self.journal_blocks,
                 updates,
                 self.active_handle.as_mut(),
+                transaction_capacity,
             )?;
         }
         if committed_any {
@@ -623,10 +699,19 @@ mod tests {
         superblock
     }
 
+    fn small_journal_superblock() -> JournalSuperBllockS {
+        JournalSuperBllockS {
+            s_maxlen: 16,
+            s_first: 1,
+            ..JournalSuperBllockS::default()
+        }
+    }
+
     fn committed_csum_v3_fixture() -> (MemBlockDev, JournalSuperBllockS, AbsoluteBN) {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
         let superblock = csum_v3_superblock();
-        dev.set_journal_superblock(superblock, AbsoluteBN::new(128));
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
 
         let target = AbsoluteBN::new(10);
         let payload = vec![0xa5; BLOCK_SIZE];
@@ -731,13 +816,15 @@ mod tests {
     #[test]
     fn auto_commit_invalidates_stale_block_cache() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let sequence = dev.journal_sequence().unwrap();
 
         let target = AbsoluteBN::new(10);
         dev.read_block(target).expect("prime target cache");
         assert_eq!(dev.buffer()[0], 0);
 
-        let count = (JBD2_BUFFER_MAX + 1) as u32;
+        let count = u32::try_from(dev.journal_transaction_capacity().unwrap() + 1).unwrap();
         let mut updates = vec![0u8; count as usize * BLOCK_SIZE];
         for idx in 0..count as usize {
             updates[idx * BLOCK_SIZE] = (idx + 1) as u8;
@@ -749,12 +836,22 @@ mod tests {
         dev.read_block(target)
             .expect("read target after auto commit");
         assert_eq!(dev.buffer()[0], 1);
+        assert_eq!(dev.journal_sequence(), Some(sequence.wrapping_add(1)));
+
+        dev.umount_commit().expect("commit final queued update");
+        assert_eq!(dev.journal_sequence(), Some(sequence.wrapping_add(2)));
+        let inner = dev.into_inner();
+        for idx in 0..count as usize {
+            let start = (target.as_usize().unwrap() + idx) * BLOCK_SIZE;
+            assert_eq!(inner.data[start], (idx + 1) as u8);
+        }
     }
 
     #[test]
     fn bulk_read_overlays_pending_journal_update() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
 
         let target = AbsoluteBN::new(10);
         let pending = vec![0x5a; BLOCK_SIZE];
@@ -838,6 +935,49 @@ mod tests {
             .validate_journal_superblock(&missing_feature, missing_feature.s_maxlen as usize)
             .expect_err("CRC32C journal superblock checksums require csum-v3 support");
         assert_eq!(error.kind(), crate::Ext4ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn transaction_capacity_follows_descriptor_and_ring_geometry() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        let superblock = csum_v3_superblock();
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
+
+        assert_eq!(dev.journal_transaction_capacity().unwrap(), 61);
+        let large_ring = JournalSuperBllockS {
+            s_maxlen: 4096,
+            ..superblock
+        };
+        assert_eq!(
+            Jbd2Dev::<MemBlockDev>::transaction_capacity(&large_ring, 1024, 4096).unwrap(),
+            62
+        );
+
+        let small = small_journal_superblock();
+        assert_eq!(
+            Jbd2Dev::<MemBlockDev>::transaction_capacity(&small, BLOCK_SIZE, 16).unwrap(),
+            13
+        );
+    }
+
+    #[test]
+    fn journal_install_rejects_ring_without_payload_capacity() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        let too_small = JournalSuperBllockS {
+            s_maxlen: 3,
+            s_first: 1,
+            ..JournalSuperBllockS::default()
+        };
+
+        let error = dev
+            .set_journal_superblock_with_mapping(
+                too_small,
+                (128..131).map(AbsoluteBN::new).collect(),
+            )
+            .expect_err("descriptor and commit alone leave no payload capacity");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::NoSpace);
+        assert_eq!(dev.journal_sequence(), None);
     }
 
     #[test]
@@ -945,7 +1085,8 @@ mod tests {
     fn csum_v3_replay_validates_all_payloads_before_any_home_write() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
         let superblock = csum_v3_superblock();
-        dev.set_journal_superblock(superblock, AbsoluteBN::new(128));
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
         let first_target = AbsoluteBN::new(10);
         let second_target = AbsoluteBN::new(11);
         dev.write_blocks(&vec![0xa5; BLOCK_SIZE * 2], first_target, 2, true)
@@ -991,7 +1132,8 @@ mod tests {
     #[test]
     fn umount_commit_propagates_device_flush_failure() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::with_failing_flush(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
         dev.write_block(AbsoluteBN::new(10), true)
             .expect("queue metadata update");
 
@@ -1055,7 +1197,8 @@ mod tests {
     #[test]
     fn journal_handle_credit_overrun_restores_queued_updates() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
         let target = AbsoluteBN::new(10);
         let updates = vec![0x5a; BLOCK_SIZE * 2];
 
@@ -1079,7 +1222,8 @@ mod tests {
     #[test]
     fn failed_journal_handle_restores_replaced_pending_update() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
         let target = AbsoluteBN::new(10);
         dev.write_blocks(&vec![0x11; BLOCK_SIZE], target, 1, true)
             .expect("queue previous transaction update");
@@ -1108,13 +1252,15 @@ mod tests {
     #[test]
     fn journal_handle_reserves_space_before_operation_without_auto_split() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let capacity = dev.journal_transaction_capacity().unwrap();
         let older_target = AbsoluteBN::new(10);
-        let older_updates = vec![0x11; (JBD2_BUFFER_MAX - 1) * BLOCK_SIZE];
+        let older_updates = vec![0x11; (capacity - 1) * BLOCK_SIZE];
         dev.write_blocks(
             &older_updates,
             older_target,
-            (JBD2_BUFFER_MAX - 1) as u32,
+            u32::try_from(capacity - 1).unwrap(),
             true,
         )
         .expect("queue older running-transaction updates");
@@ -1143,11 +1289,13 @@ mod tests {
     #[test]
     fn invalid_bulk_buffer_does_not_precommit_older_updates() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let capacity = dev.journal_transaction_capacity().unwrap();
         dev.write_blocks(
-            &vec![0x11; (JBD2_BUFFER_MAX - 1) * BLOCK_SIZE],
+            &vec![0x11; (capacity - 1) * BLOCK_SIZE],
             AbsoluteBN::new(10),
-            (JBD2_BUFFER_MAX - 1) as u32,
+            u32::try_from(capacity - 1).unwrap(),
             true,
         )
         .expect("queue older updates");
@@ -1163,7 +1311,8 @@ mod tests {
     #[test]
     fn journal_handle_charges_one_credit_per_distinct_block() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
         let target = AbsoluteBN::new(10);
 
         dev.with_journal_handle(1, |dev| {
@@ -1188,7 +1337,8 @@ mod tests {
     #[test]
     fn nested_journal_handle_is_busy_without_poisoning_outer_handle() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
         let target = AbsoluteBN::new(10);
 
         dev.with_journal_handle(1, |dev| {
@@ -1212,7 +1362,8 @@ mod tests {
     #[test]
     fn active_journal_handle_rejects_unmount_commit_without_state_change() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
         let target = AbsoluteBN::new(10);
         let sequence = dev.journal_sequence();
 
