@@ -383,3 +383,26 @@ RSEXT4_BENCH_SUMMARY commit=b55692634f4b888ef83f9bb3f666dd230108883b arch=x86_64
 改善约 5.7% 和 19.0%；sync p95 改善约 2.1%。sync median 增加约 12.8%，但
 sync latency 门槛按 p95 判定；因此本检查点满足冻结的 host 门槛。7.9 的 legacy
 allocator sync p95 红项仍独立保留，未被本检查点覆盖或改判。
+
+### 7.14 JBD2 abort errno durability 检查点
+
+采集时间：2026-08-11；被测实现 commit 为
+`367160c3b1f6da4c3299a94b814150dd8db42be2`，环境与 7.8 相同。该检查点将首次
+journal abort 记录到 JBD2 superblock `s_errno`，重新计算 checksum，并以设备
+原生 FUA 或 write-then-flush fallback 等待 durability；记录过程的第二错误单独
+保存，不覆盖提交首错。没有 FUA/flush 能力时明确返回 unsupported，不能伪造
+持久化成功。
+
+正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-jbd2-abort-errno.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=367160c3b1f6da4c3299a94b814150dd8db42be2 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6273551 write_p95_ns=6709066 read_median_ns=6146874 read_p95_ns=6833113 sync_median_ns=28082 sync_p95_ns=47959
+```
+
+相对 dev 基线，write/read median 分别改善约 8.1% 和 14.8%，对应 p95 分别
+改善约 8.5% 和 19.4%；sync median 回退约 8.7%。sync p95 受 47.959 us 与
+61.344 us 两个尾延迟样本影响为 47.959 us，相对 38.644 us 基线回退约
+24.1%，超过 10% latency 上限。因此本检查点原样登记为性能红项，不丢弃
+离群样本，也不选择性复测覆盖；与 7.9 的 legacy allocator 红项一并留待整体
+性能收敛阶段定位、优化并用相同 harness 重新验证。
