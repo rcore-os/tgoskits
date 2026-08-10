@@ -18,4 +18,4 @@ weak-map = "0.1"
 
 [dev-dependencies]
 ctor = "0.4.1"
-ax-sync = { workspace = true, features = ["host-test", "smp"] }
+ax-sync = { workspace = true, features = ["host-test", "lockdep", "smp"] }

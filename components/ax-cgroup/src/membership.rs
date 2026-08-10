@@ -146,15 +146,15 @@ mod tests {
 
     impl CgroupProvider for MockProvider {
         fn is_zombie(&self, pid: ProcessId) -> bool {
-            self.zombies.lock_irqsave().unwrap().contains(&pid)
+            self.zombies.lock().unwrap().contains(&pid)
         }
 
         fn membership(&self, pid: ProcessId) -> Option<Arc<CgroupNode>> {
-            self.memberships.lock_irqsave().unwrap().get(&pid).cloned()
+            self.memberships.lock().unwrap().get(&pid).cloned()
         }
 
         fn set_membership(&self, pid: ProcessId, cgroup: Arc<CgroupNode>) {
-            self.memberships.lock_irqsave().unwrap().insert(pid, cgroup);
+            self.memberships.lock().unwrap().insert(pid, cgroup);
         }
     }
 
@@ -166,13 +166,13 @@ mod tests {
     static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn setup() -> MutexGuard<'static, ()> {
-        let guard = TEST_LOCK.lock_irqsave().unwrap();
+        let guard = TEST_LOCK.lock().unwrap();
         INIT.call_once(|| {
             crate::init();
             register_provider(&PROVIDER);
         });
-        PROVIDER.memberships.lock_irqsave().unwrap().clear();
-        PROVIDER.zombies.lock_irqsave().unwrap().clear();
+        PROVIDER.memberships.lock().unwrap().clear();
+        PROVIDER.zombies.lock().unwrap().clear();
         guard
     }
 
@@ -185,7 +185,7 @@ mod tests {
         root.add_member(pid);
         PROVIDER
             .memberships
-            .lock_irqsave()
+            .lock()
             .unwrap()
             .insert(pid, root.clone());
 
@@ -205,7 +205,7 @@ mod tests {
         root.add_member(pid);
         PROVIDER
             .memberships
-            .lock_irqsave()
+            .lock()
             .unwrap()
             .insert(pid, root.clone());
 
@@ -225,12 +225,8 @@ mod tests {
             Err(CgroupError::NoSuchProcess)
         );
 
-        PROVIDER
-            .memberships
-            .lock_irqsave()
-            .unwrap()
-            .insert(1004, root);
-        PROVIDER.zombies.lock_irqsave().unwrap().insert(1004);
+        PROVIDER.memberships.lock().unwrap().insert(1004, root);
+        PROVIDER.zombies.lock().unwrap().insert(1004);
         assert_eq!(
             migrate_process(1004, target),
             Err(CgroupError::NoSuchProcess)
@@ -244,7 +240,7 @@ mod tests {
         let pid = 1005;
         PROVIDER
             .memberships
-            .lock_irqsave()
+            .lock()
             .unwrap()
             .insert(pid, root.clone());
 

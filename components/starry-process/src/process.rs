@@ -15,6 +15,8 @@ use weak_map::StrongMap;
 
 use crate::{Pid, ProcessGroup, Session};
 
+const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
+
 #[derive(Default)]
 pub(crate) struct ThreadGroup {
     pub(crate) threads: BTreeSet<Pid>,
@@ -290,7 +292,9 @@ impl Process {
     /// Reparents all children to `reaper`.
     ///
     /// The caller chooses the live subreaper because liveness belongs to the
-    /// OS PID-identity registry, not to this relationship-only component.
+    /// OS PID-identity registry, not to this relationship-only component. The
+    /// selected reaper must be an ancestor of this process; that hierarchy is
+    /// also the lock order for their same-class `children` locks.
     pub fn reparent_children_to(self: &Arc<Self>, reaper: &Arc<Process>) {
         if self.is_init() || Arc::ptr_eq(self, reaper) {
             return;
@@ -299,7 +303,12 @@ impl Process {
         let reaper_parent = Arc::downgrade(reaper);
 
         let mut reaper_children = reaper.children.lock_irqsave();
-        let mut children = self.children.lock_irqsave();
+        // The reaper and exiting process own different instances of the same
+        // `children` lock class. The caller guarantees that `reaper` is an
+        // ancestor, so this acquisition is structurally nested below it.
+        let mut children = self
+            .children
+            .lock_irqsave_nested(NESTED_CHILDREN_LOCK_SUBCLASS);
         for (pid, child) in core::mem::take(&mut *children) {
             *child.parent.lock_irqsave() = reaper_parent.clone();
             reaper_children.insert(pid, child);
@@ -431,7 +440,7 @@ mod tests {
         time::Instant,
     };
 
-    use super::Process;
+    use super::{NESTED_CHILDREN_LOCK_SUBCLASS, Process};
 
     #[test]
     fn orphan_never_becomes_invisible_while_reparenting() {
@@ -456,7 +465,10 @@ mod tests {
         let deadline = Instant::now() + Duration::from_millis(500);
         let mut observed_invisible = false;
         while Instant::now() < deadline {
-            let parent_has_child = parent.children.lock_irqsave().contains_key(&child_pid);
+            let parent_has_child = parent
+                .children
+                .lock_irqsave_nested(NESTED_CHILDREN_LOCK_SUBCLASS)
+                .contains_key(&child_pid);
             let reaper_has_child = reaper_children.contains_key(&child_pid);
             if !parent_has_child && !reaper_has_child {
                 observed_invisible = true;

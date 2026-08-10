@@ -11,6 +11,7 @@ use ax_sync::SpinLock;
 use crate::{CgroupError, CgroupResult, ProcessId};
 
 static NEXT_CGROUP_ID: AtomicU64 = AtomicU64::new(2);
+const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
 
 /// A stable node in the cgroup v2 hierarchy.
 pub struct CgroupNode {
@@ -94,7 +95,13 @@ impl CgroupNode {
     pub fn remove_child(&self, name: &str) -> CgroupResult<()> {
         let mut children = self.children.lock_irqsave();
         let child = children.get(name).cloned().ok_or(CgroupError::NotFound)?;
-        if !child.children.lock_irqsave().is_empty() {
+        // Parent and child nodes share the `children` lock class. Hierarchy
+        // removal always acquires the direct child's lock below its parent's.
+        if !child
+            .children
+            .lock_irqsave_nested(NESTED_CHILDREN_LOCK_SUBCLASS)
+            .is_empty()
+        {
             return Err(CgroupError::DirectoryNotEmpty);
         }
         if !child.members.lock_irqsave().is_empty() || child.pins.load(Ordering::Acquire) != 0 {
@@ -217,5 +224,16 @@ mod tests {
         drop(pin);
         assert_eq!(root.remove_child("child"), Ok(()));
         assert_eq!(incidental_reference.name(), "child");
+    }
+
+    #[test]
+    fn removes_empty_child_from_dynamic_parent() {
+        let root = CgroupNode::new_root();
+        let parent = root.create_child("parent").unwrap();
+        let child = parent.create_child("child").unwrap();
+        assert!(parent.child_names().contains(&"child".to_string()));
+        assert!(child.child_names().is_empty());
+
+        assert_eq!(parent.remove_child("child"), Ok(()));
     }
 }
