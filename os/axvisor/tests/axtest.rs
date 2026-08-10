@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+use ax_hal as _;
 use ax_std as _;
 use axvm as _;
 
