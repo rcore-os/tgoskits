@@ -243,14 +243,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
             }
         }
 
-        let result = self.with_current_cpu_set(|| {
-            self.get_arch_vcpu()
-                .bind()
-                .map_err(|error| map_vcpu_backend_error("bind vCPU", error))
-        });
-        let bind_succeeded = result.is_ok();
-        finish_cpu_on_start_state(&mut self.inner_mut.lock().state, bind_succeeded)?;
-        result
+        finish_cpu_on_start_state(&mut self.inner_mut.lock().state, true)
     }
 
     /// Rolls a failed PSCI CPU_ON reservation back to Free.
@@ -355,31 +348,65 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         unsafe { &mut *self.arch_vcpu.get() }
     }
 
-    /// Runs the vCPU until a VM exit.
-    pub fn run(&self) -> AxVmResult<A::Exit> {
+    /// Runs one already-loaded vCPU until a VM exit.
+    ///
+    /// The caller must keep [`Self::with_backend_bound_current_cpu`] active so
+    /// the architecture backend remains loaded on one non-migrating host CPU.
+    pub(crate) fn run_loaded(&self) -> AxVmResult<A::Exit> {
         self.transition_state(VmVcpuState::Ready, VmVcpuState::Running)?;
-        self.manipulate_arch_vcpu(VmVcpuState::Running, VmVcpuState::Ready, |arch_vcpu| {
+        self.with_state_transition(VmVcpuState::Running, VmVcpuState::Ready, || {
+            let arch_vcpu = self.get_arch_vcpu();
             arch_vcpu
                 .run()
                 .map_err(|error| map_vcpu_backend_error("run vCPU", error))
         })
     }
 
-    /// Binds the vCPU to the current physical CPU.
+    /// Starts one logical vCPU run slice.
+    ///
+    /// Architecture CPU-local state is loaded separately for every guest
+    /// entry by [`Self::with_backend_bound_current_cpu`].
     pub fn bind(&self) -> AxVmResult {
-        self.manipulate_arch_vcpu(VmVcpuState::Free, VmVcpuState::Ready, |arch_vcpu| {
-            arch_vcpu
-                .bind()
-                .map_err(|error| map_vcpu_backend_error("bind vCPU", error))
-        })
+        self.transition_state(VmVcpuState::Free, VmVcpuState::Ready)
     }
 
-    /// Unbinds the vCPU from the current physical CPU.
+    /// Finishes one logical vCPU run slice.
     pub fn unbind(&self) -> AxVmResult {
-        self.manipulate_arch_vcpu(VmVcpuState::Ready, VmVcpuState::Free, |arch_vcpu| {
-            arch_vcpu
+        self.transition_state(VmVcpuState::Ready, VmVcpuState::Free)
+    }
+
+    /// Loads architecture CPU-local state, runs `operation`, and unloads it
+    /// before the CPU pin is released.
+    ///
+    /// This is AxVM's `vcpu_load()`/`vcpu_put()` boundary. Code that can block,
+    /// allocate through a sleepable runtime, or invoke external device
+    /// callbacks must execute after this method returns.
+    pub(crate) fn with_backend_bound_current_cpu<F, T>(&self, operation: F) -> AxVmResult<T>
+    where
+        F: FnOnce() -> AxVmResult<T>,
+    {
+        self.with_current_cpu_set(|| {
+            self.get_arch_vcpu()
+                .bind()
+                .map_err(|error| map_vcpu_backend_error("load vCPU on host CPU", error))?;
+
+            let result = operation();
+            let unload_result = self
+                .get_arch_vcpu()
                 .unbind()
-                .map_err(|error| map_vcpu_backend_error("unbind vCPU", error))
+                .map_err(|error| map_vcpu_backend_error("unload vCPU from host CPU", error));
+            match result {
+                Ok(value) => {
+                    unload_result?;
+                    Ok(value)
+                }
+                Err(error) => {
+                    if let Err(unload_error) = unload_result {
+                        warn!("vCPU unload after operation failure also failed: {unload_error:?}");
+                    }
+                    Err(error)
+                }
+            }
         })
     }
 

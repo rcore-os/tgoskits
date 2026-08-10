@@ -119,6 +119,18 @@ concurrency guard, not an ABI version. vCPU exits must restore the host register
 to host Rust; LoongArch KS4/KS5 remain vCPU scratch and AArch64 must restore host TPIDR_EL0 before
 calling Rust exception handlers.
 
+AxVM's vCPU execution boundary follows Linux KVM's `vcpu_load()` / `vcpu_put()` split. For every
+public guest exit, load the architecture backend, publish the CPU-local current-vCPU identity, enter
+the guest, restore host state, unload the backend, and withdraw that publication under one
+non-migrating CPU pin. Only architecture register loading, pending-interrupt injection, guest
+entry/exit, and host-state restoration belong in that scope. Run MMIO/PIO emulation, hypercalls,
+guest-console callbacks, allocation, and other potentially blocking exit work after the backend is
+unloaded and preemption is enabled; a logical run slice may still continue with another load/entry
+after the handler completes. If Axvisor reaches a `futex` or conditional-wait `UnsafeContext`, use
+GDB to identify the outer vCPU frame and check whether `with_current_cpu_set` incorrectly spans the
+exit handler before changing the contested lock. On AArch64, keep run-slice timer-wait invalidation
+separate from the per-entry, pinned host-PPI migration preparation.
+
 For boot debugging, verify the typed per-CPU layout is finalized and frozen before CPU binding.
 Check both the architectural register and its defined mirror (RISC-V sscratch or LoongArch KS3)
 on secondaries. A separate current-task per-CPU variable can mask a stale register during normal

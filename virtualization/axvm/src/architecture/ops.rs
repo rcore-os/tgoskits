@@ -46,6 +46,19 @@ pub(crate) trait ArchOps {
         Ok(())
     }
 
+    /// Prepares task-owned architecture state for one vCPU run slice.
+    ///
+    /// This hook runs before the backend is loaded on a host CPU and may use
+    /// sleepable task-context services. CPU-local state belongs in
+    /// [`Self::before_vcpu_run`] instead.
+    fn prepare_vcpu_run_slice(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        Ok(())
+    }
+
+    /// Prepares architecture state before each guest entry in a run slice.
     fn before_vcpu_run(
         _vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -162,23 +175,29 @@ pub(crate) trait ArchOps {
             }
         }
 
-        let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
-            loop {
-                crate::runtime::vcpus::inject_pending_interrupts::<Self>(vm.id(), vcpu_id, vcpu);
+        let run_result = run_vcpu_slice(
+            || Self::prepare_vcpu_run_slice(vm, vcpu),
+            || {
+                vcpu.with_backend_bound_current_cpu(|| {
+                    crate::runtime::vcpus::inject_pending_interrupts::<Self>(
+                        vm.id(),
+                        vcpu_id,
+                        vcpu,
+                    );
 
-                drain_and_inject_dispatched_interrupts::<Self>(vm, vcpu_id, vcpu);
+                    drain_and_inject_dispatched_interrupts::<Self>(vm, vcpu_id, vcpu);
 
-                Self::before_vcpu_run(vm, vcpu)?;
-                let exit = vcpu.run();
-                Self::after_vcpu_run(vm, vcpu);
-                let exit = exit?;
+                    Self::before_vcpu_run(vm, vcpu)?;
+                    let exit = vcpu.run_loaded();
+                    Self::after_vcpu_run(vm, vcpu);
+                    exit
+                })
+            },
+            |exit| {
                 trace!("{exit:#x?}");
-                match Self::handle_vcpu_exit_bound(vm, vcpu, exit)? {
-                    BoundVcpuExit::Continue => continue,
-                    action => break Ok(action),
-                }
-            }
-        });
+                Self::handle_vcpu_exit_bound(vm, vcpu, exit)
+            },
+        );
 
         let unbind_result = vcpu.unbind();
         match run_result {
@@ -210,6 +229,20 @@ pub(crate) trait ArchOps {
                 }
                 Err(err)
             }
+        }
+    }
+}
+
+fn run_vcpu_slice<E, T>(
+    prepare: impl FnOnce() -> AxVmResult,
+    mut run_entry: impl FnMut() -> AxVmResult<E>,
+    mut handle_exit: impl FnMut(E) -> AxVmResult<BoundVcpuExit<T>>,
+) -> AxVmResult<BoundVcpuExit<T>> {
+    prepare()?;
+    loop {
+        match handle_exit(run_entry()?)? {
+            BoundVcpuExit::Continue => continue,
+            action => return Ok(action),
         }
     }
 }
@@ -294,7 +327,7 @@ pub(crate) fn default_vcpu_affinities(
 
 #[cfg(all(test, feature = "host-test"))]
 mod tests {
-    use std::{sync::Arc, vec};
+    use std::{cell::Cell, sync::Arc, vec};
 
     use ax_std::os::arceos::sync::IrqSafeMutex;
     use axvm_types::{
@@ -432,6 +465,59 @@ mod tests {
         ) -> AxVmResult<VcpuRunAction> {
             unreachable!("the injection test has no deferred work")
         }
+    }
+
+    #[test]
+    fn run_slice_preparation_occurs_once_across_continued_exits() {
+        let preparations = Cell::new(0);
+        let entries = Cell::new(0);
+
+        let exit = run_vcpu_slice(
+            || {
+                preparations.set(preparations.get() + 1);
+                Ok(())
+            },
+            || {
+                entries.set(entries.get() + 1);
+                Ok(entries.get())
+            },
+            |entry| {
+                Ok(if entry < 3 {
+                    BoundVcpuExit::Continue
+                } else {
+                    BoundVcpuExit::Defer(())
+                })
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(exit, BoundVcpuExit::Defer(())));
+        assert_eq!(entries.get(), 3);
+        assert_eq!(preparations.get(), 1);
+    }
+
+    #[test]
+    fn exit_handling_runs_after_the_cpu_bound_entry_scope() {
+        let cpu_bound = Cell::new(false);
+        let handled = Cell::new(false);
+
+        let exit = run_vcpu_slice(
+            || Ok(()),
+            || {
+                assert!(!cpu_bound.replace(true));
+                cpu_bound.set(false);
+                Ok(())
+            },
+            |()| {
+                assert!(!cpu_bound.get());
+                handled.set(true);
+                Ok(BoundVcpuExit::Defer(()))
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(exit, BoundVcpuExit::Defer(())));
+        assert!(handled.get());
     }
 
     #[test]

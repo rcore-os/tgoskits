@@ -75,11 +75,19 @@ impl ArchOps for Aarch64Arch {
         vgic_runtime(vm)?.deactivate()
     }
 
+    fn prepare_vcpu_run_slice(
+        _vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        vcpu.get_arch_vcpu().invalidate_virtual_timer_wait();
+        Ok(())
+    }
+
     fn before_vcpu_run(
         _vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
     ) -> AxVmResult {
-        vcpu.get_arch_vcpu().prepare_timer_run()
+        vcpu.get_arch_vcpu().prepare_timer_entry()
     }
 
     fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
@@ -426,8 +434,7 @@ impl AxvmArmVcpu {
         }
     }
 
-    fn prepare_timer_run(&self) -> AxVmResult {
-        self.invalidate_virtual_timer_wait();
+    fn prepare_timer_entry(&self) -> AxVmResult {
         self.timer_binding
             .as_ref()
             .ok_or_else(|| {

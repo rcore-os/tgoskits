@@ -1617,7 +1617,6 @@ dependencies = [
  "ax-plat",
  "ax-std",
  "ax-sync",
- "ax-timer-list",
  "axaddrspace",
  "axdevice",
  "axdevice_base",
