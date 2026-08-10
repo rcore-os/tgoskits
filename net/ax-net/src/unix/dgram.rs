@@ -126,7 +126,7 @@ impl SeqBind {
         pid: u32,
         client_receive_timestamp: Arc<AtomicBool>,
         client_receive_credentials: Arc<AtomicBool>,
-    ) -> AxResult<(PacketRx, Channel)> {
+    ) -> AxResult<(PacketRx, Channel, Arc<PollSet>)> {
         if !self.listening.load(Ordering::Acquire) {
             return Err(AxError::ConnectionRefused);
         }
@@ -153,8 +153,8 @@ impl SeqBind {
                 receive_credentials: server_receive_credentials.clone(),
             })
             .map_err(|_| AxError::ConnectionRefused)?;
-        // The connection request is queued before waking accept waiters.
-        unsafe { self.poll_new_conn.wake(IoEvents::IN) };
+        // The caller wakes accept waiters after publishing the client endpoint
+        // and releasing namespace, bind-slot, and transport locks.
         Ok((
             (rx1, poll1),
             Channel {
@@ -163,6 +163,7 @@ impl SeqBind {
                 receive_timestamp: server_receive_timestamp,
                 receive_credentials: server_receive_credentials,
             },
+            self.poll_new_conn.clone(),
         ))
     }
 }
@@ -205,6 +206,11 @@ impl DgramTransport {
     /// Create a new unconnected `SOCK_DGRAM` transport.
     pub fn new(pid: u32) -> Self {
         Self::new_typed(pid, 2) // SOCK_DGRAM
+    }
+
+    pub(super) fn wake_connected(&self) {
+        // Connected peer state is published before waking local pollers.
+        unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
     }
 
     /// Create a new unconnected `SOCK_SEQPACKET` transport.
@@ -419,7 +425,11 @@ impl TransportOps for DgramTransport {
         self.is_seqpacket && self.listening.load(Ordering::Acquire)
     }
 
-    fn connect(&self, slot: &super::BindSlot, _local_addr: &UnixSocketAddr) -> AxResult {
+    fn connect(
+        &self,
+        slot: &super::BindSlot,
+        _local_addr: &UnixSocketAddr,
+    ) -> AxResult<Option<Arc<PollSet>>> {
         if self.is_seqpacket {
             // Seqpacket connect performs the stream-style handshake: exchange a
             // packet channel pair with the listener, keep the client half.
@@ -427,21 +437,18 @@ impl TransportOps for DgramTransport {
                 return Err(AxError::AlreadyConnected);
             }
             let client_addr = self.local_addr.read().clone();
-            let (client_rx, client_chan) = slot
-                .seqpacket
-                .lock()
-                .as_ref()
-                .ok_or(AxError::ConnectionRefused)?
-                .connect(
+            let (client_rx, client_chan, accept_poll) = {
+                let slot = slot.seqpacket.lock();
+                slot.as_ref().ok_or(AxError::ConnectionRefused)?.connect(
                     client_addr,
                     self.pid,
                     self.receive_timestamp.clone(),
                     self.receive_credentials.clone(),
-                )?;
+                )?
+            };
             *self.data_rx.lock() = Some(client_rx);
             *self.connected.write() = Some(client_chan);
-            unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
-            return Ok(());
+            return Ok(Some(accept_poll));
         }
         let mut guard = self.connected.write();
         if guard.is_some() {
@@ -454,10 +461,7 @@ impl TransportOps for DgramTransport {
                 .ok_or(AxError::NotConnected)?
                 .connect(),
         );
-        drop(guard);
-        // Connected peer state is published before waking pollers.
-        unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
-        Ok(())
+        Ok(None)
     }
 
     async fn accept(&self) -> AxResult<(Transport, UnixSocketAddr)> {
