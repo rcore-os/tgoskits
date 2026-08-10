@@ -406,3 +406,25 @@ RSEXT4_BENCH_SUMMARY commit=367160c3b1f6da4c3299a94b814150dd8db42be2 arch=x86_64
 24.1%，超过 10% latency 上限。因此本检查点原样登记为性能红项，不丢弃
 离群样本，也不选择性复测覆盖；与 7.9 的 legacy allocator 红项一并留待整体
 性能收敛阶段定位、优化并用相同 harness 重新验证。
+
+### 7.15 JBD2 typed replay failure 检查点
+
+采集时间：2026-08-11；被测实现 commit 为
+`d7eaa40eb3950506744e62b277dd36069873d182`，环境与 7.8 相同。该检查点让
+replay failure 保留 OS 无关的 initialize/scan/revoke/replay/persist/cache phase、
+原始 domain cause、restart 位置和 progress persistence 次错；mount 返回同一首错，
+并通过 typed `Observer` event 提供完整诊断。越界 `s_start` 不再清日志报成功，
+空 descriptor 未提交尾部仍按 Linux clean-end 语义丢弃。
+
+正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-jbd2-typed-replay.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=d7eaa40eb3950506744e62b277dd36069873d182 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6285312 write_p95_ns=6774413 read_median_ns=6107418 read_p95_ns=7027885 sync_median_ns=29408 sync_p95_ns=35354
+```
+
+相对 dev 基线，write/read median 分别改善约 7.9% 和 15.4%，对应 p95 分别
+改善约 7.6% 和 17.1%；sync p95 改善约 8.5%。sync median 增加约 13.9%，
+但 sync latency 门槛按 p95 判定；因此本检查点满足冻结的 host 门槛。7.9 的
+legacy allocator 与 7.14 的一次 sync p95 红项仍原样保留，未被本次通过结果
+覆盖或改判。
