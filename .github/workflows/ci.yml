@@ -488,7 +488,14 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: cargo xtask axvisor test qemu --arch riscv64 --test-case smoke
+            command: |
+              CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
+                CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_RUNNER=qemu-riscv64-static \
+                RUSTFLAGS='-C target-feature=+crt-static' \
+                cargo test -p riscv_vcpu -p axvm \
+                  --target riscv64gc-unknown-linux-musl \
+                  --features axvm/host-test --no-default-features --lib ipi
+              cargo xtask axvisor test qemu --arch riscv64 --test-case smoke
             cache_key: ""
             container_image: base
             limit_to_owner: ""

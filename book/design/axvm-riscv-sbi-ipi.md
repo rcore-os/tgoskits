@@ -100,6 +100,25 @@ HVIP 的保存副本由 `riscv_vcpu` 独占；只有当前绑定到硬件的 vCP
 失去确定性。QEMU 用例同时检查 `nproc >= 3`、SBI IPI extension 日志和
 `/proc/interrupts` 非零 IPI 计数，最终输出唯一标记 `guest smp ipi pass!`。
 
+最低层行为回归直接编译 RISC-V 生产模块，并通过 RISC-V musl test binary 在
+`qemu-riscv64-static` 中执行。`riscv_vcpu` 用例验证 legacy 与 SBI v0.2 completion
+对 A0/A1 的不同写回；AxVM RISC-V router 用例验证广播、零 mask、目标顺序、hart ID
+溢出、未映射 hart、重复 vCPU 映射，以及运行时投递失败。参数错误用例同时断言完整
+目标集合校验完成前没有发布任何中断；运行时失败用例断言已经发布的前缀不会被伪装成
+可回滚。对应命令为：
+
+```bash
+CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
+  CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_RUNNER=qemu-riscv64-static \
+  RUSTFLAGS='-C target-feature=+crt-static' \
+  cargo test -p riscv_vcpu -p axvm \
+    --target riscv64gc-unknown-linux-musl \
+    --features axvm/host-test --no-default-features --lib ipi
+```
+
+该目标相关行为测试保持在 RISC-V 私有模块和 vCPU 协议模块内部，不通过 `#[path]`
+复制生产文件，也不要求公共 `arch/mod.rs` 为 host test 编译 RISC-V 实现。
+
 源码边界契约测试禁止在 `architecture/ops.rs` 加入架构 `cfg`，也禁止公共 `arch/mod.rs`
 出现 hart-mask、IPI 路由 helper 或测试专用 RISC-V 编译分支。该测试应在旧 PR #1681 实现
 上失败，在本设计上通过。

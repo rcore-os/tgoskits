@@ -1226,3 +1226,63 @@ fn sbi_call_legacy_1(eid: usize, arg0: usize) -> usize {
     }
     error
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{RiscvHostPhysAddr, RiscvHostVirtAddr};
+
+    struct TestHost;
+
+    impl RiscvHostOps for TestHost {
+        fn virt_to_phys(_vaddr: RiscvHostVirtAddr) -> RiscvHostPhysAddr {
+            RiscvHostPhysAddr::from_usize(0)
+        }
+    }
+
+    #[test]
+    fn legacy_ipi_completion_updates_only_a0() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+        let request = RiscvIpiRequest::new(1, 0, RiscvIpiAbi::Legacy);
+
+        for (completion, expected) in [
+            (RiscvIpiCompletion::Success, SbiRet::success(0)),
+            (
+                RiscvIpiCompletion::InvalidParameter,
+                SbiRet::invalid_param(),
+            ),
+            (RiscvIpiCompletion::Failed, SbiRet::failed()),
+        ] {
+            let preserved_a1 = 0xfeed_face;
+            vcpu.set_gpr_from_gpr_index(GprIndex::A1, preserved_a1);
+
+            vcpu.complete_ipi(request, completion);
+
+            assert_eq!(vcpu.get_gpr(GprIndex::A0), expected.error);
+            assert_eq!(vcpu.get_gpr(GprIndex::A1), preserved_a1);
+        }
+    }
+
+    #[test]
+    fn sbi_v02_ipi_completion_updates_a0_and_a1() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+        let request = RiscvIpiRequest::new(1, 0, RiscvIpiAbi::SbiV02);
+
+        for (completion, expected) in [
+            (RiscvIpiCompletion::Success, SbiRet::success(0)),
+            (
+                RiscvIpiCompletion::InvalidParameter,
+                SbiRet::invalid_param(),
+            ),
+            (RiscvIpiCompletion::Failed, SbiRet::failed()),
+        ] {
+            vcpu.set_gpr_from_gpr_index(GprIndex::A0, usize::MAX);
+            vcpu.set_gpr_from_gpr_index(GprIndex::A1, usize::MAX);
+
+            vcpu.complete_ipi(request, completion);
+
+            assert_eq!(vcpu.get_gpr(GprIndex::A0), expected.error);
+            assert_eq!(vcpu.get_gpr(GprIndex::A1), expected.value);
+        }
+    }
+}
