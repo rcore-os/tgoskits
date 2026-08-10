@@ -63,9 +63,12 @@ pub fn build_file_block_mapping_with_inode_num<B: BlockIo>(
             tree.insert_extent(fs, extend, block_dev)?;
         }
     } else {
-        error!("not support traditional block pointer");
-        return Err(Ext4Error::unsupported());
+        if data_blocks.len() > 12 {
+            return Err(Ext4Error::unsupported());
+        }
+        for (logical, physical) in data_blocks.iter().enumerate() {
+            inode.i_block[logical] = physical.to_u32()?;
+        }
     }
-
     Ok(())
 }

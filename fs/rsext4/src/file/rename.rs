@@ -107,7 +107,6 @@ pub fn mv<B: BlockIo + crate::runtime::Clock>(
             (parent, name)
         }
         None => {
-            error!("mv invalid old_path(no '/'): old_path={old_path}");
             return Err(Ext4Error::invalid_input());
         }
     };
@@ -122,77 +121,44 @@ pub fn mv<B: BlockIo + crate::runtime::Clock>(
             (parent, name)
         }
         None => {
-            error!("mv invalid new_path(no '/'): new_path={new_path}");
             return Err(Ext4Error::invalid_input());
         }
     };
 
     // Resolve the source entry and preserve its inode number plus file type.
-    let (old_pino, old_parent_inode) = match get_inode_with_num(fs, block_dev, &old_parent)
-        .ok()
-        .flatten()
-    {
-        Some(v) => v,
-        None => {
-            error!("mv old parent not found: old_path={old_path} old_parent={old_parent}");
-            return Err(Ext4Error::invalid_input());
-        }
-    };
+    let (old_pino, old_parent_inode) =
+        get_inode_with_num(fs, block_dev, &old_parent)?.ok_or_else(Ext4Error::not_found)?;
 
-    let old_entry = match find_named_entry_in_parent(
+    let old_entry = find_named_entry_in_parent(
         fs,
         block_dev,
         old_pino,
         &old_parent_inode,
         old_name.as_bytes(),
-    ) {
-        Ok(v) => v,
-        Err(_) => {
-            error!(
-                "mv source entry not found in old parent: old_path={old_path} \
-                 old_parent={old_parent} old_name={old_name}"
-            );
-            return Err(Ext4Error::invalid_input());
-        }
-    };
+    )?;
     let src_ino = old_entry.ino;
     let src_ft = old_entry.file_type;
 
     // Destination parent directory must exist and be a directory.
-    let (new_pino, new_parent_inode) = match get_inode_with_num(fs, block_dev, &new_parent)
-        .ok()
-        .flatten()
-    {
-        Some(v) => v,
-        None => {
-            error!("mv new parent not found: new_path={new_path} new_parent={new_parent}");
-            return Err(Ext4Error::invalid_input());
-        }
-    };
+    let (new_pino, new_parent_inode) =
+        get_inode_with_num(fs, block_dev, &new_parent)?.ok_or_else(Ext4Error::not_found)?;
     if !new_parent_inode.is_dir() {
-        error!("mv new parent is not dir: new_path={new_path} new_parent={new_parent}");
         return Err(Ext4Error::invalid_input());
     }
 
     // Destination must not already exist at this point.
-    if get_inode_with_num(fs, block_dev, &new_norm)
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        error!("mv destination already exists: new_path={new_path} new_norm={new_norm}");
-        return Err(Ext4Error::invalid_input());
+    if get_inode_with_num(fs, block_dev, &new_norm)?.is_some() {
+        return Err(Ext4Error::already_exists());
     }
 
     // The root directory itself cannot be moved.
     if old_norm == "/" {
-        error!("mv refuses to move root: old_path={old_path}");
         return Err(Ext4Error::invalid_input());
     }
 
     // Publish the source inode under its new parent/name first.
     let mut new_parent_inode_copy = new_parent_inode;
-    if insert_dir_entry(
+    insert_dir_entry(
         fs,
         block_dev,
         new_pino,
@@ -200,24 +166,12 @@ pub fn mv<B: BlockIo + crate::runtime::Clock>(
         src_ino,
         &new_name,
         src_ft,
-    )
-    .is_err()
-    {
-        error!(
-            "mv insert_dir_entry failed: old_path={old_path} new_path={new_path} \
-             new_parent={new_parent} new_name={new_name} src_ino={src_ino}"
-        );
-        return Err(Ext4Error::io());
-    }
+    )?;
 
     // Remove the old entry, rolling back the new one if that fails.
-    if remove_inodeentry_from_parentdir(fs, block_dev, &old_parent, &old_name).is_err() {
+    if let Err(error) = remove_inodeentry_from_parentdir(fs, block_dev, &old_parent, &old_name) {
         let _ = remove_inodeentry_from_parentdir(fs, block_dev, &new_parent, &new_name);
-        error!(
-            "mv remove old entry failed: old_parent={old_parent} old_name={old_name} (rollback \
-             new_parent={new_parent} new_name={new_name})"
-        );
-        return Err(Ext4Error::corrupted());
+        return Err(error);
     }
 
     // Directory moves across parents must fix both parents' link counts and the
@@ -225,62 +179,45 @@ pub fn mv<B: BlockIo + crate::runtime::Clock>(
     let mut moved_inode = match fs.get_inode_by_num(block_dev, src_ino) {
         Ok(v) => v,
         Err(e) => {
-            error!("mv get_inode_by_num failed ino={src_ino} err={e:?} ({e})");
             return Err(e);
         }
     };
     if moved_inode.is_dir() {
         // Only cross-parent moves need link-count and `..` adjustments.
-        let old_pino = match get_inode_with_num(fs, block_dev, &old_parent)
-            .ok()
-            .flatten()
-        {
-            Some((n, _)) => n,
-            None => {
-                error!("mv old parent vanished while moving dir: old_parent={old_parent}");
-                return Err(Ext4Error::invalid_input());
-            }
-        };
+        let (old_pino, _) =
+            get_inode_with_num(fs, block_dev, &old_parent)?.ok_or_else(Ext4Error::not_found)?;
         if old_pino != new_pino {
-            if let Ok(old_parent_inode) = fs.get_inode_by_num(block_dev, old_pino) {
-                let new_links = old_parent_inode.i_links_count.saturating_sub(1);
-                if let Err(e) = fs.set_inode_links_count(block_dev, old_pino, new_links) {
-                    warn!(
-                        "mv set_inode_links_count failed for old_parent={old_pino}: {e:?}, \
-                         continuing with rename"
-                    );
-                }
-            }
-            if let Ok(new_parent_inode) = fs.get_inode_by_num(block_dev, new_pino) {
-                let new_links = new_parent_inode.i_links_count.saturating_add(1);
-                if let Err(e) = fs.set_inode_links_count(block_dev, new_pino, new_links) {
-                    warn!(
-                        "mv set_inode_links_count failed for new_parent={new_pino}: {e:?}, \
-                         continuing with rename"
-                    );
-                }
-            }
+            let old_parent_inode = fs.get_inode_by_num(block_dev, old_pino)?;
+            let old_links = old_parent_inode.i_links_count.saturating_sub(1);
+            fs.set_inode_links_count(block_dev, old_pino, old_links)?;
+
+            let new_parent_inode = fs.get_inode_by_num(block_dev, new_pino)?;
+            let new_links = new_parent_inode.i_links_count.saturating_add(1);
+            fs.set_inode_links_count(block_dev, new_pino, new_links)?;
 
             // Rewrite the `..` entry inside the moved directory's first block.
             let first_blk = match resolve_inode_block(block_dev, &mut moved_inode, 0) {
                 Ok(Some(b)) => b,
                 _ => {
-                    error!("mv resolve_inode_block failed for moved dir ino={src_ino}");
                     return Err(Ext4Error::corrupted());
                 }
             };
-            if let Err(e) = fs.datablock_cache.modify(block_dev, first_blk, |data| {
+            let mut valid_parent_entry = true;
+            fs.datablock_cache.modify(block_dev, first_blk, |data| {
                 let block_bytes = BLOCK_SIZE;
                 if block_bytes < 24 {
+                    valid_parent_entry = false;
                     return;
                 }
                 // '.' entry at offset 0
                 let rec_len0 = u16::from_le_bytes([data[4], data[5]]) as usize;
                 if rec_len0 == 0 || rec_len0 + 8 > block_bytes {
+                    valid_parent_entry = false;
                     return;
                 }
                 let off1 = rec_len0;
                 if off1 + 4 > block_bytes {
+                    valid_parent_entry = false;
                     return;
                 }
                 let bytes = new_pino.raw().to_le_bytes();
@@ -294,15 +231,11 @@ pub fn mv<B: BlockIo + crate::runtime::Clock>(
                     moved_inode.i_generation,
                     data,
                 );
-            }) {
-                error!(
-                    "mv rewrite '..' entry failed for moved dir ino={src_ino} \
-                     first_blk={first_blk}: {e:?} — directory has stale parent pointer"
-                );
+            })?;
+            if !valid_parent_entry {
+                return Err(Ext4Error::corrupted());
             }
-            if let Err(e) = fs.touch_inode_ctime_for_link_change(block_dev, src_ino) {
-                warn!("mv touch_inode_ctime failed for ino={src_ino}: {e:?}");
-            }
+            fs.touch_inode_ctime_for_link_change(block_dev, src_ino)?;
         }
     }
 

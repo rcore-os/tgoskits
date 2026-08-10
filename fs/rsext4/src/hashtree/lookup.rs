@@ -2,8 +2,6 @@
 
 use alloc::vec::Vec;
 
-use log::{debug, error, warn};
-
 use super::{
     Ext4InodeHashTreeExt, HashTreeError, HashTreeManager, HashTreeNode, HashTreeSearchResult,
 };
@@ -24,18 +22,12 @@ pub(super) fn lookup<B: BlockIo>(
     dir_inode: &Ext4Inode,
     target_name: &[u8],
 ) -> Result<HashTreeSearchResult, HashTreeError> {
-    debug!(
-        "Starting hash tree lookup: {:?}",
-        core::str::from_utf8(target_name)
-    );
-
     if !dir_inode.is_htree_indexed() {
         return manager.fallback_to_linear_search(fs, block_dev, dir_inode, target_name);
     }
 
     let target_hash =
         htree_dir::calculate_hash(target_name, manager.hash_version, &manager.hash_seed);
-    debug!("Target hash value: 0x{target_hash:08x}");
 
     let root_block = manager.get_root_block(block_dev, dir_inode)?;
     let root_data = manager.read_block_data(fs, block_dev, root_block)?;
@@ -50,10 +42,7 @@ pub(super) fn lookup<B: BlockIo>(
         target_name,
     ) {
         Ok(result) => Ok(result),
-        Err(err) => {
-            warn!("Hash tree lookup failed: {err}, falling back to linear search");
-            manager.fallback_to_linear_search(fs, block_dev, dir_inode, target_name)
-        }
+        Err(_) => manager.fallback_to_linear_search(fs, block_dev, dir_inode, target_name),
     }
 }
 
@@ -190,11 +179,6 @@ impl HashTreeManager {
         dir_inode: &Ext4Inode,
         target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
-        debug!(
-            "Using linear search: {:?}",
-            core::str::from_utf8(target_name)
-        );
-
         let total_size = dir_inode.size() as usize;
         let block_bytes = BLOCK_SIZE;
         let total_blocks = if total_size == 0 {
@@ -238,7 +222,6 @@ impl HashTreeManager {
             return Err(HashTreeError::EntryNotFound);
         }
 
-        error!("FS DOES NOT SUPPORT NORMAL MULTIPLE POINTERS, PLEASE TURN ON EXTENT FEATURE!");
         Err(HashTreeError::CorruptedHashTree)
     }
 }

@@ -27,11 +27,10 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
 ) -> Ext4Result<()> {
     let mut inode = fs.get_inode_by_num(device, inode_num)?;
 
-    if !inode.is_file() {
-        warn!("truncate abnormal file")
-    } else if inode.is_symlink() {
-        error!("Can't truncate symlink file!");
+    if inode.is_symlink() {
         return Err(Ext4Error::unsupported());
+    } else if !inode.is_file() {
+        return Err(Ext4Error::invalid_input());
     }
 
     let old_size = inode.size();
@@ -299,7 +298,6 @@ fn read_file_follow<B: BlockIo + crate::runtime::Clock>(
     }
 
     if !inode.is_file() {
-        error!("Entry:{path} not a file");
         return Err(if inode.is_dir() {
             Ext4Error::is_dir()
         } else {
@@ -648,10 +646,6 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
     if fs.superblock.has_extents() && !inode.have_extend_header_and_use_extend() {
         inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
         inode.write_extend_header();
-    }
-
-    if offset > old_size {
-        info!("Expand write!");
     }
 
     let end = offset.saturating_add(data.len() as u64);

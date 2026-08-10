@@ -99,11 +99,6 @@ impl Ext4Superblock {
         if ext4_superblock_has_metadata_csum(self) {
             let expected = ext4_superblock_csum32(self);
             if self.s_checksum != expected {
-                log::error!(
-                    "Superblock checksum mismatch: stored={:#x} expected={:#x}",
-                    self.s_checksum,
-                    expected
-                );
                 return Err(Ext4Error::checksum());
             }
         }

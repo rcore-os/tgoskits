@@ -19,7 +19,7 @@ impl Ext4FileSystem {
     ) -> Ext4Result<Ext4Inode> {
         let inode = get_file_inode(self, device, path)?;
         let (_ino, inode) = inode.ok_or(Ext4Error::not_found())?;
-        debug!("Found inode for path {path}");
+
         Ok(inode)
     }
 
@@ -38,8 +38,7 @@ impl Ext4FileSystem {
         let result =
             self.inodetable_cache
                 .get_or_load(block_dev, self.root_inode, block_num, offset)?;
-        debug!("Root inode i_mode: {}", result.inode.i_mode);
-        debug!("Root inode detail: {:?}", result.inode);
+
         Ok(result.inode)
     }
 }

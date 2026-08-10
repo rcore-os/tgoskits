@@ -1,7 +1,4 @@
 //! Inode bitmap wrappers.
-
-use log::warn;
-
 use crate::bitmap::BitmapError;
 
 /// Inode bitmap view with allocation helpers.
@@ -111,7 +108,6 @@ impl<'a> InodeBitmap<'a> {
         }
 
         if (self.data[byte_idx] & (1 << bit_idx)) == 0 {
-            warn!("Inode num:{inode_idx} already free!");
             return Err(BitmapError::AlreadyFree);
         }
 

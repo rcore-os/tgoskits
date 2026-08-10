@@ -984,7 +984,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
     let mut dev = Jbd2Dev::initial_jbd2dev(0, JournalMemoryDevice::new(32), false);
     ax_assert!(!dev.is_use_journal());
     ax_assert_eq!(dev.journal_sequence(), None);
-    dev.journal_replay();
+    let _ = dev.journal_replay_checked();
     ax_assert_eq!(dev.total_blocks(), 32);
     ax_assert_eq!(dev.block_size(), BLOCK_SIZE as u32);
     ax_assert_eq!(dev.now().unwrap(), Ext4Timestamp::new(1_900_000_000, 0));
@@ -1002,7 +1002,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
     ax_assert_eq!(dev.buffer()[0], 0x66);
 
     dev.set_journal_use(true);
-    dev.journal_replay();
+    let _ = dev.journal_replay_checked();
     let journal_superblock = JournalSuperBllockS {
         s_sequence: 7,
         s_maxlen: 8,

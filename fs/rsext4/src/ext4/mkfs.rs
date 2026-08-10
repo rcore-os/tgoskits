@@ -4,8 +4,6 @@ use super::*;
 pub struct FsLayoutInfo {
     /// Total filesystem blocks.
     total_blocks: u64,
-    /// Logical block size in bytes.
-    block_size: u32,
     /// Blocks per group.
     blocks_per_group: u32,
     /// Inodes per group.
@@ -118,7 +116,6 @@ pub fn compute_fs_layout(inode_size: u16, total_blocks: u64) -> FsLayoutInfo {
 
     FsLayoutInfo {
         total_blocks,
-        block_size,
         blocks_per_group,
         inodes_per_group,
         inode_size,
@@ -167,7 +164,6 @@ fn mark_block_bitmap_padding(bitmap: &mut [u8], layout: &FsLayoutInfo, group_id:
 }
 
 pub fn mkfs<B: BlockIo + crate::runtime::Clock>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
-    debug!("Start initializing Ext4 filesystem...");
     let old_journal_use = block_dev.is_use_journal();
     // Disable journaling while laying out the initial filesystem image. The
     // journal inode and journal superblock do not exist yet at this stage.
@@ -178,17 +174,10 @@ pub fn mkfs<B: BlockIo + crate::runtime::Clock>(block_dev: &mut Jbd2Dev<B>) -> E
     let layout = compute_fs_layout(DEFAULT_INODE_SIZE, total_blocks);
     let total_groups = layout.groups;
 
-    debug!("  Total blocks: {total_blocks}");
-    debug!("  Block size: {} bytes", layout.block_size);
-    debug!("  Block group count: {total_groups}");
-    debug!("  Blocks per group: {}", layout.blocks_per_group);
-    debug!("  Inodes per group: {}", layout.inodes_per_group);
-
     // Write the primary superblock and any sparse backups first so every later
     // descriptor/bitmap write can assume a valid superblock image exists.
     let superblock = build_superblock(total_blocks, &layout);
     write_superblock(block_dev, &superblock)?;
-    debug!("Superblock written");
 
     write_superblock_redundant_backup(block_dev, &superblock, total_groups, &layout)?;
 
@@ -200,12 +189,10 @@ pub fn mkfs<B: BlockIo + crate::runtime::Clock>(block_dev: &mut Jbd2Dev<B>) -> E
         descs.push_back(desc);
     }
     write_gdt_redundant_backup(block_dev, &descs, &superblock, total_groups, &layout)?;
-    debug!("{total_groups} block group descriptors written");
 
     // Group 0 is initialized eagerly because mkfs immediately creates the root
     // directory inside it.
     initialize_group_0(block_dev, &layout)?;
-    debug!("Block group 0 initialized (for root directory)");
 
     // Other groups start with only metadata blocks allocated.
     initialize_other_groups_bitmaps(block_dev, &layout, &superblock)?;
@@ -241,13 +228,8 @@ pub fn mkfs<B: BlockIo + crate::runtime::Clock>(block_dev: &mut Jbd2Dev<B>) -> E
     block_dev.set_journal_use(old_journal_use);
 
     if verify_sb.s_magic == EXT4_SUPER_MAGIC {
-        debug!(
-            "Format completed, superblock magic verified: {:#x}",
-            verify_sb.s_magic
-        );
         Ok(())
     } else {
-        debug!("Superblock magic verification failed");
         Err(Ext4Error::corrupted())
     }
 }

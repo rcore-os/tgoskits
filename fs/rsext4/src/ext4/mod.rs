@@ -1,7 +1,6 @@
 //! Core filesystem state, mount, allocation, and mkfs helpers.
 
 use ::alloc::{collections::VecDeque, vec::Vec};
-use log::{debug, error, info, trace, warn};
 
 use crate::{
     bitmap::InodeBitmap,
@@ -32,5 +31,5 @@ mod sync;
 pub use fs::{Ext4FileSystem, FileSystemStats};
 pub use lookup::{file_entry_exisr, file_entry_exist, find_file};
 pub use mkfs::{BlcokGroupLayout, BlockGroupLayout, FsLayoutInfo, compute_fs_layout, mkfs};
-pub use mount::{MountOptions, mount, mount_with_options};
+pub use mount::{MountOptions, mount, mount_with_options, mount_with_options_and_observer};
 pub use sync::umount;

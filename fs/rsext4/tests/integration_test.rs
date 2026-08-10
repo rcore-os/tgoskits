@@ -85,6 +85,50 @@ impl rsext4::Clock for TestBlockDevice {
     }
 }
 
+#[derive(Default)]
+struct RecordingObserver {
+    events: Vec<Event>,
+}
+
+impl Observer for RecordingObserver {
+    fn event(&mut self, event: Event) {
+        self.events.push(event);
+    }
+}
+
+#[test]
+fn observer_receives_typed_mount_and_unmount_transitions() {
+    let device = TestBlockDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut observer = RecordingObserver::default();
+    let mut fs =
+        mount_with_options_and_observer(&mut jbd2_dev, MountOptions::read_write(), &mut observer)
+            .expect("observed mount failed");
+    fs.umount_with_observer(&mut jbd2_dev, &mut observer)
+        .expect("observed unmount failed");
+
+    assert_eq!(
+        observer.events.first(),
+        Some(&Event::Mount(rsext4::runtime::MountEvent::Started))
+    );
+    assert!(
+        observer
+            .events
+            .contains(&Event::Mount(rsext4::runtime::MountEvent::Succeeded))
+    );
+    assert!(
+        observer
+            .events
+            .contains(&Event::Mount(rsext4::runtime::MountEvent::UnmountStarted))
+    );
+    assert_eq!(
+        observer.events.last(),
+        Some(&Event::Mount(rsext4::runtime::MountEvent::Unmounted))
+    );
+}
+
 #[test]
 fn test_basic_mount_mkfs() {
     let device = TestBlockDevice::new(100 * 1024 * 1024); // 100MB

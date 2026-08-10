@@ -8,51 +8,10 @@ impl<'a> ExtentTree<'a> {
         new_ext: Ext4Extent,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
-        debug!(
-            "ExtentTree::insert_extent: new_ext lbn={} len={} phys_start={}",
-            new_ext.ee_block,
-            new_ext.len(),
-            new_ext.start_block()
-        );
-
         let mut root = match self.load_root_from_inode() {
             Some(node) => node,
             None => return Err(Ext4Error::corrupted()),
         };
-
-        match &root {
-            ExtentNode::Leaf { header, entries } => {
-                debug!(
-                    "ExtentTree::insert_extent: current root=LEAF depth={} entries={} max={} \
-                     first_extents={:?}",
-                    header.eh_depth,
-                    header.eh_entries,
-                    header.eh_max,
-                    entries
-                        .iter()
-                        .take(4)
-                        .map(|e| (e.ee_block, e.len(), e.start_block()))
-                        .collect::<Vec<_>>()
-                );
-            }
-            ExtentNode::Index { header, entries } => {
-                debug!(
-                    "ExtentTree::insert_extent: current root=INDEX depth={} entries={} max={} \
-                     first_indexes={:?}",
-                    header.eh_depth,
-                    header.eh_entries,
-                    header.eh_max,
-                    entries
-                        .iter()
-                        .take(4)
-                        .map(|ix| (
-                            ix.ei_block,
-                            ((ix.ei_leaf_hi as u64) << 32) | ix.ei_leaf_lo as u64
-                        ))
-                        .collect::<Vec<_>>()
-                );
-            }
-        }
 
         // Insert into the current root. If the root splits, rebuild a new
         // index root inside the inode.
@@ -60,9 +19,6 @@ impl<'a> ExtentTree<'a> {
 
         match split_result {
             None => {
-                debug!(
-                    "ExtentTree::insert_extent: no root split, writing updated root back to inode"
-                );
                 self.store_root_to_inode(&root);
                 Ok(())
             }
@@ -71,11 +27,6 @@ impl<'a> ExtentTree<'a> {
                 // rebuild the inode root as an index node.
                 let new_left_block = fs.alloc_block(block_dev)?;
                 self.add_inode_sectors_for_block();
-                debug!(
-                    "ExtentTree::insert_extent: root split occurred, new_left_block={} \
-                     split_info={{start_block={}, phy_block={}}}",
-                    new_left_block, split_info.start_block, split_info.phy_block
-                );
 
                 // Persist the old root contents into the new left child block.
                 self.write_node_to_block(block_dev, new_left_block, &root)?;
@@ -131,17 +82,6 @@ impl<'a> ExtentTree<'a> {
     ) -> Ext4Result<Option<SplitInfo>> {
         match node {
             ExtentNode::Leaf { header, entries } => {
-                debug!(
-                    "insert_recursive: LEAF depth={} entries_before={} max={} new_ext=(lbn={}, \
-                     len={}, phys_start={}) phy_block={:?}",
-                    header.eh_depth,
-                    header.eh_entries,
-                    header.eh_max,
-                    new_ext.ee_block,
-                    new_ext.len(),
-                    new_ext.start_block(),
-                    phy_block
-                );
                 let pos = entries
                     .binary_search_by_key(&new_ext.ee_block, |e| e.ee_block)
                     .unwrap_or_else(|i| i);
@@ -177,10 +117,6 @@ impl<'a> ExtentTree<'a> {
                                 if total <= max_len {
                                     prev.ee_len =
                                         prev.build_len_like(total).ok_or(Ext4Error::corrupted())?;
-                                    debug!(
-                                        "insert_recursive: merged with previous extent -> \
-                                         new_len={total} (no split yet)"
-                                    );
 
                                     if entries.len() <= header.eh_max as usize {
                                         if let Some(block_id) = phy_block {
@@ -218,15 +154,6 @@ impl<'a> ExtentTree<'a> {
                                         let insert_pos = pos;
                                         entries.insert(insert_pos, tail);
                                         header.eh_entries = entries.len() as u16;
-                                        debug!(
-                                            "insert_recursive: previous extent saturated MAX_LEN, \
-                                             inserted tail extent (lbn={}, len={}, phys_start={}) \
-                                             now entries_len={}",
-                                            tail.ee_block,
-                                            tail.len(),
-                                            tail.start_block(),
-                                            header.eh_entries
-                                        );
 
                                         if entries.len() <= header.eh_max as usize {
                                             if let Some(block_id) = phy_block {
@@ -249,17 +176,6 @@ impl<'a> ExtentTree<'a> {
 
                 entries.insert(pos, new_ext);
                 header.eh_entries = entries.len() as u16;
-                debug!(
-                    "insert_recursive: after insert (no split yet) leaf entries_len={} (max={}) \
-                     first_extents={:?}",
-                    header.eh_entries,
-                    header.eh_max,
-                    entries
-                        .iter()
-                        .take(4)
-                        .map(|e| (e.ee_block, e.len(), e.start_block()))
-                        .collect::<Vec<_>>()
-                );
 
                 // If the leaf still fits, write it back and stop bubbling.
                 if entries.len() <= header.eh_max as usize {
@@ -273,11 +189,6 @@ impl<'a> ExtentTree<'a> {
                     return Ok(None);
                 }
 
-                debug!(
-                    "Leaf node overflow ({} > {}), splitting...",
-                    entries.len(),
-                    header.eh_max
-                );
                 // Split the sorted extents into left and right halves.
                 let split_idx = entries.len() / 2;
                 let right_entries = entries.split_off(split_idx);
@@ -286,9 +197,6 @@ impl<'a> ExtentTree<'a> {
                 // Allocate a new metadata block for the right half.
                 let new_phy_block = fs.alloc_block(block_dev)?;
                 self.add_inode_sectors_for_block();
-                debug!(
-                    "insert_recursive: allocated new block for right leaf node: {new_phy_block}"
-                );
 
                 let right_header = Ext4ExtentHeader {
                     eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
@@ -328,17 +236,6 @@ impl<'a> ExtentTree<'a> {
             }
 
             ExtentNode::Index { header, entries } => {
-                debug!(
-                    "insert_recursive: INDEX depth={} entries_before={} max={} new_ext=(lbn={}, \
-                     len={}, phys_start={}) phy_block={:?}",
-                    header.eh_depth,
-                    header.eh_entries,
-                    header.eh_max,
-                    new_ext.ee_block,
-                    new_ext.len(),
-                    new_ext.start_block(),
-                    phy_block
-                );
                 // Internal nodes must always have a child to descend into.
                 if entries.is_empty() {
                     return Err(Ext4Error::corrupted());
@@ -367,15 +264,10 @@ impl<'a> ExtentTree<'a> {
 
                 let new_child_key = Self::get_node_start_block(&child_node);
                 if entries[idx_pos].ei_block != new_child_key {
-                    debug!(
-                        "insert_recursive: updating child index key from {} to {}",
-                        entries[idx_pos].ei_block, new_child_key
-                    );
                     entries[idx_pos].ei_block = new_child_key;
                 }
 
                 if let Some(split_info) = child_split_res {
-                    debug!("Child split bubbled up, inserting index to current node.");
                     // Insert the promoted child pointer in sorted order.
                     let new_idx = Ext4ExtentIdx {
                         ei_block: split_info.start_block,
@@ -402,26 +294,14 @@ impl<'a> ExtentTree<'a> {
                         return Ok(None);
                     }
 
-                    debug!("Index node overflow, splitting...");
                     // Split the sorted child pointers in half.
                     let split_idx = entries.len() / 2;
                     let right_entries = entries.split_off(split_idx);
                     header.eh_entries = entries.len() as u16;
-                    debug!(
-                        "insert_recursive: index split at idx={} -> left_entries={} \
-                         right_entries={}",
-                        split_idx,
-                        header.eh_entries,
-                        right_entries.len()
-                    );
 
                     // Allocate a block for the new right-hand index node.
                     let new_phy_block = fs.alloc_block(block_dev)?;
                     self.add_inode_sectors_for_block();
-                    debug!(
-                        "insert_recursive: allocated new block for right index node: \
-                         {new_phy_block}"
-                    );
 
                     let right_header = Ext4ExtentHeader {
                         eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,

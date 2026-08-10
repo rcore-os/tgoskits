@@ -432,7 +432,6 @@ pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
                         let child_name_str = match core::str::from_utf8(&child_name_bytes) {
                             Ok(s) => s,
                             Err(_) => {
-                                warn!("invalid child name utf8 under dir {}", frame.path);
                                 continue;
                             }
                         };
@@ -448,8 +447,6 @@ pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
                     } else {
                         alloc::format!("{}/{}", frame.path, child_name)
                     };
-
-                    debug!("scan entry path={child_path}");
 
                     let child_inode = fs.get_inode_by_num(block_dev, child_ino)?;
 
@@ -496,25 +493,9 @@ pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
         // now contain only `.` and `..`.
         let mut cur_inode = fs.get_inode_by_num(block_dev, frame.ino_num)?;
 
-        // A fully drained directory should have exactly the `.` and `..` links
-        // left. Warn if the count disagrees, but keep deleting.
-        if cur_inode.i_links_count != 2 {
-            warn!(
-                "dir inode links_count != 2 (links={}) path={} ino={}",
-                cur_inode.i_links_count, frame.path, frame.ino_num
-            );
-        }
-
         // Remove the entry from the parent directory and then fix the parent's
         // directory link count.
         if let (Some(pp), Some(name)) = (&frame.parent_path, &frame.name_in_parent) {
-            let removed_path = if pp == "/" {
-                alloc::format!("/{name}")
-            } else {
-                alloc::format!("{pp}/{name}")
-            };
-            debug!("delete entry path={removed_path}");
-
             remove_inodeentry_from_parentdir(fs, block_dev, pp, name)?;
 
             let (pino, parent_inode) =
@@ -603,13 +584,7 @@ pub fn delete_file<B: BlockIo + crate::runtime::Clock>(
     let new_links = target_inode.i_links_count.saturating_sub(1);
     fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
     if new_links == 0 {
-        debug!("Will free inode:{} path:{path}", entry.ino);
         free_inode(fs, block_dev, entry.ino, &mut target_inode)?;
-    } else {
-        debug!(
-            "inode {} still has {new_links} link(s); removing directory entry only",
-            entry.ino
-        );
     }
 
     remove_named_entry_at(

@@ -86,10 +86,6 @@ impl Ext4FileSystem {
         {
             Some(d) => d,
             None => {
-                warn!(
-                    "inode_num_already_allocated: invalid group_idx {group_idx} for inode \
-                     {inode_num}"
-                );
                 return false;
             }
         };
@@ -101,20 +97,13 @@ impl Ext4FileSystem {
             .get_or_load(device, cache_key, bitmap_block)
         {
             Ok(b) => b,
-            Err(e) => {
-                warn!("inode_num_already_allocated: load inode bitmap failed: {e:?}");
+            Err(_) => {
                 return false;
             }
         };
 
         let bm = InodeBitmap::new(&mut bitmap.data, self.superblock.s_inodes_per_group);
-        match bm.is_allocated(inode_in_group.raw()) {
-            Some(allocated) => allocated,
-            None => {
-                warn!("inode_num_already_allocated: inode_in_group {inode_in_group} out of range");
-                false
-            }
-        }
+        bm.is_allocated(inode_in_group.raw()).unwrap_or_default()
     }
 
     /// Returns an immutable block-group descriptor by index.

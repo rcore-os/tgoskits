@@ -4,12 +4,19 @@ fn discard_unpublished_inode_blocks<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     data_blocks: &[AbsoluteBN],
-) {
+) -> Ext4Result<()> {
+    let mut first_error = None;
     for &blk in data_blocks {
         fs.datablock_cache.invalidate(blk);
-        if let Err(e) = fs.free_block(device, blk) {
-            warn!("discard unpublished file block failed block={blk} err={e:?} ({e})");
+        if let Err(error) = fs.free_block(device, blk)
+            && first_error.is_none()
+        {
+            first_error = Some(error);
         }
+    }
+    match first_error {
+        Some(error) => Err(error.with_operation("rollback:file_blocks")),
+        None => Ok(()),
     }
 }
 
@@ -18,10 +25,20 @@ fn discard_unpublished_inode<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
     data_blocks: &[AbsoluteBN],
-) {
-    discard_unpublished_inode_blocks(fs, device, data_blocks);
-    if let Err(e) = fs.free_inode(device, inode_num) {
-        warn!("discard unpublished inode failed ino={inode_num} err={e:?} ({e})");
+) -> Ext4Result<()> {
+    let block_result = discard_unpublished_inode_blocks(fs, device, data_blocks);
+    let inode_result = fs.free_inode(device, inode_num);
+    match (block_result, inode_result) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error.with_operation("rollback:file_inode")),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+fn error_after_cleanup(operation_error: Ext4Error, cleanup: Ext4Result<()>) -> Ext4Error {
+    match cleanup {
+        Ok(()) => operation_error,
+        Err(cleanup_error) => cleanup_error,
     }
 }
 
@@ -94,6 +111,7 @@ pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
         symlink_mode,
         parent_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED,
     );
+    let mut data_blocks: Vec<AbsoluteBN> = Vec::new();
 
     if target_len == 0 {
         new_inode.i_blocks_lo = 0;
@@ -111,17 +129,28 @@ pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
         new_inode.l_i_blocks_high = 0;
     } else {
         // Long symlink: spill the target path into data blocks.
-        let mut data_blocks: Vec<AbsoluteBN> = Vec::new();
         let mut remaining = target_len;
         let mut src_off = 0usize;
 
         while remaining > 0 {
             if !fs.superblock.has_extents() && data_blocks.len() >= 12 {
-                discard_unpublished_inode(fs, device, new_ino, &data_blocks);
-                return Err(Ext4Error::unsupported());
+                let error = error_after_cleanup(
+                    Ext4Error::unsupported(),
+                    discard_unpublished_inode(fs, device, new_ino, &data_blocks),
+                );
+                return Err(error);
             }
 
-            let blk = fs.alloc_block(device)?;
+            let blk = match fs.alloc_block(device) {
+                Ok(block) => block,
+                Err(error) => {
+                    let error = error_after_cleanup(
+                        error,
+                        discard_unpublished_inode(fs, device, new_ino, &data_blocks),
+                    );
+                    return Err(error);
+                }
+            };
             let write_len = core::cmp::min(remaining, BLOCK_SIZE);
             if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
                 for b in data.iter_mut() {
@@ -131,14 +160,12 @@ pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
                 data[..write_len].copy_from_slice(&target_bytes[src_off..end]);
             }) {
                 fs.datablock_cache.invalidate(blk);
-                if let Err(free_err) = fs.free_block(device, blk) {
-                    warn!(
-                        "discard failed symlink block failed block={blk} err={free_err:?} \
-                         ({free_err})"
-                    );
-                }
-                discard_unpublished_inode(fs, device, new_ino, &data_blocks);
-                return Err(e);
+                data_blocks.push(blk);
+                let error = error_after_cleanup(
+                    e,
+                    discard_unpublished_inode(fs, device, new_ino, &data_blocks),
+                );
+                return Err(error);
             }
 
             data_blocks.push(blk);
@@ -151,7 +178,19 @@ pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
         new_inode.i_blocks_lo = iblocks_used;
         new_inode.l_i_blocks_high = 0; // iblocks_used is u32, so high part is 0
 
-        build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_ino, &data_blocks, device)?;
+        if let Err(error) = build_file_block_mapping_with_inode_num(
+            fs,
+            &mut new_inode,
+            new_ino,
+            &data_blocks,
+            device,
+        ) {
+            let error = error_after_cleanup(
+                error,
+                discard_unpublished_inode(fs, device, new_ino, &data_blocks),
+            );
+            return Err(error);
+        }
     }
 
     let mut create_update = Ext4InodeMetadataUpdate::create(symlink_mode);
@@ -165,7 +204,13 @@ pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
         create_update.projid = Some(parent_inode.i_projid);
     }
 
-    fs.finalize_inode_update(device, new_ino, &mut new_inode, create_update)?;
+    if let Err(error) = fs.finalize_inode_update(device, new_ino, &mut new_inode, create_update) {
+        let error = error_after_cleanup(
+            error,
+            discard_unpublished_inode(fs, device, new_ino, &data_blocks),
+        );
+        return Err(error);
+    }
 
     // Publish the new symlink by inserting its directory entry.
     let mut parent_inode_copy = parent_inode;
@@ -251,16 +296,21 @@ pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
         while remaining > 0 {
             // Non-extent files only support the 12 direct pointers here.
             if !fs.superblock.has_extents() && data_blocks.len() >= 12 {
-                discard_unpublished_inode(fs, device, new_file_ino, &data_blocks);
-                return Err(Ext4Error::unsupported());
+                let error = error_after_cleanup(
+                    Ext4Error::unsupported(),
+                    discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+                );
+                return Err(error);
             }
 
             let blk = match fs.alloc_block(device) {
                 Ok(b) => b,
                 Err(e) => {
-                    error!("mkfile alloc_block failed path={path} err={e:?} ({e})");
-                    discard_unpublished_inode(fs, device, new_file_ino, &data_blocks);
-                    return Err(e);
+                    let error = error_after_cleanup(
+                        e,
+                        discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+                    );
+                    return Err(error);
                 }
             };
 
@@ -275,14 +325,12 @@ pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
                 data[..write_len].copy_from_slice(&buf[src_off..end]);
             }) {
                 fs.datablock_cache.invalidate(blk);
-                if let Err(free_err) = fs.free_block(device, blk) {
-                    warn!(
-                        "discard failed file block failed path={path} block={blk} \
-                         err={free_err:?} ({free_err})"
-                    );
-                }
-                discard_unpublished_inode(fs, device, new_file_ino, &data_blocks);
-                return Err(e);
+                data_blocks.push(blk);
+                let error = error_after_cleanup(
+                    e,
+                    discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+                );
+                return Err(error);
             }
 
             data_blocks.push(blk);
@@ -333,13 +381,19 @@ pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
         new_inode.i_blocks_lo = used_blocks_lo;
         new_inode.l_i_blocks_high = (iblocks_used >> 32) as u16;
 
-        build_file_block_mapping_with_inode_num(
+        if let Err(error) = build_file_block_mapping_with_inode_num(
             fs,
             &mut new_inode,
             new_file_ino,
             &data_blocks,
             device,
-        )?;
+        ) {
+            let error = error_after_cleanup(
+                error,
+                discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+            );
+            return Err(error);
+        }
     } else {
         // Empty file starts with no data blocks.
         new_inode.i_size_lo = 0;
@@ -365,7 +419,15 @@ pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
         create_update.projid = Some(parent_inode.i_projid);
     }
 
-    fs.finalize_inode_update(device, new_file_ino, &mut new_inode, create_update)?;
+    if let Err(error) =
+        fs.finalize_inode_update(device, new_file_ino, &mut new_inode, create_update)
+    {
+        let error = error_after_cleanup(
+            error,
+            discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+        );
+        return Err(error);
+    }
 
     // Finally publish the file by linking it into the parent directory.
     let file_type = match file_type {
@@ -374,7 +436,7 @@ pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
     };
 
     let mut parent_inode_copy = parent_inode;
-    if insert_dir_entry(
+    insert_dir_entry(
         fs,
         device,
         parent_ino_num,
@@ -382,15 +444,7 @@ pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
         new_file_ino,
         &child,
         file_type,
-    )
-    .is_err()
-    {
-        error!(
-            "mkfile insert_dir_entry failed path={path} parent_ino={parent_ino_num} child={child} \
-             ino={new_file_ino}"
-        );
-        return Err(Ext4Error::corrupted());
-    }
+    )?;
 
     fs.get_inode_by_num(device, new_file_ino)
 }

@@ -192,18 +192,12 @@ impl Ext4Inode {
     /// Verifies both the extent flag and the embedded extent-header magic.
     pub fn have_extend_header_and_use_extend(&self) -> bool {
         if !Self::is_extent(self) {
-            debug!("Inode not have extend flag!");
             return false;
         }
 
         let word0_le = self.i_block[0].to_le_bytes();
         let magic = u16::from_le_bytes([word0_le[0], word0_le[1]]);
-        if magic == Ext4ExtentHeader::EXT4_EXT_MAGIC {
-            true
-        } else {
-            debug!("No tree header!!!");
-            false
-        }
+        magic == Ext4ExtentHeader::EXT4_EXT_MAGIC
     }
 
     // some metadata change support

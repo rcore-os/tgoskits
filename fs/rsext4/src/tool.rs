@@ -2,16 +2,13 @@
 
 use alloc::{vec, vec::*};
 
-use log::debug;
-
-use crate::{ext4::*, superblock::*};
+use crate::{ext4::BlockGroupLayout, superblock::*};
 
 /// Generates a deterministic UUID-like value as four `u32` words.
 pub fn generate_uuid() -> UUID {
-    // Mix a stable function pointer value into the seed and diffuse it across
-    // the whole array. This is lightweight and deterministic for tests.
+    // Use a stable crate-specific seed until entropy is wired into mkfs.
     let mut orign_uuid = [1_u32; 4];
-    let target_seed = debug_super_and_desc as *const () as u32;
+    let target_seed = 0x5253_4558;
     let mut last_idx: usize = 0;
     orign_uuid[0] ^= target_seed;
     for idx in 0..orign_uuid.len() * 2 {
@@ -28,7 +25,7 @@ pub fn generate_uuid_8() -> [u8; 16] {
     // Reuse the same diffusion strategy as `generate_uuid`, but keep the result
     // in byte form for on-disk fields that expect `[u8; 16]`.
     let mut orign_uuid = [1_u8; 16];
-    let target_seed = debug_super_and_desc as *const () as u8;
+    let target_seed = 0x52;
     let mut last_idx: usize = 0;
     orign_uuid[0] ^= target_seed;
     for idx in 0..orign_uuid.len() * 2 {
@@ -38,15 +35,6 @@ pub fn generate_uuid_8() -> [u8; 16] {
     }
 
     orign_uuid
-}
-
-pub fn debug_super_and_desc(superblock: &Ext4Superblock, fs: &Ext4FileSystem) {
-    debug!("Superblock info: {:?}", superblock);
-    debug!("Block group descriptors:");
-    let desc = &fs.group_descs;
-    for gid in desc {
-        debug!("Group descriptor: {gid:?}");
-    }
 }
 
 /// Returns whether this group should carry a sparse-super backup copy.

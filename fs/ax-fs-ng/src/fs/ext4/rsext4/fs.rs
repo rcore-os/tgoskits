@@ -12,7 +12,7 @@ use rsext4::{
     Jbd2Dev, MountOptions, bmalloc::InodeNumber, error::Errno, superblock::Ext4Superblock,
 };
 
-use super::{Ext4Disk, Inode, util::into_vfs_err};
+use super::{Ext4Disk, Ext4Observer, Inode, util::into_vfs_err};
 use crate::{
     block::{BlockRegion, FsBlockDevice},
     os::sync::{SleepMutex as Mutex, SleepMutexGuard as MutexGuard},
@@ -121,7 +121,11 @@ impl Ext4Filesystem {
                 );
                 Self::mount_readonly_fallback(dev, true)?
             }
-            Ok(false) => match rsext4::mount(&mut dev) {
+            Ok(false) => match rsext4::mount_with_options_and_observer(
+                &mut dev,
+                MountOptions::read_write(),
+                &mut Ext4Observer,
+            ) {
                 Ok(fs) => (fs, dev, false),
                 Err(err) if err.code == Errno::EUCLEAN => {
                     warn!(
@@ -184,12 +188,13 @@ impl Ext4Filesystem {
         mut dev: Jbd2Dev<Ext4Disk>,
         replay_journal: bool,
     ) -> VfsResult<(rsext4::Ext4FileSystem, Jbd2Dev<Ext4Disk>, bool)> {
-        let fs = rsext4::mount_with_options(
+        let fs = rsext4::mount_with_options_and_observer(
             &mut dev,
             MountOptions {
                 readonly: true,
                 replay_journal,
             },
+            &mut Ext4Observer,
         )
         .map_err(into_vfs_err)?;
         Ok((fs, dev, true))
@@ -233,7 +238,8 @@ impl Ext4Filesystem {
 
         let mut state = self.inner.lock();
         let (fs, dev) = state.split();
-        fs.umount(dev).map_err(into_vfs_err)
+        fs.umount_with_observer(dev, &mut Ext4Observer)
+            .map_err(into_vfs_err)
     }
 }
 

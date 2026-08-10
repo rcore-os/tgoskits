@@ -1,7 +1,4 @@
 //! Root directory bootstrap helpers.
-
-use log::debug;
-
 use crate::{
     blockdev::*, bmalloc::BGIndex, checksum::update_ext4_dirblock_csum32, config::*,
     crc32c::ext4_superblock_has_metadata_csum, dir::insert_dir_entry, disknode::*,
@@ -18,8 +15,6 @@ pub fn create_root_directory_entry<B: BlockIo + crate::runtime::Clock>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
 ) -> Ext4Result<()> {
-    debug!("Initializing root directory...");
-
     let root_inode_num = fs.root_inode;
     let data_block = fs.alloc_block(block_dev)?;
     let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
@@ -102,10 +97,6 @@ pub fn create_root_directory_entry<B: BlockIo + crate::runtime::Clock>(
         desc.bg_used_dirs_count_hi = ((newc >> 16) & 0xFFFF) as u16;
     }
 
-    debug!(
-        "Root directory created: inode={}, data_block={}",
-        fs.root_inode, data_block
-    );
     Ok(())
 }
 
@@ -127,7 +118,6 @@ pub fn create_lost_found_directory<B: BlockIo + crate::runtime::Clock>(
     let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
 
     let lost_ino = fs.alloc_inode(block_dev)?;
-    debug!("lost+found inode: {lost_ino}");
 
     let data_block = fs.alloc_block(block_dev)?;
     let lost_gen = fs.get_inode_by_num(block_dev, lost_ino)?.i_generation;
@@ -197,10 +187,6 @@ pub fn create_lost_found_directory<B: BlockIo + crate::runtime::Clock>(
         &[data_block],
         block_dev,
     )?;
-    debug!(
-        "When create lost+found inode iblock,:{:?} ,data_block:{:?}",
-        lost_inode.i_block, data_block
-    );
     // Carry project inheritance only when the feature bit and parent flag both allow it.
     let mut create_update = Ext4InodeMetadataUpdate::create(dir_mode);
     if fs
@@ -233,8 +219,6 @@ pub fn create_lost_found_directory<B: BlockIo + crate::runtime::Clock>(
     fs.set_inode_links_count(block_dev, fs.root_inode, root_new_links)?;
 
     fs.superblock.s_lpf_ino = lost_ino.raw();
-
-    debug!("lost+found directory created: inode={lost_ino}, data_block={data_block}");
 
     Ok(())
 }
