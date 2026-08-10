@@ -58,7 +58,7 @@ impl<'a> ExtentTree<'a> {
     }
 
     /// Walks all extent-tree blocks that live outside the inode's inline root.
-    pub fn external_node_blocks<B: BlockDevice>(
+    pub fn external_node_blocks<B: BlockIo>(
         &self,
         dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<Vec<AbsoluteBN>> {
@@ -66,7 +66,7 @@ impl<'a> ExtentTree<'a> {
             return Ok(Vec::new());
         };
 
-        fn walk<B: BlockDevice>(
+        fn walk<B: BlockIo>(
             dev: &mut Jbd2Dev<B>,
             node: &ExtentNode,
             out: &mut Vec<AbsoluteBN>,
@@ -184,7 +184,7 @@ impl<'a> ExtentTree<'a> {
         buf[tail..].copy_from_slice(&checksum.to_le_bytes());
     }
 
-    pub(super) fn write_node_to_block<B: BlockDevice>(
+    pub(super) fn write_node_to_block<B: BlockIo>(
         &self,
         dev: &mut Jbd2Dev<B>,
         block_id: AbsoluteBN,

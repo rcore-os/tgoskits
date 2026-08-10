@@ -101,7 +101,7 @@ impl BitmapCache {
     }
 
     /// Returns a cached bitmap, loading it from disk on demand.
-    pub fn get_or_load<B: BlockDevice>(
+    pub fn get_or_load<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         key: CacheKey,
@@ -112,7 +112,7 @@ impl BitmapCache {
         self.cache.get(&key).cloned().ok_or(Ext4Error::corrupted())
     }
 
-    fn ensure_loaded<B: BlockDevice>(
+    fn ensure_loaded<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         key: CacheKey,
@@ -187,7 +187,7 @@ impl BitmapCache {
         f: F,
     ) -> Ext4Result<()>
     where
-        B: BlockDevice,
+        B: BlockIo,
         F: FnOnce(&mut [u8]),
     {
         self.ensure_loaded(block_dev, key, block_num)?;
@@ -210,7 +210,7 @@ impl BitmapCache {
     }
 
     /// Evicts one cached bitmap.
-    pub fn evict<B: BlockDevice>(
+    pub fn evict<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         key: &CacheKey,
@@ -226,7 +226,7 @@ impl BitmapCache {
     }
 
     /// Flushes all dirty bitmaps to disk.
-    pub fn flush_all<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+    pub fn flush_all<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         let mut dirty = self
             .cache
             .iter()
@@ -248,7 +248,7 @@ impl BitmapCache {
     }
 
     /// Flushes one bitmap to disk.
-    pub fn flush<B: BlockDevice>(
+    pub fn flush<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         key: &CacheKey,
@@ -279,7 +279,7 @@ impl BitmapCache {
         }
     }
 
-    fn write_bitmap_static<B: BlockDevice>(
+    fn write_bitmap_static<B: BlockIo>(
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
         data: &[u8],

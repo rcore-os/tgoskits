@@ -30,7 +30,7 @@ pub struct Ext4FileSystem {
 }
 
 impl Ext4FileSystem {
-    pub(crate) fn sync_group_descriptor_if_needed<B: BlockDevice>(
+    pub(crate) fn sync_group_descriptor_if_needed<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         group_id: BGIndex,
@@ -70,7 +70,7 @@ impl Ext4FileSystem {
     }
 
     /// Returns whether the given inode number is marked allocated in its bitmap.
-    pub fn inode_num_already_allocated<B: BlockDevice>(
+    pub fn inode_num_already_allocated<B: BlockIo>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -145,7 +145,7 @@ impl Ext4FileSystem {
         f: F,
     ) -> Ext4Result<()>
     where
-        B: BlockDevice,
+        B: BlockIo,
         F: FnOnce(&mut Ext4Inode),
     {
         // Resolve the owning group first so the inode-table start block can be
@@ -181,7 +181,7 @@ impl Ext4FileSystem {
     }
 
     /// Loads one inode by number through the inode-table cache.
-    pub fn get_inode_by_num<B: BlockDevice>(
+    pub fn get_inode_by_num<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,

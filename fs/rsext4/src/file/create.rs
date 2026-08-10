@@ -1,6 +1,6 @@
 use super::*;
 
-fn discard_unpublished_inode_blocks<B: BlockDevice>(
+fn discard_unpublished_inode_blocks<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     data_blocks: &[AbsoluteBN],
@@ -13,7 +13,7 @@ fn discard_unpublished_inode_blocks<B: BlockDevice>(
     }
 }
 
-fn discard_unpublished_inode<B: BlockDevice>(
+fn discard_unpublished_inode<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
@@ -26,7 +26,7 @@ fn discard_unpublished_inode<B: BlockDevice>(
 }
 
 /// Create a symbolic link (root-owned).
-pub fn create_symbol_link<B: BlockDevice>(
+pub fn create_symbol_link<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     src_path: &str,
@@ -36,7 +36,7 @@ pub fn create_symbol_link<B: BlockDevice>(
 }
 
 /// Create a symbolic link with explicit uid/gid ownership.
-pub fn create_symbol_link_with_owner<B: BlockDevice>(
+pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     src_path: &str,
@@ -183,7 +183,7 @@ pub fn create_symbol_link_with_owner<B: BlockDevice>(
 }
 
 /// Create a file entry, creating missing parent directories on demand (root-owned).
-pub fn mkfile<B: BlockDevice>(
+pub fn mkfile<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -194,7 +194,7 @@ pub fn mkfile<B: BlockDevice>(
 }
 
 /// Create a file entry with explicit uid/gid ownership.
-pub fn mkfile_with_owner<B: BlockDevice>(
+pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,

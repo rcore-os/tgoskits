@@ -22,7 +22,7 @@ use crate::{
 ///
 /// The flow first scans existing directory blocks for reusable space, then falls
 /// back to allocating a new block when no slot can absorb the new entry.
-pub fn insert_dir_entry<B: BlockDevice>(
+pub fn insert_dir_entry<B: BlockIo + crate::runtime::Clock>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     parent_ino_num: InodeNumber,

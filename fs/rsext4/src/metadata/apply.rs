@@ -2,16 +2,17 @@
 
 use super::{Ext4DtimeUpdate, Ext4InodeMetadataUpdate, Ext4MetadataReason};
 use crate::{
-    blockdev::{BlockDevice, Jbd2Dev},
+    blockdev::{BlockIo, Jbd2Dev},
     bmalloc::InodeNumber,
     disknode::{Ext4Inode, Ext4TimeSpec},
     error::{Ext4Error, Ext4Result},
     ext4::Ext4FileSystem,
+    runtime::Clock,
     superblock::Ext4Superblock,
 };
 
 impl Ext4FileSystem {
-    pub(crate) fn finalize_inode_update<B: BlockDevice>(
+    pub(crate) fn finalize_inode_update<B: BlockIo + Clock>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -23,7 +24,7 @@ impl Ext4FileSystem {
         self.modify_inode(device, inode_num, |on_disk| *on_disk = updated)
     }
 
-    pub(crate) fn apply_inode_metadata<B: BlockDevice>(
+    pub(crate) fn apply_inode_metadata<B: BlockIo + Clock>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -34,7 +35,7 @@ impl Ext4FileSystem {
         Ok(inode)
     }
 
-    pub(crate) fn apply_inode_flags<B: BlockDevice>(
+    pub(crate) fn apply_inode_flags<B: BlockIo + Clock>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -64,7 +65,7 @@ impl Ext4FileSystem {
         Ok(inode)
     }
 
-    pub(crate) fn apply_inode_project<B: BlockDevice>(
+    pub(crate) fn apply_inode_project<B: BlockIo + Clock>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -93,7 +94,7 @@ impl Ext4FileSystem {
         Ok(inode)
     }
 
-    pub(crate) fn apply_inode_dtime<B: BlockDevice>(
+    pub(crate) fn apply_inode_dtime<B: BlockIo + Clock>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -113,7 +114,7 @@ impl Ext4FileSystem {
         Ok(inode)
     }
 
-    pub(crate) fn touch_inode_atime_if_needed<B: BlockDevice>(
+    pub(crate) fn touch_inode_atime_if_needed<B: BlockIo + Clock>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -128,7 +129,7 @@ impl Ext4FileSystem {
         Ok(())
     }
 
-    pub(crate) fn touch_parent_dir_for_entry_change<B: BlockDevice>(
+    pub(crate) fn touch_parent_dir_for_entry_change<B: BlockIo + Clock>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -141,7 +142,7 @@ impl Ext4FileSystem {
         Ok(())
     }
 
-    pub(crate) fn touch_inode_ctime_for_link_change<B: BlockDevice>(
+    pub(crate) fn touch_inode_ctime_for_link_change<B: BlockIo + Clock>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -154,7 +155,7 @@ impl Ext4FileSystem {
         Ok(())
     }
 
-    pub(crate) fn set_inode_links_count<B: BlockDevice>(
+    pub(crate) fn set_inode_links_count<B: BlockIo + Clock>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,

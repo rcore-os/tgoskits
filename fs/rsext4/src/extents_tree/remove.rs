@@ -7,7 +7,7 @@ impl<'a> ExtentTree<'a> {
     /// extents, then walks the tree again to free blocks and rewrite touched
     /// leaf/index nodes, and finally collapses degenerate root states back into
     /// the inode-inline form when possible.
-    pub fn remove_extent<B: BlockDevice>(
+    pub fn remove_extent<B: BlockIo>(
         &mut self,
         fs: &mut Ext4FileSystem,
         deleted_ext: Ext4Extent,
@@ -101,7 +101,7 @@ impl<'a> ExtentTree<'a> {
             }
 
             // Recursively search the next child that could satisfy the requested logical block.
-            fn pre_step<B: BlockDevice>(
+            fn pre_step<B: BlockIo>(
                 dev: &mut Jbd2Dev<B>,
                 node: &ExtentNode,
                 cur_lbn: u32,
@@ -233,7 +233,7 @@ impl<'a> ExtentTree<'a> {
         }
 
         #[allow(clippy::too_many_arguments)]
-        fn leaf_step<'t, B: BlockDevice>(
+        fn leaf_step<'t, B: BlockIo>(
             tree: &mut ExtentTree<'t>,
             fs: &mut Ext4FileSystem,
             dev: &mut Jbd2Dev<B>,
@@ -388,7 +388,7 @@ impl<'a> ExtentTree<'a> {
         }
 
         // Descend to the child covering the current logical block and repair parent keys while unwinding.
-        fn step_recursive<'t, B: BlockDevice>(
+        fn step_recursive<'t, B: BlockIo>(
             tree: &mut ExtentTree<'t>,
             fs: &mut Ext4FileSystem,
             dev: &mut Jbd2Dev<B>,
@@ -594,7 +594,7 @@ impl<'a> ExtentTree<'a> {
     }
 
     /// Removes an allocated logical extent range using the original misspelled API name.
-    pub fn remove_extend<B: BlockDevice>(
+    pub fn remove_extend<B: BlockIo>(
         &mut self,
         fs: &mut Ext4FileSystem,
         deleted_ext: Ext4Extent,
@@ -613,7 +613,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        blockdev::{BlockDevice, Jbd2Dev},
+        blockdev::{BlockIo, Jbd2Dev},
         bmalloc::AbsoluteBN,
         cache::bitmap::CacheKey,
         error::{Ext4Error, Ext4Result},
@@ -637,7 +637,7 @@ mod tests {
         }
     }
 
-    impl BlockDevice for MemBlockDev {
+    impl BlockIo for MemBlockDev {
         fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
             let block_size = BLOCK_SIZE;
             let required = block_size * count as usize;
@@ -674,23 +674,27 @@ mod tests {
             Ok(())
         }
 
-        fn open(&mut self) -> Ext4Result<()> {
+        fn geometry(&self) -> crate::io::DeviceGeometry {
+            crate::io::DeviceGeometry::new(BLOCK_SIZE as u32, self.total_blocks)
+        }
+
+        fn capabilities(&self) -> crate::io::DeviceCapabilities {
+            crate::io::DeviceCapabilities {
+                read_only: { false },
+
+                flush: true,
+
+                ..crate::io::DeviceCapabilities::default()
+            }
+        }
+
+        fn flush(&mut self) -> crate::Ext4Result<()> {
             Ok(())
         }
+    }
 
-        fn close(&mut self) -> Ext4Result<()> {
-            Ok(())
-        }
-
-        fn total_blocks(&self) -> u64 {
-            self.total_blocks
-        }
-
-        fn block_size(&self) -> u32 {
-            BLOCK_SIZE as u32
-        }
-
-        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+    impl crate::runtime::Clock for MemBlockDev {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
             let sec = self.now.get();
             self.now.set(sec + 1);
             Ok(Ext4Timestamp::new(sec, 0))
@@ -712,14 +716,11 @@ mod tests {
         inode
     }
 
-    fn alloc_data_block<B: BlockDevice>(
-        fs: &mut Ext4FileSystem,
-        dev: &mut Jbd2Dev<B>,
-    ) -> AbsoluteBN {
+    fn alloc_data_block<B: BlockIo>(fs: &mut Ext4FileSystem, dev: &mut Jbd2Dev<B>) -> AbsoluteBN {
         fs.alloc_block(dev).unwrap()
     }
 
-    fn bitmap_block_is_allocated<B: BlockDevice>(
+    fn bitmap_block_is_allocated<B: BlockIo>(
         fs: &mut Ext4FileSystem,
         dev: &mut Jbd2Dev<B>,
         global_block: AbsoluteBN,
@@ -742,7 +743,7 @@ mod tests {
         ((byte >> (idx % 8)) & 1) == 1
     }
 
-    fn insert_n_extents_with_phys_gaps<B: BlockDevice>(
+    fn insert_n_extents_with_phys_gaps<B: BlockIo>(
         fs: &mut Ext4FileSystem,
         dev: &mut Jbd2Dev<B>,
         inode: &mut Ext4Inode,
@@ -760,7 +761,7 @@ mod tests {
         out
     }
 
-    fn alloc_contiguous<B: BlockDevice>(
+    fn alloc_contiguous<B: BlockIo>(
         fs: &mut Ext4FileSystem,
         dev: &mut Jbd2Dev<B>,
         count: u32,
@@ -776,11 +777,11 @@ mod tests {
         first
     }
 
-    fn collect_extents_from_inode<B: BlockDevice>(
+    fn collect_extents_from_inode<B: BlockIo>(
         inode: &mut Ext4Inode,
         dev: &mut Jbd2Dev<B>,
     ) -> std::vec::Vec<Ext4Extent> {
-        fn walk<B: BlockDevice>(
+        fn walk<B: BlockIo>(
             dev: &mut Jbd2Dev<B>,
             node: &ExtentNode,
             out: &mut std::vec::Vec<Ext4Extent>,

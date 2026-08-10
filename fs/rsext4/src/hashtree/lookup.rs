@@ -8,7 +8,7 @@ use super::{
     Ext4InodeHashTreeExt, HashTreeError, HashTreeManager, HashTreeNode, HashTreeSearchResult,
 };
 use crate::{
-    blockdev::{BlockDevice, Jbd2Dev},
+    blockdev::{BlockIo, Jbd2Dev},
     bmalloc::AbsoluteBN,
     config::BLOCK_SIZE,
     disknode::Ext4Inode,
@@ -17,7 +17,7 @@ use crate::{
     loopfile::{resolve_inode_block, resolve_inode_blocks},
 };
 
-pub(super) fn lookup<B: BlockDevice>(
+pub(super) fn lookup<B: BlockIo>(
     manager: &HashTreeManager,
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
@@ -58,7 +58,7 @@ pub(super) fn lookup<B: BlockDevice>(
 }
 
 impl HashTreeManager {
-    pub(super) fn get_root_block<B: BlockDevice>(
+    pub(super) fn get_root_block<B: BlockIo>(
         &self,
         block_dev: &mut Jbd2Dev<B>,
         dir_inode: &Ext4Inode,
@@ -70,7 +70,7 @@ impl HashTreeManager {
         }
     }
 
-    pub(super) fn read_block_data<B: BlockDevice>(
+    pub(super) fn read_block_data<B: BlockIo>(
         &self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
@@ -82,7 +82,7 @@ impl HashTreeManager {
         }
     }
 
-    pub(super) fn search_in_hash_tree<B: BlockDevice>(
+    pub(super) fn search_in_hash_tree<B: BlockIo>(
         &self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
@@ -109,7 +109,7 @@ impl HashTreeManager {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn search_in_entries<B: BlockDevice>(
+    pub(super) fn search_in_entries<B: BlockIo>(
         &self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
@@ -149,7 +149,7 @@ impl HashTreeManager {
         }
     }
 
-    pub(super) fn search_in_leaf_block<B: BlockDevice>(
+    pub(super) fn search_in_leaf_block<B: BlockIo>(
         &self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
@@ -183,7 +183,7 @@ impl HashTreeManager {
         Err(HashTreeError::EntryNotFound)
     }
 
-    pub(super) fn fallback_to_linear_search<B: BlockDevice>(
+    pub(super) fn fallback_to_linear_search<B: BlockIo>(
         &self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,

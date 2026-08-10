@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// Resolves a path to its inode number and inode contents.
-pub fn get_inode_with_num<B: BlockDevice>(
+pub fn get_inode_with_num<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     path: &str,

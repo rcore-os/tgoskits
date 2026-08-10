@@ -166,7 +166,7 @@ fn mark_block_bitmap_padding(bitmap: &mut [u8], layout: &FsLayoutInfo, group_id:
     mark_bitmap_range_allocated(bitmap, valid_blocks, layout.blocks_per_group);
 }
 
-pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+pub fn mkfs<B: BlockIo + crate::runtime::Clock>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
     debug!("Start initializing Ext4 filesystem...");
     let old_journal_use = block_dev.is_use_journal();
     // Disable journaling while laying out the initial filesystem image. The
@@ -381,7 +381,7 @@ fn build_uninit_group_desc(
 }
 
 /// Writes sparse-super superblock backups to eligible groups.
-fn write_superblock_redundant_backup<B: BlockDevice>(
+fn write_superblock_redundant_backup<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     sb: &Ext4Superblock,
     groups_count: u32,
@@ -417,7 +417,7 @@ fn write_superblock_redundant_backup<B: BlockDevice>(
 }
 
 /// Writes the primary superblock to disk.
-pub(crate) fn write_superblock<B: BlockDevice>(
+pub(crate) fn write_superblock<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     sb: &Ext4Superblock,
 ) -> Ext4Result<()> {
@@ -442,7 +442,7 @@ pub(crate) fn write_superblock<B: BlockDevice>(
 }
 
 /// Reads the primary superblock from disk.
-pub(crate) fn read_superblock<B: BlockDevice>(
+pub(crate) fn read_superblock<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
 ) -> Ext4Result<Ext4Superblock> {
     // Read the containing filesystem block, then slice out the 1024-byte
@@ -463,7 +463,7 @@ pub(crate) fn read_superblock<B: BlockDevice>(
 }
 
 /// Writes redundant GDT copies to sparse-super backup groups.
-fn write_gdt_redundant_backup<B: BlockDevice>(
+fn write_gdt_redundant_backup<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     descs: &VecDeque<Ext4GroupDesc>,
     sb: &Ext4Superblock,
@@ -524,7 +524,7 @@ fn write_gdt_redundant_backup<B: BlockDevice>(
 }
 
 /// Writes one group descriptor into the primary GDT.
-fn write_group_desc<B: BlockDevice>(
+fn write_group_desc<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     group_id: u32,
     desc: &mut Ext4GroupDesc,
@@ -568,7 +568,7 @@ fn write_group_desc<B: BlockDevice>(
 }
 
 /// Initializes group 0 bitmaps, inode table, and descriptor state.
-fn initialize_group_0<B: BlockDevice>(
+fn initialize_group_0<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     layout: &FsLayoutInfo,
 ) -> Ext4Result<()> {
@@ -636,7 +636,7 @@ fn initialize_group_0<B: BlockDevice>(
 /// Initializes bitmaps for every group after group 0.
 ///
 /// Fresh groups start with only their metadata blocks allocated.
-fn initialize_other_groups_bitmaps<B: BlockDevice>(
+fn initialize_other_groups_bitmaps<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     layout: &FsLayoutInfo,
     sb: &Ext4Superblock,

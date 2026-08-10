@@ -2,15 +2,16 @@
 
 use super::Ext4InodeMetadataUpdate;
 use crate::{
-    blockdev::{BlockDevice, Jbd2Dev},
+    blockdev::{BlockIo, Jbd2Dev},
     dir::{get_inode_with_num, normalize_path},
     disknode::Ext4TimeSpec,
     error::{Ext4Error, Ext4Result},
     ext4::Ext4FileSystem,
+    runtime::Clock,
 };
 
 /// Updates the permission bits of the inode referenced by `path`.
-pub fn chmod<B: BlockDevice>(
+pub fn chmod<B: BlockIo + Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -23,7 +24,7 @@ pub fn chmod<B: BlockDevice>(
 }
 
 /// Updates the owner and group of the inode referenced by `path`.
-pub fn chown<B: BlockDevice>(
+pub fn chown<B: BlockIo + Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -37,7 +38,7 @@ pub fn chown<B: BlockDevice>(
 }
 
 /// Updates the access and modification times of the inode referenced by `path`.
-pub fn utimens<B: BlockDevice>(
+pub fn utimens<B: BlockIo + Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -55,7 +56,7 @@ pub fn utimens<B: BlockDevice>(
 }
 
 /// Updates the project identifier of the inode referenced by `path`.
-pub fn set_project<B: BlockDevice>(
+pub fn set_project<B: BlockIo + Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -68,7 +69,7 @@ pub fn set_project<B: BlockDevice>(
 }
 
 /// Updates the user-visible inode flags of the inode referenced by `path`.
-pub fn set_flags<B: BlockDevice>(
+pub fn set_flags<B: BlockIo + Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,

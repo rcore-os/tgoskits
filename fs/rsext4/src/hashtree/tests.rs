@@ -3,7 +3,7 @@ use core::cell::Cell;
 
 use super::*;
 use crate::{
-    blockdev::{BlockDevice, Jbd2Dev},
+    blockdev::{BlockIo, Jbd2Dev},
     bmalloc::{AbsoluteBN, BlockAllocator, InodeAllocator, InodeNumber},
     config::DEFAULT_INODE_SIZE,
     disknode::{Ext4Inode, Ext4Timestamp},
@@ -28,7 +28,7 @@ impl MockBlockDevice {
     }
 }
 
-impl BlockDevice for MockBlockDevice {
+impl BlockIo for MockBlockDevice {
     fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Result<(), Ext4Error> {
         if !self.is_open {
             return Err(Ext4Error::badf());
@@ -70,21 +70,27 @@ impl BlockDevice for MockBlockDevice {
         Ok(())
     }
 
-    fn open(&mut self) -> Result<(), Ext4Error> {
-        self.is_open = true;
+    fn geometry(&self) -> crate::io::DeviceGeometry {
+        crate::io::DeviceGeometry::new(512, (self.data.len() / 512) as u64)
+    }
+
+    fn capabilities(&self) -> crate::io::DeviceCapabilities {
+        crate::io::DeviceCapabilities {
+            read_only: { false },
+
+            flush: true,
+
+            ..crate::io::DeviceCapabilities::default()
+        }
+    }
+
+    fn flush(&mut self) -> crate::Ext4Result<()> {
         Ok(())
     }
+}
 
-    fn close(&mut self) -> Result<(), Ext4Error> {
-        self.is_open = false;
-        Ok(())
-    }
-
-    fn total_blocks(&self) -> u64 {
-        (self.data.len() / 512) as u64
-    }
-
-    fn current_time(&self) -> Result<Ext4Timestamp, Ext4Error> {
+impl crate::runtime::Clock for MockBlockDevice {
+    fn now(&self) -> Result<Ext4Timestamp, Ext4Error> {
         let sec = self.now.get();
         self.now.set(sec + 1);
         Ok(Ext4Timestamp::new(sec, 0))
@@ -264,8 +270,7 @@ fn test_fallback_to_linear_search() {
     let manager = create_hash_tree_manager(&fs);
     let mut dir_inode = create_test_dir_inode();
 
-    let mut mock_device = MockBlockDevice::new(1024 * 1024);
-    mock_device.open().unwrap();
+    let mock_device = MockBlockDevice::new(1024 * 1024);
     let mut mock_dev = Jbd2Dev::initial_jbd2dev(0, mock_device, false);
     dir_inode.write_extend_header();
     dir_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;

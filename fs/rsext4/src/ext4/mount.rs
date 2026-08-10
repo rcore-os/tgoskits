@@ -23,7 +23,7 @@ impl MountOptions {
 }
 
 impl Ext4FileSystem {
-    pub fn device_has_error_state<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<bool> {
+    pub fn device_has_error_state<B: BlockIo>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<bool> {
         let superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
         if superblock.s_magic != EXT4_SUPER_MAGIC {
             return Err(Ext4Error::invalid_magic());
@@ -33,7 +33,10 @@ impl Ext4FileSystem {
     }
 
     /// Creates the root directory tree during bootstrap.
-    fn create_root_dir<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+    fn create_root_dir<B: BlockIo + crate::runtime::Clock>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<()> {
         // The actual on-disk initialization lives in the dedicated directory
         // bootstrap helper.
         create_root_directory_entry(self, block_dev)
@@ -51,7 +54,7 @@ impl Ext4FileSystem {
         }
     }
 
-    fn reset_runtime_from_superblock<B: BlockDevice>(
+    fn reset_runtime_from_superblock<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
@@ -67,7 +70,7 @@ impl Ext4FileSystem {
         Ok(())
     }
 
-    fn reload_after_journal_replay<B: BlockDevice>(
+    fn reload_after_journal_replay<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
@@ -85,7 +88,7 @@ impl Ext4FileSystem {
         self.superblock.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
     }
 
-    fn valid_lost_found_hint<B: BlockDevice>(
+    fn valid_lost_found_hint<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<bool> {
@@ -98,7 +101,7 @@ impl Ext4FileSystem {
         Ok(inode.i_mode != 0 && inode.is_dir())
     }
 
-    fn journal_blocks<B: BlockDevice>(
+    fn journal_blocks<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         journal_inode: &mut Ext4Inode,
@@ -118,11 +121,13 @@ impl Ext4FileSystem {
     }
 
     /// Mounts an ext4 filesystem from the given block device.
-    pub fn mount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Result<Self, Ext4Error> {
+    pub fn mount<B: BlockIo + crate::runtime::Clock>(
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> Result<Self, Ext4Error> {
         Self::mount_with_options(block_dev, MountOptions::read_write())
     }
 
-    pub fn mount_with_options<B: BlockDevice>(
+    pub fn mount_with_options<B: BlockIo + crate::runtime::Clock>(
         block_dev: &mut Jbd2Dev<B>,
         options: MountOptions,
     ) -> Result<Self, Ext4Error> {
@@ -478,7 +483,7 @@ impl Ext4FileSystem {
     }
 
     /// Loads all block-group descriptors in on-disk order.
-    fn load_group_descriptors<B: BlockDevice>(
+    fn load_group_descriptors<B: BlockIo>(
         block_dev: &mut Jbd2Dev<B>,
         superblock: &Ext4Superblock,
         group_count: u32,
@@ -533,11 +538,13 @@ impl Ext4FileSystem {
 }
 
 /// Thin compatibility wrapper around [`Ext4FileSystem::mount`].
-pub fn mount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<Ext4FileSystem> {
+pub fn mount<B: BlockIo + crate::runtime::Clock>(
+    block_dev: &mut Jbd2Dev<B>,
+) -> Ext4Result<Ext4FileSystem> {
     mount_with_options(block_dev, MountOptions::read_write())
 }
 
-pub fn mount_with_options<B: BlockDevice>(
+pub fn mount_with_options<B: BlockIo + crate::runtime::Clock>(
     block_dev: &mut Jbd2Dev<B>,
     options: MountOptions,
 ) -> Ext4Result<Ext4FileSystem> {

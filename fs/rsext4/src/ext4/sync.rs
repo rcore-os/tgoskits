@@ -6,10 +6,7 @@ impl Ext4FileSystem {
     }
 
     /// Flushes all filesystem metadata and caches to the backing device.
-    pub fn sync_filesystem<B: BlockDevice>(
-        &mut self,
-        block_dev: &mut Jbd2Dev<B>,
-    ) -> Ext4Result<()> {
+    pub fn sync_filesystem<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         info!("Syncing filesystem...");
         self.datablock_cache.flush_all(block_dev)?;
         self.inodetable_cache.flush_all(block_dev)?;
@@ -21,7 +18,7 @@ impl Ext4FileSystem {
     }
 
     /// Unmounts the filesystem after flushing all in-memory metadata.
-    pub fn umount<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+    pub fn umount<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         if !self.mounted {
             return Ok(());
         }
@@ -44,7 +41,7 @@ impl Ext4FileSystem {
         Ok(())
     }
 
-    pub fn sync_group_descriptors<B: BlockDevice>(
+    pub fn sync_group_descriptors<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
@@ -108,10 +105,7 @@ impl Ext4FileSystem {
         Ok(())
     }
 
-    pub fn sync_superblock<B: BlockDevice>(
-        &mut self,
-        block_dev: &mut Jbd2Dev<B>,
-    ) -> Ext4Result<()> {
+    pub fn sync_superblock<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         // Recompute free-space counters from group descriptors before writing
         // the superblock so the persisted totals match the flushed metadata.
         let mut real_free_blocks: u64 = 0;
@@ -132,13 +126,13 @@ impl Ext4FileSystem {
     ///
     /// Call this during a clean unmount so that Linux sees `s_state =
     /// EXT4_VALID_FS` and skips fsck on the next boot.
-    pub fn mark_clean<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+    pub fn mark_clean<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         self.superblock.s_state = Self::clean_state(&self.superblock);
         self.sync_superblock(block_dev)
     }
 }
 
-pub fn umount<B: BlockDevice>(fs: Ext4FileSystem, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+pub fn umount<B: BlockIo>(fs: Ext4FileSystem, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
     let mut f = fs;
     f.umount(block_dev)?;
     Ok(())

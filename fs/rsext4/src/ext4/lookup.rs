@@ -2,7 +2,7 @@ use super::*;
 
 impl Ext4FileSystem {
     /// Return whether a path resolves to an inode.
-    pub fn file_entries_exist<B: BlockDevice>(
+    pub fn file_entries_exist<B: BlockIo>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         path: &str,
@@ -12,7 +12,7 @@ impl Ext4FileSystem {
     }
 
     /// Look up an inode by path.
-    pub fn find_file<B: BlockDevice>(
+    pub fn find_file<B: BlockIo>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         path: &str,
@@ -24,10 +24,7 @@ impl Ext4FileSystem {
     }
 
     /// Loads the root inode from inode table storage.
-    pub fn get_root<B: BlockDevice>(
-        &mut self,
-        block_dev: &mut Jbd2Dev<B>,
-    ) -> Ext4Result<Ext4Inode> {
+    pub fn get_root<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<Ext4Inode> {
         let inode_table_start = match self.group_descs.first() {
             Some(desc) => AbsoluteBN::new(desc.inode_table()),
             None => return Err(Ext4Error::corrupted()),
@@ -48,7 +45,7 @@ impl Ext4FileSystem {
 }
 
 /// Return whether a path resolves to an inode.
-pub fn file_entry_exist<B: BlockDevice>(
+pub fn file_entry_exist<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     path: &str,
@@ -59,7 +56,7 @@ pub fn file_entry_exist<B: BlockDevice>(
 /// Return whether a path resolves to an inode.
 ///
 /// Kept for compatibility with the original misspelled API.
-pub fn file_entry_exisr<B: BlockDevice>(
+pub fn file_entry_exisr<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     path: &str,
@@ -68,7 +65,7 @@ pub fn file_entry_exisr<B: BlockDevice>(
 }
 
 /// Look up an inode by path.
-pub fn find_file<B: BlockDevice>(
+pub fn find_file<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     path: &str,

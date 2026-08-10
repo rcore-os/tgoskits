@@ -2,7 +2,7 @@ use super::*;
 
 const MAX_RUN_IO_BYTES: usize = 1024 * 1024;
 
-pub fn truncate<B: BlockDevice>(
+pub fn truncate<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -19,7 +19,7 @@ pub fn truncate<B: BlockDevice>(
     truncate_inode(device, fs, inode_num, truncate_size)
 }
 
-pub fn truncate_inode<B: BlockDevice>(
+pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
@@ -201,7 +201,7 @@ pub fn truncate_inode<B: BlockDevice>(
     Ok(())
 }
 
-fn read_symlink_target<B: BlockDevice>(
+fn read_symlink_target<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode: &mut Ext4Inode,
@@ -272,7 +272,7 @@ fn resolve_symlink_path(current_path: &str, target: &str) -> String {
     normalize_path(&combined)
 }
 
-fn read_file_follow<B: BlockDevice>(
+fn read_file_follow<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -349,7 +349,7 @@ fn read_file_follow<B: BlockDevice>(
 }
 
 /// Read the whole file at `path`.
-pub fn read_file<B: BlockDevice>(
+pub fn read_file<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -357,7 +357,7 @@ pub fn read_file<B: BlockDevice>(
     read_file_follow(device, fs, path, 0)
 }
 
-pub fn read_inode_data_into<B: BlockDevice>(
+pub fn read_inode_data_into<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
@@ -474,7 +474,7 @@ fn copy_len_for_lbn(offset: u64, end: u64, lbn: u64) -> Ext4Result<usize> {
         .map_err(|_| Ext4Error::from(Errno::EOVERFLOW))
 }
 
-pub fn write_file<B: BlockDevice>(
+pub fn write_file<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -509,7 +509,7 @@ struct WriteSlice<'a> {
     data: &'a [u8],
 }
 
-fn write_inode_block_data<B: BlockDevice>(
+fn write_inode_block_data<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     phys: AbsoluteBN,
@@ -557,7 +557,7 @@ fn write_inode_block_data<B: BlockDevice>(
     Ok(())
 }
 
-fn write_full_block_run<B: BlockDevice>(
+fn write_full_block_run<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     start_phys: AbsoluteBN,
@@ -610,7 +610,7 @@ fn existing_full_block_run(
     Some((start_phys, run_len))
 }
 
-fn alloc_contiguous_run_best_effort<B: BlockDevice>(
+fn alloc_contiguous_run_best_effort<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     requested: u32,
@@ -627,7 +627,7 @@ fn alloc_contiguous_run_best_effort<B: BlockDevice>(
     }
 }
 
-pub fn write_inode_data<B: BlockDevice>(
+pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,

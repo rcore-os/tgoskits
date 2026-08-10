@@ -241,7 +241,7 @@ rockchip-soc = { version = "0.4.4", path = "drivers/soc/rockchip/rockchip-soc" }
 sg2002-tpu = { version = "0.3.10", path = "drivers/tpu/sg2002-tpu" }
 rdrive = { version = "0.23.9", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4.3", path = "drivers/rdrive-macros" }
-rsext4 = { version = "0.7.8", path = "fs/rsext4" }
+rsext4 = { version = "0.8.0", path = "fs/rsext4" }
 scope-local = { version = "0.4.5", path = "components/scope-local" }
 sdio-host = { version = "0.1.0", package = "sdio-host-cv1800", path = "drivers/blk/sdio-host" }
 sdio-host2 = { version = "0.1.6", path = "drivers/blk/sdio-host2" }

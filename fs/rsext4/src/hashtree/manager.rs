@@ -1,6 +1,6 @@
 //! Hash tree manager definition.
 
-use crate::blockdev::BlockDevice;
+use crate::blockdev::BlockIo;
 
 /// Coordinates hash tree parsing and lookup logic for a directory.
 pub struct HashTreeManager {
@@ -23,7 +23,7 @@ impl HashTreeManager {
     }
 
     /// Searches a directory for `target_name` using the hash tree when present.
-    pub fn lookup<B: BlockDevice>(
+    pub fn lookup<B: BlockIo>(
         &self,
         fs: &mut crate::ext4::Ext4FileSystem,
         block_dev: &mut crate::blockdev::Jbd2Dev<B>,

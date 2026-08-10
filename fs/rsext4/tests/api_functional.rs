@@ -28,7 +28,7 @@ impl MockBlockDevice {
     }
 }
 
-impl BlockDevice for MockBlockDevice {
+impl BlockIo for MockBlockDevice {
     fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
         let start = block_id.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
@@ -55,23 +55,29 @@ impl BlockDevice for MockBlockDevice {
         Ok(())
     }
 
-    fn open(&mut self) -> Ext4Result<()> {
+    fn geometry(&self) -> rsext4::DeviceGeometry {
+        rsext4::DeviceGeometry::new(self.block_size, {
+            (self.data.len() / self.block_size as usize) as u64
+        })
+    }
+
+    fn capabilities(&self) -> rsext4::DeviceCapabilities {
+        rsext4::DeviceCapabilities {
+            read_only: { false },
+
+            flush: true,
+
+            ..rsext4::DeviceCapabilities::default()
+        }
+    }
+
+    fn flush(&mut self) -> rsext4::Ext4Result<()> {
         Ok(())
     }
+}
 
-    fn close(&mut self) -> Ext4Result<()> {
-        Ok(())
-    }
-
-    fn total_blocks(&self) -> u64 {
-        (self.data.len() / self.block_size as usize) as u64
-    }
-
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
-
-    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+impl rsext4::Clock for MockBlockDevice {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
         let sec = self.now.get();
         self.now.set(sec + 1);
         Ok(Ext4Timestamp::new(sec, 0))

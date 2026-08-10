@@ -1,6 +1,6 @@
 //! Multi-block cached block device wrapper.
 //!
-//! Wraps a [`BlockDevice`] with a fixed-size LRU cache (clock algorithm)
+//! Wraps a [`BlockIo`] with a fixed-size LRU cache (clock algorithm)
 //! of `CACHE_ENTRIES` blocks (4 blocks = 16 KiB with 4 KiB blocks).
 //! Each cache hit eliminates one QEMU virtio round-trip, which is the
 //! dominant cost on virtualized block devices.
@@ -9,10 +9,11 @@
 //! [`buffer()`] / [`buffer_mut()`] for the read-modify-write pattern
 //! used throughout rsext4.
 
-use super::{buffer::BlockBuffer, traits::BlockDevice};
+use super::buffer::BlockBuffer;
 use crate::{
     bmalloc::AbsoluteBN,
     error::{Ext4Error, Ext4Result},
+    io::{BlockIo, DeviceCapabilities, DeviceGeometry},
 };
 
 /// Number of cached blocks. 4 blocks × 4 KiB = 16 KiB cache.
@@ -50,8 +51,10 @@ impl CacheLine {
 }
 
 /// Multi-block cached block device wrapper used internally by the journal proxy.
-pub(super) struct BlockDev<B: BlockDevice> {
+pub(super) struct BlockDev<B: BlockIo> {
     dev: B,
+    geometry: DeviceGeometry,
+    capabilities: DeviceCapabilities,
     /// The cache lines.
     entries: [CacheLine; CACHE_ENTRIES],
     /// Index of the most recently accessed (active) entry.
@@ -60,11 +63,15 @@ pub(super) struct BlockDev<B: BlockDevice> {
     clock: usize,
 }
 
-impl<B: BlockDevice> BlockDev<B> {
+impl<B: BlockIo> BlockDev<B> {
     /// Creates a new cached block device wrapper.
     pub fn new(dev: B) -> Self {
+        let geometry = dev.geometry();
+        let capabilities = dev.capabilities();
         Self {
             dev,
+            geometry,
+            capabilities,
             entries: core::array::from_fn(|_| CacheLine::new()),
             active: 0,
             clock: 0,
@@ -84,17 +91,6 @@ impl<B: BlockDevice> BlockDev<B> {
         let mut slf = Self::new(dev);
         slf.entries[0].buffer = buffer;
         Ok(slf)
-    }
-
-    /// Opens the underlying device.
-    pub fn _open(&mut self) -> Ext4Result<()> {
-        self.dev.open()
-    }
-
-    /// Flushes pending state and closes the underlying device.
-    pub fn _close(&mut self) -> Ext4Result<()> {
-        self.flush()?;
-        self.dev.close()
     }
 
     /// Reads one block into the cache and makes it the active entry.
@@ -128,7 +124,7 @@ impl<B: BlockDevice> BlockDev<B> {
     /// Writes the active buffer to the target block and marks it as the
     /// active entry.
     pub fn write_block(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
-        if self.dev.is_readonly() {
+        if self.capabilities.read_only {
             return Err(Ext4Error::read_only());
         }
 
@@ -147,7 +143,7 @@ impl<B: BlockDevice> BlockDev<B> {
         block_id: AbsoluteBN,
         count: u32,
     ) -> Ext4Result<()> {
-        let block_size = self.dev.block_size() as usize;
+        let block_size = self.geometry.logical_block_size as usize;
         let required_size = block_size * count as usize;
 
         if buffer.len() < required_size {
@@ -164,11 +160,11 @@ impl<B: BlockDevice> BlockDev<B> {
         block_id: AbsoluteBN,
         count: u32,
     ) -> Ext4Result<()> {
-        if self.dev.is_readonly() {
+        if self.capabilities.read_only {
             return Err(Ext4Error::read_only());
         }
 
-        let block_size = self.dev.block_size() as usize;
+        let block_size = self.geometry.logical_block_size as usize;
         let required_size = block_size * count as usize;
 
         if buffer.len() < required_size {
@@ -269,12 +265,12 @@ impl<B: BlockDevice> BlockDev<B> {
 
     /// Returns the total number of blocks on the underlying device.
     pub fn total_blocks(&self) -> u64 {
-        self.dev.total_blocks()
+        self.geometry.block_count
     }
 
     /// Returns the underlying device block size.
     pub fn block_size(&self) -> u32 {
-        self.dev.block_size()
+        self.geometry.logical_block_size
     }
 
     /// Returns an immutable reference to the underlying device.

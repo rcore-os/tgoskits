@@ -91,7 +91,7 @@ impl<'a> ExtentTree<'a> {
     }
 
     /// Finds the extent covering `lblock`, if any.
-    pub fn find_extent<B: BlockDevice>(
+    pub fn find_extent<B: BlockIo>(
         &mut self,
         dev: &mut Jbd2Dev<B>,
         lblock: u32,
@@ -103,7 +103,7 @@ impl<'a> ExtentTree<'a> {
         self.find_in_node(dev, &root, lblock)
     }
 
-    pub fn initialized_runs_in_range<B: BlockDevice>(
+    pub fn initialized_runs_in_range<B: BlockIo>(
         &mut self,
         dev: &mut Jbd2Dev<B>,
         start_lbn: u32,
@@ -123,7 +123,7 @@ impl<'a> ExtentTree<'a> {
 
     /// Recursively searches one node for the extent covering `lblock`.
     #[allow(clippy::only_used_in_recursion)]
-    fn find_in_node<B: BlockDevice>(
+    fn find_in_node<B: BlockIo>(
         &mut self,
         dev: &mut Jbd2Dev<B>,
         node: &ExtentNode,
@@ -173,7 +173,7 @@ impl<'a> ExtentTree<'a> {
         }
     }
 
-    fn collect_runs_in_node<B: BlockDevice>(
+    fn collect_runs_in_node<B: BlockIo>(
         dev: &mut Jbd2Dev<B>,
         node: &ExtentNode,
         start_lbn: u32,
@@ -238,7 +238,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        blockdev::{BlockDevice, Jbd2Dev},
+        blockdev::{BlockIo, Jbd2Dev},
         bmalloc::AbsoluteBN,
         disknode::Ext4Timestamp,
         error::{Ext4Error, Ext4Result},
@@ -261,7 +261,7 @@ mod tests {
         }
     }
 
-    impl BlockDevice for MemBlockDev {
+    impl BlockIo for MemBlockDev {
         fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
@@ -284,23 +284,27 @@ mod tests {
             Ok(())
         }
 
-        fn open(&mut self) -> Ext4Result<()> {
+        fn geometry(&self) -> crate::io::DeviceGeometry {
+            crate::io::DeviceGeometry::new(BLOCK_SIZE as u32, self.total_blocks)
+        }
+
+        fn capabilities(&self) -> crate::io::DeviceCapabilities {
+            crate::io::DeviceCapabilities {
+                read_only: { false },
+
+                flush: true,
+
+                ..crate::io::DeviceCapabilities::default()
+            }
+        }
+
+        fn flush(&mut self) -> crate::Ext4Result<()> {
             Ok(())
         }
+    }
 
-        fn close(&mut self) -> Ext4Result<()> {
-            Ok(())
-        }
-
-        fn total_blocks(&self) -> u64 {
-            self.total_blocks
-        }
-
-        fn block_size(&self) -> u32 {
-            BLOCK_SIZE as u32
-        }
-
-        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+    impl crate::runtime::Clock for MemBlockDev {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
             let sec = self.now.get();
             self.now.set(sec + 1);
             Ok(Ext4Timestamp::new(sec, 0))
@@ -322,7 +326,7 @@ mod tests {
         inode
     }
 
-    fn alloc_contiguous<B: BlockDevice>(
+    fn alloc_contiguous<B: BlockIo>(
         fs: &mut Ext4FileSystem,
         dev: &mut Jbd2Dev<B>,
         count: u32,

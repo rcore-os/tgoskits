@@ -101,7 +101,7 @@ impl InodeCache {
         ))
     }
 
-    fn load_inode<B: BlockDevice>(
+    fn load_inode<B: BlockIo>(
         &self,
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
@@ -116,7 +116,7 @@ impl InodeCache {
         Ok(Ext4Inode::from_disk_bytes(bytes))
     }
 
-    pub fn get_or_load<B: BlockDevice>(
+    pub fn get_or_load<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -131,7 +131,7 @@ impl InodeCache {
             .ok_or(Ext4Error::corrupted())
     }
 
-    fn ensure_loaded<B: BlockDevice>(
+    fn ensure_loaded<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -218,7 +218,7 @@ impl InodeCache {
         f: F,
     ) -> Ext4Result<()>
     where
-        B: BlockDevice,
+        B: BlockIo,
         F: FnOnce(&mut Ext4Inode),
     {
         self.ensure_loaded(block_dev, inode_num, block_num, offset)?;
@@ -257,13 +257,13 @@ impl InodeCache {
         f: F,
     ) -> Ext4Result<()>
     where
-        B: BlockDevice,
+        B: BlockIo,
         F: FnOnce(&mut Ext4Inode),
     {
         self.modify(block_dev, handle.inode_num, block_num, offset, f)
     }
 
-    pub fn evict<B: BlockDevice>(
+    pub fn evict<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -284,7 +284,7 @@ impl InodeCache {
         Ok(())
     }
 
-    pub fn flush_all<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+    pub fn flush_all<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         let mut dirty = self
             .cache
             .iter()
@@ -310,7 +310,7 @@ impl InodeCache {
         Ok(())
     }
 
-    pub fn flush<B: BlockDevice>(
+    pub fn flush<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -348,7 +348,7 @@ impl InodeCache {
         }
     }
 
-    fn write_inode_bytes_static<B: BlockDevice>(
+    fn write_inode_bytes_static<B: BlockIo>(
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
         offset: usize,
@@ -364,7 +364,7 @@ impl InodeCache {
         block_dev.write_blocks(&buffer, block_num, 1, true)
     }
 
-    fn write_dirty_inode_blocks<B: BlockDevice>(
+    fn write_dirty_inode_blocks<B: BlockIo>(
         block_dev: &mut Jbd2Dev<B>,
         dirty: &[(InodeNumber, AbsoluteBN, usize, Vec<u8>)],
     ) -> Ext4Result<()> {

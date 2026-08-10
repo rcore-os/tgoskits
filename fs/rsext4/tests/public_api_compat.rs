@@ -38,7 +38,7 @@ impl CompatBlockDevice {
     }
 }
 
-impl BlockDevice for CompatBlockDevice {
+impl BlockIo for CompatBlockDevice {
     fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
         let required = self.block_size as usize * count as usize;
         if buffer.len() < required {
@@ -49,7 +49,7 @@ impl BlockDevice for CompatBlockDevice {
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
                 block_id.to_u32()?,
-                self.total_blocks(),
+                self.geometry().block_count,
             ));
         }
         buffer[..required].copy_from_slice(&self.data[start..end]);
@@ -66,18 +66,10 @@ impl BlockDevice for CompatBlockDevice {
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
                 block_id.to_u32()?,
-                self.total_blocks(),
+                self.geometry().block_count,
             ));
         }
         self.data[start..end].copy_from_slice(&buffer[..required]);
-        Ok(())
-    }
-
-    fn open(&mut self) -> Ext4Result<()> {
-        Ok(())
-    }
-
-    fn close(&mut self) -> Ext4Result<()> {
         Ok(())
     }
 
@@ -86,15 +78,25 @@ impl BlockDevice for CompatBlockDevice {
         Ok(())
     }
 
-    fn total_blocks(&self) -> u64 {
-        (self.data.len() / self.block_size as usize) as u64
+    fn geometry(&self) -> rsext4::DeviceGeometry {
+        rsext4::DeviceGeometry::new(self.block_size, {
+            (self.data.len() / self.block_size as usize) as u64
+        })
     }
 
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
+    fn capabilities(&self) -> rsext4::DeviceCapabilities {
+        rsext4::DeviceCapabilities {
+            read_only: { false },
 
-    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+            flush: true,
+
+            ..rsext4::DeviceCapabilities::default()
+        }
+    }
+}
+
+impl rsext4::Clock for CompatBlockDevice {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
         let sec = self.now.get();
         self.now.set(sec + 1);
         Ok(Ext4Timestamp::new(sec, 0))

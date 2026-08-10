@@ -2,7 +2,7 @@ use super::*;
 
 impl Ext4FileSystem {
     /// Allocates a contiguous run of data blocks anywhere in the filesystem.
-    pub fn alloc_blocks<B: BlockDevice>(
+    pub fn alloc_blocks<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         count: u32,
@@ -133,7 +133,7 @@ impl Ext4FileSystem {
         Err(Ext4Error::no_space())
     }
 
-    pub fn alloc_block<B: BlockDevice>(
+    pub fn alloc_block<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<AbsoluteBN> {
@@ -144,7 +144,7 @@ impl Ext4FileSystem {
     }
 
     /// Allocates the requested number of inodes across all groups.
-    pub fn alloc_inodes<B: BlockDevice>(
+    pub fn alloc_inodes<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         count: u32,
@@ -288,7 +288,7 @@ impl Ext4FileSystem {
         Err(Ext4Error::no_space())
     }
 
-    pub fn alloc_inode<B: BlockDevice>(
+    pub fn alloc_inode<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<InodeNumber> {
@@ -307,7 +307,7 @@ impl Ext4FileSystem {
     }
 
     /// Frees one data block given its absolute physical block number.
-    pub fn free_block<B: BlockDevice>(
+    pub fn free_block<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         global_block: AbsoluteBN,
@@ -389,7 +389,7 @@ impl Ext4FileSystem {
     }
 
     /// Frees one inode given its global inode number.
-    pub fn free_inode<B: BlockDevice>(
+    pub fn free_inode<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
@@ -513,7 +513,7 @@ mod tests {
         }
     }
 
-    impl BlockDevice for MemBlockDev {
+    impl BlockIo for MemBlockDev {
         fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
@@ -548,23 +548,27 @@ mod tests {
             Ok(())
         }
 
-        fn open(&mut self) -> Ext4Result<()> {
+        fn geometry(&self) -> crate::io::DeviceGeometry {
+            crate::io::DeviceGeometry::new(BLOCK_SIZE as u32, self.total_blocks)
+        }
+
+        fn capabilities(&self) -> crate::io::DeviceCapabilities {
+            crate::io::DeviceCapabilities {
+                read_only: { false },
+
+                flush: true,
+
+                ..crate::io::DeviceCapabilities::default()
+            }
+        }
+
+        fn flush(&mut self) -> crate::Ext4Result<()> {
             Ok(())
         }
+    }
 
-        fn close(&mut self) -> Ext4Result<()> {
-            Ok(())
-        }
-
-        fn total_blocks(&self) -> u64 {
-            self.total_blocks
-        }
-
-        fn block_size(&self) -> u32 {
-            BLOCK_SIZE as u32
-        }
-
-        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+    impl crate::runtime::Clock for MemBlockDev {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
             let sec = self.now.get();
             self.now.set(sec + 1);
             Ok(Ext4Timestamp::new(sec, 0))
