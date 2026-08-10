@@ -365,10 +365,17 @@ impl Ext4FileSystem {
                     if !original_journal_use {
                         block_dev.set_journal_use(true)?;
                     }
-                    let replay_status = block_dev.journal_replay_checked();
-                    if replay_status != ReplayStatus::Complete {
-                        observer.event(Event::Recovery(RecoveryEvent::ReplayIncomplete));
-                        return Err(Ext4Error::corrupted());
+                    match block_dev.journal_replay_checked() {
+                        ReplayStatus::Complete => {}
+                        ReplayStatus::Incomplete(failure) => {
+                            let cause = failure.cause();
+                            observer.event(Event::Recovery(RecoveryEvent::ReplayFailed {
+                                phase: failure.phase(),
+                                cause,
+                                persistence_error: failure.persistence_error(),
+                            }));
+                            return Err(cause);
+                        }
                     }
                     block_dev.set_journal_use(original_journal_use)?;
 
