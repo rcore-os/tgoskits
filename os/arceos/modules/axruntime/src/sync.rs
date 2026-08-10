@@ -42,8 +42,8 @@ struct RuntimeMutexOps;
 #[cfg(all(feature = "multitask", not(feature = "host-test")))]
 #[ax_crate_interface::impl_interface]
 impl ax_sync::MutexRuntimeOps for RuntimeMutexOps {
-    fn might_sleep() {
-        ax_task::might_sleep();
+    fn might_sleep(caller: &'static core::panic::Location<'static>) {
+        ax_task::might_sleep_at(caller);
     }
 
     fn current_task_id() -> u64 {

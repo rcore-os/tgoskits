@@ -229,10 +229,12 @@ mod tests {
             self.notify();
         }
 
+        #[track_caller]
         fn wait(&self) {
             unreachable!("the completion publisher test does not block")
         }
 
+        #[track_caller]
         fn wait_timeout(&self, _duration: Duration) -> bool {
             unreachable!("the completion publisher test does not block")
         }

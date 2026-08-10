@@ -4,6 +4,7 @@ use core::{
     cell::UnsafeCell,
     marker::PhantomData,
     ops::{Deref, DerefMut},
+    panic::Location,
     ptr,
     sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
@@ -16,7 +17,7 @@ use core::{
 #[ax_crate_interface::def_interface]
 pub trait MutexRuntimeOps {
     /// Checks that the current context is allowed to sleep.
-    fn might_sleep();
+    fn might_sleep(caller: &'static Location<'static>);
 
     /// Returns the non-zero identifier of the current task.
     fn current_task_id() -> u64;
@@ -100,7 +101,7 @@ impl RawMutex {
     #[track_caller]
     #[cfg(not(feature = "lockdep"))]
     fn lock_plain(&self) {
-        ax_crate_interface::call_interface!(MutexRuntimeOps::might_sleep);
+        ax_crate_interface::call_interface!(MutexRuntimeOps::might_sleep, Location::caller());
         self.lock_after_prepare(Self::current_task_id());
     }
 
@@ -108,7 +109,7 @@ impl RawMutex {
     #[track_caller]
     #[cfg(feature = "lockdep")]
     fn lock_nested(&self, subclass: LockSubclass) {
-        ax_crate_interface::call_interface!(MutexRuntimeOps::might_sleep);
+        ax_crate_interface::call_interface!(MutexRuntimeOps::might_sleep, Location::caller());
         let current_id = Self::current_task_id();
         let lockdep = crate::mutex_lockdep::LockdepAcquire::prepare_nested(self, false, subclass);
         self.lock_after_prepare(current_id);
@@ -364,7 +365,10 @@ impl<T: ?Sized> LockdepMutexExt<T> for Mutex<T> {
 
 #[cfg(feature = "host-test")]
 mod host {
-    use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+    use core::{
+        panic::Location,
+        sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+    };
     use std::{
         boxed::Box,
         cell::Cell,
@@ -394,14 +398,18 @@ mod host {
     std::thread_local! {
         static TASK_ID: Cell<u64> = const { Cell::new(0) };
         static MIGHT_SLEEP_CALLS: Cell<usize> = const { Cell::new(0) };
+        static LAST_MIGHT_SLEEP_CALLER: Cell<Option<&'static Location<'static>>> = const {
+            Cell::new(None)
+        };
     }
 
     struct HostMutexRuntimeOps;
 
     #[ax_crate_interface::impl_interface]
     impl MutexRuntimeOps for HostMutexRuntimeOps {
-        fn might_sleep() {
+        fn might_sleep(caller: &'static Location<'static>) {
             MIGHT_SLEEP_CALLS.set(MIGHT_SLEEP_CALLS.get() + 1);
+            LAST_MIGHT_SLEEP_CALLER.set(Some(caller));
         }
 
         fn current_task_id() -> u64 {
@@ -485,11 +493,17 @@ mod host {
     #[cfg(test)]
     pub(super) fn reset_might_sleep_calls() {
         MIGHT_SLEEP_CALLS.set(0);
+        LAST_MIGHT_SLEEP_CALLER.set(None);
     }
 
     #[cfg(test)]
     pub(super) fn might_sleep_calls() -> usize {
         MIGHT_SLEEP_CALLS.get()
+    }
+
+    #[cfg(test)]
+    pub(super) fn last_might_sleep_caller() -> Option<&'static Location<'static>> {
+        LAST_MIGHT_SLEEP_CALLER.get()
     }
 }
 
@@ -557,6 +571,17 @@ mod tests {
                 .load(core::sync::atomic::Ordering::Acquire)
                 .is_null()
         );
+    }
+
+    #[test]
+    fn lock_reports_the_external_call_site_to_the_runtime() {
+        let mutex = Mutex::new(());
+        host::reset_might_sleep_calls();
+        let expected_line = line!() + 1;
+        drop(mutex.lock());
+        let caller = host::last_might_sleep_caller().expect("missing might_sleep caller");
+        assert_eq!(caller.file(), file!());
+        assert_eq!(caller.line(), expected_line);
     }
 
     #[test]

@@ -521,9 +521,18 @@ pub fn in_atomic_context() -> bool {
 /// Panics if it is executed in an atomic context.
 #[track_caller]
 pub fn might_sleep() {
+    might_sleep_at(core::panic::Location::caller());
+}
+
+/// Checks a sleep-like operation and attributes failures to `caller`.
+///
+/// Runtime capability adapters use this entry point because their generated
+/// cross-crate shim cannot preserve Rust's implicit `#[track_caller]` argument.
+#[doc(hidden)]
+pub fn might_sleep_at(caller: &'static core::panic::Location<'static>) {
     let snapshot = AtomicContextSnapshot::capture();
     if snapshot.is_atomic() {
-        panic_atomic_sleep(snapshot, core::panic::Location::caller());
+        panic_atomic_sleep(snapshot, caller);
     }
 }
 

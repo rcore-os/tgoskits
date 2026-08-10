@@ -345,8 +345,10 @@ mod tests {
             self.irq_notifications.fetch_add(1, Ordering::AcqRel);
         }
 
+        #[track_caller]
         fn wait(&self) {}
 
+        #[track_caller]
         fn wait_timeout(&self, _duration: core::time::Duration) -> bool {
             false
         }

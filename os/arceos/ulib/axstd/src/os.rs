@@ -35,16 +35,19 @@ pub mod arceos {
 
         impl<T> IrqSafeMutex<T> {
             /// Creates an unlocked IRQ-safe mutex.
+            #[track_caller]
             pub const fn new(value: T) -> Self {
                 Self(ax_sync::SpinLock::new(value))
             }
 
             /// Acquires the lock after saving and disabling local interrupts.
+            #[track_caller]
             pub fn lock(&self) -> IrqSafeMutexGuard<'_, T> {
                 self.0.lock_irqsave()
             }
 
             /// Attempts to acquire the lock with IRQ-save semantics.
+            #[track_caller]
             pub fn try_lock(&self) -> Option<IrqSafeMutexGuard<'_, T>> {
                 self.0.try_lock_irqsave()
             }

@@ -28,6 +28,7 @@ pub struct IrqMutex<T: ?Sized>(ax_sync::SpinLock<T>);
 pub type IrqMutexGuard<'a, T> = ax_sync::SpinLockIrqSaveGuard<'a, T>;
 
 impl<T> IrqMutex<T> {
+    #[track_caller]
     pub const fn new(value: T) -> Self {
         Self(ax_sync::SpinLock::new(value))
     }
@@ -36,15 +37,18 @@ impl<T> IrqMutex<T> {
         self.0.into_inner()
     }
 
+    #[track_caller]
     pub fn lock(&self) -> IrqMutexGuard<'_, T> {
         self.0.lock_irqsave()
     }
 
     /// Acquires this IRQ-save mutex using a lockdep subclass.
+    #[track_caller]
     pub fn lock_nested(&self, subclass: u32) -> IrqMutexGuard<'_, T> {
         self.0.lock_irqsave_nested(subclass)
     }
 
+    #[track_caller]
     pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
         self.0.try_lock_irqsave()
     }
