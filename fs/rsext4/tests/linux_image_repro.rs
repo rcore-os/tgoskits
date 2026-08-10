@@ -621,6 +621,81 @@ fn e2fsck_clean_after_sparse_extent_truncate_keeps_tree_blocks_counted() {
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
 }
 
+fn sparse_growth_round_trip(filesystem_block_size: u32) {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) =
+        create_ext4_geometry_image("rsext4-sparse-grow", "64M", filesystem_block_size);
+    let extent_path = "/extent-sparse-grow.bin";
+    let legacy_path = "/legacy-sparse-grow.bin";
+    let extent_size = 20 * u64::from(filesystem_block_size);
+    let legacy_size = 14 * u64::from(filesystem_block_size);
+
+    {
+        let dev = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("mount image");
+
+        mkfile(&mut dev, &mut fs, extent_path, None, None).expect("create extent sparse file");
+        truncate(&mut dev, &mut fs, extent_path, extent_size).expect("grow extent sparse file");
+
+        mkfile(&mut dev, &mut fs, legacy_path, None, None).expect("create legacy sparse file");
+        let legacy_inode = dir::get_inode_with_num(&mut fs, &mut dev, legacy_path)
+            .expect("lookup legacy sparse file")
+            .expect("legacy sparse file missing")
+            .0;
+        fs.modify_inode(&mut dev, legacy_inode, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_blocks_lo = 0;
+            inode.l_i_blocks_high = 0;
+        })
+        .expect("convert sparse file to legacy mapping");
+        truncate(&mut dev, &mut fs, legacy_path, legacy_size).expect("grow legacy sparse file");
+
+        umount(fs, &mut dev).expect("umount sparse growth image");
+    }
+
+    e2fsck_readonly_clean(&image, "sparse growth");
+
+    {
+        let dev = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("remount sparse growth image");
+        for (path, expected_size) in [(extent_path, extent_size), (legacy_path, legacy_size)] {
+            let data = read_file(&mut dev, &mut fs, path).expect("read remounted sparse file");
+            assert_eq!(data.len(), expected_size as usize);
+            assert!(data.iter().all(|&byte| byte == 0));
+            let (_, inode) = dir::get_inode_with_num(&mut fs, &mut dev, path)
+                .expect("lookup remounted sparse file")
+                .expect("remounted sparse file missing");
+            assert_eq!(inode.i_blocks_lo, 0);
+            assert_eq!(inode.l_i_blocks_high, 0);
+        }
+        umount(fs, &mut dev).expect("umount remounted sparse growth image");
+    }
+
+    e2fsck_readonly_clean(&image, "remounted sparse growth");
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn sparse_growth_round_trip_with_1k_filesystem_blocks() {
+    sparse_growth_round_trip(1024);
+}
+
+#[test]
+fn sparse_growth_round_trip_with_2k_filesystem_blocks() {
+    sparse_growth_round_trip(2048);
+}
+
+#[test]
+fn sparse_growth_round_trip_with_4k_filesystem_blocks() {
+    sparse_growth_round_trip(4096);
+}
+
 #[test]
 fn legacy_write_crosses_direct_single_boundary_and_remounts_cleanly() {
     for tool in ["mkfs.ext4", "e2fsck", "truncate"] {

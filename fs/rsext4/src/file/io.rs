@@ -19,6 +19,73 @@ pub fn truncate<B: BlockIo + crate::runtime::Clock>(
     truncate_inode(device, fs, inode_num, truncate_size)
 }
 
+fn zero_mapped_inode_tail<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    size: u64,
+) -> Ext4Result<()> {
+    let block_size = fs.block_size();
+    let block_bytes = block_size as u64;
+    let tail_offset = size % block_bytes;
+    if tail_offset == 0 {
+        return Ok(());
+    }
+
+    let logical = u32::try_from(size / block_bytes).map_err(|_| Ext4Error::file_too_large())?;
+    let Some(physical) = resolve_inode_block(fs, device, inode_num, inode, logical)? else {
+        return Ok(());
+    };
+    let tail_offset = usize::try_from(tail_offset).map_err(|_| Ext4Error::overflow())?;
+    fs.datablock_cache
+        .modify(device, physical, |block| block[tail_offset..].fill(0))
+}
+
+fn append_extent_logical_blocks<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    mappings: &alloc::collections::BTreeMap<u32, AbsoluteBN>,
+    total_blocks: usize,
+    buffer: &mut Vec<u8>,
+) -> Ext4Result<()> {
+    let block_size = fs.block_size();
+    let total_blocks = u64::try_from(total_blocks).map_err(|_| Ext4Error::file_too_large())?;
+    let mapped_blocks = u64::try_from(mappings.len()).map_err(|_| Ext4Error::file_too_large())?;
+    let dense = mapped_blocks == total_blocks
+        && mappings.first_key_value().map(|(&key, _)| key) == Some(0)
+        && mappings
+            .last_key_value()
+            .is_some_and(|(&key, _)| u64::from(key) + 1 == total_blocks);
+    if dense {
+        for &physical in mappings.values() {
+            let cached = fs.datablock_cache.get_or_load(device, physical)?;
+            buffer.extend_from_slice(&cached.data);
+        }
+        return Ok(());
+    }
+
+    let mut next_logical = 0u64;
+    for (&logical, &physical) in mappings {
+        let logical = u64::from(logical);
+        if logical >= total_blocks {
+            break;
+        }
+        while next_logical < logical {
+            append_zero_block(buffer, block_size)?;
+            next_logical += 1;
+        }
+        let cached = fs.datablock_cache.get_or_load(device, physical)?;
+        buffer.extend_from_slice(&cached.data);
+        next_logical = logical + 1;
+    }
+    while next_logical < total_blocks {
+        append_zero_block(buffer, block_size)?;
+        next_logical += 1;
+    }
+    Ok(())
+}
+
 pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -42,11 +109,6 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
     let huge_file_feature = fs
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
-    let old_blocks = if old_size == 0 {
-        0u64
-    } else {
-        old_size.div_ceil(block_bytes)
-    };
     let new_blocks = if truncate_size == 0 {
         0u64
     } else {
@@ -58,7 +120,25 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
         return Err(Ext4Error::file_too_large());
     }
 
-    // Extent-backed files handle sparse growth and extent-aware shrinking here.
+    if truncate_size > old_size {
+        if !inode.uses_extents() {
+            crate::indirect::validate_legacy_block_count(fs.block_size(), new_blocks)?;
+        }
+        // Linux clears the old partial EOF before publishing a larger size so
+        // bytes hidden by an earlier shrink can never become visible again.
+        zero_mapped_inode_tail(device, fs, inode_num, &mut inode, old_size)?;
+        inode.i_size_lo = truncate_size as u32;
+        inode.i_size_high = (truncate_size >> 32) as u32;
+        fs.finalize_inode_update(
+            device,
+            inode_num,
+            &mut inode,
+            Ext4InodeMetadataUpdate::truncate_access(),
+        )?;
+        return Ok(());
+    }
+
+    // Extent-backed files handle extent-aware shrinking here.
     if fs.superblock.has_extents() && inode.uses_extents() {
         if truncate_size < old_size {
             // Delegate range removal to the extent tree so physical-block frees
@@ -96,46 +176,6 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
             }
         }
 
-        if new_blocks > old_blocks {
-            let mut new_blocks_map: Vec<(u32, AbsoluteBN)> = Vec::new();
-            for lbn in old_blocks as u32..new_blocks as u32 {
-                let phys = fs.alloc_block(device)?;
-                fs.datablock_cache.modify_new(device, phys, |data| {
-                    for b in data.iter_mut() {
-                        *b = 0;
-                    }
-                })?;
-                new_blocks_map.push((lbn, phys));
-            }
-
-            let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
-            if !new_blocks_map.is_empty() {
-                let mut idx = 0usize;
-                while idx < new_blocks_map.len() {
-                    let (start_lbn, start_phys) = new_blocks_map[idx];
-                    let mut run_len: u32 = 1;
-                    let mut last_lbn = start_lbn;
-                    let mut last_phys = start_phys;
-                    idx += 1;
-                    while idx < new_blocks_map.len() {
-                        let (cur_lbn, cur_phys) = new_blocks_map[idx];
-                        if cur_lbn == last_lbn + 1
-                            && last_phys.checked_add(1).ok() == Some(cur_phys)
-                        {
-                            run_len = run_len.saturating_add(1);
-                            last_lbn = cur_lbn;
-                            last_phys = cur_phys;
-                            idx += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    let ext = Ext4Extent::new(start_lbn, start_phys.raw(), run_len as u16);
-                    tree.insert_extent(fs, ext, device)?;
-                }
-            }
-        }
-
         inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
         inode.i_size_high = (truncate_size >> 32) as u32;
         // i_blocks reflects number of allocated blocks, not logical length. Recompute after edits.
@@ -155,42 +195,38 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
             &mut inode,
             Ext4InodeMetadataUpdate::truncate_access(),
         )?;
-        return Ok(());
+        return zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size);
     }
 
-    // Non-extent files currently support only the 12 direct block pointers.
-    if new_blocks > 12 || old_blocks > 12 {
-        return Err(Ext4Error::unsupported());
+    // Legacy indirect shrink needs recursive pointer removal and remains a
+    // later transaction milestone. Validate the full hidden tree before
+    // returning so no inode or allocation state has been changed.
+    if crate::indirect::has_legacy_indirect_mapping(fs, &inode) {
+        crate::indirect::collect_legacy_inode_ownership(fs, device, inode_num, &inode)?;
+        return Err(Ext4Error::unsupported().with_operation("indirect:truncate"));
     }
 
-    // Grow by allocating and zeroing new direct blocks.
-    if new_blocks > old_blocks {
-        for lbn in old_blocks as u32..new_blocks as u32 {
-            let phys = fs.alloc_block(device)?;
-            fs.datablock_cache.modify_new(device, phys, |data| {
-                for b in data.iter_mut() {
-                    *b = 0;
-                }
-            })?;
-            inode.i_block[lbn as usize] = phys.to_u32()?;
+    // Free every direct pointer beyond the new EOF, including inconsistent
+    // pointers already hidden beyond the old on-disk size.
+    let first_free_slot = core::cmp::min(new_blocks, 12) as usize;
+    for lbn in first_free_slot..12 {
+        let phys = inode.i_block[lbn];
+        if phys != 0 {
+            fs.free_block(device, AbsoluteBN::from(phys))?;
         }
-    }
-
-    // Shrink by freeing trailing direct blocks and clearing their pointers.
-    if new_blocks < old_blocks {
-        for lbn in new_blocks as u32..old_blocks as u32 {
-            let phys = inode.i_block[lbn as usize];
-            if phys != 0 {
-                let phys = AbsoluteBN::from(phys);
-                fs.free_block(device, phys)?;
-            }
-            inode.i_block[lbn as usize] = 0;
-        }
+        inode.i_block[lbn] = 0;
     }
 
     inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
     inode.i_size_high = (truncate_size >> 32) as u32;
-    let iblocks_used = new_blocks
+    let allocated_blocks = u64::try_from(
+        inode.i_block[..12]
+            .iter()
+            .filter(|&&pointer| pointer != 0)
+            .count(),
+    )
+    .map_err(|_| Ext4Error::overflow())?;
+    let iblocks_used = allocated_blocks
         .checked_mul(block_bytes / 512)
         .ok_or_else(Ext4Error::overflow)?;
     inode.set_blocks_count(iblocks_used, block_bytes as u32, huge_file_feature)?;
@@ -202,7 +238,7 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
         Ext4InodeMetadataUpdate::truncate_access(),
     )?;
 
-    Ok(())
+    zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)
 }
 
 fn read_symlink_target<B: BlockIo>(
@@ -235,17 +271,11 @@ fn read_symlink_target<B: BlockIo>(
 
     if inode.uses_extents() {
         let blocks = resolve_inode_blocks(fs, device, inode_num, inode)?;
-        for &phys in blocks.values() {
-            let cached = fs.datablock_cache.get_or_load(device, phys)?;
-            let data = &cached.data;
-            buf.extend_from_slice(data);
-            if buf.len() >= size {
-                break;
-            }
-        }
+        append_extent_logical_blocks(device, fs, &blocks, total_blocks, &mut buf)?;
     } else {
         for lbn in 0..total_blocks {
-            match resolve_inode_block(fs, device, inode_num, inode, lbn as u32)? {
+            let logical = u32::try_from(lbn).map_err(|_| Ext4Error::file_too_large())?;
+            match resolve_inode_block(fs, device, inode_num, inode, logical)? {
                 Some(phys) => {
                     let cached = fs.datablock_cache.get_or_load(device, phys)?;
                     buf.extend_from_slice(&cached.data);
@@ -327,17 +357,11 @@ fn read_file_follow<B: BlockIo + crate::runtime::Clock>(
 
     if inode.uses_extents() {
         let blocks = resolve_inode_blocks(fs, device, inode_num, &mut inode)?;
-        for &phys in blocks.values() {
-            let cached = fs.datablock_cache.get_or_load(device, phys)?;
-            let data = &cached.data;
-            buf.extend_from_slice(data);
-            if buf.len() >= size {
-                break;
-            }
-        }
+        append_extent_logical_blocks(device, fs, &blocks, total_blocks, &mut buf)?;
     } else {
         for lbn in 0..total_blocks {
-            match resolve_inode_block(fs, device, inode_num, &mut inode, lbn as u32)? {
+            let logical = u32::try_from(lbn).map_err(|_| Ext4Error::file_too_large())?;
+            match resolve_inode_block(fs, device, inode_num, &mut inode, logical)? {
                 Some(phys) => {
                     let cached = fs.datablock_cache.get_or_load(device, phys)?;
                     buf.extend_from_slice(&cached.data);
