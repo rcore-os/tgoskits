@@ -29,7 +29,7 @@ pub use config::{
 pub use dir::{mkdir, mkdir_with_owner};
 pub use disknode::{Ext4TimeSpec, Ext4Timestamp};
 // Re-export the unified error model.
-pub use error::{Errno, Ext4Error, Ext4Result};
+pub use error::{ErrorContext, Ext4Error, Ext4ErrorKind, Ext4Result, FeatureSet};
 pub use ext4::{
     Ext4FileSystem, MountOptions, find_file, mkfs, mount, mount_with_options,
     mount_with_options_and_observer, umount,

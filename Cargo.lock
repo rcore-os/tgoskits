@@ -7028,6 +7028,7 @@ version = "0.8.0"
 dependencies = [
  "axtest",
  "bitflags 2.13.1",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

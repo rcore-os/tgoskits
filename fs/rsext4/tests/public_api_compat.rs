@@ -265,8 +265,8 @@ fn file_entry_exisr_matches_file_entry_exist() {
         let corrected = file_entry_exist(&mut fs, &mut dev, path);
         let compatible = file_entry_exisr(&mut fs, &mut dev, path);
         assert_eq!(
-            corrected.map_err(|err| err.code),
-            compatible.map_err(|err| err.code),
+            corrected.map_err(|err| err.kind()),
+            compatible.map_err(|err| err.kind()),
             "path {path}"
         );
     }

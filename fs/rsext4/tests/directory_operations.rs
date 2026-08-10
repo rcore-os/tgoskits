@@ -286,7 +286,7 @@ mod directory_functional_tests {
         // A missing file should still report `ENOENT`.
         let not_found = read_file(&mut jbd2_dev, &mut fs, "/findtest/notexist.txt")
             .expect_err("missing file should fail");
-        assert_eq!(not_found.code, Errno::ENOENT);
+        assert_eq!(not_found.kind(), Ext4ErrorKind::NotFound);
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
@@ -314,7 +314,7 @@ mod directory_functional_tests {
         // Removing a missing directory should fail with `ENOENT`.
         let err = delete_dir(&mut fs, &mut jbd2_dev, "/definitely-missing")
             .expect_err("missing directory should fail");
-        assert_eq!(err.code, Errno::ENOENT);
+        assert_eq!(err.kind(), Ext4ErrorKind::NotFound);
 
         // Non-empty directory deletion is implementation-defined here, so the test
         // records behavior rather than requiring one strict outcome.
@@ -342,7 +342,7 @@ mod directory_functional_tests {
         test_mkdir(&mut jbd2_dev, &mut fs, "/duplicate").expect("mkdir failed");
         let result = test_mkdir(&mut jbd2_dev, &mut fs, "/duplicate");
         let err = result.expect_err("duplicate mkdir should fail");
-        assert_eq!(err.code, Errno::EEXIST);
+        assert_eq!(err.kind(), Ext4ErrorKind::AlreadyExists);
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }

@@ -1,25 +1,30 @@
 use axfs_ng_vfs::{NodeType, VfsError};
-use rsext4::{Ext4Error, entries::Ext4DirEntry2};
+use rsext4::{Ext4Error, Ext4ErrorKind, entries::Ext4DirEntry2};
 
 pub fn into_vfs_err(err: Ext4Error) -> VfsError {
-    let linux_err = match err.code {
-        rsext4::error::Errno::ENOENT => ax_errno::LinuxError::ENOENT,
-        rsext4::error::Errno::EEXIST => ax_errno::LinuxError::EEXIST,
-        rsext4::error::Errno::EISDIR => ax_errno::LinuxError::EISDIR,
-        rsext4::error::Errno::ENOTDIR => ax_errno::LinuxError::ENOTDIR,
-        rsext4::error::Errno::ENOTEMPTY => ax_errno::LinuxError::ENOTEMPTY,
-        rsext4::error::Errno::EACCES => ax_errno::LinuxError::EACCES,
-        rsext4::error::Errno::EINVAL => ax_errno::LinuxError::EINVAL,
-        rsext4::error::Errno::ENOSPC => ax_errno::LinuxError::ENOSPC,
-        rsext4::error::Errno::EROFS => ax_errno::LinuxError::EROFS,
-        rsext4::error::Errno::EBUSY => ax_errno::LinuxError::EBUSY,
-        rsext4::error::Errno::EBADF => ax_errno::LinuxError::EBADF,
-        rsext4::error::Errno::ENAMETOOLONG => ax_errno::LinuxError::ENAMETOOLONG,
-        rsext4::error::Errno::ELOOP => ax_errno::LinuxError::ELOOP,
-        rsext4::error::Errno::ENOMEM => ax_errno::LinuxError::ENOMEM,
-        rsext4::error::Errno::EPERM => ax_errno::LinuxError::EPERM,
-        rsext4::error::Errno::EFBIG => ax_errno::LinuxError::EFBIG,
-        _ => ax_errno::LinuxError::EIO,
+    let linux_err = match err.kind() {
+        Ext4ErrorKind::NotFound => ax_errno::LinuxError::ENOENT,
+        Ext4ErrorKind::AlreadyExists => ax_errno::LinuxError::EEXIST,
+        Ext4ErrorKind::IsDirectory => ax_errno::LinuxError::EISDIR,
+        Ext4ErrorKind::NotDirectory => ax_errno::LinuxError::ENOTDIR,
+        Ext4ErrorKind::NotEmpty => ax_errno::LinuxError::ENOTEMPTY,
+        Ext4ErrorKind::PermissionDenied => ax_errno::LinuxError::EACCES,
+        Ext4ErrorKind::InvalidInput
+        | Ext4ErrorKind::BadSuperblock
+        | Ext4ErrorKind::InvalidMagic => ax_errno::LinuxError::EINVAL,
+        Ext4ErrorKind::NoSpace => ax_errno::LinuxError::ENOSPC,
+        Ext4ErrorKind::ReadOnly => ax_errno::LinuxError::EROFS,
+        Ext4ErrorKind::Busy => ax_errno::LinuxError::EBUSY,
+        Ext4ErrorKind::BadFileDescriptor => ax_errno::LinuxError::EBADF,
+        Ext4ErrorKind::FileTooLarge => ax_errno::LinuxError::EFBIG,
+        Ext4ErrorKind::Overflow => ax_errno::LinuxError::EOVERFLOW,
+        Ext4ErrorKind::Timeout => ax_errno::LinuxError::ETIMEDOUT,
+        Ext4ErrorKind::Unsupported
+        | Ext4ErrorKind::UnsupportedFeature
+        | Ext4ErrorKind::UnsupportedCapability => ax_errno::LinuxError::EOPNOTSUPP,
+        Ext4ErrorKind::Corrupted | Ext4ErrorKind::ChecksumMismatch => ax_errno::LinuxError::EUCLEAN,
+        Ext4ErrorKind::QuotaExceeded => ax_errno::LinuxError::EDQUOT,
+        Ext4ErrorKind::Io | Ext4ErrorKind::JournalAborted => ax_errno::LinuxError::EIO,
     };
     VfsError::from(linux_err).canonicalize()
 }
@@ -62,4 +67,38 @@ pub fn vfs_type_to_dir_entry(ty: NodeType) -> Option<u8> {
         NodeType::Symlink => Ext4DirEntry2::EXT4_FT_SYMLINK,
         NodeType::Unknown => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use rsext4::{Ext4Error, FeatureSet};
+
+    use super::*;
+
+    fn expected(error: ax_errno::LinuxError) -> VfsError {
+        VfsError::from(error).canonicalize()
+    }
+
+    #[test]
+    fn domain_errors_are_translated_only_at_the_vfs_boundary() {
+        assert_eq!(
+            into_vfs_err(Ext4Error::unsupported_feature(
+                FeatureSet::Incompatible,
+                0x8000_0000,
+            )),
+            expected(ax_errno::LinuxError::EOPNOTSUPP),
+        );
+        assert_eq!(
+            into_vfs_err(Ext4Error::checksum()),
+            expected(ax_errno::LinuxError::EUCLEAN),
+        );
+        assert_eq!(
+            into_vfs_err(Ext4Error::overflow()),
+            expected(ax_errno::LinuxError::EOVERFLOW),
+        );
+        assert_eq!(
+            into_vfs_err(Ext4Error::journal_aborted()),
+            expected(ax_errno::LinuxError::EIO),
+        );
+    }
 }

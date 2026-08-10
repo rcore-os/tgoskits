@@ -7,7 +7,7 @@ use crate as rsext4;
 #[axtest]
 fn rsext4_crc_and_error_rules_hold() {
     use rsext4::{
-        Errno, Ext4Error,
+        Ext4Error, Ext4ErrorKind,
         crc32c::{
             crc32c, crc32c_append, crc32c_finalize, crc32c_init, ext4_crc32c_seed_from_superblock,
             ext4_superblock_has_metadata_csum,
@@ -35,65 +35,59 @@ fn rsext4_crc_and_error_rules_hold() {
     ax_assert!(ext4_superblock_has_metadata_csum(&superblock));
     ax_assert_eq!(ext4_crc32c_seed_from_superblock(&superblock), 0xA1B2_C3D4);
 
-    ax_assert_eq!(Errno::EINVAL.as_i32(), 22);
-    ax_assert_eq!(Errno::EPERM.as_i32(), 1);
-    ax_assert_eq!(Errno::EIO.as_i32(), 5);
-    ax_assert_eq!(Errno::ENOSPC.as_i32(), 28);
-    ax_assert_eq!(Errno::EOPNOTSUPP.as_i32(), 95);
-    ax_assert_eq!(Errno::ETIMEDOUT.as_i32(), 110);
-    ax_assert_eq!(Errno::EUCLEAN.as_i32(), 117);
-    ax_assert_eq!(Errno::from_i32(22), Some(Errno::EINVAL));
-    ax_assert_eq!(Errno::from_i32(999), None);
-    ax_assert_eq!(Errno::EWOULDBLOCK.as_i32(), Errno::EAGAIN.as_i32());
-    ax_assert_eq!(Errno::EINVAL.name(), "EINVAL");
-    ax_assert!(Errno::EINVAL.description().contains("Invalid"));
-
     let error = Ext4Error::buffer_too_small(4, 8);
-    ax_assert_eq!(error.code, Errno::EINVAL);
-    ax_assert!(error.to_string().contains("provided=4"));
-    ax_assert_eq!(Ext4Error::permission_denied().code, Errno::EACCES);
+    ax_assert_eq!(error.kind(), Ext4ErrorKind::InvalidInput);
+    ax_assert!(error.to_string().contains("provided: 4"));
+    ax_assert_eq!(
+        Ext4Error::permission_denied().kind(),
+        Ext4ErrorKind::PermissionDenied
+    );
     ax_assert!(
         Ext4Error::block_out_of_range(3, 2)
             .to_string()
-            .contains("block_id=3")
+            .contains("block_id: 3")
     );
     ax_assert!(
         Ext4Error::invalid_block_size(1024, 4096)
             .to_string()
-            .contains("expected=4096")
+            .contains("expected: 4096")
     );
     ax_assert!(
         Ext4Error::alignment(3, 4)
             .to_string()
-            .contains("alignment=4")
+            .contains("alignment: 4")
     );
-    ax_assert!(Ext4Error::invalid_input().to_string().contains("EINVAL"));
+    ax_assert!(
+        Ext4Error::invalid_input()
+            .to_string()
+            .contains("invalid input")
+    );
 
     let error_cases = [
-        (Ext4Error::not_found(), Errno::ENOENT),
-        (Ext4Error::already_exists(), Errno::EEXIST),
-        (Ext4Error::not_dir(), Errno::ENOTDIR),
-        (Ext4Error::is_dir(), Errno::EISDIR),
-        (Ext4Error::io(), Errno::EIO),
-        (Ext4Error::badf(), Errno::EBADF),
-        (Ext4Error::busy(), Errno::EBUSY),
-        (Ext4Error::not_empty(), Errno::ENOTEMPTY),
-        (Ext4Error::no_space(), Errno::ENOSPC),
-        (Ext4Error::read_only(), Errno::EROFS),
-        (Ext4Error::unsupported(), Errno::EOPNOTSUPP),
-        (Ext4Error::timeout(), Errno::ETIMEDOUT),
-        (Ext4Error::corrupted(), Errno::EUCLEAN),
-        (Ext4Error::checksum(), Errno::EUCLEAN),
-        (Ext4Error::bad_superblock(), Errno::EINVAL),
-        (Ext4Error::invalid_magic(), Errno::EINVAL),
-        (Ext4Error::already_mounted(), Errno::EBUSY),
+        (Ext4Error::not_found(), Ext4ErrorKind::NotFound),
+        (Ext4Error::already_exists(), Ext4ErrorKind::AlreadyExists),
+        (Ext4Error::not_dir(), Ext4ErrorKind::NotDirectory),
+        (Ext4Error::is_dir(), Ext4ErrorKind::IsDirectory),
+        (Ext4Error::io(), Ext4ErrorKind::Io),
+        (Ext4Error::badf(), Ext4ErrorKind::BadFileDescriptor),
+        (Ext4Error::busy(), Ext4ErrorKind::Busy),
+        (Ext4Error::not_empty(), Ext4ErrorKind::NotEmpty),
+        (Ext4Error::no_space(), Ext4ErrorKind::NoSpace),
+        (Ext4Error::read_only(), Ext4ErrorKind::ReadOnly),
+        (Ext4Error::unsupported(), Ext4ErrorKind::Unsupported),
+        (Ext4Error::timeout(), Ext4ErrorKind::Timeout),
+        (Ext4Error::corrupted(), Ext4ErrorKind::Corrupted),
+        (Ext4Error::checksum(), Ext4ErrorKind::ChecksumMismatch),
+        (Ext4Error::bad_superblock(), Ext4ErrorKind::BadSuperblock),
+        (Ext4Error::invalid_magic(), Ext4ErrorKind::InvalidMagic),
+        (Ext4Error::already_mounted(), Ext4ErrorKind::Busy),
     ];
     for (error, errno) in error_cases {
-        ax_assert_eq!(error.code, errno);
-        ax_assert!(error.context.is_none());
+        ax_assert_eq!(error.kind(), errno);
+        ax_assert!(error.context().is_none());
     }
-    let operated = Ext4Error::from(Errno::EIO).with_operation("read_inode");
-    ax_assert!(operated.to_string().contains("op=read_inode"));
+    let operated = Ext4Error::io().with_operation("read_inode");
+    ax_assert!(operated.to_string().contains("op: \"read_inode\""));
 }
 
 #[axtest]
@@ -644,7 +638,7 @@ fn rsext4_disk_format_and_journal_struct_rules_hold() {
 #[axtest]
 fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
     use rsext4::{
-        BLOCK_SIZE, Errno, Ext4Error,
+        BLOCK_SIZE, Ext4Error, Ext4ErrorKind,
         api::OpenFile,
         bitmap::bitmap_utils::set_bit,
         blockdev::{BlockBuffer, BlockIo},
@@ -676,12 +670,12 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
         AbsoluteBN::new(u64::from(u32::MAX) + 1)
             .to_u32()
             .unwrap_err()
-            .code,
-        Errno::EOVERFLOW
+            .kind(),
+        Ext4ErrorKind::Overflow
     );
     ax_assert_eq!(
-        AbsoluteBN::new(0).to_group(1, 8192).unwrap_err().code,
-        Errno::EINVAL
+        AbsoluteBN::new(0).to_group(1, 8192).unwrap_err().kind(),
+        Ext4ErrorKind::InvalidInput
     );
 
     let inode_index = RelativeInodeIndex::new(123);
@@ -689,7 +683,10 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
     let (decoded_inode_group, decoded_inode_index) = inode_num.to_group(2048).unwrap();
     ax_assert_eq!(decoded_inode_group, group);
     ax_assert_eq!(decoded_inode_index, inode_index);
-    ax_assert_eq!(InodeNumber::new(0).unwrap_err().code, Errno::EINVAL);
+    ax_assert_eq!(
+        InodeNumber::new(0).unwrap_err().kind(),
+        Ext4ErrorKind::InvalidInput
+    );
     ax_assert_eq!(inode_num.as_u64(), u64::from(inode_num.raw()));
 
     let descs = [
@@ -874,8 +871,8 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
     dev.read(&mut buf, AbsoluteBN::new(0), 1).unwrap();
     ax_assert_eq!(buf, [0x5a; 4]);
     ax_assert_eq!(
-        dev.write(&buf, AbsoluteBN::new(0), 1).unwrap_err().code,
-        Errno::EROFS
+        dev.write(&buf, AbsoluteBN::new(0), 1).unwrap_err().kind(),
+        Ext4ErrorKind::ReadOnly
     );
     ax_assert_eq!(dev.now().unwrap(), Ext4Timestamp::new(12, 34));
 
@@ -1419,7 +1416,7 @@ fn rsext4_path_and_bitmap_rules_hold() {
 #[axtest]
 fn rsext4_bmalloc_allocator_rules_hold() {
     use rsext4::{
-        Errno,
+        Ext4ErrorKind,
         blockgroup_description::Ext4GroupDesc,
         bmalloc::{
             AbsoluteBN, BGIndex, BlockAllocator, InodeAllocator, InodeNumber, RelativeBN,
@@ -1456,8 +1453,8 @@ fn rsext4_bmalloc_allocator_rules_hold() {
         block_allocator
             .alloc_block_in_group(&mut block_bitmap, group, &no_space_desc)
             .unwrap_err()
-            .code,
-        Errno::ENOSPC
+            .kind(),
+        Ext4ErrorKind::NoSpace
     );
 
     let range = block_allocator
@@ -1475,15 +1472,15 @@ fn rsext4_bmalloc_allocator_rules_hold() {
         block_allocator
             .alloc_contiguous_blocks(&mut block_bitmap, group, 0)
             .unwrap_err()
-            .code,
-        Errno::EINVAL
+            .kind(),
+        Ext4ErrorKind::InvalidInput
     );
     ax_assert_eq!(
         block_allocator
             .global_to_group(AbsoluteBN::new(0))
             .unwrap_err()
-            .code,
-        Errno::EINVAL
+            .kind(),
+        Ext4ErrorKind::InvalidInput
     );
 
     let inode_superblock = Ext4Superblock {
@@ -1532,13 +1529,16 @@ fn rsext4_bmalloc_allocator_rules_hold() {
                 &Ext4GroupDesc::default()
             )
             .unwrap_err()
-            .code,
-        Errno::ENOSPC
+            .kind(),
+        Ext4ErrorKind::NoSpace
     );
-    ax_assert_eq!(InodeNumber::new(0).unwrap_err().code, Errno::EINVAL);
     ax_assert_eq!(
-        InodeNumber::new(1).unwrap().to_group(0).unwrap_err().code,
-        Errno::EINVAL
+        InodeNumber::new(0).unwrap_err().kind(),
+        Ext4ErrorKind::InvalidInput
+    );
+    ax_assert_eq!(
+        InodeNumber::new(1).unwrap().to_group(0).unwrap_err().kind(),
+        Ext4ErrorKind::InvalidInput
     );
 }
 
@@ -2081,7 +2081,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     use core::cell::Cell;
 
     use rsext4::{
-        BLOCK_SIZE, BlockIo, Errno, Ext4Result, Jbd2Dev,
+        BLOCK_SIZE, BlockIo, Ext4ErrorKind, Ext4Result, Jbd2Dev,
         bmalloc::AbsoluteBN,
         create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file,
         dir::get_inode_with_num,
@@ -2237,8 +2237,8 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     ax_assert_eq!(
         find_file(&mut fs, &mut device, "/missing")
             .unwrap_err()
-            .code,
-        Errno::ENOENT
+            .kind(),
+        Ext4ErrorKind::NotFound
     );
 
     mkdir(&mut device, &mut fs, "/cov").unwrap();
@@ -2302,8 +2302,8 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     ax_assert_eq!(
         set_project(&mut device, &mut fs, "/cov/sub/file", 77)
             .unwrap_err()
-            .code,
-        Errno::EOPNOTSUPP
+            .kind(),
+        Ext4ErrorKind::Unsupported
     );
     fs.superblock.s_feature_ro_compat |= Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT;
     set_project(&mut device, &mut fs, "/cov/sub/file", 77).unwrap();
@@ -2321,8 +2321,8 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             !Ext4Inode::EXT4_FL_USER_VISIBLE
         )
         .unwrap_err()
-        .code,
-        Errno::EINVAL
+        .kind(),
+        Ext4ErrorKind::InvalidInput
     );
     mkfile(&mut device, &mut fs, "/cov/sub/noatime", Some(b"n"), None).unwrap();
     set_flags(
@@ -2405,20 +2405,20 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     ax_assert_eq!(
         mkfile(&mut device, &mut fs, "/", None, None)
             .unwrap_err()
-            .code,
-        Errno::EINVAL
+            .kind(),
+        Ext4ErrorKind::InvalidInput
     );
     ax_assert_eq!(
         mkfile(&mut device, &mut fs, "/cov/sub/file", None, None)
             .unwrap_err()
-            .code,
-        Errno::EEXIST
+            .kind(),
+        Ext4ErrorKind::AlreadyExists
     );
     ax_assert_eq!(
         mkfile(&mut device, &mut fs, "relative-file", None, None)
             .unwrap_err()
-            .code,
-        Errno::EINVAL
+            .kind(),
+        Ext4ErrorKind::InvalidInput
     );
     fs.superblock.s_feature_ro_compat |= Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT;
     let (sub_ino, _) = get_inode_with_num(&mut fs, &mut device, "/cov/sub")
@@ -2450,14 +2450,14 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     ax_assert_eq!(
         link(&mut fs, &mut device, "/cov/sub/hard", "/cov/sub/file")
             .unwrap_err()
-            .code,
-        Errno::EEXIST
+            .kind(),
+        Ext4ErrorKind::AlreadyExists
     );
     ax_assert_eq!(
         link(&mut fs, &mut device, "/cov/sub/dir-hard", "/cov/sub")
             .unwrap_err()
-            .code,
-        Errno::EACCES
+            .kind(),
+        Ext4ErrorKind::PermissionDenied
     );
     ax_assert_eq!(
         link(
@@ -2467,8 +2467,8 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             "/cov/sub/file"
         )
         .unwrap_err()
-        .code,
-        Errno::ENOENT
+        .kind(),
+        Ext4ErrorKind::NotFound
     );
     ax_assert_eq!(
         link(
@@ -2478,8 +2478,8 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             "/cov/sub/no-file"
         )
         .unwrap_err()
-        .code,
-        Errno::ENOENT
+        .kind(),
+        Ext4ErrorKind::NotFound
     );
 
     create_symbol_link(&mut device, &mut fs, "/cov/sub/file", "/cov/sub/sym").unwrap();
@@ -2524,8 +2524,8 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     ax_assert_eq!(
         create_symbol_link(&mut device, &mut fs, "/cov/sub/no-src", "/cov/sub/bad-sym")
             .unwrap_err()
-            .code,
-        Errno::EINVAL
+            .kind(),
+        Ext4ErrorKind::InvalidInput
     );
 
     rename(&mut device, &mut fs, "/cov/sub/file", "/cov/sub/renamed").unwrap();
@@ -2563,8 +2563,8 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     ax_assert_eq!(
         resolve_inode_block(&mut device, &mut non_extent_inode, 0)
             .unwrap_err()
-            .code,
-        Errno::EOPNOTSUPP
+            .kind(),
+        Ext4ErrorKind::Unsupported
     );
     ax_assert!(
         resolve_inode_blocks(&mut fs, &mut device, &mut non_extent_inode)
@@ -2722,8 +2722,8 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             "/cov/sub/non-empty-dir",
         )
         .unwrap_err()
-        .code,
-        Errno::ENOTDIR
+        .kind(),
+        Ext4ErrorKind::NotDirectory
     );
     ax_assert_eq!(
         rename(
@@ -2733,8 +2733,8 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             "/cov/sub/replace-dst",
         )
         .unwrap_err()
-        .code,
-        Errno::EISDIR
+        .kind(),
+        Ext4ErrorKind::IsDirectory
     );
     mkdir(&mut device, &mut fs, "/cov/sub/src-dir").unwrap();
     ax_assert_eq!(
@@ -2745,20 +2745,20 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             "/cov/sub/non-empty-dir",
         )
         .unwrap_err()
-        .code,
-        Errno::ENOTEMPTY
+        .kind(),
+        Ext4ErrorKind::NotEmpty
     );
     ax_assert_eq!(
         rename(&mut device, &mut fs, "/cov/sub/src-dir", "bad-new")
             .unwrap_err()
-            .code,
-        Errno::EINVAL
+            .kind(),
+        Ext4ErrorKind::InvalidInput
     );
     ax_assert_eq!(
         rename(&mut device, &mut fs, "/", "/cov/sub/root-move")
             .unwrap_err()
-            .code,
-        Errno::EINVAL
+            .kind(),
+        Ext4ErrorKind::InvalidInput
     );
     mkdir(&mut device, &mut fs, "/cov/sub/replace-empty-src").unwrap();
     mkdir(&mut device, &mut fs, "/cov/sub/replace-empty-dst").unwrap();
@@ -2790,14 +2790,14 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     ax_assert_eq!(
         truncate(&mut device, &mut fs, "/cov/sub/missing", 1)
             .unwrap_err()
-            .code,
-        Errno::ENOENT
+            .kind(),
+        Ext4ErrorKind::NotFound
     );
     ax_assert_eq!(
         write_file(&mut device, &mut fs, "/cov/sub/missing", 0, b"x")
             .unwrap_err()
-            .code,
-        Errno::ENOENT
+            .kind(),
+        Ext4ErrorKind::NotFound
     );
 
     let mut api_file = rsext4::api::open(&mut device, &mut fs, "/cov/sub/api", true).unwrap();
@@ -2827,7 +2827,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         Ok(_) => panic!("opening a missing file without create should fail"),
         Err(error) => error,
     };
-    ax_assert_eq!(open_error.code, Errno::ENOENT);
+    ax_assert_eq!(open_error.kind(), Ext4ErrorKind::NotFound);
 
     delete_file(&mut fs, &mut device, "/cov/sub/api").unwrap();
     delete_file(&mut fs, &mut device, "/cov/sub/noatime").unwrap();
@@ -2860,40 +2860,25 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
 
 #[axtest]
 fn rsext4_bitmap_error_mapping_rules_hold() {
-    use rsext4::{Errno, bitmap::BitmapError, bmalloc::map_bitmap_error};
+    use rsext4::{Ext4ErrorKind, bitmap::BitmapError, bmalloc::map_bitmap_error};
 
     ax_assert_eq!(
-        map_bitmap_error(BitmapError::IndexOutOfRange).code,
-        Errno::EINVAL
+        map_bitmap_error(BitmapError::IndexOutOfRange).kind(),
+        Ext4ErrorKind::InvalidInput
     );
     ax_assert_eq!(
-        map_bitmap_error(BitmapError::AlreadyAllocated).code,
-        Errno::EEXIST
+        map_bitmap_error(BitmapError::AlreadyAllocated).kind(),
+        Ext4ErrorKind::AlreadyExists
     );
     ax_assert_eq!(
-        map_bitmap_error(BitmapError::AlreadyFree).code,
-        Errno::ENOENT
+        map_bitmap_error(BitmapError::AlreadyFree).kind(),
+        Ext4ErrorKind::NotFound
     );
 }
 
 #[axtest]
 fn rsext4_bmalloc_type_conversions_and_validation_hold() {
     ax_assert!(rsext4::bmalloc::bmalloc_type_conversions_and_validation_rules_hold_for_test());
-}
-
-#[axtest]
-fn rsext4_errno_additional_codes_hold() {
-    use rsext4::Errno;
-
-    // Test additional errno codes
-    ax_assert_eq!(Errno::EEXIST.as_i32(), 17);
-    ax_assert_eq!(Errno::ENOENT.as_i32(), 2);
-    ax_assert_eq!(Errno::EACCES.as_i32(), 13);
-    ax_assert_eq!(Errno::EBUSY.as_i32(), 16);
-    ax_assert_eq!(Errno::ENOTDIR.as_i32(), 20);
-    ax_assert_eq!(Errno::EISDIR.as_i32(), 21);
-    ax_assert_eq!(Errno::EFBIG.as_i32(), 27);
-    ax_assert_eq!(Errno::ENOSPC.as_i32(), 28);
 }
 
 #[axtest]

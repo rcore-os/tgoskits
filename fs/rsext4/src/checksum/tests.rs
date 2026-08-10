@@ -1,12 +1,11 @@
 use super::*;
 use crate::{
-    BLOCK_SIZE,
+    BLOCK_SIZE, Ext4ErrorKind,
     bmalloc::InodeNumber,
     crc32c::ext4_crc32c_seed_from_superblock,
     disknode::Ext4Inode,
     endian::DiskFormat,
     entries::{Ext4DirEntryTail, Ext4DxEntry},
-    error::Errno,
     jbd2::jbdstruct::*,
     superblock::Ext4Superblock,
 };
@@ -80,7 +79,7 @@ fn superblock_checksum_round_trips_and_corruption_returns_euclean() {
     let mut corrupted = sb;
     corrupted.s_free_blocks_count_lo ^= 1;
     let err = corrupted.verify_superblock().unwrap_err();
-    assert_eq!(err.code, Errno::EUCLEAN);
+    assert_eq!(err.kind(), Ext4ErrorKind::ChecksumMismatch);
 }
 
 #[test]

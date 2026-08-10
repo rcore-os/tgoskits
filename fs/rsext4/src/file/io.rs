@@ -52,7 +52,7 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
 
     // ext4 logical block numbers are u32; reject sizes that need more blocks.
     if new_blocks > u32::MAX as u64 {
-        return Err(Ext4Error::new(Errno::EFBIG));
+        return Err(Ext4Error::file_too_large());
     }
 
     // Extent-backed files handle sparse growth and extent-aware shrinking here.
@@ -417,7 +417,7 @@ pub fn read_inode_data_into<B: BlockIo + crate::runtime::Clock>(
                 let phys = run.physical_start.checked_add(run_block_offset)?;
                 let run_bytes = BLOCK_SIZE
                     .checked_mul(part_blocks as usize)
-                    .ok_or_else(|| Ext4Error::from(Errno::EOVERFLOW))?;
+                    .ok_or_else(Ext4Error::overflow)?;
                 let mut run_buf = alloc::vec![0; run_bytes];
                 fs.datablock_cache
                     .read_run(device, phys, part_blocks, &mut run_buf)?;
@@ -469,7 +469,7 @@ fn copy_len_for_lbn(offset: u64, end: u64, lbn: u64) -> Ext4Result<usize> {
     let lbn_start = lbn.saturating_mul(block_bytes);
     let lbn_end = lbn_start.saturating_add(block_bytes);
     usize::try_from(core::cmp::min(end, lbn_end) - core::cmp::max(offset, lbn_start))
-        .map_err(|_| Ext4Error::from(Errno::EOVERFLOW))
+        .map_err(|_| Ext4Error::overflow())
 }
 
 pub fn write_file<B: BlockIo + crate::runtime::Clock>(
@@ -525,18 +525,11 @@ fn write_inode_block_data<B: BlockIo>(
         return Ok(());
     }
 
-    let src_off = usize::try_from(write_start - write.offset)
-        .map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?;
-    let dst_off = usize::try_from(write_start - block_start)
-        .map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?;
-    let len =
-        usize::try_from(write_end - write_start).map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?;
-    let src_end = src_off
-        .checked_add(len)
-        .ok_or_else(|| Ext4Error::from(Errno::EOVERFLOW))?;
-    let dst_end = dst_off
-        .checked_add(len)
-        .ok_or_else(|| Ext4Error::from(Errno::EOVERFLOW))?;
+    let src_off = usize::try_from(write_start - write.offset).map_err(|_| Ext4Error::overflow())?;
+    let dst_off = usize::try_from(write_start - block_start).map_err(|_| Ext4Error::overflow())?;
+    let len = usize::try_from(write_end - write_start).map_err(|_| Ext4Error::overflow())?;
+    let src_end = src_off.checked_add(len).ok_or_else(Ext4Error::overflow)?;
+    let dst_end = dst_off.checked_add(len).ok_or_else(Ext4Error::overflow)?;
 
     let full_block = dst_off == 0 && len == BLOCK_SIZE;
     if newly_allocated || full_block {
@@ -566,13 +559,13 @@ fn write_full_block_run<B: BlockIo>(
 ) -> Ext4Result<()> {
     let block_bytes = BLOCK_SIZE as u64;
     let src_off = usize::try_from(run_start_lbn.saturating_mul(block_bytes) - offset)
-        .map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?;
+        .map_err(|_| Ext4Error::overflow())?;
     let byte_len = BLOCK_SIZE
         .checked_mul(block_count as usize)
-        .ok_or_else(|| Ext4Error::from(Errno::EOVERFLOW))?;
+        .ok_or_else(Ext4Error::overflow)?;
     let src_end = src_off
         .checked_add(byte_len)
-        .ok_or_else(|| Ext4Error::from(Errno::EOVERFLOW))?;
+        .ok_or_else(Ext4Error::overflow)?;
     fs.datablock_cache
         .write_run(device, start_phys, block_count, &data[src_off..src_end])
 }
@@ -617,7 +610,7 @@ fn alloc_contiguous_run_best_effort<B: BlockIo>(
     loop {
         match fs.alloc_blocks(device, count) {
             Ok(blocks) => return Ok(blocks),
-            Err(err) if err.code == Errno::ENOSPC && count > 1 => {
+            Err(err) if err.kind() == Ext4ErrorKind::NoSpace && count > 1 => {
                 count = count.div_ceil(2);
             }
             Err(err) => return Err(err),
@@ -653,7 +646,7 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
     let start_lbn = offset / block_bytes;
     let end_lbn = (end - 1) / block_bytes;
     if end_lbn > u32::MAX as u64 {
-        return Err(Ext4Error::new(Errno::EFBIG));
+        return Err(Ext4Error::file_too_large());
     }
 
     // Non-extent files cannot grow through sparse writes in this implementation.
@@ -705,8 +698,7 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
                         .min(u32::MAX as u64) as u32;
                     let blocks = alloc_contiguous_run_best_effort(device, fs, requested)?;
                     let first_phys = *blocks.first().ok_or(Ext4Error::no_space())?;
-                    let run_len = u32::try_from(blocks.len())
-                        .map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?;
+                    let run_len = u32::try_from(blocks.len()).map_err(|_| Ext4Error::overflow())?;
 
                     {
                         let mut tree =

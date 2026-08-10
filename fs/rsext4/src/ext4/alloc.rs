@@ -12,8 +12,7 @@ impl Ext4FileSystem {
         }
 
         for (idx, desc) in self.group_descs.iter().enumerate() {
-            let group_idx =
-                BGIndex::new(u32::try_from(idx).map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?);
+            let group_idx = BGIndex::new(u32::try_from(idx).map_err(|_| Ext4Error::overflow())?);
             let free = desc.free_blocks_count();
 
             if free < count {
@@ -53,7 +52,7 @@ impl Ext4FileSystem {
             // immediately so that groups with consistent bitmaps are still tried.
             let alloc = match alloc_res {
                 Ok(a) => a,
-                Err(e) if e.code == Errno::ENOSPC => {
+                Err(e) if e.kind() == Ext4ErrorKind::NoSpace => {
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -122,8 +121,7 @@ impl Ext4FileSystem {
         // across mutable borrows of self later in the loop body.
         let mut group_meta: Vec<(BGIndex, AbsoluteBN, bool, Ext4GroupDesc)> = Vec::new();
         for (idx, desc) in self.group_descs.iter().enumerate() {
-            let group_idx =
-                BGIndex::new(u32::try_from(idx).map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?);
+            let group_idx = BGIndex::new(u32::try_from(idx).map_err(|_| Ext4Error::overflow())?);
             let free = desc.free_inodes_count();
             if free < count {
                 continue;
@@ -169,7 +167,7 @@ impl Ext4FileSystem {
                             &desc,
                         ) {
                             Ok(InodeAlloc { global_inode, .. }) => inodes.push(global_inode),
-                            Err(err) if err.code == Errno::ENOSPC => break,
+                            Err(err) if err.kind() == Ext4ErrorKind::NoSpace => break,
                             Err(err) => {
                                 alloc_error = Some(err);
                                 break;
@@ -307,7 +305,7 @@ impl Ext4FileSystem {
             .modify(block_dev, cache_key, bitmap_block, |data| {
                 free_ok = match self.block_allocator.free_block(data, block_in_group) {
                     Ok(()) => Ok(()),
-                    Err(err) if err.code == Errno::ENOENT => {
+                    Err(err) if err.kind() == Ext4ErrorKind::NotFound => {
                         did_free = false;
                         Ok(())
                     }
@@ -389,7 +387,7 @@ impl Ext4FileSystem {
             .modify(block_dev, cache_key, bitmap_block, |data| {
                 free_ok = match self.inode_allocator.free_inode(data, inode_in_group) {
                     Ok(()) => Ok(()),
-                    Err(err) if err.code == Errno::ENOENT => {
+                    Err(err) if err.kind() == Ext4ErrorKind::NotFound => {
                         did_free = false;
                         Ok(())
                     }

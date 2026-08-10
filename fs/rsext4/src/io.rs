@@ -111,7 +111,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
-    use crate::error::Errno;
+    use crate::Ext4ErrorKind;
 
     struct MemoryIo {
         data: Vec<u8>,
@@ -156,20 +156,20 @@ mod tests {
         assert_eq!(
             io.write_with_flags(&data, AbsoluteBN::new(0), 1, WriteFlags::FUA)
                 .expect_err("FUA requires an explicit backend implementation")
-                .code,
-            Errno::EOPNOTSUPP
+                .kind(),
+            Ext4ErrorKind::Unsupported
         );
         assert_eq!(
             io.barrier()
                 .expect_err("barrier requires an explicit backend implementation")
-                .code,
-            Errno::EOPNOTSUPP
+                .kind(),
+            Ext4ErrorKind::Unsupported
         );
         assert_eq!(
             io.discard(AbsoluteBN::new(0), 1)
                 .expect_err("discard requires an explicit backend implementation")
-                .code,
-            Errno::EOPNOTSUPP
+                .kind(),
+            Ext4ErrorKind::Unsupported
         );
         io.flush().expect("declared memory flush must succeed");
     }

@@ -8,9 +8,7 @@ use core::cell::OnceCell;
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
-use rsext4::{
-    Jbd2Dev, MountOptions, bmalloc::InodeNumber, error::Errno, superblock::Ext4Superblock,
-};
+use rsext4::{Jbd2Dev, MountOptions, bmalloc::InodeNumber, superblock::Ext4Superblock};
 
 use super::{Ext4Disk, Ext4Observer, Inode, util::into_vfs_err};
 use crate::{
@@ -127,7 +125,7 @@ impl Ext4Filesystem {
                 &mut Ext4Observer,
             ) {
                 Ok(fs) => (fs, dev, false),
-                Err(err) if err.code == Errno::EUCLEAN => {
+                Err(err) if err.is_corruption() => {
                     warn!(
                         "ext4 journal replay failed with EUCLEAN; retrying read-only without \
                          journal replay"
@@ -136,7 +134,7 @@ impl Ext4Filesystem {
                 }
                 Err(err) => return Err(into_vfs_err(err)),
             },
-            Err(err) if err.code == Errno::EUCLEAN => {
+            Err(err) if err.is_corruption() => {
                 warn!(
                     "ext4 superblock check failed with EUCLEAN; retrying read-only without \
                      journal replay"

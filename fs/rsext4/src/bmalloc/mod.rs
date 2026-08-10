@@ -5,7 +5,7 @@ use core::fmt;
 use crate::{
     bitmap::*,
     blockgroup_description::*,
-    error::{Errno, Ext4Error, Ext4Result},
+    error::{Ext4Error, Ext4Result},
     superblock::*,
 };
 
@@ -18,7 +18,7 @@ pub(crate) use error::map_bitmap_error;
 pub use inode::{InodeAlloc, InodeAllocator};
 
 fn overflow_error() -> Ext4Error {
-    Ext4Error::from(Errno::EOVERFLOW)
+    Ext4Error::overflow()
 }
 
 /// Zero-based block-group index.
@@ -257,11 +257,12 @@ impl fmt::Display for RelativeInodeIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Ext4ErrorKind;
 
     #[test]
     fn inode_number_rejects_zero() {
         let err = InodeNumber::new(0).unwrap_err();
-        assert_eq!(err.code, Errno::EINVAL);
+        assert_eq!(err.kind(), Ext4ErrorKind::InvalidInput);
     }
 
     #[test]
@@ -291,7 +292,7 @@ mod tests {
         let err = AbsoluteBN::new(u64::from(u32::MAX) + 1)
             .to_u32()
             .unwrap_err();
-        assert_eq!(err.code, Errno::EOVERFLOW);
+        assert_eq!(err.kind(), Ext4ErrorKind::Overflow);
     }
 }
 

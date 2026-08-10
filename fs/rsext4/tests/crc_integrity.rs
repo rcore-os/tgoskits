@@ -20,7 +20,7 @@ use rsext4::{
         ext4_superblock_csum32,
     },
     endian::DiskFormat,
-    error::{Errno, Ext4Error, Ext4Result},
+    error::{Ext4Error, Ext4Result},
     jbd2::jbdstruct::{
         JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_BLOCKTYPE_REVOKE, JBD2_FLAG_LAST_TAG, JBD2_FLAG_SAME_UUID,
         JBD2_MAGIC, JBD2_UUID_SIZE, JOURNAL_FILE_INODE, JournalBlockTagS, JournalHeaderS,
@@ -613,7 +613,7 @@ fn invalid_revoke_record_fails_recovery() {
         Ok(_) => panic!("invalid revoke block should fail recovery"),
         Err(err) => err,
     };
-    assert_eq!(err.code, Errno::EUCLEAN);
+    assert_eq!(err.kind(), Ext4ErrorKind::Corrupted);
 }
 
 #[test]
@@ -645,7 +645,7 @@ fn readonly_no_replay_mount_can_inspect_unrecoverable_journal() {
         Ok(_) => panic!("default mount should fail unrecoverable journal replay"),
         Err(err) => err,
     };
-    assert_eq!(err.code, Errno::EUCLEAN);
+    assert_eq!(err.kind(), Ext4ErrorKind::Corrupted);
 
     let mut readonly_dev = Jbd2Dev::initial_jbd2dev(0, device.clone(), false);
     let fs = mount_with_options(
@@ -726,7 +726,7 @@ fn replay_scan_is_bounded_by_journal_ring_length() {
         Ok(_) => panic!("cyclic journal scan should fail recovery"),
         Err(err) => err,
     };
-    assert_eq!(err.code, Errno::EUCLEAN);
+    assert_eq!(err.kind(), Ext4ErrorKind::Corrupted);
 }
 
 #[test]
@@ -872,7 +872,7 @@ fn corrupted_superblock_checksum_is_reported_as_euclean_on_mount() {
         Ok(_) => panic!("mount should fail on corrupted superblock CRC"),
         Err(err) => err,
     };
-    assert_eq!(err.code, Errno::EUCLEAN);
+    assert_eq!(err.kind(), Ext4ErrorKind::ChecksumMismatch);
 }
 
 #[test]
@@ -891,7 +891,7 @@ fn corrupted_group_descriptor_checksum_is_reported_as_euclean_on_mount() {
         Ok(_) => panic!("mount should fail on corrupted GDT CRC"),
         Err(err) => err,
     };
-    assert_eq!(err.code, Errno::EUCLEAN);
+    assert_eq!(err.kind(), Ext4ErrorKind::ChecksumMismatch);
 }
 
 #[test]
@@ -911,7 +911,7 @@ fn corrupted_block_bitmap_payload_is_reported_as_euclean_on_mount() {
         Ok(_) => panic!("mount should fail on corrupted bitmap payload"),
         Err(err) => err,
     };
-    assert_eq!(err.code, Errno::EUCLEAN);
+    assert_eq!(err.kind(), Ext4ErrorKind::ChecksumMismatch);
 }
 
 #[test]
