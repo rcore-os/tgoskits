@@ -15,9 +15,15 @@ use crate::{
     error::*,
     ext4::*,
     file::*,
+    io::WriteFlags,
     jbd2::jbdstruct::*,
     metadata::Ext4InodeMetadataUpdate,
 };
+
+/// Two's-complement JBD2 on-disk representation of a generic I/O abort.
+///
+/// This is a private wire-format value, not an OS errno exposed by the core.
+const JBD2_DISK_ERROR_IO: u32 = 0xffff_fffb;
 
 #[derive(Debug, Clone, Copy)]
 struct ReplayTag {
@@ -270,6 +276,19 @@ impl JBD2DEVSYSTEM {
         block_dev: &mut D,
         journal_blocks: &[AbsoluteBN],
     ) -> Ext4Result<()> {
+        self.write_journal_superblock_with_mapping_flags(
+            block_dev,
+            journal_blocks,
+            WriteFlags::METADATA,
+        )
+    }
+
+    fn write_journal_superblock_with_mapping_flags<D: FilesystemBlockIo>(
+        &mut self,
+        block_dev: &mut D,
+        journal_blocks: &[AbsoluteBN],
+        flags: WriteFlags,
+    ) -> Ext4Result<()> {
         let sb_block = self.journal_phys_block(journal_blocks, 0)?;
         let block_size = block_dev.block_size();
         if block_size < 1024 {
@@ -279,7 +298,23 @@ impl JBD2DEVSYSTEM {
         block_dev.read(&mut sb_data, sb_block, 1)?;
         jbd2_update_superblock_checksum(&mut self.jbd2_super_block);
         self.jbd2_super_block.to_disk_bytes(&mut sb_data[0..1024]);
-        block_dev.write(&sb_data, sb_block, 1)
+        block_dev.write_with_flags(&sb_data, sb_block, 1, flags)
+    }
+
+    /// Records the first runtime journal abort in the on-disk superblock.
+    pub(crate) fn record_abort_with_mapping<D: FilesystemBlockIo>(
+        &mut self,
+        block_dev: &mut D,
+        journal_blocks: &[AbsoluteBN],
+    ) -> Ext4Result<()> {
+        if self.jbd2_super_block.s_errno == 0 {
+            self.jbd2_super_block.s_errno = JBD2_DISK_ERROR_IO;
+        }
+        self.write_journal_superblock_with_mapping_flags(
+            block_dev,
+            journal_blocks,
+            WriteFlags::METADATA | WriteFlags::FUA,
+        )
     }
 
     /// Returns the next writable journal block using the journal inode mapping.

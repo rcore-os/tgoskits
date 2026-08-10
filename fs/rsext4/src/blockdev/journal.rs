@@ -34,6 +34,11 @@ struct ActiveJournalHandle {
     queue_snapshot: Vec<Jbd2Update>,
 }
 
+struct JournalAbortState {
+    cause: Ext4Error,
+    persistence_error: Option<Ext4Error>,
+}
+
 /// Block device proxy that optionally routes metadata writes through JBD2.
 pub struct Jbd2Dev<B: BlockIo> {
     _mode: u8,
@@ -43,7 +48,7 @@ pub struct Jbd2Dev<B: BlockIo> {
     system: Option<JBD2DEVSYSTEM>,
     journal_blocks: Vec<AbsoluteBN>,
     active_handle: Option<ActiveJournalHandle>,
-    abort_cause: Option<Ext4Error>,
+    abort_state: Option<JournalAbortState>,
 }
 
 impl<B: BlockIo> Jbd2Dev<B> {
@@ -226,7 +231,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             system: None,
             journal_blocks: Vec::new(),
             active_handle: None,
-            abort_cause: None,
+            abort_state: None,
         }
     }
 
@@ -252,17 +257,35 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.system.as_ref().map(|s| s.sequence)
     }
 
+    fn journal_abort_cause(&self) -> Option<Ext4Error> {
+        self.abort_state.as_ref().map(|state| state.cause)
+    }
+
     fn ensure_not_aborted(&self, operation: &'static str) -> Ext4Result<()> {
-        if self.abort_cause.is_some() {
+        if self.journal_abort_cause().is_some() {
             Err(Ext4Error::journal_aborted().with_operation(operation))
         } else {
             Ok(())
         }
     }
 
-    fn latch_abort(&mut self, cause: Ext4Error) {
-        if self.abort_cause.is_none() {
-            self.abort_cause = Some(cause);
+    fn abort_journal(&mut self, cause: Ext4Error) {
+        if self.journal_abort_cause().is_some() {
+            return;
+        }
+        self.abort_state = Some(JournalAbortState {
+            cause,
+            persistence_error: None,
+        });
+
+        let persistence_result = self
+            .system
+            .as_mut()
+            .map(|system| system.record_abort_with_mapping(&mut self.inner, &self.journal_blocks));
+        if let Some(Err(error)) = persistence_result
+            && let Some(state) = self.abort_state.as_mut()
+        {
+            state.persistence_error = Some(error);
         }
     }
 
@@ -275,12 +298,12 @@ impl<B: BlockIo> Jbd2Dev<B> {
         let committed = match result {
             Ok(committed) => committed,
             Err(error) => {
-                self.latch_abort(error);
+                self.abort_journal(error);
                 return Err(error);
             }
         };
         if committed && let Err(error) = self.inner.invalidate_cache() {
-            self.latch_abort(error);
+            self.abort_journal(error);
             return Err(error);
         }
         Ok(committed)
@@ -314,7 +337,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// writes when the filesystem advertises a journal but no journal state was
     /// installed.
     pub(crate) fn journal_replay_checked(&mut self) -> ReplayStatus {
-        if self.abort_cause.is_some() {
+        if self.abort_state.is_some() {
             return ReplayStatus::Incomplete;
         }
         if !self.journal_use {
@@ -322,7 +345,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
 
         let Some(jbd_sys) = self.system.as_mut() else {
-            self.latch_abort(
+            self.abort_journal(
                 Ext4Error::journal_aborted().with_operation("jbd2:replay_without_state"),
             );
             return ReplayStatus::Incomplete;
@@ -330,11 +353,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
         let status = jbd_sys.replay_with_mapping(&mut self.inner, &self.journal_blocks);
         if status == ReplayStatus::Incomplete {
-            self.latch_abort(Ext4Error::corrupted().with_operation("jbd2:replay"));
+            self.abort_journal(Ext4Error::corrupted().with_operation("jbd2:replay"));
             return status;
         }
         if let Err(error) = self.inner.invalidate_cache() {
-            self.latch_abort(error);
+            self.abort_journal(error);
             return ReplayStatus::Incomplete;
         }
         status
@@ -661,6 +684,8 @@ mod tests {
         data: Vec<u8>,
         fail_flush: bool,
         fail_write_block: Option<AbsoluteBN>,
+        fail_fua: bool,
+        fua_writes: usize,
     }
 
     impl MemBlockDev {
@@ -669,6 +694,8 @@ mod tests {
                 data: vec![0; blocks * BLOCK_SIZE],
                 fail_flush: false,
                 fail_write_block: None,
+                fail_fua: false,
+                fua_writes: 0,
             }
         }
 
@@ -677,6 +704,8 @@ mod tests {
                 data: vec![0; blocks * BLOCK_SIZE],
                 fail_flush: true,
                 fail_write_block: None,
+                fail_fua: false,
+                fua_writes: 0,
             }
         }
 
@@ -685,6 +714,18 @@ mod tests {
                 data: vec![0; blocks * BLOCK_SIZE],
                 fail_flush: false,
                 fail_write_block: Some(block),
+                fail_fua: false,
+                fua_writes: 0,
+            }
+        }
+
+        fn with_failing_flush_and_fua(blocks: usize) -> Self {
+            Self {
+                data: vec![0; blocks * BLOCK_SIZE],
+                fail_flush: true,
+                fail_write_block: None,
+                fail_fua: true,
+                fua_writes: 0,
             }
         }
     }
@@ -825,6 +866,22 @@ mod tests {
             Ok(())
         }
 
+        fn write_with_flags(
+            &mut self,
+            buffer: &[u8],
+            block_id: crate::io::SectorId,
+            count: u32,
+            flags: crate::WriteFlags,
+        ) -> Ext4Result<()> {
+            if flags.contains(crate::WriteFlags::FUA) {
+                self.fua_writes += 1;
+                if self.fail_fua {
+                    return Err(Ext4Error::io());
+                }
+            }
+            self.write(buffer, block_id, count)
+        }
+
         fn flush(&mut self) -> Ext4Result<()> {
             if core::mem::take(&mut self.fail_flush) {
                 Err(Ext4Error::io())
@@ -844,6 +901,8 @@ mod tests {
                 read_only: { false },
 
                 flush: true,
+
+                fua: true,
 
                 ..crate::io::DeviceCapabilities::default()
             }
@@ -932,6 +991,43 @@ mod tests {
             .expect_err("journal-enabled unmount cannot claim a successful commit without state");
 
         assert_eq!(error.kind(), crate::Ext4ErrorKind::JournalAborted);
+    }
+
+    #[test]
+    fn abort_record_failure_does_not_replace_first_commit_error() {
+        let mut dev =
+            Jbd2Dev::initial_jbd2dev(0, MemBlockDev::with_failing_flush_and_fua(256), true);
+        dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
+            .expect("install checksummed journal");
+        dev.write_block(AbsoluteBN::new(10), true)
+            .expect("queue metadata update");
+
+        let first_error = dev
+            .umount_commit()
+            .expect_err("commit failure must remain the primary error");
+        assert_eq!(first_error.kind(), crate::Ext4ErrorKind::Io);
+        let state = dev.abort_state.as_ref().expect("journal must be aborted");
+        assert_eq!(state.cause.kind(), crate::Ext4ErrorKind::Io);
+        assert_eq!(
+            state.persistence_error.map(Ext4Error::kind),
+            Some(crate::Ext4ErrorKind::Io)
+        );
+        assert_eq!(dev.inner._device().fua_writes, 1);
+
+        let later_error = dev
+            .umount_commit()
+            .expect_err("the failed abort record must not allow a retry");
+        assert_eq!(later_error.kind(), crate::Ext4ErrorKind::JournalAborted);
+
+        let inner = dev.into_inner();
+        let journal_offset = 128 * BLOCK_SIZE;
+        let recorded = JournalSuperBllockS::from_disk_bytes(
+            &inner.data[journal_offset..journal_offset + 1024],
+        );
+        assert_eq!(
+            recorded.s_errno, 0,
+            "a failed FUA write must not claim the abort was recorded"
+        );
     }
 
     #[test]
@@ -1283,6 +1379,44 @@ mod tests {
             .set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
             .expect_err("reinstalling state must not clear an abort on the same mount object");
         assert_eq!(reinstall_error.kind(), crate::Ext4ErrorKind::JournalAborted);
+    }
+
+    #[test]
+    fn commit_failure_persists_recorded_error_with_fua() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::with_failing_flush(256), true);
+        let superblock = csum_v3_superblock();
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
+            .expect("install checksummed journal");
+        dev.write_block(AbsoluteBN::new(10), true)
+            .expect("queue metadata update");
+
+        let first_error = dev
+            .umount_commit()
+            .expect_err("first failed commit must propagate the device error");
+        assert_eq!(first_error.kind(), crate::Ext4ErrorKind::Io);
+
+        let inner = dev.into_inner();
+        assert_eq!(inner.fua_writes, 1, "abort errno must use one FUA write");
+        let journal_offset = 128 * BLOCK_SIZE;
+        let recorded = JournalSuperBllockS::from_disk_bytes(
+            &inner.data[journal_offset..journal_offset + 1024],
+        );
+        assert_eq!(
+            recorded.s_errno, 0xffff_fffb,
+            "JBD2 stores the private generic I/O abort wire code"
+        );
+        assert_eq!(
+            &inner.data[journal_offset + 32..journal_offset + 36],
+            &[0xff, 0xff, 0xff, 0xfb]
+        );
+        assert_eq!(recorded.s_sequence, superblock.s_sequence);
+        assert_eq!(recorded.s_start, superblock.s_first);
+
+        let mut remount = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        let error = remount
+            .set_journal_superblock(recorded, AbsoluteBN::new(128))
+            .expect_err("a later mount must reject the recorded journal error");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::JournalAborted);
     }
 
     #[test]
