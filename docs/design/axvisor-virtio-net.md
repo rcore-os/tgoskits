@@ -92,7 +92,7 @@ falls back to a guessed MMIO address, IRQ, MAC address, or host interface.
   AxVisor (the VM TOML files intentionally reference these generated files):
 
   ```bash
-  scripts/axvisor/build-virtio-net-peer.sh
+  apps/arceos/virtio-net-peer/run.sh
   ```
 
   Set `LLVM_OBJCOPY` when the toolchain is installed outside the pinned Rust

@@ -77,11 +77,8 @@ ax-std = { workspace = true, default-features = false, features = [
 axvm = { workspace = true, default-features = false, features = ["tls"] }
 axvmconfig = { workspace = true, default-features = false }
 axvm-types.workspace = true
-axaddrspace.workspace = true
 axdevice.workspace = true
 axdevice_base.workspace = true
-ax-kspin.workspace = true
-ax-memory-addr.workspace = true
 axvirtio-common.workspace = true
 axvirtio-net.workspace = true
 toml.workspace = true

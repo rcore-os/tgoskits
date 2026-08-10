@@ -29,6 +29,6 @@ pub use config::VirtioConfig;
 pub use constants::*;
 pub use device_type::VirtioDeviceID;
 pub use error::{VirtioError, VirtioResult};
-pub use memory::{AddressSpaceMemory, GuestMemory};
+pub use memory::{AddressSpaceMemory, GuestMemory, NoGuestMemoryAccessor};
 pub use mmio::state::{MmioReadOutcome, MmioWriteAction, VirtioMmioState};
 pub use queue::{DescriptorChain, VirtioQueue};

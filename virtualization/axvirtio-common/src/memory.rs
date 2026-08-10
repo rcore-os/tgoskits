@@ -1,5 +1,6 @@
 //! Scoped guest-memory operations used by VirtIO queues.
 
+use ax_memory_addr::PhysAddr;
 use axaddrspace::GuestMemoryAccessor;
 use axvm_types::GuestPhysAddr;
 
@@ -12,6 +13,17 @@ pub trait GuestMemory {
 
     /// Writes bytes starting at `guest_addr`.
     fn write(&mut self, guest_addr: GuestPhysAddr, data: &[u8]) -> VirtioResult<()>;
+}
+
+/// Placeholder accessor for runtimes that provide guest memory only through
+/// a scoped [`GuestMemory`] capability at queue-processing time.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoGuestMemoryAccessor;
+
+impl GuestMemoryAccessor for NoGuestMemoryAccessor {
+    fn translate_and_get_limit(&self, _guest_addr: GuestPhysAddr) -> Option<(PhysAddr, usize)> {
+        None
+    }
 }
 
 /// Adapter for existing address-space accessors used by host tests and

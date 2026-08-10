@@ -2,16 +2,14 @@
 
 use alloc::{collections::VecDeque, format, string::String, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
-use ax_kspin::SpinNoIrq;
-use ax_memory_addr::PhysAddr;
-use axaddrspace::GuestMemoryAccessor;
 use axdevice::*;
 use axdevice_base::{
     BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DmaGrant, InterruptSharing,
     InterruptTrigger, IrqLine, Resource,
 };
-use axvirtio_common::{GuestMemory, VirtioError};
+use axvirtio_common::{GuestMemory, NoGuestMemoryAccessor, VirtioError};
 use axvirtio_net::{
     DeviceEvent, NetworkBackend, NetworkBackendError, RxOutcome, VirtioMmioNetDevice,
     VirtioNetConfig,
@@ -27,7 +25,7 @@ const MMIO_SIZE: u64 = 0x200;
 const INGRESS_CAPACITY: usize = 64;
 
 static NEXT_PORT_ID: AtomicUsize = AtomicUsize::new(0);
-static INTERNAL_SWITCH: SpinNoIrq<Option<Arc<VirtualSwitch>>> = SpinNoIrq::new(None);
+static INTERNAL_SWITCH: Mutex<Option<Arc<VirtualSwitch>>> = Mutex::new(None);
 
 /// Catalog entry for `[[devices.virtual]] model = "virtio-net"`.
 pub const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
@@ -164,7 +162,7 @@ impl DeviceModel for VirtioNetModel {
                 size as usize,
                 backend,
                 VirtioNetConfig::new(self.guest_mac),
-                NoGuestMemory,
+                NoGuestMemoryAccessor,
             )
             .map_err(|error| DeviceManagerError::InvalidConfig {
                 operation: "construct virtio-net device",
@@ -194,7 +192,9 @@ impl DeviceModel for VirtioNetModel {
 }
 
 fn internal_switch() -> Arc<VirtualSwitch> {
-    let mut slot = INTERNAL_SWITCH.lock();
+    let mut slot = INTERNAL_SWITCH
+        .lock()
+        .expect("virtio-net switch mutex poisoned");
     slot.get_or_insert_with(VirtualSwitch::new).clone()
 }
 
@@ -214,7 +214,7 @@ impl NetworkBackend for SwitchBackend {
 struct PortEndpoint {
     id: SwitchPortId,
     mac: [u8; 6],
-    ingress: SpinNoIrq<VecDeque<alloc::vec::Vec<u8>>>,
+    ingress: Mutex<VecDeque<alloc::vec::Vec<u8>>>,
     active: AtomicBool,
     wake_target: Arc<dyn WakeTarget>,
     _switch: Arc<VirtualSwitch>,
@@ -252,7 +252,7 @@ impl PortEndpoint {
         Arc::new(Self {
             id,
             mac,
-            ingress: SpinNoIrq::new(VecDeque::new()),
+            ingress: Mutex::new(VecDeque::new()),
             active: AtomicBool::new(false),
             wake_target,
             _switch: switch,
@@ -264,11 +264,17 @@ impl PortEndpoint {
     }
 
     fn pop_ingress(&self) -> Option<alloc::vec::Vec<u8>> {
-        self.ingress.lock().pop_front()
+        self.lock_ingress().pop_front()
     }
 
     fn requeue_ingress(&self, frame: alloc::vec::Vec<u8>) {
-        self.ingress.lock().push_front(frame);
+        self.lock_ingress().push_front(frame);
+    }
+
+    fn lock_ingress(&self) -> MutexGuard<'_, VecDeque<alloc::vec::Vec<u8>>> {
+        self.ingress
+            .lock()
+            .expect("virtio-net ingress mutex poisoned")
     }
 }
 
@@ -286,7 +292,7 @@ impl SwitchPort for PortEndpoint {
     }
 
     fn deliver_ingress(&self, frame: &[u8]) -> bool {
-        let mut ingress = self.ingress.lock();
+        let mut ingress = self.lock_ingress();
         if !self.is_active() || ingress.len() >= INGRESS_CAPACITY {
             return false;
         }
@@ -296,20 +302,6 @@ impl SwitchPort for PortEndpoint {
 
     fn notify_ingress(&self) {
         self.wake_target.notify();
-    }
-}
-
-struct NoGuestMemory;
-
-impl Clone for NoGuestMemory {
-    fn clone(&self) -> Self {
-        Self
-    }
-}
-
-impl GuestMemoryAccessor for NoGuestMemory {
-    fn translate_and_get_limit(&self, _guest_addr: GuestPhysAddr) -> Option<(PhysAddr, usize)> {
-        None
     }
 }
 
@@ -333,7 +325,7 @@ impl GuestMemory for ScopedDeviceMemory<'_> {
 }
 
 struct VirtioNetRuntimeDevice {
-    model: Arc<VirtioMmioNetDevice<SwitchBackend, NoGuestMemory>>,
+    model: Arc<VirtioMmioNetDevice<SwitchBackend, NoGuestMemoryAccessor>>,
     irq: IrqLine,
     grant: DmaGrant,
     endpoint: Arc<PortEndpoint>,

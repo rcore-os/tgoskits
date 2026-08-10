@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-workspace=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+workspace=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 cd "$workspace"
 
 objcopy="${LLVM_OBJCOPY:-}"

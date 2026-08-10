@@ -10,11 +10,11 @@ keywords = ["virtio", "hypervisor", "no_std", "arceos"]
 categories = ["no-std", "embedded", "hardware-support"]
 
 [dependencies]
+ax-memory-addr.workspace = true
 axaddrspace.workspace = true
 axvm-types.workspace = true
 ax-kspin.workspace = true
 log.workspace = true
 
 [dev-dependencies]
-ax-memory-addr.workspace = true
 ax-kspin = { workspace = true, features = ["host-test"] }
