@@ -243,7 +243,12 @@ mod tests {
     }
 
     impl BlockIo for MemBlockDev {
-        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+        fn write(
+            &mut self,
+            buffer: &[u8],
+            block_id: crate::io::SectorId,
+            count: u32,
+        ) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
                 return Err(Ext4Error::buffer_too_small(buffer.len(), required));
@@ -254,7 +259,12 @@ mod tests {
             Ok(())
         }
 
-        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+        fn read(
+            &mut self,
+            buffer: &mut [u8],
+            block_id: crate::io::SectorId,
+            count: u32,
+        ) -> Ext4Result<()> {
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
                 return Err(Ext4Error::buffer_too_small(buffer.len(), required));

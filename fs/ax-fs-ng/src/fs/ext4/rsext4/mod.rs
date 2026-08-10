@@ -7,9 +7,7 @@ use alloc::boxed::Box;
 pub use fs::*;
 pub use inode::*;
 use rsext4::{
-    BlockIo, DeviceCapabilities, DeviceGeometry, Event, Observer,
-    bmalloc::AbsoluteBN,
-    config::BLOCK_SIZE,
+    BlockIo, DeviceCapabilities, DeviceGeometry, Event, Observer, SectorId,
     disknode::Ext4Timestamp,
     error::{Ext4Error, Ext4Result},
 };
@@ -34,44 +32,34 @@ impl Ext4Disk {
 }
 
 impl BlockIo for Ext4Disk {
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+    fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
         let dev_block = self.0.block_size();
-        if !BLOCK_SIZE.is_multiple_of(dev_block) {
-            return Err(Ext4Error::invalid_input());
-        }
-        let factor = (BLOCK_SIZE / dev_block) as u64;
-        let required_size = BLOCK_SIZE * count as usize;
+        let required_size = dev_block
+            .checked_mul(count as usize)
+            .ok_or_else(Ext4Error::overflow)?;
         if buffer.len() < required_size {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
-        let start_block = block_id.raw() * factor;
         self.0
-            .write_block(start_block, &buffer[..required_size])
+            .write_block(sector.raw(), &buffer[..required_size])
             .map_err(|_| Ext4Error::io())
     }
 
-    fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+    fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()> {
         let dev_block = self.0.block_size();
-        if !BLOCK_SIZE.is_multiple_of(dev_block) {
-            return Err(Ext4Error::invalid_input());
-        }
-        let factor = (BLOCK_SIZE / dev_block) as u64;
-        let required_size = BLOCK_SIZE * count as usize;
+        let required_size = dev_block
+            .checked_mul(count as usize)
+            .ok_or_else(Ext4Error::overflow)?;
         if buffer.len() < required_size {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
-        let start_block = block_id.raw() * factor;
         self.0
-            .read_block(start_block, &mut buffer[..required_size])
+            .read_block(sector.raw(), &mut buffer[..required_size])
             .map_err(|_| Ext4Error::io())
     }
 
     fn geometry(&self) -> DeviceGeometry {
-        let device_bytes = self
-            .0
-            .num_blocks()
-            .saturating_mul(self.0.block_size() as u64);
-        DeviceGeometry::new(BLOCK_SIZE as u32, device_bytes / BLOCK_SIZE as u64)
+        DeviceGeometry::new(self.0.block_size() as u32, self.0.num_blocks())
     }
 
     fn capabilities(&self) -> DeviceCapabilities {

@@ -19,6 +19,17 @@ impl Ext4Superblock {
         1024 << self.s_log_block_size
     }
 
+    /// Returns a checked filesystem block size supported by this core.
+    pub fn checked_block_size(&self) -> Ext4Result<u32> {
+        let block_size = 1024u32
+            .checked_shl(self.s_log_block_size)
+            .ok_or_else(Ext4Error::bad_superblock)?;
+        if !(1024..=BLOCK_SIZE_U32).contains(&block_size) || !block_size.is_power_of_two() {
+            return Err(Ext4Error::bad_superblock().with_operation("superblock:block_size"));
+        }
+        Ok(block_size)
+    }
+
     /// Returns the 64-bit block count.
     pub fn blocks_count(&self) -> u64 {
         (self.s_blocks_count_hi as u64) << 32 | self.s_blocks_count_lo as u64

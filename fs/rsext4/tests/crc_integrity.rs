@@ -67,25 +67,25 @@ impl SharedCrcDevice {
         self.data.borrow_mut()[offset..offset + bytes.len()].copy_from_slice(bytes);
     }
 
-    fn read_block_bytes(&self, block_id: u64) -> Vec<u8> {
-        self.read_bytes(block_id as usize * BLOCK_SIZE, BLOCK_SIZE)
+    fn read_block_bytes(&self, sector: u64) -> Vec<u8> {
+        self.read_bytes(sector as usize * BLOCK_SIZE, BLOCK_SIZE)
     }
 
-    fn write_block_bytes(&self, block_id: u64, bytes: &[u8]) {
-        self.write_bytes(block_id as usize * BLOCK_SIZE, bytes);
+    fn write_block_bytes(&self, sector: u64, bytes: &[u8]) {
+        self.write_bytes(sector as usize * BLOCK_SIZE, bytes);
     }
 }
 
 impl BlockIo for SharedCrcDevice {
-    fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-        if self.blocked_read_block.get() == Some(block_id.raw()) {
+    fn read(&mut self, buffer: &mut [u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
+        if self.blocked_read_block.get() == Some(sector.raw()) {
             return Err(Ext4Error::io());
         }
-        let start = block_id.as_usize()? * self.block_size as usize;
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.borrow().len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 (self.data.borrow().len() / self.block_size as usize) as u64,
             ));
         }
@@ -93,8 +93,8 @@ impl BlockIo for SharedCrcDevice {
         Ok(())
     }
 
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-        if self.failing_write_block.get() == Some(block_id.raw()) {
+    fn write(&mut self, buffer: &[u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
+        if self.failing_write_block.get() == Some(sector.raw()) {
             let attempt = self.journal_superblock_write_attempts.get() + 1;
             self.journal_superblock_write_attempts.set(attempt);
             if self.failing_write_attempts.borrow_mut().remove(&attempt) {
@@ -104,11 +104,11 @@ impl BlockIo for SharedCrcDevice {
         if self.fail_writes.get() {
             return Err(Ext4Error::io());
         }
-        let start = block_id.as_usize()? * self.block_size as usize;
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.borrow().len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 (self.data.borrow().len() / self.block_size as usize) as u64,
             ));
         }

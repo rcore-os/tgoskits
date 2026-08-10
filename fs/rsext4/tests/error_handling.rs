@@ -18,7 +18,7 @@ struct ErrorMockDevice {
     // Failure injection toggles.
     fail_on_read: bool,
     fail_on_write: bool,
-    fail_on_specific_block: Option<AbsoluteBN>,
+    fail_on_specific_block: Option<SectorId>,
     fail_after_bytes: Option<usize>,
     bytes_written: usize,
     now: Cell<i64>,
@@ -40,22 +40,22 @@ impl ErrorMockDevice {
 }
 
 impl BlockIo for ErrorMockDevice {
-    fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+    fn read(&mut self, buffer: &mut [u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
         if self.fail_on_read {
             return Err(Ext4Error::io());
         }
 
         if let Some(fail_block) = self.fail_on_specific_block
-            && block_id == fail_block
+            && sector == fail_block
         {
             return Err(Ext4Error::corrupted());
         }
 
-        let start = block_id.as_usize()? * self.block_size as usize;
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 (self.data.len() / self.block_size as usize) as u64,
             ));
         }
@@ -63,13 +63,13 @@ impl BlockIo for ErrorMockDevice {
         Ok(())
     }
 
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+    fn write(&mut self, buffer: &[u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
         if self.fail_on_write {
             return Err(Ext4Error::io());
         }
 
         if let Some(fail_block) = self.fail_on_specific_block
-            && block_id == fail_block
+            && sector == fail_block
         {
             return Err(Ext4Error::corrupted());
         }
@@ -81,11 +81,11 @@ impl BlockIo for ErrorMockDevice {
             }
         }
 
-        let start = block_id.as_usize()? * self.block_size as usize;
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 (self.data.len() / self.block_size as usize) as u64,
             ));
         }

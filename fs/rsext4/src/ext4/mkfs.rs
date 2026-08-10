@@ -403,22 +403,20 @@ pub(crate) fn write_superblock<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     sb: &Ext4Superblock,
 ) -> Ext4Result<()> {
-    // The primary ext4 superblock always starts at byte offset 1024.
-    if BLOCK_SIZE == 1024 {
-        block_dev.read_block(AbsoluteBN::from(1u32))?;
-        let buffer = block_dev.buffer_mut();
-        sb.to_disk_bytes(&mut buffer[0..SUPERBLOCK_SIZE]);
-        block_dev.write_block(AbsoluteBN::from(1u32), true)?;
-    } else {
-        block_dev.read_block(AbsoluteBN::from(0u32))?;
-        let buffer = block_dev.buffer_mut();
-        let offset = Ext4Superblock::SUPERBLOCK_OFFSET as usize;
-        let end = offset + Ext4Superblock::SUPERBLOCK_SIZE;
-        sb.to_disk_bytes(&mut buffer[offset..end]);
-        // Force the write out immediately so later mount-time reads never see a
-        // stale primary superblock during crash recovery.
-        block_dev.write_block(AbsoluteBN::from(0u32), true)?;
+    let block_size = block_dev.block_size() as usize;
+    let byte_offset = Ext4Superblock::SUPERBLOCK_OFFSET as usize;
+    let block = AbsoluteBN::new((byte_offset / block_size) as u64);
+    let in_block = byte_offset % block_size;
+    let end = in_block
+        .checked_add(Ext4Superblock::SUPERBLOCK_SIZE)
+        .ok_or_else(Ext4Error::overflow)?;
+    if end > block_size {
+        return Err(Ext4Error::bad_superblock().with_operation("superblock:crosses_block"));
     }
+
+    block_dev.read_block(block)?;
+    sb.to_disk_bytes(&mut block_dev.buffer_mut()[in_block..end]);
+    block_dev.write_block(block, true)?;
 
     Ok(())
 }
@@ -427,21 +425,12 @@ pub(crate) fn write_superblock<B: BlockIo>(
 pub(crate) fn read_superblock<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
 ) -> Ext4Result<Ext4Superblock> {
-    // Read the containing filesystem block, then slice out the 1024-byte
-    // superblock payload.
-    if BLOCK_SIZE == 1024 {
-        block_dev.read_block(AbsoluteBN::from(1u32))?;
-        let buffer = block_dev.buffer();
-        let sb = Ext4Superblock::from_disk_bytes(&buffer[0..SUPERBLOCK_SIZE]);
-        Ok(sb)
-    } else {
-        block_dev.read_block(AbsoluteBN::from(0u32))?;
-        let buffer = block_dev.buffer();
-        let offset = Ext4Superblock::SUPERBLOCK_OFFSET as usize;
-        let end = offset + Ext4Superblock::SUPERBLOCK_SIZE;
-        let sb = Ext4Superblock::from_disk_bytes(&buffer[offset..end]);
-        Ok(sb)
-    }
+    let mut bytes = [0; SUPERBLOCK_SIZE];
+    block_dev.read_device_bytes(SUPERBLOCK_OFFSET, &mut bytes)?;
+    let superblock = Ext4Superblock::from_disk_bytes(&bytes);
+    let block_size = superblock.checked_block_size()?;
+    block_dev.set_filesystem_block_size(block_size as usize)?;
+    Ok(superblock)
 }
 
 /// Writes redundant GDT copies to sparse-super backup groups.

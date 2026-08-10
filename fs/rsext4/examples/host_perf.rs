@@ -8,8 +8,8 @@ use std::{
 };
 
 use rsext4::{
-    BLOCK_SIZE, BlockIo, Ext4Error, Ext4Result, Ext4Timestamp, Jbd2Dev, bmalloc::AbsoluteBN,
-    mkfile, mkfs, mount, read_file, umount, write_file,
+    BLOCK_SIZE, BlockIo, Ext4Error, Ext4Result, Ext4Timestamp, Jbd2Dev, mkfile, mkfs, mount,
+    read_file, umount, write_file,
 };
 
 const DEFAULT_BYTES: usize = 20 * 1024 * 1024;
@@ -32,27 +32,27 @@ impl MemoryDevice {
 }
 
 impl BlockIo for MemoryDevice {
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-        let start = block_id.as_usize()? * BLOCK_SIZE;
+    fn write(&mut self, buffer: &[u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
+        let start = sector.as_usize()? * BLOCK_SIZE;
         let total_blocks = self.geometry().block_count;
         let end = start
             .checked_add(buffer.len())
             .ok_or_else(Ext4Error::invalid_input)?;
         let dst = self.bytes.get_mut(start..end).ok_or_else(|| {
-            Ext4Error::block_out_of_range(block_id.to_u32().unwrap_or(u32::MAX), total_blocks)
+            Ext4Error::block_out_of_range(sector.to_u32().unwrap_or(u32::MAX), total_blocks)
         })?;
         dst.copy_from_slice(buffer);
         Ok(())
     }
 
-    fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-        let start = block_id.as_usize()? * BLOCK_SIZE;
+    fn read(&mut self, buffer: &mut [u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
+        let start = sector.as_usize()? * BLOCK_SIZE;
         let total_blocks = self.geometry().block_count;
         let end = start
             .checked_add(buffer.len())
             .ok_or_else(Ext4Error::invalid_input)?;
         let src = self.bytes.get(start..end).ok_or_else(|| {
-            Ext4Error::block_out_of_range(block_id.to_u32().unwrap_or(u32::MAX), total_blocks)
+            Ext4Error::block_out_of_range(sector.to_u32().unwrap_or(u32::MAX), total_blocks)
         })?;
         buffer.copy_from_slice(src);
         Ok(())

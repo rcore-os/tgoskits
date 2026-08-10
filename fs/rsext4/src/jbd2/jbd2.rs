@@ -235,9 +235,9 @@ impl JBD2DEVSYSTEM {
         Some(blocks)
     }
 
-    fn write_journal_superblock_with_mapping<B: BlockIo>(
+    fn write_journal_superblock_with_mapping<D: FilesystemBlockIo>(
         &mut self,
-        block_dev: &mut B,
+        block_dev: &mut D,
         journal_blocks: &[AbsoluteBN],
     ) -> Ext4Result<()> {
         let sb_block = self.journal_phys_block(journal_blocks, 0)?;
@@ -248,15 +248,10 @@ impl JBD2DEVSYSTEM {
         block_dev.write(&sb_data, sb_block, 1)
     }
 
-    /// Returns the next writable journal block, handling wrap-around.
-    pub fn set_next_log_block<B: BlockIo>(&mut self, block_dev: &mut B) -> Ext4Result<AbsoluteBN> {
-        self.set_next_log_block_with_mapping(block_dev, &[])
-    }
-
     /// Returns the next writable journal block using the journal inode mapping.
-    pub(crate) fn set_next_log_block_with_mapping<B: BlockIo>(
+    pub(crate) fn set_next_log_block_with_mapping<D: FilesystemBlockIo>(
         &mut self,
-        block_dev: &mut B,
+        block_dev: &mut D,
         journal_blocks: &[AbsoluteBN],
     ) -> Ext4Result<AbsoluteBN> {
         let last_rel = self
@@ -303,15 +298,10 @@ impl JBD2DEVSYSTEM {
             Ok(target_use)
         }
     }
-    /// Commits the currently queued metadata updates as one transaction.
-    pub fn commit_transaction<B: BlockIo>(&mut self, block_dev: &mut B) -> Ext4Result<bool> {
-        self.commit_transaction_with_mapping(block_dev, &[])
-    }
-
     /// Commits the currently queued metadata updates using the journal inode mapping.
-    pub(crate) fn commit_transaction_with_mapping<B: BlockIo>(
+    pub(crate) fn commit_transaction_with_mapping<D: FilesystemBlockIo>(
         &mut self,
-        block_dev: &mut B,
+        block_dev: &mut D,
         journal_blocks: &[AbsoluteBN],
     ) -> Ext4Result<bool> {
         let tid = self.sequence;
@@ -436,9 +426,9 @@ impl JBD2DEVSYSTEM {
         Ok(true)
     }
 
-    fn replay_one_transaction<B: BlockIo>(
+    fn replay_one_transaction<D: FilesystemBlockIo>(
         &self,
-        block_dev: &mut B,
+        block_dev: &mut D,
         ring: &ReplayRing<'_>,
         start_rel: u32,
         expect_seq: u32,
@@ -611,9 +601,9 @@ impl JBD2DEVSYSTEM {
     }
 
     /// Replays committed transactions using the journal inode logical-block map.
-    pub(crate) fn replay_with_mapping<B: BlockIo>(
+    pub(crate) fn replay_with_mapping<D: FilesystemBlockIo>(
         &mut self,
-        block_dev: &mut B,
+        block_dev: &mut D,
         journal_blocks: &[AbsoluteBN],
     ) -> ReplayStatus {
         let mut journal_rel = self.jbd2_super_block.s_start;

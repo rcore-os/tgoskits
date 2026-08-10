@@ -2,7 +2,7 @@
 
 use alloc::{boxed::Box, vec::Vec};
 
-use super::cached_device::BlockDev;
+use super::{FilesystemBlockIo, cached_device::BlockDev};
 use crate::{
     bmalloc::AbsoluteBN,
     config::{BLOCK_SIZE, JBD2_BUFFER_MAX},
@@ -33,9 +33,10 @@ pub struct Jbd2Dev<B: BlockIo> {
 }
 
 impl<B: BlockIo> Jbd2Dev<B> {
-    fn enqueue_journal_update(
+    fn enqueue_journal_update<D: FilesystemBlockIo>(
         system: &mut JBD2DEVSYSTEM,
-        raw_dev: &mut B,
+        block_dev: &mut D,
+        journal_blocks: &[AbsoluteBN],
         update: Jbd2Update,
     ) -> Ext4Result<bool> {
         if let Some(existing) = system
@@ -49,7 +50,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
         let mut committed = false;
         if system.commit_queue.len() >= JBD2_BUFFER_MAX {
-            system.commit_transaction(raw_dev)?;
+            system.commit_transaction_with_mapping(block_dev, journal_blocks)?;
             committed = true;
         }
 
@@ -88,6 +89,14 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.inner.into_inner()
     }
 
+    pub(crate) fn set_filesystem_block_size(&mut self, block_size: usize) -> Ext4Result<()> {
+        self.inner.set_filesystem_block_size(block_size)
+    }
+
+    pub(crate) fn read_device_bytes(&mut self, offset: u64, output: &mut [u8]) -> Ext4Result<()> {
+        self.inner.read_device_bytes(offset, output)
+    }
+
     /// Returns whether journal support is enabled.
     pub fn is_use_journal(&self) -> bool {
         self.journal_use
@@ -113,7 +122,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return ReplayStatus::Incomplete;
         };
 
-        let status = jbd_sys.replay_with_mapping(self.inner.device_mut(), &self.journal_blocks);
+        let status = jbd_sys.replay_with_mapping(&mut self.inner, &self.journal_blocks);
         if self.inner.invalidate_cache().is_err() {
             return ReplayStatus::Incomplete;
         }
@@ -157,8 +166,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
 
         if let Some(system) = self.system.as_mut() {
-            let committed = system
-                .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)?;
+            let committed =
+                system.commit_transaction_with_mapping(&mut self.inner, &self.journal_blocks)?;
             if committed {
                 self.inner.invalidate_cache()?;
             }
@@ -182,9 +191,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         let Some(system) = self.system.as_mut() else {
             return Err(Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"));
         };
-        let raw_dev = self.inner.device_mut();
-
-        if Self::enqueue_journal_update(system, raw_dev, updates)? {
+        if Self::enqueue_journal_update(system, &mut self.inner, &self.journal_blocks, updates)? {
             self.inner.invalidate_cache()?;
         }
 
@@ -200,7 +207,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 .iter()
                 .find(|queued| queued.0 == block_id)
         {
-            self.inner.cache_clean_block(block_id, &update.1)?;
+            self.inner.cache_clean_block(block_id, &update.1[..])?;
             return Ok(());
         }
 
@@ -263,7 +270,6 @@ impl<B: BlockIo> Jbd2Dev<B> {
         let Some(system) = self.system.as_mut() else {
             return Err(Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"));
         };
-        let raw_dev = self.inner.device_mut();
         let required = count as usize * BLOCK_SIZE;
         if buf.len() < required {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
@@ -276,7 +282,12 @@ impl<B: BlockIo> Jbd2Dev<B> {
             boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
             let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
 
-            committed_any |= Self::enqueue_journal_update(system, raw_dev, updates)?;
+            committed_any |= Self::enqueue_journal_update(
+                system,
+                &mut self.inner,
+                &self.journal_blocks,
+                updates,
+            )?;
         }
         if committed_any {
             self.inner.invalidate_cache()?;
@@ -351,15 +362,28 @@ mod tests {
     }
 
     impl BlockIo for MemBlockDev {
-        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+        fn read(
+            &mut self,
+            buffer: &mut [u8],
+            block_id: crate::io::SectorId,
+            _count: u32,
+        ) -> Ext4Result<()> {
             let start = block_id.as_usize()? * BLOCK_SIZE;
             let end = start + buffer.len();
             buffer.copy_from_slice(&self.data[start..end]);
             Ok(())
         }
 
-        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-            if self.fail_write_block == Some(block_id) {
+        fn write(
+            &mut self,
+            buffer: &[u8],
+            block_id: crate::io::SectorId,
+            _count: u32,
+        ) -> Ext4Result<()> {
+            if self
+                .fail_write_block
+                .is_some_and(|block| crate::io::SectorId::new(block.raw()) == block_id)
+            {
                 return Err(Ext4Error::io());
             }
             let start = block_id.as_usize()? * BLOCK_SIZE;
