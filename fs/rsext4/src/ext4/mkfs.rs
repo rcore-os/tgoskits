@@ -305,7 +305,7 @@ pub fn mkfs_with_options<B: BlockIo + crate::runtime::Clock>(
     // Disable journaling while laying out the initial filesystem image. The
     // journal inode and journal superblock do not exist yet at this stage.
     let result = (|| {
-        block_dev.set_journal_use(false);
+        block_dev.set_journal_use(false)?;
         let total_groups = layout.groups;
 
         // Write the primary superblock and any sparse backups first so every later
@@ -364,8 +364,11 @@ pub fn mkfs_with_options<B: BlockIo + crate::runtime::Clock>(
             Err(Ext4Error::corrupted())
         }
     })();
-    block_dev.set_journal_use(old_journal_use);
-    result
+    let restore_result = block_dev.set_journal_use(old_journal_use);
+    match result {
+        Err(error) => Err(error),
+        Ok(()) => restore_result,
+    }
 }
 
 /// Builds the in-memory superblock used by mkfs.

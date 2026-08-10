@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-use super::{FilesystemBlockIo, cached_device::BlockDev};
+use super::cached_device::BlockDev;
 use crate::{
     bmalloc::AbsoluteBN,
     checksum::jbd2_superblock_csum32,
@@ -43,6 +43,7 @@ pub struct Jbd2Dev<B: BlockIo> {
     system: Option<JBD2DEVSYSTEM>,
     journal_blocks: Vec<AbsoluteBN>,
     active_handle: Option<ActiveJournalHandle>,
+    abort_cause: Option<Ext4Error>,
 }
 
 impl<B: BlockIo> Jbd2Dev<B> {
@@ -97,21 +98,23 @@ impl<B: BlockIo> Jbd2Dev<B> {
         Ok(())
     }
 
-    fn enqueue_journal_update<D: FilesystemBlockIo>(
-        system: &mut JBD2DEVSYSTEM,
-        block_dev: &mut D,
-        journal_blocks: &[AbsoluteBN],
+    fn enqueue_journal_update(
+        &mut self,
         update: Jbd2Update,
-        active_handle: Option<&mut ActiveJournalHandle>,
         transaction_capacity: usize,
-    ) -> Ext4Result<bool> {
-        if let Some(handle) = active_handle {
+    ) -> Ext4Result<()> {
+        self.ensure_not_aborted("jbd2:write_after_abort")?;
+
+        if let Some(handle) = self.active_handle.as_mut() {
             if !handle.touched_blocks.contains(&update.0) {
                 if handle.touched_blocks.len() >= handle.credits {
                     return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
                 }
                 handle.touched_blocks.push(update.0);
             }
+            let system = self.system.as_mut().ok_or_else(|| {
+                Ext4Error::journal_aborted().with_operation("jbd2:write_without_state")
+            })?;
             if let Some(existing) = system
                 .commit_queue
                 .iter_mut()
@@ -121,26 +124,33 @@ impl<B: BlockIo> Jbd2Dev<B> {
             } else {
                 system.commit_queue.push(update);
             }
-            return Ok(false);
+            return Ok(());
         }
 
-        if let Some(existing) = system
-            .commit_queue
-            .iter_mut()
-            .find(|queued| queued.0 == update.0)
-        {
-            *existing = update;
-            return Ok(false);
+        let needs_commit = {
+            let system = self.system.as_mut().ok_or_else(|| {
+                Ext4Error::journal_aborted().with_operation("jbd2:write_without_state")
+            })?;
+            if let Some(existing) = system
+                .commit_queue
+                .iter_mut()
+                .find(|queued| queued.0 == update.0)
+            {
+                *existing = update;
+                return Ok(());
+            }
+            system.commit_queue.len() >= transaction_capacity
+        };
+
+        if needs_commit {
+            self.commit_pending_transaction()?;
         }
 
-        let mut committed = false;
-        if system.commit_queue.len() >= transaction_capacity {
-            system.commit_transaction_with_mapping(block_dev, journal_blocks)?;
-            committed = true;
-        }
-
+        let system = self.system.as_mut().ok_or_else(|| {
+            Ext4Error::journal_aborted().with_operation("jbd2:write_without_state")
+        })?;
         system.commit_queue.push(update);
-        Ok(committed)
+        Ok(())
     }
 
     fn clone_commit_queue(queue: &[Jbd2Update]) -> Vec<Jbd2Update> {
@@ -216,6 +226,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             system: None,
             journal_blocks: Vec::new(),
             active_handle: None,
+            abort_cause: None,
         }
     }
 
@@ -241,7 +252,42 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.system.as_ref().map(|s| s.sequence)
     }
 
+    fn ensure_not_aborted(&self, operation: &'static str) -> Ext4Result<()> {
+        if self.abort_cause.is_some() {
+            Err(Ext4Error::journal_aborted().with_operation(operation))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn latch_abort(&mut self, cause: Ext4Error) {
+        if self.abort_cause.is_none() {
+            self.abort_cause = Some(cause);
+        }
+    }
+
+    fn commit_pending_transaction(&mut self) -> Ext4Result<bool> {
+        self.ensure_not_aborted("jbd2:commit_after_abort")?;
+        let Some(system) = self.system.as_mut() else {
+            return Err(Ext4Error::journal_aborted().with_operation("jbd2:commit_without_state"));
+        };
+        let result = system.commit_transaction_with_mapping(&mut self.inner, &self.journal_blocks);
+        let committed = match result {
+            Ok(committed) => committed,
+            Err(error) => {
+                self.latch_abort(error);
+                return Err(error);
+            }
+        };
+        if committed && let Err(error) = self.inner.invalidate_cache() {
+            self.latch_abort(error);
+            return Err(error);
+        }
+        Ok(committed)
+    }
+
     fn journal_transaction_capacity(&self) -> Ext4Result<usize> {
+        self.ensure_not_aborted("jbd2:capacity_after_abort")?;
         let system = self.system.as_ref().ok_or_else(|| {
             Ext4Error::journal_aborted().with_operation("jbd2:capacity_without_state")
         })?;
@@ -268,24 +314,49 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// writes when the filesystem advertises a journal but no journal state was
     /// installed.
     pub(crate) fn journal_replay_checked(&mut self) -> ReplayStatus {
+        if self.abort_cause.is_some() {
+            return ReplayStatus::Incomplete;
+        }
         if !self.journal_use {
             return ReplayStatus::Complete;
         }
 
         let Some(jbd_sys) = self.system.as_mut() else {
+            self.latch_abort(
+                Ext4Error::journal_aborted().with_operation("jbd2:replay_without_state"),
+            );
             return ReplayStatus::Incomplete;
         };
 
         let status = jbd_sys.replay_with_mapping(&mut self.inner, &self.journal_blocks);
-        if self.inner.invalidate_cache().is_err() {
+        if status == ReplayStatus::Incomplete {
+            self.latch_abort(Ext4Error::corrupted().with_operation("jbd2:replay"));
+            return status;
+        }
+        if let Err(error) = self.inner.invalidate_cache() {
+            self.latch_abort(error);
             return ReplayStatus::Incomplete;
         }
         status
     }
 
-    /// Enables or disables journal use at runtime.
-    pub fn set_journal_use(&mut self, use_journal: bool) {
+    /// Enables or disables journal use when no transaction is in flight.
+    pub fn set_journal_use(&mut self, use_journal: bool) -> Ext4Result<()> {
+        self.ensure_not_aborted("jbd2:change_mode_after_abort")?;
+        if !use_journal && self.journal_use {
+            if self.active_handle.is_some() {
+                return Err(Ext4Error::busy().with_operation("jbd2:disable_with_active_handle"));
+            }
+            if self
+                .system
+                .as_ref()
+                .is_some_and(|system| !system.commit_queue.is_empty())
+            {
+                return Err(Ext4Error::busy().with_operation("jbd2:disable_with_pending_commit"));
+            }
+        }
         self.journal_use = use_journal;
+        Ok(())
     }
 
     /// Installs the journal superblock so JBD2 state can be initialized lazily.
@@ -294,6 +365,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         super_block: JournalSuperBllockS,
         journal_start_block: AbsoluteBN,
     ) -> Ext4Result<()> {
+        self.ensure_not_aborted("jbd2:reinstall_after_abort")?;
         let available = self
             .total_blocks()
             .checked_sub(journal_start_block.raw())
@@ -310,6 +382,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         super_block: JournalSuperBllockS,
         journal_blocks: Vec<AbsoluteBN>,
     ) -> Ext4Result<()> {
+        self.ensure_not_aborted("jbd2:reinstall_after_abort")?;
         let Some(&journal_start_block) = journal_blocks.first() else {
             self.journal_blocks.clear();
             self.system = None;
@@ -323,6 +396,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
     /// Commits all buffered journal transactions during unmount.
     pub fn umount_commit(&mut self) -> Ext4Result<()> {
+        self.ensure_not_aborted("jbd2:unmount_after_abort")?;
         if !self.journal_use {
             return Ok(());
         }
@@ -330,15 +404,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return Err(Ext4Error::busy().with_operation("jbd2:commit_with_active_handle"));
         }
 
-        if let Some(system) = self.system.as_mut() {
-            let committed =
-                system.commit_transaction_with_mapping(&mut self.inner, &self.journal_blocks)?;
-            if committed {
-                self.inner.invalidate_cache()?;
-            }
-        } else {
-            return Err(Ext4Error::journal_aborted().with_operation("jbd2:commit_without_state"));
-        }
+        self.commit_pending_transaction()?;
         Ok(())
     }
 
@@ -354,6 +420,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         credits: usize,
         operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
     ) -> Ext4Result<T> {
+        self.ensure_not_aborted("jbd2:handle_after_abort")?;
         if !self.journal_use {
             return operation(self);
         }
@@ -368,7 +435,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return Err(Ext4Error::busy().with_operation("jbd2:nested_handle"));
         }
 
-        let committed = {
+        let needs_commit = {
             let Some(system) = self.system.as_mut() else {
                 return Err(
                     Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
@@ -379,14 +446,10 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 .len()
                 .checked_add(credits)
                 .ok_or_else(Ext4Error::overflow)?;
-            if reserved > transaction_capacity {
-                system.commit_transaction_with_mapping(&mut self.inner, &self.journal_blocks)?
-            } else {
-                false
-            }
+            reserved > transaction_capacity
         };
-        if committed {
-            self.inner.invalidate_cache()?;
+        if needs_commit {
+            self.commit_pending_transaction()?;
         }
 
         let queue_snapshot = {
@@ -428,6 +491,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
     /// Writes the current internal block buffer.
     pub fn write_block(&mut self, block_id: AbsoluteBN, is_metadata: bool) -> Ext4Result<()> {
+        self.ensure_not_aborted("jbd2:write_after_abort")?;
         if !self.journal_use || !is_metadata {
             return self.inner.write_block(block_id);
         }
@@ -436,21 +500,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         let updates = Jbd2Update(block_id, new_buf);
         let transaction_capacity = self.journal_transaction_capacity()?;
 
-        let Some(system) = self.system.as_mut() else {
-            return Err(Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"));
-        };
-        if Self::enqueue_journal_update(
-            system,
-            &mut self.inner,
-            &self.journal_blocks,
-            updates,
-            self.active_handle.as_mut(),
-            transaction_capacity,
-        )? {
-            self.inner.invalidate_cache()?;
-        }
-
-        Ok(())
+        self.enqueue_journal_update(updates, transaction_capacity)
     }
 
     /// Drops an uncommitted update for a newly allocated metadata block.
@@ -533,6 +583,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         count: u32,
         is_metadata: bool,
     ) -> Ext4Result<()> {
+        self.ensure_not_aborted("jbd2:write_after_abort")?;
         if !self.journal_use || !is_metadata {
             return self.inner.write_blocks(buf, block_id, count);
         }
@@ -553,27 +604,12 @@ impl<B: BlockIo> Jbd2Dev<B> {
             });
         }
 
-        let Some(system) = self.system.as_mut() else {
-            return Err(Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"));
-        };
-
-        let mut committed_any = false;
         for i in 0..count {
             let off = (i as usize) * block_size;
             let boxbuf = buf[off..off + block_size].to_vec().into_boxed_slice();
             let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
 
-            committed_any |= Self::enqueue_journal_update(
-                system,
-                &mut self.inner,
-                &self.journal_blocks,
-                updates,
-                self.active_handle.as_mut(),
-                transaction_capacity,
-            )?;
-        }
-        if committed_any {
-            self.inner.invalidate_cache()?;
+            self.enqueue_journal_update(updates, transaction_capacity)?;
         }
 
         Ok(())
@@ -581,6 +617,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
     /// Flushes the inner cached device.
     pub fn flush(&mut self) -> Ext4Result<()> {
+        self.ensure_not_aborted("jbd2:flush_after_abort")?;
         self.inner.flush()
     }
 
@@ -731,6 +768,12 @@ mod tests {
         dev.set_journal_superblock_with_mapping(superblock, journal_blocks)
             .expect("install csum-v3 journal");
         let status = dev.journal_replay_checked();
+        if status == ReplayStatus::Incomplete {
+            let error = dev
+                .set_journal_use(false)
+                .expect_err("incomplete replay must latch the journal abort");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::JournalAborted);
+        }
         let inner = dev.into_inner();
         let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
         assert_eq!(
@@ -766,7 +809,7 @@ mod tests {
         }
 
         fn flush(&mut self) -> Ext4Result<()> {
-            if self.fail_flush {
+            if core::mem::take(&mut self.fail_flush) {
                 Err(Ext4Error::io())
             } else {
                 Ok(())
@@ -1125,6 +1168,115 @@ mod tests {
             .expect_err("unmount commit must propagate the device error");
 
         assert_eq!(error, Ext4Error::io());
+    }
+
+    #[test]
+    fn commit_failure_aborts_future_journal_operations() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::with_failing_flush(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        dev.write_block(AbsoluteBN::new(10), true)
+            .expect("queue metadata update");
+
+        let first_error = dev
+            .umount_commit()
+            .expect_err("first failed commit must propagate the device error");
+        assert_eq!(first_error.kind(), crate::Ext4ErrorKind::Io);
+
+        let write_error = dev
+            .write_block(AbsoluteBN::new(11), true)
+            .expect_err("an aborted journal must reject later metadata writes");
+        assert_eq!(write_error.kind(), crate::Ext4ErrorKind::JournalAborted);
+
+        let handle_error = dev
+            .with_journal_handle(1, |_| Ok(()))
+            .expect_err("an aborted journal must reject later handles");
+        assert_eq!(handle_error.kind(), crate::Ext4ErrorKind::JournalAborted);
+
+        let flush_error = dev
+            .flush()
+            .expect_err("an aborted journal must reject later flushes");
+        assert_eq!(flush_error.kind(), crate::Ext4ErrorKind::JournalAborted);
+
+        let unmount_error = dev
+            .umount_commit()
+            .expect_err("an aborted journal must not retry the transaction");
+        assert_eq!(unmount_error.kind(), crate::Ext4ErrorKind::JournalAborted);
+
+        let mode_error = dev
+            .set_journal_use(false)
+            .expect_err("an abort must reject journal mode changes");
+        assert_eq!(mode_error.kind(), crate::Ext4ErrorKind::JournalAborted);
+        let bypass_error = dev
+            .write_block(AbsoluteBN::new(13), false)
+            .expect_err("disabling journal use must not clear an abort");
+        assert_eq!(bypass_error.kind(), crate::Ext4ErrorKind::JournalAborted);
+
+        let reinstall_error = dev
+            .set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect_err("reinstalling state must not clear an abort on the same mount object");
+        assert_eq!(reinstall_error.kind(), crate::Ext4ErrorKind::JournalAborted);
+    }
+
+    #[test]
+    fn automatic_commit_failure_aborts_the_journal() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::with_failing_flush(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let capacity = dev.journal_transaction_capacity().unwrap();
+        let updates = vec![0x5a; capacity * BLOCK_SIZE];
+        dev.write_blocks(
+            &updates,
+            AbsoluteBN::new(10),
+            u32::try_from(capacity).unwrap(),
+            true,
+        )
+        .expect("fill one transaction");
+
+        let first_error = dev
+            .write_block(AbsoluteBN::new(10 + capacity as u64), true)
+            .expect_err("queue overflow must propagate the automatic commit failure");
+        assert_eq!(first_error.kind(), crate::Ext4ErrorKind::Io);
+
+        let unmount_error = dev
+            .umount_commit()
+            .expect_err("an aborted automatic commit must not be retried");
+        assert_eq!(unmount_error.kind(), crate::Ext4ErrorKind::JournalAborted);
+    }
+
+    #[test]
+    fn journal_cannot_be_disabled_with_pending_updates() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        dev.write_block(AbsoluteBN::new(10), true)
+            .expect("queue metadata update");
+
+        let error = dev
+            .set_journal_use(false)
+            .expect_err("pending journal state must not be bypassed");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
+        assert!(dev.is_use_journal());
+
+        dev.umount_commit().expect("commit pending update");
+        dev.set_journal_use(false)
+            .expect("disable journal after commit");
+        assert!(!dev.is_use_journal());
+    }
+
+    #[test]
+    fn replay_without_journal_state_latches_abort() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+
+        assert_eq!(
+            dev.journal_replay_checked(),
+            ReplayStatus::Incomplete,
+            "replay cannot proceed without installed journal state"
+        );
+        let error = dev
+            .set_journal_use(false)
+            .expect_err("an incomplete replay must latch the journal abort");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::JournalAborted);
     }
 
     #[test]

@@ -998,7 +998,8 @@ mod file_functional_tests {
             .unwrap()
             .0;
         let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
-        jbd2_dev.set_journal_use(false);
+        jbd2_dev.umount_commit().unwrap();
+        jbd2_dev.set_journal_use(false).unwrap();
         jbd2_dev.read_block(indirect_root).unwrap();
         jbd2_dev.buffer_mut().fill(0);
         jbd2_dev.write_block(indirect_root, true).unwrap();
@@ -1056,7 +1057,8 @@ mod file_functional_tests {
             .unwrap()
             .unwrap()
             .0;
-        jbd2_dev.set_journal_use(false);
+        jbd2_dev.umount_commit().unwrap();
+        jbd2_dev.set_journal_use(false).unwrap();
         fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
             inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
             inode.i_block = [0; 15];

@@ -363,14 +363,14 @@ impl Ext4FileSystem {
                     // must not force replay without the ext4 recovery bit.
                     let original_journal_use = block_dev.is_use_journal();
                     if !original_journal_use {
-                        block_dev.set_journal_use(true);
+                        block_dev.set_journal_use(true)?;
                     }
                     let replay_status = block_dev.journal_replay_checked();
-                    block_dev.set_journal_use(original_journal_use);
                     if replay_status != ReplayStatus::Complete {
                         observer.event(Event::Recovery(RecoveryEvent::ReplayIncomplete));
                         return Err(Ext4Error::corrupted());
                     }
+                    block_dev.set_journal_use(original_journal_use)?;
 
                     // Journal replay can update the superblock, group
                     // descriptors, bitmaps, inode table, and directory blocks.
@@ -400,7 +400,7 @@ impl Ext4FileSystem {
             // writes bypass the journal path instead of hitting the
             // "system uninitialized" guard on every write.
             if !fs.superblock.has_journal() {
-                block_dev.set_journal_use(false);
+                block_dev.set_journal_use(false)?;
             }
         }
 

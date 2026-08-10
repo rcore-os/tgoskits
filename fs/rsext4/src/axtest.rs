@@ -1010,8 +1010,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
         .unwrap();
     ax_assert_eq!(dev.buffer()[0], 0x66);
 
-    dev.set_journal_use(true);
-    let _ = dev.journal_replay_checked();
+    dev.set_journal_use(true).unwrap();
     let journal_superblock = JournalSuperBllockS {
         s_sequence: 7,
         s_maxlen: 8,
@@ -1053,7 +1052,8 @@ fn rsext4_journal_device_overlay_rules_hold() {
             .is_err()
     );
 
-    dev.set_journal_use(false);
+    dev.umount_commit().unwrap();
+    dev.set_journal_use(false).unwrap();
     ax_assert!(
         dev.write_blocks(&direct[..8], AbsoluteBN::new(4), 1, false)
             .is_err()
