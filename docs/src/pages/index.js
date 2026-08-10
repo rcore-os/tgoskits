@@ -219,7 +219,7 @@ function HeroBanner() {
     { label: '项目概览', to: '/docs/introduction/overview' },
     { label: '快速开始', to: '/docs/quickstart/overview' },
     { label: '构建系统', to: '/docs/build/overview' },
-    { label: '组件视图', to: '/docs/development/components' },
+    { label: '架构视图', to: '/docs/architecture/overview' },
   ];
 
   return (
@@ -492,10 +492,10 @@ function CapabilityIllustration() {
 function CapabilitySection() {
   const features = [
     { icon: 'orbit', title: '统一工程编排', desc: 'cargo xtask 提供 ArceOS、StarryOS、Axvisor、镜像、板卡与测试命令的统一入口。', to: '/docs/build/overview' },
-    { icon: 'grid', title: '内存基础能力', desc: 'allocator、地址类型、memory set 与多架构页表实现集中在 memory/，供系统按需组合。', to: '/docs/development/components' },
-    { icon: 'layers', title: '调度与同步原语', desc: 'axsched、cpumask、kspin、kernel_guard 与 lockdep 提供可复用的内核运行时基础。', to: '/docs/development/components' },
-    { icon: 'server', title: '文件与进程组件', desc: 'axfs-ng-vfs、rsext4、starry-process、starry-signal 与 starry-vm 承载明确的领域语义。', to: '/docs/development/components' },
-    { icon: 'chip', title: '虚拟化基础对象', desc: 'virtualization/ 提供 VM、vCPU、地址空间、虚拟设备及各架构中断控制器实现。', to: '/docs/development/components' },
+    { icon: 'grid', title: '内存基础能力', desc: 'allocator、地址类型、memory set 与多架构页表实现集中在 memory/，供系统按需组合。', to: '/docs/architecture/overview' },
+    { icon: 'layers', title: '调度与同步原语', desc: 'axsched、cpumask、kspin、kernel_guard 与 lockdep 提供可复用的内核运行时基础。', to: '/docs/architecture/overview' },
+    { icon: 'server', title: '文件与进程组件', desc: 'axfs-ng-vfs、rsext4、starry-process、starry-signal 与 starry-vm 承载明确的领域语义。', to: '/docs/architecture/overview' },
+    { icon: 'chip', title: '虚拟化基础对象', desc: 'virtualization/ 提供 VM、vCPU、地址空间、虚拟设备及各架构中断控制器实现。', to: '/docs/architecture/axvisor' },
     { icon: 'plug', title: '设备能力接口', desc: 'dma-api、mmio-api、irq-framework 与 RDIF 接口 crate 将资源访问从具体 OS glue 中分离。', to: '/docs/architecture/overview' },
   ];
 
@@ -521,7 +521,7 @@ function CapabilitySection() {
             <div><dt>3</dt><dd>system paths</dd></div>
             <div><dt>4</dt><dd>CPU architectures</dd></div>
           </dl>
-          <Link className="capability-narrative__link" to="/docs/development/components">查看组件与边界</Link>
+          <Link className="capability-narrative__link" to="/docs/architecture/overview">查看架构边界</Link>
         </div>
       </div>
 
@@ -683,8 +683,8 @@ function DocsSection() {
   const docs = [
     { title: '入门与运行', desc: '了解项目定位、开发环境与三套系统的 QEMU 启动流程。', links: [{ label: '项目概览', to: '/docs/introduction/overview' }, { label: '快速开始', to: '/docs/quickstart/overview' }] },
     { title: '构建与验证', desc: '配置目标架构和平台，生成系统镜像并执行相应测试。', links: [{ label: '命令参考', to: '/docs/build/commands' }, { label: '配置系统', to: '/docs/build/configuration' }, { label: '测试入口', to: '/docs/build/test' }] },
-    { title: '系统开发', desc: '查阅 ArceOS、StarryOS 与 Axvisor 的目录结构、开发接口和运行方式。', links: [{ label: 'ArceOS', to: '/docs/development/arceos' }, { label: 'StarryOS', to: '/docs/development/starryos' }, { label: 'Axvisor', to: '/docs/development/axvisor' }] },
-    { title: '扩展与贡献', desc: '掌握组件边界、仓库同步机制以及代码与文档贡献规范。', links: [{ label: '组件开发', to: '/docs/development/components' }, { label: '仓库结构', to: '/docs/contributing/repo' }, { label: '文档贡献', to: '/docs/contributing/docs' }] },
+    { title: '系统上手', desc: '查阅 ArceOS、StarryOS 与 Axvisor 的环境准备和 QEMU 启动流程。', links: [{ label: 'ArceOS', to: '/docs/quickstart/arceos' }, { label: 'StarryOS', to: '/docs/quickstart/starryos' }, { label: 'Axvisor', to: '/docs/quickstart/axvisor' }] },
+    { title: '扩展与贡献', desc: '掌握仓库同步机制以及代码与文档贡献规范。', links: [{ label: '架构设计', to: '/docs/architecture/overview' }, { label: '仓库结构', to: '/docs/contributing/repo' }, { label: '文档贡献', to: '/docs/contributing/docs' }] },
   ];
 
   return (

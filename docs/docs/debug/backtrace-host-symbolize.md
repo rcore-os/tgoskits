@@ -143,7 +143,7 @@ cargo test -p axbuild backtrace::
 
 ## 相关文档与 PR
 
-- Target 回溯组件：[`axbacktrace`](../components/crates/axbacktrace.md)
+- Target 回溯组件：`components/axbacktrace`
 - Panic 路径与 backtrace 门控：[Panic 递归保护](./panic-recursion-guards.md)
 - Tracking issue：[#146](https://github.com/rcore-os/tgoskits/issues/146)
 - Host symbolize PR：[#635](https://github.com/rcore-os/tgoskits/pull/635)
