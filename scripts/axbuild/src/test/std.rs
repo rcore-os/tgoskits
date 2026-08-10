@@ -47,6 +47,13 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     },
 ];
 
+const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "starfive-jh7110-dwmmc",
+    features: &["starfive-jh7110-dwmmc"],
+    name_filter: None,
+    expected_tests: &[],
+}];
+
 const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
     features: &["host-test"],
@@ -251,6 +258,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
             Some(HOST_TEST_FEATURE_PROFILES)
         }
         "ax-task" => Some(AX_TASK_FEATURE_PROFILES),
+        "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
         _ => None,
     }
 }
@@ -588,6 +596,27 @@ mod tests {
         assert_eq!(
             runner.invocations[0].1.args(),
             vec!["test", "-p", "starry-process"]
+        );
+    }
+
+    #[test]
+    fn ax_driver_uses_visionfive2_mmc_feature_profile() {
+        let root = PathBuf::from("/tmp/workspace");
+        let packages = vec!["ax-driver".to_string()];
+        let mut runner = FakeCargoRunner::succeeding();
+
+        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
+
+        assert!(failed.is_empty());
+        assert_eq!(
+            runner.invocations[0].1.args(),
+            vec![
+                "test",
+                "-p",
+                "ax-driver",
+                "--features",
+                "starfive-jh7110-dwmmc"
+            ]
         );
     }
 
