@@ -37,12 +37,12 @@ pub fn qperf_runtime_scheduler_metrics_snapshot() -> QperfRuntimeSchedulerMetric
 }
 
 #[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
-pub(super) fn record_scheduler_ipi_send() {
+pub(crate) fn record_scheduler_ipi_send() {
     SCHEDULER_IPI_SEND_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
-pub(super) fn record_scheduler_ipi_consume() {
+pub(crate) fn record_scheduler_ipi_consume() {
     SCHEDULER_IPI_CONSUME_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
