@@ -87,6 +87,23 @@ int main(void)
         return fail("verify alarm cancellation");
     }
 
+    timer.it_value.tv_sec = 1;
+    timer.it_value.tv_usec = 250000;
+    if (setitimer(ITIMER_REAL, &timer, NULL) < 0) {
+        return fail("arm one-second fractional ITIMER_REAL");
+    }
+
+    previous = syscall(SYS_alarm, 0U);
+    if (previous != 2) {
+        errno = EPROTO;
+        return fail("round one-second fractional remainder upward");
+    }
+    if (!timer_is_disarmed()) {
+        errno = EPROTO;
+        return fail("verify one-second fractional alarm cancellation");
+    }
+
+    timer.it_value.tv_sec = 0;
     timer.it_value.tv_usec = 250000;
     if (setitimer(ITIMER_REAL, &timer, NULL) < 0) {
         return fail("arm fractional ITIMER_REAL");

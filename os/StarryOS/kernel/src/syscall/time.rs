@@ -70,8 +70,7 @@ pub fn sys_alarm(seconds: u32) -> AxResult<isize> {
             .set_itimer(ITimerType::Real, 0, remaining_ns);
 
     let mut old_seconds = old_remaining.as_secs();
-    let old_subsecond = old_remaining.subsec_nanos() as u64;
-    if (old_seconds == 0 && old_subsecond != 0) || old_subsecond >= NANOS_PER_SEC / 2 {
+    if old_remaining.subsec_nanos() != 0 {
         old_seconds += 1;
     }
     Ok(old_seconds as isize)
