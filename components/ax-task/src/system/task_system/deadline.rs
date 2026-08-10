@@ -578,12 +578,18 @@ impl TaskSystem {
                 cpu.as_mut()
                     .promote_due_task_deadlines(monotonic_now, remaining);
             }
-            let Some(event) = cpu.as_mut().take_one_expired_task_deadline() else {
+            let Some(event) = cpu.remote().lock_deadline_base().peek_buffered_expiration() else {
                 break;
             };
-            if let Err(error) = self.service_expired_deadline(event) {
-                cpu.remote().publish_ktimer_work();
-                return Err(error);
+            let claimed = match self.service_buffered_expired_deadline(cpu.as_mut(), event) {
+                Ok(claimed) => claimed,
+                Err(error) => {
+                    cpu.remote().publish_ktimer_work();
+                    return Err(error);
+                }
+            };
+            if !claimed {
+                continue;
             }
             processed += 1;
         }
@@ -602,14 +608,54 @@ impl TaskSystem {
         })
     }
 
-    fn service_expired_deadline(&self, event: ExpiredTaskDeadline) -> Result<(), TaskError> {
+    fn service_buffered_expired_deadline(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        event: ExpiredTaskDeadline,
+    ) -> Result<bool, TaskError> {
         match event.kind() {
-            Some(TaskDeadlineKind::ParkTimeout { .. }) => self.service_expired_park_deadline(event),
+            Some(TaskDeadlineKind::ParkTimeout { .. }) => {
+                self.service_buffered_expired_park_deadline(cpu, event)
+            }
             Some(TaskDeadlineKind::DeadlineCbs | TaskDeadlineKind::DeadlineZeroLag) => {
                 task_runtime::fatal_invariant(0x444c_0011, event.token().generation() as usize)
             }
-            None => Ok(()),
+            None => Ok(false),
         }
+    }
+
+    fn service_buffered_expired_park_deadline(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        event: ExpiredTaskDeadline,
+    ) -> Result<bool, TaskError> {
+        let Some(thread) = event.thread() else {
+            return Ok(false);
+        };
+        let handle = match self.thread_handle(thread) {
+            Ok(handle) => Some(handle),
+            Err(TaskError::StaleThreadId) => None,
+            Err(error) => return Err(error),
+        };
+        let completed = {
+            let mut deadline_base = cpu.remote().lock_deadline_base();
+            if deadline_base.take_buffered_event(event).is_none() {
+                return Ok(false);
+            }
+            handle
+                .as_ref()
+                .is_some_and(|handle| handle.core.complete_sleep_timer(event.token().generation()))
+        };
+        let Some(handle) = handle else {
+            return Ok(true);
+        };
+        let park_matches = event
+            .kind()
+            .is_some_and(|kind| kind.park_generation() == Some(handle.core.park_generation()));
+        if completed && park_matches {
+            let _wake_result = handle.wake_handle().wake();
+        }
+        Ok(true)
     }
 
     pub(super) fn service_expired_park_deadline(

@@ -381,6 +381,7 @@ impl CpuLocal {
     ///
     /// Events that do not fit in `output` remain buffered for the next
     /// task-context drain.
+    #[cfg(test)]
     pub(crate) fn take_expired_task_deadlines(
         self: Pin<&mut Self>,
         output: &mut [ExpiredTaskDeadline],
@@ -398,13 +399,6 @@ impl CpuLocal {
         count
     }
 
-    pub(crate) fn take_one_expired_task_deadline(
-        mut self: Pin<&mut Self>,
-    ) -> Option<ExpiredTaskDeadline> {
-        let mut event = [ExpiredTaskDeadline::EMPTY; 1];
-        (self.as_mut().take_expired_task_deadlines(&mut event) == 1).then_some(event[0])
-    }
-
     /// Removes only the expiration owned by one move-only registration.
     /// Park commit uses this to resolve its own timeout without running an
     /// unrelated soft-timer batch inside the rq transition.
@@ -412,23 +406,9 @@ impl CpuLocal {
         self: Pin<&mut Self>,
         registration: &TaskDeadlineRegistration,
     ) -> Option<ExpiredTaskDeadline> {
-        let mut task_deadlines = self.remote.lock_deadline_base();
-        let buffered = task_deadlines.expired_count;
-        let index = task_deadlines.expired_buffer[..buffered]
-            .iter()
-            .position(|event| {
-                event.thread() == Some(registration.thread())
-                    && event.token() == registration.token()
-                    && event.deadline() == Some(registration.deadline())
-                    && event.kind() == Some(registration.kind())
-            })?;
-        let event = task_deadlines.expired_buffer[index];
-        task_deadlines
-            .expired_buffer
-            .copy_within(index + 1..buffered, index);
-        task_deadlines.expired_count -= 1;
-        task_deadlines.expired_buffer[buffered - 1] = ExpiredTaskDeadline::EMPTY;
-        Some(event)
+        self.remote
+            .lock_deadline_base()
+            .take_buffered_expiration(registration)
     }
 
     pub(crate) fn has_expired_task_deadlines(&self) -> bool {

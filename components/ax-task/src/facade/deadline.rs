@@ -317,6 +317,7 @@ pub(crate) fn cancel_current_park_deadline(
     let Some(token) = ticket.deadline().map(|registration| registration.token()) else {
         return Ok(false);
     };
+    let system = runtime_task_system()?;
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     let actual = cpu.owner();
@@ -330,10 +331,52 @@ pub(crate) fn cancel_current_park_deadline(
         return Ok(false);
     };
     if actual != expected {
-        return Err(TaskError::CpuOwnerMismatch {
-            expected: expected.as_u32(),
-            actual: actual.as_u32(),
-        });
+        let remote = system
+            .cpu_remote(expected)
+            .ok_or(TaskError::CpuOffline(expected.as_u32()))?;
+        let registration = ticket
+            .deadline()
+            .expect("the deadline registration remains owned until cancellation");
+        let (cancellation, expired) = {
+            let mut deadline_base = remote.lock_deadline_base();
+            let cancellation = deadline_base.queue.begin_cancel(registration);
+            let expired = if cancellation.is_none() {
+                deadline_base
+                    .take_buffered_expiration(registration)
+                    .is_some()
+            } else {
+                false
+            };
+            (cancellation, expired)
+        };
+        let cancelled = match (cancellation, expired) {
+            (Some(cancellation), _) => {
+                // Linux does not reprogram another CPU's clockevent when a
+                // remote hrtimer is removed. The stale edge is conservative;
+                // its owner recomputes the authoritative queue when it fires.
+                cancellation.commit();
+                true
+            }
+            (None, true) => false,
+            (None, false)
+                if thread
+                    .core
+                    .sleep_timer_cpu_for(token.generation())
+                    .is_none() =>
+            {
+                if !ticket.clear_deadline(token) {
+                    task_runtime::fatal_invariant(0x5444_0003, thread.id().as_u64() as usize);
+                }
+                return Ok(false);
+            }
+            (None, false) => {
+                task_runtime::fatal_invariant(0x5444_0006, thread.id().as_u64() as usize)
+            }
+        };
+        if !thread.core.complete_sleep_timer(token.generation()) || !ticket.clear_deadline(token) {
+            task_runtime::fatal_invariant(0x5444_0004, thread.id().as_u64() as usize);
+        }
+        return Ok(cancelled);
     }
     let (cancellation, update) = {
         let registration = ticket
@@ -342,12 +385,14 @@ pub(crate) fn cancel_current_park_deadline(
         let cancellation_state = {
             let mut deadline_base = cpu.lock_deadline_base();
             let cancellation = deadline_base.queue.begin_cancel(registration);
-            let buffered = if cancellation.is_none() {
-                deadline_base.owns_buffered_expiration(registration)
+            let expired = if cancellation.is_none() {
+                deadline_base
+                    .take_buffered_expiration(registration)
+                    .is_some()
             } else {
                 false
             };
-            (cancellation, buffered)
+            (cancellation, expired)
         };
         let cancellation = match cancellation_state {
             (Some(cancellation), _) => cancellation,
@@ -356,6 +401,17 @@ pub(crate) fn cancel_current_park_deadline(
                     || !ticket.clear_deadline(token)
                 {
                     task_runtime::fatal_invariant(0x5444_0004, thread.id().as_u64() as usize);
+                }
+                return Ok(false);
+            }
+            (None, false)
+                if thread
+                    .core
+                    .sleep_timer_cpu_for(token.generation())
+                    .is_none() =>
+            {
+                if !ticket.clear_deadline(token) {
+                    task_runtime::fatal_invariant(0x5444_0003, thread.id().as_u64() as usize);
                 }
                 return Ok(false);
             }

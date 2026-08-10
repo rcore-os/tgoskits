@@ -708,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn park_deadline_owner_mismatch_preserves_ticket_for_retry() {
+    fn unavailable_park_deadline_owner_preserves_ticket_for_retry() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
         let running = system
@@ -732,14 +732,11 @@ mod tests {
             .register_sleep_timer(CpuId::new(1), token.generation());
         assert_eq!(
             cancel_current_park_deadline(&running, &mut ticket),
-            Err(TaskError::CpuOwnerMismatch {
-                expected: 1,
-                actual: 0,
-            })
+            Err(TaskError::CpuOffline(1))
         );
         assert!(
             ticket.has_deadline(),
-            "a retryable owner mismatch must not consume the move-only deadline token"
+            "an unavailable owner must not consume the move-only deadline token"
         );
         assert_eq!(
             next_test_deadline(cpu.as_ref()),
@@ -754,6 +751,81 @@ mod tests {
         assert!(!ticket.has_deadline());
         assert_eq!(next_test_deadline(cpu.as_ref()), None);
         cancel_current_park(&mut ticket).unwrap();
+    }
+
+    #[test]
+    fn migrated_waiter_cancels_the_deadline_on_its_remote_timer_base() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(2)).unwrap());
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu0.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system
+            .install_bootstrap_thread(cpu1.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu0.as_mut()).unwrap();
+        system.bring_cpu_online(cpu1.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
+
+        let mut ticket = crate::ParkTicket::new(running.id(), 1);
+        let registration = arm_test_deadline(
+            cpu1.as_ref(),
+            running.sleep_timer(),
+            deadline(10),
+            TaskDeadlineKind::park_timeout(ticket.generation()),
+        );
+        let token = registration.token();
+        running
+            .core
+            .register_sleep_timer(CpuId::new(1), token.generation());
+        ticket.attach_deadline(registration).unwrap();
+
+        assert!(cancel_current_park_deadline(&running, &mut ticket).unwrap());
+        assert!(!ticket.has_deadline());
+        assert_eq!(running.core.sleep_timer_cpu(), None);
+        assert_eq!(next_test_deadline(cpu1.as_ref()), None);
+    }
+
+    #[test]
+    fn migrated_waiter_claims_expiration_from_its_remote_timer_base() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(2)).unwrap());
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu0.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system
+            .install_bootstrap_thread(cpu1.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu0.as_mut()).unwrap();
+        system.bring_cpu_online(cpu1.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
+
+        let mut ticket = crate::ParkTicket::new(running.id(), 1);
+        let registration = arm_test_deadline(
+            cpu1.as_ref(),
+            running.sleep_timer(),
+            deadline(10),
+            TaskDeadlineKind::park_timeout(ticket.generation()),
+        );
+        let token = registration.token();
+        running
+            .core
+            .register_sleep_timer(CpuId::new(1), token.generation());
+        ticket.attach_deadline(registration).unwrap();
+        assert_eq!(
+            cpu1
+                .as_mut()
+                .promote_due_task_deadlines(instant(10), 1)
+                .expired(),
+            1
+        );
+
+        assert!(!cancel_current_park_deadline(&running, &mut ticket).unwrap());
+        assert!(!ticket.has_deadline());
+        assert_eq!(running.core.sleep_timer_cpu(), None);
+        assert!(!cpu1.has_expired_task_deadlines());
     }
 
     #[test]

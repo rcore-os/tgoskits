@@ -44,15 +44,42 @@ impl CpuDeadlineState {
         }
     }
 
-    pub(crate) fn owns_buffered_expiration(&self, registration: &TaskDeadlineRegistration) -> bool {
-        self.expired_buffer[..self.expired_count]
+    pub(crate) fn peek_buffered_expiration(&self) -> Option<ExpiredTaskDeadline> {
+        self.expired_buffer[..self.expired_count].first().copied()
+    }
+
+    pub(crate) fn take_buffered_expiration(
+        &mut self,
+        registration: &TaskDeadlineRegistration,
+    ) -> Option<ExpiredTaskDeadline> {
+        self.take_buffered_expiration_if(|event| {
+            event.thread() == Some(registration.thread())
+                && event.token() == registration.token()
+                && event.deadline() == Some(registration.deadline())
+                && event.kind() == Some(registration.kind())
+        })
+    }
+
+    pub(crate) fn take_buffered_event(
+        &mut self,
+        event: ExpiredTaskDeadline,
+    ) -> Option<ExpiredTaskDeadline> {
+        self.take_buffered_expiration_if(|candidate| candidate == event)
+    }
+
+    fn take_buffered_expiration_if(
+        &mut self,
+        matches: impl Fn(ExpiredTaskDeadline) -> bool,
+    ) -> Option<ExpiredTaskDeadline> {
+        let index = self.expired_buffer[..self.expired_count]
             .iter()
             .copied()
-            .any(|event| {
-                event.thread() == Some(registration.thread())
-                    && event.token() == registration.token()
-                    && event.deadline() == Some(registration.deadline())
-                    && event.kind() == Some(registration.kind())
-            })
+            .position(matches)?;
+        let event = self.expired_buffer[index];
+        self.expired_buffer
+            .copy_within(index + 1..self.expired_count, index);
+        self.expired_count -= 1;
+        self.expired_buffer[self.expired_count] = ExpiredTaskDeadline::EMPTY;
+        Some(event)
     }
 }
