@@ -264,6 +264,8 @@ struct SubmittedUrb {
 enum SubmittedUrbTransfer {
     Live(manager::SubmittedTransfer),
     Deferred(UsbfsQuirk),
+    #[cfg(test)]
+    Test(tests::TestSubmittedTransfer),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -277,6 +279,8 @@ impl SubmittedUrb {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => Some(transfer.queue_key()),
             SubmittedUrbTransfer::Deferred(_) => None,
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(_) => None,
         }
     }
 
@@ -284,6 +288,8 @@ impl SubmittedUrb {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.try_reclaim(),
             SubmittedUrbTransfer::Deferred(_) => Ok(None),
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(transfer) => transfer.try_reclaim(),
         }
     }
 
@@ -291,6 +297,8 @@ impl SubmittedUrb {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.poll_reclaim(cx),
             SubmittedUrbTransfer::Deferred(_) => Poll::Pending,
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(_) => Poll::Pending,
         }
     }
 
@@ -298,6 +306,8 @@ impl SubmittedUrb {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.cancel(),
             SubmittedUrbTransfer::Deferred(_) => Ok(()),
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(_) => Ok(()),
         }
     }
 
@@ -305,6 +315,8 @@ impl SubmittedUrb {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.retire_after_quiesce(),
             SubmittedUrbTransfer::Deferred(_) => Ok(()),
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(transfer) => transfer.retire_after_quiesce(),
         }
     }
 
@@ -312,6 +324,8 @@ impl SubmittedUrb {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.supports_retire_after_quiesce(),
             SubmittedUrbTransfer::Deferred(_) => true,
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(_) => true,
         }
     }
 
@@ -319,6 +333,8 @@ impl SubmittedUrb {
         match &self.transfer {
             SubmittedUrbTransfer::Live(_) => None,
             SubmittedUrbTransfer::Deferred(quirk) => Some(*quirk),
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(_) => None,
         }
     }
 
@@ -433,31 +449,23 @@ impl UsbDeviceFile {
             }
             Vec::new()
         };
-        if let Err(err) = self.with_live_lease(|lease| lease.claim_interface(interface, alternate))
-        {
-            self.submitted_urbs.lock().extend(submitted);
-            return Err(err);
+        if retire_after_quiesce {
+            let previous_alternate = self.claimed_interfaces.lock().get(&interface).copied();
+            return switch_alternate_and_retire_quiesced_urbs(
+                submitted,
+                interface,
+                alternate,
+                previous_alternate,
+                |interface, alternate| {
+                    self.with_live_lease(|lease| lease.claim_interface(interface, alternate))
+                },
+                |remaining| self.submitted_urbs.lock().extend(remaining),
+                |interface, alternate| {
+                    self.claimed_interfaces.lock().insert(interface, alternate);
+                },
+            );
         }
-        let remaining = if retire_after_quiesce {
-            retire_quiesced_urbs(submitted)
-        } else {
-            Vec::new()
-        };
-        if !remaining.is_empty() {
-            if let Some(previous_alternate) =
-                self.claimed_interfaces.lock().get(&interface).copied()
-                && let Err(err) = self
-                    .with_live_lease(|lease| lease.claim_interface(interface, previous_alternate))
-            {
-                warn!(
-                    "usbfs: failed to restore interface {} alt {} after URB retirement failure: \
-                     {err:?}",
-                    interface, previous_alternate
-                );
-            }
-            self.submitted_urbs.lock().extend(remaining);
-            return Err(AxError::ResourceBusy);
-        }
+        self.with_live_lease(|lease| lease.claim_interface(interface, alternate))?;
         self.claimed_interfaces.lock().insert(interface, alternate);
         Ok(0)
     }
@@ -1631,6 +1639,37 @@ fn completed_urb_from_result(
     }
 }
 
+fn switch_alternate_and_retire_quiesced_urbs(
+    submitted: Vec<SubmittedUrb>,
+    interface: u8,
+    alternate: u8,
+    previous_alternate: Option<u8>,
+    mut switch_alternate: impl FnMut(u8, u8) -> AxResult<()>,
+    mut requeue: impl FnMut(Vec<SubmittedUrb>),
+    mut commit_alternate: impl FnMut(u8, u8),
+) -> AxResult<usize> {
+    if let Err(err) = switch_alternate(interface, alternate) {
+        requeue(submitted);
+        return Err(err);
+    }
+    let remaining = retire_quiesced_urbs(submitted);
+    if !remaining.is_empty() {
+        if let Some(previous_alternate) = previous_alternate
+            && let Err(err) = switch_alternate(interface, previous_alternate)
+        {
+            warn!(
+                "usbfs: failed to restore interface {} alt {} after URB retirement failure: \
+                 {err:?}",
+                interface, previous_alternate
+            );
+        }
+        requeue(remaining);
+        return Err(AxError::ResourceBusy);
+    }
+    commit_alternate(interface, alternate);
+    Ok(0)
+}
+
 fn cleanup_submitted_urbs(
     mut submitted_urbs: Vec<SubmittedUrb>,
     timeout: Option<Duration>,
@@ -1940,4 +1979,150 @@ fn write_iso_packet_descs(
         vm_write_slice(ptr, descs)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use alloc::{sync::Arc, vec};
+    use core::cell::RefCell;
+
+    use crab_usb::usb_if::endpoint::{RequestId, TransferStatus};
+
+    use self::std::sync::Mutex as TestMutex;
+    use super::*;
+
+    struct TestXhciState {
+        alternate: u8,
+        alternate_history: Vec<u8>,
+        inflight_requests: usize,
+        completion_pending: bool,
+        completion_reclaims: usize,
+        fail_next_retire: bool,
+    }
+
+    struct TestUsbfsXhciAdapter(Arc<TestMutex<TestXhciState>>);
+
+    impl TestUsbfsXhciAdapter {
+        fn new(alternate: u8) -> Self {
+            Self(Arc::new(TestMutex::new(TestXhciState {
+                alternate,
+                alternate_history: Vec::new(),
+                inflight_requests: 0,
+                completion_pending: false,
+                completion_reclaims: 0,
+                fail_next_retire: true,
+            })))
+        }
+
+        fn submit_async_urb(&self, interface: u8) -> SubmittedUrb {
+            self.0.lock().unwrap().inflight_requests += 1;
+            SubmittedUrb {
+                user_urb_ptr: 1,
+                transfer: SubmittedUrbTransfer::Test(TestSubmittedTransfer(self.0.clone())),
+                interface: Some(interface),
+                discarded: false,
+                buffer: Vec::new(),
+                is_in: false,
+                data_offset: 0,
+                packet_lengths: Vec::new(),
+                log: false,
+            }
+        }
+
+        fn switch_alternate(&self, alternate: u8) -> AxResult<()> {
+            let mut state = self.0.lock().unwrap();
+            state.alternate = alternate;
+            state.alternate_history.push(alternate);
+            Ok(())
+        }
+
+        fn complete_request(&self) {
+            let mut state = self.0.lock().unwrap();
+            assert_eq!(state.inflight_requests, 1);
+            assert!(!state.completion_pending);
+            state.completion_pending = true;
+        }
+    }
+
+    pub(super) struct TestSubmittedTransfer(Arc<TestMutex<TestXhciState>>);
+
+    impl TestSubmittedTransfer {
+        pub(super) fn try_reclaim(&self) -> AxResult<Option<TransferCompletion>> {
+            let mut state = self.0.lock().unwrap();
+            if !state.completion_pending {
+                return Ok(None);
+            }
+            state.completion_pending = false;
+            state.inflight_requests -= 1;
+            state.completion_reclaims += 1;
+            Ok(Some(TransferCompletion {
+                request_id: RequestId::new(1),
+                status: TransferStatus::Completed,
+                actual_length: 0,
+                iso_packets: Vec::new(),
+            }))
+        }
+
+        pub(super) fn retire_after_quiesce(&self) -> AxResult<()> {
+            let mut state = self.0.lock().unwrap();
+            if core::mem::take(&mut state.fail_next_retire) {
+                return Err(AxError::ResourceBusy);
+            }
+            state.inflight_requests -= 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn retire_failure_restores_alternate_and_completes_requeued_urb_once() {
+        const INTERFACE: u8 = 1;
+        const PREVIOUS_ALTERNATE: u8 = 2;
+        const REQUESTED_ALTERNATE: u8 = 0;
+
+        let adapter = TestUsbfsXhciAdapter::new(PREVIOUS_ALTERNATE);
+        let submitted = vec![adapter.submit_async_urb(INTERFACE)];
+        let requeued = RefCell::new(Vec::new());
+        let claimed = RefCell::new(BTreeMap::from([(INTERFACE, PREVIOUS_ALTERNATE)]));
+        let previous_alternate = claimed.borrow().get(&INTERFACE).copied();
+
+        let result = switch_alternate_and_retire_quiesced_urbs(
+            submitted,
+            INTERFACE,
+            REQUESTED_ALTERNATE,
+            previous_alternate,
+            |_, alternate| adapter.switch_alternate(alternate),
+            |remaining| requeued.borrow_mut().extend(remaining),
+            |interface, alternate| {
+                claimed.borrow_mut().insert(interface, alternate);
+            },
+        );
+
+        assert_eq!(result, Err(AxError::ResourceBusy));
+        assert_eq!(
+            claimed.borrow().get(&INTERFACE).copied(),
+            Some(PREVIOUS_ALTERNATE)
+        );
+        {
+            let state = adapter.0.lock().unwrap();
+            assert_eq!(state.alternate, PREVIOUS_ALTERNATE);
+            assert_eq!(
+                state.alternate_history,
+                vec![REQUESTED_ALTERNATE, PREVIOUS_ALTERNATE]
+            );
+            assert_eq!(state.inflight_requests, 1);
+        }
+        assert_eq!(requeued.borrow().len(), 1);
+
+        adapter.complete_request();
+        let submitted = requeued.borrow_mut().pop().unwrap();
+        assert!(submitted.try_reclaim().unwrap().is_some());
+        assert!(submitted.try_reclaim().unwrap().is_none());
+        let state = adapter.0.lock().unwrap();
+        assert_eq!(state.inflight_requests, 0);
+        assert!(!state.completion_pending);
+        assert_eq!(state.completion_reclaims, 1);
+        assert!(requeued.borrow().is_empty());
+    }
 }
