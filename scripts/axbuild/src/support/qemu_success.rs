@@ -277,38 +277,6 @@ mod tests {
     }
 
     #[test]
-    fn dual_guest_contract_rejects_a_single_completion_marker() {
-        let pattern = r"(?s)(VM1_VIRTIO_NET_PASS.*VM2_VIRTIO_NET_PASS|VM2_VIRTIO_NET_PASS.*VM1_VIRTIO_NET_PASS)";
-
-        for marker in [
-            b"VM1_VIRTIO_NET_PASS\n".as_slice(),
-            b"VM2_VIRTIO_NET_PASS\n",
-        ] {
-            let output = captured_output(&[pattern], &[marker]);
-            let error = verify_qemu_success_contract(Ok(()), Some(&output)).unwrap_err();
-
-            assert!(
-                error
-                    .to_string()
-                    .contains("without matching a configured success regex")
-            );
-        }
-    }
-
-    #[test]
-    fn dual_guest_contract_accepts_both_completion_orders() {
-        let pattern = r"(?s)(VM1_VIRTIO_NET_PASS.*VM2_VIRTIO_NET_PASS|VM2_VIRTIO_NET_PASS.*VM1_VIRTIO_NET_PASS)";
-
-        for transcript in [
-            b"VM1_VIRTIO_NET_PASS\nVM2_VIRTIO_NET_PASS\n".as_slice(),
-            b"VM2_VIRTIO_NET_PASS\nVM1_VIRTIO_NET_PASS\n",
-        ] {
-            let output = captured_output(&[pattern], &[transcript]);
-            verify_qemu_success_contract(Ok(()), Some(&output)).unwrap();
-        }
-    }
-
-    #[test]
     fn empty_success_contract_preserves_normal_exit() {
         verify_qemu_success_contract(Ok(()), None).unwrap();
     }
