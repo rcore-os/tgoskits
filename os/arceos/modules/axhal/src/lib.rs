@@ -20,11 +20,15 @@
 //! - `tls`: Enable kernel space thread-local storage support.
 //! - `rtc`: Enable real-time clock support.
 //! - `uspace`: Enable user space support.
+//! - `axtest`: Enable internal AxTest cases.
 //!
 //! [ArceOS]: https://github.com/arceos-org/arceos
 //! [cargo test]: https://doc.rust-lang.org/cargo/guide/tests.html
 
 #![no_std]
+
+#[cfg(all(axtest, feature = "axtest"))]
+mod axtest;
 
 #[cfg(all(feature = "uspace", feature = "tls"))]
 compile_error!("ax-hal features `uspace` and `tls` select incompatible register ownership modes");

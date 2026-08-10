@@ -26,16 +26,50 @@ pub fn ipi_irq() -> IrqId {
 
 /// IRQ handler.
 ///
-/// # Warn
+/// Normalizes both hardware-trap and hypervisor VM-exit callers to the same
+/// local-IRQ-disabled entry contract. A hypervisor may restore the host IRQ
+/// state before forwarding a deferred external interrupt.
+///
+/// # Warning
 ///
 /// Make sure called in an interrupt context or hypervisor VM exit handler.
 pub fn handle_irq(vector: usize) -> bool {
-    prepare_irq_context(TrapVector(vector));
-    let guard = ax_kernel_guard::NoPreempt::new();
-    let handled = handle(TrapVector(vector)).is_some();
+    with_irq_entry(
+        || prepare_irq_context(TrapVector(vector)),
+        || handle(TrapVector(vector)).is_some(),
+    )
+}
 
-    drop(guard); // rescheduling may occur when preemption is re-enabled.
-    handled
+fn with_irq_entry<T>(prepare: impl FnOnce(), dispatch: impl FnOnce() -> T) -> T {
+    // Keep IRQs disabled until the preemption guard has handed any pending
+    // reschedule back to the IRQ-return path. Hardware traps already enter in
+    // this state; IrqSave also covers deferred VM-exit dispatchers.
+    let irq_guard = ax_kernel_guard::IrqSave::new();
+    prepare();
+    let preempt_guard = ax_kernel_guard::NoPreempt::new();
+    let result = dispatch();
+
+    drop(preempt_guard); // rescheduling may occur when preemption is re-enabled.
+    drop(irq_guard);
+    result
+}
+
+#[cfg(axtest)]
+pub(crate) fn irq_entry_state_rules_hold_for_test() -> bool {
+    let caller_irqs_enabled = crate::asm::irqs_enabled();
+    let enabled_entry_irqs = with_irq_entry(|| {}, crate::asm::irqs_enabled);
+    let enabled_state_restored = crate::asm::irqs_enabled();
+
+    crate::asm::disable_irqs();
+    let disabled_entry_irqs = with_irq_entry(|| {}, crate::asm::irqs_enabled);
+    let disabled_state_restored = !crate::asm::irqs_enabled();
+    crate::asm::enable_irqs();
+
+    caller_irqs_enabled
+        && !enabled_entry_irqs
+        && enabled_state_restored
+        && !disabled_entry_irqs
+        && disabled_state_restored
 }
 
 /// Installs the default ArceOS IRQ dispatcher into `ax-cpu`'s runtime hook.

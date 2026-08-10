@@ -909,6 +909,7 @@ dependencies = [
  "ax-percpu",
  "ax-plat",
  "axplat-dyn",
+ "axtest",
  "cfg-if",
  "cpu-local",
  "fdt-parser",

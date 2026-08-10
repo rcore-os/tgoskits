@@ -231,7 +231,7 @@ axtest.workspace = true
 axbacktrace = { workspace = true, features = ["axtest"] }
 ax-cpumask = { workspace = true, features = ["axtest"] }
 ax-driver = { workspace = true, features = ["axtest"] }
-ax-hal.workspace = true
+ax-hal = { workspace = true, features = ["axtest"] }
 ax-std = { workspace = true, default-features = false, features = [
     "alloc",
     "fd",
