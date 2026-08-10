@@ -1,0 +1,209 @@
+//! Reproducible host-side baseline for the existing rsext4 data path.
+
+use std::{
+    cell::Cell,
+    env,
+    hint::black_box,
+    time::{Duration, Instant},
+};
+
+use rsext4::{
+    BLOCK_SIZE, BlockDevice, Ext4Error, Ext4Result, Ext4Timestamp, Jbd2Dev, bmalloc::AbsoluteBN,
+    mkfile, mkfs, mount, read_file, umount, write_file,
+};
+
+const DEFAULT_BYTES: usize = 20 * 1024 * 1024;
+const DEFAULT_WARMUPS: usize = 3;
+const DEFAULT_RUNS: usize = 10;
+const IMAGE_BYTES: usize = 128 * 1024 * 1024;
+
+struct MemoryDevice {
+    bytes: Vec<u8>,
+    now: Cell<i64>,
+}
+
+impl MemoryDevice {
+    fn new() -> Self {
+        Self {
+            bytes: vec![0; IMAGE_BYTES],
+            now: Cell::new(1_700_000_000),
+        }
+    }
+}
+
+impl BlockDevice for MemoryDevice {
+    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+        let start = block_id.as_usize()? * BLOCK_SIZE;
+        let total_blocks = self.total_blocks();
+        let end = start
+            .checked_add(buffer.len())
+            .ok_or_else(Ext4Error::invalid_input)?;
+        let dst = self.bytes.get_mut(start..end).ok_or_else(|| {
+            Ext4Error::block_out_of_range(block_id.to_u32().unwrap_or(u32::MAX), total_blocks)
+        })?;
+        dst.copy_from_slice(buffer);
+        Ok(())
+    }
+
+    fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+        let start = block_id.as_usize()? * BLOCK_SIZE;
+        let total_blocks = self.total_blocks();
+        let end = start
+            .checked_add(buffer.len())
+            .ok_or_else(Ext4Error::invalid_input)?;
+        let src = self.bytes.get(start..end).ok_or_else(|| {
+            Ext4Error::block_out_of_range(block_id.to_u32().unwrap_or(u32::MAX), total_blocks)
+        })?;
+        buffer.copy_from_slice(src);
+        Ok(())
+    }
+
+    fn open(&mut self) -> Ext4Result<()> {
+        Ok(())
+    }
+
+    fn close(&mut self) -> Ext4Result<()> {
+        Ok(())
+    }
+
+    fn total_blocks(&self) -> u64 {
+        (self.bytes.len() / BLOCK_SIZE) as u64
+    }
+
+    fn block_size(&self) -> u32 {
+        BLOCK_SIZE as u32
+    }
+
+    fn flush(&mut self) -> Ext4Result<()> {
+        black_box(&self.bytes);
+        Ok(())
+    }
+
+    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+        let seconds = self.now.get();
+        self.now.set(seconds + 1);
+        Ok(Ext4Timestamp::new(seconds, 0))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Sample {
+    write: Duration,
+    read: Duration,
+    sync: Duration,
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn run_once(payload: &[u8]) -> Sample {
+    let device = MemoryDevice::new();
+    let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut device).expect("benchmark mkfs must succeed");
+    let mut filesystem = mount(&mut device).expect("benchmark mount must succeed");
+    mkfile(
+        &mut device,
+        &mut filesystem,
+        "/rsext4-host-perf.bin",
+        None,
+        None,
+    )
+    .expect("benchmark file creation must succeed");
+
+    let start = Instant::now();
+    write_file(
+        &mut device,
+        &mut filesystem,
+        "/rsext4-host-perf.bin",
+        0,
+        payload,
+    )
+    .expect("benchmark write must succeed");
+    let write = start.elapsed();
+
+    let start = Instant::now();
+    let read_back = read_file(&mut device, &mut filesystem, "/rsext4-host-perf.bin")
+        .expect("benchmark read must succeed");
+    black_box(&read_back);
+    assert_eq!(read_back, payload);
+    let read = start.elapsed();
+
+    let start = Instant::now();
+    umount(filesystem, &mut device).expect("benchmark unmount must succeed");
+    let sync = start.elapsed();
+
+    Sample { write, read, sync }
+}
+
+fn percentile(samples: &[u128], numerator: usize, denominator: usize) -> u128 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let rank = sorted
+        .len()
+        .saturating_mul(numerator)
+        .div_ceil(denominator)
+        .saturating_sub(1);
+    sorted[rank.min(sorted.len() - 1)]
+}
+
+fn main() {
+    let bytes = env_usize("RSEXT4_BENCH_BYTES", DEFAULT_BYTES);
+    let warmups = env_usize("RSEXT4_BENCH_WARMUPS", DEFAULT_WARMUPS);
+    let runs = env_usize("RSEXT4_BENCH_RUNS", DEFAULT_RUNS);
+    assert!(bytes > 0 && bytes.is_multiple_of(BLOCK_SIZE));
+    assert!(runs > 0);
+
+    let mut payload = vec![0u8; bytes];
+    for (index, byte) in payload.iter_mut().enumerate() {
+        *byte = (index as u8).wrapping_mul(31).wrapping_add(7);
+    }
+
+    println!(
+        "RSEXT4_BENCH_CONFIG workload=sequential bytes={bytes} warmups={warmups} runs={runs} \
+         block_size={BLOCK_SIZE} journal=true"
+    );
+
+    for _ in 0..warmups {
+        black_box(run_once(&payload));
+    }
+
+    let mut samples = Vec::with_capacity(runs);
+    for run in 0..runs {
+        let sample = run_once(&payload);
+        println!(
+            "RSEXT4_BENCH_RESULT run={run} write_ns={} read_ns={} sync_ns={}",
+            sample.write.as_nanos(),
+            sample.read.as_nanos(),
+            sample.sync.as_nanos()
+        );
+        samples.push(sample);
+    }
+
+    let write = samples
+        .iter()
+        .map(|sample| sample.write.as_nanos())
+        .collect::<Vec<_>>();
+    let read = samples
+        .iter()
+        .map(|sample| sample.read.as_nanos())
+        .collect::<Vec<_>>();
+    let sync = samples
+        .iter()
+        .map(|sample| sample.sync.as_nanos())
+        .collect::<Vec<_>>();
+
+    println!(
+        "RSEXT4_BENCH_SUMMARY workload=sequential write_median_ns={} write_p95_ns={} \
+         read_median_ns={} read_p95_ns={} sync_median_ns={} sync_p95_ns={}",
+        percentile(&write, 1, 2),
+        percentile(&write, 95, 100),
+        percentile(&read, 1, 2),
+        percentile(&read, 95, 100),
+        percentile(&sync, 1, 2),
+        percentile(&sync, 95, 100),
+    );
+}
