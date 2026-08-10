@@ -85,11 +85,10 @@ pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
         ("/".to_string(), dst_norm)
     };
 
-    let (parent_ino_num, parent_inode) =
-        match get_inode_with_num(fs, device, &parent).ok().flatten() {
-            Some(v) => v,
-            None => return Err(Ext4Error::invalid_input()),
-        };
+    let (parent_ino_num, parent_inode) = match get_inode_with_num(fs, device, &parent)? {
+        Some(v) => v,
+        None => return Err(Ext4Error::invalid_input()),
+    };
     if !parent_inode.is_dir() {
         return Err(Ext4Error::invalid_input());
     }

@@ -263,11 +263,11 @@ impl FileNodeOps for Inode {
                 return Err(VfsError::InvalidInput);
             }
 
-            if let Ok(blocks) = rsext4::loopfile::resolve_inode_block_allextend(fs, dev, &mut inode)
-            {
-                for blk in blocks.values() {
-                    let _ = fs.free_block(dev, *blk);
-                }
+            let blocks =
+                rsext4::loopfile::resolve_inode_block_allextend(fs, dev, self.ino, &mut inode)
+                    .map_err(into_vfs_err)?;
+            for blk in blocks.values() {
+                fs.free_block(dev, *blk).map_err(into_vfs_err)?;
             }
 
             let target_bytes = target.as_bytes();
@@ -363,7 +363,7 @@ impl DirNodeOps for Inode {
         let (fs, dev) = state.split();
         let mut inode = fs.get_inode_by_num(dev, self.ino).map_err(into_vfs_err)?;
 
-        let blocks = rsext4::loopfile::resolve_inode_block_allextend(fs, dev, &mut inode)
+        let blocks = rsext4::loopfile::resolve_inode_block_allextend(fs, dev, self.ino, &mut inode)
             .map_err(into_vfs_err)?;
 
         let mut byte_offset: u64 = 0;
@@ -553,7 +553,7 @@ impl DirNodeOps for Inode {
             let mut deferred_zero_link: Option<InodeNumber> = None;
             if inode.is_dir() {
                 let mut dir_inode = inode; // Ext4Inode is Copy
-                if !rsext4::is_dir_empty(fs, dev, &mut dir_inode).map_err(into_vfs_err)? {
+                if !rsext4::is_dir_empty(fs, dev, ino, &mut dir_inode).map_err(into_vfs_err)? {
                     return Err(VfsError::DirectoryNotEmpty);
                 }
                 rsext4::delete_dir(fs, dev, &path).map_err(into_vfs_err)?;

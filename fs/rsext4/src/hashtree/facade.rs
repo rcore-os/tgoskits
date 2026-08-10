@@ -3,6 +3,7 @@
 use super::{HashTreeError, HashTreeManager, HashTreeSearchResult};
 use crate::{
     blockdev::{BlockIo, Jbd2Dev},
+    bmalloc::InodeNumber,
     disknode::Ext4Inode,
     ext4::Ext4FileSystem,
 };
@@ -20,9 +21,10 @@ pub fn create_hash_tree_manager(fs: &Ext4FileSystem) -> HashTreeManager {
 pub fn lookup_directory_entry<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
+    dir_ino: InodeNumber,
     dir_inode: &Ext4Inode,
     target_name: &[u8],
 ) -> Result<HashTreeSearchResult, HashTreeError> {
     let manager = create_hash_tree_manager(fs);
-    manager.lookup(fs, block_dev, dir_inode, target_name)
+    manager.lookup(fs, block_dev, dir_ino, dir_inode, target_name)
 }

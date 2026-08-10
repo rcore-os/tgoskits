@@ -13,6 +13,7 @@ impl<'a> ExtentTree<'a> {
         deleted_ext: Ext4Extent,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
+        self.bind_geometry(&fs.superblock);
         let del_start = deleted_ext.ee_block;
         let del_len = deleted_ext.len();
         if del_len == 0 {
@@ -101,22 +102,15 @@ impl<'a> ExtentTree<'a> {
             }
 
             // Recursively search the next child that could satisfy the requested logical block.
-            fn pre_step<B: BlockIo>(
+            fn pre_step<'t, B: BlockIo>(
+                tree: &ExtentTree<'t>,
                 dev: &mut Jbd2Dev<B>,
                 node: &ExtentNode,
                 cur_lbn: u32,
             ) -> Ext4Result<PreRes> {
                 match node {
                     ExtentNode::Leaf { entries, .. } => Ok(pre_leaf_step(entries, cur_lbn)),
-                    ExtentNode::Index { entries, .. } => {
-                        if entries.is_empty() {
-                            return Ok(PreRes {
-                                kind: PreKind::NoMore,
-                                can_take: 0,
-                                next_lbn: cur_lbn,
-                            });
-                        }
-
+                    ExtentNode::Index { header, entries } => {
                         let mut search_lbn = cur_lbn;
                         let mut idx_pos = {
                             let pp = entries.partition_point(|idx| idx.ei_block <= search_lbn);
@@ -124,15 +118,10 @@ impl<'a> ExtentTree<'a> {
                         };
 
                         while idx_pos < entries.len() {
-                            let child_phy = AbsoluteBN::new(
-                                ((entries[idx_pos].ei_leaf_hi as u64) << 32)
-                                    | (entries[idx_pos].ei_leaf_lo as u64),
-                            );
-                            dev.read_block(child_phy)?;
-                            let child = ExtentTree::parse_node_from_bytes(dev.buffer())
-                                .ok_or(Ext4Error::corrupted())?;
+                            let child =
+                                tree.read_child_node(dev, &entries[idx_pos], header.eh_depth - 1)?;
 
-                            let r = pre_step(dev, &child, search_lbn)?;
+                            let r = pre_step(tree, dev, &child, search_lbn)?;
                             match r.kind {
                                 PreKind::Have | PreKind::HoleSkip => return Ok(r),
                                 PreKind::NoMore => {
@@ -155,15 +144,13 @@ impl<'a> ExtentTree<'a> {
                 }
             }
 
-            let pre_root = match self.load_root_from_inode() {
-                Some(node) => node,
-                None => return Err(Ext4Error::corrupted()),
-            };
+            let pre_root = self.load_root_from_inode()?;
+            self.validate_node(&pre_root, None, None, block_dev.total_blocks(), true)?;
 
             let mut need = del_len;
             let mut cur = del_start;
             while need > 0 {
-                let r = pre_step(block_dev, &pre_root, cur)?;
+                let r = pre_step(self, block_dev, &pre_root, cur)?;
                 match r.kind {
                     PreKind::Have => {
                         let take = core::cmp::min(need, r.can_take);
@@ -182,10 +169,8 @@ impl<'a> ExtentTree<'a> {
         }
 
         // Phase 2: perform the actual deletion and rewrite touched nodes on unwind.
-        let mut root = match self.load_root_from_inode() {
-            Some(node) => node,
-            None => return Err(Ext4Error::corrupted()),
-        };
+        let mut root = self.load_root_from_inode()?;
+        self.validate_node(&root, None, None, block_dev.total_blocks(), true)?;
 
         fn inline_eh_max_for_node(node: &ExtentNode) -> u16 {
             let inline_bytes = 15usize * 4;
@@ -403,16 +388,6 @@ impl<'a> ExtentTree<'a> {
                     tree, fs, dev, header, entries, cur_lbn, remaining, phy_block,
                 ),
                 ExtentNode::Index { header, entries } => {
-                    if entries.is_empty() {
-                        return Ok(StepRes {
-                            kind: StepKind::NoMoreExtent,
-                            deleted: 0,
-                            next_lbn: cur_lbn,
-                            empty: true,
-                            first_key: 0,
-                        });
-                    }
-
                     let mut search_lbn = cur_lbn;
                     let mut idx_pos = {
                         let pp = entries.partition_point(|idx| idx.ei_block <= search_lbn);
@@ -424,10 +399,8 @@ impl<'a> ExtentTree<'a> {
                             ((entries[idx_pos].ei_leaf_hi as u64) << 32)
                                 | (entries[idx_pos].ei_leaf_lo as u64),
                         );
-                        dev.read_block(child_phy)?;
-                        let child_bytes = dev.buffer();
-                        let mut child_node = ExtentTree::parse_node_from_bytes(child_bytes)
-                            .ok_or(Ext4Error::corrupted())?;
+                        let mut child_node =
+                            tree.read_child_node(dev, &entries[idx_pos], header.eh_depth - 1)?;
 
                         let child_res = step_recursive(
                             tree,
@@ -538,8 +511,7 @@ impl<'a> ExtentTree<'a> {
             ExtentNode::Leaf { header, entries } => {
                 header.eh_entries = entries.len() as u16;
                 header.eh_max = en_max;
-                self.store_root_to_inode(&root);
-                Ok(())
+                self.store_root_to_inode(&root)
             }
             ExtentNode::Index { header, entries } => {
                 if entries.is_empty() {
@@ -553,18 +525,15 @@ impl<'a> ExtentTree<'a> {
                         header: hdr,
                         entries: Vec::new(),
                     };
-                    self.store_root_to_inode(&empty_root);
-                    return Ok(());
+                    return self.store_root_to_inode(&empty_root);
                 }
 
                 if entries.len() == 1 {
                     let child_phy = AbsoluteBN::new(
                         ((entries[0].ei_leaf_hi as u64) << 32) | (entries[0].ei_leaf_lo as u64),
                     );
-                    block_dev.read_block(child_phy)?;
-                    let child_bytes = block_dev.buffer();
-                    let mut child_node = ExtentTree::parse_node_from_bytes(child_bytes)
-                        .ok_or(Ext4Error::corrupted())?;
+                    let mut child_node =
+                        self.read_child_node(block_dev, &entries[0], header.eh_depth - 1)?;
 
                     let inline_max = inline_eh_max_for_node(&child_node) as usize;
                     let child_entries_len = match &child_node {
@@ -580,7 +549,7 @@ impl<'a> ExtentTree<'a> {
                         };
 
                         self.can_sub_inode_sectors_for_blocks(fs, 1)?;
-                        self.store_root_to_inode(&child_node);
+                        self.store_root_to_inode(&child_node)?;
                         fs.free_block(block_dev, child_phy)?;
                         self.sub_inode_sectors_for_block(fs)?;
                         return Ok(());
@@ -589,8 +558,7 @@ impl<'a> ExtentTree<'a> {
 
                 header.eh_entries = entries.len() as u16;
                 header.eh_max = en_max;
-                self.store_root_to_inode(&root);
-                Ok(())
+                self.store_root_to_inode(&root)
             }
         }
     }
@@ -954,7 +922,7 @@ mod tests {
             tree.remove_extent(&mut fs, ext, &mut dev).unwrap();
 
             let tree2 = ExtentTree::new(&mut inode, BLOCK_SIZE);
-            assert!(tree2.load_root_from_inode().is_some());
+            assert!(tree2.load_root_from_inode().is_ok());
         }
 
         let tree = ExtentTree::new(&mut inode, BLOCK_SIZE);

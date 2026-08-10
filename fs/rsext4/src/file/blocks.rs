@@ -19,12 +19,7 @@ pub fn build_file_block_mapping_with_inode_num<B: BlockIo>(
         // Prefer extents and merge contiguous physical blocks into the same run.
         inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
         inode.i_block = [0; 15];
-
-        // Make sure the embedded root header exists before inserting extents.
-        if !inode.have_extend_header_and_use_extend() {
-            inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
-            inode.write_extend_header();
-        }
+        inode.write_extend_header();
 
         let mut exts_vec: Vec<Ext4Extent> = Vec::new();
 

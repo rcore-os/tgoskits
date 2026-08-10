@@ -28,7 +28,7 @@ pub fn open<B: BlockIo + crate::runtime::Clock>(
 ) -> Ext4Result<OpenFile> {
     let norm_path = normalize_path(path);
 
-    if let Ok(Some(inode)) = get_file_inode(fs, dev, &norm_path) {
+    if let Some(inode) = get_file_inode(fs, dev, &norm_path)? {
         let real_inode = inode.1;
         return Ok(OpenFile {
             inode_num: inode.0,
@@ -122,7 +122,7 @@ pub fn read_at<B: BlockIo + crate::runtime::Clock>(
         return Ok(Vec::new());
     }
 
-    if !file.inode.have_extend_header_and_use_extend() {
+    if !file.inode.uses_extents() {
         return Err(Ext4Error::unsupported());
     }
 
@@ -145,7 +145,9 @@ pub fn read_at<B: BlockIo + crate::runtime::Clock>(
             continue;
         }
 
-        if let Some(phys) = resolve_inode_block(dev, &mut file.inode, lbn as u32)? {
+        if let Some(phys) =
+            resolve_inode_block(fs, dev, file.inode_num, &mut file.inode, lbn as u32)?
+        {
             let cached = fs.datablock_cache.get_or_load(dev, phys)?;
             let data = &cached.data[..block_bytes as usize];
             out.extend_from_slice(&data[copy_start as usize..(copy_start + copy_len) as usize]);

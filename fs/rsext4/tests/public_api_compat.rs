@@ -157,6 +157,7 @@ fn bitmap_block_is_allocated(
 }
 
 fn collect_extents(
+    fs: &Ext4FileSystem,
     inode: &mut Ext4Inode,
     dev: &mut Jbd2Dev<CompatBlockDevice>,
 ) -> Vec<(u32, u32, u64)> {
@@ -186,8 +187,8 @@ fn collect_extents(
     }
 
     let mut out = Vec::new();
-    let tree = ExtentTree::new(inode, BLOCK_SIZE);
-    if let Some(root) = tree.load_root_from_inode() {
+    let tree = ExtentTree::with_checksum(inode, &fs.superblock, fs.root_inode);
+    if let Ok(root) = tree.load_root_from_inode() {
         walk(dev, &root, &mut out);
     }
     out.sort_unstable();
@@ -198,7 +199,7 @@ fn build_mapped_inode(fs: &mut Ext4FileSystem, dev: &mut Jbd2Dev<CompatBlockDevi
     let mut inode = new_extent_inode();
     let first = alloc_contiguous(fs, dev, 2);
     let second = alloc_contiguous(fs, dev, 1);
-    let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+    let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, fs.root_inode);
     tree.insert_extent(fs, Ext4Extent::new(0, first.raw(), 2), dev)
         .expect("insert first extent");
     tree.insert_extent(fs, Ext4Extent::new(4, second.raw(), 1), dev)
@@ -322,10 +323,12 @@ fn resolve_inode_block_allextend_matches_resolve_inode_blocks() {
     let mut corrected_inode = inode;
     let mut compatible_inode = inode;
 
-    let corrected = resolve_inode_blocks(&mut fs, &mut dev, &mut corrected_inode)
+    let inode_num = fs.root_inode;
+    let corrected = resolve_inode_blocks(&mut fs, &mut dev, inode_num, &mut corrected_inode)
         .expect("resolve through corrected API");
-    let compatible = resolve_inode_block_allextend(&mut fs, &mut dev, &mut compatible_inode)
-        .expect("resolve through compatibility API");
+    let compatible =
+        resolve_inode_block_allextend(&mut fs, &mut dev, inode_num, &mut compatible_inode)
+            .expect("resolve through compatibility API");
 
     assert_eq!(corrected, compatible);
     assert_eq!(corrected.len(), 3);
@@ -345,7 +348,7 @@ fn remove_extend_matches_remove_extent() {
         let mut inode = new_extent_inode();
         let base = alloc_contiguous(&mut fs, &mut dev, 4);
         let inserted = Ext4Extent::new(0, base.raw(), 4);
-        ExtentTree::new(&mut inode, BLOCK_SIZE)
+        ExtentTree::with_checksum(&mut inode, &fs.superblock, fs.root_inode)
             .insert_extent(&mut fs, inserted, &mut dev)
             .expect("insert extent");
         inode
@@ -354,7 +357,7 @@ fn remove_extend_matches_remove_extent() {
 
         let deleted = Ext4Extent::new(1, 0, 2);
         remove(
-            &mut ExtentTree::new(&mut inode, BLOCK_SIZE),
+            &mut ExtentTree::with_checksum(&mut inode, &fs.superblock, fs.root_inode),
             &mut fs,
             deleted,
             &mut dev,
@@ -377,7 +380,7 @@ fn remove_extend_matches_remove_extent() {
         .collect();
 
         RemovedExtentObservation {
-            extents: collect_extents(&mut inode, &mut dev),
+            extents: collect_extents(&fs, &mut inode, &mut dev),
             allocated_blocks: allocated,
         }
     }

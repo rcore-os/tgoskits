@@ -478,6 +478,49 @@ mod file_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
+    #[test]
+    fn hard_link_propagates_corrupt_destination_parent_extent() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/source").expect("source mkdir failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/destination").expect("destination mkdir failed");
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/source/original",
+            Some(b"link target"),
+            None,
+        )
+        .expect("target creation failed");
+
+        let destination_ino = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/destination")
+            .expect("destination lookup failed")
+            .expect("destination missing")
+            .0;
+        fs.modify_inode(&mut jbd2_dev, destination_ino, |inode| {
+            inode.i_block[0] = 0;
+        })
+        .expect("extent corruption injection failed");
+
+        let error = link(
+            &mut fs,
+            &mut jbd2_dev,
+            "/destination/missing/new-link",
+            "/source/original",
+        )
+        .expect_err("corrupt destination parent must abort hard-link creation");
+        assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
+        assert_eq!(
+            error.context(),
+            Some(ErrorContext::Operation {
+                op: "extent:bad_magic",
+            })
+        );
+    }
+
     /// Verifies symbolic-link resolution by reading the target through the link path.
     #[test]
     fn test_symbolic_link() {

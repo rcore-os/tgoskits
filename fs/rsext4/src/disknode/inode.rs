@@ -293,15 +293,13 @@ impl Ext4Inode {
     fn is_extent(&self) -> bool {
         self.i_flags & Self::EXT4_EXTENTS_FL != 0
     }
-    /// Verifies both the extent flag and the embedded extent-header magic.
-    pub fn have_extend_header_and_use_extend(&self) -> bool {
-        if !Self::is_extent(self) {
-            return false;
-        }
-
-        let word0_le = self.i_block[0].to_le_bytes();
-        let magic = u16::from_le_bytes([word0_le[0], word0_le[1]]);
-        magic == Ext4ExtentHeader::EXT4_EXT_MAGIC
+    /// Returns whether `i_block` must be decoded as an extent tree.
+    ///
+    /// The extent header is validated by the checked codec. A bad magic value
+    /// on an extent inode is corruption, not a reason to reinterpret `i_block`
+    /// as legacy indirect pointers.
+    pub fn uses_extents(&self) -> bool {
+        Self::is_extent(self)
     }
 
     // some metadata change support

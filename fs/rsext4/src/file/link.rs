@@ -24,11 +24,7 @@ pub fn link<B: BlockIo + crate::runtime::Clock>(
     let new_links = target_inode.incremented_links_count(false)?;
 
     // Destination entry must not already exist.
-    if get_file_inode(fs, block_dev, &link_norm)
-        .ok()
-        .flatten()
-        .is_some()
-    {
+    if get_file_inode(fs, block_dev, &link_norm)?.is_some() {
         return Err(Ext4Error::already_exists());
     }
 
@@ -44,10 +40,7 @@ pub fn link<B: BlockIo + crate::runtime::Clock>(
     } else {
         ("/".to_string(), link_norm)
     };
-    let (parent_ino, mut parent_inode) = match get_inode_with_num(fs, block_dev, &parent_path)
-        .ok()
-        .flatten()
-    {
+    let (parent_ino, mut parent_inode) = match get_inode_with_num(fs, block_dev, &parent_path)? {
         Some(v) => v,
         None => return Err(Ext4Error::not_found()),
     };
@@ -70,16 +63,10 @@ pub fn link<B: BlockIo + crate::runtime::Clock>(
     };
 
     let mut copied_ft: Option<u8> = None;
-    if let Some((_lpino, mut lp_inode)) = get_inode_with_num(fs, block_dev, &linked_parent_path)
-        .ok()
-        .flatten()
-        && let Ok(blocks) = resolve_inode_blocks(fs, block_dev, &mut lp_inode)
-    {
+    if let Some((lpino, mut lp_inode)) = get_inode_with_num(fs, block_dev, &linked_parent_path)? {
+        let blocks = resolve_inode_blocks(fs, block_dev, lpino, &mut lp_inode)?;
         for &phys in blocks.values() {
-            let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
+            let cached = fs.datablock_cache.get_or_load(block_dev, phys)?;
             let data = &cached.data;
             let iter = DirEntryIterator::new(data);
             for (entry, _) in iter {

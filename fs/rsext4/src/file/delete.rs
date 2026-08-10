@@ -13,10 +13,10 @@ pub fn free_inode<B: BlockIo + crate::runtime::Clock>(
     inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<()> {
-    let mut used_blocks: Vec<AbsoluteBN> = resolve_inode_blocks(fs, block_dev, inode)?
+    let mut used_blocks: Vec<AbsoluteBN> = resolve_inode_blocks(fs, block_dev, inode_num, inode)?
         .into_values()
         .collect();
-    if inode.have_extend_header_and_use_extend() {
+    if inode.uses_extents() {
         used_blocks.extend(
             ExtentTree::with_checksum(inode, &fs.superblock, inode_num)
                 .external_node_blocks(block_dev)?,
@@ -69,10 +69,7 @@ pub fn unlink<B: BlockIo + crate::runtime::Clock>(
         ("/".to_string(), norm_path)
     };
 
-    let (parent_ino, parent_inode) = match get_inode_with_num(fs, block_dev, &parent_path)
-        .ok()
-        .flatten()
-    {
+    let (parent_ino, parent_inode) = match get_inode_with_num(fs, block_dev, &parent_path)? {
         Some(v) => v,
         None => return Err(Ext4Error::not_found()),
     };
@@ -222,29 +219,31 @@ fn try_remove_dentry_in_block<B: BlockIo>(
 fn parent_dir_data_blocks<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
+    parent_ino: InodeNumber,
     parent_inode: &mut Ext4Inode,
 ) -> Ext4Result<alloc::vec::Vec<AbsoluteBN>> {
-    let mut blocks: alloc::vec::Vec<AbsoluteBN> =
-        if parent_inode.have_extend_header_and_use_extend() {
-            resolve_inode_blocks(fs, block_dev, parent_inode)?
-                .into_values()
-                .collect()
+    let mut blocks: alloc::vec::Vec<AbsoluteBN> = if parent_inode.uses_extents() {
+        resolve_inode_blocks(fs, block_dev, parent_ino, parent_inode)?
+            .into_values()
+            .collect()
+    } else {
+        let total_size = parent_inode.size() as usize;
+        let block_bytes = fs.block_size();
+        let total_blocks = if total_size == 0 {
+            0
         } else {
-            let total_size = parent_inode.size() as usize;
-            let block_bytes = fs.block_size();
-            let total_blocks = if total_size == 0 {
-                0
-            } else {
-                total_size.div_ceil(block_bytes)
-            };
-            let mut collected = alloc::vec::Vec::new();
-            for lbn in 0..total_blocks {
-                if let Ok(Some(phys)) = resolve_inode_block(block_dev, parent_inode, lbn as u32) {
-                    collected.push(phys);
-                }
-            }
-            collected
+            total_size.div_ceil(block_bytes)
         };
+        let mut collected = alloc::vec::Vec::new();
+        for lbn in 0..total_blocks {
+            if let Some(phys) =
+                resolve_inode_block(fs, block_dev, parent_ino, parent_inode, lbn as u32)?
+            {
+                collected.push(phys);
+            }
+        }
+        collected
+    };
     blocks.sort_unstable();
     blocks.dedup();
     Ok(blocks)
@@ -254,33 +253,35 @@ fn parent_dir_data_blocks<B: BlockIo>(
 pub(crate) fn find_named_entry_in_parent<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
-    _parent_ino: InodeNumber,
+    parent_ino: InodeNumber,
     parent_inode: &Ext4Inode,
     name_bytes: &[u8],
 ) -> Ext4Result<ParentDirEntry> {
-    use crate::hashtree::{Ext4InodeHashTreeExt, lookup_directory_entry};
+    use crate::hashtree::{Ext4InodeHashTreeExt, HashTreeError, lookup_directory_entry};
 
     if !parent_inode.is_dir() {
         return Err(Ext4Error::not_dir());
     }
 
-    if parent_inode.is_htree_indexed()
-        && let Ok(result) = lookup_directory_entry(fs, block_dev, parent_inode, name_bytes)
-    {
-        let ino = InodeNumber::new(result.entry.inode).map_err(|_| Ext4Error::corrupted())?;
-        return Ok(ParentDirEntry {
-            ino,
-            phys: result.block_num,
-            file_type: result.entry.file_type,
-        });
+    if parent_inode.is_htree_indexed() {
+        match lookup_directory_entry(fs, block_dev, parent_ino, parent_inode, name_bytes) {
+            Ok(result) => {
+                let ino =
+                    InodeNumber::new(result.entry.inode).map_err(|_| Ext4Error::corrupted())?;
+                return Ok(ParentDirEntry {
+                    ino,
+                    phys: result.block_num,
+                    file_type: result.entry.file_type,
+                });
+            }
+            Err(HashTreeError::Filesystem(error)) => return Err(error),
+            Err(_) => {}
+        }
     }
 
     let mut parent_inode = *parent_inode;
-    for phys in parent_dir_data_blocks(fs, block_dev, &mut parent_inode)? {
-        let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+    for phys in parent_dir_data_blocks(fs, block_dev, parent_ino, &mut parent_inode)? {
+        let cached = fs.datablock_cache.get_or_load(block_dev, phys)?;
         let data = &cached.data;
         if let Some((inode, file_type)) = find_dentry_in_dir_block(data, name_bytes) {
             let ino = InodeNumber::new(inode).map_err(|_| Ext4Error::corrupted())?;
@@ -317,10 +318,7 @@ pub fn remove_inodeentry_from_parentdir<B: BlockIo + crate::runtime::Clock>(
     parent_path: &str,
     child_name: &str,
 ) -> Ext4Result<()> {
-    let parent_info = match get_inode_with_num(fs, block_dev, parent_path)
-        .ok()
-        .flatten()
-    {
+    let parent_info = match get_inode_with_num(fs, block_dev, parent_path)? {
         Some(v) => v,
         None => return Err(Ext4Error::not_found()),
     };
@@ -404,7 +402,7 @@ pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
         // Stage 0 scans children and pushes subdirectories for a depth-first
         // traversal.
         if frame.stage == 0 {
-            let dir_blocks = resolve_inode_blocks(fs, block_dev, &mut frame.inode)?;
+            let dir_blocks = resolve_inode_blocks(fs, block_dev, frame.ino_num, &mut frame.inode)?;
 
             let mut to_descend: Vec<(
                 alloc::string::String,
@@ -524,9 +522,10 @@ pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
 pub fn is_dir_empty<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
+    inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<bool> {
-    let dir_blocks = resolve_inode_blocks(fs, block_dev, inode)?;
+    let dir_blocks = resolve_inode_blocks(fs, block_dev, inode_num, inode)?;
     for &phys in dir_blocks.values() {
         let cached = fs.datablock_cache.get_or_load(block_dev, phys)?;
         let data = &cached.data;
@@ -559,10 +558,7 @@ pub fn delete_file<B: BlockIo + crate::runtime::Clock>(
         ("/".to_string(), norm_path)
     };
 
-    let (parent_ino, parent_inode) = match get_inode_with_num(fs, block_dev, &parent_path)
-        .ok()
-        .flatten()
-    {
+    let (parent_ino, parent_inode) = match get_inode_with_num(fs, block_dev, &parent_path)? {
         Some(v) => v,
         None => return Err(Ext4Error::not_found()),
     };

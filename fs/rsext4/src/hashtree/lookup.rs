@@ -7,54 +7,65 @@ use super::{
 };
 use crate::{
     blockdev::{BlockIo, Jbd2Dev},
-    bmalloc::AbsoluteBN,
+    bmalloc::{AbsoluteBN, InodeNumber},
     disknode::Ext4Inode,
     entries::{DirEntryIterator, Ext4DirEntryInfo, Ext4DxEntry, classic_dir, htree_dir},
     ext4::Ext4FileSystem,
     loopfile::{resolve_inode_block, resolve_inode_blocks},
 };
 
+#[derive(Clone, Copy)]
+struct HashSearch<'a> {
+    dir_ino: InodeNumber,
+    dir_inode: &'a Ext4Inode,
+    target_hash: u32,
+    target_name: &'a [u8],
+}
+
 pub(super) fn lookup<B: BlockIo>(
     manager: &HashTreeManager,
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
+    dir_ino: InodeNumber,
     dir_inode: &Ext4Inode,
     target_name: &[u8],
 ) -> Result<HashTreeSearchResult, HashTreeError> {
     if !dir_inode.is_htree_indexed() {
-        return manager.fallback_to_linear_search(fs, block_dev, dir_inode, target_name);
+        return manager.fallback_to_linear_search(fs, block_dev, dir_ino, dir_inode, target_name);
     }
 
     let target_hash =
         htree_dir::calculate_hash(target_name, manager.hash_version, &manager.hash_seed);
+    let search = HashSearch {
+        dir_ino,
+        dir_inode,
+        target_hash,
+        target_name,
+    };
 
-    let root_block = manager.get_root_block(block_dev, dir_inode)?;
+    let root_block = manager.get_root_block(fs, block_dev, dir_ino, dir_inode)?;
     let root_data = manager.read_block_data(fs, block_dev, root_block)?;
     let root_info = manager.parse_root_node(&root_data)?;
 
-    match manager.search_in_hash_tree(
-        fs,
-        block_dev,
-        dir_inode,
-        &root_info,
-        target_hash,
-        target_name,
-    ) {
+    match manager.search_in_hash_tree(fs, block_dev, search, &root_info) {
         Ok(result) => Ok(result),
-        Err(_) => manager.fallback_to_linear_search(fs, block_dev, dir_inode, target_name),
+        Err(error @ HashTreeError::Filesystem(_)) => Err(error),
+        Err(_) => manager.fallback_to_linear_search(fs, block_dev, dir_ino, dir_inode, target_name),
     }
 }
 
 impl HashTreeManager {
     pub(super) fn get_root_block<B: BlockIo>(
         &self,
+        fs: &Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
+        dir_ino: InodeNumber,
         dir_inode: &Ext4Inode,
     ) -> Result<AbsoluteBN, HashTreeError> {
-        match resolve_inode_block(block_dev, &mut dir_inode.clone(), 0) {
+        match resolve_inode_block(fs, block_dev, dir_ino, &mut dir_inode.clone(), 0) {
             Ok(Some(block)) => Ok(block),
             Ok(None) => Err(HashTreeError::InvalidHashTree),
-            Err(_) => Err(HashTreeError::BlockOutOfRange),
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -64,52 +75,40 @@ impl HashTreeManager {
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
     ) -> Result<Vec<u8>, HashTreeError> {
-        match fs.datablock_cache.get_or_load(block_dev, block_num) {
-            Ok(cached_block) => Ok(cached_block.data.clone()),
-            Err(_) => Err(HashTreeError::BlockOutOfRange),
-        }
+        fs.datablock_cache
+            .get_or_load(block_dev, block_num)
+            .map(|cached_block| cached_block.data.clone())
+            .map_err(HashTreeError::from)
     }
 
-    pub(super) fn search_in_hash_tree<B: BlockIo>(
+    fn search_in_hash_tree<B: BlockIo>(
         &self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
-        dir_inode: &Ext4Inode,
+        search: HashSearch<'_>,
         node: &HashTreeNode,
-        target_hash: u32,
-        target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
         match node {
-            HashTreeNode::Root { entries, .. } | HashTreeNode::Internal { entries, .. } => self
-                .search_in_entries(
-                    fs,
-                    block_dev,
-                    dir_inode,
-                    entries,
-                    target_hash,
-                    target_name,
-                    0,
-                ),
+            HashTreeNode::Root { entries, .. } | HashTreeNode::Internal { entries, .. } => {
+                self.search_in_entries(fs, block_dev, search, entries, 0)
+            }
             HashTreeNode::Leaf { block_num, .. } => {
-                self.search_in_leaf_block(fs, block_dev, *block_num, target_name)
+                self.search_in_leaf_block(fs, block_dev, *block_num, search.target_name)
             }
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn search_in_entries<B: BlockIo>(
+    fn search_in_entries<B: BlockIo>(
         &self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
-        dir_inode: &Ext4Inode,
+        search: HashSearch<'_>,
         entries: &[Ext4DxEntry],
-        target_hash: u32,
-        target_name: &[u8],
         level: u32,
     ) -> Result<HashTreeSearchResult, HashTreeError> {
         let mut selected_entry = None;
         for entry in entries {
-            if entry.hash <= target_hash {
+            if entry.hash <= search.target_hash {
                 selected_entry = Some(entry);
             } else {
                 break;
@@ -117,23 +116,22 @@ impl HashTreeManager {
         }
 
         let entry = selected_entry.ok_or(HashTreeError::EntryNotFound)?;
-        let block_num = resolve_inode_block(block_dev, &mut dir_inode.clone(), entry.block)
-            .map_err(|_| HashTreeError::BlockOutOfRange)?
-            .ok_or(HashTreeError::BlockOutOfRange)?;
+        let block_num = resolve_inode_block(
+            fs,
+            block_dev,
+            search.dir_ino,
+            &mut search.dir_inode.clone(),
+            entry.block,
+        )
+        .map_err(HashTreeError::from)?
+        .ok_or(HashTreeError::BlockOutOfRange)?;
         let block_data = self.read_block_data(fs, block_dev, block_num)?;
 
         if level >= self.indirect_levels as u32 {
-            self.search_in_leaf_data(&block_data, target_name, block_num)
+            self.search_in_leaf_data(&block_data, search.target_name, block_num)
         } else {
             let internal_node = self.parse_internal_node(&block_data)?;
-            self.search_in_hash_tree(
-                fs,
-                block_dev,
-                dir_inode,
-                &internal_node,
-                target_hash,
-                target_name,
-            )
+            self.search_in_hash_tree(fs, block_dev, search, &internal_node)
         }
     }
 
@@ -175,6 +173,7 @@ impl HashTreeManager {
         &self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
+        dir_ino: InodeNumber,
         dir_inode: &Ext4Inode,
         target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
@@ -186,12 +185,10 @@ impl HashTreeManager {
             total_size.div_ceil(block_bytes)
         };
 
-        if dir_inode.have_extend_header_and_use_extend() {
+        if dir_inode.uses_extents() {
             let mut inode_copy = *dir_inode;
-            let blocks_map = match resolve_inode_blocks(fs, block_dev, &mut inode_copy) {
-                Ok(map) => map,
-                Err(_) => return Err(HashTreeError::BlockOutOfRange),
-            };
+            let blocks_map = resolve_inode_blocks(fs, block_dev, dir_ino, &mut inode_copy)
+                .map_err(HashTreeError::from)?;
 
             for lbn in 0..total_blocks {
                 let phys = match blocks_map.get(&(lbn as u32)) {
@@ -199,10 +196,10 @@ impl HashTreeManager {
                     None => continue,
                 };
 
-                let cached_block = match fs.datablock_cache.get_or_load(block_dev, phys) {
-                    Ok(block) => block,
-                    Err(_) => return Err(HashTreeError::BlockOutOfRange),
-                };
+                let cached_block = fs
+                    .datablock_cache
+                    .get_or_load(block_dev, phys)
+                    .map_err(HashTreeError::from)?;
 
                 let block_data = &cached_block.data;
                 if let Some(entry) = classic_dir::find_entry(block_data, target_name) {

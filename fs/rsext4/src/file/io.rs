@@ -11,7 +11,7 @@ pub fn truncate<B: BlockIo + crate::runtime::Clock>(
     let norm_path = normalize_path(path);
 
     // Resolve the target inode once, then delegate to the inode-based helper.
-    let (inode_num, _inode) = match get_inode_with_num(fs, device, &norm_path).ok().flatten() {
+    let (inode_num, _inode) = match get_inode_with_num(fs, device, &norm_path)? {
         Some(v) => v,
         None => return Err(Ext4Error::not_found()),
     };
@@ -59,14 +59,14 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
     }
 
     // Extent-backed files handle sparse growth and extent-aware shrinking here.
-    if fs.superblock.has_extents() && inode.have_extend_header_and_use_extend() {
+    if fs.superblock.has_extents() && inode.uses_extents() {
         if truncate_size < old_size {
             // Delegate range removal to the extent tree so physical-block frees
             // stay consistent even when holes exist.
             let del_start_lbn = new_blocks as u32;
 
             loop {
-                let blocks_map = resolve_inode_blocks(fs, device, &mut inode)?;
+                let blocks_map = resolve_inode_blocks(fs, device, inode_num, &mut inode)?;
                 let del_len = if truncate_size == 0 {
                     blocks_map.len() as u32
                 } else {
@@ -139,7 +139,7 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
         inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
         inode.i_size_high = (truncate_size >> 32) as u32;
         // i_blocks reflects number of allocated blocks, not logical length. Recompute after edits.
-        let alloc_blocks = resolve_inode_blocks(fs, device, &mut inode)?.len() as u64;
+        let alloc_blocks = resolve_inode_blocks(fs, device, inode_num, &mut inode)?.len() as u64;
         let extent_tree_blocks = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num)
             .external_node_blocks(device)?
             .len() as u64;
@@ -208,6 +208,7 @@ pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
 fn read_symlink_target<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<Vec<u8>> {
     let size = inode.size() as usize;
@@ -232,8 +233,8 @@ fn read_symlink_target<B: BlockIo>(
     let total_blocks = size.div_ceil(block_bytes);
     let mut buf = Vec::with_capacity(size);
 
-    if inode.have_extend_header_and_use_extend() {
-        let blocks = resolve_inode_blocks(fs, device, inode)?;
+    if inode.uses_extents() {
+        let blocks = resolve_inode_blocks(fs, device, inode_num, inode)?;
         for &phys in blocks.values() {
             let cached = fs.datablock_cache.get_or_load(device, phys)?;
             let data = &cached.data;
@@ -244,7 +245,7 @@ fn read_symlink_target<B: BlockIo>(
         }
     } else {
         for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(device, inode, lbn as u32)? {
+            let phys = match resolve_inode_block(fs, device, inode_num, inode, lbn as u32)? {
                 Some(b) => b,
                 None => break,
             };
@@ -296,7 +297,7 @@ fn read_file_follow<B: BlockIo + crate::runtime::Clock>(
     };
 
     if inode.is_symlink() {
-        let target_bytes = read_symlink_target(device, fs, &mut inode)?;
+        let target_bytes = read_symlink_target(device, fs, inode_num, &mut inode)?;
         let target = match core::str::from_utf8(&target_bytes) {
             Ok(s) => s,
             Err(_) => return Err(Ext4Error::corrupted()),
@@ -324,8 +325,8 @@ fn read_file_follow<B: BlockIo + crate::runtime::Clock>(
 
     let mut buf = Vec::with_capacity(size);
 
-    if inode.have_extend_header_and_use_extend() {
-        let blocks = resolve_inode_blocks(fs, device, &mut inode)?;
+    if inode.uses_extents() {
+        let blocks = resolve_inode_blocks(fs, device, inode_num, &mut inode)?;
         for &phys in blocks.values() {
             let cached = fs.datablock_cache.get_or_load(device, phys)?;
             let data = &cached.data;
@@ -336,7 +337,7 @@ fn read_file_follow<B: BlockIo + crate::runtime::Clock>(
         }
     } else {
         for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(device, &mut inode, lbn as u32)? {
+            let phys = match resolve_inode_block(fs, device, inode_num, &mut inode, lbn as u32)? {
                 Some(b) => b,
                 None => break,
             };
@@ -381,7 +382,7 @@ pub fn read_inode_data_into<B: BlockIo + crate::runtime::Clock>(
     }
 
     if inode.is_symlink() {
-        let target = read_symlink_target(device, fs, &mut inode)?;
+        let target = read_symlink_target(device, fs, inode_num, &mut inode)?;
         let start = offset as usize;
         let available = target.len().saturating_sub(start);
         let to_read = core::cmp::min(dst.len(), available);
@@ -406,8 +407,8 @@ pub fn read_inode_data_into<B: BlockIo + crate::runtime::Clock>(
     let end_lbn = (end - 1) / block_bytes;
 
     let mut copied = 0usize;
-    if inode.have_extend_header_and_use_extend() {
-        let mut tree = ExtentTree::new(&mut inode, fs.block_size());
+    if inode.uses_extents() {
+        let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
         let runs = tree.initialized_runs_in_range(device, start_lbn as u32, end_lbn as u32)?;
         let mut lbn = start_lbn;
         let max_run_blocks = (MAX_RUN_IO_BYTES / block_size).max(1) as u32;
@@ -455,7 +456,8 @@ pub fn read_inode_data_into<B: BlockIo + crate::runtime::Clock>(
         let mut lbn = start_lbn;
         while lbn <= end_lbn {
             let copy_len = copy_len_for_lbn(offset, end, lbn, block_bytes)?;
-            if let Some(phys) = resolve_inode_block(device, &mut inode, lbn as u32)? {
+            if let Some(phys) = resolve_inode_block(fs, device, inode_num, &mut inode, lbn as u32)?
+            {
                 let cached = fs.datablock_cache.get_or_load(device, phys)?;
                 let lbn_start = lbn * block_bytes;
                 let src_off = (core::cmp::max(offset, lbn_start) - lbn_start) as usize;
@@ -492,7 +494,7 @@ pub fn write_file<B: BlockIo + crate::runtime::Clock>(
     }
 
     // Resolve the inode once before switching to the inode-based writer.
-    let info = match get_inode_with_num(fs, device, path).ok().flatten() {
+    let info = match get_inode_with_num(fs, device, path)? {
         Some(v) => v,
         None => return Err(Ext4Error::not_found()),
     };
@@ -652,9 +654,10 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
     let old_size = inode.size();
     let block_bytes = fs.block_size() as u64;
 
-    // Some older or partially initialized inodes may carry the extents flag
-    // without a valid embedded header. Repair that before extent operations.
-    if fs.superblock.has_extents() && !inode.have_extend_header_and_use_extend() {
+    // Initialize a legacy inode before its first extent operation. An inode
+    // already carrying EXT4_EXTENTS_FL is never repaired here: its on-disk
+    // header must pass the checked codec.
+    if fs.superblock.has_extents() && !inode.uses_extents() {
         inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
         inode.write_extend_header();
     }
@@ -668,9 +671,7 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
     }
 
     // Non-extent files cannot grow through sparse writes in this implementation.
-    if end > old_size
-        && (!fs.superblock.has_extents() || !inode.have_extend_header_and_use_extend())
-    {
+    if end > old_size && (!fs.superblock.has_extents() || !inode.uses_extents()) {
         return Err(Ext4Error::unsupported());
     }
 
@@ -684,9 +685,9 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
         && offset.is_multiple_of(block_bytes)
         && end.is_multiple_of(block_bytes)
         && start_lbn < end_lbn
-        && inode.have_extend_header_and_use_extend();
+        && inode.uses_extents();
     let existing_runs = if use_existing_run_map {
-        let mut tree = ExtentTree::new(&mut inode, fs.block_size());
+        let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
         Some(tree.initialized_runs_in_range(device, start_lbn as u32, end_lbn as u32)?)
     } else {
         None
@@ -704,8 +705,8 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
             continue;
         }
 
-        let phys = if inode.have_extend_header_and_use_extend() {
-            match resolve_inode_block(device, &mut inode, lbn as u32)? {
+        let phys = if inode.uses_extents() {
+            match resolve_inode_block(fs, device, inode_num, &mut inode, lbn as u32)? {
                 Some(b) => b,
                 None => {
                     let missing_len = if lbn >= old_blocks {
@@ -770,7 +771,7 @@ pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
                 }
             }
         } else {
-            match resolve_inode_block(device, &mut inode, lbn as u32)? {
+            match resolve_inode_block(fs, device, inode_num, &mut inode, lbn as u32)? {
                 Some(b) => b,
                 None => return Err(Ext4Error::unsupported()),
             }

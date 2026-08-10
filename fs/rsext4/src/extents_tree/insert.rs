@@ -8,20 +8,22 @@ impl<'a> ExtentTree<'a> {
         new_ext: Ext4Extent,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
-        let mut root = match self.load_root_from_inode() {
-            Some(node) => node,
-            None => return Err(Ext4Error::corrupted()),
-        };
+        self.bind_geometry(&fs.superblock);
+        Self::validate_leaf_entries(core::slice::from_ref(&new_ext))?;
+        self.validate_physical_range(
+            new_ext.start_block(),
+            u64::from(new_ext.len()),
+            block_dev.total_blocks(),
+        )?;
+        let mut root = self.load_root_from_inode()?;
+        self.validate_node(&root, None, None, block_dev.total_blocks(), true)?;
 
         // Insert into the current root. If the root splits, rebuild a new
         // index root inside the inode.
         let split_result = self.insert_recursive(fs, block_dev, &mut root, new_ext, None)?;
 
         match split_result {
-            None => {
-                self.store_root_to_inode(&root);
-                Ok(())
-            }
+            None => self.store_root_to_inode(&root),
             Some(split_info) => {
                 // Root split: promote the old inline root into a real block and
                 // rebuild the inode root as an index node.
@@ -40,7 +42,14 @@ impl<'a> ExtentTree<'a> {
 
                 let mut new_root_header = Ext4ExtentHeader::new();
                 new_root_header.eh_magic = Ext4ExtentHeader::EXT4_EXT_MAGIC;
-                new_root_header.eh_depth = root.header().eh_depth + 1;
+                new_root_header.eh_depth = root
+                    .header()
+                    .eh_depth
+                    .checked_add(1)
+                    .filter(|depth| *depth <= Self::MAX_DEPTH)
+                    .ok_or_else(|| {
+                        Ext4Error::corrupted().with_operation("extent:depth_overflow")
+                    })?;
                 new_root_header.eh_entries = 2;
                 new_root_header.eh_max = root_eh_max;
 
@@ -64,8 +73,7 @@ impl<'a> ExtentTree<'a> {
                     entries: vec![left_idx, right_idx],
                 };
 
-                self.store_root_to_inode(&new_root_node);
-                Ok(())
+                self.store_root_to_inode(&new_root_node)
             }
         }
     }
@@ -227,8 +235,15 @@ impl<'a> ExtentTree<'a> {
                 // Bubble the right node's first logical block and physical block
                 // up to the parent.
                 let split_key = match &right_node {
-                    ExtentNode::Leaf { entries, .. } => entries[0].ee_block,
-                    _ => unreachable!(),
+                    ExtentNode::Leaf { entries, .. } => entries
+                        .first()
+                        .map(|extent| extent.ee_block)
+                        .ok_or_else(|| {
+                            Ext4Error::corrupted().with_operation("extent:empty_split")
+                        })?,
+                    ExtentNode::Index { .. } => {
+                        return Err(Ext4Error::corrupted().with_operation("extent:split_kind"));
+                    }
                 };
 
                 Ok(Some(SplitInfo {
@@ -246,15 +261,16 @@ impl<'a> ExtentTree<'a> {
                 // Descend through the last child whose key is <= the new extent.
                 let pp = entries.partition_point(|idx| idx.ei_block <= new_ext.ee_block);
                 let idx_pos = if pp == 0 { 0 } else { pp - 1 };
+                let child_index = entries
+                    .get(idx_pos)
+                    .copied()
+                    .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:empty_index"))?;
 
                 let child_phy_block = AbsoluteBN::new(
-                    ((entries[idx_pos].ei_leaf_hi as u64) << 32)
-                        | (entries[idx_pos].ei_leaf_lo as u64),
+                    ((child_index.ei_leaf_hi as u64) << 32) | u64::from(child_index.ei_leaf_lo),
                 );
-                block_dev.read_block(child_phy_block)?;
-                let child_bytes = block_dev.buffer();
                 let mut child_node =
-                    Self::parse_node_from_bytes(child_bytes).ok_or(Ext4Error::corrupted())?;
+                    self.read_child_node(block_dev, &child_index, header.eh_depth - 1)?;
 
                 let child_split_res = self.insert_recursive(
                     fs,
@@ -330,8 +346,14 @@ impl<'a> ExtentTree<'a> {
 
                     // Bubble the new right child up to the parent.
                     let split_key = match &right_node {
-                        ExtentNode::Index { entries, .. } => entries[0].ei_block,
-                        _ => unreachable!(),
+                        ExtentNode::Index { entries, .. } => {
+                            entries.first().map(|index| index.ei_block).ok_or_else(|| {
+                                Ext4Error::corrupted().with_operation("extent:empty_split")
+                            })?
+                        }
+                        ExtentNode::Leaf { .. } => {
+                            return Err(Ext4Error::corrupted().with_operation("extent:split_kind"));
+                        }
                     };
 
                     Ok(Some(SplitInfo {

@@ -16,12 +16,14 @@ use crate::{
 
 /// Resolves a logical block number to an absolute physical block number.
 pub fn resolve_inode_block<B: BlockIo>(
+    fs: &Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
+    inode_num: InodeNumber,
     inode: &mut Ext4Inode,
     logical_block: u32,
 ) -> Ext4Result<Option<AbsoluteBN>> {
-    if inode.have_extend_header_and_use_extend() {
-        let mut tree = ExtentTree::new(inode, block_dev.block_size() as usize);
+    if inode.uses_extents() {
+        let mut tree = ExtentTree::with_checksum(inode, &fs.superblock, inode_num);
         if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
             let len = ext.len();
             if len == 0 {
@@ -29,7 +31,10 @@ pub fn resolve_inode_block<B: BlockIo>(
             }
 
             let start_lbn = ext.ee_block;
-            if logical_block < start_lbn || logical_block >= start_lbn.saturating_add(len) {
+            let end_lbn = start_lbn
+                .checked_add(len)
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:logical_overflow"))?;
+            if logical_block < start_lbn || logical_block >= end_lbn {
                 return Ok(None);
             }
 
@@ -38,8 +43,9 @@ pub fn resolve_inode_block<B: BlockIo>(
             }
 
             let base = ((ext.ee_start_hi as u64) << 32) | ext.ee_start_lo as u64;
-            let phys = base + (logical_block - start_lbn) as u64;
-            return Ok(Some(AbsoluteBN::new(phys)));
+            return Ok(Some(
+                AbsoluteBN::new(base).checked_add(logical_block - start_lbn)?,
+            ));
         }
         Ok(None)
     } else {
@@ -54,67 +60,27 @@ pub fn resolve_inode_block<B: BlockIo>(
 pub fn resolve_inode_blocks<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
+    inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
-    if !inode.have_extend_header_and_use_extend() {
+    if !inode.uses_extents() {
         return Ok(BTreeMap::new());
     }
 
-    fn push_extent_blocks(out: &mut Vec<(u32, AbsoluteBN)>, ext: &Ext4Extent) {
-        if ext.is_unwritten() {
-            return;
-        }
-        let len = ext.len();
-        if len == 0 {
-            return;
-        }
-        let base = ((ext.ee_start_hi as u64) << 32) | ext.ee_start_lo as u64;
-        for i in 0..len {
-            let lbn = ext.ee_block.saturating_add(i);
-            out.push((lbn, AbsoluteBN::new(base + i as u64)));
-        }
-    }
-
-    fn walk_node<B: BlockIo>(
-        dev: &mut Jbd2Dev<B>,
-        node: &ExtentNode,
-        out: &mut Vec<(u32, AbsoluteBN)>,
-    ) -> Ext4Result<()> {
-        match node {
-            ExtentNode::Leaf { entries, .. } => {
-                for ext in entries {
-                    push_extent_blocks(out, ext);
-                }
-                Ok(())
-            }
-            ExtentNode::Index { entries, .. } => {
-                // Depth-first traversal keeps the helper independent from the tree depth.
-                for idx in entries {
-                    let child_block = ((idx.ei_leaf_hi as u64) << 32) | (idx.ei_leaf_lo as u64);
-                    dev.read_block(AbsoluteBN::new(child_block))?;
-                    let buf = dev.buffer();
-                    let child = ExtentTree::parse_node(buf).ok_or(Ext4Error::corrupted())?;
-                    walk_node(dev, &child, out)?;
-                }
-                Ok(())
-            }
-        }
-    }
-
-    let tree = ExtentTree::new(inode, fs.block_size());
-    let root = match tree.load_root_from_inode() {
-        Some(n) => n,
-        None => return Ok(BTreeMap::new()),
-    };
-
-    let mut blocks: Vec<(u32, AbsoluteBN)> = Vec::new();
-    walk_node(block_dev, &root, &mut blocks)?;
-    blocks.sort_unstable_by_key(|(lbn, _)| *lbn);
-    blocks.dedup_by_key(|(lbn, _)| *lbn);
-
+    let mut tree = ExtentTree::with_checksum(inode, &fs.superblock, inode_num);
+    let runs = tree.initialized_runs_in_range(block_dev, 0, u32::MAX)?;
     let mut out = BTreeMap::new();
-    for (lbn, phys) in blocks {
-        out.insert(lbn, phys);
+    for run in runs {
+        for offset in 0..run.len {
+            let lbn = run
+                .logical_start
+                .checked_add(offset)
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:logical_overflow"))?;
+            let phys = run.physical_start.checked_add(offset)?;
+            if out.insert(lbn, phys).is_some() {
+                return Err(Ext4Error::corrupted().with_operation("extent:duplicate_mapping"));
+            }
+        }
     }
     Ok(out)
 }
@@ -123,9 +89,10 @@ pub fn resolve_inode_blocks<B: BlockIo>(
 pub fn resolve_inode_block_allextend<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
+    inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
-    resolve_inode_blocks(fs, block_dev, inode)
+    resolve_inode_blocks(fs, block_dev, inode_num, inode)
 }
 
 /// Resolves a path to its inode number and inode contents.
@@ -172,13 +139,15 @@ pub fn get_file_inode<B: BlockIo>(
         let mut found_inode_num: Option<InodeNumber> = None;
 
         // Prefer the hashed directory path and fall back to a full scan only when needed.
-        match lookup_directory_entry(fs, block_dev, &current_inode, target) {
+        match lookup_directory_entry(fs, block_dev, current_ino_num, &current_inode, target) {
             Ok(result) => {
                 found_inode_num =
                     Some(InodeNumber::new(result.entry.inode).map_err(|_| Ext4Error::corrupted())?);
             }
+            Err(HashTreeError::Filesystem(error)) => return Err(error),
             Err(_) => {
-                let blocks = resolve_inode_blocks(fs, block_dev, &mut current_inode)?;
+                let blocks =
+                    resolve_inode_blocks(fs, block_dev, current_ino_num, &mut current_inode)?;
 
                 for phys in &blocks {
                     let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys.1)?;

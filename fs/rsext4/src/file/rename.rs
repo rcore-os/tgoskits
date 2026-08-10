@@ -29,7 +29,7 @@ pub fn rename<B: BlockIo + crate::runtime::Clock>(
     let src_is_dir = get_inode_with_num(fs, device, &old_norm)?.is_some_and(|(_, i)| i.is_dir());
 
     // Replace existing destination entries before moving the source entry.
-    if let Some((_ino, dst_inode)) = get_inode_with_num(fs, device, &new_norm)? {
+    if let Some((dst_ino, dst_inode)) = get_inode_with_num(fs, device, &new_norm)? {
         if dst_inode.is_dir() {
             if !src_is_dir {
                 // rename file → dir: not allowed
@@ -37,7 +37,7 @@ pub fn rename<B: BlockIo + crate::runtime::Clock>(
             }
             // rename dir → dir: destination must be empty
             let mut dir_inode = dst_inode; // Ext4Inode is Copy
-            if !is_dir_empty(fs, device, &mut dir_inode)? {
+            if !is_dir_empty(fs, device, dst_ino, &mut dir_inode)? {
                 return Err(Ext4Error::not_empty());
             }
             delete_dir(fs, device, new_path)?;
@@ -51,29 +51,17 @@ pub fn rename<B: BlockIo + crate::runtime::Clock>(
         }
     }
     // The destination must be gone before the move starts.
-    if get_inode_with_num(fs, device, &new_norm)
-        .ok()
-        .flatten()
-        .is_some()
-    {
+    if get_inode_with_num(fs, device, &new_norm)?.is_some() {
         return Err(Ext4Error::corrupted());
     }
 
     mv(fs, device, &old_norm, &new_norm)?;
 
     // Verify that the source disappeared and the destination now resolves.
-    if get_inode_with_num(fs, device, &old_norm)
-        .ok()
-        .flatten()
-        .is_some()
-    {
+    if get_inode_with_num(fs, device, &old_norm)?.is_some() {
         return Err(Ext4Error::corrupted());
     }
-    if get_inode_with_num(fs, device, &new_norm)
-        .ok()
-        .flatten()
-        .is_none()
-    {
+    if get_inode_with_num(fs, device, &new_norm)?.is_none() {
         return Err(Ext4Error::corrupted());
     }
 
@@ -196,12 +184,8 @@ pub fn mv<B: BlockIo + crate::runtime::Clock>(
             fs.set_inode_links_count(block_dev, new_pino, new_links)?;
 
             // Rewrite the `..` entry inside the moved directory's first block.
-            let first_blk = match resolve_inode_block(block_dev, &mut moved_inode, 0) {
-                Ok(Some(b)) => b,
-                _ => {
-                    return Err(Ext4Error::corrupted());
-                }
-            };
+            let first_blk = resolve_inode_block(fs, block_dev, src_ino, &mut moved_inode, 0)?
+                .ok_or_else(Ext4Error::corrupted)?;
             let mut valid_parent_entry = true;
             fs.datablock_cache.modify(block_dev, first_blk, |data| {
                 let block_bytes = data.len();
