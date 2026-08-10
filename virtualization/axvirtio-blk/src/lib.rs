@@ -56,10 +56,8 @@
 
 #![no_std]
 
-#[macro_use]
 extern crate alloc;
 
-#[macro_use]
 extern crate log;
 
 mod backend;
@@ -74,4 +72,4 @@ pub use axvirtio_common::{VirtioConfig, VirtioError, VirtioQueue, VirtioResult};
 pub use backend::BlockBackend;
 pub use block::config::VirtioBlockConfig;
 pub use managed::ManagedVirtioBlockDevice;
-pub use mmio::VirtioMmioBlockDevice;
+pub use mmio::{BlockDeviceEvent, VirtioMmioBlockDevice};

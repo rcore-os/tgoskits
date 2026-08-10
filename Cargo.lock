@@ -416,6 +416,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-virtio-blk-test"
+version = "0.1.0"
+dependencies = [
+ "ax-driver",
+ "ax-std",
+ "virtio-drivers",
+]
+
+[[package]]
 name = "arceos-virtio-net-peer"
 version = "0.1.0"
 dependencies = [
@@ -1551,6 +1560,7 @@ dependencies = [
  "axdevice",
  "axdevice_base",
  "axtest",
+ "axvirtio-blk",
  "axvirtio-common",
  "axvirtio-net",
  "axvm",

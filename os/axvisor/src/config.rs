@@ -197,6 +197,9 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
     }
     let mut virtual_device_catalog = axvm::ConfiguredDeviceCatalog::new();
     virtual_device_catalog
+        .register(crate::virtio_blk::REGISTRATION)
+        .expect("the static virtio-blk model registration is valid and unique");
+    virtual_device_catalog
         .register(crate::virtio_net::REGISTRATION)
         .expect("the static virtio-net model registration is valid and unique");
     AxVMConfig::new(AxVMConfigParams {

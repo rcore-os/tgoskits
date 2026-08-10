@@ -80,6 +80,7 @@ axvm-types.workspace = true
 axdevice.workspace = true
 axdevice_base.workspace = true
 axvirtio-common.workspace = true
+axvirtio-blk.workspace = true
 axvirtio-net.workspace = true
 toml.workspace = true
 ax-driver = { workspace = true, optional = true }

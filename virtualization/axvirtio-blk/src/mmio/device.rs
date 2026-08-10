@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec};
 
 use axaddrspace::GuestMemoryAccessor;
 use axvirtio_common::{
@@ -6,13 +6,22 @@ use axvirtio_common::{
     VirtioMmioState, VirtioQueue, VirtioResult, mmio::transport,
 };
 use axvm_types::{AccessWidth, GuestPhysAddr};
+use log::{trace, warn};
 
 use crate::{
-    backend::BlockBackend,
-    block::{BlockRequest, config::VirtioBlockConfig, request::BlockRequestResult},
-    constants::*,
-    mmio::VirtioBlockHeader,
+    backend::BlockBackend, block::config::VirtioBlockConfig, constants::*, mmio::VirtioBlockHeader,
 };
+
+/// Action that the VMM must perform after an MMIO write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockDeviceEvent {
+    /// No external action is required.
+    None,
+    /// The used-ring interrupt bit became pending.
+    InterruptPending,
+    /// The guest reset the transport.
+    Reset,
+}
 
 /// VirtIO MMIO Block Device
 ///
@@ -107,291 +116,126 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
         addr: GuestPhysAddr,
         width: AccessWidth,
         val: usize,
-    ) -> VirtioResult<bool> {
-        if !self.is_enabled() {
-            return Ok(false);
-        }
+    ) -> VirtioResult<BlockDeviceEvent> {
+        let mut memory = AddressSpaceMemory::new(self.accessor.as_ref());
+        self.mmio_write_with_memory(addr, width, val, &mut memory)
+    }
+
+    /// Handles an MMIO write using a guest-memory capability scoped to this
+    /// device access.
+    pub fn mmio_write_with_memory(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        val: usize,
+        memory: &mut dyn axvirtio_common::GuestMemory,
+    ) -> VirtioResult<BlockDeviceEvent> {
         match self.state.mmio_write(addr, width, val)? {
-            MmioWriteAction::None => {}
-            MmioWriteAction::Reset => {}
-            MmioWriteAction::InterruptPending => return Ok(true),
+            MmioWriteAction::None => Ok(BlockDeviceEvent::None),
+            MmioWriteAction::Reset => Ok(BlockDeviceEvent::Reset),
+            MmioWriteAction::InterruptPending => Ok(BlockDeviceEvent::InterruptPending),
             MmioWriteAction::QueueNotified(queue_index) => {
-                self.handle_queue_notify(queue_index);
+                self.handle_queue_notify(queue_index, memory)
             }
         }
-        Ok(false)
     }
 
     /// Handle queue notification.
-    fn handle_queue_notify(&self, queue_index: u16) {
+    fn handle_queue_notify(
+        &self,
+        queue_index: u16,
+        memory: &mut dyn axvirtio_common::GuestMemory,
+    ) -> VirtioResult<BlockDeviceEvent> {
         if !self.is_device_ready() {
-            warn!("Device not ready, ignoring queue notification");
-            return;
+            return Ok(BlockDeviceEvent::None);
         }
-
-        // Get a copy of the queue to avoid holding the lock during processing.
-        let queue_copy = {
-            let queues = self.state.queues_lock();
-            match queues.get(queue_index as usize) {
-                Some(q) if q.ready => q.clone(),
-                Some(_) => {
-                    warn!("Queue {} not ready", queue_index);
-                    return;
-                }
-                None => {
-                    warn!("Invalid queue index: {}", queue_index);
-                    return;
-                }
-            }
-        };
-
-        // Check if queue addresses are set.
-        if queue_copy.desc_table_addr.as_usize() == 0
-            || queue_copy.avail_ring_addr.as_usize() == 0
-            || queue_copy.used_ring_addr.as_usize() == 0
-        {
-            warn!("Queue {} addresses not properly set", queue_index);
-            return;
-        }
-
-        self.process_queue_requests(&queue_copy);
-    }
-
-    /// Process requests in the queue.
-    fn process_queue_requests(&self, queue: &VirtioQueue<T>) {
-        let avail_idx = match queue.read_avail_idx() {
-            Ok(idx) => idx,
-            Err(e) => {
-                error!("Failed to read available index: {:?}", e);
-                return;
-            }
-        };
-
-        trace!(
-            "Available index: {}, next_avail: {}",
-            avail_idx,
-            queue.get_last_avail_idx()
-        );
-
-        let mut current_avail = queue.get_last_avail_idx();
-        let mut processed_requests = Vec::new();
-
-        while current_avail != avail_idx {
-            let ring_index = current_avail % queue.size;
-            let desc_index = match queue.read_avail_entry(ring_index) {
-                Ok(idx) => idx,
-                Err(e) => {
-                    error!(
-                        "Failed to read available ring entry {}: {:?}",
-                        ring_index, e
-                    );
-                    current_avail = current_avail.wrapping_add(1);
-                    continue;
-                }
-            };
-
-            trace!(
-                "Processing descriptor chain starting at index {}",
-                desc_index
-            );
-
-            match self.process_descriptor_chain(queue, desc_index) {
-                Ok(()) => {}
-                Err(e) => {
-                    error!("Failed to process descriptor chain {}: {:?}", desc_index, e);
-                    if let Err(se) = queue.write_status_byte(desc_index, VIRTIO_BLK_S_IOERR as u8) {
-                        error!("Failed to write error status byte: {:?}", se);
-                    }
-                    processed_requests.push((desc_index, 0u32));
-                }
-            }
-
-            current_avail = current_avail.wrapping_add(1);
-        }
-
-        if current_avail != queue.get_last_avail_idx() || !processed_requests.is_empty() {
-            let processed_count = current_avail.wrapping_sub(queue.get_last_avail_idx());
-            trace!("Processed {} requests", processed_count);
-
-            let mut queues = self.state.queues_lock();
-            if let Some(queue_mut) = queues.get_mut(queue.index as usize) {
-                queue_mut.update_last_avail_idx(current_avail);
-
-                for (desc_index, len) in processed_requests {
-                    if let Err(e) = queue_mut.add_used(desc_index, len) {
-                        error!("Failed to add used buffer for error request: {:?}", e);
-                    }
-                }
-
-                let notify = queue_mut.should_notify().unwrap_or(false);
-                if notify {
-                    drop(queues);
-                    self.trigger_interrupt();
-                }
-            }
-        }
-    }
-
-    /// Process a descriptor chain.
-    fn process_descriptor_chain(
-        &self,
-        queue: &VirtioQueue<T>,
-        head_index: u16,
-    ) -> VirtioResult<()> {
-        let request = self.parse_virtio_request(queue, head_index)?;
-        let status = self.execute_block_request(&request)?;
-        let request_size = request.size() as u32;
-        self.add_used_buffer(queue, head_index, request_size, status);
-        Ok(())
-    }
-
-    /// Parse VirtIO block request from descriptor chain.
-    fn parse_virtio_request(
-        &self,
-        queue: &VirtioQueue<T>,
-        head_index: u16,
-    ) -> VirtioResult<BlockRequest<T>> {
-        let header = match self.parse_virtio_block_header(queue, head_index) {
-            Ok(header) => header,
-            Err(e) => {
-                error!("Failed to parse VirtIO block header: {:?}", e);
-                return Err(VirtioError::InvalidQueue);
-            }
-        };
-
-        match queue.validate_virtio_block_chain(head_index, MIN_DESCRIPTOR_CHAIN_LENGTH) {
-            Ok(true) => {}
-            Ok(false) => {
-                error!("Invalid VirtIO block descriptor chain");
-                return Err(VirtioError::InvalidQueue);
-            }
-            Err(e) => {
-                error!("Failed to validate descriptor chain: {:?}", e);
-                return Err(VirtioError::InvalidQueue);
-            }
-        }
-
-        let buffers = match queue.get_data_buffers(head_index, VirtioDeviceID::Block) {
-            Ok(buffers) => buffers,
-            Err(e) => {
-                error!("Failed to get data buffers: {:?}", e);
-                return Err(VirtioError::InvalidQueue);
-            }
-        };
-
-        trace!("Descriptor chain has {} data buffers", buffers.len());
-
-        let status_addr = match queue.get_status_addr(head_index) {
-            Ok(addr) => addr,
-            Err(e) => {
-                error!("Failed to get status address: {:?}", e);
-                return Err(VirtioError::InvalidQueue);
-            }
-        };
-
-        let request = BlockRequest::new_virtio(
-            header.request_type,
-            header.sector,
-            buffers,
-            status_addr,
-            self.accessor.clone(),
-        );
-
-        Ok(request)
-    }
-
-    /// Parse VirtIO block header.
-    pub fn parse_virtio_block_header(
-        &self,
-        queue: &VirtioQueue<T>,
-        head_index: u16,
-    ) -> VirtioResult<VirtioBlockHeader> {
-        if let Some(ref desc_table) = queue.desc_table {
-            let mut memory = AddressSpaceMemory::new(self.accessor.as_ref());
-            let descriptors = desc_table.follow_chain(head_index, &mut memory)?;
-            if descriptors.is_empty() {
-                return Err(VirtioError::InvalidDescriptor);
-            }
-
-            let header_desc = &descriptors[0];
-
-            if header_desc.is_write() {
-                warn!("Request header descriptor should not be write-only");
-                return Err(VirtioError::InvalidDescriptor);
-            }
-
-            if header_desc.len < VirtioBlockHeader::SIZE {
-                warn!(
-                    "Request header descriptor too small: {} bytes, need {} bytes",
-                    header_desc.len,
-                    VirtioBlockHeader::SIZE
-                );
-                return Err(VirtioError::InvalidDescriptor);
-            }
-
-            let header_addr = header_desc.guest_addr();
-            let header = VirtioBlockHeader::read_from_guest(header_addr, self.accessor.clone())?;
-
-            trace!(
-                "Parsed VirtIO block header: type={}, sector={}",
-                header.request_type, header.sector
-            );
-
-            Ok(header)
-        } else {
-            Err(VirtioError::QueueNotReady)
-        }
-    }
-
-    /// Execute a block request.
-    fn execute_block_request(&self, request: &BlockRequest<T>) -> VirtioResult<u8> {
-        match request.execute(&self.backend) {
-            Ok(status) => Ok(status as u8),
-            Err(e) => {
-                error!("Block request execution failed: {:?}", e);
-                let status = match e {
-                    VirtioError::InvalidBufferSize => BlockRequestResult::Unsupported,
-                    VirtioError::MemoryError => BlockRequestResult::IoError,
-                    _ => BlockRequestResult::IoError,
-                };
-                Ok(status as u8)
-            }
-        }
-    }
-
-    /// Add a used buffer to the used ring.
-    fn add_used_buffer(&self, queue: &VirtioQueue<T>, desc_index: u16, len: u32, status: u8) {
-        trace!(
-            "Completing request: desc_index={}, len={}, status={}",
-            desc_index, len, status
-        );
-
-        if let Err(e) = queue.write_status_byte(desc_index, status) {
-            error!("Failed to write status byte: {:?}", e);
-            return;
-        }
-
         let mut queues = self.state.queues_lock();
-        if let Some(queue_mut) = queues.get_mut(queue.index as usize) {
-            if let Err(e) = queue_mut.add_used(desc_index, len) {
-                error!("Failed to add used buffer: {:?}", e);
-                return;
-            }
-
-            match queue_mut.should_notify() {
-                Ok(should_notify) => {
-                    if should_notify {
-                        drop(queues);
-                        self.trigger_interrupt();
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to check notification requirement: {:?}", e);
-                }
-            }
-        } else {
-            error!("Invalid queue index: {}", queue.index);
+        let queue = queues
+            .get_mut(queue_index as usize)
+            .ok_or(VirtioError::InvalidQueue)?;
+        if !queue.is_valid() {
+            return Ok(BlockDeviceEvent::None);
         }
+        let mut notify = false;
+        while let Some(head) = queue.pop_available_head_with_memory(memory)? {
+            let written = self
+                .process_request(queue, head, memory)
+                .unwrap_or_else(|error| {
+                    warn!("virtio-blk request {head} failed: {error:?}");
+                    0
+                });
+            notify |= queue.complete_with_memory(head, written, memory)?;
+        }
+        if notify {
+            self.trigger_interrupt();
+            Ok(BlockDeviceEvent::InterruptPending)
+        } else {
+            Ok(BlockDeviceEvent::None)
+        }
+    }
+
+    fn process_request(
+        &self,
+        queue: &VirtioQueue<T>,
+        head: u16,
+        memory: &mut dyn axvirtio_common::GuestMemory,
+    ) -> VirtioResult<u32> {
+        let chain = queue.descriptor_chain_with_memory(head, memory)?;
+        let descriptors = chain.descriptors();
+        if descriptors.len() < MIN_DESCRIPTOR_CHAIN_LENGTH {
+            return Err(VirtioError::InvalidDescriptor);
+        }
+        let header = &descriptors[0];
+        let status = descriptors.last().unwrap();
+        if header.is_write() || header.len < VirtioBlockHeader::SIZE {
+            return Err(VirtioError::InvalidDescriptor);
+        }
+        if !status.is_write() || status.len < 1 {
+            return Err(VirtioError::InvalidDescriptor);
+        }
+        let mut header_bytes = [0u8; VirtioBlockHeader::SIZE as usize];
+        memory.read(header.base_addr, &mut header_bytes)?;
+        let request_type = u32::from_le_bytes(header_bytes[0..4].try_into().unwrap());
+        let sector = u64::from_le_bytes(header_bytes[8..16].try_into().unwrap());
+        let data = &descriptors[1..descriptors.len() - 1];
+        let total_len = data.iter().try_fold(0usize, |total, descriptor| {
+            total
+                .checked_add(descriptor.len as usize)
+                .ok_or(VirtioError::InvalidBufferSize)
+        })?;
+        let mut buffer = vec![0u8; total_len];
+        let result = match request_type {
+            VIRTIO_BLK_T_IN if data.iter().all(|descriptor| descriptor.is_write()) => {
+                self.backend.read(sector, &mut buffer)?;
+                let mut offset = 0;
+                for descriptor in data {
+                    let end = offset + descriptor.len as usize;
+                    memory.write(descriptor.base_addr, &buffer[offset..end])?;
+                    offset = end;
+                }
+                total_len as u32 + 1
+            }
+            VIRTIO_BLK_T_OUT if data.iter().all(|descriptor| !descriptor.is_write()) => {
+                let mut offset = 0;
+                for descriptor in data {
+                    let end = offset + descriptor.len as usize;
+                    memory.read(descriptor.base_addr, &mut buffer[offset..end])?;
+                    offset = end;
+                }
+                self.backend.write(sector, &buffer)?;
+                1
+            }
+            VIRTIO_BLK_T_FLUSH if data.is_empty() => {
+                self.backend.flush()?;
+                1
+            }
+            _ => {
+                memory.write(status.base_addr, &[VIRTIO_BLK_S_UNSUPP as u8])?;
+                return Ok(1);
+            }
+        };
+        memory.write(status.base_addr, &[VIRTIO_BLK_S_OK as u8])?;
+        Ok(result)
     }
 
     /// Raise the used-buffer notification interrupt bit.

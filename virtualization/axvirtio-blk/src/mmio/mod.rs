@@ -1,10 +1,5 @@
 mod device;
-use alloc::sync::Arc;
-
-use axaddrspace::GuestMemoryAccessor;
-use axvirtio_common::{VirtioError, VirtioResult};
-use axvm_types::GuestPhysAddr;
-pub use device::VirtioMmioBlockDevice;
+pub use device::{BlockDeviceEvent, VirtioMmioBlockDevice};
 
 /// VirtIO block request header structure
 #[derive(Debug, Clone, Copy)]
@@ -21,14 +16,4 @@ pub struct VirtioBlockHeader {
 impl VirtioBlockHeader {
     /// Size of the VirtIO block header in bytes
     pub const SIZE: u32 = 16; // type (4) + ioprio (4) + sector (8)
-
-    /// Read VirtIO block header from guest memory
-    pub fn read_from_guest<T>(addr: GuestPhysAddr, accessor: Arc<T>) -> VirtioResult<Self>
-    where
-        T: GuestMemoryAccessor,
-    {
-        accessor
-            .read_obj(addr)
-            .map_err(|_| VirtioError::InvalidAddress)
-    }
 }

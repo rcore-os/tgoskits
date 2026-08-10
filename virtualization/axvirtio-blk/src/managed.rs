@@ -9,7 +9,7 @@ use axdevice_base::{
 };
 use axvm_types::GuestPhysAddr;
 
-use crate::{BlockBackend, VirtioError, VirtioMmioBlockDevice};
+use crate::{BlockBackend, BlockDeviceEvent, VirtioError, VirtioMmioBlockDevice};
 
 /// A VirtIO block model registered in the unified emulated-device runtime.
 pub struct ManagedVirtioBlockDevice<B, T>
@@ -103,7 +103,9 @@ where
                 .mmio_write(address, access.width, access.data as usize)
                 .map_err(map_virtio_error)?;
             let interrupt_after = self.model.interrupt_status();
-            if reassert_interrupt || interrupt_after & !interrupt_before != 0 {
+            if reassert_interrupt == BlockDeviceEvent::InterruptPending
+                || interrupt_after & !interrupt_before != 0
+            {
                 self.irq.pulse().map_err(|error| DeviceError::Backend {
                     operation: "pulse virtio-block interrupt",
                     detail: alloc::format!("{error}"),
