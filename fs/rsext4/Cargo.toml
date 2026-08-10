@@ -21,6 +21,7 @@ ax-sync = { workspace = true }
 [features]
 default = ["USE_MULTILEVEL_CACHE"]
 axtest = ["dep:axtest"]
+host-test = ["ax-sync/host-test"]
 USE_MULTILEVEL_CACHE = [] #启用多级缓存
 
 [lints.rust]

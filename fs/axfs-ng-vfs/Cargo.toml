@@ -11,6 +11,7 @@ license = "Apache-2.0"
 [features]
 axtest = ["dep:axtest"]
 default = []
+host-test = ["ax-sync/host-test"]
 lockdep = ["ax-sync/lockdep"]
 
 [dependencies]
