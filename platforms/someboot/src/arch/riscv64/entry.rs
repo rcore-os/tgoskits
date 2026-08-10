@@ -15,11 +15,10 @@ pub unsafe extern "C" fn _head() -> ! {
     naked_asm!(
         ".option push",
         ".option norvc",
-        // code0/code1: use lla+jr instead of j to avoid R_RISCV_JAL
-        // range limit (±1MB); lla expands to auipc+addi with ±2GB reach
-        "lla t0, {kernel_entry}",
-        "jr t0",
-        "nop",
+        ".option norelax",
+        // The RISC-V Image header reserves exactly 8 bytes for code0/code1.
+        "2: auipc t0, %pcrel_hi({kernel_entry})",
+        "jalr zero, %pcrel_lo(2b)(t0)",
         ".option pop",
         // text_offset
         ".quad {text_offset}",
