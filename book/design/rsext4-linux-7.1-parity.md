@@ -337,3 +337,24 @@ RSEXT4_BENCH_SUMMARY commit=5e143a8302dd441188c7cfe35e603414a00bc0ee arch=x86_64
 仍在 10% latency 上限内。sync median 增加约 51.8%，但 sync latency 硬门槛按
 p95 判定；因此本检查点满足冻结的 host 门槛。7.9 的 legacy allocator sync p95
 红项仍独立保留。
+
+### 7.12 JBD2 dynamic transaction capacity 检查点
+
+采集时间：2026-08-11；被测实现 commit 为
+`4bba3dc12d0c05b5deec3a8558cdaa02d91d944f`，环境与 7.8 相同。该检查点删除
+固定且公开的 10-buffer 上限；当前 single-descriptor writer 从 filesystem block
+size、descriptor header、tag/UUID/checksum tail 和 journal ring geometry 推导每个
+transaction 的安全 update 上限。连续与 mapped journal 都在安装 state 前完成
+feature、checksum、mapping 与最小容量验证。
+
+正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-jbd2-dynamic-capacity.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=4bba3dc12d0c05b5deec3a8558cdaa02d91d944f arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6467905 write_p95_ns=7227933 read_median_ns=6358891 read_p95_ns=7332003 sync_median_ns=31402 sync_p95_ns=37894
+```
+
+相对 dev 基线，write/read median 分别改善约 5.3% 和 11.9%，对应 p95 分别
+改善约 1.5% 和 13.6%；sync p95 改善约 1.9%。sync median 增加约 21.6%，但
+sync latency 门槛按 p95 判定；因此本检查点满足冻结的 host 门槛。7.9 的 legacy
+allocator sync p95 红项仍独立保留。
