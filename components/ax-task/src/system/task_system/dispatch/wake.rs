@@ -467,6 +467,7 @@ impl TaskSystem {
             WakePreemptionDecision::KeepCurrent => {
                 crate::metrics::record_direct_wake_current_kept()
             }
+            WakePreemptionDecision::DedicatedIdlePreempted => {}
             WakePreemptionDecision::QueuedCandidateSelected => {
                 crate::metrics::record_direct_wake_queued_candidate_selected()
             }

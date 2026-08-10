@@ -999,6 +999,77 @@ fn direct_wake_activates_the_target_runqueue_before_its_owner_safe_point() {
     );
 }
 
+#[test]
+fn fair_wake_republishes_reschedule_for_a_dedicated_idle_owner() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    let mut cpu1_only = CpuSet::empty(2);
+    assert!(cpu1_only.insert(CpuId::new(1)));
+    for cpu in [&mut cpu0, &mut cpu1] {
+        let idle = system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        assert_eq!(
+            system.schedule_at(cpu.as_mut(), 0).unwrap().next(),
+            idle.id()
+        );
+        system.complete_context_switch(cpu.as_mut()).unwrap();
+    }
+
+    let sleeper = system
+        .create_thread(
+            ThreadSpec::new(SchedulePolicy::fair(
+                Nice::new(19).unwrap(),
+                FairMode::Normal,
+            ))
+            .with_affinity(cpu1_only.clone()),
+        )
+        .unwrap();
+    system.make_ready(sleeper.id()).unwrap();
+    system.enqueue_at(cpu1.as_mut(), sleeper.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule_at(cpu1.as_mut(), 1).unwrap().next(),
+        sleeper.id()
+    );
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+    assert_eq!(
+        system.block_current_at(cpu1.as_mut(), 2).unwrap().next(),
+        cpu1.remote().idle_thread().unwrap()
+    );
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+
+    let contender = system
+        .create_thread(
+            ThreadSpec::new(SchedulePolicy::fair(
+                Nice::new(-20).unwrap(),
+                FairMode::Normal,
+            ))
+            .with_affinity(cpu1_only),
+        )
+        .unwrap();
+    system.make_ready(contender.id()).unwrap();
+    system.enqueue_at(cpu1.as_mut(), contender.id(), 3).unwrap();
+    assert!(cpu1.remote().take_preempt_requested());
+    assert!(!cpu1.remote().needs_reschedule());
+
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
+    assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
+
+    assert_eq!(cpu1.lock_run_queue().nr_queued(), 2);
+    assert!(
+        cpu1.remote().needs_reschedule(),
+        "Linux idle-class wakeup must publish a strong reschedule even when another queued Fair \
+         contender wins the EEVDF pick"
+    );
+}
+
 fn remote_fifo_wake_fixture(
     current_priority: u8,
     woken_priority: u8,

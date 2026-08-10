@@ -8,6 +8,7 @@ use crate::SchedulerClass;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WakePreemptionDecision {
     KeepCurrent,
+    DedicatedIdlePreempted,
     WakeeSelected,
     QueuedCandidateSelected,
 }
@@ -30,7 +31,7 @@ pub(in crate::system::cpu) enum RqCurrentTick {
 
 impl WakePreemptionDecision {
     pub(crate) const fn requests_reschedule(self) -> bool {
-        matches!(self, Self::WakeeSelected)
+        matches!(self, Self::DedicatedIdlePreempted | Self::WakeeSelected)
     }
 }
 
@@ -576,7 +577,9 @@ impl CpuRunQueueState {
 
     /// Applies Linux EEVDF wakeup preemption to the complete owner runqueue.
     ///
-    /// A fair wakee may request rescheduling only when it both defeats the
+    /// Dedicated idle is preempted before any class-local selection rule,
+    /// matching Linux's unconditional idle-class `resched_curr()`. Otherwise,
+    /// a fair wakee may request rescheduling only when it both defeats the
     /// protected current request and is itself the earliest eligible queued
     /// entity. Comparing only the wakee with current creates needless
     /// reschedule IPIs when an older queued contender would be selected.
@@ -590,6 +593,9 @@ impl CpuRunQueueState {
         let Some(current) = self.current() else {
             return WakePreemptionDecision::WakeeSelected;
         };
+        if current.is_dedicated_idle() {
+            return WakePreemptionDecision::DedicatedIdlePreempted;
+        }
         let current_entity = self
             .current_scheduling_entity()
             .expect("current dispatch must have one rq-owned scheduling entity");
