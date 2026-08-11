@@ -299,16 +299,31 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         self.options
     }
 
-    /// Applies mount options whose state can be rebuilt without changing the
-    /// device ownership or the filesystem read/write mode.
+    /// Applies mount options without releasing device or journal ownership.
     pub fn remount(&mut self, options: MountOptions) -> Ext4Result<()> {
-        if options.readonly != self.options.readonly
-            || options.replay_journal != self.options.replay_journal
-        {
-            return Err(Ext4Error::unsupported().with_operation("remount:mode"));
+        if !self.filesystem.mounted {
+            return Err(Ext4Error::busy().with_operation("remount:unmounted"));
         }
+        if options.replay_journal != self.options.replay_journal {
+            return Err(Ext4Error::unsupported().with_operation("remount:replay_policy"));
+        }
+
+        let previous_options = self.options;
         self.filesystem
             .set_block_validity(&mut self.device, options.block_validity)?;
+        let mode_result = match (previous_options.readonly, options.readonly) {
+            (false, true) => self.filesystem.remount_read_only(&mut self.device),
+            (true, false) => self
+                .filesystem
+                .remount_read_write(&mut self.device, &mut self.services.observer),
+            _ => Ok(()),
+        };
+        if let Err(error) = mode_result {
+            let rollback = self
+                .filesystem
+                .set_block_validity(&mut self.device, previous_options.block_validity);
+            return Err(error_after_cleanup(error, rollback));
+        }
         self.options = options;
         Ok(())
     }
@@ -920,11 +935,19 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
     }
 
     pub fn sync(&mut self) -> Ext4Result<()> {
+        if self.options.readonly {
+            return self.device.flush();
+        }
         self.filesystem
             .sync_filesystem_with_observer(&mut self.device, &mut self.services.observer)
     }
 
     pub fn unmount(&mut self) -> Ext4Result<()> {
+        if self.options.readonly {
+            self.filesystem
+                .finish_read_only_unmount(&mut self.services.observer);
+            return Ok(());
+        }
         self.filesystem
             .umount_with_observer(&mut self.device, &mut self.services.observer)
     }

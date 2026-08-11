@@ -3,7 +3,13 @@
 //! These tests exercise mkfs, mount, directory creation, file IO, and the
 //! public API surface together so regressions show up as user-visible failures.
 
-use std::cell::Cell;
+use std::{
+    cell::Cell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use rsext4::{
     error::{Ext4Error, Ext4Result},
@@ -87,6 +93,8 @@ impl rsext4::Clock for TestBlockDevice {
 struct IoOnlyDevice {
     data: Vec<u8>,
     block_size: u32,
+    read_only: bool,
+    fail_flush: Option<Arc<AtomicBool>>,
 }
 
 impl From<TestBlockDevice> for IoOnlyDevice {
@@ -94,7 +102,21 @@ impl From<TestBlockDevice> for IoOnlyDevice {
         Self {
             data: device.data,
             block_size: device.block_size,
+            read_only: false,
+            fail_flush: None,
         }
+    }
+}
+
+impl IoOnlyDevice {
+    fn into_read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+
+    fn with_flush_failure(mut self, fail_flush: Arc<AtomicBool>) -> Self {
+        self.fail_flush = Some(fail_flush);
+        self
     }
 }
 
@@ -115,6 +137,9 @@ impl BlockIo for IoOnlyDevice {
     }
 
     fn write(&mut self, buffer: &[u8], sector: SectorId, _count: u32) -> Ext4Result<()> {
+        if self.read_only {
+            return Err(Ext4Error::read_only());
+        }
         let start = sector.as_usize()? * self.block_size as usize;
         let end = start
             .checked_add(buffer.len())
@@ -136,13 +161,22 @@ impl BlockIo for IoOnlyDevice {
 
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
+            read_only: self.read_only,
             flush: true,
             ..DeviceCapabilities::default()
         }
     }
 
     fn flush(&mut self) -> Ext4Result<()> {
-        Ok(())
+        if self
+            .fail_flush
+            .as_ref()
+            .is_some_and(|failure| failure.swap(false, Ordering::SeqCst))
+        {
+            Err(Ext4Error::io())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -234,6 +268,28 @@ fn owned_test_filesystem() -> TestOwnedFilesystem {
         RecordingObserver::default(),
     );
     Ext4::mount(device, services, MountOptions::read_write()).expect("owned mount failed")
+}
+
+fn owned_test_filesystem_with_flush_failure() -> (TestOwnedFilesystem, Arc<AtomicBool>) {
+    let fail_flush = Arc::new(AtomicBool::new(false));
+    let device = IoOnlyDevice::from(TestBlockDevice::new(100 * 1024 * 1024))
+        .with_flush_failure(fail_flush.clone());
+    let device = format(
+        device,
+        SeparateClock(Cell::new(1_700_000_000)),
+        MkfsOptions::default(),
+    )
+    .expect("mkfs failed");
+    let services = MountServices::new(
+        SeparateClock(Cell::new(1_800_000_000)),
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        RecordingObserver::default(),
+    );
+    let filesystem =
+        Ext4::mount(device, services, MountOptions::read_write()).expect("owned mount failed");
+    (filesystem, fail_flush)
 }
 
 #[test]
@@ -393,6 +449,110 @@ fn owned_remount_tracks_block_validity_option() {
         .remount(enabled)
         .expect("reenable block validity");
     assert!(filesystem.options().block_validity);
+}
+
+#[test]
+fn owned_remount_transitions_between_read_write_and_read_only() {
+    let mut filesystem = owned_test_filesystem();
+    let root = filesystem.root_inode();
+    let context = MutationContext::new(1000, 1001, 0, 0o022);
+    let permissions = FilePermissions::new(0o644).expect("valid permissions");
+    filesystem
+        .create_regular_file(
+            context,
+            root,
+            FileName::new(b"before-readonly").expect("valid name"),
+            permissions,
+        )
+        .expect("create pending file before remount");
+
+    let read_only = MountOptions {
+        readonly: true,
+        ..filesystem.options()
+    };
+    filesystem.remount(read_only).expect("remount read-only");
+    assert_eq!(filesystem.options(), read_only);
+    let error = filesystem
+        .create_regular_file(
+            context,
+            root,
+            FileName::new(b"while-readonly").expect("valid name"),
+            permissions,
+        )
+        .expect_err("read-only remount must reject mutations");
+    assert_eq!(error.kind(), Ext4ErrorKind::ReadOnly);
+
+    let read_write = MountOptions {
+        readonly: false,
+        ..filesystem.options()
+    };
+    filesystem.remount(read_write).expect("remount read-write");
+    assert_eq!(filesystem.options(), read_write);
+    filesystem
+        .create_regular_file(
+            context,
+            root,
+            FileName::new(b"after-readwrite").expect("valid name"),
+            permissions,
+        )
+        .expect("read-write remount must accept mutations");
+}
+
+#[test]
+fn owned_remount_to_read_only_rolls_back_options_on_flush_failure() {
+    let (mut filesystem, fail_flush) = owned_test_filesystem_with_flush_failure();
+    let previous = filesystem.options();
+    let read_only = MountOptions {
+        readonly: true,
+        ..previous
+    };
+    fail_flush.store(true, Ordering::SeqCst);
+
+    let error = filesystem
+        .remount(read_only)
+        .expect_err("failed journal flush must abort remount");
+
+    assert_eq!(error.kind(), Ext4ErrorKind::Io);
+    assert_eq!(filesystem.options(), previous);
+}
+
+#[test]
+fn owned_remount_rejects_read_write_on_read_only_device() {
+    let device = IoOnlyDevice::from(TestBlockDevice::new(100 * 1024 * 1024));
+    let device = format(
+        device,
+        SeparateClock(Cell::new(1_700_000_000)),
+        MkfsOptions::default(),
+    )
+    .expect("mkfs failed")
+    .into_read_only();
+    let services = MountServices::new(
+        SeparateClock(Cell::new(1_800_000_000)),
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        RecordingObserver::default(),
+    );
+    let previous = MountOptions::read_only_no_journal_replay();
+    let mut filesystem = Ext4::mount(device, services, previous).expect("read-only mount failed");
+    let read_write = MountOptions {
+        readonly: false,
+        ..previous
+    };
+
+    let error = filesystem
+        .remount(read_write)
+        .expect_err("read-only device must reject read-write remount");
+
+    assert_eq!(error.kind(), Ext4ErrorKind::ReadOnly);
+    assert_eq!(filesystem.options(), previous);
+    filesystem
+        .unmount()
+        .expect("read-only unmount must not write to the device");
+    let error = filesystem
+        .remount(previous)
+        .expect_err("an unmounted owner cannot be remounted in place");
+    assert_eq!(error.kind(), Ext4ErrorKind::Busy);
 }
 
 #[test]
