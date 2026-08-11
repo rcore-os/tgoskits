@@ -6,15 +6,17 @@ use core::{
     time::Duration,
 };
 
-use ax_kernel_guard::NoPreempt;
+use ax_lazyinit::LazyLock;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_std::os::arceos::task::{self as scheduler, WaitQueue};
-use spin::LazyLock;
 use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
 
-use crate::{sync::PiMutex, task::poll_process_timer_for_alarm};
+use crate::{
+    sync::{NoPreempt, PiMutex},
+    task::poll_process_timer_for_alarm,
+};
 
 mod accounting;
 mod alarm;

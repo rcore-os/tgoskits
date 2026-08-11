@@ -7,6 +7,7 @@
 use ax_errno::{AxError, AxResult};
 
 use super::hw_owner::Counter;
+use crate::sync::SpinLock;
 
 struct HwAlloc {
     num_counters: usize,
@@ -53,7 +54,7 @@ impl HwAlloc {
     }
 }
 
-static ALLOC: ax_kspin::SpinNoPreempt<HwAlloc> = ax_kspin::SpinNoPreempt::new(HwAlloc::new());
+static ALLOC: SpinLock<HwAlloc> = SpinLock::new(HwAlloc::new());
 
 pub(super) fn set_programmable_counter_count(num_counters: usize) {
     ALLOC.lock().num_counters = num_counters;

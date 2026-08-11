@@ -5,11 +5,13 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use ax_kspin::SpinNoPreempt;
 use ktracepoint::{ExtTracePoint, TracePoint};
 
 use super::KernelTraceAux;
-use crate::{sync::PiMutex, task::future::IrqNotify};
+use crate::{
+    sync::{IrqMutex, PiMutex},
+    task::future::IrqNotify,
+};
 
 /// Maximum retired callback snapshots reclaimed without yielding.
 const TRACEPOINT_RECLAIM_BATCH: usize = 64;
@@ -20,7 +22,7 @@ struct TracepointSnapshotState {
 }
 
 struct KernelExtTracePointState {
-    snapshot: SpinNoPreempt<TracepointSnapshotState>,
+    snapshot: IrqMutex<TracepointSnapshotState>,
     readers: [AtomicUsize; 2],
     update: PiMutex<()>,
     reclaimer: &'static TracepointReclaimer,
@@ -80,7 +82,7 @@ impl KernelExtTracePoint {
     ) -> Self {
         Self {
             state: Arc::new(KernelExtTracePointState {
-                snapshot: SpinNoPreempt::new(TracepointSnapshotState {
+                snapshot: IrqMutex::new(TracepointSnapshotState {
                     current: Arc::new(tracepoint),
                     epoch: 0,
                 }),
