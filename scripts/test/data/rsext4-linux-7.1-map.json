@@ -813,7 +813,9 @@
             "mkdir-mutation-rollback",
             "rename-mutation-rollback",
             "typed-rename-flags",
-            "special-inode-rdev"
+            "special-inode-rdev",
+            "typed-rmdir-open-lifecycle",
+            "symlink-target-transaction"
           ]
         }
       ]
@@ -940,7 +942,8 @@
           "rust_owner": "rsext4::dir",
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
-            "linux-map-complete"
+            "linux-map-complete",
+            "symlink-target-transaction"
           ]
         }
       ]

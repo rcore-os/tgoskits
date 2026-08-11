@@ -469,8 +469,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
         Ok(())
     }
 
-    /// Commits all buffered journal transactions during unmount.
-    pub fn umount_commit(&mut self) -> Ext4Result<()> {
+    /// Commits every buffered journal update without ending the mount.
+    pub fn commit(&mut self) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:unmount_after_abort")?;
         if !self.journal_use {
             return Ok(());
@@ -481,6 +481,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
         self.commit_pending_transaction()?;
         Ok(())
+    }
+
+    /// Commits all buffered journal transactions during unmount.
+    pub fn umount_commit(&mut self) -> Ext4Result<()> {
+        self.commit()
     }
 
     /// Runs one metadata operation with a bounded number of queue credits.

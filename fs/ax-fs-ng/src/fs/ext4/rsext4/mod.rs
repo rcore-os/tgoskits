@@ -7,8 +7,8 @@ use alloc::boxed::Box;
 pub use fs::*;
 pub use inode::*;
 use rsext4::{
-    BlockIo, DeviceCapabilities, DeviceGeometry, Event, Observer, SectorId,
-    disknode::Ext4Timestamp,
+    BlockIo, DeviceCapabilities, DeviceGeometry, Event, Ext4Timestamp, MountedServices, Observer,
+    SectorId,
     error::{Ext4Error, Ext4Result},
 };
 
@@ -16,8 +16,13 @@ use crate::block::{BlockRegion, FsBlockDevice, RegionBlockDevice};
 
 pub(crate) struct Ext4Disk(RegionBlockDevice<Box<dyn FsBlockDevice>>);
 
+pub(crate) type MountedExt4 = rsext4::Ext4<Ext4Disk, MountedServices<(), (), (), Ext4Observer>>;
+
 #[derive(Default)]
 pub(crate) struct Ext4Observer;
+
+#[derive(Default)]
+pub(crate) struct Ext4Clock;
 
 impl Observer for Ext4Observer {
     fn event(&mut self, event: Event) {
@@ -79,9 +84,10 @@ impl BlockIo for Ext4Disk {
     }
 }
 
-impl rsext4::Clock for Ext4Disk {
+impl rsext4::Clock for Ext4Clock {
     fn now(&self) -> Ext4Result<Ext4Timestamp> {
         let dur = crate::os::wall_time();
-        Ok(Ext4Timestamp::new(dur.as_secs() as i64, dur.subsec_nanos()))
+        let seconds = i64::try_from(dur.as_secs()).map_err(|_| Ext4Error::overflow())?;
+        Ok(Ext4Timestamp::new(seconds, dur.subsec_nanos()))
     }
 }

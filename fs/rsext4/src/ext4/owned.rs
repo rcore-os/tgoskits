@@ -8,17 +8,20 @@ use crate::{
     bmalloc::InodeNumber,
     checksum::{verify_ext4_dirblock_checksum, verify_ext4_dx_checksum},
     dir::{CreateEntryRequest, FileName, LinkEntryRequest, create_directory_at},
-    disknode::{DeviceNumber, Ext4Inode},
+    disknode::{DeviceNumber, Ext4Inode, Ext4TimeSpec, Ext4Timestamp},
     entries::Ext4DirEntry2,
     error::{Ext4Error, Ext4ErrorKind, Ext4Result},
     file::{
         CreateInodePayload, RenameEntryRequest, RenameOptions, RenameOutcome, UnlinkOutcome,
-        create_inode_at, find_named_entry_in_parent, link_inode_at, read_inode_data_into,
-        reap_unlinked_inode, rename_inode_at, truncate_inode, unlink_inode_at, write_inode_data,
+        build_file_block_mapping_with_inode_num, create_inode_at, discard_unpublished_inode_blocks,
+        error_after_cleanup, find_named_entry_in_parent, link_inode_at, read_inode_data_into,
+        reap_unlinked_inode, rename_inode_at, truncate_inode, unlink_empty_directory_at,
+        unlink_inode_at, write_inode_data,
     },
     hashtree::Ext4InodeHashTreeExt,
     io::BlockIo,
     loopfile::resolve_inode_blocks,
+    metadata::{Ext4InodeMetadataUpdate, Ext4MetadataReason, Ext4ModeUpdate},
     runtime::{Clock, MountServices, MountedServices, Observer},
 };
 
@@ -163,6 +166,16 @@ pub struct InodeInfo {
     pub device_number: Option<DeviceNumber>,
 }
 
+/// Metadata changes already authorized and normalized by the embedding VFS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InodeMetadataUpdate {
+    pub permissions: Option<FilePermissions>,
+    pub owner: Option<(u32, u32)>,
+    pub device_number: Option<DeviceNumber>,
+    pub atime: Option<Ext4Timestamp>,
+    pub mtime: Option<Ext4Timestamp>,
+}
+
 /// Mounted ext4 instance that owns its device, caches, journal, and services.
 ///
 /// The representation is private. The embedding OS serializes access to this
@@ -205,6 +218,74 @@ where
             options,
         })
     }
+
+    /// Attempts a read-write mount and keeps the same private device/cache
+    /// owner for the Linux-compatible read-only fallback paths.
+    pub fn mount_with_readonly_fallback<C>(
+        device: D,
+        services: MountServices<C, E, P, K, O>,
+    ) -> Ext4Result<Self>
+    where
+        C: Clock + Send + 'static,
+    {
+        let MountServices {
+            clock,
+            entropy,
+            crypto,
+            keys,
+            mut observer,
+        } = services;
+        let mut device = Jbd2Dev::with_clock(0, device, clock, true);
+        let read_write = MountOptions::read_write();
+        let read_only_replay = MountOptions {
+            readonly: true,
+            replay_journal: true,
+        };
+        let read_only_no_replay = MountOptions::read_only_no_journal_replay();
+
+        let (filesystem, options) = match Ext4FileSystem::device_has_error_state(&mut device) {
+            Ok(true) => (
+                Ext4FileSystem::mount_with_options_and_observer(
+                    &mut device,
+                    read_only_replay,
+                    &mut observer,
+                )?,
+                read_only_replay,
+            ),
+            Ok(false) => match Ext4FileSystem::mount_with_options_and_observer(
+                &mut device,
+                read_write,
+                &mut observer,
+            ) {
+                Ok(filesystem) => (filesystem, read_write),
+                Err(error) if error.is_corruption() => (
+                    Ext4FileSystem::mount_with_options_and_observer(
+                        &mut device,
+                        read_only_no_replay,
+                        &mut observer,
+                    )?,
+                    read_only_no_replay,
+                ),
+                Err(error) => return Err(error),
+            },
+            Err(error) if error.is_corruption() => (
+                Ext4FileSystem::mount_with_options_and_observer(
+                    &mut device,
+                    read_only_no_replay,
+                    &mut observer,
+                )?,
+                read_only_no_replay,
+            ),
+            Err(error) => return Err(error),
+        };
+
+        Ok(Self {
+            filesystem,
+            device,
+            services: MountedServices::new(entropy, crypto, keys, observer),
+            options,
+        })
+    }
 }
 
 impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
@@ -221,7 +302,54 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
     }
 
     pub fn inode(&mut self, number: InodeNumber) -> Ext4Result<InodeInfo> {
+        if !self
+            .filesystem
+            .inode_is_allocated_checked(&mut self.device, number)?
+        {
+            return Err(Ext4Error::not_found().with_operation("inode:inspect_unallocated"));
+        }
         let inode = self.filesystem.get_inode_by_num(&mut self.device, number)?;
+        self.inspect_inode(number, inode)
+    }
+
+    /// Applies VFS-authorized metadata fields through the checked inode codec.
+    pub fn update_inode_metadata(
+        &mut self,
+        _context: MutationContext,
+        number: InodeNumber,
+        update: InodeMetadataUpdate,
+    ) -> Ext4Result<InodeInfo> {
+        let current = self.inode(number)?;
+        if update == InodeMetadataUpdate::default() {
+            return Ok(current);
+        }
+        self.ensure_writable("inode:update_metadata")?;
+        let mut inode = self.filesystem.get_inode_by_num(&mut self.device, number)?;
+        if let Some(device_number) = update.device_number {
+            inode.set_device_number(device_number)?;
+        }
+        let (uid, gid) = match update.owner {
+            Some((uid, gid)) => (Some(uid), Some(gid)),
+            None => (None, None),
+        };
+        self.filesystem.finalize_inode_update(
+            &mut self.device,
+            number,
+            &mut inode,
+            Ext4InodeMetadataUpdate {
+                reason: Ext4MetadataReason::Utimens,
+                mode: update
+                    .permissions
+                    .map(|permissions| Ext4ModeUpdate::Chmod(permissions.bits())),
+                uid,
+                gid,
+                atime: update.atime.map(Ext4TimeSpec::Set),
+                mtime: update.mtime.map(Ext4TimeSpec::Set),
+                ctime: Some(Ext4TimeSpec::Now),
+                clear_suid_sgid_on_chown: update.owner.is_some(),
+                ..Default::default()
+            },
+        )?;
         self.inspect_inode(number, inode)
     }
 
@@ -425,6 +553,33 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         })
     }
 
+    /// Creates a symbolic link below a resolved directory.
+    pub fn create_symlink(
+        &mut self,
+        context: MutationContext,
+        parent: InodeNumber,
+        name: FileName<'_>,
+        target: &[u8],
+    ) -> Ext4Result<InodeInfo> {
+        self.ensure_writable("symlink:create")?;
+        create_inode_at(
+            &mut self.device,
+            &mut self.filesystem,
+            CreateEntryRequest {
+                parent,
+                name,
+                mode: Ext4Inode::S_IFLNK | 0o777,
+                uid: context.uid,
+                gid: context.gid,
+            },
+            CreateInodePayload::Data(target),
+            Ext4DirEntry2::EXT4_FT_SYMLINK,
+        )?;
+        self.lookup_child(parent, name)?.ok_or_else(|| {
+            Ext4Error::corrupted().with_operation("symlink:create_missing_directory_entry")
+        })
+    }
+
     /// Creates a directory below an already resolved directory.
     pub fn create_directory(
         &mut self,
@@ -482,6 +637,18 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
     ) -> Ext4Result<UnlinkOutcome> {
         self.ensure_writable("inode:unlink")?;
         unlink_inode_at(&mut self.filesystem, &mut self.device, parent, name)
+    }
+
+    /// Removes an empty directory without reclaiming its inode while the VFS
+    /// may still hold a live directory reference.
+    pub fn remove_empty_directory(
+        &mut self,
+        _context: MutationContext,
+        parent: InodeNumber,
+        name: FileName<'_>,
+    ) -> Ext4Result<UnlinkOutcome> {
+        self.ensure_writable("directory:remove")?;
+        unlink_empty_directory_at(&mut self.filesystem, &mut self.device, parent, name)
     }
 
     /// Renames or exchanges two raw directory names below resolved parents.
@@ -578,9 +745,167 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         truncate_inode(&mut self.device, &mut self.filesystem, number, size)
     }
 
+    /// Replaces the target bytes of an existing symbolic-link inode.
+    pub fn set_symlink_target(
+        &mut self,
+        _context: MutationContext,
+        number: InodeNumber,
+        target: &[u8],
+    ) -> Ext4Result<()> {
+        self.ensure_writable("symlink:set_target")?;
+        let mut old_inode = self.filesystem.get_inode_by_num(&mut self.device, number)?;
+        if !old_inode.is_symlink() {
+            return Err(Ext4Error::invalid_input().with_operation("symlink:not_symlink"));
+        }
+        let old_blocks = resolve_inode_blocks(
+            &mut self.filesystem,
+            &mut self.device,
+            number,
+            &mut old_inode,
+        )?;
+
+        let target_len = target.len();
+        let mut new_inode = old_inode;
+        new_inode.i_size_lo = (target_len as u64 & 0xffff_ffff) as u32;
+        new_inode.i_size_high = ((target_len as u64) >> 32) as u32;
+        new_inode.i_blocks_lo = 0;
+        new_inode.l_i_blocks_high = 0;
+        new_inode.i_block = [0; 15];
+        let mut new_data_blocks = Vec::new();
+
+        if target_len < 60 {
+            new_inode.i_flags &= !Ext4Inode::EXT4_EXTENTS_FL;
+            let mut inline = [0u8; 60];
+            inline[..target_len].copy_from_slice(target);
+            for (word, bytes) in new_inode.i_block.iter_mut().zip(inline.as_chunks::<4>().0) {
+                *word = u32::from_le_bytes(*bytes);
+            }
+        } else {
+            let block_size = self.filesystem.block_size();
+            let storage_len = target_len.checked_add(1).ok_or_else(Ext4Error::overflow)?;
+            let mut remaining = storage_len;
+            let mut source_offset = 0usize;
+            while remaining != 0 {
+                if !self.filesystem.superblock.has_extents() && new_data_blocks.len() >= 12 {
+                    let cleanup = discard_unpublished_inode_blocks(
+                        &mut self.filesystem,
+                        &mut self.device,
+                        &new_data_blocks,
+                    );
+                    return Err(error_after_cleanup(
+                        Ext4Error::unsupported().with_operation("symlink:legacy_indirect"),
+                        cleanup,
+                    ));
+                }
+                let block = match self.filesystem.alloc_block(&mut self.device) {
+                    Ok(block) => block,
+                    Err(error) => {
+                        let cleanup = discard_unpublished_inode_blocks(
+                            &mut self.filesystem,
+                            &mut self.device,
+                            &new_data_blocks,
+                        );
+                        return Err(error_after_cleanup(error, cleanup));
+                    }
+                };
+                let write_len = core::cmp::min(remaining, block_size);
+                if let Err(error) =
+                    self.filesystem
+                        .datablock_cache
+                        .modify_new(&mut self.device, block, |data| {
+                            data.fill(0);
+                            let copy_len =
+                                core::cmp::min(write_len, target_len.saturating_sub(source_offset));
+                            let source_end = source_offset + copy_len;
+                            data[..copy_len].copy_from_slice(&target[source_offset..source_end]);
+                        })
+                {
+                    self.filesystem.datablock_cache.invalidate(block);
+                    new_data_blocks.push(block);
+                    let cleanup = discard_unpublished_inode_blocks(
+                        &mut self.filesystem,
+                        &mut self.device,
+                        &new_data_blocks,
+                    );
+                    return Err(error_after_cleanup(error, cleanup));
+                }
+                new_data_blocks.push(block);
+                source_offset = source_offset.saturating_add(write_len);
+                remaining -= write_len;
+            }
+
+            if self.filesystem.superblock.has_extents() {
+                new_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
+                new_inode.write_extend_header();
+            } else {
+                new_inode.i_flags &= !Ext4Inode::EXT4_EXTENTS_FL;
+            }
+            let sectors = match (new_data_blocks.len() as u64).checked_mul(block_size as u64 / 512)
+            {
+                Some(sectors) => sectors,
+                None => {
+                    let cleanup = discard_unpublished_inode_blocks(
+                        &mut self.filesystem,
+                        &mut self.device,
+                        &new_data_blocks,
+                    );
+                    return Err(error_after_cleanup(Ext4Error::overflow(), cleanup));
+                }
+            };
+            let huge_file = self.filesystem.superblock.has_feature_ro_compat(
+                crate::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE,
+            );
+            if let Err(error) = new_inode.set_blocks_count(sectors, block_size as u32, huge_file) {
+                let cleanup = discard_unpublished_inode_blocks(
+                    &mut self.filesystem,
+                    &mut self.device,
+                    &new_data_blocks,
+                );
+                return Err(error_after_cleanup(error, cleanup));
+            }
+            if let Err(error) = build_file_block_mapping_with_inode_num(
+                &mut self.filesystem,
+                &mut new_inode,
+                number,
+                &new_data_blocks,
+                &mut self.device,
+            ) {
+                let cleanup = discard_unpublished_inode_blocks(
+                    &mut self.filesystem,
+                    &mut self.device,
+                    &new_data_blocks,
+                );
+                return Err(error_after_cleanup(error, cleanup));
+            }
+        }
+
+        if let Err(error) = self.filesystem.finalize_inode_update(
+            &mut self.device,
+            number,
+            &mut new_inode,
+            Ext4InodeMetadataUpdate::write_access(),
+        ) {
+            let cleanup = discard_unpublished_inode_blocks(
+                &mut self.filesystem,
+                &mut self.device,
+                &new_data_blocks,
+            );
+            return Err(error_after_cleanup(error, cleanup));
+        }
+        for block in old_blocks.into_values() {
+            self.filesystem.datablock_cache.invalidate(block);
+            self.filesystem.free_block(&mut self.device, block)?;
+        }
+        Ok(())
+    }
+
     pub fn sync(&mut self) -> Ext4Result<()> {
         self.filesystem
-            .sync_filesystem_with_observer(&mut self.device, &mut self.services.observer)
+            .sync_filesystem_with_observer(&mut self.device, &mut self.services.observer)?;
+        if self.device.is_use_journal() {
+            self.device.commit()?;
+        }
+        self.device.flush()
     }
 
     pub fn unmount(&mut self) -> Ext4Result<()> {
