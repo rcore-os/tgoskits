@@ -19,6 +19,7 @@ use crate::task::prepare_user_thread_with_policy;
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, add_file_like, close_file_like_if},
     mm::{VmMutPtr, VmPtr, copy_from_kernel},
+    sync::SpinLock,
     task::{
         ProcessData, ProcessDataInit, ProcessImage, Thread, allocate_user_tid, new_user_task,
         notify_members_changed, register_prepared_task,
@@ -550,11 +551,10 @@ impl CloneArgs {
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
                 old_proc_data.signal.actions()
             } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
-                Arc::new(SpinNoIrq::new(Default::default()))
+                Arc::new(SpinLock::new(Default::default()))
             } else {
-                Arc::new(SpinNoIrq::new(
-                    old_proc_data.signal.actions().lock().clone(),
-                ))
+                let actions = old_proc_data.signal.actions();
+                Arc::new(SpinLock::new(actions.lock_irqsave().clone()))
             };
 
             let inherited_cgroup = old_proc_data.cgroup_node();
