@@ -809,6 +809,151 @@ fn legacy_write_crosses_direct_single_boundary_and_remounts_cleanly() {
 }
 
 #[test]
+fn legacy_sparse_truncate_prunes_single_double_and_triple_roots() {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-legacy-truncate-roots", "64M");
+    let pointers_per_block = (BLOCK_SIZE / size_of::<u32>()) as u64;
+    let double_capacity = pointers_per_block * pointers_per_block;
+    let cases = [
+        ("single", 1usize, 12u64),
+        ("double", 2, 12 + pointers_per_block),
+        ("triple", 3, 12 + pointers_per_block + double_capacity),
+    ];
+
+    {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("mount image");
+        let huge_file = fs
+            .superblock
+            .has_feature_ro_compat(superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+
+        for (name, depth, root_start) in cases {
+            let path = format!("/legacy-{name}-truncate.bin");
+            mkfile(&mut dev, &mut fs, &path, None, None).expect("create legacy truncate file");
+            let inode_number = dir::get_inode_with_num(&mut fs, &mut dev, &path)
+                .expect("lookup legacy truncate file")
+                .expect("legacy truncate inode")
+                .0;
+            fs.modify_inode(&mut dev, inode_number, |inode| {
+                inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+                inode.i_block = [0; 15];
+                inode.i_blocks_lo = 0;
+                inode.l_i_blocks_high = 0;
+            })
+            .expect("convert empty inode to legacy mapping");
+
+            let retained_marker = [0x40 | depth as u8];
+            let removed_marker = [0x80 | depth as u8];
+            write_file(&mut dev, &mut fs, &path, 0, &retained_marker)
+                .expect("write retained direct marker");
+            write_file(
+                &mut dev,
+                &mut fs,
+                &path,
+                root_start * BLOCK_SIZE as u64,
+                &removed_marker,
+            )
+            .expect("write sparse indirect marker");
+
+            let mut marker = [0u8; 1];
+            assert_eq!(
+                read_inode_data_into(&mut dev, &mut fs, inode_number, 0, &mut marker)
+                    .expect("read direct marker before truncate"),
+                1
+            );
+            assert_eq!(marker, retained_marker);
+            assert_eq!(
+                read_inode_data_into(
+                    &mut dev,
+                    &mut fs,
+                    inode_number,
+                    root_start * BLOCK_SIZE as u64,
+                    &mut marker,
+                )
+                .expect("read indirect marker before truncate"),
+                1
+            );
+            assert_eq!(marker, removed_marker);
+
+            let inode = fs
+                .get_inode_by_num(&mut dev, inode_number)
+                .expect("read allocated legacy inode");
+            assert!(!inode.uses_extents());
+            assert_ne!(inode.i_block[11 + depth], 0, "{name} root must exist");
+            assert_eq!(
+                inode.blocks_count(BLOCK_SIZE as u32, huge_file),
+                (depth as u64 + 2) * (BLOCK_SIZE / 512) as u64,
+                "two data blocks plus the {depth}-level metadata path must be accounted"
+            );
+
+            truncate(&mut dev, &mut fs, &path, root_start * BLOCK_SIZE as u64)
+                .expect("truncate sparse legacy root");
+            let inode = fs
+                .get_inode_by_num(&mut dev, inode_number)
+                .expect("read truncated legacy inode");
+            assert_eq!(inode.i_block[11 + depth], 0, "{name} root must be pruned");
+            assert_eq!(
+                inode.blocks_count(BLOCK_SIZE as u32, huge_file),
+                (BLOCK_SIZE / 512) as u64,
+                "only the retained direct data block may remain"
+            );
+            assert_eq!(
+                read_inode_data_into(&mut dev, &mut fs, inode_number, 0, &mut marker)
+                    .expect("read direct marker after truncate"),
+                1
+            );
+            assert_eq!(marker, retained_marker);
+        }
+
+        umount(fs, &mut dev).expect("umount legacy truncate image");
+    }
+
+    e2fsck_readonly_clean(&image, "legacy indirect root truncation");
+
+    {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("remount legacy truncate image");
+        for (name, depth, root_start) in cases {
+            let path = format!("/legacy-{name}-truncate.bin");
+            let (inode_number, inode) = dir::get_inode_with_num(&mut fs, &mut dev, &path)
+                .expect("lookup remounted legacy truncate file")
+                .expect("remounted legacy truncate inode");
+            assert!(!inode.uses_extents());
+            assert_eq!(inode.size(), root_start * BLOCK_SIZE as u64);
+            assert_eq!(inode.i_block[11 + depth], 0);
+
+            let mut marker = [0u8; 1];
+            assert_eq!(
+                read_inode_data_into(&mut dev, &mut fs, inode_number, 0, &mut marker)
+                    .expect("read retained direct marker"),
+                1
+            );
+            assert_eq!(marker, [0x40 | depth as u8]);
+            assert_eq!(
+                read_inode_data_into(
+                    &mut dev,
+                    &mut fs,
+                    inode_number,
+                    root_start * BLOCK_SIZE as u64,
+                    &mut marker,
+                )
+                .expect("read at truncated EOF"),
+                0
+            );
+        }
+        umount(fs, &mut dev).expect("umount remounted legacy truncate image");
+    }
+
+    e2fsck_readonly_clean(&image, "remounted legacy indirect root truncation");
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
 fn e2fsck_clean_after_deleting_split_extent_file_frees_tree_blocks() {
     for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
         require_tool(tool);

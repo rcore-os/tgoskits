@@ -358,6 +358,21 @@ impl<B: BlockIo> BlockDev<B> {
         Ok(())
     }
 
+    /// Invalidates one cached block without writing its current contents.
+    ///
+    /// Filesystem metadata may only use this after the block has been detached
+    /// from every durable owner. Writing the old buffer after the allocator
+    /// reuses that physical block would corrupt the new owner.
+    pub(crate) fn invalidate_block(&mut self, block_id: AbsoluteBN) {
+        for entry in &mut self.entries {
+            if entry.block_id == Some(block_id) {
+                entry.block_id = None;
+                entry.dirty = false;
+                entry.referenced = false;
+            }
+        }
+    }
+
     /// Flushes all dirty cached blocks and the underlying device.
     pub fn flush(&mut self) -> Ext4Result<()> {
         for entry in self.entries.iter_mut() {
@@ -725,6 +740,27 @@ mod tests {
         dev.read_block(target).unwrap();
 
         assert!(dev.buffer().iter().all(|byte| *byte == 0x5a));
+    }
+
+    #[test]
+    fn invalidating_detached_block_discards_dirty_buffer() {
+        let mut data = vec![0; 16 * crate::config::BLOCK_SIZE];
+        let target = AbsoluteBN::new(2);
+        let start = target.as_usize().unwrap() * crate::config::BLOCK_SIZE;
+        data[start..start + crate::config::BLOCK_SIZE].fill(0x11);
+        let mut dev = BlockDev::new(StrictSectorDevice { data });
+
+        dev.read_block(target).expect("cache detached metadata");
+        dev.buffer_mut().fill(0x22);
+        dev.invalidate_block(target);
+        dev.flush().expect("flush remaining cache state");
+
+        let inner = dev.into_inner();
+        assert!(
+            inner.data[start..start + crate::config::BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0x11)
+        );
     }
 
     #[test]
