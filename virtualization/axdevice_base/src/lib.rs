@@ -117,6 +117,26 @@ impl DeviceId {
     }
 }
 
+/// VM-local identity of the vCPU that issued one trapped device access.
+///
+/// This value describes the architectural accessor, not the physical CPU that
+/// happens to execute the device callback. It remains valid when exit handling
+/// is preempted or migrates between host CPUs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceVcpuId(usize);
+
+impl DeviceVcpuId {
+    /// Creates a device-access vCPU identifier from its VM-local value.
+    pub const fn new(id: usize) -> Self {
+        Self(id)
+    }
+
+    /// Returns the VM-local numeric identifier.
+    pub const fn as_usize(self) -> usize {
+        self.0
+    }
+}
+
 /// Target instruction-set architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arch {
@@ -356,6 +376,15 @@ pub trait DeviceAccess {
     /// Returns the identity of the device currently handling this access.
     fn device_id(&self) -> DeviceId;
 
+    /// Returns the vCPU that issued this trapped access, when applicable.
+    ///
+    /// Management-path and device-originated callbacks return `None`. Devices
+    /// with banked per-vCPU registers must reject a missing accessor instead of
+    /// consulting host CPU-local state.
+    fn accessing_vcpu(&self) -> Option<DeviceVcpuId> {
+        None
+    }
+
     /// Reads guest memory on behalf of the currently dispatched device.
     ///
     /// This capability is valid only for this access and is denied by default.
@@ -412,18 +441,32 @@ pub trait DeviceAccess {
 /// A no-permission access context for tests and adapter-only callers.
 pub struct NoopDeviceAccess {
     device_id: DeviceId,
+    accessing_vcpu: Option<DeviceVcpuId>,
 }
 
 impl NoopDeviceAccess {
     /// Creates a no-permission context for `device_id`.
     pub const fn new(device_id: DeviceId) -> Self {
-        Self { device_id }
+        Self {
+            device_id,
+            accessing_vcpu: None,
+        }
+    }
+
+    /// Associates this no-permission context with a trapped vCPU access.
+    pub const fn with_vcpu(mut self, vcpu_id: DeviceVcpuId) -> Self {
+        self.accessing_vcpu = Some(vcpu_id);
+        self
     }
 }
 
 impl DeviceAccess for NoopDeviceAccess {
     fn device_id(&self) -> DeviceId {
         self.device_id
+    }
+
+    fn accessing_vcpu(&self) -> Option<DeviceVcpuId> {
+        self.accessing_vcpu
     }
 }
 

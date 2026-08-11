@@ -23,7 +23,11 @@ pub(crate) fn try_handle_mmio_read<V: VmArchVcpuOps>(
 ) -> AxVmResult<bool> {
     let Some(raw) = vm
         .get_devices()?
-        .try_handle_mmio_read(exit.addr, exit.width)
+        .try_handle_mmio_read_for_vcpu(
+            exit.addr,
+            exit.width,
+            axdevice_base::DeviceVcpuId::new(vcpu.id()),
+        )
         .map_err(|error| AxVmError::device("read guest MMIO", error))?
     else {
         return Ok(false);
@@ -40,9 +44,10 @@ pub(crate) fn try_handle_mmio_read<V: VmArchVcpuOps>(
 
 pub(crate) fn handle_mmio_write<A: ArchOps>(
     vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
     exit: MmioWriteExit,
 ) -> AxVmResult<BoundVcpuExit<A::DeferredRunWork>> {
-    if !try_handle_mmio_write::<A>(vm, exit)? {
+    if !try_handle_mmio_write::<A>(vm, vcpu, exit)? {
         return Err(missing_mmio_error("write", exit.addr, exit.width));
     }
     Ok(BoundVcpuExit::Continue)
@@ -50,9 +55,15 @@ pub(crate) fn handle_mmio_write<A: ArchOps>(
 
 pub(crate) fn try_handle_mmio_write<A: ArchOps>(
     vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
     exit: MmioWriteExit,
 ) -> AxVmResult<bool> {
-    let handled = vm.try_handle_mmio_write(exit.addr, exit.width, exit.data as usize)?;
+    let handled = vm.try_handle_mmio_write(
+        axdevice_base::DeviceVcpuId::new(vcpu.id()),
+        exit.addr,
+        exit.width,
+        exit.data as usize,
+    )?;
     if handled {
         A::after_mmio_write(vm);
     }

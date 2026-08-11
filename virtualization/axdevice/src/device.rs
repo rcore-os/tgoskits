@@ -174,6 +174,7 @@ pub struct DeviceRuntime {
 /// Stack-scoped metadata for one routed device access.
 struct RuntimeDeviceAccess<'a> {
     device_id: DeviceId,
+    accessing_vcpu: Option<DeviceVcpuId>,
     memory: Option<&'a mut dyn DeviceAccess>,
     dma_grants: &'a [(DeviceId, DmaGrant)],
     timer_grants: &'a [(DeviceId, TimerGrant)],
@@ -193,6 +194,10 @@ impl RuntimeDeviceAccess<'_> {
 impl DeviceAccess for RuntimeDeviceAccess<'_> {
     fn device_id(&self) -> DeviceId {
         self.device_id
+    }
+
+    fn accessing_vcpu(&self) -> Option<DeviceVcpuId> {
+        self.accessing_vcpu
     }
     fn read_guest_memory(
         &mut self,
@@ -818,6 +823,7 @@ impl DeviceRuntime {
         for (device_id, pollable, grant) in &self.dma_pollable_devices {
             let mut context = RuntimeDeviceAccess {
                 device_id: *device_id,
+                accessing_vcpu: None,
                 memory: Some(&mut *memory),
                 dma_grants: &self.dma_grants,
                 timer_grants: &self.timer_grants,
@@ -896,6 +902,26 @@ impl DeviceRuntime {
         addr: GuestPhysAddr,
         width: AccessWidth,
     ) -> DeviceManagerResult<Option<usize>> {
+        self.try_handle_mmio_read_from(addr, width, None)
+    }
+
+    /// Handles one MMIO read issued by `vcpu_id` when the address belongs to
+    /// this runtime.
+    pub fn try_handle_mmio_read_for_vcpu(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        vcpu_id: DeviceVcpuId,
+    ) -> DeviceManagerResult<Option<usize>> {
+        self.try_handle_mmio_read_from(addr, width, Some(vcpu_id))
+    }
+
+    fn try_handle_mmio_read_from(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        accessing_vcpu: Option<DeviceVcpuId>,
+    ) -> DeviceManagerResult<Option<usize>> {
         let access = BusAccess {
             kind: BusKind::Mmio,
             is_read: true,
@@ -904,7 +930,7 @@ impl DeviceRuntime {
             data: 0,
         };
         match self
-            .dispatch_optional(&access, None)
+            .dispatch_optional(&access, None, accessing_vcpu)
             .map_err(|source| access_error("read", &access, source))?
         {
             Some(BusResponse::Read { value }) => Ok(Some(value as usize)),
@@ -963,6 +989,30 @@ impl DeviceRuntime {
         val: usize,
         memory: &mut dyn axdevice_base::DeviceAccess,
     ) -> DeviceManagerResult<bool> {
+        self.try_handle_mmio_write_from(addr, width, val, memory, None)
+    }
+
+    /// Handles one MMIO write issued by `vcpu_id` with an access-scoped
+    /// guest-memory capability.
+    pub fn try_handle_mmio_write_with_memory_for_vcpu(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        val: usize,
+        memory: &mut dyn axdevice_base::DeviceAccess,
+        vcpu_id: DeviceVcpuId,
+    ) -> DeviceManagerResult<bool> {
+        self.try_handle_mmio_write_from(addr, width, val, memory, Some(vcpu_id))
+    }
+
+    fn try_handle_mmio_write_from(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        val: usize,
+        memory: &mut dyn axdevice_base::DeviceAccess,
+        accessing_vcpu: Option<DeviceVcpuId>,
+    ) -> DeviceManagerResult<bool> {
         let access = BusAccess {
             kind: BusKind::Mmio,
             is_read: false,
@@ -971,7 +1021,7 @@ impl DeviceRuntime {
             data: val as u64,
         };
         let Some(response) = self
-            .dispatch_optional(&access, Some(memory))
+            .dispatch_optional(&access, Some(memory), accessing_vcpu)
             .map_err(|source| access_error("write", &access, source))?
         else {
             return Ok(false);
@@ -1068,7 +1118,7 @@ impl DeviceRuntime {
             data: 0,
         };
         match self
-            .dispatch_optional(&access, None)
+            .dispatch_optional(&access, None, None)
             .map_err(|source| access_error("read", &access, source))?
         {
             Some(BusResponse::Read { value }) => Ok(Some(value as usize)),
@@ -1134,7 +1184,7 @@ impl DeviceRuntime {
             data: val as u64,
         };
         let Some(response) = self
-            .dispatch_optional(&access, Some(memory))
+            .dispatch_optional(&access, Some(memory), None)
             .map_err(|source| access_error("write", &access, source))?
         else {
             return Ok(false);
@@ -1147,6 +1197,7 @@ impl DeviceRuntime {
         &'a self,
         access: &BusAccess,
         memory: Option<&'a mut dyn axdevice_base::DeviceAccess>,
+        accessing_vcpu: Option<DeviceVcpuId>,
     ) -> Result<Option<BusResponse>, DeviceError> {
         let index = match access.kind {
             BusKind::Mmio => self.lookup_mmio(access.addr, access.width),
@@ -1167,6 +1218,7 @@ impl DeviceRuntime {
 
         let mut context = RuntimeDeviceAccess {
             device_id: DeviceId::new(index as u32),
+            accessing_vcpu,
             memory,
             dma_grants: &self.dma_grants,
             timer_grants: &self.timer_grants,
@@ -1236,7 +1288,7 @@ impl DeviceRegistry for DeviceRuntime {
 
 impl BusRouter for DeviceRuntime {
     fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
-        self.dispatch_optional(access, None)?
+        self.dispatch_optional(access, None, None)?
             .ok_or(DeviceError::NotFound)
     }
 
@@ -1267,8 +1319,8 @@ mod tests {
 
     use axdevice_base::{
         AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
-        DeviceId, DeviceRegistry, DmaGrant, InvalidResourceReason, Port, RegistryError, Resource,
-        StopGrant, SysRegAddr, TimerGrant, WakeGrant,
+        DeviceId, DeviceRegistry, DeviceVcpuId, DmaGrant, InvalidResourceReason, Port,
+        RegistryError, Resource, StopGrant, SysRegAddr, TimerGrant, WakeGrant,
     };
     use axvm_types::GuestPhysAddr;
 
@@ -1301,6 +1353,7 @@ mod tests {
 
     struct AccessAwareDevice {
         resources: alloc::vec::Vec<Resource>,
+        expected_vcpu: Option<DeviceVcpuId>,
     }
 
     struct GuestMemoryRequestDevice {
@@ -1414,6 +1467,7 @@ mod tests {
             context: &mut dyn DeviceAccess,
         ) -> Result<BusResponse, DeviceError> {
             assert_eq!(context.device_id(), DeviceId::new(0));
+            assert_eq!(context.accessing_vcpu(), self.expected_vcpu);
             Ok(BusResponse::Read { value: 0xfeed })
         }
     }
@@ -1591,6 +1645,7 @@ mod tests {
                     base: 0x4000,
                     size: 0x100,
                 }],
+                expected_vcpu: None,
             }))
             .unwrap();
 
@@ -1604,6 +1659,32 @@ mod tests {
             }),
             Ok(BusResponse::Read { value: 0xfeed })
         ));
+    }
+
+    #[test]
+    fn vcpu_mmio_dispatch_propagates_the_explicit_accessor() {
+        let mut devices = DeviceRuntime::empty();
+        let vcpu_id = DeviceVcpuId::new(7);
+        devices
+            .register(Arc::new(AccessAwareDevice {
+                resources: alloc::vec![Resource::MmioRange {
+                    base: 0x4000,
+                    size: 0x100,
+                }],
+                expected_vcpu: Some(vcpu_id),
+            }))
+            .unwrap();
+
+        assert_eq!(
+            devices
+                .try_handle_mmio_read_for_vcpu(
+                    GuestPhysAddr::from_usize(0x4000),
+                    AccessWidth::Dword,
+                    vcpu_id,
+                )
+                .unwrap(),
+            Some(0xfeed)
+        );
     }
 
     #[test]

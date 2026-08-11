@@ -6,12 +6,6 @@ use axdevice_base::{BusAccess, BusKind, BusResponse, Device, DeviceAccess, Devic
 
 use crate::{ArmVgicConfig, GicVcpuId, ItsConfig, VgicCore, VgicMmioRegion, VgicResult};
 
-/// Architecture-owned source of the vCPU issuing a trapped register access.
-pub trait VgicAccessContext: Send + Sync {
-    /// Returns the current VM-local vCPU identifier.
-    fn current_vcpu(&self) -> Option<usize>;
-}
-
 /// Complete set of bus devices exposing one [`VgicCore`].
 pub struct VgicDeviceSet {
     devices: Vec<Arc<dyn Device>>,
@@ -19,29 +13,23 @@ pub struct VgicDeviceSet {
 
 impl VgicDeviceSet {
     /// Creates all MMIO frontends from the same immutable controller config.
-    pub fn new(
-        core: Arc<VgicCore>,
-        access_context: Arc<dyn VgicAccessContext>,
-    ) -> VgicResult<Self> {
+    pub fn new(core: Arc<VgicCore>) -> VgicResult<Self> {
         let mut devices: Vec<Arc<dyn Device>> = Vec::new();
         match core.config() {
             ArmVgicConfig::V2(config) => {
                 devices.push(Arc::new(VgicDistributorDevice::new(
                     core.clone(),
-                    access_context.clone(),
                     config.distributor(),
                     DistributorVersion::V2,
                 )));
                 devices.push(Arc::new(VgicV2CpuInterfaceDevice::new(
                     core.clone(),
-                    access_context,
                     config.cpu_interface(),
                 )));
             }
             ArmVgicConfig::V3(config) => {
                 devices.push(Arc::new(VgicDistributorDevice::new(
                     core.clone(),
-                    access_context,
                     config.distributor(),
                     DistributorVersion::V3,
                 )));
@@ -85,22 +73,15 @@ enum DistributorVersion {
 
 struct VgicDistributorDevice {
     core: Arc<VgicCore>,
-    access_context: Arc<dyn VgicAccessContext>,
     region: VgicMmioRegion,
     resources: Box<[Resource]>,
     version: DistributorVersion,
 }
 
 impl VgicDistributorDevice {
-    fn new(
-        core: Arc<VgicCore>,
-        access_context: Arc<dyn VgicAccessContext>,
-        region: VgicMmioRegion,
-        version: DistributorVersion,
-    ) -> Self {
+    fn new(core: Arc<VgicCore>, region: VgicMmioRegion, version: DistributorVersion) -> Self {
         Self {
             core,
-            access_context,
             region,
             resources: mmio_resources(region),
             version,
@@ -120,22 +101,17 @@ impl Device for VgicDistributorDevice {
     fn access(
         &self,
         access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
+        context: &mut dyn DeviceAccess,
     ) -> Result<BusResponse, DeviceError> {
         let offset = mmio_offset(access, self.region)?;
         let result = match (self.version, access.is_read) {
             (DistributorVersion::V2, true) => self
                 .core
-                .read_v2_distributor(current_vcpu(&*self.access_context)?, offset, access.width)
+                .read_v2_distributor(accessing_vcpu(context)?, offset, access.width)
                 .map(|value| BusResponse::Read { value }),
             (DistributorVersion::V2, false) => self
                 .core
-                .write_v2_distributor(
-                    current_vcpu(&*self.access_context)?,
-                    offset,
-                    access.width,
-                    access.data,
-                )
+                .write_v2_distributor(accessing_vcpu(context)?, offset, access.width, access.data)
                 .map(|()| BusResponse::Write),
             (DistributorVersion::V3, true) => self
                 .core
@@ -154,20 +130,14 @@ impl Device for VgicDistributorDevice {
 
 struct VgicV2CpuInterfaceDevice {
     core: Arc<VgicCore>,
-    access_context: Arc<dyn VgicAccessContext>,
     region: VgicMmioRegion,
     resources: Box<[Resource]>,
 }
 
 impl VgicV2CpuInterfaceDevice {
-    fn new(
-        core: Arc<VgicCore>,
-        access_context: Arc<dyn VgicAccessContext>,
-        region: VgicMmioRegion,
-    ) -> Self {
+    fn new(core: Arc<VgicCore>, region: VgicMmioRegion) -> Self {
         Self {
             core,
-            access_context,
             region,
             resources: mmio_resources(region),
         }
@@ -186,10 +156,10 @@ impl Device for VgicV2CpuInterfaceDevice {
     fn access(
         &self,
         access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
+        context: &mut dyn DeviceAccess,
     ) -> Result<BusResponse, DeviceError> {
         let offset = mmio_offset(access, self.region)?;
-        let vcpu = current_vcpu(&*self.access_context)?;
+        let vcpu = accessing_vcpu(context)?;
         if access.is_read {
             self.core
                 .read_v2_cpu_interface(vcpu, offset, access.width)
@@ -344,12 +314,12 @@ fn mmio_offset(access: &BusAccess, region: VgicMmioRegion) -> Result<u64, Device
     Ok(access.addr - region.base())
 }
 
-fn current_vcpu(context: &dyn VgicAccessContext) -> Result<GicVcpuId, DeviceError> {
+fn accessing_vcpu(context: &dyn DeviceAccess) -> Result<GicVcpuId, DeviceError> {
     context
-        .current_vcpu()
-        .map(GicVcpuId::new)
+        .accessing_vcpu()
+        .map(|vcpu| GicVcpuId::new(vcpu.as_usize()))
         .ok_or_else(|| DeviceError::InvalidState {
             operation: "access per-vCPU VGIC register",
-            detail: "no current vCPU is installed in the architecture runtime".into(),
+            detail: "the device access does not identify its issuing vCPU".into(),
         })
 }

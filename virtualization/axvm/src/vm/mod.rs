@@ -1362,6 +1362,7 @@ impl AxVM {
 
     pub(crate) fn try_handle_mmio_write(
         &self,
+        vcpu_id: DeviceVcpuId,
         addr: GuestPhysAddr,
         width: AccessWidth,
         data: usize,
@@ -1369,7 +1370,7 @@ impl AxVM {
         let devices = self.get_devices()?;
         let mut memory = VmDmaAccess { vm: self };
         devices
-            .try_handle_mmio_write_with_memory(addr, width, data, &mut memory)
+            .try_handle_mmio_write_with_memory_for_vcpu(addr, width, data, &mut memory, vcpu_id)
             .map_err(Into::into)
     }
 

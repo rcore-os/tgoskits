@@ -140,6 +140,7 @@ impl ArchOps for X86_64Arch {
             ),
             X86VmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
                 vm,
+                vcpu,
                 MmioWriteExit {
                     addr: x86_guest_phys_addr_to_ax(addr),
                     width: x86_access_width_to_ax(width),

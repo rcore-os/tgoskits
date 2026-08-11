@@ -125,6 +125,7 @@ impl ArchOps for Aarch64Arch {
             ),
             ArmVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
                 vm,
+                vcpu,
                 MmioWriteExit {
                     addr: arm_guest_phys_addr_to_ax(addr),
                     width: arm_access_width_to_ax(width),

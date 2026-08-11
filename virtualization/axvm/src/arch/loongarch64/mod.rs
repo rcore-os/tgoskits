@@ -129,6 +129,7 @@ impl ArchOps for LoongArch64Arch {
             ),
             LoongArchVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
                 vm,
+                vcpu,
                 MmioWriteExit {
                     addr: loong_guest_phys_addr_to_ax(addr),
                     width: loong_access_width_to_ax(width),
@@ -228,6 +229,7 @@ fn handle_loongarch_nested_page_fault(
             LoongArchVmExit::MmioWrite { addr, width, data } => {
                 super::try_handle_mmio_write::<LoongArch64Arch>(
                     vm,
+                    vcpu,
                     MmioWriteExit {
                         addr: loong_guest_phys_addr_to_ax(addr),
                         width: loong_access_width_to_ax(width),
