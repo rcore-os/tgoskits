@@ -22,6 +22,15 @@ fn assert_omits(source: &str, path: &str, forbidden: &[&str]) {
     }
 }
 
+fn assert_omits_lines(source: &str, path: &str, forbidden: &[&str]) {
+    for token in forbidden {
+        assert!(
+            !source.lines().any(|line| line.trim() == *token),
+            "{path} must not ignore architecture lifecycle result in {token:?}"
+        );
+    }
+}
+
 #[test]
 fn riscv_ipi_protocol_stays_out_of_common_architecture_files() {
     let architecture_ops = read_source("src/architecture/ops.rs");
@@ -68,5 +77,15 @@ fn loongarch_platform_injector_does_not_claim_the_eiointc_cascade_line() {
         &loongarch_irq,
         "src/arch/loongarch64/irq.rs",
         &["EIOINTC_IRQ", "set_irq_enabled"],
+    );
+}
+
+#[test]
+fn aarch64_vgic_lifecycle_observes_deferred_kick_results() {
+    let vgic = read_source("src/arch/aarch64/vgic/mod.rs");
+    assert_omits_lines(
+        &vgic,
+        "src/arch/aarch64/vgic/mod.rs",
+        &["self.kick.start();", "self.kick.stop();"],
     );
 }
