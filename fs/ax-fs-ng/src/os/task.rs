@@ -164,6 +164,11 @@ mod tests {
 
         #[track_caller]
         fn wait(&self) {
+            assert_eq!(
+                ax_sync::host_preempt_depth(),
+                0,
+                "block notification wait cannot hold a non-sleeping lock"
+            );
             let mut pending = self.pending.lock().unwrap();
             while !*pending {
                 pending = self.ready.wait(pending).unwrap();
@@ -173,6 +178,11 @@ mod tests {
 
         #[track_caller]
         fn wait_timeout(&self, duration: Duration) -> bool {
+            assert_eq!(
+                ax_sync::host_preempt_depth(),
+                0,
+                "block notification wait cannot hold a non-sleeping lock"
+            );
             TEST_WAIT_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
             let mut pending = self.pending.lock().unwrap();
             if !*pending {

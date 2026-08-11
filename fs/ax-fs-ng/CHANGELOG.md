@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Enable the host `ax-sync` provider for `ax-fs-ng` tests after the sleepable
   lock migration.
+- Move grouped block-controller ownership out of its IRQ-save mutex before
+  retry waits during shutdown, and exercise unit tests with the real host spin
+  provider so blocking under non-sleeping guards is detected.
 
 ## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.6...ax-fs-ng-v0.8.7) - 2026-08-09
 
