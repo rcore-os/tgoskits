@@ -12,12 +12,15 @@ default = []
 qperf-metrics = []
 # The final runtime selects the host or OS PiMutexTaskOps provider. ax-task's
 # host compatibility must not select ax-sync's independent host waiter ABI.
-host-test = []
+host-test = ["smp"]
 lockdep = ["ax-sync/lockdep"]
+smp = []
 
 [dependencies]
 ax-crate-interface.workspace = true
 ax-sync = { workspace = true, features = ["lock-api", "sleep"] }
+cfg-if.workspace = true
+lock_api.workspace = true
 thiserror.workspace = true
 trait-ffi = "0.2.11"
 

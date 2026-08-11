@@ -61,6 +61,12 @@ pub use self::raw_spin::RawIrqSaveMutex;
 /// A non-sleeping mutex whose guard saves and disables local IRQs.
 pub type IrqMutex<T> = lock_api::Mutex<RawIrqSaveMutex, T>;
 #[cfg(feature = "lockdep")]
+#[doc(hidden)]
+pub use self::lockdep_core::{
+    DEFAULT_LOCK_SUBCLASS, Lockdep as ExternalLockdepTrace, finish_acquire_task,
+    force_release_task, prepare_acquire_with_snapshot_nested, release_task,
+};
+#[cfg(feature = "lockdep")]
 pub use self::spin_lockdep::{
     HeldLock, HeldLockKind, HeldLockSnapshot, HeldLockStack, LockdepMap, LockdepOps,
     PreparedAcquire, current_task_held_lock_snapshot, dump_lockdep_trace,

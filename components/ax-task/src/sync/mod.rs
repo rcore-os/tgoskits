@@ -8,5 +8,6 @@ pub mod api;
 #[doc(hidden)]
 pub mod bridge;
 mod context;
+mod spin;
 
 pub use self::api::*;

@@ -1207,6 +1207,8 @@ version = "0.7.0"
 dependencies = [
  "ax-crate-interface",
  "ax-sync",
+ "cfg-if",
+ "lock_api",
  "loom",
  "thiserror 2.0.20",
  "trait-ffi",

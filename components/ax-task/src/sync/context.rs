@@ -5,12 +5,17 @@ use core::marker::PhantomData;
 use crate::runtime::{LocalIrqState, PreemptGuardToken, task_runtime};
 
 /// Internal critical-section contract shared by task-owned lock algorithms.
-pub(crate) trait GuardState {
+pub trait GuardState {
     type State: Copy;
 
     fn acquire() -> Self::State;
 
     fn release(state: Self::State);
+
+    #[cfg(feature = "lockdep")]
+    fn lockdep_enabled() -> bool {
+        false
+    }
 }
 
 struct PendingGuardState<G: GuardState> {
@@ -39,9 +44,20 @@ impl<G: GuardState> Drop for PendingGuardState<G> {
     }
 }
 
-pub(crate) struct PreemptState;
-pub(crate) struct IrqSaveState;
-pub(crate) struct PreemptIrqSaveState;
+pub struct RawState;
+pub struct PreemptState;
+pub struct IrqSaveState;
+pub struct PreemptIrqSaveState;
+
+impl GuardState for RawState {
+    type State = ();
+
+    #[inline(always)]
+    fn acquire() -> Self::State {}
+
+    #[inline(always)]
+    fn release(_state: Self::State) {}
+}
 
 impl GuardState for PreemptState {
     type State = PreemptGuardToken;
@@ -59,6 +75,11 @@ impl GuardState for PreemptState {
         // SAFETY: acquire returned this same-context token, and the owning
         // guard consumes it exactly once without permitting migration.
         unsafe { task_runtime::preempt_guard_exit(state) };
+    }
+
+    #[cfg(feature = "lockdep")]
+    fn lockdep_enabled() -> bool {
+        true
     }
 }
 
@@ -92,6 +113,11 @@ impl GuardState for PreemptIrqSaveState {
     fn release((preempt, irq): Self::State) {
         IrqSaveState::release(irq);
         PreemptState::release(preempt);
+    }
+
+    #[cfg(feature = "lockdep")]
+    fn lockdep_enabled() -> bool {
+        true
     }
 }
 
