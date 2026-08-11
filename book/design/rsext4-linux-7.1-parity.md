@@ -577,3 +577,28 @@ RSEXT4_BENCH_SUMMARY commit=a1e72761288d58198232e441df521f4b52d08f38 arch=x86_64
 未丢弃样本，也未用选择性复测覆盖；本检查点原样登记为性能红项。由于 legacy
 truncate 不在该 workload 热路径，当前证据不能把回退归因于 truncate 实现，留待
 整体性能收敛阶段用冻结 harness 和同机 dev A/B 定位。
+
+### 7.21 legacy indirect reap 检查点
+
+采集时间：2026-08-11；被测实现 commit 为
+`678a92512c8939ea02bf352a2c0114c9cce644c7`，固定 CPU 2，环境、owned API
+harness 和 workload 与 7.19 相同。本检查点让 final unlink 仅发布 zero-link/orphan，
+显式 reap 与 mount recovery 复用强制 mapping cleanup，完成 legacy indirect data、
+pointer metadata 和 inode bitmap 回收。冻结的 sequential workload 不执行 unlink、reap
+或 orphan recovery，因此结果只保护共享 write/read/sync 热路径，不能作为新删除路径
+的因果性能证明。
+
+正式检查使用 3 次预热与 20 次测量，全部有效原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-legacy-indirect-reap.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=678a92512c8939ea02bf352a2c0114c9cce644c7 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=7097313 write_p95_ns=7451501 read_median_ns=7420004 read_p95_ns=7875142 sync_median_ns=34526 sync_p95_ns=38863
+```
+
+相对 dev 基线，write/read median 分别回退约 4.0%/2.8%，write/read/sync p95
+分别回退约 1.6%、改善约 7.1%、回退约 0.6%，均在冻结硬门槛内。sync median
+回退约 33.7%，但 sync workload 的 latency 门槛按 p95 判定。相对 7.20，write
+median/p95 分别回退约 8.1%/4.4%，read median/p95 分别回退约 6.4%/0.4%，
+sync median 回退约 3.7%，sync p95 改善约 19.7%。8.533 ms write 与 57.090 us
+sync 最大样本均保留，未选择性剔除或复测覆盖；7.20 及更早红检查点也保持原始结论。
+当前检查点通过 sequential host 门槛，但完整 workload/feature 与最终同机 A/B 仍未完成。
