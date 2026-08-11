@@ -1,5 +1,24 @@
 //! Execution-context guards used by the synchronization primitives.
 
+/// Opaque runtime ownership returned by a preemption-guard entry.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreemptGuardToken(usize);
+
+impl PreemptGuardToken {
+    /// Creates the capability result for one runtime guard entry.
+    #[doc(hidden)]
+    pub const fn from_entered(entered: bool) -> Self {
+        Self(entered as usize)
+    }
+
+    /// Returns whether a stronger runtime scope already owns the CPU.
+    #[doc(hidden)]
+    pub const fn is_none(self) -> bool {
+        self.0 == 0
+    }
+}
+
 /// Runtime operations required to enter and leave kernel critical sections.
 ///
 /// The operating-system runtime provides this interface. Keeping the
@@ -7,11 +26,26 @@
 /// [`crate::SpinLock`] without depending on a scheduler or hardware layer.
 #[ax_crate_interface::def_interface]
 pub trait CriticalSectionOps {
-    /// Disables kernel preemption for the current task.
-    fn disable_preempt();
+    /// Enters a task-preemption exclusion scope.
+    ///
+    /// Zero means a stronger runtime owner already pins this CPU. Any non-zero
+    /// token must be returned unchanged to the matching exit operation.
+    fn preempt_guard_enter() -> PreemptGuardToken;
 
-    /// Re-enables kernel preemption for the current task.
-    fn enable_preempt();
+    /// Leaves an ordinary task-preemption exclusion scope.
+    fn preempt_guard_exit(token: PreemptGuardToken);
+
+    /// Leaves preemption at an explicit hard-IRQ return boundary.
+    ///
+    /// The runtime may enter the scheduler while hardware IRQs remain
+    /// disabled, but must return with them disabled for the exception epilogue.
+    fn preempt_guard_exit_irq_return(token: PreemptGuardToken);
+
+    /// Publishes entry into hard-interrupt accounting and nesting.
+    fn hardirq_enter();
+
+    /// Publishes exit from hard-interrupt accounting and nesting.
+    fn hardirq_exit();
 
     /// Saves the local interrupt state and disables local interrupts.
     fn irq_save_and_disable() -> usize;
@@ -88,16 +122,16 @@ impl GuardState for RawState {
 }
 
 impl GuardState for PreemptState {
-    type State = ();
+    type State = PreemptGuardToken;
 
     #[inline(always)]
     fn acquire() -> Self::State {
-        ax_crate_interface::call_interface!(CriticalSectionOps::disable_preempt);
+        ax_crate_interface::call_interface!(CriticalSectionOps::preempt_guard_enter)
     }
 
     #[inline(always)]
-    fn release(_state: Self::State) {
-        ax_crate_interface::call_interface!(CriticalSectionOps::enable_preempt);
+    fn release(state: Self::State) {
+        ax_crate_interface::call_interface!(CriticalSectionOps::preempt_guard_exit, state);
     }
 
     fn lockdep_enabled() -> bool {
@@ -120,18 +154,19 @@ impl GuardState for IrqSaveState {
 }
 
 impl GuardState for PreemptIrqSaveState {
-    type State = usize;
+    type State = (PreemptGuardToken, usize);
 
     #[inline(always)]
     fn acquire() -> Self::State {
-        ax_crate_interface::call_interface!(CriticalSectionOps::disable_preempt);
-        ax_crate_interface::call_interface!(CriticalSectionOps::irq_save_and_disable)
+        let preempt = ax_crate_interface::call_interface!(CriticalSectionOps::preempt_guard_enter);
+        let irq = ax_crate_interface::call_interface!(CriticalSectionOps::irq_save_and_disable);
+        (preempt, irq)
     }
 
     #[inline(always)]
-    fn release(state: Self::State) {
-        ax_crate_interface::call_interface!(CriticalSectionOps::irq_restore, state);
-        ax_crate_interface::call_interface!(CriticalSectionOps::enable_preempt);
+    fn release((preempt, irq): Self::State) {
+        ax_crate_interface::call_interface!(CriticalSectionOps::irq_restore, irq);
+        ax_crate_interface::call_interface!(CriticalSectionOps::preempt_guard_exit, preempt);
     }
 
     fn lockdep_enabled() -> bool {
@@ -140,13 +175,16 @@ impl GuardState for PreemptIrqSaveState {
 }
 
 /// An RAII guard which disables kernel preemption while it is alive.
-pub struct PreemptGuard;
+pub struct PreemptGuard {
+    state: <PreemptState as GuardState>::State,
+}
 
 impl PreemptGuard {
     /// Disables preemption and creates a guard which restores it on drop.
     pub fn new() -> Self {
-        PreemptState::acquire();
-        Self
+        Self {
+            state: PreemptState::acquire(),
+        }
     }
 }
 
@@ -158,7 +196,7 @@ impl Default for PreemptGuard {
 
 impl Drop for PreemptGuard {
     fn drop(&mut self) {
-        PreemptState::release(());
+        PreemptState::release(self.state);
     }
 }
 
@@ -174,6 +212,17 @@ impl IrqSaveGuard {
             state: IrqSaveState::acquire(),
         }
     }
+
+    /// Disables preemption for work completed by a hard-IRQ return epilogue.
+    ///
+    /// The mutable borrow prevents local IRQ restoration before the dedicated
+    /// preemption exit has completed.
+    pub fn disable_preempt_for_irq_return(&mut self) -> IrqReturnPreemptGuard<'_> {
+        IrqReturnPreemptGuard {
+            token: ax_crate_interface::call_interface!(CriticalSectionOps::preempt_guard_enter),
+            _irq_guard: core::marker::PhantomData,
+        }
+    }
 }
 
 impl Default for IrqSaveGuard {
@@ -186,6 +235,34 @@ impl Drop for IrqSaveGuard {
     fn drop(&mut self) {
         IrqSaveState::release(self.state);
     }
+}
+
+/// A preemption guard whose final release is an explicit IRQ-return boundary.
+#[must_use = "dropping the guard completes the IRQ-return preemption exit"]
+pub struct IrqReturnPreemptGuard<'irq> {
+    token: PreemptGuardToken,
+    _irq_guard: core::marker::PhantomData<&'irq mut IrqSaveGuard>,
+}
+
+impl Drop for IrqReturnPreemptGuard<'_> {
+    fn drop(&mut self) {
+        ax_crate_interface::call_interface!(
+            CriticalSectionOps::preempt_guard_exit_irq_return,
+            self.token
+        );
+    }
+}
+
+/// Publishes entry into the runtime's hard-interrupt lifecycle.
+#[inline(always)]
+pub fn hardirq_enter() {
+    ax_crate_interface::call_interface!(CriticalSectionOps::hardirq_enter);
+}
+
+/// Publishes exit from the runtime's hard-interrupt lifecycle.
+#[inline(always)]
+pub fn hardirq_exit() {
+    ax_crate_interface::call_interface!(CriticalSectionOps::hardirq_exit);
 }
 
 /// An RAII guard which disables preemption and local interrupts.
@@ -233,12 +310,14 @@ mod host {
 
     #[ax_crate_interface::impl_interface]
     impl CriticalSectionOps for HostCriticalSectionOps {
-        fn disable_preempt() {
+        fn preempt_guard_enter() -> super::PreemptGuardToken {
             EVENTS.with_borrow_mut(|events| events.push("preempt-disable"));
             PREEMPT_DEPTH.set(PREEMPT_DEPTH.get() + 1);
+            super::PreemptGuardToken::from_entered(true)
         }
 
-        fn enable_preempt() {
+        fn preempt_guard_exit(token: super::PreemptGuardToken) {
+            assert!(!token.is_none(), "host preemption token is invalid");
             EVENTS.with_borrow_mut(|events| events.push("preempt-enable"));
             PREEMPT_DEPTH.set(
                 PREEMPT_DEPTH
@@ -246,6 +325,28 @@ mod host {
                     .checked_sub(1)
                     .expect("unbalanced preemption guard"),
             );
+        }
+
+        fn preempt_guard_exit_irq_return(token: super::PreemptGuardToken) {
+            assert!(
+                !token.is_none(),
+                "host IRQ-return preemption token is invalid"
+            );
+            EVENTS.with_borrow_mut(|events| events.push("preempt-irq-return"));
+            PREEMPT_DEPTH.set(
+                PREEMPT_DEPTH
+                    .get()
+                    .checked_sub(1)
+                    .expect("unbalanced IRQ-return preemption guard"),
+            );
+        }
+
+        fn hardirq_enter() {
+            EVENTS.with_borrow_mut(|events| events.push("hardirq-enter"));
+        }
+
+        fn hardirq_exit() {
+            EVENTS.with_borrow_mut(|events| events.push("hardirq-exit"));
         }
 
         fn irq_save_and_disable() -> usize {
@@ -289,7 +390,9 @@ pub(crate) fn host_context_snapshot() -> (usize, bool) {
 
 #[cfg(all(test, feature = "host-test", not(target_os = "none")))]
 mod tests {
-    use super::{IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard, host};
+    use super::{
+        IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard, hardirq_enter, hardirq_exit, host,
+    };
 
     #[test]
     fn preempt_guard_nests_and_restores_depth() {
@@ -334,6 +437,31 @@ mod tests {
                 "irq-disable",
                 "irq-restore",
                 "preempt-enable"
+            ]
+        );
+    }
+
+    #[test]
+    fn irq_return_preserves_hardirq_accounting_and_release_order() {
+        assert_eq!(host::snapshot(), (0, true));
+        let _ = host::take_events();
+        let mut irq = IrqSaveGuard::new();
+        let preempt = irq.disable_preempt_for_irq_return();
+        hardirq_enter();
+        hardirq_exit();
+        drop(preempt);
+        assert_eq!(host::snapshot(), (0, false));
+        drop(irq);
+        assert_eq!(host::snapshot(), (0, true));
+        assert_eq!(
+            host::take_events(),
+            [
+                "irq-disable",
+                "preempt-disable",
+                "hardirq-enter",
+                "hardirq-exit",
+                "preempt-irq-return",
+                "irq-restore"
             ]
         );
     }

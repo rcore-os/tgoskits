@@ -114,8 +114,9 @@ IRQ state 是逐次保存的，因此嵌套 IRQ-save guard 不会错误地提前
 
 `ax-sync` 通过三个最小接口请求外部能力：
 
-- `CriticalSectionOps`：`disable_preempt`、`enable_preempt`、
-  `irq_save_and_disable`、`irq_restore`；
+- `CriticalSectionOps`：generation-bearing preempt guard enter/exit、专用 IRQ-return exit、
+  hardirq enter/exit accounting、`irq_save_and_disable` 和 `irq_restore`；普通退出不能根据
+  live IRQ 状态猜测自己处于异常返回，IRQ-return 所有权必须由独立 token 显式表达；
 - `PiMutexTaskOps`：当前 task ID、阻塞上下文校验、waiter 注册/取消、ownerless
   handoff claim、park/wake、owner on-CPU/reschedule 查询和内联 provider storage 销毁；
 - `LockdepOps`：IRQ-safe 图状态访问、当前任务 held-lock 快照、push/pop、console 和

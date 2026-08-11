@@ -299,6 +299,11 @@ pub(crate) fn exit_preempt() {
     }
 }
 
+#[cfg(all(feature = "multitask", not(test)))]
+pub(crate) fn exit_preempt_from_irq_return() {
+    finish_kernel_preempt_guard(PreemptExitOrigin::IrqReturn);
+}
+
 #[cfg(any(feature = "multitask", test))]
 /// Checks only context constraints after the selected preemption word returned
 /// `FinalPending`; that transition is already the reschedule observation.
@@ -497,36 +502,6 @@ fn with_guard_state_mut<R>(
     // conflicting owner access for the complete callback.
     unsafe { RUNTIME_GUARD_STATE.with_scheduler_cpu_mut(operation) }
         .unwrap_or_else(|error| panic!("runtime guard CPU-local state is invalid: {error}"))
-}
-
-struct KernelGuardIfImpl;
-
-#[ax_crate_interface::impl_interface]
-impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
-    fn hardirq_enter() {
-        #[cfg(feature = "multitask")]
-        crate::irq_time::enter();
-    }
-
-    fn hardirq_exit() {
-        #[cfg(feature = "multitask")]
-        crate::irq_time::exit();
-    }
-
-    fn disable_preempt() {
-        if ax_hal::percpu::scheduler_enter_preempt_guard().is_err() {
-            #[cfg(not(feature = "host-test"))]
-            panic!("architecture preemption state is invalid while disabling preemption");
-        }
-    }
-
-    fn enable_preempt() {
-        finish_kernel_preempt_guard(PreemptExitOrigin::Task);
-    }
-
-    fn enable_preempt_from_irq_return() {
-        finish_kernel_preempt_guard(PreemptExitOrigin::IrqReturn);
-    }
 }
 
 fn finish_kernel_preempt_guard(origin: PreemptExitOrigin) {

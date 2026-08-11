@@ -71,7 +71,10 @@ pub const fn dump_lockdep_trace() {}
 #[cfg(all(feature = "host-test", not(target_os = "none")))]
 #[doc(hidden)]
 pub use self::context::host_preempt_depth;
-pub use self::context::{CriticalSectionOps, IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard};
+pub use self::context::{
+    CriticalSectionOps, IrqReturnPreemptGuard, IrqSaveGuard, PreemptGuard, PreemptGuardToken,
+    PreemptIrqSaveGuard, hardirq_enter, hardirq_exit,
+};
 pub use crate::spin::{
     RawSpinLockGuard, RawSpinRwLockReadGuard, RawSpinRwLockWriteGuard, SpinLock, SpinLockGuard,
     SpinLockIrqSaveGuard, SpinRwLock, SpinRwLockIrqSaveReadGuard, SpinRwLockIrqSaveWriteGuard,

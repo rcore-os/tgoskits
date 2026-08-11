@@ -74,7 +74,7 @@ pub fn update_mmu_cache(vaddr: VirtAddr) {
 /// Flushes the TLB entries covering a virtual-address range on all available CPUs.
 pub fn flush_tlb_range_all_cpus(start: VirtAddr, size: usize) -> Result<(), TlbShootdownError> {
     #[cfg(feature = "ipi")]
-    let _guard = ax_kernel_guard::NoPreempt::new();
+    let _guard = ax_sync::PreemptGuard::new();
     let cpu_count = crate::cpu_num().min(usize::BITS as usize);
     let cpu_mask = if cpu_count == usize::BITS as usize {
         usize::MAX
@@ -94,7 +94,7 @@ pub fn flush_tlb_range_on_cpus(
     size: usize,
 ) -> Result<(), TlbShootdownError> {
     #[cfg(feature = "ipi")]
-    let _guard = ax_kernel_guard::NoPreempt::new();
+    let _guard = ax_sync::PreemptGuard::new();
     flush_tlb_range_on_cpus_with(&AxHalTlbShootdown, cpu_mask, start, size)
 }
 

@@ -6,14 +6,47 @@ struct RuntimeCriticalSectionOps;
 #[cfg(not(feature = "host-test"))]
 #[ax_crate_interface::impl_interface]
 impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {
-    fn disable_preempt() {
+    fn preempt_guard_enter() -> ax_sync::PreemptGuardToken {
         #[cfg(feature = "multitask")]
-        ax_task::disable_preempt();
+        {
+            return ax_sync::PreemptGuardToken::from_entered(crate::guard::enter_lock_preempt());
+        }
+        #[cfg(not(feature = "multitask"))]
+        ax_sync::PreemptGuardToken::from_entered(false)
     }
 
-    fn enable_preempt() {
+    fn preempt_guard_exit(token: ax_sync::PreemptGuardToken) {
         #[cfg(feature = "multitask")]
-        ax_task::enable_preempt();
+        if !token.is_none() {
+            crate::guard::exit_preempt();
+        }
+        #[cfg(not(feature = "multitask"))]
+        assert!(
+            token.is_none(),
+            "uniprocessor runtime received a preemption token"
+        );
+    }
+
+    fn preempt_guard_exit_irq_return(token: ax_sync::PreemptGuardToken) {
+        #[cfg(feature = "multitask")]
+        if !token.is_none() {
+            crate::guard::exit_preempt_from_irq_return();
+        }
+        #[cfg(not(feature = "multitask"))]
+        assert!(
+            token.is_none(),
+            "uniprocessor runtime received an IRQ-return token"
+        );
+    }
+
+    fn hardirq_enter() {
+        #[cfg(feature = "multitask")]
+        crate::irq_time::enter();
+    }
+
+    fn hardirq_exit() {
+        #[cfg(feature = "multitask")]
+        crate::irq_time::exit();
     }
 
     fn irq_save_and_disable() -> usize {

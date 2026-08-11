@@ -60,12 +60,12 @@ fn with_observed_irq_entry<T>(
     dispatch: impl FnOnce() -> T,
     after_preempt_release: impl FnOnce(),
 ) -> T {
-    let mut irq_guard = ax_kernel_guard::IrqSave::new();
+    let mut irq_guard = ax_sync::IrqSaveGuard::new();
     prepare();
     let preempt_guard = irq_guard.disable_preempt_for_irq_return();
-    ax_kernel_guard::hardirq_enter();
+    ax_sync::hardirq_enter();
     let result = dispatch();
-    ax_kernel_guard::hardirq_exit();
+    ax_sync::hardirq_exit();
 
     drop(preempt_guard); // Explicit IRQ-return scheduling keeps local IRQs disabled.
     after_preempt_release();
