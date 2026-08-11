@@ -13,10 +13,10 @@ use crate::{
     jbd2::{
         jbd2::{ReplayFailure, ReplayStatus},
         jbdstruct::{
-            JBD2_BLOCKTYPE_SUPERBLOCK_V2, JBD2_CRC32C_CHKSUM, JBD2_DESCRIPTOR_HEADER_SIZE,
-            JBD2_FEATURE_INCOMPAT_64BIT, JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_MAGIC,
-            JBD2_TAG_BLOCKNR_HIGH_SIZE, JBD2_TAG_SIZE, JBD2_TAG3_SIZE, JBD2_UUID_SIZE,
-            JBD2DEVSYSTEM, Jbd2Update, JournalSuperBllockS,
+            JBD2_BLOCKTYPE_SUPERBLOCK_V1, JBD2_BLOCKTYPE_SUPERBLOCK_V2, JBD2_CRC32C_CHKSUM,
+            JBD2_DESCRIPTOR_HEADER_SIZE, JBD2_FEATURE_INCOMPAT_64BIT,
+            JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_MAGIC, JBD2_TAG_BLOCKNR_HIGH_SIZE, JBD2_TAG_SIZE,
+            JBD2_TAG3_SIZE, JBD2_UUID_SIZE, JBD2DEVSYSTEM, Jbd2Update, JournalSuperBlock,
         },
     },
     runtime::{Clock, JournalReplayPhase},
@@ -64,11 +64,15 @@ pub struct Jbd2Dev<B: BlockIo> {
 impl<B: BlockIo> Jbd2Dev<B> {
     fn validate_journal_superblock(
         &self,
-        super_block: &JournalSuperBllockS,
+        super_block: &JournalSuperBlock,
         mapped_blocks: usize,
     ) -> Ext4Result<()> {
+        let block_type = super_block.s_header.h_blocktype;
         if super_block.s_header.h_magic != JBD2_MAGIC
-            || super_block.s_header.h_blocktype != JBD2_BLOCKTYPE_SUPERBLOCK_V2
+            || !matches!(
+                block_type,
+                JBD2_BLOCKTYPE_SUPERBLOCK_V1 | JBD2_BLOCKTYPE_SUPERBLOCK_V2
+            )
         {
             return Err(Ext4Error::corrupted().with_operation("jbd2:superblock_header"));
         }
@@ -85,6 +89,17 @@ impl<B: BlockIo> Jbd2Dev<B> {
                     || super_block.s_start >= super_block.s_maxlen))
         {
             return Err(Ext4Error::corrupted().with_operation("jbd2:ring_geometry"));
+        }
+        if super_block.is_v1() {
+            if super_block.s_errno != 0 {
+                return Err(Ext4Error::journal_aborted().with_operation("jbd2:recorded_error"));
+            }
+            Self::transaction_capacity(
+                super_block,
+                self.inner.block_size() as usize,
+                mapped_blocks,
+            )?;
+            return Ok(());
         }
         let supported_incompat = JBD2_FEATURE_INCOMPAT_64BIT | JBD2_FEATURE_INCOMPAT_CSUM_V3;
         if super_block.s_feature_incompat & !supported_incompat != 0 {
@@ -176,12 +191,17 @@ impl<B: BlockIo> Jbd2Dev<B> {
     }
 
     fn transaction_capacity(
-        superblock: &JournalSuperBllockS,
+        superblock: &JournalSuperBlock,
         block_size: usize,
         mapped_blocks: usize,
     ) -> Ext4Result<usize> {
-        let has_csum_v3 = superblock.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0;
-        let has_64bit = superblock.s_feature_incompat & JBD2_FEATURE_INCOMPAT_64BIT != 0;
+        let feature_incompat = if superblock.is_v1() {
+            0
+        } else {
+            superblock.s_feature_incompat
+        };
+        let has_csum_v3 = feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0;
+        let has_64bit = feature_incompat & JBD2_FEATURE_INCOMPAT_64BIT != 0;
         let descriptor_tail = usize::from(has_csum_v3) * size_of::<u32>();
         let descriptor_end = block_size
             .checked_sub(descriptor_tail)
@@ -217,7 +237,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
     }
 
     fn make_system(
-        super_block: JournalSuperBllockS,
+        super_block: JournalSuperBlock,
         journal_start_block: AbsoluteBN,
     ) -> JBD2DEVSYSTEM {
         JBD2DEVSYSTEM {
@@ -451,7 +471,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// Installs the journal superblock so JBD2 state can be initialized lazily.
     pub fn set_journal_superblock(
         &mut self,
-        super_block: JournalSuperBllockS,
+        super_block: JournalSuperBlock,
         journal_start_block: AbsoluteBN,
     ) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:reinstall_after_abort")?;
@@ -468,7 +488,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
     pub(crate) fn set_journal_superblock_with_mapping(
         &mut self,
-        super_block: JournalSuperBllockS,
+        super_block: JournalSuperBlock,
         journal_blocks: Vec<AbsoluteBN>,
     ) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:reinstall_after_abort")?;
@@ -985,8 +1005,8 @@ mod tests {
         reference_crc32c(checksum, &block[checksum_offset + 4..])
     }
 
-    fn csum_v3_superblock() -> JournalSuperBllockS {
-        let mut superblock = JournalSuperBllockS::default();
+    fn csum_v3_superblock() -> JournalSuperBlock {
+        let mut superblock = JournalSuperBlock::default();
         superblock.s_maxlen = 64;
         superblock.s_feature_incompat = JBD2_FEATURE_INCOMPAT_64BIT | JBD2_FEATURE_INCOMPAT_CSUM_V3;
         superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
@@ -995,15 +1015,15 @@ mod tests {
         superblock
     }
 
-    fn small_journal_superblock() -> JournalSuperBllockS {
-        JournalSuperBllockS {
+    fn small_journal_superblock() -> JournalSuperBlock {
+        JournalSuperBlock {
             s_maxlen: 16,
             s_first: 1,
-            ..JournalSuperBllockS::default()
+            ..JournalSuperBlock::default()
         }
     }
 
-    fn committed_csum_v3_fixture() -> (MemBlockDev, JournalSuperBllockS, AbsoluteBN) {
+    fn committed_csum_v3_fixture() -> (MemBlockDev, JournalSuperBlock, AbsoluteBN) {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
         let superblock = csum_v3_superblock();
         dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
@@ -1030,7 +1050,7 @@ mod tests {
 
     fn replay_csum_v3_fixture(
         inner: MemBlockDev,
-        superblock: JournalSuperBllockS,
+        superblock: JournalSuperBlock,
         target: AbsoluteBN,
     ) -> (ReplayStatus, MemBlockDev) {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
@@ -1251,9 +1271,8 @@ mod tests {
 
         let inner = dev.into_inner();
         let journal_offset = 128 * BLOCK_SIZE;
-        let recorded = JournalSuperBllockS::from_disk_bytes(
-            &inner.data[journal_offset..journal_offset + 1024],
-        );
+        let recorded =
+            JournalSuperBlock::from_disk_bytes(&inner.data[journal_offset..journal_offset + 1024]);
         assert_eq!(
             recorded.s_errno, 0,
             "a failed FUA write must not claim the abort was recorded"
@@ -1263,7 +1282,7 @@ mod tests {
     #[test]
     fn journal_superblock_must_match_filesystem_block_size() {
         let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
-        let mut superblock = JournalSuperBllockS::default();
+        let mut superblock = JournalSuperBlock::default();
         superblock.s_blocksize = 1024;
 
         let error = dev
@@ -1273,9 +1292,70 @@ mod tests {
     }
 
     #[test]
+    fn journal_v1_ignores_v2_extension_fields() {
+        let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
+        let superblock = JournalSuperBlock {
+            s_header: crate::jbd2::jbdstruct::JournalHeaderS {
+                h_blocktype: JBD2_BLOCKTYPE_SUPERBLOCK_V1,
+                ..Default::default()
+            },
+            s_maxlen: 16,
+            s_feature_compat: u32::MAX,
+            s_feature_incompat: u32::MAX,
+            s_feature_ro_compat: u32::MAX,
+            s_checksum_type: u8::MAX,
+            s_checksum: u32::MAX,
+            ..Default::default()
+        };
+
+        dev.validate_journal_superblock(&superblock, 16)
+            .expect("Linux ignores version-2 extension fields on a v1 journal");
+    }
+
+    #[test]
+    fn journal_v1_commits_without_interpreting_or_rewriting_v2_tail() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        let superblock = JournalSuperBlock {
+            s_header: crate::jbd2::jbdstruct::JournalHeaderS {
+                h_blocktype: JBD2_BLOCKTYPE_SUPERBLOCK_V1,
+                ..Default::default()
+            },
+            s_maxlen: 16,
+            s_feature_compat: u32::MAX,
+            s_feature_incompat: u32::MAX,
+            s_feature_ro_compat: u32::MAX,
+            s_checksum_type: u8::MAX,
+            s_checksum: 0xa5a5_5a5a,
+            ..Default::default()
+        };
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
+            .unwrap();
+
+        let target = AbsoluteBN::new(10);
+        let payload = vec![0x5a; BLOCK_SIZE];
+        dev.write_blocks(&payload, target, 1, true).unwrap();
+        dev.umount_commit().unwrap();
+
+        let inner = dev.into_inner();
+        let home_offset = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(&inner.data[home_offset..home_offset + BLOCK_SIZE], &payload);
+        let journal_offset = 128 * BLOCK_SIZE;
+        let persisted = JournalSuperBlock::decode_checked(
+            &inner.data[journal_offset..journal_offset + BLOCK_SIZE],
+        )
+        .unwrap();
+        assert!(persisted.is_v1());
+        assert_eq!(persisted.s_sequence, 2);
+        assert_eq!(persisted.s_start, 0);
+        assert_eq!(persisted.s_feature_incompat, u32::MAX);
+        assert_eq!(persisted.s_checksum_type, u8::MAX);
+        assert_eq!(persisted.s_checksum, 0xa5a5_5a5a);
+    }
+
+    #[test]
     fn journal_superblock_checksum_is_verified_before_use() {
         let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
-        let mut superblock = JournalSuperBllockS::default();
+        let mut superblock = JournalSuperBlock::default();
         superblock.s_feature_incompat |= JBD2_FEATURE_INCOMPAT_CSUM_V3;
         superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
         crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
@@ -1290,14 +1370,14 @@ mod tests {
     #[test]
     fn journal_superblock_requires_csum_v3_and_crc32c_together() {
         let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
-        let mut missing_type = JournalSuperBllockS::default();
+        let mut missing_type = JournalSuperBlock::default();
         missing_type.s_feature_incompat |= JBD2_FEATURE_INCOMPAT_CSUM_V3;
         let error = dev
             .validate_journal_superblock(&missing_type, missing_type.s_maxlen as usize)
             .expect_err("csum-v3 requires CRC32C journal superblock checksums");
         assert_eq!(error.kind(), crate::Ext4ErrorKind::Unsupported);
 
-        let mut missing_feature = JournalSuperBllockS::default();
+        let mut missing_feature = JournalSuperBlock::default();
         missing_feature.s_checksum_type = JBD2_CRC32C_CHKSUM;
         crate::checksum::jbd2_update_superblock_checksum(&mut missing_feature);
         let error = dev
@@ -1314,7 +1394,7 @@ mod tests {
             .expect("install csum-v3 journal");
 
         assert_eq!(dev.journal_transaction_capacity().unwrap(), 61);
-        let large_ring = JournalSuperBllockS {
+        let large_ring = JournalSuperBlock {
             s_maxlen: 4096,
             ..superblock
         };
@@ -1333,10 +1413,10 @@ mod tests {
     #[test]
     fn journal_install_rejects_ring_without_payload_capacity() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        let too_small = JournalSuperBllockS {
+        let too_small = JournalSuperBlock {
             s_maxlen: 3,
             s_first: 1,
-            ..JournalSuperBllockS::default()
+            ..JournalSuperBlock::default()
         };
 
         let error = dev
@@ -1835,9 +1915,8 @@ mod tests {
         let inner = dev.into_inner();
         assert_eq!(inner.fua_writes, 1, "abort errno must use one FUA write");
         let journal_offset = 128 * BLOCK_SIZE;
-        let recorded = JournalSuperBllockS::from_disk_bytes(
-            &inner.data[journal_offset..journal_offset + 1024],
-        );
+        let recorded =
+            JournalSuperBlock::from_disk_bytes(&inner.data[journal_offset..journal_offset + 1024]);
         assert_eq!(
             recorded.s_errno, 0xffff_fffb,
             "JBD2 stores the private generic I/O abort wire code"
@@ -2182,7 +2261,7 @@ mod tests {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
 
         let error = dev
-            .set_journal_superblock_with_mapping(JournalSuperBllockS::default(), Vec::new())
+            .set_journal_superblock_with_mapping(JournalSuperBlock::default(), Vec::new())
             .expect_err("empty journal mappings are corrupt");
 
         assert_eq!(error, Ext4Error::corrupted());

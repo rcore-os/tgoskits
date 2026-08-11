@@ -217,7 +217,7 @@ fn dx_checksum_uses_counted_entries_and_tail() {
 fn journal_superblock_checksum_uses_raw_crc_accumulator() {
     // Test idea: JBD2 stores the raw ext2fs_crc32c_le(~0, superblock) accumulator, not
     // the finalized CRC32C value. This keeps the value accepted by e2fsck.
-    let mut jsb = JournalSuperBllockS {
+    let mut jsb = JournalSuperBlock {
         s_blocksize: BLOCK_SIZE as u32,
         s_maxlen: 8192,
         s_first: 1,

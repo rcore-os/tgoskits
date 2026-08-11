@@ -425,8 +425,8 @@ impl Ext4FileSystem {
                     .data
                     .clone();
 
-                let j_sb = JournalSuperBllockS::from_disk_bytes(&journal_data);
-                if j_sb.s_uuid != fs.superblock.s_uuid {
+                let j_sb = JournalSuperBlock::decode_checked(&journal_data)?;
+                if !j_sb.is_v1() && j_sb.s_uuid != fs.superblock.s_uuid {
                     return Err(Ext4Error::corrupted().with_operation("jbd2:uuid"));
                 }
 

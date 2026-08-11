@@ -3,7 +3,12 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::convert::TryInto;
 
-use crate::{bmalloc::AbsoluteBN, config::*, endian::*};
+use crate::{
+    bmalloc::AbsoluteBN,
+    config::*,
+    endian::*,
+    error::{Ext4Error, Ext4Result},
+};
 pub const JOURNAL_FILE_INODE: u64 = 8;
 /// ext4 reserves inode 8 for the journal file.
 pub const JBD2_MAGIC: u32 = 0xC03B_3998u32; // jbd2 magic number (on-disk big-endian)
@@ -15,6 +20,7 @@ pub const JBD2_FLAG_SAME_UUID: u16 = 0x2;
 pub const JBD2_FLAG_LAST_TAG: u16 = 0x8;
 pub const JBD2_BLOCKTYPE_DESCRIPTOR: u32 = 1;
 pub const JBD2_BLOCKTYPE_COMMIT: u32 = 2;
+pub const JBD2_BLOCKTYPE_SUPERBLOCK_V1: u32 = 3;
 pub const JBD2_BLOCKTYPE_SUPERBLOCK_V2: u32 = 4;
 pub const JBD2_BLOCKTYPE_REVOKE: u32 = 5;
 pub const JBD2_DESCRIPTOR_HEADER_SIZE: usize = 12;
@@ -30,7 +36,7 @@ pub const JBD2_FEATURE_INCOMPAT_CSUM_V3: u32 = 0x0000_0010;
 pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8]>);
 #[repr(C)]
 pub struct JBD2DEVSYSTEM {
-    pub jbd2_super_block: JournalSuperBllockS,
+    pub jbd2_super_block: JournalSuperBlock,
     pub start_block: AbsoluteBN, // Physical block containing the journal superblock.
     pub max_len: u32,            // Total number of blocks in the journal area.
     pub head: u32,               // Commit cursor as a relative log block.
@@ -77,7 +83,7 @@ impl DiskFormat for JournalHeaderS {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct JournalSuperBllockS {
+pub struct JournalSuperBlock {
     // Offset 0x0 - 0xB: journal_header_t (12 bytes)
     pub s_header: JournalHeaderS,
 
@@ -111,13 +117,13 @@ pub struct JournalSuperBllockS {
     pub s_users: [u8; 16 * 48], // ids of filesystems sharing the log
 }
 
-impl Default for JournalSuperBllockS {
+impl Default for JournalSuperBlock {
     /// Creates a journal superblock template.
     ///
     /// Callers are expected to override `s_maxlen` with the real journal size.
     fn default() -> Self {
         let header = JournalHeaderS::default();
-        JournalSuperBllockS {
+        JournalSuperBlock {
             s_header: header,
             s_blocksize: BLOCK_SIZE_U32,
             s_maxlen: 4096,
@@ -142,9 +148,33 @@ impl Default for JournalSuperBllockS {
     }
 }
 
-impl DiskFormat for JournalSuperBllockS {
-    fn from_disk_bytes(bytes: &[u8]) -> Self {
-        // expect 1024 bytes
+impl JournalSuperBlock {
+    /// Fixed size of `journal_superblock_s` through Linux 7.1.
+    pub const DISK_SIZE: usize = 1024;
+
+    /// Returns whether only the version-1 prefix fields are meaningful.
+    pub const fn is_v1(&self) -> bool {
+        self.s_header.h_blocktype == JBD2_BLOCKTYPE_SUPERBLOCK_V1
+    }
+
+    /// Decodes the fixed JBD2 superblock prefix from a journal block.
+    pub fn decode_checked(bytes: &[u8]) -> Ext4Result<Self> {
+        if bytes.len() < Self::DISK_SIZE {
+            return Err(Ext4Error::corrupted().with_operation("jbd2:superblock_decode_size"));
+        }
+        Ok(Self::from_validated_disk_bytes(bytes))
+    }
+
+    /// Encodes the fixed JBD2 superblock prefix into a journal block.
+    pub(crate) fn encode_checked(&self, bytes: &mut [u8]) -> Ext4Result<()> {
+        if bytes.len() < Self::DISK_SIZE {
+            return Err(Ext4Error::corrupted().with_operation("jbd2:superblock_encode_size"));
+        }
+        self.write_validated_disk_bytes(bytes);
+        Ok(())
+    }
+
+    fn from_validated_disk_bytes(bytes: &[u8]) -> Self {
         let s_header = JournalHeaderS::from_disk_bytes(&bytes[0..12]);
 
         let s_blocksize = u32::from_be_bytes(bytes[12..16].try_into().unwrap());
@@ -183,7 +213,7 @@ impl DiskFormat for JournalSuperBllockS {
         let mut s_users = [0u8; 16 * 48];
         s_users.copy_from_slice(&bytes[0x100..0x100 + 16 * 48]);
 
-        JournalSuperBllockS {
+        JournalSuperBlock {
             s_header,
             s_blocksize,
             s_maxlen,
@@ -207,7 +237,7 @@ impl DiskFormat for JournalSuperBllockS {
         }
     }
 
-    fn to_disk_bytes(&self, bytes: &mut [u8]) {
+    fn write_validated_disk_bytes(&self, bytes: &mut [u8]) {
         self.s_header.to_disk_bytes(&mut bytes[0..12]);
         bytes[12..16].copy_from_slice(&self.s_blocksize.to_be_bytes());
         bytes[16..20].copy_from_slice(&self.s_maxlen.to_be_bytes());
@@ -239,6 +269,20 @@ impl DiskFormat for JournalSuperBllockS {
 
         bytes[0xFC..0x100].copy_from_slice(&self.s_checksum.to_be_bytes());
         bytes[0x100..0x100 + 16 * 48].copy_from_slice(&self.s_users);
+    }
+}
+
+impl DiskFormat for JournalSuperBlock {
+    fn from_disk_bytes(bytes: &[u8]) -> Self {
+        Self::from_validated_disk_bytes(bytes)
+    }
+
+    fn to_disk_bytes(&self, bytes: &mut [u8]) {
+        self.write_validated_disk_bytes(bytes);
+    }
+
+    fn disk_size() -> usize {
+        Self::DISK_SIZE
     }
 }
 
@@ -454,10 +498,10 @@ mod tests {
         // build a sample superblock with distinct values
         let header = JournalHeaderS {
             h_magic: JBD2_MAGIC,
-            h_blocktype: 3,
+            h_blocktype: JBD2_BLOCKTYPE_SUPERBLOCK_V1,
             h_sequence: 0xAABB_CCDD,
         };
-        let sb = JournalSuperBllockS {
+        let sb = JournalSuperBlock {
             s_header: header,
             s_blocksize: 4096,
             s_maxlen: 1024,
@@ -492,7 +536,7 @@ mod tests {
         assert_eq!(&buf[0x1C..0x20], &sb.s_start.to_be_bytes());
         assert_eq!(&buf[0xFC..0x100], &sb.s_checksum.to_be_bytes());
 
-        let parsed = JournalSuperBllockS::from_disk_bytes(&buf);
+        let parsed = JournalSuperBlock::from_disk_bytes(&buf);
         assert_eq!(parsed.s_header.h_magic, sb.s_header.h_magic);
         assert_eq!(parsed.s_blocksize, sb.s_blocksize);
         assert_eq!(parsed.s_maxlen, sb.s_maxlen);
@@ -501,6 +545,23 @@ mod tests {
         assert_eq!(parsed.s_start, sb.s_start);
         assert_eq!(parsed.s_checksum, sb.s_checksum);
         assert_eq!(&parsed.s_users[..], &sb.s_users[..]);
+    }
+
+    #[test]
+    fn checked_journal_superblock_codec_rejects_short_buffers() {
+        for len in [0, 1023] {
+            let bytes = alloc::vec![0u8; len];
+            let error = JournalSuperBlock::decode_checked(&bytes)
+                .expect_err("short journal superblock must be rejected");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::Corrupted);
+        }
+
+        let superblock = JournalSuperBlock::default();
+        let mut short = [0u8; 1023];
+        let error = superblock
+            .encode_checked(&mut short)
+            .expect_err("short journal superblock output must be rejected");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Corrupted);
     }
 
     #[test]

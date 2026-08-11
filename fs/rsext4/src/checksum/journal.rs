@@ -3,14 +3,14 @@
 use crate::{
     crc32c::{crc32c_append, crc32c_init},
     endian::DiskFormat,
-    jbd2::jbdstruct::{JBD2_CRC32C_CHKSUM, JBD2_UUID_SIZE, JournalSuperBllockS},
+    jbd2::jbdstruct::{JBD2_CRC32C_CHKSUM, JBD2_UUID_SIZE, JournalSuperBlock},
 };
 
 const JBD2_BLOCK_TAIL_SIZE: usize = 4;
 const JBD2_COMMIT_CHECKSUM_OFFSET: usize = 16;
 
 /// Computes the checksum stored in the JBD2 journal superblock.
-pub fn jbd2_superblock_csum32(jsb: &JournalSuperBllockS) -> u32 {
+pub fn jbd2_superblock_csum32(jsb: &JournalSuperBlock) -> u32 {
     let mut bytes = [0u8; 1024];
     let mut jsb_for_csum = *jsb;
     jsb_for_csum.s_checksum = 0;
@@ -19,7 +19,10 @@ pub fn jbd2_superblock_csum32(jsb: &JournalSuperBllockS) -> u32 {
 }
 
 /// Updates the stored JBD2 journal superblock checksum.
-pub fn jbd2_update_superblock_checksum(jsb: &mut JournalSuperBllockS) {
+pub fn jbd2_update_superblock_checksum(jsb: &mut JournalSuperBlock) {
+    if jsb.is_v1() {
+        return;
+    }
     if jsb.s_checksum_type == JBD2_CRC32C_CHKSUM {
         jsb.s_checksum = jbd2_superblock_csum32(jsb);
     } else if jsb.s_checksum_type == 0 {
