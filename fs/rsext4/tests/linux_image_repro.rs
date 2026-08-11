@@ -198,6 +198,14 @@ fn e2fsck_readonly_clean(image: &Path, context: &str) {
 }
 
 fn create_ext4_test_image(prefix: &str, size: &str) -> (PathBuf, PathBuf) {
+    create_ext4_test_image_with_args(prefix, size, &[])
+}
+
+fn create_ext4_test_image_with_args(
+    prefix: &str,
+    size: &str,
+    mkfs_args: &[&str],
+) -> (PathBuf, PathBuf) {
     let temp_dir = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
     if temp_dir.exists() {
         fs::remove_dir_all(&temp_dir).expect("remove stale temp dir");
@@ -216,7 +224,10 @@ fn create_ext4_test_image(prefix: &str, size: &str) -> (PathBuf, PathBuf) {
     run_command(
         {
             let mut command = Command::new("mkfs.ext4");
-            command.args(["-F", "-q", "-b", "4096"]).arg(&image);
+            command
+                .args(["-F", "-q", "-b", "4096"])
+                .args(mkfs_args)
+                .arg(&image);
             command
         },
         "mkfs.ext4 test image",
@@ -916,6 +927,84 @@ fn rsext4_special_device_is_linux_readable() {
         stat.contains("Device major/minor number: 259:511"),
         "Linux did not decode the expected modern device number\n{stat}"
     );
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn owned_project_metadata_and_inheritance_are_linux_readable() {
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+    let (temp_dir, image) = create_ext4_test_image_with_args(
+        "rsext4-project-metadata",
+        "64M",
+        &["-I", "256", "-O", "project"],
+    );
+
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_800_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem =
+            Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
+        let context = MutationContext::new(1000, 1001, 0, 0o022);
+        let project_directory = filesystem
+            .create_directory(
+                context,
+                filesystem.root_inode(),
+                FileName::new(b"project-root").expect("valid project directory name"),
+                FilePermissions::new(0o755).expect("valid project directory permissions"),
+            )
+            .expect("create project directory");
+        let project_directory = filesystem
+            .update_inode_metadata(
+                context,
+                project_directory.number,
+                InodeMetadataUpdate {
+                    project_id: Some(1234),
+                    flags: Some(InodeFlags::PROJECT_INHERIT),
+                    ..Default::default()
+                },
+            )
+            .expect("set project metadata");
+        assert_eq!(project_directory.project_id, 1234);
+        assert!(
+            project_directory
+                .flags
+                .contains(InodeFlags::PROJECT_INHERIT)
+        );
+
+        let child = filesystem
+            .create_regular_file(
+                context,
+                project_directory.number,
+                FileName::new(b"child").expect("valid project child name"),
+                FilePermissions::new(0o600).expect("valid project child permissions"),
+            )
+            .expect("create project child");
+        assert_eq!(child.project_id, 1234);
+        filesystem
+            .unmount()
+            .expect("unmount project metadata image");
+    }
+
+    e2fsck_readonly_clean(&image, "rsext4 project metadata");
+    let directory_stat = debugfs_query(&image, "stat /project-root");
+    assert!(
+        directory_stat.contains("Project:  1234"),
+        "{directory_stat}"
+    );
+    assert!(
+        directory_stat.contains("Flags: 0x20080000"),
+        "Linux did not decode PROJINHERIT on the project directory\n{directory_stat}"
+    );
+    let child_stat = debugfs_query(&image, "stat /project-root/child");
+    assert!(child_stat.contains("Project:  1234"), "{child_stat}");
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
 }
 
