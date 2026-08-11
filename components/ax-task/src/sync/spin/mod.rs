@@ -8,6 +8,7 @@ use self::{
 };
 use super::context::{GuardState, PreemptIrqSaveState, PreemptState, RawState};
 
+mod atomic;
 mod base;
 #[cfg(feature = "lockdep")]
 mod lockdep;

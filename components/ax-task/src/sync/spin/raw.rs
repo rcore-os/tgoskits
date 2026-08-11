@@ -12,7 +12,7 @@
 //! from contexts that may be re-entered by interrupts or trap handlers.
 
 #[cfg(feature = "smp")]
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::AtomicBool;
 use core::{cell::UnsafeCell, marker::PhantomData};
 
 use crate::sync::context::{GuardState, PreemptIrqSaveState};
@@ -86,18 +86,9 @@ unsafe impl<G: GuardState + Send + Sync + 'static> lock_api::RawMutex for BaseRa
 
         #[cfg(feature = "smp")]
         {
-            while self
-                .locked
-                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-            {
-                // Wait until the lock looks unlocked before retrying. Use
-                // `Acquire` (matching `BaseSpinLock::is_locked`) so this read
-                // does not mix Relaxed with the stronger orderings on `locked`.
-                while self.locked.load(Ordering::Acquire) {
-                    core::hint::spin_loop();
-                }
-            }
+            super::atomic::spin_acquire(&self.locked, || {
+                super::atomic::spin_try_acquire_weak(&self.locked)
+            });
         }
 
         self.save_state(state);
@@ -108,11 +99,7 @@ unsafe impl<G: GuardState + Send + Sync + 'static> lock_api::RawMutex for BaseRa
 
         #[cfg(feature = "smp")]
         {
-            if self
-                .locked
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-            {
+            if !super::atomic::spin_try_acquire_strong(&self.locked) {
                 G::release(state);
                 return false;
             }
@@ -126,7 +113,7 @@ unsafe impl<G: GuardState + Send + Sync + 'static> lock_api::RawMutex for BaseRa
         let state = self.take_state();
 
         #[cfg(feature = "smp")]
-        self.locked.store(false, Ordering::Release);
+        super::atomic::spin_release(&self.locked);
 
         G::release(state);
     }

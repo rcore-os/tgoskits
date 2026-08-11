@@ -6,7 +6,7 @@
 //! The atomic algorithm derives from the upstream `spin` crate's mutex.
 
 #[cfg(feature = "smp")]
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::AtomicBool;
 use core::{
     cell::UnsafeCell,
     fmt,
@@ -137,10 +137,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
     fn acquire_once_weak(&self, lockdep: LockdepAcquire) -> bool {
         #[cfg(feature = "lockdep")]
         let _lockdep_irq_guard = IrqSaveGuard::new();
-        let acquired = self
-            .lock
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok();
+        let acquired = super::atomic::spin_try_acquire_weak(&self.lock);
         if acquired {
             lockdep.finish(true);
         }
@@ -152,10 +149,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
     fn acquire_once_strong(&self, lockdep: LockdepAcquire) -> bool {
         #[cfg(feature = "lockdep")]
         let _lockdep_irq_guard = IrqSaveGuard::new();
-        let acquired = self
-            .lock
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok();
+        let acquired = super::atomic::spin_try_acquire_strong(&self.lock);
         if acquired {
             lockdep.finish(true);
         }
@@ -168,12 +162,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
             if #[cfg(feature = "smp")] {
                 // Can fail to lock even if the spinlock is not locked. May be
                 // more efficient than `try_lock` when called in a loop.
-                while !self.acquire_once_weak(lockdep) {
-                    // Wait until the lock looks unlocked before retrying.
-                    while self.is_locked() {
-                        core::hint::spin_loop();
-                    }
-                }
+                super::atomic::spin_acquire(&self.lock, || self.acquire_once_weak(lockdep));
             } else {
                 Self::finish_lockdep_with_irqsave(lockdep);
             }
@@ -237,7 +226,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
     pub fn is_locked(&self) -> bool {
         cfg_if::cfg_if! {
             if #[cfg(feature = "smp")] {
-                self.lock.load(Ordering::Acquire)
+                super::atomic::spin_is_locked(&self.lock)
             } else {
                 false
             }
@@ -290,7 +279,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
             super::lockdep::force_release::<G>(addr);
         }
         #[cfg(feature = "smp")]
-        self.lock.store(false, Ordering::Release);
+        super::atomic::spin_release(&self.lock);
     }
 
     /// Returns a mutable reference to the underlying data.
@@ -359,7 +348,7 @@ impl<G: GuardState, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
             #[cfg(feature = "lockdep")]
             super::lockdep::release::<G>(self.lock_addr);
             #[cfg(feature = "smp")]
-            self.lock.store(false, Ordering::Release);
+            super::atomic::spin_release(self.lock);
         }
         G::release(self.irq_state);
     }

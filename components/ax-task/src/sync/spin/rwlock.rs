@@ -5,7 +5,7 @@ use core::{
     fmt,
     marker::PhantomData,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::AtomicUsize,
 };
 
 use crate::sync::context::GuardState;
@@ -30,10 +30,6 @@ impl LockdepAcquire {
     #[inline(always)]
     fn finish(&self, _acquired: bool) {}
 }
-
-const READER: usize = 1;
-const WRITER: usize = 1 << (usize::BITS - 1);
-const MAX_READER: usize = 1 << (usize::BITS - 2);
 
 /// A spin-based read-write lock.
 ///
@@ -151,20 +147,12 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
 
     #[inline(always)]
     fn try_acquire_read(&self) -> bool {
-        let old = self.state.fetch_add(READER, Ordering::Acquire);
-        if old & (WRITER | MAX_READER) == 0 {
-            true
-        } else {
-            self.state.fetch_sub(READER, Ordering::Release);
-            false
-        }
+        super::atomic::rw_try_acquire_read(&self.state)
     }
 
     #[inline(always)]
     fn try_acquire_write(&self) -> bool {
-        self.state
-            .compare_exchange(0, WRITER, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
+        super::atomic::rw_try_acquire_write(&self.state)
     }
 
     /// Acquires a shared read lock, spinning until it is available.
@@ -173,11 +161,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
     pub fn read(&self) -> BaseSpinRwLockReadGuard<'_, G, T> {
         let guard_state = G::acquire();
         let lockdep = self.prepare_lockdep(false, false);
-        while !self.try_acquire_read() {
-            while self.is_write_locked() {
-                core::hint::spin_loop();
-            }
-        }
+        super::atomic::rw_acquire_read(&self.state);
         Self::finish_lockdep(lockdep, true);
         BaseSpinRwLockReadGuard {
             _phantom: &PhantomData,
@@ -196,11 +180,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
     pub fn write(&self) -> BaseSpinRwLockWriteGuard<'_, G, T> {
         let guard_state = G::acquire();
         let lockdep = self.prepare_lockdep(false, true);
-        while !self.try_acquire_write() {
-            while self.state.load(Ordering::Acquire) != 0 {
-                core::hint::spin_loop();
-            }
-        }
+        super::atomic::rw_acquire_write(&self.state);
         Self::finish_lockdep(lockdep, true);
         BaseSpinRwLockWriteGuard {
             _phantom: &PhantomData,
@@ -263,12 +243,6 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
         }
     }
 
-    /// Returns true if a writer currently holds the lock.
-    #[inline(always)]
-    pub fn is_write_locked(&self) -> bool {
-        self.state.load(Ordering::Acquire) & WRITER != 0
-    }
-
     /// Force decrement the reader count.
     ///
     /// # Safety
@@ -280,28 +254,11 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
     /// writers permanently.
     #[inline(always)]
     pub unsafe fn force_read_decrement(&self) {
-        let mut state = self.state.load(Ordering::Acquire);
-        loop {
-            let readers = state & !(WRITER | MAX_READER);
-            if readers == 0 {
-                return;
-            }
-
-            match self.state.compare_exchange_weak(
-                state,
-                state - READER,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    #[cfg(feature = "lockdep")]
-                    {
-                        let _lockdep_irq_guard = IrqSaveGuard::new();
-                        super::lockdep::release_trace_only::<G>("spin-rwlock", self.lock_addr());
-                    }
-                    return;
-                }
-                Err(observed) => state = observed,
+        if super::atomic::rw_force_read_decrement(&self.state) {
+            #[cfg(feature = "lockdep")]
+            {
+                let _lockdep_irq_guard = IrqSaveGuard::new();
+                super::lockdep::release_trace_only::<G>("spin-rwlock", self.lock_addr());
             }
         }
     }
@@ -362,7 +319,7 @@ impl<G: GuardState, T: ?Sized> Drop for BaseSpinRwLockReadGuard<'_, G, T> {
             let _lockdep_irq_guard = IrqSaveGuard::new();
             super::lockdep::release_trace_only::<G>("spin-rwlock", self.lock_addr);
         }
-        self.state.fetch_sub(READER, Ordering::Release);
+        super::atomic::rw_release_read(self.state);
         G::release(self.guard_state);
     }
 }
@@ -397,7 +354,7 @@ impl<G: GuardState, T: ?Sized> Drop for BaseSpinRwLockWriteGuard<'_, G, T> {
             let _lockdep_irq_guard = IrqSaveGuard::new();
             super::lockdep::release_kind::<G>("spin-rwlock", self.lock_addr);
         }
-        self.state.fetch_and(!WRITER, Ordering::Release);
+        super::atomic::rw_release_write(self.state);
         G::release(self.guard_state);
     }
 }
