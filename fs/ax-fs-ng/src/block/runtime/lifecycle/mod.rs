@@ -652,6 +652,15 @@ impl BlockDeviceHandle {
         *self.inner.info.lock()
     }
 
+    #[cfg(feature = "ext4")]
+    pub(crate) fn supports_flush(&self) -> bool {
+        let queues = self.inner.hctxs.lock();
+        !queues.is_empty()
+            && queues
+                .iter()
+                .all(|queue| queue.info().limits.supports_flush)
+    }
+
     /// Enqueues one DMA-owning request on the current CPU software channel.
     ///
     /// `NOWAIT` affects only bounded channel admission and is removed before
