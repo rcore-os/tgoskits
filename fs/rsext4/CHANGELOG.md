@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rollback ownership for allocator, bitmap, inode, and superblock state.
 - Restore physical metadata preimages when a journal-disabled transaction
   fails, including shared external-xattr COW allocation and inode state.
+- Reject short inode records and invalid `i_extra_isize` values with typed
+  corruption errors before the inode cache decodes any on-disk fields.
 
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 

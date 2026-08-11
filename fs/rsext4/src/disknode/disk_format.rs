@@ -1,4 +1,28 @@
 use super::*;
+use crate::error::{Ext4Error, Ext4Result};
+
+impl Ext4Inode {
+    /// Decodes an inode record after validating its fixed and extra regions.
+    pub(crate) fn decode_checked(bytes: &[u8]) -> Ext4Result<Self> {
+        let base_size = usize::from(Self::GOOD_OLD_INODE_SIZE);
+        if bytes.len() < base_size || u16::try_from(bytes.len()).is_err() {
+            return Err(Ext4Error::corrupted().with_operation("inode:decode_size"));
+        }
+
+        if bytes.len() > base_size {
+            let extra_isize = bytes
+                .get(base_size..base_size + 2)
+                .map(read_u16_le)
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:decode_extra_isize"))?;
+            let extra_end = base_size + usize::from(extra_isize);
+            if !extra_isize.is_multiple_of(4) || extra_end > bytes.len() {
+                return Err(Ext4Error::corrupted().with_operation("inode:decode_extra_isize"));
+            }
+        }
+
+        Ok(Self::from_disk_bytes(bytes))
+    }
+}
 
 impl DiskFormat for Ext4ExtentHeader {
     fn from_disk_bytes(bytes: &[u8]) -> Self {
@@ -208,6 +232,26 @@ impl DiskFormat for Ext4Inode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_inode_codec_rejects_short_and_invalid_extra_inode_bytes() {
+        for raw in [alloc::vec![], alloc::vec![0; 127], alloc::vec![0; 129]] {
+            let error = Ext4Inode::decode_checked(&raw).expect_err("short inode must be rejected");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::Corrupted);
+        }
+
+        let mut oversized_extra = alloc::vec![0; Ext4Inode::LARGE_INODE_SIZE as usize];
+        oversized_extra[128..130].copy_from_slice(&132_u16.to_le_bytes());
+        let error = Ext4Inode::decode_checked(&oversized_extra)
+            .expect_err("extra inode bytes must fit the inode record");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Corrupted);
+
+        let mut unaligned_extra = alloc::vec![0; Ext4Inode::LARGE_INODE_SIZE as usize];
+        unaligned_extra[128..130].copy_from_slice(&6_u16.to_le_bytes());
+        let error = Ext4Inode::decode_checked(&unaligned_extra)
+            .expect_err("extra inode bytes must be four-byte aligned");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Corrupted);
+    }
 
     #[test]
     fn inode_codec_preserves_fields_beyond_extra_isize() {
