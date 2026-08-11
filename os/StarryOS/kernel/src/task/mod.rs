@@ -35,7 +35,6 @@ mod user_wait;
 
 use alloc::sync::Arc;
 
-use ax_sync::spin::SpinNoIrq;
 pub(crate) use process_ptrace::PtraceAttachMode;
 pub use process_ptrace::{PtraceStopFpData, SyscallTraceState};
 use starry_process::{Pid, Process};
@@ -88,7 +87,7 @@ pub(crate) use self::{
 };
 use crate::{
     mm::AddrSpace,
-    sync::{PiMutex, PiMutexGuard},
+    sync::{IrqMutex, PiMutex, PiMutexGuard, SpinLock},
 };
 
 pub struct ProcessData {
@@ -109,7 +108,7 @@ pub struct ProcessData {
     ///
     /// Namespace objects referenced by the aggregate retain their own locks
     /// because processes in the same namespace intentionally share them.
-    nsproxy: SpinNoIrq<Arc<axnsproxy::NsProxy>>,
+    nsproxy: IrqMutex<Arc<axnsproxy::NsProxy>>,
     /// Sleepable writer transaction gate for process-wide namespace updates.
     namespace_update: PiMutex<()>,
     /// Authoritative cgroup membership and exit serialization.
@@ -137,7 +136,7 @@ pub struct ProcessData {
 pub struct ProcessDataInit {
     image: ProcessImage,
     aspace: Arc<PiMutex<AddrSpace>>,
-    signal_actions: Arc<SpinNoIrq<SignalActions>>,
+    signal_actions: Arc<SpinLock<SignalActions>>,
     nsproxy: axnsproxy::NsProxy,
     cgroup: Arc<ax_cgroup::CgroupNode>,
     exit_signal: Option<Signo>,
@@ -150,7 +149,7 @@ impl ProcessDataInit {
     pub fn new(
         image: ProcessImage,
         aspace: Arc<PiMutex<AddrSpace>>,
-        signal_actions: Arc<SpinNoIrq<SignalActions>>,
+        signal_actions: Arc<SpinLock<SignalActions>>,
         nsproxy: axnsproxy::NsProxy,
         exit_signal: Option<Signo>,
         wait_parent_tid: Pid,
@@ -219,7 +218,7 @@ impl ProcessData {
                     signal_actions,
                     crate::config::SIGNAL_TRAMPOLINE,
                 )),
-                nsproxy: SpinNoIrq::new(Arc::new(nsproxy)),
+                nsproxy: IrqMutex::new(Arc::new(nsproxy)),
                 namespace_update: PiMutex::new(()),
                 cgroup: ProcessCgroupState::new(cgroup),
 
@@ -320,7 +319,7 @@ impl Drop for ProcessData {
 /// from the current snapshot. This prevents a concurrent replacement from
 /// making that mutation invisible to the process.
 pub(crate) struct ProcessNamespaceUpdate<'a> {
-    publication: &'a SpinNoIrq<Arc<axnsproxy::NsProxy>>,
+    publication: &'a IrqMutex<Arc<axnsproxy::NsProxy>>,
     _guard: PiMutexGuard<'a, ()>,
 }
 
@@ -346,13 +345,11 @@ impl ProcessNamespaceUpdate<'_> {
 #[cfg(test)]
 mod tests {
     use super::ProcessData;
+    use crate::sync::IrqMutex;
 
     #[test]
     fn namespace_publication_lock_only_contains_a_shared_snapshot() {
-        fn assert_snapshot_lock(
-            _: &ax_sync::spin::SpinNoIrq<alloc::sync::Arc<axnsproxy::NsProxy>>,
-        ) {
-        }
+        fn assert_snapshot_lock(_: &IrqMutex<alloc::sync::Arc<axnsproxy::NsProxy>>) {}
         fn assert_process_lock_type(process: &ProcessData) {
             assert_snapshot_lock(&process.nsproxy);
         }
