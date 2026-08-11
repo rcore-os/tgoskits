@@ -1670,6 +1670,30 @@ mod tests {
     }
 
     #[test]
+    fn beginning_a_park_obtains_handle_from_task_current_publication() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        test_runtime::reset_current_thread_publication_reads();
+
+        let CurrentParkStart::Prepared(park) = begin_current_park().unwrap() else {
+            panic!("a fresh current thread must prepare its first park")
+        };
+
+        let publication_reads = test_runtime::current_thread_publication_reads();
+        park.cancel().unwrap();
+        assert_eq!(
+            publication_reads,
+            1,
+            "Linux-style park identity must come from task current, not rq->curr",
+        );
+    }
+
+    #[test]
     fn park_deadline_arm_uses_one_owner_transaction() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();

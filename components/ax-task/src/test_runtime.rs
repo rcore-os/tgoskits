@@ -25,6 +25,7 @@ std::thread_local! {
     static CPU_LOCAL_HANDLE: Cell<usize> = const { Cell::new(0) };
     static CURRENT_CPU_REMOTE_HANDLE: Cell<usize> = const { Cell::new(0) };
     static CURRENT_CPU_REMOTE_HANDLE_READS: Cell<usize> = const { Cell::new(0) };
+    static CURRENT_THREAD_PUBLICATION_READS: Cell<usize> = const { Cell::new(0) };
     static CPU_LOCAL_HANDLE_READS: Cell<usize> = const { Cell::new(0) };
     static CPU_REMOTE_HANDLE_READS: Cell<usize> = const { Cell::new(0) };
     static CPU_OWNER_CLAIMS: Cell<usize> = const { Cell::new(0) };
@@ -157,6 +158,7 @@ impl TaskRuntime for UnitTestRuntime {
         })
     }
     fn current_thread_publication() -> CurrentThreadPublication {
+        CURRENT_THREAD_PUBLICATION_READS.with(|reads| reads.set(reads.get() + 1));
         let raw = CPU_LOCAL_HANDLE.with(Cell::get);
         if raw == 0 {
             return CurrentThreadPublication::NONE;
@@ -882,6 +884,14 @@ pub(crate) fn cpu_handle_reads() -> (usize, usize) {
 
 pub(crate) fn current_cpu_remote_handle_reads() -> usize {
     CURRENT_CPU_REMOTE_HANDLE_READS.with(Cell::get)
+}
+
+pub(crate) fn reset_current_thread_publication_reads() {
+    CURRENT_THREAD_PUBLICATION_READS.with(|reads| reads.set(0));
+}
+
+pub(crate) fn current_thread_publication_reads() -> usize {
+    CURRENT_THREAD_PUBLICATION_READS.with(Cell::get)
 }
 
 pub(crate) fn record_cpu_owner_claim() {
