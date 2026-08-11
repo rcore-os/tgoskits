@@ -224,7 +224,7 @@ mod file_functional_tests {
         )
         .expect("mkfile failed");
 
-        rename(
+        let _ = rename(
             &mut jbd2_dev,
             &mut fs,
             "/renametest/oldname",
@@ -243,6 +243,25 @@ mod file_functional_tests {
         assert_eq!(new_data, test_data.to_vec());
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
+    }
+
+    #[test]
+    fn renaming_an_entry_to_itself_is_a_noop() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let contents = b"same dentry must survive";
+        mkfile(&mut jbd2_dev, &mut fs, "/same-name", Some(contents), None)
+            .expect("file creation failed");
+
+        let _ = rename(&mut jbd2_dev, &mut fs, "/same-name", "/same-name")
+            .expect("same-path rename must succeed");
+
+        let data = read_file(&mut jbd2_dev, &mut fs, "/same-name")
+            .expect("same-path rename removed the entry");
+        assert_eq!(data, contents);
     }
 
     /// Verifies that a full-block overwrite inside an existing large extent
@@ -320,8 +339,12 @@ mod file_functional_tests {
         mkfile(&mut jbd2_dev, &mut fs, "/tmp/temp.txt", Some(updated), None)
             .expect("mkfile temp failed");
 
-        rename(&mut jbd2_dev, &mut fs, "/tmp/temp.txt", "/tmp/original.txt")
+        let outcome = rename(&mut jbd2_dev, &mut fs, "/tmp/temp.txt", "/tmp/original.txt")
             .expect("rename replace failed");
+        let replaced = outcome.replaced.expect("replacement outcome missing");
+        assert!(replaced.requires_reap());
+        reap_unlinked_inode(&mut fs, &mut jbd2_dev, replaced.inode)
+            .expect("replacement target reap failed");
 
         let data =
             read_file(&mut jbd2_dev, &mut fs, "/tmp/original.txt").expect("read_file failed");
@@ -352,7 +375,7 @@ mod file_functional_tests {
         )
         .expect("mkfile temp failed");
 
-        rename(
+        let _ = rename(
             &mut jbd2_dev,
             &mut fs,
             "/temp-rewriteaof.aof",

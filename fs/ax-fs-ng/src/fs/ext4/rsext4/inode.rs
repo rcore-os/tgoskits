@@ -9,7 +9,7 @@ use core::any::Any;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, FilesystemOps,
     FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
-    Reference, VfsError, VfsResult, WeakDirEntry,
+    Reference, RenameOptions as VfsRenameOptions, VfsError, VfsResult, WeakDirEntry,
 };
 use rsext4::bmalloc::InodeNumber;
 
@@ -576,25 +576,46 @@ impl DirNodeOps for Inode {
         self.fs.sync_to_disk()
     }
 
-    fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        src_name: &str,
+        dst_dir: &DirNode,
+        dst_name: &str,
+        options: VfsRenameOptions,
+    ) -> VfsResult<()> {
         let dst_dir: Arc<Self> = dst_dir.downcast().map_err(|_| VfsError::InvalidInput)?;
+        if !Arc::ptr_eq(&self.fs, &dst_dir.fs) {
+            return Err(VfsError::CrossesDevices);
+        }
         let src_path = join_child_path(&self.dir_path()?, src_name);
         let dst_path = join_child_path(&dst_dir.dir_path()?, dst_name);
-        let replaced_file_ino = {
-            let mut state = dst_dir.fs.lock();
-            let (fs, dev) = state.split();
-            rsext4::dir::get_inode_with_num(fs, dev, &dst_path)
-                .map_err(into_vfs_err)?
-                .and_then(|(ino, inode)| {
-                    (!inode.is_dir() && inode.i_links_count <= 1).then_some(ino)
-                })
+        let core_options = match (options.no_replace(), options.exchange(), options.whiteout()) {
+            (false, false, false) => rsext4::RenameOptions::REPLACE,
+            (true, false, false) => rsext4::RenameOptions::NO_REPLACE,
+            (false, true, false) => rsext4::RenameOptions::EXCHANGE,
+            (false, false, true) => rsext4::RenameOptions::WHITEOUT,
+            (true, false, true) => rsext4::RenameOptions::WHITEOUT_NO_REPLACE,
+            _ => return Err(VfsError::InvalidInput),
         };
-        {
+        let (zero_link_inode, reap_claim) = {
             let mut state = self.fs.lock();
-            let (fs, dev) = state.split();
-            rsext4::rename(dev, fs, &src_path, &dst_path).map_err(into_vfs_err)?;
+            let outcome = {
+                let (fs, dev) = state.split();
+                rsext4::rename_with_options(dev, fs, &src_path, &dst_path, core_options)
+                    .map_err(into_vfs_err)?
+            };
+            match outcome.replaced.filter(|outcome| outcome.requires_reap()) {
+                Some(outcome) => {
+                    let claim = state.publish_zero_link(outcome.inode);
+                    (Some(outcome.inode), claim)
+                }
+                None => (None, None),
+            }
+        };
+        if let Some(claim) = reap_claim {
+            self.fs.reap(claim)?;
         }
-        if let Some(ino) = replaced_file_ino {
+        if let Some(ino) = zero_link_inode {
             forget_cached_file_key(&*self.fs, ino.as_u64());
         }
         self.fs.sync_to_disk()

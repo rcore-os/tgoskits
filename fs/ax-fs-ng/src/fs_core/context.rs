@@ -17,7 +17,7 @@ use ax_lazyinit::OnceLock;
 #[cfg(feature = "vfs")]
 use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
-    Location, Metadata, NodePermission, NodeType, VfsError, VfsResult,
+    Location, Metadata, NodePermission, NodeType, RenameOptions, VfsError, VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
 
@@ -490,9 +490,19 @@ impl FsContext {
     /// Renames a file or directory to a new name, replacing the original file
     /// if `to` already exists.
     pub fn rename(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> VfsResult<()> {
+        self.rename_with_options(from, to, RenameOptions::REPLACE)
+    }
+
+    /// Renames a path with typed `renameat2` behavior.
+    pub fn rename_with_options(
+        &self,
+        from: impl AsRef<Path>,
+        to: impl AsRef<Path>,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
         let (src_dir, src_name) = self.resolve_parent(from.as_ref())?;
         let (dst_dir, dst_name) = self.resolve_parent(to.as_ref())?;
-        src_dir.rename(&src_name, &dst_dir, &dst_name)
+        src_dir.rename_with_options(&src_name, &dst_dir, &dst_name, options)
     }
 
     /// Creates a new, empty directory at the provided path.

@@ -812,7 +812,7 @@ mod tests {
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
         FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-        Reference, StatFs, VfsResult, WeakDirEntry,
+        Reference, RenameOptions, StatFs, VfsResult, WeakDirEntry,
     };
     use rdif_block::{
         BatchSubmitResult, BlkError, BlockController, CompletionSink, ControllerEvent,
@@ -1025,7 +1025,13 @@ mod tests {
             Err(VfsError::ReadOnlyFilesystem)
         }
 
-        fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+        fn rename(
+            &self,
+            _src_name: &str,
+            _dst_dir: &DirNode,
+            _dst_name: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
     }

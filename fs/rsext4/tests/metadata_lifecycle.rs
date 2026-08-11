@@ -332,7 +332,7 @@ fn test_parent_directory_timestamps_follow_entry_changes() {
     );
 
     let parent_before_rename = parent_after_unlink;
-    rename(&mut dev, &mut fs, "/parent/file", "/parent/file2").expect("rename failed");
+    let _ = rename(&mut dev, &mut fs, "/parent/file", "/parent/file2").expect("rename failed");
     let parent_after_rename = lookup_inode(&mut dev, &mut fs, "/parent");
     assert!(
         parent_after_rename.mtime_ts(INODE_SIZE).sec

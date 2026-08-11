@@ -280,7 +280,7 @@ fn linux_image_geometry_round_trip(filesystem_block_size: u32) {
             .expect("create geometry file");
         write_file(&mut dev, &mut fs, "/geometry/source.bin", 0, &payload)
             .expect("write across a filesystem block boundary");
-        rename(
+        let _ = rename(
             &mut dev,
             &mut fs,
             "/geometry/source.bin",
@@ -879,7 +879,7 @@ fn repro_linux_image_create_write_rename_then_e2fsck() {
             b"tail-starry-fsck-probe\n",
         )
         .expect("append data");
-        rename(
+        let _ = rename(
             &mut dev,
             &mut fs,
             &format!("{probe}/sub/data.txt"),

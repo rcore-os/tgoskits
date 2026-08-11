@@ -22,7 +22,7 @@ use ax_fs_ng::vfs::OpenOptions;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, FsIoEvents, FsPollable, Location, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
+    NodePermission, NodeType, Reference, RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 
 use crate::{
@@ -680,8 +680,24 @@ impl DirNodeOps for OverlayDir {
     /// Lower-backed files are copied up before rename. Lower-backed
     /// directories are rejected because full redirect_dir/index semantics are
     /// not implemented.
-    fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        src_name: &str,
+        dst_dir: &DirNode,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
+        if options.exchange() || options.whiteout() {
+            return Err(VfsError::OperationNotSupported);
+        }
         let dst = dst_dir.downcast::<Self>()?;
+        if options.no_replace() {
+            match dst.lookup(dst_name) {
+                Ok(_) => return Err(VfsError::AlreadyExists),
+                Err(error) if error.canonicalize() == VfsError::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
         let src = match self.lookup_visible_upper_child(src_name)? {
             Some(upper) => upper,
             None => {
@@ -693,8 +709,12 @@ impl DirNodeOps for OverlayDir {
             }
         };
         dst.remove_existing_whiteout(dst_name)?;
-        self.materialize_upper_dir()?
-            .rename(src_name, &dst.materialize_upper_dir()?, dst_name)?;
+        self.materialize_upper_dir()?.rename_with_options(
+            src_name,
+            &dst.materialize_upper_dir()?,
+            dst_name,
+            options,
+        )?;
         if lookup_lower(&self.lower_dirs, src_name)?.is_some() {
             create_whiteout(&self.materialize_upper_dir()?, src_name)?;
         }

@@ -14,7 +14,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FsContext, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use ax_task::current;
-use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
+use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, RenameOptions, path::Path};
 use linux_raw_sys::{
     general::*,
     ioctl::{FIOASYNC, FIONBIO},
@@ -837,7 +837,8 @@ pub fn sys_renameat(
     sys_renameat2(old_dirfd, old_path, new_dirfd, new_path, 0)
 }
 
-// Rename a path, currently supporting Linux RENAME_NOREPLACE.
+// Rename a path with Linux renameat2 flag validation. Filesystems reject
+// individually unsupported operations at their typed capability boundary.
 pub fn sys_renameat2(
     old_dirfd: i32,
     old_path: *const c_char,
@@ -845,10 +846,18 @@ pub fn sys_renameat2(
     new_path: *const c_char,
     flags: u32,
 ) -> AxResult<isize> {
-    const RENAMEAT2_SUPPORTED_FLAGS: u32 = RENAME_NOREPLACE;
+    const RENAMEAT2_SUPPORTED_FLAGS: u32 = RENAME_NOREPLACE | RENAME_EXCHANGE | RENAME_WHITEOUT;
     if flags & !RENAMEAT2_SUPPORTED_FLAGS != 0 {
         return Err(AxError::InvalidInput);
     }
+    let options = match flags {
+        0 => RenameOptions::REPLACE,
+        RENAME_NOREPLACE => RenameOptions::NO_REPLACE,
+        RENAME_EXCHANGE => RenameOptions::EXCHANGE,
+        RENAME_WHITEOUT => RenameOptions::WHITEOUT,
+        value if value == RENAME_NOREPLACE | RENAME_WHITEOUT => RenameOptions::WHITEOUT_NO_REPLACE,
+        _ => return Err(AxError::InvalidInput),
+    };
 
     let old_path = vm_load_path_string(old_path)?;
     let new_path = vm_load_path_string(new_path)?;
@@ -860,19 +869,8 @@ pub fn sys_renameat2(
     let (old_dir, old_name) = with_fs(old_dirfd, |fs| fs.resolve_parent(Path::new(&old_path)))?;
     let (new_dir, new_name) = with_fs(new_dirfd, |fs| fs.resolve_parent(Path::new(&new_path)))?;
 
-    if flags & RENAME_NOREPLACE != 0 {
-        // Linux reports a missing source leaf before checking whether the
-        // no-replace destination already exists.
-        old_dir.lookup_no_follow(&old_name)?;
-        match new_dir.lookup_no_follow(&new_name) {
-            Ok(_) => return Err(AxError::AlreadyExists),
-            Err(AxError::NotFound) => {}
-            Err(err) => return Err(err),
-        }
-    }
-
     // Propagate the filesystem errno directly to match renameat2 callers.
-    old_dir.rename(&old_name, &new_dir, &new_name)?;
+    old_dir.rename_with_options(&old_name, &new_dir, &new_name, options)?;
     Ok(0)
 }
 
