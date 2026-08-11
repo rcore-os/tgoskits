@@ -1,5 +1,5 @@
 use super::*;
-use crate::{bmalloc::BGIndex, cache::bitmap::CacheKey, hashtree::Ext4InodeHashTreeExt};
+use crate::hashtree::Ext4InodeHashTreeExt;
 
 // Linux uses EXT4_DATA_TRANS_BLOCKS for both unlink and rmdir. Extent
 // filesystems without writable quota support reserve 20 + 6 - 2 blocks.
@@ -120,44 +120,13 @@ fn reap_transaction_credits(fs: &Ext4FileSystem, inode: &Ext4Inode) -> Ext4Resul
         .ok_or_else(Ext4Error::overflow)
 }
 
-fn group_counters(fs: &Ext4FileSystem) -> Vec<(u32, u32, u32)> {
-    fs.group_descs
-        .iter()
-        .map(|descriptor| {
-            (
-                descriptor.free_blocks_count(),
-                descriptor.free_inodes_count(),
-                descriptor.used_dirs_count(),
-            )
-        })
-        .collect()
-}
-
 fn flush_reap_metadata<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
-    counters_before: &[(u32, u32, u32)],
+    counters_before: &[GroupCounters],
     orphan_predecessor: Option<InodeNumber>,
 ) -> Ext4Result<()> {
-    for (index, before) in counters_before.iter().copied().enumerate() {
-        let group = BGIndex::new(u32::try_from(index).map_err(|_| Ext4Error::overflow())?);
-        let descriptor = fs.get_group_desc(group).ok_or_else(Ext4Error::corrupted)?;
-        let free_blocks_changed = descriptor.free_blocks_count() != before.0;
-        let free_inodes_changed = descriptor.free_inodes_count() != before.1;
-        let used_dirs_changed = descriptor.used_dirs_count() != before.2;
-
-        if free_blocks_changed {
-            fs.bitmap_cache
-                .flush(block_dev, &CacheKey::new_block(group))?;
-        }
-        if free_inodes_changed {
-            fs.bitmap_cache
-                .flush(block_dev, &CacheKey::new_inode(group))?;
-        }
-        if free_blocks_changed || free_inodes_changed || used_dirs_changed {
-            fs.sync_group_descriptor(block_dev, group)?;
-        }
-    }
+    fs.flush_changed_group_metadata(block_dev, counters_before)?;
     if let Some(predecessor) = orphan_predecessor {
         fs.inodetable_cache.flush(block_dev, predecessor)?;
     }
@@ -215,7 +184,7 @@ pub fn reap_unlinked_inode<B: BlockIo>(
     }
     preflight_inode_free(fs, block_dev, inode_num, &inode)?;
     let credits = reap_transaction_credits(fs, &inode)?;
-    let counters_before = group_counters(fs);
+    let counters_before = fs.group_counter_snapshot();
 
     fs.with_metadata_transaction(block_dev, credits, |fs, block_dev| {
         truncate_legacy_indirect_mapping_before_free(fs, block_dev, inode_num, &mut inode)?;

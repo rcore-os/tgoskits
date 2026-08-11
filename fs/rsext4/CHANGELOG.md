@@ -70,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inode updates and the classic orphan head under Linux-sized transactions.
 - Reclaim orphaned inodes under Linux-sized truncate credits while atomically
   persisting block/inode bitmaps, group counters, orphan links, and checksums.
+- Create regular, special, symlink, and directory inodes under one Linux-sized
+  namespace transaction with ordered payload publication and full cache undo.
 
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 

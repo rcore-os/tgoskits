@@ -31,6 +31,7 @@ mod owned;
 mod sync;
 mod system_zone;
 
+pub(crate) use fs::GroupCounters;
 pub use fs::{Ext4FileSystem, FileSystemStats};
 pub use lookup::{file_entry_exist, find_file};
 pub use mkfs::{

@@ -1,11 +1,22 @@
 use super::*;
 use crate::dir::{CreateEntryRequest, FileName, insert_dir_entry_raw};
 
+// Linux ext4_create/ext4_mkdir/ext4_symlink reserve DATA_TRANS_BLOCKS,
+// INDEX_EXTRA_TRANS_BLOCKS, and three inode-allocation buffers. Writable quota
+// is not implemented, so extent filesystems reserve 24 + 12 + 3 blocks.
+const CREATE_TRANSACTION_CREDITS: usize = 39;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CreateInodePayload<'a> {
     Empty,
     Data(&'a [u8]),
     Device(DeviceNumber),
+}
+
+struct CreatedInode {
+    number: InodeNumber,
+    inode: Ext4Inode,
+    data_blocks: Vec<AbsoluteBN>,
 }
 
 pub(crate) fn discard_unpublished_inode_blocks<B: BlockIo>(
@@ -104,150 +115,21 @@ pub fn create_symbol_link_with_owner<B: BlockIo>(
         return Err(Ext4Error::invalid_input());
     }
 
-    // Allocate and populate the new symlink inode.
-    let new_ino = fs.alloc_inode(device)?;
-
-    let target_bytes = src_path.as_bytes();
-    let target_len = target_bytes.len();
-    let block_size = fs.block_size();
-    let size_lo = (target_len as u64 & 0xffffffff) as u32;
-    let size_hi = ((target_len as u64) >> 32) as u32;
     let symlink_mode = Ext4Inode::S_IFLNK | 0o777;
-
-    let mut new_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
-    new_inode.i_links_count = 1;
-    new_inode.i_size_lo = size_lo;
-    new_inode.i_size_high = size_hi;
-    new_inode.i_flags = Ext4Inode::mask_flags_for_mode(
-        symlink_mode,
-        parent_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED,
-    );
-    let mut data_blocks: Vec<AbsoluteBN> = Vec::new();
-
-    if target_len == 0 {
-        new_inode.i_blocks_lo = 0;
-        new_inode.l_i_blocks_high = 0;
-        new_inode.i_block = [0; 15];
-    } else if target_len < 60 {
-        // Fast symlink: store the target directly inside `i_block`.
-        let mut raw = [0u8; 60];
-        raw[..target_len].copy_from_slice(target_bytes);
-        for i in 0..15 {
-            new_inode.i_block[i] =
-                u32::from_le_bytes([raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2], raw[i * 4 + 3]]);
-        }
-        new_inode.i_blocks_lo = 0;
-        new_inode.l_i_blocks_high = 0;
-    } else {
-        // Long symlink: spill the target path into data blocks.
-        let mut remaining = target_len;
-        let mut src_off = 0usize;
-
-        while remaining > 0 {
-            if !fs.superblock.has_extents() && data_blocks.len() >= 12 {
-                let error = error_after_cleanup(
-                    Ext4Error::unsupported(),
-                    discard_unpublished_inode(fs, device, new_ino, &data_blocks),
-                );
-                return Err(error);
-            }
-
-            let blk = match fs.alloc_block(device) {
-                Ok(block) => block,
-                Err(error) => {
-                    let error = error_after_cleanup(
-                        error,
-                        discard_unpublished_inode(fs, device, new_ino, &data_blocks),
-                    );
-                    return Err(error);
-                }
-            };
-            let write_len = core::cmp::min(remaining, block_size);
-            if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
-                for b in data.iter_mut() {
-                    *b = 0;
-                }
-                let end = src_off + write_len;
-                data[..write_len].copy_from_slice(&target_bytes[src_off..end]);
-            }) {
-                fs.datablock_cache.invalidate(blk);
-                data_blocks.push(blk);
-                let error = error_after_cleanup(
-                    e,
-                    discard_unpublished_inode(fs, device, new_ino, &data_blocks),
-                );
-                return Err(error);
-            }
-
-            data_blocks.push(blk);
-            remaining -= write_len;
-            src_off += write_len;
-        }
-
-        let used_datablocks = data_blocks.len() as u64;
-        let iblocks_used = used_datablocks
-            .checked_mul(block_size as u64 / 512)
-            .ok_or_else(Ext4Error::overflow);
-        let huge_file_feature = fs
-            .superblock
-            .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
-        if let Err(error) = iblocks_used.and_then(|sectors| {
-            new_inode.set_blocks_count(sectors, block_size as u32, huge_file_feature)
-        }) {
-            let error = error_after_cleanup(
-                error,
-                discard_unpublished_inode(fs, device, new_ino, &data_blocks),
-            );
-            return Err(error);
-        }
-
-        if let Err(error) = build_file_block_mapping_with_inode_num(
-            fs,
-            &mut new_inode,
-            new_ino,
-            &data_blocks,
-            device,
-        ) {
-            let error = error_after_cleanup(
-                error,
-                discard_unpublished_inode(fs, device, new_ino, &data_blocks),
-            );
-            return Err(error);
-        }
-    }
-
-    let mut create_update = Ext4InodeMetadataUpdate::create(symlink_mode);
-    create_update.uid = Some(uid);
-    create_update.gid = Some(gid);
-    if fs
-        .superblock
-        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT)
-        && parent_inode.i_flags & Ext4Inode::EXT4_PROJINHERIT_FL != 0
-    {
-        create_update.projid = Some(parent_inode.i_projid);
-    }
-
-    if let Err(error) = fs.finalize_inode_update(device, new_ino, &mut new_inode, create_update) {
-        let error = error_after_cleanup(
-            error,
-            discard_unpublished_inode(fs, device, new_ino, &data_blocks),
-        );
-        return Err(error);
-    }
-
-    // Publish the new symlink by inserting its directory entry.
-    let mut parent_inode_copy = parent_inode;
-    insert_dir_entry(
-        fs,
+    create_inode_at(
         device,
-        parent_ino_num,
-        &mut parent_inode_copy,
-        new_ino,
-        &child,
+        fs,
+        CreateEntryRequest {
+            parent: parent_ino_num,
+            name: FileName::new(child.as_bytes())?,
+            mode: symlink_mode,
+            uid,
+            gid,
+        },
+        CreateInodePayload::Data(src_path.as_bytes()),
         Ext4DirEntry2::EXT4_FT_SYMLINK,
-    )?;
-
-    Ok(())
+    )
+    .map(|_| ())
 }
 
 /// Create a file entry, creating missing parent directories on demand (root-owned).
@@ -269,6 +151,30 @@ pub(crate) fn create_inode_at<B: BlockIo>(
     payload: CreateInodePayload<'_>,
     file_type: u8,
 ) -> Ext4Result<Ext4Inode> {
+    let counters_before = fs.group_counter_snapshot();
+    fs.with_metadata_transaction(device, CREATE_TRANSACTION_CREDITS, |fs, device| {
+        let created = create_inode_at_inner(device, fs, request, payload, file_type)?;
+
+        // Ordered create writes initialized payload blocks before the metadata
+        // transaction can commit their inode mapping and directory entry.
+        for &block in &created.data_blocks {
+            fs.datablock_cache.flush(device, block)?;
+        }
+        fs.inodetable_cache.flush(device, created.number)?;
+        fs.inodetable_cache.flush(device, request.parent)?;
+        fs.flush_changed_group_metadata(device, &counters_before)?;
+        fs.sync_superblock(device)?;
+        Ok(created.inode)
+    })
+}
+
+fn create_inode_at_inner<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    request: CreateEntryRequest<'_>,
+    payload: CreateInodePayload<'_>,
+    file_type: u8,
+) -> Ext4Result<CreatedInode> {
     if request.name.is_reserved() || request.mode & Ext4Inode::S_IFMT == Ext4Inode::S_IFDIR {
         return Err(Ext4Error::invalid_input());
     }
@@ -503,7 +409,12 @@ pub(crate) fn create_inode_at<B: BlockIo>(
         return Err(error);
     }
 
-    fs.get_inode_by_num(device, new_file_ino)
+    let inode = fs.get_inode_by_num(device, new_file_ino)?;
+    Ok(CreatedInode {
+        number: new_file_ino,
+        inode,
+        data_blocks,
+    })
 }
 
 /// Create a file entry with explicit uid/gid ownership.

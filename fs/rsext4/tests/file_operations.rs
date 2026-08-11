@@ -158,6 +158,116 @@ mod file_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
+    #[test]
+    fn failed_file_create_does_not_publish_a_directory_entry() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let free_blocks_before = fs.superblock.free_blocks_count();
+        let free_inodes_before = fs.superblock.s_free_inodes_count;
+        let root_number = fs.root_inode;
+        let mut root_inode = fs
+            .get_inode_by_num(&mut jbd2_dev, root_number)
+            .expect("root inode");
+        let root_block =
+            loopfile::resolve_inode_block(&fs, &mut jbd2_dev, root_number, &mut root_inode, 0)
+                .expect("root block lookup failed")
+                .expect("root block missing");
+
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        jbd2_dev
+            .set_journal_use(false)
+            .expect("disable journal for direct fault injection");
+        fail_after_write_sector.set(Some(root_block.raw()));
+
+        let error = mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/create-fault",
+            Some(b"unpublished create"),
+            None,
+        )
+        .expect_err("directory write failure must abort file creation");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        drop(fs);
+        let device = jbd2_dev.into_inner();
+        let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut remounted = mount(&mut remount_dev).expect("remount after failed create");
+        assert!(
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/create-fault")
+                .expect("remounted lookup failed")
+                .is_none(),
+            "a failed create must not leave a reachable inode"
+        );
+        assert_eq!(remounted.superblock.free_blocks_count(), free_blocks_before);
+        assert_eq!(remounted.superblock.s_free_inodes_count, free_inodes_before);
+    }
+
+    #[test]
+    fn failed_directory_create_restores_parent_and_allocation_state() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let free_blocks_before = fs.superblock.free_blocks_count();
+        let free_inodes_before = fs.superblock.s_free_inodes_count;
+        let used_dirs_before: u32 = fs
+            .group_descs
+            .iter()
+            .map(|descriptor| descriptor.used_dirs_count())
+            .sum();
+        let root_number = fs.root_inode;
+        let mut root_inode = fs
+            .get_inode_by_num(&mut jbd2_dev, root_number)
+            .expect("root inode");
+        let root_links_before = root_inode.i_links_count;
+        let root_block =
+            loopfile::resolve_inode_block(&fs, &mut jbd2_dev, root_number, &mut root_inode, 0)
+                .expect("root block lookup failed")
+                .expect("root block missing");
+
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        jbd2_dev
+            .set_journal_use(false)
+            .expect("disable journal for direct fault injection");
+        fail_after_write_sector.set(Some(root_block.raw()));
+
+        let error = mkdir(&mut jbd2_dev, &mut fs, "/mkdir-fault")
+            .expect_err("directory write failure must abort mkdir");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        drop(fs);
+        let device = jbd2_dev.into_inner();
+        let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut remounted = mount(&mut remount_dev).expect("remount after failed mkdir");
+        assert!(
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/mkdir-fault")
+                .expect("remounted lookup failed")
+                .is_none(),
+            "a failed mkdir must not leave a reachable directory"
+        );
+        assert_eq!(remounted.superblock.free_blocks_count(), free_blocks_before);
+        assert_eq!(remounted.superblock.s_free_inodes_count, free_inodes_before);
+        let root_after = remounted
+            .get_inode_by_num(&mut remount_dev, root_number)
+            .expect("remounted root inode");
+        assert_eq!(root_after.i_links_count, root_links_before);
+        let used_dirs_after: u32 = remounted
+            .group_descs
+            .iter()
+            .map(|descriptor| descriptor.used_dirs_count())
+            .sum();
+        assert_eq!(used_dirs_after, used_dirs_before);
+    }
+
     /// Covers both shrinking and growing a file and requires Linux EOF zeroing.
     #[test]
     fn test_file_truncate() {
