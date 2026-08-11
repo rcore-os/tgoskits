@@ -29,7 +29,6 @@ use std::{
 };
 
 use ax_cpumask::CpuMask;
-use ax_memory_addr::align_up_4k;
 use ax_std::os::arceos::sync::IrqSafeMutex;
 use axaddrspace::AddrSpace;
 #[cfg(not(target_arch = "aarch64"))]
@@ -2378,33 +2377,6 @@ impl AxVM {
         })
     }
 
-    /// Allocates an IVC channel for inter-VM communication region.
-    ///
-    /// ## Arguments
-    /// * `expected_size` - The expected size of the IVC channel in bytes.
-    /// ## Returns
-    /// * `AxVmResult<(GuestPhysAddr, usize)>` - A tuple containing the guest physical address of the allocated IVC channel and its actual size.
-    pub fn alloc_ivc_channel(&self, expected_size: usize) -> AxVmResult<(GuestPhysAddr, usize)> {
-        // Ensure the expected size is aligned to 4K.
-        let size = align_up_4k(expected_size);
-        let devices = self.get_devices()?;
-        let gpa = crate::runtime::ivc::alloc_guest_binding(&devices, size)
-            .map_err(|error| AxVmError::memory("reserve IVC guest address range", error))?;
-        Ok((gpa, size))
-    }
-
-    /// Releases an IVC channel for inter-VM communication region.
-    /// ## Arguments
-    /// * `gpa` - The guest physical address of the IVC channel to release.
-    /// * `size` - The size of the IVC channel in bytes.
-    /// ## Returns
-    /// * `AxVmResult<()>` - An empty result indicating success or failure.
-    pub fn release_ivc_channel(&self, gpa: GuestPhysAddr, size: usize) -> AxVmResult {
-        crate::runtime::ivc::release_guest_binding(self.get_devices()?.as_ref(), gpa, size)
-            .map_err(|error| AxVmError::memory("release IVC guest address range", error))?;
-        Ok(())
-    }
-
     /// Allocates a new memory region for the VM.
     pub fn alloc_memory_region(
         &self,
@@ -2419,7 +2391,7 @@ impl AxVM {
         let hva = unsafe { std::alloc::alloc_zeroed(layout) };
         if hva.is_null() {
             return Err(AxVmError::OutOfMemory {
-                operation: "allocate IVC channel",
+                operation: "allocate VM memory region",
             });
         }
         let s = unsafe { std::slice::from_raw_parts_mut(hva, layout.size()) };

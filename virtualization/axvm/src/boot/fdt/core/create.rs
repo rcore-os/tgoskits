@@ -718,7 +718,7 @@ impl FdtTree {
     }
 
     fn next_phandle(&self) -> u32 {
-        const AXIVC_PHANDLE_BASE: u32 = 0xa11c_0000;
+        const AXVISOR_PHANDLE_BASE: u32 = 0xa11c_0000;
 
         self.inner()
             .iter_node_ids()
@@ -731,10 +731,10 @@ impl FdtTree {
                 ]
             })
             .flatten()
-            .filter(|phandle| *phandle >= AXIVC_PHANDLE_BASE)
+            .filter(|phandle| *phandle >= AXVISOR_PHANDLE_BASE)
             .max()
             .and_then(|phandle| phandle.checked_add(1))
-            .unwrap_or(AXIVC_PHANDLE_BASE)
+            .unwrap_or(AXVISOR_PHANDLE_BASE)
     }
 
     fn root_cells(&self, property: &str, fallback: u32) -> u32 {
@@ -1256,80 +1256,6 @@ mod tests {
         let reparsed = Fdt::from_bytes(&patched).unwrap();
 
         assert!(reparsed.get_by_path_id("/chosen").is_some());
-    }
-
-    #[test]
-    fn runtime_patch_adds_ivc_channel_node() {
-        let mut tree = FdtTree::new();
-        let intc = tree.ensure_path("/intc@8000000").unwrap();
-        tree.set_property(intc, prop_string("compatible", "arm,gic-v3"))
-            .unwrap();
-        tree.set_property(intc, Property::new("interrupt-controller", std::vec![]))
-            .unwrap();
-        tree.set_property(intc, u32_property("#interrupt-cells", 4))
-            .unwrap();
-        let dtb = tree.finish();
-        let cfg = GuestConfig::default();
-        let devices = std::vec![super::ResolvedFdtDevice {
-            id: "ivc0".into(),
-            node_name: "ivc-channel".into(),
-            compatible: std::vec!["axvisor,ivc-channel".into()],
-            registers: std::vec![(0xbff0_0000, 0x1_0000)],
-            interrupts: std::vec![super::ResolvedFdtInterrupt {
-                controller: axdevice_base::InterruptControllerId::new(0),
-                input: 60,
-                trigger: axdevice_base::InterruptTrigger::EdgeTriggered,
-            }],
-            properties: std::vec![
-                super::ResolvedFdtProperty::String("status".into(), "okay".into()),
-                super::ResolvedFdtProperty::U32("axvisor,ivc-version".into(), 1),
-                super::ResolvedFdtProperty::U32("axvisor,notify-irq".into(), 60),
-            ],
-        }];
-        let serial = crate::machine::current_machine_profile(1).serial;
-        let gic = gic_profile(7);
-
-        let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
-            fdt_bytes: &dtb,
-            memory_regions: &[],
-            devices: &devices,
-            crate_config: &cfg,
-            serial_profile: serial,
-            serial_identity: None,
-            additional_serials: &[],
-            gic_profile: Some(&gic),
-            plic_profile: None,
-            timer_profile: None,
-            initrd_start_size: None,
-            create_chosen: false,
-        })
-        .unwrap();
-        let reparsed = Fdt::from_bytes(&patched).unwrap();
-        let node_id = reparsed.get_by_path_id("/ivc-channel@bff00000").unwrap();
-        let node = reparsed.node(node_id).unwrap();
-        let typed_node = reparsed.view_typed(node_id).unwrap();
-
-        assert_eq!(
-            node.get_property("compatible").unwrap().as_str(),
-            Some("axvisor,ivc-channel")
-        );
-        assert_eq!(typed_node.regs()[0].address, 0xbff0_0000);
-        assert_eq!(typed_node.regs()[0].size, Some(0x1_0000));
-        assert_eq!(
-            node.get_property("axvisor,notify-irq").unwrap().get_u32(),
-            Some(60)
-        );
-        assert_eq!(
-            node.get_property("interrupt-parent").unwrap().get_u32(),
-            Some(7)
-        );
-        assert_eq!(
-            node.get_property("interrupts")
-                .unwrap()
-                .get_u32_iter()
-                .collect::<std::vec::Vec<_>>(),
-            [0, 28, 1, 0]
-        );
     }
 
     #[test]

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 pub(crate) mod hvc;
-pub(crate) mod ivc;
 pub(crate) mod vcpus;
 
 mod dispatcher;

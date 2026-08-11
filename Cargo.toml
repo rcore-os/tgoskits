@@ -200,7 +200,6 @@ axdevice = { version = "0.8", path = "virtualization/axdevice" }
 axdevice_base = { version = "0.7", path = "virtualization/axdevice_base" }
 axfs-ng-vfs = { version = "0.8", path = "fs/axfs-ng-vfs" }
 axhvc = { version = "0.5", path = "virtualization/axhvc" }
-axivc = { version = "0.1", path = "virtualization/axivc" }
 axklib = { version = "0.9", path = "components/axklib" }
 axplat-dyn = { version = "0.10.4", path = "platforms/axplat-dyn", default-features = false }
 axpoll = { version = "0.7", path = "components/axpoll" }
