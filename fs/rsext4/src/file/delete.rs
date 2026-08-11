@@ -7,6 +7,24 @@ pub(crate) struct ParentDirEntry {
     pub file_type: u8,
 }
 
+/// Result of removing one non-directory name from a parent directory.
+///
+/// A zero `remaining_links` value means the inode is still allocated on the
+/// ext4 orphan chain and must be reaped only after the VFS has released its
+/// final live inode reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub struct UnlinkOutcome {
+    pub inode: InodeNumber,
+    pub remaining_links: u16,
+}
+
+impl UnlinkOutcome {
+    pub const fn requires_reap(self) -> bool {
+        self.remaining_links == 0
+    }
+}
+
 fn ensure_inode_free_is_supported(fs: &Ext4FileSystem, inode: &Ext4Inode) -> Ext4Result<()> {
     if crate::indirect::has_legacy_indirect_mapping(fs, inode) {
         return Err(Ext4Error::unsupported().with_operation("indirect:free"));
@@ -26,12 +44,12 @@ fn preflight_inode_free<B: BlockIo>(
     ensure_inode_free_is_supported(fs, inode)
 }
 
-pub fn free_inode<B: BlockIo>(
+fn inode_owned_blocks<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
     inode: &mut Ext4Inode,
-) -> Ext4Result<()> {
+) -> Ext4Result<Vec<AbsoluteBN>> {
     ensure_inode_free_is_supported(fs, inode)?;
     let mut used_blocks: Vec<AbsoluteBN> = if inode.uses_extents() {
         resolve_inode_blocks(fs, block_dev, inode_num, inode)?
@@ -48,6 +66,16 @@ pub fn free_inode<B: BlockIo>(
     }
     used_blocks.sort_unstable();
     used_blocks.dedup();
+    Ok(used_blocks)
+}
+
+pub fn free_inode<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+) -> Ext4Result<()> {
+    let used_blocks = inode_owned_blocks(fs, block_dev, inode_num, inode)?;
 
     let updated_inode = fs.apply_inode_dtime(block_dev, inode_num, Ext4DtimeUpdate::SetNow)?;
 
@@ -72,12 +100,126 @@ pub fn free_inode<B: BlockIo>(
     fs.free_inode(block_dev, inode_num)
 }
 
+/// Reclaims a zero-link inode after the VFS has dropped its final reference.
+pub fn reap_unlinked_inode<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    inode_num: InodeNumber,
+) -> Ext4Result<()> {
+    if !fs.inode_is_allocated_checked(block_dev, inode_num)? {
+        return Err(Ext4Error::not_found().with_operation("orphan:reap_unallocated"));
+    }
+    let mut inode = fs.get_inode_by_num(block_dev, inode_num)?;
+    if inode.i_links_count != 0 {
+        return Err(Ext4Error::invalid_input().with_operation("orphan:reap_linked"));
+    }
+    if !fs.orphan_contains(block_dev, inode_num)? {
+        return Err(Ext4Error::not_found().with_operation("orphan:reap_not_listed"));
+    }
+
+    let used_blocks = inode_owned_blocks(fs, block_dev, inode_num, &mut inode)?;
+    for block in used_blocks {
+        fs.free_block(block_dev, block)?;
+    }
+
+    // Keep i_dtime intact while the inode is on the orphan chain: it is the
+    // next-inode pointer, not a wall-clock deletion time.
+    inode.i_block = [0; 15];
+    inode.i_blocks_lo = 0;
+    inode.l_i_blocks_high = 0;
+    inode.i_size_lo = 0;
+    inode.i_size_high = 0;
+    fs.finalize_inode_update(
+        block_dev,
+        inode_num,
+        &mut inode,
+        Ext4InodeMetadataUpdate::link_count_change(),
+    )?;
+
+    fs.remove_orphan(block_dev, inode_num)?;
+    fs.apply_inode_dtime(block_dev, inode_num, Ext4DtimeUpdate::SetNow)?;
+    fs.free_inode(block_dev, inode_num)
+}
+
+/// Removes one raw name below an already resolved parent directory.
+pub(crate) fn unlink_inode_at<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    parent: InodeNumber,
+    name: FileName<'_>,
+) -> Ext4Result<UnlinkOutcome> {
+    if name.is_reserved() {
+        return Err(Ext4Error::invalid_input().with_operation("unlink:reserved_name"));
+    }
+    let parent_inode = fs.get_inode_by_num(block_dev, parent)?;
+    let entry = find_named_entry_in_parent(fs, block_dev, parent, &parent_inode, name.as_bytes())?;
+    let target_inode = fs.get_inode_by_num(block_dev, entry.ino)?;
+    if target_inode.is_dir() {
+        return Err(Ext4Error::is_dir());
+    }
+
+    let old_links = target_inode.i_links_count;
+    let new_links = target_inode.decremented_links_count()?;
+    if new_links == 0 {
+        preflight_inode_free(fs, block_dev, entry.ino, &target_inode)?;
+    }
+    fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
+    if new_links == 0
+        && let Err(error) = fs.add_orphan(block_dev, entry.ino)
+    {
+        let rollback = fs
+            .set_inode_links_count(block_dev, entry.ino, old_links)
+            .map(|_| ());
+        return Err(error_after_cleanup(error, rollback));
+    }
+
+    if let Err(error) = remove_named_entry_at(
+        fs,
+        block_dev,
+        parent,
+        &parent_inode,
+        entry.phys,
+        name.as_bytes(),
+    ) {
+        // A failed write may still have published the directory-block change.
+        // Only roll back link/orphan state when lookup proves the name remains.
+        let still_present = matches!(
+            find_named_entry_in_parent(
+                fs,
+                block_dev,
+                parent,
+                &parent_inode,
+                name.as_bytes(),
+            ),
+            Ok(found) if found.ino == entry.ino
+        );
+        if still_present {
+            let orphan_rollback = if new_links == 0 {
+                fs.remove_orphan(block_dev, entry.ino)
+            } else {
+                Ok(())
+            };
+            let link_rollback = orphan_rollback.and_then(|()| {
+                fs.set_inode_links_count(block_dev, entry.ino, old_links)
+                    .map(|_| ())
+            });
+            return Err(error_after_cleanup(error, link_rollback));
+        }
+        return Err(error);
+    }
+    fs.touch_parent_dir_for_entry_change(block_dev, parent)?;
+    Ok(UnlinkOutcome {
+        inode: entry.ino,
+        remaining_links: new_links,
+    })
+}
+
 /// Remove a non-directory link from its parent directory.
 pub fn unlink<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     link_path: &str,
-) -> Ext4Result<()> {
+) -> Ext4Result<UnlinkOutcome> {
     // Resolve the parent directory and target entry before mutating link
     // counts or directory contents.
     let norm_path = normalize_path(link_path);
@@ -93,50 +235,16 @@ pub fn unlink<B: BlockIo>(
         ("/".to_string(), norm_path)
     };
 
-    let (parent_ino, parent_inode) = match get_inode_with_num(fs, block_dev, &parent_path)? {
+    let (parent_ino, _) = match get_inode_with_num(fs, block_dev, &parent_path)? {
         Some(v) => v,
         None => return Err(Ext4Error::not_found()),
     };
-
-    let entry = find_named_entry_in_parent(
+    unlink_inode_at(
         fs,
         block_dev,
         parent_ino,
-        &parent_inode,
-        child_name.as_bytes(),
-    )?;
-
-    let mut target_inode = fs.get_inode_by_num(block_dev, entry.ino)?;
-    if target_inode.is_dir() {
-        return Err(Ext4Error::is_dir());
-    }
-
-    // Capability preconditions must be checked before publishing the link
-    // count. Recursive legacy-indirect freeing is a later transaction
-    // milestone, so a final unlink of such an inode remains unsupported.
-    let new_links = target_inode.decremented_links_count()?;
-    if new_links == 0 {
-        preflight_inode_free(fs, block_dev, entry.ino, &target_inode)?;
-    }
-    fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
-
-    // When the final link disappears, free blocks and inode through the shared
-    // deletion path.
-    if new_links == 0 {
-        free_inode(fs, block_dev, entry.ino, &mut target_inode)?;
-    }
-
-    // Remove the directory entry at the block found above (no second scan).
-    remove_named_entry_at(
-        fs,
-        block_dev,
-        parent_ino,
-        &parent_inode,
-        entry.phys,
-        child_name.as_bytes(),
-    )?;
-    fs.touch_parent_dir_for_entry_change(block_dev, parent_ino)?;
-    Ok(())
+        FileName::new(child_name.as_bytes())?,
+    )
 }
 
 fn find_dentry_in_dir_block(data: &[u8], name_bytes: &[u8]) -> Option<(u32, u8)> {
@@ -574,54 +682,9 @@ pub fn delete_file<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     path: &str,
 ) -> Ext4Result<()> {
-    let norm_path = normalize_path(path);
-    let (parent_path, child_name) = if let Some(pos) = norm_path.rfind('/') {
-        let parent = if pos == 0 {
-            "/".to_string()
-        } else {
-            norm_path[..pos].to_string()
-        };
-        let child = norm_path[pos + 1..].to_string();
-        (parent, child)
-    } else {
-        ("/".to_string(), norm_path)
-    };
-
-    let (parent_ino, parent_inode) = match get_inode_with_num(fs, block_dev, &parent_path)? {
-        Some(v) => v,
-        None => return Err(Ext4Error::not_found()),
-    };
-
-    let entry = find_named_entry_in_parent(
-        fs,
-        block_dev,
-        parent_ino,
-        &parent_inode,
-        child_name.as_bytes(),
-    )?;
-
-    let mut target_inode = fs.get_inode_by_num(block_dev, entry.ino)?;
-    if target_inode.is_dir() {
-        return Err(Ext4Error::is_dir());
+    let outcome = unlink(fs, block_dev, path)?;
+    if outcome.requires_reap() {
+        reap_unlinked_inode(fs, block_dev, outcome.inode)?;
     }
-
-    let new_links = target_inode.decremented_links_count()?;
-    if new_links == 0 {
-        preflight_inode_free(fs, block_dev, entry.ino, &target_inode)?;
-    }
-    fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
-    if new_links == 0 {
-        free_inode(fs, block_dev, entry.ino, &mut target_inode)?;
-    }
-
-    remove_named_entry_at(
-        fs,
-        block_dev,
-        parent_ino,
-        &parent_inode,
-        entry.phys,
-        child_name.as_bytes(),
-    )?;
-    fs.touch_parent_dir_for_entry_change(block_dev, parent_ino)?;
     Ok(())
 }

@@ -490,6 +490,41 @@ mod file_functional_tests {
     }
 
     #[test]
+    fn final_unlink_keeps_inode_alive_until_explicit_reap() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let contents = b"open inode survives unlink";
+        mkfile(&mut jbd2_dev, &mut fs, "/open-unlink", Some(contents), None)
+            .expect("file creation failed");
+        let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/open-unlink")
+            .expect("lookup failed")
+            .expect("created file missing")
+            .0;
+
+        let outcome = unlink(&mut fs, &mut jbd2_dev, "/open-unlink").expect("unlink failed");
+        assert_eq!(outcome.inode, inode_number);
+        assert!(outcome.requires_reap());
+
+        assert!(
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/open-unlink")
+                .expect("post-unlink lookup failed")
+                .is_none(),
+            "the directory entry must disappear"
+        );
+        assert!(
+            fs.inode_num_already_allocated(&mut jbd2_dev, inode_number),
+            "the zero-link inode must remain allocated while an open reference may exist"
+        );
+        let mut output = [0u8; 26];
+        let read = read_inode_data_into(&mut jbd2_dev, &mut fs, inode_number, 0, &mut output)
+            .expect("reading the unlinked inode by number failed");
+        assert_eq!(&output[..read], contents);
+    }
+
+    #[test]
     fn hard_link_propagates_corrupt_destination_parent_extent() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);

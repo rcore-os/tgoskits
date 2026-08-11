@@ -303,6 +303,47 @@ fn owned_mount_injects_clock_separately_from_block_io() {
             .number,
         raw_file.number
     );
+
+    let payload = b"open-unlink through the owned core";
+    filesystem
+        .write_inode(context, raw_file.number, 0, payload)
+        .expect("owned inode write failed");
+    let first_unlink = filesystem
+        .unlink(context, raw_directory.number, raw_file_name)
+        .expect("first raw unlink failed");
+    assert_eq!(first_unlink.inode, raw_file.number);
+    assert_eq!(first_unlink.remaining_links, 1);
+    assert!(!first_unlink.requires_reap());
+
+    let final_unlink = filesystem
+        .unlink(context, root.number, raw_link_name)
+        .expect("final raw unlink failed");
+    assert_eq!(final_unlink.inode, raw_file.number);
+    assert!(final_unlink.requires_reap());
+    assert!(
+        filesystem
+            .lookup_child(root.number, raw_link_name)
+            .expect("post-unlink lookup failed")
+            .is_none()
+    );
+    let mut unlinked_payload = [0u8; 34];
+    let read = filesystem
+        .read_inode(raw_file.number, 0, &mut unlinked_payload)
+        .expect("zero-link inode read failed");
+    assert_eq!(&unlinked_payload[..read], payload);
+
+    let busy_unmount = filesystem
+        .unmount()
+        .expect_err("a mount with a live orphan must remain busy");
+    assert_eq!(busy_unmount.kind(), Ext4ErrorKind::Busy);
+
+    filesystem
+        .reap_unlinked_inode(raw_file.number)
+        .expect("explicit zero-link reap failed");
+    let second_reap = filesystem
+        .reap_unlinked_inode(raw_file.number)
+        .expect_err("a reaped inode must not be reclaimed twice");
+    assert_eq!(second_reap.kind(), Ext4ErrorKind::NotFound);
     filesystem.unmount().expect("owned unmount failed");
 }
 

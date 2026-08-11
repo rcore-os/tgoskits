@@ -41,6 +41,9 @@ impl Ext4FileSystem {
         if !self.mounted {
             return Ok(());
         }
+        if self.superblock.s_last_orphan != 0 {
+            return Err(Ext4Error::busy().with_operation("unmount:live_orphans"));
+        }
 
         observer.event(Event::Mount(MountEvent::UnmountStarted));
 

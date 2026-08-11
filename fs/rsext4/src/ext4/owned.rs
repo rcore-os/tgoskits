@@ -12,8 +12,9 @@ use crate::{
     entries::Ext4DirEntry2,
     error::{Ext4Error, Ext4ErrorKind, Ext4Result},
     file::{
-        create_inode_at, find_named_entry_in_parent, link_inode_at, read_inode_data_into,
-        truncate_inode, write_inode_data,
+        UnlinkOutcome, create_inode_at, find_named_entry_in_parent, link_inode_at,
+        read_inode_data_into, reap_unlinked_inode, truncate_inode, unlink_inode_at,
+        write_inode_data,
     },
     hashtree::Ext4InodeHashTreeExt,
     io::BlockIo,
@@ -402,6 +403,25 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         )?;
         self.lookup_child(parent, name)?
             .ok_or_else(|| Ext4Error::corrupted().with_operation("link:missing_directory_entry"))
+    }
+
+    /// Removes one non-directory name without reclaiming a final zero-link
+    /// inode that may still be referenced by the embedding VFS.
+    pub fn unlink(
+        &mut self,
+        _context: MutationContext,
+        parent: InodeNumber,
+        name: FileName<'_>,
+    ) -> Ext4Result<UnlinkOutcome> {
+        self.ensure_writable("inode:unlink")?;
+        unlink_inode_at(&mut self.filesystem, &mut self.device, parent, name)
+    }
+
+    /// Reclaims an orphaned zero-link inode after the VFS releases its final
+    /// live reference.
+    pub fn reap_unlinked_inode(&mut self, inode: InodeNumber) -> Ext4Result<()> {
+        self.ensure_writable("inode:reap_unlinked")?;
+        reap_unlinked_inode(&mut self.filesystem, &mut self.device, inode)
     }
 
     fn inspect_inode(&self, number: InodeNumber, inode: Ext4Inode) -> Ext4Result<InodeInfo> {

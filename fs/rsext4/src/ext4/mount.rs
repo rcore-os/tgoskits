@@ -403,6 +403,15 @@ impl Ext4FileSystem {
             }
         }
 
+        // Classic orphan-list recovery must observe metadata after JBD2 replay
+        // and complete before ordinary namespace repair can allocate inodes or
+        // blocks. Read-only mounts validate but never mutate the chain.
+        if options.readonly {
+            fs.validate_orphan_chain(block_dev)?;
+        } else {
+            fs.recover_orphans(block_dev)?;
+        }
+
         // rootinode check !
         {
             let root_inode = fs.get_root(block_dev).map_err(|_| Ext4Error::io())?;

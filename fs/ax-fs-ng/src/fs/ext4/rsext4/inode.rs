@@ -4,7 +4,7 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
 };
-use core::{any::Any, cell::Cell};
+use core::any::Any;
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, FilesystemOps,
@@ -103,13 +103,17 @@ impl Inode {
 
 impl Drop for Inode {
     fn drop(&mut self) {
-        let mut state = self.fs.lock();
-        let is_last = state.dec_ref(self.ino);
-        if is_last && state.is_zero_link(self.ino) {
-            state.clear_zero_link(self.ino);
-            let (fs, dev) = state.split();
-            if let Ok(mut on_disk) = fs.get_inode_by_num(dev, self.ino) {
-                let _ = rsext4::free_inode(fs, dev, self.ino, &mut on_disk);
+        let claim = self.fs.lock().release_ref(self.ino);
+        if let Some(claim) = claim {
+            match self.fs.reap(claim) {
+                Ok(()) => {
+                    if let Err(error) = self.fs.sync_to_disk() {
+                        log::error!("failed to persist reaped ext4 inode: {error:?}");
+                    }
+                }
+                Err(error) => {
+                    log::error!("failed to reap zero-link ext4 inode: {error:?}");
+                }
             }
         }
     }
@@ -535,61 +539,38 @@ impl DirNodeOps for Inode {
     fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         let dir_path = self.dir_path()?;
         let path = join_child_path(&dir_path, name);
-        let forget_file_ino: Cell<Option<InodeNumber>> = Cell::new(None);
-        {
+        let (forget_file_ino, reap_claim) = {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
             let inode_info =
                 rsext4::dir::get_inode_with_num(fs, dev, &path).map_err(into_vfs_err)?;
-            if inode_info.is_none() {
-                return Err(VfsError::NotFound);
-            }
-            let (ino, inode) = inode_info.unwrap();
+            let (ino, inode) = inode_info.ok_or(VfsError::NotFound)?;
             match (inode.is_dir(), is_dir) {
                 (true, false) => return Err(VfsError::IsADirectory),
                 (false, true) => return Err(VfsError::NotADirectory),
                 _ => {}
             }
-            let mut deferred_zero_link: Option<InodeNumber> = None;
             if inode.is_dir() {
                 let mut dir_inode = inode; // Ext4Inode is Copy
                 if !rsext4::is_dir_empty(fs, dev, ino, &mut dir_inode).map_err(into_vfs_err)? {
                     return Err(VfsError::DirectoryNotEmpty);
                 }
                 rsext4::delete_dir(fs, dev, &path).map_err(into_vfs_err)?;
-            } else if inode.i_links_count > 1 {
-                // Multiple hard links remain after this one is removed.
-                rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;
+                (None, None)
             } else {
-                // Last (or only) link.  Mark the inode zero-link,
-                // remove the directory entry, and defer the
-                // zero-link / free_inode check until after the
-                // fs/dev split borrow ends.
-                fs.modify_inode(dev, ino, |on_disk| {
-                    on_disk.i_links_count = 0;
-                })
-                .map_err(into_vfs_err)?;
-                rsext4::remove_inodeentry_from_parentdir(fs, dev, &dir_path, name)
-                    .map_err(into_vfs_err)?;
-                deferred_zero_link = Some(ino);
-            }
-            // Capture the inode number for page-cache key cleanup.
-            // This must be set before the fs/dev borrow ends because
-            // deferred_zero_link is bound inside this scope.
-            forget_file_ino.set(deferred_zero_link);
-            // fs/dev borrow ends here (last use in all branches).
-            // `state` is accessible again.
-            if let Some(ino) = deferred_zero_link
-                && state.mark_zero_link(ino)
-            {
-                // No live Inode Arcs — free immediately.
-                let (fs, dev) = state.split();
-                if let Ok(mut on_disk) = fs.get_inode_by_num(dev, ino) {
-                    let _ = rsext4::free_inode(fs, dev, ino, &mut on_disk);
+                let outcome = rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;
+                if outcome.requires_reap() {
+                    let claim = state.publish_zero_link(outcome.inode);
+                    (Some(outcome.inode), claim)
+                } else {
+                    (None, None)
                 }
             }
+        };
+        if let Some(claim) = reap_claim {
+            self.fs.reap(claim)?;
         }
-        if let Some(ino) = forget_file_ino.get() {
+        if let Some(ino) = forget_file_ino {
             forget_cached_file_key(&*self.fs, ino.as_u64());
         }
         self.fs.sync_to_disk()

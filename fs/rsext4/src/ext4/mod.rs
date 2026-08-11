@@ -26,6 +26,7 @@ mod fs;
 mod lookup;
 mod mkfs;
 mod mount;
+mod orphan;
 mod owned;
 mod sync;
 mod system_zone;
