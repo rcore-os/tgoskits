@@ -9,12 +9,14 @@ use std::{
 
 use rsext4::{
     BLOCK_SIZE, BlockIo, Ext4, Ext4Error, Ext4Result, Ext4Timestamp, FileName, FilePermissions,
-    MkfsOptions, MountOptions, MountServices, MutationContext, NoopObserver, format,
+    MkfsOptions, MountOptions, MountServices, MutationContext, NoopObserver, XattrNamespace,
+    XattrSetMode, format,
 };
 
 const DEFAULT_BYTES: usize = 20 * 1024 * 1024;
 const DEFAULT_WARMUPS: usize = 3;
 const DEFAULT_RUNS: usize = 10;
+const DEFAULT_XATTR_BYTES: usize = 512;
 const IMAGE_BYTES: usize = 128 * 1024 * 1024;
 
 struct MemoryDevice {
@@ -95,6 +97,13 @@ struct Sample {
     sync: Duration,
 }
 
+#[derive(Clone, Copy)]
+struct XattrSample {
+    set_sync: Duration,
+    get: Duration,
+    remove_sync: Duration,
+}
+
 fn env_usize(name: &str, default: usize) -> usize {
     env::var(name)
         .ok()
@@ -166,6 +175,76 @@ fn run_once(payload: &[u8]) -> Sample {
     Sample { write, read, sync }
 }
 
+fn run_xattr_once(value: &[u8]) -> XattrSample {
+    let device = MemoryDevice::new();
+    let device = format(
+        device,
+        BenchClock(Cell::new(1_700_000_000)),
+        MkfsOptions::default(),
+    )
+    .expect("benchmark mkfs must succeed");
+    let services = MountServices::new(
+        BenchClock(Cell::new(1_700_000_000)),
+        (),
+        (),
+        (),
+        NoopObserver,
+    );
+    let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
+        .expect("benchmark mount must succeed");
+    let context = MutationContext::new(0, 0, 0, 0);
+    let file = filesystem
+        .create_regular_file(
+            context,
+            filesystem.root_inode(),
+            FileName::new(b"rsext4-host-xattr.bin").expect("benchmark name must be valid"),
+            FilePermissions::new(0o644).expect("benchmark permissions must be valid"),
+        )
+        .expect("benchmark file creation must succeed");
+
+    let start = Instant::now();
+    filesystem
+        .set_xattr(
+            context,
+            file.number,
+            XattrNamespace::User,
+            b"host-perf",
+            value,
+            XattrSetMode::Create,
+        )
+        .expect("benchmark xattr create must succeed");
+    filesystem
+        .sync()
+        .expect("benchmark xattr create sync must succeed");
+    let set_sync = start.elapsed();
+
+    let start = Instant::now();
+    let observed = filesystem
+        .get_xattr(file.number, XattrNamespace::User, b"host-perf")
+        .expect("benchmark xattr read must succeed");
+    black_box(&observed);
+    assert_eq!(observed, value);
+    let get = start.elapsed();
+
+    let start = Instant::now();
+    filesystem
+        .remove_xattr(context, file.number, XattrNamespace::User, b"host-perf")
+        .expect("benchmark xattr remove must succeed");
+    filesystem
+        .sync()
+        .expect("benchmark xattr remove sync must succeed");
+    let remove_sync = start.elapsed();
+
+    filesystem
+        .unmount()
+        .expect("benchmark unmount must succeed");
+    XattrSample {
+        set_sync,
+        get,
+        remove_sync,
+    }
+}
+
 fn percentile(samples: &[u128], numerator: usize, denominator: usize) -> u128 {
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
@@ -177,6 +256,67 @@ fn percentile(samples: &[u128], numerator: usize, denominator: usize) -> u128 {
     sorted[rank.min(sorted.len() - 1)]
 }
 
+fn run_xattr_benchmark(
+    commit: &str,
+    arch: &str,
+    backend: &str,
+    feature: &str,
+    warmups: usize,
+    runs: usize,
+    value_bytes: usize,
+) {
+    let mut value = vec![0u8; value_bytes];
+    for (index, byte) in value.iter_mut().enumerate() {
+        *byte = (index as u8).wrapping_mul(17).wrapping_add(11);
+    }
+    println!(
+        "RSEXT4_BENCH_CONFIG commit={commit} arch={arch} backend={backend} feature={feature} \
+         workload=xattr-external value_bytes={value_bytes} warmups={warmups} runs={runs} \
+         block_size={BLOCK_SIZE} journal=true"
+    );
+
+    for _ in 0..warmups {
+        black_box(run_xattr_once(&value));
+    }
+
+    let mut samples = Vec::with_capacity(runs);
+    for run in 0..runs {
+        let sample = run_xattr_once(&value);
+        println!(
+            "RSEXT4_BENCH_RESULT commit={commit} arch={arch} backend={backend} feature={feature} \
+             workload=xattr-external run={run} set_sync_ns={} get_ns={} remove_sync_ns={}",
+            sample.set_sync.as_nanos(),
+            sample.get.as_nanos(),
+            sample.remove_sync.as_nanos()
+        );
+        samples.push(sample);
+    }
+
+    let set_sync = samples
+        .iter()
+        .map(|sample| sample.set_sync.as_nanos())
+        .collect::<Vec<_>>();
+    let get = samples
+        .iter()
+        .map(|sample| sample.get.as_nanos())
+        .collect::<Vec<_>>();
+    let remove_sync = samples
+        .iter()
+        .map(|sample| sample.remove_sync.as_nanos())
+        .collect::<Vec<_>>();
+    println!(
+        "RSEXT4_BENCH_SUMMARY commit={commit} arch={arch} backend={backend} feature={feature} \
+         workload=xattr-external set_sync_median_ns={} set_sync_p95_ns={} get_median_ns={} \
+         get_p95_ns={} remove_sync_median_ns={} remove_sync_p95_ns={}",
+        percentile(&set_sync, 1, 2),
+        percentile(&set_sync, 95, 100),
+        percentile(&get, 1, 2),
+        percentile(&get, 95, 100),
+        percentile(&remove_sync, 1, 2),
+        percentile(&remove_sync, 95, 100),
+    );
+}
+
 fn main() {
     let bytes = env_usize("RSEXT4_BENCH_BYTES", DEFAULT_BYTES);
     let warmups = env_usize("RSEXT4_BENCH_WARMUPS", DEFAULT_WARMUPS);
@@ -185,8 +325,28 @@ fn main() {
     let arch = marker_value("RSEXT4_BENCH_ARCH", env::consts::ARCH);
     let backend = marker_value("RSEXT4_BENCH_BACKEND", "memory");
     let feature = marker_value("RSEXT4_BENCH_FEATURE", "metadata_csum+64bit+journal");
+    let workload = marker_value("RSEXT4_BENCH_WORKLOAD", "sequential");
     assert!(bytes > 0 && bytes.is_multiple_of(BLOCK_SIZE));
     assert!(runs > 0);
+
+    if workload == "xattr-external" {
+        let value_bytes = env_usize("RSEXT4_BENCH_XATTR_BYTES", DEFAULT_XATTR_BYTES);
+        assert!(
+            value_bytes > 256,
+            "external xattr fixture must not fit inline"
+        );
+        run_xattr_benchmark(
+            &commit,
+            &arch,
+            &backend,
+            &feature,
+            warmups,
+            runs,
+            value_bytes,
+        );
+        return;
+    }
+    assert_eq!(workload, "sequential", "unsupported benchmark workload");
 
     let mut payload = vec![0u8; bytes];
     for (index, byte) in payload.iter_mut().enumerate() {
