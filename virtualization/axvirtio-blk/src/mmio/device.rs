@@ -137,7 +137,12 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
     ) -> VirtioResult<BlockDeviceEvent> {
         match self.state.mmio_write(addr, width, val)? {
             MmioWriteAction::None => Ok(BlockDeviceEvent::None),
-            MmioWriteAction::Reset => Ok(BlockDeviceEvent::Reset),
+            MmioWriteAction::Reset => {
+                // A transport reset invalidates every in-flight descriptor,
+                // including a deferred request that was removed from avail.
+                self.pending_head.lock().take();
+                Ok(BlockDeviceEvent::Reset)
+            }
             MmioWriteAction::InterruptPending => Ok(BlockDeviceEvent::InterruptPending),
             MmioWriteAction::QueueNotified(queue_index) => {
                 if self.backend.requires_deferred_processing() {
@@ -398,7 +403,10 @@ fn allocate_request_buffer(len: usize) -> VirtioResult<alloc::vec::Vec<u8>> {
 mod tests {
     use alloc::{sync::Arc, vec, vec::Vec};
 
-    use axvirtio_common::{GuestMemory, NoGuestMemoryAccessor, constants::VIRTQ_DESC_F_NEXT};
+    use axvirtio_common::{
+        GuestMemory, NoGuestMemoryAccessor,
+        constants::{VIRTIO_MMIO_STATUS, VIRTQ_DESC_F_NEXT},
+    };
 
     use super::*;
 
@@ -525,5 +533,21 @@ mod tests {
 
         assert_eq!(device.process_request(&queue, 0, &mut memory), Ok(Some(1)));
         assert_eq!(memory.0[STATUS], IOERR);
+    }
+
+    #[test]
+    fn reset_discards_deferred_request_head() {
+        let (device, _queue, mut memory) = fixture(64, 0);
+        *device.pending_head.lock() = Some(3);
+
+        let event = device.mmio_write_with_memory(
+            GuestPhysAddr::from(0x0a00_0000 + VIRTIO_MMIO_STATUS),
+            AccessWidth::Dword,
+            0,
+            &mut memory,
+        );
+
+        assert_eq!(event, Ok(BlockDeviceEvent::Reset));
+        assert_eq!(*device.pending_head.lock(), None);
     }
 }

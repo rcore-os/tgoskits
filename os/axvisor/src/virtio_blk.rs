@@ -676,7 +676,10 @@ impl Device for VirtioBlkRuntimeDevice {
                     detail: "only queue 0 is supported".into(),
                 });
             }
-            BlockDeviceEvent::None | BlockDeviceEvent::Reset => {}
+            BlockDeviceEvent::Reset => {
+                self.queue_pending.store(false, Ordering::Release);
+            }
+            BlockDeviceEvent::None => {}
         }
         Ok(BusResponse::Write)
     }
