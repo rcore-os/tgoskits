@@ -720,6 +720,57 @@ fn test_basic_mount_mkfs() {
 }
 
 #[test]
+fn special_inode_does_not_initialize_an_extent_tree() {
+    let device = TestBlockDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+    let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+
+    mkfile_with_owner(
+        &mut jbd2_dev,
+        &mut fs,
+        "/character-device",
+        None,
+        Some(rsext4::entries::Ext4DirEntry2::EXT4_FT_CHRDEV),
+        1000,
+        1001,
+    )
+    .expect("character device creation failed");
+    let (_, inode) = rsext4::loopfile::get_file_inode(&mut fs, &mut jbd2_dev, "/character-device")
+        .expect("character device lookup failed")
+        .expect("character device missing");
+
+    assert_eq!(
+        inode.i_mode & rsext4::disknode::Ext4Inode::S_IFMT,
+        rsext4::disknode::Ext4Inode::S_IFCHR
+    );
+    assert_eq!(
+        inode.i_flags & rsext4::disknode::Ext4Inode::EXT4_EXTENTS_FL,
+        0,
+        "special inodes must not interpret i_block as an extent tree"
+    );
+    assert_eq!(inode.i_block, [0; 15]);
+    assert_eq!(inode.size(), 0);
+    assert_eq!(inode.i_blocks_lo, 0);
+    assert_eq!(inode.l_i_blocks_high, 0);
+
+    let error = mkfile(
+        &mut jbd2_dev,
+        &mut fs,
+        "/invalid-special-payload",
+        Some(b"not device data"),
+        Some(rsext4::entries::Ext4DirEntry2::EXT4_FT_CHRDEV),
+    )
+    .expect_err("special inode payload must be rejected");
+    assert_eq!(error.kind(), Ext4ErrorKind::InvalidInput);
+    assert!(
+        rsext4::loopfile::get_file_inode(&mut fs, &mut jbd2_dev, "/invalid-special-payload",)
+            .expect("invalid special inode lookup failed")
+            .is_none()
+    );
+}
+
+#[test]
 fn overlong_directory_name_is_rejected_without_truncation() {
     let device = TestBlockDevice::new(100 * 1024 * 1024);
     let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);

@@ -265,6 +265,11 @@ pub(crate) fn create_inode_at<B: BlockIo>(
     if request.name.is_reserved() || request.mode & Ext4Inode::S_IFMT == Ext4Inode::S_IFDIR {
         return Err(Ext4Error::invalid_input());
     }
+    let inode_type = request.mode & Ext4Inode::S_IFMT;
+    let supports_data_mapping = matches!(inode_type, Ext4Inode::S_IFREG | Ext4Inode::S_IFLNK);
+    if initial_data.is_some() && !supports_data_mapping {
+        return Err(Ext4Error::invalid_input().with_operation("inode:special_data"));
+    }
     let parent_inode = fs.get_inode_by_num(device, request.parent)?;
     if !parent_inode.is_dir() {
         return Err(Ext4Error::not_dir());
@@ -348,7 +353,7 @@ pub(crate) fn create_inode_at<B: BlockIo>(
     );
 
     // Extent-enabled files start with an embedded extent root.
-    if fs.superblock.has_extents() {
+    if supports_data_mapping && fs.superblock.has_extents() {
         new_inode.write_extend_header();
     }
 
@@ -397,7 +402,7 @@ pub(crate) fn create_inode_at<B: BlockIo>(
         new_inode.i_size_high = 0;
         new_inode.i_blocks_lo = 0;
         new_inode.l_i_blocks_high = 0;
-        if fs.superblock.has_extents() {
+        if supports_data_mapping && fs.superblock.has_extents() {
             new_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
             new_inode.write_extend_header();
         } else {
