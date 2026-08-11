@@ -66,6 +66,20 @@ pub(crate) trait ArchOps {
         Ok(())
     }
 
+    /// Commits backend state staged by the preceding unbound exit handler.
+    ///
+    /// The hook runs immediately after the backend is loaded and before new
+    /// interrupts are injected. It is the in-kernel equivalent of Linux KVM's
+    /// `complete_userspace_io`: sleepable device work remains outside
+    /// `vcpu_load()`/`vcpu_put()`, while the resulting RIP/register update is
+    /// committed after the next `vcpu_load()`.
+    fn complete_pending_vcpu_exit(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        Ok(())
+    }
+
     fn after_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
 
     fn wait_for_vcpu_event(
@@ -141,7 +155,12 @@ pub(crate) trait ArchOps {
 
     fn after_mmio_write(_vm: &crate::AxVMRef) {}
 
-    fn handle_vcpu_exit_bound(
+    /// Handles a VM exit after the architecture backend has been unloaded.
+    ///
+    /// This hook may invoke sleepable runtime and device services. Any state
+    /// update that requires a loaded backend must be staged here and committed
+    /// by [`Self::complete_pending_vcpu_exit`] on the next bound entry.
+    fn handle_vcpu_exit_unbound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
@@ -179,6 +198,8 @@ pub(crate) trait ArchOps {
             || Self::prepare_vcpu_run_slice(vm, vcpu),
             || {
                 vcpu.with_backend_bound_current_cpu(|| {
+                    Self::complete_pending_vcpu_exit(vm, vcpu)?;
+
                     crate::runtime::vcpus::inject_pending_interrupts::<Self>(
                         vm.id(),
                         vcpu_id,
@@ -195,7 +216,7 @@ pub(crate) trait ArchOps {
             },
             |exit| {
                 trace!("{exit:#x?}");
-                Self::handle_vcpu_exit_bound(vm, vcpu, exit)
+                Self::handle_vcpu_exit_unbound(vm, vcpu, exit)
             },
         );
 
@@ -450,7 +471,7 @@ mod tests {
             true
         }
 
-        fn handle_vcpu_exit_bound(
+        fn handle_vcpu_exit_unbound(
             _vm: &crate::AxVMRef,
             _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
             _exit: <Self::VCpu as VmArchVcpuOps>::Exit,

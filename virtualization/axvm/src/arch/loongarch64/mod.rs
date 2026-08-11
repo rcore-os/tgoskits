@@ -98,7 +98,7 @@ impl ArchOps for LoongArch64Arch {
         drain_loongarch_pch_pic_events(vm);
     }
 
-    fn handle_vcpu_exit_bound(
+    fn handle_vcpu_exit_unbound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,

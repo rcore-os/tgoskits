@@ -79,6 +79,13 @@ impl ArchOps for X86_64Arch {
         Ok(())
     }
 
+    fn complete_pending_vcpu_exit(
+        _vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        vcpu.get_arch_vcpu().complete_pending_port_io_string()
+    }
+
     fn after_external_interrupt(
         _vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -92,7 +99,7 @@ impl ArchOps for X86_64Arch {
         Self::deactivate_devices(vm)
     }
 
-    fn handle_vcpu_exit_bound(
+    fn handle_vcpu_exit_unbound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
@@ -385,12 +392,59 @@ impl X86HostOps for AxvmX86HostOps {
     }
 }
 
-pub(crate) struct AxvmX86Vcpu(X86Vcpu<AxvmX86HostOps>);
+#[derive(Debug)]
+struct PendingCompletion<T>(Option<T>);
+
+impl<T> Default for PendingCompletion<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T> PendingCompletion<T> {
+    fn stage(&mut self, completion: T) -> Result<(), T> {
+        if self.0.is_some() {
+            return Err(completion);
+        }
+        self.0 = Some(completion);
+        Ok(())
+    }
+
+    fn take(&mut self) -> Option<T> {
+        self.0.take()
+    }
+
+    fn restore(&mut self, completion: T) {
+        debug_assert!(self.0.is_none());
+        self.0 = Some(completion);
+    }
+}
+
+pub(crate) struct AxvmX86Vcpu(
+    X86Vcpu<AxvmX86HostOps>,
+    PendingCompletion<X86PortIoStringExit>,
+);
 
 impl AxvmX86Vcpu {
-    fn complete_port_io_string(&mut self, exit: X86PortIoStringExit) -> AxVmResult {
-        x86_result(self.0.complete_port_io_string(exit))
-            .map_err(|error| crate::vcpu::map_vcpu_backend_error("complete x86 string I/O", error))
+    fn stage_port_io_string_completion(&mut self, exit: X86PortIoStringExit) -> AxVmResult {
+        self.1.stage(exit).map_err(|_| {
+            AxVmError::invalid_state(
+                "stage x86 string I/O completion",
+                "a previous string I/O completion is still pending",
+            )
+        })
+    }
+
+    fn complete_pending_port_io_string(&mut self) -> AxVmResult {
+        let Some(exit) = self.1.take() else {
+            return Ok(());
+        };
+        let result = x86_result(self.0.complete_port_io_string(exit))
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("complete x86 string I/O", error));
+        if result.is_err() {
+            self.1.restore(exit);
+        }
+        result
     }
 }
 
@@ -400,7 +454,8 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
     type Exit = X86VmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
-        x86_result(X86Vcpu::new_with_config(vm_id, vcpu_id, config)).map(Self)
+        x86_result(X86Vcpu::new_with_config(vm_id, vcpu_id, config))
+            .map(|vcpu| Self(vcpu, PendingCompletion::default()))
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
@@ -930,6 +985,7 @@ fn restore_host_interrupt_flag(host_rflags: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn assert_x86_exit_type<T: VmArchVcpuOps<Exit = X86VmExit>>() {}
 
     #[test]
@@ -980,5 +1036,15 @@ mod tests {
         assert!(x86_interrupt_is_level_triggered(
             InterruptTriggerMode::LevelTriggered
         ));
+    }
+
+    #[test]
+    fn pending_completion_rejects_replacement_without_losing_the_owner() {
+        let mut pending = PendingCompletion::default();
+
+        assert_eq!(pending.stage(11), Ok(()));
+        assert_eq!(pending.stage(22), Err(22));
+        assert_eq!(pending.take(), Some(11));
+        assert_eq!(pending.take(), None);
     }
 }
