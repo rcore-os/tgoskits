@@ -16,7 +16,8 @@ use core::{
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, Reference, RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry,
+    NodePermission, NodeType, PreallocationMode, Reference, RenameOptions, StatFs, VfsError,
+    VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
@@ -531,6 +532,15 @@ impl FileNodeOps for MemoryNode {
         self.fs.resize_usage(old_len, len)?;
         file.length.store(len, AtomicOrdering::Release);
         Ok(())
+    }
+
+    fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        if mode == PreallocationMode::KeepSize {
+            return Err(VfsError::OperationNotSupported);
+        }
+        let end = offset.checked_add(len).ok_or(VfsError::InvalidInput)?;
+        let current = self.inode.as_file()?.length.load(AtomicOrdering::Acquire);
+        self.set_len(current.max(end))
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {

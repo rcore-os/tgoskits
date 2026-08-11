@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 
-use axfs_ng_vfs::{FileNode, VfsError, VfsResult};
+use ax_errno::LinuxError;
+use axfs_ng_vfs::{FileNode, PreallocationMode, VfsError, VfsResult};
 
 use super::{CachedFile, PAGE_SIZE, PageCache};
 
@@ -14,6 +15,20 @@ struct PreparedPageWrite {
 }
 
 impl CachedFile {
+    /// Reserves backing storage and keeps the cached length coherent.
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| VfsError::from(LinuxError::EFBIG))?;
+        let file = self.inner.entry().as_file()?;
+        let _io = self.shared.io_lock.lock();
+        file.preallocate(offset, len, mode)?;
+        if mode == PreallocationMode::ExtendSize {
+            self.shared.update_len_max(end);
+        }
+        Ok(())
+    }
+
     pub(super) fn zero_partial_page_locked(
         &self,
         file: &FileNode,

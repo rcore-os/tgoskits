@@ -22,7 +22,8 @@ use ax_fs_ng::vfs::OpenOptions;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, FsIoEvents, FsPollable, Location, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, Reference, RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry,
+    NodePermission, NodeType, PreallocationMode, Reference, RenameOptions, StatFs, VfsError,
+    VfsResult, WeakDirEntry,
 };
 
 use crate::{
@@ -849,6 +850,12 @@ impl FileNodeOps for OverlayFile {
 
     fn set_len(&self, len: u64) -> VfsResult<()> {
         open_write(self.ensure_upper()?)?.backend()?.set_len(len)
+    }
+
+    fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        open_write(self.ensure_upper()?)?
+            .backend()?
+            .preallocate(offset, len, mode)
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {

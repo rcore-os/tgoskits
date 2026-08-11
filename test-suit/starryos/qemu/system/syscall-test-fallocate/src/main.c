@@ -3,6 +3,11 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/vfs.h>
+
+#ifndef EXT4_SUPER_MAGIC
+#define EXT4_SUPER_MAGIC 0xEF53
+#endif
 
 #ifndef FALLOC_FL_KEEP_SIZE
 #define FALLOC_FL_KEEP_SIZE 0x01
@@ -23,7 +28,7 @@
  *
  * 关键语义:
  *   1. EBADF 优先级 > ESPIPE > EOPNOTSUPP > EINVAL
- *   2. mode != 0 返回 EOPNOTSUPP (Linux 文件系统默认不支持)
+ *   2. ext4 必须支持普通预分配和 FALLOC_FL_KEEP_SIZE
  *   3. offset < 0 或 len <= 0 返回 EINVAL
  */
 
@@ -66,11 +71,16 @@ int main(void)
 {
     TEST_START("fallocate");
 
+    struct statfs ext4_root;
+    CHECK_RET(statfs("/root", &ext4_root), 0, "statfs /root 应成功");
+    CHECK((unsigned long)ext4_root.f_type == EXT4_SUPER_MAGIC,
+          "fallocate 持久化测例必须运行在 ext4 上");
+
     /* ================================================================
      * 1. 正常分配 — 创建文件并 fallocate 扩展大小
      * ================================================================ */
     {
-        char tmpl[] = "/tmp/test-fallocate-XXXXXX";
+        char tmpl[] = "/root/test-fallocate-XXXXXX";
         int fd = mkstemp(tmpl);
         CHECK(fd >= 0, "mkstemp 应成功");
 
@@ -83,6 +93,7 @@ int main(void)
 
         CHECK_RET(fstat(fd, &st), 0, "fstat 分配后");
         CHECK(st.st_size == 4096, "分配后文件大小应为 4096");
+        CHECK(st.st_blocks >= 8, "普通 fallocate 应预留至少一个 4 KiB 块");
 
         close(fd);
         unlink(tmpl);
@@ -92,7 +103,7 @@ int main(void)
      * 2. fallocate 追加扩展 — offset 超出当前文件末尾
      * ================================================================ */
     {
-        char tmpl[] = "/tmp/test-fallocate-XXXXXX";
+        char tmpl[] = "/root/test-fallocate-XXXXXX";
         int fd = mkstemp(tmpl);
         CHECK(fd >= 0, "mkstemp 应成功");
 
@@ -298,25 +309,20 @@ int main(void)
 
     /* ================================================================
      * 16. mode = FALLOC_FL_KEEP_SIZE (0x01)
-     *     Linux: 返回 0 (文件系统支持) 或 EOPNOTSUPP (不支持)
+     *     ext4: 返回 0，预留磁盘块但不改变文件大小
      * ================================================================ */
     {
-        char tmpl[] = "/tmp/test-fallocate-XXXXXX";
+        char tmpl[] = "/root/test-fallocate-XXXXXX";
         int fd = mkstemp(tmpl);
         CHECK(fd >= 0, "mkstemp 应成功");
 
-        errno = 0;
-        long ret = (long)call_fallocate(fd, FALLOC_FL_KEEP_SIZE, 0, 4096);
-        {
-            const int ok[] = { EOPNOTSUPP };
-            check_ret_or_err(ret, 1, ok, __FILE__, __LINE__,
-                             "FALLOC_FL_KEEP_SIZE: 期望 0 或 EOPNOTSUPP");
-        }
-        if (ret == 0) {
-            struct stat st;
-            CHECK_RET(fstat(fd, &st), 0, "KEEP_SIZE 后 fstat 成功");
-            CHECK(st.st_size == 0, "KEEP_SIZE 不扩展文件大小");
-        }
+        CHECK_RET(call_fallocate(fd, FALLOC_FL_KEEP_SIZE, 0, 4096), 0,
+                  "ext4 FALLOC_FL_KEEP_SIZE 应返回 0");
+
+        struct stat st;
+        CHECK_RET(fstat(fd, &st), 0, "KEEP_SIZE 后 fstat 成功");
+        CHECK(st.st_size == 0, "KEEP_SIZE 不扩展文件大小");
+        CHECK(st.st_blocks >= 8, "KEEP_SIZE 应预留至少一个 4 KiB 块");
 
         close(fd);
         unlink(tmpl);

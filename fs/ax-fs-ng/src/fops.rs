@@ -3,7 +3,7 @@ use core::time::Duration;
 
 use ax_errno::{AxError, AxResult};
 use ax_io::{Seek, SeekFrom};
-use axfs_ng_vfs::{Metadata, MetadataUpdate, NodePermission, NodeType};
+use axfs_ng_vfs::{Metadata, MetadataUpdate, NodePermission, NodeType, PreallocationMode};
 
 use crate::highlevel::{File as CoreFile, OpenOptions as CoreOpenOptions, current_fs_context};
 
@@ -178,6 +178,10 @@ impl File {
     pub fn truncate(&self, size: u64) -> AxResult {
         self.inner.set_len(size)?;
         Ok(())
+    }
+
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> AxResult {
+        self.inner.preallocate(offset, len, mode)
     }
 
     pub fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {

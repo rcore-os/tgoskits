@@ -6,7 +6,9 @@ use core::{
 };
 
 use ax_io::{SeekFrom, prelude::*};
-use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, NodeFlags, VfsError, VfsResult, path::Path};
+use axfs_ng_vfs::{
+    FsIoEvents, FsPollable, Location, NodeFlags, PreallocationMode, VfsError, VfsResult, path::Path,
+};
 
 use super::{
     cache::CachedFile,
@@ -163,6 +165,14 @@ impl FileBackend {
             Self::Direct(loc) => loc.entry().as_file()?.set_len(len),
         }
     }
+
+    /// Reserves backing storage for a byte range.
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        match self {
+            Self::Cached(cached) => cached.preallocate(offset, len, mode),
+            Self::Direct(loc) => loc.entry().as_file()?.preallocate(offset, len, mode),
+        }
+    }
 }
 
 /// Provides `std::fs::File`-like interface.
@@ -279,6 +289,12 @@ impl File {
     /// Truncates or extends the file to `len` bytes.
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
         self.access(FileFlags::WRITE)?.set_len(len)
+    }
+
+    /// Reserves backing storage for a byte range.
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        self.access(FileFlags::WRITE)?
+            .preallocate(offset, len, mode)
     }
 
     /// Attempts to sync OS-internal file content and metadata to disk.
