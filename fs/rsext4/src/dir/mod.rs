@@ -16,4 +16,4 @@ pub(crate) use mkdir::{create_directory_at, ensure_directory};
 pub use mkdir::{mkdir, mkdir_with_owner};
 pub use name::FileName;
 pub use path::{normalize_path, split_paren_child_and_translatevalid};
-pub(crate) use request::CreateEntryRequest;
+pub(crate) use request::{CreateEntryRequest, LinkEntryRequest};
