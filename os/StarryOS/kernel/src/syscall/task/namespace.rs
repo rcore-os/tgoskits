@@ -3,7 +3,6 @@ use core::ops::DerefMut;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::{FS_CONTEXT, FsContext};
-use ax_kspin::SpinRwLock;
 use axnsproxy::NsProxy;
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
@@ -13,7 +12,7 @@ use linux_raw_sys::general::{
 
 use crate::{
     file::{FD_TABLE, FileDescriptor, NsFd, PidFd, get_file_like},
-    sync::PiMutex,
+    sync::{PiMutex, RwLock},
     task::{AX_FILE_LIMIT, ProcessNamespaceUpdate, Thread, get_task},
 };
 
@@ -43,11 +42,8 @@ impl PreparedUnshare {
         thread: &Thread,
         namespace_update: Option<&ProcessNamespaceUpdate<'_>>,
     ) -> AxResult<Self> {
-        let file_table = (flags & CLONE_FILES != 0).then(|| {
-            Arc::new(SpinRwLock::new(
-                crate::file::current_fd_table().read().clone(),
-            ))
-        });
+        let file_table = (flags & CLONE_FILES != 0)
+            .then(|| Arc::new(RwLock::new(crate::file::current_fd_table().read().clone())));
 
         let mut nsproxy = namespace_update
             .map(ProcessNamespaceUpdate::snapshot)
