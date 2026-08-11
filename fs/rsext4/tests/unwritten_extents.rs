@@ -759,13 +759,13 @@ fn owned_core_reports_sparse_and_unwritten_file_extents() {
             rsext4::FileExtentTarget::ExtendedAttributes,
             1,
         )
-        .expect_err("range validation must precede xattr capability rejection");
+        .expect_err("range validation must precede xattr mapping inspection");
     assert_eq!(
         zero_length_xattr.kind(),
         rsext4::Ext4ErrorKind::InvalidInput
     );
 
-    let unsupported_xattr = filesystem
+    let empty_xattr = filesystem
         .inode_extents(
             file.number,
             0,
@@ -773,8 +773,10 @@ fn owned_core_reports_sparse_and_unwritten_file_extents() {
             rsext4::FileExtentTarget::ExtendedAttributes,
             1,
         )
-        .expect_err("xattr extent inspection is not implemented yet");
-    assert_eq!(unsupported_xattr.kind(), rsext4::Ext4ErrorKind::Unsupported);
+        .expect("inode without xattrs must report an empty mapping");
+    assert_eq!(empty_xattr.mapped_extents, 0);
+    assert!(empty_xattr.extents.is_empty());
+    assert!(empty_xattr.complete);
 
     let directory_mappings = filesystem
         .inode_extents(
@@ -794,8 +796,9 @@ fn owned_core_reports_sparse_and_unwritten_file_extents() {
             .all(|extent| extent.state == rsext4::FileExtentState::Initialized)
     );
 
-    let maximum_extent_bytes = u64::from(u32::MAX) * BLOCK_SIZE as u64;
-    let error = filesystem
+    let sector_shift = BLOCK_SIZE.trailing_zeros() - 9;
+    let maximum_extent_bytes = (u64::from(u32::MAX) >> sector_shift) * BLOCK_SIZE as u64;
+    let at_extent_limit = filesystem
         .inode_extents(
             file.number,
             maximum_extent_bytes,
@@ -803,7 +806,19 @@ fn owned_core_reports_sparse_and_unwritten_file_extents() {
             rsext4::FileExtentTarget::Data,
             1,
         )
-        .expect_err("extent FIEMAP at the ee_block limit must fail");
+        .expect("extent FIEMAP at maxbytes must return an empty mapping");
+    assert_eq!(at_extent_limit.mapped_extents, 0);
+    assert!(at_extent_limit.extents.is_empty());
+    assert!(at_extent_limit.complete);
+    let error = filesystem
+        .inode_extents(
+            file.number,
+            maximum_extent_bytes + 1,
+            1,
+            rsext4::FileExtentTarget::Data,
+            1,
+        )
+        .expect_err("extent FIEMAP above the ee_block limit must fail");
     assert_eq!(error.kind(), rsext4::Ext4ErrorKind::FileTooLarge);
 }
 
@@ -880,7 +895,7 @@ fn file_extent_inspection_merges_legacy_indirect_block_runs() {
         rsext4::FileExtentTarget::Data,
         1,
     )
-    .expect_err("legacy FIEMAP at the indirect-tree limit must fail");
+    .expect_err("legacy FIEMAP above maxbytes must fail");
     assert_eq!(error.kind(), rsext4::Ext4ErrorKind::FileTooLarge);
 }
 

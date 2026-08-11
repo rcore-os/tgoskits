@@ -130,7 +130,12 @@ int main(void)
               "zero-length FIEMAP 返回 EINVAL");
     reset_fiemap(&map, 0, 0, FIEMAP_FLAG_XATTR, 1);
     CHECK_ERR(ioctl(fd, FS_IOC_FIEMAP, &map.header), EINVAL,
-              "范围校验优先于 XATTR capability 检查");
+              "范围校验优先于 XATTR mapping 检查");
+    reset_fiemap(&map, 0, UINT64_MAX, FIEMAP_FLAG_XATTR, 8);
+    CHECK_RET(ioctl(fd, FS_IOC_FIEMAP, &map.header), 0,
+              "无磁盘 xattr 的 FIEMAP XATTR 查询成功");
+    CHECK(map.header.fm_mapped_extents == 0,
+          "无磁盘 xattr 的 FIEMAP XATTR 返回空 mapping");
 
     reset_fiemap(&map, 0, UINT64_MAX, 0x80000000U, 1);
     CHECK_ERR(ioctl(fd, FS_IOC_FIEMAP, &map.header), EBADR,

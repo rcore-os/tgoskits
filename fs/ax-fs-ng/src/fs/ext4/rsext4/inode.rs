@@ -122,6 +122,7 @@ impl Inode {
                     state: match extent.state {
                         rsext4::FileExtentState::Initialized => VfsFileExtentState::Initialized,
                         rsext4::FileExtentState::Unwritten => VfsFileExtentState::Unwritten,
+                        rsext4::FileExtentState::Inline => VfsFileExtentState::Inline,
                     },
                     merged: extent.merged,
                 })
