@@ -91,19 +91,47 @@ impl Default for PiMutexStorage {
 // serializes every access to the concrete object stored in `wait_storage`.
 unsafe impl Sync for PiMutexStorage {}
 
+/// Opaque execution-context restore state returned by the provider.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct ContextState {
+    preempt: usize,
+    irq: usize,
+}
+
+impl ContextState {
+    /// Creates a provider context result.
+    #[doc(hidden)]
+    pub const fn new(preempt: usize, irq: usize) -> Self {
+        Self { preempt, irq }
+    }
+
+    /// Returns the provider's preemption restore token.
+    #[doc(hidden)]
+    pub const fn preempt(self) -> usize {
+        self.preempt
+    }
+
+    /// Returns the provider's raw local-IRQ restore state.
+    #[doc(hidden)]
+    pub const fn irq(self) -> usize {
+        self.irq
+    }
+}
+
 /// Result of one complete non-sleeping acquisition transaction.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct AcquireResult {
     acquired: u8,
     _reserved: [u8; 7],
-    context_state: usize,
+    context_state: ContextState,
 }
 
 impl AcquireResult {
     /// Creates a provider result.
     #[doc(hidden)]
-    pub const fn new(acquired: bool, context_state: usize) -> Self {
+    pub const fn new(acquired: bool, context_state: ContextState) -> Self {
         Self {
             acquired: acquired as u8,
             _reserved: [0; 7],
@@ -115,7 +143,7 @@ impl AcquireResult {
         self.acquired != 0
     }
 
-    pub(crate) const fn context_state(self) -> usize {
+    pub(crate) const fn context_state(self) -> ContextState {
         self.context_state
     }
 }
@@ -162,10 +190,22 @@ impl Default for LockMetadata {
 #[ax_crate_interface::def_interface]
 pub trait ContextOps {
     /// Enters `context` and returns its opaque restore token.
-    fn enter(context: u8) -> usize;
+    fn enter(context: u8) -> ContextState;
 
     /// Leaves `context` using the matching token.
-    fn exit(context: u8, state: usize);
+    fn exit(context: u8, state: ContextState);
+
+    /// Enters the preemption scope consumed by a hard-IRQ return epilogue.
+    fn irq_return_preempt_enter() -> usize;
+
+    /// Leaves one IRQ-return preemption scope while raw local IRQs stay disabled.
+    fn irq_return_preempt_exit(state: usize);
+
+    /// Publishes entry into the runtime hard-interrupt lifecycle.
+    fn hardirq_enter();
+
+    /// Publishes exit from the runtime hard-interrupt lifecycle.
+    fn hardirq_exit();
 }
 
 /// Complete spin-lock acquisition and release operations.
@@ -181,7 +221,7 @@ pub trait SpinOps {
         caller: &'static Location<'static>,
     ) -> AcquireResult;
 
-    fn release(locked: &AtomicBool, lock_addr: usize, context: u8, context_state: usize);
+    fn release(locked: &AtomicBool, lock_addr: usize, context: u8, context_state: ContextState);
 
     fn force_release(locked: &AtomicBool, lock_addr: usize, context: u8);
 
@@ -201,7 +241,13 @@ pub trait RwLockOps {
         caller: &'static Location<'static>,
     ) -> AcquireResult;
 
-    fn release(state: &AtomicUsize, lock_addr: usize, context: u8, context_state: usize, mode: u8);
+    fn release(
+        state: &AtomicUsize,
+        lock_addr: usize,
+        context: u8,
+        context_state: ContextState,
+        mode: u8,
+    );
 
     fn force_read_decrement(state: &AtomicUsize, lock_addr: usize, context: u8);
 }
@@ -237,12 +283,28 @@ pub trait LockdepOps {
     fn dump_trace();
 }
 
-pub(crate) fn context_enter(context: u8) -> usize {
+pub(crate) fn context_enter(context: u8) -> ContextState {
     ax_crate_interface::call_interface!(ContextOps::enter, context)
 }
 
-pub(crate) fn context_exit(context: u8, state: usize) {
+pub(crate) fn context_exit(context: u8, state: ContextState) {
     ax_crate_interface::call_interface!(ContextOps::exit, context, state);
+}
+
+pub(crate) fn irq_return_preempt_enter() -> usize {
+    ax_crate_interface::call_interface!(ContextOps::irq_return_preempt_enter)
+}
+
+pub(crate) fn irq_return_preempt_exit(state: usize) {
+    ax_crate_interface::call_interface!(ContextOps::irq_return_preempt_exit, state);
+}
+
+pub(crate) fn hardirq_enter() {
+    ax_crate_interface::call_interface!(ContextOps::hardirq_enter);
+}
+
+pub(crate) fn hardirq_exit() {
+    ax_crate_interface::call_interface!(ContextOps::hardirq_exit);
 }
 
 pub(crate) fn spin_acquire(
@@ -270,7 +332,7 @@ pub(crate) fn spin_release(
     locked: &AtomicBool,
     lock_addr: usize,
     context: u8,
-    context_state: usize,
+    context_state: ContextState,
 ) {
     ax_crate_interface::call_interface!(
         SpinOps::release,
@@ -314,7 +376,7 @@ pub(crate) fn rwlock_release(
     state: &AtomicUsize,
     lock_addr: usize,
     context: u8,
-    context_state: usize,
+    context_state: ContextState,
     mode: u8,
 ) {
     ax_crate_interface::call_interface!(
@@ -394,18 +456,23 @@ mod tests {
 
     #[test]
     fn acquire_result_has_fixed_bridge_layout() {
+        assert_eq!(offset_of!(ContextState, preempt), 0);
+        assert_eq!(offset_of!(ContextState, irq), size_of::<usize>());
+        assert_eq!(align_of::<ContextState>(), align_of::<usize>());
+        assert_eq!(size_of::<ContextState>(), 2 * size_of::<usize>());
+
         assert_eq!(offset_of!(AcquireResult, acquired), 0);
         assert_eq!(offset_of!(AcquireResult, context_state), 8);
         assert_eq!(align_of::<AcquireResult>(), align_of::<usize>());
-        assert_eq!(size_of::<AcquireResult>(), 8 + size_of::<usize>());
+        assert_eq!(size_of::<AcquireResult>(), 8 + size_of::<ContextState>());
 
-        let failed = AcquireResult::new(false, usize::MAX);
+        let failed = AcquireResult::new(false, ContextState::new(usize::MAX, 0));
         assert!(!failed.acquired());
-        assert_eq!(failed.context_state(), usize::MAX);
+        assert_eq!(failed.context_state(), ContextState::new(usize::MAX, 0));
 
-        let acquired = AcquireResult::new(true, 0x5a5a);
+        let acquired = AcquireResult::new(true, ContextState::new(0x5a5a, 0xa5a5));
         assert!(acquired.acquired());
-        assert_eq!(acquired.context_state(), 0x5a5a);
+        assert_eq!(acquired.context_state(), ContextState::new(0x5a5a, 0xa5a5));
     }
 
     #[test]

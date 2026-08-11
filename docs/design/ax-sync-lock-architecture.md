@@ -94,7 +94,8 @@ context capability 必须区分两种 IRQ 所有权：raw local-IRQ save/restore
 - 泛型数据 `T`；
 - 固定布局的原子锁状态与 lock metadata；
 - `Deref`/`DerefMut`、RAII guard 和 guard 的 `Drop`；
-- provider 返回的 opaque context restore token；
+- provider 返回的固定布局 `ContextState`；其中 preempt token 与 raw local-IRQ state
+  分占两个机器字，不能合并、复用或互相充当无效值；
 - 与 pinned toolchain 一起演进的隐藏内部 ABI。
 
 它不拥有：
@@ -122,6 +123,10 @@ task-owned 状态，直接调整接口并迁移调用方；不得为兼容保留
 provider 必须完成一次操作的整个事务：进入 context、lockdep prepare、原子获取或 waiter
 注册、donation/park/handoff、lockdep commit、失败回滚、Release 解锁和 context 逆序恢复。
 不能把这些步骤拆回 `ax-sync`，也不能让 runtime 在两次 provider 调用之间保存中间事实。
+
+raw context 不调用 provider，也不产生 restore state。组合 context 先取得 preempt token，
+再保存并关闭本地 IRQ；`ContextState` 必须同时保存二者，退出时先恢复 raw IRQ state，再
+消费 preempt token。该布局用于 pinned workspace 内部桥接，不是跨版本稳定 ABI。
 
 ABI 只传固定布局的原子引用、裸指针、整数模式、`Location` 和 `#[repr(C)]` 结果；泛型
 值、Rust guard、task handle 和 scheduler 对象不跨边界。所有 raw pointer 都必须在相邻

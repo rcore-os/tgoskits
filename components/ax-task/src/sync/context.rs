@@ -4,6 +4,98 @@ use core::marker::PhantomData;
 
 use crate::runtime::{LocalIrqState, PreemptGuardToken, task_runtime};
 
+pub(crate) trait ContextBackend {
+    type PreemptState: Copy;
+    type IrqState: Copy;
+
+    fn preempt_enter(&self) -> Self::PreemptState;
+    fn preempt_exit(&self, state: Self::PreemptState);
+    fn preempt_exit_irq_return(&self, state: Self::PreemptState);
+    fn irq_save_and_disable(&self) -> Self::IrqState;
+    fn irq_restore(&self, state: Self::IrqState);
+}
+
+pub(crate) struct TaskRuntimeContext;
+
+impl ContextBackend for TaskRuntimeContext {
+    type PreemptState = PreemptGuardToken;
+    type IrqState = LocalIrqState;
+
+    fn preempt_enter(&self) -> Self::PreemptState {
+        task_runtime::preempt_guard_enter()
+    }
+
+    fn preempt_exit(&self, state: Self::PreemptState) {
+        if state.is_none() {
+            return;
+        }
+        // SAFETY: the matching acquire returned this same-context token.
+        unsafe { task_runtime::preempt_guard_exit(state) };
+    }
+
+    fn preempt_exit_irq_return(&self, state: Self::PreemptState) {
+        if state.is_none() {
+            return;
+        }
+        // SAFETY: the matching acquire returned this token, and IRQ-return
+        // consumes it while the raw local-IRQ guard remains active.
+        unsafe { task_runtime::preempt_guard_exit_irq_return(state) };
+    }
+
+    fn irq_save_and_disable(&self) -> Self::IrqState {
+        task_runtime::local_irq_save_and_disable()
+    }
+
+    fn irq_restore(&self, state: Self::IrqState) {
+        // SAFETY: the matching acquire returned this raw state on this CPU.
+        unsafe { task_runtime::local_irq_restore(state) };
+    }
+}
+
+struct PendingPreempt<'backend, B: ContextBackend> {
+    backend: &'backend B,
+    state: Option<B::PreemptState>,
+}
+
+impl<'backend, B: ContextBackend> PendingPreempt<'backend, B> {
+    fn acquire(backend: &'backend B) -> Self {
+        Self {
+            backend,
+            state: Some(backend.preempt_enter()),
+        }
+    }
+
+    fn into_state(mut self) -> B::PreemptState {
+        self.state
+            .take()
+            .expect("pending preemption state must be owned")
+    }
+}
+
+impl<B: ContextBackend> Drop for PendingPreempt<'_, B> {
+    fn drop(&mut self) {
+        if let Some(state) = self.state.take() {
+            self.backend.preempt_exit(state);
+        }
+    }
+}
+
+pub(crate) fn enter_preempt_irqsave<B: ContextBackend>(
+    backend: &B,
+) -> (B::PreemptState, B::IrqState) {
+    let preempt = PendingPreempt::acquire(backend);
+    let irq = backend.irq_save_and_disable();
+    (preempt.into_state(), irq)
+}
+
+pub(crate) fn exit_preempt_irqsave<B: ContextBackend>(
+    (preempt, irq): (B::PreemptState, B::IrqState),
+    backend: &B,
+) {
+    backend.irq_restore(irq);
+    backend.preempt_exit(preempt);
+}
+
 /// Internal critical-section contract shared by task-owned lock algorithms.
 pub trait GuardState {
     type State: Copy;
@@ -15,32 +107,6 @@ pub trait GuardState {
     #[cfg(feature = "lockdep")]
     fn lockdep_enabled() -> bool {
         false
-    }
-}
-
-struct PendingGuardState<G: GuardState> {
-    state: Option<G::State>,
-}
-
-impl<G: GuardState> PendingGuardState<G> {
-    fn acquire() -> Self {
-        Self {
-            state: Some(G::acquire()),
-        }
-    }
-
-    fn into_state(mut self) -> G::State {
-        self.state
-            .take()
-            .expect("pending context state must be owned")
-    }
-}
-
-impl<G: GuardState> Drop for PendingGuardState<G> {
-    fn drop(&mut self) {
-        if let Some(state) = self.state.take() {
-            G::release(state);
-        }
     }
 }
 
@@ -64,17 +130,12 @@ impl GuardState for PreemptState {
 
     #[inline(always)]
     fn acquire() -> Self::State {
-        task_runtime::preempt_guard_enter()
+        TaskRuntimeContext.preempt_enter()
     }
 
     #[inline(always)]
     fn release(state: Self::State) {
-        if state.is_none() {
-            return;
-        }
-        // SAFETY: acquire returned this same-context token, and the owning
-        // guard consumes it exactly once without permitting migration.
-        unsafe { task_runtime::preempt_guard_exit(state) };
+        TaskRuntimeContext.preempt_exit(state);
     }
 
     #[cfg(feature = "lockdep")]
@@ -88,14 +149,12 @@ impl GuardState for IrqSaveState {
 
     #[inline(always)]
     fn acquire() -> Self::State {
-        task_runtime::local_irq_save_and_disable()
+        TaskRuntimeContext.irq_save_and_disable()
     }
 
     #[inline(always)]
     fn release(state: Self::State) {
-        // SAFETY: acquire returned this state on the current CPU. The guard is
-        // !Send and consumes it exactly once in properly nested order.
-        unsafe { task_runtime::local_irq_restore(state) };
+        TaskRuntimeContext.irq_restore(state);
     }
 }
 
@@ -104,15 +163,12 @@ impl GuardState for PreemptIrqSaveState {
 
     #[inline(always)]
     fn acquire() -> Self::State {
-        let preempt = PendingGuardState::<PreemptState>::acquire();
-        let irq = IrqSaveState::acquire();
-        (preempt.into_state(), irq)
+        enter_preempt_irqsave(&TaskRuntimeContext)
     }
 
     #[inline(always)]
     fn release((preempt, irq): Self::State) {
-        IrqSaveState::release(irq);
-        PreemptState::release(preempt);
+        exit_preempt_irqsave((preempt, irq), &TaskRuntimeContext);
     }
 
     #[cfg(feature = "lockdep")]
@@ -197,13 +253,7 @@ pub struct IrqReturnPreemptGuard<'irq> {
 
 impl Drop for IrqReturnPreemptGuard<'_> {
     fn drop(&mut self) {
-        if self.token.is_none() {
-            return;
-        }
-        // SAFETY: construction received this token on the current execution
-        // context, and the !Send guard consumes it exactly once while its raw
-        // IRQ guard remains borrowed and active.
-        unsafe { task_runtime::preempt_guard_exit_irq_return(self.token) };
+        TaskRuntimeContext.preempt_exit_irq_return(self.token);
     }
 }
 

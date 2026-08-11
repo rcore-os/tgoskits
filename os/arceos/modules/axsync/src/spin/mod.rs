@@ -15,8 +15,8 @@ use core::{
 #[cfg(feature = "lock-api")]
 pub use self::raw::*;
 use crate::interface::{
-    CONTEXT_PREEMPT, CONTEXT_PREEMPT_IRQSAVE, CONTEXT_RAW, LOCK_MODE_READ, LOCK_MODE_WRITE,
-    LockMetadata,
+    CONTEXT_PREEMPT, CONTEXT_PREEMPT_IRQSAVE, CONTEXT_RAW, ContextState, LOCK_MODE_READ,
+    LOCK_MODE_WRITE, LockMetadata,
 };
 
 /// A non-sleeping mutual-exclusion lock.
@@ -36,7 +36,7 @@ pub struct SpinLock<T: ?Sized> {
 pub struct SpinLockGuard<'a, T: ?Sized> {
     lock: &'a SpinLock<T>,
     context: u8,
-    context_state: usize,
+    context_state: ContextState,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -236,7 +236,7 @@ pub struct SpinRwLock<T: ?Sized> {
 pub struct SpinRwLockReadGuard<'a, T: ?Sized> {
     lock: &'a SpinRwLock<T>,
     context: u8,
-    context_state: usize,
+    context_state: ContextState,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -249,7 +249,7 @@ pub struct SpinRwLockReadGuard<'a, T: ?Sized> {
 pub struct SpinRwLockWriteGuard<'a, T: ?Sized> {
     lock: &'a SpinRwLock<T>,
     context: u8,
-    context_state: usize,
+    context_state: ContextState,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -284,7 +284,7 @@ impl<T> SpinRwLock<T> {
 
 impl<T: ?Sized> SpinRwLock<T> {
     #[track_caller]
-    fn acquire(&self, context: u8, mode: u8, is_try: bool) -> Option<usize> {
+    fn acquire(&self, context: u8, mode: u8, is_try: bool) -> Option<ContextState> {
         let result = crate::interface::rwlock_acquire(
             &self.state,
             &self.metadata,
