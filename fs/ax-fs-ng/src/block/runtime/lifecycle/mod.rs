@@ -341,10 +341,13 @@ impl BlockGroupHandle {
         if self.stopped.swap(true, Ordering::AcqRel) {
             return 0;
         }
+        // Teardown has exclusive ownership after publishing `stopped`. Move
+        // the controller out so retry waits never retain an IRQ-save guard.
+        let mut controller = self.controller.lock().take();
         for member in &self.members {
             member.inner.prepare_group_shutdown();
         }
-        if let Some(controller) = self.controller.lock().as_deref_mut() {
+        if let Some(controller) = controller.as_deref_mut() {
             let _ = drive_group_transition(
                 controller,
                 GroupControllerEvent::QuiesceIrqs,
@@ -358,7 +361,7 @@ impl BlockGroupHandle {
         for member in &self.members {
             member.shutdown();
         }
-        if let Some(mut controller) = self.controller.lock().take()
+        if let Some(mut controller) = controller
             && let Err(error) = drive_group_transition(
                 &mut *controller,
                 GroupControllerEvent::Shutdown,

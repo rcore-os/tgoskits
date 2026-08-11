@@ -390,6 +390,44 @@ struct TestControllerGroup {
     log: Arc<StdMutex<Vec<&'static str>>>,
 }
 
+struct QuiesceRetryControllerGroup {
+    members: Option<Vec<BlockGroupMember>>,
+    quiesce_pending: bool,
+}
+
+impl DriverGeneric for QuiesceRetryControllerGroup {
+    fn name(&self) -> &str {
+        "quiesce-retry-controller-group"
+    }
+}
+
+impl BlockControllerGroup for QuiesceRetryControllerGroup {
+    fn advance(&mut self, event: GroupControllerEvent) -> Result<GroupControllerUpdate, BlkError> {
+        match event {
+            GroupControllerEvent::Start => Ok(GroupControllerUpdate::with_resources(
+                ControllerState::Ready,
+                self.members.take().ok_or(BlkError::Io)?,
+                vec![SharedIrqEndpoint::new(0, Box::new(SharedSpuriousHandler))],
+            )),
+            GroupControllerEvent::QuiesceIrqs if !self.quiesce_pending => {
+                self.quiesce_pending = true;
+                Ok(GroupControllerUpdate::state(
+                    ControllerState::RegisterPending {
+                        retry_after: Duration::from_micros(1),
+                    },
+                ))
+            }
+            GroupControllerEvent::RegisterRetry => {
+                Ok(GroupControllerUpdate::state(ControllerState::Ready))
+            }
+            GroupControllerEvent::Shutdown => {
+                Ok(GroupControllerUpdate::state(ControllerState::Shutdown))
+            }
+            _ => Ok(GroupControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
+
 impl DriverGeneric for TestControllerGroup {
     fn name(&self) -> &str {
         "test-controller-group"
@@ -881,6 +919,43 @@ fn controller_group_enables_shared_irq_before_unmasking_sources_and_tears_down_o
     );
     assert!(log_position(&log, "irq_disable_sync") < log_position(&log, "member_shutdown"));
     assert!(log_position(&log, "member_shutdown") < log_position(&log, "group_shutdown"));
+}
+
+#[test]
+fn group_shutdown_retry_never_sleeps_under_irq_mutex() {
+    let _registrar_guard = lock_test_irq_registrar();
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
+
+    let member = Box::new(GroupMemberController {
+        name: "quiesce-retry-member",
+        queue: Some(LifecycleQueue {
+            log: Arc::clone(&log),
+        }),
+        log,
+    });
+    let group = QuiesceRetryControllerGroup {
+        members: Some(vec![BlockGroupMember::new(0, member)]),
+        quiesce_pending: false,
+    };
+    let irq = IrqId::new(IrqDomainId(1), HwIrq(16));
+    let runtime = BlockRuntime::from_rdif_sources(
+        Vec::new(),
+        [RdifBlockGroup::new_with_irqs(
+            "quiesce-retry-group",
+            [BlockIrqSource { source_id: 0, irq }],
+            Box::new(group),
+        )],
+    );
+
+    assert_eq!(runtime.devices().len(), 1);
+    assert_eq!(runtime.release_irqs_for_passthrough(), 1);
 }
 
 #[test]
