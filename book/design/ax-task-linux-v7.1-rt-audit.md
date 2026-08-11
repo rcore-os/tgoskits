@@ -2748,6 +2748,31 @@ acquisition source 处区分 `RuntimeIrqGuard`、executor publication、各类 `
 `IrqScope`，同时区分 public spin、scheduler activity、PI/wait 等 preempt guard；只有证明某类
 调用已经借用更强 baton，才允许从接口层删除重复 transaction，不能增加兼容快路或第二套锁实现。
 
+source-classified 计数保持每次 entry 仍只更新一个 entry counter，总数由 snapshot 对分类求和；因此
+没有在热路径叠加第二次总数原子操作。相同配置的 60.617 秒复测仍到 `file-0474`，真实 switch
+增量为 117,697，分类差分为：
+
+| guard source | entry 增量 | 占同类 entry | empty token | empty/entry |
+|---|---:|---:|---:|---:|
+| preempt ticket lock | 341,352 | 46.260% | 271,112 | 79.423% |
+| preempt explicit scope | 147,618 | 20.005% | 0 | 0% |
+| preempt public/native sync | 138,050 | 18.708% | 86,924 | 62.966% |
+| preempt scheduler activity | 110,884 | 15.027% | 29,513 | 26.616% |
+| preempt IRQ-return | 0 | 0% | 0 | — |
+| IRQ ticket lock | 2,516,167 | 91.447% | 0 | 0% |
+| IRQ explicit publication scope | 57,387 | 2.085% | 0 | 0% |
+| IRQ runtime CPU baton | 177,799 | 6.462% | 0 | 0% |
+| IRQ executor publication | 162 | 0.006% | 0 | 0% |
+
+IRQ ticket lock 平均每次真实 switch 进入 21.378 次，是 275.2 万次 runtime IRQ guard 的决定性
+来源；executor 与通用 runtime CPU facade 不是主要放大源。preempt 侧则不是单一 public spin：
+内部 ticket lock 占 46.260%，其中近八成已经在更强 scheduler/IRQ owner 下返回空 token；public/native
+sync 与 scheduler activity 也分别存在 86,924 和 29,513 次空 token。空 token 仍然经过 runtime
+provider/CPU-local ownership 判断，因此下一步需要按 ticket lock 所保护的 authoritative state 与
+typed caller baton 继续分类。此时不能把 `IrqTicketLock` 或 `PreemptTicketLock` 整体替换为 raw：
+普通 task context 仍需建立真实 exclusion，只有 API 已持有 scheduler/IRQ baton 的调用点才能选择
+raw/no-pin variant，这与 Linux `rq_lock_irqsave()` 和已持有 baton 的 raw rq 接口分层一致。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
