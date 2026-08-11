@@ -954,6 +954,151 @@ fn legacy_sparse_truncate_prunes_single_double_and_triple_roots() {
 }
 
 #[test]
+fn legacy_orphan_recovery_truncates_linked_and_reaps_unlinked_inode() {
+    for tool in ["mkfs.ext4", "dumpe2fs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-legacy-orphan-recovery", "64M");
+    let linked_path = "/legacy-linked-orphan.bin";
+    let unlinked_path = "/legacy-unlinked-orphan.bin";
+    let (linked_inode, unlinked_inode, free_blocks_after_recovery) = {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("mount legacy orphan image");
+
+        let mut inode_numbers = [None; 2];
+        let free_blocks_before_mapping = fs.superblock.free_blocks_count();
+        for (index, (path, marker)) in [(linked_path, 0x51u8), (unlinked_path, 0x61u8)]
+            .into_iter()
+            .enumerate()
+        {
+            mkfile(&mut dev, &mut fs, path, None, None).expect("create legacy orphan file");
+            let inode_number = dir::get_inode_with_num(&mut fs, &mut dev, path)
+                .expect("lookup legacy orphan file")
+                .expect("legacy orphan inode")
+                .0;
+            inode_numbers[index] = Some(inode_number);
+            fs.modify_inode(&mut dev, inode_number, |inode| {
+                inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+                inode.i_block = [0; 15];
+                inode.i_blocks_lo = 0;
+                inode.l_i_blocks_high = 0;
+            })
+            .expect("convert orphan fixture to legacy mapping");
+            write_file(&mut dev, &mut fs, path, 0, &[marker])
+                .expect("write retained direct marker");
+            write_file(
+                &mut dev,
+                &mut fs,
+                path,
+                12 * BLOCK_SIZE as u64,
+                &[marker | 0x80],
+            )
+            .expect("write removable single-indirect marker");
+        }
+        let [linked_inode, unlinked_inode] = inode_numbers;
+        let linked_inode = linked_inode.expect("linked fixture inode");
+        let unlinked_inode = unlinked_inode.expect("unlinked fixture inode");
+        assert_eq!(
+            fs.superblock.free_blocks_count(),
+            free_blocks_before_mapping - 6,
+            "each fixture owns two data blocks and one pointer block"
+        );
+
+        fs.modify_inode(&mut dev, linked_inode, |inode| {
+            inode.i_size_lo = BLOCK_SIZE as u32;
+            inode.i_size_high = 0;
+            inode.i_dtime = 0;
+        })
+        .expect("publish shortened linked orphan size");
+        fs.superblock.s_last_orphan = linked_inode.raw();
+        let outcome =
+            unlink(&mut fs, &mut dev, unlinked_path).expect("publish zero-link legacy orphan");
+        assert_eq!(outcome.inode, unlinked_inode);
+        assert!(outcome.requires_reap());
+        assert_eq!(fs.superblock.s_last_orphan, unlinked_inode.raw());
+        assert_eq!(
+            fs.get_inode_by_num(&mut dev, unlinked_inode)
+                .expect("read unlinked orphan")
+                .i_dtime,
+            linked_inode.raw()
+        );
+
+        fs.sync_filesystem(&mut dev)
+            .expect("persist dirty legacy orphan transaction");
+        dev.umount_commit()
+            .expect("commit dirty legacy orphan journal");
+        drop(fs);
+        drop(dev);
+
+        (linked_inode, unlinked_inode, free_blocks_before_mapping - 1)
+    };
+
+    let dirty_header = dumpe2fs_header(&image, "legacy orphan recovery fixture");
+    assert!(
+        dirty_header.contains("needs_recovery"),
+        "unclean orphan fixture must require journal recovery\n{dirty_header}"
+    );
+
+    {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("recover legacy orphan image");
+        assert_eq!(fs.superblock.s_last_orphan, 0);
+        assert_eq!(
+            fs.superblock.free_blocks_count(),
+            free_blocks_after_recovery
+        );
+        assert!(
+            fs.inode_num_already_allocated(&mut dev, linked_inode)
+                .expect("linked inode allocation lookup")
+        );
+        assert!(
+            !fs.inode_num_already_allocated(&mut dev, unlinked_inode)
+                .expect("unlinked inode allocation lookup")
+        );
+        assert!(
+            dir::get_inode_with_num(&mut fs, &mut dev, unlinked_path)
+                .expect("lookup recovered unlinked path")
+                .is_none()
+        );
+
+        let inode = fs
+            .get_inode_by_num(&mut dev, linked_inode)
+            .expect("read recovered linked inode");
+        assert_eq!(inode.i_links_count, 1);
+        assert_eq!(inode.i_dtime, 0);
+        assert_eq!(inode.size(), BLOCK_SIZE as u64);
+        assert_eq!(inode.i_block[12], 0);
+        assert_eq!(inode.i_blocks_lo, (BLOCK_SIZE / 512) as u32);
+        let mut marker = [0u8; 1];
+        assert_eq!(
+            read_inode_data_into(&mut dev, &mut fs, linked_inode, 0, &mut marker)
+                .expect("read recovered linked marker"),
+            1
+        );
+        assert_eq!(marker, [0x51]);
+        assert_eq!(
+            read_inode_data_into(
+                &mut dev,
+                &mut fs,
+                linked_inode,
+                BLOCK_SIZE as u64,
+                &mut marker,
+            )
+            .expect("read recovered linked EOF"),
+            0
+        );
+        umount(fs, &mut dev).expect("unmount recovered legacy orphan image");
+    }
+
+    e2fsck_readonly_clean(&image, "legacy linked and unlinked orphan recovery");
+    assert_debugfs_path_exists(&image, linked_path);
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
 fn e2fsck_clean_after_deleting_split_extent_file_frees_tree_blocks() {
     for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
         require_tool(tool);

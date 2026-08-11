@@ -50,7 +50,20 @@ pub(crate) fn preflight_inode_free<B: BlockIo>(
     if !inode.uses_extents() {
         crate::indirect::collect_legacy_inode_ownership(fs, block_dev, inode_num, inode)?;
     }
-    ensure_inode_free_is_supported(fs, inode)
+    Ok(())
+}
+
+fn truncate_legacy_indirect_mapping_before_free<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+) -> Ext4Result<()> {
+    if crate::indirect::has_legacy_indirect_mapping(fs, inode) {
+        crate::file::truncate_inode_for_reap(block_dev, fs, inode_num)?;
+        *inode = fs.get_inode_by_num(block_dev, inode_num)?;
+    }
+    Ok(())
 }
 
 fn inode_owned_blocks<B: BlockIo>(
@@ -84,6 +97,7 @@ pub fn free_inode<B: BlockIo>(
     inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<()> {
+    truncate_legacy_indirect_mapping_before_free(fs, block_dev, inode_num, inode)?;
     let used_blocks = inode_owned_blocks(fs, block_dev, inode_num, inode)?;
 
     let updated_inode = fs.apply_inode_dtime(block_dev, inode_num, Ext4DtimeUpdate::SetNow)?;
@@ -127,6 +141,7 @@ pub fn reap_unlinked_inode<B: BlockIo>(
         return Err(Ext4Error::not_found().with_operation("orphan:reap_not_listed"));
     }
 
+    truncate_legacy_indirect_mapping_before_free(fs, block_dev, inode_num, &mut inode)?;
     let used_blocks = inode_owned_blocks(fs, block_dev, inode_num, &mut inode)?;
     for block in used_blocks {
         fs.free_block(block_dev, block)?;

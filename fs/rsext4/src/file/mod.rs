@@ -41,10 +41,10 @@ pub use delete::{
     UnlinkOutcome, delete_dir, delete_file, free_inode, is_dir_empty, reap_unlinked_inode,
     remove_inodeentry_from_parentdir, unlink,
 };
-pub(crate) use io::recover_linked_truncate_inode;
 pub use io::{
     read_file, read_inode_data_into, truncate, truncate_inode, write_file, write_inode_data,
 };
+pub(crate) use io::{recover_linked_truncate_inode, truncate_inode_for_reap};
 pub use link::link;
 pub(crate) use link::link_inode_at;
 pub(crate) use rename::{RenameEntryRequest, rename_inode_at};

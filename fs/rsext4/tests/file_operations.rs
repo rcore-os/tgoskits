@@ -592,7 +592,7 @@ mod file_functional_tests {
     }
 
     #[test]
-    fn unsupported_legacy_indirect_unlink_preserves_link_count() {
+    fn legacy_indirect_unlink_defers_blocks_until_reap() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
@@ -604,26 +604,71 @@ mod file_functional_tests {
             .unwrap()
             .unwrap()
             .0;
+        let free_blocks_before = fs.superblock.free_blocks_count();
         let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
+        let indirect_data = fs.alloc_block(&mut jbd2_dev).unwrap();
+        jbd2_dev.read_block(indirect_root).unwrap();
+        jbd2_dev.buffer_mut().fill(0);
+        jbd2_dev.buffer_mut()[..core::mem::size_of::<u32>()]
+            .copy_from_slice(&indirect_data.to_u32().unwrap().to_le_bytes());
+        jbd2_dev.write_block(indirect_root, true).unwrap();
+        fs.datablock_cache
+            .modify_new(&mut jbd2_dev, indirect_data, |block| block[0] = 0x5a)
+            .unwrap();
         fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
             inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
             inode.i_block = [0; 15];
             inode.i_block[12] = indirect_root.to_u32().unwrap();
+            inode.i_size_lo = (13 * BLOCK_SIZE) as u32;
+            inode.i_size_high = 0;
+            inode.i_blocks_lo = 2 * (BLOCK_SIZE / 512) as u32;
         })
         .unwrap();
 
-        let error = unlink(&mut fs, &mut jbd2_dev, "/legacy-indirect")
-            .expect_err("indirect-tree deletion is not implemented yet");
-        assert_eq!(error.kind(), Ext4ErrorKind::Unsupported);
+        let outcome = unlink(&mut fs, &mut jbd2_dev, "/legacy-indirect")
+            .expect("final unlink must retain a legacy inode for open references");
+        assert_eq!(outcome.inode, inode_number);
+        assert!(outcome.requires_reap());
+        assert!(
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-indirect")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            fs.inode_num_already_allocated(&mut jbd2_dev, inode_number)
+                .unwrap()
+        );
+        let inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+        assert_eq!(inode.i_links_count, 0);
+        assert_eq!(inode.i_block[12], indirect_root.to_u32().unwrap());
+        assert_eq!(fs.superblock.s_last_orphan, inode_number.raw());
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before - 2);
+        let mut marker = [0u8; 1];
+        assert_eq!(
+            read_inode_data_into(
+                &mut jbd2_dev,
+                &mut fs,
+                inode_number,
+                12 * BLOCK_SIZE as u64,
+                &mut marker,
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(marker, [0x5a]);
 
-        let (_, inode) = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-indirect")
-            .unwrap()
-            .expect("failed unlink must preserve the directory entry");
-        assert_eq!(inode.i_links_count, 1);
+        reap_unlinked_inode(&mut fs, &mut jbd2_dev, inode_number)
+            .expect("final reference release must reclaim legacy blocks and inode");
+        assert_eq!(fs.superblock.s_last_orphan, 0);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        assert!(
+            !fs.inode_num_already_allocated(&mut jbd2_dev, inode_number)
+                .unwrap()
+        );
     }
 
     #[test]
-    fn unsupported_legacy_indirect_delete_preserves_link_count() {
+    fn legacy_indirect_delete_reclaims_data_metadata_and_inode() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
@@ -634,22 +679,38 @@ mod file_functional_tests {
             .unwrap()
             .unwrap()
             .0;
+        let free_blocks_before = fs.superblock.free_blocks_count();
         let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
+        let indirect_data = fs.alloc_block(&mut jbd2_dev).unwrap();
+        jbd2_dev.read_block(indirect_root).unwrap();
+        jbd2_dev.buffer_mut().fill(0);
+        jbd2_dev.buffer_mut()[..core::mem::size_of::<u32>()]
+            .copy_from_slice(&indirect_data.to_u32().unwrap().to_le_bytes());
+        jbd2_dev.write_block(indirect_root, true).unwrap();
         fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
             inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
             inode.i_block = [0; 15];
             inode.i_block[12] = indirect_root.to_u32().unwrap();
+            inode.i_size_lo = (13 * BLOCK_SIZE) as u32;
+            inode.i_size_high = 0;
+            inode.i_blocks_lo = 2 * (BLOCK_SIZE / 512) as u32;
         })
         .unwrap();
 
-        let error = delete_file(&mut fs, &mut jbd2_dev, "/legacy-delete")
-            .expect_err("indirect-tree deletion is not implemented yet");
-        assert_eq!(error.kind(), Ext4ErrorKind::Unsupported);
+        delete_file(&mut fs, &mut jbd2_dev, "/legacy-delete")
+            .expect("legacy indirect delete must reclaim the inode");
 
-        let (_, inode) = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-delete")
-            .unwrap()
-            .expect("failed delete must preserve the directory entry");
-        assert_eq!(inode.i_links_count, 1);
+        assert!(
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-delete")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(fs.superblock.s_last_orphan, 0);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        assert!(
+            !fs.inode_num_already_allocated(&mut jbd2_dev, inode_number)
+                .unwrap()
+        );
     }
 
     #[test]
