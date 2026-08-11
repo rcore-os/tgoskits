@@ -43,20 +43,6 @@ pub fn directory_entry_type_to_vfs(file_type: DirectoryEntryType) -> NodeType {
     }
 }
 
-pub fn inode_to_vfs_type(i_mode: u16) -> NodeType {
-    use rsext4::disknode::Ext4Inode;
-    match i_mode & Ext4Inode::S_IFMT {
-        Ext4Inode::S_IFDIR => NodeType::Directory,
-        Ext4Inode::S_IFREG => NodeType::RegularFile,
-        Ext4Inode::S_IFLNK => NodeType::Symlink,
-        Ext4Inode::S_IFCHR => NodeType::CharacterDevice,
-        Ext4Inode::S_IFBLK => NodeType::BlockDevice,
-        Ext4Inode::S_IFIFO => NodeType::Fifo,
-        Ext4Inode::S_IFSOCK => NodeType::Socket,
-        _ => NodeType::Unknown,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use rsext4::{Ext4Error, FeatureSet};

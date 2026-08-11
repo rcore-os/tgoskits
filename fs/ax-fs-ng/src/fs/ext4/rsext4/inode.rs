@@ -7,13 +7,13 @@ use axfs_ng_vfs::{
     Reference, RenameOptions as VfsRenameOptions, VfsError, VfsResult, WeakDirEntry,
 };
 use rsext4::{
-    DeviceNumber, Ext4Timestamp, FileName, FilePermissions, InodeMetadataUpdate, MutationContext,
-    SpecialInodeKind, bmalloc::InodeNumber,
+    DeviceNumber, Ext4Timestamp, FileName, FilePermissions, InodeMetadataUpdate, InodeNumber,
+    MutationContext, SpecialInodeKind,
 };
 
 use super::{
     Ext4Filesystem,
-    util::{directory_entry_type_to_vfs, inode_to_vfs_type, into_vfs_err},
+    util::{directory_entry_type_to_vfs, into_vfs_err},
 };
 use crate::highlevel::forget_cached_file_key;
 
@@ -42,7 +42,7 @@ impl Inode {
             self.this.as_ref().and_then(WeakDirEntry::upgrade),
             name.clone(),
         );
-        if inode_to_vfs_type(info.mode) == NodeType::Directory {
+        if info.is_directory() {
             DirEntry::new_dir(
                 |this| DirNode::new(Inode::new(self.fs.clone(), info.number, Some(this))),
                 reference,
@@ -50,7 +50,7 @@ impl Inode {
         } else {
             DirEntry::new_file(
                 FileNode::new(Inode::new(self.fs.clone(), info.number, None)),
-                inode_to_vfs_type(info.mode),
+                directory_entry_type_to_vfs(info.file_type()),
                 reference,
             )
         }
@@ -109,7 +109,7 @@ impl NodeOps for Inode {
     fn metadata(&self) -> VfsResult<Metadata> {
         let mut state = self.fs.lock();
         let inode = state.ext4.inode(self.ino).map_err(into_vfs_err)?;
-        let node_type = inode_to_vfs_type(inode.mode);
+        let node_type = directory_entry_type_to_vfs(inode.file_type());
         let block_size = state.ext4.statfs().block_size;
         Ok(Metadata {
             inode: self.ino.as_u64(),
@@ -392,7 +392,7 @@ impl DirNodeOps for Inode {
                 .lookup_child(self.ino, raw_name)
                 .map_err(into_vfs_err)?
                 .ok_or(VfsError::NotFound)?;
-            let target_is_dir = inode_to_vfs_type(info.mode) == NodeType::Directory;
+            let target_is_dir = info.is_directory();
             match (target_is_dir, is_dir) {
                 (true, false) => return Err(VfsError::IsADirectory),
                 (false, true) => return Err(VfsError::NotADirectory),

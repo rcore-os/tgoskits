@@ -19,6 +19,7 @@ extern crate std;
 // Re-export the most frequently used public APIs.
 pub use api::{lseek, open, read_at, write_at};
 pub use blockdev::Jbd2Dev;
+pub use bmalloc::InodeNumber;
 pub use config::{
     BITMAP_CACHE_MAX, BLOCK_SIZE, BLOCK_SIZE_U32, DATABLOCK_CACHE_MAX, DEFAULT_FEATURE_COMPAT,
     DEFAULT_FEATURE_INCOMPAT, DEFAULT_FEATURE_RO_COMPAT, DEFAULT_INODE_SIZE, DIRNAME_LEN,

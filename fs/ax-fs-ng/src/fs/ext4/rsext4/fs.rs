@@ -8,7 +8,7 @@ use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
-use rsext4::{MountServices, bmalloc::InodeNumber};
+use rsext4::{InodeNumber, MountServices};
 
 use super::{Ext4Clock, Ext4Disk, Ext4Observer, Inode, MountedExt4, util::into_vfs_err};
 use crate::{
