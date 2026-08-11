@@ -33,7 +33,8 @@ pub use error::{ErrorContext, Ext4Error, Ext4ErrorKind, Ext4Result, FeatureSet};
 pub use ext4::{
     DirectoryEntry, DirectoryEntryType, Ext4, Ext4FileSystem, FilePermissions, InodeInfo,
     InodeMetadataUpdate, MkfsOptions, MountOptions, MutationContext, SpecialInodeKind, find_file,
-    mkfs, mkfs_with_options, mount, mount_with_options, mount_with_options_and_observer, umount,
+    format, mkfs, mkfs_with_options, mount, mount_with_options, mount_with_options_and_observer,
+    umount,
 };
 pub use file::{
     RenameOptions, RenameOutcome, UnlinkOutcome, create_symbol_link, create_symbol_link_with_owner,
