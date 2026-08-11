@@ -1,0 +1,11 @@
+commit,arch,backend,feature,workload,block_size,bytes,warmups,runs,run,write_ns,read_ns,sync_ns
+d2871bd7d,x86_64,memory,metadata_csum+64bit+journal,sequential,4096,20971520,3,10,0,7307310,7349364,46288
+d2871bd7d,x86_64,memory,metadata_csum+64bit+journal,sequential,4096,20971520,3,10,1,7304199,7432123,38152
+d2871bd7d,x86_64,memory,metadata_csum+64bit+journal,sequential,4096,20971520,3,10,2,7272243,7288981,37096
+d2871bd7d,x86_64,memory,metadata_csum+64bit+journal,sequential,4096,20971520,3,10,3,11335665,6987463,38856
+d2871bd7d,x86_64,memory,metadata_csum+64bit+journal,sequential,4096,20971520,3,10,4,7884503,7209893,41121
+d2871bd7d,x86_64,memory,metadata_csum+64bit+journal,sequential,4096,20971520,3,10,5,7541358,7625277,39470
+d2871bd7d,x86_64,memory,metadata_csum+64bit+journal,sequential,4096,20971520,3,10,6,7036098,6720672,33500
+d2871bd7d,x86_64,memory,metadata_csum+64bit+journal,sequential,4096,20971520,3,10,7,6698037,6511384,31967
+d2871bd7d,x86_64,memory,metadata_csum+64bit+journal,sequential,4096,20971520,3,10,8,6423198,6270626,31751
+d2871bd7d,x86_64,memory,metadata_csum+64bit+journal,sequential,4096,20971520,3,10,9,6385135,6902204,31691
