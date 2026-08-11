@@ -238,16 +238,10 @@ pub trait LockdepOps {
 }
 
 pub(crate) fn context_enter(context: u8) -> usize {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::context_enter(context);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    return ax_crate_interface::call_interface!(ContextOps::enter, context);
+    ax_crate_interface::call_interface!(ContextOps::enter, context)
 }
 
 pub(crate) fn context_exit(context: u8, state: usize) {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::context_exit(context, state);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     ax_crate_interface::call_interface!(ContextOps::exit, context, state);
 }
 
@@ -260,12 +254,7 @@ pub(crate) fn spin_acquire(
     is_try: bool,
     caller: &'static Location<'static>,
 ) -> AcquireResult {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::spin_acquire(
-        locked, metadata, lock_addr, context, subclass, is_try, caller,
-    );
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    return ax_crate_interface::call_interface!(
+    ax_crate_interface::call_interface!(
         SpinOps::acquire,
         locked,
         metadata,
@@ -274,7 +263,7 @@ pub(crate) fn spin_acquire(
         subclass,
         is_try,
         caller
-    );
+    )
 }
 
 pub(crate) fn spin_release(
@@ -283,9 +272,6 @@ pub(crate) fn spin_release(
     context: u8,
     context_state: usize,
 ) {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::spin_release(locked, lock_addr, context, context_state);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     ax_crate_interface::call_interface!(
         SpinOps::release,
         locked,
@@ -296,17 +282,11 @@ pub(crate) fn spin_release(
 }
 
 pub(crate) fn spin_force_release(locked: &AtomicBool, lock_addr: usize, context: u8) {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::spin_force_release(locked, lock_addr, context);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     ax_crate_interface::call_interface!(SpinOps::force_release, locked, lock_addr, context);
 }
 
 pub(crate) fn spin_is_locked(locked: &AtomicBool) -> bool {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::spin_is_locked(locked);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    return ax_crate_interface::call_interface!(SpinOps::is_locked, locked);
+    ax_crate_interface::call_interface!(SpinOps::is_locked, locked)
 }
 
 pub(crate) fn rwlock_acquire(
@@ -318,10 +298,7 @@ pub(crate) fn rwlock_acquire(
     is_try: bool,
     caller: &'static Location<'static>,
 ) -> AcquireResult {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::rwlock_acquire(state, metadata, lock_addr, context, mode, is_try, caller);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    return ax_crate_interface::call_interface!(
+    ax_crate_interface::call_interface!(
         RwLockOps::acquire,
         state,
         metadata,
@@ -330,7 +307,7 @@ pub(crate) fn rwlock_acquire(
         mode,
         is_try,
         caller
-    );
+    )
 }
 
 pub(crate) fn rwlock_release(
@@ -340,9 +317,6 @@ pub(crate) fn rwlock_release(
     context_state: usize,
     mode: u8,
 ) {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::rwlock_release(state, lock_addr, context, context_state, mode);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     ax_crate_interface::call_interface!(
         RwLockOps::release,
         state,
@@ -354,9 +328,6 @@ pub(crate) fn rwlock_release(
 }
 
 pub(crate) fn rwlock_force_read_decrement(state: &AtomicUsize, lock_addr: usize, context: u8) {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::rwlock_force_read_decrement(state, lock_addr, context);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     ax_crate_interface::call_interface!(RwLockOps::force_read_decrement, state, lock_addr, context);
 }
 
@@ -370,18 +341,7 @@ pub(crate) fn mutex_acquire(
     is_try: bool,
     caller: &'static Location<'static>,
 ) -> bool {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::mutex_acquire(
-        storage,
-        next_waiter_sequence,
-        metadata,
-        lock_addr,
-        subclass,
-        is_try,
-        caller,
-    );
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    return ax_crate_interface::call_interface!(
+    ax_crate_interface::call_interface!(
         MutexOps::acquire,
         storage,
         next_waiter_sequence,
@@ -390,60 +350,39 @@ pub(crate) fn mutex_acquire(
         subclass,
         is_try,
         caller
-    );
+    )
 }
 
 #[cfg(feature = "sleep")]
 pub(crate) fn mutex_release(storage: &PiMutexStorage, lock_addr: usize) {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::mutex_release(storage, lock_addr);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     ax_crate_interface::call_interface!(MutexOps::release, storage, lock_addr);
 }
 
 #[cfg(feature = "sleep")]
 pub(crate) fn mutex_force_release(storage: &PiMutexStorage, lock_addr: usize) {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::mutex_force_release(storage, lock_addr);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     ax_crate_interface::call_interface!(MutexOps::force_release, storage, lock_addr);
 }
 
 #[cfg(feature = "sleep")]
 pub(crate) fn mutex_is_owned_by_current(storage: &PiMutexStorage) -> bool {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::mutex_is_owned_by_current(storage);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    return ax_crate_interface::call_interface!(MutexOps::is_owned_by_current, storage);
+    ax_crate_interface::call_interface!(MutexOps::is_owned_by_current, storage)
 }
 
 #[cfg(feature = "sleep")]
 pub(crate) fn mutex_is_locked(storage: &PiMutexStorage) -> bool {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::mutex_is_locked(storage);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    return ax_crate_interface::call_interface!(MutexOps::is_locked, storage);
+    ax_crate_interface::call_interface!(MutexOps::is_locked, storage)
 }
 
 #[cfg(feature = "sleep")]
 pub(crate) fn mutex_destroy(storage: &mut PiMutexStorage) {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::mutex_destroy(storage);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     ax_crate_interface::call_interface!(MutexOps::destroy, storage);
 }
 
 pub(crate) fn set_trace_enabled(enabled: bool) {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::set_trace_enabled(enabled);
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     ax_crate_interface::call_interface!(LockdepOps::set_trace_enabled, enabled);
 }
 
 pub(crate) fn dump_trace() {
-    #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::dump_trace();
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     ax_crate_interface::call_interface!(LockdepOps::dump_trace);
 }
 

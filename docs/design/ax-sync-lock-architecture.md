@@ -192,19 +192,16 @@ lockdep 被关闭时 trace API 是 no-op，但锁算法和执行上下文不改�
 
 ## 7. Host test 与 provider 选择
 
-`ax-sync/host-test` 仅在以下最窄边界编译内部 std backend：
-
-```text
-cfg(all(feature = "host-test", not(target_os = "none")))
-```
-
-该 backend 服务 OS 无关组件的 host test，不注册生产 provider，也不成为第二个算法事实
-源。`target_os = "none"` 即使误开 `host-test` 仍要求 runtime provider。
+`ax-sync` 在 host 与裸机目标上都只调用 external provider；crate 内不编译 std backend、
+TLS context、独立 waiter/condvar 或测试 lockdep 图。`host-test` 只标记测试组合，不改变
+wrapper 代码路径，也不选择算法。OS 无关组件的 host test 必须由测试 runtime 链接真实
+provider，经过 `ax-runtime -> ax-task::sync` 验证同一算法。
 
 `ax-task` host test 使用测试 `TaskRuntime` provider 和真实 `TaskSystem/ThreadCore` 当前任务
-验证 native 算法；不得另建 TLS held-lock stack，也不得通过依赖 feature 反向选择
-`ax-sync` host backend。最终 runtime 决定生产或 host 组合，底层 crate 不能自行猜测
-provider。
+验证 native 算法；不得另建 TLS held-lock stack、host mutex engine，也不得通过依赖 feature
+反向选择 `ax-sync` 内部实现。最终 runtime 决定生产或 host 组合，底层 crate 不能自行猜测
+provider。未链接 provider 的独立 wrapper 测试只验证布局、RAII 类型和编译契约，不伪造
+锁语义。
 
 ## 8. 子系统规则与机器约束
 
