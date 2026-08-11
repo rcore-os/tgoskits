@@ -1,6 +1,6 @@
 //! Inode table cache helpers.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use crate::{
     blockdev::*,
@@ -18,7 +18,7 @@ pub type InodeCacheKey = InodeNumber;
 #[derive(Debug, Clone)]
 pub struct CachedInode {
     pub inode: Ext4Inode,
-    raw_inode: Vec<u8>,
+    raw_inode: Arc<Vec<u8>>,
     pub dirty: bool,
     pub block_num: AbsoluteBN,
     pub offset_in_block: usize,
@@ -37,7 +37,7 @@ impl CachedInode {
     ) -> Self {
         Self {
             inode,
-            raw_inode,
+            raw_inode: Arc::new(raw_inode),
             dirty: false,
             block_num,
             offset_in_block,
@@ -58,7 +58,7 @@ impl CachedInode {
     }
 
     pub(crate) fn raw_inode(&self) -> &[u8] {
-        &self.raw_inode
+        self.raw_inode.as_slice()
     }
 }
 
@@ -232,7 +232,10 @@ impl InodeCache {
             .ok_or(Ext4Error::corrupted())?;
         let previous_inode = cached.inode;
         let previous_raw_inode = cached.raw_inode.clone();
-        if let Err(error) = f(&mut cached.inode, &mut cached.raw_inode) {
+        if let Err(error) = f(
+            &mut cached.inode,
+            Arc::make_mut(&mut cached.raw_inode).as_mut_slice(),
+        ) {
             cached.inode = previous_inode;
             cached.raw_inode = previous_raw_inode;
             return Err(error);
@@ -371,7 +374,7 @@ impl InodeCache {
 
     fn write_dirty_inode_blocks<B: BlockIo>(
         block_dev: &mut Jbd2Dev<B>,
-        dirty: &[(InodeNumber, AbsoluteBN, usize, Vec<u8>)],
+        dirty: &[(InodeNumber, AbsoluteBN, usize, Arc<Vec<u8>>)],
     ) -> Ext4Result<()> {
         let mut index = 0;
         while index < dirty.len() {

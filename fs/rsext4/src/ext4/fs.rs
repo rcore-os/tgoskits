@@ -156,13 +156,16 @@ impl Ext4FileSystem {
         let bitmap_block = AbsoluteBN::new(desc.inode_bitmap());
         let cache_key = CacheKey::new_inode(group_idx);
 
-        let mut bitmap = self
+        let bitmap = self
             .bitmap_cache
             .get_or_load(device, cache_key, bitmap_block)?;
 
-        let bm = InodeBitmap::new(&mut bitmap.data, self.superblock.s_inodes_per_group);
-        bm.is_allocated(inode_in_group.raw())
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:bitmap_range"))
+        InodeBitmap::is_allocated_in(
+            &bitmap.data,
+            self.superblock.s_inodes_per_group,
+            inode_in_group.raw(),
+        )
+        .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:bitmap_range"))
     }
 
     /// Returns an immutable block-group descriptor by index.
