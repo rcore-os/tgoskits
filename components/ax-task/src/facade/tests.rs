@@ -1032,7 +1032,7 @@ mod tests {
         let system =
             Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1).with_batch_limit(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-        system
+        let bootstrap = system
             .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
         system.bring_cpu_online(cpu.as_mut()).unwrap();
@@ -1048,7 +1048,13 @@ mod tests {
             .unwrap();
         system.make_ready(exited.id()).unwrap();
         system.enqueue(cpu.as_mut(), exited.id()).unwrap();
-        assert_eq!(system.schedule(cpu.as_mut()).unwrap().next(), exited.id());
+        assert_eq!(
+            system
+                .schedule(cpu.as_mut(), Some(&bootstrap))
+                .unwrap()
+                .next(),
+            exited.id()
+        );
         system.complete_context_switch(cpu.as_mut()).unwrap();
         let exit_decision = system.exit_current(cpu.as_mut()).unwrap();
         assert_ne!(exit_decision.next(), exited.id());
@@ -1141,7 +1147,13 @@ mod tests {
             .unwrap();
         system.make_ready(exiting.id()).unwrap();
         system.enqueue(cpu.as_mut(), exiting.id()).unwrap();
-        assert_eq!(system.schedule(cpu.as_mut()).unwrap().next(), exiting.id());
+        assert_eq!(
+            system
+                .schedule(cpu.as_mut(), Some(&bootstrap))
+                .unwrap()
+                .next(),
+            exiting.id()
+        );
         system.complete_context_switch(cpu.as_mut()).unwrap();
         assert_eq!(
             system.exit_current(cpu.as_mut()).unwrap().next(),

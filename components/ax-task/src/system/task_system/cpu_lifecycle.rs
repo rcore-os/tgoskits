@@ -506,7 +506,10 @@ mod tests {
             .unwrap();
         system.make_ready(sleeper.id()).unwrap();
         system.enqueue(cpu1.as_mut(), sleeper.id()).unwrap();
-        assert_eq!(system.schedule(cpu1.as_mut()).unwrap().next(), sleeper.id());
+        assert_eq!(
+            system.schedule(cpu1.as_mut(), None).unwrap().next(),
+            sleeper.id()
+        );
         system.complete_context_switch(cpu1.as_mut()).unwrap();
         let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu1.as_mut()).unwrap() else {
             panic!("the isolated sleeper must enter the park transaction")

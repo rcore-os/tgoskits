@@ -205,13 +205,22 @@ impl TaskSystem {
     }
 
     /// Selects the next thread according to strict class precedence.
-    pub fn schedule(&self, cpu: Pin<&mut CpuLocal>) -> Result<ScheduleDecision, TaskError> {
-        self.schedule_owner(cpu, OwnerRqEntry::IrqSave)
+    ///
+    /// `current` is the architecture-published task identity used only to
+    /// acquire task-owned scheduler state before the runqueue transaction.
+    /// `None` is valid only for an initial dispatch with no `rq->curr`.
+    pub fn schedule(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        current: Option<&ThreadHandle>,
+    ) -> Result<ScheduleDecision, TaskError> {
+        self.schedule_owner(cpu, current, OwnerRqEntry::IrqSave)
     }
 
     fn schedule_owner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
+        current: Option<&ThreadHandle>,
         rq_entry: OwnerRqEntry,
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
@@ -220,7 +229,7 @@ impl TaskSystem {
         self.complete_context_switch(cpu.as_mut())?;
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let previous_core_hint = cpu.current_core();
+        let previous_core_hint = current.map(|thread| Arc::clone(thread.runtime_core_arc()));
         let mut previous_sched = previous_core_hint.as_ref().map(|core| core.sched().lock());
         // SAFETY: the public task entry chooses irqsave; the scheduler-frame
         // entry is exposed only by its unsafe wrapper below.
@@ -289,11 +298,15 @@ impl TaskSystem {
     }
 
     /// Services sticky scheduler work and switches only for a real preemption.
+    ///
+    /// `current` must be the architecture-published task identity. The owner
+    /// runqueue transaction revalidates it against `rq->curr` before use.
     pub fn schedule_if_requested(
         &self,
         cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
     ) -> Result<SchedulerOutcome, TaskError> {
-        self.schedule_if_requested_owner(cpu, OwnerRqEntry::IrqSave)
+        self.schedule_if_requested_owner(cpu, current, OwnerRqEntry::IrqSave)
     }
 
     /// Services scheduler work while the runtime owns the IRQ-off baton.
@@ -304,13 +317,15 @@ impl TaskSystem {
     pub(crate) unsafe fn schedule_if_requested_in_scheduler_frame(
         &self,
         cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
     ) -> Result<SchedulerOutcome, TaskError> {
-        self.schedule_if_requested_owner(cpu, OwnerRqEntry::SchedulerFrame)
+        self.schedule_if_requested_owner(cpu, current, OwnerRqEntry::SchedulerFrame)
     }
 
     fn schedule_if_requested_owner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
         rq_entry: OwnerRqEntry,
     ) -> Result<SchedulerOutcome, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
@@ -319,8 +334,8 @@ impl TaskSystem {
         self.complete_context_switch(cpu.as_mut())?;
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let previous_core_hint = cpu.current_core();
-        let mut previous_sched = previous_core_hint.as_ref().map(|core| core.sched().lock());
+        let previous_core_hint = Arc::clone(current.runtime_core_arc());
+        let mut previous_sched = previous_core_hint.sched().lock();
         // SAFETY: propagated from the selected entry contract.
         let mut transaction = unsafe { rq_entry.begin(self, &remote) };
         let clock = transaction.clock();
@@ -350,7 +365,10 @@ impl TaskSystem {
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();
-        if previous_core.as_ref().map(Arc::as_ptr) != previous_core_hint.as_ref().map(Arc::as_ptr) {
+        if previous_core
+            .as_ref()
+            .is_none_or(|core| !Arc::ptr_eq(core, &previous_core_hint))
+        {
             task_runtime::fatal_invariant(0x5343_1204, cpu.owner().as_u32() as usize);
         }
         if previous_core.is_some() && !switch_requested {
@@ -395,9 +413,7 @@ impl TaskSystem {
                 cpu.as_mut(),
                 &mut transaction,
                 Arc::clone(core),
-                previous_sched.as_deref_mut().unwrap_or_else(|| {
-                    task_runtime::fatal_invariant(0x5343_1205, core.id().as_u64() as usize)
-                }),
+                &mut previous_sched,
                 now_ns,
                 EnqueueReason::Preempted,
             );
@@ -439,8 +455,15 @@ impl TaskSystem {
     }
 
     /// Moves the current thread to its class tail and selects another thread.
-    pub fn yield_current(&self, cpu: Pin<&mut CpuLocal>) -> Result<ScheduleDecision, TaskError> {
-        self.yield_current_owner(cpu, OwnerRqEntry::IrqSave)
+    ///
+    /// `current` must be the architecture-published task identity. The owner
+    /// runqueue transaction revalidates it against `rq->curr` before use.
+    pub fn yield_current(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
+    ) -> Result<ScheduleDecision, TaskError> {
+        self.yield_current_owner(cpu, current, OwnerRqEntry::IrqSave)
     }
 
     /// Yields while the runtime owns the IRQ-off scheduler baton.
@@ -451,13 +474,15 @@ impl TaskSystem {
     pub(crate) unsafe fn yield_current_in_scheduler_frame(
         &self,
         cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
     ) -> Result<ScheduleDecision, TaskError> {
-        self.yield_current_owner(cpu, OwnerRqEntry::SchedulerFrame)
+        self.yield_current_owner(cpu, current, OwnerRqEntry::SchedulerFrame)
     }
 
     fn yield_current_owner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
         rq_entry: OwnerRqEntry,
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
@@ -466,8 +491,8 @@ impl TaskSystem {
         self.complete_context_switch(cpu.as_mut())?;
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let previous_core_hint = cpu.current_core();
-        let mut previous_sched = previous_core_hint.as_ref().map(|core| core.sched().lock());
+        let previous_core_hint = Arc::clone(current.runtime_core_arc());
+        let mut previous_sched = previous_core_hint.sched().lock();
         // SAFETY: propagated from the selected entry contract.
         let mut transaction = unsafe { rq_entry.begin(self, &remote) };
         let clock = transaction.clock();
@@ -481,20 +506,20 @@ impl TaskSystem {
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();
-        if previous_core.as_ref().map(Arc::as_ptr) != previous_core_hint.as_ref().map(Arc::as_ptr) {
+        if previous_core
+            .as_ref()
+            .is_none_or(|core| !Arc::ptr_eq(core, &previous_core_hint))
+        {
             task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize);
         }
         if let Some(core) = previous_core.as_ref() {
             let owner = cpu.owner();
             let continuing_dispatch = {
-                let sched = previous_sched.as_deref().unwrap_or_else(|| {
-                    task_runtime::fatal_invariant(0x5343_1208, core.id().as_u64() as usize)
-                });
                 matches!(
                     transaction.current_scheduling_entity(),
                     Some(SchedulingEntity::Fair(_))
                 ) && core.sched().placement().can_continue_running_on(owner)
-                    && sched.affinity.affinity.contains(owner)
+                    && previous_sched.affinity.affinity.contains(owner)
                     && transaction.nr_queued() == 0
             };
             if continuing_dispatch {
@@ -532,9 +557,7 @@ impl TaskSystem {
         if let Some(core) = previous_core.as_ref() {
             let deadline_job_ended = {
                 let placement = core.sched().placement();
-                let sched = previous_sched.as_deref_mut().unwrap_or_else(|| {
-                    task_runtime::fatal_invariant(0x5343_120a, core.id().as_u64() as usize)
-                });
+                let sched = &mut previous_sched;
                 if matches!(sched.policy.base, SchedulePolicy::Deadline(_))
                     && !sched.is_pi_boosted()
                 {
@@ -587,9 +610,7 @@ impl TaskSystem {
                     cpu.as_mut(),
                     &mut transaction,
                     Arc::clone(core),
-                    previous_sched.as_deref_mut().unwrap_or_else(|| {
-                        task_runtime::fatal_invariant(0x5343_120f, core.id().as_u64() as usize)
-                    }),
+                    &mut previous_sched,
                     now_ns,
                     EnqueueReason::Yield,
                 );

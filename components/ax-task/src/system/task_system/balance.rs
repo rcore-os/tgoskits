@@ -654,7 +654,7 @@ mod tests {
             let idle = cpu
                 .idle()
                 .expect("registered CPU must retain its idle task");
-            assert_eq!(system.schedule(cpu.as_mut()).unwrap().next(), idle);
+            assert_eq!(system.schedule(cpu.as_mut(), None).unwrap().next(), idle);
         }
         (system, cpu0, cpu1)
     }

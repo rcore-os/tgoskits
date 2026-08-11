@@ -269,7 +269,8 @@ impl TaskSystemClockTestExt for TaskSystem {
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
         crate::test_runtime::set_scheduler_ns_for_cpu(cpu.owner().as_u32(), now_ns);
-        self.schedule(cpu)
+        let current = cpu.current_core().map(ThreadHandle::from_core);
+        self.schedule(cpu, current.as_ref())
     }
 
     fn schedule_if_requested_at(
@@ -278,7 +279,11 @@ impl TaskSystemClockTestExt for TaskSystem {
         now_ns: u64,
     ) -> Result<SchedulerOutcome, TaskError> {
         crate::test_runtime::set_scheduler_ns_for_cpu(cpu.owner().as_u32(), now_ns);
-        self.schedule_if_requested(cpu)
+        let current = cpu
+            .current_core()
+            .map(ThreadHandle::from_core)
+            .ok_or(TaskError::NoRunnableThread)?;
+        self.schedule_if_requested(cpu, &current)
     }
 
     fn yield_current_at(
@@ -287,7 +292,11 @@ impl TaskSystemClockTestExt for TaskSystem {
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
         crate::test_runtime::set_scheduler_ns_for_cpu(cpu.owner().as_u32(), now_ns);
-        self.yield_current(cpu)
+        let current = cpu
+            .current_core()
+            .map(ThreadHandle::from_core)
+            .ok_or(TaskError::NoRunnableThread)?;
+        self.yield_current(cpu, &current)
     }
 
     fn block_current_at(

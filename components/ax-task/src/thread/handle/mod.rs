@@ -115,6 +115,10 @@ impl ThreadHandle {
         crate::runtime::CurrentThreadPublication::from_core(self.id(), &self.core)
     }
 
+    pub(crate) fn runtime_core_arc(&self) -> &Arc<ThreadCore> {
+        &self.core
+    }
+
     /// Returns the generation-checked registry identity.
     pub fn id(&self) -> ThreadId {
         self.core.id

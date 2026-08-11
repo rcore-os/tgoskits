@@ -64,8 +64,9 @@ fn schedule_current_cpu_with_entry(
                 SchedulerOutcome::Quiescent
             }
         } else {
+            let current = current_thread_handle()?;
             // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
-            unsafe { system.schedule_if_requested_in_scheduler_frame(cpu.as_mut())? }
+            unsafe { system.schedule_if_requested_in_scheduler_frame(cpu.as_mut(), &current)? }
         }
     };
     if let Some(decision) = outcome.decision() {
@@ -77,6 +78,7 @@ fn schedule_current_cpu_with_entry(
 /// Yields the calling thread and executes the resulting context switch.
 pub fn yield_current_cpu() -> Result<ScheduleDecision, TaskError> {
     validate_schedule_context(RuntimeScheduleOrigin::Yield)?;
+    let current = current_thread_handle()?;
     let mut scheduler_frame = RuntimeSchedulerFrameGuard::enter(
         RuntimeScheduleOrigin::Yield,
         RuntimeSchedulerEntry::Task,
@@ -85,7 +87,7 @@ pub fn yield_current_cpu() -> Result<ScheduleDecision, TaskError> {
     let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
-        unsafe { system.yield_current_in_scheduler_frame(cpu.as_mut())? }
+        unsafe { system.yield_current_in_scheduler_frame(cpu.as_mut(), &current)? }
     };
     execute_switch_plan(&mut scheduler_frame, decision);
     Ok(decision)

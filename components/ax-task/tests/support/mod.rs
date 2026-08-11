@@ -7,9 +7,21 @@ use core::{
 
 use ax_task::{
     ChargeOutcome, CpuId, CpuLocal, CpuRemote, ParkCommit, ParkPrepare, PiMutexAcquire,
-    PiMutexCore, PiMutexLockResult, PiWaitToken, TaskError, TaskSystem, ThreadId, impl_trait,
+    PiMutexCore, PiMutexLockResult, PiWaitToken, TaskError, TaskSystem, ThreadHandle, ThreadId,
+    impl_trait,
     runtime::{TaskRuntime, *},
 };
+
+fn current_thread_handle(
+    system: &TaskSystem,
+    cpu: Pin<&CpuLocal>,
+) -> Result<Option<ThreadHandle>, TaskError> {
+    system
+        .snapshot(cpu)?
+        .current()
+        .map(|thread| system.thread_handle(thread))
+        .transpose()
+}
 
 pub trait TaskSystemClockTestExt {
     fn enqueue_at(
@@ -132,7 +144,8 @@ impl TaskSystemClockTestExt for TaskSystem {
         now_ns: u64,
     ) -> Result<ax_task::ScheduleDecision, TaskError> {
         set_scheduler_ns_for_cpu(cpu.owner().as_u32(), now_ns);
-        self.schedule(cpu)
+        let current = current_thread_handle(self, cpu.as_ref())?;
+        self.schedule(cpu, current.as_ref())
     }
 
     fn schedule_if_requested_at(
@@ -141,7 +154,9 @@ impl TaskSystemClockTestExt for TaskSystem {
         now_ns: u64,
     ) -> Result<ax_task::SchedulerOutcome, TaskError> {
         set_scheduler_ns_for_cpu(cpu.owner().as_u32(), now_ns);
-        self.schedule_if_requested(cpu)
+        let current =
+            current_thread_handle(self, cpu.as_ref())?.ok_or(TaskError::NoRunnableThread)?;
+        self.schedule_if_requested(cpu, &current)
     }
 
     fn yield_current_at(
@@ -150,7 +165,9 @@ impl TaskSystemClockTestExt for TaskSystem {
         now_ns: u64,
     ) -> Result<ax_task::ScheduleDecision, TaskError> {
         set_scheduler_ns_for_cpu(cpu.owner().as_u32(), now_ns);
-        self.yield_current(cpu)
+        let current =
+            current_thread_handle(self, cpu.as_ref())?.ok_or(TaskError::NoRunnableThread)?;
+        self.yield_current(cpu, &current)
     }
 
     fn block_current_at(
