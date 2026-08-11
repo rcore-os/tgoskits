@@ -13,6 +13,7 @@ mod uts;
 use alloc::sync::Arc;
 
 pub use ax_cgroup::{CgroupNamespace, CgroupNode};
+pub use ax_runtime::sync::IrqMutex;
 pub use cgroup::{ROOT_CGROUP_NS, new_cgroup_namespace};
 pub use ipc::{IpcNamespace, ROOT_IPC_NS};
 pub use mnt::{MntNamespace, ROOT_MNT_NS};

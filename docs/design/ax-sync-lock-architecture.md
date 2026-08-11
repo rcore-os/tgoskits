@@ -41,9 +41,10 @@ ax-task::sync <──── ax-runtime provider ─ ax-hal / platform
   donation graph、park/wake 和 handoff 生命周期归 `ax-task`。
 - `ax-runtime` 是 ArceOS 生产环境唯一的能力 provider，并使用 `ax-task` 实现
   `ax-sync` 请求的调度能力；provider 不能反向写入物理锁之外的事实源。
-- 显式启用 `host-test` 时由 `ax-sync` 内置的 std provider 支持，并开放确定性测试探针；
-  不能用 target triple 的 `target_os` 推断 provider，因为 ArceOS 的 std 兼容目标仍是
-  生产内核。其他 OS 必须提供自己的 provider。
+- 最终 runtime 显式启用 `host-test` 时，选择 `ax-sync` 内置的 std provider 并开放
+  确定性测试探针；下层 `ax-task` 和 OS crate 不能自行选择 provider。不能用 target
+  triple 的 `target_os` 推断 provider，因为 ArceOS 的 std 兼容目标仍是生产内核。
+  其他 OS 必须提供自己的 provider。
 - StarryOS kernel 只从 `crate::sync` 导入锁，该 facade 只重导
   `ax-runtime::sync` 并收口 task scope、kprobe、namespace 和 POSIX adapter；生产代码
   不直接依赖 `ax-sync`。
@@ -73,7 +74,20 @@ ax-task::sync <──── ax-runtime provider ─ ax-hal / platform
 计数和未使用的强制写解锁被删除；Starry task scope 需要的“释放一个已泄漏读 guard”
 保留为 `#[doc(hidden)] unsafe` 接口，并只经专用 wrapper 使用。
 
-### 3.2 `Mutex<T>`
+### 3.2 `IrqMutex<T>`
+
+`IrqMutex<T>` 是 `lock_api::Mutex<RawIrqSaveMutex, T>` 的稳定名称。它是不可睡眠的
+IRQ-save mutex；调用 `.lock()` 时先禁止抢占、保存并关闭本地 IRQ，guard 释放时先恢复
+IRQ、再恢复抢占。它用于调用方必须把“每次获取都关闭 IRQ”固化进类型的共享状态，不能
+用于可能睡眠、分配或调用未知代码的临界区。
+
+物理实现仍位于 `ax-sync`，并且只通过 `CriticalSectionOps` 请求外部能力；`ax-task::sync`
+重导该类型，`ax-runtime::sync` 再作为 OS 出口导出。Starry kernel 和 `axnsproxy` 只从
+runtime facade 获取它，不能直接依赖 `ax-sync`。这与 `SpinLock::lock_irqsave()` 的执行
+上下文语义相同，区别仅在于前者把所有获取都固定为 IRQ-save，便于现有
+`lock_api::Mutex` 调用方和公共字段维持单一 guard 类型。
+
+### 3.3 `Mutex<T>`
 
 `Mutex<T>` 永远表示可睡眠、无 poisoning 的 mutex，仅在 `sleep` feature 下存在。
 非 multitask ArceOS/AXLibC 需要的锁由其 OS facade 显式选择 `SpinLock`，不能改变
@@ -97,7 +111,7 @@ ax-task::sync <──── ax-runtime provider ─ ax-hal / platform
 POSIX pthread 因 C ABI 不能保存 Rust guard，使用专用 wrapper
 泄漏 guard，再调用隐藏的 `unsafe force_unlock`；该接口仍检查当前 task 是 owner。
 
-### 3.3 Guard 和恢复顺序
+### 3.4 Guard 和恢复顺序
 
 `PreemptGuard`、`IrqSaveGuard`、`PreemptIrqSaveGuard` 取代独立 guard crate。
 组合 guard 的固定顺序是：
@@ -148,8 +162,9 @@ lockdep 关闭时 trace 控制入口是无操作函数，便于 OS facade 保持
 - 驱动、内存和虚拟设备：保持 OS 无关，直接使用 `ax-sync`；raw 获取必须在相邻处写明
   无重入和并发排他依据。
 - StarryOS：kernel 生产代码不得直接导入 `ax_sync`，`crate::sync` 从
-  `ax_runtime::sync` 获取 OS 锁，特殊适配只存在于该 facade 及其明确实现层。用户态
-  ABI 和 syscall 返回行为不变。
+  `ax_runtime::sync` 获取 OS 锁；`axnsproxy` 等 OS-owned crate 同样通过 runtime facade
+  获取 `IrqMutex`。特殊适配只存在于 facade 及其明确实现层。用户态 ABI 和 syscall
+  返回行为不变。
 - Axvisor：普通状态使用真实 Rust `std::sync`。只有 IRQ/guest-entry/no-preempt 路径
   使用 `ax_std::os::arceos::sync::{IrqSafeMutex, NoPreemptMutex, RawSpinLock}`。
 

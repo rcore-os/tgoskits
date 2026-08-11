@@ -56,6 +56,10 @@ pub use self::pi::{
 };
 #[cfg(feature = "lock-api")]
 pub use self::raw_spin::RawIrqSaveMutex;
+#[cfg(feature = "lock-api")]
+#[cfg_attr(doc, doc(cfg(feature = "lock-api")))]
+/// A non-sleeping mutex whose guard saves and disables local IRQs.
+pub type IrqMutex<T> = lock_api::Mutex<RawIrqSaveMutex, T>;
 #[cfg(feature = "lockdep")]
 pub use self::spin_lockdep::{
     HeldLock, HeldLockKind, HeldLockSnapshot, HeldLockStack, LockdepMap, LockdepOps,
@@ -93,5 +97,11 @@ mod public_api_tests {
         let _guard = PhantomData::<super::PiMutexGuard<'static, u8>>;
         let _core = PhantomData::<super::PiMutexCore>;
         let _token = PhantomData::<super::PiWaitToken>;
+    }
+
+    #[cfg(feature = "lock-api")]
+    #[test]
+    fn lock_api_exposes_irq_mutex_explicitly() {
+        let _mutex = core::marker::PhantomData::<super::IrqMutex<u8>>;
     }
 }

@@ -249,6 +249,14 @@ fn check_dependency_tables(manifest_path: &Path, value: &Value, findings: &mut V
                         "consume synchronization primitives through ax-runtime::sync",
                     ));
                 }
+                if is_axnsproxy_manifest(manifest_path) && package_name == "ax-sync" {
+                    findings.push(Finding::new(
+                        manifest_path,
+                        &location,
+                        "axnsproxy must not depend directly on ax-sync",
+                        "consume synchronization primitives through ax-runtime::sync",
+                    ));
+                }
             }
         }
 
@@ -357,6 +365,17 @@ fn check_source_boundaries(
                     path,
                     format!("line {}", line_index + 1),
                     "ax-std bypasses ax-runtime::sync",
+                    "import synchronization primitives from ax_runtime::sync",
+                ));
+            }
+
+            if is_axnsproxy_source(&relative)
+                && (line.contains("ax_sync::") || line.contains("use ax_sync"))
+            {
+                findings.push(Finding::new(
+                    path,
+                    format!("line {}", line_index + 1),
+                    "axnsproxy bypasses ax-runtime::sync",
                     "import synchronization primitives from ax_runtime::sync",
                 ));
             }
@@ -586,6 +605,16 @@ fn is_ax_std_source(relative: &str) -> bool {
     relative.starts_with("os/arceos/ulib/axstd/src/")
 }
 
+fn is_axnsproxy_manifest(path: &Path) -> bool {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .ends_with("/os/StarryOS/axnsproxy/Cargo.toml")
+}
+
+fn is_axnsproxy_source(relative: &str) -> bool {
+    relative.starts_with("os/StarryOS/axnsproxy/src/")
+}
+
 fn relative_path(workspace_root: &Path, path: &Path) -> String {
     path.strip_prefix(workspace_root)
         .unwrap_or(path)
@@ -755,6 +784,41 @@ legacy = { package = "ax-lockdep", version = "0.1" }
                 .iter()
                 .any(|finding| finding.message.contains("crate::sync"))
         );
+    }
+
+    #[test]
+    fn rejects_axnsproxy_bypassing_runtime_sync_facade() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "os/StarryOS/axnsproxy/Cargo.toml",
+            r#"
+[package]
+name = "axnsproxy"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+ax-sync = "0.1"
+"#,
+        );
+        write_file(
+            root.path(),
+            "os/StarryOS/axnsproxy/src/lib.rs",
+            "use ax_sync::SpinLock;\n",
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("axnsproxy must not depend directly on ax-sync")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("axnsproxy bypasses ax-runtime::sync")
+        }));
     }
 
     #[test]

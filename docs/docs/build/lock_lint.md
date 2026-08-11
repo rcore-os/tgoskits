@@ -14,9 +14,9 @@ sidebar_label: "Lock Lint"
 |------|------|
 | 已移除 package | workspace、成员 manifest 和 `Cargo.lock` 不能重新出现 `ax-kspin`、`ax-kernel-guard` 或 `ax-lockdep` |
 | 第一方 `spin` | manifest 不能直接依赖 crates.io `spin`，Rust 源码不能直接导入或调用 `spin::*` |
-| StarryOS | kernel 生产源码只能经 `crate::sync` 使用锁；`src/sync.rs` 是唯一允许直接导入 `ax-sync` 的 facade |
+| StarryOS | kernel 生产源码只能经 `crate::sync` 使用锁；`axnsproxy` 等 OS-owned crate 经 `ax-runtime::sync` 使用锁，不能直接依赖 `ax-sync` |
 | Axvisor | AxVM/Axvisor 不得直接依赖或导入 `ax-sync`；普通路径使用 `std::sync`，特殊上下文经 `ax_std::os::arceos::sync` |
-| runtime provider | `CriticalSectionOps`、`MutexRuntimeOps`、`LockdepOps` 的生产实现必须各有且仅有一个，并位于 `ax-runtime/src/sync.rs` |
+| runtime provider | `CriticalSectionOps`、`PiMutexTaskOps`、`LockdepOps` 的生产实现必须各有且仅有一个，并位于 `os/arceos/modules/axruntime/src/sync.rs` |
 
 扫描跳过 `.git`、`target`、`tmp`、`.cache`、文档和 lint 实现自身。测试 provider 只允许出现在
 `ax-sync` 的明确测试位置；第三方依赖树中的传递 `spin` package 不属于第一方直接依赖，允许保留。
@@ -41,6 +41,12 @@ StarryOS kernel 从本地 facade 导入：
 
 ```rust
 use crate::sync::{Mutex, SpinLock};
+```
+
+Starry 的 OS-owned library crate 从 runtime facade 导入，例如：
+
+```rust
+use ax_runtime::sync::IrqMutex;
 ```
 
 AxVM 普通任务上下文使用 `std::sync`；只有 IRQ、guest-entry 或 no-preempt 路径使用：

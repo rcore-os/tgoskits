@@ -4,13 +4,12 @@
 //! acquisition operation preserve sleep, preemption, and IRQ semantics.
 
 pub(crate) use ax_runtime::sync::{
-    InterruptibleMutexExt, LockdepMutexExt, Mutex, MutexGuard, PiMutex, PiMutexGuard,
+    InterruptibleMutexExt, IrqMutex, LockdepMutexExt, Mutex, MutexGuard, PiMutex, PiMutexGuard,
 };
 pub(crate) use ax_sync::{
-    PreemptIrqSaveGuard, RawIrqSaveMutex as RawSpinNoIrq, SpinLock,
-    SpinLock as NoPreemptMutex, SpinRwLock as RwLock,
+    PreemptIrqSaveGuard, RawIrqSaveMutex as RawSpinNoIrq, SpinLock, SpinLock as NoPreemptMutex,
+    SpinRwLock as RwLock,
 };
-pub(crate) use axnsproxy::IrqMutex;
 
 /// A read-write lock whose read ownership may span a scheduler context switch.
 ///

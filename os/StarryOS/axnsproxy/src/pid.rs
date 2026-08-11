@@ -2,15 +2,16 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
+use ax_lazyinit::LazyLock;
+use ax_runtime::sync::IrqMutex;
 
 /// Shared ownership handle for one PID namespace generation.
 pub type PidNamespaceRef = Arc<PidNamespace>;
 
 /// The initial root PID namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWPID)` or `clone(CLONE_NEWPID)`.
-pub static ROOT_PID_NS: spin::LazyLock<PidNamespaceRef> =
-    spin::LazyLock::new(|| Arc::new(PidNamespace::new_root()));
+pub static ROOT_PID_NS: LazyLock<PidNamespaceRef> =
+    LazyLock::new(|| Arc::new(PidNamespace::new_root()));
 
 static NEXT_PID_NS_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -28,7 +29,7 @@ pub struct PidNamespace {
     /// Immediate enclosing namespace. The hierarchy only owns upward, so
     /// namespace handles cannot form a reference cycle.
     parent: Option<PidNamespaceRef>,
-    state: SpinNoIrq<PidNamespaceState>,
+    state: IrqMutex<PidNamespaceState>,
 }
 
 struct PidNamespaceState {
@@ -74,7 +75,7 @@ impl PidNamespace {
             id: NEXT_PID_NS_ID.fetch_add(1, Ordering::Relaxed),
             level: 0,
             parent: None,
-            state: SpinNoIrq::new(PidNamespaceState::new(PidNamespaceLifecycle::Root)),
+            state: IrqMutex::new(PidNamespaceState::new(PidNamespaceLifecycle::Root)),
         }
     }
 
@@ -88,7 +89,7 @@ impl PidNamespace {
             id: NEXT_PID_NS_ID.fetch_add(1, Ordering::Relaxed),
             level,
             parent: Some(parent),
-            state: SpinNoIrq::new(PidNamespaceState::new(PidNamespaceLifecycle::AwaitingInit)),
+            state: IrqMutex::new(PidNamespaceState::new(PidNamespaceLifecycle::AwaitingInit)),
         }
     }
 

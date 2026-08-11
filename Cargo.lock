@@ -1382,7 +1382,7 @@ dependencies = [
  "ax-cgroup",
  "ax-errno",
  "ax-lazyinit",
- "ax-sync",
+ "ax-runtime",
  "linux-raw-sys 0.12.1",
  "log",
  "quote",

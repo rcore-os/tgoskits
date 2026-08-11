@@ -17,7 +17,7 @@ lockdep = ["ax-sync/lockdep"]
 
 [dependencies]
 ax-crate-interface.workspace = true
-ax-sync = { workspace = true, features = ["sleep"] }
+ax-sync = { workspace = true, features = ["lock-api", "sleep"] }
 thiserror.workspace = true
 trait-ffi = "0.2.11"
 
