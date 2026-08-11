@@ -2,10 +2,13 @@
 
 use core::{
     panic::Location,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize},
+    sync::atomic::{AtomicBool, AtomicUsize},
 };
 
-use super::context::{ContextOperations, ContextState, context_enter, context_exit};
+use super::{
+    context::{ContextOperations, ContextState, context_enter, context_exit},
+    lockdep::LockClass,
+};
 use crate::sync::spin::atomic;
 #[cfg(feature = "lockdep")]
 use crate::sync::{
@@ -16,13 +19,6 @@ use crate::sync::{
 
 const LOCK_MODE_READ: u8 = 1;
 const LOCK_MODE_WRITE: u8 = 2;
-
-/// Borrowed lock-class storage from an external fixed-layout wrapper.
-#[derive(Clone, Copy)]
-pub struct LockClass<'lock> {
-    pub class_id: &'lock AtomicU32,
-    pub class_key: &'lock AtomicPtr<Location<'static>>,
-}
 
 /// One complete external exclusive-spin acquisition request.
 pub struct SpinAcquireRequest<'lock> {

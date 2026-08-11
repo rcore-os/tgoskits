@@ -1,11 +1,9 @@
 //! Fake TaskRuntime linked only into the ax-task unit-test binary.
 
-#[cfg(feature = "lockdep")]
 use alloc::boxed::Box;
-#[cfg(feature = "lockdep")]
-use core::pin::Pin;
 use core::{
     cell::{Cell, RefCell},
+    pin::Pin,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -825,13 +823,11 @@ pub(crate) fn install_task_handles(task_system: usize, cpu_local: usize) {
     CURRENT_CPU_REMOTE_HANDLE.with(|handle| handle.set(remote));
 }
 
-#[cfg(feature = "lockdep")]
 pub(crate) struct InstalledDefaultTaskRuntime {
     _cpu: Pin<Box<crate::CpuLocal>>,
     _system: Pin<Box<crate::TaskSystem>>,
 }
 
-#[cfg(feature = "lockdep")]
 impl InstalledDefaultTaskRuntime {
     pub(crate) fn new() -> Self {
         let system = Box::pin(
@@ -864,7 +860,6 @@ impl InstalledDefaultTaskRuntime {
     }
 }
 
-#[cfg(feature = "lockdep")]
 impl Drop for InstalledDefaultTaskRuntime {
     fn drop(&mut self) {
         clear_task_handles();

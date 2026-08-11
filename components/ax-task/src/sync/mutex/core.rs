@@ -42,10 +42,6 @@ impl PiMutexWaitStorage {
     pub const fn view(&self) -> PiMutexWaitStorageView<'_> {
         PiMutexWaitStorageView::from_parts(&self.state, &self.words)
     }
-
-    fn take_initialized(&mut self) -> Option<*mut ()> {
-        take_initialized_wait_storage(self.state.get_mut(), self.words.get_mut())
-    }
 }
 
 /// Borrowed scheduler-owned waiter storage for one physical PI mutex.
@@ -596,12 +592,30 @@ impl Default for PiMutexCore {
 
 impl Drop for PiMutexCore {
     fn drop(&mut self) {
-        if let Some(wait_handle) = self.wait_storage.take_initialized() {
-            // SAFETY: mutable destruction makes every safe reference to this
-            // core unreachable, and the waiter handle verifies its tree is
-            // empty before releasing the inline object.
-            unsafe { crate::drop_pi_mutex_wait_handle(wait_handle) };
-        }
+        destroy_pi_mutex_storage(
+            &mut self.owner,
+            &mut self.generation,
+            &mut self.wait_storage.state,
+            &mut self.wait_storage.words,
+        );
+    }
+}
+
+pub(in crate::sync) fn destroy_pi_mutex_storage(
+    owner: &mut AtomicU64,
+    generation: &mut AtomicU64,
+    wait_state: &mut AtomicU8,
+    wait_words: &mut UnsafeCell<[MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS]>,
+) {
+    *owner.get_mut() = 0;
+    *generation.get_mut() = 0;
+    if let Some(wait_handle) =
+        take_initialized_wait_storage(wait_state.get_mut(), wait_words.get_mut())
+    {
+        // SAFETY: mutable destruction makes every safe reference to this core
+        // unreachable, and the waiter handle verifies its tree is empty before
+        // releasing the inline object.
+        unsafe { crate::drop_pi_mutex_wait_handle(wait_handle) };
     }
 }
 

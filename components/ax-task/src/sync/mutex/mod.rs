@@ -3,7 +3,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "lockdep")]
-mod lockdep;
+pub(in crate::sync) mod lockdep;
 #[path = "core.rs"]
 mod pi_core;
 
@@ -136,7 +136,11 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     }
 
     pub(in crate::sync) fn is_owned_by_current(&self) -> bool {
-        self.core.is_owned_by(Self::current_task_id())
+        Self::core_is_owned_by_current(self.core)
+    }
+
+    pub(in crate::sync) fn core_is_owned_by_current(core: PiMutexCoreView<'_>) -> bool {
+        core.is_owned_by(Self::current_task_id())
     }
 
     #[inline(always)]
@@ -378,23 +382,25 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     }
 
     pub(in crate::sync) unsafe fn unlock_pi(&self) {
+        // SAFETY: forwarded from this method's raw-mutex ownership contract.
+        unsafe { Self::unlock_core(self.core) };
+    }
+
+    pub(in crate::sync) unsafe fn unlock_core(core: PiMutexCoreView<'_>) {
         // SAFETY: the caller is the lock_api raw-mutex owner and retains that
         // exclusive authority through this complete release transaction.
-        match core_result(
-            unsafe { self.core.try_release_owned() },
-            "try PI mutex release",
-        ) {
+        match core_result(unsafe { core.try_release_owned() }, "try PI mutex release") {
             PiMutexOwnedRelease::Released => {}
             PiMutexOwnedRelease::Contended(owner) => {
                 // SAFETY: `owner` came from this core's owner-authorized release
                 // result and the raw-mutex contract remains active.
-                unsafe { self.unlock_contended(owner) };
+                unsafe { Self::unlock_contended(core, owner) };
             }
         }
     }
 
-    unsafe fn unlock_contended(&self, owner: PiTaskId) {
-        let lock = core_result(self.core.mutex_ref(), "borrow PI mutex release identity");
+    unsafe fn unlock_contended(core: PiMutexCoreView<'_>, owner: PiTaskId) {
+        let lock = core_result(core.mutex_ref(), "borrow PI mutex release identity");
         task_result(
             unsafe {
                 // SAFETY: `owner` came from this core's owner-authorized
@@ -406,7 +412,11 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     }
 
     pub(in crate::sync) fn is_locked(&self) -> bool {
-        self.core.is_locked()
+        Self::core_is_locked(self.core)
+    }
+
+    pub(in crate::sync) fn core_is_locked(core: PiMutexCoreView<'_>) -> bool {
+        core.is_locked()
     }
 }
 

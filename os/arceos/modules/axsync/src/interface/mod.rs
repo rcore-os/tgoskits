@@ -45,6 +45,15 @@ pub struct PiMutexStorage {
     wait_storage: UnsafeCell<[MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS]>,
 }
 
+/// Exclusive borrow of every field in one external PI-mutex storage object.
+#[doc(hidden)]
+pub struct PiMutexStoragePartsMut<'lock> {
+    pub owner_word: &'lock mut AtomicU64,
+    pub generation: &'lock mut AtomicU64,
+    pub wait_state: &'lock mut AtomicU8,
+    pub wait_storage: &'lock mut UnsafeCell<[MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS]>,
+}
+
 impl PiMutexStorage {
     /// Creates storage for an unlocked, generation-free PI mutex.
     pub const fn new() -> Self {
@@ -74,10 +83,23 @@ impl PiMutexStorage {
         &self.wait_state
     }
 
-    /// Returns the number of pointer-sized inline waiter words.
+    /// Returns the native inline waiter storage borrowed by the provider.
     #[doc(hidden)]
-    pub const fn wait_words(&self) -> usize {
-        PI_MUTEX_WAIT_STORAGE_WORDS
+    pub const fn wait_storage(
+        &self,
+    ) -> &UnsafeCell<[MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS]> {
+        &self.wait_storage
+    }
+
+    /// Exclusively borrows every field for the native destruction transaction.
+    #[doc(hidden)]
+    pub fn parts_mut(&mut self) -> PiMutexStoragePartsMut<'_> {
+        PiMutexStoragePartsMut {
+            owner_word: &mut self.owner_word,
+            generation: &mut self.generation,
+            wait_state: &mut self.wait_state,
+            wait_storage: &mut self.wait_storage,
+        }
     }
 }
 
@@ -450,7 +472,10 @@ pub(crate) fn dump_trace() {
 
 #[cfg(test)]
 mod tests {
-    use core::mem::{align_of, offset_of, size_of};
+    use core::{
+        mem::{align_of, offset_of, size_of},
+        sync::atomic::Ordering,
+    };
 
     use super::*;
 
@@ -488,5 +513,37 @@ mod tests {
         assert_eq!(pointer_offset, expected_pointer_offset);
         assert_eq!(align_of::<LockMetadata>(), expected_alignment);
         assert_eq!(size_of::<LockMetadata>(), expected_size);
+    }
+
+    #[test]
+    fn pi_mutex_storage_has_fixed_bridge_layout_and_mutable_parts() {
+        let generation_offset = size_of::<AtomicU64>();
+        let wait_state_offset = 2 * size_of::<AtomicU64>();
+        let wait_storage_alignment = align_of::<usize>();
+        let wait_storage_offset =
+            (wait_state_offset + size_of::<AtomicU8>()).next_multiple_of(wait_storage_alignment);
+        let expected_alignment = align_of::<AtomicU64>().max(wait_storage_alignment);
+        let expected_size = (wait_storage_offset
+            + PI_MUTEX_WAIT_STORAGE_WORDS * size_of::<usize>())
+        .next_multiple_of(expected_alignment);
+
+        assert_eq!(offset_of!(PiMutexStorage, owner_word), 0);
+        assert_eq!(offset_of!(PiMutexStorage, generation), generation_offset);
+        assert_eq!(offset_of!(PiMutexStorage, wait_state), wait_state_offset);
+        assert_eq!(
+            offset_of!(PiMutexStorage, wait_storage),
+            wait_storage_offset
+        );
+        assert_eq!(align_of::<PiMutexStorage>(), expected_alignment);
+        assert_eq!(size_of::<PiMutexStorage>(), expected_size);
+
+        let mut storage = PiMutexStorage::new();
+        let parts = storage.parts_mut();
+        *parts.owner_word.get_mut() = 7;
+        *parts.generation.get_mut() = 11;
+        *parts.wait_state.get_mut() = 2;
+        assert_eq!(storage.owner_word().load(Ordering::Relaxed), 7);
+        assert_eq!(storage.generation().load(Ordering::Relaxed), 11);
+        assert_eq!(storage.wait_state().load(Ordering::Relaxed), 2);
     }
 }

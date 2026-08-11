@@ -7,6 +7,7 @@
 //! directly by the task-owned algorithms and is not a provider surface.
 mod context;
 mod lockdep;
+mod mutex;
 mod spin;
 
 pub use self::{
@@ -14,16 +15,13 @@ pub use self::{
         ContextOperations, ContextState, context_enter, context_exit, hardirq_enter, hardirq_exit,
         irq_return_preempt_enter, irq_return_preempt_exit,
     },
-    lockdep::{dump_lockdep_trace, set_lockdep_trace_enabled},
-    spin::{
-        LockClass, RwLockAcquireRequest, SpinAcquireRequest, rwlock_acquire,
-        rwlock_force_read_decrement, rwlock_release, spin_acquire, spin_force_release,
-        spin_is_locked, spin_release,
+    lockdep::{LockClass, dump_lockdep_trace, set_lockdep_trace_enabled},
+    mutex::{
+        MutexAcquireRequest, PiMutexStorage, PiMutexStorageMut, mutex_acquire, mutex_destroy,
+        mutex_force_release, mutex_is_locked, mutex_is_owned_by_current, mutex_release,
     },
-};
-pub use crate::{
-    current_needs_reschedule_pinned, current_thread_id, current_thread_token, pi_drop_wait_handle,
-    pi_initial_owner_is_on_cpu, pi_mutex_claim, pi_mutex_lock_slow, pi_mutex_release_owned,
-    pi_park_current_once, pi_wait_try_cancel, pi_waiter_is_granted, pi_waiter_is_top,
-    validate_blocking_context,
+    spin::{
+        RwLockAcquireRequest, SpinAcquireRequest, rwlock_acquire, rwlock_force_read_decrement,
+        rwlock_release, spin_acquire, spin_force_release, spin_is_locked, spin_release,
+    },
 };

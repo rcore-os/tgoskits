@@ -1,7 +1,7 @@
 //! Native ArceOS lock facade and `ax-sync` bridge provider.
 
 #[cfg(feature = "multitask")]
-use core::sync::atomic::{AtomicPtr, AtomicU64};
+use core::sync::atomic::AtomicU64;
 use core::{
     panic::Location,
     sync::atomic::{AtomicBool, AtomicUsize},
@@ -239,11 +239,23 @@ impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
 struct RuntimeMutexOps;
 
 #[cfg(feature = "multitask")]
+fn into_task_pi_storage(
+    storage: &ax_sync::interface::PiMutexStorage,
+) -> ax_task::sync::bridge::PiMutexStorage<'_> {
+    ax_task::sync::bridge::PiMutexStorage {
+        owner: storage.owner_word(),
+        generation: storage.generation(),
+        wait_state: storage.wait_state(),
+        wait_words: storage.wait_storage(),
+    }
+}
+
+#[cfg(feature = "multitask")]
 #[ax_crate_interface::impl_interface]
 impl ax_sync::interface::MutexOps for RuntimeMutexOps {
     fn acquire(
-        wait_queue: &AtomicPtr<()>,
-        owner_id: &AtomicU64,
+        storage: &ax_sync::interface::PiMutexStorage,
+        next_waiter_sequence: &AtomicU64,
         metadata: &ax_sync::interface::LockMetadata,
         lock_addr: usize,
         subclass: u32,
@@ -251,8 +263,8 @@ impl ax_sync::interface::MutexOps for RuntimeMutexOps {
         caller: &'static Location<'static>,
     ) -> bool {
         ax_task::sync::bridge::mutex_acquire(ax_task::sync::bridge::MutexAcquireRequest {
-            wait_queue,
-            owner_id,
+            storage: into_task_pi_storage(storage),
+            next_waiter_sequence,
             class: ax_task::sync::bridge::LockClass {
                 class_id: metadata.class_id(),
                 class_key: metadata.class_key(),
@@ -264,24 +276,30 @@ impl ax_sync::interface::MutexOps for RuntimeMutexOps {
         })
     }
 
-    fn release(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64, lock_addr: usize) {
-        ax_task::sync::bridge::mutex_release(wait_queue, owner_id, lock_addr);
+    fn release(storage: &ax_sync::interface::PiMutexStorage, lock_addr: usize) {
+        ax_task::sync::bridge::mutex_release(into_task_pi_storage(storage), lock_addr);
     }
 
-    fn force_release(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64, lock_addr: usize) {
-        ax_task::sync::bridge::mutex_force_release(wait_queue, owner_id, lock_addr);
+    fn force_release(storage: &ax_sync::interface::PiMutexStorage, lock_addr: usize) {
+        ax_task::sync::bridge::mutex_force_release(into_task_pi_storage(storage), lock_addr);
     }
 
-    fn is_owned_by_current(owner_id: &AtomicU64) -> bool {
-        ax_task::sync::bridge::mutex_is_owned_by_current(owner_id)
+    fn is_owned_by_current(storage: &ax_sync::interface::PiMutexStorage) -> bool {
+        ax_task::sync::bridge::mutex_is_owned_by_current(into_task_pi_storage(storage))
     }
 
-    fn is_locked(owner_id: &AtomicU64) -> bool {
-        ax_task::sync::bridge::mutex_is_locked(owner_id)
+    fn is_locked(storage: &ax_sync::interface::PiMutexStorage) -> bool {
+        ax_task::sync::bridge::mutex_is_locked(into_task_pi_storage(storage))
     }
 
-    fn drop_wait_queue(wait_queue: *mut ()) {
-        ax_task::sync::bridge::mutex_drop_wait_queue(wait_queue);
+    fn destroy(storage: &mut ax_sync::interface::PiMutexStorage) {
+        let parts = storage.parts_mut();
+        ax_task::sync::bridge::mutex_destroy(ax_task::sync::bridge::PiMutexStorageMut {
+            owner: parts.owner_word,
+            generation: parts.generation,
+            wait_state: parts.wait_state,
+            wait_words: parts.wait_storage,
+        });
     }
 }
 

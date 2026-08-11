@@ -1,6 +1,6 @@
 use core::mem::{align_of, size_of};
 
-use ax_sync::interface::PiMutexStorage;
+use ax_sync::interface::{PI_MUTEX_WAIT_STORAGE_WORDS, PiMutexStorage};
 
 #[test]
 fn pi_mutex_external_storage_carries_the_native_generation_and_inline_waiter_state() {
@@ -24,7 +24,7 @@ fn pi_mutex_external_storage_carries_the_native_generation_and_inline_waiter_sta
             .load(core::sync::atomic::Ordering::Relaxed),
         0
     );
-    assert_eq!(storage.wait_words(), 5);
+    assert_eq!(PI_MUTEX_WAIT_STORAGE_WORDS, 5);
     assert_eq!(align_of::<PiMutexStorage>(), align_of::<usize>());
     assert!(size_of::<PiMutexStorage>() >= 8 * size_of::<usize>());
 }
