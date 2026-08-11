@@ -1,6 +1,11 @@
 use super::*;
 use crate::dir::{FileName, LinkEntryRequest, insert_dir_entry_raw};
 
+// Linux reserves EXT4_DATA_TRANS_BLOCKS + EXT4_INDEX_EXTRA_TRANS_BLOCKS + 1
+// for ext4_link(). Keep the same conservative boundary while this core has a
+// single filesystem-owned handle instead of Linux's extend/restart helpers.
+const HARD_LINK_TRANSACTION_CREDITS: usize = 32;
+
 fn directory_entry_type(inode: &Ext4Inode) -> Ext4Result<u8> {
     match inode.i_mode & Ext4Inode::S_IFMT {
         Ext4Inode::S_IFREG => Ok(Ext4DirEntry2::EXT4_FT_REG_FILE),
@@ -20,6 +25,16 @@ pub(crate) fn link_inode_at<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     request: LinkEntryRequest<'_>,
 ) -> Ext4Result<Ext4Inode> {
+    fs.with_metadata_transaction(block_dev, HARD_LINK_TRANSACTION_CREDITS, |fs, block_dev| {
+        link_inode_at_in_transaction(fs, block_dev, request)
+    })
+}
+
+fn link_inode_at_in_transaction<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    request: LinkEntryRequest<'_>,
+) -> Ext4Result<Ext4Inode> {
     if request.name.is_reserved() {
         return Err(Ext4Error::invalid_input());
     }
@@ -28,7 +43,6 @@ pub(crate) fn link_inode_at<B: BlockIo>(
         return Err(Ext4Error::not_found().with_operation("link:unlinked_inode"));
     }
     let file_type = directory_entry_type(&target_inode)?;
-    let old_links = target_inode.i_links_count;
     let new_links = target_inode.incremented_links_count(false)?;
 
     let mut parent_inode = fs.get_inode_by_num(block_dev, request.parent)?;
@@ -48,7 +62,7 @@ pub(crate) fn link_inode_at<B: BlockIo>(
     }
 
     fs.set_inode_links_count(block_dev, request.target, new_links)?;
-    if let Err(insert_error) = insert_dir_entry_raw(
+    insert_dir_entry_raw(
         fs,
         block_dev,
         request.parent,
@@ -56,24 +70,13 @@ pub(crate) fn link_inode_at<B: BlockIo>(
         request.target,
         request.name,
         file_type,
-    ) {
-        let lookup = find_named_entry_in_parent(
-            fs,
-            block_dev,
-            request.parent,
-            &parent_inode,
-            request.name.as_bytes(),
-        );
-        match lookup {
-            Ok(entry) if entry.ino == request.target => return Err(insert_error),
-            Err(error) if error.kind() != Ext4ErrorKind::NotFound => return Err(insert_error),
-            _ => {}
-        }
-        let rollback = fs
-            .set_inode_links_count(block_dev, request.target, old_links)
-            .map(|_| ());
-        return Err(error_after_cleanup(insert_error, rollback));
-    }
+    )?;
+
+    // Multi-level caches defer inode-table writeback. Publish both inode
+    // records before ending the handle so target nlink/ctime, parent times,
+    // and the directory entry cannot be split across transactions.
+    fs.inodetable_cache.flush(block_dev, request.target)?;
+    fs.inodetable_cache.flush(block_dev, request.parent)?;
 
     fs.get_inode_by_num(block_dev, request.target)
 }

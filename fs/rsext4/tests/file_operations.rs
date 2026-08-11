@@ -471,8 +471,8 @@ mod file_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
-    /// Exercises the current hard-link path without requiring full correctness.
-    /// The test documents the known limitation and only asserts source stability.
+    /// Verifies that a hard link publishes a second name for the same inode and
+    /// persists the matching link count.
     #[test]
     fn test_hard_link() {
         let device = MockBlockDevice::new(100 * 1024 * 1024); // 100MB
@@ -493,23 +493,105 @@ mod file_functional_tests {
         )
         .expect("mkfile failed");
 
-        // The implementation is still under development, so only the original
-        // file stability is asserted after attempting to add a hard link.
-        let _ = link(
+        link(
             &mut fs,
             &mut jbd2_dev,
-            "/linktest/original",
             "/linktest/hardlink",
-        );
+            "/linktest/original",
+        )
+        .expect("hard-link creation failed");
 
-        // The source file must remain readable even if hard-link creation is incomplete.
         let original_data =
             read_file(&mut jbd2_dev, &mut fs, "/linktest/original").expect("read_file failed");
         assert_eq!(original_data, test_data.to_vec());
-
-        // TODO: strengthen this test once the hard-link path is fully implemented.
+        let linked_data =
+            read_file(&mut jbd2_dev, &mut fs, "/linktest/hardlink").expect("link read failed");
+        assert_eq!(linked_data, test_data.to_vec());
+        let (original_number, original_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/linktest/original")
+                .expect("original lookup failed")
+                .expect("original missing");
+        let (linked_number, linked_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/linktest/hardlink")
+                .expect("link lookup failed")
+                .expect("link missing");
+        assert_eq!(linked_number, original_number);
+        assert_eq!(original_inode.i_links_count, 2);
+        assert_eq!(linked_inode.i_links_count, 2);
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
+    }
+
+    #[test]
+    fn failed_hard_link_directory_publish_is_atomic_after_remount() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/source").expect("source mkdir failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/destination").expect("destination mkdir failed");
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/source/original",
+            Some(b"atomic hard-link target"),
+            None,
+        )
+        .expect("target creation failed");
+
+        let (target_number, target_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/source/original")
+                .expect("target lookup failed")
+                .expect("target missing");
+        let old_links = target_inode.i_links_count;
+        let (destination_number, mut destination_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/destination")
+                .expect("destination lookup failed")
+                .expect("destination missing");
+        let destination_block = loopfile::resolve_inode_block(
+            &fs,
+            &mut jbd2_dev,
+            destination_number,
+            &mut destination_inode,
+            0,
+        )
+        .expect("destination block lookup failed")
+        .expect("destination block missing");
+
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        jbd2_dev
+            .set_journal_use(false)
+            .expect("disable journal for direct fault injection");
+        fail_after_write_sector.set(Some(destination_block.raw()));
+
+        let error = link(
+            &mut fs,
+            &mut jbd2_dev,
+            "/destination/new-link",
+            "/source/original",
+        )
+        .expect_err("directory publish failure must abort hard-link creation");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        drop(fs);
+        let device = jbd2_dev.into_inner();
+        let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut remounted = mount(&mut remount_dev).expect("remount after failed link");
+        let (remounted_target, remounted_inode) =
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/source/original")
+                .expect("remounted target lookup failed")
+                .expect("remounted target missing");
+        assert_eq!(remounted_target, target_number);
+        assert_eq!(remounted_inode.i_links_count, old_links);
+        assert!(
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/destination/new-link")
+                .expect("remounted destination lookup failed")
+                .is_none(),
+            "a failed hard link must not publish its destination name"
+        );
     }
 
     #[test]

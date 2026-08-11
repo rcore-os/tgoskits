@@ -92,7 +92,7 @@ fn rsext4_crc_and_error_rules_hold() {
 
 #[axtest]
 fn rsext4_superblock_geometry_rules_hold() {
-    use rsext4::{GROUP_DESC_SIZE, GROUP_DESC_SIZE_OLD, superblock::Ext4Superblock};
+    use rsext4::{GROUP_DESC_SIZE_OLD, superblock::Ext4Superblock};
 
     let mut superblock = Ext4Superblock {
         s_magic: Ext4Superblock::EXT4_SUPER_MAGIC,
@@ -2582,7 +2582,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         Ext4ErrorKind::InvalidInput
     );
 
-    rename(&mut device, &mut fs, "/cov/sub/file", "/cov/sub/renamed").unwrap();
+    let _ = rename(&mut device, &mut fs, "/cov/sub/file", "/cov/sub/renamed").unwrap();
     ax_assert!(
         get_inode_with_num(&mut fs, &mut device, "/cov/sub/file")
             .unwrap()
@@ -2722,7 +2722,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
 
     mkdir(&mut device, &mut fs, "/cov/other").unwrap();
     mkdir(&mut device, &mut fs, "/cov/other/child").unwrap();
-    rename(
+    let _ = rename(
         &mut device,
         &mut fs,
         "/cov/other/child",
@@ -2752,7 +2752,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         None,
     )
     .unwrap();
-    rename(
+    let _ = rename(
         &mut device,
         &mut fs,
         "/cov/sub/replace-src",
@@ -2820,7 +2820,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     );
     mkdir(&mut device, &mut fs, "/cov/sub/replace-empty-src").unwrap();
     mkdir(&mut device, &mut fs, "/cov/sub/replace-empty-dst").unwrap();
-    rename(
+    let _ = rename(
         &mut device,
         &mut fs,
         "/cov/sub/replace-empty-src",

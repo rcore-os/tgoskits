@@ -24,7 +24,7 @@ pub fn create_root_directory_entry<B: BlockIo>(
     // Format the initial root directory block through modify_new so
     // mutations are persisted in the cache entry rather than on a clone.
     fs.datablock_cache
-        .modify_new(block_dev, data_block, |data| {
+        .modify_new_metadata(block_dev, data_block, |data| {
             let block_size = data.len();
             let dot_name = b".";
             let dot_rec_len = Ext4DirEntry2::entry_len(dot_name.len() as u8);
@@ -68,6 +68,7 @@ pub fn create_root_directory_entry<B: BlockIo>(
                 update_ext4_dirblock_csum32(&fs.superblock, root_inode_num.raw(), root_gen, data);
             }
         })?;
+    fs.datablock_cache.flush_metadata(block_dev, data_block)?;
 
     // Persist a clean directory inode that points at the newly initialized block.
     let dir_mode = Ext4Inode::S_IFDIR | 0o755;
@@ -132,7 +133,7 @@ pub fn create_lost_found_directory<B: BlockIo>(
     // Format the first block of the new directory through modify_new so
     // mutations are persisted in the cache entry rather than on a clone.
     fs.datablock_cache
-        .modify_new(block_dev, data_block, |data| {
+        .modify_new_metadata(block_dev, data_block, |data| {
             let block_size = data.len();
             let dot_name = b".";
             let dot_rec_len = Ext4DirEntry2::entry_len(dot_name.len() as u8);
@@ -176,6 +177,7 @@ pub fn create_lost_found_directory<B: BlockIo>(
                 update_ext4_dirblock_csum32(&fs.superblock, lost_ino.raw(), lost_gen, data);
             }
         })?;
+    fs.datablock_cache.flush_metadata(block_dev, data_block)?;
 
     let (lf_group, _idx) = fs.inode_allocator.global_to_group(lost_ino)?;
     let dir_mode = Ext4Inode::S_IFDIR | 0o755;

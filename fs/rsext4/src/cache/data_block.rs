@@ -1,6 +1,6 @@
 //! Data block cache helpers.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use crate::{blockdev::*, bmalloc::AbsoluteBN, config::USE_MULTILEVEL_CACHE, error::*};
 
@@ -11,7 +11,7 @@ pub type BlockCacheKey = AbsoluteBN;
 #[derive(Debug, Clone)]
 pub struct CachedBlock {
     /// Block contents.
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
     /// Whether the cache entry is dirty.
     pub dirty: bool,
     /// Physical block number.
@@ -25,7 +25,7 @@ pub struct CachedBlock {
 impl CachedBlock {
     pub fn new(data: Vec<u8>, block_num: AbsoluteBN) -> Self {
         Self {
-            data,
+            data: Arc::new(data),
             dirty: false,
             block_num,
             last_access: 0,
@@ -44,6 +44,7 @@ impl CachedBlock {
 /// The portable core deliberately provides no internal synchronization. The
 /// OS adapter owns the filesystem lock and every cache mutation is visible
 /// through an exclusive borrow.
+#[derive(Clone)]
 pub struct DataBlockCache {
     cache: BTreeMap<BlockCacheKey, CachedBlock>,
     /// Unique block numbers ordered from least to most recently used.
@@ -161,7 +162,7 @@ impl DataBlockCache {
             return Ok(());
         };
         if cached.dirty {
-            Self::write_block_static(block_dev, block_num, &cached.data, self.block_size)?;
+            Self::write_block_static(block_dev, block_num, &cached.data, self.block_size, false)?;
         }
         Ok(())
     }
@@ -223,6 +224,35 @@ impl DataBlockCache {
         B: BlockIo,
         F: FnOnce(&mut [u8]),
     {
+        self.modify_with_kind(block_dev, block_num, false, f)
+    }
+
+    /// Modifies one filesystem metadata block and routes write-through through
+    /// the active JBD2/direct metadata handle.
+    pub(crate) fn modify_metadata<B, F>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        block_num: AbsoluteBN,
+        f: F,
+    ) -> Ext4Result<()>
+    where
+        B: BlockIo,
+        F: FnOnce(&mut [u8]),
+    {
+        self.modify_with_kind(block_dev, block_num, true, f)
+    }
+
+    fn modify_with_kind<B, F>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        block_num: AbsoluteBN,
+        is_metadata: bool,
+        f: F,
+    ) -> Ext4Result<()>
+    where
+        B: BlockIo,
+        F: FnOnce(&mut [u8]),
+    {
         self.ensure_loaded(block_dev, block_num)?;
         self.touch(block_num);
 
@@ -230,13 +260,13 @@ impl DataBlockCache {
             .cache
             .get_mut(&block_num)
             .ok_or(Ext4Error::corrupted())?;
-        f(&mut cached.data);
+        f(Arc::make_mut(&mut cached.data).as_mut_slice());
         cached.mark_dirty();
         cached.generation = cached.generation.saturating_add(1);
 
         if !USE_MULTILEVEL_CACHE {
             let data = cached.data.clone();
-            Self::write_block_static(block_dev, block_num, &data, self.block_size)?;
+            Self::write_block_static(block_dev, block_num, &data, self.block_size, is_metadata)?;
             let cached = self
                 .cache
                 .get_mut(&block_num)
@@ -260,6 +290,21 @@ impl DataBlockCache {
     {
         self.create_new(block_dev, block_num)?;
         self.modify(block_dev, block_num, f)
+    }
+
+    /// Initializes a newly allocated filesystem metadata block.
+    pub(crate) fn modify_new_metadata<B, F>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        block_num: AbsoluteBN,
+        f: F,
+    ) -> Ext4Result<()>
+    where
+        B: BlockIo,
+        F: FnOnce(&mut [u8]),
+    {
+        self.create_new(block_dev, block_num)?;
+        self.modify_metadata(block_dev, block_num, f)
     }
 
     /// Writes a contiguous initialized data-block run directly and refreshes
@@ -294,8 +339,7 @@ impl DataBlockCache {
                     .cache
                     .get_mut(&block_num)
                     .ok_or(Ext4Error::corrupted())?;
-                cached
-                    .data
+                Arc::make_mut(&mut cached.data)
                     .copy_from_slice(&data[start..start + self.block_size]);
                 cached.dirty = false;
                 cached.last_access = self.access_counter;
@@ -388,7 +432,32 @@ impl DataBlockCache {
 
         let generation = cached.generation;
         let data = cached.data.clone();
-        Self::write_block_static(block_dev, block_num, &data, self.block_size)?;
+        Self::write_block_static(block_dev, block_num, &data, self.block_size, false)?;
+        if let Some(cached) = self.cache.get_mut(&block_num)
+            && cached.generation == generation
+        {
+            cached.dirty = false;
+            cached.generation = cached.generation.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    /// Flushes one cached filesystem metadata block through the journal owner.
+    pub(crate) fn flush_metadata<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        block_num: AbsoluteBN,
+    ) -> Ext4Result<()> {
+        let Some(cached) = self.cache.get(&block_num) else {
+            return Ok(());
+        };
+        if !cached.dirty {
+            return Ok(());
+        }
+
+        let generation = cached.generation;
+        let data = cached.data.clone();
+        Self::write_block_static(block_dev, block_num, &data, self.block_size, true)?;
         if let Some(cached) = self.cache.get_mut(&block_num)
             && cached.generation == generation
         {
@@ -426,7 +495,13 @@ impl DataBlockCache {
             .cache
             .values()
             .filter(|cached| cached.dirty)
-            .map(|cached| (cached.block_num, cached.generation, cached.data.clone()))
+            .map(|cached| {
+                (
+                    cached.block_num,
+                    cached.generation,
+                    cached.data.as_ref().clone(),
+                )
+            })
             .collect::<Vec<_>>();
         dirty_blocks.sort_by_key(|(block_num, ..)| *block_num);
         dirty_blocks
@@ -438,12 +513,13 @@ impl DataBlockCache {
         block_num: AbsoluteBN,
         data: &[u8],
         block_size: usize,
+        is_metadata: bool,
     ) -> Ext4Result<()> {
         let mut buf = alloc::vec![0u8; block_size];
         block_dev.read_blocks(&mut buf, block_num, 1)?;
         let len = core::cmp::min(data.len(), block_size);
         buf[..len].copy_from_slice(&data[..len]);
-        block_dev.write_blocks(&buf, block_num, 1, false)?;
+        block_dev.write_blocks(&buf, block_num, 1, is_metadata)?;
         Ok(())
     }
 

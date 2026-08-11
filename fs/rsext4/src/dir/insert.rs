@@ -87,7 +87,7 @@ pub(crate) fn insert_dir_entry_raw<B: BlockIo>(
             }
         };
 
-        fs.datablock_cache.modify(device, phys, |data| {
+        fs.datablock_cache.modify_metadata(device, phys, |data| {
             if inserted {
                 return;
             }
@@ -176,7 +176,7 @@ pub(crate) fn insert_dir_entry_raw<B: BlockIo>(
 
     if let Some(modified_block) = modified_phys {
         // Publish the modified directory block before subsequent lookup.
-        fs.datablock_cache.flush(device, modified_block)?;
+        fs.datablock_cache.flush_metadata(device, modified_block)?;
         // The hash tree is stale after insertion; force subsequent lookups
         // through the authoritative linear directory scan.
         if parent_inode.i_flags & Ext4Inode::EXT4_INDEX_FL != 0 {
@@ -227,39 +227,40 @@ pub(crate) fn insert_dir_entry_raw<B: BlockIo>(
         parent_inode.i_block[old_blocks] = new_block.to_u32()?;
     }
 
-    fs.datablock_cache.modify(device, new_block, |data| {
-        for b in data.iter_mut() {
-            *b = 0;
-        }
-        // A new block starts with exactly one live record and an optional checksum tail.
-        let block_size = data.len();
-        let mut full_entry = new_entry;
-        full_entry.rec_len = if has_checksum {
-            (block_size - Ext4DirEntryTail::TAIL_LEN as usize) as u16
-        } else {
-            block_size as u16
-        };
-        full_entry.to_disk_bytes(&mut data[0..8]);
-        let nlen = full_entry.name_len as usize;
-        data[8..8 + nlen].copy_from_slice(&full_entry.name[..nlen]);
-        if has_checksum {
-            let tail = Ext4DirEntryTail::new();
-            let tail_offset = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
-            tail.to_disk_bytes(
-                &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
-            );
-            update_ext4_dirblock_csum32(
-                &fs.superblock,
-                parent_ino_num.raw(),
-                parent_inode.i_generation,
-                data,
-            );
-        }
-    })?;
+    fs.datablock_cache
+        .modify_new_metadata(device, new_block, |data| {
+            for b in data.iter_mut() {
+                *b = 0;
+            }
+            // A new block starts with exactly one live record and an optional checksum tail.
+            let block_size = data.len();
+            let mut full_entry = new_entry;
+            full_entry.rec_len = if has_checksum {
+                (block_size - Ext4DirEntryTail::TAIL_LEN as usize) as u16
+            } else {
+                block_size as u16
+            };
+            full_entry.to_disk_bytes(&mut data[0..8]);
+            let nlen = full_entry.name_len as usize;
+            data[8..8 + nlen].copy_from_slice(&full_entry.name[..nlen]);
+            if has_checksum {
+                let tail = Ext4DirEntryTail::new();
+                let tail_offset = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
+                tail.to_disk_bytes(
+                    &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
+                );
+                update_ext4_dirblock_csum32(
+                    &fs.superblock,
+                    parent_ino_num.raw(),
+                    parent_inode.i_generation,
+                    data,
+                );
+            }
+        })?;
 
     // Immediately write the new directory block to disk so it is visible
     // to subsequent lookups.
-    fs.datablock_cache.flush(device, new_block)?;
+    fs.datablock_cache.flush_metadata(device, new_block)?;
 
     // Clear the hash-tree index flag: the hash tree is stale after
     // adding a directory entry, and forcing linear scan guarantees

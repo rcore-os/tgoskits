@@ -77,7 +77,7 @@ impl HashTreeManager {
     ) -> Result<Vec<u8>, HashTreeError> {
         fs.datablock_cache
             .get_or_load(block_dev, block_num)
-            .map(|cached_block| cached_block.data.clone())
+            .map(|cached_block| cached_block.data.as_ref().clone())
             .map_err(HashTreeError::from)
     }
 
