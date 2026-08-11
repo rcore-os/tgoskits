@@ -24,6 +24,8 @@ use crate::{
 mod deadline;
 mod irq_worker;
 mod ktimer;
+#[cfg(feature = "lockdep")]
+mod lockdep;
 mod membarrier;
 mod pi;
 mod runtime_cpu;
@@ -40,6 +42,10 @@ pub(crate) use deadline::{
     begin_current_park_with_permit, cancel_current_park, commit_current_park,
 };
 pub use ktimer::start_current_ktimer_service;
+#[cfg(feature = "lockdep")]
+pub use lockdep::{
+    collect_current_task_held_locks, pop_current_task_held_lock, push_current_task_held_lock,
+};
 pub use membarrier::{
     MembarrierCommand, membarrier, refresh_current_membarrier_run_queue,
     register_current_membarrier,

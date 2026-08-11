@@ -11,6 +11,7 @@ description = "OS-independent IRQ-safe SMP task scheduling core"
 default = []
 qperf-metrics = []
 host-test = ["ax-sync/host-test"]
+lockdep = ["ax-sync/lockdep"]
 
 [dependencies]
 ax-crate-interface.workspace = true

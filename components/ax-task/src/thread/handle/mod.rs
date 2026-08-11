@@ -1,6 +1,8 @@
 //! Strong, weak, and direct IRQ-wake handles.
 
 use alloc::sync::{Arc, Weak};
+#[cfg(feature = "lockdep")]
+use core::cell::UnsafeCell;
 use core::{
     marker::PhantomData,
     mem::ManuallyDrop,
@@ -28,6 +30,39 @@ const SCHEDULER_ACTIVITY_MAX_READERS: usize = SCHEDULER_ACTIVITY_CLOSED - 1;
 const WAKE_PENDING: u8 = 1 << 0;
 const PARK_NOTIFIED: u8 = 1 << 1;
 const WAKE_STATE_PUBLISHED: u8 = WAKE_PENDING | PARK_NOTIFIED;
+
+#[cfg(feature = "lockdep")]
+struct ThreadHeldLocks {
+    stack: UnsafeCell<ax_sync::HeldLockStack>,
+}
+
+#[cfg(feature = "lockdep")]
+impl ThreadHeldLocks {
+    const fn new() -> Self {
+        Self {
+            stack: UnsafeCell::new(ax_sync::HeldLockStack::new()),
+        }
+    }
+
+    unsafe fn with_mut<R>(&self, operation: impl FnOnce(&mut ax_sync::HeldLockStack) -> R) -> R {
+        // SAFETY: the caller owns the current-task and migration-exclusion
+        // contract documented on `ThreadCore::with_held_locks`.
+        unsafe { operation(&mut *self.stack.get()) }
+    }
+}
+
+#[cfg(feature = "lockdep")]
+impl core::fmt::Debug for ThreadHeldLocks {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("ThreadHeldLocks(..)")
+    }
+}
+
+// SAFETY: the stack is accessed only by its currently executing task while
+// local IRQ exclusion prevents migration and scheduler replacement. Other
+// threads may retain `ThreadCore` references but cannot access this field.
+#[cfg(feature = "lockdep")]
+unsafe impl Sync for ThreadHeldLocks {}
 
 /// A strong reference used to inspect and control a live thread.
 #[derive(Debug)]
@@ -430,6 +465,8 @@ pub(crate) struct ThreadCore {
     charged_runtime_ns: AtomicU64,
     runtime_accounted_until_ns: AtomicU64,
     runtime_running: AtomicBool,
+    #[cfg(feature = "lockdep")]
+    held_locks: ThreadHeldLocks,
     pi_wait_state: PiWaitState,
 }
 
@@ -484,6 +521,8 @@ impl ThreadCore {
             charged_runtime_ns: AtomicU64::new(0),
             runtime_accounted_until_ns: AtomicU64::new(0),
             runtime_running: AtomicBool::new(false),
+            #[cfg(feature = "lockdep")]
+            held_locks: ThreadHeldLocks::new(),
             pi_wait_state: PiWaitState::new(),
         }
     }
@@ -494,6 +533,20 @@ impl ThreadCore {
 
     pub(crate) const fn pi_wait_nodes(&self) -> &PiWaitNodeStorage {
         &self.pi_wait_nodes
+    }
+
+    /// Mutates lockdep state owned by this currently executing thread.
+    ///
+    /// # Safety
+    ///
+    /// The caller must prove that this is the current thread and prevent local
+    /// IRQ entry, migration, and scheduler replacement for the complete call.
+    #[cfg(feature = "lockdep")]
+    pub(crate) unsafe fn with_held_locks<R>(
+        &self,
+        operation: impl FnOnce(&mut ax_sync::HeldLockStack) -> R,
+    ) -> R {
+        unsafe { self.held_locks.with_mut(operation) }
     }
 }
 
@@ -513,6 +566,34 @@ mod tests {
     fn test_core(id: ThreadId, policy: SchedulePolicy) -> Arc<ThreadCore> {
         let sched = Arc::new(ThreadSchedCell::new_test(id, policy));
         Arc::new(ThreadCore::new(id, policy, sched, None, None, None))
+    }
+
+    #[cfg(feature = "lockdep")]
+    #[test]
+    fn held_lock_stacks_are_owned_by_their_threads() {
+        let first = test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default());
+        let second = test_core(ThreadId::from_parts(1, 1), SchedulePolicy::default());
+        let held = ax_sync::HeldLock {
+            class_id: 1,
+            kind: ax_sync::HeldLockKind::Spin,
+            sleep_forbidden: true,
+            addr: 0x1000,
+            caller: core::panic::Location::caller(),
+        };
+
+        // SAFETY: the test has exclusive access to both unpublished cores.
+        unsafe { first.with_held_locks(|stack| stack.push(held)) };
+        // SAFETY: the test has exclusive access to this unpublished core.
+        unsafe {
+            second.with_held_locks(|stack| assert!(!stack.contains_addr(held.addr)));
+        }
+        // SAFETY: the test has exclusive access to this unpublished core.
+        unsafe {
+            first.with_held_locks(|stack| {
+                assert!(stack.contains_addr(held.addr));
+                stack.pop_checked(held.addr);
+            });
+        }
     }
 
     #[test]
