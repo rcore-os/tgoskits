@@ -1,10 +1,14 @@
 use super::*;
-use crate::dir::{FileName, LinkEntryRequest, insert_dir_entry_raw};
+use crate::{
+    bmalloc::BGIndex,
+    cache::bitmap::CacheKey,
+    dir::{FileName, LinkEntryRequest, insert_dir_entry_raw},
+};
 
 // Linux reserves EXT4_DATA_TRANS_BLOCKS + EXT4_INDEX_EXTRA_TRANS_BLOCKS + 1
-// for ext4_link(). Keep the same conservative boundary while this core has a
-// single filesystem-owned handle instead of Linux's extend/restart helpers.
-const HARD_LINK_TRANSACTION_CREDITS: usize = 32;
+// for ext4_link(). On an extent filesystem without quota this is 24 + 12 + 1.
+// Quota is not yet accepted for writable mounts by this core.
+const HARD_LINK_TRANSACTION_CREDITS: usize = 37;
 
 fn directory_entry_type(inode: &Ext4Inode) -> Ext4Result<u8> {
     match inode.i_mode & Ext4Inode::S_IFMT {
@@ -61,6 +65,12 @@ fn link_inode_at_in_transaction<B: BlockIo>(
         Err(error) => return Err(error),
     }
 
+    let free_blocks_before = fs
+        .group_descs
+        .iter()
+        .map(|descriptor| descriptor.free_blocks_count())
+        .collect::<Vec<_>>();
+
     fs.set_inode_links_count(block_dev, request.target, new_links)?;
     insert_dir_entry_raw(
         fs,
@@ -77,6 +87,25 @@ fn link_inode_at_in_transaction<B: BlockIo>(
     // and the directory entry cannot be split across transactions.
     fs.inodetable_cache.flush(block_dev, request.target)?;
     fs.inodetable_cache.flush(block_dev, request.parent)?;
+
+    let allocated_groups = fs
+        .group_descs
+        .iter()
+        .zip(&free_blocks_before)
+        .enumerate()
+        .filter_map(|(index, (descriptor, before))| {
+            (descriptor.free_blocks_count() < *before).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    for index in &allocated_groups {
+        let group = BGIndex::new(u32::try_from(*index).map_err(|_| Ext4Error::overflow())?);
+        fs.bitmap_cache
+            .flush(block_dev, &CacheKey::new_block(group))?;
+        fs.sync_group_descriptor(block_dev, group)?;
+    }
+    if !allocated_groups.is_empty() {
+        fs.sync_superblock(block_dev)?;
+    }
 
     fs.get_inode_by_num(block_dev, request.target)
 }

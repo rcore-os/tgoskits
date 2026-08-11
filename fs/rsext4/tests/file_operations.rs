@@ -595,6 +595,90 @@ mod file_functional_tests {
     }
 
     #[test]
+    fn failed_hard_link_directory_growth_restores_allocation_after_remount() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/source").expect("source mkdir failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/destination").expect("destination mkdir failed");
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/source/original",
+            Some(b"directory growth target"),
+            None,
+        )
+        .expect("target creation failed");
+
+        for index in 0..15 {
+            let name = format!("{index:03}{}", "a".repeat(252));
+            let path = format!("/destination/{name}");
+            mkfile(&mut jbd2_dev, &mut fs, &path, None, None)
+                .expect("directory fill entry creation failed");
+        }
+
+        let (target_number, target_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/source/original")
+                .expect("target lookup failed")
+                .expect("target missing");
+        let old_links = target_inode.i_links_count;
+        let (destination_number, destination_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/destination")
+                .expect("destination lookup failed")
+                .expect("destination missing");
+        assert_eq!(destination_inode.size(), BLOCK_SIZE as u64);
+
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        let free_blocks_before = fs.superblock.free_blocks_count();
+        let block_bitmap = fs.group_descs[0].block_bitmap();
+        jbd2_dev
+            .set_journal_use(false)
+            .expect("disable journal for direct fault injection");
+        fail_after_write_sector.set(Some(block_bitmap));
+
+        let link_name = format!("grow{}", "z".repeat(251));
+        let link_path = format!("/destination/{link_name}");
+        let error = link(&mut fs, &mut jbd2_dev, &link_path, "/source/original")
+            .expect_err("block-bitmap failure must abort growing hard link");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        drop(fs);
+        let device = jbd2_dev.into_inner();
+        let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut remounted = mount(&mut remount_dev).expect("remount after failed growth");
+        let (remounted_target, remounted_inode) =
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/source/original")
+                .expect("remounted target lookup failed")
+                .expect("remounted target missing");
+        assert_eq!(remounted_target, target_number);
+        assert_eq!(remounted_inode.i_links_count, old_links);
+        assert!(
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, &link_path)
+                .expect("remounted destination lookup failed")
+                .is_none(),
+            "a failed growing hard link must not publish its destination name"
+        );
+        let remounted_destination = remounted
+            .get_inode_by_num(&mut remount_dev, destination_number)
+            .expect("remounted destination inode read failed");
+        assert_eq!(remounted_destination.size(), BLOCK_SIZE as u64);
+        assert_eq!(remounted.superblock.free_blocks_count(), free_blocks_before);
+        let second_block = loopfile::resolve_inode_block(
+            &remounted,
+            &mut remount_dev,
+            destination_number,
+            &mut { remounted_destination },
+            1,
+        )
+        .expect("remounted second block lookup failed");
+        assert!(second_block.is_none());
+    }
+
+    #[test]
     fn final_unlink_keeps_inode_alive_until_explicit_reap() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
