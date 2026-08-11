@@ -1,14 +1,32 @@
 //! Guest address-space construction for VM preparation.
 
-use std::vec::Vec;
+use std::{
+    collections::{BTreeMap, btree_map::Entry},
+    sync::Mutex,
+    vec::Vec,
+};
 
+use ax_memory_addr::{PAGE_SIZE_4K, align_up_4k};
 use axdevice::DeviceNodeKind;
 use axdevice_base::Resource;
-use axvm_types::HostDeviceAssignment;
+use axvm_types::{HostDeviceAssignment, HostPhysAddr};
 
 use super::super::*;
+use crate::{
+    host::{HostMemory, default_host},
+    sync::MutexExt,
+};
 
-const IVSHMEM_BAR2_SLOT: &str = "bar2";
+const SHARED_MEMORY_MAPPING_NAME: &str = "shared-memory";
+
+#[derive(Debug, Clone, Copy)]
+struct SharedMemoryBacking {
+    base_hpa: usize,
+    size: usize,
+}
+
+static SHARED_MEMORY_BACKINGS: Mutex<BTreeMap<u64, SharedMemoryBacking>> =
+    Mutex::new(BTreeMap::new());
 
 impl AxVMResources {
     pub(crate) fn prepare_guest_address_space(
@@ -40,7 +58,7 @@ impl AxVMResources {
         owned_regions: &[GuestOwnedRegion],
     ) -> AxVmResult {
         let graph = self.planned_devices().graph();
-        let mut shared_mappings = Vec::new();
+        let mut shared_memory_mappings = Vec::new();
         let mut emulated_resources = Vec::new();
         for node in graph.nodes().filter(|node| {
             matches!(
@@ -49,24 +67,27 @@ impl AxVMResources {
             )
         }) {
             let resolved = graph.resources_for(node.id())?;
+            for (_slot, shared) in resolved.shared_memory_ranges() {
+                let base_gpa = usize::try_from(shared.base()).map_err(|_| {
+                    AxVmError::invalid_config("shared-memory GPA does not fit usize")
+                })?;
+                let size = usize::try_from(shared.size()).map_err(|_| {
+                    AxVmError::invalid_config("shared-memory size does not fit usize")
+                })?;
+                let requested_backing = usize::try_from(shared.host_backing()).map_err(|_| {
+                    AxVmError::invalid_config("shared-memory backing does not fit usize")
+                })?;
+                let base_hpa =
+                    shared_memory_backing_for(shared.sharing_key(), size, requested_backing)?;
+                shared_memory_mappings.push(HostDeviceAssignment {
+                    name: SHARED_MEMORY_MAPPING_NAME.into(),
+                    base_gpa,
+                    base_hpa,
+                    length: size,
+                });
+            }
             for (slot, base, size) in resolved.mmio_ranges() {
-                if node.id().as_str().contains("ivshmem") {
-                    if slot.as_str() == IVSHMEM_BAR2_SLOT {
-                        shared_mappings.push(HostDeviceAssignment {
-                            name: std::string::String::new(),
-                            base_gpa: usize::try_from(base).map_err(|_| {
-                                AxVmError::invalid_config("ivshmem BAR2 GPA does not fit usize")
-                            })?,
-                            base_hpa: usize::try_from(base).map_err(|_| {
-                                AxVmError::invalid_config("ivshmem BAR2 HPA does not fit usize")
-                            })?,
-                            length: usize::try_from(size).map_err(|_| {
-                                AxVmError::invalid_config("ivshmem BAR2 size does not fit usize")
-                            })?,
-                        });
-                        continue;
-                    }
-                }
+                let _ = slot;
                 emulated_resources.push(Resource::MmioRange { base, size });
             }
         }
@@ -87,12 +108,12 @@ impl AxVMResources {
                 })
             })
             .collect::<AxVmResult<Vec<_>>>()?;
-        shared_mappings.extend(passthrough_devices);
+        shared_memory_mappings.extend(passthrough_devices);
         let address_layout = build_address_layout(
             self.config.address_space_policy(),
             VM_ASPACE_BASE,
             stage2_guest_address_space_size(self.nested_paging.gpa_bits),
-            &shared_mappings,
+            &shared_memory_mappings,
             &[],
             owned_regions,
             &emulated_resources,
@@ -139,6 +160,60 @@ impl AxVMResources {
 
         regions
     }
+}
+
+fn shared_memory_backing_for(
+    sharing_key: u64,
+    size: usize,
+    requested_backing: usize,
+) -> AxVmResult<usize> {
+    let mut backings = SHARED_MEMORY_BACKINGS.lock_unpoisoned();
+    match backings.entry(sharing_key) {
+        Entry::Occupied(entry) => {
+            let backing = entry.get();
+            if backing.size != size {
+                return Err(AxVmError::invalid_config(format!(
+                    "shared-memory key {sharing_key} size mismatch: {size:#x} != {:#x}",
+                    backing.size
+                )));
+            }
+            if requested_backing != 0 && requested_backing != backing.base_hpa {
+                return Err(AxVmError::invalid_config(format!(
+                    "shared-memory key {sharing_key} backing mismatch: {requested_backing:#x} != \
+                     {:#x}",
+                    backing.base_hpa
+                )));
+            }
+            Ok(backing.base_hpa)
+        }
+        Entry::Vacant(entry) => {
+            let base_hpa = if requested_backing != 0 {
+                requested_backing
+            } else {
+                alloc_shared_memory_backing(size)?
+            };
+            entry.insert(SharedMemoryBacking { base_hpa, size });
+            Ok(base_hpa)
+        }
+    }
+}
+
+fn alloc_shared_memory_backing(size: usize) -> AxVmResult<usize> {
+    let size = align_up_4k(size);
+    let frames = size / PAGE_SIZE_4K;
+    let base_hpa = default_host()
+        .alloc_contiguous_frames(frames, PAGE_SIZE_4K)
+        .ok_or(AxVmError::OutOfMemory {
+            operation: "allocate shared-memory backing",
+        })?;
+    // The first peer must not observe data left by an earlier host allocation.
+    unsafe {
+        default_host()
+            .phys_to_virt(HostPhysAddr::from(base_hpa.as_usize()))
+            .as_mut_ptr()
+            .write_bytes(0, size);
+    }
+    Ok(base_hpa.as_usize())
 }
 
 fn stage2_guest_address_space_size(gpa_bits: usize) -> usize {

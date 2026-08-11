@@ -44,6 +44,15 @@ impl<'a> AllocationState<'a> {
             } => self
                 .addresses
                 .allocate_mmio(requester, slot, *size, *alignment, *request),
+            DeviceRequirement::SharedMemory {
+                slot,
+                size,
+                alignment,
+                request,
+                shared,
+            } => self
+                .addresses
+                .allocate_shared_memory(requester, slot, *size, *alignment, *request, *shared),
             DeviceRequirement::Pio {
                 slot,
                 size,

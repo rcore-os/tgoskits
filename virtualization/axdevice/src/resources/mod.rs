@@ -14,6 +14,6 @@ pub use plan::{VmResourcePlan, VmResourcePlanner};
 pub use pool::ResourcePools;
 pub use requirements::{
     DevicePlanRequest, DeviceRequirement, DeviceRequirements, MsiResourceRequest, ResourceRequest,
-    ResourceSlot,
+    ResourceSlot, SharedMemoryRequest,
 };
-pub use resolved::{ResolvedDeviceResources, ResolvedMsi, ResolvedWiredIrq};
+pub use resolved::{ResolvedDeviceResources, ResolvedMsi, ResolvedSharedMemory, ResolvedWiredIrq};

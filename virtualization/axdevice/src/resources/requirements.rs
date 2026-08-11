@@ -112,6 +112,37 @@ impl MsiResourceRequest {
     }
 }
 
+/// A shared-memory window requested by a virtual device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SharedMemoryRequest {
+    sharing_key: u64,
+    host_backing: u64,
+}
+
+impl SharedMemoryRequest {
+    /// Creates a shared-memory request.
+    ///
+    /// `sharing_key` groups windows from different VMs that must resolve to the
+    /// same backing memory. `host_backing == 0` asks the VM layer to allocate a
+    /// backing object.
+    pub const fn new(sharing_key: u64, host_backing: u64) -> Self {
+        Self {
+            sharing_key,
+            host_backing,
+        }
+    }
+
+    /// Returns the VM-global sharing key.
+    pub const fn sharing_key(self) -> u64 {
+        self.sharing_key
+    }
+
+    /// Returns the optional host physical backing address.
+    pub const fn host_backing(self) -> u64 {
+        self.host_backing
+    }
+}
+
 /// One resource required by a virtual-device model.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DeviceRequirement {
@@ -125,6 +156,19 @@ pub enum DeviceRequirement {
         alignment: u64,
         /// Base-address request.
         request: ResourceRequest<u64>,
+    },
+    /// A guest physical shared-memory window.
+    SharedMemory {
+        /// Model-defined slot.
+        slot: ResourceSlot,
+        /// Window size in bytes.
+        size: u64,
+        /// Required power-of-two alignment.
+        alignment: u64,
+        /// Guest base-address request.
+        request: ResourceRequest<u64>,
+        /// Shared-memory backing request.
+        shared: SharedMemoryRequest,
     },
     /// An x86 port-I/O range.
     Pio {
@@ -171,6 +215,7 @@ impl DeviceRequirement {
     pub const fn slot(&self) -> &ResourceSlot {
         match self {
             Self::Mmio { slot, .. }
+            | Self::SharedMemory { slot, .. }
             | Self::Pio { slot, .. }
             | Self::WiredIrq { slot, .. }
             | Self::HostIrq { slot, .. }
@@ -181,6 +226,7 @@ impl DeviceRequirement {
     pub(crate) const fn is_fixed(&self) -> bool {
         match self {
             Self::Mmio { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
+            Self::SharedMemory { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
             Self::Pio { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
             Self::WiredIrq { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
             Self::HostIrq { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
@@ -227,6 +273,32 @@ impl DeviceRequirements {
             size,
             alignment,
             request,
+        })?;
+        Ok(self)
+    }
+
+    /// Adds one shared-memory requirement.
+    pub fn with_shared_memory(
+        mut self,
+        slot: ResourceSlot,
+        size: u64,
+        alignment: u64,
+        request: ResourceRequest<u64>,
+        shared: SharedMemoryRequest,
+    ) -> DeviceManagerResult<Self> {
+        if size == 0 || !alignment.is_power_of_two() {
+            return Err(invalid_requirement(
+                "declare shared-memory resource",
+                &slot,
+                "non-zero size and power-of-two alignment",
+            ));
+        }
+        self.insert(DeviceRequirement::SharedMemory {
+            slot,
+            size,
+            alignment,
+            request,
+            shared,
         })?;
         Ok(self)
     }

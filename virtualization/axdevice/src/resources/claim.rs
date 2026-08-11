@@ -195,6 +195,15 @@ impl ResourceClaimSet {
             .ok_or_else(|| claim_kind_error(&self.device_id, slot, "PIO"))
     }
 
+    pub(crate) fn shared_memory(
+        &self,
+        slot: &ResourceSlot,
+    ) -> DeviceManagerResult<ResolvedSharedMemory> {
+        self.claim(slot)?
+            .shared_memory()
+            .ok_or_else(|| claim_kind_error(&self.device_id, slot, "shared memory"))
+    }
+
     pub(crate) fn wired_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedWiredIrq> {
         self.claim(slot)?
             .wired_irq()
@@ -313,6 +322,13 @@ impl ResourceLease {
         self.resource
             .pio()
             .ok_or_else(|| lease_kind_error(&self.key, "PIO"))
+    }
+
+    /// Returns the leased shared-memory window.
+    pub fn shared_memory(&self) -> DeviceManagerResult<ResolvedSharedMemory> {
+        self.resource
+            .shared_memory()
+            .ok_or_else(|| lease_kind_error(&self.key, "shared memory"))
     }
 
     /// Returns the leased wired interrupt.

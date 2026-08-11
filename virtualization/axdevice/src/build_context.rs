@@ -36,6 +36,16 @@ impl<'a> DeviceBuildContext<'a> {
         self.resources.consume(&slot, ResourceClaimSet::pio)
     }
 
+    /// Consumes a planned shared-memory slot.
+    pub fn shared_memory(
+        &mut self,
+        slot: impl AsRef<str>,
+    ) -> DeviceManagerResult<ResolvedSharedMemory> {
+        let slot = ResourceSlot::new(slot.as_ref())?;
+        self.resources
+            .consume(&slot, ResourceClaimSet::shared_memory)
+    }
+
     /// Consumes a planned host physical IRQ slot.
     ///
     /// This returns only the immutable identity. Architecture code remains

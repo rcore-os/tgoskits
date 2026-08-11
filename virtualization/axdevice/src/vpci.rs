@@ -10,7 +10,7 @@ use axvm_types::GuestPhysAddr;
 
 use crate::{
     DeviceBuildContext, DeviceBundle, DeviceFirmwareSpec, DeviceManagerResult, DeviceModel,
-    DeviceRequirements, ResourceRequest, ResourceSlot,
+    DeviceRequirements, ResourceRequest, ResourceSlot, SharedMemoryRequest,
 };
 
 const PCI_CONFIG_SPACE_SIZE: usize = 256;
@@ -124,6 +124,8 @@ pub struct VirtualPciEndpointConfig {
     pub bar2_base: u64,
     /// BAR2 size in bytes.
     pub bar2_size: u64,
+    /// Optional host physical backing address for BAR2 shared memory.
+    pub bar2_host_backing: u64,
     /// Legacy PCI interrupt line exposed in configuration space.
     pub interrupt_line: u8,
     /// Legacy PCI interrupt pin exposed in configuration space.
@@ -144,6 +146,7 @@ impl Default for VirtualPciEndpointConfig {
             bar0_size: DEFAULT_BAR0_SIZE as u64,
             bar2_base: 0,
             bar2_size: 0,
+            bar2_host_backing: 0,
             interrupt_line: PCI_INTERRUPT_LINE_NONE,
             interrupt_pin: PCI_INTERRUPT_PIN_NONE,
             kind: VirtualPciEndpointKind::Dummy,
@@ -199,6 +202,9 @@ impl VirtualPciEndpointConfig {
         }
         if let Some(value) = cfg_list.get(14).copied() {
             config.bar2_size = value as u64;
+        }
+        if let Some(value) = cfg_list.get(15).copied() {
+            config.bar2_host_backing = value as u64;
         }
         if config.bar2_size != 0 || config.bar2_base != 0 {
             validate_bar_config("BAR2", config.bar2_base, config.bar2_size)?;
@@ -776,12 +782,24 @@ impl DeviceModel for VirtualPciHostModel {
                 ResourceRequest::Fixed(self.endpoint.bar0_base),
             )?;
         if self.endpoint.bar2_size != 0 {
-            requirements = requirements.with_mmio(
-                ResourceSlot::new(BAR2_SLOT)?,
-                self.endpoint.bar2_size,
-                self.endpoint.bar2_size,
-                ResourceRequest::Fixed(self.endpoint.bar2_base),
-            )?;
+            requirements = match self.endpoint.kind {
+                VirtualPciEndpointKind::Ivshmem(config) => requirements.with_shared_memory(
+                    ResourceSlot::new(BAR2_SLOT)?,
+                    self.endpoint.bar2_size,
+                    self.endpoint.bar2_size,
+                    ResourceRequest::Fixed(self.endpoint.bar2_base),
+                    SharedMemoryRequest::new(
+                        config.link_id as u64,
+                        self.endpoint.bar2_host_backing,
+                    ),
+                )?,
+                VirtualPciEndpointKind::Dummy => requirements.with_mmio(
+                    ResourceSlot::new(BAR2_SLOT)?,
+                    self.endpoint.bar2_size,
+                    self.endpoint.bar2_size,
+                    ResourceRequest::Fixed(self.endpoint.bar2_base),
+                )?,
+            };
         }
         if let Some((controller, input)) = self.irq {
             requirements = requirements.with_wired_irq(
@@ -803,7 +821,14 @@ impl DeviceModel for VirtualPciHostModel {
         let _ = context.mmio(ECAM_SLOT)?;
         let _ = context.mmio(BAR0_SLOT)?;
         if self.endpoint.bar2_size != 0 {
-            let _ = context.mmio(BAR2_SLOT)?;
+            match self.endpoint.kind {
+                VirtualPciEndpointKind::Ivshmem(_) => {
+                    let _ = context.shared_memory(BAR2_SLOT)?;
+                }
+                VirtualPciEndpointKind::Dummy => {
+                    let _ = context.mmio(BAR2_SLOT)?;
+                }
+            }
         }
         let irq = if self.irq.is_some() {
             Some(context.irq(IRQ_SLOT)?)
@@ -1019,6 +1044,7 @@ mod tests {
                 bar0_size: 0x1000,
                 bar2_base: 0,
                 bar2_size: 0,
+                bar2_host_backing: 0,
                 interrupt_line: PCI_INTERRUPT_LINE_NONE,
                 interrupt_pin: PCI_INTERRUPT_PIN_NONE,
                 kind: VirtualPciEndpointKind::Dummy,
@@ -1047,6 +1073,7 @@ mod tests {
                 bar0_size: 0x1000,
                 bar2_base: BAR2_BASE as u64,
                 bar2_size: 0x20_0000,
+                bar2_host_backing: 0,
                 interrupt_line: 60,
                 interrupt_pin: PCI_INTERRUPT_PIN_INTA,
                 kind: VirtualPciEndpointKind::Ivshmem(IvshmemPciConfig {
