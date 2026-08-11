@@ -31,9 +31,9 @@ pub use disknode::{Ext4TimeSpec, Ext4Timestamp};
 // Re-export the unified error model.
 pub use error::{ErrorContext, Ext4Error, Ext4ErrorKind, Ext4Result, FeatureSet};
 pub use ext4::{
-    DirectoryEntry, DirectoryEntryType, Ext4, Ext4FileSystem, InodeInfo, MkfsOptions, MountOptions,
-    MutationContext, find_file, mkfs, mkfs_with_options, mount, mount_with_options,
-    mount_with_options_and_observer, umount,
+    DirectoryEntry, DirectoryEntryType, Ext4, Ext4FileSystem, FilePermissions, InodeInfo,
+    MkfsOptions, MountOptions, MutationContext, find_file, mkfs, mkfs_with_options, mount,
+    mount_with_options, mount_with_options_and_observer, umount,
 };
 pub use file::{
     create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file, free_inode,

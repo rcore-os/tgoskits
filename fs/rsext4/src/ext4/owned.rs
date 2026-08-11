@@ -7,10 +7,14 @@ use crate::{
     blockdev::Jbd2Dev,
     bmalloc::InodeNumber,
     checksum::{verify_ext4_dirblock_checksum, verify_ext4_dx_checksum},
-    dir::FileName,
+    dir::{CreateEntryRequest, FileName, create_directory_at},
     disknode::Ext4Inode,
+    entries::Ext4DirEntry2,
     error::{Ext4Error, Ext4ErrorKind, Ext4Result},
-    file::{find_named_entry_in_parent, read_inode_data_into, truncate_inode, write_inode_data},
+    file::{
+        create_inode_at, find_named_entry_in_parent, read_inode_data_into, truncate_inode,
+        write_inode_data,
+    },
     hashtree::Ext4InodeHashTreeExt,
     io::BlockIo,
     loopfile::resolve_inode_blocks,
@@ -76,6 +80,30 @@ impl MutationContext {
             project_id,
             umask,
         }
+    }
+}
+
+/// Permission bits supplied by a VFS after its policy checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct FilePermissions(u16);
+
+impl FilePermissions {
+    const VALID_BITS: u16 = 0o7777;
+
+    pub fn new(bits: u16) -> Ext4Result<Self> {
+        if bits & !Self::VALID_BITS != 0 {
+            return Err(Ext4Error::invalid_input().with_operation("inode:permissions"));
+        }
+        Ok(Self(bits))
+    }
+
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    const fn masked_by(self, umask: u16) -> u16 {
+        self.0 & !(umask & 0o777)
     }
 }
 
@@ -300,6 +328,58 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
             }
         }
         Ok(output)
+    }
+
+    /// Creates an empty regular file below an already resolved directory.
+    pub fn create_regular_file(
+        &mut self,
+        context: MutationContext,
+        parent: InodeNumber,
+        name: FileName<'_>,
+        permissions: FilePermissions,
+    ) -> Ext4Result<InodeInfo> {
+        self.ensure_writable("inode:create")?;
+        create_inode_at(
+            &mut self.device,
+            &mut self.filesystem,
+            CreateEntryRequest {
+                parent,
+                name,
+                mode: Ext4Inode::S_IFREG | permissions.masked_by(context.umask),
+                uid: context.uid,
+                gid: context.gid,
+            },
+            None,
+            Ext4DirEntry2::EXT4_FT_REG_FILE,
+        )?;
+        self.lookup_child(parent, name)?.ok_or_else(|| {
+            Ext4Error::corrupted().with_operation("inode:create_missing_directory_entry")
+        })
+    }
+
+    /// Creates a directory below an already resolved directory.
+    pub fn create_directory(
+        &mut self,
+        context: MutationContext,
+        parent: InodeNumber,
+        name: FileName<'_>,
+        permissions: FilePermissions,
+    ) -> Ext4Result<InodeInfo> {
+        self.ensure_writable("directory:create")?;
+        create_directory_at(
+            &mut self.device,
+            &mut self.filesystem,
+            CreateEntryRequest {
+                parent,
+                name,
+                mode: Ext4Inode::S_IFDIR | permissions.masked_by(context.umask),
+                uid: context.uid,
+                gid: context.gid,
+            },
+        )?;
+        self.lookup_child(parent, name)?.ok_or_else(|| {
+            Ext4Error::corrupted().with_operation("directory:create_missing_directory_entry")
+        })
     }
 
     fn inspect_inode(&self, number: InodeNumber, inode: Ext4Inode) -> Ext4Result<InodeInfo> {
