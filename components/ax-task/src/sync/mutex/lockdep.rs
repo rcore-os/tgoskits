@@ -1,7 +1,7 @@
 use core::panic::Location;
 
 use crate::sync::{
-    lockdep::{self as common, HeldLockSnapshot, LockSubclass, PreparedAcquire},
+    lockdep::{self as common, HeldLockSnapshot, LockSubclass, LockdepMapView, PreparedAcquire},
     mutex::RawMutex,
 };
 
@@ -15,23 +15,41 @@ pub(crate) struct LockdepAcquire {
     inner: common::Lockdep,
 }
 
+pub(in crate::sync) struct LockdepAcquireRequest<'lock> {
+    pub map: LockdepMapView<'lock>,
+    pub addr: usize,
+    pub subclass: LockSubclass,
+    pub is_try: bool,
+    pub caller: &'static Location<'static>,
+}
+
 impl LockdepAcquire {
     #[inline(always)]
     #[track_caller]
     pub(crate) fn prepare_nested(lock: &RawMutex, is_try: bool, subclass: LockSubclass) -> Self {
         let addr = lock as *const _ as *const () as usize;
-        let prepared = common::prepare_acquire_with_snapshot_nested_with_sleep(
-            &lock.lockdep,
-            "mutex",
+        Self::prepare_view(LockdepAcquireRequest {
+            map: lock.lockdep.view(),
             addr,
-            Location::caller(),
-            current_held_locks(),
             subclass,
+            is_try,
+            caller: Location::caller(),
+        })
+    }
+
+    pub(in crate::sync) fn prepare_view(request: LockdepAcquireRequest<'_>) -> Self {
+        let prepared = common::prepare_acquire_with_snapshot_view_nested_with_sleep(
+            request.map,
+            "mutex",
+            request.addr,
+            request.caller,
+            current_held_locks(),
+            request.subclass,
             false,
         );
-        let inner = common::Lockdep::prepare("mutex", addr, is_try, None);
+        let inner = common::Lockdep::prepare("mutex", request.addr, request.is_try, None);
         Self {
-            addr,
+            addr: request.addr,
             prepared,
             inner,
         }
@@ -49,6 +67,11 @@ impl LockdepAcquire {
 #[inline(always)]
 pub(crate) fn release(lock: &RawMutex) {
     let addr = lock as *const _ as *const () as usize;
+    release_external(addr);
+}
+
+#[inline(always)]
+pub(in crate::sync) fn release_external(addr: usize) {
     common::release_task(addr);
     common::Lockdep::release("mutex", addr, None);
 }

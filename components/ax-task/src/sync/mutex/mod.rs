@@ -23,6 +23,12 @@ pub struct RawMutex {
     pub(crate) lockdep: super::lockdep::LockdepMap,
 }
 
+/// Borrowed execution state for the unique native PI-mutex algorithm.
+pub(in crate::sync) struct PiMutexAlgorithm<'lock> {
+    core: PiMutexCoreView<'lock>,
+    next_waiter_sequence: &'lock AtomicU64,
+}
+
 enum LockAttempt {
     Acquired,
     Contended,
@@ -102,9 +108,13 @@ impl RawMutex {
         }
     }
 
+    const fn algorithm(&self) -> PiMutexAlgorithm<'_> {
+        PiMutexAlgorithm::new(self.core.view(), &self.next_waiter_sequence)
+    }
+
     /// Returns whether the current thread owns this mutex.
     pub fn is_owned_by_current(&self) -> bool {
-        self.core.is_owned_by(Self::current_task_id())
+        self.algorithm().is_owned_by_current()
     }
 
     #[inline(always)]
@@ -112,13 +122,29 @@ impl RawMutex {
     fn mutex_ref(&self) -> PiMutexRef<'_> {
         core_result(self.core.mutex_ref(), "borrow PI mutex core")
     }
+}
+
+impl<'lock> PiMutexAlgorithm<'lock> {
+    pub(in crate::sync) const fn new(
+        core: PiMutexCoreView<'lock>,
+        next_waiter_sequence: &'lock AtomicU64,
+    ) -> Self {
+        Self {
+            core,
+            next_waiter_sequence,
+        }
+    }
+
+    pub(in crate::sync) fn is_owned_by_current(&self) -> bool {
+        self.core.is_owned_by(Self::current_task_id())
+    }
 
     #[inline(always)]
     fn current_task_id() -> PiTaskId {
         task_result(crate::current_thread_id(), "capture current PI mutex task").into()
     }
 
-    fn lock_pi(&self) {
+    pub(in crate::sync) fn lock_pi(&self) {
         let mut blocking_context_validated = false;
 
         loop {
@@ -325,7 +351,7 @@ impl RawMutex {
         }
     }
 
-    fn try_lock_pi(&self) -> bool {
+    pub(in crate::sync) fn try_lock_pi(&self) -> bool {
         let current = Self::current_task_id();
         match self.core.try_acquire(current) {
             Ok(PiMutexAcquire::Acquired) => true,
@@ -351,7 +377,7 @@ impl RawMutex {
         }
     }
 
-    unsafe fn unlock_pi(&self) {
+    pub(in crate::sync) unsafe fn unlock_pi(&self) {
         // SAFETY: the caller is the lock_api raw-mutex owner and retains that
         // exclusive authority through this complete release transaction.
         match core_result(
@@ -377,6 +403,32 @@ impl RawMutex {
             },
             "release contended PI mutex",
         );
+    }
+
+    pub(in crate::sync) fn is_locked(&self) -> bool {
+        self.core.is_locked()
+    }
+}
+
+impl RawMutex {
+    fn lock_pi(&self) {
+        self.algorithm().lock_pi();
+    }
+
+    fn lock_pi_interruptible(
+        &self,
+        should_interrupt: impl FnMut() -> bool,
+    ) -> Result<(), PiMutexLockInterrupted> {
+        self.algorithm().lock_pi_interruptible(should_interrupt)
+    }
+
+    fn try_lock_pi(&self) -> bool {
+        self.algorithm().try_lock_pi()
+    }
+
+    unsafe fn unlock_pi(&self) {
+        // SAFETY: forwarded from the caller's raw-mutex ownership contract.
+        unsafe { self.algorithm().unlock_pi() };
     }
 
     #[cfg(feature = "lockdep")]
@@ -460,7 +512,7 @@ unsafe impl lock_api::RawMutex for RawMutex {
 
     #[inline(always)]
     fn is_locked(&self) -> bool {
-        self.core.is_locked()
+        self.algorithm().is_locked()
     }
 }
 

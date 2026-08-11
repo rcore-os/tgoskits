@@ -739,26 +739,6 @@ pub fn current_task_held_lock_snapshot() -> HeldLockSnapshot {
     snapshot
 }
 
-pub fn prepare_acquire_with_snapshot_nested_with_sleep(
-    map: &LockdepMap,
-    lock_kind: &'static str,
-    addr: usize,
-    caller: &'static Location<'static>,
-    held_before: HeldLockSnapshot,
-    subclass: LockSubclass,
-    sleep_forbidden: bool,
-) -> PreparedAcquire {
-    prepare_acquire_with_snapshot_view_nested_with_sleep(
-        map.view(),
-        lock_kind,
-        addr,
-        caller,
-        held_before,
-        subclass,
-        sleep_forbidden,
-    )
-}
-
 pub(crate) fn prepare_acquire_with_snapshot_view_nested_with_sleep(
     map: LockdepMapView<'_>,
     lock_kind: &'static str,
