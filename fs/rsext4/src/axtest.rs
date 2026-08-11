@@ -466,7 +466,7 @@ fn rsext4_disk_format_and_journal_struct_rules_hold() {
             CommitHeader, JBD2_BLOCKTYPE_COMMIT, JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_CRC32C_CHKSUM,
             JBD2_MAGIC, JBD2_TAG_SIZE, Jbd2JournalBlockTail, Jbd2JournalRevokeHeadS,
             Jbd2JournalRevokeTail, JournalBlockTag3S, JournalBlockTagS, JournalHeaderS,
-            JournalSuperBllockS,
+            JournalSuperBlock,
         },
     };
 
@@ -532,7 +532,7 @@ fn rsext4_disk_format_and_journal_struct_rules_hold() {
     ax_assert_eq!(parsed_header.h_magic, JBD2_MAGIC);
     ax_assert_eq!(parsed_header.h_sequence, 0x1122_3344);
 
-    let mut journal_sb = JournalSuperBllockS {
+    let mut journal_sb = JournalSuperBlock {
         s_header: journal_header,
         s_blocksize: BLOCK_SIZE_U32,
         s_maxlen: 1024,
@@ -546,7 +546,7 @@ fn rsext4_disk_format_and_journal_struct_rules_hold() {
     };
     let mut journal_bytes = [0_u8; 1024];
     journal_sb.to_disk_bytes(&mut journal_bytes);
-    let parsed_sb = JournalSuperBllockS::from_disk_bytes(&journal_bytes);
+    let parsed_sb = JournalSuperBlock::from_disk_bytes(&journal_bytes);
     ax_assert_eq!(parsed_sb.s_blocksize, BLOCK_SIZE_U32);
     ax_assert_eq!(parsed_sb.s_sequence, 0x0102_0304);
     ax_assert_eq!(parsed_sb.s_users[0], 0x55);
@@ -891,7 +891,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
 
     use rsext4::{
         BLOCK_SIZE, BlockIo, Ext4Result, Jbd2Dev, bmalloc::AbsoluteBN, disknode::Ext4Timestamp,
-        jbd2::jbdstruct::JournalSuperBllockS, runtime::Clock,
+        jbd2::jbdstruct::JournalSuperBlock, runtime::Clock,
     };
 
     struct JournalMemoryDevice {
@@ -1013,7 +1013,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
     ax_assert_eq!(dev.buffer()[0], 0x66);
 
     dev.set_journal_use(true).unwrap();
-    let journal_superblock = JournalSuperBllockS {
+    let journal_superblock = JournalSuperBlock {
         s_sequence: 7,
         s_maxlen: 8,
         ..Default::default()

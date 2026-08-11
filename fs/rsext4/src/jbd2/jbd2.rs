@@ -165,7 +165,7 @@ impl<'a> ReplayRing<'a> {
 
 impl JBD2DEVSYSTEM {
     fn has_incompat_feature(&self, feature: u32) -> bool {
-        self.jbd2_super_block.s_feature_incompat & feature != 0
+        !self.jbd2_super_block.is_v1() && self.jbd2_super_block.s_feature_incompat & feature != 0
     }
 
     fn journal_phys_block(
@@ -407,7 +407,7 @@ impl JBD2DEVSYSTEM {
         let mut sb_data = vec![0u8; block_size];
         block_dev.read(&mut sb_data, sb_block, 1)?;
         jbd2_update_superblock_checksum(&mut self.jbd2_super_block);
-        self.jbd2_super_block.to_disk_bytes(&mut sb_data[0..1024]);
+        self.jbd2_super_block.encode_checked(&mut sb_data)?;
         block_dev.write_with_flags(&sb_data, sb_block, 1, flags)
     }
 
@@ -1069,7 +1069,7 @@ pub fn create_journal_entry<B: BlockIo>(
         Ext4InodeMetadataUpdate::create(Ext4Inode::S_IFREG | 0o600),
     )?;
 
-    let mut jbd2_sb = JournalSuperBllockS::default();
+    let mut jbd2_sb = JournalSuperBlock::default();
 
     if fs
         .superblock
@@ -1093,10 +1093,12 @@ pub fn create_journal_entry<B: BlockIo>(
     jbd2_sb.s_first = 1;
     jbd2_sb.s_uuid = fs.superblock.s_uuid;
     jbd2_update_superblock_checksum(&mut jbd2_sb);
+    let mut journal_superblock_bytes = vec![0u8; block_size];
+    jbd2_sb.encode_checked(&mut journal_superblock_bytes)?;
 
     fs.datablock_cache
         .modify_new(block_dev, free_block[0], |data| {
-            jbd2_sb.to_disk_bytes(data);
+            data.copy_from_slice(&journal_superblock_bytes);
         })?;
 
     Ok(())
@@ -1187,13 +1189,13 @@ mod tests {
         }
     }
 
-    fn replay_superblock() -> JournalSuperBllockS {
-        JournalSuperBllockS {
+    fn replay_superblock() -> JournalSuperBlock {
+        JournalSuperBlock {
             s_maxlen: JOURNAL_LEN,
             s_first: 1,
             s_start: 1,
             s_sequence: 1,
-            ..JournalSuperBllockS::default()
+            ..JournalSuperBlock::default()
         }
     }
 

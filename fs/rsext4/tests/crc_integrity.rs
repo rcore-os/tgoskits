@@ -22,10 +22,10 @@ use rsext4::{
     endian::DiskFormat,
     error::{Ext4Error, Ext4Result},
     jbd2::jbdstruct::{
-        JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_BLOCKTYPE_REVOKE, JBD2_CRC32C_CHKSUM,
-        JBD2_FEATURE_INCOMPAT_64BIT, JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_FLAG_LAST_TAG,
-        JBD2_FLAG_SAME_UUID, JBD2_MAGIC, JBD2_UUID_SIZE, JOURNAL_FILE_INODE, JournalBlockTag3S,
-        JournalBlockTagS, JournalHeaderS, JournalSuperBllockS,
+        JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_BLOCKTYPE_REVOKE, JBD2_BLOCKTYPE_SUPERBLOCK_V1,
+        JBD2_CRC32C_CHKSUM, JBD2_FEATURE_INCOMPAT_64BIT, JBD2_FEATURE_INCOMPAT_CSUM_V3,
+        JBD2_FLAG_LAST_TAG, JBD2_FLAG_SAME_UUID, JBD2_MAGIC, JBD2_UUID_SIZE, JOURNAL_FILE_INODE,
+        JournalBlockTag3S, JournalBlockTagS, JournalHeaderS, JournalSuperBlock,
     },
     loopfile::{resolve_inode_block, resolve_inode_blocks},
     superblock::Ext4Superblock,
@@ -215,7 +215,7 @@ fn write_group_desc0(device: &SharedCrcDevice, sb: &Ext4Superblock, desc: &Ext4G
 
 fn write_journal_start(device: &SharedCrcDevice, journal_block: u64, start: u32) {
     let mut bytes = device.read_block_bytes(journal_block);
-    let mut journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
+    let mut journal_sb = JournalSuperBlock::from_disk_bytes(&bytes);
     journal_sb.s_start = start;
     jbd2_update_superblock_checksum(&mut journal_sb);
     journal_sb.to_disk_bytes(&mut bytes);
@@ -236,13 +236,13 @@ fn reference_crc32c(mut crc: u32, bytes: &[u8]) -> u32 {
     crc
 }
 
-fn jbd2_tag_checksum(journal_sb: &JournalSuperBllockS, payload: &[u8]) -> u32 {
+fn jbd2_tag_checksum(journal_sb: &JournalSuperBlock, payload: &[u8]) -> u32 {
     let checksum = reference_crc32c(u32::MAX, &journal_sb.s_uuid);
     let checksum = reference_crc32c(checksum, &journal_sb.s_sequence.to_be_bytes());
     reference_crc32c(checksum, payload)
 }
 
-fn seal_jbd2_control_block(journal_sb: &JournalSuperBllockS, block: &mut [u8]) {
+fn seal_jbd2_control_block(journal_sb: &JournalSuperBlock, block: &mut [u8]) {
     if journal_sb.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 == 0 {
         return;
     }
@@ -255,7 +255,7 @@ fn seal_jbd2_control_block(journal_sb: &JournalSuperBllockS, block: &mut [u8]) {
 
 fn write_incomplete_journal_descriptor(device: &SharedCrcDevice, journal_block: u64) {
     let bytes = device.read_block_bytes(journal_block);
-    let journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
+    let journal_sb = JournalSuperBlock::from_disk_bytes(&bytes);
 
     let mut descriptor = vec![0u8; BLOCK_SIZE];
     JournalHeaderS {
@@ -275,7 +275,7 @@ fn write_uncommitted_journal_update(
     payload: &[u8],
 ) {
     let bytes = device.read_block_bytes(journal_block);
-    let journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
+    let journal_sb = JournalSuperBlock::from_disk_bytes(&bytes);
 
     let mut metadata = vec![0u8; BLOCK_SIZE];
     metadata[..payload.len()].copy_from_slice(payload);
@@ -312,7 +312,7 @@ fn write_uncommitted_journal_update(
 
 fn write_invalid_journal_revoke(device: &SharedCrcDevice, journal_block: u64) {
     let bytes = device.read_block_bytes(journal_block);
-    let journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
+    let journal_sb = JournalSuperBlock::from_disk_bytes(&bytes);
 
     let mut revoke = vec![0u8; BLOCK_SIZE];
     JournalHeaderS {
@@ -328,7 +328,7 @@ fn write_invalid_journal_revoke(device: &SharedCrcDevice, journal_block: u64) {
 
 fn write_repeating_journal_descriptors(device: &SharedCrcDevice, journal_block: u64) {
     let bytes = device.read_block_bytes(journal_block);
-    let journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
+    let journal_sb = JournalSuperBlock::from_disk_bytes(&bytes);
 
     let mut descriptor = vec![0u8; BLOCK_SIZE];
     JournalHeaderS {
@@ -368,7 +368,7 @@ fn write_uncommitted_journal_updates(
     target_blocks: &[u64],
 ) {
     let bytes = device.read_block_bytes(journal_block);
-    let journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
+    let journal_sb = JournalSuperBlock::from_disk_bytes(&bytes);
 
     let metadata_blocks: Vec<Vec<u8>> = target_blocks
         .iter()
@@ -652,7 +652,7 @@ fn mkfs_maps_ext4_metadata_checksum_and_64bit_features_to_jbd2() {
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
         .raw();
-    let journal = JournalSuperBllockS::from_disk_bytes(&device.read_block_bytes(journal_block));
+    let journal = JournalSuperBlock::from_disk_bytes(&device.read_block_bytes(journal_block));
 
     assert_ne!(
         journal.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3,
@@ -661,6 +661,35 @@ fn mkfs_maps_ext4_metadata_checksum_and_64bit_features_to_jbd2() {
     assert_ne!(journal.s_feature_incompat & JBD2_FEATURE_INCOMPAT_64BIT, 0);
     assert_eq!(journal.s_checksum_type, JBD2_CRC32C_CHKSUM);
     umount(fs, &mut dev).expect("umount failed");
+}
+
+#[test]
+fn mount_accepts_v1_journal_without_reading_v2_extension_fields() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut first_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut first_dev).expect("mkfs failed");
+    let first_fs = mount(&mut first_dev).expect("initial mount failed");
+    let journal_block = first_fs
+        .journal_sb_block_start
+        .expect("journal superblock should be mapped")
+        .raw();
+    umount(first_fs, &mut first_dev).expect("initial unmount failed");
+
+    let mut bytes = device.read_block_bytes(journal_block);
+    let mut journal = JournalSuperBlock::decode_checked(&bytes).unwrap();
+    journal.s_header.h_blocktype = JBD2_BLOCKTYPE_SUPERBLOCK_V1;
+    journal.s_feature_compat = u32::MAX;
+    journal.s_feature_incompat = u32::MAX;
+    journal.s_feature_ro_compat = u32::MAX;
+    journal.s_uuid = [0xff; 16];
+    journal.s_checksum_type = u8::MAX;
+    journal.s_checksum = 0xa5a5_5a5a;
+    journal.to_disk_bytes(&mut bytes);
+    device.write_block_bytes(journal_block, &bytes);
+
+    let mut remount_dev = new_jbd2_dev(device);
+    let remounted = mount(&mut remount_dev).expect("Linux-compatible v1 journal mount");
+    umount(remounted, &mut remount_dev).expect("v1 journal unmount");
 }
 
 #[test]
@@ -829,7 +858,7 @@ fn uncommitted_journal_tail_is_discarded_during_recovery() {
     assert_eq!(device.read_block_bytes(target_block), original_target);
 
     let recovered_journal = device.read_block_bytes(journal_block);
-    let recovered_journal_sb = JournalSuperBllockS::from_disk_bytes(&recovered_journal);
+    let recovered_journal_sb = JournalSuperBlock::from_disk_bytes(&recovered_journal);
     assert_eq!(recovered_journal_sb.s_start, 0);
 }
 
@@ -1257,7 +1286,7 @@ fn mount_returns_journal_superblock_read_failure_without_panicking() {
     let Err(error) = result.unwrap() else {
         panic!("mount must fail");
     };
-    assert_eq!(error.code, Errno::EIO);
+    assert_eq!(error.kind(), Ext4ErrorKind::Io);
 }
 
 #[test]
@@ -1277,7 +1306,7 @@ fn mount_returns_bitmap_read_failures_without_panicking() {
         let Err(error) = result.unwrap() else {
             panic!("mount must fail");
         };
-        assert_eq!(error.code, Errno::EIO);
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
     }
 }
 
@@ -1306,11 +1335,11 @@ fn mount_rejects_an_empty_journal_mapping_without_panicking() {
     let Err(error) = result.unwrap() else {
         panic!("mount must reject an empty journal mapping");
     };
-    assert_eq!(error.code, Errno::EUCLEAN);
+    assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
 }
 
 #[test]
-fn mount_returns_journal_bootstrap_write_failure_without_panicking() {
+fn mount_rejects_missing_journal_inode_without_panicking() {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut jbd2_dev = new_jbd2_dev(device.clone());
     mkfs(&mut jbd2_dev).expect("mkfs failed");
@@ -1329,24 +1358,20 @@ fn mount_returns_journal_bootstrap_write_failure_without_panicking() {
     superblock.update_checksum();
     write_superblock(&device, &superblock);
 
-    device.fail_writes.set(true);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut remount_dev = new_jbd2_dev(device.clone());
         mount(&mut remount_dev)
     }));
 
-    assert!(
-        result.is_ok(),
-        "journal bootstrap I/O failure must not panic"
-    );
+    assert!(result.is_ok(), "a missing journal inode must not panic");
     let Err(error) = result.unwrap() else {
-        panic!("mount must fail when journal bootstrap writes fail");
+        panic!("mount must reject a missing journal inode");
     };
-    assert_eq!(error.code, Errno::EIO);
+    assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
 }
 
 #[test]
-fn journal_commit_retry_persists_replay_start_after_initial_superblock_write_failure() {
+fn journal_start_write_failure_rolls_back_and_aborts_without_retry() {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut format_dev = new_jbd2_dev(device.clone());
     mkfs(&mut format_dev).expect("mkfs failed");
@@ -1365,30 +1390,22 @@ fn journal_commit_retry_persists_replay_start_after_initial_superblock_write_fai
         .expect("queue metadata update");
 
     device.failing_write_block.set(Some(journal_block));
-    // Fail the initial replay-start write, then fail the final cleanup write
-    // after the retry has written a committed transaction. The second failure
-    // models a crash before journal cleanup can hide the transaction.
-    *device.failing_write_attempts.borrow_mut() = [1, 3].into_iter().collect();
+    device.failing_write_attempts.borrow_mut().insert(1);
 
     let first_error = dev
         .umount_commit()
         .expect_err("initial journal superblock write must fail");
-    assert_eq!(first_error.code, Errno::EIO);
+    assert_eq!(first_error.kind(), Ext4ErrorKind::Io);
 
-    let retry_error = dev
+    let abort_error = dev
         .umount_commit()
-        .expect_err("final journal cleanup write must fail");
-    assert_eq!(retry_error.code, Errno::EIO);
+        .expect_err("an aborted journal must reject transaction retry");
+    assert_eq!(abort_error.kind(), Ext4ErrorKind::JournalAborted);
 
     let on_disk_journal =
-        JournalSuperBllockS::from_disk_bytes(&device.read_block_bytes(journal_block));
-    assert_ne!(
+        JournalSuperBlock::from_disk_bytes(&device.read_block_bytes(journal_block));
+    assert_eq!(
         on_disk_journal.s_start, 0,
-        "the retried committed transaction must remain discoverable after a crash"
+        "a failed replay-start write must not publish a partial transaction"
     );
-
-    let mut remount_dev = new_jbd2_dev(device.clone());
-    let recovered =
-        mount(&mut remount_dev).expect("mount must replay the discoverable transaction");
-    umount(recovered, &mut remount_dev).expect("clean unmount after replay");
 }
