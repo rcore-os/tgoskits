@@ -1,8 +1,10 @@
 //! Hidden runtime boundary for the OS-independent lock wrappers.
 
 use core::{
+    cell::UnsafeCell,
+    mem::MaybeUninit,
     panic::Location,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize},
 };
 
 /// Do not alter the current execution context.
@@ -27,6 +29,67 @@ pub const LOCK_MODE_EXCLUSIVE: u8 = 0;
 pub const LOCK_MODE_READ: u8 = 1;
 /// Exclusive write ownership.
 pub const LOCK_MODE_WRITE: u8 = 2;
+
+/// Number of pointer-sized words reserved for the scheduler-owned PI waiter tree.
+pub const PI_MUTEX_WAIT_STORAGE_WORDS: usize = 5;
+
+/// Fixed external storage for one native PI-mutex core.
+///
+/// The provider interprets this storage as the native `ax-task` PI core. The
+/// wrapper never reads or mutates the state machine itself.
+#[repr(C)]
+pub struct PiMutexStorage {
+    owner_word: AtomicU64,
+    generation: AtomicU64,
+    wait_state: AtomicU8,
+    wait_storage: UnsafeCell<[MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS]>,
+}
+
+impl PiMutexStorage {
+    /// Creates storage for an unlocked, generation-free PI mutex.
+    pub const fn new() -> Self {
+        Self {
+            owner_word: AtomicU64::new(0),
+            generation: AtomicU64::new(0),
+            wait_state: AtomicU8::new(0),
+            wait_storage: UnsafeCell::new([MaybeUninit::uninit(); PI_MUTEX_WAIT_STORAGE_WORDS]),
+        }
+    }
+
+    /// Returns the native owner-word storage for provider layout validation.
+    #[doc(hidden)]
+    pub const fn owner_word(&self) -> &AtomicU64 {
+        &self.owner_word
+    }
+
+    /// Returns the native lock-generation storage for provider layout validation.
+    #[doc(hidden)]
+    pub const fn generation(&self) -> &AtomicU64 {
+        &self.generation
+    }
+
+    /// Returns the inline waiter lifecycle storage for provider layout validation.
+    #[doc(hidden)]
+    pub const fn wait_state(&self) -> &AtomicU8 {
+        &self.wait_state
+    }
+
+    /// Returns the number of pointer-sized inline waiter words.
+    #[doc(hidden)]
+    pub const fn wait_words(&self) -> usize {
+        PI_MUTEX_WAIT_STORAGE_WORDS
+    }
+}
+
+impl Default for PiMutexStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// SAFETY: the provider publishes initialization through `wait_state` and
+// serializes every access to the concrete object stored in `wait_storage`.
+unsafe impl Sync for PiMutexStorage {}
 
 /// Result of one complete non-sleeping acquisition transaction.
 #[derive(Clone, Copy)]
@@ -147,8 +210,8 @@ pub trait RwLockOps {
 #[ax_crate_interface::def_interface]
 pub trait MutexOps {
     fn acquire(
-        wait_queue: &AtomicPtr<()>,
-        owner_id: &AtomicU64,
+        storage: &PiMutexStorage,
+        next_waiter_sequence: &AtomicU64,
         metadata: &LockMetadata,
         lock_addr: usize,
         subclass: u32,
@@ -156,15 +219,15 @@ pub trait MutexOps {
         caller: &'static Location<'static>,
     ) -> bool;
 
-    fn release(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64, lock_addr: usize);
+    fn release(storage: &PiMutexStorage, lock_addr: usize);
 
-    fn force_release(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64, lock_addr: usize);
+    fn force_release(storage: &PiMutexStorage, lock_addr: usize);
 
-    fn is_owned_by_current(owner_id: &AtomicU64) -> bool;
+    fn is_owned_by_current(storage: &PiMutexStorage) -> bool;
 
-    fn is_locked(owner_id: &AtomicU64) -> bool;
+    fn is_locked(storage: &PiMutexStorage) -> bool;
 
-    fn drop_wait_queue(wait_queue: *mut ());
+    fn destroy(storage: &mut PiMutexStorage);
 }
 
 /// Runtime lockdep diagnostics which do not belong to one lock acquisition.
@@ -299,8 +362,8 @@ pub(crate) fn rwlock_force_read_decrement(state: &AtomicUsize, lock_addr: usize,
 
 #[cfg(feature = "sleep")]
 pub(crate) fn mutex_acquire(
-    wait_queue: &AtomicPtr<()>,
-    owner_id: &AtomicU64,
+    storage: &PiMutexStorage,
+    next_waiter_sequence: &AtomicU64,
     metadata: &LockMetadata,
     lock_addr: usize,
     subclass: u32,
@@ -309,13 +372,19 @@ pub(crate) fn mutex_acquire(
 ) -> bool {
     #[cfg(all(feature = "host-test", not(target_os = "none")))]
     return crate::host::mutex_acquire(
-        wait_queue, owner_id, metadata, lock_addr, subclass, is_try, caller,
+        storage,
+        next_waiter_sequence,
+        metadata,
+        lock_addr,
+        subclass,
+        is_try,
+        caller,
     );
     #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     return ax_crate_interface::call_interface!(
         MutexOps::acquire,
-        wait_queue,
-        owner_id,
+        storage,
+        next_waiter_sequence,
         metadata,
         lock_addr,
         subclass,
@@ -325,47 +394,43 @@ pub(crate) fn mutex_acquire(
 }
 
 #[cfg(feature = "sleep")]
-pub(crate) fn mutex_release(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64, lock_addr: usize) {
+pub(crate) fn mutex_release(storage: &PiMutexStorage, lock_addr: usize) {
     #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::mutex_release(wait_queue, owner_id, lock_addr);
+    return crate::host::mutex_release(storage, lock_addr);
     #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    ax_crate_interface::call_interface!(MutexOps::release, wait_queue, owner_id, lock_addr);
+    ax_crate_interface::call_interface!(MutexOps::release, storage, lock_addr);
 }
 
 #[cfg(feature = "sleep")]
-pub(crate) fn mutex_force_release(
-    wait_queue: &AtomicPtr<()>,
-    owner_id: &AtomicU64,
-    lock_addr: usize,
-) {
+pub(crate) fn mutex_force_release(storage: &PiMutexStorage, lock_addr: usize) {
     #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::mutex_force_release(wait_queue, owner_id, lock_addr);
+    return crate::host::mutex_force_release(storage, lock_addr);
     #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    ax_crate_interface::call_interface!(MutexOps::force_release, wait_queue, owner_id, lock_addr);
+    ax_crate_interface::call_interface!(MutexOps::force_release, storage, lock_addr);
 }
 
 #[cfg(feature = "sleep")]
-pub(crate) fn mutex_is_owned_by_current(owner_id: &AtomicU64) -> bool {
+pub(crate) fn mutex_is_owned_by_current(storage: &PiMutexStorage) -> bool {
     #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::mutex_is_owned_by_current(owner_id);
+    return crate::host::mutex_is_owned_by_current(storage);
     #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    return ax_crate_interface::call_interface!(MutexOps::is_owned_by_current, owner_id);
+    return ax_crate_interface::call_interface!(MutexOps::is_owned_by_current, storage);
 }
 
 #[cfg(feature = "sleep")]
-pub(crate) fn mutex_is_locked(owner_id: &AtomicU64) -> bool {
+pub(crate) fn mutex_is_locked(storage: &PiMutexStorage) -> bool {
     #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::mutex_is_locked(owner_id);
+    return crate::host::mutex_is_locked(storage);
     #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    return ax_crate_interface::call_interface!(MutexOps::is_locked, owner_id);
+    return ax_crate_interface::call_interface!(MutexOps::is_locked, storage);
 }
 
 #[cfg(feature = "sleep")]
-pub(crate) fn mutex_drop_wait_queue(wait_queue: *mut ()) {
+pub(crate) fn mutex_destroy(storage: &mut PiMutexStorage) {
     #[cfg(all(feature = "host-test", not(target_os = "none")))]
-    return crate::host::mutex_drop_wait_queue(wait_queue);
+    return crate::host::mutex_destroy(storage);
     #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-    ax_crate_interface::call_interface!(MutexOps::drop_wait_queue, wait_queue);
+    ax_crate_interface::call_interface!(MutexOps::destroy, storage);
 }
 
 pub(crate) fn set_trace_enabled(enabled: bool) {
