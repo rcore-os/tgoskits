@@ -229,6 +229,7 @@ fn round_robin_preserves_partial_quantum_across_block_and_wake() {
         (&system as *const TaskSystem).expose_provenance(),
         cpu.as_mut(),
     );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
     assert_eq!(first.wake_handle().wake(), WakeResult::Notified);
     assert_eq!(
         system.yield_current_at(cpu.as_mut(), 2).unwrap().next(),
@@ -324,6 +325,9 @@ fn repeated_smp_wake_distributes_rt_threads_without_duplicate_entries() {
     );
     support::install_cpu(1, cpu1.as_mut());
     support::set_online_cpu_count(2);
+    support::set_current_cpu(1);
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+    support::set_current_cpu(0);
 
     let first_wake = first.wake_handle();
     let second_wake = second.wake_handle();
@@ -332,7 +336,6 @@ fn repeated_smp_wake_distributes_rt_threads_without_duplicate_entries() {
     assert_eq!(first_wake.wake(), WakeResult::Notified);
     assert_eq!(support::ipi_count(1), 1);
     assert!(support::consume_ipi(1));
-    system.complete_context_switch(cpu1.as_mut()).unwrap();
     assert_eq!(first.state(), ThreadState::Ready);
     assert_eq!(second.state(), ThreadState::Ready);
     assert_eq!(cpu0.queued_summary(), 1);

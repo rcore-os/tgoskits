@@ -84,12 +84,12 @@ fn facade_reports_uninitialized_then_uses_runtime_owned_objects() {
         system.block_current_at(cpu.as_mut(), 1).unwrap().next(),
         bootstrap.id()
     );
-    assert_eq!(sleeper.wake_handle().wake(), WakeResult::Notified);
+    system.complete_context_switch(cpu.as_mut()).unwrap();
     assert_eq!(
         system.thread_state(sleeper.id()).unwrap(),
-        ThreadState::Waking
+        ThreadState::Blocked
     );
-    system.complete_context_switch(cpu.as_mut()).unwrap();
+    assert_eq!(sleeper.wake_handle().wake(), WakeResult::Notified);
     assert_eq!(
         system.thread_state(sleeper.id()).unwrap(),
         ThreadState::Ready

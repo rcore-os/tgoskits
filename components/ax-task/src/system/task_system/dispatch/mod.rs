@@ -44,7 +44,6 @@ pub(super) fn owner_dispatch_constructions() -> usize {
 enum WakeTransition {
     Notified,
     Activate,
-    DeferredUntilSwitchTail,
 }
 
 pub(super) struct OwnerDispatchCommit {

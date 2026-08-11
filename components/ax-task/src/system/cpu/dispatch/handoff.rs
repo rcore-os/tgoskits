@@ -7,6 +7,7 @@ use super::super::*;
 pub(crate) struct SwitchHandoff {
     phase: SwitchHandoffPhase,
     previous: Arc<ThreadCore>,
+    incoming: Arc<ThreadCore>,
     migration: Option<PreparedMigrationDelivery>,
 }
 
@@ -16,20 +17,32 @@ enum SwitchHandoffPhase {
     RuntimeTailFinished,
 }
 
+pub(crate) struct CompletedSwitchHandoff {
+    pub(crate) previous: Arc<ThreadCore>,
+    pub(crate) incoming: Arc<ThreadCore>,
+    pub(crate) migration: Option<PreparedMigrationDelivery>,
+}
+
 impl SwitchHandoff {
     pub(crate) fn prepared(
         previous: Arc<ThreadCore>,
+        incoming: Arc<ThreadCore>,
         migration: Option<PreparedMigrationDelivery>,
     ) -> Self {
         Self {
             phase: SwitchHandoffPhase::Prepared,
             previous,
+            incoming,
             migration,
         }
     }
 
     pub(crate) fn previous(&self) -> &Arc<ThreadCore> {
         &self.previous
+    }
+
+    pub(crate) fn incoming(&self) -> &Arc<ThreadCore> {
+        &self.incoming
     }
 
     pub(crate) fn migration_target(&self) -> Option<CpuId> {
@@ -50,12 +63,14 @@ impl SwitchHandoff {
         Ok(self)
     }
 
-    pub(crate) fn into_runtime_finished(
-        self,
-    ) -> Result<(Arc<ThreadCore>, Option<PreparedMigrationDelivery>), TaskError> {
+    pub(crate) fn into_runtime_finished(self) -> Result<CompletedSwitchHandoff, TaskError> {
         if self.phase != SwitchHandoffPhase::RuntimeTailFinished {
             return Err(TaskError::InvalidConfiguration);
         }
-        Ok((self.previous, self.migration))
+        Ok(CompletedSwitchHandoff {
+            previous: self.previous,
+            incoming: self.incoming,
+            migration: self.migration,
+        })
     }
 }

@@ -511,11 +511,11 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         previous: Option<ThreadId>,
         previous_core: Option<Arc<ThreadCore>>,
-        next: ThreadId,
+        next: Arc<ThreadCore>,
         migration: Option<PreparedMigrationDelivery>,
     ) {
         match previous {
-            Some(previous) if previous != next => {
+            Some(previous) if previous != next.id() => {
                 let previous_core = previous_core.unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1115, previous.as_u64() as usize)
                 });
@@ -523,13 +523,13 @@ impl TaskSystem {
                     task_runtime::fatal_invariant(0x5343_1116, previous.as_u64() as usize);
                 }
                 cpu.as_mut()
-                    .stage_switch_handoff(previous_core, migration)
+                    .stage_switch_handoff(previous_core, next, migration)
                     .unwrap_or_else(|_| {
                         task_runtime::fatal_invariant(0x5343_1117, previous.as_u64() as usize)
                     });
             }
             _ if migration.is_none() => {}
-            _ => task_runtime::fatal_invariant(0x5343_1118, next.as_u64() as usize),
+            _ => task_runtime::fatal_invariant(0x5343_1118, next.id().as_u64() as usize),
         }
     }
 

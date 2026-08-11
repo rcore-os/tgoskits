@@ -5028,7 +5028,7 @@ fn affinity_update_preserves_an_in_flight_switch_handoff() {
         cpu0.as_mut(),
         Some(running.id()),
         Some(Arc::clone(&running.core)),
-        next.core.id(),
+        Arc::clone(&next.core),
         None,
     );
     assert!(
@@ -6512,10 +6512,17 @@ fn wake_after_final_park_check_serializes_with_blocked_publication() {
     let wake_escaped_locked_park = wake_result_rx.recv_timeout(Duration::from_millis(250)).ok();
     park_exit::complete_park_after_final_wake_check();
     let (mut cpu, commit_result) = commit.join().unwrap();
-    let wake_result = wake_escaped_locked_park.unwrap_or_else(|| wake_result_rx.recv().unwrap());
-    waker.join().unwrap();
+    while running.state() != ThreadState::Waking {
+        core::hint::spin_loop();
+    }
+    assert!(
+        matches!(wake_result_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+        "the waker must retain enqueue ownership while the old stack is on_cpu"
+    );
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
     system.complete_context_switch(cpu.as_mut()).unwrap();
+    let wake_result = wake_escaped_locked_park.unwrap_or_else(|| wake_result_rx.recv().unwrap());
+    waker.join().unwrap();
 
     assert!(
         wake_escaped_locked_park.is_none(),

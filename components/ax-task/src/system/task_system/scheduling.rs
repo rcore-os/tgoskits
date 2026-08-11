@@ -261,7 +261,7 @@ impl TaskSystem {
             cpu.as_mut(),
             previous,
             previous_core.as_ref().map(Arc::clone),
-            next_core.id(),
+            Arc::clone(&next_core),
             migration,
         );
         let reason = if migrated {
@@ -392,7 +392,7 @@ impl TaskSystem {
             cpu.as_mut(),
             previous,
             previous_core.as_ref().map(Arc::clone),
-            next_core.id(),
+            Arc::clone(&next_core),
             migration,
         );
         let reason = if migrated {
@@ -580,7 +580,7 @@ impl TaskSystem {
             cpu.as_mut(),
             previous,
             previous_core.as_ref().map(Arc::clone),
-            next_core.id(),
+            Arc::clone(&next_core),
             migration,
         );
         let reason = if migrated {

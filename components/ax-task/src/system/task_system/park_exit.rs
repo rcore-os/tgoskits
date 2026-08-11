@@ -353,7 +353,7 @@ impl TaskSystem {
             cpu.as_mut(),
             Some(token.thread()),
             Some(Arc::clone(&previous_core)),
-            next_core.id(),
+            Arc::clone(&next_core),
             None,
         );
         transaction.commit_and_acknowledge_scheduler_request();
@@ -594,7 +594,7 @@ impl TaskSystem {
             cpu.as_mut(),
             Some(exiting),
             Some(Arc::clone(&exited_core)),
-            next_core.id(),
+            Arc::clone(&next_core),
             None,
         );
         transaction.commit_and_acknowledge_scheduler_request();
@@ -646,9 +646,16 @@ impl TaskSystem {
         };
         let owner = cpu.owner();
         let previous_core = Arc::clone(initial_handoff.previous());
+        let incoming = Arc::clone(initial_handoff.incoming());
         let migration_target = initial_handoff.migration_target();
         let runtime_tail_finished = initial_handoff.runtime_tail_is_finished();
+        if previous_core.id() == incoming.id()
+            || previous_core.sched().placement().on_cpu() != Some(owner)
+            || incoming.sched().placement().execution_cpu() != Some(owner)
         {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        if migration_target.is_some() {
             let placement = previous_core.sched().placement();
             let sched = previous_core.sched().lock();
             let remote = Arc::clone(cpu.remote());
@@ -684,11 +691,14 @@ impl TaskSystem {
             .switch_handoff()
             .ok_or(TaskError::InvalidConfiguration)?;
         let previous = handoff.previous().id();
-        let incoming = cpu.current_core().ok_or(TaskError::NoRunnableThread)?;
-        if incoming.id() == previous {
+        if !Arc::ptr_eq(handoff.previous(), &previous_core)
+            || !Arc::ptr_eq(handoff.incoming(), &incoming)
+            || incoming.id() == previous
+        {
             return Err(TaskError::InvalidConfiguration);
         }
-        let (migration_target, previous_exited, wake_after_tail, affinity_completed) = {
+        let (migration_target, previous_exited, affinity_completed) = if migration_target.is_some()
+        {
             let placement = previous_core.sched().placement();
             let mut sched = handoff.previous().sched().lock();
             let remote = Arc::clone(cpu.remote());
@@ -726,12 +736,19 @@ impl TaskSystem {
             }
             let affinity_completed =
                 Self::complete_affinity_if_satisfied_locked(&previous_core, &sched);
-            (
-                migration_target,
-                previous_exited,
-                sched.lifecycle.state() == ThreadState::Waking,
-                affinity_completed,
-            )
+            (migration_target, previous_exited, affinity_completed)
+        } else {
+            // Linux PREEMPT_RT keeps the wake transaction under `p->pi_lock`:
+            // before consulting task metadata, the incoming tail release-clears
+            // `p->on_cpu`. A waker that published TASK_WAKING observes this
+            // release and performs its own target selection and enqueue without
+            // a second rq transaction.
+            previous_core.sched().placement().finish_task(owner);
+            let sched = previous_core.sched().lock();
+            let previous_exited = sched.lifecycle.state() == ThreadState::Exited;
+            let affinity_completed =
+                Self::complete_affinity_if_satisfied_locked(&previous_core, &sched);
+            (None, previous_exited, affinity_completed)
         };
         if affinity_completed {
             previous_core.notify_affinity_waiters();
@@ -739,17 +756,22 @@ impl TaskSystem {
         let consumed = cpu.as_mut().take_switch_handoff().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5357_0003, previous.as_u64() as usize)
         });
-        if consumed.previous().id() != previous || consumed.migration_target() != migration_target {
+        if consumed.previous().id() != previous
+            || consumed.incoming().id() != incoming.id()
+            || consumed.migration_target() != migration_target
+        {
             task_runtime::fatal_invariant(0x5357_0004, previous.as_u64() as usize);
         }
-        let (_, migration) = consumed.into_runtime_finished().unwrap_or_else(|_| {
+        let completed = consumed.into_runtime_finished().unwrap_or_else(|_| {
             task_runtime::fatal_invariant(0x5357_0004, previous.as_u64() as usize)
         });
-        if let Some(migration) = migration {
-            migration.commit();
+        if !Arc::ptr_eq(&completed.previous, &previous_core)
+            || !Arc::ptr_eq(&completed.incoming, &incoming)
+        {
+            task_runtime::fatal_invariant(0x5357_0004, previous.as_u64() as usize)
         }
-        if wake_after_tail {
-            self.finish_switch_tail_wake(&previous_core);
+        if let Some(migration) = completed.migration {
+            migration.commit();
         }
         if previous_exited {
             self.task_work.publish();

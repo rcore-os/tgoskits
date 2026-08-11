@@ -146,11 +146,7 @@ impl TaskSystem {
             ThreadState::Parking => Ok(WakeTransition::Notified),
             ThreadState::Blocked => {
                 sched.transition(core, ThreadState::Waking)?;
-                Ok(if sched.placement.on_cpu().is_some() {
-                    WakeTransition::DeferredUntilSwitchTail
-                } else {
-                    WakeTransition::Activate
-                })
+                Ok(WakeTransition::Activate)
             }
             ThreadState::Ready | ThreadState::Running | ThreadState::Waking => {
                 Ok(WakeTransition::Notified)
@@ -270,14 +266,6 @@ impl TaskSystem {
             .placement
             .assigned_cpu()
             .or_else(|| core.wake_cpu_hint());
-        if sched.lifecycle.state() == ThreadState::Blocked && sched.placement.on_cpu().is_some() {
-            match Self::consume_wake_locked(&core, &mut sched) {
-                Ok(WakeTransition::DeferredUntilSwitchTail) => return WakeResult::Notified,
-                Ok(WakeTransition::Notified | WakeTransition::Activate) | Err(_) => {
-                    task_runtime::fatal_invariant(0x574b_0003, core.id().as_u64() as usize)
-                }
-            }
-        }
         let policy = sched.policy.active().policy();
         let queued_entity = sched.policy.active().entity().clone();
         let target = self.select_wake_target(&sched, policy, queued_entity, waker, previous);
@@ -297,9 +285,6 @@ impl TaskSystem {
             WakeTransition::Notified => WakeResult::Notified,
             WakeTransition::Activate => {
                 self.activate_waking_thread_locked(&core, sched, target, publication)
-            }
-            WakeTransition::DeferredUntilSwitchTail => {
-                task_runtime::fatal_invariant(0x574b_0004, core.id().as_u64() as usize)
             }
         }
     }
@@ -343,21 +328,6 @@ impl TaskSystem {
                 // final, infallible step that prevents Blocked publication.
                 let _already_pending = core.publish_wake();
                 WaitWakeDelivery::Delivered
-            }
-            ThreadState::Blocked if sched.placement.on_cpu().is_some() => {
-                if !claim.deliver_selected() {
-                    return WaitWakeDelivery::Cancelled;
-                }
-                // Switch-tail owns the already committed execution endpoint.
-                // Once Waking is published it must activate the task and treats
-                // any missing target as a scheduler invariant failure.
-                let _already_pending = core.publish_wake();
-                match Self::consume_wake_locked(&core, &mut sched) {
-                    Ok(WakeTransition::DeferredUntilSwitchTail) => WaitWakeDelivery::Delivered,
-                    Ok(WakeTransition::Notified | WakeTransition::Activate) | Err(_) => {
-                        task_runtime::fatal_invariant(0x574b_000a, core.id().as_u64() as usize)
-                    }
-                }
             }
             ThreadState::Blocked => {
                 let previous = sched
@@ -415,6 +385,10 @@ impl TaskSystem {
         target: CpuId,
         publication: CpuRemotePublication<'_>,
     ) -> WakeResult {
+        // PREEMPT_RT keeps wake ownership in the waker. `finish_task()` only
+        // release-publishes that the old stack is inactive; switch tail never
+        // reopens the task lock to finish this wake or enqueues on its behalf.
+        sched.placement.wait_until_not_on_cpu();
         if sched.lifecycle.state() != ThreadState::Waking || sched.placement.on_cpu().is_some() {
             task_runtime::fatal_invariant(0x574b_0005, core.id().as_u64() as usize);
         }
@@ -547,37 +521,6 @@ impl TaskSystem {
             remote.kick_scheduler_work();
         }
         WakeResult::Notified
-    }
-
-    /// Completes Linux's `TASK_WAKING` handoff after `finish_task()`.
-    pub(in crate::system::task_system) fn finish_switch_tail_wake(&self, core: &Arc<ThreadCore>) {
-        let sched = core.sched().lock();
-        if sched.lifecycle.state() != ThreadState::Waking {
-            return;
-        }
-        if sched.placement.on_cpu().is_some()
-            || sched.placement.queued_cpu().is_some()
-            || sched.placement.committed_migration_target().is_some()
-        {
-            task_runtime::fatal_invariant(0x574b_0007, core.id().as_u64() as usize);
-        }
-        let policy = sched.policy.active().policy();
-        let entity = sched.policy.active().entity().clone();
-        let previous = sched
-            .placement
-            .assigned_cpu()
-            .or_else(|| core.wake_cpu_hint());
-        let target = self
-            .select_wake_target(&sched, policy, entity, None, previous)
-            .unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x574b_0008, core.id().as_u64() as usize)
-            });
-        let publication = self.cpu_remotes[target.as_usize()]
-            .begin_publication()
-            .unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x574b_0009, core.id().as_u64() as usize)
-            });
-        let _result = self.activate_waking_thread_locked(core, sched, target, publication);
     }
 
     pub(in crate::system::task_system) fn enqueue_owner_thread(

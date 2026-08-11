@@ -242,7 +242,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | 用户 TLB 回收 | `mmu_gather`、`mm_cpumask()`、各架构 `flush_tlb_mm_range()` | 先改 PTE，再同步 active-mm CPU，最后释放物理所有权 | 共享 mm CPU tracker + typed gather 已实现；调度 token 不再各自维护错误的 CPU footprint |
 | task deadline | `hrtimer`、`sched/deadline.c` | IRQ 只处理 generation-bearing 值记录；CBS 状态机是唯一期限真值 | Deadline 已改为 class-owned 有序 AVL rq，并在节点内增广最早 CBS 事件；pick/dequeue/rekey 为 O(log n)；CBS 记账与物理入队同属目标 rq 事务；CBS 生命周期改为互斥状态，删除 `base_deadline` 镜像 |
 | clockevent/nohz | `clockevents_program_event()`、`clockevents_shutdown()`、`hrtimer_interrupt()`、`tick_nohz_idle_enter()`、`tick_nohz_stop_tick()`、`tick_nohz_idle_exit()` | 每 CPU 单一物理 owner；CPU 生命周期与 firing 带 epoch；任何已投递的硬件边必须先失效旧 arm，再由逻辑时钟判断是否到期；idle 无调度事件时停止 tick；无期限用 `Option` | scheduler tick 建模为 `Running/Stopped`；online/offline 推进 CPU epoch；有效 `Armed` edge 都取得 move-only firing token，先失效旧 arm，再有界运行 hard queue/发布 soft work，早到或旧 pending edge 在 finish 时只按当前最早期限重编程一次；idle IRQ-off 提交时撤销 tick，只保留 task deadline |
-| switch tail | `finish_task_switch()` | 清 outgoing `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | `on_switch_in` 位于 current publication、runtime tail、`on_cpu` 清除与 handoff consumption 之后；task placement 不保存 switch-tail 暂态，唯一未完成事务是 per-CPU move-only `SwitchHandoff` |
+| switch tail | `finish_task_switch()` | 清 outgoing `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | move-only `SwitchHandoff` 同时携带 outgoing 与 incoming 的权威引用；普通 tail 只校验原子 placement、完成 runtime tail 并 release-clear `on_cpu`，不重开 rq；只有已提交 migration 的 Deadline bandwidth 转移进入 rq 慢路径；`on_switch_in` 位于 handoff consume 之后 |
 | 架构 current/preempt | `current.h`、`preempt.h`、`cpu_switch_to`、`finish_task_switch()` | current 与普通 preempt 状态必须由架构唯一来源取得；TLS 只在物理寄存器确实重叠时改变 current 读取路径；裸切换尾不可失败 | AArch64 始终以 `SP_EL0` 为 current、`TPIDR_EL0` 为 TLS；x86 以 GS/FS 分离；RISC-V/LoongArch TLS 模式才从 CPU anchor 取得 current；删除全局 TLS current 模式选择 |
 | PI/锁 | `rtmutex`、`spinlock_rt.c`、`wake_q` | raw rq/IRQ gate、sleeping PI、task-local pin 四层分离；每把锁拥有有序 waiter tree，owner 只接收各锁 top waiter；解锁核心在同一 preempt-disabled 事务内选择 waiter、deboost、发布 ownerless 状态并加入 wake_q，释放元数据锁后由核心完成 wake | `PiMutexCore` 唯一拥有 generation-bearing owner word 与 allocation-free AVL waiter tree；线程预备 lock/owner 两套 linkage，owner donor tree 只保存每把已持有锁的 top waiter；ax-sync 不再保存第二份 owner、selected、waiter 容器或可丢弃 wake handle；registration、release、claim 与 release 后 wake 均由 ax-task 持有完整事务，外层不能遗漏 handoff wake |
 | 阻塞等待 | `do_lock_file_wait()`、`wait_event_interruptible()`、`locks_delete_block()` | wake 只是重试提示；条件与临时阻塞关系由领域层拥有，返回前必须先注销 | scheduler notification 与 nofault access retry 已类型化分离，fcntl/futex 外层负责重试 |
@@ -267,9 +267,10 @@ v7.1 PREEMPT_RT。此次不再把“已有枚举/guard/缓存”当作完成标�
    `on_cpu` 发布位；queued/running 由目标 rq 及 `rq->curr` 表示。`Migrating` 是源 rq
    dequeue 到目标 rq enqueue 之间唯一允许的 carrier。`SwitchingOut` 和
    `ExitedAwaitingTail` 不再写入线程 placement。
-2. **switch 暂态只在 CPU 上存在**。`SwitchHandoff` 持有 outgoing thread、最终目的地、
-   exit 标志、deadline bandwidth lease 与 generation。raw switch 前一次 stage，目标
-   continuation 的 switch tail 一次 consume；只有它能清 `on_cpu`、发布迁移或允许回收。
+2. **switch 暂态只在 CPU 上存在**。`SwitchHandoff` 持有 outgoing/incoming thread 与可选的
+   migration publication lease。raw switch 前由同一个 rq 选择事务一次 stage，目标 continuation
+   的 switch tail 一次 consume；因此普通 tail 不需要再次读取 `rq->curr`。只有它能清 `on_cpu`、
+   发布迁移或允许回收。
 3. **调度类通过共同 rq 边界组合**。class rank 固定为 Deadline、RT、Fair、Idle；各类
    自己拥有 enqueue/dequeue/pick/tick/yield 后端。Deadline 使用有序 rq 和 CBS
    replenishment 状态机，删除 O(n) `Vec` 扫描、`replenish_pending` 手工轮询和
@@ -436,14 +437,15 @@ task_tick/migrate hook；`RunQueue` 只负责 Linux common rq accounting 和 mem
 远程 wake 的状态事务固定为：
 
 ```text
-lock thread state -> wait/validate on_cpu release -> select target
--> lock target rq -> validate placement/CPU admission -> activate
+lock thread state -> reserve stable target publication -> publish TASK_WAKING
+-> wait/validate on_cpu release -> lock target rq -> validate placement -> activate
 -> check preemption -> unlock rq -> optional reschedule IPI
 ```
 
 `switch_handoff`、current publication、前一任务 `on_cpu` release 和资源回收继续只允许
-owner CPU 执行。CPU offline 先关闭 rq admission，再等待在途 rq lock holder，最后迁移
-queued 实体；不能把旧 inbox quiescent 当作 offline 完成条件。
+owner CPU 执行；它不替 waker 重开 task/rq 事务。目标 publication lease 使 CPU offline 不能
+越过已经选定的 wake target：offline 先关闭 rq admission，再等待在途 publication/rq holder，
+最后迁移 queued 实体；不能把旧 inbox quiescent 当作 offline 完成条件。
 
 ### 物理门铃
 
@@ -2129,15 +2131,19 @@ placement 现在直接采用 Linux v7.1 的三组正交事实，而不是一个�
 
 这消除了两个旧问题。其一，新的 affinity request 不能在 carrier 已经离开源 rq 后偷偷改写
 目标；exit 只能显式取消尚未消费的 remote handoff，目标仍负责 drain carrier 并释放 publication
-lease。其二，blocked task 可能在 outgoing context 尚未完成 switch tail 时被唤醒。此时线程先
-进入 `Waking`，但不得 activate 到任何 rq；`finish_task()` 以 Release 清除 `on_cpu` 后，
-`finish_switch_tail_wake()` 才选目标并提交 `Waking -> Ready`。这对应 Linux
-`try_to_wake_up()` 等待/观察 `p->on_cpu` 与 `finish_task()` 的 release/acquire 边界。
+lease。其二，blocked task 可能在 outgoing context 尚未完成 switch tail 时被唤醒。waker 在
+唯一 task sched lock 下取得稳定 target publication、提交 `Waking`，再以 Acquire 等待
+`finish_task()` Release 清除 `on_cpu`，随后由同一个 waker 直接锁目标 rq 并提交
+`Waking -> Ready`。switch tail 在 release `on_cpu` 前不取得 task lock，也不替 waker
+完成 wake/enqueue；release 后的 exit/affinity 元数据收尾不能反向阻塞 waker。这对应 Linux
+PREEMPT_RT 关闭 `TTWU_QUEUE` 后由 `try_to_wake_up()` 持有完整唤醒事务的所有权。
 
 Idle 也按 Linux 特殊调度类处理：运行中的 idle 始终保持 `on_rq=Queued`，schedule-out 只执行
 `put_prev`，不会借普通 block 路径把它变成 detached。确定性回归分别覆盖 wake-before-tail、
 后续 affinity request 不改写 committed target、exit 取消未消费 carrier、连续 idle 选择和
-blocked task 在 CPU offline 后保留旧 `task_cpu` 但更新 wake hint。
+blocked task 在 CPU offline 后保留旧 `task_cpu` 但更新 wake hint。普通 switch-tail 的最低层
+红测还要求完成阶段不再打开任何 `OwnerRqTxn`；wake/park 竞态测试要求 waker 在旧 stack
+仍为 `on_cpu` 时保持 `Waking` 且不返回，release 后由该 waker 完成 enqueue。
 
 检查点验证还包括 `cargo xtask clippy --package ax-task` 的 base/qperf 两项，以及
 `cargo xtask clippy --package starry-kernel` 的 26 项 feature/configuration matrix，全部通过。

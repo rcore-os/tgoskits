@@ -1545,8 +1545,9 @@ mod tests {
         );
         assert_eq!(
             test_runtime::scheduler_reads(),
-            3,
-            "pre-switch validation, switch tail, and exit commit each own one rq transaction"
+            1,
+            "exit commit owns the only rq transaction; ordinary validation and switch tail use the \
+             staged placement handoff"
         );
         let mut expired = [ExpiredTaskDeadline::EMPTY; 1];
         assert_eq!(cpu.as_mut().take_expired_task_deadlines(&mut expired), 1);

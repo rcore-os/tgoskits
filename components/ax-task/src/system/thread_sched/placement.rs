@@ -87,6 +87,18 @@ impl SchedulerPlacement {
         self.snapshot().on_cpu
     }
 
+    /// Waits until switch tail releases Linux's `p->on_cpu` execution claim.
+    ///
+    /// The waker holds the task scheduler lock while waiting, matching
+    /// `try_to_wake_up()` under `p->pi_lock`. The acquire load pairs with
+    /// `finish_task()` so runnable activation and enqueue cannot overtake the
+    /// previous stack's final scheduler publications.
+    pub(in crate::system) fn wait_until_not_on_cpu(&self) {
+        while self.on_cpu().is_some() {
+            core::hint::spin_loop();
+        }
+    }
+
     #[cfg(test)]
     pub(in crate::system) fn task_cpu(&self) -> Option<CpuId> {
         self.snapshot().task_cpu

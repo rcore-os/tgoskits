@@ -112,13 +112,14 @@ impl CpuLocal {
     pub(crate) fn stage_switch_handoff(
         self: Pin<&mut Self>,
         previous: Arc<ThreadCore>,
+        incoming: Arc<ThreadCore>,
         migration: Option<PreparedMigrationDelivery>,
     ) -> Result<(), TaskError> {
         let handoff = &mut self.dispatch_state_mut().switch_handoff;
         if handoff.is_some() {
             return Err(TaskError::InvalidConfiguration);
         }
-        *handoff = Some(SwitchHandoff::prepared(previous, migration));
+        *handoff = Some(SwitchHandoff::prepared(previous, incoming, migration));
         Ok(())
     }
 
