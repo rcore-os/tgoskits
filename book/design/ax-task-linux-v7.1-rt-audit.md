@@ -2633,6 +2633,51 @@ guest 79s/QEMU 84.82s；同机 warm `dev` 为 guest 67s，剩余差距仍约 18%
 preemption 合并确实减少物理中断放大，但剩余回退主要仍在真实切换/唤醒链。full-stack qperf
 在 shell prompt 前触发 QEMU plugin `SIGSEGV`、没有产生样本，因此不能据该失败构造 caller 结论。
 
+### 2026-08-12 真实 context switch 原因分布
+
+sticky preemption 合并后，IPI send/consume 已下降，但相同 60 秒窗口的 context switch 数没有
+下降。仅靠总数无法判断这些切换来自重复 reschedule、主动 yield、迁移，还是 I/O 阻塞后的真实
+wake；继续从 leaf hotspot 猜调用者会把队列实现成本和 block runtime 往返混在一起。
+
+`SwitchReason` 已经是跨 OS extension callback 的稳定五值 ABI，且 `execute_switch_plan()` 在
+`requires_context_switch()` 过滤后、唯一架构 `switch_context()` 之前拥有最终 reason。qperf 指标
+因此只在这个位置计数，不在 scheduler decision、wake 或 switch callback 中建立第二来源：
+
+- 红测 `context_switches_are_classified_by_reason` 在旧行为下得到总数 5，而
+  Preempted/Yield/Blocked/Exited/Migrated 全部为 0；
+- 修复后一次真实 switch 先增加总数，再按最终 `SwitchReason` 严格增加且仅增加一个分类；
+- Starry `/sys/kernel/debug/scheduler_metrics` 只渲染同一 ax-task snapshot。字段是启动以来累计的
+  Relaxed 诊断值，工作负载必须以前后快照差分，不能把跨字段读取误作原子事务。
+
+相同 x86_64 Q35/TCG、4 vCPU、1009 Hz leaf-qperf 的 60.605 秒窗口再次推进到
+`file-0474`。前后差分为：
+
+| 指标 | 增量 | 占真实切换比例 |
+|---|---:|---:|
+| context switch | 121,350 | 100% |
+| Blocked | 77,168 | 63.591% |
+| Preempted | 44,177 | 36.405% |
+| Yield | 1 | 0.001% |
+| Exited | 4 | 0.003% |
+| Migrated | 0 | 0% |
+| direct wake activation/enqueue | 77,168 | — |
+| scheduler IPI send/consume | 18,346 / 17,504 | — |
+| clockevent IRQ | 15,217 | — |
+
+五个 reason 的和精确等于总切换数；Blocked 与 direct-wake activation/enqueue 的窗口增量也相等。
+相等本身不能为每个高层 wait source 建立因果映射，但它否定了“迁移、yield 或重复 activation 是
+11 万次切换主因”的假设。当前主要成本是大量真实 block/wake 所放大的每次 owner-rq、class queue、
+CPU-local/context guard 与 switch handoff 固定工作。qperf 两个相邻检查点的聚合热点也稳定：
+sync bridge 约 8.59%、CPU-local/percpu 约 15.02%、scheduler queue 约 6.56%、memcpy/memset
+约 3.84%、block runtime 约 9.59%。下一步必须与 `dev` 的相同窗口比较真实切换次数；只有次数
+接近而耗时不同，才能把剩余 18% 明确归因到单次调度事务而不是 block 分层本身。
+
+该提交第一次运行 qperf 时曾在 shell prompt 前停顿 150 秒，98.68% boot 样本集中在
+`ax_task::sync::bridge::spin_acquire` 的同一 AtomicBool 等待循环。随后同一 ELF/rootfs/plugin 的
+两次 GDB-capable 启动与 8 次有界重复启动全部到达 shell，未再次捕获锁地址或 owner，正式 reason
+窗口也正常完成。因此这里只保留低频竞态证据，不据一次不可复现停顿修改锁算法，也不把 qperf
+进程返回 0 当作该次 guest 启动通过。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
