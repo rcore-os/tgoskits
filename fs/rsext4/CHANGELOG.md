@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add typed inode extent inspection for extent and legacy mappings, including
   sparse, unwritten, directory, bounded, and dynamic block-size coverage.
 
+### Fixed
+
+- Preserve extent allocation and inode block accounting when publishing an
+  updated external extent leaf fails during removal.
+
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 
 ### Fixed
