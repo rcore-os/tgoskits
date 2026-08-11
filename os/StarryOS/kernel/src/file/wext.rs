@@ -20,11 +20,10 @@ use alloc::{string::String, vec::Vec};
 use core::mem::MaybeUninit;
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq as Mutex;
 
 use crate::{
     mm::{vm_read_slice, vm_write_slice},
-    sync::IrqMutex as Mutex,
+    sync::PiMutex as Mutex,
 };
 
 // ---------------------------------------------------------------------------
