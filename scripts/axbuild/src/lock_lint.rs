@@ -11,15 +11,14 @@ use walkdir::{DirEntry, WalkDir};
 const REMOVED_LOCK_PACKAGES: &[&str] = &["ax-kspin", "ax-kernel-guard", "ax-lockdep"];
 const REMOVED_LOCK_IMPORTS: &[&str] = &["ax_kspin", "ax_kernel_guard", "ax_lockdep"];
 const DIRECT_SPIN_PATTERNS: &[&str] = &["use spin", "extern crate spin"];
-const PROVIDER_TRAITS: &[&str] = &["CriticalSectionOps", "PiMutexTaskOps"];
-const FORBIDDEN_PROVIDER_TRAITS: &[&str] = &["LockdepOps"];
-const RUNTIME_PROVIDER_PATH: &str = "os/arceos/modules/axruntime/src/sync.rs";
-const HOST_PROVIDER_PATHS: &[&str] = &[
-    "os/arceos/modules/axsync/src/context.rs",
-    "os/arceos/modules/axsync/src/mutex.rs",
+const PROVIDER_TRAITS: &[&str] = &[
+    "ContextOps",
+    "SpinOps",
+    "RwLockOps",
+    "MutexOps",
+    "LockdepOps",
 ];
-const HOST_PROVIDER_CFG: &str =
-    "#[cfg(all(feature = \"host-test\", not(target_os = \"none\")))]\nmod host {";
+const RUNTIME_PROVIDER_PATH: &str = "os/arceos/modules/axruntime/src/sync.rs";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Finding {
@@ -115,44 +114,9 @@ fn check_manifests(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow
         if path == workspace_root.join("Cargo.toml") {
             check_removed_workspace_members(path, &manifest, findings);
         }
-        check_ax_task_host_provider_selection(path, &manifest, findings);
         check_dependency_tables(path, &manifest, findings);
     }
     Ok(())
-}
-
-fn check_ax_task_host_provider_selection(
-    manifest_path: &Path,
-    manifest: &Value,
-    findings: &mut Vec<Finding>,
-) {
-    let package_name = manifest
-        .get("package")
-        .and_then(Value::as_table)
-        .and_then(|package| package.get("name"))
-        .and_then(Value::as_str);
-    if package_name != Some("ax-task") {
-        return;
-    }
-    let selects_host_provider = manifest
-        .get("features")
-        .and_then(Value::as_table)
-        .and_then(|features| features.get("host-test"))
-        .and_then(Value::as_array)
-        .is_some_and(|members| {
-            members
-                .iter()
-                .any(|member| member.as_str() == Some("ax-sync/host-test"))
-        });
-    if selects_host_provider {
-        findings.push(Finding::new(
-            manifest_path,
-            "features.host-test",
-            "ax-task must not select ax-sync's host PI provider",
-            "the final runtime owns PiMutexTaskOps provider selection; keep ax-task's host-test \
-             feature provider-neutral",
-        ));
-    }
 }
 
 fn check_removed_workspace_members(
@@ -293,9 +257,22 @@ fn check_source_boundaries(
         let relative = relative_path(workspace_root, path);
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
+        let source_lines = source_lines_without_comments(&contents);
+        let has_local_spin_module = source_lines.iter().any(|line| {
+            matches!(
+                line.trim(),
+                "mod spin;" | "pub mod spin;" | "pub(crate) mod spin;"
+            )
+        });
+        let mut in_local_use_group = false;
 
-        for (line_index, line) in source_lines_without_comments(&contents).iter().enumerate() {
-            if contains_direct_spin_path(line) {
+        for (line_index, line) in source_lines.iter().enumerate() {
+            let starts_local_use_group = ["use self::", "use super::", "use crate::"]
+                .iter()
+                .any(|prefix| line.contains(prefix) && line.contains('{'));
+            let local_spin_path =
+                has_local_spin_module || in_local_use_group || starts_local_use_group;
+            if contains_direct_spin_path(line) && !local_spin_path {
                 findings.push(Finding::new(
                     path,
                     format!("line {}", line_index + 1),
@@ -304,7 +281,7 @@ fn check_source_boundaries(
                 ));
             }
             for pattern in DIRECT_SPIN_PATTERNS {
-                if line.contains(pattern) {
+                if line.contains(pattern) && !local_spin_path {
                     findings.push(Finding::new(
                         path,
                         format!("line {}", line_index + 1),
@@ -380,6 +357,13 @@ fn check_source_boundaries(
                     "import synchronization primitives from ax_runtime::sync",
                 ));
             }
+
+            if starts_local_use_group && !line.contains(';') {
+                in_local_use_group = true;
+            }
+            if in_local_use_group && line.contains(';') {
+                in_local_use_group = false;
+            }
         }
     }
     Ok(())
@@ -430,31 +414,15 @@ fn check_runtime_providers(
         }
         let contents = fs::read_to_string(entry.path())
             .with_context(|| format!("failed to read {}", entry.path().display()))?;
-        for trait_name in FORBIDDEN_PROVIDER_TRAITS {
-            let qualified = format!("impl ax_sync::{trait_name} for");
-            let local = format!("impl {trait_name} for");
-            if contents.contains(&qualified) || contents.contains(&local) {
-                findings.push(Finding::new(
-                    entry.path(),
-                    trait_name.to_string(),
-                    format!("obsolete {trait_name} provider remains"),
-                    "lockdep graph, task-held state, IRQ exclusion, and diagnostics belong to \
-                     ax-task and TaskRuntime",
-                ));
-            }
-        }
         for (trait_index, trait_name) in PROVIDER_TRAITS.iter().enumerate() {
-            let qualified = format!("impl ax_sync::{trait_name} for");
-            let local = format!("impl {trait_name} for");
-            let occurrences =
-                contents.matches(&qualified).count() + contents.matches(&local).count();
+            let occurrences = provider_occurrences(&contents, trait_name);
             if occurrences == 0 {
                 continue;
             }
 
             if relative == RUNTIME_PROVIDER_PATH {
                 runtime_counts[trait_index] += occurrences;
-            } else if !is_allowed_test_provider(&relative, trait_name) {
+            } else {
                 findings.push(Finding::new(
                     entry.path(),
                     trait_name.to_string(),
@@ -479,49 +447,28 @@ fn check_runtime_providers(
     Ok(())
 }
 
+fn provider_occurrences(contents: &str, trait_name: &str) -> usize {
+    let qualified = format!("impl ax_sync::interface::{trait_name} for");
+    let local = format!("impl {trait_name} for");
+    contents.matches(&qualified).count() + contents.matches(&local).count()
+}
+
 fn check_provider_cfgs(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow::Result<()> {
     let runtime_path = workspace_root.join(RUNTIME_PROVIDER_PATH);
     if runtime_path.exists() {
         let contents = fs::read_to_string(&runtime_path)
             .with_context(|| format!("failed to read {}", runtime_path.display()))?;
-        if contents.contains("target_os = \"none\"")
-            || !contents.contains("not(feature = \"host-test\")")
-        {
+        let code = source_lines_without_comments(&contents).join("\n");
+        if code.contains("target_os") || code.contains("feature = \"host-test\"") {
             findings.push(Finding::new(
                 &runtime_path,
                 "provider cfg",
-                "ax-runtime providers are not selected by the explicit host-test boundary",
-                "gate production providers with not(feature = \"host-test\"); custom std targets \
-                 are still ArceOS production builds",
-            ));
-        }
-    }
-
-    for relative in HOST_PROVIDER_PATHS {
-        let path = workspace_root.join(relative);
-        if !path.exists() {
-            continue;
-        }
-        let contents = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        if !contents.contains(HOST_PROVIDER_CFG) {
-            findings.push(Finding::new(
-                &path,
-                "host provider cfg",
-                "ax-sync host provider is not restricted to host-test on std-capable targets",
-                "gate the host provider with all(feature = \"host-test\", not(target_os = \
-                 \"none\"))",
+                "ax-runtime providers must not be split by target or host-test cfg",
+                "keep one ax-runtime provider implementation for production and host validation",
             ));
         }
     }
     Ok(())
-}
-
-fn is_allowed_test_provider(relative: &str, trait_name: &str) -> bool {
-    (relative == "os/arceos/modules/axsync/src/context.rs" && trait_name == "CriticalSectionOps")
-        || (relative == "os/arceos/modules/axsync/src/mutex.rs" && trait_name == "PiMutexTaskOps")
-        || (relative == "components/ax-task/src/test_runtime.rs" && trait_name == "PiMutexTaskOps")
-        || (relative == "components/ax-task/tests/support/mod.rs" && trait_name == "PiMutexTaskOps")
 }
 
 fn check_lockfile(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow::Result<()> {
@@ -694,10 +641,11 @@ edition = "2024"
             root,
             RUNTIME_PROVIDER_PATH,
             r#"
-#[cfg(not(feature = "host-test"))]
-impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {}
-#[cfg(not(feature = "host-test"))]
-impl ax_sync::PiMutexTaskOps for RuntimePiMutexTaskOps {}
+impl ax_sync::interface::ContextOps for RuntimeContextOps {}
+impl ax_sync::interface::SpinOps for RuntimeSpinOps {}
+impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {}
+impl ax_sync::interface::MutexOps for RuntimeMutexOps {}
+impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {}
 "#,
         );
     }
@@ -753,6 +701,32 @@ spin = "0.12"
                 .iter()
                 .any(|finding| finding.message.contains("direct crates.io"))
         );
+    }
+
+    #[test]
+    fn accepts_local_spin_module_paths() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "crate/src/lib.rs",
+            r#"
+mod spin;
+pub use self::{
+    other::Thing,
+    spin::LocalSpin,
+};
+mod child {
+    use crate::{
+        other::Other,
+        spin::LocalSpin,
+    };
+    use super::spin::OtherSpin;
+}
+"#,
+        );
+
+        assert!(lint_workspace(root.path()).unwrap().is_empty());
     }
 
     #[test]
@@ -945,7 +919,7 @@ ax-sync = "0.1"
         write_file(
             root.path(),
             "crate/src/provider.rs",
-            "impl ax_sync::CriticalSectionOps for OtherRuntime {}\n",
+            "impl ax_sync::interface::SpinOps for OtherRuntime {}\n",
         );
 
         let findings = lint_workspace(root.path()).unwrap();
@@ -957,124 +931,108 @@ ax-sync = "0.1"
     }
 
     #[test]
-    fn rejects_pi_mutex_provider_outside_runtime() {
+    fn rejects_current_context_provider_outside_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "crate/src/provider.rs",
+            "impl ax_sync::interface::ContextOps for OtherRuntime {}\n",
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("ContextOps provider exists outside ax-runtime")
+        }));
+    }
+
+    #[test]
+    fn rejects_mutex_provider_outside_runtime() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
             root.path(),
             "components/ax-task/src/provider.rs",
-            "impl ax_sync::PiMutexTaskOps for TaskProvider {}\n",
+            "impl ax_sync::interface::MutexOps for TaskProvider {}\n",
         );
 
         let findings = lint_workspace(root.path()).unwrap();
         assert!(findings.iter().any(|finding| {
             finding
                 .message
-                .contains("PiMutexTaskOps provider exists outside ax-runtime")
+                .contains("MutexOps provider exists outside ax-runtime")
         }));
     }
 
     #[test]
-    fn rejects_obsolete_lockdep_provider() {
+    fn rejects_lockdep_provider_outside_runtime() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
             root.path(),
-            RUNTIME_PROVIDER_PATH,
-            r#"
-#[cfg(not(feature = "host-test"))]
-impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {}
-#[cfg(not(feature = "host-test"))]
-impl ax_sync::PiMutexTaskOps for RuntimePiMutexTaskOps {}
-impl ax_sync::LockdepOps for RuntimeLockdepOps {}
-"#,
+            "components/ax-task/src/lockdep_provider.rs",
+            "impl ax_sync::interface::LockdepOps for TaskLockdepOps {}\n",
         );
 
         let findings = lint_workspace(root.path()).unwrap();
         assert!(findings.iter().any(|finding| {
             finding
                 .message
-                .contains("obsolete LockdepOps provider remains")
-        }));
-    }
-
-    #[test]
-    fn rejects_ax_task_selecting_the_independent_host_pi_provider() {
-        let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
-        write_file(
-            root.path(),
-            "components/ax-task/Cargo.toml",
-            r#"
-[package]
-name = "ax-task"
-version = "0.1.0"
-edition = "2024"
-[features]
-host-test = ["ax-sync/host-test"]
-"#,
-        );
-
-        let findings = lint_workspace(root.path()).unwrap();
-        assert!(findings.iter().any(|finding| {
-            finding
-                .message
-                .contains("ax-task must not select ax-sync's host PI provider")
+                .contains("LockdepOps provider exists outside ax-runtime")
         }));
     }
 
     #[test]
     fn rejects_target_os_based_provider_selection() {
         let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
+        write_file(root.path(), "Cargo.toml", "[workspace]\nmembers = []\n");
+        write_file(root.path(), "Cargo.lock", "version = 4\n");
         write_file(
             root.path(),
             RUNTIME_PROVIDER_PATH,
             r#"
 #[cfg(target_os = "none")]
-impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {}
-impl ax_sync::MutexRuntimeOps for RuntimeMutexOps {}
-"#,
-        );
-        write_file(
-            root.path(),
-            HOST_PROVIDER_PATHS[0],
-            r#"
-#[cfg(not(target_os = "none"))]
-mod host {
-    impl CriticalSectionOps for HostCriticalSectionOps {}
-}
+impl ax_sync::interface::ContextOps for RuntimeContextOps {}
+impl ax_sync::interface::SpinOps for RuntimeSpinOps {}
+impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {}
+impl ax_sync::interface::MutexOps for RuntimeMutexOps {}
+impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {}
 "#,
         );
 
         let findings = lint_workspace(root.path()).unwrap();
-        assert!(
-            findings
-                .iter()
-                .any(|finding| { finding.message.contains("explicit host-test boundary") })
-        );
         assert!(findings.iter().any(|finding| {
             finding
                 .message
-                .contains("not restricted to host-test on std-capable targets")
+                .contains("must not be split by target or host-test cfg")
         }));
     }
 
     #[test]
-    fn accepts_target_aware_host_provider_selection() {
+    fn rejects_host_test_based_provider_selection() {
         let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
-        for relative in HOST_PROVIDER_PATHS {
-            write_file(
-                root.path(),
-                relative,
-                r#"
-#[cfg(all(feature = "host-test", not(target_os = "none")))]
-mod host {}
+        write_file(root.path(), "Cargo.toml", "[workspace]\nmembers = []\n");
+        write_file(root.path(), "Cargo.lock", "version = 4\n");
+        write_file(
+            root.path(),
+            RUNTIME_PROVIDER_PATH,
+            r#"
+#[cfg(not(feature = "host-test"))]
+impl ax_sync::interface::ContextOps for RuntimeContextOps {}
+impl ax_sync::interface::SpinOps for RuntimeSpinOps {}
+impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {}
+impl ax_sync::interface::MutexOps for RuntimeMutexOps {}
+impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {}
 "#,
-            );
-        }
+        );
 
-        assert!(lint_workspace(root.path()).unwrap().is_empty());
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("must not be split by target or host-test cfg")
+        }));
     }
 }
