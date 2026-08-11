@@ -8,13 +8,14 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReleaseOperation {
-    ReadModifyWrite,
     Store,
 }
 
-const RELEASE_OPERATION: ReleaseOperation = ReleaseOperation::ReadModifyWrite;
+#[cfg(test)]
+const RELEASE_OPERATION: ReleaseOperation = ReleaseOperation::Store;
 
 /// A FIFO raw ticket lock used only inside `ax-task`.
 #[derive(Debug)]
@@ -64,15 +65,11 @@ impl<T> RawTicketLock<T> {
     }
 
     fn unlock(&self) {
-        match RELEASE_OPERATION {
-            ReleaseOperation::ReadModifyWrite => {
-                self.owner.fetch_add(1, Ordering::Release);
-            }
-            ReleaseOperation::Store => {
-                let owner = self.owner.load(Ordering::Relaxed);
-                self.owner.store(owner.wrapping_add(1), Ordering::Release);
-            }
-        }
+        // The holder is the only context allowed to advance `owner`. Waiters
+        // only acquire-load it, so publishing the successor needs a release
+        // store rather than a second atomic read-modify-write.
+        let owner = self.owner.load(Ordering::Relaxed);
+        self.owner.store(owner.wrapping_add(1), Ordering::Release);
     }
 }
 
