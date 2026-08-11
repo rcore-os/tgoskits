@@ -43,7 +43,7 @@ fn error_after_cleanup(operation_error: Ext4Error, cleanup: Ext4Result<()>) -> E
 }
 
 /// Create a symbolic link (root-owned).
-pub fn create_symbol_link<B: BlockIo + crate::runtime::Clock>(
+pub fn create_symbol_link<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     src_path: &str,
@@ -53,7 +53,7 @@ pub fn create_symbol_link<B: BlockIo + crate::runtime::Clock>(
 }
 
 /// Create a symbolic link with explicit uid/gid ownership.
-pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
+pub fn create_symbol_link_with_owner<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     src_path: &str,
@@ -240,7 +240,7 @@ pub fn create_symbol_link_with_owner<B: BlockIo + crate::runtime::Clock>(
 }
 
 /// Create a file entry, creating missing parent directories on demand (root-owned).
-pub fn mkfile<B: BlockIo + crate::runtime::Clock>(
+pub fn mkfile<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -251,7 +251,7 @@ pub fn mkfile<B: BlockIo + crate::runtime::Clock>(
 }
 
 /// Create a file entry with explicit uid/gid ownership.
-pub fn mkfile_with_owner<B: BlockIo + crate::runtime::Clock>(
+pub fn mkfile_with_owner<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,

@@ -11,7 +11,7 @@ use crate::{
 /// This formats the first directory block with `.` and `..`, persists a fresh
 /// root inode through the metadata path, and updates the directory count in the
 /// first block group.
-pub fn create_root_directory_entry<B: BlockIo + crate::runtime::Clock>(
+pub fn create_root_directory_entry<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
 ) -> Ext4Result<()> {
@@ -106,7 +106,7 @@ pub fn create_root_directory_entry<B: BlockIo + crate::runtime::Clock>(
 ///
 /// The helper is idempotent for repeated mkfs-style setup and follows the same
 /// directory bootstrap flow as root creation before linking the entry under `/`.
-pub fn create_lost_found_directory<B: BlockIo + crate::runtime::Clock>(
+pub fn create_lost_found_directory<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
 ) -> Ext4Result<()> {

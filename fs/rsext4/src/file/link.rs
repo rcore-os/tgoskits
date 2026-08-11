@@ -1,7 +1,7 @@
 use super::{delete::remove_inodeentry_from_parentdir, *};
 
 /// Create a hard link.
-pub fn link<B: BlockIo + crate::runtime::Clock>(
+pub fn link<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     link_path: &str,

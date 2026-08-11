@@ -106,6 +106,7 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 | --- | --- | --- | --- | --- |
 | `boundary-no-os-deps` | `ax-kspin`、`log` direct dependencies | boundary script passes | portable core skeleton | 绿：`RSEXT4_BOUNDARY_PASSED` |
 | `domain-error-no-errno` | core 公开并按 Linux `Errno` 分支 | typed domain error，errno 仅由 adapter 映射 | portable core skeleton | 绿：core 已无 `Errno`；`ax-fs-ng` 集中映射 |
+| `owned-mount-boundary` | caller 分别持有公开字段的 `Ext4FileSystem` 和公开 `Jbd2Dev`，且 block device 必须同时实现 `Clock` | 私有 `Ext4<D, S>` 独占 device/cache/journal/services；`BlockIo` 与 `Clock` 分离；只公开 typed operations/DTO | portable core skeleton | 进行中：`Ext4<D, MountedServices<...>>` 已消费 device 与 `MountServices`，独立 clock callback 驱动旧内部 metadata 链路；不实现 `Clock` 的 deterministic `IoOnlyDevice` 已通过 mount/root inspection/unmount。旧 path/fd re-export、公开 `Ext4FileSystem`/`Jbd2Dev`、`initial_jbd2dev` 与 ax-fs-ng 的 split state 仍待同一迁移链删除，尚不能转绿 |
 | `feature-gate-strict` | unknown incompat、ENCRYPT、RW QUOTA 均被接受 | incompat 拒绝；未实现 RO_COMPAT 只允许 RO | codec/feature negotiation | 绿：四项确定性单测完成红绿验证 |
 | `device-sector-map` | filesystem block number 被直接作为 device sector，512-byte 设备只读一个 sector | typed `SectorId` + private filesystem-block mapper | portable I/O core | 绿：512-byte sector 聚合与 byte-offset superblock 红绿回归通过 |
 | `filesystem-block-dynamic` | core 算法仍大量引用 4 KiB 常量 | 1/2/4 KiB geometry、cache、JBD2 与 codec 全部按 mount 派生 | codec/geometry | 绿：Linux 与 rsext4 各自创建的 1/2/4 KiB 镜像均在 512-byte sector 上完成跨块写入、rename、remount 与 `e2fsck -fn`；cache、extent 与 JBD2 buffer 均按 mount geometry 分配 |

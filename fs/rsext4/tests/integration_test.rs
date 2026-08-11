@@ -84,6 +84,119 @@ impl rsext4::Clock for TestBlockDevice {
     }
 }
 
+struct IoOnlyDevice {
+    data: Vec<u8>,
+    block_size: u32,
+}
+
+impl From<TestBlockDevice> for IoOnlyDevice {
+    fn from(device: TestBlockDevice) -> Self {
+        Self {
+            data: device.data,
+            block_size: device.block_size,
+        }
+    }
+}
+
+impl BlockIo for IoOnlyDevice {
+    fn read(&mut self, buffer: &mut [u8], sector: SectorId, _count: u32) -> Ext4Result<()> {
+        let start = sector.as_usize()? * self.block_size as usize;
+        let end = start
+            .checked_add(buffer.len())
+            .ok_or_else(Ext4Error::overflow)?;
+        let source = self.data.get(start..end).ok_or_else(|| {
+            Ext4Error::block_out_of_range(
+                sector.to_u32().unwrap_or(u32::MAX),
+                self.geometry().block_count,
+            )
+        })?;
+        buffer.copy_from_slice(source);
+        Ok(())
+    }
+
+    fn write(&mut self, buffer: &[u8], sector: SectorId, _count: u32) -> Ext4Result<()> {
+        let start = sector.as_usize()? * self.block_size as usize;
+        let end = start
+            .checked_add(buffer.len())
+            .ok_or_else(Ext4Error::overflow)?;
+        let block_count = self.geometry().block_count;
+        let destination = self.data.get_mut(start..end).ok_or_else(|| {
+            Ext4Error::block_out_of_range(sector.to_u32().unwrap_or(u32::MAX), block_count)
+        })?;
+        destination.copy_from_slice(buffer);
+        Ok(())
+    }
+
+    fn geometry(&self) -> DeviceGeometry {
+        DeviceGeometry::new(
+            self.block_size,
+            (self.data.len() / self.block_size as usize) as u64,
+        )
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities {
+            flush: true,
+            ..DeviceCapabilities::default()
+        }
+    }
+
+    fn flush(&mut self) -> Ext4Result<()> {
+        Ok(())
+    }
+}
+
+struct SeparateClock(Cell<i64>);
+
+impl Clock for SeparateClock {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
+        let seconds = self.0.get();
+        self.0.set(seconds + 1);
+        Ok(Ext4Timestamp::new(seconds, 0))
+    }
+}
+
+struct UnavailableCapabilities;
+
+impl EntropySource for UnavailableCapabilities {
+    fn fill_bytes(&mut self, _output: &mut [u8]) -> Ext4Result<()> {
+        Err(Ext4Error::unsupported_capability("entropy"))
+    }
+}
+
+impl CryptoProvider for UnavailableCapabilities {
+    fn crypt(
+        &mut self,
+        _operation: CryptoOperation,
+        _algorithm: EncryptionAlgorithm,
+        _key: &[u8],
+        _nonce: &[u8],
+        _input: &[u8],
+        _output: &mut [u8],
+    ) -> Ext4Result<()> {
+        Err(Ext4Error::unsupported_capability("crypto"))
+    }
+
+    fn digest(
+        &mut self,
+        _algorithm: DigestAlgorithm,
+        _input: &[u8],
+        _output: &mut [u8],
+    ) -> Ext4Result<usize> {
+        Err(Ext4Error::unsupported_capability("crypto"))
+    }
+}
+
+impl KeyProvider for UnavailableCapabilities {
+    fn read_key(
+        &mut self,
+        _descriptor: KeyDescriptor<'_>,
+        _output: &mut [u8],
+    ) -> Ext4Result<usize> {
+        Err(Ext4Error::unsupported_capability("keys"))
+    }
+}
+
 #[derive(Default)]
 struct RecordingObserver {
     events: Vec<Event>,
@@ -93,6 +206,31 @@ impl Observer for RecordingObserver {
     fn event(&mut self, event: Event) {
         self.events.push(event);
     }
+}
+
+#[test]
+fn owned_mount_injects_clock_separately_from_block_io() {
+    let device = TestBlockDevice::new(100 * 1024 * 1024);
+    let mut builder = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut builder).expect("mkfs failed");
+    let device = IoOnlyDevice::from(builder.into_inner());
+    let services = MountServices::new(
+        SeparateClock(Cell::new(1_800_000_000)),
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        RecordingObserver::default(),
+    );
+
+    let mut filesystem =
+        Ext4::mount(device, services, MountOptions::read_write()).expect("owned mount failed");
+    let root = filesystem
+        .inode(filesystem.root_inode())
+        .expect("root inode inspection failed");
+
+    assert_eq!(root.number.raw(), 2);
+    assert_ne!(root.mode & rsext4::disknode::Ext4Inode::S_IFDIR, 0);
+    filesystem.unmount().expect("owned unmount failed");
 }
 
 #[test]

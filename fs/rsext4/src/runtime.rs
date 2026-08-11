@@ -167,6 +167,29 @@ pub struct MountServices<C, E, P, K, O> {
     pub observer: O,
 }
 
+/// Capabilities retained by a mounted filesystem after its clock has moved
+/// into the private persistence owner.
+///
+/// The fields stay private so callers use typed filesystem operations instead
+/// of reaching through the mount object to invoke providers directly.
+pub struct MountedServices<E, P, K, O> {
+    pub(crate) _entropy: E,
+    pub(crate) _crypto: P,
+    pub(crate) _keys: K,
+    pub(crate) observer: O,
+}
+
+impl<E, P, K, O> MountedServices<E, P, K, O> {
+    pub(crate) const fn new(entropy: E, crypto: P, keys: K, observer: O) -> Self {
+        Self {
+            _entropy: entropy,
+            _crypto: crypto,
+            _keys: keys,
+            observer,
+        }
+    }
+}
+
 impl<C, E, P, K, O> MountServices<C, E, P, K, O> {
     pub const fn new(clock: C, entropy: E, crypto: P, keys: K, observer: O) -> Self {
         Self {

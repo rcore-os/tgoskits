@@ -2,7 +2,7 @@ use super::*;
 
 const MAX_RUN_IO_BYTES: usize = 1024 * 1024;
 
-pub fn truncate<B: BlockIo + crate::runtime::Clock>(
+pub fn truncate<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -86,7 +86,7 @@ fn append_extent_logical_blocks<B: BlockIo>(
     Ok(())
 }
 
-pub fn truncate_inode<B: BlockIo + crate::runtime::Clock>(
+pub fn truncate_inode<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
@@ -310,7 +310,7 @@ fn resolve_symlink_path(current_path: &str, target: &str) -> String {
     normalize_path(&combined)
 }
 
-fn read_file_follow<B: BlockIo + crate::runtime::Clock>(
+fn read_file_follow<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -388,7 +388,7 @@ fn append_zero_block(buffer: &mut Vec<u8>, block_bytes: usize) -> Ext4Result<()>
 }
 
 /// Read the whole file at `path`.
-pub fn read_file<B: BlockIo + crate::runtime::Clock>(
+pub fn read_file<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -396,7 +396,7 @@ pub fn read_file<B: BlockIo + crate::runtime::Clock>(
     read_file_follow(device, fs, path, 0)
 }
 
-pub fn read_inode_data_into<B: BlockIo + crate::runtime::Clock>(
+pub fn read_inode_data_into<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
@@ -514,7 +514,7 @@ fn copy_len_for_lbn(offset: u64, end: u64, lbn: u64, block_bytes: u64) -> Ext4Re
         .map_err(|_| Ext4Error::overflow())
 }
 
-pub fn write_file<B: BlockIo + crate::runtime::Clock>(
+pub fn write_file<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -691,7 +691,7 @@ fn rollback_legacy_allocations<B: BlockIo>(
     }
 }
 
-fn write_legacy_inode_data<B: BlockIo + crate::runtime::Clock>(
+fn write_legacy_inode_data<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
@@ -755,7 +755,7 @@ fn write_legacy_inode_data<B: BlockIo + crate::runtime::Clock>(
     }
 }
 
-pub fn write_inode_data<B: BlockIo + crate::runtime::Clock>(
+pub fn write_inode_data<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,

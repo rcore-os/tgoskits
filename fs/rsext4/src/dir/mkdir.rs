@@ -24,7 +24,7 @@ use crate::{
 /// The flow normalizes the path, ensures parent directories exist, builds the
 /// new `.`/`..` block, persists the child inode, and finally links it into the
 /// parent directory.
-fn mkdir_internal<B: BlockIo + crate::runtime::Clock>(
+fn mkdir_internal<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -207,7 +207,7 @@ fn mkdir_internal<B: BlockIo + crate::runtime::Clock>(
     fs.get_inode_by_num(device, new_dir_ino)
 }
 
-pub(crate) fn ensure_directory<B: BlockIo + crate::runtime::Clock>(
+pub(crate) fn ensure_directory<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -218,7 +218,7 @@ pub(crate) fn ensure_directory<B: BlockIo + crate::runtime::Clock>(
 }
 
 /// Creates a directory and any missing parent directories (root-owned).
-pub fn mkdir<B: BlockIo + crate::runtime::Clock>(
+pub fn mkdir<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -227,7 +227,7 @@ pub fn mkdir<B: BlockIo + crate::runtime::Clock>(
 }
 
 /// Creates a directory with explicit uid/gid ownership.
-pub fn mkdir_with_owner<B: BlockIo + crate::runtime::Clock>(
+pub fn mkdir_with_owner<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,

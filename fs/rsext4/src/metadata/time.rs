@@ -7,7 +7,7 @@ use crate::{
     runtime::Clock,
 };
 
-pub(crate) fn get_now<B: BlockIo + Clock>(
+pub(crate) fn get_now<B: BlockIo>(
     device: &Jbd2Dev<B>,
     now_cache: &mut Option<Ext4Timestamp>,
 ) -> Ext4Result<Ext4Timestamp> {
@@ -20,7 +20,7 @@ pub(crate) fn get_now<B: BlockIo + Clock>(
     Ok(now)
 }
 
-pub(crate) fn resolve_time_spec<B: BlockIo + Clock>(
+pub(crate) fn resolve_time_spec<B: BlockIo>(
     device: &Jbd2Dev<B>,
     spec: Ext4TimeSpec,
     now_cache: &mut Option<Ext4Timestamp>,

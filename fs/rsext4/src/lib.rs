@@ -31,8 +31,8 @@ pub use disknode::{Ext4TimeSpec, Ext4Timestamp};
 // Re-export the unified error model.
 pub use error::{ErrorContext, Ext4Error, Ext4ErrorKind, Ext4Result, FeatureSet};
 pub use ext4::{
-    Ext4FileSystem, MkfsOptions, MountOptions, find_file, mkfs, mkfs_with_options, mount,
-    mount_with_options, mount_with_options_and_observer, umount,
+    Ext4, Ext4FileSystem, InodeInfo, MkfsOptions, MountOptions, MutationContext, find_file, mkfs,
+    mkfs_with_options, mount, mount_with_options, mount_with_options_and_observer, umount,
 };
 pub use file::{
     create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file, free_inode,
@@ -44,7 +44,8 @@ pub use io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, WriteFlags};
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};
 pub use runtime::{
     Clock, CryptoOperation, CryptoProvider, DigestAlgorithm, EncryptionAlgorithm, EntropySource,
-    Event, KeyDescriptor, KeyProvider, KeyPurpose, MountServices, NoopObserver, Observer,
+    Event, KeyDescriptor, KeyProvider, KeyPurpose, MountServices, MountedServices, NoopObserver,
+    Observer,
 };
 
 pub mod api;

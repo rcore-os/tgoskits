@@ -26,7 +26,7 @@ fn preflight_inode_free<B: BlockIo>(
     ensure_inode_free_is_supported(fs, inode)
 }
 
-pub fn free_inode<B: BlockIo + crate::runtime::Clock>(
+pub fn free_inode<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
@@ -73,7 +73,7 @@ pub fn free_inode<B: BlockIo + crate::runtime::Clock>(
 }
 
 /// Remove a non-directory link from its parent directory.
-pub fn unlink<B: BlockIo + crate::runtime::Clock>(
+pub fn unlink<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     link_path: &str,
@@ -341,7 +341,7 @@ pub(crate) fn remove_named_entry_at<B: BlockIo>(
     }
 }
 
-pub fn remove_inodeentry_from_parentdir<B: BlockIo + crate::runtime::Clock>(
+pub fn remove_inodeentry_from_parentdir<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     parent_path: &str,
@@ -373,7 +373,7 @@ pub fn remove_inodeentry_from_parentdir<B: BlockIo + crate::runtime::Clock>(
 }
 
 /// Remove a directory tree.
-pub fn delete_dir<B: BlockIo + crate::runtime::Clock>(
+pub fn delete_dir<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     path: &str,
@@ -569,7 +569,7 @@ pub fn is_dir_empty<B: BlockIo>(
 }
 
 /// Remove a non-directory inode from its parent directory.
-pub fn delete_file<B: BlockIo + crate::runtime::Clock>(
+pub fn delete_file<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     path: &str,
