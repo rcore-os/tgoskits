@@ -209,7 +209,7 @@ pub(crate) struct RuntimeIrqGuard {
 
 impl RuntimeIrqGuard {
     pub(crate) fn enter() -> Self {
-        let token = task_runtime::irq_guard_enter();
+        let token = crate::runtime::enter_irq_guard();
         Self {
             token,
             cpu: RuntimeCpuHandles::capture(),

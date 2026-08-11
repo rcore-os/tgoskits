@@ -37,6 +37,48 @@ fn render_scheduler_metrics() -> alloc::string::String {
         task.current_thread_handle_queries
     )
     .unwrap();
+    writeln!(
+        output,
+        "runtime_preempt_guard_entries {}",
+        task.runtime_preempt_guard_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "runtime_preempt_guard_none {}",
+        task.runtime_preempt_guard_none
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "runtime_irq_guard_entries {}",
+        task.runtime_irq_guard_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "runtime_irq_guard_none {}",
+        task.runtime_irq_guard_none
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "owner_rq_irqsave_transactions {}",
+        task.owner_rq_irqsave_transactions
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "owner_rq_scheduler_transactions {}",
+        task.owner_rq_scheduler_transactions
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "owner_rq_bootstrap_transactions {}",
+        task.owner_rq_bootstrap_transactions
+    )
+    .unwrap();
     writeln!(output, "direct_wake_attempts {}", task.direct_wake_attempts).unwrap();
     writeln!(
         output,
@@ -208,6 +250,13 @@ mod tests {
             keys,
             [
                 "current_thread_handle_queries",
+                "runtime_preempt_guard_entries",
+                "runtime_preempt_guard_none",
+                "runtime_irq_guard_entries",
+                "runtime_irq_guard_none",
+                "owner_rq_irqsave_transactions",
+                "owner_rq_scheduler_transactions",
+                "owner_rq_bootstrap_transactions",
                 "direct_wake_attempts",
                 "direct_wake_activations",
                 "direct_wake_enqueues",

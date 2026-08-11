@@ -76,6 +76,8 @@ impl<'a> OwnerRqTxn<'a> {
     pub(crate) fn begin(system: &'a TaskSystem, remote: &'a CpuRemote) -> Self {
         let mut run_queue = remote.lock_run_queue();
         let clock = run_queue.update_clock();
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_owner_rq_irqsave_transaction();
         Self {
             system,
             remote,
@@ -97,6 +99,8 @@ impl<'a> OwnerRqTxn<'a> {
         // SAFETY: forwarded from this constructor's contract.
         let mut run_queue = unsafe { remote.lock_run_queue_irq_disabled() };
         let clock = run_queue.update_clock();
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_owner_rq_scheduler_transaction();
         Self {
             system,
             remote,
@@ -122,6 +126,8 @@ impl<'a> OwnerRqTxn<'a> {
         // SAFETY: forwarded from this constructor's boot-owner contract.
         let mut run_queue = unsafe { remote.lock_run_queue_irq_disabled() };
         let clock = run_queue.update_clock();
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_owner_rq_bootstrap_transaction();
         Self {
             system,
             remote,

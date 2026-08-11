@@ -9,3 +9,17 @@ mod interface;
 pub use capability::*;
 pub use clock::*;
 pub use interface::*;
+
+pub(crate) fn enter_preempt_guard() -> PreemptGuardToken {
+    let token = task_runtime::preempt_guard_enter();
+    #[cfg(feature = "qperf-metrics")]
+    crate::metrics::record_runtime_preempt_guard_entry(token.is_none());
+    token
+}
+
+pub(crate) fn enter_irq_guard() -> IrqGuardToken {
+    let token = task_runtime::irq_guard_enter();
+    #[cfg(feature = "qperf-metrics")]
+    crate::metrics::record_runtime_irq_guard_entry(token.is_none());
+    token
+}

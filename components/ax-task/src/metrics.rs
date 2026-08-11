@@ -8,6 +8,13 @@ use crate::SwitchReason;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct QperfSchedulerMetricsSnapshot {
     pub current_thread_handle_queries: u64,
+    pub runtime_preempt_guard_entries: u64,
+    pub runtime_preempt_guard_none: u64,
+    pub runtime_irq_guard_entries: u64,
+    pub runtime_irq_guard_none: u64,
+    pub owner_rq_irqsave_transactions: u64,
+    pub owner_rq_scheduler_transactions: u64,
+    pub owner_rq_bootstrap_transactions: u64,
     pub direct_wake_attempts: u64,
     pub direct_wake_activations: u64,
     pub direct_wake_enqueues: u64,
@@ -38,6 +45,13 @@ pub struct QperfSchedulerMetricsSnapshot {
 
 struct QperfSchedulerMetrics {
     current_thread_handle_queries: AtomicU64,
+    runtime_preempt_guard_entries: AtomicU64,
+    runtime_preempt_guard_none: AtomicU64,
+    runtime_irq_guard_entries: AtomicU64,
+    runtime_irq_guard_none: AtomicU64,
+    owner_rq_irqsave_transactions: AtomicU64,
+    owner_rq_scheduler_transactions: AtomicU64,
+    owner_rq_bootstrap_transactions: AtomicU64,
     direct_wake_attempts: AtomicU64,
     direct_wake_activations: AtomicU64,
     direct_wake_enqueues: AtomicU64,
@@ -70,6 +84,13 @@ impl QperfSchedulerMetrics {
     const fn new() -> Self {
         Self {
             current_thread_handle_queries: AtomicU64::new(0),
+            runtime_preempt_guard_entries: AtomicU64::new(0),
+            runtime_preempt_guard_none: AtomicU64::new(0),
+            runtime_irq_guard_entries: AtomicU64::new(0),
+            runtime_irq_guard_none: AtomicU64::new(0),
+            owner_rq_irqsave_transactions: AtomicU64::new(0),
+            owner_rq_scheduler_transactions: AtomicU64::new(0),
+            owner_rq_bootstrap_transactions: AtomicU64::new(0),
             direct_wake_attempts: AtomicU64::new(0),
             direct_wake_activations: AtomicU64::new(0),
             direct_wake_enqueues: AtomicU64::new(0),
@@ -103,6 +124,21 @@ impl QperfSchedulerMetrics {
         QperfSchedulerMetricsSnapshot {
             current_thread_handle_queries: self
                 .current_thread_handle_queries
+                .load(Ordering::Relaxed),
+            runtime_preempt_guard_entries: self
+                .runtime_preempt_guard_entries
+                .load(Ordering::Relaxed),
+            runtime_preempt_guard_none: self.runtime_preempt_guard_none.load(Ordering::Relaxed),
+            runtime_irq_guard_entries: self.runtime_irq_guard_entries.load(Ordering::Relaxed),
+            runtime_irq_guard_none: self.runtime_irq_guard_none.load(Ordering::Relaxed),
+            owner_rq_irqsave_transactions: self
+                .owner_rq_irqsave_transactions
+                .load(Ordering::Relaxed),
+            owner_rq_scheduler_transactions: self
+                .owner_rq_scheduler_transactions
+                .load(Ordering::Relaxed),
+            owner_rq_bootstrap_transactions: self
+                .owner_rq_bootstrap_transactions
                 .load(Ordering::Relaxed),
             direct_wake_attempts: self.direct_wake_attempts.load(Ordering::Relaxed),
             direct_wake_activations: self.direct_wake_activations.load(Ordering::Relaxed),
@@ -162,6 +198,46 @@ pub fn qperf_scheduler_metrics_snapshot() -> QperfSchedulerMetricsSnapshot {
 pub(crate) fn record_current_thread_handle_query() {
     QPERF_SCHEDULER_METRICS
         .current_thread_handle_queries
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_runtime_preempt_guard_entry(none: bool) {
+    QPERF_SCHEDULER_METRICS
+        .runtime_preempt_guard_entries
+        .fetch_add(1, Ordering::Relaxed);
+    if none {
+        QPERF_SCHEDULER_METRICS
+            .runtime_preempt_guard_none
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_runtime_irq_guard_entry(none: bool) {
+    QPERF_SCHEDULER_METRICS
+        .runtime_irq_guard_entries
+        .fetch_add(1, Ordering::Relaxed);
+    if none {
+        QPERF_SCHEDULER_METRICS
+            .runtime_irq_guard_none
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_owner_rq_irqsave_transaction() {
+    QPERF_SCHEDULER_METRICS
+        .owner_rq_irqsave_transactions
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_owner_rq_scheduler_transaction() {
+    QPERF_SCHEDULER_METRICS
+        .owner_rq_scheduler_transactions
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_owner_rq_bootstrap_transaction() {
+    QPERF_SCHEDULER_METRICS
+        .owner_rq_bootstrap_transactions
         .fetch_add(1, Ordering::Relaxed);
 }
 
@@ -323,6 +399,47 @@ mod tests {
                 context_switches_blocked: 1,
                 context_switches_exited: 1,
                 context_switches_migrated: 1,
+                ..QperfSchedulerMetricsSnapshot::default()
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_guard_and_owner_rq_entries_are_classified() {
+        let metrics = QperfSchedulerMetrics::new();
+
+        metrics
+            .runtime_preempt_guard_entries
+            .fetch_add(2, Ordering::Relaxed);
+        metrics
+            .runtime_preempt_guard_none
+            .fetch_add(1, Ordering::Relaxed);
+        metrics
+            .runtime_irq_guard_entries
+            .fetch_add(3, Ordering::Relaxed);
+        metrics
+            .runtime_irq_guard_none
+            .fetch_add(2, Ordering::Relaxed);
+        metrics
+            .owner_rq_irqsave_transactions
+            .fetch_add(4, Ordering::Relaxed);
+        metrics
+            .owner_rq_scheduler_transactions
+            .fetch_add(5, Ordering::Relaxed);
+        metrics
+            .owner_rq_bootstrap_transactions
+            .fetch_add(6, Ordering::Relaxed);
+
+        assert_eq!(
+            metrics.snapshot(),
+            QperfSchedulerMetricsSnapshot {
+                runtime_preempt_guard_entries: 2,
+                runtime_preempt_guard_none: 1,
+                runtime_irq_guard_entries: 3,
+                runtime_irq_guard_none: 2,
+                owner_rq_irqsave_transactions: 4,
+                owner_rq_scheduler_transactions: 5,
+                owner_rq_bootstrap_transactions: 6,
                 ..QperfSchedulerMetricsSnapshot::default()
             }
         );

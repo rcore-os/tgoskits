@@ -6,7 +6,7 @@ use core::{
 };
 
 use super::{RawTicketGuard, RawTicketLock};
-use crate::runtime::{PreemptGuardToken, task_runtime};
+use crate::runtime::{PreemptGuardToken, enter_preempt_guard, task_runtime};
 
 /// A private ticket lock for scheduler state that hard IRQs never acquire.
 #[derive(Debug)]
@@ -62,7 +62,7 @@ pub(crate) struct PreemptScope {
 impl PreemptScope {
     pub(crate) fn enter() -> Self {
         Self {
-            token: task_runtime::preempt_guard_enter(),
+            token: enter_preempt_guard(),
             _not_send: PhantomData,
         }
     }
