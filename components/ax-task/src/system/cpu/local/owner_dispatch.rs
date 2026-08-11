@@ -6,13 +6,13 @@ impl CpuLocal {
     /// Returns the currently executing non-idle thread, if any.
     pub(crate) fn current(&self) -> Option<ThreadId> {
         self.remote
-            .lock_run_queue(RunQueueGuardSource::OwnerObservation)
+            .lock_run_queue(RunQueueGuardSource::OwnerCurrentThreadObservation)
             .current_thread()
     }
 
     pub(crate) fn current_core(&self) -> Option<Arc<ThreadCore>> {
         self.remote
-            .lock_run_queue(RunQueueGuardSource::OwnerObservation)
+            .lock_run_queue(RunQueueGuardSource::OwnerCurrentCoreObservation)
             .current_core()
     }
 
@@ -23,7 +23,7 @@ impl CpuLocal {
     /// extension until the returned handle is dropped.
     pub(crate) fn current_thread_handle(&self) -> Result<ThreadHandle, TaskError> {
         self.remote
-            .lock_run_queue(RunQueueGuardSource::OwnerObservation)
+            .lock_run_queue(RunQueueGuardSource::OwnerCurrentHandleObservation)
             .current_core()
             .map(ThreadHandle::from_core)
             .ok_or(TaskError::NoRunnableThread)
@@ -32,14 +32,14 @@ impl CpuLocal {
     /// Returns the configured CPU idle thread, if any.
     pub(crate) fn idle(&self) -> Option<ThreadId> {
         self.remote
-            .lock_run_queue(RunQueueGuardSource::OwnerObservation)
+            .lock_run_queue(RunQueueGuardSource::OwnerIdleObservation)
             .idle()
     }
 
     /// Returns the number of runnable non-idle threads.
     pub(crate) fn runnable_count(&self) -> usize {
         self.remote
-            .lock_run_queue(RunQueueGuardSource::OwnerObservation)
+            .lock_run_queue(RunQueueGuardSource::OwnerRunnableObservation)
             .nr_running()
     }
 

@@ -12,8 +12,13 @@ use crate::SchedulerClass;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RunQueueGuardSource {
     Transaction,
-    OwnerObservation,
-    TimerObservation,
+    OwnerCurrentThreadObservation,
+    OwnerCurrentCoreObservation,
+    OwnerCurrentHandleObservation,
+    OwnerIdleObservation,
+    OwnerRunnableObservation,
+    TimerSchedulerClockEventObservation,
+    TimerFairBalanceObservation,
     RtAccounting,
     DeadlineAccounting,
     Membarrier,
@@ -26,11 +31,26 @@ impl RunQueueGuardSource {
     pub(crate) const fn irq_guard_source(self) -> crate::runtime::IrqGuardSource {
         match self {
             Self::Transaction => crate::runtime::IrqGuardSource::CpuRunQueueTransactionTicket,
-            Self::OwnerObservation => {
-                crate::runtime::IrqGuardSource::CpuRunQueueOwnerObservationTicket
+            Self::OwnerCurrentThreadObservation => {
+                crate::runtime::IrqGuardSource::CpuRunQueueOwnerCurrentThreadObservationTicket
             }
-            Self::TimerObservation => {
-                crate::runtime::IrqGuardSource::CpuRunQueueTimerObservationTicket
+            Self::OwnerCurrentCoreObservation => {
+                crate::runtime::IrqGuardSource::CpuRunQueueOwnerCurrentCoreObservationTicket
+            }
+            Self::OwnerCurrentHandleObservation => {
+                crate::runtime::IrqGuardSource::CpuRunQueueOwnerCurrentHandleObservationTicket
+            }
+            Self::OwnerIdleObservation => {
+                crate::runtime::IrqGuardSource::CpuRunQueueOwnerIdleObservationTicket
+            }
+            Self::OwnerRunnableObservation => {
+                crate::runtime::IrqGuardSource::CpuRunQueueOwnerRunnableObservationTicket
+            }
+            Self::TimerSchedulerClockEventObservation => {
+                crate::runtime::IrqGuardSource::CpuRunQueueTimerSchedulerClockEventObservationTicket
+            }
+            Self::TimerFairBalanceObservation => {
+                crate::runtime::IrqGuardSource::CpuRunQueueTimerFairBalanceObservationTicket
             }
             Self::RtAccounting => crate::runtime::IrqGuardSource::CpuRunQueueRtAccountingTicket,
             Self::DeadlineAccounting => {

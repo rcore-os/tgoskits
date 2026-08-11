@@ -60,7 +60,7 @@ impl CpuRemote {
 
     /// Returns `rq->curr` under the authoritative runqueue lock.
     pub fn current_thread(&self) -> Option<ThreadId> {
-        self.lock_run_queue(RunQueueGuardSource::OwnerObservation)
+        self.lock_run_queue(RunQueueGuardSource::OwnerCurrentThreadObservation)
             .current_thread()
     }
 

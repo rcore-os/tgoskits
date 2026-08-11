@@ -176,7 +176,7 @@ impl CpuLocal {
     ) -> Option<SchedulerClockEvent> {
         let run_queue = self
             .remote
-            .lock_run_queue(RunQueueGuardSource::TimerObservation);
+            .lock_run_queue(RunQueueGuardSource::TimerSchedulerClockEventObservation);
         let mut due = false;
         let mut next = None;
 
@@ -237,7 +237,7 @@ impl CpuLocal {
     fn has_periodic_fair_balance_work(&self) -> bool {
         let run_queue = self
             .remote
-            .lock_run_queue(RunQueueGuardSource::TimerObservation);
+            .lock_run_queue(RunQueueGuardSource::TimerFairBalanceObservation);
         let current_non_idle =
             run_queue.current_thread().is_some() && run_queue.current_thread() != run_queue.idle();
         run_queue.has_fair() && run_queue.nr_running() > usize::from(current_non_idle)
