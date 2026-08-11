@@ -1,5 +1,6 @@
 use alloc::{
     borrow::ToOwned,
+    collections::BTreeMap,
     string::String,
     sync::{Arc, Weak},
     vec::Vec,
@@ -17,13 +18,13 @@ use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps,
     FileRangeOperation, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata,
     MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode, Reference,
-    RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry,
+    RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
-use crate::sync::{IrqMutex, Mutex};
+use crate::sync::{FsMutex, IrqMutex, Mutex};
 
 const TMPFS_MAGIC: u32 = 0x0102_1994;
 const RAMFS_MAGIC: u32 = 0x8584_58f6;
@@ -289,6 +290,10 @@ struct Inode {
     ino: u64,
     metadata: IrqMutex<Metadata>,
     content: NodeContent,
+    // Extended attributes belong to the inode so hard links observe the same
+    // values. Syscall xattr paths are sleepable and never hold a directory
+    // entries guard while acquiring this lock.
+    xattrs: FsMutex<BTreeMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl Inode {
@@ -331,6 +336,7 @@ impl Inode {
             ino,
             metadata: IrqMutex::new(metadata),
             content,
+            xattrs: FsMutex::new(BTreeMap::new()),
         });
         entry.insert(result.clone());
         drop(inodes);
@@ -373,6 +379,48 @@ impl Drop for Inode {
         };
         let length = content.length.load(AtomicOrdering::Acquire);
         fs.used_bytes.fetch_sub(length, AtomicOrdering::AcqRel);
+    }
+}
+
+fn xattr_not_found() -> VfsError {
+    VfsError::from(ax_errno::LinuxError::ENODATA).canonicalize()
+}
+
+impl XattrOps for Inode {
+    fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>> {
+        self.xattrs
+            .lock()
+            .get(name)
+            .cloned()
+            .ok_or_else(xattr_not_found)
+    }
+
+    fn list_xattrs(&self) -> VfsResult<Vec<Vec<u8>>> {
+        Ok(self.xattrs.lock().keys().cloned().collect())
+    }
+
+    fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()> {
+        if name.is_empty() {
+            return Err(VfsError::InvalidInput);
+        }
+
+        let mut xattrs = self.xattrs.lock();
+        let exists = xattrs.contains_key(name);
+        match mode {
+            XattrSetMode::Create if exists => return Err(VfsError::AlreadyExists),
+            XattrSetMode::Replace if !exists => return Err(xattr_not_found()),
+            XattrSetMode::Upsert | XattrSetMode::Create | XattrSetMode::Replace => {}
+        }
+        xattrs.insert(name.to_vec(), value.to_vec());
+        Ok(())
+    }
+
+    fn remove_xattr(&self, name: &[u8]) -> VfsResult<()> {
+        self.xattrs
+            .lock()
+            .remove(name)
+            .map(|_| ())
+            .ok_or_else(xattr_not_found)
     }
 }
 
@@ -503,6 +551,10 @@ impl NodeOps for MemoryNode {
 
     fn flags(&self) -> NodeFlags {
         NodeFlags::ALWAYS_CACHE
+    }
+
+    fn xattr_ops(&self) -> Option<&dyn XattrOps> {
+        Some(self.inode.as_ref())
     }
 }
 

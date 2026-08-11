@@ -1,21 +1,14 @@
-//! Extended attribute syscalls backed by per-node `user_data`.
+//! Extended attribute syscalls backed by filesystem inode capabilities.
 //!
-//! Only the `user.*` namespace is supported here. Attributes are stored in a
-//! VFS node side map rather than in the underlying on-disk filesystem. Overlay
-//! paths need special handling: overlay entries are non-cacheable, so xattrs
-//! must be read from the current real target and written to the copy-up target
-//! instead of the temporary overlay entry.
+//! Only the `user.*` namespace is currently exposed by Starry. Persistent
+//! storage and create/replace atomicity belong to the selected filesystem;
+//! this layer owns userspace validation, overlay copy-up, and Linux ABI sizes.
 
-use alloc::{
-    collections::{BTreeMap, btree_map::Entry},
-    string::String,
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{string::String, vec::Vec};
 use core::ffi::c_char;
 
-use ax_errno::{AxError, AxResult, LinuxError};
-use axfs_ng_vfs::Location;
+use ax_errno::{AxError, AxResult};
+use axfs_ng_vfs::{Location, XattrSetMode};
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, XATTR_CREATE, XATTR_LIST_MAX, XATTR_NAME_MAX,
     XATTR_REPLACE, XATTR_SIZE_MAX,
@@ -26,36 +19,7 @@ use crate::{
     file::{fd_is_path, resolve_at},
     mm::{vm_load_path_string, vm_load_string},
     pseudofs::overlay,
-    sync::Mutex,
 };
-
-type XattrMap = BTreeMap<String, Vec<u8>>;
-
-#[derive(Default)]
-struct XattrStore {
-    attrs: Mutex<XattrMap>,
-}
-
-fn linux_errno(errno: LinuxError) -> AxError {
-    AxError::from(errno)
-}
-
-fn existing_store(loc: &Location) -> Option<Arc<XattrStore>> {
-    loc.user_data().get::<XattrStore>()
-}
-
-/// Return the existing xattr store or attach a new one to this real node.
-fn store_for_update(loc: &Location) -> Arc<XattrStore> {
-    loc.user_data().get_or_insert_with(XattrStore::default)
-}
-
-/// Snapshot existing attrs before copy-up.
-///
-/// Copy-up creates a different upper `Location`, so metadata kept in
-/// `user_data` must be transferred explicitly when the upper store is empty.
-fn existing_attrs(loc: &Location) -> Option<XattrMap> {
-    existing_store(loc).map(|store| store.attrs.lock().clone())
-}
 
 /// Read and validate an xattr name from userspace.
 fn read_name(name: *const c_char) -> AxResult<String> {
@@ -120,13 +84,11 @@ fn copy_value_to_user(value: &[u8], user_value: *mut u8, size: usize) -> AxResul
 }
 
 /// Serialize xattr names as a nul-separated Linux listxattr buffer.
-fn serialize_names(attrs: Option<&XattrMap>) -> AxResult<Vec<u8>> {
+fn serialize_names(attrs: &[Vec<u8>]) -> AxResult<Vec<u8>> {
     let mut names = Vec::new();
-    if let Some(attrs) = attrs {
-        for name in attrs.keys() {
-            names.extend_from_slice(name.as_bytes());
-            names.push(0);
-        }
+    for name in attrs {
+        names.extend_from_slice(name);
+        names.push(0);
     }
     if names.len() > XATTR_LIST_MAX as usize {
         return Err(AxError::ArgumentListTooLong);
@@ -157,28 +119,31 @@ fn get_xattr(
 ) -> AxResult<isize> {
     let name = read_name(name)?;
     let loc = overlay::visible_target(&loc)?;
-    let value = {
-        let store = existing_store(&loc).ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
-        store
-            .attrs
-            .lock()
-            .get(&name)
-            .cloned()
-            .ok_or_else(|| linux_errno(LinuxError::ENODATA))?
-    };
+    let value = loc.get_xattr(name.as_bytes())?;
     copy_value_to_user(&value, user_value, size)
 }
 
 /// List xattrs from the currently visible real node.
 fn list_xattr(loc: Location, list: *mut u8, size: usize) -> AxResult<isize> {
     let loc = overlay::visible_target(&loc)?;
-    let names = {
-        let Some(store) = existing_store(&loc) else {
-            return copy_list_to_user(&[], list, size);
-        };
-        serialize_names(Some(&store.attrs.lock()))?
-    };
+    let names = serialize_names(&loc.list_xattrs()?)?;
     copy_list_to_user(&names, list, size)
+}
+
+fn copy_up_xattrs(source: &Location, target: &Location) -> AxResult<()> {
+    if source.ptr_eq(target) {
+        return Ok(());
+    }
+    let names = match source.list_xattrs() {
+        Ok(names) => names,
+        Err(error) if error.canonicalize() == AxError::OperationNotSupported => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    for name in names {
+        let value = source.get_xattr(&name)?;
+        target.set_xattr(&name, &value, XattrSetMode::Upsert)?;
+    }
+    Ok(())
 }
 
 /// Set an xattr, copying lower-backed overlay files up before writing.
@@ -198,61 +163,36 @@ fn set_xattr(
 
     let name = read_name(name)?;
     let value = read_value(value, size)?;
-    let old_attrs = existing_attrs(&overlay::visible_target(&loc)?);
-
-    if let Some(attrs) = &old_attrs {
-        let exists = attrs.contains_key(&name);
-        if exists && flags & XATTR_CREATE != 0 {
-            return Err(AxError::AlreadyExists);
-        }
-        if !exists && flags & XATTR_REPLACE != 0 {
-            return Err(linux_errno(LinuxError::ENODATA));
-        }
+    if loc.is_readonly() {
+        return Err(AxError::ReadOnlyFilesystem);
+    }
+    let source = overlay::visible_target(&loc)?;
+    let target = overlay::ensure_copy_up_target(&loc)?;
+    copy_up_xattrs(&source, &target)?;
+    let mode = if flags & XATTR_CREATE != 0 {
+        XattrSetMode::Create
     } else if flags & XATTR_REPLACE != 0 {
-        return Err(linux_errno(LinuxError::ENODATA));
-    }
-
-    let loc = overlay::ensure_copy_up_target(&loc)?;
-    let store = store_for_update(&loc);
-    let mut attrs = store.attrs.lock();
-    if attrs.is_empty()
-        && let Some(old_attrs) = old_attrs
-    {
-        *attrs = old_attrs;
-    }
-    match attrs.entry(name) {
-        Entry::Occupied(mut entry) => {
-            if flags & XATTR_CREATE != 0 {
-                return Err(AxError::AlreadyExists);
-            }
-            entry.insert(value);
-        }
-        Entry::Vacant(entry) => {
-            if flags & XATTR_REPLACE != 0 {
-                return Err(linux_errno(LinuxError::ENODATA));
-            }
-            entry.insert(value);
-        }
-    }
+        XattrSetMode::Replace
+    } else {
+        XattrSetMode::Upsert
+    };
+    target.set_xattr(name.as_bytes(), &value, mode)?;
     Ok(0)
 }
 
 /// Remove an xattr, copying lower-backed overlay files up before mutation.
 fn remove_xattr(loc: Location, name: *const c_char) -> AxResult<isize> {
     let name = read_name(name)?;
-    let old_attrs = existing_attrs(&overlay::visible_target(&loc)?)
-        .ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
-    if !old_attrs.contains_key(&name) {
-        return Err(linux_errno(LinuxError::ENODATA));
+    if loc.is_readonly() {
+        return Err(AxError::ReadOnlyFilesystem);
     }
-
-    let loc = overlay::ensure_copy_up_target(&loc)?;
-    let store = store_for_update(&loc);
-    let mut attrs = store.attrs.lock();
-    if attrs.is_empty() {
-        *attrs = old_attrs;
-    }
-    attrs.remove(&name);
+    let source = overlay::visible_target(&loc)?;
+    // Linux overlayfs probes a lower-only inode before copy-up so a missing
+    // removal returns ENODATA without materializing an upper file.
+    source.get_xattr(name.as_bytes())?;
+    let target = overlay::ensure_copy_up_target(&loc)?;
+    copy_up_xattrs(&source, &target)?;
+    target.remove_xattr(name.as_bytes())?;
     Ok(0)
 }
 

@@ -27,6 +27,7 @@ mod extent_map;
 mod io;
 mod link;
 mod rename;
+mod xattr;
 mod xattr_extent;
 
 pub use blocks::build_file_block_mapping_with_inode_num;
@@ -56,3 +57,5 @@ pub use link::link;
 pub(crate) use link::link_inode_at;
 pub(crate) use rename::{RenameEntryRequest, rename_inode_at};
 pub use rename::{RenameOptions, RenameOutcome, mv, rename, rename_with_options};
+pub use xattr::{XattrName, XattrNamespace, XattrSetMode};
+pub(crate) use xattr::{get_inode_xattr, list_inode_xattrs, remove_inode_xattr, set_inode_xattr};

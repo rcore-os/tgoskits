@@ -13,11 +13,13 @@ use crate::{
     error::{Ext4Error, Ext4ErrorKind, Ext4Result},
     file::{
         CreateInodePayload, FileExtentMap, FileExtentTarget, PreallocationOptions, RangeOperation,
-        RenameEntryRequest, RenameOptions, RenameOutcome, UnlinkOutcome,
-        build_file_block_mapping_with_inode_num, create_inode_at, discard_unpublished_inode_blocks,
-        error_after_cleanup, find_named_entry_in_parent, inspect_inode_extents, link_inode_at,
-        operate_inode_range, read_inode_data_into, reap_unlinked_inode, rename_inode_at,
-        truncate_inode, unlink_empty_directory_at, unlink_inode_at, write_inode_data,
+        RenameEntryRequest, RenameOptions, RenameOutcome, UnlinkOutcome, XattrName, XattrNamespace,
+        XattrSetMode, build_file_block_mapping_with_inode_num, create_inode_at,
+        discard_unpublished_inode_blocks, error_after_cleanup, find_named_entry_in_parent,
+        get_inode_xattr, inspect_inode_extents, link_inode_at, list_inode_xattrs,
+        operate_inode_range, read_inode_data_into, reap_unlinked_inode, remove_inode_xattr,
+        rename_inode_at, set_inode_xattr, truncate_inode, unlink_empty_directory_at,
+        unlink_inode_at, write_inode_data,
     },
     hashtree::Ext4InodeHashTreeExt,
     io::BlockIo,
@@ -365,6 +367,67 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
             length,
             target,
             extent_limit,
+        )
+    }
+
+    /// Reads one ext4 extended attribute by inode number and raw namespace name.
+    pub fn get_xattr(
+        &mut self,
+        number: InodeNumber,
+        namespace: XattrNamespace,
+        name: &[u8],
+    ) -> Ext4Result<Vec<u8>> {
+        get_inode_xattr(
+            &mut self.device,
+            &mut self.filesystem,
+            number,
+            namespace,
+            name,
+        )
+    }
+
+    /// Lists ext4 extended-attribute names without applying OS visibility policy.
+    pub fn list_xattrs(&mut self, number: InodeNumber) -> Ext4Result<Vec<XattrName>> {
+        list_inode_xattrs(&mut self.device, &mut self.filesystem, number)
+    }
+
+    /// Creates or replaces one VFS-authorized extended attribute.
+    pub fn set_xattr(
+        &mut self,
+        _context: MutationContext,
+        number: InodeNumber,
+        namespace: XattrNamespace,
+        name: &[u8],
+        value: &[u8],
+        mode: XattrSetMode,
+    ) -> Ext4Result<()> {
+        self.ensure_writable("xattr:set")?;
+        set_inode_xattr(
+            &mut self.device,
+            &mut self.filesystem,
+            number,
+            namespace,
+            name,
+            value,
+            mode,
+        )
+    }
+
+    /// Removes one VFS-authorized extended attribute.
+    pub fn remove_xattr(
+        &mut self,
+        _context: MutationContext,
+        number: InodeNumber,
+        namespace: XattrNamespace,
+        name: &[u8],
+    ) -> Ext4Result<()> {
+        self.ensure_writable("xattr:remove")?;
+        remove_inode_xattr(
+            &mut self.device,
+            &mut self.filesystem,
+            number,
+            namespace,
+            name,
         )
     }
 

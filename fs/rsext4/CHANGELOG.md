@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add typed inode extent inspection for extent and legacy mappings, including
   sparse, unwritten, directory, bounded, inline/external xattr, and dynamic
   block-size coverage.
+- Add typed inode-number extended-attribute operations with checked inline and
+  external-block codecs, Linux hashes/checksums, create/replace policy, and
+  dynamic block-size Linux-image coverage.
 
 ### Fixed
 

@@ -86,6 +86,30 @@ pub trait NodeOps: Send + Sync + 'static {
     fn flags(&self) -> NodeFlags {
         NodeFlags::empty()
     }
+
+    /// Returns the optional persistent extended-attribute capability.
+    fn xattr_ops(&self) -> Option<&dyn XattrOps> {
+        None
+    }
+}
+
+/// Persistent extended-attribute capability owned by a filesystem inode.
+pub trait XattrOps: Send + Sync {
+    fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>>;
+
+    fn list_xattrs(&self) -> VfsResult<Vec<Vec<u8>>>;
+
+    fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()>;
+
+    fn remove_xattr(&self, name: &[u8]) -> VfsResult<()>;
+}
+
+/// Create/replace policy passed through VFS without Linux flag bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XattrSetMode {
+    Upsert,
+    Create,
+    Replace,
 }
 
 enum Node {
@@ -381,6 +405,38 @@ impl DirEntry {
 
     pub fn user_data(&self) -> MutexGuard<'_, TypeMap> {
         self.0.user_data.lock()
+    }
+
+    pub fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>> {
+        self.0
+            .node
+            .xattr_ops()
+            .ok_or(VfsError::OperationNotSupported)?
+            .get_xattr(name)
+    }
+
+    pub fn list_xattrs(&self) -> VfsResult<Vec<Vec<u8>>> {
+        self.0
+            .node
+            .xattr_ops()
+            .ok_or(VfsError::OperationNotSupported)?
+            .list_xattrs()
+    }
+
+    pub fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()> {
+        self.0
+            .node
+            .xattr_ops()
+            .ok_or(VfsError::OperationNotSupported)?
+            .set_xattr(name, value, mode)
+    }
+
+    pub fn remove_xattr(&self, name: &[u8]) -> VfsResult<()> {
+        self.0
+            .node
+            .xattr_ops()
+            .ok_or(VfsError::OperationNotSupported)?
+            .remove_xattr(name)
     }
 }
 

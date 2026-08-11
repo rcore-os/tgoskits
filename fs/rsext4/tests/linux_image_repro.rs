@@ -543,6 +543,21 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
         )
         .expect("lookup xattr FIEMAP fixture")
         .expect("xattr FIEMAP fixture must exist");
+    assert_eq!(
+        filesystem
+            .get_xattr(file.number, XattrNamespace::User, b"fiemap")
+            .expect("read inline xattr"),
+        b"inline-value"
+    );
+    assert_eq!(
+        filesystem
+            .list_xattrs(file.number)
+            .expect("list inline xattrs"),
+        vec![XattrName {
+            namespace: XattrNamespace::User,
+            name: b"fiemap".to_vec(),
+        }]
+    );
     let mappings = filesystem
         .inode_extents(
             file.number,
@@ -599,6 +614,21 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
         )
         .expect("lookup external-xattr FIEMAP fixture")
         .expect("external-xattr FIEMAP fixture must exist");
+    assert_eq!(
+        filesystem
+            .get_xattr(external_file.number, XattrNamespace::User, b"fiemap")
+            .expect("read external xattr"),
+        external_value.as_bytes()
+    );
+    assert_eq!(
+        filesystem
+            .list_xattrs(external_file.number)
+            .expect("list external xattrs"),
+        vec![XattrName {
+            namespace: XattrNamespace::User,
+            name: b"fiemap".to_vec(),
+        }]
+    );
     let external = filesystem
         .inode_extents(
             external_file.number,
@@ -627,6 +657,19 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
         )
         .expect("lookup no-xattr FIEMAP fixture")
         .expect("no-xattr FIEMAP fixture must exist");
+    assert!(
+        filesystem
+            .list_xattrs(no_xattr_file.number)
+            .expect("list absent xattrs")
+            .is_empty()
+    );
+    assert_eq!(
+        filesystem
+            .get_xattr(no_xattr_file.number, XattrNamespace::User, b"fiemap")
+            .expect_err("missing xattr must be reported")
+            .kind(),
+        Ext4ErrorKind::NotFound
+    );
     let no_xattr = filesystem
         .inode_extents(
             no_xattr_file.number,
@@ -639,6 +682,119 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
     assert_eq!(no_xattr.mapped_extents, 0);
     assert!(no_xattr.extents.is_empty());
     assert!(no_xattr.complete);
+
+    let context = MutationContext::new(1000, 1000, 0, 0o022);
+    assert_eq!(
+        filesystem
+            .set_xattr(
+                context,
+                file.number,
+                XattrNamespace::User,
+                b"fiemap",
+                b"duplicate",
+                XattrSetMode::Create,
+            )
+            .expect_err("CREATE must reject an existing attribute")
+            .kind(),
+        Ext4ErrorKind::AlreadyExists
+    );
+    assert_eq!(
+        filesystem
+            .set_xattr(
+                context,
+                file.number,
+                XattrNamespace::User,
+                b"missing",
+                b"value",
+                XattrSetMode::Replace,
+            )
+            .expect_err("REPLACE must reject a missing attribute")
+            .kind(),
+        Ext4ErrorKind::NotFound
+    );
+
+    filesystem
+        .set_xattr(
+            context,
+            file.number,
+            XattrNamespace::User,
+            b"rsext4",
+            b"small",
+            XattrSetMode::Create,
+        )
+        .expect("create inline xattr");
+    assert_eq!(
+        filesystem
+            .get_xattr(file.number, XattrNamespace::User, b"rsext4")
+            .expect("read created inline xattr"),
+        b"small"
+    );
+
+    let free_before_external = filesystem.statfs().free_blocks;
+    let large_value = vec![b'z'; 300];
+    filesystem
+        .set_xattr(
+            context,
+            file.number,
+            XattrNamespace::User,
+            b"rsext4",
+            &large_value,
+            XattrSetMode::Replace,
+        )
+        .expect("migrate inline xattrs to an external block");
+    assert_eq!(
+        filesystem
+            .get_xattr(file.number, XattrNamespace::User, b"rsext4")
+            .expect("read externalized xattr"),
+        large_value
+    );
+    assert_eq!(filesystem.statfs().free_blocks + 1, free_before_external);
+    assert_eq!(
+        filesystem
+            .inode_extents(
+                file.number,
+                0,
+                u64::MAX,
+                FileExtentTarget::ExtendedAttributes,
+                1,
+            )
+            .expect("inspect externalized xattr")
+            .extents[0]
+            .state,
+        FileExtentState::Initialized
+    );
+
+    filesystem
+        .remove_xattr(context, file.number, XattrNamespace::User, b"rsext4")
+        .expect("remove externalized xattr");
+    assert_eq!(filesystem.statfs().free_blocks, free_before_external);
+    assert_eq!(
+        filesystem
+            .get_xattr(file.number, XattrNamespace::User, b"fiemap")
+            .expect("preserve sibling xattr during migration"),
+        b"inline-value"
+    );
+    assert_eq!(
+        filesystem
+            .inode_extents(
+                file.number,
+                0,
+                u64::MAX,
+                FileExtentTarget::ExtendedAttributes,
+                1,
+            )
+            .expect("inspect migrated inline xattr")
+            .extents[0]
+            .state,
+        FileExtentState::Inline
+    );
+    assert_eq!(
+        filesystem
+            .remove_xattr(context, file.number, XattrNamespace::User, b"rsext4",)
+            .expect_err("remove must report a missing xattr")
+            .kind(),
+        Ext4ErrorKind::NotFound
+    );
 
     filesystem
         .write_inode(

@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filesystem-specific extent structures through the VFS boundary.
 - Add typed extent-query target selection and bounded mapping DTOs for both
   regular-file and directory nodes; unsupported xattr mappings stay explicit.
+- Add an optional inode-owned extended-attribute capability with typed
+  create/replace policy and read-only mount enforcement.
 
 ## [0.5.8](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.7...axfs-ng-vfs-v0.5.8) - 2026-08-09
 

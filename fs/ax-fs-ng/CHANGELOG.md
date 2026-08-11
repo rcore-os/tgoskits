@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Route regular-file and directory extent inspection through the ext4 mount's
   sleepable owner without exposing core disk structures, including typed
   inline and external xattr mappings.
+- Route persistent user extended attributes through the ext4 mount's sleepable
+  owner and translate core domain errors at the adapter boundary.
 
 ### Fixed
 

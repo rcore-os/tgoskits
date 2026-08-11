@@ -20,7 +20,7 @@ use crate::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, FsIoEvents,
     FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission,
     NodeType, OpenOptions, Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult,
-    WeakDirEntry,
+    WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -695,6 +695,10 @@ impl Location {
     pub fn flags(&self) -> NodeFlags;
 
     pub fn user_data(&self) -> MutexGuard<'_, TypeMap>;
+
+    pub fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>>;
+
+    pub fn list_xattrs(&self) -> VfsResult<Vec<Vec<u8>>>;
 }
 
 impl Location {
@@ -727,6 +731,20 @@ impl Location {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         self.entry.update_metadata(update)
+    }
+
+    pub fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry.set_xattr(name, value, mode)
+    }
+
+    pub fn remove_xattr(&self, name: &[u8]) -> VfsResult<()> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry.remove_xattr(name)
     }
 
     /// Returns the entry name.
