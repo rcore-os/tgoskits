@@ -2930,6 +2930,37 @@ clippy 均通过。
 enqueue、park 与 ktimer 触发源分类；剩余 owner observation 约 5.9--6.0 次/switch，则需在保持
 task-sched -> rq 锁序与事务复核的前提下合并分散的 current/core/idle 查询。
 
+下一轮只在唯一 `scheduler_deadline_publication()` 入口记录请求重新推导的外层状态转换；八个 leaf
+求和得到 aggregate，指标不参与 deadline、generation、timer update 或调度选择。相同配置的
+60.954 秒完整 marker 窗口中，219,906 次 scheduler deadline derivation 可以完整归因：
+
+| deadline derivation trigger | entry 增量 | 占全部推导 | 每次真实 switch |
+|---|---:|---:|---:|
+| clock event | 15,008 | 6.825% | 0.120 |
+| park arm | 33,687 | 15.319% | 0.269 |
+| park cancel | 28,169 | 12.810% | 0.225 |
+| ktimer service | 5,395 | 2.453% | 0.043 |
+| enqueue | 0 | 0% | 0 |
+| placement | 0 | 0% | 0 |
+| schedule selection | 125,508 | 57.074% | 1.001 |
+| schedule no-switch | 12,139 | 5.520% | 0.097 |
+
+窗口内真实 switch 增量为 125,415，推导总数为 1.753 次/switch；物理 clockevent IRQ 增量为
+14,999，与 clock-event 推导 15,008 基本一一对应。`ScheduleSelection` 才是唯一接近每次 switch
+一次的主要来源：selection 已经在 `OwnerRqTxn` 内决定 next 并提交 authoritative rq 状态，随后
+`finish_owner_selection()` 释放 transaction，又由 `program_local_timer()` 为相同 current/runtime
+事实重新取得 rq observation guard。该边界与 Linux 不一致：Linux 的 `set_next_task_fair()` /
+`set_next_task_dl()` 在 rq lock 内按 `first` 产生 hrtick 请求，`hrtick_schedule_exit()` 再以 queued
+状态和 5 us expiry 差值合并物理重编程；它不会在 selection transaction 结束后为了读取同一 rq
+事实再锁一次 rq。
+
+因此下一确定性红绿阶段不是跳过 `ScheduleSelection` 的 deadline 更新，而是让 selection transaction
+在持有唯一 rq guard 时产生 scheduler deadline observation，commit 后只发布已经得到的结果。park
+arm/cancel 仍是 deadline queue registration/cancellation 的独立事务，不能假装与 owner-rq selection
+共享一把锁；后续只允许通过已有 publication equality 合并物理更新。本轮总 rq acquisition 为
+9.017 次/switch，仍推进到 `file-0538`，host user 为 87.799 秒；这里只定位到结构性二次 rq
+acquisition，不宣称整体性能问题已经解决。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
