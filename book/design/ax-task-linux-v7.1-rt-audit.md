@@ -2894,16 +2894,41 @@ aggregate 增量与 leaf 求和相差 270（0.020%），以下使用 1,350,515 �
 | lifecycle | 16 | 0.001% | 0.0001 |
 
 窗口内真实 switch 增量为 121,711，物理 clockevent IRQ 增量为 15,207。两个 timer leaf 不仅完全
-相等，而且各自平均每个物理 IRQ 进入 15.232 次；因此它们不是“一次 IRQ 各观察一次”，而是同一
-deadline 查询/重编程链反复取得 rq lock 并重复计算同一 current/fair/runnable 事实。owner 侧的
+相等，而且各自平均每个物理 IRQ 进入 15.232 次；因此不能把它们解释为“一次 IRQ 各观察一次”。
+调用图确认 `on_clock_event` 自身只在末尾推导一次，但 switch、enqueue、park、ktimer 等状态转换也
+各自要求刷新物理 deadline；真正确定的重复是每次推导内部都为 current runtime 与 fair balance
+分别取得 rq lock。owner 侧的
 `runnable_count` 在该 workload 为 0，不能用它解释原来的 54% owner observation；主要来源是
 current-core、idle、current-thread 和 current-handle 的分散查询。
 
 Linux 允许 `READ_ONCE(rq->curr)` 只作启发式选择并在持锁事务中复核，但 `rq->nr_running`、current/
 idle 多字段一致性、当前实体 runtime 以及 `rq->next_balance` 都没有通用 lockless snapshot；这些
 状态仍需 rq lock 或一项有明确生产者协议的 derived publication。因此下一阶段先合并同一 deadline
-推导中的 runqueue observation，并追踪为何一次物理 IRQ 触发十五轮重算，不能直接把上述七个入口
-改成无锁读取，也不能复制 current/queue 状态。
+推导中的 runqueue observation，并继续分类造成推导次数远高于物理 IRQ 的非 IRQ 状态转换，不能
+直接把上述七个入口改成无锁读取，也不能复制 current/queue 状态。
+
+确定性红测在一个 current fair task 与一个 contender 的真实 1-CPU fixture 上单独调用一次
+`next_oneshot_deadline`；旧实现 timer rq ticket 精确增加 2，契约要求同一推导只进入一次 rq scope。
+修复增加一次性 `SchedulerDeadlineRqObservation`：在唯一 rq guard 内共同读取 current/idle、当前
+实体 runtime、RT quota 与 periodic fair predicate，然后由 `scheduler_work_due` 或
+`next_oneshot_deadline` 消费；原 scheduler-clock-event/fair-balance 两个 guard source 被删除并
+替换成唯一 deadline-derivation source，没有保留兼容入口或复制 rq 状态。该顺序对应 Linux hrtick
+callback 在一次 rq lock 内完成 `update_rq_clock()` 与 class `task_tick()`，而不是把同一 current
+状态拆成多个锁外查询。红测转绿，完整 ax-task qperf-feature、integration、loom、doctest 与目标
+clippy 均通过。
+
+相对修复前每 switch 11.098 次总 rq acquisition、3.806 次 timer observation，两个修复后窗口为：
+
+| qperf window | 总 rq / switch | 变化 | timer / switch | 变化 | workload 进度 | host user |
+|---|---:|---:|---:|---:|---|---:|
+| coherent run 1 | 9.188 | -17.211% | 1.896 | -50.190% | `file-0538` | 88.424 s |
+| coherent run 2 | 8.998 | -18.921% | 1.863 | -51.042% | `file-0538` | 87.683 s |
+
+修复前窗口推进到 `file-0474`，host user 为 88.026 秒。两轮都稳定消除了每次推导的第二次 rq lock，
+并都多推进一个 64-file 诊断边界；host CPU 时间一升一降，仍不能解释为稳定改善，workload 也仍由
+60 秒 timeout 终止。剩余 timer derivation 约 1.86 次/switch，需要继续按 clockevent、switch、
+enqueue、park 与 ktimer 触发源分类；剩余 owner observation 约 5.9--6.0 次/switch，则需在保持
+task-sched -> rq 锁序与事务复核的前提下合并分散的 current/core/idle 查询。
 
 ## 模块化结果
 
