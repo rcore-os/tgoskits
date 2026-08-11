@@ -1245,3 +1245,94 @@ fn repro_linux_image_create_write_rename_then_e2fsck() {
 
     fs::remove_dir_all(temp_dir).expect("remove Linux image temp dir");
 }
+
+#[test]
+fn unwritten_preallocation_partial_write_remounts_and_passes_e2fsck() {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+    let (temp_dir, image) = create_ext4_test_image("rsext4-unwritten-preallocation", "64M");
+    let inode_number = {
+        let device = FileBlockDevice::open(image.clone());
+        let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = mount(&mut device).expect("mount image");
+        mkfile(&mut device, &mut filesystem, "/preallocated", None, None)
+            .expect("create preallocated file");
+        let inode_number = dir::get_inode_with_num(&mut filesystem, &mut device, "/preallocated")
+            .expect("lookup preallocated file")
+            .expect("preallocated file missing")
+            .0;
+        preallocate_inode(
+            &mut device,
+            &mut filesystem,
+            inode_number,
+            0,
+            3 * BLOCK_SIZE as u64,
+            PreallocationOptions::EXTEND_SIZE,
+        )
+        .expect("preallocate file");
+        write_inode_data(
+            &mut device,
+            &mut filesystem,
+            inode_number,
+            BLOCK_SIZE as u64 + 97,
+            b"linux-unwritten-parity",
+        )
+        .expect("write middle unwritten block");
+        let data = read_file(&mut device, &mut filesystem, "/preallocated")
+            .expect("read preallocated file");
+        assert_eq!(data.len(), 3 * BLOCK_SIZE);
+        assert!(data[..BLOCK_SIZE + 97].iter().all(|byte| *byte == 0));
+        assert_eq!(
+            &data[BLOCK_SIZE + 97..BLOCK_SIZE + 119],
+            b"linux-unwritten-parity"
+        );
+        assert!(data[BLOCK_SIZE + 119..].iter().all(|byte| *byte == 0));
+        umount(filesystem, &mut device).expect("unmount preallocated image");
+        inode_number
+    };
+
+    e2fsck_readonly_clean(&image, "unwritten preallocation after partial write");
+
+    {
+        let device = FileBlockDevice::open(image.clone());
+        let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = mount(&mut device).expect("remount preallocated image");
+        let data = read_file(&mut device, &mut filesystem, "/preallocated")
+            .expect("read remounted preallocated file");
+        assert_eq!(data.len(), 3 * BLOCK_SIZE);
+        assert!(data[..BLOCK_SIZE + 97].iter().all(|byte| *byte == 0));
+        assert_eq!(
+            &data[BLOCK_SIZE + 97..BLOCK_SIZE + 119],
+            b"linux-unwritten-parity"
+        );
+        assert!(data[BLOCK_SIZE + 119..].iter().all(|byte| *byte == 0));
+
+        let mut inode = filesystem
+            .get_inode_by_num(&mut device, inode_number)
+            .expect("read remounted inode");
+        let mut tree =
+            extents_tree::ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number);
+        assert!(
+            tree.find_extent(&mut device, 0)
+                .expect("left lookup")
+                .expect("left extent")
+                .is_unwritten()
+        );
+        assert!(
+            tree.find_extent(&mut device, 1)
+                .expect("middle lookup")
+                .expect("middle extent")
+                .is_initialized()
+        );
+        assert!(
+            tree.find_extent(&mut device, 2)
+                .expect("right lookup")
+                .expect("right extent")
+                .is_unwritten()
+        );
+        umount(filesystem, &mut device).expect("unmount remounted image");
+    }
+    e2fsck_readonly_clean(&image, "remounted unwritten preallocation");
+    fs::remove_dir_all(temp_dir).expect("remove unwritten temp dir");
+}

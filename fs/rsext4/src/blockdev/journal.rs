@@ -573,6 +573,16 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
     }
 
+    /// Runs one filesystem-owned metadata transition without allowing an
+    /// automatic commit to split its journal updates.
+    pub(crate) fn with_transaction_handle<T>(
+        &mut self,
+        credits: usize,
+        operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
+    ) -> Ext4Result<T> {
+        self.with_journal_handle(credits, operation)
+    }
+
     /// Writes the current internal block buffer.
     pub fn write_block(&mut self, block_id: AbsoluteBN, is_metadata: bool) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:write_after_abort")?;

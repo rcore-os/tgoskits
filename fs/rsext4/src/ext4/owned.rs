@@ -12,11 +12,12 @@ use crate::{
     entries::Ext4DirEntry2,
     error::{Ext4Error, Ext4ErrorKind, Ext4Result},
     file::{
-        CreateInodePayload, RenameEntryRequest, RenameOptions, RenameOutcome, UnlinkOutcome,
-        build_file_block_mapping_with_inode_num, create_inode_at, discard_unpublished_inode_blocks,
-        error_after_cleanup, find_named_entry_in_parent, link_inode_at, read_inode_data_into,
-        reap_unlinked_inode, rename_inode_at, truncate_inode, unlink_empty_directory_at,
-        unlink_inode_at, write_inode_data,
+        CreateInodePayload, PreallocationOptions, RenameEntryRequest, RenameOptions, RenameOutcome,
+        UnlinkOutcome, build_file_block_mapping_with_inode_num, create_inode_at,
+        discard_unpublished_inode_blocks, error_after_cleanup, find_named_entry_in_parent,
+        link_inode_at, preallocate_inode, read_inode_data_into, reap_unlinked_inode,
+        rename_inode_at, truncate_inode, unlink_empty_directory_at, unlink_inode_at,
+        write_inode_data,
     },
     hashtree::Ext4InodeHashTreeExt,
     io::BlockIo,
@@ -778,6 +779,25 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
     ) -> Ext4Result<()> {
         self.ensure_writable("inode:truncate")?;
         truncate_inode(&mut self.device, &mut self.filesystem, number, size)
+    }
+
+    pub fn preallocate_inode(
+        &mut self,
+        _context: MutationContext,
+        number: InodeNumber,
+        offset: u64,
+        len: u64,
+        options: PreallocationOptions,
+    ) -> Ext4Result<()> {
+        self.ensure_writable("inode:preallocate")?;
+        preallocate_inode(
+            &mut self.device,
+            &mut self.filesystem,
+            number,
+            offset,
+            len,
+            options,
+        )
     }
 
     /// Replaces the target bytes of an existing symbolic-link inode.
