@@ -92,6 +92,7 @@ impl LegacyTruncatePlan {
             filesystem.free_block(device, block)?;
         }
         for block in self.metadata_blocks_to_free {
+            device.forget_detached_metadata(block);
             filesystem.datablock_cache.invalidate(block);
             filesystem.free_block(device, block)?;
         }

@@ -596,6 +596,21 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if let Some(system) = self.system.as_mut() {
             system.commit_queue.retain(|update| update.0 != block_id);
         }
+        self.inner.invalidate_block(block_id);
+    }
+
+    /// Forgets a pending home update after published metadata is detached.
+    ///
+    /// The current journal owner has one running queue and checkpoints every
+    /// committed transaction synchronously. Removing the queued image is
+    /// therefore sufficient to prevent a later checkpoint from overwriting a
+    /// new owner after allocator reuse. A pipelined running/committing journal
+    /// must replace this with a real revoke record.
+    pub(crate) fn forget_detached_metadata(&mut self, block_id: AbsoluteBN) {
+        if let Some(system) = self.system.as_mut() {
+            system.commit_queue.retain(|update| update.0 != block_id);
+        }
+        self.inner.invalidate_block(block_id);
     }
 
     /// Reads one block through the cached inner device.
