@@ -1,0 +1,2773 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running `target/debug/tg-xtask axvisor qemu --config /tmp/task2-axvisor-qemu-debug.toml --qemu-config scripts/test/net-dual-guest/qemu-aarch64-p3-proxy-final.toml --vmconfigs scripts/test/net-dual-guest/vm-aarch64-p2-linux.toml --vmconfigs scripts/test/net-dual-guest/vm-aarch64-p2-rtos.toml --rootfs /home/huhu/tgoskits-net-task3/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img`
+[2026-08-11T16:11:49Z INFO  axbuild::context] Workspace root: /home/huhu/tgoskits-net-task3
+[2026-08-11T16:11:49Z INFO  axbuild::context] Workspace member dir for axvisor: /home/huhu/tgoskits-net-task3/os/axvisor
+Using build config: /tmp/task2-axvisor-qemu-debug.toml
+file already exists and passed checksum verification
+image archive verified at /home/huhu/tgoskits-net-task3/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img.tar.xz
+image already extracted and up to date at /home/huhu/tgoskits-net-task3/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
+[2026-08-11T16:11:51Z INFO  ostool::run::qemu] Using QEMU config file: scripts/test/net-dual-guest/qemu-aarch64-p3-proxy-final.toml
+[axbuild] qemu build+run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/tmp/task2-axvisor-qemu-debug.toml ...
+sh -c /home/huhu/tgoskits-net-task3/tmp/axbuild/std/prebuild/prebuild-aarch64-unknown-linux-musl-16277c8008f173e7.sh
+AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+AXVISOR_VM_CONFIGS=/home/huhu/tgoskits-net-task3/tmp/axbuild/axvisor/resolved-vm-configs/4cfeb606a7a40e8c4acbfcd5b8e799b52b2519048d6487194e9343a51ee7efdd.toml:/home/huhu/tgoskits-net-task3/tmp/axbuild/axvisor/resolved-vm-configs/b4da18272b4f0705e60d8575ac6b3af542959895852b901db473a4d4982c816d.toml
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+CC_aarch64_unknown_linux_musl=aarch64-linux-musl-cc
+CFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+CXXFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+cargo build --config /home/huhu/tgoskits-net-task3/tmp/axbuild/std/config-aarch64-unknown-linux-musl-dynamic.toml -p axvisor --target scripts/targets/std/pie/aarch64-unknown-linux-musl.json -Z unstable-options --target-dir /home/huhu/tgoskits-net-task3/target --features ax-std/fs,ax-std/nvme,fs,log/release_max_level_info -Z json-target-spec --bin axvisor --release --message-format json-render-diagnostics
+warning: associated function `after_external_interrupt` is never used
+   --> virtualization/axvm/src/architecture/ops.rs:113:8
+    |
+ 12 | pub(crate) trait ArchOps {
+    |                  ------- associated function in this trait
+...
+113 |     fn after_external_interrupt(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `host_console_irq` is never used
+  --> virtualization/axvm/src/host/arceos.rs:91:15
+   |
+91 | pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: function `dispatch_host_irq` is never used
+  --> virtualization/axvm/src/host/arceos.rs:95:15
+   |
+95 | pub(crate) fn dispatch_host_irq(vector: usize) {
+   |               ^^^^^^^^^^^^^^^^^
+
+warning: function `with_vm` is never used
+  --> virtualization/axvm/src/manager.rs:56:15
+   |
+56 | pub(crate) fn with_vm<F, R>(vm_id: VMId, f: F) -> Option<R>
+   |               ^^^^^^^
+
+warning: function `active_vcpu_mask` is never used
+  --> virtualization/axvm/src/manager.rs:65:15
+   |
+65 | pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: function `inject_interrupt` is never used
+  --> virtualization/axvm/src/manager.rs:77:15
+   |
+77 | pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: variant `Generic` is never constructed
+  --> virtualization/axvm/src/runtime/hvc.rs:26:5
+   |
+25 | pub(crate) enum HyperCallAbi {
+   |                 ------------ variant in this enum
+26 |     Generic,
+   |     ^^^^^^^
+   |
+   = note: `HyperCallAbi` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `handle` is never used
+   --> virtualization/axvm/src/timer.rs:158:8
+    |
+113 | impl TimerWheels {
+    | ---------------- method in this implementation
+...
+158 |     fn handle(&self, token: usize) -> Option<VmTimerHandle> {
+    |        ^^^^^^
+
+warning: function `cancel_timer` is never used
+   --> virtualization/axvm/src/timer.rs:236:15
+    |
+236 | pub(crate) fn cancel_timer(token: usize) {
+    |               ^^^^^^^^^^^^
+
+warning: associated items `with_planned_device_graph`, `try_handle_port_write`, `handle_nested_page_fault`, and `debug_nested_page_fault` are never used
+    --> virtualization/axvm/src/vm/mod.rs:960:19
+     |
+ 784 | impl AxVM {
+     | --------- associated items in this implementation
+...
+ 960 |     pub(crate) fn with_planned_device_graph<F, R>(&self, f: F) -> AxVmResult<R>
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1255 |     pub(crate) fn try_handle_port_write(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+1268 |     pub(crate) fn handle_nested_page_fault(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1283 |     fn debug_nested_page_fault(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `SimpleVmPlan` is never constructed
+  --> virtualization/axvm/src/vm/prepare/device_plan/mod.rs:60:19
+   |
+60 | pub(crate) struct SimpleVmPlan(VmDevicePlan);
+   |                   ^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> virtualization/axvm/src/vm/prepare/device_plan/mod.rs:63:25
+   |
+62 | impl SimpleVmPlan {
+   | ----------------- associated function in this implementation
+63 |     pub(crate) const fn new(devices: VmDevicePlan) -> Self {
+   |                         ^^^
+
+warning: `axvm` (lib) generated 12 warnings
+   Compiling axvisor v0.5.24 (/home/huhu/tgoskits-net-task3/os/axvisor)
+    Finished `release` profile [optimized] target(s) in 2.32s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/huhu/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Converting ELF to BIN format...
+  elf: /home/huhu/tgoskits-net-task3/target/aarch64-unknown-linux-musl/release/axvisor
+  bin: /home/huhu/tgoskits-net-task3/target/aarch64-unknown-linux-musl/release/axvisor.bin
+/home/huhu/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /home/huhu/tgoskits-net-task3/target/aarch64-unknown-linux-musl/release/axvisor /home/huhu/tgoskits-net-task3/target/aarch64-unknown-linux-musl/release/axvisor.bin
+qemu-system-aarch64 -nographic -cpu cortex-a72 -machine virt,virtualization=on,gic-version=3 -global virtio-mmio.force-legacy=false -dtb /home/huhu/tgoskits-net-task3/tmp/net-dual-guest/qemu-p2-host-carved.dtb -smp 1 -m 8g -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 -drive id=disk0,if=none,format=raw,file=/home/huhu/tgoskits-net-task3/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img -append root=/dev/nvme0n1 rw init=/init -snapshot -qmp unix:/home/huhu/tgoskits-net-task3/tmp/net-dual-guest/qmp-p3-final.sock,server,nowait -netdev socket,id=net-linux,connect=127.0.0.1:12731 -device virtio-net-device,netdev=net-linux,mac=52:54:00:12:34:01 -object filter-dump,id=fd-linux,netdev=net-linux,file=/home/huhu/tgoskits-net-task3/tmp/net-dual-guest/linux-p3-final.pcap -netdev socket,id=net-rtos,connect=127.0.0.1:12732 -device virtio-net-device,netdev=net-rtos,mac=52:54:00:12:34:02 -object filter-dump,id=fd-rtos,netdev=net-rtos,file=/home/huhu/tgoskits-net-task3/tmp/net-dual-guest/rtos-p3-final.pcap -kernel /home/huhu/tgoskits-net-task3/target/aarch64-unknown-linux-musl/release/axvisor.bin
+root=/dev/nvme0n1 rw init=/init
+VM Load @PA:0x40200000
+VM Load Offset: 0xffff0000c0200000
+Memory Map:
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000044a00000 (72 MiB)
+  Free   0x00000044a00000 - 0x00000080000000 (950 MiB)
+  Rsv    0x00000080000000 - 0x000000c0000000 (1 GiB)
+  Free   0x000000c0000000 - 0x00000240000000 (6 GiB)
+Initialize RAM allocator: 0x44a00000..0x80000000
+Reserving CPU-local areas
+CPU-local area stride: 0x44000 bytes
+Total CPU-local allocation: 0x44000 bytes (1 CPUs)
+Flushed RAM used range to memory map: 0x44a00000..0x44c05000, current: 0x44c05000
+Flushed RAM used range to memory map: 0x44c05000..0x44c49000, current: 0x44c49000
+CPU-local areas allocated at 0x44c05000 - 0x44c49000
+EL: 2
+Mapping early memory regions...
+Ram                 : [0x0000000040000000, 0x0000000240000000) -> [0x0000000040000000, 0x0000000240000000) (8 GiB)
+KImage              : [0x0000ffff80000000, 0x0000ffff84800000) -> [0x0000000040200000, 0x0000000044a00000) (72 MiB)
+PerCpu              : [0x0000ff0044c05000, 0x0000ff0044c49000) -> [0x0000000044c05000, 0x0000000044c49000) (272 KiB)
+Debug serial        : [0x0000000009000000, 0x0000000009001000) -> [0x0000000009000000, 0x0000000009001000) (4 KiB)
+Boot page table at physical address: PA:0x44c49000
+Setting up table registers...
+MMU Entry point at physical address: 0x40457f18
+Trap vector at 0xffff8025b800
+Memory Map:
+  MMIO   0x00000009000000 - 0x00000009001000 (4 KiB)
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000044a00000 (72 MiB)
+  Rsv    0x00000044a00000 - 0x00000044c05000 (2.02 MiB)
+  PerCPU 0x00000044c05000 - 0x00000044c49000 (272 KiB)
+  Rsv    0x00000044c49000 - 0x00000044c52000 (36 KiB)
+  Free   0x00000044c52000 - 0x00000080000000 (947.68 MiB)
+  Rsv    0x00000080000000 - 0x000000c0000000 (1 GiB)
+  Free   0x000000c0000000 - 0x00000240000000 (6 GiB)
+Jumping to main entry point at 0xffff8023f94c with SP 0x0000ff0044c49000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = linux,dummy-virt
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 1
+
+[37m[  0.084753 ax_runtime:219] [32mLogging is enabled.[m
+[m[37m[  0.085155 ax_runtime:220] [32mPrimary CPU 0 started, arg = 0x44a00000.[m
+[m[37m[  0.085251 ax_runtime:222] [32mFound physcial memory regions:[m
+[m[37m[  0.086166 ax_runtime:224] [32m  [PA:0x9000000, PA:0x9001000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.086368 ax_runtime:224] [32m  [PA:0x40000000, PA:0x40200000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.086497 ax_runtime:224] [32m  [PA:0x40200000, PA:0x44a00000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.086607 ax_runtime:224] [32m  [PA:0x44a00000, PA:0x44c05000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.086723 ax_runtime:224] [32m  [PA:0x44c05000, PA:0x44c49000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.086837 ax_runtime:224] [32m  [PA:0x44c49000, PA:0x44c52000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.086947 ax_runtime:224] [32m  [PA:0x44c52000, PA:0x80000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.087044 ax_runtime:224] [32m  [PA:0x80000000, PA:0xc0000000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.087150 ax_runtime:224] [32m  [PA:0xc0000000, PA:0x240000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.087269 ax_runtime:372] [32mInitialize global memory allocator...[m
+[m[37m[  0.087361 ax_runtime:373] [32m  use buddy-slab-allocator allocator.[m
+[m[37m[  0.087559 ax_alloc::buddy_slab:158] [32mInitialize global memory allocator, start_vaddr: 0xc0000000, size: 0x180000000[m
+[m[37m[  0.093650 ax_alloc::buddy_slab:410] [32mglobal allocator initialized[m
+[m[37m[  0.093829 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x40000000, size: 0x200000[m
+[m[37m[  0.093996 buddy_slab_allocator::global:143] [32mGlobalAllocator: skip region 0x40000000+0x200000, no allocator-visible memory after 2097152 alignment[m
+[m[37m[  0.094197 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x44c52000, size: 0x3b3ae000[m
+[m[37m[  0.095249 ax_runtime:259] [32mkernel aspace: [VA:0x0, VA:0xffffffffffffffff)[m
+[m[37m[  0.095535 ax_mm:103] [32mInitialize virtual memory management...[m
+[m[37m[  0.681519 ax_runtime:271] [32mInitialize platform devices...[m
+[m[37m[  0.687518 someboot::arch::power:23] [32mPower management method : SMC[m
+[m[37m[  0.687675 somehal::driver:5] [32mInitializing rdrive with FDT at 0x44a00000[m
+[m[37m[  0.698952 somehal::arch::gic::v3:274] [32mGICv3 CPU 0 EOI mode: two_step=true[m
+[m[37m[  0.705454 ax_task::api:149] [32mInitialize scheduling...[m
+[m[37m[  0.706521 ax_task::api:157] [32m  use FIFO scheduler.[m
+[m[37m[  0.706951 ax_runtime:297] [32mInitialize interrupt handlers...[m
+[m[37m[  0.708917 ax_runtime::devices:2] [32mProbe platform devices...[m
+[m[37m[  0.732545 ax_driver::block::nvme:42] [32mNVMe PCI endpoint 0000:00:01.0: BAR0=0x8000000000..0x8000004000, int_pin=1, int_line=0[m
+[m[37m[  0.744494 nvme_driver::nvme:161] [32mNVME @0x8000000000 deferred init, version: 1.4.0[m
+[m[37m[  0.745083 ax_driver::block::nvme:74] [32mNVMe block device registered at 0000:00:01.0 with 65 MSI-X vectors[m
+[m[37m[  0.750572 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 0 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(0) }) fixed to CPU 0 for queue mask 0x0[m
+[m[37m[  0.777273 ax_fs_ng::block::runtime::hctx:173] [32mblock hctx 0 bound to CPU 0 with hardware depth 63[m
+[m[37m[  0.777793 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 1 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(1) }) fixed to CPU 0 for queue mask 0x1[m
+[m[37m[  0.785459 ax_fs_ng::root:341] [32m    raw device fs=Some(Ext4)[m
+[m[37m[  0.785655 ax_fs_ng::root:372] [32m  block device 0 (nvme) has no usable partition table; treating the whole disk as a candidate[m
+[m[37m[  0.786099 ax_fs_ng::root:481] [32m  matched root by raw device path on disk0 raw device[m
+[m[37m[  0.786571 ax_fs_ng:86] [32mInitialize filesystem subsystem...[m
+[m[37m[  0.786668 ax_fs_ng:87] [32m  selected root device: disk0 raw device[m
+[m[37m[  0.809533 rsext4::ext4::mount:340] [32m/lost+found exists (path resolution, repaired hint inode=11)[m
+[m[37m[  0.811318 rsext4::ext4::mount:462] [32mExt4 filesystem mounted[m
+[m[37m[  0.811414 rsext4::ext4::mount:463] [32m  - block size: 4096 bytes[m
+[m[37m[  0.811511 rsext4::ext4::mount:464] [32m  - total blocks: 524288[m
+[m[37m[  0.811596 rsext4::ext4::mount:465] [32m  - free blocks: 113778[m
+[m[37m[  0.811682 rsext4::ext4::mount:466] [32m  - total inodes: 131072[m
+[m[37m[  0.811773 rsext4::ext4::mount:467] [32m  - free inodes: 125270[m
+[m[37m[  0.811871 rsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[m[37m[  0.822838 rsext4::ext4::mount:546] [32mExt4 filesystem mounted[m
+[m[37m[  0.823359 ax_fs_ng:99] [32m  filesystem type: "ext4"[m
+[m[37m[  0.824071 ax_runtime:345] [32mPrimary CPU 0 init OK.[m
+[m[37m[  0.824364 0:2 ax_fs_ng::block::runtime::lifecycle::device:369] [32mblock device nvme online with 1 hctxs across 1 CPUs[m
+[m
+
+       d8888            888     888  d8b
+      d88888            888     888  Y8P
+     d88P888            888     888
+    d88P 888  888  888  Y88b   d88P  888  .d8888b    .d88b.   888d888
+   d88P  888  `Y8bd8P'   Y88b d88P   888  88K       d88""88b  888P"
+  d88P   888    X88K      Y88o88P    888  "Y8888b.  888  888  888
+ d8888888888  .d8""8b.     Y888P     888       X88  Y88..88P  888
+d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
+
+
+by AxVisor Team
+
+[37m[  0.826997 0:2 axvisor:73] [32mStarting virtualization...[m
+[m[37m[  0.827120 0:2 axvm::host::arceos:342] [32mEnabling hardware virtualization support on all cores...[m
+[m[37m[  0.827276 0:2 axvm::host::arceos:348] [32mCore 0 is initializing hardware virtualization support...[m
+[m[37m[  0.827420 0:2 axvm::timer:318] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.833043 0:2 axvm::host::arceos:350] [32mHardware virtualization support enabled on core 0[m
+[m[37m[  0.833190 0:2 axvm::host::arceos:376] [32mWaiting for all cores to enable hardware virtualization...[m
+[m[37m[  0.833335 0:2 axvm::host::arceos:392] [32mAll cores have enabled hardware virtualization support.[m
+[m[37m[  0.837143 0:2 axvisor::manager:145] [32mNOT find dir: /guest/vm_default in filesystem[m
+[m[37m[  0.837323 0:2 axvisor::config:90] [32mUsing static VM configs.[m
+[m[37m[  0.850569 0:2 axvm::arch::aarch64::fdt::core:79] [32mVM[1] virtual GIC follows host firmware resources: GuestGicProfile { compatible: "arm,gic-v3", node_path: "/intc@8000000", node_phandle: Some(32770), distributor: GuestMmioRegion { base: 134217728, length: 65536 }, cpu_region: Redistributors(GuestGicRedistributorProfile { regions: [GuestMmioRegion { base: 134873088, length: 16121856 }], stride: 131072 }), its: [GuestItsProfile { id: ItsId(0), node_path: "/intc@8000000/its@8080000", node_phandle: Some(32771), registers: GuestMmioRegion { base: 134742016, length: 131072 } }] }[m
+[m[37m[  0.852835 0:2 axvm::arch::aarch64::fdt::core:93] [32mVM[1] architectural timer follows host firmware PPIs[m
+[m[37m[  0.856194 0:2 axvm::arch::aarch64::fdt::core::parser:442] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m[37m[  0.856449 0:2 axvm::arch::aarch64::fdt::core::parser:449] [32mFound 1 host CPU nodes[m
+[m[37m[  0.856924 0:2 axvm::arch::aarch64::fdt::core:144] [32mVM[1] DTB not found, generating from the VM configuration[m
+[m[37m[  0.866151 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  0.872760 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  0.874631 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  0.875772 0:2 axvisor::config:137] [32mCreating VM[1] "task2-p2-linux"[m
+[m[37m[  0.892856 0:2 axvm::vm:806] [32mVM created: id=1[m
+[m[37m[  0.894058 0:2 axvisor::config:149] [32mVM[1] created success, loading images...[m
+[m[37m[  1.005218 0:2 axvm::boot::images:137] [32mLoading ramdisk image from memory (18343567 bytes) into GPA @0x9c000000[m
+[m[37m[  1.054777 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=0[m
+[m[37m[  1.055130 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=1[m
+[m[37m[  1.055303 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=2[m
+[m[37m[  1.056900 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=3[m
+[m[37m[  1.060360 0:2 axvm::vm::prepare:82] [32mVM setup: id=1[m
+[m[37m[  1.062516 0:2 axvm::arch::aarch64::fdt::core:79] [32mVM[2] virtual GIC follows host firmware resources: GuestGicProfile { compatible: "arm,gic-v3", node_path: "/intc@8000000", node_phandle: Some(32770), distributor: GuestMmioRegion { base: 134217728, length: 65536 }, cpu_region: Redistributors(GuestGicRedistributorProfile { regions: [GuestMmioRegion { base: 134873088, length: 16121856 }], stride: 131072 }), its: [GuestItsProfile { id: ItsId(0), node_path: "/intc@8000000/its@8080000", node_phandle: Some(32771), registers: GuestMmioRegion { base: 134742016, length: 131072 } }] }[m
+[m[37m[  1.063131 0:2 axvm::arch::aarch64::fdt::core:93] [32mVM[2] architectural timer follows host firmware PPIs[m
+[m[37m[  1.065535 0:2 axvm::arch::aarch64::fdt::core::parser:442] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m[37m[  1.065683 0:2 axvm::arch::aarch64::fdt::core::parser:449] [32mFound 1 host CPU nodes[m
+[m[37m[  1.065781 0:2 axvm::arch::aarch64::fdt::core:144] [32mVM[2] DTB not found, generating from the VM configuration[m
+[m[37m[  1.070949 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  1.074265 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  1.075184 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  1.075595 0:2 axvisor::config:137] [32mCreating VM[2] "task2-p2-zephyr"[m
+[m[37m[  1.076616 0:2 axvm::vm:806] [32mVM created: id=2[m
+[m[37m[  1.076807 0:2 axvisor::config:149] [32mVM[2] created success, loading images...[m
+[m[37m[  1.079886 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=0[m
+[m[37m[  1.079981 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=1[m
+[m[37m[  1.080065 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=2[m
+[m[37m[  1.080219 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=3[m
+[m[37m[  1.080425 0:2 axvm::vm::prepare:82] [32mVM setup: id=2[m
+[m[37m[  1.080692 0:2 axvm::runtime:42] [32mInitializing VMM...[m
+[m[37m[  1.081253 0:2 axvm::runtime:53] [32mVMM starting, booting VMs...[m
+[m[37m[  1.081422 0:2 axvm::vm:1021] [32mStarting VM[1][m
+[m[37m[  1.081585 0:2 axvm::runtime::vcpus:358] [32mSpawning task for VM[1] VCpu[0][m
+[m[37m[  1.081969 0:2 axvm::runtime::vcpus:375] [32mVCpu task Task(7, "VM[1]-VCpu[0]") created cpumask: [0, ][m
+[m[37m[  1.084345 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=79 guest_intid=79[m
+[m[37m[  1.085068 0:2 axvm::runtime:61] [32mVM[1] boot success[m
+[m[37m[  1.085147 0:2 axvm::vm:1021] [32mStarting VM[2][m
+[m[37m[  1.085208 0:2 axvm::runtime::vcpus:358] [32mSpawning task for VM[2] VCpu[0][m
+[m[37m[  1.085309 0:2 axvm::runtime::vcpus:375] [32mVCpu task Task(9, "VM[2]-VCpu[0]") created cpumask: [0, ][m
+[m[37m[  1.085456 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=78 guest_intid=78[m
+[m[37m[  1.085609 0:2 axvm::runtime:61] [32mVM[2] boot success[m
+[m[37m[  1.087212 0:2 axvisor:89] [32m[OK] Default guest initialized[m
+[m[37m[  1.088274 0:7 axvm::runtime::vcpus:429] [32mVM[1] VCpu[0] waiting for running[m
+[m[37m[  1.088573 0:7 axvm::runtime::vcpus:467] [32mVM[1] VCpu[0] running...[m
+[m[37m[  1.100413 0:9 axvm::runtime::vcpus:429] [32mVM[2] VCpu[0] waiting for running[m
+[m[37m[  1.100514 0:9 axvm::runtime::vcpus:467] [32mVM[2] VCpu[0] running...[m
+[m[VM 2] *** Booting Zephyr OS build aa37fa1ebc92 ***
+[VM 2] TASK2_MAIN_START
+[VM 2] TASK2_SOCKET_CREATE
+[VM 2] TASK2_SOCKET_CREATED fd=0
+[37m[  1.160292 0:7 axvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0x80000000[m
+[m[VM 2] TASK2_NET_CONFIGURED interface=virtio-net ip=10.0.42.2/24
+[VM 2] TASK2_READY role=managed local=10.0.42.2:4242 peer=10.0.42.15:4242
+[37m[  1.173864 0:7 axvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc4000001[m
+[m[37m[  1.174156 0:7 axvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc400000e[m
+[m[37m[  1.174383 0:7 axvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc4000012[m
+[m[37m[  1.174595 0:7 axvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc4000015[m
+[m[VM 1] [    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd083]
+[VM 1] [    0.000000] Linux version 7.1.0-rc2-g74fe02ce122a (runner@s1lqc) (aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #2 SMP PREEMPT Mon Jun  8 08:07:46 UTC 2026
+[VM 1] [    0.000000] KASLR disabled due to lack of seed
+[VM 1] [    0.000000] Machine model: linux,dummy-virt
+[VM 1] [    0.000000] efi: UEFI not found.
+[VM 1] [    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[VM 1] [    0.000000] NUMA: Faking a node at [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000] NODE_DATA(0) allocated [mem 0x9ff08880-0x9ff0af7f]
+[VM 1] [    0.000000] cma: Reserved 32 MiB at 0x000000009de00000
+[VM 1] [    0.000000] psci: probing for conduit method from DT.
+[VM 1] [    0.000000] psci: PSCIv1.1 detected in firmware.
+[VM 1] [    0.000000] psci: Using standard PSCI v0.2 function IDs
+[VM 1] [    0.000000] psci: Trusted OS migration not required
+[VM 1] [    0.000000] psci: SMC Calling Convention v65535.65535
+[VM 1] [    0.000000] Zone ranges:
+[VM 1] [    0.000000]   DMA      [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000]   DMA32    empty
+[VM 1] [    0.000000]   Normal   empty
+[VM 1] [    0.000000] Movable zone start for each node
+[VM 1] [    0.000000] Early memory node ranges
+[VM 1] [    0.000000]   node   0: [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000] Initmem setup node 0 [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000] percpu: Embedded 26 pages/cpu s66584 r8192 d31720 u106496
+[VM 1] [    0.000000] Detected PIPT I-cache on CPU0
+[VM 1] [    0.000000] CPU features: detected: GICv3 CPU interface
+[VM 1] [    0.000000] CPU features: detected: Spectre-v2
+[VM 1] [    0.000000] CPU features: detected: Spectre-v3a
+[VM 1] [    0.000000] CPU features: detected: Spectre-v4
+[VM 1] [    0.000000] CPU features: detected: Spectre-BHB
+[VM 1] [    0.000000] CPU features: detected: ARM erratum 1742098
+[VM 1] [    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[VM 1] [    0.000000] alternatives: applying boot alternatives
+[VM 1] [    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[VM 1] [    0.000000] Dentry cache hash table entries: 65536 (order: 7, 524288 bytes, linear)
+[VM 1] [    0.000000] Inode-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[VM 1] [    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[VM 1] [    0.000000] software IO TLB: area num 1.
+[VM 1] [    0.000000] software IO TLB: mapped [mem 0x000000009d580000-0x000000009d600000] (0MB)
+[VM 1] [    0.000000] Fallback order for Node 0: 0 
+[VM 1] [    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 131072
+[VM 1] [    0.000000] Policy zone: DMA
+[VM 1] [    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[VM 1] [    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[VM 1] [    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[VM 1] [    0.000000] rcu: 	RCU event tracing is enabled.
+[VM 1] [    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=1.
+[VM 1] [    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[VM 1] [    0.000000] 	Tracing variant of Tasks RCU enabled.
+[VM 1] [    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[VM 1] [    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[VM 1] [    0.000000] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[VM 1] [    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[VM 1] [    0.000000] GICv3: 256 SPIs implemented
+[VM 1] [    0.000000] GICv3: 0 Extended SPIs implemented
+[VM 1] [    0.000000] Root IRQ handler: gic_handle_irq
+[VM 1] [    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[VM 1] [    0.000000] GICv3: GICD_CTLR.DS=0, SCR_EL3.FIQ=0
+[VM 1] [    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000
+[VM 1] [    0.000000] ITS [mem 0x08080000-0x0809ffff]
+[VM 1] [    0.000000] ITS@0x0000000008080000: allocated 8192 Devices @83450000 (indirect, esz 8, psz 64K, shr 1)
+[VM 1] [    0.000000] ITS@0x0000000008080000: allocated 8192 Interrupt Collections @83460000 (flat, esz 8, psz 64K, shr 1)
+[VM 1] [    0.000000] GICv3: using LPI property table @0x0000000083470000
+[VM 1] [    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000083480000
+[VM 1] [    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[VM 1] [    0.000000] arch_timer: cp15 timer running at 62.50MHz (virt).
+[VM 1] [    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+[VM 1] [    0.000058] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+[VM 1] [    0.007124] Console: colour dummy device 80x25
+[VM 1] [    0.007469] printk: legacy console [tty0] enabled
+[VM 1] [    0.011545] Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=250000)
+[VM 1] [    0.011684] pid_max: default: 32768 minimum: 301
+[VM 1] [    0.015211] Mount-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)
+[VM 1] [    0.015273] Mountpoint-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)
+[VM 1] [    0.021379] VFS: Finished mounting rootfs on nullfs
+[VM 1] [    0.039463] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[VM 1] [    0.048752] rcu: Hierarchical SRCU implementation.
+[VM 1] [    0.048812] rcu: 	Max phase no-delay instances is 1000.
+[VM 1] [    0.051260] fsl-mc MSI: its@8080000 domain created
+[VM 1] [    0.052035] EFI services will not be available.
+[VM 1] [    0.052482] smp: Bringing up secondary CPUs ...
+[VM 1] [    0.053022] smp: Brought up 1 node, 1 CPU
+[VM 1] [    0.053053] SMP: Total of 1 processors activated.
+[VM 1] [    0.053085] CPU: All CPU(s) started at EL1
+[VM 1] [    0.053279] CPU features: detected: 32-bit EL0 Support
+[VM 1] [    0.053302] CPU features: detected: 32-bit EL1 Support
+[VM 1] [    0.053360] CPU features: detected: CRC32 instructions
+[VM 1] [    0.053488] CPU features: detected: PMUv3
+[VM 1] [    0.062824] alternatives: applying system-wide alternatives
+[VM 1] [    0.082792] Memory: 408164K/524288K available (18688K kernel code, 5242K rwdata, 14480K rodata, 12672K init, 718K bss, 80672K reserved, 32768K cma-reserved)
+[VM 1] [    0.105134] devtmpfs: initialized
+[VM 1] [    0.119208] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[VM 1] [    0.119663] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[VM 1] [    0.119892] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[VM 1] [    0.121740] 19744 pages in range for non-PLT usage
+[VM 1] [    0.121784] 511264 pages in range for PLT usage
+[VM 1] [    0.132500] DMI: not present or invalid.
+[VM 1] [    0.151960] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[VM 1] [    0.161514] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[VM 1] [    0.162207] audit: initializing netlink subsys (disabled)
+[VM 1] [    0.163655] audit: type=2000 audit(0.144:1): state=initialized audit_enabled=0 res=1
+[VM 1] [    0.167819] thermal_sys: Registered thermal governor 'step_wise'
+[VM 1] [    0.167857] thermal_sys: Registered thermal governor 'power_allocator'
+[VM 1] [    0.168159] cpuidle: using governor menu
+[VM 1] [    0.168996] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[VM 1] [    0.169285] ASID allocator initialised with 65536 entries
+[VM 1] [    0.173898] Serial: AMBA PL011 UART driver
+[VM 1] [    0.194504] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+[VM 1] [    0.198006] printk: console [ttyAMA0] enabled
+[VM 1] [    0.761114] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[VM 1] [    0.761197] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[VM 1] [    0.761235] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[VM 1] [    0.761253] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[VM 1] [    0.761268] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[VM 1] [    0.761282] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[VM 1] [    0.761296] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[VM 1] [    0.761309] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[VM 1] [    1.189162] ACPI: Interpreter disabled.
+[VM 1] [    1.308899] iommu: Default domain type: Translated
+[VM 1] [    1.317291] iommu: DMA domain TLB invalidation policy: strict mode
+[VM 1] [    1.328683] SCSI subsystem initialized
+[VM 1] [    1.337969] usbcore: registered new interface driver usbfs
+[VM 1] [    1.347677] usbcore: registered new interface driver hub
+[VM 1] [    1.356966] usbcore: registered new device driver usb
+[VM 1] [    1.367415] pps_core: LinuxPPS API ver. 1 registered
+[VM 1] [    1.376097] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[VM 1] [    1.390444] PTP clock support registered
+[VM 1] [    1.397893] EDAC MC: Ver: 3.0.0
+[VM 1] [    1.405071] scmi_core: SCMI protocol bus registered
+[VM 1] [    1.415903] FPGA manager framework
+[VM 1] [    1.429606] vgaarb: loaded
+[VM 1] [    1.436308] clocksource: Switched to clocksource arch_sys_counter
+[VM 1] [    1.448995] VFS: Disk quotas dquot_6.6.0
+[VM 1] [    1.455850] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[VM 1] [    1.469271] pnp: PnP ACPI: disabled
+[VM 1] [    1.492962] NET: Registered PF_INET protocol family
+[VM 1] [    1.502121] IP idents hash table entries: 8192 (order: 4, 65536 bytes, linear)
+[VM 1] [    1.517694] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[VM 1] [    1.531201] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[VM 1] [    1.543895] TCP established hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[VM 1] [    1.556861] TCP bind hash table entries: 4096 (order: 5, 131072 bytes, linear)
+[VM 1] [    1.569485] TCP: Hash tables configured (established 4096 bind 4096)
+[VM 1] [    1.581303] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[VM 1] [    1.592997] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[VM 1] [    1.605196] RPC: Registered named UNIX socket transport module.
+[VM 1] [    1.614909] RPC: Registered udp transport module.
+[VM 1] [    1.623012] RPC: Registered tcp transport module.
+[VM 1] [    1.631434] RPC: Registered tcp-with-tls transport module.
+[VM 1] [    1.640475] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[VM 1] [    1.650823] PCI: CLS 0 bytes, default 64
+[VM 1] [    1.659294] kvm [1]: HYP mode not available
+[VM 1] [    1.670160] Unpacking initramfs...
+[VM 1] [    1.678079] Initialise system trusted keyrings
+[VM 1] [    1.689619] workingset: timestamp_bits=42 (anon: 38) max_order=17 bucket_order=0 (anon: 0)
+[VM 1] [    1.691461] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[VM 1] [    1.721407] NFS: Registering the id_resolver key type
+[VM 1] [    1.730172] Key type id_resolver registered
+[VM 1] [    1.738770] Key type id_legacy registered
+[VM 1] [    1.746743] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[VM 1] [    1.757771] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[VM 1] [    1.772690] 9p: Installing v9fs 9p2000 file system support
+[VM 1] [    1.774511] Key type asymmetric registered
+[VM 1] [    1.774758] Asymmetric key parser 'x509' registered
+[VM 1] [    1.775196] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[VM 1] [    1.775487] io scheduler mq-deadline registered
+[VM 1] [    1.775711] io scheduler kyber registered
+[VM 1] [    1.828591] io scheduler bfq registered
+[VM 1] [    1.856641] ledtrig-cpu: registered to indicate activity on CPUs
+[VM 1] [    1.929025] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[VM 1] [    1.954711] msm_serial: driver initialized
+[VM 1] [    1.962544] SuperH (H)SCI(F) driver initialized
+[VM 1] [    1.972793] STM32 USART driver initialized
+[VM 1] [    2.015521] loop: module loaded
+[VM 1] [    2.022659] megasas: 07.734.00.00-rc1
+[VM 1] [    2.049709] tun: Universal TUN/TAP device driver, 1.6
+[VM 1] [    2.082192] thunder_xcv, ver 1.0
+[VM 1] [    2.088769] thunder_bgx, ver 1.0
+[VM 1] [    2.095205] nicpf, ver 1.0
+[VM 1] [    2.102352] e1000: Intel(R) PRO/1000 Network Driver
+[VM 1] [    2.116544] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[VM 1] [    2.116916] e1000e: Intel(R) PRO/1000 Network Driver
+[VM 1] [    2.117125] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[VM 1] [    2.117459] igb: Intel(R) Gigabit Ethernet Network Driver
+[VM 1] [    2.117663] igb: Copyright (c) 2007-2014 Intel Corporation.
+[VM 1] [    2.117968] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[VM 1] [    2.118164] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[VM 1] [    2.118789] sky2: driver version 1.30
+[VM 1] [    2.197082] VFIO - User Level meta-driver version: 0.3
+[VM 1] [    2.213692] usbcore: registered new interface driver usb-storage
+[VM 1] [    2.230385] i2c_dev: i2c /dev entries driver
+[VM 1] [    2.261432] SMCCC: SOC_ID: ARCH_SOC_ID not implemented, skipping ....
+[VM 1] [    2.273528] usbcore: registered new interface driver usbhid
+[VM 1] [    2.284626] usbhid: USB HID core driver
+[VM 1] [    2.306390] NET: Registered PF_INET6 protocol family
+[VM 1] [    2.325216] Segment Routing with IPv6
+[VM 1] [    2.336723] In-situ OAM (IOAM) with IPv6
+[VM 1] [    2.337260] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[VM 1] [    2.358021] NET: Registered PF_PACKET protocol family
+[VM 1] [    2.367408] 9pnet: Installing 9P2000 support
+[VM 1] [    2.376766] Key type dns_resolver registered
+[VM 1] [    2.421213] registered taskstats version 1
+[VM 1] [    2.429679] Loading compiled-in X.509 certificates
+[VM 1] [    2.464750] Demotion targets for Node 0: null
+[VM 1] [    2.478176] clk: Disabling unused clocks
+[VM 1] [    2.488733] PM: genpd: Disabling unused power domains
+[VM 1] [    2.852086] Freeing initrd memory: 17912K
+[VM 1] [    2.895752] Freeing unused kernel memory: 12672K
+[VM 1] [    2.904961] Run /init as init process
+[VM 1] TASK2_INIT_START
+[VM 1] TASK2_NET_CONFIGURED interface=eth0 ip=10.0.42.15/24
+[VM 1] TASK2_READY role=controller local=10.0.42.15:4242 peer=10.0.42.2:4242
+[VM 1] TASK3_INFER elapsed_ms=12 sample=1 output=24 infer_us=10754
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12 request=1 value=24 target=300 state=300 seq=1
+[VM 2] TASK2_CONTROL_RECEIVED seq=1 request=1
+[VM 2] TASK3_CONTROL_APPLIED request=1 value=24
+[VM 2] TASK3_PLANT_STATE before=300 after=179 dist=0
+[VM 2] TASK2_STATUS_SENT seq=1
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2550
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2770
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2770
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2990
+[VM 1] TASK2_ACK seq=1
+[VM 2] TASK2_ACK seq=1
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=165 request=1 value=179 state=179 sample=1 rtt_ms=153
+[VM 1] TASK3_INFER elapsed_ms=165 sample=2 output=236 infer_us=8816
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=165 request=2 value=236 target=300 state=179 seq=2
+[VM 2] TASK2_CONTROL_RECEIVED seq=2 request=2
+[VM 2] TASK3_CONTROL_APPLIED request=2 value=236
+[VM 2] TASK3_PLANT_STATE before=179 after=180 dist=0
+[VM 2] TASK2_STATUS_SENT seq=2
+[VM 1] TASK2_ACK seq=2
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=246 request=2 value=180 state=180 sample=2 rtt_ms=81
+[VM 2] TASK2_ACK seq=2
+[VM 1] TASK3_INFER elapsed_ms=246 sample=3 output=361 infer_us=8079
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=246 request=3 value=361 target=300 state=180 seq=3
+[VM 2] TASK2_CONTROL_RECEIVED seq=3 request=3
+[VM 2] TASK3_CONTROL_APPLIED request=3 value=361
+[VM 2] TASK3_PLANT_STATE before=180 after=225 dist=0
+[VM 2] TASK2_STATUS_SENT seq=3
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=336 request=3 value=225 state=225 sample=3 rtt_ms=90
+[VM 2] TASK2_ACK seq=3
+[VM 1] TASK3_INFER elapsed_ms=336 sample=4 output=381 infer_us=8519
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=449
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=3730
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=658
+[VM 1] TASK2_RETRANSMIT seq=3 attempt=1
+[VM 2] TASK2_DUPLICATE seq=3
+[VM 1] TASK2_ACK seq=3
+[VM 1] TASK3_INFER elapsed_ms=763 sample=5 output=449 infer_us=8061
+[VM 2] TASK2_CONTROL_RECEIVED seq=4 request=5
+[VM 2] TASK3_CONTROL_APPLIED request=5 value=449
+[VM 2] TASK3_PLANT_STATE before=225 after=282 dist=0
+[VM 2] TASK2_STATUS_SENT seq=4
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=763 request=5 value=449 target=300 state=225 seq=4
+[VM 1] TASK2_ACK seq=4
+[VM 2] TASK2_ACK seq=4
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=837 request=5 value=282 state=282 sample=4 rtt_ms=74
+[VM 1] TASK3_INFER elapsed_ms=837 sample=6 output=373 infer_us=8140
+[VM 2] TASK2_CONTROL_RECEIVED seq=5 request=6
+[VM 2] TASK3_CONTROL_APPLIED request=6 value=373
+[VM 2] TASK3_PLANT_STATE before=282 after=289 dist=0
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=837 request=6 value=373 target=300 state=282 seq=5
+[VM 2] TASK2_STATUS_SENT seq=5
+[VM 1] TASK2_ACK seq=5
+[VM 2] TASK2_ACK seq=5
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=950 request=6 value=289 state=289 sample=5 rtt_ms=113
+[VM 1] TASK3_INFER elapsed_ms=950 sample=7 output=390 infer_us=8964
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=950 request=7 value=390 target=300 state=289 seq=6
+[VM 2] TASK2_CONTROL_RECEIVED seq=6 request=7
+[VM 2] TASK3_CONTROL_APPLIED request=7 value=390
+[VM 2] TASK3_PLANT_STATE before=289 after=299 dist=0
+[VM 2] TASK2_STATUS_SENT seq=6
+[VM 1] TASK2_ACK seq=6
+[VM 2] TASK2_ACK seq=6
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=1037 request=7 value=299 state=299 sample=6 rtt_ms=87
+[VM 1] TASK3_INFER elapsed_ms=1037 sample=8 output=379 infer_us=8272
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=1037 request=8 value=379 target=300 state=299 seq=7
+[VM 2] TASK2_CONTROL_RECEIVED seq=7 request=8
+[VM 2] TASK3_CONTROL_APPLIED request=8 value=379
+[VM 2] TASK3_PLANT_STATE before=299 after=302 dist=0
+[VM 2] TASK2_STATUS_SENT seq=7
+[VM 1] TASK2_ACK seq=7
+[VM 2] TASK2_ACK seq=7
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=1127 request=8 value=302 state=302 sample=7 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=1127 sample=9 output=376 infer_us=8184
+[VM 2] TASK2_CONTROL_RECEIVED seq=8 request=9
+[VM 2] TASK3_CONTROL_APPLIED request=9 value=376
+[VM 2] TASK3_PLANT_STATE before=302 after=302 dist=0
+[VM 2] TASK2_STATUS_SENT seq=8
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=1127 request=9 value=376 target=300 state=302 seq=8
+[VM 1] TASK2_ACK seq=8
+[VM 2] TASK2_ACK seq=8
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=1225 request=9 value=302 state=302 sample=8 rtt_ms=98
+[VM 1] TASK3_INFER elapsed_ms=1225 sample=10 output=377 infer_us=8605
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=1225 request=10 value=377 target=300 state=302 seq=9
+[VM 2] TASK2_CONTROL_RECEIVED seq=9 request=10
+[VM 2] TASK3_CONTROL_APPLIED request=10 value=377
+[VM 2] TASK3_PLANT_STATE before=302 after=303 dist=0
+[VM 2] TASK2_STATUS_SENT seq=9
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=1322 request=10 value=303 state=303 sample=9 rtt_ms=97
+[VM 2] TASK2_ACK seq=9
+[VM 1] TASK3_INFER elapsed_ms=1322 sample=11 output=372 infer_us=8903
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=1430
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=4710
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=1638
+[VM 1] TASK2_RETRANSMIT seq=9 attempt=1
+[VM 2] TASK2_DUPLICATE seq=9
+[VM 1] TASK2_ACK seq=9
+[VM 1] TASK3_INFER elapsed_ms=1750 sample=12 output=363 infer_us=8533
+[VM 2] TASK2_CONTROL_RECEIVED seq=10 request=12
+[VM 2] TASK3_CONTROL_APPLIED request=12 value=363
+[VM 2] TASK3_PLANT_STATE before=303 after=298 dist=0
+[VM 2] TASK2_STATUS_SENT seq=10
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=1750 request=12 value=363 target=300 state=303 seq=10
+[VM 1] TASK2_ACK seq=10
+[VM 2] TASK2_ACK seq=10
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=1825 request=12 value=298 state=298 sample=10 rtt_ms=75
+[VM 1] TASK3_INFER elapsed_ms=1825 sample=13 output=366 infer_us=7807
+[VM 2] TASK2_CONTROL_RECEIVED seq=11 request=13
+[VM 2] TASK3_CONTROL_APPLIED request=13 value=366
+[VM 2] TASK3_PLANT_STATE before=298 after=296 dist=0
+[VM 2] TASK2_STATUS_SENT seq=11
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=1825 request=13 value=366 target=300 state=298 seq=11
+[VM 2] TASK2_ACK seq=11
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=1945 request=13 value=296 state=296 sample=11 rtt_ms=120
+[VM 1] TASK3_INFER elapsed_ms=1945 sample=14 output=366 infer_us=8668
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2027
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=5300
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2235
+[VM 1] TASK2_RETRANSMIT seq=11 attempt=1
+[VM 2] TASK2_DUPLICATE seq=11
+[VM 1] TASK2_ACK seq=11
+[VM 1] TASK3_INFER elapsed_ms=2347 sample=15 output=362 infer_us=8632
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=2347 request=15 value=362 target=300 state=296 seq=12
+[VM 2] TASK2_CONTROL_RECEIVED seq=12 request=15
+[VM 2] TASK3_CONTROL_APPLIED request=15 value=362
+[VM 2] TASK3_PLANT_STATE before=296 after=294 dist=0
+[VM 2] TASK2_STATUS_SENT seq=12
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=5500
+[VM 2] TASK2_ACK seq=12
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=2427 request=15 value=294 state=294 sample=12 rtt_ms=80
+[VM 1] TASK3_INFER elapsed_ms=2427 sample=16 output=363 infer_us=8364
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2550
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=5830
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2759
+[VM 1] TASK2_RETRANSMIT seq=12 attempt=1
+[VM 2] TASK2_DUPLICATE seq=12
+[VM 1] TASK2_ACK seq=12
+[VM 1] TASK3_INFER elapsed_ms=2871 sample=17 output=364 infer_us=8395
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=2871 request=17 value=364 target=300 state=294 seq=13
+[VM 2] TASK2_CONTROL_RECEIVED seq=13 request=17
+[VM 2] TASK3_CONTROL_APPLIED request=17 value=364
+[VM 1] TASK2_ACK seq=13
+[VM 2] TASK3_PLANT_STATE before=294 after=293 dist=0
+[VM 2] TASK2_STATUS_SENT seq=13
+[VM 2] TASK2_ACK seq=13
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=2936 request=17 value=293 state=293 sample=13 rtt_ms=65
+[VM 1] TASK3_INFER elapsed_ms=2936 sample=18 output=365 infer_us=8361
+[VM 2] TASK2_CONTROL_RECEIVED seq=14 request=18
+[VM 2] TASK3_CONTROL_APPLIED request=18 value=365
+[VM 2] TASK3_PLANT_STATE before=293 after=293 dist=0
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=2936 request=18 value=365 target=300 state=293 seq=14
+[VM 2] TASK2_STATUS_SENT seq=14
+[VM 1] TASK2_ACK seq=14
+[VM 2] TASK2_ACK seq=14
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=3059 request=18 value=293 state=293 sample=14 rtt_ms=123
+[VM 1] TASK3_INFER elapsed_ms=3059 sample=19 output=365 infer_us=8571
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=3059 request=19 value=365 target=300 state=293 seq=15
+[VM 2] TASK2_CONTROL_RECEIVED seq=15 request=19
+[VM 2] TASK3_CONTROL_APPLIED request=19 value=365
+[VM 2] TASK3_PLANT_STATE before=293 after=293 dist=0
+[VM 2] TASK2_STATUS_SENT seq=15
+[VM 1] TASK2_ACK seq=15
+[VM 2] TASK2_ACK seq=15
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=3148 request=19 value=293 state=293 sample=15 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=3148 sample=20 output=365 infer_us=8238
+[VM 2] TASK2_CONTROL_RECEIVED seq=16 request=20
+[VM 2] TASK3_CONTROL_APPLIED request=20 value=365
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=3148 request=20 value=365 target=300 state=293 seq=16
+[VM 2] TASK3_PLANT_STATE before=293 after=293 dist=0
+[VM 2] TASK2_STATUS_SENT seq=16
+[VM 1] TASK2_ACK seq=16
+[VM 2] TASK2_ACK seq=16
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=3239 request=20 value=293 state=293 sample=16 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=3239 sample=21 output=365 infer_us=8356
+[VM 2] TASK2_CONTROL_RECEIVED seq=17 request=21
+[VM 2] TASK3_CONTROL_APPLIED request=21 value=365
+[VM 2] TASK3_PLANT_STATE before=293 after=293 dist=0
+[VM 2] TASK2_STATUS_SENT seq=17
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=3239 request=21 value=365 target=300 state=293 seq=17
+[VM 1] TASK2_ACK seq=17
+[VM 2] TASK2_ACK seq=17
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=3337 request=21 value=293 state=293 sample=17 rtt_ms=98
+[VM 1] TASK3_INFER elapsed_ms=3337 sample=22 output=365 infer_us=8244
+[VM 2] TASK2_CONTROL_RECEIVED seq=18 request=22
+[VM 2] TASK3_CONTROL_APPLIED request=22 value=365
+[VM 2] TASK3_PLANT_STATE before=293 after=293 dist=0
+[VM 2] TASK2_STATUS_SENT seq=18
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=3337 request=22 value=365 target=300 state=293 seq=18
+[VM 2] TASK2_ACK seq=18
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=3435 request=22 value=293 state=293 sample=18 rtt_ms=98
+[VM 1] TASK3_INFER elapsed_ms=3435 sample=23 output=366 infer_us=8367
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=3540
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=6820
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=3749
+[VM 2] TASK2_DUPLICATE seq=18
+[VM 1] TASK2_RETRANSMIT seq=18 attempt=1
+[VM 1] TASK2_ACK seq=18
+[VM 1] TASK3_INFER elapsed_ms=3865 sample=24 output=364 infer_us=8509
+[VM 2] TASK2_CONTROL_RECEIVED seq=19 request=24
+[VM 2] TASK3_CONTROL_APPLIED request=24 value=364
+[VM 2] TASK3_PLANT_STATE before=293 after=292 dist=0
+[VM 2] TASK2_STATUS_SENT seq=19
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=3865 request=24 value=364 target=300 state=293 seq=19
+[VM 1] TASK2_ACK seq=19
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=3943 request=24 value=292 state=292 sample=19 rtt_ms=78
+[VM 2] TASK2_ACK seq=19
+[VM 1] TASK3_INFER elapsed_ms=3943 sample=25 output=366 infer_us=8650
+[VM 2] TASK2_CONTROL_RECEIVED seq=20 request=25
+[VM 2] TASK3_CONTROL_APPLIED request=25 value=366
+[VM 2] TASK3_PLANT_STATE before=292 after=292 dist=0
+[VM 2] TASK2_STATUS_SENT seq=20
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=3943 request=25 value=366 target=300 state=292 seq=20
+[VM 1] TASK2_ACK seq=20
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4051 request=25 value=292 state=292 sample=20 rtt_ms=108
+[VM 2] TASK2_ACK seq=20
+[VM 1] TASK3_INFER elapsed_ms=4051 sample=26 output=366 infer_us=11163
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4051 request=26 value=366 target=300 state=292 seq=21
+[VM 2] TASK2_CONTROL_RECEIVED seq=21 request=26
+[VM 2] TASK3_CONTROL_APPLIED request=26 value=366
+[VM 2] TASK3_PLANT_STATE before=292 after=292 dist=0
+[VM 2] TASK2_STATUS_SENT seq=21
+[VM 2] TASK2_ACK seq=21
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4137 request=26 value=292 state=292 sample=21 rtt_ms=86
+[VM 1] TASK3_INFER elapsed_ms=4137 sample=27 output=366 infer_us=8431
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=4254
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=7530
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=4454
+[VM 1] TASK2_RETRANSMIT seq=21 attempt=1
+[VM 2] TASK2_DUPLICATE seq=21
+[VM 1] TASK2_ACK seq=21
+[VM 1] TASK3_INFER elapsed_ms=4581 sample=28 output=366 infer_us=8267
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4581 request=28 value=366 target=300 state=292 seq=22
+[VM 2] TASK2_CONTROL_RECEIVED seq=22 request=28
+[VM 2] TASK3_CONTROL_APPLIED request=28 value=366
+[VM 2] TASK3_PLANT_STATE before=292 after=292 dist=0
+[VM 2] TASK2_STATUS_SENT seq=22
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=7730
+[VM 1] TASK2_ACK seq=22
+[VM 2] TASK2_ACK seq=22
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4663 request=28 value=292 state=292 sample=22 rtt_ms=82
+[VM 1] TASK3_INFER elapsed_ms=4663 sample=29 output=366 infer_us=8944
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4663 request=29 value=366 target=300 state=292 seq=23
+[VM 2] TASK2_CONTROL_RECEIVED seq=23 request=29
+[VM 2] TASK3_CONTROL_APPLIED request=29 value=366
+[VM 2] TASK3_PLANT_STATE before=292 after=292 dist=0
+[VM 2] TASK2_STATUS_SENT seq=23
+[VM 1] TASK2_ACK seq=23
+[VM 2] TASK2_ACK seq=23
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4770 request=29 value=292 state=292 sample=23 rtt_ms=107
+[VM 1] TASK3_INFER elapsed_ms=4770 sample=30 output=367 infer_us=8824
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4770 request=30 value=367 target=300 state=292 seq=24
+[VM 2] TASK2_CONTROL_RECEIVED seq=24 request=30
+[VM 2] TASK3_CONTROL_APPLIED request=30 value=367
+[VM 2] TASK3_PLANT_STATE before=292 after=293 dist=0
+[VM 2] TASK2_STATUS_SENT seq=24
+[VM 1] TASK2_ACK seq=24
+[VM 2] TASK2_ACK seq=24
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4859 request=30 value=293 state=293 sample=24 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=4859 sample=31 output=365 infer_us=8546
+[VM 2] TASK3_DISTURBANCE change=150 at_ms=8070
+[VM 2] TASK2_CONTROL_RECEIVED seq=25 request=31
+[VM 2] TASK3_CONTROL_APPLIED request=31 value=365
+[VM 2] TASK3_PLANT_STATE before=293 after=443 dist=150
+[VM 2] TASK2_STATUS_SENT seq=25
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4859 request=31 value=365 target=300 state=293 seq=25
+[VM 1] TASK2_ACK seq=25
+[VM 2] TASK2_ACK seq=25
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4963 request=31 value=443 state=443 sample=25 rtt_ms=104
+[VM 1] TASK3_INFER elapsed_ms=4963 sample=32 output=5 infer_us=8828
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4963 request=32 value=5 target=300 state=443 seq=26
+[VM 2] TASK2_CONTROL_RECEIVED seq=26 request=32
+[VM 2] TASK3_CONTROL_APPLIED request=32 value=5
+[VM 2] TASK3_PLANT_STATE before=443 after=402 dist=150
+[VM 2] TASK2_STATUS_SENT seq=26
+[VM 1] TASK2_ACK seq=26
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5051 request=32 value=402 state=402 sample=26 rtt_ms=88
+[VM 2] TASK2_ACK seq=26
+[VM 1] TASK3_INFER elapsed_ms=5051 sample=33 output=759 infer_us=8385
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5051 request=33 value=759 target=800 state=402 seq=27
+[VM 2] TASK2_CONTROL_RECEIVED seq=27 request=33
+[VM 2] TASK3_CONTROL_APPLIED request=33 value=759
+[VM 2] TASK3_PLANT_STATE before=402 after=642 dist=150
+[VM 2] TASK2_STATUS_SENT seq=27
+[VM 1] TASK2_ACK seq=27
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5151 request=33 value=642 state=642 sample=27 rtt_ms=100
+[VM 2] TASK2_ACK seq=27
+[VM 1] TASK3_INFER elapsed_ms=5151 sample=34 output=599 infer_us=11189
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5151 request=34 value=599 target=800 state=642 seq=28
+[VM 2] TASK2_CONTROL_RECEIVED seq=28 request=34
+[VM 2] TASK3_CONTROL_APPLIED request=34 value=599
+[VM 2] TASK3_PLANT_STATE before=642 after=713 dist=150
+[VM 2] TASK2_STATUS_SENT seq=28
+[VM 1] TASK2_ACK seq=28
+[VM 2] TASK2_ACK seq=28
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5241 request=34 value=713 state=713 sample=28 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=5241 sample=35 output=567 infer_us=8563
+[VM 2] TASK2_CONTROL_RECEIVED seq=29 request=35
+[VM 2] TASK3_CONTROL_APPLIED request=35 value=567
+[VM 2] TASK3_PLANT_STATE before=713 after=736 dist=150
+[VM 2] TASK2_STATUS_SENT seq=29
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5241 request=35 value=567 target=800 state=713 seq=29
+[VM 1] TASK2_ACK seq=29
+[VM 2] TASK2_ACK seq=29
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5338 request=35 value=736 state=736 sample=29 rtt_ms=97
+[VM 1] TASK3_INFER elapsed_ms=5338 sample=36 output=664 infer_us=8830
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5338 request=36 value=664 target=800 state=736 seq=30
+[VM 2] TASK2_CONTROL_RECEIVED seq=30 request=36
+[VM 2] TASK3_CONTROL_APPLIED request=36 value=664
+[VM 2] TASK3_PLANT_STATE before=736 after=781 dist=150
+[VM 2] TASK2_STATUS_SENT seq=30
+[VM 2] TASK2_ACK seq=30
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5428 request=36 value=781 state=781 sample=30 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=5428 sample=37 output=619 infer_us=8436
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=5542
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=8820
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=5751
+[VM 1] TASK2_RETRANSMIT seq=30 attempt=1
+[VM 2] TASK2_DUPLICATE seq=30
+[VM 1] TASK2_ACK seq=30
+[VM 1] TASK3_INFER elapsed_ms=5863 sample=38 output=642 infer_us=8794
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5863 request=38 value=642 target=800 state=781 seq=31
+[VM 2] TASK2_CONTROL_RECEIVED seq=31 request=38
+[VM 2] TASK3_CONTROL_APPLIED request=38 value=642
+[VM 2] TASK3_PLANT_STATE before=781 after=795 dist=150
+[VM 2] TASK2_STATUS_SENT seq=31
+[VM 1] TASK2_ACK seq=31
+[VM 2] TASK2_ACK seq=31
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5946 request=38 value=795 state=795 sample=31 rtt_ms=83
+[VM 1] TASK3_INFER elapsed_ms=5946 sample=39 output=647 infer_us=8689
+[VM 2] TASK2_CONTROL_RECEIVED seq=32 request=39
+[VM 2] TASK3_CONTROL_APPLIED request=39 value=647
+[VM 2] TASK3_PLANT_STATE before=795 after=804 dist=150
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5946 request=39 value=647 target=800 state=795 seq=32
+[VM 2] TASK2_STATUS_SENT seq=32
+[VM 1] TASK2_ACK seq=32
+[VM 2] TASK2_ACK seq=32
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6049 request=39 value=804 state=804 sample=32 rtt_ms=103
+[VM 1] TASK3_INFER elapsed_ms=6049 sample=40 output=647 infer_us=8569
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6049 request=40 value=647 target=800 state=804 seq=33
+[VM 2] TASK2_CONTROL_RECEIVED seq=33 request=40
+[VM 2] TASK3_CONTROL_APPLIED request=40 value=647
+[VM 2] TASK3_PLANT_STATE before=804 after=808 dist=150
+[VM 2] TASK2_STATUS_SENT seq=33
+[VM 1] TASK2_ACK seq=33
+[VM 2] TASK2_ACK seq=33
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6138 request=40 value=808 state=808 sample=33 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=6138 sample=41 output=653 infer_us=8465
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6138 request=41 value=653 target=800 state=808 seq=34
+[VM 2] TASK2_CONTROL_RECEIVED seq=34 request=41
+[VM 2] TASK3_CONTROL_APPLIED request=41 value=653
+[VM 2] TASK3_PLANT_STATE before=808 after=811 dist=150
+[VM 2] TASK2_STATUS_SENT seq=34
+[VM 1] TASK2_ACK seq=34
+[VM 2] TASK2_ACK seq=34
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6240 request=41 value=811 state=811 sample=34 rtt_ms=102
+[VM 1] TASK3_INFER elapsed_ms=6240 sample=42 output=652 infer_us=8728
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6240 request=42 value=652 target=800 state=811 seq=35
+[VM 2] TASK2_CONTROL_RECEIVED seq=35 request=42
+[VM 2] TASK3_CONTROL_APPLIED request=42 value=652
+[VM 2] TASK3_PLANT_STATE before=811 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=35
+[VM 2] TASK2_ACK seq=35
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6337 request=42 value=813 state=813 sample=35 rtt_ms=97
+[VM 1] TASK3_INFER elapsed_ms=6337 sample=43 output=654 infer_us=8812
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=6444
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=9720
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=6653
+[VM 2] TASK2_DUPLICATE seq=35
+[VM 1] TASK2_RETRANSMIT seq=35 attempt=1
+[VM 1] TASK2_ACK seq=35
+[VM 1] TASK3_INFER elapsed_ms=6769 sample=44 output=651 infer_us=8838
+[VM 2] TASK2_CONTROL_RECEIVED seq=36 request=44
+[VM 2] TASK3_CONTROL_APPLIED request=44 value=651
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=36
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6769 request=44 value=651 target=800 state=813 seq=36
+[VM 2] TASK2_ACK seq=36
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6842 request=44 value=813 state=813 sample=36 rtt_ms=73
+[VM 1] TASK3_INFER elapsed_ms=6842 sample=45 output=652 infer_us=8660
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=6972
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=10250
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=7181
+[VM 2] TASK2_DUPLICATE seq=36
+[VM 1] TASK2_RETRANSMIT seq=36 attempt=1
+[VM 1] TASK2_ACK seq=36
+[VM 1] TASK3_INFER elapsed_ms=7298 sample=46 output=653 infer_us=9233
+[VM 2] TASK2_CONTROL_RECEIVED seq=37 request=46
+[VM 2] TASK3_CONTROL_APPLIED request=46 value=653
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=37
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=7298 request=46 value=653 target=800 state=813 seq=37
+[VM 1] TASK2_ACK seq=37
+[VM 2] TASK2_ACK seq=37
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=7374 request=46 value=813 state=813 sample=37 rtt_ms=76
+[VM 1] TASK3_INFER elapsed_ms=7374 sample=47 output=653 infer_us=8887
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=7374 request=47 value=653 target=800 state=813 seq=38
+[VM 2] TASK2_CONTROL_RECEIVED seq=38 request=47
+[VM 2] TASK3_CONTROL_APPLIED request=47 value=653
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=38
+[VM 1] TASK2_ACK seq=38
+[VM 2] TASK2_ACK seq=38
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=7487 request=47 value=813 state=813 sample=38 rtt_ms=113
+[VM 1] TASK3_INFER elapsed_ms=7487 sample=48 output=654 infer_us=8962
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=7487 request=48 value=654 target=800 state=813 seq=39
+[VM 2] TASK2_CONTROL_RECEIVED seq=39 request=48
+[VM 2] TASK3_CONTROL_APPLIED request=48 value=654
+[VM 2] TASK3_PLANT_STATE before=813 after=814 dist=150
+[VM 2] TASK2_STATUS_SENT seq=39
+[VM 1] TASK2_ACK seq=39
+[VM 2] TASK2_ACK seq=39
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=7578 request=48 value=814 state=814 sample=39 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=7578 sample=49 output=653 infer_us=8905
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=7578 request=49 value=653 target=800 state=814 seq=40
+[VM 2] TASK2_CONTROL_RECEIVED seq=40 request=49
+[VM 2] TASK3_CONTROL_APPLIED request=49 value=653
+[VM 2] TASK3_PLANT_STATE before=814 after=814 dist=150
+[VM 2] TASK2_STATUS_SENT seq=40
+[VM 1] TASK2_ACK seq=40
+[VM 2] TASK2_ACK seq=40
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=7674 request=49 value=814 state=814 sample=40 rtt_ms=96
+[VM 1] TASK3_INFER elapsed_ms=7674 sample=50 output=654 infer_us=8851
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=7674 request=50 value=654 target=800 state=814 seq=41
+[VM 2] TASK2_CONTROL_RECEIVED seq=41 request=50
+[VM 2] TASK3_CONTROL_APPLIED request=50 value=654
+[VM 2] TASK3_PLANT_STATE before=814 after=814 dist=150
+[VM 2] TASK2_STATUS_SENT seq=41
+[VM 1] TASK2_ACK seq=41
+[VM 2] TASK2_ACK seq=41
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=7767 request=50 value=814 state=814 sample=41 rtt_ms=93
+[VM 1] TASK3_INFER elapsed_ms=7767 sample=51 output=654 infer_us=8876
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=7767 request=51 value=654 target=800 state=814 seq=42
+[VM 2] TASK2_CONTROL_RECEIVED seq=42 request=51
+[VM 2] TASK3_CONTROL_APPLIED request=51 value=654
+[VM 2] TASK3_PLANT_STATE before=814 after=814 dist=150
+[VM 2] TASK2_STATUS_SENT seq=42
+[VM 1] TASK2_ACK seq=42
+[VM 2] TASK2_ACK seq=42
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=7863 request=51 value=814 state=814 sample=42 rtt_ms=96
+[VM 1] TASK3_INFER elapsed_ms=7863 sample=52 output=654 infer_us=8691
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=7863 request=52 value=654 target=800 state=814 seq=43
+[VM 2] TASK2_CONTROL_RECEIVED seq=43 request=52
+[VM 2] TASK3_CONTROL_APPLIED request=52 value=654
+[VM 2] TASK3_PLANT_STATE before=814 after=814 dist=150
+[VM 2] TASK2_STATUS_SENT seq=43
+[VM 1] TASK2_ACK seq=43
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=7956 request=52 value=814 state=814 sample=43 rtt_ms=93
+[VM 2] TASK2_ACK seq=43
+[VM 1] TASK3_INFER elapsed_ms=7956 sample=53 output=654 infer_us=8840
+[VM 2] TASK2_CONTROL_RECEIVED seq=44 request=53
+[VM 2] TASK3_CONTROL_APPLIED request=53 value=654
+[VM 2] TASK3_PLANT_STATE before=814 after=814 dist=150
+[VM 2] TASK2_STATUS_SENT seq=44
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=7956 request=53 value=654 target=800 state=814 seq=44
+[VM 2] TASK2_ACK seq=44
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=8047 request=53 value=814 state=814 sample=44 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=8047 sample=54 output=654 infer_us=8857
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=8159
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=11440
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=8367
+[VM 2] TASK2_DUPLICATE seq=44
+[VM 1] TASK2_RETRANSMIT seq=44 attempt=1
+[VM 1] TASK2_ACK seq=44
+[VM 1] TASK3_INFER elapsed_ms=8483 sample=55 output=652 infer_us=8852
+[VM 2] TASK2_CONTROL_RECEIVED seq=45 request=55
+[VM 2] TASK3_CONTROL_APPLIED request=55 value=652
+[VM 2] TASK3_PLANT_STATE before=814 after=814 dist=150
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=8483 request=55 value=652 target=800 state=814 seq=45
+[VM 2] TASK2_STATUS_SENT seq=45
+[VM 1] TASK2_ACK seq=45
+[VM 2] TASK2_ACK seq=45
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=8559 request=55 value=814 state=814 sample=45 rtt_ms=76
+[VM 1] TASK3_INFER elapsed_ms=8559 sample=56 output=652 infer_us=8995
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=8559 request=56 value=652 target=800 state=814 seq=46
+[VM 2] TASK2_CONTROL_RECEIVED seq=46 request=56
+[VM 2] TASK3_CONTROL_APPLIED request=56 value=652
+[VM 2] TASK3_PLANT_STATE before=814 after=814 dist=150
+[VM 2] TASK2_STATUS_SENT seq=46
+[VM 1] TASK2_ACK seq=46
+[VM 2] TASK2_ACK seq=46
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=8673 request=56 value=814 state=814 sample=46 rtt_ms=114
+[VM 1] TASK3_INFER elapsed_ms=8673 sample=57 output=651 infer_us=9264
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=8673 request=57 value=651 target=800 state=814 seq=47
+[VM 2] TASK2_CONTROL_RECEIVED seq=47 request=57
+[VM 2] TASK3_CONTROL_APPLIED request=57 value=651
+[VM 2] TASK3_PLANT_STATE before=814 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=47
+[VM 1] TASK2_ACK seq=47
+[VM 2] TASK2_ACK seq=47
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=8764 request=57 value=813 state=813 sample=47 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=8764 sample=58 output=652 infer_us=9219
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=8764 request=58 value=652 target=800 state=813 seq=48
+[VM 2] TASK2_CONTROL_RECEIVED seq=48 request=58
+[VM 2] TASK3_CONTROL_APPLIED request=58 value=652
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=48
+[VM 1] TASK2_ACK seq=48
+[VM 2] TASK2_ACK seq=48
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=8863 request=58 value=813 state=813 sample=48 rtt_ms=99
+[VM 1] TASK3_INFER elapsed_ms=8863 sample=59 output=651 infer_us=8965
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=8863 request=59 value=651 target=800 state=813 seq=49
+[VM 2] TASK2_CONTROL_RECEIVED seq=49 request=59
+[VM 2] TASK3_CONTROL_APPLIED request=59 value=651
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=49
+[VM 1] TASK2_ACK seq=49
+[VM 2] TASK2_ACK seq=49
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=8953 request=59 value=813 state=813 sample=49 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=8953 sample=60 output=651 infer_us=8928
+[VM 2] TASK2_CONTROL_RECEIVED seq=50 request=60
+[VM 2] TASK3_CONTROL_APPLIED request=60 value=651
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=50
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=8953 request=60 value=651 target=800 state=813 seq=50
+[VM 1] TASK2_ACK seq=50
+[VM 2] TASK2_ACK seq=50
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=9053 request=60 value=813 state=813 sample=50 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=9053 sample=61 output=651 infer_us=8877
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=9053 request=61 value=651 target=800 state=813 seq=51
+[VM 2] TASK2_CONTROL_RECEIVED seq=51 request=61
+[VM 2] TASK3_CONTROL_APPLIED request=61 value=651
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=51
+[VM 1] TASK2_ACK seq=51
+[VM 2] TASK2_ACK seq=51
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=9142 request=61 value=813 state=813 sample=51 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=9142 sample=62 output=648 infer_us=8838
+[VM 2] TASK2_CONTROL_RECEIVED seq=52 request=62
+[VM 2] TASK3_CONTROL_APPLIED request=62 value=648
+[VM 2] TASK3_PLANT_STATE before=813 after=812 dist=150
+[VM 2] TASK2_STATUS_SENT seq=52
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=9142 request=62 value=648 target=800 state=813 seq=52
+[VM 1] TASK2_ACK seq=52
+[VM 2] TASK2_ACK seq=52
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=9242 request=62 value=812 state=812 sample=52 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=9242 sample=63 output=646 infer_us=8929
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=9242 request=63 value=646 target=800 state=812 seq=53
+[VM 2] TASK2_CONTROL_RECEIVED seq=53 request=63
+[VM 2] TASK3_CONTROL_APPLIED request=63 value=646
+[VM 2] TASK3_PLANT_STATE before=812 after=810 dist=150
+[VM 2] TASK2_STATUS_SENT seq=53
+[VM 1] TASK2_ACK seq=53
+[VM 2] TASK2_ACK seq=53
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=9331 request=63 value=810 state=810 sample=53 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=9331 sample=64 output=651 infer_us=9120
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=9331 request=64 value=651 target=800 state=810 seq=54
+[VM 2] TASK2_CONTROL_RECEIVED seq=54 request=64
+[VM 2] TASK3_CONTROL_APPLIED request=64 value=651
+[VM 2] TASK3_PLANT_STATE before=810 after=812 dist=150
+[VM 2] TASK2_STATUS_SENT seq=54
+[VM 1] TASK2_ACK seq=54
+[VM 2] TASK2_ACK seq=54
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=9432 request=64 value=812 state=812 sample=54 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=9432 sample=65 output=648 infer_us=8780
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=9432 request=65 value=648 target=800 state=812 seq=55
+[VM 2] TASK2_CONTROL_RECEIVED seq=55 request=65
+[VM 2] TASK3_CONTROL_APPLIED request=65 value=648
+[VM 2] TASK3_PLANT_STATE before=812 after=811 dist=150
+[VM 2] TASK2_STATUS_SENT seq=55
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=9528 request=65 value=811 state=811 sample=55 rtt_ms=96
+[VM 2] TASK2_ACK seq=55
+[VM 1] TASK3_INFER elapsed_ms=9528 sample=66 output=651 infer_us=8675
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=9632
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=12910
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=9840
+[VM 2] TASK2_DUPLICATE seq=55
+[VM 1] TASK2_RETRANSMIT seq=55 attempt=1
+[VM 1] TASK2_ACK seq=55
+[VM 1] TASK3_INFER elapsed_ms=9956 sample=67 output=655 infer_us=8878
+[VM 2] TASK2_CONTROL_RECEIVED seq=56 request=67
+[VM 2] TASK3_CONTROL_APPLIED request=67 value=655
+[VM 2] TASK3_PLANT_STATE before=811 after=814 dist=150
+[VM 2] TASK2_STATUS_SENT seq=56
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=9956 request=67 value=655 target=800 state=811 seq=56
+[VM 1] TASK2_ACK seq=56
+[VM 2] TASK2_ACK seq=56
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10034 request=67 value=814 state=814 sample=56 rtt_ms=78
+[VM 1] TASK3_INFER elapsed_ms=10034 sample=68 output=650 infer_us=8803
+[VM 2] TASK2_CONTROL_RECEIVED seq=57 request=68
+[VM 2] TASK3_CONTROL_APPLIED request=68 value=650
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10034 request=68 value=650 target=800 state=814 seq=57
+[VM 2] TASK3_PLANT_STATE before=814 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=57
+[VM 1] TASK2_ACK seq=57
+[VM 2] TASK2_ACK seq=57
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10139 request=68 value=813 state=813 sample=57 rtt_ms=105
+[VM 1] TASK3_INFER elapsed_ms=10139 sample=69 output=653 infer_us=8591
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10139 request=69 value=653 target=800 state=813 seq=58
+[VM 2] TASK2_CONTROL_RECEIVED seq=58 request=69
+[VM 2] TASK3_CONTROL_APPLIED request=69 value=653
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=58
+[VM 1] TASK2_ACK seq=58
+[VM 2] TASK2_ACK seq=58
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10228 request=69 value=813 state=813 sample=58 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=10228 sample=70 output=653 infer_us=8935
+[VM 2] TASK2_CONTROL_RECEIVED seq=59 request=70
+[VM 2] TASK3_CONTROL_APPLIED request=70 value=653
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=59
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10228 request=70 value=653 target=800 state=813 seq=59
+[VM 1] TASK2_ACK seq=59
+[VM 2] TASK2_ACK seq=59
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10328 request=70 value=813 state=813 sample=59 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=10328 sample=71 output=653 infer_us=8667
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10328 request=71 value=653 target=800 state=813 seq=60
+[VM 2] TASK2_CONTROL_RECEIVED seq=60 request=71
+[VM 2] TASK3_CONTROL_APPLIED request=71 value=653
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=60
+[VM 1] TASK2_ACK seq=60
+[VM 2] TASK2_ACK seq=60
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10417 request=71 value=813 state=813 sample=60 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=10417 sample=72 output=654 infer_us=8620
+[VM 2] TASK2_CONTROL_RECEIVED seq=61 request=72
+[VM 2] TASK3_CONTROL_APPLIED request=72 value=654
+[VM 2] TASK3_PLANT_STATE before=813 after=814 dist=150
+[VM 2] TASK2_STATUS_SENT seq=61
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10417 request=72 value=654 target=800 state=813 seq=61
+[VM 1] TASK2_ACK seq=61
+[VM 2] TASK2_ACK seq=61
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10518 request=72 value=814 state=814 sample=61 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=10518 sample=73 output=652 infer_us=9400
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10518 request=73 value=652 target=800 state=814 seq=62
+[VM 2] TASK2_CONTROL_RECEIVED seq=62 request=73
+[VM 2] TASK3_CONTROL_APPLIED request=73 value=652
+[VM 2] TASK3_PLANT_STATE before=814 after=814 dist=150
+[VM 2] TASK2_STATUS_SENT seq=62
+[VM 1] TASK2_ACK seq=62
+[VM 2] TASK2_ACK seq=62
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10606 request=73 value=814 state=814 sample=62 rtt_ms=88
+[VM 1] TASK3_INFER elapsed_ms=10606 sample=74 output=651 infer_us=9067
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10606 request=74 value=651 target=800 state=814 seq=63
+[VM 2] TASK2_CONTROL_RECEIVED seq=63 request=74
+[VM 2] TASK3_CONTROL_APPLIED request=74 value=651
+[VM 2] TASK3_PLANT_STATE before=814 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=63
+[VM 1] TASK2_ACK seq=63
+[VM 2] TASK2_ACK seq=63
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10705 request=74 value=813 state=813 sample=63 rtt_ms=99
+[VM 1] TASK3_INFER elapsed_ms=10705 sample=75 output=652 infer_us=8773
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10705 request=75 value=652 target=800 state=813 seq=64
+[VM 2] TASK2_CONTROL_RECEIVED seq=64 request=75
+[VM 2] TASK3_CONTROL_APPLIED request=75 value=652
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=64
+[VM 1] TASK2_ACK seq=64
+[VM 2] TASK2_ACK seq=64
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10801 request=75 value=813 state=813 sample=64 rtt_ms=96
+[VM 1] TASK3_INFER elapsed_ms=10801 sample=76 output=652 infer_us=8659
+[VM 2] TASK2_CONTROL_RECEIVED seq=65 request=76
+[VM 2] TASK3_CONTROL_APPLIED request=76 value=652
+[VM 2] TASK3_PLANT_STATE before=813 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=65
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10801 request=76 value=652 target=800 state=813 seq=65
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10891 request=76 value=813 state=813 sample=65 rtt_ms=90
+[VM 2] TASK2_ACK seq=65
+[VM 1] TASK3_INFER elapsed_ms=10891 sample=77 output=651 infer_us=8836
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=11002
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=14280
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=11211
+[VM 2] TASK2_DUPLICATE seq=65
+[VM 1] TASK2_RETRANSMIT seq=65 attempt=1
+[VM 1] TASK2_ACK seq=65
+[VM 1] TASK3_INFER elapsed_ms=11327 sample=78 output=650 infer_us=8768
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=11327 request=78 value=650 target=800 state=813 seq=66
+[VM 2] TASK2_CONTROL_RECEIVED seq=66 request=78
+[VM 2] TASK3_CONTROL_APPLIED request=78 value=650
+[VM 2] TASK3_PLANT_STATE before=813 after=812 dist=150
+[VM 2] TASK2_STATUS_SENT seq=66
+[VM 1] TASK2_ACK seq=66
+[VM 2] TASK2_ACK seq=66
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=11404 request=78 value=812 state=812 sample=66 rtt_ms=77
+[VM 1] TASK3_INFER elapsed_ms=11404 sample=79 output=651 infer_us=8779
+[VM 2] TASK2_CONTROL_RECEIVED seq=67 request=79
+[VM 2] TASK3_CONTROL_APPLIED request=79 value=651
+[VM 2] TASK3_PLANT_STATE before=812 after=812 dist=150
+[VM 2] TASK2_STATUS_SENT seq=67
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=11404 request=79 value=651 target=800 state=812 seq=67
+[VM 1] TASK2_ACK seq=67
+[VM 2] TASK2_ACK seq=67
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=11517 request=79 value=812 state=812 sample=67 rtt_ms=113
+[VM 1] TASK3_INFER elapsed_ms=11517 sample=80 output=648 infer_us=9232
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=11517 request=80 value=648 target=800 state=812 seq=68
+[VM 2] TASK2_CONTROL_RECEIVED seq=68 request=80
+[VM 2] TASK3_CONTROL_APPLIED request=80 value=648
+[VM 2] TASK3_PLANT_STATE before=812 after=811 dist=150
+[VM 2] TASK2_STATUS_SENT seq=68
+[VM 1] TASK2_ACK seq=68
+[VM 2] TASK2_ACK seq=68
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=11606 request=80 value=811 state=811 sample=68 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=11606 sample=81 output=649 infer_us=8690
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=11606 request=81 value=649 target=800 state=811 seq=69
+[VM 2] TASK2_CONTROL_RECEIVED seq=69 request=81
+[VM 2] TASK3_CONTROL_APPLIED request=81 value=649
+[VM 2] TASK3_PLANT_STATE before=811 after=812 dist=150
+[VM 2] TASK2_STATUS_SENT seq=69
+[VM 1] TASK2_ACK seq=69
+[VM 2] TASK2_ACK seq=69
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=11706 request=81 value=812 state=812 sample=69 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=11706 sample=82 output=647 infer_us=9211
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=11706 request=82 value=647 target=800 state=812 seq=70
+[VM 2] TASK2_CONTROL_RECEIVED seq=70 request=82
+[VM 2] TASK3_CONTROL_APPLIED request=82 value=647
+[VM 2] TASK3_PLANT_STATE before=812 after=811 dist=150
+[VM 2] TASK2_STATUS_SENT seq=70
+[VM 1] TASK2_ACK seq=70
+[VM 2] TASK2_ACK seq=70
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=11794 request=82 value=811 state=811 sample=70 rtt_ms=88
+[VM 1] TASK3_INFER elapsed_ms=11794 sample=83 output=647 infer_us=9078
+[VM 2] TASK2_CONTROL_RECEIVED seq=71 request=83
+[VM 2] TASK3_CONTROL_APPLIED request=83 value=647
+[VM 2] TASK3_PLANT_STATE before=811 after=811 dist=150
+[VM 2] TASK2_STATUS_SENT seq=71
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=11794 request=83 value=647 target=800 state=811 seq=71
+[VM 1] TASK2_ACK seq=71
+[VM 2] TASK2_ACK seq=71
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=11895 request=83 value=811 state=811 sample=71 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=11895 sample=84 output=646 infer_us=8791
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=11895 request=84 value=646 target=800 state=811 seq=72
+[VM 2] TASK2_CONTROL_RECEIVED seq=72 request=84
+[VM 2] TASK3_CONTROL_APPLIED request=84 value=646
+[VM 2] TASK3_PLANT_STATE before=811 after=811 dist=150
+[VM 2] TASK2_STATUS_SENT seq=72
+[VM 1] TASK2_ACK seq=72
+[VM 2] TASK2_ACK seq=72
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=11984 request=84 value=811 state=811 sample=72 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=11984 sample=85 output=645 infer_us=8806
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=11984 request=85 value=645 target=800 state=811 seq=73
+[VM 2] TASK2_CONTROL_RECEIVED seq=73 request=85
+[VM 2] TASK3_CONTROL_APPLIED request=85 value=645
+[VM 2] TASK3_PLANT_STATE before=811 after=810 dist=150
+[VM 2] TASK2_STATUS_SENT seq=73
+[VM 1] TASK2_ACK seq=73
+[VM 2] TASK2_ACK seq=73
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12083 request=85 value=810 state=810 sample=73 rtt_ms=99
+[VM 1] TASK3_INFER elapsed_ms=12083 sample=86 output=646 infer_us=8854
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12083 request=86 value=646 target=800 state=810 seq=74
+[VM 2] TASK2_CONTROL_RECEIVED seq=74 request=86
+[VM 2] TASK3_CONTROL_APPLIED request=86 value=646
+[VM 2] TASK3_PLANT_STATE before=810 after=810 dist=150
+[VM 2] TASK2_STATUS_SENT seq=74
+[VM 1] TASK2_ACK seq=74
+[VM 2] TASK2_ACK seq=74
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12173 request=86 value=810 state=810 sample=74 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=12173 sample=87 output=645 infer_us=8869
+[VM 2] TASK2_CONTROL_RECEIVED seq=75 request=87
+[VM 2] TASK3_CONTROL_APPLIED request=87 value=645
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12173 request=87 value=645 target=800 state=810 seq=75
+[VM 2] TASK3_PLANT_STATE before=810 after=810 dist=150
+[VM 2] TASK2_STATUS_SENT seq=75
+[VM 1] TASK2_ACK seq=75
+[VM 2] TASK2_ACK seq=75
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12274 request=87 value=810 state=810 sample=75 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=12274 sample=88 output=645 infer_us=9184
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12274 request=88 value=645 target=800 state=810 seq=76
+[VM 2] TASK2_CONTROL_RECEIVED seq=76 request=88
+[VM 2] TASK3_CONTROL_APPLIED request=88 value=645
+[VM 2] TASK3_PLANT_STATE before=810 after=810 dist=150
+[VM 2] TASK2_STATUS_SENT seq=76
+[VM 1] TASK2_ACK seq=76
+[VM 2] TASK2_ACK seq=76
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12364 request=88 value=810 state=810 sample=76 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=12364 sample=89 output=645 infer_us=8756
+[VM 2] TASK2_CONTROL_RECEIVED seq=77 request=89
+[VM 2] TASK3_CONTROL_APPLIED request=89 value=645
+[VM 2] TASK3_PLANT_STATE before=810 after=810 dist=150
+[VM 2] TASK2_STATUS_SENT seq=77
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12364 request=89 value=645 target=800 state=810 seq=77
+[VM 1] TASK2_ACK seq=77
+[VM 2] TASK2_ACK seq=77
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12463 request=89 value=810 state=810 sample=77 rtt_ms=99
+[VM 1] TASK3_INFER elapsed_ms=12463 sample=90 output=645 infer_us=8914
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12463 request=90 value=645 target=800 state=810 seq=78
+[VM 2] TASK2_CONTROL_RECEIVED seq=78 request=90
+[VM 2] TASK3_CONTROL_APPLIED request=90 value=645
+[VM 2] TASK3_PLANT_STATE before=810 after=810 dist=150
+[VM 2] TASK2_STATUS_SENT seq=78
+[VM 1] TASK2_ACK seq=78
+[VM 2] TASK2_ACK seq=78
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12553 request=90 value=810 state=810 sample=78 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=12553 sample=91 output=644 infer_us=8877
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12553 request=91 value=644 target=800 state=810 seq=79
+[VM 2] TASK2_CONTROL_RECEIVED seq=79 request=91
+[VM 2] TASK3_CONTROL_APPLIED request=91 value=644
+[VM 2] TASK3_PLANT_STATE before=810 after=809 dist=150
+[VM 2] TASK2_STATUS_SENT seq=79
+[VM 1] TASK2_ACK seq=79
+[VM 2] TASK2_ACK seq=79
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12653 request=91 value=809 state=809 sample=79 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=12653 sample=92 output=649 infer_us=8692
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12653 request=92 value=649 target=800 state=809 seq=80
+[VM 2] TASK2_CONTROL_RECEIVED seq=80 request=92
+[VM 2] TASK3_CONTROL_APPLIED request=92 value=649
+[VM 2] TASK3_PLANT_STATE before=809 after=810 dist=150
+[VM 2] TASK2_STATUS_SENT seq=80
+[VM 1] TASK2_ACK seq=80
+[VM 2] TASK2_ACK seq=80
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12742 request=92 value=810 state=810 sample=80 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=12742 sample=93 output=649 infer_us=8728
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12742 request=93 value=649 target=800 state=810 seq=81
+[VM 2] TASK2_CONTROL_RECEIVED seq=81 request=93
+[VM 2] TASK3_CONTROL_APPLIED request=93 value=649
+[VM 1] TASK2_ACK seq=81
+[VM 2] TASK3_PLANT_STATE before=810 after=811 dist=150
+[VM 2] TASK2_STATUS_SENT seq=81
+[VM 2] TASK2_ACK seq=81
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12838 request=93 value=811 state=811 sample=81 rtt_ms=96
+[VM 1] TASK3_INFER elapsed_ms=12838 sample=94 output=644 infer_us=8662
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12838 request=94 value=644 target=800 state=811 seq=82
+[VM 2] TASK2_CONTROL_RECEIVED seq=82 request=94
+[VM 2] TASK3_CONTROL_APPLIED request=94 value=644
+[VM 2] TASK3_PLANT_STATE before=811 after=810 dist=150
+[VM 2] TASK2_STATUS_SENT seq=82
+[VM 1] TASK2_ACK seq=82
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12930 request=94 value=810 state=810 sample=82 rtt_ms=92
+[VM 2] TASK2_ACK seq=82
+[VM 1] TASK3_INFER elapsed_ms=12930 sample=95 output=652 infer_us=8606
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12930 request=95 value=652 target=800 state=810 seq=83
+[VM 2] TASK2_CONTROL_RECEIVED seq=83 request=95
+[VM 2] TASK3_CONTROL_APPLIED request=95 value=652
+[VM 2] TASK3_PLANT_STATE before=810 after=812 dist=150
+[VM 2] TASK2_STATUS_SENT seq=83
+[VM 1] TASK2_ACK seq=83
+[VM 2] TASK2_ACK seq=83
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13024 request=95 value=812 state=812 sample=83 rtt_ms=94
+[VM 1] TASK3_INFER elapsed_ms=13024 sample=96 output=649 infer_us=8586
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13024 request=96 value=649 target=800 state=812 seq=84
+[VM 2] TASK2_CONTROL_RECEIVED seq=84 request=96
+[VM 2] TASK3_CONTROL_APPLIED request=96 value=649
+[VM 2] TASK3_PLANT_STATE before=812 after=811 dist=150
+[VM 2] TASK2_STATUS_SENT seq=84
+[VM 1] TASK2_ACK seq=84
+[VM 2] TASK2_ACK seq=84
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13118 request=96 value=811 state=811 sample=84 rtt_ms=94
+[VM 1] TASK3_INFER elapsed_ms=13118 sample=97 output=652 infer_us=8551
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13118 request=97 value=652 target=800 state=811 seq=85
+[VM 2] TASK2_CONTROL_RECEIVED seq=85 request=97
+[VM 2] TASK3_CONTROL_APPLIED request=97 value=652
+[VM 2] TASK3_PLANT_STATE before=811 after=813 dist=150
+[VM 2] TASK2_STATUS_SENT seq=85
+[VM 1] TASK2_ACK seq=85
+[VM 2] TASK2_ACK seq=85
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13212 request=97 value=813 state=813 sample=85 rtt_ms=94
+[VM 1] TASK3_INFER elapsed_ms=13212 sample=98 output=645 infer_us=8406
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13212 request=98 value=645 target=800 state=813 seq=86
+[VM 2] TASK2_CONTROL_RECEIVED seq=86 request=98
+[VM 2] TASK3_CONTROL_APPLIED request=98 value=645
+[VM 2] TASK3_PLANT_STATE before=813 after=811 dist=150
+[VM 2] TASK2_STATUS_SENT seq=86
+[VM 1] TASK2_ACK seq=86
+[VM 2] TASK2_ACK seq=86
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13306 request=98 value=811 state=811 sample=86 rtt_ms=94
+[VM 1] TASK3_INFER elapsed_ms=13306 sample=99 output=658 infer_us=8584
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13306 request=99 value=658 target=800 state=811 seq=87
+[VM 2] TASK2_CONTROL_RECEIVED seq=87 request=99
+[VM 2] TASK3_CONTROL_APPLIED request=99 value=658
+[VM 2] TASK3_PLANT_STATE before=811 after=815 dist=150
+[VM 2] TASK2_STATUS_SENT seq=87
+[VM 1] TASK2_ACK seq=87
+[VM 2] TASK2_ACK seq=87
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13400 request=99 value=815 state=815 sample=87 rtt_ms=94
+[VM 1] TASK3_INFER elapsed_ms=13400 sample=100 output=657 infer_us=8414
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13400 request=100 value=657 target=800 state=815 seq=88
+[VM 2] TASK2_CONTROL_RECEIVED seq=88 request=100
+[VM 2] TASK3_CONTROL_APPLIED request=100 value=657
+[VM 2] TASK3_PLANT_STATE before=815 after=816 dist=150
+[VM 2] TASK2_STATUS_SENT seq=88
+[VM 1] TASK2_ACK seq=88
+[VM 2] TASK2_ACK seq=88
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13495 request=100 value=816 state=816 sample=88 rtt_ms=95
+[VM 1] TASK3_INFER elapsed_ms=13495 sample=101 output=660 infer_us=8433
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13495 request=101 value=660 target=800 state=816 seq=89
+[VM 2] TASK2_CONTROL_RECEIVED seq=89 request=101
+[VM 2] TASK3_CONTROL_APPLIED request=101 value=660
+[VM 2] TASK3_PLANT_STATE before=816 after=818 dist=150
+[VM 2] TASK2_STATUS_SENT seq=89
+[VM 1] TASK2_ACK seq=89
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13590 request=101 value=818 state=818 sample=89 rtt_ms=95
+[VM 2] TASK2_ACK seq=89
+[VM 1] TASK3_INFER elapsed_ms=13590 sample=102 output=670 infer_us=8991
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13590 request=102 value=670 target=800 state=818 seq=90
+[VM 2] TASK2_CONTROL_RECEIVED seq=90 request=102
+[VM 2] TASK3_CONTROL_APPLIED request=102 value=670
+[VM 2] TASK3_PLANT_STATE before=818 after=822 dist=150
+[VM 2] TASK2_STATUS_SENT seq=90
+[VM 1] TASK2_ACK seq=90
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13684 request=102 value=822 state=822 sample=90 rtt_ms=94
+[VM 2] TASK2_ACK seq=90
+[VM 1] TASK3_INFER elapsed_ms=13684 sample=103 output=670 infer_us=8463
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13684 request=103 value=670 target=800 state=822 seq=91
+[VM 2] TASK2_CONTROL_RECEIVED seq=91 request=103
+[VM 2] TASK3_CONTROL_APPLIED request=103 value=670
+[VM 2] TASK3_PLANT_STATE before=822 after=823 dist=150
+[VM 2] TASK2_STATUS_SENT seq=91
+[VM 1] TASK2_ACK seq=91
+[VM 2] TASK2_ACK seq=91
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13778 request=103 value=823 state=823 sample=91 rtt_ms=94
+[VM 1] TASK3_INFER elapsed_ms=13778 sample=104 output=672 infer_us=8652
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13778 request=104 value=672 target=800 state=823 seq=92
+[VM 2] TASK2_CONTROL_RECEIVED seq=92 request=104
+[VM 2] TASK3_CONTROL_APPLIED request=104 value=672
+[VM 2] TASK3_PLANT_STATE before=823 after=825 dist=150
+[VM 2] TASK2_STATUS_SENT seq=92
+[VM 1] TASK2_ACK seq=92
+[VM 2] TASK2_ACK seq=92
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13874 request=104 value=825 state=825 sample=92 rtt_ms=96
+[VM 1] TASK3_INFER elapsed_ms=13874 sample=105 output=674 infer_us=8304
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13874 request=105 value=674 target=800 state=825 seq=93
+[VM 2] TASK3_DISTURBANCE change=0 at_ms=17080
+[VM 2] TASK2_CONTROL_RECEIVED seq=93 request=105
+[VM 2] TASK3_CONTROL_APPLIED request=105 value=674
+[VM 2] TASK3_PLANT_STATE before=825 after=677 dist=0
+[VM 2] TASK2_STATUS_SENT seq=93
+[VM 1] TASK2_ACK seq=93
+[VM 2] TASK2_ACK seq=93
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13972 request=105 value=677 state=677 sample=93 rtt_ms=98
+[VM 1] TASK3_INFER elapsed_ms=13972 sample=106 output=868 infer_us=8435
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13972 request=106 value=868 target=800 state=677 seq=94
+[VM 2] TASK2_CONTROL_RECEIVED seq=94 request=106
+[VM 2] TASK3_CONTROL_APPLIED request=106 value=868
+[VM 2] TASK3_PLANT_STATE before=677 after=674 dist=0
+[VM 2] TASK2_STATUS_SENT seq=94
+[VM 1] TASK2_ACK seq=94
+[VM 2] TASK2_ACK seq=94
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=14063 request=106 value=674 state=674 sample=94 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=14063 sample=107 output=1000 infer_us=8339
+[VM 2] TASK2_CONTROL_RECEIVED seq=95 request=107
+[VM 2] TASK3_CONTROL_APPLIED request=107 value=1000
+[VM 2] TASK3_PLANT_STATE before=674 after=719 dist=0
+[VM 2] TASK2_STATUS_SENT seq=95
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=14063 request=107 value=1000 target=800 state=674 seq=95
+[VM 1] TASK2_ACK seq=95
+[VM 2] TASK2_ACK seq=95
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=14163 request=107 value=719 state=719 sample=95 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=14163 sample=108 output=1000 infer_us=8473
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=14163 request=108 value=1000 target=800 state=719 seq=96
+[VM 2] TASK2_CONTROL_RECEIVED seq=96 request=108
+[VM 2] TASK3_CONTROL_APPLIED request=108 value=1000
+[VM 2] TASK3_PLANT_STATE before=719 after=740 dist=0
+[VM 2] TASK2_STATUS_SENT seq=96
+[VM 1] TASK2_ACK seq=96
+[VM 2] TASK2_ACK seq=96
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=14253 request=108 value=740 state=740 sample=96 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=14253 sample=109 output=1000 infer_us=8575
+[VM 2] TASK2_CONTROL_RECEIVED seq=97 request=109
+[VM 2] TASK3_CONTROL_APPLIED request=109 value=1000
+[VM 2] TASK3_PLANT_STATE before=740 after=751 dist=0
+[VM 2] TASK2_STATUS_SENT seq=97
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=14253 request=109 value=1000 target=800 state=740 seq=97
+[VM 1] TASK2_ACK seq=97
+[VM 2] TASK2_ACK seq=97
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=14353 request=109 value=751 state=751 sample=97 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=14353 sample=110 output=1000 infer_us=8509
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=14353 request=110 value=1000 target=800 state=751 seq=98
+[VM 2] TASK2_CONTROL_RECEIVED seq=98 request=110
+[VM 2] TASK3_CONTROL_APPLIED request=110 value=1000
+[VM 2] TASK3_PLANT_STATE before=751 after=756 dist=0
+[VM 2] TASK2_STATUS_SENT seq=98
+[VM 1] TASK2_ACK seq=98
+[VM 2] TASK2_ACK seq=98
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=14444 request=110 value=756 state=756 sample=98 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=14444 sample=111 output=1000 infer_us=8725
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=14444 request=111 value=1000 target=800 state=756 seq=99
+[VM 2] TASK2_CONTROL_RECEIVED seq=99 request=111
+[VM 2] TASK3_CONTROL_APPLIED request=111 value=1000
+[VM 2] TASK3_PLANT_STATE before=756 after=758 dist=0
+[VM 2] TASK2_STATUS_SENT seq=99
+[VM 1] TASK2_ACK seq=99
+[VM 2] TASK2_ACK seq=99
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=14543 request=111 value=758 state=758 sample=99 rtt_ms=99
+[VM 1] TASK3_INFER elapsed_ms=14543 sample=112 output=1000 infer_us=8565
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=14543 request=112 value=1000 target=800 state=758 seq=100
+[VM 2] TASK2_CONTROL_RECEIVED seq=100 request=112
+[VM 2] TASK3_CONTROL_APPLIED request=112 value=1000
+[VM 2] TASK3_PLANT_STATE before=758 after=759 dist=0
+[VM 2] TASK2_STATUS_SENT seq=100
+[VM 1] TASK2_ACK seq=100
+[VM 2] TASK2_ACK seq=100
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=14634 request=112 value=759 state=759 sample=100 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=14634 sample=113 output=998 infer_us=8484
+[VM 2] TASK2_CONTROL_RECEIVED seq=101 request=113
+[VM 2] TASK3_CONTROL_APPLIED request=113 value=998
+[VM 2] TASK3_PLANT_STATE before=759 after=758 dist=0
+[VM 2] TASK2_STATUS_SENT seq=101
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=14634 request=113 value=998 target=800 state=759 seq=101
+[VM 1] TASK2_ACK seq=101
+[VM 2] TASK2_ACK seq=101
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=14735 request=113 value=758 state=758 sample=101 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=14735 sample=114 output=996 infer_us=8498
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=14735 request=114 value=996 target=800 state=758 seq=102
+[VM 2] TASK2_CONTROL_RECEIVED seq=102 request=114
+[VM 2] TASK3_CONTROL_APPLIED request=114 value=996
+[VM 2] TASK3_PLANT_STATE before=758 after=758 dist=0
+[VM 2] TASK2_STATUS_SENT seq=102
+[VM 1] TASK2_ACK seq=102
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=14824 request=114 value=758 state=758 sample=102 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=14824 sample=115 output=995 infer_us=8746
+[VM 2] TASK2_ACK seq=102
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=14824 request=115 value=995 target=800 state=758 seq=103
+[VM 2] TASK2_CONTROL_RECEIVED seq=103 request=115
+[VM 2] TASK3_CONTROL_APPLIED request=115 value=995
+[VM 2] TASK3_PLANT_STATE before=758 after=757 dist=0
+[VM 2] TASK2_STATUS_SENT seq=103
+[VM 1] TASK2_ACK seq=103
+[VM 2] TASK2_ACK seq=103
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=14926 request=115 value=757 state=757 sample=103 rtt_ms=102
+[VM 1] TASK3_INFER elapsed_ms=14926 sample=116 output=995 infer_us=8676
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=14926 request=116 value=995 target=800 state=757 seq=104
+[VM 2] TASK2_CONTROL_RECEIVED seq=104 request=116
+[VM 2] TASK3_CONTROL_APPLIED request=116 value=995
+[VM 2] TASK3_PLANT_STATE before=757 after=757 dist=0
+[VM 2] TASK2_STATUS_SENT seq=104
+[VM 1] TASK2_ACK seq=104
+[VM 2] TASK2_ACK seq=104
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=15015 request=116 value=757 state=757 sample=104 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=15015 sample=117 output=631 infer_us=8588
+[VM 2] TASK2_CONTROL_RECEIVED seq=105 request=117
+[VM 2] TASK3_CONTROL_APPLIED request=117 value=631
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=15015 request=117 value=631 target=500 state=757 seq=105
+[VM 2] TASK3_PLANT_STATE before=757 after=630 dist=0
+[VM 2] TASK2_STATUS_SENT seq=105
+[VM 1] TASK2_ACK seq=105
+[VM 2] TASK2_ACK seq=105
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=15118 request=117 value=630 state=630 sample=105 rtt_ms=103
+[VM 1] TASK3_INFER elapsed_ms=15118 sample=118 output=791 infer_us=8505
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=15118 request=118 value=791 target=500 state=630 seq=106
+[VM 2] TASK2_CONTROL_RECEIVED seq=106 request=118
+[VM 2] TASK3_CONTROL_APPLIED request=118 value=791
+[VM 2] TASK3_PLANT_STATE before=630 after=624 dist=0
+[VM 2] TASK2_STATUS_SENT seq=106
+[VM 1] TASK2_ACK seq=106
+[VM 2] TASK2_ACK seq=106
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=15209 request=118 value=624 state=624 sample=106 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=15209 sample=119 output=638 infer_us=8321
+[VM 2] TASK2_CONTROL_RECEIVED seq=107 request=119
+[VM 2] TASK3_CONTROL_APPLIED request=119 value=638
+[VM 2] TASK3_PLANT_STATE before=624 after=567 dist=0
+[VM 2] TASK2_STATUS_SENT seq=107
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=15209 request=119 value=638 target=500 state=624 seq=107
+[VM 1] TASK2_ACK seq=107
+[VM 2] TASK2_ACK seq=107
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=15309 request=119 value=567 state=567 sample=107 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=15309 sample=120 output=703 infer_us=8371
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=15309 request=120 value=703 target=500 state=567 seq=108
+[VM 2] TASK2_CONTROL_RECEIVED seq=108 request=120
+[VM 2] TASK3_CONTROL_APPLIED request=120 value=703
+[VM 2] TASK3_PLANT_STATE before=567 after=561 dist=0
+[VM 2] TASK2_STATUS_SENT seq=108
+[VM 1] TASK2_ACK seq=108
+[VM 2] TASK2_ACK seq=108
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=15399 request=120 value=561 state=561 sample=108 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=15399 sample=121 output=646 infer_us=8536
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=15399 request=121 value=646 target=500 state=561 seq=109
+[VM 2] TASK2_CONTROL_RECEIVED seq=109 request=121
+[VM 2] TASK3_CONTROL_APPLIED request=121 value=646
+[VM 2] TASK3_PLANT_STATE before=561 after=538 dist=0
+[VM 2] TASK2_STATUS_SENT seq=109
+[VM 1] TASK2_ACK seq=109
+[VM 2] TASK2_ACK seq=109
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=15500 request=121 value=538 state=538 sample=109 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=15500 sample=122 output=660 infer_us=8567
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=15500 request=122 value=660 target=500 state=538 seq=110
+[VM 2] TASK2_CONTROL_RECEIVED seq=110 request=122
+[VM 2] TASK3_CONTROL_APPLIED request=122 value=660
+[VM 2] TASK3_PLANT_STATE before=538 after=531 dist=0
+[VM 2] TASK2_STATUS_SENT seq=110
+[VM 1] TASK2_ACK seq=110
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=15590 request=122 value=531 state=531 sample=110 rtt_ms=90
+[VM 2] TASK2_ACK seq=110
+[VM 1] TASK3_INFER elapsed_ms=15590 sample=123 output=645 infer_us=8350
+[VM 2] TASK2_CONTROL_RECEIVED seq=111 request=123
+[VM 2] TASK3_CONTROL_APPLIED request=123 value=645
+[VM 2] TASK3_PLANT_STATE before=531 after=522 dist=0
+[VM 2] TASK2_STATUS_SENT seq=111
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=15590 request=123 value=645 target=500 state=531 seq=111
+[VM 1] TASK2_ACK seq=111
+[VM 2] TASK2_ACK seq=111
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=15687 request=123 value=522 state=522 sample=111 rtt_ms=97
+[VM 1] TASK3_INFER elapsed_ms=15687 sample=124 output=642 infer_us=8875
+[VM 2] TASK2_CONTROL_RECEIVED seq=112 request=124
+[VM 2] TASK3_CONTROL_APPLIED request=124 value=642
+[VM 2] TASK3_PLANT_STATE before=522 after=517 dist=0
+[VM 2] TASK2_STATUS_SENT seq=112
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=15687 request=124 value=642 target=500 state=522 seq=112
+[VM 1] TASK2_ACK seq=112
+[VM 2] TASK2_ACK seq=112
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=15790 request=124 value=517 state=517 sample=112 rtt_ms=103
+[VM 1] TASK3_INFER elapsed_ms=15790 sample=125 output=639 infer_us=8521
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=15790 request=125 value=639 target=500 state=517 seq=113
+[VM 2] TASK2_CONTROL_RECEIVED seq=113 request=125
+[VM 2] TASK3_CONTROL_APPLIED request=125 value=639
+[VM 2] TASK3_PLANT_STATE before=517 after=512 dist=0
+[VM 2] TASK2_STATUS_SENT seq=113
+[VM 1] TASK2_ACK seq=113
+[VM 2] TASK2_ACK seq=113
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=15880 request=125 value=512 state=512 sample=113 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=15880 sample=126 output=637 infer_us=8649
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=15880 request=126 value=637 target=500 state=512 seq=114
+[VM 2] TASK2_CONTROL_RECEIVED seq=114 request=126
+[VM 2] TASK3_CONTROL_APPLIED request=126 value=637
+[VM 2] TASK3_PLANT_STATE before=512 after=509 dist=0
+[VM 2] TASK2_STATUS_SENT seq=114
+[VM 1] TASK2_ACK seq=114
+[VM 2] TASK2_ACK seq=114
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=15981 request=126 value=509 state=509 sample=114 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=15981 sample=127 output=636 infer_us=9444
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=15981 request=127 value=636 target=500 state=509 seq=115
+[VM 2] TASK2_CONTROL_RECEIVED seq=115 request=127
+[VM 2] TASK3_CONTROL_APPLIED request=127 value=636
+[VM 2] TASK3_PLANT_STATE before=509 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=115
+[VM 1] TASK2_ACK seq=115
+[VM 2] TASK2_ACK seq=115
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=16072 request=127 value=507 state=507 sample=115 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=16072 sample=128 output=636 infer_us=8838
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=16072 request=128 value=636 target=500 state=507 seq=116
+[VM 2] TASK2_CONTROL_RECEIVED seq=116 request=128
+[VM 2] TASK3_CONTROL_APPLIED request=128 value=636
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=116
+[VM 2] TASK2_ACK seq=116
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=16174 request=128 value=507 state=507 sample=116 rtt_ms=102
+[VM 1] TASK3_INFER elapsed_ms=16174 sample=129 output=635 infer_us=8992
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=16278
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=19550
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=16487
+[VM 2] TASK2_DUPLICATE seq=116
+[VM 1] TASK2_RETRANSMIT seq=116 attempt=1
+[VM 1] TASK2_ACK seq=116
+[VM 1] TASK3_INFER elapsed_ms=16592 sample=130 output=630 infer_us=8821
+[VM 2] TASK2_CONTROL_RECEIVED seq=117 request=130
+[VM 2] TASK3_CONTROL_APPLIED request=130 value=630
+[VM 2] TASK3_PLANT_STATE before=507 after=505 dist=0
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=16592 request=130 value=630 target=500 state=507 seq=117
+[VM 2] TASK2_STATUS_SENT seq=117
+[VM 1] TASK2_ACK seq=117
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=16671 request=130 value=505 state=505 sample=117 rtt_ms=79
+[VM 2] TASK2_ACK seq=117
+[VM 1] TASK3_INFER elapsed_ms=16671 sample=131 output=629 infer_us=8598
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=16671 request=131 value=629 target=500 state=505 seq=118
+[VM 2] TASK2_CONTROL_RECEIVED seq=118 request=131
+[VM 2] TASK3_CONTROL_APPLIED request=131 value=629
+[VM 2] TASK3_PLANT_STATE before=505 after=503 dist=0
+[VM 2] TASK2_STATUS_SENT seq=118
+[VM 1] TASK2_ACK seq=118
+[VM 2] TASK2_ACK seq=118
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=16780 request=131 value=503 state=503 sample=118 rtt_ms=109
+[VM 1] TASK3_INFER elapsed_ms=16780 sample=132 output=629 infer_us=8668
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=16780 request=132 value=629 target=500 state=503 seq=119
+[VM 2] TASK2_CONTROL_RECEIVED seq=119 request=132
+[VM 2] TASK3_CONTROL_APPLIED request=132 value=629
+[VM 2] TASK3_PLANT_STATE before=503 after=502 dist=0
+[VM 2] TASK2_STATUS_SENT seq=119
+[VM 1] TASK2_ACK seq=119
+[VM 2] TASK2_ACK seq=119
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=16871 request=132 value=502 state=502 sample=119 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=16871 sample=133 output=629 infer_us=8649
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=16871 request=133 value=629 target=500 state=502 seq=120
+[VM 2] TASK2_CONTROL_RECEIVED seq=120 request=133
+[VM 2] TASK3_CONTROL_APPLIED request=133 value=629
+[VM 2] TASK3_PLANT_STATE before=502 after=501 dist=0
+[VM 2] TASK2_STATUS_SENT seq=120
+[VM 2] TASK2_ACK seq=120
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=16969 request=133 value=501 state=501 sample=120 rtt_ms=98
+[VM 1] TASK3_INFER elapsed_ms=16969 sample=134 output=629 infer_us=8570
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=17074
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=20350
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=17282
+[VM 2] TASK2_DUPLICATE seq=120
+[VM 1] TASK2_RETRANSMIT seq=120 attempt=1
+[VM 1] TASK2_ACK seq=120
+[VM 1] TASK3_INFER elapsed_ms=17399 sample=135 output=633 infer_us=8690
+[VM 2] TASK2_CONTROL_RECEIVED seq=121 request=135
+[VM 2] TASK3_CONTROL_APPLIED request=135 value=633
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=17399 request=135 value=633 target=500 state=501 seq=121
+[VM 2] TASK3_PLANT_STATE before=501 after=502 dist=0
+[VM 2] TASK2_STATUS_SENT seq=121
+[VM 1] TASK2_ACK seq=121
+[VM 2] TASK2_ACK seq=121
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=17477 request=135 value=502 state=502 sample=121 rtt_ms=78
+[VM 1] TASK3_INFER elapsed_ms=17477 sample=136 output=634 infer_us=8675
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=17477 request=136 value=634 target=500 state=502 seq=122
+[VM 2] TASK2_CONTROL_RECEIVED seq=122 request=136
+[VM 2] TASK3_CONTROL_APPLIED request=136 value=634
+[VM 2] TASK3_PLANT_STATE before=502 after=503 dist=0
+[VM 2] TASK2_STATUS_SENT seq=122
+[VM 1] TASK2_ACK seq=122
+[VM 2] TASK2_ACK seq=122
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=17589 request=136 value=503 state=503 sample=122 rtt_ms=112
+[VM 1] TASK3_INFER elapsed_ms=17589 sample=137 output=634 infer_us=8924
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=17589 request=137 value=634 target=500 state=503 seq=123
+[VM 2] TASK2_CONTROL_RECEIVED seq=123 request=137
+[VM 2] TASK3_CONTROL_APPLIED request=137 value=634
+[VM 2] TASK3_PLANT_STATE before=503 after=503 dist=0
+[VM 2] TASK2_STATUS_SENT seq=123
+[VM 1] TASK2_ACK seq=123
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=17679 request=137 value=503 state=503 sample=123 rtt_ms=90
+[VM 2] TASK2_ACK seq=123
+[VM 1] TASK3_INFER elapsed_ms=17679 sample=138 output=635 infer_us=8680
+[VM 2] TASK2_CONTROL_RECEIVED seq=124 request=138
+[VM 2] TASK3_CONTROL_APPLIED request=138 value=635
+[VM 2] TASK3_PLANT_STATE before=503 after=504 dist=0
+[VM 2] TASK2_STATUS_SENT seq=124
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=17679 request=138 value=635 target=500 state=503 seq=124
+[VM 1] TASK2_ACK seq=124
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=17779 request=138 value=504 state=504 sample=124 rtt_ms=100
+[VM 2] TASK2_ACK seq=124
+[VM 1] TASK3_INFER elapsed_ms=17779 sample=139 output=635 infer_us=11443
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=17779 request=139 value=635 target=500 state=504 seq=125
+[VM 2] TASK2_CONTROL_RECEIVED seq=125 request=139
+[VM 2] TASK3_CONTROL_APPLIED request=139 value=635
+[VM 2] TASK3_PLANT_STATE before=504 after=504 dist=0
+[VM 2] TASK2_STATUS_SENT seq=125
+[VM 1] TASK2_ACK seq=125
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=17868 request=139 value=504 state=504 sample=125 rtt_ms=89
+[VM 2] TASK2_ACK seq=125
+[VM 1] TASK3_INFER elapsed_ms=17868 sample=140 output=636 infer_us=8676
+[VM 2] TASK2_CONTROL_RECEIVED seq=126 request=140
+[VM 2] TASK3_CONTROL_APPLIED request=140 value=636
+[VM 2] TASK3_PLANT_STATE before=504 after=505 dist=0
+[VM 2] TASK2_STATUS_SENT seq=126
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=17868 request=140 value=636 target=500 state=504 seq=126
+[VM 1] TASK2_ACK seq=126
+[VM 2] TASK2_ACK seq=126
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=17970 request=140 value=505 state=505 sample=126 rtt_ms=102
+[VM 1] TASK3_INFER elapsed_ms=17970 sample=141 output=635 infer_us=8602
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=17970 request=141 value=635 target=500 state=505 seq=127
+[VM 2] TASK2_CONTROL_RECEIVED seq=127 request=141
+[VM 2] TASK3_CONTROL_APPLIED request=141 value=635
+[VM 2] TASK3_PLANT_STATE before=505 after=505 dist=0
+[VM 2] TASK2_STATUS_SENT seq=127
+[VM 1] TASK2_ACK seq=127
+[VM 2] TASK2_ACK seq=127
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=18060 request=141 value=505 state=505 sample=127 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=18060 sample=142 output=635 infer_us=8692
+[VM 2] TASK2_CONTROL_RECEIVED seq=128 request=142
+[VM 2] TASK3_CONTROL_APPLIED request=142 value=635
+[VM 2] TASK3_PLANT_STATE before=505 after=505 dist=0
+[VM 2] TASK2_STATUS_SENT seq=128
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=18060 request=142 value=635 target=500 state=505 seq=128
+[VM 2] TASK2_ACK seq=128
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=18158 request=142 value=505 state=505 sample=128 rtt_ms=98
+[VM 1] TASK3_INFER elapsed_ms=18158 sample=143 output=635 infer_us=8977
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=18265
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=21540
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=18469
+[VM 2] TASK2_DUPLICATE seq=128
+[VM 1] TASK2_RETRANSMIT seq=128 attempt=1
+[VM 1] TASK2_ACK seq=128
+[VM 1] TASK3_INFER elapsed_ms=18586 sample=144 output=638 infer_us=8549
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=18586 request=144 value=638 target=500 state=505 seq=129
+[VM 2] TASK2_CONTROL_RECEIVED seq=129 request=144
+[VM 2] TASK3_CONTROL_APPLIED request=144 value=638
+[VM 2] TASK3_PLANT_STATE before=505 after=506 dist=0
+[VM 2] TASK2_STATUS_SENT seq=129
+[VM 1] TASK2_ACK seq=129
+[VM 2] TASK2_ACK seq=129
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=18664 request=144 value=506 state=506 sample=129 rtt_ms=78
+[VM 1] TASK3_INFER elapsed_ms=18664 sample=145 output=637 infer_us=8654
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=18664 request=145 value=637 target=500 state=506 seq=130
+[VM 2] TASK2_CONTROL_RECEIVED seq=130 request=145
+[VM 2] TASK3_CONTROL_APPLIED request=145 value=637
+[VM 2] TASK3_PLANT_STATE before=506 after=506 dist=0
+[VM 2] TASK2_STATUS_SENT seq=130
+[VM 1] TASK2_ACK seq=130
+[VM 2] TASK2_ACK seq=130
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=18776 request=145 value=506 state=506 sample=130 rtt_ms=112
+[VM 1] TASK3_INFER elapsed_ms=18776 sample=146 output=638 infer_us=8626
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=18776 request=146 value=638 target=500 state=506 seq=131
+[VM 2] TASK2_CONTROL_RECEIVED seq=131 request=146
+[VM 2] TASK3_CONTROL_APPLIED request=146 value=638
+[VM 2] TASK3_PLANT_STATE before=506 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=131
+[VM 1] TASK2_ACK seq=131
+[VM 2] TASK2_ACK seq=131
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=18868 request=146 value=507 state=507 sample=131 rtt_ms=92
+[VM 1] TASK3_INFER elapsed_ms=18868 sample=147 output=637 infer_us=9191
+[VM 2] TASK2_CONTROL_RECEIVED seq=132 request=147
+[VM 2] TASK3_CONTROL_APPLIED request=147 value=637
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=132
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=18868 request=147 value=637 target=500 state=507 seq=132
+[VM 1] TASK2_ACK seq=132
+[VM 2] TASK2_ACK seq=132
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=18968 request=147 value=507 state=507 sample=132 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=18968 sample=148 output=637 infer_us=8770
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=18968 request=148 value=637 target=500 state=507 seq=133
+[VM 2] TASK2_CONTROL_RECEIVED seq=133 request=148
+[VM 2] TASK3_CONTROL_APPLIED request=148 value=637
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=133
+[VM 2] TASK2_ACK seq=133
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=19055 request=148 value=507 state=507 sample=133 rtt_ms=87
+[VM 1] TASK3_INFER elapsed_ms=19055 sample=149 output=637 infer_us=8405
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=19172
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=22450
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=19381
+[VM 1] TASK2_RETRANSMIT seq=133 attempt=1
+[VM 2] TASK2_DUPLICATE seq=133
+[VM 1] TASK2_ACK seq=133
+[VM 1] TASK3_INFER elapsed_ms=19494 sample=150 output=637 infer_us=9033
+[VM 2] TASK2_CONTROL_RECEIVED seq=134 request=150
+[VM 2] TASK3_CONTROL_APPLIED request=150 value=637
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=134
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=19494 request=150 value=637 target=500 state=507 seq=134
+[VM 2] TASK2_ACK seq=134
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=19568 request=150 value=507 state=507 sample=134 rtt_ms=74
+[VM 1] TASK3_INFER elapsed_ms=19568 sample=151 output=637 infer_us=8672
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=19698
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=22980
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=19907
+[VM 2] TASK2_DUPLICATE seq=134
+[VM 1] TASK2_RETRANSMIT seq=134 attempt=1
+[VM 1] TASK2_ACK seq=134
+[VM 1] TASK3_INFER elapsed_ms=20024 sample=152 output=637 infer_us=8708
+[VM 2] TASK2_CONTROL_RECEIVED seq=135 request=152
+[VM 2] TASK3_CONTROL_APPLIED request=152 value=637
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=135
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=20024 request=152 value=637 target=500 state=507 seq=135
+[VM 1] TASK2_ACK seq=135
+[VM 2] TASK2_ACK seq=135
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=20101 request=152 value=507 state=507 sample=135 rtt_ms=77
+[VM 1] TASK3_INFER elapsed_ms=20101 sample=153 output=637 infer_us=8575
+[VM 2] TASK2_CONTROL_RECEIVED seq=136 request=153
+[VM 2] TASK3_CONTROL_APPLIED request=153 value=637
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=136
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=20101 request=153 value=637 target=500 state=507 seq=136
+[VM 2] TASK2_ACK seq=136
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=20211 request=153 value=507 state=507 sample=136 rtt_ms=110
+[VM 1] TASK3_INFER elapsed_ms=20211 sample=154 output=637 infer_us=8602
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=20304
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=23580
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=20513
+[VM 1] TASK2_RETRANSMIT seq=136 attempt=1
+[VM 2] TASK2_DUPLICATE seq=136
+[VM 1] TASK2_ACK seq=136
+[VM 1] TASK3_INFER elapsed_ms=20626 sample=155 output=637 infer_us=8655
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=20626 request=155 value=637 target=500 state=507 seq=137
+[VM 2] TASK2_CONTROL_RECEIVED seq=137 request=155
+[VM 2] TASK3_CONTROL_APPLIED request=155 value=637
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=137
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=23780
+[VM 1] TASK2_RETRANSMIT seq=137 attempt=1
+[VM 2] TASK2_RETRANSMIT seq=137 attempt=1
+[VM 1] TASK2_RETRANSMIT seq=137 attempt=2
+[VM 2] TASK2_RETRANSMIT seq=137 attempt=2
+[VM 1] TASK2_RETRANSMIT seq=137 attempt=3
+[VM 2] TASK2_RETRANSMIT seq=137 attempt=3
+[VM 2] TASK2_RETRANSMIT seq=137 attempt=4
+[VM 1] TASK2_RETRANSMIT seq=137 attempt=4
+[VM 1] TASK2_RETRANSMIT seq=137 attempt=5
+[VM 2] TASK2_RETRANSMIT seq=137 attempt=5
+[VM 1] TASK2_SAFE state=Safe event=RetryExhausted { sequence: SequenceNumber(137) }
+[VM 2] TASK2_SAFE state=Safe event=RetryExhausted seq=137
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=30981
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=34270
+[VM 1] TASK2_RECOVERED state=Active elapsed_ms=31114
+[VM 2] TASK2_CONTROL_RECEIVED seq=1 request=156
+[VM 2] TASK3_CONTROL_APPLIED request=156 value=637
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=1
+[VM 1] TASK3_INFER elapsed_ms=31114 sample=156 output=637 infer_us=20724
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=31114 request=156 value=637 target=500 state=507 seq=1
+[VM 1] TASK2_ACK seq=1
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=31188 request=156 value=507 state=507 sample=137 rtt_ms=74
+[VM 2] TASK2_ACK seq=1
+[VM 1] TASK3_INFER elapsed_ms=31188 sample=157 output=637 infer_us=8594
+[VM 2] TASK2_CONTROL_RECEIVED seq=2 request=157
+[VM 2] TASK3_CONTROL_APPLIED request=157 value=637
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=2
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=31188 request=157 value=637 target=500 state=507 seq=2
+[VM 1] TASK2_ACK seq=2
+[VM 2] TASK2_ACK seq=2
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=31299 request=157 value=507 state=507 sample=138 rtt_ms=111
+[VM 1] TASK3_INFER elapsed_ms=31299 sample=158 output=637 infer_us=8505
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=31299 request=158 value=637 target=500 state=507 seq=3
+[VM 2] TASK2_CONTROL_RECEIVED seq=3 request=158
+[VM 2] TASK3_CONTROL_APPLIED request=158 value=637
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=3
+[VM 1] TASK2_ACK seq=3
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=31387 request=158 value=507 state=507 sample=139 rtt_ms=88
+[VM 2] TASK2_ACK seq=3
+[VM 1] TASK3_INFER elapsed_ms=31387 sample=159 output=636 infer_us=8568
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=31387 request=159 value=636 target=500 state=507 seq=4
+[VM 2] TASK2_CONTROL_RECEIVED seq=4 request=159
+[VM 2] TASK3_CONTROL_APPLIED request=159 value=636
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=4
+[VM 2] TASK2_ACK seq=4
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=31483 request=159 value=507 state=507 sample=140 rtt_ms=96
+[VM 1] TASK3_INFER elapsed_ms=31483 sample=160 output=637 infer_us=8822
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=31591
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=34870
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=31799
+[VM 1] TASK2_RETRANSMIT seq=4 attempt=1
+[VM 2] TASK2_DUPLICATE seq=4
+[VM 1] TASK2_ACK seq=4
+[VM 1] TASK3_INFER elapsed_ms=31911 sample=161 output=636 infer_us=8548
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=31911 request=161 value=636 target=500 state=507 seq=5
+[VM 2] TASK2_CONTROL_RECEIVED seq=5 request=161
+[VM 2] TASK3_CONTROL_APPLIED request=161 value=636
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=5
+[VM 1] TASK2_ACK seq=5
+[VM 2] TASK2_ACK seq=5
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=31987 request=161 value=507 state=507 sample=141 rtt_ms=76
+[VM 1] TASK3_INFER elapsed_ms=31987 sample=162 output=636 infer_us=8603
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=31987 request=162 value=636 target=500 state=507 seq=6
+[VM 2] TASK2_CONTROL_RECEIVED seq=6 request=162
+[VM 2] TASK3_CONTROL_APPLIED request=162 value=636
+[VM 2] TASK3_PLANT_STATE before=507 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=6
+[VM 2] TASK2_ACK seq=6
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=32097 request=162 value=507 state=507 sample=142 rtt_ms=110
+[VM 1] TASK3_INFER elapsed_ms=32097 sample=163 output=636 infer_us=8591
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=32189
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=35470
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=32399
+[VM 1] TASK2_RETRANSMIT seq=6 attempt=1
+[VM 2] TASK2_DUPLICATE seq=6
+[VM 1] TASK2_ACK seq=6
+[VM 1] TASK3_INFER elapsed_ms=32511 sample=164 output=640 infer_us=8568
+[VM 2] TASK2_CONTROL_RECEIVED seq=7 request=164
+[VM 2] TASK3_CONTROL_APPLIED request=164 value=640
+[VM 2] TASK3_PLANT_STATE before=507 after=508 dist=0
+[VM 2] TASK2_STATUS_SENT seq=7
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=32511 request=164 value=640 target=500 state=507 seq=7
+[VM 2] TASK2_ACK seq=7
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=32584 request=164 value=508 state=508 sample=143 rtt_ms=73
+[VM 1] TASK3_INFER elapsed_ms=32584 sample=165 output=639 infer_us=8757
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=32715
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=35990
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=32924
+[VM 2] TASK2_DUPLICATE seq=7
+[VM 1] TASK2_RETRANSMIT seq=7 attempt=1
+[VM 1] TASK2_ACK seq=7
+[VM 1] TASK3_INFER elapsed_ms=33041 sample=166 output=634 infer_us=8634
+[VM 2] TASK2_CONTROL_RECEIVED seq=8 request=166
+[VM 2] TASK3_CONTROL_APPLIED request=166 value=634
+[VM 2] TASK3_PLANT_STATE before=508 after=507 dist=0
+[VM 2] TASK2_STATUS_SENT seq=8
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=33041 request=166 value=634 target=500 state=508 seq=8
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=36190
+[VM 1] TASK2_ACK seq=8
+[VM 2] TASK2_ACK seq=8
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=33134 request=166 value=507 state=507 sample=144 rtt_ms=93
+[VM 1] TASK3_INFER elapsed_ms=33134 sample=167 output=634 infer_us=8885
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=33134 request=167 value=634 target=500 state=507 seq=9
+[VM 2] TASK2_CONTROL_RECEIVED seq=9 request=167
+[VM 2] TASK3_CONTROL_APPLIED request=167 value=634
+[VM 2] TASK3_PLANT_STATE before=507 after=506 dist=0
+[VM 2] TASK2_STATUS_SENT seq=9
+[VM 1] TASK2_ACK seq=9
+[VM 2] TASK2_ACK seq=9
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=33231 request=167 value=506 state=506 sample=145 rtt_ms=97
+[VM 1] TASK3_INFER elapsed_ms=33231 sample=168 output=634 infer_us=8842
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=33231 request=168 value=634 target=500 state=506 seq=10
+[VM 2] TASK2_CONTROL_RECEIVED seq=10 request=168
+[VM 2] TASK3_CONTROL_APPLIED request=168 value=634
+[VM 2] TASK3_PLANT_STATE before=506 after=505 dist=0
+[VM 2] TASK2_STATUS_SENT seq=10
+[VM 1] TASK2_ACK seq=10
+[VM 2] TASK2_ACK seq=10
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=33325 request=168 value=505 state=505 sample=146 rtt_ms=94
+[VM 1] TASK3_INFER elapsed_ms=33325 sample=169 output=633 infer_us=8566
+[VM 2] TASK2_CONTROL_RECEIVED seq=11 request=169
+[VM 2] TASK3_CONTROL_APPLIED request=169 value=633
+[VM 2] TASK3_PLANT_STATE before=505 after=504 dist=0
+[VM 2] TASK2_STATUS_SENT seq=11
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=33325 request=169 value=633 target=500 state=505 seq=11
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=33418 request=169 value=504 state=504 sample=147 rtt_ms=93
+[VM 2] TASK2_ACK seq=11
+[VM 1] TASK3_INFER elapsed_ms=33418 sample=170 output=634 infer_us=8589
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=33527
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=36800
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=33736
+[VM 2] TASK2_DUPLICATE seq=11
+[VM 1] TASK2_RETRANSMIT seq=11 attempt=1
+[VM 1] TASK2_ACK seq=11
+[VM 1] TASK3_INFER elapsed_ms=33853 sample=171 output=635 infer_us=8578
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=33853 request=171 value=635 target=500 state=504 seq=12
+[VM 2] TASK2_CONTROL_RECEIVED seq=12 request=171
+[VM 2] TASK3_CONTROL_APPLIED request=171 value=635
+[VM 2] TASK3_PLANT_STATE before=504 after=504 dist=0
+[VM 2] TASK2_STATUS_SENT seq=12
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=37000
+[VM 2] TASK2_ACK seq=12
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=33934 request=171 value=504 state=504 sample=148 rtt_ms=81
+[VM 1] TASK3_INFER elapsed_ms=33934 sample=172 output=635 infer_us=8535
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=34056
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=37330
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=34265
+[VM 2] TASK2_DUPLICATE seq=12
+[VM 1] TASK2_RETRANSMIT seq=12 attempt=1
+[VM 1] TASK2_ACK seq=12
+[VM 1] TASK3_INFER elapsed_ms=34383 sample=173 output=627 infer_us=9151
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=34383 request=173 value=627 target=500 state=504 seq=13
+[VM 2] TASK2_CONTROL_RECEIVED seq=13 request=173
+[VM 2] TASK3_CONTROL_APPLIED request=173 value=627
+[VM 2] TASK3_PLANT_STATE before=504 after=502 dist=0
+[VM 2] TASK2_STATUS_SENT seq=13
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=37530
+[VM 2] TASK2_ACK seq=13
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=34464 request=173 value=502 state=502 sample=149 rtt_ms=81
+[VM 1] TASK3_INFER elapsed_ms=34464 sample=174 output=626 infer_us=8580
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=34586
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=37860
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=34795
+[VM 1] TASK2_RETRANSMIT seq=13 attempt=1
+[VM 2] TASK2_DUPLICATE seq=13
+[VM 1] TASK2_ACK seq=13
+[VM 1] TASK3_INFER elapsed_ms=34907 sample=175 output=624 infer_us=8775
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=34907 request=175 value=624 target=500 state=502 seq=14
+[VM 2] TASK2_CONTROL_RECEIVED seq=14 request=175
+[VM 2] TASK3_CONTROL_APPLIED request=175 value=624
+[VM 2] TASK3_PLANT_STATE before=502 after=499 dist=0
+[VM 2] TASK2_STATUS_SENT seq=14
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=38060
+[VM 1] TASK2_ACK seq=14
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=34990 request=175 value=499 state=499 sample=150 rtt_ms=83
+[VM 2] TASK2_ACK seq=14
+[VM 1] TASK3_INFER elapsed_ms=34990 sample=176 output=625 infer_us=8710
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=34990 request=176 value=625 target=500 state=499 seq=15
+[VM 2] TASK2_CONTROL_RECEIVED seq=15 request=176
+[VM 2] TASK3_CONTROL_APPLIED request=176 value=625
+[VM 2] TASK3_PLANT_STATE before=499 after=499 dist=0
+[VM 2] TASK2_STATUS_SENT seq=15
+[VM 2] TASK2_ACK seq=15
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=35092 request=176 value=499 state=499 sample=151 rtt_ms=102
+[VM 1] TASK3_INFER elapsed_ms=35092 sample=177 output=624 infer_us=8556
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=35195
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=38470
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=35405
+[VM 1] TASK2_RETRANSMIT seq=15 attempt=1
+[VM 2] TASK2_DUPLICATE seq=15
+[VM 1] TASK2_ACK seq=15
+[VM 1] TASK3_INFER elapsed_ms=35506 sample=178 output=620 infer_us=8827
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=35506 request=178 value=620 target=500 state=499 seq=16
+[VM 2] TASK2_CONTROL_RECEIVED seq=16 request=178
+[VM 2] TASK3_CONTROL_APPLIED request=178 value=620
+[VM 2] TASK3_PLANT_STATE before=499 after=497 dist=0
+[VM 2] TASK2_STATUS_SENT seq=16
+[VM 2] TASK2_ACK seq=16
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=35579 request=178 value=497 state=497 sample=152 rtt_ms=73
+[VM 1] TASK3_INFER elapsed_ms=35579 sample=179 output=624 infer_us=8729
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=35710
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=38990
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=35918
+[VM 2] TASK2_DUPLICATE seq=16
+[VM 1] TASK2_RETRANSMIT seq=16 attempt=1
+[VM 1] TASK2_ACK seq=16
+[VM 1] TASK3_INFER elapsed_ms=36041 sample=180 output=627 infer_us=8471
+[VM 2] TASK2_CONTROL_RECEIVED seq=17 request=180
+[VM 2] TASK3_CONTROL_APPLIED request=180 value=627
+[VM 2] TASK3_PLANT_STATE before=497 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=17
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=36041 request=180 value=627 target=500 state=497 seq=17
+[VM 1] TASK2_ACK seq=17
+[VM 2] TASK2_ACK seq=17
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=36118 request=180 value=498 state=498 sample=153 rtt_ms=77
+[VM 1] TASK3_INFER elapsed_ms=36118 sample=181 output=625 infer_us=8760
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=36118 request=181 value=625 target=500 state=498 seq=18
+[VM 2] TASK2_CONTROL_RECEIVED seq=18 request=181
+[VM 2] TASK3_CONTROL_APPLIED request=181 value=625
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=18
+[VM 1] TASK2_ACK seq=18
+[VM 2] TASK2_ACK seq=18
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=36231 request=181 value=498 state=498 sample=154 rtt_ms=113
+[VM 1] TASK3_INFER elapsed_ms=36231 sample=182 output=627 infer_us=8515
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=36231 request=182 value=627 target=500 state=498 seq=19
+[VM 2] TASK2_CONTROL_RECEIVED seq=19 request=182
+[VM 2] TASK3_CONTROL_APPLIED request=182 value=627
+[VM 2] TASK3_PLANT_STATE before=498 after=499 dist=0
+[VM 2] TASK2_STATUS_SENT seq=19
+[VM 1] TASK2_ACK seq=19
+[VM 2] TASK2_ACK seq=19
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=36320 request=182 value=499 state=499 sample=155 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=36320 sample=183 output=619 infer_us=8551
+[VM 2] TASK2_CONTROL_RECEIVED seq=20 request=183
+[VM 2] TASK3_CONTROL_APPLIED request=183 value=619
+[VM 2] TASK3_PLANT_STATE before=499 after=497 dist=0
+[VM 2] TASK2_STATUS_SENT seq=20
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=36320 request=183 value=619 target=500 state=499 seq=20
+[VM 1] TASK2_ACK seq=20
+[VM 2] TASK2_ACK seq=20
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=36422 request=183 value=497 state=497 sample=156 rtt_ms=102
+[VM 1] TASK3_INFER elapsed_ms=36422 sample=184 output=627 infer_us=8520
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=36422 request=184 value=627 target=500 state=497 seq=21
+[VM 2] TASK2_CONTROL_RECEIVED seq=21 request=184
+[VM 2] TASK3_CONTROL_APPLIED request=184 value=627
+[VM 2] TASK3_PLANT_STATE before=497 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=21
+[VM 1] TASK2_ACK seq=21
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=36511 request=184 value=498 state=498 sample=157 rtt_ms=89
+[VM 2] TASK2_ACK seq=21
+[VM 1] TASK3_INFER elapsed_ms=36511 sample=185 output=627 infer_us=8796
+[VM 2] TASK2_CONTROL_RECEIVED seq=22 request=185
+[VM 2] TASK3_CONTROL_APPLIED request=185 value=627
+[VM 2] TASK3_PLANT_STATE before=498 after=499 dist=0
+[VM 2] TASK2_STATUS_SENT seq=22
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=36511 request=185 value=627 target=500 state=498 seq=22
+[VM 1] TASK2_ACK seq=22
+[VM 2] TASK2_ACK seq=22
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=36610 request=185 value=499 state=499 sample=158 rtt_ms=99
+[VM 1] TASK3_INFER elapsed_ms=36610 sample=186 output=626 infer_us=8550
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=36610 request=186 value=626 target=500 state=499 seq=23
+[VM 2] TASK2_CONTROL_RECEIVED seq=23 request=186
+[VM 2] TASK3_CONTROL_APPLIED request=186 value=626
+[VM 2] TASK3_PLANT_STATE before=499 after=499 dist=0
+[VM 2] TASK2_STATUS_SENT seq=23
+[VM 1] TASK2_ACK seq=23
+[VM 2] TASK2_ACK seq=23
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=36701 request=186 value=499 state=499 sample=159 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=36701 sample=187 output=626 infer_us=8522
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=36701 request=187 value=626 target=500 state=499 seq=24
+[VM 2] TASK2_CONTROL_RECEIVED seq=24 request=187
+[VM 2] TASK3_CONTROL_APPLIED request=187 value=626
+[VM 2] TASK3_PLANT_STATE before=499 after=499 dist=0
+[VM 2] TASK2_STATUS_SENT seq=24
+[VM 1] TASK2_ACK seq=24
+[VM 2] TASK2_ACK seq=24
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=36798 request=187 value=499 state=499 sample=160 rtt_ms=97
+[VM 1] TASK3_INFER elapsed_ms=36798 sample=188 output=626 infer_us=8609
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=36798 request=188 value=626 target=500 state=499 seq=25
+[VM 2] TASK2_CONTROL_RECEIVED seq=25 request=188
+[VM 2] TASK3_CONTROL_APPLIED request=188 value=626
+[VM 2] TASK3_PLANT_STATE before=499 after=499 dist=0
+[VM 2] TASK2_STATUS_SENT seq=25
+[VM 1] TASK2_ACK seq=25
+[VM 2] TASK2_ACK seq=25
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=36891 request=188 value=499 state=499 sample=161 rtt_ms=93
+[VM 1] TASK3_INFER elapsed_ms=36891 sample=189 output=626 infer_us=8342
+[VM 2] TASK2_CONTROL_RECEIVED seq=26 request=189
+[VM 2] TASK3_CONTROL_APPLIED request=189 value=626
+[VM 2] TASK3_PLANT_STATE before=499 after=499 dist=0
+[VM 2] TASK2_STATUS_SENT seq=26
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=36891 request=189 value=626 target=500 state=499 seq=26
+[VM 1] TASK2_ACK seq=26
+[VM 2] TASK2_ACK seq=26
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=36986 request=189 value=499 state=499 sample=162 rtt_ms=95
+[VM 1] TASK3_INFER elapsed_ms=36986 sample=190 output=625 infer_us=8479
+[VM 2] TASK2_CONTROL_RECEIVED seq=27 request=190
+[VM 2] TASK3_CONTROL_APPLIED request=190 value=625
+[VM 2] TASK3_PLANT_STATE before=499 after=499 dist=0
+[VM 2] TASK2_STATUS_SENT seq=27
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=36986 request=190 value=625 target=500 state=499 seq=27
+[VM 1] TASK2_ACK seq=27
+[VM 2] TASK2_ACK seq=27
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=37081 request=190 value=499 state=499 sample=163 rtt_ms=95
+[VM 1] TASK3_INFER elapsed_ms=37081 sample=191 output=625 infer_us=8415
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=37081 request=191 value=625 target=500 state=499 seq=28
+[VM 2] TASK2_CONTROL_RECEIVED seq=28 request=191
+[VM 2] TASK3_CONTROL_APPLIED request=191 value=625
+[VM 2] TASK3_PLANT_STATE before=499 after=499 dist=0
+[VM 2] TASK2_STATUS_SENT seq=28
+[VM 1] TASK2_ACK seq=28
+[VM 2] TASK2_ACK seq=28
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=37175 request=191 value=499 state=499 sample=164 rtt_ms=94
+[VM 1] TASK3_INFER elapsed_ms=37175 sample=192 output=624 infer_us=8618
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=37175 request=192 value=624 target=500 state=499 seq=29
+[VM 2] TASK2_CONTROL_RECEIVED seq=29 request=192
+[VM 2] TASK3_CONTROL_APPLIED request=192 value=624
+[VM 2] TASK3_PLANT_STATE before=499 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=29
+[VM 1] TASK2_ACK seq=29
+[VM 2] TASK2_ACK seq=29
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=37271 request=192 value=498 state=498 sample=165 rtt_ms=96
+[VM 1] TASK3_INFER elapsed_ms=37271 sample=193 output=625 infer_us=8558
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=37271 request=193 value=625 target=500 state=498 seq=30
+[VM 2] TASK2_CONTROL_RECEIVED seq=30 request=193
+[VM 2] TASK3_CONTROL_APPLIED request=193 value=625
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=30
+[VM 1] TASK2_ACK seq=30
+[VM 2] TASK2_ACK seq=30
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=37364 request=193 value=498 state=498 sample=166 rtt_ms=93
+[VM 1] TASK3_INFER elapsed_ms=37364 sample=194 output=627 infer_us=8580
+[VM 2] TASK2_CONTROL_RECEIVED seq=31 request=194
+[VM 2] TASK3_CONTROL_APPLIED request=194 value=627
+[VM 2] TASK3_PLANT_STATE before=498 after=499 dist=0
+[VM 2] TASK2_STATUS_SENT seq=31
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=37364 request=194 value=627 target=500 state=498 seq=31
+[VM 1] TASK2_ACK seq=31
+[VM 2] TASK2_ACK seq=31
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=37461 request=194 value=499 state=499 sample=167 rtt_ms=97
+[VM 1] TASK3_INFER elapsed_ms=37461 sample=195 output=624 infer_us=8550
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=37461 request=195 value=624 target=500 state=499 seq=32
+[VM 2] TASK2_CONTROL_RECEIVED seq=32 request=195
+[VM 2] TASK3_CONTROL_APPLIED request=195 value=624
+[VM 2] TASK3_PLANT_STATE before=499 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=32
+[VM 1] TASK2_ACK seq=32
+[VM 2] TASK2_ACK seq=32
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=37553 request=195 value=498 state=498 sample=168 rtt_ms=92
+[VM 1] TASK3_INFER elapsed_ms=37553 sample=196 output=626 infer_us=8824
+[VM 2] TASK2_CONTROL_RECEIVED seq=33 request=196
+[VM 2] TASK3_CONTROL_APPLIED request=196 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=33
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=37553 request=196 value=626 target=500 state=498 seq=33
+[VM 1] TASK2_ACK seq=33
+[VM 2] TASK2_ACK seq=33
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=37651 request=196 value=498 state=498 sample=169 rtt_ms=98
+[VM 1] TASK3_INFER elapsed_ms=37651 sample=197 output=626 infer_us=8495
+[VM 2] TASK2_CONTROL_RECEIVED seq=34 request=197
+[VM 2] TASK3_CONTROL_APPLIED request=197 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=34
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=37651 request=197 value=626 target=500 state=498 seq=34
+[VM 2] TASK2_ACK seq=34
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=37741 request=197 value=498 state=498 sample=170 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=37741 sample=198 output=626 infer_us=8470
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=37855
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=41130
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=38063
+[VM 2] TASK2_DUPLICATE seq=34
+[VM 1] TASK2_RETRANSMIT seq=34 attempt=1
+[VM 1] TASK2_ACK seq=34
+[VM 1] TASK3_INFER elapsed_ms=38179 sample=199 output=626 infer_us=8828
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=38179 request=199 value=626 target=500 state=498 seq=35
+[VM 2] TASK2_CONTROL_RECEIVED seq=35 request=199
+[VM 2] TASK3_CONTROL_APPLIED request=199 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=35
+[VM 1] TASK2_ACK seq=35
+[VM 2] TASK2_ACK seq=35
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=38256 request=199 value=498 state=498 sample=171 rtt_ms=77
+[VM 1] TASK3_INFER elapsed_ms=38256 sample=200 output=626 infer_us=8317
+[VM 2] TASK2_CONTROL_RECEIVED seq=36 request=200
+[VM 2] TASK3_CONTROL_APPLIED request=200 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=36
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=38256 request=200 value=626 target=500 state=498 seq=36
+[VM 1] TASK2_ACK seq=36
+[VM 2] TASK2_ACK seq=36
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=38367 request=200 value=498 state=498 sample=172 rtt_ms=111
+[VM 1] TASK3_INFER elapsed_ms=38367 sample=201 output=626 infer_us=8441
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=38367 request=201 value=626 target=500 state=498 seq=37
+[VM 2] TASK2_CONTROL_RECEIVED seq=37 request=201
+[VM 2] TASK3_CONTROL_APPLIED request=201 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=37
+[VM 1] TASK2_ACK seq=37
+[VM 2] TASK2_ACK seq=37
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=38455 request=201 value=498 state=498 sample=173 rtt_ms=88
+[VM 1] TASK3_INFER elapsed_ms=38455 sample=202 output=626 infer_us=8397
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=38455 request=202 value=626 target=500 state=498 seq=38
+[VM 2] TASK2_CONTROL_RECEIVED seq=38 request=202
+[VM 2] TASK3_CONTROL_APPLIED request=202 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=38
+[VM 1] TASK2_ACK seq=38
+[VM 2] TASK2_ACK seq=38
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=38556 request=202 value=498 state=498 sample=174 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=38556 sample=203 output=626 infer_us=8413
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=38556 request=203 value=626 target=500 state=498 seq=39
+[VM 2] TASK2_CONTROL_RECEIVED seq=39 request=203
+[VM 2] TASK3_CONTROL_APPLIED request=203 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=39
+[VM 1] TASK2_ACK seq=39
+[VM 2] TASK2_ACK seq=39
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=38644 request=203 value=498 state=498 sample=175 rtt_ms=88
+[VM 1] TASK3_INFER elapsed_ms=38644 sample=204 output=626 infer_us=8335
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=38644 request=204 value=626 target=500 state=498 seq=40
+[VM 2] TASK2_CONTROL_RECEIVED seq=40 request=204
+[VM 2] TASK3_CONTROL_APPLIED request=204 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=40
+[VM 1] TASK2_ACK seq=40
+[VM 2] TASK2_ACK seq=40
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=38746 request=204 value=498 state=498 sample=176 rtt_ms=102
+[VM 1] TASK3_INFER elapsed_ms=38746 sample=205 output=626 infer_us=8802
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=38746 request=205 value=626 target=500 state=498 seq=41
+[VM 2] TASK2_CONTROL_RECEIVED seq=41 request=205
+[VM 2] TASK3_CONTROL_APPLIED request=205 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=41
+[VM 1] TASK2_ACK seq=41
+[VM 2] TASK2_ACK seq=41
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=38834 request=205 value=498 state=498 sample=177 rtt_ms=88
+[VM 1] TASK3_INFER elapsed_ms=38834 sample=206 output=626 infer_us=8377
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=38834 request=206 value=626 target=500 state=498 seq=42
+[VM 2] TASK2_CONTROL_RECEIVED seq=42 request=206
+[VM 2] TASK3_CONTROL_APPLIED request=206 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=42
+[VM 1] TASK2_ACK seq=42
+[VM 2] TASK2_ACK seq=42
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=38934 request=206 value=498 state=498 sample=178 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=38934 sample=207 output=626 infer_us=8491
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=38934 request=207 value=626 target=500 state=498 seq=43
+[VM 2] TASK2_CONTROL_RECEIVED seq=43 request=207
+[VM 2] TASK3_CONTROL_APPLIED request=207 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=43
+[VM 1] TASK2_ACK seq=43
+[VM 2] TASK2_ACK seq=43
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=39028 request=207 value=498 state=498 sample=179 rtt_ms=94
+[VM 1] TASK3_INFER elapsed_ms=39028 sample=208 output=626 infer_us=8413
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=39028 request=208 value=626 target=500 state=498 seq=44
+[VM 2] TASK2_CONTROL_RECEIVED seq=44 request=208
+[VM 2] TASK3_CONTROL_APPLIED request=208 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=44
+[VM 2] TASK2_ACK seq=44
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=39119 request=208 value=498 state=498 sample=180 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=39119 sample=209 output=626 infer_us=8192
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=39231
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=42510
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=39440
+[VM 2] TASK2_DUPLICATE seq=44
+[VM 1] TASK2_RETRANSMIT seq=44 attempt=1
+[VM 1] TASK2_ACK seq=44
+[VM 1] TASK3_INFER elapsed_ms=39557 sample=210 output=626 infer_us=8445
+[VM 2] TASK2_CONTROL_RECEIVED seq=45 request=210
+[VM 2] TASK3_CONTROL_APPLIED request=210 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=45
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=39557 request=210 value=626 target=500 state=498 seq=45
+[VM 1] TASK2_ACK seq=45
+[VM 2] TASK2_ACK seq=45
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=39633 request=210 value=498 state=498 sample=181 rtt_ms=76
+[VM 1] TASK3_INFER elapsed_ms=39633 sample=211 output=626 infer_us=7940
+[VM 2] TASK2_CONTROL_RECEIVED seq=46 request=211
+[VM 2] TASK3_CONTROL_APPLIED request=211 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=46
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=39633 request=211 value=626 target=500 state=498 seq=46
+[VM 1] TASK2_ACK seq=46
+[VM 2] TASK2_ACK seq=46
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=39747 request=211 value=498 state=498 sample=182 rtt_ms=114
+[VM 1] TASK3_INFER elapsed_ms=39747 sample=212 output=626 infer_us=8765
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=39747 request=212 value=626 target=500 state=498 seq=47
+[VM 2] TASK2_CONTROL_RECEIVED seq=47 request=212
+[VM 2] TASK3_CONTROL_APPLIED request=212 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=47
+[VM 1] TASK2_ACK seq=47
+[VM 2] TASK2_ACK seq=47
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=39835 request=212 value=498 state=498 sample=183 rtt_ms=88
+[VM 1] TASK3_INFER elapsed_ms=39835 sample=213 output=626 infer_us=8213
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=39835 request=213 value=626 target=500 state=498 seq=48
+[VM 2] TASK2_CONTROL_RECEIVED seq=48 request=213
+[VM 2] TASK3_CONTROL_APPLIED request=213 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=48
+[VM 1] TASK2_ACK seq=48
+[VM 2] TASK2_ACK seq=48
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=39936 request=213 value=498 state=498 sample=184 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=39936 sample=214 output=626 infer_us=8315
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=39936 request=214 value=626 target=500 state=498 seq=49
+[VM 2] TASK2_CONTROL_RECEIVED seq=49 request=214
+[VM 2] TASK3_CONTROL_APPLIED request=214 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=49
+[VM 1] TASK2_ACK seq=49
+[VM 2] TASK2_ACK seq=49
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=40025 request=214 value=498 state=498 sample=185 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=40025 sample=215 output=626 infer_us=8392
+[VM 2] TASK2_CONTROL_RECEIVED seq=50 request=215
+[VM 2] TASK3_CONTROL_APPLIED request=215 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=50
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=40025 request=215 value=626 target=500 state=498 seq=50
+[VM 1] TASK2_ACK seq=50
+[VM 2] TASK2_ACK seq=50
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=40125 request=215 value=498 state=498 sample=186 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=40125 sample=216 output=626 infer_us=8376
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=40125 request=216 value=626 target=500 state=498 seq=51
+[VM 2] TASK2_CONTROL_RECEIVED seq=51 request=216
+[VM 2] TASK3_CONTROL_APPLIED request=216 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=51
+[VM 1] TASK2_ACK seq=51
+[VM 2] TASK2_ACK seq=51
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=40213 request=216 value=498 state=498 sample=187 rtt_ms=88
+[VM 1] TASK3_INFER elapsed_ms=40213 sample=217 output=626 infer_us=8341
+[VM 2] TASK2_CONTROL_RECEIVED seq=52 request=217
+[VM 2] TASK3_CONTROL_APPLIED request=217 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=52
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=40213 request=217 value=626 target=500 state=498 seq=52
+[VM 1] TASK2_ACK seq=52
+[VM 2] TASK2_ACK seq=52
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=40314 request=217 value=498 state=498 sample=188 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=40314 sample=218 output=626 infer_us=8374
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=40314 request=218 value=626 target=500 state=498 seq=53
+[VM 2] TASK2_CONTROL_RECEIVED seq=53 request=218
+[VM 2] TASK3_CONTROL_APPLIED request=218 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=53
+[VM 1] TASK2_ACK seq=53
+[VM 2] TASK2_ACK seq=53
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=40402 request=218 value=498 state=498 sample=189 rtt_ms=88
+[VM 1] TASK3_INFER elapsed_ms=40402 sample=219 output=626 infer_us=8489
+[VM 2] TASK2_CONTROL_RECEIVED seq=54 request=219
+[VM 2] TASK3_CONTROL_APPLIED request=219 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=54
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=40402 request=219 value=626 target=500 state=498 seq=54
+[VM 1] TASK2_ACK seq=54
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=40504 request=219 value=498 state=498 sample=190 rtt_ms=102
+[VM 2] TASK2_ACK seq=54
+[VM 1] TASK3_INFER elapsed_ms=40504 sample=220 output=626 infer_us=8444
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=40504 request=220 value=626 target=500 state=498 seq=55
+[VM 2] TASK2_CONTROL_RECEIVED seq=55 request=220
+[VM 2] TASK3_CONTROL_APPLIED request=220 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=55
+[VM 1] TASK2_ACK seq=55
+[VM 2] TASK2_ACK seq=55
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=40593 request=220 value=498 state=498 sample=191 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=40593 sample=221 output=626 infer_us=8372
+[VM 2] TASK2_CONTROL_RECEIVED seq=56 request=221
+[VM 2] TASK3_CONTROL_APPLIED request=221 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=56
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=40593 request=221 value=626 target=500 state=498 seq=56
+[VM 1] TASK2_ACK seq=56
+[VM 2] TASK2_ACK seq=56
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=40694 request=221 value=498 state=498 sample=192 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=40694 sample=222 output=626 infer_us=8339
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=40694 request=222 value=626 target=500 state=498 seq=57
+[VM 2] TASK2_CONTROL_RECEIVED seq=57 request=222
+[VM 2] TASK3_CONTROL_APPLIED request=222 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=57
+[VM 1] TASK2_ACK seq=57
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=40792 request=222 value=498 state=498 sample=193 rtt_ms=98
+[VM 2] TASK2_ACK seq=57
+[VM 1] TASK3_INFER elapsed_ms=40792 sample=223 output=626 infer_us=8639
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=40792 request=223 value=626 target=500 state=498 seq=58
+[VM 2] TASK2_CONTROL_RECEIVED seq=58 request=223
+[VM 2] TASK3_CONTROL_APPLIED request=223 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=58
+[VM 1] TASK2_ACK seq=58
+[VM 2] TASK2_ACK seq=58
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=40883 request=223 value=498 state=498 sample=194 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=40883 sample=224 output=626 infer_us=8363
+[VM 2] TASK2_CONTROL_RECEIVED seq=59 request=224
+[VM 2] TASK3_CONTROL_APPLIED request=224 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=59
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=40883 request=224 value=626 target=500 state=498 seq=59
+[VM 1] TASK2_ACK seq=59
+[VM 2] TASK2_ACK seq=59
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=40980 request=224 value=498 state=498 sample=195 rtt_ms=97
+[VM 1] TASK3_INFER elapsed_ms=40980 sample=225 output=626 infer_us=8467
+[VM 2] TASK2_CONTROL_RECEIVED seq=60 request=225
+[VM 2] TASK3_CONTROL_APPLIED request=225 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=60
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=40980 request=225 value=626 target=500 state=498 seq=60
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=41067 request=225 value=498 state=498 sample=196 rtt_ms=87
+[VM 2] TASK2_ACK seq=60
+[VM 1] TASK3_INFER elapsed_ms=41067 sample=226 output=626 infer_us=8297
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=41181
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=44460
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=41381
+[VM 2] TASK2_DUPLICATE seq=60
+[VM 1] TASK2_RETRANSMIT seq=60 attempt=1
+[VM 1] TASK2_ACK seq=60
+[VM 1] TASK3_INFER elapsed_ms=41509 sample=227 output=626 infer_us=8454
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=41509 request=227 value=626 target=500 state=498 seq=61
+[VM 2] TASK2_CONTROL_RECEIVED seq=61 request=227
+[VM 2] TASK3_CONTROL_APPLIED request=227 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=61
+[VM 2] TASK2_ACK seq=61
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=41583 request=227 value=498 state=498 sample=197 rtt_ms=74
+[VM 1] TASK3_INFER elapsed_ms=41583 sample=228 output=626 infer_us=8969
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=41713
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=44990
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=41921
+[VM 1] TASK2_RETRANSMIT seq=61 attempt=1
+[VM 2] TASK2_DUPLICATE seq=61
+[VM 1] TASK2_ACK seq=61
+[VM 1] TASK3_INFER elapsed_ms=42034 sample=229 output=626 infer_us=8876
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=42034 request=229 value=626 target=500 state=498 seq=62
+[VM 2] TASK2_CONTROL_RECEIVED seq=62 request=229
+[VM 2] TASK3_CONTROL_APPLIED request=229 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=62
+[VM 1] TASK2_ACK seq=62
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=42110 request=229 value=498 state=498 sample=198 rtt_ms=76
+[VM 2] TASK2_ACK seq=62
+[VM 1] TASK3_INFER elapsed_ms=42110 sample=230 output=626 infer_us=8497
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=42110 request=230 value=626 target=500 state=498 seq=63
+[VM 2] TASK2_CONTROL_RECEIVED seq=63 request=230
+[VM 2] TASK3_CONTROL_APPLIED request=230 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=63
+[VM 2] TASK2_ACK seq=63
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=42217 request=230 value=498 state=498 sample=199 rtt_ms=107
+[VM 1] TASK3_INFER elapsed_ms=42217 sample=231 output=626 infer_us=8350
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=42320
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=45600
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=42528
+[VM 2] TASK2_DUPLICATE seq=63
+[VM 1] TASK2_RETRANSMIT seq=63 attempt=1
+[VM 1] TASK2_ACK seq=63
+[VM 1] TASK3_INFER elapsed_ms=42634 sample=232 output=626 infer_us=8378
+[VM 2] TASK2_CONTROL_RECEIVED seq=64 request=232
+[VM 2] TASK3_CONTROL_APPLIED request=232 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=64
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=42634 request=232 value=626 target=500 state=498 seq=64
+[VM 2] TASK2_ACK seq=64
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=42707 request=232 value=498 state=498 sample=200 rtt_ms=73
+[VM 1] TASK3_INFER elapsed_ms=42707 sample=233 output=626 infer_us=8385
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=42837
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=46110
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=43046
+[VM 2] TASK2_DUPLICATE seq=64
+[VM 1] TASK2_RETRANSMIT seq=64 attempt=1
+[VM 1] TASK2_ACK seq=64
+[VM 1] TASK3_INFER elapsed_ms=43163 sample=234 output=626 infer_us=8386
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=43163 request=234 value=626 target=500 state=498 seq=65
+[VM 2] TASK2_CONTROL_RECEIVED seq=65 request=234
+[VM 2] TASK3_CONTROL_APPLIED request=234 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=65
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=46310
+[VM 1] TASK2_ACK seq=65
+[VM 2] TASK2_ACK seq=65
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=43247 request=234 value=498 state=498 sample=201 rtt_ms=84
+[VM 1] TASK3_INFER elapsed_ms=43247 sample=235 output=626 infer_us=8543
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=43247 request=235 value=626 target=500 state=498 seq=66
+[VM 2] TASK2_CONTROL_RECEIVED seq=66 request=235
+[VM 2] TASK3_CONTROL_APPLIED request=235 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=66
+[VM 1] TASK2_ACK seq=66
+[VM 2] TASK2_ACK seq=66
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=43351 request=235 value=498 state=498 sample=202 rtt_ms=104
+[VM 1] TASK3_INFER elapsed_ms=43351 sample=236 output=626 infer_us=8540
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=43351 request=236 value=626 target=500 state=498 seq=67
+[VM 2] TASK2_CONTROL_RECEIVED seq=67 request=236
+[VM 2] TASK3_CONTROL_APPLIED request=236 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=67
+[VM 1] TASK2_ACK seq=67
+[VM 2] TASK2_ACK seq=67
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=43440 request=236 value=498 state=498 sample=203 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=43440 sample=237 output=626 infer_us=8359
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=43440 request=237 value=626 target=500 state=498 seq=68
+[VM 2] TASK2_CONTROL_RECEIVED seq=68 request=237
+[VM 2] TASK3_CONTROL_APPLIED request=237 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=68
+[VM 1] TASK2_ACK seq=68
+[VM 2] TASK2_ACK seq=68
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=43541 request=237 value=498 state=498 sample=204 rtt_ms=101
+[VM 1] TASK3_INFER elapsed_ms=43541 sample=238 output=626 infer_us=8493
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=43541 request=238 value=626 target=500 state=498 seq=69
+[VM 2] TASK2_CONTROL_RECEIVED seq=69 request=238
+[VM 2] TASK3_CONTROL_APPLIED request=238 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=69
+[VM 1] TASK2_ACK seq=69
+[VM 2] TASK2_ACK seq=69
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=43629 request=238 value=498 state=498 sample=205 rtt_ms=88
+[VM 1] TASK3_INFER elapsed_ms=43629 sample=239 output=626 infer_us=8487
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=43629 request=239 value=626 target=500 state=498 seq=70
+[VM 2] TASK2_CONTROL_RECEIVED seq=70 request=239
+[VM 2] TASK3_CONTROL_APPLIED request=239 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=70
+[VM 1] TASK2_ACK seq=70
+[VM 2] TASK2_ACK seq=70
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=43732 request=239 value=498 state=498 sample=206 rtt_ms=103
+[VM 1] TASK3_INFER elapsed_ms=43732 sample=240 output=626 infer_us=8352
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=43732 request=240 value=626 target=500 state=498 seq=71
+[VM 2] TASK2_CONTROL_RECEIVED seq=71 request=240
+[VM 2] TASK3_CONTROL_APPLIED request=240 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=71
+[VM 1] TASK2_ACK seq=71
+[VM 2] TASK2_ACK seq=71
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=43822 request=240 value=498 state=498 sample=207 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=43822 sample=241 output=626 infer_us=8414
+[VM 2] TASK2_CONTROL_RECEIVED seq=72 request=241
+[VM 2] TASK3_CONTROL_APPLIED request=241 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=72
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=43822 request=241 value=626 target=500 state=498 seq=72
+[VM 1] TASK2_ACK seq=72
+[VM 2] TASK2_ACK seq=72
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=43920 request=241 value=498 state=498 sample=208 rtt_ms=98
+[VM 1] TASK3_INFER elapsed_ms=43920 sample=242 output=626 infer_us=8449
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=43920 request=242 value=626 target=500 state=498 seq=73
+[VM 2] TASK2_CONTROL_RECEIVED seq=73 request=242
+[VM 2] TASK3_CONTROL_APPLIED request=242 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=73
+[VM 1] TASK2_ACK seq=73
+[VM 2] TASK2_ACK seq=73
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=44012 request=242 value=498 state=498 sample=209 rtt_ms=92
+[VM 1] TASK3_INFER elapsed_ms=44012 sample=243 output=626 infer_us=8417
+[VM 2] TASK2_CONTROL_RECEIVED seq=74 request=243
+[VM 2] TASK3_CONTROL_APPLIED request=243 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=74
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=44012 request=243 value=626 target=500 state=498 seq=74
+[VM 1] TASK2_ACK seq=74
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=44110 request=243 value=498 state=498 sample=210 rtt_ms=98
+[VM 2] TASK2_ACK seq=74
+[VM 1] TASK3_INFER elapsed_ms=44110 sample=244 output=626 infer_us=8460
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=44110 request=244 value=626 target=500 state=498 seq=75
+[VM 2] TASK2_CONTROL_RECEIVED seq=75 request=244
+[VM 2] TASK3_CONTROL_APPLIED request=244 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=75
+[VM 1] TASK2_ACK seq=75
+[VM 2] TASK2_ACK seq=75
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=44200 request=244 value=498 state=498 sample=211 rtt_ms=90
+[VM 1] TASK3_INFER elapsed_ms=44200 sample=245 output=626 infer_us=8519
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=44200 request=245 value=626 target=500 state=498 seq=76
+[VM 2] TASK2_CONTROL_RECEIVED seq=76 request=245
+[VM 2] TASK3_CONTROL_APPLIED request=245 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=76
+[VM 1] TASK2_ACK seq=76
+[VM 2] TASK2_ACK seq=76
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=44300 request=245 value=498 state=498 sample=212 rtt_ms=100
+[VM 1] TASK3_INFER elapsed_ms=44300 sample=246 output=626 infer_us=8575
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=44300 request=246 value=626 target=500 state=498 seq=77
+[VM 2] TASK2_CONTROL_RECEIVED seq=77 request=246
+[VM 2] TASK3_CONTROL_APPLIED request=246 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=77
+[VM 1] TASK2_ACK seq=77
+[VM 2] TASK2_ACK seq=77
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=44391 request=246 value=498 state=498 sample=213 rtt_ms=91
+[VM 1] TASK3_INFER elapsed_ms=44391 sample=247 output=626 infer_us=8471
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=44391 request=247 value=626 target=500 state=498 seq=78
+[VM 2] TASK2_CONTROL_RECEIVED seq=78 request=247
+[VM 2] TASK3_CONTROL_APPLIED request=247 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=78
+[VM 1] TASK2_ACK seq=78
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=44492 request=247 value=498 state=498 sample=214 rtt_ms=101
+[VM 2] TASK2_ACK seq=78
+[VM 1] TASK3_INFER elapsed_ms=44492 sample=248 output=626 infer_us=8400
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=44492 request=248 value=626 target=500 state=498 seq=79
+[VM 2] TASK2_CONTROL_RECEIVED seq=79 request=248
+[VM 2] TASK3_CONTROL_APPLIED request=248 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=79
+[VM 1] TASK2_ACK seq=79
+[VM 2] TASK2_ACK seq=79
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=44581 request=248 value=498 state=498 sample=215 rtt_ms=89
+[VM 1] TASK3_INFER elapsed_ms=44581 sample=249 output=626 infer_us=8313
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=44581 request=249 value=626 target=500 state=498 seq=80
+[VM 2] TASK2_CONTROL_RECEIVED seq=80 request=249
+[VM 2] TASK3_CONTROL_APPLIED request=249 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=80
+[VM 2] TASK2_ACK seq=80
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=44679 request=249 value=498 state=498 sample=216 rtt_ms=98
+[VM 1] TASK3_INFER elapsed_ms=44679 sample=250 output=626 infer_us=9606
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=44787
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=48060
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=44996
+[VM 2] TASK2_DUPLICATE seq=80
+[VM 1] TASK2_RETRANSMIT seq=80 attempt=1
+[VM 1] TASK2_ACK seq=80
+[VM 1] TASK3_INFER elapsed_ms=45102 sample=251 output=626 infer_us=8187
+[VM 2] TASK2_CONTROL_RECEIVED seq=81 request=251
+[VM 2] TASK3_CONTROL_APPLIED request=251 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=81
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=45102 request=251 value=626 target=500 state=498 seq=81
+[VM 1] TASK2_ACK seq=81
+[VM 2] TASK2_ACK seq=81
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=45177 request=251 value=498 state=498 sample=217 rtt_ms=75
+[VM 1] TASK3_INFER elapsed_ms=45177 sample=252 output=626 infer_us=8578
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=45177 request=252 value=626 target=500 state=498 seq=82
+[VM 2] TASK2_CONTROL_RECEIVED seq=82 request=252
+[VM 2] TASK3_CONTROL_APPLIED request=252 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=82
+[VM 2] TASK2_ACK seq=82
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=45289 request=252 value=498 state=498 sample=218 rtt_ms=112
+[VM 1] TASK3_INFER elapsed_ms=45289 sample=253 output=626 infer_us=8607
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=45381
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=48660
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=45591
+[VM 1] TASK2_RETRANSMIT seq=82 attempt=1
+[VM 2] TASK2_DUPLICATE seq=82
+[VM 1] TASK2_ACK seq=82
+[VM 1] TASK3_INFER elapsed_ms=45703 sample=254 output=626 infer_us=8423
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=45703 request=254 value=626 target=500 state=498 seq=83
+[VM 2] TASK2_CONTROL_RECEIVED seq=83 request=254
+[VM 2] TASK3_CONTROL_APPLIED request=254 value=626
+[VM 2] TASK3_PLANT_STATE before=498 after=498 dist=0
+[VM 2] TASK2_STATUS_SENT seq=83
+[VM 1] TASK2_ACK seq=83
+[axbuild] qemu build+run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/tmp/task2-axvisor-qemu-debug.toml ... done (52.94s)

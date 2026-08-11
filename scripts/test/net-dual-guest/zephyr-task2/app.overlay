@@ -1,0 +1,27 @@
+/* The board's generic PCIe node is not part of this MMIO-only Guest.  Disable
+ * both the host controller and its E1000 child; this also prevents the board
+ * Kconfig from selecting PCIe support for the image. */
+&pcie {
+	status = "disabled";
+};
+
+&eth0 {
+	status = "disabled";
+};
+
+/* The board enables slot 3 for its ramfb/input demo; this Guest receives only
+ * the explicitly passed-through slot 30 endpoint. */
+&virtio_mmio3 {
+	status = "disabled";
+};
+
+&virtio_mmio30 {
+	status = "okay";
+
+	virtio_net: virtio-net {
+		compatible = "virtio,net";
+		status = "okay";
+		/* Keep the Guest MAC identical to QEMU's second endpoint. */
+		local-mac-address = [52 54 00 12 34 02];
+	};
+};

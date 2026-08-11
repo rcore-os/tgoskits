@@ -388,6 +388,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-task2-net"
+version = "0.1.0"
+dependencies = [
+ "ax-errno",
+ "ax-net",
+ "ax-std",
+ "task2-net-protocol",
+ "task3-model",
+]
+
+[[package]]
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
@@ -8182,6 +8193,17 @@ dependencies = [
  "libc",
  "xattr",
 ]
+
+[[package]]
+name = "task2-net-protocol"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "task3-model"
+version = "0.1.0"
 
 [[package]]
 name = "tempfile"
