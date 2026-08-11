@@ -157,6 +157,43 @@ impl JournalSuperBlock {
         self.s_header.h_blocktype == JBD2_BLOCKTYPE_SUPERBLOCK_V1
     }
 
+    /// Returns Linux's continuation capacity for one descriptor block.
+    ///
+    /// In addition to the UUID following the first tag, JBD2 closes the
+    /// descriptor unless another tag, UUID, and checksum tail could fit. This
+    /// deliberately leaves one UUID-sized reserve instead of packing the last
+    /// otherwise byte-aligned tag into a non-final descriptor.
+    pub(crate) fn descriptor_tag_capacity(&self, block_size: usize) -> Ext4Result<usize> {
+        let feature_incompat = if self.is_v1() {
+            0
+        } else {
+            self.s_feature_incompat
+        };
+        let has_csum_v3 = feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0;
+        let has_64bit = feature_incompat & JBD2_FEATURE_INCOMPAT_64BIT != 0;
+        let descriptor_tail = usize::from(has_csum_v3) * core::mem::size_of::<u32>();
+        let descriptor_end = block_size
+            .checked_sub(descriptor_tail)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:descriptor_capacity"))?;
+        let fixed_descriptor_bytes = JBD2_DESCRIPTOR_HEADER_SIZE
+            .checked_add(JBD2_UUID_SIZE)
+            .and_then(|bytes| bytes.checked_add(JBD2_UUID_SIZE))
+            .ok_or_else(Ext4Error::overflow)?;
+        let tag_bytes = if has_csum_v3 {
+            JBD2_TAG3_SIZE
+        } else {
+            JBD2_TAG_SIZE + usize::from(has_64bit) * JBD2_TAG_BLOCKNR_HIGH_SIZE
+        };
+        let capacity = descriptor_end
+            .checked_sub(fixed_descriptor_bytes)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:descriptor_capacity"))?
+            / tag_bytes;
+        if capacity == 0 {
+            return Err(Ext4Error::no_space().with_operation("jbd2:descriptor_capacity"));
+        }
+        Ok(capacity)
+    }
+
     /// Decodes the fixed JBD2 superblock prefix from a journal block.
     pub fn decode_checked(bytes: &[u8]) -> Ext4Result<Self> {
         if bytes.len() < Self::DISK_SIZE {
