@@ -670,6 +670,41 @@ RSEXT4_BENCH_SUMMARY commit=a51017e08 arch=x86_64 backend=memory feature=metadat
 改善约 16.5%/13.9%，sync p95 回退约 2.5%，均通过冻结硬门槛；sync median
 回退约 17.8%，但 sync latency 硬门槛按 p95 判定。相对 7.22 优化检查点，
 write median/p95 分别改善约 4.0%/18.8%，read median/p95 分别改善约
-13.4%/23.9%，sync median/p95 分别改善约 7.7%/4.8%。下一步必须在 harness
-中以不改变 sequential 计时边界的方式补入独立 xattr workload，并报告新增语义
-相对 Linux 7.1 的开销；当前数据不将该项提前判绿。
+13.4%/23.9%，sync median/p95 分别改善约 7.7%/4.8%。独立 xattr workload
+及 metadata snapshot 优化复测见 7.24；Linux 7.1 syscall 对照仍未完成，因此本项
+不能提前判绿。
+
+### 7.24 external xattr 与 touched metadata COW 检查点
+
+采集时间：2026-08-11；固定 CPU 2、memory backend、4 KiB filesystem block、
+`metadata_csum+64bit+journal`，每组 3 次预热与 20 次测量。新增
+`xattr-external` workload 对 512-byte external value 分别测量 set 后 sync、get、
+remove 后 sync，且不改变既有 sequential workload 的计时边界。全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-xattr-external.csv`。
+
+| 实现 | commit | set+sync median/p95 (ns) | get median/p95 (ns) | remove+sync median/p95 (ns) |
+| --- | --- | ---: | ---: | ---: |
+| transaction 前 | `783661ce7-pretxn` | 35,692 / 36,927 | 3,127 / 3,484 | 24,375 / 24,847 |
+| 完整 metadata clone | `a51017e08` | 38,735 / 42,981 | 3,295 / 3,535 | 25,907 / 26,135 |
+| touched payload COW | `1ffabfbb5` | 37,708 / 38,414 | 2,804 / 3,306 | 25,075 / 25,288 |
+
+相对完整 clone，touched payload COW 的 set median/p95 分别改善约 2.7%/10.6%，
+get median/p95 改善约 14.9%/6.5%，remove median/p95 改善约 3.2%/3.2%。
+相对 transaction 前实现，set median/p95 回退约 5.6%/4.0%，get median/p95
+改善约 10.3%/5.1%，remove median/p95 回退约 2.9%/1.8%。该 workload 对应新增的
+持久化 external-xattr 语义，dev 没有等价实现，故不套用虚假的 dev 回退门槛；
+Linux 7.1 的同镜像 syscall/fsync 对照仍为红项。memory backend 的
+`Ext4::sync` 也不能冒充 Linux `fsync(fd)`，最终验收必须在固定 Linux 7.1 环境重跑。
+
+同 commit 的 sequential workload 连续采集两组，原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-metadata-cow-sequential-red.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=1ffabfbb5 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential sample_set=first write_median_ns=9310397 write_p95_ns=10172142 read_median_ns=12778695 read_p95_ns=13765920 sync_median_ns=50382 sync_p95_ns=55585
+RSEXT4_BENCH_SUMMARY commit=1ffabfbb5-repeat arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential sample_set=repeat write_median_ns=6635219 write_p95_ns=7151323 read_median_ns=7288561 read_p95_ns=8656543 sync_median_ns=32627 sync_p95_ns=58098
+```
+
+采集期间 CPU governor 为 `powersave`，两组 write/read 分布明显双峰，无法用任一组
+单独证明或否定 5%/10% 门槛。两组与全部高延迟样本均原样保留，不作废、不选择性
+覆盖；当前 sequential 门禁保持红色，待可固定 governor 的同机环境以冻结 harness
+重新完成 dev/最终实现 A/B。

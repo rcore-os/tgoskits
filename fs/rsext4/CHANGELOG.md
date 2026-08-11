@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add typed inode-number extended-attribute operations with checked inline and
   external-block codecs, Linux hashes/checksums, create/replace policy, and
   dynamic block-size Linux-image coverage.
+- Add a durable external-xattr benchmark workload and retain machine-readable
+  metadata copy-on-write performance samples for final Linux/dev comparison.
 
 ### Fixed
 
@@ -35,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   updated external extent leaf fails during removal.
 - Replay JBD2 in scan, revoke, and replay passes so a later transaction can
   revoke an earlier transaction's logged payload without hiding newer data.
+- Create the internal journal explicitly during mkfs, and reject missing,
+  unlinked, or non-regular journal inodes on mount instead of repairing them.
+- Copy only metadata payloads touched by a transaction while retaining complete
+  rollback ownership for allocator, bitmap, inode, and superblock state.
 
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 
