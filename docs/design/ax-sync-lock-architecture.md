@@ -1,205 +1,271 @@
-# 全项目锁语义统一设计
+# TGOSKits 锁实现、桥接与 OS facade 分层
 
-## 1. 背景与问题
+## 1. 问题与目标
 
-本次修改属于高风险、跨子系统的同步边界重构。修改前，同一个“自旋锁”概念分别由
-`ax-kspin`、`ax-kernel-guard`、`ax-sync`、`ax-lockdep` 和 crates.io `spin`
-表达。类型名经常把执行上下文固化在类型上，但调用点又无法直接说明本次获取是否需要
-关闭中断；可睡眠锁则会随 feature 退化为自旋锁。结果是：
+本设计是高风险、跨 crate 的同步架构重构。锁算法、执行上下文、调度等待、PI donation
+和 lockdep 如果同时散落在 `ax-sync`、`ax-task` 与 runtime provider 中，会出现两类根本
+问题：同一个状态有多个事实源，或者调度器通过外部锁 crate 间接调用自己拥有的能力。
+这两种结构都会放大丢唤醒、错误 handoff、锁顺序和 feature 组合问题。
 
-- 驱动、文件系统、网络和内核代码面对多套等价但不完全兼容的 API；
-- lockdep 无法观察绕过项目锁的第一方 `spin` 锁；
-- `ax-sync` 若直接依赖 task/runtime，会形成同步层到调度层的反向依赖；
-- StarryOS 和 Axvisor 很难在 crate 边界上强制自己的锁策略；
-- 锁类型名称不能独立回答“是否可睡眠、是否关闭 IRQ、谁负责恢复上下文”。
+目标调用方分为两类：
 
-使用者包括 ArceOS runtime/task、StarryOS kernel、Axvisor、文件系统、网络栈、
-可移植驱动、内存管理和虚拟设备。成功标准是第一方代码只有一个公共锁 crate，调用点
-能够审计执行上下文，生产构建只有一个 runtime provider，并且既有 ABI、syscall 行为和
-自旋读写锁公平性不变。
+- 驱动、文件系统、网络、内存和其他 OS 无关组件需要稳定的 `ax-sync` API；
+- ArceOS、StarryOS、`ax-std` 和 Axvisor 需要使用所属 OS 的原生锁 facade。
 
-## 2. 边界与依赖方向
+成功标准是：
 
-锁按使用者分成两个稳定入口。`ax-sync` 是 OS 无关组件的锁 crate，拥有物理锁机制、
-guard、opaque capability 和 lockdep 状态机，但不拥有硬件或调度器；`ax-task::sync`
-拥有任务调度语义，`ax-runtime::sync` 是 StarryOS、`ax-std` 和 Axvisor 的 OS 入口：
+1. 生产锁算法、执行上下文事务、PI 状态机和 lockdep 只有 `ax-task::sync` 一个实现所有者；
+2. `ax-sync` 不依赖 `ax-task`、`ax-hal`、`ax-runtime` 或其他 OS 组件；
+3. OS 无关组件仍可使用固定布局、稳定 API 的 `ax-sync` 锁；
+4. `ax-runtime` 是 ArceOS 唯一的 `ax-sync` 生产 provider，同时重导 `ax-task` 原生锁；
+5. 本分支已有的 Linux-RT 风格 PI waiter、generation、donation、park/wake 和 handoff
+   语义不因分层迁移而退化；
+6. Starry 用户态 ABI、syscall 行为、pthread C 布局和 spin rwlock 公平性不变。
+
+## 2. 依赖方向
+
+终态依赖图如下：
 
 ```text
-drivers / fs / net / components ───────> ax-sync
-                                           │ 只声明外部能力
-                                           ▼
-ax-task::sync <──── ax-runtime provider ─ ax-hal / platform
-      ▲
-      └──── ax-runtime::sync ─────> StarryOS / ax-std / Axvisor
+portable components / drivers / fs / net
+                     |
+                     v
+                  ax-sync
+                     ^
+                     | hidden provider ABI
+                     |
+ax-task <-------- ax-runtime --------> ArceOS / StarryOS facade
+   ^                 |
+   | native API      +-------------> ax-std / axlibc
+   +------ ax-log / ax-display / ax-input
+
+Axvisor ordinary state ----------> std::sync
+Axvisor special contexts --------> ax_std::os::arceos::sync
 ```
 
-具体规则如下：
+硬约束如下：
 
-- `ax-sync` 只依赖 `ax-crate-interface` 等基础 crate，不依赖 `ax-task` 或
-  `ax-runtime`。
-- `ax-task` 可使用 `ax-sync` 的 OS 无关物理机制，但任务 PI 状态、waiter 节点、
-  donation graph、park/wake 和 handoff 生命周期归 `ax-task`。
-- `ax-runtime` 是 ArceOS 生产环境唯一的能力 provider，并使用 `ax-task` 实现
-  `ax-sync` 请求的调度能力；provider 不能反向写入物理锁之外的事实源。
-- 最终 runtime 显式启用 `host-test` 时，选择 `ax-sync` 内置的 std provider 并开放
-  确定性测试探针；下层 `ax-task` 和 OS crate 不能自行选择 provider。不能用 target
-  triple 的 `target_os` 推断 provider，因为 ArceOS 的 std 兼容目标仍是生产内核。
-  其他 OS 必须提供自己的 provider。
-- StarryOS kernel 只从 `crate::sync` 导入锁，该 facade 只重导
-  `ax-runtime::sync` 并收口 task scope、kprobe、namespace 和 POSIX adapter；生产代码
-  不直接依赖 `ax-sync`。
-- `ax-std` 的 ArceOS 锁只从 `ax-runtime::sync` 重导。Axvisor/AxVM 的普通任务状态使用
-  `std::sync`；IRQ、guest-entry 或禁止抢占路径只从 `ax_std::os::arceos::sync` 获取
-  runtime 导出的特有锁，不能直接依赖 `ax-sync`。
-- `ax-kspin`、`ax-kernel-guard`、`ax-lockdep` 和第一方 crates.io `spin` 依赖全部删除。
-  `OnceLock`、`LazyLock` 由 `ax-lazyinit` 提供；std 组件使用 `std::sync`。
+- `ax-task` 不依赖 `ax-sync`。锁的 native API、算法和 task-owned 状态都在
+  `ax-task::sync`。
+- `ax-sync` 只依赖基础 crate；所有 OS 能力通过隐藏 provider ABI 请求。
+- `ax-runtime` 同时依赖 `ax-task` 与 `ax-sync`：它从 `ax-task::sync::api` 重导原生锁，
+  并用 `ax-task::sync::bridge` 实现 `ax-sync` provider。
+- Starry kernel 只从 `crate::sync` 导入锁；`crate::sync` 只聚合
+  `ax-runtime::sync` 与少量语义明确的 wrapper。
+- ArceOS API、POSIX API、`ax-std` 和 `axlibc` 使用 `ax-runtime::sync`。
+- Axvisor 普通任务状态使用真实 `std::sync`；IRQ、guest-entry 和 no-preempt 路径使用
+  `ax_std::os::arceos::sync`。
+- `ax-log`、`ax-display`、`ax-input` 属于 ArceOS 内部基础模块，可直接使用
+  `ax-task::sync` native API。
+- 为解除真实依赖环，`ax-hal`、`ax-mm`、`ax-ipi` 等比 `ax-task` 更低的模块可使用
+  `ax-sync`。新增例外必须以 `cargo metadata` 证明依赖环，并加入 `lock-lint` 显式规则。
+- 不允许 `ax-kspin`、`ax-kernel-guard`、`ax-lockdep` 或第一方 crates.io `spin`
+  重新进入依赖图。
 
-## 3. 公共锁语义
+## 3. `ax-task::sync` 的实现所有权
 
-### 3.1 `SpinLock<T>`
+`ax-task::sync` 按职责分层：
 
-锁对象不固化上下文策略，获取方法表达本次调用的约束：
+- `api`：稳定的 native 锁与 guard 出口；
+- `context`：preempt、IRQ 与组合 guard 的进入、嵌套和逆序恢复；
+- `spin`：native `SpinLock`、`SpinRwLock`、raw/no-preempt/IRQ-save 获取；
+- `mutex`：本分支的 urgency-ordered PI mutex；
+- `lockdep`：lock class、依赖图、task held-lock stack、trace 与诊断；
+- `bridge`：只供 `ax-runtime` 调用的非泛型 external-layout 事务。
 
-| 获取方法 | 进入动作 | 退出动作 | 使用场景 |
-|---|---|---|---|
-| `lock()` / `try_lock()` | 禁止内核抢占 | 恢复抢占深度 | 短临界区，不会在 IRQ handler 重入 |
-| `lock_irqsave()` / `try_lock_irqsave()` | 先禁止抢占，再保存并关闭本地 IRQ | 先恢复 IRQ，再恢复抢占 | IRQ 与任务共享状态、scheduler-sensitive 状态 |
-| `unsafe lock_raw()` / `try_lock_raw()` | 不改变上下文 | 不改变上下文 | 调用方已证明无同 CPU 重入或外层已完成保护 |
+`bridge` 不是第二套实现。native 锁和 external `ax-sync` wrapper 必须调用同一组内部算法。
+native 路径直接使用本 crate 拥有的布局；bridge 路径把 `ax-sync` 的固定原子字段借用为
+external layout view。禁止 bridge 复制 owner、waiter、grant、donation 或 wake 状态。
 
-三类 guard 具有不同类型，不能混淆释放策略。raw 获取是 `unsafe`，因为在 UP 构建中
-原子锁字可能被裁掉；调用方仍必须证明独占性。`SpinRwLock<T>` 对 read/write 提供相同
-三类获取方法。
+`ax-task` 不直接访问 `ax-hal`。IRQ、preempt、current-thread、scheduler entry 和硬中断
+状态继续通过 `TaskRuntime` 能力边界取得。这样 native 锁属于调度层，但具体 OS/架构实现
+仍由 runtime 提供，Cargo 依赖方向不反转。
 
-读写锁继续使用原有非公平算法，不增加 writer preference。公开的瞬时 reader/writer
-计数和未使用的强制写解锁被删除；Starry task scope 需要的“释放一个已泄漏读 guard”
-保留为 `#[doc(hidden)] unsafe` 接口，并只经专用 wrapper 使用。
+## 4. `ax-sync` 薄桥接层
 
-### 3.2 `IrqMutex<T>`
+`ax-sync` 只拥有稳定 wrapper 所必需的表示与 Rust API：
 
-`IrqMutex<T>` 是 `lock_api::Mutex<RawIrqSaveMutex, T>` 的稳定名称。它是不可睡眠的
-IRQ-save mutex；调用 `.lock()` 时先禁止抢占、保存并关闭本地 IRQ，guard 释放时先恢复
-IRQ、再恢复抢占。它用于调用方必须把“每次获取都关闭 IRQ”固化进类型的共享状态，不能
-用于可能睡眠、分配或调用未知代码的临界区。
+- 泛型数据 `T`；
+- 固定布局的原子锁状态与 lock metadata；
+- `Deref`/`DerefMut`、RAII guard 和 guard 的 `Drop`；
+- provider 返回的 opaque context restore token；
+- 与 pinned toolchain 一起演进的隐藏内部 ABI。
 
-物理实现仍位于 `ax-sync`，并且只通过 `CriticalSectionOps` 请求外部能力；`ax-task::sync`
-重导该类型，`ax-runtime::sync` 再作为 OS 出口导出。Starry kernel 和 `axnsproxy` 只从
-runtime facade 获取它，不能直接依赖 `ax-sync`。这与 `SpinLock::lock_irqsave()` 的执行
-上下文语义相同，区别仅在于前者把所有获取都固定为 IRQ-save，便于现有
-`lock_api::Mutex` 调用方和公共字段维持单一 guard 类型。
+它不拥有：
 
-### 3.3 `Mutex<T>`
+- spin、rwlock 或 PI mutex 算法；
+- task identity、task registry、runqueue 或调度策略；
+- waiter 节点、donation graph、effective priority 或 `blocked_on`；
+- IRQ/preempt 的硬件实现；
+- 生产 lockdep 图或 task held-lock stack；
+- fallback、超时重试或另一套生产 provider。
 
-`Mutex<T>` 永远表示可睡眠、无 poisoning 的 mutex，仅在 `sleep` feature 下存在。
-非 multitask ArceOS/AXLibC 需要的锁由其 OS facade 显式选择 `SpinLock`，不能改变
-`Mutex` 的语义。
+隐藏接口按完整事务划分：
 
-状态由非零 task owner ID、锁生命周期 generation 和内联 opaque waiter storage 组成：
+- `ContextOps`：独立 context guard enter/exit；
+- `SpinOps`：spin acquire/try/release 与受控 force-release；
+- `RwLockOps`：read/write acquire/try/release 与受控 read decrement；
+- `PiMutexOps`：PI acquire/try/release/cancel/force-release、owner 查询和 external storage
+  销毁；
+- `LockdepOps`：不隶属单次获取的 trace 控制与 dump。
 
-1. uncontended 获取以 Acquire CAS 将 owner 从 0 改为当前 task ID；
-2. 物理 mutex 内联五个指针宽度的 provider storage；首次竞争只原地构造 wait lock 和
-   ordered-tree root，不分配 lock-local 对象；
-3. waiter 节点和 handshake state 在 task 创建时预分配。token 保存 provider-issued
-   task-local capability，读取 top/granted 不查询全局 task registry；
-4. waiter 在同一 wait lock 下完成 owner 快照、waiter bit、ordered tree 和 donation
-   edge 的提交，匹配 Linux `rt_mutex_base::wait_lock + waiters` 与
-   `task_struct::pi_lock + pi_waiters/pi_blocked_on` 的所有权拆分；
-5. unlock 先发布 ownerless handoff，再在任务层完成 deboost、选择、wake 和 claim；
-6. drop 只在 waiter tree 为空时原地销毁 provider storage。
+provider 必须完成一次操作的整个事务：进入 context、lockdep prepare、原子获取或 waiter
+注册、donation/park/handoff、lockdep commit、失败回滚、Release 解锁和 context 逆序恢复。
+不能把这些步骤拆回 `ax-sync`，也不能让 runtime 在两次 provider 调用之间保存中间事实。
 
-`try_lock` 不调用 `might_sleep`、不初始化 waiter storage、也不进入调度器。首次竞争、
-注册、取消、release 和 claim 都不得分配。递归获取和错误 owner 解锁会被诊断。
-POSIX pthread 因 C ABI 不能保存 Rust guard，使用专用 wrapper
-泄漏 guard，再调用隐藏的 `unsafe force_unlock`；该接口仍检查当前 task 是 owner。
+ABI 只传固定布局的原子引用、裸指针、整数模式、`Location` 和 `#[repr(C)]` 结果；泛型
+值、Rust guard、task handle 和 scheduler 对象不跨边界。所有 raw pointer 都必须在相邻
+代码记录生命周期、唯一性、对齐和别名不变量。
 
-### 3.4 Guard 和恢复顺序
+## 5. 公共锁语义
 
-`PreemptGuard`、`IrqSaveGuard`、`PreemptIrqSaveGuard` 取代独立 guard crate。
-组合 guard 的固定顺序是：
+### 5.1 Spin lock 与执行上下文
+
+锁对象不固化获取上下文，调用方法表达本次约束：
+
+| 获取方法 | 进入动作 | 退出动作 | 典型场景 |
+| --- | --- | --- | --- |
+| `lock()` / `try_lock()` | 禁止 preempt | 恢复 preempt token | 不会被本地 IRQ 重入的短临界区 |
+| `lock_irqsave()` / `try_lock_irqsave()` | 禁止 preempt，再保存并关闭 IRQ | 恢复 IRQ，再恢复 preempt | IRQ 与任务共享状态 |
+| `unsafe lock_raw()` / `try_lock_raw()` | 不改变 context | 不改变 context | 外层已建立排他性 |
+
+`SpinRwLock<T>` 提供相同三种策略并保留非公平算法，不引入 writer preference。raw 获取
+保持 `unsafe`，调用方必须证明 UP 与 SMP 下都不会发生同 CPU 重入或违反共享/独占规则。
+
+所有 context guard 和锁 guard 都是 `!Send`。组合顺序固定为：
 
 ```text
 acquire: disable_preempt -> irq_save_and_disable
 release: irq_restore -> enable_preempt
 ```
 
-逆序恢复保证 IRQ handler 不会在抢占已经恢复、临界区仍未完全退出时观察中间状态。
-IRQ state 是逐次保存的，因此嵌套 IRQ-save guard 不会错误地提前打开中断。
+try 失败、lockdep 诊断 panic 或部分获取 unwind 时，pending RAII 状态必须释放已取得的
+锁状态，并按相反顺序恢复 context。
 
-## 4. Runtime 能力接口
+### 5.2 PI mutex
 
-`ax-sync` 通过三个最小接口请求外部能力：
+`Mutex<T>` 与 `PiMutex<T>` 始终表示无 poison 的可睡眠 PI mutex；它们不会因 feature
+退化为 spin lock。当前 PI 语义必须完整迁入 `ax-task::sync::mutex`：
 
-- `CriticalSectionOps`：generation-bearing preempt guard enter/exit、专用 IRQ-return exit、
-  hardirq enter/exit accounting、`irq_save_and_disable` 和 `irq_restore`；普通退出不能根据
-  live IRQ 状态猜测自己处于异常返回，IRQ-return 所有权必须由独立 token 显式表达；
-- `PiMutexTaskOps`：当前 task ID、阻塞上下文校验、waiter 注册/取消、ownerless
-  handoff claim、park/wake、owner on-CPU/reschedule 查询和内联 provider storage 销毁；
-- `LockdepOps`：IRQ-safe 图状态访问、当前任务 held-lock 快照、push/pop、console 和
-  fatal 诊断。
+1. lock-local state 包含 owner word、waiter bit、generation 和固定大小的 opaque waiter
+   storage；
+2. task-local state 包含 waiter node、`blocked_on`、donor tree、effective priority、grant
+   与 park handshake；
+3. waiter 注册在同一事务内提交 owner snapshot、ordered waiter tree 和 donation edge；
+4. ownerless handoff、deboost、选择、wake 和 claim 由 task/scheduler owner 协调；
+5. cancel 与 timeout 必须通过 generation 验证，不能把旧 wake 当成新一代 waiter；
+6. `try_lock` 不调用 `might_sleep`，不初始化 waiter storage，不分配，也不进入 scheduler；
+7. release、claim、cancel、waiter 注册和 drop 不分配；
+8. drop 只在 waiter tree 为空且没有可达 lock reference 时销毁 external storage。
 
-ArceOS 的实现位于 `ax-runtime/src/sync.rs`。`lock-lint` 要求三个生产 provider 在该
-文件中各出现一次，并要求生产与 host provider 分别由 `not(feature = "host-test")` 和
-`feature = "host-test"` 选择。当前仓库中的其他生产 OS 不能另行注册 provider；若未来
-新增独立 runtime，必须同时扩展构建边界和 lint 规则。
+native mutex 与 `ax-sync` wrapper 的字段可以位于不同对象，但算法、状态转换和顺序必须
+共享同一实现。`ax-sync` 只能承载 external 固定布局，不能重新实现 PI fast path 或 claim。
 
-## 5. Lockdep 内聚
+POSIX pthread 因 C ABI 无法保存 Rust guard，只能经专用 wrapper 泄漏 guard，并调用隐藏
+的 `unsafe force_unlock`；该路径仍须验证当前 task 是 owner。
 
-原 `ax-lockdep` 的 lock class、subclass、依赖图、held-lock stack 和 trace buffer 全部
-进入 `ax-sync`。spin mutex、spin rwlock 和 sleep mutex 在同一张依赖图中记录：
+## 6. Lockdep 所有权
 
-- spin 类获取标记 `sleep_forbidden=true`；
-- sleep mutex 标记 `sleep_forbidden=false`；
-- 获取前检查递归和已有路径反向可达，成功后记录边；
-- 释放时校验 held-lock 栈顶与实例地址；
-- 动态锁实例共享 class，不按实例消耗 class 槽位。
+生产 lockdep 完全属于 `ax-task::sync::lockdep`：lock class、依赖图、task held-lock stack、
+获取模式、trace 和诊断只有一个事实源。`ax-sync` 只保存 external wrapper 的固定 class
+metadata，provider 将其借用为 ax-task 的 external lock class view。
 
-raw spin 获取仍进入 lockdep trace，但其上下文正确性由 `unsafe` 调用契约保证。
-lockdep 关闭时 trace 控制入口是无操作函数，便于 OS facade 保持稳定接口。
+spin、rwlock 和 PI mutex 共享同一张图：
 
-## 6. 子系统策略
+- spin 获取标记 `sleep_forbidden=true`，PI mutex 标记 `false`；
+- 获取前检查递归和反向可达路径，成功后再提交依赖边；
+- release 校验 task held-lock 栈顶与实例地址；
+- read、write、exclusive 和 subclass 是明确的 typed mode；
+- raw read 跨 task 的特殊路径只能由专用 wrapper 使用。
 
-- `ax-fs-ng`、`ax-net`：可能阻塞、分配或调度的状态用 sleep `Mutex`；IRQ/短临界区用
-  `SpinLock::lock_irqsave()`，普通不可睡眠任务临界区用 `lock()`。
-- 驱动、内存和虚拟设备：保持 OS 无关，直接使用 `ax-sync`；raw 获取必须在相邻处写明
-  无重入和并发排他依据。
-- StarryOS：kernel 生产代码不得直接导入 `ax_sync`，`crate::sync` 从
-  `ax_runtime::sync` 获取 OS 锁；`axnsproxy` 等 OS-owned crate 同样通过 runtime facade
-  获取 `IrqMutex`。特殊适配只存在于 facade 及其明确实现层。用户态 ABI 和 syscall
-  返回行为不变。
-- Axvisor：普通状态使用真实 Rust `std::sync`。只有 IRQ/guest-entry/no-preempt 路径
-  使用 `ax_std::os::arceos::sync::{IrqSafeMutex, NoPreemptMutex, RawSpinLock}`。
+lockdep 被关闭时 trace API 是 no-op，但锁算法和执行上下文不改变。
 
-## 7. Prior art 与方案比较
+## 7. Host test 与 provider 选择
 
-参考基线为 Linux v6.12：
+`ax-sync/host-test` 仅在以下最窄边界编译内部 std backend：
 
-- `include/linux/spinlock.h` 的普通、`irqsave` 和 raw spin 获取族说明“上下文策略属于
-  获取动作”这一设计；
-- `kernel/locking/mutex.c` 的 owner 发布、慢路径等待和单 waiter 唤醒说明 sleep mutex
-  与 spin mutex 不应由配置静默互换；
-- `kernel/locking/lockdep.c` 的 held-lock/class 图模型说明不同锁算法应共享依赖诊断。
+```text
+cfg(all(feature = "host-test", not(target_os = "none")))
+```
 
-评估过的替代方案：
+该 backend 服务 OS 无关组件的 host test，不注册生产 provider，也不成为第二个算法事实
+源。`target_os = "none"` 即使误开 `host-test` 仍要求 runtime provider。
 
-1. 保留 `ax-kspin`，让 `ax-sync` 只重导。它继续暴露两套公共 crate 和类型名兼容层，
-   无法实现唯一入口，因此拒绝。
-2. 让 `ax-sync` 直接依赖 `ax-task`。这会形成 `ax-task -> ax-sync -> ax-task` 的层次环，
-   也阻止其他 OS 提供 runtime，因此拒绝。
-3. 继续允许 crates.io `spin` 只承载 Once/Lazy。它会保留第一方直接依赖和 lint 例外；
-   `ax-lazyinit` 可以提供同等 no_std 初始化原语，因此拒绝。
-4. 所有路径统一使用 sleep mutex。IRQ、调度器和早期启动路径不能睡眠，因此不成立。
-5. 为 rwlock 引入 writer preference。该行为改变超出重构目标，继续保留既有非公平算法。
+`ax-task` host test 使用测试 `TaskRuntime` provider 验证 native 算法；不得通过依赖
+feature 反向选择 `ax-sync` host backend。最终 runtime 决定生产或 host 组合，底层 crate
+不能自行猜测 provider。
 
-## 8. 风险、验证与非目标
+## 8. 子系统规则与机器约束
 
-主要风险是 IRQ/preempt 恢复错误、raw 调用无重入证明、mutex 注册边界丢唤醒、provider
-重复链接、Starry facade 绕过以及 Axvisor 把普通状态重新放回内核 spin 锁。
-验证覆盖 public spin/rwlock 上下文状态、SMP 可见性、try 失败清理、mutex 多 waiter、
-注册边界、非分配 try、owner 诊断、强制解锁、drop、lockdep 顺序和各 OS smoke。
+- OS 无关组件使用 `ax-sync`；可以阻塞的状态使用 PI mutex，IRQ/短临界区使用明确的
+  spin 获取策略。
+- StarryOS 只使用 `crate::sync`，不能直接依赖 `ax-sync` 或穿透 `ax-task::sync::bridge`。
+- `ax-std`、ArceOS API 和 POSIX API 只使用 `ax-runtime::sync`。
+- Axvisor 普通路径使用 `std::sync`，特殊路径使用 `ax_std::os::arceos::sync`。
+- OS facade 不能导出 `bridge`；external-layout API 保持 `#[doc(hidden)]`。
+- `lock-lint` 检查旧锁 crate、直接 crates.io `spin`、OS facade 绕过、provider 唯一性、
+  `ax-task -> ax-sync` 反向依赖、host cfg 和底层依赖例外。
+- `sync-lint` 检查 sleep mutex 不得在 spin/IRQ/preempt-disabled 临界区内获取。
 
-本次明确不做：
+不能用 allowlist 掩盖未完成的普通迁移。依赖环例外必须是路径级、原因明确、可由依赖图
+复核的最小集合。
 
-- 不改变 Starry 用户态 ABI、syscall 语义或 pthread C 布局；
-- 不改变 rwlock 公平性；
-- 不为 Axvisor 普通路径引入 `ax-sync`；
+## 9. Linux PREEMPT_RT 对照
+
+参考源码为本地 Linux `v7.1`，commit
+`8cd9520d35a6c38db6567e97dd93b1f11f185dc6`：
+
+- `include/linux/rtmutex.h` 的 `rt_mutex_base` 保存 lock-local owner/waiters，而 task PI
+  状态不放进通用 wrapper；
+- `kernel/locking/rtmutex.c` 由 `lock->wait_lock` 保护 lock waiter tree，由
+  `task->pi_lock` 保护 `pi_waiters`/`pi_blocked_on`，chain walk 和 priority 更新属于 task；
+- unlock 在 wake 前完成 top waiter、deboost 与 handoff 协调，避免双事实源和
+  deboost-after-wake；
+- `include/linux/spinlock.h` 的普通/raw/irqsave 获取族说明 context 策略属于获取动作；
+- `kernel/locking/lockdep.c` 的 class/held-lock graph 说明不同锁算法必须共享诊断状态。
+
+本设计借鉴的是所有权与事务顺序，不复制 Linux 对象布局。TGOSKits 的 generation-bearing
+task identity、runtime capability 和固定 external ABI 仍由本项目边界表达。
+
+## 10. 方案比较
+
+1. **保持 `ax-sync` 为算法所有者。** 会让调度器通过外部 crate 使用自己的 PI/task
+   能力，并使 lockdep/task state 跨层，拒绝。
+2. **让 `ax-sync` 依赖 `ax-task`。** 会破坏 OS 无关边界并形成依赖环，拒绝。
+3. **采用 #1962 的普通 WaitQueue mutex。** 分层正确，但会丢失本分支 urgency ordering、
+   generation waiter、donation chain 和 ownerless handoff，拒绝该具体实现。
+4. **采用 #1962 分层并迁移本分支 PI 实现。** 依赖方向正确，同时保留 Linux-RT 风格
+   语义，选用。
+5. **所有状态统一为 sleep mutex。** IRQ、调度器和早期启动路径不能睡眠，不成立。
+6. **保留第二套 host/provider crate。** 增加重复注册和 feature 漂移风险，拒绝。
+
+## 11. 迁移与验证
+
+迁移按可审计层次进行：
+
+1. 建立 `ax-task::sync::{api,bridge}` 命名空间，runtime 只经 bridge 使用 task 能力；
+2. 迁移 context 与 native spin/rwlock，不改变 external `ax-sync` API；
+3. 迁移 lockdep 图和 task held-lock state，建立 external class view；
+4. 将当前 PI physical/task transaction 移入 ax-task，并建立 external PI layout view；
+5. 把 `ax-sync` 改为 wrapper/provider ABI，删除 `ax-task -> ax-sync`；
+6. 收紧 lint 与 Cargo feature，迁移 OS consumers，最后清理兼容路径。
+
+每一步必须有在旧实现上失败、在新实现上通过的确定性测试。最终验证至少包括：
+
+- ax-task native 与 ax-sync bridge 的 UP/SMP Acquire/Release、try/unwind 和 `!Send`；
+- PI 单/多 waiter、priority ordering、donation chain、ownerless handoff、cancel/timeout、
+  generation、防丢唤醒、非分配 fast/slow path 与 drop；
+- lockdep 递归、反向锁序、subclass、sleep-in-atomic 和 panic rollback；
+- `cargo fmt`、目标 crate clippy、rustdoc、`lock-lint`、`sync-lint`；
+- StarryOS 四架构 QEMU 与 Axvisor 四架构 build/smoke；
+- 与 `dev` 相同命令的耗时对比，明显变慢视为实现缺陷，不能用 timeout 或轮询兜底。
+
+## 12. 非目标
+
+- 不改变 Starry syscall、用户 ABI、pthread C 布局或 errno；
+- 不改变 spin rwlock 公平性；
 - 不把 raw 获取变成安全 API；
-- 不手工修改任何 crate 版本号，版本维护由 release-plz 负责。
+- 不为 Axvisor 普通路径引入内核锁；
+- 不使用 timeout、fallback、全局 task registry 或第二份 waiter 状态掩盖模型问题；
+- 不修改 `[patch.crates-io]`；
+- 不手工修改 crate 版本号，版本由 release-plz 维护。
