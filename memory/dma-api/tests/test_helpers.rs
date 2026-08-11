@@ -158,6 +158,9 @@ impl TrackingDmaOp {
         constraints: DmaConstraints,
         layout: core::alloc::Layout,
     ) -> Option<DmaAllocHandle> {
+        if layout.size() == 0 {
+            return None;
+        }
         let ptr = unsafe { alloc_zeroed(layout) };
         let cpu_addr = NonNull::new(ptr)?;
         let dma_addr = self.alloc_dma_addr(layout, constraints);

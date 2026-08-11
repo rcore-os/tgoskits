@@ -87,6 +87,9 @@ impl DeviceDma {
         &self,
         layout: core::alloc::Layout,
     ) -> Result<DmaAllocHandle, DmaError> {
+        if layout.size() == 0 {
+            return Err(DmaError::ZeroSizedBuffer);
+        }
         let constraints = self.constraints.with_align(layout.align());
         let res =
             unsafe { self.op.alloc_contiguous(constraints, layout) }.ok_or(DmaError::NoMemory)?;
@@ -107,6 +110,9 @@ impl DeviceDma {
         &self,
         layout: core::alloc::Layout,
     ) -> Result<DmaAllocHandle, DmaError> {
+        if layout.size() == 0 {
+            return Err(DmaError::ZeroSizedBuffer);
+        }
         let constraints = self.constraints.with_align(layout.align());
         let res =
             unsafe { self.op.alloc_coherent(constraints, layout) }.ok_or(DmaError::NoMemory)?;

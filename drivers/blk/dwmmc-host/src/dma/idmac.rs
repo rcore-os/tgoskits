@@ -58,6 +58,10 @@ pub struct IdmacDesc {
     pub(super) des3: u32,
 }
 
+// SAFETY: The aligned C-layout descriptor contains only `u32` fields, accepts
+// every bit pattern, and owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for IdmacDesc {}
+
 pub(crate) struct IdmacRing {
     descriptors: CoherentArray<IdmacDesc>,
     used: usize,

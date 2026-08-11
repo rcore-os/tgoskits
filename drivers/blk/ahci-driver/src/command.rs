@@ -49,6 +49,10 @@ pub(super) struct CommandHeader {
     reserved: [u32; 4],
 }
 
+// SAFETY: The C-layout command header contains only integer fields, accepts
+// every bit pattern, and owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for CommandHeader {}
+
 pub(super) type CommandList = [CommandHeader; 32];
 pub(super) type ReceivedFis = [u8; 256];
 
@@ -69,6 +73,10 @@ pub(super) struct CommandTable {
     reserved: [u8; 48],
     descriptors: [PhysicalRegionDescriptor; MAX_PRDS],
 }
+
+// SAFETY: The C-layout command table contains only byte arrays and C-layout
+// integer descriptors, so every bit pattern is valid.
+unsafe impl dma_api::DmaPod for CommandTable {}
 
 impl Default for CommandTable {
     fn default() -> Self {

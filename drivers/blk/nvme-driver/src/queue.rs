@@ -51,6 +51,10 @@ register_bitfields! [
 #[derive(Clone, Copy)]
 pub struct NvmeSubmission([u8; 64]);
 
+// SAFETY: The transparent wrapper contains only bytes, accepts every bit
+// pattern, and owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for NvmeSubmission {}
+
 pub trait Submission {
     fn to_submission(self) -> NvmeSubmission;
 }
@@ -226,6 +230,10 @@ pub(crate) struct NvmeCompletion {
     pub command_id: u16,
     pub status: CompletionStatus,
 }
+
+// SAFETY: The C-layout completion contains only integer fields and a
+// transparent `u16` wrapper, so every bit pattern is valid.
+unsafe impl dma_api::DmaPod for NvmeCompletion {}
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, Default)]

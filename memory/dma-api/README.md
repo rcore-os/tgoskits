@@ -27,7 +27,19 @@ and when it has completed.
 
 `DmaAddr` is the only portable device-visible address type. Backend-private raw
 handles are split into `DmaAllocHandle` for owned allocations and
-`DmaMapHandle` for streaming mappings.
+`DmaMapHandle` for streaming mappings. Both handles are move-only tokens:
+their matching release operation consumes them, so safe code cannot release
+the same allocation or mapping twice.
+
+Typed DMA storage requires an explicit `DmaPod` implementation. Primitive
+integer and floating-point types, plus arrays of `DmaPod` elements, are
+provided by `dma-api`. Driver descriptor and wire-format structs must use a
+stable layout and provide their own safety justification. Types with invalid
+bit patterns, references, pointers, or owned resources must not implement
+`DmaPod`.
+
+All allocation and mapping entry points reject zero-sized buffers before
+calling the platform backend.
 
 ## Constraints
 

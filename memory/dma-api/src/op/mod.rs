@@ -19,6 +19,8 @@ pub trait DmaOp: Sync + Send + 'static {
 
     /// Allocates a device-visible contiguous DMA address range.
     ///
+    /// `dma-api` rejects zero-sized layouts before calling this method.
+    ///
     /// The returned CPU mapping is normal memory. Non-coherent platforms must
     /// use `sync_alloc_for_device` and `sync_alloc_for_cpu` to transfer
     /// ownership between CPU and device.
@@ -40,6 +42,8 @@ pub trait DmaOp: Sync + Send + 'static {
     unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle);
 
     /// Allocates coherent DMA memory.
+    ///
+    /// `dma-api` rejects zero-sized layouts before calling this method.
     ///
     /// Coherent memory is CPU/device visible without explicit cache
     /// maintenance. Ordering barriers are still the driver's responsibility.
@@ -78,7 +82,8 @@ pub trait DmaOp: Sync + Send + 'static {
 
     /// # Safety
     ///
-    /// Must be paired with `map_streaming`.
+    /// Must be paired with `map_streaming`. The handle is consumed by this
+    /// operation and must not be reused.
     unsafe fn unmap_streaming(&self, handle: DmaMapHandle);
 
     fn flush(&self, addr: NonNull<u8>, size: usize) {

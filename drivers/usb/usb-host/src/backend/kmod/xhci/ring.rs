@@ -20,6 +20,10 @@ const DEFAULT_RING_PAGES: usize = 2;
 #[repr(transparent)]
 pub struct TrbData([u32; TRB_LEN]);
 
+// SAFETY: The transparent wrapper contains only a `u32` array, accepts every
+// bit pattern, and owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for TrbData {}
+
 impl TrbData {
     pub fn to_raw(self) -> [u32; TRB_LEN] {
         self.0

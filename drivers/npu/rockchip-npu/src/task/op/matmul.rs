@@ -1,4 +1,4 @@
-use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
+use dma_api::{ContiguousArray, DeviceDma, DmaDirection, DmaPod};
 
 use super::super::def::*;
 use crate::{
@@ -7,7 +7,7 @@ use crate::{
     op::{Operation, OperationTrait, Precision},
 };
 
-pub struct MatMul<T: Sized + Copy, O: Sized + Copy> {
+pub struct MatMul<T: DmaPod, O: DmaPod> {
     m: u16,
     k: u16,
     n: u16,
@@ -16,7 +16,7 @@ pub struct MatMul<T: Sized + Copy, O: Sized + Copy> {
     output: ContiguousArray<O>,
 }
 
-impl<T: Sized + Copy, O: Sized + Copy> MatMul<T, O> {
+impl<T: DmaPod, O: DmaPod> MatMul<T, O> {
     pub fn new(dma: &DeviceDma, m: usize, k: usize, n: usize) -> Self {
         Self {
             m: m as _,

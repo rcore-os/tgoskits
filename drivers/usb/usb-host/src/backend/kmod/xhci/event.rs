@@ -15,6 +15,10 @@ pub struct EventRingSte {
     _reserved: [u8; 6],
 }
 
+// SAFETY: The C-layout event ring entry contains only integers and bytes, so
+// every bit pattern is valid and it owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for EventRingSte {}
+
 pub struct EventRing {
     segments: Vec<Ring>,
     segment_index: usize,

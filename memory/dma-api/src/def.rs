@@ -150,16 +150,61 @@ pub enum DmaError {
 
 /// Marker for plain data that can be safely stored in typed DMA buffers.
 ///
+/// Types with restricted bit patterns, such as `bool`, must not implement this
+/// trait because a device can write bytes that do not represent a valid value.
+///
+/// ```compile_fail
+/// use dma_api::DmaPod;
+///
+/// fn require_dma_pod<T: DmaPod>() {}
+/// require_dma_pod::<bool>();
+/// ```
+///
 /// # Safety
 ///
-/// Implementors must be `Copy`, have no invalid all-zero bit pattern, and must
-/// not own resources or references whose validity can be broken by raw device
-/// writes.
+/// Implementors must be `Copy`, permit every possible bit pattern, and contain
+/// no references, pointers, or owned resources whose validity can be broken by
+/// raw device writes. Padding bytes are allowed, but drivers must not rely on
+/// their contents.
 pub unsafe trait DmaPod: Copy {}
 
-unsafe impl<T: Copy> DmaPod for T {}
+macro_rules! impl_dma_pod_for_scalars {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            // SAFETY: Integer and floating-point scalars accept every bit pattern and
+            // contain no references or owned resources.
+            unsafe impl DmaPod for $ty {}
+        )+
+    };
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+impl_dma_pod_for_scalars!(
+    u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64,
+);
+
+// SAFETY: An array has the same validity requirements as its elements and
+// contains no additional references or owned resources.
+unsafe impl<T: DmaPod, const N: usize> DmaPod for [T; N] {}
+
+/// Backend-owned token for one DMA allocation.
+///
+/// The token is consumed by the matching deallocation operation and therefore
+/// cannot be copied.
+///
+/// ```compile_fail
+/// use dma_api::DmaAllocHandle;
+///
+/// fn require_copy<T: Copy>() {}
+/// require_copy::<DmaAllocHandle>();
+/// ```
+///
+/// ```compile_fail
+/// use dma_api::DmaAllocHandle;
+///
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<DmaAllocHandle>();
+/// ```
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct DmaAllocHandle {
     pub(crate) cpu_addr: NonNull<u8>,
     pub(crate) dma_addr: DmaAddr,
@@ -200,7 +245,25 @@ impl DmaAllocHandle {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Backend-owned token for one streaming DMA mapping.
+///
+/// The token is consumed by the matching unmap operation and therefore cannot
+/// be copied.
+///
+/// ```compile_fail
+/// use dma_api::DmaMapHandle;
+///
+/// fn require_copy<T: Copy>() {}
+/// require_copy::<DmaMapHandle>();
+/// ```
+///
+/// ```compile_fail
+/// use dma_api::DmaMapHandle;
+///
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<DmaMapHandle>();
+/// ```
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct DmaMapHandle {
     pub(crate) cpu_addr: NonNull<u8>,
     pub(crate) dma_addr: DmaAddr,

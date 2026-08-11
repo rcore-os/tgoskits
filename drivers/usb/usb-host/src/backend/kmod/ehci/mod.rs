@@ -420,6 +420,10 @@ struct QueueHead {
     overlay: QueueTransferDescriptor,
 }
 
+// SAFETY: The aligned C-layout queue head contains only integers and the
+// integer-only transfer descriptor, so every bit pattern is valid.
+unsafe impl dma_api::DmaPod for QueueHead {}
+
 impl QueueHead {
     fn async_head(addr: u32) -> Self {
         Self {
@@ -467,6 +471,10 @@ struct QueueTransferDescriptor {
     buffer: [u32; 5],
     ext_buffer: [u32; 5],
 }
+
+// SAFETY: The aligned C-layout descriptor contains only integers and integer
+// arrays, so every bit pattern is valid and it owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for QueueTransferDescriptor {}
 
 impl QueueTransferDescriptor {
     const fn terminated() -> Self {

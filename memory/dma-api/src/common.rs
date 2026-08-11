@@ -76,9 +76,6 @@ impl DmaAllocation {
         let Some(handle) = self.handle.take() else {
             return Ok(());
         };
-        if handle.size() == 0 {
-            return Ok(());
-        }
 
         unsafe {
             match self.kind {

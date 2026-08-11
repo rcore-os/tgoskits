@@ -18,6 +18,10 @@ pub struct TxDesc {
     pub addr: u64,
 }
 
+// SAFETY: The C-layout descriptor contains only integer fields, so every bit
+// pattern is valid and it owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for TxDesc {}
+
 impl TxDesc {
     pub fn new_cpu_owned(addr: u64, len: usize, ring_end: bool) -> Self {
         let mut opts1 = FIRST_FRAG | LAST_FRAG | len as u32;
@@ -52,6 +56,10 @@ pub struct RxDesc {
     pub opts2: u32,
     pub addr: u64,
 }
+
+// SAFETY: The C-layout descriptor contains only integer fields, so every bit
+// pattern is valid and it owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for RxDesc {}
 
 impl RxDesc {
     pub fn new_cpu_owned(addr: u64, len: usize, ring_end: bool) -> Self {

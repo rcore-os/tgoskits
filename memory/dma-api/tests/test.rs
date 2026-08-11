@@ -13,6 +13,16 @@ struct Descriptor {
     flags: u32,
 }
 
+#[derive(Clone, Copy)]
+struct ZeroSizedDmaPod;
+
+// SAFETY: The type has no bytes, invalid bit patterns, references, or owned resources.
+unsafe impl DmaPod for ZeroSizedDmaPod {}
+
+// SAFETY: `Descriptor` has a stable C layout, every field accepts all bit
+// patterns, and it contains no references or owned resources.
+unsafe impl DmaPod for Descriptor {}
+
 fn new_tracking_device() -> (DeviceDma, &'static TrackingDmaOp) {
     let tracker = Box::new(TrackingDmaOp::new());
     let tracker = Box::leak(tracker);
@@ -109,6 +119,14 @@ fn streaming_map_has_explicit_device_and_cpu_sync() {
             .operations()
             .iter()
             .any(|op| matches!(op, DmaOperation::UnmapStreaming { size: 128 }))
+    );
+    assert_eq!(
+        tracker
+            .operations()
+            .iter()
+            .filter(|op| matches!(op, DmaOperation::UnmapStreaming { .. }))
+            .count(),
+        1
     );
 }
 
@@ -299,6 +317,57 @@ fn allocation_rejects_backend_address_outside_mask() {
 }
 
 #[test]
+fn coherent_array_rejects_zero_length_before_backend() {
+    let (dev, tracker) = new_tracking_device();
+
+    let result = dev.coherent_array_zero::<u8>(0);
+
+    assert!(matches!(result, Err(DmaError::ZeroSizedBuffer)));
+    assert!(tracker.operations().is_empty());
+}
+
+#[test]
+fn contiguous_array_rejects_zero_length_before_backend() {
+    let (dev, tracker) = new_tracking_device();
+
+    let result = dev.contiguous_array_zero::<u8>(0, DmaDirection::ToDevice);
+
+    assert!(matches!(result, Err(DmaError::ZeroSizedBuffer)));
+    assert!(tracker.operations().is_empty());
+}
+
+#[test]
+fn coherent_box_rejects_zero_sized_type_before_backend() {
+    let (dev, tracker) = new_tracking_device();
+
+    let result = dev.coherent_box_zero::<ZeroSizedDmaPod>();
+
+    assert!(matches!(result, Err(DmaError::ZeroSizedBuffer)));
+    assert!(tracker.operations().is_empty());
+}
+
+#[test]
+fn contiguous_box_rejects_zero_sized_type_before_backend() {
+    let (dev, tracker) = new_tracking_device();
+
+    let result = dev.contiguous_box_zero::<ZeroSizedDmaPod>(DmaDirection::FromDevice);
+
+    assert!(matches!(result, Err(DmaError::ZeroSizedBuffer)));
+    assert!(tracker.operations().is_empty());
+}
+
+#[test]
+fn streaming_map_rejects_zero_length_before_backend() {
+    let (dev, tracker) = new_tracking_device();
+    let mut backing = [0u8; 0];
+
+    let result = dev.map_streaming_slice(&mut backing, 1, DmaDirection::Bidirectional);
+
+    assert!(matches!(result, Err(DmaError::ZeroSizedBuffer)));
+    assert!(tracker.operations().is_empty());
+}
+
+#[test]
 fn coherent_try_release_reports_failure_without_retrying() {
     let (dev, tracker) = new_tracking_device();
     let buffer = dev.coherent_array_zero::<u8>(64).unwrap();
@@ -332,6 +401,26 @@ fn coherent_drop_failure_attempts_release_only_once() {
             .operations()
             .iter()
             .filter(|op| matches!(op, DmaOperation::DeallocCoherent { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn contiguous_drop_releases_allocation_only_once() {
+    let (dev, tracker) = new_tracking_device();
+    let buffer = dev
+        .contiguous_array_zero::<u8>(64, DmaDirection::ToDevice)
+        .unwrap();
+    tracker.clear();
+
+    drop(buffer);
+
+    assert_eq!(
+        tracker
+            .operations()
+            .iter()
+            .filter(|op| matches!(op, DmaOperation::DeallocContiguous { .. }))
             .count(),
         1
     );

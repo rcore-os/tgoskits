@@ -214,6 +214,10 @@ struct Descriptor {
     flags: u32,
 }
 
+// SAFETY: `Descriptor` has a stable C layout, every field accepts all bit
+// patterns, and it contains no references or owned resources.
+unsafe impl crate::DmaPod for Descriptor {}
+
 #[axtest]
 fn dma_api_device_metadata_constraints_and_nop_cache_ops_are_callable() {
     let (dev, op) = tracking_device();

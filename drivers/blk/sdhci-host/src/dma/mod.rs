@@ -59,6 +59,10 @@ pub(crate) struct Adma2Desc32 {
     address: u32,
 }
 
+// SAFETY: The aligned C-layout descriptor contains only integer fields, so
+// every bit pattern is valid and it owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for Adma2Desc32 {}
+
 /// 96-bit ADMA2 descriptor used for 64-bit system addresses in pre-v4 mode.
 #[repr(C, align(4))]
 #[derive(Clone, Copy, Default)]
@@ -68,6 +72,10 @@ pub(crate) struct Adma2Desc64 {
     address_low: u32,
     address_high: u32,
 }
+
+// SAFETY: The aligned C-layout descriptor contains only integer fields, so
+// every bit pattern is valid and it owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for Adma2Desc64 {}
 
 pub(crate) enum Adma2DescriptorTable {
     Addr32(CoherentArray<Adma2Desc32>),

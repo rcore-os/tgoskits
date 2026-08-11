@@ -10,6 +10,10 @@ pub struct TxDesc {
     pub special: u16,
 }
 
+// SAFETY: The C-layout descriptor contains only integer fields, so every bit
+// pattern is valid and it owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for TxDesc {}
+
 impl TxDesc {
     pub const CMD_EOP: u8 = 1 << 0;
     pub const CMD_IFCS: u8 = 1 << 1;
@@ -44,6 +48,10 @@ pub struct RxDesc {
     pub errors: u8,
     pub special: u16,
 }
+
+// SAFETY: The C-layout descriptor contains only integer fields, so every bit
+// pattern is valid and it owns no CPU-side resources.
+unsafe impl dma_api::DmaPod for RxDesc {}
 
 impl RxDesc {
     pub const STATUS_DD: u8 = 1 << 0;

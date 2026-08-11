@@ -6,6 +6,38 @@ use xhci::context::{Device32Byte, Device64Byte, Input32Byte, Input64Byte, InputH
 use super::SlotId;
 use crate::{err::*, osal::Kernel};
 
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct DeviceContext32Dma(Device32Byte);
+
+// SAFETY: xhci 0.9.2 defines `Device<8>` as a C-layout aggregate of
+// transparent `u32` arrays, so every bit pattern is valid.
+unsafe impl dma_api::DmaPod for DeviceContext32Dma {}
+
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct DeviceContext64Dma(Device64Byte);
+
+// SAFETY: xhci 0.9.2 defines `Device<16>` as a C-layout aggregate of
+// transparent `u32` arrays, so every bit pattern is valid.
+unsafe impl dma_api::DmaPod for DeviceContext64Dma {}
+
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct InputContext32Dma(Input32Byte);
+
+// SAFETY: xhci 0.9.2 defines `Input<8>` as a C-layout aggregate of
+// transparent `u32` arrays, so every bit pattern is valid.
+unsafe impl dma_api::DmaPod for InputContext32Dma {}
+
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct InputContext64Dma(Input64Byte);
+
+// SAFETY: xhci 0.9.2 defines `Input<16>` as a C-layout aggregate of
+// transparent `u32` arrays, so every bit pattern is valid.
+unsafe impl dma_api::DmaPod for InputContext64Dma {}
+
 pub struct DeviceContextList {
     pub dcbaa: CoherentArray<u64>,
     max_slots: usize,
@@ -15,13 +47,13 @@ unsafe impl Send for DeviceContextList {}
 unsafe impl Sync for DeviceContextList {}
 
 pub(crate) struct Context32 {
-    out: CoherentBox<Device32Byte>,
-    input: CoherentBox<Input32Byte>,
+    out: CoherentBox<DeviceContext32Dma>,
+    input: CoherentBox<InputContext32Dma>,
 }
 
 pub(crate) struct Context64 {
-    out: CoherentBox<Device64Byte>,
-    input: CoherentBox<Input64Byte>,
+    out: CoherentBox<DeviceContext64Dma>,
+    input: CoherentBox<InputContext64Dma>,
 }
 pub(crate) enum ContextData {
     Context32(Context32),
@@ -51,12 +83,12 @@ impl ContextData {
             ContextData::Context32(ctx) => {
                 let mut input = Input32Byte::new_32byte();
                 f(&mut input);
-                ctx.input.write_cpu(input);
+                ctx.input.write_cpu(InputContext32Dma(input));
             }
             ContextData::Context64(ctx) => {
                 let mut input = Input64Byte::new_64byte();
                 f(&mut input);
-                ctx.input.write_cpu(input);
+                ctx.input.write_cpu(InputContext64Dma(input));
             }
         }
     }
@@ -67,14 +99,14 @@ impl ContextData {
     {
         match self {
             ContextData::Context32(ctx) => {
-                let mut input = ctx.input.read_cpu();
+                let mut input = ctx.input.read_cpu().0;
                 f(&mut input);
-                ctx.input.write_cpu(input);
+                ctx.input.write_cpu(InputContext32Dma(input));
             }
             ContextData::Context64(ctx) => {
-                let mut input = ctx.input.read_cpu();
+                let mut input = ctx.input.read_cpu().0;
                 f(&mut input);
-                ctx.input.write_cpu(input);
+                ctx.input.write_cpu(InputContext64Dma(input));
             }
         }
     }
