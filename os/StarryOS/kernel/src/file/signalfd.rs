@@ -6,13 +6,13 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet, Pollable};
 use starry_signal::{SignalInfo, SignalSet};
 use zerocopy::{Immutable, IntoBytes};
 
 use crate::{
     file::{FileLike, IoDst, IoSrc},
+    sync::IrqMutex,
     task::{
         current_user_task,
         future::{block_on_user, poll_io},
