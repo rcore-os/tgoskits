@@ -3030,6 +3030,37 @@ integration、21 loom、12 doctest），ax-task 与 Starry 31 项 clippy 全部�
 schedule/yield/park 在 transaction 前为取得 `previous_sched` 而读取 current core、进入 transaction
 后又权威复核 `rq->curr` 的锁序问题，不能把后一次复核删除或增加 current-core mirror。
 
+继续对照 Linux v7.1 `__schedule()` 后，调度入口的 previous-task 所有权也收敛为两层：runtime
+facade 从架构 `CurrentThreadPublication` 捕获强 `ThreadHandle`，只用它在 rq transaction 前取得
+task-owned `ThreadSchedState` 锁；owner transaction 内仍从唯一 `rq->curr` 取得 thread/core/endpoint
+并做 Arc identity 致命复核。`schedule_if_requested`、`yield_current` 和有 previous task 的普通
+`schedule` 均显式接收该 handle，不再先调用 `CpuLocal::current_core()`；CPU 初次 dispatch 只能
+显式传 `None`，且 transaction 若观察到已有 current 就触发不变量。这样保持现有
+task-scheduler-state -> rq 锁序，又没有把 architecture current 升格为 `on_rq/on_cpu` 或调度选择
+权威。确定性 facade 回归在旧实现观察到 task-current publication 读取 0，修复后为 1。
+
+完整 ax-task qperf-feature 测试通过（445 unit、全部 integration、21 loom、12 doctest）；ax-task/
+Starry 31 项 clippy 及复跑的 ax-task 5 项 clippy 均通过。并行验证最初暴露测试 helper 通过
+registry 重建 current handle，恰被“持有冷 registry 锁时 owner schedule 仍需进展”的测试阻塞；
+helper 已改为只在 `cfg(test)` 下从当前 core 构造 handle，生产 facade 始终使用架构 publication。
+
+相同 x86_64 Q35/TCG、4 vCPU、1009 Hz、60 秒 ext4 marker 窗口的 qperf 结果如下。profile 必须
+使用 `--test-case qemu/system/test-ext4-inode-unique` 注入 grouped-case rootfs；`--case` 只命名
+报告，不能替代 test-case 选择。
+
+| qperf window | owner observation / switch | current core / switch | current thread / switch | idle / switch | timer rq / switch | 总 rq / switch | workload 进度 | host user |
+|---|---:|---:|---:|---:|---:|---:|---|---:|
+| park handle task current | 5.130 | 2.110 | 1.374 | 1.645 | 0.826 | 7.196 | `file-0474` | 88.125 s |
+| scheduler task current | 4.722 | 1.664 | 1.407 | 1.652 | 0.857 | 6.830 | `file-0474` | 88.142 s |
+
+current-core 每 switch 下降 21.159%，owner observation 下降 7.939%，总 rq 下降 5.090%；
+current-thread、idle、timer-rq 和 owner transaction 只在约 0.4%--3.8% 的同轮噪声范围内变化，
+没有接收被删除的 current-core 查询。两轮 workload 都以状态 143 在完整 marker 内结束、只到
+`file-0474`，host user 几乎完全相同，因此仍只确认锁获取结构修正，不宣称吞吐改善。current-core
+还剩 1.664 次/switch，说明 park commit、exit、affinity 等非 schedule/yield 路径仍在 transaction
+前查询 rq core；下一阶段继续逐个建立红绿并传递已有 task-current handle，transaction 内复核不得
+删除。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
