@@ -8,6 +8,14 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReleaseOperation {
+    ReadModifyWrite,
+    Store,
+}
+
+const RELEASE_OPERATION: ReleaseOperation = ReleaseOperation::ReadModifyWrite;
+
 /// A FIFO raw ticket lock used only inside `ax-task`.
 #[derive(Debug)]
 pub(crate) struct RawTicketLock<T> {
@@ -56,7 +64,15 @@ impl<T> RawTicketLock<T> {
     }
 
     fn unlock(&self) {
-        self.owner.fetch_add(1, Ordering::Release);
+        match RELEASE_OPERATION {
+            ReleaseOperation::ReadModifyWrite => {
+                self.owner.fetch_add(1, Ordering::Release);
+            }
+            ReleaseOperation::Store => {
+                let owner = self.owner.load(Ordering::Relaxed);
+                self.owner.store(owner.wrapping_add(1), Ordering::Release);
+            }
+        }
     }
 }
 
@@ -112,6 +128,19 @@ mod tests {
         let mut second = lock.try_lock().expect("failed try-lock must roll back");
         *second = 1;
         assert_eq!(*second, 1);
+    }
+
+    #[test]
+    fn uncontended_unlock_uses_release_store() {
+        let lock = RawTicketLock::new(());
+
+        drop(lock.lock());
+
+        assert_eq!(
+            RELEASE_OPERATION,
+            ReleaseOperation::Store,
+            "the sole ticket owner must publish its successor without a second atomic RMW"
+        );
     }
 
     #[test]
