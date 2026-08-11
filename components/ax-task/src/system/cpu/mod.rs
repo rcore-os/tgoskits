@@ -30,8 +30,8 @@ pub use local::CpuLocal;
 use remote::RqCurrentTick;
 pub use remote::{CpuLifecycleState, CpuLocalOwnerBorrow, CpuRemote};
 pub(crate) use remote::{
-    CpuRemotePublication, CpuRunQueueState, IdlePullReservation, PreparedMigrationDelivery,
-    SchedulerRequestClaim, WakePreemptionDecision,
+    CpuRemotePublication, CpuRunQueueState, DeadlineBaseGuardSource, IdlePullReservation,
+    PreparedMigrationDelivery, SchedulerRequestClaim, WakePreemptionDecision,
 };
 #[cfg(test)]
 pub(crate) use remote::{reset_rt_bandwidth_lock_acquisitions, rt_bandwidth_lock_acquisitions};

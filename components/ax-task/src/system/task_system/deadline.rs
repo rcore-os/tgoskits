@@ -203,7 +203,9 @@ impl TaskSystem {
                 Some(SchedulerClockEvent::Due) | None => None,
             };
             {
-                let mut deadline_base = cpu.remote().lock_deadline_base();
+                let mut deadline_base = cpu
+                    .remote()
+                    .lock_deadline_base(DeadlineBaseGuardSource::Registration);
                 let cbs_plan = Self::prepare_owner_deadline_timer(
                     &deadline_base.queue,
                     core.deadline_cbs_timer(),
@@ -346,7 +348,7 @@ impl TaskSystem {
         sched: &mut ThreadSchedState,
         remote: &CpuRemote,
     ) {
-        let mut deadline_base = remote.lock_deadline_base();
+        let mut deadline_base = remote.lock_deadline_base(DeadlineBaseGuardSource::Registration);
         let cbs_plan = Self::prepare_owner_deadline_timer(
             &deadline_base.queue,
             core.deadline_cbs_timer(),
@@ -578,7 +580,11 @@ impl TaskSystem {
                 cpu.as_mut()
                     .promote_due_task_deadlines(monotonic_now, remaining);
             }
-            let Some(event) = cpu.remote().lock_deadline_base().peek_buffered_expiration() else {
+            let Some(event) = cpu
+                .remote()
+                .lock_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
+                .peek_buffered_expiration()
+            else {
                 break;
             };
             let claimed = match self.service_buffered_expired_deadline(cpu.as_mut(), event) {
@@ -638,7 +644,9 @@ impl TaskSystem {
             Err(error) => return Err(error),
         };
         let completed = {
-            let mut deadline_base = cpu.remote().lock_deadline_base();
+            let mut deadline_base = cpu
+                .remote()
+                .lock_deadline_base(DeadlineBaseGuardSource::SoftExpiry);
             if deadline_base.take_buffered_event(event).is_none() {
                 return Ok(false);
             }

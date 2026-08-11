@@ -5,8 +5,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CpuId, Nice, RtPriority, SchedulePolicy, SwitchReason, ThreadExtension,
-        ThreadExtensionOps, ThreadSpec,
+        CpuId, Nice, RtPriority, SchedulePolicy, SwitchReason, ThreadExtension, ThreadExtensionOps,
+        ThreadSpec,
         inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
         runtime::{AddressSpaceHandle, AddressSpaceToken},
         test_runtime,
@@ -33,14 +33,17 @@ mod tests {
         kind: TaskDeadlineKind,
     ) -> crate::timer::TaskDeadlineRegistration {
         cpu.remote()
-            .lock_deadline_base()
+            .lock_deadline_base(crate::DeadlineBaseGuardSource::TestInspection)
             .queue
             .arm(node, deadline, kind)
             .unwrap()
     }
 
     fn next_test_deadline(cpu: Pin<&CpuLocal>) -> Option<MonotonicDeadline> {
-        cpu.remote().lock_deadline_base().queue.next_deadline()
+        cpu.remote()
+            .lock_deadline_base(crate::DeadlineBaseGuardSource::TestInspection)
+            .queue
+            .next_deadline()
     }
 
     fn owner_snapshot(system: &TaskSystem, cpu: Pin<&CpuLocal>) -> crate::CpuSnapshot {
@@ -185,9 +188,7 @@ mod tests {
     fn membarrier_registration_publishes_requested_then_ready_for_current_mm() {
         use crate::{
             MembarrierError, ThreadResources,
-            runtime::{
-                ExecutionContextHandle, MembarrierRegistration, StackHandle, TlsHandle,
-            },
+            runtime::{ExecutionContextHandle, MembarrierRegistration, StackHandle, TlsHandle},
         };
 
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
@@ -286,7 +287,8 @@ mod tests {
         );
         assert!(
             !owner_snapshot(&system, cpu.as_ref()).need_resched(),
-            "a timeout which wins before park commit leaves current running and consumes the request"
+            "a timeout which wins before park commit leaves current running and consumes the \
+             request"
         );
         assert!(!cancel_current_park_deadline(&running, &mut ticket).unwrap());
     }
@@ -305,10 +307,16 @@ mod tests {
             panic!("fresh OS waiter park must publish Parking");
         };
         assert_eq!(park.thread_id(), running.id());
-        assert_eq!(system.thread_state(running.id()).unwrap(), crate::ThreadState::Parking);
+        assert_eq!(
+            system.thread_state(running.id()).unwrap(),
+            crate::ThreadState::Parking
+        );
 
         park.cancel().unwrap();
-        assert_eq!(system.thread_state(running.id()).unwrap(), crate::ThreadState::Running);
+        assert_eq!(
+            system.thread_state(running.id()).unwrap(),
+            crate::ThreadState::Running
+        );
     }
 
     #[test]
@@ -321,7 +329,13 @@ mod tests {
         system.bring_cpu_online(cpu.as_mut()).unwrap();
         let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
 
-        assert_eq!(system.service_ktimer_work(cpu.as_mut()).unwrap().processed(), 0);
+        assert_eq!(
+            system
+                .service_ktimer_work(cpu.as_mut())
+                .unwrap()
+                .processed(),
+            0
+        );
         assert_eq!(
             cpu.deadline_expire_passes_for_test(),
             0,
@@ -480,7 +494,13 @@ mod tests {
             !running.core.take_park_notification(),
             "the IRQ-off scheduler frame must leave soft timeout wakeup to the timer worker"
         );
-        assert_eq!(system.service_ktimer_work(cpu.as_mut()).unwrap().processed(), 1);
+        assert_eq!(
+            system
+                .service_ktimer_work(cpu.as_mut())
+                .unwrap()
+                .processed(),
+            1
+        );
         assert!(
             running.core.take_park_notification(),
             "the task-context timer worker must complete the IRQ-claimed expiration"
@@ -593,8 +613,8 @@ mod tests {
                 .update()
                 .deadline()
                 .is_none_or(|deadline| deadline.as_nanos() > 11),
-            "an expired bounded backlog must be advanced by ktimers, not by a timer \
-             interrupt rearmed at the 1ns hardware resolution"
+            "an expired bounded backlog must be advanced by ktimers, not by a timer interrupt \
+             rearmed at the 1ns hardware resolution"
         );
         assert!(
             cpu.remote().ktimer_event().is_pending(),
@@ -695,7 +715,11 @@ mod tests {
         assert!(irq.pending());
         let mut processed = 0;
         let mut passes = 0;
-        while !cpu.remote().lock_deadline_base().queue.is_empty()
+        while !cpu
+            .remote()
+            .lock_deadline_base(crate::DeadlineBaseGuardSource::TestInspection)
+            .queue
+            .is_empty()
             || cpu.has_expired_task_deadlines()
         {
             let batch = system.service_ktimer_work(cpu.as_mut()).unwrap();
@@ -704,7 +728,12 @@ mod tests {
             assert!(passes <= 3, "bounded ktimer work must make progress");
         }
         assert_eq!(processed, 3);
-        assert!(cpu.remote().lock_deadline_base().queue.is_empty());
+        assert!(
+            cpu.remote()
+                .lock_deadline_base(crate::DeadlineBaseGuardSource::TestInspection)
+                .queue
+                .is_empty()
+        );
     }
 
     #[test]
@@ -815,8 +844,7 @@ mod tests {
             .register_sleep_timer(CpuId::new(1), token.generation());
         ticket.attach_deadline(registration).unwrap();
         assert_eq!(
-            cpu1
-                .as_mut()
+            cpu1.as_mut()
                 .promote_due_task_deadlines(instant(10), 1)
                 .expired(),
             1
@@ -881,7 +909,8 @@ mod tests {
             panic!("fresh park must publish PARKING");
         };
         let _ = permit;
-        cpu.as_mut().set_scheduler_deadline_generation_for_test(u64::MAX);
+        cpu.as_mut()
+            .set_scheduler_deadline_generation_for_test(u64::MAX);
 
         assert_eq!(
             arm_current_park_deadline(&running, &mut ticket, deadline(10)),
@@ -909,7 +938,8 @@ mod tests {
         };
         let _ = permit;
         arm_current_park_deadline(&running, &mut ticket, deadline(10)).unwrap();
-        cpu.as_mut().set_scheduler_deadline_generation_for_test(u64::MAX);
+        cpu.as_mut()
+            .set_scheduler_deadline_generation_for_test(u64::MAX);
 
         assert_eq!(
             cancel_current_park_deadline(&running, &mut ticket),
@@ -920,10 +950,7 @@ mod tests {
             "a failed publication-state update must roll back the queue cancellation"
         );
         assert_eq!(running.core.sleep_timer_cpu(), Some(CpuId::new(0)));
-        assert_eq!(
-            next_test_deadline(cpu.as_ref()),
-            Some(deadline(10))
-        );
+        assert_eq!(next_test_deadline(cpu.as_ref()), Some(deadline(10)));
 
         cpu.as_mut().set_scheduler_deadline_generation_for_test(1);
         assert!(cancel_current_park_deadline(&running, &mut ticket).unwrap());
@@ -956,10 +983,7 @@ mod tests {
             .unwrap();
         system.make_ready(exited.id()).unwrap();
         system.enqueue(cpu.as_mut(), exited.id()).unwrap();
-        assert_eq!(
-            system.schedule(cpu.as_mut()).unwrap().next(),
-            exited.id()
-        );
+        assert_eq!(system.schedule(cpu.as_mut()).unwrap().next(), exited.id());
         system.complete_context_switch(cpu.as_mut()).unwrap();
         let exit_decision = system.exit_current(cpu.as_mut()).unwrap();
         assert_ne!(exit_decision.next(), exited.id());
@@ -1052,10 +1076,7 @@ mod tests {
             .unwrap();
         system.make_ready(exiting.id()).unwrap();
         system.enqueue(cpu.as_mut(), exiting.id()).unwrap();
-        assert_eq!(
-            system.schedule(cpu.as_mut()).unwrap().next(),
-            exiting.id()
-        );
+        assert_eq!(system.schedule(cpu.as_mut()).unwrap().next(), exiting.id());
         system.complete_context_switch(cpu.as_mut()).unwrap();
         assert_eq!(
             system.exit_current(cpu.as_mut()).unwrap().next(),
@@ -1199,17 +1220,20 @@ mod tests {
         assert_eq!(
             test_runtime::cpu_handle_reads(),
             (2, 0),
-            "scheduler entry and switch return must use current-CPU owner snapshots without resolving the current endpoint through the global registry"
+            "scheduler entry and switch return must use current-CPU owner snapshots without \
+             resolving the current endpoint through the global registry"
         );
         assert_eq!(
             test_runtime::cpu_owner_claims(),
             2,
-            "the common scheduler path must use one owner transaction before switch and one switch-tail transaction after return"
+            "the common scheduler path must use one owner transaction before switch and one \
+             switch-tail transaction after return"
         );
         assert_eq!(
             test_runtime::scheduler_frame_state(),
             (0, 1, 1),
-            "one scheduling operation must use one scheduler baton while irq-safe shared locks nest inside it"
+            "one scheduling operation must use one scheduler baton while irq-safe shared locks \
+             nest inside it"
         );
         assert_eq!(
             test_runtime::irq_guards_at_context_switch(),
@@ -1530,9 +1554,8 @@ mod tests {
         test_runtime::reset_monotonic_reads();
         test_runtime::reset_scheduler_reads();
 
-        let exit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            commit_current_exit(permit)
-        }));
+        let exit =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| commit_current_exit(permit)));
 
         assert!(
             exit.is_err(),
@@ -1546,8 +1569,8 @@ mod tests {
         assert_eq!(
             test_runtime::scheduler_reads(),
             1,
-            "exit commit owns the only rq transaction; ordinary validation and switch tail use the \
-             staged placement handoff"
+            "exit commit owns the only rq transaction; ordinary validation and switch tail use \
+             the staged placement handoff"
         );
         let mut expired = [ExpiredTaskDeadline::EMPTY; 1];
         assert_eq!(cpu.as_mut().take_expired_task_deadlines(&mut expired), 1);
@@ -1596,8 +1619,7 @@ mod tests {
         let owner_claims = test_runtime::cpu_owner_claims();
         park.cancel().unwrap();
         assert_eq!(
-            owner_claims,
-            1,
+            owner_claims, 1,
             "current identity capture and Parking publication must share one owner transaction"
         );
     }
@@ -1621,8 +1643,7 @@ mod tests {
         let owner_claims = test_runtime::cpu_owner_claims();
         park.cancel().unwrap();
         assert_eq!(
-            owner_claims,
-            1,
+            owner_claims, 1,
             "deadline owner validation and heap insertion must share one owner transaction"
         );
     }
@@ -1682,7 +1703,11 @@ mod tests {
             PiMutexAcquire::Acquired
         );
         let PiMutexLockResult::Waiting(token) = system
-            .pi_mutex_lock_slow(lock.mutex_ref().unwrap(), running.id(), running.id().as_u64())
+            .pi_mutex_lock_slow(
+                lock.mutex_ref().unwrap(),
+                running.id(),
+                running.id().as_u64(),
+            )
             .unwrap()
         else {
             panic!("the current thread must enter the PI wait slow path")
@@ -1698,9 +1723,9 @@ mod tests {
         cancel_current_park(&mut ticket).unwrap();
         system.pi_wait_cancel(token).unwrap();
         assert_eq!(
-            owner_claims,
-            1,
-            "PI current validation, policy drain, and park publication must share one owner transaction"
+            owner_claims, 1,
+            "PI current validation, policy drain, and park publication must share one owner \
+             transaction"
         );
     }
 
@@ -1790,7 +1815,8 @@ mod tests {
         assert_eq!(
             current_thread_handle().unwrap().id(),
             bootstrap.id(),
-            "a current-context publication must remain readable while the runqueue owner is borrowed"
+            "a current-context publication must remain readable while the runqueue owner is \
+             borrowed"
         );
 
         test_runtime::reenter_current_thread_from_next_hook();
@@ -1998,7 +2024,8 @@ mod tests {
         assert_eq!(
             test_runtime::cpu_handle_reads(),
             (1, 0),
-            "one migration pin must capture its owner snapshot once without a generic remote lookup"
+            "one migration pin must capture its owner snapshot once without a generic remote \
+             lookup"
         );
     }
 

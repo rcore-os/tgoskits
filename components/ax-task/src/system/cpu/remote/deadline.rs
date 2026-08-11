@@ -8,6 +8,38 @@
 
 use super::*;
 
+/// Typed reason for entering the per-CPU task-deadline base.
+///
+/// Each reason maps to one qperf IRQ-ticket category, so the aggregate keeps
+/// one counter update per existing lock acquisition rather than adding a
+/// second diagnostic operation to the hot path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DeadlineBaseGuardSource {
+    Observation,
+    Publication,
+    Registration,
+    HardExpiry,
+    SoftExpiry,
+    Lifecycle,
+    #[cfg(test)]
+    TestInspection,
+}
+
+impl DeadlineBaseGuardSource {
+    pub(crate) const fn irq_guard_source(self) -> crate::runtime::IrqGuardSource {
+        match self {
+            Self::Observation => crate::runtime::IrqGuardSource::CpuDeadlineObservationTicket,
+            Self::Publication => crate::runtime::IrqGuardSource::CpuDeadlinePublicationTicket,
+            Self::Registration => crate::runtime::IrqGuardSource::CpuDeadlineRegistrationTicket,
+            Self::HardExpiry => crate::runtime::IrqGuardSource::CpuDeadlineHardExpiryTicket,
+            Self::SoftExpiry => crate::runtime::IrqGuardSource::CpuDeadlineSoftExpiryTicket,
+            Self::Lifecycle => crate::runtime::IrqGuardSource::CpuDeadlineLifecycleTicket,
+            #[cfg(test)]
+            Self::TestInspection => crate::runtime::IrqGuardSource::CpuDeadlineLifecycleTicket,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SchedulerDeadlinePublicationState {
     pub(crate) deadline: Option<MonotonicDeadline>,

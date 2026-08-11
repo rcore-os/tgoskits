@@ -12,7 +12,9 @@ mod owner;
 mod run_queue;
 mod scheduler;
 
-pub(crate) use deadline::{CpuDeadlineState, SchedulerDeadlinePublicationState};
+pub(crate) use deadline::{
+    CpuDeadlineState, DeadlineBaseGuardSource, SchedulerDeadlinePublicationState,
+};
 pub(crate) use delivery::PreparedMigrationDelivery;
 pub(crate) use idle_pull::IdlePullReservation;
 pub use lifecycle::CpuLifecycleState;
@@ -111,9 +113,11 @@ impl CpuRemote {
     /// The rq lock precedes this lock when both are required. Timer IRQ code
     /// takes only this lock; soft-timer callbacks release it before acquiring a
     /// task control lock or rq lock.
-    pub(crate) fn lock_deadline_base(&self) -> IrqTicketGuard<'_, CpuDeadlineState> {
-        self.deadline
-            .lock(crate::runtime::IrqGuardSource::CpuDeadlineTicket)
+    pub(crate) fn lock_deadline_base(
+        &self,
+        source: DeadlineBaseGuardSource,
+    ) -> IrqTicketGuard<'_, CpuDeadlineState> {
+        self.deadline.lock(source.irq_guard_source())
     }
 
     /// Locks Linux `rt_rq::rt_runtime_lock` after the owner rq lock when both

@@ -165,6 +165,42 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "irq_ticket_cpu_deadline_observation_entries {}",
+        task.irq_ticket_cpu_deadline_observation_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_cpu_deadline_publication_entries {}",
+        task.irq_ticket_cpu_deadline_publication_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_cpu_deadline_registration_entries {}",
+        task.irq_ticket_cpu_deadline_registration_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_cpu_deadline_hard_expiry_entries {}",
+        task.irq_ticket_cpu_deadline_hard_expiry_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_cpu_deadline_soft_expiry_entries {}",
+        task.irq_ticket_cpu_deadline_soft_expiry_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_cpu_deadline_lifecycle_entries {}",
+        task.irq_ticket_cpu_deadline_lifecycle_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
         "irq_ticket_root_rt_runtime_entries {}",
         task.irq_ticket_root_rt_runtime_entries
     )
@@ -427,6 +463,12 @@ mod tests {
                 "irq_ticket_cpu_run_queue_entries",
                 "irq_ticket_cpu_rt_bandwidth_entries",
                 "irq_ticket_cpu_deadline_entries",
+                "irq_ticket_cpu_deadline_observation_entries",
+                "irq_ticket_cpu_deadline_publication_entries",
+                "irq_ticket_cpu_deadline_registration_entries",
+                "irq_ticket_cpu_deadline_hard_expiry_entries",
+                "irq_ticket_cpu_deadline_soft_expiry_entries",
+                "irq_ticket_cpu_deadline_lifecycle_entries",
                 "irq_ticket_root_rt_runtime_entries",
                 "irq_ticket_root_rt_period_entries",
                 "irq_ticket_root_deadline_index_entries",
