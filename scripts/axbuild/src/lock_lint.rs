@@ -241,6 +241,14 @@ fn check_dependency_tables(manifest_path: &Path, value: &Value, findings: &mut V
                         "consume synchronization primitives through ax-runtime::sync",
                     ));
                 }
+                if is_ax_std_manifest(manifest_path) && package_name == "ax-sync" {
+                    findings.push(Finding::new(
+                        manifest_path,
+                        &location,
+                        "ax-std must not depend directly on ax-sync",
+                        "consume synchronization primitives through ax-runtime::sync",
+                    ));
+                }
             }
         }
 
@@ -339,6 +347,17 @@ fn check_source_boundaries(
                     format!("line {}", line_index + 1),
                     "ax-posix-api bypasses ax-runtime::sync",
                     "import synchronization primitives from ax_runtime::sync or crate::sync",
+                ));
+            }
+
+            if is_ax_std_source(&relative)
+                && (line.contains("ax_sync::") || line.contains("use ax_sync"))
+            {
+                findings.push(Finding::new(
+                    path,
+                    format!("line {}", line_index + 1),
+                    "ax-std bypasses ax-runtime::sync",
+                    "import synchronization primitives from ax_runtime::sync",
                 ));
             }
         }
@@ -555,6 +574,16 @@ fn is_posix_api_manifest(path: &Path) -> bool {
 
 fn is_posix_api_source(relative: &str) -> bool {
     relative.starts_with("os/arceos/api/arceos_posix_api/src/")
+}
+
+fn is_ax_std_manifest(path: &Path) -> bool {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .ends_with("/os/arceos/ulib/axstd/Cargo.toml")
+}
+
+fn is_ax_std_source(relative: &str) -> bool {
+    relative.starts_with("os/arceos/ulib/axstd/src/")
 }
 
 fn relative_path(workspace_root: &Path, path: &Path) -> String {
@@ -796,6 +825,41 @@ ax-sync = "0.1"
                 .message
                 .contains("ax-posix-api bypasses ax-runtime::sync")
         }));
+    }
+
+    #[test]
+    fn rejects_ax_std_bypassing_runtime_sync_facade() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "os/arceos/ulib/axstd/Cargo.toml",
+            r#"
+[package]
+name = "ax-std"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+ax-sync = "0.1"
+"#,
+        );
+        write_file(
+            root.path(),
+            "os/arceos/ulib/axstd/src/lib.rs",
+            "use ax_sync::SpinLock;\n",
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("ax-std must not depend directly on ax-sync")
+        }));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| { finding.message.contains("ax-std bypasses ax-runtime::sync") })
+        );
     }
 
     #[test]

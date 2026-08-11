@@ -7,6 +7,7 @@
 pub use ax_sync::{
     InterruptibleMutexExt, IrqSaveGuard, LockSubclass, LockdepMutexExt, Mutex, MutexGuard, PiMutex,
     PiMutexGuard, PiMutexLockInterrupted, PreemptGuard, PreemptIrqSaveGuard, RawMutex, RawPiMutex,
-    SpinLock, SpinLockGuard, SpinLockIrqSaveGuard, SpinRwLock, SpinRwLockIrqSaveReadGuard,
-    SpinRwLockIrqSaveWriteGuard, SpinRwLockReadGuard, SpinRwLockWriteGuard,
+    RawSpinLockGuard, SpinLock, SpinLockGuard, SpinLockIrqSaveGuard, SpinRwLock,
+    SpinRwLockIrqSaveReadGuard, SpinRwLockIrqSaveWriteGuard, SpinRwLockReadGuard,
+    SpinRwLockWriteGuard, dump_lockdep_trace, set_lockdep_trace_enabled,
 };

@@ -1184,7 +1184,6 @@ dependencies = [
  "ax-percpu",
  "ax-posix-api",
  "ax-runtime",
- "ax-sync",
  "axbacktrace",
  "libc",
 ]
