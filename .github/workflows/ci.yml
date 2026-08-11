@@ -677,6 +677,8 @@ jobs:
               cargo xtask image pull qemu-x86_64 --output-dir tmp/axbuild/images
               echo "==> axvisor x86_64 svm direct ACPI boot"
               cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-svm
+              echo "==> axvisor x86_64 svm nested OVMF ACPI boot"
+              cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-svm
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
