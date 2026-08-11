@@ -828,11 +828,6 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.inner.flush()
     }
 
-    /// Flushes the inner cached device using the original misspelled API name.
-    pub fn cantflush(&mut self) -> Ext4Result<()> {
-        self.flush()
-    }
-
     /// Returns the total number of device blocks.
     pub fn total_blocks(&self) -> u64 {
         self.inner.total_blocks()

@@ -39,21 +39,18 @@ pub struct FsLayoutInfo {
 }
 
 /// Per-group layout derived during mkfs.
-pub struct BlcokGroupLayout {
+pub struct BlockGroupLayout {
     /// Absolute first block of the group.
     pub group_start_block: u64,
     /// Absolute block number of the block bitmap.
-    pub group_blcok_bitmap_startblocks: u64,
+    pub group_block_bitmap_start_block: u64,
     /// Absolute block number of the inode bitmap.
-    pub group_inode_bitmap_startblocks: u64,
+    pub group_inode_bitmap_start_block: u64,
     /// Absolute start block of the inode table.
-    pub group_inode_table_startblocks: u64,
+    pub group_inode_table_start_block: u64,
     /// Number of blocks consumed by metadata inside the group.
     pub metadata_blocks_in_group: u32,
 }
-
-/// Correctly spelled alias for [`BlcokGroupLayout`].
-pub type BlockGroupLayout = BlcokGroupLayout;
 
 /// Derives the on-disk layout for a new filesystem without writing the device.
 ///
@@ -465,9 +462,9 @@ fn build_uninit_group_desc(
     );
 
     // Persist the group-local metadata block locations.
-    desc.bg_block_bitmap_lo = gl.group_blcok_bitmap_startblocks as u32;
-    desc.bg_inode_bitmap_lo = gl.group_inode_bitmap_startblocks as u32;
-    desc.bg_inode_table_lo = gl.group_inode_table_startblocks as u32;
+    desc.bg_block_bitmap_lo = gl.group_block_bitmap_start_block as u32;
+    desc.bg_inode_bitmap_lo = gl.group_inode_bitmap_start_block as u32;
+    desc.bg_inode_table_lo = gl.group_inode_table_start_block as u32;
 
     // Free-block count is based on the group's real capacity. The last block
     // group is often partial, so blocks past s_blocks_count must never be
@@ -606,7 +603,7 @@ fn write_gdt_redundant_backup<B: BlockIo>(
                 let mut desc_iter = descs.iter();
                 // Stream descriptor copies block by block into the reserved GDT
                 // area of this backup group.
-                for gdt_block_id in gdt_start..group_layout.group_blcok_bitmap_startblocks {
+                for gdt_block_id in gdt_start..group_layout.group_block_bitmap_start_block {
                     block_dev.read_block(AbsoluteBN::new(gdt_block_id))?;
                     let buffer = block_dev.buffer_mut();
                     let mut current_offset = 0_usize;
@@ -759,8 +756,8 @@ fn initialize_other_groups_bitmaps<B: BlockIo>(
             layout.gdt_blocks,
         );
 
-        let block_bitmap_blk = gl.group_blcok_bitmap_startblocks as u32;
-        let inode_bitmap_blk = gl.group_inode_bitmap_startblocks as u32;
+        let block_bitmap_blk = gl.group_block_bitmap_start_block as u32;
+        let inode_bitmap_blk = gl.group_inode_bitmap_start_block as u32;
 
         // Start with a zeroed block bitmap, then mark metadata blocks used.
         {
@@ -879,7 +876,7 @@ mod tests {
         );
 
         assert!(
-            group.group_inode_table_startblocks + u64::from(layout.inode_table_blocks)
+            group.group_inode_table_start_block + u64::from(layout.inode_table_blocks)
                 <= total_blocks
         );
     }

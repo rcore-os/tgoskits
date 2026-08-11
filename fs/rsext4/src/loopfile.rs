@@ -66,16 +66,6 @@ pub fn resolve_inode_blocks<B: BlockIo>(
     Ok(out)
 }
 
-/// Builds a logical-block map using the original misspelled API name.
-pub fn resolve_inode_block_allextend<B: BlockIo>(
-    fs: &mut Ext4FileSystem,
-    block_dev: &mut Jbd2Dev<B>,
-    inode_num: InodeNumber,
-    inode: &mut Ext4Inode,
-) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
-    resolve_inode_blocks(fs, block_dev, inode_num, inode)
-}
-
 /// Resolves a path to its inode number and inode contents.
 ///
 /// The path walk tries hash-tree lookup first for each component and falls back

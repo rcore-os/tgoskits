@@ -567,16 +567,6 @@ impl<'a> ExtentTree<'a> {
             }
         }
     }
-
-    /// Removes an allocated logical extent range using the original misspelled API name.
-    pub fn remove_extend<B: BlockIo>(
-        &mut self,
-        fs: &mut Ext4FileSystem,
-        deleted_ext: Ext4Extent,
-        block_dev: &mut Jbd2Dev<B>,
-    ) -> Ext4Result<()> {
-        self.remove_extent(fs, deleted_ext, block_dev)
-    }
 }
 
 #[cfg(test)]

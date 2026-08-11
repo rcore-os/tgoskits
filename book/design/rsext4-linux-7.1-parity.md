@@ -86,6 +86,12 @@ typed IDs、domain errors，以及 `io`/`runtime` capability traits。
 同一集成 PR 内迁移 `ax-fs-ng` 与所有测试，不维护长期双 API。短期编译迁移
 helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 
+当前已删除 `cantflush`、`file_entry_exisr`、
+`split_paren_child_and_translatevalid`、`cloc_group_layout`、
+`resolve_inode_block_allextend` 与 `remove_extend`；mkfs layout 只保留
+`BlockGroupLayout` 和单数的 `*_start_block` 字段。原兼容测试已改为
+对正确 API 的独立行为断言，不再用新旧 wrapper 互比。
+
 ## 5. 同步与持久化
 
 - Core cache 使用显式可变借用，不包含任何 mutex。
