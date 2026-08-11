@@ -23,7 +23,14 @@ pub(crate) enum PreemptGuardSource {
 #[derive(Clone, Copy)]
 #[repr(usize)]
 pub(crate) enum IrqGuardSource {
-    TicketLock,
+    ThreadSchedTicket,
+    DeadlineServerTicket,
+    CpuRunQueueTicket,
+    CpuRtBandwidthTicket,
+    CpuDeadlineTicket,
+    RootRtRuntimeTicket,
+    RootRtPeriodTicket,
+    RootDeadlineIndexTicket,
     ExplicitScope,
     RuntimeCpu,
     Executor,

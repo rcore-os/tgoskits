@@ -373,24 +373,36 @@ impl DeadlineServer {
     }
 
     pub(crate) fn bind(&self, policy: DeadlinePolicy) {
-        let mut storage = self.storage.lock();
+        let mut storage = self
+            .storage
+            .lock(crate::runtime::IrqGuardSource::DeadlineServerTicket);
         storage.policy = Some(policy);
         storage.execution = DeadlineServerState::new();
     }
 
     fn policy(&self) -> DeadlinePolicy {
         self.storage
-            .lock()
+            .lock(crate::runtime::IrqGuardSource::DeadlineServerTicket)
             .policy
             .expect("Deadline parameters require a bound task server")
     }
 
     fn with_execution<R>(&self, operation: impl FnOnce(&DeadlineServerState) -> R) -> R {
-        operation(&self.storage.lock().execution)
+        operation(
+            &self
+                .storage
+                .lock(crate::runtime::IrqGuardSource::DeadlineServerTicket)
+                .execution,
+        )
     }
 
     fn with_execution_mut<R>(&self, operation: impl FnOnce(&mut DeadlineServerState) -> R) -> R {
-        operation(&mut self.storage.lock().execution)
+        operation(
+            &mut self
+                .storage
+                .lock(crate::runtime::IrqGuardSource::DeadlineServerTicket)
+                .execution,
+        )
     }
 }
 
@@ -514,7 +526,7 @@ impl DeadlineEntity {
     pub fn owner_flags(&self) -> DeadlineFlags {
         self.local
             .storage
-            .lock()
+            .lock(crate::runtime::IrqGuardSource::DeadlineServerTicket)
             .policy
             .map_or(DeadlineFlags::NONE, DeadlinePolicy::flags)
     }

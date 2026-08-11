@@ -20,8 +20,8 @@ impl IrqScope {
         Self::enter_with_source(IrqGuardSource::ExplicitScope)
     }
 
-    pub(super) fn enter_ticket_lock() -> Self {
-        Self::enter_with_source(IrqGuardSource::TicketLock)
+    pub(super) fn enter_ticket_lock(source: IrqGuardSource) -> Self {
+        Self::enter_with_source(source)
     }
 
     fn enter_with_source(source: IrqGuardSource) -> Self {

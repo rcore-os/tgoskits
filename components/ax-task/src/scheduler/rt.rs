@@ -191,7 +191,8 @@ impl RootRtBandwidth {
     }
 
     pub(crate) fn lock_runtime(&self) -> crate::lock::IrqTicketGuard<'_, ()> {
-        self.runtime_lock.lock()
+        self.runtime_lock
+            .lock(crate::runtime::IrqGuardSource::RootRtRuntimeTicket)
     }
 
     /// Starts the root period on the CPU that activated RT work.
@@ -199,7 +200,9 @@ impl RootRtBandwidth {
         if !self.enabled {
             return false;
         }
-        let mut state = self.state.lock();
+        let mut state = self
+            .state
+            .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket);
         let started = state.deadline.is_none();
         if started {
             state.generation = state
@@ -220,7 +223,9 @@ impl RootRtBandwidth {
     }
 
     pub(crate) fn deadline_for(&self, cpu: CpuId) -> Option<MonotonicDeadline> {
-        let state = self.state.lock();
+        let state = self
+            .state
+            .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket);
         (state.owner == Some(cpu))
             .then_some(state.deadline)
             .flatten()
@@ -228,7 +233,9 @@ impl RootRtBandwidth {
 
     /// Begins one due root-period callback on its pinned owner CPU.
     pub(crate) fn begin_period(&self, cpu: CpuId, now: MonotonicInstant) -> Option<RtPeriodFiring> {
-        let mut state = self.state.lock();
+        let mut state = self
+            .state
+            .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket);
         let deadline = state.deadline?;
         if state.owner != Some(cpu) || state.firing || !now.reached(deadline) {
             return None;
@@ -251,7 +258,9 @@ impl RootRtBandwidth {
 
     /// Completes a callback after all online rq ledgers were replenished.
     pub(crate) fn finish_period(&self, firing: RtPeriodFiring, keep_active: bool) {
-        let mut state = self.state.lock();
+        let mut state = self
+            .state
+            .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket);
         assert!(state.firing, "root RT period must finish an active firing");
         assert_eq!(
             state.generation, firing.generation,
@@ -269,7 +278,9 @@ impl RootRtBandwidth {
 
     /// Moves an active pinned period timer away from an offlining CPU.
     pub(crate) fn migrate_owner(&self, offline: CpuId, replacement: CpuId) -> bool {
-        let mut state = self.state.lock();
+        let mut state = self
+            .state
+            .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket);
         if state.owner != Some(offline) || state.deadline.is_none() {
             return false;
         }
@@ -279,7 +290,8 @@ impl RootRtBandwidth {
 
     #[cfg(test)]
     fn state(&self) -> IrqTicketGuard<'_, RootRtBandwidthState> {
-        self.state.lock()
+        self.state
+            .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket)
     }
 }
 

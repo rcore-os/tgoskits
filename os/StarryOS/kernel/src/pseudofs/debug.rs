@@ -135,6 +135,54 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "irq_ticket_thread_sched_entries {}",
+        task.irq_ticket_thread_sched_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_deadline_server_entries {}",
+        task.irq_ticket_deadline_server_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_cpu_run_queue_entries {}",
+        task.irq_ticket_cpu_run_queue_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_cpu_rt_bandwidth_entries {}",
+        task.irq_ticket_cpu_rt_bandwidth_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_cpu_deadline_entries {}",
+        task.irq_ticket_cpu_deadline_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_root_rt_runtime_entries {}",
+        task.irq_ticket_root_rt_runtime_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_root_rt_period_entries {}",
+        task.irq_ticket_root_rt_period_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_ticket_root_deadline_index_entries {}",
+        task.irq_ticket_root_deadline_index_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
         "irq_guard_explicit_entries {}",
         task.irq_guard_explicit_entries
     )
@@ -374,6 +422,14 @@ mod tests {
                 "runtime_irq_guard_none",
                 "irq_guard_ticket_entries",
                 "irq_guard_ticket_none",
+                "irq_ticket_thread_sched_entries",
+                "irq_ticket_deadline_server_entries",
+                "irq_ticket_cpu_run_queue_entries",
+                "irq_ticket_cpu_rt_bandwidth_entries",
+                "irq_ticket_cpu_deadline_entries",
+                "irq_ticket_root_rt_runtime_entries",
+                "irq_ticket_root_rt_period_entries",
+                "irq_ticket_root_deadline_index_entries",
                 "irq_guard_explicit_entries",
                 "irq_guard_explicit_none",
                 "irq_guard_runtime_cpu_entries",

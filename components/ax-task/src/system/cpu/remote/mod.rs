@@ -87,7 +87,8 @@ impl CpuRemote {
     /// transaction needs both. Owner-only switch-tail state is never protected
     /// by this lock and must not escape its CPU-local scheduler baton.
     pub(crate) fn lock_run_queue(&self) -> IrqTicketGuard<'_, CpuRunQueueState> {
-        self.run_queue.lock()
+        self.run_queue
+            .lock(crate::runtime::IrqGuardSource::CpuRunQueueTicket)
     }
 
     /// Acquires the rq under an already-active IRQ-off CPU owner.
@@ -111,7 +112,8 @@ impl CpuRemote {
     /// takes only this lock; soft-timer callbacks release it before acquiring a
     /// task control lock or rq lock.
     pub(crate) fn lock_deadline_base(&self) -> IrqTicketGuard<'_, CpuDeadlineState> {
-        self.deadline.lock()
+        self.deadline
+            .lock(crate::runtime::IrqGuardSource::CpuDeadlineTicket)
     }
 
     /// Locks Linux `rt_rq::rt_runtime_lock` after the owner rq lock when both
@@ -119,7 +121,8 @@ impl CpuRemote {
     pub(crate) fn lock_rt_bandwidth(&self) -> IrqTicketGuard<'_, RtRunQueueBandwidth> {
         #[cfg(test)]
         RT_BANDWIDTH_LOCK_ACQUISITIONS.set(RT_BANDWIDTH_LOCK_ACQUISITIONS.get().saturating_add(1));
-        self.rt_bandwidth.lock()
+        self.rt_bandwidth
+            .lock(crate::runtime::IrqGuardSource::CpuRtBandwidthTicket)
     }
 
     pub(crate) fn publish_deadline_extra_bw(&self, extra_bw_scaled: u64) {

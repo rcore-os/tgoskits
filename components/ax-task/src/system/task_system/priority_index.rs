@@ -98,7 +98,9 @@ impl RootDomainPriorityIndex {
             return;
         }
 
-        self.deadline.lock().publish(cpu, online, earliest_deadline);
+        self.deadline
+            .lock(crate::runtime::IrqGuardSource::RootDeadlineIndexTicket)
+            .publish(cpu, online, earliest_deadline);
         published.record(online, earliest_deadline);
         #[cfg(test)]
         DEADLINE_INDEX_PUBLICATIONS.set(DEADLINE_INDEX_PUBLICATIONS.get().saturating_add(1));
@@ -137,7 +139,7 @@ impl RootDomainPriorityIndex {
         #[cfg(test)]
         PRIORITY_INDEX_LOOKUPS.set(PRIORITY_INDEX_LOOKUPS.get().saturating_add(1));
         self.deadline
-            .lock()
+            .lock(crate::runtime::IrqGuardSource::RootDeadlineIndexTicket)
             .find_later(absolute_deadline_ns, affinity, preferred, accepts)
     }
 }

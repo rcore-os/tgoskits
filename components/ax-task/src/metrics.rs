@@ -8,7 +8,7 @@ use crate::{
 };
 
 const PREEMPT_GUARD_SOURCE_COUNT: usize = 5;
-const IRQ_GUARD_SOURCE_COUNT: usize = 4;
+const IRQ_GUARD_SOURCE_COUNT: usize = 11;
 
 /// Aggregate scheduler counters captured without allocating or taking locks.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -30,6 +30,14 @@ pub struct QperfSchedulerMetricsSnapshot {
     pub runtime_irq_guard_none: u64,
     pub irq_guard_ticket_entries: u64,
     pub irq_guard_ticket_none: u64,
+    pub irq_ticket_thread_sched_entries: u64,
+    pub irq_ticket_deadline_server_entries: u64,
+    pub irq_ticket_cpu_run_queue_entries: u64,
+    pub irq_ticket_cpu_rt_bandwidth_entries: u64,
+    pub irq_ticket_cpu_deadline_entries: u64,
+    pub irq_ticket_root_rt_runtime_entries: u64,
+    pub irq_ticket_root_rt_period_entries: u64,
+    pub irq_ticket_root_deadline_index_entries: u64,
     pub irq_guard_explicit_entries: u64,
     pub irq_guard_explicit_none: u64,
     pub irq_guard_runtime_cpu_entries: u64,
@@ -127,8 +135,22 @@ impl QperfSchedulerMetrics {
                 AtomicU64::new(0),
                 AtomicU64::new(0),
                 AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
             ],
             irq_guard_none: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
                 AtomicU64::new(0),
                 AtomicU64::new(0),
                 AtomicU64::new(0),
@@ -188,8 +210,31 @@ impl QperfSchedulerMetrics {
         let preempt_guard_activity_none = preempt_none(PreemptGuardSource::SchedulerActivity);
         let preempt_guard_irq_return_entries = preempt_entries(PreemptGuardSource::IrqReturn);
         let preempt_guard_irq_return_none = preempt_none(PreemptGuardSource::IrqReturn);
-        let irq_guard_ticket_entries = irq_entries(IrqGuardSource::TicketLock);
-        let irq_guard_ticket_none = irq_none(IrqGuardSource::TicketLock);
+        let irq_ticket_thread_sched_entries = irq_entries(IrqGuardSource::ThreadSchedTicket);
+        let irq_ticket_deadline_server_entries = irq_entries(IrqGuardSource::DeadlineServerTicket);
+        let irq_ticket_cpu_run_queue_entries = irq_entries(IrqGuardSource::CpuRunQueueTicket);
+        let irq_ticket_cpu_rt_bandwidth_entries = irq_entries(IrqGuardSource::CpuRtBandwidthTicket);
+        let irq_ticket_cpu_deadline_entries = irq_entries(IrqGuardSource::CpuDeadlineTicket);
+        let irq_ticket_root_rt_runtime_entries = irq_entries(IrqGuardSource::RootRtRuntimeTicket);
+        let irq_ticket_root_rt_period_entries = irq_entries(IrqGuardSource::RootRtPeriodTicket);
+        let irq_ticket_root_deadline_index_entries =
+            irq_entries(IrqGuardSource::RootDeadlineIndexTicket);
+        let irq_guard_ticket_entries = irq_ticket_thread_sched_entries
+            + irq_ticket_deadline_server_entries
+            + irq_ticket_cpu_run_queue_entries
+            + irq_ticket_cpu_rt_bandwidth_entries
+            + irq_ticket_cpu_deadline_entries
+            + irq_ticket_root_rt_runtime_entries
+            + irq_ticket_root_rt_period_entries
+            + irq_ticket_root_deadline_index_entries;
+        let irq_guard_ticket_none = irq_none(IrqGuardSource::ThreadSchedTicket)
+            + irq_none(IrqGuardSource::DeadlineServerTicket)
+            + irq_none(IrqGuardSource::CpuRunQueueTicket)
+            + irq_none(IrqGuardSource::CpuRtBandwidthTicket)
+            + irq_none(IrqGuardSource::CpuDeadlineTicket)
+            + irq_none(IrqGuardSource::RootRtRuntimeTicket)
+            + irq_none(IrqGuardSource::RootRtPeriodTicket)
+            + irq_none(IrqGuardSource::RootDeadlineIndexTicket);
         let irq_guard_explicit_entries = irq_entries(IrqGuardSource::ExplicitScope);
         let irq_guard_explicit_none = irq_none(IrqGuardSource::ExplicitScope);
         let irq_guard_runtime_cpu_entries = irq_entries(IrqGuardSource::RuntimeCpu);
@@ -230,6 +275,14 @@ impl QperfSchedulerMetrics {
                 + irq_guard_executor_none,
             irq_guard_ticket_entries,
             irq_guard_ticket_none,
+            irq_ticket_thread_sched_entries,
+            irq_ticket_deadline_server_entries,
+            irq_ticket_cpu_run_queue_entries,
+            irq_ticket_cpu_rt_bandwidth_entries,
+            irq_ticket_cpu_deadline_entries,
+            irq_ticket_root_rt_runtime_entries,
+            irq_ticket_root_rt_period_entries,
+            irq_ticket_root_deadline_index_entries,
             irq_guard_explicit_entries,
             irq_guard_explicit_none,
             irq_guard_runtime_cpu_entries,
@@ -518,7 +571,14 @@ mod tests {
         metrics.record_preempt_guard_entry(PreemptGuardSource::SyncContext, false);
         metrics.record_preempt_guard_entry(PreemptGuardSource::SchedulerActivity, true);
         metrics.record_preempt_guard_entry(PreemptGuardSource::IrqReturn, false);
-        metrics.record_irq_guard_entry(IrqGuardSource::TicketLock, false);
+        metrics.record_irq_guard_entry(IrqGuardSource::ThreadSchedTicket, false);
+        metrics.record_irq_guard_entry(IrqGuardSource::DeadlineServerTicket, false);
+        metrics.record_irq_guard_entry(IrqGuardSource::CpuRunQueueTicket, false);
+        metrics.record_irq_guard_entry(IrqGuardSource::CpuRtBandwidthTicket, false);
+        metrics.record_irq_guard_entry(IrqGuardSource::CpuDeadlineTicket, false);
+        metrics.record_irq_guard_entry(IrqGuardSource::RootRtRuntimeTicket, false);
+        metrics.record_irq_guard_entry(IrqGuardSource::RootRtPeriodTicket, false);
+        metrics.record_irq_guard_entry(IrqGuardSource::RootDeadlineIndexTicket, false);
         metrics.record_irq_guard_entry(IrqGuardSource::ExplicitScope, true);
         metrics.record_irq_guard_entry(IrqGuardSource::RuntimeCpu, false);
         metrics.record_irq_guard_entry(IrqGuardSource::Executor, true);
@@ -544,9 +604,17 @@ mod tests {
                 preempt_guard_activity_entries: 1,
                 preempt_guard_activity_none: 1,
                 preempt_guard_irq_return_entries: 1,
-                runtime_irq_guard_entries: 4,
+                runtime_irq_guard_entries: 11,
                 runtime_irq_guard_none: 2,
-                irq_guard_ticket_entries: 1,
+                irq_guard_ticket_entries: 8,
+                irq_ticket_thread_sched_entries: 1,
+                irq_ticket_deadline_server_entries: 1,
+                irq_ticket_cpu_run_queue_entries: 1,
+                irq_ticket_cpu_rt_bandwidth_entries: 1,
+                irq_ticket_cpu_deadline_entries: 1,
+                irq_ticket_root_rt_runtime_entries: 1,
+                irq_ticket_root_rt_period_entries: 1,
+                irq_ticket_root_deadline_index_entries: 1,
                 irq_guard_explicit_entries: 1,
                 irq_guard_explicit_none: 1,
                 irq_guard_runtime_cpu_entries: 1,

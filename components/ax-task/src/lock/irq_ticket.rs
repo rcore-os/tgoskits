@@ -6,6 +6,7 @@ use core::{
 };
 
 use super::{IrqScope, RawTicketGuard, RawTicketLock};
+use crate::runtime::IrqGuardSource;
 
 /// A non-sleeping lock for scheduler state shared with hard-IRQ producers.
 ///
@@ -26,8 +27,8 @@ impl<T> IrqTicketLock<T> {
     }
 
     /// Disables local IRQs and acquires the lock in ticket order.
-    pub(crate) fn lock(&self) -> IrqTicketGuard<'_, T> {
-        let irq = IrqScope::enter_ticket_lock();
+    pub(crate) fn lock(&self, source: IrqGuardSource) -> IrqTicketGuard<'_, T> {
+        let irq = IrqScope::enter_ticket_lock(source);
         let raw = self.raw.lock();
         IrqTicketGuard {
             raw: Some(raw),
@@ -55,8 +56,8 @@ impl<T> IrqTicketLock<T> {
 
     /// Attempts acquisition and restores local IRQ state on failure.
     #[cfg(test)]
-    pub(crate) fn try_lock(&self) -> Option<IrqTicketGuard<'_, T>> {
-        let irq = IrqScope::enter_ticket_lock();
+    pub(crate) fn try_lock(&self, source: IrqGuardSource) -> Option<IrqTicketGuard<'_, T>> {
+        let irq = IrqScope::enter_ticket_lock(source);
         self.raw.try_lock().map(|raw| IrqTicketGuard {
             raw: Some(raw),
             irq: Some(irq),
@@ -107,9 +108,9 @@ mod tests {
     fn try_lock_failure_restores_its_irq_nesting() {
         crate::test_runtime::reset_irq_guard_entries();
         let lock = IrqTicketLock::new(());
-        let first = lock.lock();
+        let first = lock.lock(IrqGuardSource::ThreadSchedTicket);
         assert_eq!(crate::test_runtime::active_irq_guards(), 1);
-        assert!(lock.try_lock().is_none());
+        assert!(lock.try_lock(IrqGuardSource::ThreadSchedTicket).is_none());
         assert_eq!(crate::test_runtime::active_irq_guards(), 1);
         drop(first);
         assert_eq!(crate::test_runtime::active_irq_guards(), 0);

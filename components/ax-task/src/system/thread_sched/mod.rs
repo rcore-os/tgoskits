@@ -63,7 +63,8 @@ impl ThreadSchedCell {
     }
 
     pub(super) fn lock(&self) -> IrqTicketGuard<'_, ThreadSchedState> {
-        self.state.lock()
+        self.state
+            .lock(crate::runtime::IrqGuardSource::ThreadSchedTicket)
     }
 
     /// Locks scheduler state during offline CPU bootstrap.
