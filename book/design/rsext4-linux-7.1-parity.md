@@ -551,3 +551,29 @@ API 检查点，write median/p95 改善约 1.7%/9.0%，read median/p95 改善约
 7.4%/5.5%，sync p95 改善约 37.7%。本检查点使现有 sequential host workload
 重新通过，但完整 workload/feature、Linux 7.1 新功能开销和最终三架构矩阵仍未完成，
 不能作为最终性能验收。
+
+### 7.20 legacy indirect truncate 检查点
+
+采集时间：2026-08-11；被测实现 commit 为
+`a1e72761288d58198232e441df521f4b52d08f38`，固定 CPU 2，环境、owned API
+harness 和 workload 与 7.19 相同。本检查点实现 legacy indirect truncate 的完整
+ownership preflight、single/double/triple-indirect 右侧裁剪、pointer block 回滚与
+inode 映射先发布后释放。冻结的 sequential workload 不创建或裁剪 legacy indirect
+inode，因此本结果只保护共享 write/read/sync 热路径，不能作为 truncate 路径的因果
+性能证明。
+
+正式检查使用 3 次预热与 20 次测量，全部有效原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-legacy-indirect-truncate.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=a1e72761288d58198232e441df521f4b52d08f38 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6563417 write_p95_ns=7134188 read_median_ns=6976323 read_p95_ns=7841817 sync_median_ns=33291 sync_p95_ns=48397
+```
+
+相对 dev 基线，write median/p95 分别改善约 3.9%/2.7%，read median/p95 分别
+改善约 3.4%/7.5%，均通过冻结门槛；sync median/p95 分别回退约 28.9%/25.2%，
+其中 sync p95 超过 10% latency 上限。相对 7.19，write median/p95 分别回退约
+1.1%/1.4%，read median/p95 分别回退约 12.4%/3.4%，sync median/p95 分别回退约
+3.2%/35.6%。两个最长 sync 样本 49.157 us 与 48.397 us 均保留在原始数据中，
+未丢弃样本，也未用选择性复测覆盖；本检查点原样登记为性能红项。由于 legacy
+truncate 不在该 workload 热路径，当前证据不能把回退归因于 truncate 实现，留待
+整体性能收敛阶段用冻结 harness 和同机 dev A/B 定位。
