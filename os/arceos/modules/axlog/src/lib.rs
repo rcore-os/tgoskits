@@ -302,8 +302,8 @@ impl Log for Logger {
 }
 
 fn write_console_fmt_locked(args: fmt::Arguments) -> fmt::Result {
-    use ax_kspin::SpinNoIrq; // TODO: more efficient
-    static LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
+    use ax_sync::SpinLock;
+    static LOCK: SpinLock<()> = SpinLock::new(());
 
     // Panic and oops paths must not re-enter the normal print lock because its
     // unlock path may restore preemption/IRQs and trigger more complex control
