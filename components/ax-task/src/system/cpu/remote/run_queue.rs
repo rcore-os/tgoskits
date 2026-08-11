@@ -5,6 +5,45 @@ use super::*;
 use crate::FairEntity;
 use crate::SchedulerClass;
 
+/// Typed reason for entering the per-CPU runqueue with irqsave semantics.
+///
+/// Scheduler-frame and offline-bootstrap owners use the separate
+/// `lock_run_queue_irq_disabled` contract and therefore never appear here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RunQueueGuardSource {
+    Transaction,
+    OwnerObservation,
+    TimerObservation,
+    RtAccounting,
+    DeadlineAccounting,
+    Membarrier,
+    Lifecycle,
+    #[cfg(test)]
+    TestInspection,
+}
+
+impl RunQueueGuardSource {
+    pub(crate) const fn irq_guard_source(self) -> crate::runtime::IrqGuardSource {
+        match self {
+            Self::Transaction => crate::runtime::IrqGuardSource::CpuRunQueueTransactionTicket,
+            Self::OwnerObservation => {
+                crate::runtime::IrqGuardSource::CpuRunQueueOwnerObservationTicket
+            }
+            Self::TimerObservation => {
+                crate::runtime::IrqGuardSource::CpuRunQueueTimerObservationTicket
+            }
+            Self::RtAccounting => crate::runtime::IrqGuardSource::CpuRunQueueRtAccountingTicket,
+            Self::DeadlineAccounting => {
+                crate::runtime::IrqGuardSource::CpuRunQueueDeadlineAccountingTicket
+            }
+            Self::Membarrier => crate::runtime::IrqGuardSource::CpuRunQueueMembarrierTicket,
+            Self::Lifecycle => crate::runtime::IrqGuardSource::CpuRunQueueLifecycleTicket,
+            #[cfg(test)]
+            Self::TestInspection => crate::runtime::IrqGuardSource::CpuRunQueueLifecycleTicket,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WakePreemptionDecision {
     KeepCurrent,

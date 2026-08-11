@@ -198,7 +198,9 @@ impl TaskSystem {
     pub fn rt_run_queue_may_run(&self, cpu: Pin<&mut CpuLocal>) -> Result<bool, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let run_queue = cpu.remote().lock_run_queue();
+        let run_queue = cpu
+            .remote()
+            .lock_run_queue(RunQueueGuardSource::RtAccounting);
         Ok(!run_queue.rt_is_throttled() || run_queue.has_exempt_rt())
     }
 

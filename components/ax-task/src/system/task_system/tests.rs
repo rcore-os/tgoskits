@@ -104,7 +104,8 @@ fn rt_period_observes_rq_throttle_after_an_optimistic_empty_snapshot() {
     // Model the interleaving where the period owner first observes an empty
     // runtime ledger, then the rq owner publishes the throttle transition and
     // removes the last RT entity before the period owner acquires the rq lock.
-    cpu.lock_run_queue().set_rt_throttled(true);
+    cpu.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+        .set_rt_throttled(true);
     assert!(
         system
             .root_domain
@@ -116,7 +117,8 @@ fn rt_period_observes_rq_throttle_after_an_optimistic_empty_snapshot() {
         MonotonicInstant::from_nanos(1_000_000_000).unwrap(),
     ));
     assert!(
-        !cpu.lock_run_queue().rt_is_throttled(),
+        !cpu.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+            .rt_is_throttled(),
         "the rq-owned throttle fact must participate in the period fast-path decision"
     );
 }
@@ -474,7 +476,7 @@ fn remote_deadline_wake_uses_the_target_runqueue_clock() {
         crate::WakeResult::Notified
     );
     let absolute_deadline = cpu1
-        .lock_run_queue()
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .scheduling_entity(deadline.id())
         .expect("the woken Deadline entity must be owned by the target rq")
         .deadline()
@@ -741,7 +743,7 @@ fn fair_service_thread_woken_from_irq_preempts_without_waiting_for_timer() {
         service.id()
     );
     system.complete_context_switch(cpu.as_mut()).unwrap();
-    *cpu.lock_run_queue()
+    *cpu.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .current_mut()
         .unwrap()
         .active_mut()
@@ -775,12 +777,12 @@ fn fair_service_thread_woken_from_irq_preempts_without_waiting_for_timer() {
 
     let current_entity =
         FairEntity::test_state(Nice::ZERO, FairMode::Normal, 20_000_000, 20_400_000);
-    *cpu.lock_run_queue()
+    *cpu.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .current_mut()
         .unwrap()
         .active_mut()
         .entity_mut() = SchedulingEntity::Fair(current_entity);
-    cpu.lock_run_queue()
+    cpu.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .update_fair_virtual_time(Some(current_entity));
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
     crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
@@ -799,7 +801,7 @@ fn fair_service_thread_woken_from_irq_preempts_without_waiting_for_timer() {
         ThreadState::Ready
     );
     let queued = cpu
-        .lock_run_queue()
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .scheduling_entity(service.id())
         .expect("the IRQ-woken service must be linked in its owner rq")
         .fair()
@@ -834,7 +836,7 @@ fn eligible_fair_current_keeps_latest_eevdf_slice_protection_on_wake() {
 
     let current = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 900, 1_200);
     let woken = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 800, 1_000);
-    let mut run_queue = cpu.lock_run_queue();
+    let mut run_queue = cpu.lock_run_queue(crate::RunQueueGuardSource::TestInspection);
     let dispatch = run_queue.current_mut().unwrap();
     *dispatch.active_mut().entity_mut() = SchedulingEntity::Fair(current);
 
@@ -1054,7 +1056,8 @@ fn direct_wake_activates_the_target_runqueue_before_its_owner_safe_point() {
          point",
     );
     assert_eq!(
-        cpu1.lock_run_queue().nr_queued(),
+        cpu1.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+            .nr_queued(),
         1,
         "the target runqueue must expose the newly runnable thread before the wake returns",
     );
@@ -1348,7 +1351,11 @@ fn fair_wake_republishes_reschedule_for_a_dedicated_idle_owner() {
     crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
 
-    assert_eq!(cpu1.lock_run_queue().nr_queued(), 2);
+    assert_eq!(
+        cpu1.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+            .nr_queued(),
+        2
+    );
     assert!(
         cpu1.remote().needs_reschedule(),
         "Linux idle-class wakeup must publish a strong reschedule even when another queued Fair \
@@ -1409,8 +1416,12 @@ fn remote_fifo_wake_fixture(
 fn lower_priority_remote_wake_uses_lower_priority_cpu_with_one_doorbell() {
     crate::test_runtime::reset_irq_state();
     let (system, mut cpu0, cpu1, sleeper) = remote_fifo_wake_fixture(10, 1);
-    let local_runnable_before = cpu0.lock_run_queue().nr_queued();
-    let remote_runnable_before = cpu1.lock_run_queue().nr_queued();
+    let local_runnable_before = cpu0
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+        .nr_queued();
+    let remote_runnable_before = cpu1
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+        .nr_queued();
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
     crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
 
@@ -1420,8 +1431,16 @@ fn lower_priority_remote_wake_uses_lower_priority_cpu_with_one_doorbell() {
         system.thread_state(sleeper.id()).unwrap(),
         ThreadState::Ready
     );
-    assert_eq!(cpu0.lock_run_queue().nr_queued(), local_runnable_before + 1);
-    assert_eq!(cpu1.lock_run_queue().nr_queued(), remote_runnable_before);
+    assert_eq!(
+        cpu0.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+            .nr_queued(),
+        local_runnable_before + 1
+    );
+    assert_eq!(
+        cpu1.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+            .nr_queued(),
+        remote_runnable_before
+    );
     assert_eq!(
         crate::test_runtime::scheduler_ipi_send_count(),
         1,
@@ -1438,7 +1457,9 @@ fn higher_priority_remote_wake_sends_one_reschedule_ipi() {
     system.set_affinity(sleeper.id(), cpu1_only).unwrap();
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
     crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
-    let runnable_before = cpu1.lock_run_queue().nr_queued();
+    let runnable_before = cpu1
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+        .nr_queued();
 
     assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
 
@@ -1446,7 +1467,11 @@ fn higher_priority_remote_wake_sends_one_reschedule_ipi() {
         system.thread_state(sleeper.id()).unwrap(),
         ThreadState::Ready
     );
-    assert_eq!(cpu1.lock_run_queue().nr_queued(), runnable_before + 1);
+    assert_eq!(
+        cpu1.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+            .nr_queued(),
+        runnable_before + 1
+    );
     assert_eq!(
         crate::test_runtime::scheduler_ipi_send_count(),
         1,
@@ -4107,7 +4132,7 @@ fn running_rt_task_has_one_active_schedule_owner() {
         usize::from(sched.policy.owns_active())
     };
     let rq_owners = cpu
-        .lock_run_queue()
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .debug_schedule_owner_count(running.id());
     assert_eq!(
         thread_owner + rq_owners,
@@ -4271,14 +4296,16 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .unwrap();
 
     let before = cpu
-        .lock_run_queue()
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .current_scheduling_entity()
         .unwrap()
         .fair()
         .unwrap();
     assert_eq!(before.vruntime(), 650_000);
     assert_eq!(before.remaining_request_ns(), 450_000);
-    let virtual_time = cpu.lock_run_queue().virtual_time();
+    let virtual_time = cpu
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+        .virtual_time();
     assert_eq!(virtual_time, 525_000);
 
     let nice = Nice::new(5).unwrap();
@@ -4289,7 +4316,7 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .drain_owner_control_at(cpu.as_mut(), 1_050_000)
         .unwrap();
     let reweighted = cpu
-        .lock_run_queue()
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .current_scheduling_entity()
         .expect("the running task must retain its rq-owned Fair entity")
         .fair()
@@ -4314,7 +4341,7 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .drain_owner_control_at(cpu.as_mut(), 1_050_000)
         .unwrap();
     let batch = cpu
-        .lock_run_queue()
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .current_scheduling_entity()
         .expect("the running task must retain its rq-owned Batch entity")
         .fair()
@@ -4333,7 +4360,7 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .drain_owner_control_at(cpu.as_mut(), 1_050_000)
         .unwrap();
     let idle = cpu
-        .lock_run_queue()
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .current_scheduling_entity()
         .expect("the running task must retain its rq-owned SCHED_IDLE entity")
         .fair()
@@ -4417,7 +4444,9 @@ fn running_idle_to_normal_transition_uses_both_class_virtual_times() {
         .charge_current_at(cpu.as_mut(), 1_001_000, 1_000, 0)
         .unwrap();
 
-    let normal_virtual_time = cpu.lock_run_queue().virtual_time();
+    let normal_virtual_time = cpu
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+        .virtual_time();
     assert_eq!(normal_virtual_time, 1_000_000);
     system
         .set_thread_policy(idle.id(), SchedulePolicy::default())
@@ -4427,7 +4456,7 @@ fn running_idle_to_normal_transition_uses_both_class_virtual_times() {
         .unwrap();
 
     let transitioned = cpu
-        .lock_run_queue()
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .current_scheduling_entity()
         .expect("the running policy target must remain rq->curr")
         .fair()
@@ -4459,7 +4488,7 @@ fn running_normal_to_idle_transition_settles_then_rebases_lag() {
         .unwrap();
 
     let transitioned = cpu
-        .lock_run_queue()
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .current_scheduling_entity()
         .expect("the running policy target must remain rq->curr")
         .fair()
@@ -4467,7 +4496,8 @@ fn running_normal_to_idle_transition_settles_then_rebases_lag() {
     assert_eq!(transitioned.mode(), FairMode::Idle);
     assert_eq!(
         transitioned.vruntime(),
-        cpu.lock_run_queue().virtual_time_for_mode(FairMode::Idle),
+        cpu.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+            .virtual_time_for_mode(FairMode::Idle),
         "settled zero lag must be expressed relative to the destination V domain",
     );
 }
@@ -4579,14 +4609,14 @@ fn single_runnable_fair_yield_preserves_the_active_request() {
     system.bring_cpu_online(cpu.as_mut()).unwrap();
 
     let before = cpu
-        .lock_run_queue()
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .current_scheduling_entity()
         .expect("bootstrap current must be owned by rq->curr")
         .fair()
         .unwrap();
     let decision = system.yield_current_at(cpu.as_mut(), 0).unwrap();
     let after = cpu
-        .lock_run_queue()
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
         .current_scheduling_entity()
         .expect("no-switch yield must retain rq->curr")
         .fair()
@@ -4711,7 +4741,8 @@ fn queued_affinity_migration_captures_lag_before_detaching_from_source() {
         system.enqueue(cpu0.as_mut(), thread.id()).unwrap();
     }
 
-    cpu0.lock_run_queue().set_virtual_time_for_test(1_000);
+    cpu0.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+        .set_virtual_time_for_test(1_000);
     for (thread, vruntime, deadline) in [(&migrating, 900, 950), (&peer, 1_100, 1_200)] {
         let entity = SchedulingEntity::Fair(FairEntity::test_state(
             Nice::ZERO,
@@ -5088,8 +5119,13 @@ fn rt_deadline_put_prev_keeps_one_runqueue_owner() {
         deadline.id()
     );
     system.complete_context_switch(cpu.as_mut()).unwrap();
-    assert!(cpu.lock_run_queue().is_linked_current(deadline.id()));
-    let queued_before = cpu.lock_run_queue().nr_queued();
+    assert!(
+        cpu.lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+            .is_linked_current(deadline.id())
+    );
+    let queued_before = cpu
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+        .nr_queued();
     let remote = Arc::clone(cpu.remote());
     {
         let mut sched = deadline.core.sched().lock();
@@ -5111,7 +5147,7 @@ fn rt_deadline_put_prev_keeps_one_runqueue_owner() {
     assert_eq!(sched.placement.queued_cpu(), Some(CpuId::new(0)));
     drop(sched);
     assert_eq!(cpu.current(), None);
-    let run_queue = cpu.lock_run_queue();
+    let run_queue = cpu.lock_run_queue(crate::RunQueueGuardSource::TestInspection);
     assert!(run_queue.queued_thread(deadline.id()).is_some());
     assert_eq!(run_queue.nr_queued(), queued_before + 1);
 }
@@ -5135,7 +5171,9 @@ fn deadline_runqueue_ledger_tracks_policy_replacement() {
         .unwrap();
     system.make_ready(deadline.id()).unwrap();
     system.enqueue_at(cpu.as_mut(), deadline.id(), 0).unwrap();
-    let bandwidth = cpu.lock_run_queue().deadline_bandwidth();
+    let bandwidth = cpu
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+        .deadline_bandwidth();
     assert_eq!(bandwidth.this_bw_scaled(), 500_000_000);
     assert_eq!(bandwidth.running_bw_scaled(), 500_000_000);
 
@@ -5143,7 +5181,9 @@ fn deadline_runqueue_ledger_tracks_policy_replacement() {
         .set_thread_policy(deadline.id(), SchedulePolicy::default())
         .unwrap();
     system.drain_owner_control_at(cpu.as_mut(), 1).unwrap();
-    let bandwidth = cpu.lock_run_queue().deadline_bandwidth();
+    let bandwidth = cpu
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+        .deadline_bandwidth();
     assert_eq!(bandwidth.this_bw_scaled(), 0);
     assert_eq!(bandwidth.running_bw_scaled(), 0);
 
@@ -5154,7 +5194,9 @@ fn deadline_runqueue_ledger_tracks_policy_replacement() {
         )
         .unwrap();
     system.drain_owner_control_at(cpu.as_mut(), 2).unwrap();
-    let bandwidth = cpu.lock_run_queue().deadline_bandwidth();
+    let bandwidth = cpu
+        .lock_run_queue(crate::RunQueueGuardSource::TestInspection)
+        .deadline_bandwidth();
     assert_eq!(bandwidth.this_bw_scaled(), 100_000_000);
     assert_eq!(bandwidth.running_bw_scaled(), 100_000_000);
 }
@@ -5180,7 +5222,7 @@ fn queued_rt_deadline_reclassification_preserves_pushable_membership() {
     system.make_ready(thread.id()).unwrap();
     system.enqueue_at(cpu0.as_mut(), thread.id(), 0).unwrap();
     {
-        let run_queue = cpu0.lock_run_queue();
+        let run_queue = cpu0.lock_run_queue(crate::RunQueueGuardSource::TestInspection);
         assert_eq!(run_queue.nr_running(), 1);
         assert!(run_queue.has_pushable_realtime());
         assert!(!run_queue.has_pushable_deadline());
@@ -5190,7 +5232,7 @@ fn queued_rt_deadline_reclassification_preserves_pushable_membership() {
         SchedulePolicy::deadline(DeadlinePolicy::new(1, 4, 10, DeadlineFlags::NONE).unwrap());
     system.set_thread_policy(thread.id(), deadline).unwrap();
     {
-        let run_queue = cpu0.lock_run_queue();
+        let run_queue = cpu0.lock_run_queue(crate::RunQueueGuardSource::TestInspection);
         assert_eq!(run_queue.nr_running(), 1);
         assert!(!run_queue.has_pushable_realtime());
         assert!(run_queue.has_pushable_deadline());
@@ -5201,7 +5243,7 @@ fn queued_rt_deadline_reclassification_preserves_pushable_membership() {
     }
 
     system.set_thread_policy(thread.id(), rt).unwrap();
-    let run_queue = cpu0.lock_run_queue();
+    let run_queue = cpu0.lock_run_queue(crate::RunQueueGuardSource::TestInspection);
     assert_eq!(run_queue.nr_running(), 1);
     assert!(run_queue.has_pushable_realtime());
     assert!(!run_queue.has_pushable_deadline());
@@ -5586,7 +5628,7 @@ fn effective_rt_entity_never_replaces_the_base_rr_accounting() {
     let wait = commit_pi_wait(&system, &lock, donor.id(), owner.id()).unwrap();
     system.drain_owner_control_at(cpu.as_mut(), 0).unwrap();
 
-    let rq = cpu.lock_run_queue();
+    let rq = cpu.lock_run_queue(crate::RunQueueGuardSource::TestInspection);
     let (effective_policy, effective_entity) = rq.scheduling_state(owner.id()).unwrap();
     assert_eq!(
         effective_policy,

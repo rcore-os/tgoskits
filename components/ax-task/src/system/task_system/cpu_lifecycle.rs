@@ -147,7 +147,10 @@ impl TaskSystem {
             "validated offline CPU must accept final publication"
         );
         OwnerRqTxn::begin(self, cpu.remote()).commit();
-        if cpu.lock_run_queue().has_runnable_rt() {
+        if cpu
+            .lock_run_queue(RunQueueGuardSource::Lifecycle)
+            .has_runnable_rt()
+        {
             self.root_domain.activate_rt_period(id, monotonic_now);
         }
         Ok(())

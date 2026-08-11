@@ -701,7 +701,11 @@ impl TaskSystem {
         // The owner rq retains every admitted Deadline core until both timers
         // are cancelled and the reservation is detached, matching Linux's
         // sched_dl_entity-embedded hrtimer lifetime.
-        let Some(core) = cpu.remote().lock_run_queue().deadline_member(thread) else {
+        let Some(core) = cpu
+            .remote()
+            .lock_run_queue(RunQueueGuardSource::DeadlineAccounting)
+            .deadline_member(thread)
+        else {
             return Ok(());
         };
         match event.kind() {

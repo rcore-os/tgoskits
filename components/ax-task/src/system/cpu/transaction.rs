@@ -74,7 +74,7 @@ impl<'a> OwnerRqTxn<'a> {
     }
 
     pub(crate) fn begin(system: &'a TaskSystem, remote: &'a CpuRemote) -> Self {
-        let mut run_queue = remote.lock_run_queue();
+        let mut run_queue = remote.lock_run_queue(RunQueueGuardSource::Transaction);
         let clock = run_queue.update_clock();
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_owner_rq_irqsave_transaction();

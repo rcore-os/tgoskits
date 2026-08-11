@@ -228,7 +228,7 @@ mod tests {
         let state = task_runtime::address_space_membarrier_state(address_space_handle);
         assert!(state.requested(MembarrierRegistration::PrivateExpedited));
         assert!(state.ready(MembarrierRegistration::PrivateExpedited));
-        let rq_state = cpu.remote().lock_run_queue().membarrier_state();
+        let rq_state = cpu.remote().lock_run_queue(crate::RunQueueGuardSource::TestInspection).membarrier_state();
         assert_eq!(rq_state.identity(), state.identity());
         assert!(rq_state.requested(MembarrierRegistration::PrivateExpedited));
         assert!(

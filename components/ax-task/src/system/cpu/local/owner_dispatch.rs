@@ -5,11 +5,15 @@ use super::*;
 impl CpuLocal {
     /// Returns the currently executing non-idle thread, if any.
     pub(crate) fn current(&self) -> Option<ThreadId> {
-        self.remote.lock_run_queue().current_thread()
+        self.remote
+            .lock_run_queue(RunQueueGuardSource::OwnerObservation)
+            .current_thread()
     }
 
     pub(crate) fn current_core(&self) -> Option<Arc<ThreadCore>> {
-        self.remote.lock_run_queue().current_core()
+        self.remote
+            .lock_run_queue(RunQueueGuardSource::OwnerObservation)
+            .current_core()
     }
 
     /// Clones a strong handle for the currently executing thread.
@@ -19,7 +23,7 @@ impl CpuLocal {
     /// extension until the returned handle is dropped.
     pub(crate) fn current_thread_handle(&self) -> Result<ThreadHandle, TaskError> {
         self.remote
-            .lock_run_queue()
+            .lock_run_queue(RunQueueGuardSource::OwnerObservation)
             .current_core()
             .map(ThreadHandle::from_core)
             .ok_or(TaskError::NoRunnableThread)
@@ -27,16 +31,20 @@ impl CpuLocal {
 
     /// Returns the configured CPU idle thread, if any.
     pub(crate) fn idle(&self) -> Option<ThreadId> {
-        self.remote.lock_run_queue().idle()
+        self.remote
+            .lock_run_queue(RunQueueGuardSource::OwnerObservation)
+            .idle()
     }
 
     /// Returns the number of runnable non-idle threads.
     pub(crate) fn runnable_count(&self) -> usize {
-        self.remote.lock_run_queue().nr_running()
+        self.remote
+            .lock_run_queue(RunQueueGuardSource::OwnerObservation)
+            .nr_running()
     }
 
     pub(crate) fn is_quiescent_for_offline(&self) -> bool {
-        let run_queue = self.remote.lock_run_queue();
+        let run_queue = self.remote.lock_run_queue(RunQueueGuardSource::Lifecycle);
         let deadlines = self
             .remote
             .read_deadline_base(DeadlineBaseGuardSource::Lifecycle);
@@ -170,8 +178,11 @@ impl CpuLocal {
         &mut unsafe { self.get_unchecked_mut() }.dispatch
     }
 
-    pub(crate) fn lock_run_queue(&self) -> IrqTicketGuard<'_, CpuRunQueueState> {
-        self.remote.lock_run_queue()
+    pub(crate) fn lock_run_queue(
+        &self,
+        source: RunQueueGuardSource,
+    ) -> IrqTicketGuard<'_, CpuRunQueueState> {
+        self.remote.lock_run_queue(source)
     }
 
     pub(crate) fn drain_state_mut(self: Pin<&mut Self>) -> &mut drain_state::OwnerDrainScratch {
@@ -185,7 +196,9 @@ impl CpuLocal {
 
     #[cfg(test)]
     pub(crate) fn deadline_members_are_empty_for_test(&self) -> bool {
-        self.remote.lock_run_queue().deadline_members_are_empty()
+        self.remote
+            .lock_run_queue(RunQueueGuardSource::DeadlineAccounting)
+            .deadline_members_are_empty()
     }
 
     pub(crate) fn balance_request_node(&self) -> Pin<&'static InboxNode> {

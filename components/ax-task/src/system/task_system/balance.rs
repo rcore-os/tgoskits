@@ -726,7 +726,7 @@ mod tests {
             Ok(BalanceTransferOutcome::Retry)
         );
         {
-            let run_queue = cpu0.lock_run_queue();
+            let run_queue = cpu0.lock_run_queue(crate::RunQueueGuardSource::TestInspection);
             assert_eq!(run_queue.nr_running(), 2);
             assert_eq!(run_queue.rt_count_at_priority(50), 2);
             assert!(run_queue.has_pushable_realtime());

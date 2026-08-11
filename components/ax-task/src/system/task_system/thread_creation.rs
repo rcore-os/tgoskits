@@ -66,7 +66,9 @@ impl TaskSystem {
         // irqsave locks.
         for remote in &self.cpu_remotes {
             let mut run_queue = match context {
-                ThreadCreationContext::Runtime => remote.lock_run_queue(),
+                ThreadCreationContext::Runtime => {
+                    remote.lock_run_queue(RunQueueGuardSource::Lifecycle)
+                }
                 ThreadCreationContext::OfflineBootstrap => {
                     // SAFETY: per-CPU bootstrap retains raw IRQ exclusion and
                     // PREEMPT_DISABLED until the complete rq/current/idle

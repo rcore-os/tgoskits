@@ -22,7 +22,7 @@ pub use lifecycle::CpuLifecycleState;
 pub(crate) use lifecycle::{CpuRemotePublication, OwnedCpuRemotePublication};
 pub use owner::CpuLocalOwnerBorrow;
 pub(in crate::system::cpu) use run_queue::RqCurrentTick;
-pub(crate) use run_queue::{CpuRunQueueState, WakePreemptionDecision};
+pub(crate) use run_queue::{CpuRunQueueState, RunQueueGuardSource, WakePreemptionDecision};
 pub(crate) use scheduler::SchedulerRequestClaim;
 
 #[cfg(test)]
@@ -89,9 +89,11 @@ impl CpuRemote {
     /// Thread scheduler state must be acquired before this lock whenever one
     /// transaction needs both. Owner-only switch-tail state is never protected
     /// by this lock and must not escape its CPU-local scheduler baton.
-    pub(crate) fn lock_run_queue(&self) -> IrqTicketGuard<'_, CpuRunQueueState> {
-        self.run_queue
-            .lock(crate::runtime::IrqGuardSource::CpuRunQueueTicket)
+    pub(crate) fn lock_run_queue(
+        &self,
+        source: RunQueueGuardSource,
+    ) -> IrqTicketGuard<'_, CpuRunQueueState> {
+        self.run_queue.lock(source.irq_guard_source())
     }
 
     /// Acquires the rq under an already-active IRQ-off CPU owner.

@@ -30,7 +30,7 @@ impl RootDomain {
                 continue;
             }
             let snapshot = *remote.lock_rt_bandwidth();
-            let run_queue = remote.lock_run_queue();
+            let run_queue = remote.lock_run_queue(RunQueueGuardSource::RtAccounting);
             let runnable = run_queue.has_runnable_rt();
             let throttled = run_queue.rt_is_throttled();
             drop(run_queue);
@@ -138,7 +138,7 @@ impl RootDomain {
 
     pub(in crate::system::task_system) fn enable_rt_runtime(&self, cpu: CpuId) {
         let remote = &self.runqueues[cpu.as_usize()];
-        let mut run_queue = remote.lock_run_queue();
+        let mut run_queue = remote.lock_run_queue(RunQueueGuardSource::RtAccounting);
         remote.lock_rt_bandwidth().enable(
             self.rt_bandwidth.period_ns(),
             self.rt_bandwidth.runtime_ns(),
@@ -177,7 +177,7 @@ impl RootDomain {
         self.runqueues[cpu.as_usize()].lock_rt_bandwidth().disable();
         drop(root_guard);
         self.runqueues[cpu.as_usize()]
-            .lock_run_queue()
+            .lock_run_queue(RunQueueGuardSource::RtAccounting)
             .set_rt_throttled(false);
     }
 }

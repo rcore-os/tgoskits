@@ -95,7 +95,10 @@ impl TaskSystem {
         if reason.checks_preemption_after_enqueue() && preempts_current {
             cpu.request_reschedule();
         }
-        if cpu.lock_run_queue().has_runnable_rt() {
+        if cpu
+            .lock_run_queue(RunQueueGuardSource::RtAccounting)
+            .has_runnable_rt()
+        {
             self.root_domain
                 .activate_rt_period(cpu.owner(), task_runtime::monotonic_now());
         }

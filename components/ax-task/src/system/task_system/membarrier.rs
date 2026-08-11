@@ -48,7 +48,7 @@ impl TaskSystem {
         targets: MembarrierCpuTargets<'system>,
     ) -> Result<MembarrierRegistrationPlan<'system>, TaskError> {
         self.ensure_owner_cpu_online(&cpu)?;
-        let mut run_queue = cpu.lock_run_queue();
+        let mut run_queue = cpu.lock_run_queue(RunQueueGuardSource::Membarrier);
         let address_space = run_queue
             .current()
             .map(CurrentDispatch::address_space)
@@ -104,7 +104,7 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
     ) -> Result<MembarrierTarget, crate::MembarrierError> {
         self.ensure_owner_cpu_online(&cpu)?;
-        let run_queue = cpu.lock_run_queue();
+        let run_queue = cpu.lock_run_queue(RunQueueGuardSource::Membarrier);
         let address_space = run_queue
             .current()
             .map(CurrentDispatch::address_space)
@@ -122,7 +122,8 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
     ) -> Result<(), TaskError> {
         self.ensure_owner_cpu_online(&cpu)?;
-        cpu.lock_run_queue().refresh_membarrier_state();
+        cpu.lock_run_queue(RunQueueGuardSource::Membarrier)
+            .refresh_membarrier_state();
         Ok(())
     }
 
@@ -137,7 +138,9 @@ impl TaskSystem {
             let Some(publication) = remote.begin_publication() else {
                 continue;
             };
-            let state = remote.lock_run_queue().membarrier_state();
+            let state = remote
+                .lock_run_queue(RunQueueGuardSource::Membarrier)
+                .membarrier_state();
             let selected = match target {
                 MembarrierTarget::Global => true,
                 MembarrierTarget::GlobalExpedited => {

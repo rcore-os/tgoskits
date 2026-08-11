@@ -79,7 +79,7 @@ use crate::{
     system::cpu::{
         CpuRunQueueState, CurrentClassState, CurrentDispatch, CurrentDispatchState,
         DeadlineBaseGuardSource, IdlePullReservation, OwnerRqEntry, OwnerRqTxn,
-        PreparedMigrationDelivery, RqTaskTime, RunQueueClockSnapshot,
+        PreparedMigrationDelivery, RqTaskTime, RunQueueClockSnapshot, RunQueueGuardSource,
     },
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
     timer::{
