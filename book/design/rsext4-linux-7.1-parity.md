@@ -649,3 +649,27 @@ median/p95 分别改善约 88.4%/87.9%。相对 dev 基线，write/read median
 回退约 17.0%/13.1%，超过 10% latency 门槛。所有高延迟样本均保留，
 不用作废组或选择性复测覆盖；本检查点仍登记为性能红项，留待完整
 workload 与最终同机 dev A/B 的整体性能收敛。
+
+### 7.23 xattr metadata transaction 检查点
+
+采集时间：2026-08-11；被测实现 commit 为 `a51017e08`，固定 CPU 2，环境、
+owned API harness 和 sequential workload 与 7.22 相同。本检查点首次引入
+filesystem-owned metadata snapshot，并修正 journal-owned device-cache buffer 的
+commit/abort 所有权。冻结的 sequential workload 不执行 xattr，因此本结果只守护
+共享 allocator、inode、JBD2 与 sync 热路径，不能作为 xattr transaction clone 开销
+或 Linux 7.1 xattr 相对开销的替代数据。
+
+正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-xattr-metadata-transaction.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=a51017e08 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6266323 write_p95_ns=6973303 read_median_ns=6029894 read_p95_ns=7303204 sync_median_ns=30408 sync_p95_ns=39628
+```
+
+相对 dev 基线，write median/p95 分别改善约 8.2%/4.9%，read median/p95 分别
+改善约 16.5%/13.9%，sync p95 回退约 2.5%，均通过冻结硬门槛；sync median
+回退约 17.8%，但 sync latency 硬门槛按 p95 判定。相对 7.22 优化检查点，
+write median/p95 分别改善约 4.0%/18.8%，read median/p95 分别改善约
+13.4%/23.9%，sync median/p95 分别改善约 7.7%/4.8%。下一步必须在 harness
+中以不改变 sequential 计时边界的方式补入独立 xattr workload，并报告新增语义
+相对 Linux 7.1 的开销；当前数据不将该项提前判绿。
