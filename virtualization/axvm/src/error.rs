@@ -531,35 +531,35 @@ mod tests {
 
     #[test]
     fn hypercall_errors_map_to_matching_axvm_domains() {
-        let code = axhvc::HyperCallCode::HIVCPublishChannel;
+        let code = axhvc::HyperCallCode::HyperVisorDebug;
         let invalid_code = AxVmError::from(HyperCallError::from(axhvc::InvalidHyperCallCode(0xff)));
         let cases = [
             AxVmError::from(HyperCallError::InvalidParameter {
                 code,
-                parameter: "shm_size_ptr",
+                parameter: "debug_arg",
                 detail: "unaligned".to_string(),
             }),
             AxVmError::from(HyperCallError::InvalidState {
                 code,
-                detail: "channel is unpublished".to_string(),
+                detail: "debug state is unavailable".to_string(),
             }),
             AxVmError::from(HyperCallError::ResourceNotFound {
                 code,
-                resource: "IVC channel 7".to_string(),
+                resource: "debug resource 7".to_string(),
                 detail: "not registered".to_string(),
             }),
             AxVmError::from(HyperCallError::ResourceConflict {
                 code,
-                resource: "IVC channel 7".to_string(),
+                resource: "debug resource 7".to_string(),
                 detail: "already registered".to_string(),
             }),
             AxVmError::from(HyperCallError::OutOfMemory {
                 code,
-                operation: "allocate IVC frame",
+                operation: "allocate debug buffer",
             }),
             AxVmError::from(HyperCallError::GuestMemoryAccess {
                 code,
-                operation: "write IVC result",
+                operation: "write debug result",
                 address: 0x4000,
                 detail: "unmapped".to_string(),
             }),
@@ -569,7 +569,7 @@ mod tests {
             }),
             AxVmError::from(HyperCallError::Internal {
                 code,
-                operation: "map IVC frame",
+                operation: "map debug buffer",
                 detail: "mapping failed".to_string(),
             }),
         ];

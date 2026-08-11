@@ -521,7 +521,7 @@ impl FdtTree {
     }
 
     fn next_phandle(&self) -> u32 {
-        const AXIVC_PHANDLE_BASE: u32 = 0xa11c_0000;
+        const AXVISOR_PHANDLE_BASE: u32 = 0xa11c_0000;
 
         self.inner()
             .iter_node_ids()
@@ -534,10 +534,10 @@ impl FdtTree {
                 ]
             })
             .flatten()
-            .filter(|phandle| *phandle >= AXIVC_PHANDLE_BASE)
+            .filter(|phandle| *phandle >= AXVISOR_PHANDLE_BASE)
             .max()
             .and_then(|phandle| phandle.checked_add(1))
-            .unwrap_or(AXIVC_PHANDLE_BASE)
+            .unwrap_or(AXVISOR_PHANDLE_BASE)
     }
 
     fn root_cells(&self, property: &str, fallback: u32) -> u32 {
@@ -845,63 +845,6 @@ mod tests {
         let reparsed = Fdt::from_bytes(&patched).unwrap();
 
         assert!(reparsed.get_by_path_id("/chosen").is_some());
-    }
-
-    #[test]
-    fn runtime_patch_adds_ivc_channel_node() {
-        let fdt = Fdt::new();
-        let dtb = fdt.encode().as_ref().to_vec();
-        let cfg = AxVMCrateConfig {
-            devices: axvmconfig::VMDevicesConfig {
-                emu_devices: alloc::vec![axvmconfig::EmulatedDeviceConfig {
-                    name: "ivc-channel".into(),
-                    base_gpa: 0xbff0_0000,
-                    length: 0x1_0000,
-                    irq_id: 0,
-                    emu_type: axvmconfig::EmulatedDeviceType::IVCChannel,
-                    cfg_list: alloc::vec![60],
-                }],
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let patched = super::patch_guest_fdt_for_runtime(&dtb, &[], &cfg, None, false).unwrap();
-        let reparsed = Fdt::from_bytes(&patched).unwrap();
-        let node_id = reparsed.get_by_path_id("/ivc-channel@bff00000").unwrap();
-        let node = reparsed.node(node_id).unwrap();
-        let typed_node = reparsed.view_typed(node_id).unwrap();
-
-        assert_eq!(
-            node.get_property("compatible").unwrap().as_str(),
-            Some("axvisor,ivc-channel")
-        );
-        assert_eq!(typed_node.regs()[0].address, 0xbff0_0000);
-        assert_eq!(typed_node.regs()[0].size, Some(0x1_0000));
-        assert_eq!(
-            node.get_property("axvisor,notify-irq").unwrap().get_u32(),
-            Some(60)
-        );
-
-        let shm_id = reparsed
-            .get_by_path_id("/reserved-memory/axivc-shm@bff00000")
-            .unwrap();
-        let shm_node = reparsed.node(shm_id).unwrap();
-        let shm_typed_node = reparsed.view_typed(shm_id).unwrap();
-        let shm_phandle = shm_node.get_property("phandle").unwrap().get_u32();
-
-        assert_eq!(
-            shm_node.get_property("compatible").unwrap().as_str(),
-            Some("shared-dma-pool")
-        );
-        assert!(shm_node.get_property("no-map").is_some());
-        assert_eq!(shm_typed_node.regs()[0].address, 0xbff0_0000);
-        assert_eq!(shm_typed_node.regs()[0].size, Some(0x1_0000));
-        assert_eq!(
-            node.get_property("memory-region").unwrap().get_u32(),
-            shm_phandle
-        );
-        assert!(node.get_property("dma-coherent").is_some());
     }
 
     #[test]

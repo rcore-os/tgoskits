@@ -337,20 +337,6 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    /// Allocates an IVC channel from a graph-claimed guest range service.
-    pub fn alloc_ivc_channel(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
-        self.services
-            .require::<GuestRangeAllocatorKey>()?
-            .allocate(size)
-    }
-
-    /// Releases a previously allocated IVC channel.
-    pub fn release_ivc_channel(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
-        self.services
-            .require::<GuestRangeAllocatorKey>()?
-            .release(addr, size)
-    }
-
     /// Registers a bundle atomically.  If any device fails to register,
     /// already-registered devices in this bundle are rolled back via
     /// `pop()` + index-key removal.

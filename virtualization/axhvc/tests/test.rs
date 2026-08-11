@@ -20,10 +20,6 @@ fn hypercall_wire_codes_round_trip_and_reject_unknown_values() {
         HyperCallCode::HypervisorDisable,
         HyperCallCode::HyperVisorPrepareDisable,
         HyperCallCode::HyperVisorDebug,
-        HyperCallCode::HIVCPublishChannel,
-        HyperCallCode::HIVCSubscribChannel,
-        HyperCallCode::HIVCUnPublishChannel,
-        HyperCallCode::HIVCUnSubscribChannel,
     ];
 
     for (wire, code) in codes.into_iter().enumerate() {

@@ -31,7 +31,6 @@
 //! The following hypercall categories are supported:
 //!
 //! - **Hypervisor Control**: Enable/disable hypervisor functionality
-//! - **Inter-VM Communication (IVC)**: Shared memory channels between VMs
 //!
 //! # Example
 //!
@@ -74,7 +73,6 @@ pub use error::{HyperCallError, HyperCallResult, InvalidHyperCallCode};
 /// # Categories
 ///
 /// - **Hypervisor Control** (0-2): Operations to control the hypervisor lifecycle
-/// - **IVC Operations** (3-6): Inter-VM communication channel management
 ///
 /// # Example
 ///
@@ -172,72 +170,6 @@ pub enum HyperCallCode {
     ///
     /// This hypercall should not be used in production environments.
     HyperVisorDebug      = 2,
-
-    /// Publish an IVC (Inter-VM Communication) shared memory channel.
-    ///
-    /// Creates a new shared memory channel that other VMs can subscribe to.
-    /// The publisher VM owns the channel and controls its lifecycle.
-    ///
-    /// # Arguments
-    ///
-    /// - `key`: The unique key identifying this IVC channel
-    /// - `shm_base_gpa_ptr`: Pointer to receive the base guest physical address
-    ///   of the shared memory region
-    /// - `shm_size_ptr`: Pointer to receive the size of the shared memory region
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(0)` on success, with the shared memory info written to the provided pointers
-    /// - `Err(_)` if the channel cannot be created
-    HIVCPublishChannel   = 3,
-
-    /// Subscribe to an IVC shared memory channel.
-    ///
-    /// Connects to an existing shared memory channel created by another VM.
-    ///
-    /// # Arguments
-    ///
-    /// - `publisher_vm_id`: The ID of the VM that published the channel
-    /// - `key`: The key of the IVC channel to subscribe to
-    /// - `shm_base_gpa_ptr`: Pointer to receive the base guest physical address
-    ///   of the shared memory region
-    /// - `shm_size_ptr`: Pointer to receive the size of the shared memory region
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(0)` on success, with the shared memory info written to the provided pointers
-    /// - `Err(_)` if subscription fails (e.g., channel not found)
-    HIVCSubscribChannel  = 4,
-
-    /// Unpublish an IVC shared memory channel.
-    ///
-    /// Removes a previously published IVC channel. All subscribers will be
-    /// disconnected when this is called.
-    ///
-    /// # Arguments
-    ///
-    /// - `key`: The key of the IVC channel to unpublish
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(0)` on success
-    /// - `Err(_)` if the channel cannot be unpublished
-    HIVCUnPublishChannel = 5,
-
-    /// Unsubscribe from an IVC shared memory channel.
-    ///
-    /// Disconnects from a previously subscribed IVC channel.
-    ///
-    /// # Arguments
-    ///
-    /// - `publisher_vm_id`: The ID of the publisher VM
-    /// - `key`: The key of the IVC channel to unsubscribe from
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(0)` on success
-    /// - `Err(_)` if unsubscription fails
-    HIVCUnSubscribChannel = 6,
 }
 
 impl TryFrom<u32> for HyperCallCode {
@@ -265,10 +197,6 @@ impl TryFrom<u32> for HyperCallCode {
             0 => Ok(HyperCallCode::HypervisorDisable),
             1 => Ok(HyperCallCode::HyperVisorPrepareDisable),
             2 => Ok(HyperCallCode::HyperVisorDebug),
-            3 => Ok(HyperCallCode::HIVCPublishChannel),
-            4 => Ok(HyperCallCode::HIVCSubscribChannel),
-            5 => Ok(HyperCallCode::HIVCUnPublishChannel),
-            6 => Ok(HyperCallCode::HIVCUnSubscribChannel),
             _ => Err(InvalidHyperCallCode(value)),
         }
     }
@@ -299,18 +227,6 @@ impl core::fmt::Debug for HyperCallCode {
                 write!(f, "HyperVisorPrepareDisable {:#x}", *self as u32)
             }
             HyperCallCode::HyperVisorDebug => write!(f, "HyperVisorDebug {:#x}", *self as u32),
-            HyperCallCode::HIVCPublishChannel => {
-                write!(f, "HIVCPublishChannel {:#x}", *self as u32)
-            }
-            HyperCallCode::HIVCSubscribChannel => {
-                write!(f, "HIVCSubscribChannel {:#x}", *self as u32)
-            }
-            HyperCallCode::HIVCUnPublishChannel => {
-                write!(f, "HIVCUnPublishChannel {:#x}", *self as u32)
-            }
-            HyperCallCode::HIVCUnSubscribChannel => {
-                write!(f, "HIVCUnSubscribChannel {:#x}", *self as u32)
-            }
         }?;
         write!(f, ")")
     }

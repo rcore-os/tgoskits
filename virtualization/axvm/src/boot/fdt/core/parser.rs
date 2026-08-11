@@ -215,37 +215,6 @@ fn node_regs(fdt: &Fdt, node_id: usize) -> Vec<fdt_edit::RegFixed> {
         .unwrap_or_default()
 }
 
-fn node_phandle(node: &Node) -> Option<u32> {
-    node.get_property("phandle")
-        .and_then(|prop| prop.get_u32())
-        .or_else(|| {
-            node.get_property("linux,phandle")
-                .and_then(|prop| prop.get_u32())
-        })
-}
-
-fn ivc_memory_region_phandles(fdt: &Fdt) -> BTreeSet<u32> {
-    let mut phandles = BTreeSet::new();
-    for node_id in fdt.iter_node_ids() {
-        let Some(node) = fdt.node(node_id) else {
-            continue;
-        };
-        if !node
-            .compatibles()
-            .any(|compatible| compatible == "axvisor,ivc-channel")
-        {
-            continue;
-        }
-        if let Some(phandle) = node
-            .get_property("memory-region")
-            .and_then(|prop| prop.get_u32())
-        {
-            phandles.insert(phandle);
-        }
-    }
-    phandles
-}
-
 fn node_pci_ranges(fdt: &Fdt, node_id: usize) -> Vec<PciRange> {
     match fdt.view_typed(node_id) {
         Some(NodeType::Pci(pci)) => pci.ranges().unwrap_or_default(),
@@ -411,7 +380,6 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut GuestConfig, dtb: &[u8]) ->
         )
     })?;
     let default_flags = (MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE).bits();
-    let ivc_memory_regions = ivc_memory_region_phandles(&fdt);
 
     let mut added_count = 0usize;
     for node_id in fdt.iter_node_ids() {
@@ -419,13 +387,9 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut GuestConfig, dtb: &[u8]) ->
         if !is_reserved_memory_path(&node_path) {
             continue;
         }
-        let Some(node) = fdt.node(node_id) else {
-            continue;
-        };
-        if node_phandle(node).is_some_and(|phandle| ivc_memory_regions.contains(&phandle)) {
+        if fdt.node(node_id).is_none() {
             continue;
         }
-
         for reg in node_regs(&fdt, node_id) {
             let original_gpa = reg.address as usize;
             let original_size = reg.size.unwrap_or(0) as usize;
@@ -1032,51 +996,6 @@ mod tests {
                 .unwrap()
                 .set_regs(&[RegInfo::new(base, Some(0x1000))]);
         }
-
-        fdt.encode().as_ref().to_vec()
-    }
-
-    fn fdt_with_ivc_and_regular_reserved_memory() -> Vec<u8> {
-        let mut fdt = Fdt::new();
-        let root = fdt.root_id();
-        fdt.node_mut(root)
-            .unwrap()
-            .set_property(prop_u32("#address-cells", 2));
-        fdt.node_mut(root)
-            .unwrap()
-            .set_property(prop_u32("#size-cells", 2));
-
-        let reserved = fdt.add_node(root, Node::new("reserved-memory"));
-        fdt.node_mut(reserved)
-            .unwrap()
-            .set_property(prop_u32("#address-cells", 2));
-        fdt.node_mut(reserved)
-            .unwrap()
-            .set_property(prop_u32("#size-cells", 2));
-
-        let ivc_shm = fdt.add_node(reserved, Node::new("axivc-shm@bff00000"));
-        fdt.node_mut(ivc_shm)
-            .unwrap()
-            .set_property(prop_string("compatible", "shared-dma-pool"));
-        fdt.node_mut(ivc_shm)
-            .unwrap()
-            .set_property(prop_u32("phandle", 0xa11c_0000));
-        fdt.view_typed_mut(ivc_shm)
-            .unwrap()
-            .set_regs(&[RegInfo::new(0xbff0_0000, Some(0x200_0000))]);
-
-        let regular = fdt.add_node(reserved, Node::new("regular@90000000"));
-        fdt.view_typed_mut(regular)
-            .unwrap()
-            .set_regs(&[RegInfo::new(0x9000_0000, Some(0x1000))]);
-
-        let ivc = fdt.add_node(root, Node::new("ivc-channel@bff00000"));
-        fdt.node_mut(ivc)
-            .unwrap()
-            .set_property(prop_string("compatible", "axvisor,ivc-channel"));
-        fdt.node_mut(ivc)
-            .unwrap()
-            .set_property(prop_u32("memory-region", 0xa11c_0000));
 
         fdt.encode().as_ref().to_vec()
     }
