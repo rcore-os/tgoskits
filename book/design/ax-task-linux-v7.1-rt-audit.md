@@ -2874,6 +2874,37 @@ observation 继续拆到具体入口，判断哪些只是查询 derived publicat
 权威状态；在此之前不增加 lockless mirror，也不改变事务路径的锁语义。本轮 host user 为
 88.386 秒，吞吐与 CPU 时间均未改善，因此这里只确认放大来源，不宣称性能问题已经解决。
 
+随后把 owner observation 按 current-thread、current-core、current-handle、idle、runnable 五个语义
+入口拆分，把 timer observation 按 scheduler-clock-event 与 fair-balance 两个入口拆分。原 owner/
+timer 字段仅由 leaf 求和，不再占用独立 source；每次锁进入仍只记录一个 leaf。相同配置的 60.955 秒
+窗口再次推进到 `file-0474`，host user 为 88.026 秒。活跃系统上的 Relaxed debugfs 前后读取使
+aggregate 增量与 leaf 求和相差 270（0.020%），以下使用 1,350,515 次 leaf acquisition 归因：
+
+| runqueue leaf source | entry 增量 | 占 leaf 总数 | 每次真实 switch |
+|---|---:|---:|---:|
+| transaction | 143,503 | 10.626% | 1.179 |
+| owner current thread | 170,757 | 12.644% | 1.403 |
+| owner current core | 260,925 | 19.321% | 2.144 |
+| owner current handle | 102,714 | 7.606% | 0.844 |
+| owner idle | 199,626 | 14.781% | 1.640 |
+| owner runnable count | 0 | 0% | 0 |
+| timer scheduler clock event | 231,627 | 17.151% | 1.903 |
+| timer fair balance | 231,627 | 17.151% | 1.903 |
+| RT accounting | 9,720 | 0.720% | 0.080 |
+| lifecycle | 16 | 0.001% | 0.0001 |
+
+窗口内真实 switch 增量为 121,711，物理 clockevent IRQ 增量为 15,207。两个 timer leaf 不仅完全
+相等，而且各自平均每个物理 IRQ 进入 15.232 次；因此它们不是“一次 IRQ 各观察一次”，而是同一
+deadline 查询/重编程链反复取得 rq lock 并重复计算同一 current/fair/runnable 事实。owner 侧的
+`runnable_count` 在该 workload 为 0，不能用它解释原来的 54% owner observation；主要来源是
+current-core、idle、current-thread 和 current-handle 的分散查询。
+
+Linux 允许 `READ_ONCE(rq->curr)` 只作启发式选择并在持锁事务中复核，但 `rq->nr_running`、current/
+idle 多字段一致性、当前实体 runtime 以及 `rq->next_balance` 都没有通用 lockless snapshot；这些
+状态仍需 rq lock 或一项有明确生产者协议的 derived publication。因此下一阶段先合并同一 deadline
+推导中的 runqueue observation，并追踪为何一次物理 IRQ 触发十五轮重算，不能直接把上述七个入口
+改成无锁读取，也不能复制 current/queue 状态。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
