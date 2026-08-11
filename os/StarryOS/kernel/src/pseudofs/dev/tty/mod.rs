@@ -19,7 +19,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
 use axfs_ng_vfs::{Location, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
@@ -41,7 +40,7 @@ pub use self::{
 use crate::{
     mm::{VmMutPtr, VmPtr},
     pseudofs::{Device, DeviceOps},
-    sync::PiMutex,
+    sync::{IrqMutex, PiMutex},
     task::{current_user_task, get_process_group, send_signal_to_process_group},
 };
 

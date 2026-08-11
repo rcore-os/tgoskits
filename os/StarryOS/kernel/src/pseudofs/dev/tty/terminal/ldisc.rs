@@ -7,7 +7,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
@@ -20,7 +19,7 @@ use starry_signal::SignalInfo;
 
 use super::{Terminal, termios::Termios2};
 use crate::{
-    sync::PiMutex,
+    sync::{IrqMutex, PiMutex},
     task::{future::block_on, send_signal_to_process_group},
 };
 
