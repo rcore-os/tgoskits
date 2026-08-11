@@ -10,16 +10,12 @@ description = "OS-independent IRQ-safe SMP task scheduling core"
 [features]
 default = []
 qperf-metrics = []
-# The final runtime selects the host or OS PiMutexTaskOps provider. ax-task's
-# host compatibility must not select ax-sync's independent host waiter ABI.
 host-test = ["smp"]
 lockdep = ["dep:axpanic"]
 smp = []
 
 [dependencies]
-ax-crate-interface.workspace = true
 axpanic = { workspace = true, optional = true }
-ax-sync = { workspace = true, features = ["lock-api", "sleep"] }
 cfg-if.workspace = true
 lock_api.workspace = true
 thiserror.workspace = true

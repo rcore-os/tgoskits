@@ -1,17 +1,15 @@
 //! Stable synchronization API exported by the scheduler layer.
 //!
-//! The concrete lock algorithms are migrated into this crate in independent
-//! stages. During that migration these exports preserve the current PI mutex
-//! and execution-context semantics rather than substituting the simpler
-//! wait-queue mutex from the layering reference.
-
-pub use ax_sync::{
-    InterruptibleMutexExt, LockdepMutexExt, Mutex, MutexGuard, PiMutex, PiMutexGuard,
-    PiMutexLockInterrupted, RawMutex, RawPiMutex,
-};
+//! These exports preserve the branch's urgency-ordered PI mutex and execution
+//! context semantics; the external `ax-sync` wrappers use the same algorithms
+//! through the runtime bridge.
 
 #[cfg(feature = "lockdep")]
 pub use super::lockdep::{LockSubclass, dump_lockdep_trace, set_lockdep_trace_enabled};
+pub use super::mutex::{
+    InterruptibleMutexExt, LockdepMutexExt, Mutex, MutexGuard, PiMutex, PiMutexGuard,
+    PiMutexLockInterrupted, RawMutex, RawPiMutex,
+};
 #[cfg(not(feature = "lockdep"))]
 pub type LockSubclass = u32;
 #[cfg(not(feature = "lockdep"))]

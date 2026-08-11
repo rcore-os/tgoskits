@@ -10,6 +10,13 @@ pub mod bridge;
 mod context;
 #[cfg(feature = "lockdep")]
 pub(crate) mod lockdep;
+mod mutex;
 mod spin;
 
 pub use self::api::*;
+#[doc(hidden)]
+pub use self::mutex::{
+    PI_MUTEX_WAIT_STORAGE_WORDS, PiMutexAcquire, PiMutexClaimOutcome, PiMutexCore, PiMutexId,
+    PiMutexLockResult, PiMutexOwnedRelease, PiMutexOwnerSnapshot, PiMutexRaw, PiMutexRef,
+    PiMutexStateError, PiTaskId, PiWaitCancelOutcome, PiWaitToken,
+};

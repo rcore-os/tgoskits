@@ -7,7 +7,8 @@ pub use self::{
     state::{
         DEFAULT_LOCK_SUBCLASS, HeldLock, HeldLockSnapshot, HeldLockStack, LockSubclass, LockdepMap,
         PreparedAcquire, current_task_held_lock_snapshot, finish_acquire_task, force_release_task,
-        prepare_acquire_with_snapshot_nested, release_task,
+        prepare_acquire_with_snapshot_nested, prepare_acquire_with_snapshot_nested_with_sleep,
+        release_task,
     },
     trace::{dump_trace_buffer, set_trace_enabled},
 };

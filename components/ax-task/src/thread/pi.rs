@@ -2,12 +2,11 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-pub use ax_sync::{
-    PiMutexAcquire, PiMutexClaimOutcome, PiMutexCore, PiMutexId, PiMutexLockResult,
-    PiMutexOwnedRelease, PiMutexOwnerSnapshot, PiMutexRaw, PiMutexRef, PiMutexStateError, PiTaskId,
-    PiWaitCancelOutcome, PiWaitToken,
+pub use crate::sync::{
+    PI_MUTEX_WAIT_STORAGE_WORDS, PiMutexAcquire, PiMutexClaimOutcome, PiMutexCore, PiMutexId,
+    PiMutexLockResult, PiMutexOwnedRelease, PiMutexOwnerSnapshot, PiMutexRaw, PiMutexRef,
+    PiMutexStateError, PiTaskId, PiWaitCancelOutcome, PiWaitToken,
 };
-
 use crate::{
     PiWaitStateError, PiWaitTree, TaskError, ThreadId,
     lock::{RawTicketGuard, RawTicketLock},
@@ -120,7 +119,7 @@ pub(crate) unsafe fn drop_pi_mutex_wait_handle(wait_handle: *mut ()) {
 fn ensure_pi_mutex_wait_handle(core: &PiMutexCore) -> &PiMutexWaitHandle {
     const _: () = assert!(
         core::mem::size_of::<PiMutexWaitHandle>()
-            <= ax_sync::PI_MUTEX_WAIT_STORAGE_WORDS * core::mem::size_of::<usize>()
+            <= PI_MUTEX_WAIT_STORAGE_WORDS * core::mem::size_of::<usize>()
     );
     const _: () =
         assert!(core::mem::align_of::<PiMutexWaitHandle>() <= core::mem::align_of::<usize>());

@@ -1199,8 +1199,6 @@ dependencies = [
 name = "ax-task"
 version = "0.7.0"
 dependencies = [
- "ax-crate-interface",
- "ax-sync",
  "axpanic",
  "cfg-if",
  "lock_api",
