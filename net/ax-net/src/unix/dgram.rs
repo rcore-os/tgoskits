@@ -30,8 +30,7 @@ use async_trait::async_trait;
 use ax_errno::{AxError, AxResult};
 use ax_hal::time::wall_time;
 use ax_io::{Read, Write};
-use ax_kspin::SpinRwLock as RwLock;
-use ax_sync::SpinMutex;
+use ax_sync::{SpinLock, SpinRwLock as RwLock};
 use axpoll::{IoEvents, PollSet, Pollable};
 
 use crate::{
@@ -172,7 +171,7 @@ impl SeqBind {
 /// Datagram transport for Unix domain sockets.
 pub struct DgramTransport {
     /// Receiver installed when the socket is bound or paired.
-    data_rx: SpinMutex<Option<(async_channel::Receiver<Packet>, Arc<PollSet>)>>,
+    data_rx: SpinLock<Option<(async_channel::Receiver<Packet>, Arc<PollSet>)>>,
     /// Direct peer channel for connected datagram sockets.
     connected: RwLock<Option<Channel>>,
     /// Address reported as sender on outgoing datagrams.
@@ -182,12 +181,12 @@ pub struct DgramTransport {
     /// The async channel has no peek primitive, so a peeking receiver pops one
     /// packet, copies it out, and parks it here; the next recv drains this slot
     /// before touching the channel, preserving record boundaries and order.
-    peeked: SpinMutex<Option<Packet>>,
+    peeked: SpinLock<Option<Packet>>,
     /// True for `SOCK_SEQPACKET`, which is connection-oriented (bind/listen/
     /// accept/connect) unlike connectionless `SOCK_DGRAM`.
     is_seqpacket: bool,
     /// Connection-request queue installed by a seqpacket listener's bind.
-    conn_rx: SpinMutex<Option<(async_channel::Receiver<SeqConnRequest>, Arc<PollSet>)>>,
+    conn_rx: SpinLock<Option<(async_channel::Receiver<SeqConnRequest>, Arc<PollSet>)>>,
     /// True after a bound seqpacket socket enters listening state.
     listening: Arc<AtomicBool>,
     /// Poll set for local state changes.
@@ -225,12 +224,12 @@ impl DgramTransport {
 
     fn new_typed(pid: u32, socket_type: i32) -> Self {
         DgramTransport {
-            data_rx: SpinMutex::new(None),
+            data_rx: SpinLock::new(None),
             connected: RwLock::new(None),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
-            peeked: SpinMutex::new(None),
+            peeked: SpinLock::new(None),
             is_seqpacket: socket_type == 5,
-            conn_rx: SpinMutex::new(None),
+            conn_rx: SpinLock::new(None),
             listening: Arc::new(AtomicBool::new(false)),
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),
@@ -249,12 +248,12 @@ impl DgramTransport {
         receive_credentials: Arc<AtomicBool>,
     ) -> Self {
         DgramTransport {
-            data_rx: SpinMutex::new(Some(data_rx)),
+            data_rx: SpinLock::new(Some(data_rx)),
             connected: RwLock::new(Some(connected)),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
-            peeked: SpinMutex::new(None),
+            peeked: SpinLock::new(None),
             is_seqpacket: socket_type == 5,
-            conn_rx: SpinMutex::new(None),
+            conn_rx: SpinLock::new(None),
             listening: Arc::new(AtomicBool::new(false)),
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),

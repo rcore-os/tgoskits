@@ -6,7 +6,8 @@
 //! boundary, after the IP header has been generated and before the packet is
 //! handed to loopback or a concrete device.
 
-use ax_sync::SpinMutex;
+use ax_lazyinit::LazyLock;
+use ax_sync::SpinLock;
 use hashbrown::HashMap;
 use smoltcp::wire::{
     IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpVersion, Ipv4Packet, Ipv6Packet,
@@ -54,8 +55,8 @@ impl EgressIpTosKey {
     }
 }
 
-static EGRESS_IP_TOS: LazyLock<SpinMutex<HashMap<EgressIpTosKey, u8>>> =
-    LazyLock::new(|| SpinMutex::new(HashMap::new()));
+static EGRESS_IP_TOS: LazyLock<SpinLock<HashMap<EgressIpTosKey, u8>>> =
+    LazyLock::new(|| SpinLock::new(HashMap::new()));
 
 pub(crate) fn set_egress_ip_tos(key: EgressIpTosKey, tos: u8) {
     let mut table = EGRESS_IP_TOS.lock();

@@ -34,7 +34,8 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError, ax_bail, ax_err_type};
 use ax_io::prelude::*;
-use ax_sync::SpinMutex;
+use ax_lazyinit::LazyLock;
+use ax_sync::SpinLock;
 use axpoll::{IoEvents, PollSet, Pollable};
 use hashbrown::HashMap;
 use smoltcp::{
@@ -77,11 +78,11 @@ pub struct TcpSocket {
     /// Handle into the global smoltcp socket set.
     handle: SocketHandle,
     /// Bound listen endpoint, or an empty endpoint before bind/connect.
-    bound_endpoint: SpinMutex<IpListenEndpoint>,
+    bound_endpoint: SpinLock<IpListenEndpoint>,
     /// Connected peer endpoint once established.
-    peer_endpoint: SpinMutex<Option<IpEndpoint>>,
+    peer_endpoint: SpinLock<Option<IpEndpoint>>,
     /// Currently registered egress IP_TOS policy for this TCP socket.
-    tos_key: SpinMutex<Option<EgressIpTosKey>>,
+    tos_key: SpinLock<Option<EgressIpTosKey>>,
     /// Whether `bound_endpoint` is registered in `TCP_BOUND_PORTS`.
     bound_registered: AtomicBool,
 
@@ -118,9 +119,9 @@ impl TcpSocket {
                 smol::SocketBuffer::new(vec![0; TCP_RX_BUF_LEN]),
                 smol::SocketBuffer::new(vec![0; TCP_TX_BUF_LEN]),
             )),
-            bound_endpoint: SpinMutex::new(empty_endpoint()),
-            peer_endpoint: SpinMutex::new(None),
-            tos_key: SpinMutex::new(None),
+            bound_endpoint: SpinLock::new(empty_endpoint()),
+            peer_endpoint: SpinLock::new(None),
+            tos_key: SpinLock::new(None),
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
@@ -156,9 +157,9 @@ impl TcpSocket {
         let result = Self {
             state: StateLock::new(State::Connected),
             handle,
-            bound_endpoint: SpinMutex::new(empty_endpoint()),
-            peer_endpoint: SpinMutex::new(Some(remote_endpoint)),
-            tos_key: SpinMutex::new(None),
+            bound_endpoint: SpinLock::new(empty_endpoint()),
+            peer_endpoint: SpinLock::new(Some(remote_endpoint)),
+            tos_key: SpinLock::new(None),
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
@@ -1049,8 +1050,8 @@ struct TcpBoundEntry {
     reuse_port: bool,
 }
 
-static TCP_BOUND_PORTS: LazyLock<SpinMutex<HashMap<u16, Vec<TcpBoundEntry>>>> =
-    LazyLock::new(|| SpinMutex::new(HashMap::new()));
+static TCP_BOUND_PORTS: LazyLock<SpinLock<HashMap<u16, Vec<TcpBoundEntry>>>> =
+    LazyLock::new(|| SpinLock::new(HashMap::new()));
 
 /// Registers TCP bind ownership with wildcard/specific address conflicts.
 ///

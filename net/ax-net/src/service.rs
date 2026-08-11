@@ -16,11 +16,11 @@
 //!    - Acquired during poll, socket operations, and state queries
 //!    - ⚠️ Never acquire SERVICE while holding this lock
 //!
-//! 3. **TCP_BOUND_PORTS** (`SpinMutex<HashMap<u16, Vec<...>>>`)
+//! 3. **TCP_BOUND_PORTS** (`SpinLock<HashMap<u16, Vec<...>>>`)
 //!    - Tracks TCP bind() registrations
 //!    - Hold duration: registration/unregistration only
 //!
-//! 4. **Per-port LISTEN_TABLE buckets** (`Arc<SpinMutex<Vec<ListenTableEntryInner>>>`)
+//! 4. **Per-port LISTEN_TABLE buckets** (`Arc<SpinLock<Vec<ListenTableEntryInner>>>`)
 //!    - Innermost, most granular (one mutex per TCP port)
 //!
 //! **Acquisition order rule:**
@@ -61,7 +61,7 @@ use core::task::Waker;
 
 use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos, wall_time_nanos};
-use ax_kspin::SpinRwLock as RwLock;
+use ax_sync::SpinRwLock as RwLock;
 use smoltcp::{
     iface::{Interface, PollResult, SocketSet},
     phy::ChecksumCapabilities,

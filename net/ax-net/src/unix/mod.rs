@@ -27,8 +27,9 @@ use core::task::Context;
 use async_trait::async_trait;
 use ax_errno::{AxError, AxResult};
 use ax_io::{IoBuf, Read, Write};
-use ax_sync::SpinMutex;
-use axpoll::{IoEvents, Pollable};
+use ax_lazyinit::LazyLock;
+use ax_sync::SpinLock;
+use axpoll::{IoEvents, PollSet, Pollable};
 use enum_dispatch::enum_dispatch;
 use hashbrown::HashMap;
 
@@ -139,17 +140,17 @@ impl Pollable for Transport {
 #[derive(Default)]
 pub struct BindSlot {
     /// Stream listener bound at this address.
-    stream: SpinMutex<Option<stream::Bind>>,
+    stream: SpinLock<Option<stream::Bind>>,
     /// Datagram endpoint bound at this address.
-    dgram: SpinMutex<Option<dgram::Bind>>,
+    dgram: SpinLock<Option<dgram::Bind>>,
     /// Seqpacket listener bound at this address. Seqpacket is connection
     /// oriented (like stream) but preserves message boundaries (like dgram),
     /// so it carries its own connection-request queue.
-    seqpacket: SpinMutex<Option<dgram::SeqBind>>,
+    seqpacket: SpinLock<Option<dgram::SeqBind>>,
 }
 
-static ABSTRACT_BINDS: LazyLock<SpinMutex<HashMap<Arc<[u8]>, BindSlot>>> =
-    LazyLock::new(|| SpinMutex::new(HashMap::new()));
+static ABSTRACT_BINDS: LazyLock<SpinLock<HashMap<Arc<[u8]>, BindSlot>>> =
+    LazyLock::new(|| SpinLock::new(HashMap::new()));
 
 /// Resolves an existing bind slot and runs `f` with it.
 pub(crate) fn with_slot<R>(
@@ -195,17 +196,17 @@ pub struct UnixSocket {
     /// Concrete stream or datagram transport.
     transport: Transport,
     /// Public local Unix address.
-    local_addr: SpinMutex<UnixSocketAddr>,
+    local_addr: SpinLock<UnixSocketAddr>,
     /// Public remote Unix address.
-    remote_addr: SpinMutex<UnixSocketAddr>,
+    remote_addr: SpinLock<UnixSocketAddr>,
 }
 impl UnixSocket {
     /// Create a new Unix socket with the given transport.
     pub fn new(transport: impl Into<Transport>) -> Self {
         Self {
             transport: transport.into(),
-            local_addr: SpinMutex::new(UnixSocketAddr::Unnamed),
-            remote_addr: SpinMutex::new(UnixSocketAddr::Unnamed),
+            local_addr: SpinLock::new(UnixSocketAddr::Unnamed),
+            remote_addr: SpinLock::new(UnixSocketAddr::Unnamed),
         }
     }
 }
@@ -268,8 +269,8 @@ impl SocketOps for UnixSocket {
             })?;
         Ok(Self {
             transport,
-            local_addr: SpinMutex::new(self.local_addr.lock().clone()),
-            remote_addr: SpinMutex::new(peer_addr),
+            local_addr: SpinLock::new(self.local_addr.lock().clone()),
+            remote_addr: SpinLock::new(peer_addr),
         }
         .into())
     }

@@ -24,7 +24,8 @@
 
 use alloc::vec::Vec;
 
-use ax_sync::SpinMutex;
+use ax_lazyinit::LazyLock;
+use ax_sync::SpinLock;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp,
@@ -62,8 +63,8 @@ enum ReapReason {
 /// Accessed by:
 /// - TcpSocket::drop() to add orphans
 /// - net-poll worker to reap finished orphans
-static ORPHAN_SOCKETS: LazyLock<SpinMutex<Vec<OrphanSocket>>> =
-    LazyLock::new(|| SpinMutex::new(Vec::new()));
+static ORPHAN_SOCKETS: LazyLock<SpinLock<Vec<OrphanSocket>>> =
+    LazyLock::new(|| SpinLock::new(Vec::new()));
 
 const ORPHAN_MAX_LINGER: i64 = 60_000_000; // 60 seconds in microseconds
 const ORPHAN_MAX_SOCKETS: usize = 1024;

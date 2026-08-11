@@ -84,6 +84,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, ax_err_type};
+use ax_lazyinit::LazyLock;
 use ax_sync::{PiMutex, PiMutexGuard};
 use ax_task::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, quiesce_irq_wait};
 use axpoll::{IoEvents, PollSet};
@@ -91,6 +92,7 @@ use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
 };
+use spin::Once;
 
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
@@ -169,7 +171,7 @@ const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 fn net_poll_device_waker() -> &'static Waker {
-    LazyLock::force(&NET_POLL_DEVICE_WAKER)
+    &NET_POLL_DEVICE_WAKER
 }
 
 fn get_service() -> PiMutexGuard<'static, Service> {

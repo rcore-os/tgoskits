@@ -49,8 +49,7 @@ use core::{
 };
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
-use ax_kspin::SpinRwLock as RwLock;
-use ax_sync::{PiMutex, SpinMutex};
+use ax_sync::{PiMutex, SpinLock, SpinRwLock as RwLock};
 use ax_task::WaitQueue;
 use axpoll::IoEvents;
 use smoltcp::{
@@ -175,7 +174,7 @@ fn tx_metadata() -> RxMetadata {
 
 /// Bounded FIFO used between the protocol core and per-device workers.
 struct BoundedPacketQueue<T> {
-    inner: SpinMutex<VecDeque<T>>,
+    inner: SpinLock<VecDeque<T>>,
     capacity: usize,
     len: AtomicUsize,
 }
@@ -183,7 +182,7 @@ struct BoundedPacketQueue<T> {
 impl<T> BoundedPacketQueue<T> {
     fn new(capacity: usize) -> Self {
         Self {
-            inner: SpinMutex::new(VecDeque::with_capacity(capacity)),
+            inner: SpinLock::new(VecDeque::with_capacity(capacity)),
             capacity,
             len: AtomicUsize::new(0),
         }
