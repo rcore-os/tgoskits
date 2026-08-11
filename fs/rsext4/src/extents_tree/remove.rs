@@ -305,16 +305,10 @@ impl<'a> ExtentTree<'a> {
             let cut_len = core::cmp::min(remaining, can_take);
             let seg_end = seg_start.saturating_add(cut_len);
 
-            {
-                // Free physical blocks first so allocation bitmaps stay consistent with the extent edit.
-                let base = extent_start_phys(&e);
-                let off = within_off as u64;
-                tree.can_sub_inode_sectors_for_blocks(fs, u64::from(cut_len))?;
-                for j in 0..(cut_len as u64) {
-                    fs.free_block(dev, AbsoluteBN::new(base + off + j))?;
-                    tree.sub_inode_sectors_for_block(fs)?;
-                }
-            }
+            let physical_start = extent_start_phys(&e)
+                .checked_add(u64::from(within_off))
+                .ok_or_else(Ext4Error::overflow)?;
+            tree.can_sub_inode_sectors_for_blocks(fs, u64::from(cut_len))?;
 
             // Rewrite the matching extent as delete, trim-left, trim-right, or split-in-two.
             if seg_start == e_start && seg_end == e_end {
@@ -362,6 +356,17 @@ impl<'a> ExtentTree<'a> {
                     entries: entries.clone(),
                 };
                 tree.write_node_to_block(dev, block_id, &disk_node)?;
+            }
+
+            // Never release a block while durable extent metadata still refers
+            // to it. A later bitmap failure may leak an unreachable block, but
+            // it cannot turn a referenced block into free space.
+            for offset in 0..u64::from(cut_len) {
+                let block = physical_start
+                    .checked_add(offset)
+                    .ok_or_else(Ext4Error::overflow)?;
+                fs.free_block(dev, AbsoluteBN::new(block))?;
+                tree.sub_inode_sectors_for_block(fs)?;
             }
 
             Ok(StepRes {

@@ -497,6 +497,101 @@ fn failed_finish_restores_external_leaf_to_unwritten() {
 }
 
 #[test]
+fn failed_external_leaf_remove_preserves_mapping_and_allocation() {
+    let (device, fail_write) = MemoryDevice::with_write_failure(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(&mut journal, &mut filesystem, "/remove-failure", None, None)
+        .expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/remove-failure")
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+    let mut inode = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("inode read failed");
+    let huge_file = filesystem
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+    let sectors_per_block = (BLOCK_SIZE / 512) as u64;
+    let mut inserted = Vec::new();
+    for logical_block in 0..5 {
+        let physical = filesystem
+            .alloc_block(&mut journal)
+            .expect("data allocation failed");
+        let _physical_gap = filesystem
+            .alloc_block(&mut journal)
+            .expect("gap allocation failed");
+        let extent = Ext4Extent::new(logical_block, physical.raw(), 1);
+        ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number)
+            .insert_extent(&mut filesystem, extent, &mut journal)
+            .expect("extent insertion failed");
+        let blocks_count = inode.blocks_count(BLOCK_SIZE as u32, huge_file);
+        inode
+            .set_blocks_count(
+                blocks_count + sectors_per_block,
+                BLOCK_SIZE as u32,
+                huge_file,
+            )
+            .expect("data block accounting failed");
+        inserted.push(extent);
+    }
+    filesystem
+        .modify_inode(&mut journal, inode_number, |on_disk| *on_disk = inode)
+        .expect("inode publication failed");
+
+    journal.umount_commit().expect("commit fixture failed");
+    journal
+        .set_journal_use(false)
+        .expect("disable journal for direct failure injection");
+    let root = ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number)
+        .load_root_from_inode()
+        .expect("external root parse failed");
+    let leaf_block = match root {
+        ExtentNode::Index { entries, .. } => entries
+            .first()
+            .map(|index| (u64::from(index.ei_leaf_hi) << 32) | u64::from(index.ei_leaf_lo))
+            .expect("external root must reference a leaf"),
+        ExtentNode::Leaf { .. } => panic!("fixture must create an external leaf"),
+    };
+    let extents_before = rsext4::inspect_inode_extents(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        0,
+        u64::MAX,
+        rsext4::FileExtentTarget::Data,
+        usize::MAX,
+    )
+    .expect("extent snapshot failed");
+    let blocks_before = inode.blocks_count(BLOCK_SIZE as u32, huge_file);
+    let free_before = filesystem.superblock.free_blocks_count();
+
+    fail_write.set(Some((leaf_block, 1)));
+    let error = ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number)
+        .remove_extent(&mut filesystem, inserted[0], &mut journal)
+        .expect_err("external leaf write failure must abort removal");
+    assert_eq!(error.kind(), rsext4::Ext4ErrorKind::Io);
+    assert_eq!(filesystem.superblock.free_blocks_count(), free_before);
+    assert_eq!(
+        inode.blocks_count(BLOCK_SIZE as u32, huge_file),
+        blocks_before
+    );
+    let extents_after = rsext4::inspect_inode_extents(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        0,
+        u64::MAX,
+        rsext4::FileExtentTarget::Data,
+        usize::MAX,
+    )
+    .expect("extent read after failure failed");
+    assert_eq!(extents_after, extents_before);
+}
+
+#[test]
 fn owned_core_exposes_preallocation_without_os_types() {
     let device = rsext4::format(
         MemoryDevice::new(32 * 1024),
