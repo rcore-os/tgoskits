@@ -2,7 +2,7 @@
 
 use alloc::boxed::Box;
 
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_sync::SpinLock as Mutex;
 use axdevice_base::*;
 
 const CONFIG_ADDRESS_ENABLE: u32 = 1 << 31;
@@ -82,7 +82,7 @@ impl Device for X86PciConfigDevice {
         let size = Self::access_size(access.width)?;
         let port = u16::try_from(access.addr)
             .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
 
         if (CONFIG_ADDRESS_PORT..CONFIG_DATA_PORT).contains(&port) {
             let offset = usize::from(port - CONFIG_ADDRESS_PORT);

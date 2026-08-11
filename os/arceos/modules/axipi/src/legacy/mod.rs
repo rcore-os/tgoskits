@@ -11,13 +11,13 @@ use ax_hal::{
     irq::{CpuId, IrqError},
     percpu::this_cpu_id,
 };
-use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
+use ax_sync::SpinLock;
 pub use event::{Callback, MulticastCallback};
 use queue::IpiEventQueue;
 
 #[ax_percpu::def_percpu]
-static IPI_EVENT_QUEUE: LazyInit<SpinNoIrq<IpiEventQueue>> = LazyInit::new();
+static IPI_EVENT_QUEUE: LazyInit<SpinLock<IpiEventQueue>> = LazyInit::new();
 
 pub(crate) fn init_current_queue() {
     // SAFETY: runtime initialization keeps this CPU offline with IRQ/re-entry
@@ -26,7 +26,7 @@ pub(crate) fn init_current_queue() {
         ax_percpu::with_cpu_pin(|pin| {
             ax_percpu::with_exclusive_cpu(pin, |exclusive| {
                 IPI_EVENT_QUEUE.with_current_mut(exclusive, |queue| {
-                    queue.init_once(SpinNoIrq::new(IpiEventQueue::default()));
+                    queue.init_once(SpinLock::new(IpiEventQueue::default()));
                 })
             })
         })
@@ -43,10 +43,10 @@ pub fn run_on_cpu<T: Into<Callback>>(dest_cpu: usize, callback: T) -> Result<(),
     }
 
     let area = crate::remote_cpu_area(CpuId(dest_cpu))?;
-    // SAFETY: the CPU-local area is permanent and SpinNoIrq serializes remote
+    // SAFETY: the CPU-local area is permanent and SpinLock serializes remote
     // producers with the owner CPU's interrupt consumer.
     unsafe { IPI_EVENT_QUEUE.remote_ptr(area).as_ref() }
-        .lock()
+        .lock_irqsave()
         .push(this_cpu_id(), callback.into());
     crate::notify_cpu(CpuId(dest_cpu)).map(|_| ())
 }
@@ -66,7 +66,7 @@ pub fn run_on_each_cpu<T: Into<MulticastCallback>>(callback: T) -> Result<(), Ir
         let area = crate::remote_cpu_area(cpu)?;
         // SAFETY: the permanent remote object is internally synchronized.
         unsafe { IPI_EVENT_QUEUE.remote_ptr(area).as_ref() }
-            .lock()
+            .lock_irqsave()
             .push(current_cpu, callback.clone().into_unicast());
         crate::notify_cpu(cpu)?;
     }
@@ -79,7 +79,7 @@ pub fn drain_current_callbacks() {
         // SAFETY: interrupt entry pins this CPU and the queue lock serializes
         // all local and remote producers.
         ax_percpu::with_cpu_pin(|pin| {
-            IPI_EVENT_QUEUE.with_current(pin, |queue| queue.lock().pop_one())
+            IPI_EVENT_QUEUE.with_current(pin, |queue| queue.lock_irqsave().pop_one())
         })
     }
     .expect("legacy IPI handling requires an installed CPU-local area")

@@ -16,8 +16,8 @@ use core::{
 use core::{sync::atomic::AtomicUsize, time::Duration};
 
 use ax_errno::LinuxError;
-use ax_kspin::SpinRaw as Mutex;
-use spin::LazyLock;
+use ax_lazyinit::LazyLock;
+use ax_sync::SpinLock as Mutex;
 
 type SizeT = libc::size_t;
 type SSizeT = libc::ssize_t;

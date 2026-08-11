@@ -8,6 +8,7 @@ use ax_kspin::SpinNoIrq;
 use ax_sync::{SpinMutex, SpinMutexGuard};
 
 use super::epoll::EpollInner;
+use crate::sync::{IrqMutex, Mutex, MutexGuard};
 
 const MAX_NESTED_EPOLL_EDGES: usize = 4;
 
@@ -25,8 +26,8 @@ pub(super) struct EpollTopologyLink {
 
 #[derive(Default)]
 pub(super) struct EpollTopology {
-    parents: SpinNoIrq<Vec<EpollTopologyLink>>,
-    children: SpinNoIrq<Vec<EpollTopologyLink>>,
+    parents: IrqMutex<Vec<EpollTopologyLink>>,
+    children: IrqMutex<Vec<EpollTopologyLink>>,
 }
 
 #[derive(Clone, Copy)]

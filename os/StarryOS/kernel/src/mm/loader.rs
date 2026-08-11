@@ -17,6 +17,7 @@ use zerocopy::IntoBytes;
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
     mm::aspace::{AddrSpace, Backend},
+    sync::Mutex,
 };
 
 // RISC-V relocation types

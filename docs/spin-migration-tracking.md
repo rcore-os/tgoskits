@@ -1,16 +1,22 @@
-# spin crate 迁移与清理跟踪
+# `spin` 迁移历史
 
-## 背景
+> 本文只保留早期迁移的历史结论，不再描述当前接口或可执行步骤。当前锁架构、
+> API、边界约束和验证命令以 [`ax-sync` 锁架构设计](./design/ax-sync-lock-architecture.md)
+> 与 [`lock-lint`](./docs/build/lock_lint.md) 文档为准。
 
-项目历史上直接或间接使用了外部 `spin` crate。`spin` 提供的 `Mutex`、`RwLock`
-等同步原语是纯自旋语义：不会进入等待队列，不会主动让出 CPU，也不会自动关闭中断或禁止抢占。
-这类锁如果和项目内的 `ax_kspin`、`axsync::Mutex` 等锁混用，容易形成锁语义不清、锁顺序不稳定、
-睡眠上下文误用、甚至 ABBA 死锁等问题。
+项目最初同时使用 crates.io `spin`、`ax-kspin`、`ax-kernel-guard`、`ax-lockdep`
+和旧 `ax-sync`。迁移曾分阶段把外部 `spin` 的 `Mutex`、`RwLock`、`Once` 和
+`LazyLock` 收口到仓库内实现，再统一锁的上下文语义。
 
-本计划的目标是把外部 `spin` 依赖收口到仓库内，逐步替换项目中对 `spin` 同步原语的直接使用，
-最终完全移除 `spin`。
+该迁移现已结束：
 
-## 总目标
+- `ax-sync` 是第一方代码唯一的公共锁 crate；
+- `SpinLock` 和 `SpinRwLock` 由获取方法区分 preempt、IRQ-save 和 raw 上下文；
+- `Mutex` 固定为可睡眠 mutex；
+- lockdep 和 guard 能力已并入 `ax-sync`；
+- `ax-kspin`、`ax-kernel-guard`、`ax-lockdep` 以及第一方 crates.io `spin` 依赖已删除；
+- no-std 一次性初始化使用 `ax-lazyinit`，std 组件使用 `std::sync`；
+- 原 `spin-lint` 已由覆盖完整锁边界的 `cargo xtask lock-lint` 取代。
 
 - 项目不再从 crates.io 引入任何版本的 `spin`，包括传递依赖。
 - `spin` 的临时 vendored 版本只作为迁移缓冲区存在。

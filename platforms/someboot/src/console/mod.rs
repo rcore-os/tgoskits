@@ -346,7 +346,7 @@ impl<T> EarlyconMutex<T> {
     }
 
     fn with_lock<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        // Do not replace this with spin::Mutex or the rdif runtime wrapper.
+        // Do not replace this with an allocating mutex or the rdif runtime wrapper.
         // someboot runs before the normal allocator is available, so early
         // serial cannot allocate Box/Arc-backed runtime state and must keep a
         // raw register-level enum here. On AArch64, exclusive atomic

@@ -95,23 +95,21 @@ Starry 用户内存访问和 page fault slow path。核心调度入口通过
 
 ## MS-2：识别 held non-sleep lock
 
-当前 `lockdep` feature 下，task 已经有 held-lock stack，`ax-kspin` 和 `ax-sync` 会在加锁/解锁时维护 held lock。这个信息可以用于增强 `might_sleep()` 诊断和判定。
+当前 `lockdep` feature 下，task 已经有 held-lock stack，`ax-sync` 会在加锁/解锁时维护
+held lock。这个信息可以用于增强 `might_sleep()` 诊断和判定。
 
 实现状态：
 
-- `ax-lockdep::HeldLock` 已记录 kind、`sleep_forbidden`、class、addr、acquired_at。
-- `ax-kspin` 的 spin / spin-rwlock 记录为 `sleep_forbidden=true`。
+- `ax_sync::HeldLock` 已记录 kind、`sleep_forbidden`、class、addr、acquired_at。
+- `ax-sync` 的 spin / spin-rwlock 记录为 `sleep_forbidden=true`。
 - `ax-sync::Mutex` 记录为 `sleep_forbidden=false`，避免把 sleepable mutex 本身误标成 non-sleep lock。
 - `might_sleep()` 在 `lockdep` feature 下 panic 时会打印当前 held-lock snapshot。
-- 当前完成的是诊断增强；`SpinRaw` / `SpinRwLock<NoOp>` 持锁睡眠的直接判定仍留给第二阶段 `non_sleep_lock_depth` 或等价状态。
+- 当前完成的是诊断增强；raw `SpinLock` / `SpinRwLock` 持锁睡眠的直接判定仍留给第二阶段 `non_sleep_lock_depth` 或等价状态。
 
 需要重点覆盖的锁：
 
-- `SpinNoPreempt`
-- `SpinNoIrq`
-- `SpinRaw`
-- `SpinRwLock`
-- `SpinNoIrqRwLock`
+- `SpinLock::{lock, lock_irqsave, lock_raw}`
+- `SpinRwLock` 的 read/write 三种获取模式
 - 后续可能新增的项目内 non-sleep rwlock
 
 建议方向：
@@ -131,7 +129,7 @@ Starry 用户内存访问和 page fault slow path。核心调度入口通过
 
 讨论点：
 
-- 第一阶段 held-lock 输出格式如何和 `ax-lockdep` 现有格式复用。
+- 第一阶段 held-lock 输出格式如何和 `ax-sync` 现有格式复用。
 - 第二阶段 feature 名称和默认启用范围。
 - raw lock、读锁和 IRQ-only 短锁的误报边界如何控制。
 
@@ -140,7 +138,7 @@ Starry 用户内存访问和 page fault slow path。核心调度入口通过
 - 持有 non-sleep lock 后调用 `might_sleep()` 能报告问题。
 - 报告能指出至少一个持有锁的 acquire 位置。
 - 不改变正常锁快路径的默认开销，或开销可通过 feature 控制。
-- 已新增 host 单测覆盖持 `SpinNoPreempt` 时 `might_sleep()` 输出 held-lock stack。
+- 已新增 host 单测覆盖持 `SpinLock` 时 `might_sleep()` 输出 held-lock stack。
 
 ## MS-3：改进 panic 诊断
 
@@ -156,7 +154,7 @@ Starry 用户内存访问和 page fault slow path。核心调度入口通过
 
 - 阶段 A 已完成：输出不依赖额外锁路径的上下文快照，包括 caller、IRQ enabled、显式 IRQ context、preempt count、CPU id、task id、task state。
 - 阶段 A 已完成：输出结构化 reason 列表，目前覆盖 `irq_disabled`、`irq_context`、`preempt_disabled`，避免只打印“atomic context”这个总称。
-- 阶段 B 已完成：在 `lockdep` feature 下打印 held-lock stack，复用 `ax-lockdep` 字段，包含 kind、sleepability、class、addr、acquired_at。
+- 阶段 B 已完成：在 `lockdep` feature 下打印 held-lock stack，复用 `ax-sync` 字段，包含 kind、sleepability、class、addr、acquired_at。
 - 阶段 C 在 preempt count 从 0 变成 1 时记录 preempt-disable caller，在降回 0 时清除；`might_sleep()` 因 preempt disabled 触发时输出该位置。
 - 阶段 C 如果 `#[track_caller]` 不能完整穿透 `NoPreempt::new()` /
   `NoPreemptIrqSave::new()` 到 runtime guard 操作，先记录 guard 创建点，不伪造更精确的位置。
@@ -331,8 +329,8 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 
 - IRQ handler 内调用 `ax_task::sleep()` 或 `WaitQueue::wait()` 应触发。
 - preempt disabled 后调用睡眠入口应触发，覆盖现有基础路径。
-- 持 `SpinNoIrq` 后调用 `ax_sync::Mutex::lock()` 应触发，覆盖 IRQ/preempt 路径。
-- `lockdep` feature 下持 `SpinRaw` / `SpinRwLock` 后调用睡眠入口应触发，覆盖 MS-2 的 held non-sleep lock 判定。
+- 持 IRQ-save `SpinLock` 后调用 `ax_sync::Mutex::lock()` 应触发，覆盖 IRQ/preempt 路径。
+- `lockdep` feature 下持 raw `SpinLock` / `SpinRwLock` 后调用睡眠入口应触发，覆盖 MS-2 的 held non-sleep lock 判定。
 - `ax_sync::Mutex::try_lock()` 在原子上下文中不应触发，防止把 non-blocking fast path 误判为 sleepable 操作。
 
 讨论点：
@@ -368,7 +366,7 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 rg -n "might_sleep|might_fault|might_alloc|cant_sleep|non_block" \
   --glob '*.rs' --glob '!target/**'
 
-rg -n "SpinNoIrq|SpinNoPreempt|SpinRaw|SpinRwLock|SpinNoIrqRwLock" \
+rg -n "SpinLock|SpinRwLock|lock_irqsave\(|lock_raw\(" \
   os components drivers net memory virtualization --glob '*.rs'
 
 rg -n "access_user_memory|handle_page_fault|vm_read|vm_write|IoDst::write" \
@@ -394,8 +392,8 @@ rg -n "access_user_memory|handle_page_fault|vm_read|vm_write|IoDst::write" \
 2026-07-02 在实现 MS-1、MS-2 Phase 1 和 MS-3 Phase A/B 时，以下 host 单元测试过滤项出现 SIGSEGV：
 
 - `cargo test -p ax-task --features "test sched-rr" test_fp_state_switch`
-- `cargo test -p ax-lockdep dynamic_lock_instances_do_not_consume_class_slots`
-- `cargo test -p ax-lockdep subclass_tracks_same_base_class_nesting`
+- `cargo test -p ax-sync --features "host-test,lockdep" dynamic_lock_instances_do_not_consume_class_slots`
+- `cargo test -p ax-sync --features "host-test,lockdep" subclass_tracks_same_base_class_nesting`
 
 已在临时 clean worktree 上用改动前 HEAD `9c8bb98d0` 复跑相同过滤项，三者同样 SIGSEGV。因此该现象不是本次 `might_sleep` 增强引入，先记录为既有 host-test 不稳定或未定义行为问题。新增/修改的过滤测试已单独通过。
 

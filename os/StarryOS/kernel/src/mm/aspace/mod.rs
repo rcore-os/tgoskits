@@ -20,7 +20,10 @@ use ax_runtime::{
 };
 use ax_sync::{LockdepMutexExt, PiMutex};
 
-use crate::mm::{ProcessVmStat, paging_error_to_ax_error};
+use crate::{
+    mm::{ProcessVmStat, paging_error_to_ax_error},
+    sync::{LockdepMutexExt, Mutex},
+};
 
 mod accounting;
 mod backend;

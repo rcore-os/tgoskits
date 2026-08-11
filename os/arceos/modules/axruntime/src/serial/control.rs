@@ -41,7 +41,7 @@ impl ControlQueue {
     pub(super) fn submit(&self, op: ControlOp, notify: impl FnOnce()) -> AxResult {
         let completion = Arc::new(CommandCompletion::new());
         {
-            let mut commands = self.commands.lock();
+            let mut commands = self.commands.lock_irqsave();
             if commands.len() == CONTROL_QUEUE_CAPACITY {
                 return Err(AxError::ResourceBusy);
             }
@@ -55,11 +55,11 @@ impl ControlQueue {
     }
 
     pub(super) fn try_pop(&self) -> Option<ControlCommand> {
-        self.commands.lock().pop_front()
+        self.commands.lock_irqsave().pop_front()
     }
 
     pub(super) fn has_pending(&self) -> bool {
-        !self.commands.lock().is_empty()
+        !self.commands.lock_irqsave().is_empty()
     }
 }
 
@@ -82,9 +82,10 @@ impl CommandCompletion {
     }
 
     fn wait(&self) -> AxResult {
-        self.wait.wait_until(|| self.result.lock().is_some());
+        self.wait
+            .wait_until(|| self.result.lock_irqsave().is_some());
         self.result
-            .lock()
+            .lock_irqsave()
             .take()
             .expect("serial command completion was published without a result")
     }

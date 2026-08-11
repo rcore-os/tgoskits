@@ -1,360 +1,47 @@
-//! Priority-inheritance mutex identities and wait handshake tokens.
+//! Task-local PI metadata and scheduler-owned per-lock waiter handles.
 
-use alloc::sync::Arc;
-use core::{
-    marker::PhantomData,
-    ptr::NonNull,
-    sync::atomic::{AtomicU64, Ordering},
+use core::sync::atomic::{AtomicU64, Ordering};
+
+pub use ax_sync::{
+    PiMutexAcquire, PiMutexClaimOutcome, PiMutexCore, PiMutexId, PiMutexLockResult,
+    PiMutexOwnedRelease, PiMutexOwnerSnapshot, PiMutexRaw, PiMutexRef, PiMutexStateError, PiTaskId,
+    PiWaitCancelOutcome, PiWaitToken,
 };
 
 use crate::{
-    CurrentThreadToken, PiWaitStateError, PiWaitTree, TaskError, ThreadCore, ThreadId,
+    PiWaitStateError, PiWaitTree, TaskError, ThreadId,
     lock::{RawTicketGuard, RawTicketLock},
 };
 
-static NEXT_PI_MUTEX_GENERATION: AtomicU64 = AtomicU64::new(1);
-const OWNER_HAS_WAITERS: u64 = 1 << 63;
-const OWNER_ID_MASK: u64 = !OWNER_HAS_WAITERS;
-
-/// Stable identity of one kernel PI mutex.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PiMutexId(u64);
-
-impl PiMutexId {
-    /// Returns the globally unique generation allocated to this lock instance.
-    pub const fn get(self) -> u64 {
-        self.0
+impl From<ThreadId> for PiTaskId {
+    fn from(thread: ThreadId) -> Self {
+        Self::new(thread.as_u64()).expect("scheduler thread identity must fit the PI owner word")
     }
 }
 
-/// Lazily allocated identity owned by one physical PI lock instance.
-///
-/// Keeping the allocator state inside the lock makes reconstructing a lock at
-/// the same address allocate a fresh generation. The generation is never
-/// reused, but the physical lock owner must still quiesce all scheduler wait
-/// registrations before destruction.
-pub struct PiMutexCore {
-    owner: AtomicU64,
-    generation: AtomicU64,
-    state: RawTicketLock<PiMutexWaiters>,
+impl From<PiTaskId> for ThreadId {
+    fn from(thread: PiTaskId) -> Self {
+        let raw = thread.get();
+        Self::from_parts(raw as u32, (raw >> 32) as u32)
+    }
 }
 
-impl PiMutexCore {
-    /// Creates an identity owner that has not yet entered the PI scheduler.
-    pub const fn new() -> Self {
-        Self {
-            owner: AtomicU64::new(0),
-            generation: AtomicU64::new(0),
-            state: RawTicketLock::new(PiMutexWaiters::new()),
-        }
-    }
-
-    /// Attempts the atomic uncontended acquisition path.
-    pub fn try_acquire(&self, current: &CurrentThreadToken) -> Result<PiMutexAcquire, TaskError> {
-        self.try_acquire_thread(current.id())
-    }
-
-    /// Attempts acquisition on behalf of an explicitly authorized thread.
-    ///
-    /// This is the proxy-owner form used by scheduler models and PI-futex-like
-    /// handoff code. Ordinary task-context locks must use [`Self::try_acquire`]
-    /// with a [`CurrentThreadToken`].
-    ///
-    /// # Safety
-    ///
-    /// The caller must own the scheduler authority to establish `current` as
-    /// this physical mutex's executing owner.
-    pub unsafe fn try_acquire_for_thread(
-        &self,
-        current: ThreadId,
-    ) -> Result<PiMutexAcquire, TaskError> {
-        self.try_acquire_thread(current)
-    }
-
-    fn try_acquire_thread(&self, current: ThreadId) -> Result<PiMutexAcquire, TaskError> {
-        let current_word = owner_word(current)?;
-        match self
-            .owner
-            .compare_exchange(0, current_word, Ordering::Acquire, Ordering::Relaxed)
-        {
-            Ok(_) => Ok(PiMutexAcquire::Acquired),
-            Err(owner) if owner & OWNER_ID_MASK == current_word => Err(
-                TaskError::InvalidPiWaitState(PiWaitStateError::WaiterOwnsLock),
-            ),
-            Err(_) => Ok(PiMutexAcquire::Contended),
-        }
-    }
-
-    /// Attempts release on behalf of an explicitly authorized thread.
-    ///
-    /// This proxy-owner form exists for scheduler models and PI-futex-like
-    /// handoff code. Ordinary raw mutexes should use
-    /// [`Self::try_release_owned`], whose authority comes from the raw-mutex
-    /// ownership contract rather than a caller-provided identity.
-    ///
-    /// # Safety
-    ///
-    /// The caller must own the scheduler authority to release `current` and
-    /// must serialize this operation with the physical mutex owner.
-    pub unsafe fn try_release_for_thread(&self, current: ThreadId) -> Result<bool, TaskError> {
-        let current_word = owner_word(current)?;
-        match self
-            .owner
-            .compare_exchange(current_word, 0, Ordering::Release, Ordering::Relaxed)
-        {
-            Ok(_) => Ok(true),
-            Err(owner) if owner_from_word(owner) == Some(current) => Ok(false),
-            Err(_) => Err(TaskError::InvalidPiState),
-        }
-    }
-
-    /// Releases the physical owner named by this mutex's owner word.
-    ///
-    /// # Safety
-    ///
-    /// The caller must be the execution context that owns this mutex under a
-    /// higher-level raw-mutex contract. It must keep task preemption disabled
-    /// from a contended result through the scheduler metadata handoff and wake.
-    pub unsafe fn try_release_owned(&self) -> Result<PiMutexOwnedRelease, TaskError> {
-        let observed = self.owner.load(Ordering::Acquire);
-        let owner = owner_from_word(observed).ok_or(TaskError::InvalidPiState)?;
-        let owner_word = owner_word(owner)?;
-        match self
-            .owner
-            .compare_exchange(owner_word, 0, Ordering::Release, Ordering::Relaxed)
-        {
-            Ok(_) => Ok(PiMutexOwnedRelease::Released),
-            Err(current) if owner_from_word(current) == Some(owner) => {
-                Ok(PiMutexOwnedRelease::Contended(owner))
+impl From<PiMutexStateError> for TaskError {
+    fn from(error: PiMutexStateError) -> Self {
+        match error {
+            PiMutexStateError::WaiterOwnsLock => {
+                Self::InvalidPiWaitState(PiWaitStateError::WaiterOwnsLock)
             }
-            Err(_) => Err(TaskError::InvalidPiState),
+            PiMutexStateError::InvalidState => Self::InvalidPiState,
         }
     }
-
-    /// Returns whether `current` is the physical mutex owner.
-    pub fn is_owned_by(&self, current: ThreadId) -> bool {
-        owner_from_word(self.owner.load(Ordering::Acquire)) == Some(current)
-    }
-
-    /// Returns whether the mutex is owned or in an ownerless handoff window.
-    pub fn is_locked(&self) -> bool {
-        self.owner.load(Ordering::Relaxed) != 0
-    }
-
-    /// Borrows this physical lock's stable scheduler identity.
-    ///
-    /// The returned borrow keeps the embedded waiter tree at a stable address
-    /// for every scheduler token derived from it. Moving or destroying the
-    /// mutex while a wait token exists is therefore rejected by Rust's normal
-    /// borrow rules rather than delegated to a raw-address convention.
-    pub fn mutex_ref(&self) -> Result<PiMutexRef<'_>, TaskError> {
-        let observed = self.generation.load(Ordering::Acquire);
-        if observed != 0 {
-            return Ok(PiMutexRef {
-                core: self,
-                id: PiMutexId(observed),
-            });
-        }
-
-        let allocated = NEXT_PI_MUTEX_GENERATION
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |next| {
-                next.checked_add(1)
-            })
-            .map(PiMutexId)
-            .map_err(|_| TaskError::InvalidPiState)?;
-        match self
-            .generation
-            .compare_exchange(0, allocated.0, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => Ok(PiMutexRef {
-                core: self,
-                id: allocated,
-            }),
-            Err(installed) if installed != 0 => Ok(PiMutexRef {
-                core: self,
-                id: PiMutexId(installed),
-            }),
-            Err(_) => Err(TaskError::InvalidPiState),
-        }
-    }
-
-    pub(crate) fn owner_snapshot(&self) -> PiMutexOwnerSnapshot {
-        let word = self.owner.load(Ordering::Acquire);
-        PiMutexOwnerSnapshot {
-            word,
-            owner: owner_from_word(word),
-        }
-    }
-
-    pub(crate) fn try_acquire_snapshot(
-        &self,
-        snapshot: PiMutexOwnerSnapshot,
-        current: ThreadId,
-    ) -> Result<bool, TaskError> {
-        debug_assert_eq!(snapshot.word, 0);
-        let current = owner_word(current)?;
-        Ok(self
-            .owner
-            .compare_exchange(snapshot.word, current, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok())
-    }
-
-    pub(crate) fn try_mark_waiters(&self, snapshot: PiMutexOwnerSnapshot) -> bool {
-        if snapshot.has_waiters() {
-            return self.owner.load(Ordering::Acquire) == snapshot.word;
-        }
-        self.owner
-            .compare_exchange(
-                snapshot.word,
-                snapshot.word | OWNER_HAS_WAITERS,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-    }
-
-    pub(crate) fn publish_owner(&self, owner: ThreadId, has_waiters: bool) {
-        let owner = owner_word(owner).expect("validated thread identity must fit PI owner word");
-        self.owner.store(
-            owner | if has_waiters { OWNER_HAS_WAITERS } else { 0 },
-            Ordering::Release,
-        );
-    }
-
-    pub(crate) fn publish_ownerless(&self) {
-        self.owner.store(OWNER_HAS_WAITERS, Ordering::Release);
-    }
-
-    /// Ends an ownerless handoff after its last uncommitted waiter is removed.
-    pub(crate) fn publish_unlocked(&self) {
-        self.owner.store(0, Ordering::Release);
-    }
-
-    pub(crate) fn clear_waiters_bit(&self, owner: ThreadId) -> Result<(), TaskError> {
-        let owner = owner_word(owner)?;
-        self.owner.store(owner, Ordering::Release);
-        Ok(())
-    }
 }
-
-impl core::fmt::Debug for PiMutexCore {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("PiMutexCore")
-            .field(
-                "owner",
-                &owner_from_word(self.owner.load(Ordering::Relaxed)),
-            )
-            .field("generation", &self.generation.load(Ordering::Relaxed))
-            .finish_non_exhaustive()
-    }
-}
-
-impl Drop for PiMutexCore {
-    fn drop(&mut self) {
-        let state = self.state.lock();
-        assert!(
-            state.waiters.is_empty(),
-            "a PI mutex cannot be destroyed with live scheduler waiters"
-        );
-    }
-}
-
-impl Default for PiMutexCore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Borrowed scheduler capability of one physical PI mutex.
-#[derive(Clone, Copy, Debug)]
-pub struct PiMutexRef<'lock> {
-    core: &'lock PiMutexCore,
-    id: PiMutexId,
-}
-
-/// Result of the atomic PI mutex fast acquisition path.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PiMutexAcquire {
-    /// The caller became the physical owner.
-    Acquired,
-    /// The caller must register in the scheduler-owned waiter tree.
-    Contended,
-}
-
-/// Result of an owner-authorized PI mutex release.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PiMutexOwnedRelease {
-    /// The uncontended owner word was released atomically.
-    Released,
-    /// Scheduler waiter metadata must select the next owner before wake.
-    Contended(ThreadId),
-}
-
-impl<'lock> PiMutexRef<'lock> {
-    /// Returns the stable generation-bearing lock identity.
-    pub const fn id(self) -> PiMutexId {
-        self.id
-    }
-
-    pub(crate) fn raw(self) -> PiMutexRaw {
-        PiMutexRaw {
-            core: NonNull::from(self.core),
-            id: self.id,
-        }
-    }
-
-    pub(crate) const fn core(self) -> &'lock PiMutexCore {
-        self.core
-    }
-
-    pub(crate) fn lock_state(self) -> RawTicketGuard<'lock, PiMutexWaiters> {
-        self.core.state.lock()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PiMutexRaw {
-    core: NonNull<PiMutexCore>,
-    id: PiMutexId,
-}
-
-impl PiMutexRaw {
-    pub(crate) const fn id(self) -> PiMutexId {
-        self.id
-    }
-
-    pub(crate) unsafe fn lock_state(self) -> RawTicketGuard<'static, PiMutexWaiters> {
-        // SAFETY: every stored raw lock reference is lifetime-bound by the
-        // public PiWaitToken and by the owning mutex guard. The embedded state
-        // remains at this address until the final registration is removed.
-        unsafe { self.core.as_ref() }.state.lock()
-    }
-
-    pub(crate) unsafe fn try_lock_state(self) -> Option<RawTicketGuard<'static, PiMutexWaiters>> {
-        // SAFETY: identical lifetime contract to `lock_state`; failure does
-        // not expose the protected waiter tree.
-        unsafe { self.core.as_ref() }.state.try_lock()
-    }
-
-    pub(crate) unsafe fn core(self) -> &'static PiMutexCore {
-        // SAFETY: the raw capability is lifetime-bound by a wait token or
-        // mutex transaction, both of which borrow the physical mutex core.
-        unsafe { self.core.as_ref() }
-    }
-}
-
-// SAFETY: PiMutexRaw is used only while a PiWaitToken or mutex borrow keeps the
-// identity alive. The embedded raw ticket lock serializes mutable state.
-unsafe impl Send for PiMutexRaw {}
-unsafe impl Sync for PiMutexRaw {}
 
 /// One generation-checked edge from a blocked task to a physical PI mutex.
 ///
-/// The edge is protected by the blocked task's scheduler lock, the equivalent
-/// of Linux `task_struct::pi_lock`. The referenced mutex waiter node remains
-/// protected by that mutex's wait lock.
+/// The edge is protected by the blocked task's scheduler lock, equivalent to
+/// Linux `task_struct::pi_lock`. The referenced lock waiter remains protected
+/// by the scheduler-owned wait handle installed in the physical mutex.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PiWaitRegistration {
     pub(crate) lock: PiMutexRaw,
@@ -375,112 +62,88 @@ impl PiMutexWaiters {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PiMutexOwnerSnapshot {
-    word: u64,
-    owner: Option<ThreadId>,
+/// Scheduler-owned waiter state installed lazily into one physical PI mutex.
+pub(crate) struct PiMutexWaitHandle {
+    state: RawTicketLock<PiMutexWaiters>,
 }
 
-impl PiMutexOwnerSnapshot {
-    pub(crate) const fn owner(self) -> Option<ThreadId> {
-        self.owner
-    }
-
-    pub(crate) const fn is_unlocked(self) -> bool {
-        self.word == 0
-    }
-
-    pub(crate) const fn is_ownerless(self) -> bool {
-        self.word == OWNER_HAS_WAITERS
-    }
-
-    pub(crate) const fn has_waiters(self) -> bool {
-        self.word & OWNER_HAS_WAITERS != 0
+impl PiMutexWaitHandle {
+    fn new() -> Self {
+        Self {
+            state: RawTicketLock::new(PiMutexWaiters::new()),
+        }
     }
 }
 
-fn owner_word(thread: ThreadId) -> Result<u64, TaskError> {
-    let raw = thread.as_u64();
-    if raw == 0 || raw & OWNER_HAS_WAITERS != 0 {
-        return Err(TaskError::InvalidPiState);
-    }
-    Ok(raw)
-}
-
-fn owner_from_word(state: u64) -> Option<ThreadId> {
-    let raw = state & OWNER_ID_MASK;
-    (raw != 0).then(|| ThreadId::from_parts(raw as u32, (raw >> 32) as u32))
-}
-
-/// Token joining ax-sync's waiter grant with ax-task's parking transition.
-///
-/// The token retains the thread's preallocated wait state. Creating, granting,
-/// cancelling, and dropping it never allocates memory.
-#[must_use = "a PI wait token must be granted or explicitly cancelled"]
-#[derive(Debug)]
-pub struct PiWaitToken<'lock> {
-    pub(crate) core: Arc<ThreadCore>,
-    pub(crate) initial_owner: Option<Arc<ThreadCore>>,
-    pub(crate) generation: u64,
-    pub(crate) lock: PiMutexRaw,
-    pub(crate) _lock_lifetime: PhantomData<&'lock PiMutexCore>,
-}
-
-impl PiWaitToken<'_> {
-    /// Returns the generation-bearing identity of the registered waiter.
-    pub fn thread_id(&self) -> ThreadId {
-        self.core.id()
-    }
-
-    /// Returns whether ownership handoff has already selected this waiter.
-    pub fn is_granted(&self) -> bool {
-        self.core.pi_wait_state().is_granted(self.generation)
-    }
-
-    /// Returns whether this waiter is currently eligible to acquire an
-    /// ownerless mutex.
-    ///
-    /// Linux leaves the woken waiter in the lock tree and authorizes whichever
-    /// waiter is first when `try_to_take_rt_mutex()` serializes on wait_lock.
-    /// Deriving eligibility from the live top node lets a newly arrived, more
-    /// urgent waiter take the lock without a second selected-owner state.
-    pub fn can_claim(&self) -> bool {
-        self.is_top_waiter()
-            && unsafe {
-                // SAFETY: this token retains the physical mutex-core borrow.
-                self.lock.core()
-            }
-            .owner_snapshot()
-            .is_ownerless()
-    }
-
-    /// Returns whether this waiter is currently the lock's cached top waiter.
-    pub fn is_top_waiter(&self) -> bool {
-        self.core.pi_wait_state().is_top(self.generation)
-    }
-
-    /// Returns the owner observed by the wait-registration transaction.
-    ///
-    /// A waiter which joins an already ownerless claim window has no initial
-    /// owner. A later handoff may also redirect an owned waiter, so mutex owner
-    /// spinning must stop as soon as its local owner word no longer names this
-    /// identity.
-    pub fn initial_owner(&self) -> Option<ThreadId> {
-        self.initial_owner.as_ref().map(|owner| owner.id())
-    }
-
-    /// Returns whether the initially observed owner still occupies a CPU.
-    ///
-    /// This is a progress hint equivalent to Linux `owner_on_cpu()`, not an
-    /// ownership proof. The mutex owner word remains the serialization source
-    /// of truth.
-    pub fn initial_owner_is_on_cpu(&self) -> bool {
-        self.initial_owner
-            .as_ref()
-            .is_some_and(|owner| owner.sched().scheduler_fence_cpu().is_some())
+impl Drop for PiMutexWaitHandle {
+    fn drop(&mut self) {
+        assert!(
+            self.state.lock().waiters.is_empty(),
+            "a PI mutex cannot be destroyed with live scheduler waiters"
+        );
     }
 }
 
+pub(crate) fn lock_pi_mutex_waiters(lock: PiMutexRef<'_>) -> RawTicketGuard<'_, PiMutexWaiters> {
+    ensure_pi_mutex_wait_handle(lock.core()).state.lock()
+}
+
+pub(crate) unsafe fn lock_raw_pi_mutex_waiters(
+    lock: PiMutexRaw,
+) -> RawTicketGuard<'static, PiMutexWaiters> {
+    installed_pi_mutex_wait_handle(unsafe {
+        // SAFETY: the caller retains the registration represented by `lock`.
+        lock.core()
+    })
+    .state
+    .lock()
+}
+
+pub(crate) unsafe fn try_lock_raw_pi_mutex_waiters(
+    lock: PiMutexRaw,
+) -> Option<RawTicketGuard<'static, PiMutexWaiters>> {
+    installed_pi_mutex_wait_handle(unsafe {
+        // SAFETY: the caller retains the registration represented by `lock`.
+        lock.core()
+    })
+    .state
+    .try_lock()
+}
+
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+pub(crate) unsafe fn drop_pi_mutex_wait_handle(wait_handle: *mut ()) {
+    let wait_handle = wait_handle.cast::<PiMutexWaitHandle>();
+    // SAFETY: PiMutexCore transferred the unique initialized inline object
+    // after its final safe reference and waiter registration became unreachable.
+    unsafe { wait_handle.drop_in_place() };
+}
+
+fn ensure_pi_mutex_wait_handle(core: &PiMutexCore) -> &PiMutexWaitHandle {
+    const _: () = assert!(
+        core::mem::size_of::<PiMutexWaitHandle>()
+            <= ax_sync::PI_MUTEX_WAIT_STORAGE_WORDS * core::mem::size_of::<usize>()
+    );
+    const _: () =
+        assert!(core::mem::align_of::<PiMutexWaitHandle>() <= core::mem::align_of::<usize>());
+
+    unsafe {
+        // SAFETY: every ArceOS access to this storage uses the same concrete
+        // handle type, whose size and alignment are checked above.
+        core.wait_storage().get_or_init(PiMutexWaitHandle::new)
+    }
+}
+
+fn installed_pi_mutex_wait_handle(core: &PiMutexCore) -> &PiMutexWaitHandle {
+    unsafe {
+        // SAFETY: a raw waiter registration is created only after the slow path
+        // initialized this exact concrete handle type.
+        core.wait_storage()
+            .get::<PiMutexWaitHandle>()
+            .expect("registered PI mutex has no scheduler wait handle")
+    }
+}
+
+/// Task-local handshake generation for one preallocated PI waiter.
 #[derive(Debug)]
 pub(crate) struct PiWaitState {
     generation: AtomicU64,
@@ -541,11 +204,13 @@ impl PiWaitState {
             && self.granted_generation.load(Ordering::Acquire) != generation
     }
 
-    fn is_granted(&self, generation: u64) -> bool {
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+    pub(crate) fn is_granted(&self, generation: u64) -> bool {
         self.granted_generation.load(Ordering::Acquire) == generation
     }
 
-    fn is_top(&self, generation: u64) -> bool {
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+    pub(crate) fn is_top(&self, generation: u64) -> bool {
         self.top_generation.load(Ordering::Acquire) == generation
     }
 }

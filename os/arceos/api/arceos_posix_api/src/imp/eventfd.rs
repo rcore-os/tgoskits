@@ -14,7 +14,7 @@ use ax_io::PollState;
 use ax_sync::PiMutex;
 
 use super::fd_ops::{FileLike, add_file_like};
-use crate::ctypes;
+use crate::{ctypes, sync::Mutex};
 
 const EFD_SUPPORTED_FLAGS: u32 = ctypes::EFD_SEMAPHORE | ctypes::EFD_CLOEXEC | ctypes::EFD_NONBLOCK;
 

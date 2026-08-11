@@ -6,7 +6,7 @@ use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 use ax_sync::PiMutex;
 
 use super::{AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, pages_in};
-use crate::mm::paging_error_to_ax_error;
+use crate::{mm::paging_error_to_ax_error, sync::Mutex};
 
 /// Linear mapping backend.
 ///

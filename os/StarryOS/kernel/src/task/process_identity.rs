@@ -23,7 +23,7 @@ pub(crate) struct ProcessIdentity {
     process: Arc<Process>,
     pid_namespaces: Arc<[axnsproxy::PidNamespaceRef]>,
     exit_event: Arc<PollSet>,
-    state: SpinNoIrq<ProcessIdentityState>,
+    state: IrqMutex<ProcessIdentityState>,
 }
 
 enum ProcessIdentityState {
@@ -60,7 +60,7 @@ impl ProcessIdentity {
             process,
             pid_namespaces,
             exit_event,
-            state: SpinNoIrq::new(ProcessIdentityState::Live(proc_data)),
+            state: IrqMutex::new(ProcessIdentityState::Live(proc_data)),
         })
     }
 

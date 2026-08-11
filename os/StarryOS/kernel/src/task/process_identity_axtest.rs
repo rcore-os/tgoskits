@@ -28,7 +28,7 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
         process: process.clone(),
         pid_namespaces: Arc::from([Arc::clone(&axnsproxy::ROOT_PID_NS)]),
         exit_event: Arc::new(PollSet::new()),
-        state: SpinNoIrq::new(ProcessIdentityState::Zombie(ZombieSnapshot {
+        state: IrqMutex::new(ProcessIdentityState::Zombie(ZombieSnapshot {
             cred: Arc::new(Cred::default()),
             nice: 0,
             ptrace_tracer_pid: None,
@@ -46,7 +46,7 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
     REAP_CLAIM_RELEASED.store(false, Ordering::Release);
     REAP_CLAIM_BARRIER_PID.store(TEST_PID, Ordering::Release);
 
-    let reaped_cpu_time = Arc::new(SpinNoIrq::new(None));
+    let reaped_cpu_time = Arc::new(IrqMutex::new(None));
     let reap_task = {
         let process = process.clone();
         let reaped_cpu_time = reaped_cpu_time.clone();

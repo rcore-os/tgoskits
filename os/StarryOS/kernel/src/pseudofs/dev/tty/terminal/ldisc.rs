@@ -298,7 +298,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
 
 struct EchoQueue<W> {
     writer: W,
-    queue: SpinNoIrq<VecDeque<u8>>,
+    queue: IrqMutex<VecDeque<u8>>,
     wake_source: Arc<PollSet>,
     dropped: AtomicUsize,
 }
@@ -307,7 +307,7 @@ impl<W: TtyWrite> EchoQueue<W> {
     fn new(writer: W, wake_source: Arc<PollSet>) -> Arc<Self> {
         Arc::new(Self {
             writer,
-            queue: SpinNoIrq::new(VecDeque::new()),
+            queue: IrqMutex::new(VecDeque::new()),
             wake_source,
             dropped: AtomicUsize::new(0),
         })

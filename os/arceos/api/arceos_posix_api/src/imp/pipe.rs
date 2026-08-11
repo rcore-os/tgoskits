@@ -6,7 +6,7 @@ use ax_io::PollState;
 use ax_sync::SpinMutex;
 
 use super::fd_ops::{FileLike, add_file_like, close_file_like};
-use crate::ctypes;
+use crate::{ctypes, sync::Mutex};
 
 #[derive(Copy, Clone, PartialEq)]
 enum RingBufferStatus {

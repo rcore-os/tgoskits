@@ -3,7 +3,6 @@ use core::task::Context;
 
 use ax_errno::AxResult;
 use ax_fs_ng::MountNamespace as FsMountNamespace;
-use ax_kspin::SpinNoIrq;
 use axnsproxy::{
     CgroupNamespace, IpcNamespace, MntNamespace as ProxyMntNamespace, NetNamespace,
     PidNamespaceRef, UserNamespace, UtNamespace,
@@ -15,16 +14,17 @@ use linux_raw_sys::general::{
 };
 
 use super::FileLike;
+use crate::sync::IrqMutex;
 
 /// A file descriptor that references a specific kernel namespace.
 ///
 /// Created by opening a file under `/proc/<pid>/ns/<type>`.  The fd is
 /// passed to `setns(2)` to join the referenced namespace.
 pub enum NsFd {
-    Uts(Arc<SpinNoIrq<UtNamespace>>),
-    Ipc(Arc<SpinNoIrq<IpcNamespace>>),
+    Uts(Arc<IrqMutex<UtNamespace>>),
+    Ipc(Arc<IrqMutex<IpcNamespace>>),
     Mnt {
-        ns: Arc<SpinNoIrq<ProxyMntNamespace>>,
+        ns: Arc<IrqMutex<ProxyMntNamespace>>,
         fs_ns: Arc<FsMountNamespace>,
     },
     Pid(PidNamespaceRef),

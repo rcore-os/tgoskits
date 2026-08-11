@@ -37,7 +37,7 @@ const NO_ACTIVE_CONSOLE: usize = usize::MAX;
 const IRQ_RX_CAPACITY: usize = 16_384;
 const SUBSCRIPTION_RX_CAPACITY: usize = 4_096;
 
-static SERIAL_RUNTIMES: Once<Box<[SerialRuntimeHandle]>> = Once::new();
+static SERIAL_RUNTIMES: OnceLock<Box<[SerialRuntimeHandle]>> = OnceLock::new();
 static ACTIVE_CONSOLE: AtomicUsize = AtomicUsize::new(NO_ACTIVE_CONSOLE);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,7 +195,7 @@ struct RuntimeShared {
     rx_progress: WaitQueue,
     tx_progress: WaitQueue,
     started: AtomicBool,
-    irq_handle: Once<ax_hal::irq::IrqHandle>,
+    irq_handle: OnceLock<ax_hal::irq::IrqHandle>,
 }
 
 impl RuntimeShared {
@@ -273,7 +273,7 @@ impl SerialRuntimeHandle {
 
     /// Takes the only RX subscription. Starry serializes its readers above it.
     pub fn take_rx_subscription(&self) -> Option<SerialRxSubscription> {
-        let consumer = self.shared.rx_subscription.lock().take()?;
+        let consumer = self.shared.rx_subscription.lock_irqsave().take()?;
         Some(SerialRxSubscription {
             consumer: PiMutex::new(Some(consumer)),
             shared: self.shared.clone(),
@@ -428,13 +428,13 @@ impl SerialRxSubscription {
         self.shared.ensure_started()?;
         self.shared.rx_progress.wait_until(|| {
             self.consumer
-                .lock()
+                .lock_irqsave()
                 .as_ref()
                 .is_some_and(|consumer| !consumer.is_empty())
                 || !self.shared.started()
         });
         self.consumer
-            .lock()
+            .lock_irqsave()
             .as_ref()
             .is_some_and(|consumer| !consumer.is_empty())
             .then_some(())
@@ -457,7 +457,7 @@ impl SerialRxSubscription {
     }
 
     fn clear_pending(&self) {
-        if let Some(consumer) = self.consumer.lock().as_mut() {
+        if let Some(consumer) = self.consumer.lock_irqsave().as_mut() {
             consumer.clear();
         }
         self.shared.bridge.notify();
@@ -469,7 +469,7 @@ impl Drop for SerialRxSubscription {
         let Some(consumer) = self.consumer.get_mut().take() else {
             return;
         };
-        let mut available = self.shared.rx_subscription.lock();
+        let mut available = self.shared.rx_subscription.lock_irqsave();
         debug_assert!(
             available.is_none(),
             "serial runtime cannot have two RX consumers"
@@ -542,7 +542,7 @@ fn build_runtime(
         rx_progress: WaitQueue::new(),
         tx_progress: WaitQueue::new(),
         started: AtomicBool::new(false),
-        irq_handle: Once::new(),
+        irq_handle: OnceLock::new(),
     });
 
     let worker = SerialWorker::new(

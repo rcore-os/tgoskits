@@ -349,9 +349,15 @@ fn do_execve(
     thr.set_robust_list_head(0);
     thr.clear_rseq_state();
 
-    // Remove CLOEXEC fds from the table under the write guard we took
-    // for the post-teardown snapshot — no fd can be added or have its
-    // CLOEXEC bit flipped between scan and close — but defer the actual
+    // Collect and remove CLOEXEC fds after sibling teardown. Snapshotting
+    // before teardown would miss any fd a sibling promoted to CLOEXEC (via
+    // `open(... O_CLOEXEC)`, `fcntl(F_SETFD)`, or `close_range(..., CLOEXEC)`)
+    // between our snapshot and its own exit. The scan and removal share one
+    // short write critical section, but that guard must not span the address
+    // space and signal commit above: `FD_TABLE` uses a preempt-disabling lock,
+    // while those operations may acquire sleeping mutexes.
+    //
+    // Defer the actual
     // `release_locks_on_close` (POSIX-lock release, OFD waker wakes,
     // FileDescriptor drop) until after we've dropped the table write
     // lock. The wakers fire on the global advisory-lock waiter queues
@@ -363,13 +369,21 @@ fn do_execve(
     // after the lock is released, which is equivalent: no new fd can
     // appear in the slots we just emptied because nothing else in this
     // process is running yet (siblings reaped, new image not started).
-    let mut closing = Vec::with_capacity(cloexec_fds.len());
-    for fd in cloexec_fds {
-        if let Some(f) = fd_table.remove(fd) {
-            closing.push(f);
+    let closing = {
+        let current_fd_table = crate::file::current_fd_table();
+        let mut fd_table = current_fd_table.write();
+        let cloexec_fds: Vec<_> = fd_table
+            .ids()
+            .filter(|it| fd_table.get(*it).unwrap().cloexec)
+            .collect();
+        let mut closing = Vec::with_capacity(cloexec_fds.len());
+        for fd in cloexec_fds {
+            if let Some(f) = fd_table.remove(fd) {
+                closing.push(f);
+            }
         }
-    }
-    drop(fd_table);
+        closing
+    };
     for f in closing {
         crate::file::release_locks_on_close(f);
     }

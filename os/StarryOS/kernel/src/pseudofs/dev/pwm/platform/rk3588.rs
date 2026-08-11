@@ -1,12 +1,12 @@
 use alloc::vec::Vec;
 
+use ax_lazyinit::LazyLock;
 use axfs_ng_vfs::{VfsError, VfsResult};
 use rdif_pwm::{Pwm, PwmError, PwmState};
 use rdrive::{
     Device, DeviceId,
     probe::fdt::{NodeType, Status},
 };
-use spin::LazyLock;
 
 static PWM_CHIPS: LazyLock<Vec<PwmChipDesc>> = LazyLock::new(discover_pwm_chips);
 

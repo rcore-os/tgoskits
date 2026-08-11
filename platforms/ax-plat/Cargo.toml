@@ -10,22 +10,21 @@ authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.
 license = "Apache-2.0"
 
 [features]
-smp = ["ax-kspin/smp"]
+smp = ["ax-sync/smp"]
 irq = ["dep:rdif-intc"]
 
 [dependencies]
 ax-memory-addr = { workspace = true }
+ax-lazyinit.workspace = true
 bitflags = "2.6"
 ax-crate-interface = { workspace = true }
 irq-framework = { workspace = true }
 rdif-intc = { workspace = true, optional = true }
 const-str = "1.0"
 ax-plat-macros = { workspace = true }
-ax-kernel-guard = { workspace = true }
-ax-kspin = { workspace = true }
+ax-sync = { workspace = true }
 ax-percpu.workspace = true
 rdrive.workspace = true
-spin = { workspace = true }
 thiserror.workspace = true
 
 [package.metadata.docs.rs]

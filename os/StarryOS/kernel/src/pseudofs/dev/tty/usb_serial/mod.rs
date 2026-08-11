@@ -7,7 +7,6 @@ use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
 use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
-use spin::LazyLock;
 
 use self::backend::{UsbSerialPortInfo, find_usb_serial_port};
 use super::{
@@ -18,7 +17,10 @@ use super::{
         termios::Termios2,
     },
 };
-use crate::pseudofs::usbfs::{self, UsbDeviceHandle};
+use crate::{
+    pseudofs::usbfs::{self, UsbDeviceHandle},
+    sync::{IrqMutex, Mutex},
+};
 
 pub type UsbSerialTtyDriver = Tty<UsbSerialReader, UsbSerialWriter>;
 
@@ -53,8 +55,8 @@ struct UsbSerialBackendState {
     session_closing: AtomicBool,
     rx_worker_started: AtomicBool,
     tx_worker_started: AtomicBool,
-    rx_queue: SpinNoIrq<VecDeque<u8>>,
-    tx_queue: SpinNoIrq<VecDeque<u8>>,
+    rx_queue: IrqMutex<VecDeque<u8>>,
+    tx_queue: IrqMutex<VecDeque<u8>>,
     dropped_rx: AtomicUsize,
     input_source: Arc<PollSet>,
     output_source: Arc<PollSet>,
@@ -90,8 +92,8 @@ fn new_usb_serial_tty(index: usize) -> Arc<UsbSerialTtyDriver> {
         session_closing: AtomicBool::new(false),
         rx_worker_started: AtomicBool::new(false),
         tx_worker_started: AtomicBool::new(false),
-        rx_queue: SpinNoIrq::new(VecDeque::new()),
-        tx_queue: SpinNoIrq::new(VecDeque::new()),
+        rx_queue: IrqMutex::new(VecDeque::new()),
+        tx_queue: IrqMutex::new(VecDeque::new()),
         dropped_rx: AtomicUsize::new(0),
         input_source: Arc::new(PollSet::new()),
         output_source: Arc::new(PollSet::new()),

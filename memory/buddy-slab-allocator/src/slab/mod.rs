@@ -12,7 +12,7 @@ pub mod size_class;
 
 use core::{alloc::Layout, ptr::NonNull};
 
-use ax_kspin::SpinRaw as SpinMutex;
+use ax_sync::{RawSpinLockGuard, SpinLock};
 use cache::{CacheDeallocResult, SlabCache};
 pub use page::SlabPageHeader;
 pub use size_class::SizeClass;
@@ -133,7 +133,7 @@ pub struct SlabAllocator<const PAGE_SIZE: usize = 0x1000> {
 /// Default per-CPU slab wrapper used by EII integrators.
 pub struct PerCpuSlab<const PAGE_SIZE: usize = 0x1000> {
     cpu_id: u16,
-    inner: SpinMutex<SlabAllocator<PAGE_SIZE>>,
+    inner: SpinLock<SlabAllocator<PAGE_SIZE>>,
 }
 
 /// Default static slab-pool wrapper used by EII integrators.
@@ -147,13 +147,20 @@ impl<const PAGE_SIZE: usize> PerCpuSlab<PAGE_SIZE> {
     pub const fn new(cpu_id: u16) -> Self {
         Self {
             cpu_id,
-            inner: SpinMutex::new(SlabAllocator::new()),
+            inner: SpinLock::new(SlabAllocator::new()),
         }
+    }
+
+    #[inline]
+    fn inner(&self) -> RawSpinLockGuard<'_, SlabAllocator<PAGE_SIZE>> {
+        // SAFETY: per-CPU slab access preserves the legacy raw-lock contract:
+        // the pool selects one owner CPU and callers exclude local re-entry.
+        unsafe { self.inner.lock_raw() }
     }
 
     /// Reset the inner slab allocator to an empty state.
     pub fn reset(&self) {
-        *self.inner.lock() = SlabAllocator::new();
+        *self.inner() = SlabAllocator::new();
     }
 
     /// Return this slab's logical CPU id.
@@ -163,19 +170,17 @@ impl<const PAGE_SIZE: usize> PerCpuSlab<PAGE_SIZE> {
 
     /// Allocate one object.
     pub fn alloc(&self, layout: Layout) -> AllocResult<SlabAllocResult> {
-        self.inner.lock().alloc(layout)
+        self.inner().alloc(layout)
     }
 
     /// Register a freshly allocated slab page.
     pub fn add_slab(&self, size_class: SizeClass, base: usize, bytes: usize) {
-        self.inner
-            .lock()
-            .add_slab(size_class, base, bytes, self.cpu_id);
+        self.inner().add_slab(size_class, base, bytes, self.cpu_id);
     }
 
     /// Free an object on the owner CPU path.
     pub fn dealloc_local(&self, ptr: NonNull<u8>, layout: Layout) -> SlabDeallocResult {
-        self.inner.lock().dealloc(ptr, layout)
+        self.inner().dealloc(ptr, layout)
     }
 
     /// Queue an object onto this slab's remote-free list.

@@ -13,6 +13,7 @@ use ax_sync::PiMutex;
 use crate::{
     ctypes,
     imp::fd_ops::{FileLike, add_file_like, get_file_like},
+    sync::Mutex,
 };
 
 const EPOLL_READ_EVENTS: u32 =

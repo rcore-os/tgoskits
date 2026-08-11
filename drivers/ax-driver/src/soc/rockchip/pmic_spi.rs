@@ -91,14 +91,14 @@ use core::{
 // poll, or the caller would stall task-switching on its CPU for the whole
 // transaction (the scheduling-starvation risk raised in review). So the slow
 // transactions are guarded by a non-preempt-disabling bus-ownership flag
-// (`BUS_BUSY` / [`BusGuard`]); the `SpinNoPreempt` `Mutex` below is used ONLY to
+// (`BUS_BUSY` / [`BusGuard`]); the `SpinLock` `Mutex` below is used ONLY to
 // store the controller handle (`init`) or clone it out (`BusGuard::claim`) — a
 // microsecond window that never spans a poll. Ownership is single-caller by
 // construction (the A55 rail is programmed once at boot; the ring-only governor
 // issues no dynamic A55 write), so `BusGuard::claim` bails on the never-expected
-// contended case rather than spinning. `SpinNoPreempt` (not `SpinNoIrq`) keeps
+// contended case rather than spinning. `SpinLock` (not `SpinNoIrq`) keeps
 // IRQs enabled; the lock is never taken from an interrupt handler.
-use ax_kspin::SpinNoPreempt as Mutex;
+use ax_sync::SpinLock as Mutex;
 use log::{info, warn};
 use rdif_pinctrl::PinctrlDevice;
 
@@ -274,11 +274,11 @@ struct Rk806Spi {
 }
 
 // The controller handle is only ever stored/cloned under `PMIC` (a microsecond
-// `SpinNoPreempt` window) and used while its owner holds `BUS_BUSY`; the MMIO
+// `SpinLock` window) and used while its owner holds `BUS_BUSY`; the MMIO
 // mapping is stable for the kernel lifetime.
 unsafe impl Send for Rk806Spi {}
 
-/// Global RK806/SPI2 handle, populated once by [`init`]. The `SpinNoPreempt`
+/// Global RK806/SPI2 handle, populated once by [`init`]. The `SpinLock`
 /// mutex is held only to store the handle or clone it out ([`BusGuard::claim`]),
 /// never across an SPI poll.
 static PMIC: Mutex<Option<Rk806Spi>> = Mutex::new(None);
@@ -294,7 +294,7 @@ static PMIC: Mutex<Option<Rk806Spi>> = Mutex::new(None);
 static BUS_BUSY: AtomicBool = AtomicBool::new(false);
 
 /// RAII ownership of the RK806 SPI bus for one transaction. Carries a clone of
-/// the controller handle so the poll runs with no `SpinNoPreempt` guard held;
+/// the controller handle so the poll runs with no `SpinLock` guard held;
 /// releases ownership on drop.
 struct BusGuard {
     dev: Rk806Spi,

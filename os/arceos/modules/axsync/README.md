@@ -1,9 +1,7 @@
-# axsync
+# ax-sync
 
-[![Crates.io](https://img.shields.io/crates/v/axsync)](https://crates.io/crates/axsync)
-[![Docs.rs](https://docs.rs/axsync/badge.svg)](https://docs.rs/axsync)
-
-[ArceOS](https://github.com/arceos-org/arceos) synchronization primitives.
+OS-independent synchronization interfaces for TGOSKits kernels and reusable
+components.
 
 ## Primitives
 

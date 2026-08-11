@@ -72,10 +72,12 @@ struct CorkState {
 pub struct UdpSocket {
     /// Handle into the global smoltcp socket set.
     handle: SocketHandle,
+    /// Serializes the multi-step public bind transaction.
+    bind_lock: Mutex<()>,
     /// Bound local endpoint as exposed by POSIX socket calls.
-    local_addr: RwLock<Option<IpEndpoint>>,
+    local_addr: Mutex<Option<IpEndpoint>>,
     /// Connected remote endpoint plus selected source address.
-    peer_addr: RwLock<Option<(IpEndpoint, IpAddress)>>,
+    peer_addr: Mutex<Option<(IpEndpoint, IpAddress)>>,
 
     /// Shared socket options and blocking helpers.
     general: GeneralOptions,
@@ -97,8 +99,9 @@ impl UdpSocket {
                 smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; UDP_RX_BUF_LEN]),
                 smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; UDP_TX_BUF_LEN]),
             )),
-            local_addr: RwLock::new(None),
-            peer_addr: RwLock::new(None),
+            bind_lock: Mutex::new(()),
+            local_addr: Mutex::new(None),
+            peer_addr: Mutex::new(None),
 
             general: GeneralOptions::new(2, 2, 17), // SOCK_DGRAM
             tos_keys: SpinMutex::new(Vec::new()),
@@ -124,7 +127,7 @@ impl UdpSocket {
 
     /// Returns the connected peer and cached source address.
     fn remote_endpoint(&self) -> AxResult<(IpEndpoint, IpAddress)> {
-        match self.peer_addr.try_read() {
+        match self.peer_addr.try_lock() {
             Some(addr) => addr.ok_or(AxError::NotConnected),
             None => Err(AxError::NotConnected),
         }
@@ -138,7 +141,7 @@ impl UdpSocket {
     }
 
     fn send_source_for_remote(&self, remote: &IpAddress) -> AxResult<IpAddress> {
-        if let Some(local_ep) = *self.local_addr.read()
+        if let Some(local_ep) = *self.local_addr.lock()
             && !local_ep.addr.is_unspecified()
         {
             Ok(local_ep.addr)
@@ -151,7 +154,7 @@ impl UdpSocket {
         &self,
         remote: &IpAddress,
     ) -> AxResult<(IpAddress, bool)> {
-        if let Some(local_ep) = *self.local_addr.read()
+        if let Some(local_ep) = *self.local_addr.lock()
             && !local_ep.addr.is_unspecified()
         {
             Ok((local_ep.addr, false))
@@ -168,7 +171,7 @@ impl UdpSocket {
         let Some(local_addr) = local_addr else {
             return;
         };
-        let Some(local) = self.local_addr.read().map(|endpoint| IpEndpoint {
+        let Some(local) = self.local_addr.lock().map(|endpoint| IpEndpoint {
             addr: local_addr,
             port: endpoint.port,
         }) else {
@@ -250,13 +253,13 @@ impl SocketOps for UdpSocket {
     /// Binds the UDP socket and records public port ownership.
     fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
         let mut local_addr = local_addr.into_ip()?;
-        let mut guard = self.local_addr.write();
+        let _bind_guard = self.bind_lock.lock();
 
+        if self.local_addr.lock().is_some() {
+            ax_bail!(InvalidInput, "already bound");
+        }
         if local_addr.port() == 0 {
             local_addr.set_port(get_ephemeral_port()?);
-        }
-        if guard.is_some() {
-            ax_bail!(InvalidInput, "already bound");
         }
 
         let local_endpoint = IpEndpoint::from(local_addr);
@@ -285,7 +288,7 @@ impl SocketOps for UdpSocket {
             self.general.set_device_binding(binding);
         }
 
-        *guard = Some(local_endpoint);
+        *self.local_addr.lock() = Some(local_endpoint);
         info!("UDP socket {}: bound on {}", self.handle, endpoint);
         Ok(())
     }
@@ -293,9 +296,9 @@ impl SocketOps for UdpSocket {
     /// Stores a default peer and source address for connected UDP semantics.
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
         let remote_addr = remote_addr.into_ip()?;
-        let mut guard = self.peer_addr.write();
+        let mut guard = self.peer_addr.lock();
 
-        if self.local_addr.read().is_none() {
+        if self.local_addr.lock().is_none() {
             self.bind(SocketAddrEx::Ip(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                 0,
@@ -303,7 +306,7 @@ impl SocketOps for UdpSocket {
         }
 
         let remote_addr = IpEndpoint::from(remote_addr);
-        let local_port = self.local_addr.read().map_or(0, |endpoint| endpoint.port);
+        let local_port = self.local_addr.lock().map_or(0, |endpoint| endpoint.port);
         let (src, should_update_binding) =
             self.source_and_binding_update_for_remote(&remote_addr.addr)?;
 
@@ -328,7 +331,7 @@ impl SocketOps for UdpSocket {
             ax_bail!(OperationNotSupported);
         }
 
-        if self.local_addr.read().is_none() {
+        if self.local_addr.lock().is_none() {
             self.bind(SocketAddrEx::Ip(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                 0,
@@ -577,7 +580,7 @@ impl SocketOps for UdpSocket {
     }
 
     fn local_addr(&self) -> AxResult<SocketAddrEx> {
-        match self.local_addr.try_read() {
+        match self.local_addr.try_lock() {
             Some(addr) => addr
                 .map(Into::into)
                 .map(SocketAddrEx::Ip)
@@ -607,9 +610,13 @@ impl SocketOps for UdpSocket {
 impl Pollable for UdpSocket {
     fn poll(&self) -> IoEvents {
         request_poll();
-        if self.local_addr.read().is_none() {
+        let Some(local_addr) = self.local_addr.try_lock() else {
+            return IoEvents::empty();
+        };
+        if local_addr.is_none() {
             return IoEvents::empty();
         }
+        drop(local_addr);
 
         let mut events = IoEvents::empty();
         self.with_smol_socket(|socket| {

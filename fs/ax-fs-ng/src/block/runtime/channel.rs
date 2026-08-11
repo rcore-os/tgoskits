@@ -263,6 +263,7 @@ mod tests {
             self.publish();
         }
 
+        #[track_caller]
         fn wait(&self) {
             *self.entered_wait.lock().unwrap() += 1;
             self.entered_ready.notify_one();
@@ -273,6 +274,7 @@ mod tests {
             *pending = false;
         }
 
+        #[track_caller]
         fn wait_timeout(&self, duration: Duration) -> bool {
             let mut pending = self.pending.lock().unwrap();
             if !*pending {

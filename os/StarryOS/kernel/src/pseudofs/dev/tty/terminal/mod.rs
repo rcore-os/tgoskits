@@ -9,6 +9,8 @@ use ax_kspin::SpinNoIrq as TerminalStateLock;
 use ax_kspin::SpinRaw as TerminalStateLock;
 use bytemuck::AnyBitPattern;
 
+use crate::sync::IrqMutex;
+
 pub mod job;
 pub mod ldisc;
 pub mod termios;

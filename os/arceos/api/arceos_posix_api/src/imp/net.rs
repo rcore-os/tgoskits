@@ -17,7 +17,7 @@ use ax_sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 
 use super::fd_ops::FileLike;
-use crate::{ctypes, utils::char_ptr_to_str};
+use crate::{ctypes, sync::Mutex, utils::char_ptr_to_str};
 
 pub enum Socket {
     Udp(PiMutex<UdpSocket>),

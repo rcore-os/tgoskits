@@ -170,7 +170,7 @@ struct EpollInterest {
     // the originating process lifetime.
     signalfd_registration_owner: Option<Weak<ProcessData>>,
     registration_order: usize,
-    mode: SpinNoIrq<TriggerMode>,
+    mode: IrqMutex<TriggerMode>,
     exclusive: bool,
     in_ready_queue: AtomicBool,
     owner_repoll_pending: AtomicBool,
@@ -193,7 +193,7 @@ impl EpollInterest {
             event,
             nested_link,
             registration_order,
-            mode: SpinNoIrq::new(TriggerMode::from_flags(flags)),
+            mode: IrqMutex::new(TriggerMode::from_flags(flags)),
             exclusive: flags.contains(EpollFlags::EXCLUSIVE),
             in_ready_queue: AtomicBool::new(false),
             owner_repoll_pending: AtomicBool::new(false),
@@ -350,9 +350,9 @@ impl Wake for InterestWaker {
 }
 
 pub(super) struct EpollInner {
-    interests: SpinNoIrq<HashMap<EntryKey, Arc<EpollInterest>>>,
+    interests: IrqMutex<HashMap<EntryKey, Arc<EpollInterest>>>,
     pub(super) topology: EpollTopology,
-    ready_queue: SpinNoIrq<VecDeque<Weak<EpollInterest>>>,
+    ready_queue: IrqMutex<VecDeque<Weak<EpollInterest>>>,
     overflow_ready: AtomicBool,
     poll_ready: PollSet,
     next_registration_order: AtomicUsize,
@@ -361,9 +361,9 @@ pub(super) struct EpollInner {
 impl Default for EpollInner {
     fn default() -> Self {
         Self {
-            interests: SpinNoIrq::new(HashMap::new()),
+            interests: IrqMutex::new(HashMap::new()),
             topology: EpollTopology::default(),
-            ready_queue: SpinNoIrq::new(VecDeque::new()),
+            ready_queue: IrqMutex::new(VecDeque::new()),
             overflow_ready: AtomicBool::new(false),
             poll_ready: PollSet::new(),
             next_registration_order: AtomicUsize::new(0),

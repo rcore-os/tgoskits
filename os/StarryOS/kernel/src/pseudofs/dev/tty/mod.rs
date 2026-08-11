@@ -93,7 +93,7 @@ pub struct Tty<R, W> {
     writer: W,
     is_ptm: bool,
     open_count: AtomicUsize,
-    binding: SpinNoIrq<Option<Weak<dyn Any + Send + Sync>>>,
+    binding: IrqMutex<Option<Weak<dyn Any + Send + Sync>>>,
 }
 
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
@@ -108,7 +108,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             writer,
             is_ptm,
             open_count: AtomicUsize::new(0),
-            binding: SpinNoIrq::new(None),
+            binding: IrqMutex::new(None),
         })
     }
 }

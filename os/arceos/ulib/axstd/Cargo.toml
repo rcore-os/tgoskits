@@ -29,8 +29,7 @@ arceos = ["irq", "paging", "std-compat", "smp"]
 host-test = [
     "ax-api/host-test",
     "ax-hal/host-test",
-    "ax-kernel-guard/host-test",
-    "ax-kspin/host-test",
+    "ax-sync/host-test",
     "ax-percpu/host-test",
     "ax-runtime/host-test",
 ]
@@ -133,12 +132,9 @@ ax-driver.workspace = true
 ax-errno.workspace = true
 ax-hal.workspace = true
 ax-io.workspace = true
-ax-kernel-guard.workspace = true
-ax-kspin.workspace = true
+ax-sync.workspace = true
 ax-lazyinit.workspace = true
 ax-percpu.workspace = true
 ax-posix-api.workspace = true
 ax-runtime.workspace = true
 libc.workspace = true
-lock_api.workspace = true
-spin.workspace = true

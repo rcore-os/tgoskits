@@ -1,12 +1,12 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_kspin::SpinNoIrq;
+use crate::IrqMutex;
 
 /// The initial root user namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWUSER)` or `clone(CLONE_NEWUSER)`.
-pub static ROOT_USER_NS: spin::LazyLock<Arc<SpinNoIrq<UserNamespace>>> =
-    spin::LazyLock::new(|| Arc::new(SpinNoIrq::new(UserNamespace::new_root())));
+pub static ROOT_USER_NS: ax_lazyinit::LazyLock<Arc<IrqMutex<UserNamespace>>> =
+    ax_lazyinit::LazyLock::new(|| Arc::new(IrqMutex::new(UserNamespace::new_root())));
 
 static NEXT_USER_NS_ID: AtomicU64 = AtomicU64::new(1);
 

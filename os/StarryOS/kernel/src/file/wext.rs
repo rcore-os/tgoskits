@@ -24,6 +24,8 @@ use ax_kspin::SpinNoIrq as Mutex;
 
 use crate::mm::{vm_read_slice, vm_write_slice};
 
+use crate::sync::IrqMutex as Mutex;
+
 // ---------------------------------------------------------------------------
 // Wireless-extensions ioctl numbers (not provided by linux_raw_sys).
 // These are the fixed values from <linux/wireless.h>.

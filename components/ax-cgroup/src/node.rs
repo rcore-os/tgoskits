@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use crate::{CgroupError, CgroupResult, ProcessId, sync::CgroupMutex};
 
 static NEXT_CGROUP_ID: AtomicU64 = AtomicU64::new(2);
+const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
 
 /// A stable node in the cgroup v2 hierarchy.
 pub struct CgroupNode {
@@ -58,7 +59,7 @@ impl CgroupNode {
             return Err(CgroupError::InvalidInput);
         }
 
-        let mut children = self.children.lock();
+        let mut children = self.children.lock_irqsave();
         if children.contains_key(name) {
             return Err(CgroupError::AlreadyExists);
         }
@@ -77,7 +78,7 @@ impl CgroupNode {
     /// Look up a direct child.
     pub fn lookup_child(&self, name: &str) -> CgroupResult<Arc<Self>> {
         self.children
-            .lock()
+            .lock_irqsave()
             .get(name)
             .cloned()
             .ok_or(CgroupError::NotFound)
@@ -85,17 +86,23 @@ impl CgroupNode {
 
     /// List direct child names.
     pub fn child_names(&self) -> Vec<String> {
-        self.children.lock().keys().cloned().collect()
+        self.children.lock_irqsave().keys().cloned().collect()
     }
 
     /// Remove an empty, unpinned direct child.
     pub fn remove_child(&self, name: &str) -> CgroupResult<()> {
-        let mut children = self.children.lock();
+        let mut children = self.children.lock_irqsave();
         let child = children.get(name).cloned().ok_or(CgroupError::NotFound)?;
-        if !child.children.lock().is_empty() {
+        // Parent and child nodes share the `children` lock class. Hierarchy
+        // removal always acquires the direct child's lock below its parent's.
+        if !child
+            .children
+            .lock_irqsave_nested(NESTED_CHILDREN_LOCK_SUBCLASS)
+            .is_empty()
+        {
             return Err(CgroupError::DirectoryNotEmpty);
         }
-        if !child.members.lock().is_empty() || child.pins.load(Ordering::Acquire) != 0 {
+        if !child.members.lock_irqsave().is_empty() || child.pins.load(Ordering::Acquire) != 0 {
             return Err(CgroupError::ResourceBusy);
         }
         children.remove(name);
@@ -104,7 +111,7 @@ impl CgroupNode {
 
     /// Return a sorted snapshot of member process IDs.
     pub fn members(&self) -> Vec<ProcessId> {
-        self.members.lock().iter().copied().collect()
+        self.members.lock_irqsave().iter().copied().collect()
     }
 
     pub(crate) fn add_member(&self, pid: ProcessId) -> bool {
@@ -112,11 +119,11 @@ impl CgroupNode {
     }
 
     pub(crate) fn remove_member(&self, pid: ProcessId) -> bool {
-        self.members.lock().remove(&pid)
+        self.members.lock_irqsave().remove(&pid)
     }
 
     pub(crate) fn has_member(&self, pid: ProcessId) -> bool {
-        self.members.lock().contains(&pid)
+        self.members.lock_irqsave().contains(&pid)
     }
 
     /// Pin this node as a namespace or mounted hierarchy root.
@@ -215,5 +222,16 @@ mod tests {
         drop(pin);
         assert_eq!(root.remove_child("child"), Ok(()));
         assert_eq!(incidental_reference.name(), "child");
+    }
+
+    #[test]
+    fn removes_empty_child_from_dynamic_parent() {
+        let root = CgroupNode::new_root();
+        let parent = root.create_child("parent").unwrap();
+        let child = parent.create_child("child").unwrap();
+        assert!(parent.child_names().contains(&"child".to_string()));
+        assert!(child.child_names().is_empty());
+
+        assert_eq!(parent.remove_child("child"), Ok(()));
     }
 }

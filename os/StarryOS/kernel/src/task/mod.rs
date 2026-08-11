@@ -225,7 +225,7 @@ impl ProcessData {
                 job_control: ProcessJobControl::new(),
             }
         });
-        // Clone the Arc in a separate statement: a temporary `SpinNoIrq` guard
+        // Clone the Arc in a separate statement: a temporary `IrqMutex` guard
         // from `lock()` lives until the end of the statement, so calling
         // `attach_process_slot` (which locks `PiMutex<AddrSpace>`) in the same
         // expression would nest a sleepable lock inside atomic context.

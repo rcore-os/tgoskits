@@ -24,7 +24,7 @@ ureq = "3"
 sha2 = "0.10"
 
 [dependencies]
-ax-kspin = { workspace = true }
+ax-sync = { workspace = true }
 log = { workspace = true }
 
 sdio-host = { workspace = true }

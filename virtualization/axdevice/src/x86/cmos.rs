@@ -2,7 +2,7 @@
 
 use alloc::boxed::Box;
 
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_sync::SpinLock as Mutex;
 use axdevice_base::*;
 
 const INDEX_PORT: u16 = 0x70;
@@ -99,7 +99,7 @@ impl Device for X86CmosDevice {
             });
         }
 
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         match (access.addr, access.is_read) {
             (addr, false) if addr == u64::from(INDEX_PORT) => {
                 state.index = access.data as u8 & 0x7f;

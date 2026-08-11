@@ -23,6 +23,7 @@ mod lock;
 mod metrics;
 pub mod runtime;
 mod scheduler;
+pub mod sync;
 mod system;
 mod task_work;
 mod thread;
@@ -37,6 +38,7 @@ pub use irq_wait::*;
 #[cfg(feature = "qperf-metrics")]
 pub use metrics::{QperfSchedulerMetricsSnapshot, qperf_scheduler_metrics_snapshot};
 pub use scheduler::*;
+pub use sync::{Mutex, MutexGuard, PiMutex, PiMutexGuard, SpinLock, SpinRwLock};
 pub use system::*;
 pub use thread::*;
 pub use thread_start::*;

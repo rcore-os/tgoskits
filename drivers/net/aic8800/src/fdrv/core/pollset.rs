@@ -12,7 +12,7 @@
 use alloc::boxed::Box;
 use core::{mem::MaybeUninit, task::Waker};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 
 const POLL_SET_CAPACITY: usize = 64;
 

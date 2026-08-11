@@ -4,6 +4,7 @@ use ktracepoint::{TraceFilterFile, TracePoint, TracePointEnableFile};
 
 use crate::{
     pseudofs::DirectRwFsFileOps,
+    sync::Mutex,
     tracepoint::{KernelExtTracePoint, KernelTraceAux},
 };
 

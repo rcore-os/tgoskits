@@ -38,7 +38,10 @@ use ax_sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 
 use super::{File, FileLike, IoDst, IoSrc, Kstat, get_file_like};
-use crate::mm::{AddrSpace, Backend};
+use crate::{
+    mm::{AddrSpace, Backend},
+    sync::Mutex,
+};
 
 pub const F_SEAL_SEAL: u32 = 0x0001;
 pub const F_SEAL_SHRINK: u32 = 0x0002;

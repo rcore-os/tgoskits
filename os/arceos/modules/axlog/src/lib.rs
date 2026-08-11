@@ -312,7 +312,7 @@ fn write_console_fmt_locked(args: fmt::Arguments) -> fmt::Result {
         return Logger.write_fmt(args);
     }
 
-    let _guard = LOCK.lock();
+    let _guard = LOCK.lock_irqsave();
     Logger.write_fmt(args)
 }
 

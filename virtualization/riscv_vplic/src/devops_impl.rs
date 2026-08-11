@@ -30,7 +30,7 @@ impl VPlicGlobal {
     fn validate_assigned_irq(&self, irq_id: usize) -> VplicResult {
         Self::validate_irq_id(irq_id)?;
 
-        let assigned_irqs = self.assigned_irqs.lock();
+        let assigned_irqs = self.assigned_irqs.lock_irqsave();
         if !assigned_irqs.is_empty() && !assigned_irqs.get(irq_id) {
             return Err(VplicError::SourceNotAssigned { source_id: irq_id });
         }
@@ -39,7 +39,7 @@ impl VPlicGlobal {
 
     fn update_pending_irq(&self, irq_id: usize, pending: bool) -> VplicResult {
         self.validate_assigned_irq(irq_id)?;
-        self.pending_irqs.lock().set(irq_id, pending);
+        self.pending_irqs.lock_irqsave().set(irq_id, pending);
         Ok(())
     }
 
@@ -65,40 +65,40 @@ impl VPlicGlobal {
     pub fn set_irq_line_level(&self, irq_id: usize, asserted: bool) -> VplicResult<bool> {
         self.validate_assigned_irq(irq_id)?;
         let newly_asserted = {
-            let mut asserted_irqs = self.line_asserted_irqs.lock();
+            let mut asserted_irqs = self.line_asserted_irqs.lock_irqsave();
             let was_asserted = asserted_irqs.get(irq_id);
             asserted_irqs.set(irq_id, asserted);
             asserted && !was_asserted
         };
-        self.pending_irqs.lock().set(irq_id, asserted);
+        self.pending_irqs.lock_irqsave().set(irq_id, asserted);
         Ok(newly_asserted)
     }
 
     /// Returns whether one interrupt source is pending.
     pub fn is_pending(&self, irq_id: usize) -> VplicResult<bool> {
         self.validate_assigned_irq(irq_id)?;
-        Ok(self.pending_irqs.lock().get(irq_id))
+        Ok(self.pending_irqs.lock_irqsave().get(irq_id))
     }
 
     /// Reads the priority programmed by this guest.
     fn irq_priority(&self, irq_id: usize) -> VplicResult<u32> {
-        Ok(self.registers.lock().priorities[irq_id])
+        Ok(self.registers.lock_irqsave().priorities[irq_id])
     }
 
     /// Reads the priority threshold configured for a PLIC context.
     fn context_threshold(&self, context_id: usize) -> VplicResult<u32> {
-        Ok(self.registers.lock().thresholds[context_id])
+        Ok(self.registers.lock_irqsave().thresholds[context_id])
     }
 
     /// Reads one enable register word for a PLIC context.
     fn context_enable_mask(&self, context_id: usize, reg_index: usize) -> VplicResult<u32> {
-        Ok(self.registers.lock().enable_masks[context_id][reg_index])
+        Ok(self.registers.lock_irqsave().enable_masks[context_id][reg_index])
     }
 
     /// Returns pending interrupts that are not currently in service.
     fn pending_inactive_irqs(&self) -> Bitmap<{ PLIC_NUM_SOURCES }> {
-        let pending_irqs = self.pending_irqs.lock();
-        let active_irqs = self.active_irqs.lock();
+        let pending_irqs = self.pending_irqs.lock_irqsave();
+        let active_irqs = self.active_irqs.lock_irqsave();
         let mut candidates = *pending_irqs & !*active_irqs;
         // IRQ 0 is reserved by the PLIC specification and must never be claimed.
         candidates.set(0, false);
@@ -180,8 +180,8 @@ impl VPlicGlobal {
                 return Ok(None);
             };
 
-            let mut pending_irqs = self.pending_irqs.lock();
-            let mut active_irqs = self.active_irqs.lock();
+            let mut pending_irqs = self.pending_irqs.lock_irqsave();
+            let mut active_irqs = self.active_irqs.lock_irqsave();
             if !pending_irqs.get(irq_id) || active_irqs.get(irq_id) {
                 continue;
             }
@@ -226,7 +226,7 @@ impl VPlicGlobal {
             match reg {
                 // priority
                 PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => {
-                    Ok(self.registers.lock().priorities[reg / 4] as usize)
+                    Ok(self.registers.lock_irqsave().priorities[reg / 4] as usize)
                 }
                 // pending
                 PLIC_PENDING_OFFSET..PLIC_ENABLE_OFFSET => {
@@ -237,7 +237,7 @@ impl VPlicGlobal {
                     let bit_index_start = reg_index * 32;
                     let mut val: u32 = 0;
                     let mut bit_mask: u32 = 1;
-                    let pending_irqs = self.pending_irqs.lock();
+                    let pending_irqs = self.pending_irqs.lock_irqsave();
                     for i in 0..32 {
                         let irq_id = bit_index_start + i as usize;
                         if irq_id != 0 && pending_irqs.get(irq_id) {
@@ -257,7 +257,7 @@ impl VPlicGlobal {
                             contexts: self.contexts_num,
                         });
                     }
-                    Ok(self.registers.lock().enable_masks[context_id][reg_index] as usize)
+                    Ok(self.registers.lock_irqsave().enable_masks[context_id][reg_index] as usize)
                 }
                 // threshold
                 offset
@@ -272,7 +272,7 @@ impl VPlicGlobal {
                             contexts: self.contexts_num,
                         });
                     }
-                    Ok(self.registers.lock().thresholds[context_id] as usize)
+                    Ok(self.registers.lock_irqsave().thresholds[context_id] as usize)
                 }
                 // claim/complete
                 offset
@@ -349,7 +349,7 @@ impl VPlicGlobal {
             match reg {
                 // priority
                 PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => {
-                    self.registers.lock().priorities[reg / 4] = val as u32;
+                    self.registers.lock_irqsave().priorities[reg / 4] = val as u32;
                     Ok(None)
                 }
                 // pending (Here is uesd for hyperivosr to inject pending IRQs, later should move it to a separate interface)
@@ -382,7 +382,7 @@ impl VPlicGlobal {
                             contexts: self.contexts_num,
                         });
                     }
-                    self.registers.lock().enable_masks[context_id][reg_index] = val as u32;
+                    self.registers.lock_irqsave().enable_masks[context_id][reg_index] = val as u32;
                     Ok(None)
                 }
                 // threshold
@@ -398,7 +398,7 @@ impl VPlicGlobal {
                             contexts: self.contexts_num,
                         });
                     }
-                    self.registers.lock().thresholds[context_id] = val as u32;
+                    self.registers.lock_irqsave().thresholds[context_id] = val as u32;
                     Ok(None)
                 }
                 // claim/complete
@@ -424,8 +424,8 @@ impl VPlicGlobal {
                     if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
                         return Ok(None);
                     }
-                    let asserted_irqs = self.line_asserted_irqs.lock();
-                    let mut active_irqs = self.active_irqs.lock();
+                    let asserted_irqs = self.line_asserted_irqs.lock_irqsave();
+                    let mut active_irqs = self.active_irqs.lock_irqsave();
                     if !active_irqs.get(irq_id) {
                         drop(active_irqs);
                         drop(asserted_irqs);
@@ -438,7 +438,7 @@ impl VPlicGlobal {
                     active_irqs.set(irq_id, false);
                     drop(active_irqs);
                     if asserted_irqs.get(irq_id) {
-                        self.pending_irqs.lock().set(irq_id, true);
+                        self.pending_irqs.lock_irqsave().set(irq_id, true);
                     }
                     drop(asserted_irqs);
                     Ok(Some(VplicCompletion::new(irq_id)))
@@ -494,7 +494,7 @@ mod tests {
         let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2).unwrap();
 
         {
-            let mut pending_irqs = vplic.pending_irqs.lock();
+            let mut pending_irqs = vplic.pending_irqs.lock_irqsave();
             pending_irqs.set(0, true);
             pending_irqs.set(1, true);
         }

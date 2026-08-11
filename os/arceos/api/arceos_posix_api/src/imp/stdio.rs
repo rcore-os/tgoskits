@@ -4,6 +4,8 @@ use ax_sync::SpinMutex;
 #[cfg(feature = "fd")]
 use {alloc::sync::Arc, ax_errno::LinuxError, ax_errno::LinuxResult, ax_io::PollState};
 
+use crate::sync::Mutex;
+
 fn console_read_bytes(buf: &mut [u8]) -> AxResult<usize> {
     let len = ax_hal::console::read_bytes(buf);
     for c in &mut buf[..len] {

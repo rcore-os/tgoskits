@@ -2,6 +2,7 @@ use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxResult};
+use ax_lazyinit::LazyLock;
 use ax_runtime::{
     hal::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
     serial::{
@@ -11,7 +12,6 @@ use ax_runtime::{
 };
 use ax_sync::PiMutex;
 use rdrive::DeviceId as RDriveDeviceId;
-use spin::LazyLock;
 use starry_process::Process;
 
 use super::{
@@ -22,7 +22,7 @@ use super::{
         termios::{Termios2, TermiosParity},
     },
 };
-use crate::pseudofs::DeviceOps;
+use crate::{pseudofs::DeviceOps, sync::Mutex};
 
 pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 

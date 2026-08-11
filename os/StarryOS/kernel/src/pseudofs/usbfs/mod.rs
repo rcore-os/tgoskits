@@ -5,7 +5,12 @@ mod refresh;
 mod sysfs;
 mod tree;
 
-use alloc::{borrow::ToOwned, collections::VecDeque, sync::Arc, vec::Vec};
+use alloc::{
+    borrow::ToOwned,
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
+    vec::Vec,
+};
 use core::{
     any::Any,
     future::{Future, poll_fn},
@@ -29,6 +34,7 @@ use crate::{
     file::{File as KernelFile, FileLike, IoDst, IoSrc, Kstat},
     mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
     pseudofs::{SimpleDir, SimpleFs},
+    sync::{IrqMutex as Mutex, Mutex as BlockingMutex},
 };
 
 fn create_filesystem(manager: Arc<UsbFsManager>) -> Filesystem {
@@ -270,6 +276,7 @@ struct SubmittedUrb {
     user_urb_ptr: usize,
     transfer: SubmittedUrbTransfer,
     interface: Option<u8>,
+    discarded: bool,
     buffer: Vec<u8>,
     is_in: bool,
     data_offset: usize,
@@ -280,6 +287,8 @@ struct SubmittedUrb {
 enum SubmittedUrbTransfer {
     Live(manager::SubmittedTransfer),
     Deferred(UsbfsQuirk),
+    #[cfg(test)]
+    Test(tests::TestSubmittedTransfer),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -289,10 +298,21 @@ enum UsbfsQuirk {
 }
 
 impl SubmittedUrb {
+    fn queue_key(&self) -> Option<manager::SubmittedTransferQueue> {
+        match &self.transfer {
+            SubmittedUrbTransfer::Live(transfer) => Some(transfer.queue_key()),
+            SubmittedUrbTransfer::Deferred(_) => None,
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(_) => None,
+        }
+    }
+
     fn try_reclaim(&self) -> AxResult<Option<TransferCompletion>> {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.try_reclaim(),
             SubmittedUrbTransfer::Deferred(_) => Ok(None),
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(transfer) => transfer.try_reclaim(),
         }
     }
 
@@ -300,6 +320,8 @@ impl SubmittedUrb {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.poll_reclaim(cx),
             SubmittedUrbTransfer::Deferred(_) => Poll::Pending,
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(_) => Poll::Pending,
         }
     }
 
@@ -307,6 +329,26 @@ impl SubmittedUrb {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.cancel(),
             SubmittedUrbTransfer::Deferred(_) => Ok(()),
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(_) => Ok(()),
+        }
+    }
+
+    fn retire_after_quiesce(&self) -> AxResult<()> {
+        match &self.transfer {
+            SubmittedUrbTransfer::Live(transfer) => transfer.retire_after_quiesce(),
+            SubmittedUrbTransfer::Deferred(_) => Ok(()),
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(transfer) => transfer.retire_after_quiesce(),
+        }
+    }
+
+    fn supports_retire_after_quiesce(&self) -> bool {
+        match &self.transfer {
+            SubmittedUrbTransfer::Live(transfer) => transfer.supports_retire_after_quiesce(),
+            SubmittedUrbTransfer::Deferred(_) => true,
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(_) => true,
         }
     }
 
@@ -314,6 +356,8 @@ impl SubmittedUrb {
         match &self.transfer {
             SubmittedUrbTransfer::Live(_) => None,
             SubmittedUrbTransfer::Deferred(quirk) => Some(*quirk),
+            #[cfg(test)]
+            SubmittedUrbTransfer::Test(_) => None,
         }
     }
 
@@ -391,7 +435,7 @@ impl UsbDeviceFile {
         }
 
         let interface_quirk = usbfs_quirk_for_interface(&self.snapshot, interface, alternate);
-        self.cancel_submitted_urbs_for_interface(interface)?;
+        let submitted = self.drain_submitted_urbs_for_interface(interface);
         if interface_quirk != Some(UsbfsQuirk::UserspaceClaimedUvcControlInterface)
             && self
                 .submitted_urbs
@@ -399,12 +443,50 @@ impl UsbDeviceFile {
                 .iter()
                 .any(|submitted| !submitted.is_deferred())
         {
+            self.submitted_urbs.lock().extend(submitted);
             return Err(AxError::ResourceBusy);
         }
-        self.release_endpoint_handles_for_interface(interface)?;
         if interface_quirk == Some(UsbfsQuirk::UserspaceClaimedUvcControlInterface) {
-            self.claimed_interfaces.lock().insert(interface, alternate);
-            return Ok(0);
+            let remaining = cleanup_submitted_urbs(submitted, Some(USBFS_URB_CANCEL_TIMEOUT));
+            if !remaining.is_empty() {
+                self.submitted_urbs.lock().extend(remaining);
+                return Err(AxError::ResourceBusy);
+            }
+            return commit_userspace_uvc_claim(
+                &self.claimed_interfaces,
+                interface,
+                alternate,
+                |interface| self.release_endpoint_handles_for_interface(interface),
+            );
+        }
+        let retire_after_quiesce = submitted
+            .iter()
+            .all(SubmittedUrb::supports_retire_after_quiesce);
+        let submitted = if retire_after_quiesce {
+            submitted
+        } else {
+            let remaining = cleanup_submitted_urbs(submitted, Some(USBFS_URB_CANCEL_TIMEOUT));
+            if !remaining.is_empty() {
+                self.submitted_urbs.lock().extend(remaining);
+                return Err(AxError::ResourceBusy);
+            }
+            Vec::new()
+        };
+        if retire_after_quiesce {
+            let previous_alternate = self.claimed_interfaces.lock().get(&interface).copied();
+            return switch_alternate_and_retire_quiesced_urbs(
+                submitted,
+                interface,
+                alternate,
+                previous_alternate,
+                |interface, alternate| {
+                    self.with_live_lease(|lease| lease.claim_interface(interface, alternate))
+                },
+                |remaining| self.submitted_urbs.lock().extend(remaining),
+                |interface, alternate| {
+                    self.claimed_interfaces.lock().insert(interface, alternate);
+                },
+            );
         }
         self.with_live_lease(|lease| lease.claim_interface(interface, alternate))?;
         self.claimed_interfaces.lock().insert(interface, alternate);
@@ -413,10 +495,55 @@ impl UsbDeviceFile {
 
     fn release_interface(&self, interface: u8) -> AxResult<usize> {
         let _lifecycle_guard = self.lifecycle_lock.lock();
-        self.cancel_submitted_urbs_for_interface(interface)?;
+        let alternate = self
+            .claimed_interfaces
+            .lock()
+            .get(&interface)
+            .copied()
+            .ok_or(AxError::InvalidInput)?;
+        let submitted = self.drain_submitted_urbs_for_interface(interface);
         if let Some(lease) = self.lease.lock().as_ref().cloned() {
+            let remaining = if alternate != 0
+                && usbfs_quirk_for_interface(&self.snapshot, interface, alternate).is_none()
+            {
+                let retire_after_quiesce = submitted
+                    .iter()
+                    .all(SubmittedUrb::supports_retire_after_quiesce);
+                let submitted = if retire_after_quiesce {
+                    submitted
+                } else {
+                    let remaining =
+                        cleanup_submitted_urbs(submitted, Some(USBFS_URB_CANCEL_TIMEOUT));
+                    if !remaining.is_empty() {
+                        self.submitted_urbs.lock().extend(remaining);
+                        return Err(AxError::ResourceBusy);
+                    }
+                    Vec::new()
+                };
+                if let Err(err) = lease.claim_interface(interface, 0) {
+                    self.submitted_urbs.lock().extend(submitted);
+                    return Err(err);
+                }
+                self.claimed_interfaces.lock().insert(interface, 0);
+                if retire_after_quiesce {
+                    retire_quiesced_urbs(submitted)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                cleanup_submitted_urbs(submitted, Some(USBFS_URB_CANCEL_TIMEOUT))
+            };
+            if !remaining.is_empty() {
+                self.submitted_urbs.lock().extend(remaining);
+                return Err(AxError::ResourceBusy);
+            }
             lease.release_interface(interface)?;
         } else {
+            let remaining = cleanup_submitted_urbs(submitted, Some(USBFS_URB_CANCEL_TIMEOUT));
+            if !remaining.is_empty() {
+                self.submitted_urbs.lock().extend(remaining);
+                return Err(AxError::ResourceBusy);
+            }
             self.release_endpoint_handles_for_interface(interface)?;
         }
         self.claimed_interfaces.lock().remove(&interface);
@@ -442,18 +569,6 @@ impl UsbDeviceFile {
         }
         self.with_live_lease(|lease| lease.set_configuration(configuration as u8))?;
         Ok(0)
-    }
-
-    fn cancel_submitted_urbs_for_interface(&self, interface: u8) -> AxResult<()> {
-        let remaining = cleanup_submitted_urbs(
-            self.drain_submitted_urbs_for_interface(interface),
-            Some(USBFS_URB_CANCEL_TIMEOUT),
-        );
-        if !remaining.is_empty() {
-            self.submitted_urbs.lock().extend(remaining);
-            return Err(AxError::ResourceBusy);
-        }
-        Ok(())
     }
 
     fn drain_submitted_urbs_for_interface(&self, interface: u8) -> Vec<SubmittedUrb> {
@@ -482,7 +597,7 @@ impl UsbDeviceFile {
         let mut submitted_urbs = self.submitted_urbs.lock();
         let index = submitted_urbs
             .iter()
-            .position(|submitted| submitted.user_urb_ptr == user_urb_ptr)
+            .position(|submitted| !submitted.discarded && submitted.user_urb_ptr == user_urb_ptr)
             .ok_or(AxError::InvalidInput)?;
         submitted_urbs.remove(index).ok_or(AxError::InvalidInput)
     }
@@ -767,6 +882,9 @@ impl UsbDeviceFile {
         submitted: SubmittedUrb,
         result: AxResult<TransferCompletion>,
     ) {
+        if submitted.discarded {
+            return;
+        }
         if submitted.log {
             match &result {
                 Ok(completion) => debug!(
@@ -794,8 +912,14 @@ impl UsbDeviceFile {
         let mut ready = Vec::new();
         {
             let mut submitted_urbs = self.submitted_urbs.lock();
+            let mut blocked_queues = BTreeSet::new();
             let mut index = 0;
             while index < submitted_urbs.len() {
+                let queue_key = submitted_urbs[index].queue_key();
+                if queue_key.is_some_and(|key| blocked_queues.contains(&key)) {
+                    index += 1;
+                    continue;
+                }
                 let result = match cx.as_mut() {
                     Some(cx) => match submitted_urbs[index].poll_reclaim(cx) {
                         Poll::Ready(result) => Some(result),
@@ -814,6 +938,9 @@ impl UsbDeviceFile {
                         .expect("pending submitted URB disappeared");
                     ready.push((submitted, result));
                 } else {
+                    if let Some(queue_key) = queue_key {
+                        blocked_queues.insert(queue_key);
+                    }
                     index += 1;
                 }
             }
@@ -843,8 +970,14 @@ impl UsbDeviceFile {
                         let mut ready = Vec::new();
                         {
                             let mut submitted = submitted_urbs.lock();
+                            let mut blocked_queues = BTreeSet::new();
                             let mut index = 0;
                             while index < submitted.len() {
+                                let queue_key = submitted[index].queue_key();
+                                if queue_key.is_some_and(|key| blocked_queues.contains(&key)) {
+                                    index += 1;
+                                    continue;
+                                }
                                 let result = match submitted[index].try_reclaim() {
                                     Ok(Some(completion)) => Some(Ok(completion)),
                                     Ok(None) => None,
@@ -856,12 +989,18 @@ impl UsbDeviceFile {
                                         result,
                                     ));
                                 } else {
+                                    if let Some(queue_key) = queue_key {
+                                        blocked_queues.insert(queue_key);
+                                    }
                                     index += 1;
                                 }
                             }
                         }
 
                         for (submitted, result) in ready {
+                            if submitted.discarded {
+                                continue;
+                            }
                             complete_urb(
                                 &pending_urbs,
                                 &poll_urbs,
@@ -911,9 +1050,17 @@ impl UsbDeviceFile {
                             let usb_activity_ready = manager.usb_activity_seq() != activity_seq
                                 || activity_listener.as_mut().poll(cx).is_ready();
                             let mut submitted = submitted_urbs.lock();
+                            let mut blocked_queues = BTreeSet::new();
                             let mut index = 0;
                             while index < submitted.len() {
                                 if submitted[index].is_deferred() {
+                                    index += 1;
+                                    continue;
+                                }
+                                let queue_key = submitted[index]
+                                    .queue_key()
+                                    .expect("live submitted URB has no transfer queue");
+                                if blocked_queues.contains(&queue_key) {
                                     index += 1;
                                     continue;
                                 }
@@ -924,7 +1071,10 @@ impl UsbDeviceFile {
                                             .expect("submitted URB disappeared");
                                         return Poll::Ready(Some((submitted, result)));
                                     }
-                                    Poll::Pending => index += 1,
+                                    Poll::Pending => {
+                                        blocked_queues.insert(queue_key);
+                                        index += 1;
+                                    }
                                 }
                             }
                             if usb_activity_ready {
@@ -935,6 +1085,9 @@ impl UsbDeviceFile {
                         })
                         .await;
                         if let Some((submitted, result)) = completed {
+                            if submitted.discarded {
+                                continue;
+                            }
                             complete_urb(
                                 &pending_urbs,
                                 &poll_urbs,
@@ -1054,6 +1207,7 @@ impl UsbDeviceFile {
             user_urb_ptr: arg,
             transfer: SubmittedUrbTransfer::Live(transfer),
             interface: Some(claimed_endpoint.interface),
+            discarded: false,
             buffer,
             is_in,
             data_offset: 0,
@@ -1135,6 +1289,7 @@ impl UsbDeviceFile {
             user_urb_ptr: arg,
             transfer: SubmittedUrbTransfer::Live(transfer),
             interface: None,
+            discarded: false,
             buffer,
             is_in,
             data_offset: 8,
@@ -1191,6 +1346,7 @@ impl UsbDeviceFile {
                 user_urb_ptr: arg,
                 transfer: SubmittedUrbTransfer::Deferred(UsbfsQuirk::DeferredStatusInterrupt),
                 interface: Some(claimed_endpoint.interface),
+                discarded: false,
                 buffer: Vec::new(),
                 is_in: true,
                 data_offset: 0,
@@ -1301,8 +1457,10 @@ impl UsbDeviceFile {
     }
 
     fn discard_urb(&self, arg: usize) -> AxResult<usize> {
-        let submitted = self.drain_submitted_urb_by_ptr(arg)?;
+        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let mut submitted = self.drain_submitted_urb_by_ptr(arg)?;
         submitted.cancel()?;
+        submitted.discarded = true;
 
         complete_urb(
             &self.pending_urbs,
@@ -1326,6 +1484,17 @@ impl UsbDeviceFile {
         }
         Ok(0)
     }
+}
+
+fn commit_userspace_uvc_claim(
+    claimed_interfaces: &Mutex<BTreeMap<u8, u8>>,
+    interface: u8,
+    alternate: u8,
+    release_endpoint_handles: impl FnOnce(u8) -> AxResult<()>,
+) -> AxResult<usize> {
+    release_endpoint_handles(interface)?;
+    claimed_interfaces.lock().insert(interface, alternate);
+    Ok(0)
 }
 
 impl FileLike for UsbDeviceFile {
@@ -1477,18 +1646,37 @@ impl Drop for UsbDeviceFile {
     fn drop(&mut self) {
         self.urb_worker.close();
         let lease = self.lease.lock().take();
+        let mut submitted = self.drain_all_submitted_urbs();
         if let Some(lease) = lease.as_ref() {
             let interfaces = self
                 .claimed_interfaces
                 .lock()
-                .keys()
-                .copied()
+                .iter()
+                .map(|(&interface, &alternate)| (interface, alternate))
                 .collect::<Vec<_>>();
-            for interface in interfaces {
+            for (interface, alternate) in interfaces {
+                if alternate != 0 {
+                    let mut interface_urbs = Vec::new();
+                    let mut index = 0;
+                    while index < submitted.len() {
+                        if submitted[index].interface == Some(interface) {
+                            interface_urbs.push(submitted.swap_remove(index));
+                        } else {
+                            index += 1;
+                        }
+                    }
+                    let retire_after_quiesce = interface_urbs
+                        .iter()
+                        .all(SubmittedUrb::supports_retire_after_quiesce);
+                    if retire_after_quiesce && lease.claim_interface(interface, 0).is_ok() {
+                        submitted.extend(retire_quiesced_urbs(interface_urbs));
+                    } else {
+                        submitted.extend(interface_urbs);
+                    }
+                }
                 let _ = lease.release_interface(interface);
             }
         }
-        let submitted = self.drain_all_submitted_urbs();
         self.pending_urbs.lock().clear();
         if submitted.is_empty() {
             drop(lease);
@@ -1531,6 +1719,37 @@ fn completed_urb_from_result(
     }
 }
 
+fn switch_alternate_and_retire_quiesced_urbs(
+    submitted: Vec<SubmittedUrb>,
+    interface: u8,
+    alternate: u8,
+    previous_alternate: Option<u8>,
+    mut switch_alternate: impl FnMut(u8, u8) -> AxResult<()>,
+    mut requeue: impl FnMut(Vec<SubmittedUrb>),
+    mut commit_alternate: impl FnMut(u8, u8),
+) -> AxResult<usize> {
+    if let Err(err) = switch_alternate(interface, alternate) {
+        requeue(submitted);
+        return Err(err);
+    }
+    let remaining = retire_quiesced_urbs(submitted);
+    if !remaining.is_empty() {
+        if let Some(previous_alternate) = previous_alternate
+            && let Err(err) = switch_alternate(interface, previous_alternate)
+        {
+            warn!(
+                "usbfs: failed to restore interface {} alt {} after URB retirement failure: \
+                 {err:?}",
+                interface, previous_alternate
+            );
+        }
+        requeue(remaining);
+        return Err(AxError::ResourceBusy);
+    }
+    commit_alternate(interface, alternate);
+    Ok(0)
+}
+
 fn cleanup_submitted_urbs(
     mut submitted_urbs: Vec<SubmittedUrb>,
     timeout: Option<Duration>,
@@ -1571,6 +1790,27 @@ fn cleanup_submitted_urbs(
     }
 
     submitted_urbs
+}
+
+fn retire_quiesced_urbs(submitted_urbs: Vec<SubmittedUrb>) -> Vec<SubmittedUrb> {
+    let mut remaining = Vec::new();
+    for submitted in submitted_urbs {
+        if submitted.is_deferred() {
+            continue;
+        }
+        match submitted.try_reclaim() {
+            Ok(None) => {}
+            Ok(Some(_)) | Err(_) => continue,
+        }
+        if let Err(err) = submitted.retire_after_quiesce() {
+            debug!(
+                "usbfs: failed to retire quiesced URB ptr={:#x}: {err:?}",
+                submitted.user_urb_ptr
+            );
+            remaining.push(submitted);
+        }
+    }
+    remaining
 }
 
 fn usbfs_should_log_urb() -> bool {
@@ -1829,4 +2069,150 @@ fn write_iso_packet_descs(
         vm_write_slice(current, ptr, descs)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use alloc::{sync::Arc, vec};
+    use core::cell::RefCell;
+
+    use crab_usb::usb_if::endpoint::{RequestId, TransferStatus};
+
+    use self::std::sync::Mutex as TestMutex;
+    use super::*;
+
+    struct TestXhciState {
+        alternate: u8,
+        alternate_history: Vec<u8>,
+        inflight_requests: usize,
+        completion_pending: bool,
+        completion_reclaims: usize,
+        fail_next_retire: bool,
+    }
+
+    struct TestUsbfsXhciAdapter(Arc<TestMutex<TestXhciState>>);
+
+    impl TestUsbfsXhciAdapter {
+        fn new(alternate: u8) -> Self {
+            Self(Arc::new(TestMutex::new(TestXhciState {
+                alternate,
+                alternate_history: Vec::new(),
+                inflight_requests: 0,
+                completion_pending: false,
+                completion_reclaims: 0,
+                fail_next_retire: true,
+            })))
+        }
+
+        fn submit_async_urb(&self, interface: u8) -> SubmittedUrb {
+            self.0.lock().unwrap().inflight_requests += 1;
+            SubmittedUrb {
+                user_urb_ptr: 1,
+                transfer: SubmittedUrbTransfer::Test(TestSubmittedTransfer(self.0.clone())),
+                interface: Some(interface),
+                discarded: false,
+                buffer: Vec::new(),
+                is_in: false,
+                data_offset: 0,
+                packet_lengths: Vec::new(),
+                log: false,
+            }
+        }
+
+        fn switch_alternate(&self, alternate: u8) -> AxResult<()> {
+            let mut state = self.0.lock().unwrap();
+            state.alternate = alternate;
+            state.alternate_history.push(alternate);
+            Ok(())
+        }
+
+        fn complete_request(&self) {
+            let mut state = self.0.lock().unwrap();
+            assert_eq!(state.inflight_requests, 1);
+            assert!(!state.completion_pending);
+            state.completion_pending = true;
+        }
+    }
+
+    pub(super) struct TestSubmittedTransfer(Arc<TestMutex<TestXhciState>>);
+
+    impl TestSubmittedTransfer {
+        pub(super) fn try_reclaim(&self) -> AxResult<Option<TransferCompletion>> {
+            let mut state = self.0.lock().unwrap();
+            if !state.completion_pending {
+                return Ok(None);
+            }
+            state.completion_pending = false;
+            state.inflight_requests -= 1;
+            state.completion_reclaims += 1;
+            Ok(Some(TransferCompletion {
+                request_id: RequestId::new(1),
+                status: TransferStatus::Completed,
+                actual_length: 0,
+                iso_packets: Vec::new(),
+            }))
+        }
+
+        pub(super) fn retire_after_quiesce(&self) -> AxResult<()> {
+            let mut state = self.0.lock().unwrap();
+            if core::mem::take(&mut state.fail_next_retire) {
+                return Err(AxError::ResourceBusy);
+            }
+            state.inflight_requests -= 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn retire_failure_restores_alternate_and_completes_requeued_urb_once() {
+        const INTERFACE: u8 = 1;
+        const PREVIOUS_ALTERNATE: u8 = 2;
+        const REQUESTED_ALTERNATE: u8 = 0;
+
+        let adapter = TestUsbfsXhciAdapter::new(PREVIOUS_ALTERNATE);
+        let submitted = vec![adapter.submit_async_urb(INTERFACE)];
+        let requeued = RefCell::new(Vec::new());
+        let claimed = RefCell::new(BTreeMap::from([(INTERFACE, PREVIOUS_ALTERNATE)]));
+        let previous_alternate = claimed.borrow().get(&INTERFACE).copied();
+
+        let result = switch_alternate_and_retire_quiesced_urbs(
+            submitted,
+            INTERFACE,
+            REQUESTED_ALTERNATE,
+            previous_alternate,
+            |_, alternate| adapter.switch_alternate(alternate),
+            |remaining| requeued.borrow_mut().extend(remaining),
+            |interface, alternate| {
+                claimed.borrow_mut().insert(interface, alternate);
+            },
+        );
+
+        assert_eq!(result, Err(AxError::ResourceBusy));
+        assert_eq!(
+            claimed.borrow().get(&INTERFACE).copied(),
+            Some(PREVIOUS_ALTERNATE)
+        );
+        {
+            let state = adapter.0.lock().unwrap();
+            assert_eq!(state.alternate, PREVIOUS_ALTERNATE);
+            assert_eq!(
+                state.alternate_history,
+                vec![REQUESTED_ALTERNATE, PREVIOUS_ALTERNATE]
+            );
+            assert_eq!(state.inflight_requests, 1);
+        }
+        assert_eq!(requeued.borrow().len(), 1);
+
+        adapter.complete_request();
+        let submitted = requeued.borrow_mut().pop().unwrap();
+        assert!(submitted.try_reclaim().unwrap().is_some());
+        assert!(submitted.try_reclaim().unwrap().is_none());
+        let state = adapter.0.lock().unwrap();
+        assert_eq!(state.inflight_requests, 0);
+        assert!(!state.completion_pending);
+        assert_eq!(state.completion_reclaims, 1);
+        assert!(requeued.borrow().is_empty());
+    }
 }

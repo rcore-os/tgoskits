@@ -15,7 +15,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::FileFlags;
-use ax_kspin::SpinRwLock as RwLock;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::{paging::MappingFlags, time::wall_time};
 use ax_std::os::arceos::task::WaitQueue;

@@ -19,7 +19,7 @@ axtest = { workspace = true, optional = true }
 axpanic = { workspace = true }
 cfg-if = "1"
 log = "0.4"
-spin = { workspace = true }
+ax-lazyinit.workspace = true
 
 addr2line = { version = "0.26", default-features = false, optional = true, features = [
     "cpp_demangle",

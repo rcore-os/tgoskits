@@ -16,6 +16,8 @@ use ax_runtime::hal::{
 use ax_sync::PiMutex;
 use enum_dispatch::enum_dispatch;
 
+use crate::sync::Mutex;
+
 mod cow;
 mod file;
 mod linear;

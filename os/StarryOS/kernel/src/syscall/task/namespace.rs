@@ -29,7 +29,7 @@ const SUPPORTED_NS_FLAGS: u32 = UNSHARE_NAMESPACE_FLAGS | CLONE_FS | CLONE_FILES
 
 const SUPPORTED_SETNS_FLAGS: u32 = SUPPORTED_NS_FLAGS & !CLONE_FILES;
 
-type SharedFileTable = Arc<SpinRwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>>;
+type SharedFileTable = Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>>;
 
 struct PreparedUnshare {
     file_table: Option<SharedFileTable>,

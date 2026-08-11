@@ -43,7 +43,6 @@ use smoltcp::{
     time::Duration,
     wire::{IpEndpoint, IpListenEndpoint, IpProtocol},
 };
-use spin::LazyLock;
 
 use crate::{
     DeferPollWake, LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket,

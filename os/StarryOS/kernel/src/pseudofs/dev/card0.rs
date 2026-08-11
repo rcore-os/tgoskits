@@ -82,6 +82,7 @@ use crate::{
     file::{FileLike, add_file_like},
     mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
     pseudofs::{DeviceMmap, DeviceOps},
+    sync::Mutex,
 };
 
 pub const DRIVER_NAME: &str = "starry-simpledrm";
@@ -372,7 +373,7 @@ pub struct Card0 {
     /// only one allocation lands in `system_blobs`.
     system_blobs_init: PiMutex<()>,
     /// Registered virtio-gpu IRQ action, when the display backend advertises one.
-    irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
+    irq_handle: ax_lazyinit::OnceLock<ax_runtime::hal::irq::IrqHandle>,
 }
 
 impl Card0 {

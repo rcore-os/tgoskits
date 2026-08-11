@@ -8,7 +8,6 @@ use ctor::ctor;
 use scope_local::{ActiveScope, Scope, scope_local};
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
-static PREEMPT_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static EAGER_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static PINNED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -34,7 +33,7 @@ impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
 }
 
 scope_local! {
-    static INIT_PREEMPT_DEPTH: usize = PREEMPT_DEPTH.load(Ordering::Acquire);
+    static INIT_PREEMPT_DEPTH: usize = ax_sync::host_preempt_depth();
     static EAGER_VALUE: usize = {
         EAGER_INIT_COUNT.fetch_add(1, Ordering::AcqRel);
         7

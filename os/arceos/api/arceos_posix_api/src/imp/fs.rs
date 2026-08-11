@@ -11,7 +11,7 @@ use ax_io::{PollState, SeekFrom};
 use ax_sync::PiMutex;
 
 use super::fd_ops::{FileLike, get_file_like};
-use crate::{ctypes, utils::char_ptr_to_str};
+use crate::{ctypes, sync::Mutex, utils::char_ptr_to_str};
 
 const UTIME_NOW: i64 = (1 << 30) - 1;
 const UTIME_OMIT: i64 = (1 << 30) - 2;

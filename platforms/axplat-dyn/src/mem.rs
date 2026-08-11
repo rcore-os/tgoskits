@@ -1,14 +1,14 @@
+use ax_lazyinit::OnceLock;
 use ax_plat::mem::{
     DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, PhysAddr, RawRange, VirtAddr,
 };
 use heapless::Vec;
 use someboot::ArchTrait;
 use somehal::mem::MemoryType;
-use spin::Once;
 
-static FREE_LIST: Once<Vec<RawRange, 32>> = Once::new();
-static RESERVED_LIST: Once<Vec<RawRange, 32>> = Once::new();
-static MMIO_LIST: Once<Vec<RawRange, 16>> = Once::new();
+static FREE_LIST: OnceLock<Vec<RawRange, 32>> = OnceLock::new();
+static RESERVED_LIST: OnceLock<Vec<RawRange, 32>> = OnceLock::new();
+static MMIO_LIST: OnceLock<Vec<RawRange, 16>> = OnceLock::new();
 
 #[cfg(target_arch = "x86_64")]
 const X86_FIXED_MMIO_RANGES: &[RawRange] = &[

@@ -19,6 +19,7 @@ mod tests {
     pub struct TestMutexGuard<'a, T: ?Sized>(MutexGuard<'a, T>);
 
     impl<T> TestMutex<T> {
+        #[track_caller]
         pub const fn new(value: T) -> Self {
             Self(Mutex::new(value))
         }
@@ -35,10 +36,12 @@ mod tests {
     }
 
     impl<T: ?Sized> TestMutex<T> {
+        #[track_caller]
         pub fn lock(&self) -> TestMutexGuard<'_, T> {
             TestMutexGuard(self.0.lock().unwrap_or_else(|err| err.into_inner()))
         }
 
+        #[track_caller]
         pub fn try_lock(&self) -> Option<TestMutexGuard<'_, T>> {
             match self.0.try_lock() {
                 Ok(guard) => Some(TestMutexGuard(guard)),

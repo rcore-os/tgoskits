@@ -13,7 +13,7 @@ use linux_raw_sys::io_uring::{
 };
 
 use super::FileLike;
-use crate::pseudofs::DeviceMmap;
+use crate::{pseudofs::DeviceMmap, sync::Mutex};
 
 const SQ_HEAD_OFFSET: usize = 0;
 const SQ_TAIL_OFFSET: usize = 4;

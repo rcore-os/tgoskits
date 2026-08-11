@@ -2,13 +2,15 @@ use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc, vec::Vec};
 use core::sync::atomic::Ordering;
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodeOps, NodePermission, NodeType, VfsResult};
 use flatten_objects::FlattenObjects;
 
-use crate::pseudofs::{
-    Device, NodeOpsMux, SimpleDirOps, SimpleFs,
-    dev::tty::{Ptmx, pty::PtyDriver},
+use crate::{
+    pseudofs::{
+        Device, NodeOpsMux, SimpleDirOps, SimpleFs,
+        dev::tty::{Ptmx, pty::PtyDriver},
+    },
+    sync::IrqMutex,
 };
 
 /// Per-mount devpts configuration.
@@ -48,15 +50,15 @@ pub(crate) enum DevPtsMount {
 
 /// PTY index space and mount options owned by one devpts filesystem instance.
 pub(crate) struct PtsInstance {
-    options: SpinNoIrq<DevPtsOptions>,
-    table: SpinNoIrq<FlattenObjects<Arc<Device>, 16>>,
+    options: IrqMutex<DevPtsOptions>,
+    table: IrqMutex<FlattenObjects<Arc<Device>, 16>>,
 }
 
 impl PtsInstance {
     pub(crate) fn new(options: DevPtsOptions) -> Arc<Self> {
         Arc::new(Self {
-            options: SpinNoIrq::new(options),
-            table: SpinNoIrq::new(FlattenObjects::new()),
+            options: IrqMutex::new(options),
+            table: IrqMutex::new(FlattenObjects::new()),
         })
     }
 

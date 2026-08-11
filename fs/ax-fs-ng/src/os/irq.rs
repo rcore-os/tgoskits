@@ -2,7 +2,7 @@ use alloc::{boxed::Box, string::String};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinRwLock as RwLock;
+use ax_sync::SpinRwLock as RwLock;
 use irq_framework::IrqId;
 
 use crate::block::runtime::BlockIrqAction;

@@ -331,7 +331,7 @@ impl EventDev {
 
     fn handle_irq(&self) -> ax_runtime::hal::irq::IrqReturn {
         // Use `lock()` rather than `try_lock()` so the virtio ISR is always
-        // acknowledged. `SpinNoIrq` guarantees the holder has local IRQs
+        // acknowledged. `IrqMutex` guarantees the holder has local IRQs
         // disabled, so this IRQ can only fire on a different CPU. Without the
         // ack, a level-triggered shared IRQ line stays asserted and can starve
         // other devices on the same line.

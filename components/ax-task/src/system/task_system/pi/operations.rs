@@ -17,7 +17,7 @@ impl TaskSystem {
     ) -> Result<PiWaiterRemoval, TaskError> {
         let mut lock_state = unsafe {
             // SAFETY: the token or rollback caller retains the mutex identity.
-            lock.lock_state()
+            lock_raw_pi_mutex_waiters(lock)
         };
         let core = unsafe {
             // SAFETY: identical lifetime contract to the waiter-tree guard.
@@ -45,13 +45,11 @@ impl TaskSystem {
         if !lock_state.waiters.contains(registration.key) {
             return Err(TaskError::InvalidPiState);
         }
-        let owner = snapshot.owner();
+        let owner = snapshot.owner().map(ThreadId::from);
         self.remove_lock_waiter(&mut lock_state, owner, waiter_core, generation)?;
         if lock_state.waiters.is_empty() {
             if let Some(owner) = owner {
-                core.clear_waiters_bit(owner).unwrap_or_else(|_| {
-                    task_runtime::fatal_invariant(0x5049_1215, waiter_core.id().as_u64() as usize)
-                });
+                core.clear_waiters_bit(owner.into());
             } else {
                 core.publish_unlocked();
             }
@@ -60,12 +58,12 @@ impl TaskSystem {
     }
 
     /// Registers one contender in the mutex-owned PI waiter tree.
-    pub fn pi_mutex_lock_slow<'lock>(
+    pub fn pi_mutex_lock_slow(
         &self,
-        lock: PiMutexRef<'lock>,
+        lock: PiMutexRef<'_>,
         waiter: ThreadId,
         sequence: u64,
-    ) -> Result<PiMutexLockResult<'lock>, TaskError> {
+    ) -> Result<PiMutexLockResult, TaskError> {
         let _preempt = PreemptScope::enter();
         let waiter_core = self.pi_thread_core(waiter)?;
         let Some(_waiter_activity) = waiter_core.try_scheduler_activity() else {
@@ -91,7 +89,7 @@ impl TaskSystem {
         let urgency = waiter_core.effective_pi_wait_urgency();
         let donation = self.pi_donation(&waiter_core)?;
         let key = PiWaitKey::new(urgency, sequence, waiter);
-        let mut lock_state = lock.lock_state();
+        let mut lock_state = lock_pi_mutex_waiters(lock);
         loop {
             let snapshot = mutex_core.owner_snapshot();
             if snapshot.is_unlocked() {
@@ -100,12 +98,12 @@ impl TaskSystem {
                         PiWaitStateError::StaleSchedulerOwnership,
                     ));
                 }
-                if mutex_core.try_acquire_snapshot(snapshot, waiter)? {
+                if mutex_core.try_acquire_snapshot(snapshot, waiter.into()) {
                     return Ok(PiMutexLockResult::Acquired);
                 }
                 continue;
             }
-            let owner = snapshot.owner();
+            let owner = snapshot.owner().map(ThreadId::from);
             if owner == Some(waiter) {
                 return Err(TaskError::InvalidPiWaitState(
                     PiWaitStateError::WaiterOwnsLock,
@@ -148,14 +146,9 @@ impl TaskSystem {
                 Ok(generation) => generation,
                 Err(error) => {
                     if !snapshot.has_waiters() {
-                        mutex_core
-                            .clear_waiters_bit(owner.expect("an owned mutex must retain its owner"))
-                            .unwrap_or_else(|_| {
-                                task_runtime::fatal_invariant(
-                                    0x5049_120c,
-                                    waiter_core.id().as_u64() as usize,
-                                )
-                            });
+                        mutex_core.clear_waiters_bit(
+                            owner.expect("an owned mutex must retain its owner").into(),
+                        );
                     }
                     return Err(error);
                 }
@@ -172,14 +165,11 @@ impl TaskSystem {
                 donation,
             ) {
                 if lock_state.waiters.is_empty() {
-                    mutex_core
-                        .clear_waiters_bit(owner.expect("an empty waiter tree must retain owner"))
-                        .unwrap_or_else(|_| {
-                            task_runtime::fatal_invariant(
-                                0x5049_120d,
-                                waiter_core.id().as_u64() as usize,
-                            )
-                        });
+                    mutex_core.clear_waiters_bit(
+                        owner
+                            .expect("an empty waiter tree must retain owner")
+                            .into(),
+                    );
                 }
                 return Err(error);
             }
@@ -211,18 +201,22 @@ impl TaskSystem {
             }
             drop(_owner_activity);
             drop(_waiter_activity);
-            return Ok(PiMutexLockResult::Waiting(PiWaitToken {
-                core: waiter_core,
-                initial_owner,
-                generation,
-                lock: lock_raw,
-                _lock_lifetime: PhantomData,
+            return Ok(PiMutexLockResult::Waiting(unsafe {
+                // SAFETY: both waiter-tree edges are committed and retain this
+                // physical lock identity until claim or cancellation.
+                PiWaitToken::from_registration(
+                    lock_raw,
+                    waiter.into(),
+                    owner.map(PiTaskId::from),
+                    generation,
+                    core::ptr::NonNull::from(waiter_core.pi_wait_state()).cast(),
+                )
             }));
         }
     }
 
     /// Cancels a committed waiter which has not been selected for claim.
-    pub fn pi_wait_cancel(&self, token: PiWaitToken<'_>) -> Result<(), TaskError> {
+    pub fn pi_wait_cancel(&self, token: PiWaitToken) -> Result<(), TaskError> {
         match self.pi_wait_try_cancel(&token)? {
             PiWaitCancelOutcome::Cancelled => Ok(()),
             PiWaitCancelOutcome::HandoffPending => Err(TaskError::InvalidPiState),
@@ -233,16 +227,22 @@ impl TaskSystem {
     /// ownerless handoff.
     pub fn pi_wait_try_cancel(
         &self,
-        token: &PiWaitToken<'_>,
+        token: &PiWaitToken,
     ) -> Result<PiWaitCancelOutcome, TaskError> {
         let _preempt = PreemptScope::enter();
-        let removal =
-            self.remove_registered_waiter(&token.core, token.lock, token.generation, true)?;
+        let waiter = ThreadId::from(token.thread_id());
+        let waiter_core = self.pi_thread_core(waiter)?;
+        let removal = self.remove_registered_waiter(
+            &waiter_core,
+            token.lock_raw(),
+            token.generation(),
+            true,
+        )?;
         let PiWaiterRemoval::Removed(owner) = removal else {
             return Ok(PiWaitCancelOutcome::HandoffPending);
         };
         if let Some(owner) = owner {
-            self.recompute_pi_cleanup_chain(owner, token.thread_id())?;
+            self.recompute_pi_cleanup_chain(owner, waiter)?;
         }
         Ok(PiWaitCancelOutcome::Cancelled)
     }
@@ -257,9 +257,9 @@ impl TaskSystem {
         let old_owner_core = self.pi_thread_core(old_owner)?;
         let selected = {
             let mutex_core = lock.core();
-            let lock_state = lock.lock_state();
+            let lock_state = lock_pi_mutex_waiters(lock);
             let snapshot = mutex_core.owner_snapshot();
-            if snapshot.owner() != Some(old_owner) || !snapshot.has_waiters() {
+            if snapshot.owner() != Some(old_owner.into()) || !snapshot.has_waiters() {
                 return Err(TaskError::InvalidPiState);
             }
             let selected_entry = lock_state
@@ -308,16 +308,14 @@ impl TaskSystem {
     }
 
     /// Claims an ownerless handoff selected for this waiter.
-    pub fn pi_mutex_claim(
-        &self,
-        token: &PiWaitToken<'_>,
-    ) -> Result<PiMutexClaimOutcome, TaskError> {
+    pub fn pi_mutex_claim(&self, token: &PiWaitToken) -> Result<PiMutexClaimOutcome, TaskError> {
         let _preempt = PreemptScope::enter();
-        let claimant = token.thread_id();
-        let lock = token.lock;
+        let claimant = ThreadId::from(token.thread_id());
+        let claimant_core = self.pi_thread_core(claimant)?;
+        let lock = token.lock_raw();
         let mut lock_state = unsafe {
             // SAFETY: the borrowed token keeps the physical mutex core live.
-            lock.lock_state()
+            lock_raw_pi_mutex_waiters(lock)
         };
         let mutex_core = unsafe {
             // SAFETY: the token lifetime is borrowed from this mutex core.
@@ -326,40 +324,37 @@ impl TaskSystem {
         if !mutex_core.owner_snapshot().is_ownerless() {
             return Ok(PiMutexClaimOutcome::Retry);
         }
-        let registration = token
-            .core
+        let registration = claimant_core
             .sched()
             .lock()
             .pi
             .blocked_on
             .filter(|registration| {
-                registration.lock == lock && registration.generation == token.generation
+                registration.lock == lock && registration.generation == token.generation()
             })
             .ok_or(TaskError::InvalidPiState)?;
         if lock_state.waiters.first() != Some(registration.key) {
             return Ok(PiMutexClaimOutcome::Retry);
         }
-        if !token
-            .core
+        if !claimant_core
             .pi_wait_state()
             .can_grant(registration.generation)
         {
             return Err(TaskError::InvalidPiState);
         }
         let registration =
-            self.remove_lock_waiter(&mut lock_state, None, &token.core, token.generation)?;
-        debug_assert_eq!(registration.generation, token.generation);
+            self.remove_lock_waiter(&mut lock_state, None, &claimant_core, token.generation())?;
+        debug_assert_eq!(registration.generation, token.generation());
         if let Some(top) = lock_state.waiters.first_entry() {
             self.replace_owner_lock_top(claimant, None, Some(top))
                 .unwrap_or_else(|_| {
                     task_runtime::fatal_invariant(0x5049_1212, claimant.as_u64() as usize)
                 });
         }
-        mutex_core.publish_owner(claimant, !lock_state.waiters.is_empty());
-        token
-            .core
+        mutex_core.publish_owner(claimant.into(), !lock_state.waiters.is_empty());
+        claimant_core
             .pi_wait_state()
-            .grant(token.generation)
+            .grant(token.generation())
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5049_1213, claimant.as_u64() as usize)
             });
@@ -369,5 +364,17 @@ impl TaskSystem {
                 task_runtime::fatal_invariant(0x5049_1214, claimant.as_u64() as usize)
             });
         Ok(PiMutexClaimOutcome::Claimed)
+    }
+
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+    pub(crate) fn pi_initial_owner_is_on_cpu(
+        &self,
+        token: &PiWaitToken,
+    ) -> Result<bool, TaskError> {
+        let Some(owner) = token.initial_owner() else {
+            return Ok(false);
+        };
+        let owner = self.pi_thread_core(owner.into())?;
+        Ok(owner.sched().scheduler_fence_cpu().is_some())
     }
 }

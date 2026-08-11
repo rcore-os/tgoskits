@@ -14,13 +14,13 @@ use ax_hal::{
     mem::{IomapAttrs, IomapDecision, IomapError, MemRegionFlags, phys_to_virt},
     paging::{MappingFlags, PageTableRef, PagingAllocator, PagingError},
 };
-use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_sync::SpinLock;
 
 pub use self::{aspace::AddrSpace, backend::Backend};
 
-static KERNEL_ASPACE: LazyInit<SpinNoIrq<AddrSpace>> = LazyInit::new();
+static KERNEL_ASPACE: LazyInit<SpinLock<AddrSpace>> = LazyInit::new();
 
 fn reg_flag_to_map_flag(f: MemRegionFlags) -> MappingFlags {
     let mut ret = MappingFlags::empty();
@@ -49,7 +49,7 @@ pub fn new_user_aspace(base: VirtAddr, size: usize) -> AxResult<AddrSpace> {
     if ax_hal::mem::user_aspace_needs_kernel_mappings() {
         // SAFETY: the global kernel address space outlives every user address
         // space, whose memory areas never cover the shared kernel range.
-        unsafe { aspace.share_mappings_from(&kernel_aspace().lock())? };
+        unsafe { aspace.share_mappings_from(&kernel_aspace().lock_irqsave())? };
     }
     Ok(aspace)
 }
@@ -86,13 +86,13 @@ pub fn new_kernel_aspace() -> AxResult<AddrSpace> {
 }
 
 /// Returns the globally unique kernel address space.
-pub fn kernel_aspace() -> &'static SpinNoIrq<AddrSpace> {
+pub fn kernel_aspace() -> &'static SpinLock<AddrSpace> {
     &KERNEL_ASPACE
 }
 
 /// Returns the root physical address of the kernel page table.
 pub fn kernel_page_table_root() -> PhysAddr {
-    KERNEL_ASPACE.lock().page_table_root()
+    KERNEL_ASPACE.lock_irqsave().page_table_root()
 }
 
 /// Initializes virtual memory management.
@@ -104,7 +104,7 @@ pub fn init_memory_management() {
 
     let kernel_aspace = new_kernel_aspace().expect("failed to initialize kernel address space");
     debug!("kernel address space init OK: {kernel_aspace:#x?}");
-    KERNEL_ASPACE.init_once(SpinNoIrq::new(kernel_aspace));
+    KERNEL_ASPACE.init_once(SpinLock::new(kernel_aspace));
     unsafe {
         ax_hal::asm::write_kernel_page_table(kernel_page_table_root());
         ax_hal::asm::flush_tlb(None);
@@ -161,7 +161,7 @@ fn iomap_generic(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
     let offset = addr - addr_aligned;
 
     let flags = MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE;
-    let mut tb = kernel_aspace().lock();
+    let mut tb = kernel_aspace().lock_irqsave();
 
     let mapped = if tb.contains_range(virt_aligned, size_aligned) {
         match tb.map_linear(virt_aligned, addr_aligned, size_aligned, flags) {

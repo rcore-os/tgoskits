@@ -239,7 +239,7 @@ crate 内部的 `AxVM::prepare_resources_with()` 重建 vCPU/设备/中断结构
 | `Destroying` | **destroy 入口瞬态**：`destroy_with` 第一行 `replace(self, Machine::Destroying)`（machine.rs:476），执行期间持锁、`status()` 不可观测；`destroy_with` 内也不调用 `status()`。**但清理闭包失败时不回滚**：`f(Some(resources))?` 出错即返回，machine 停在 `Destroying`（resources 已被闭包消费）——锁释放后 `status()` 可观测到 `Destroying`。这是三个"不可观测"态中**唯一可达的泄漏路径**：重试 `destroy()` 走 `f(None)` 到 `Destroyed`（machine.rs:552-556；对应 lifecycle.md §4 ②） | machine.rs:476、:483/:548/:553 |
 
 **锁语义：** `status()`（vm/mod.rs:621）与所有转换方法走**同一把 machine lock**——
-`Mutex<Machine<..>>`（vm/mod.rs:580，`ax_kspin::SpinNoIrq`），**不可重入**。因此
+`IrqSafeMutex<Machine<..>>`（由 `ax_std::os::arceos::sync` 导出），**不可重入**。因此
 "转换期间锁被持有 → `status()` 阻塞"是保证不可观测性的机制，不是巧合。这也意味着外部代码
 **只能观测到稳定态**（`Ready`/`Running`/`Paused`/`Stopping`/`Stopped`/`Destroyed`）、
 **确实失败后**的 `Failed`（machine.rs:120/:217 的闭包失败路径），以及 **destroy 清理失败后的
@@ -248,9 +248,8 @@ crate 内部的 `AxVM::prepare_resources_with()` 重建 vCPU/设备/中断结构
 
 `wait_until_stopped`（vm/mod.rs:873-893）在 machine 锁**外**执行：每次迭代 `status()` 单次取锁、
 其余时间 `yield_now`，锁不跨迭代持有——因此 `destroy()`/`reset()` 的等待期间，同一 VM 上其他
-task 调 `status()` 可正常返回 `Stopping`（与 lifecycle.md §4 一致）。`SpinNoIrq`
-（= `BaseSpinLock<NoPreemptIrqSave>`，ax_kspin/src/lib.rs:69）获取时**关本地中断并保存状态**
-（`local_irq_save_and_disable`，kernel_guard/src/lib.rs:177-192）、释放时恢复——持锁期间本地中断
+task 调 `status()` 可正常返回 `Stopping`（与 lifecycle.md §4 一致）。`IrqSafeMutex`
+获取时禁止抢占并保存/关闭本地中断，释放时恢复——持锁期间本地中断
 被屏蔽；转换函数与 `status()` 持锁均为短暂（`status()` **持锁后**为 O(1) match；获取锁的等待时间
 取决于当前持锁者的剩余执行时间，通常微秒级），对延迟敏感的设备中断影响有限。
 

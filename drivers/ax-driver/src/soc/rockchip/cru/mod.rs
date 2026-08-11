@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
 use rdrive::{DriverGeneric, KError};
 use rockchip_soc::{
     ClkId, ClockAssignmentProtection, ClockMmioWriteProtection, ClockOp, Cru, ResetOp, RstId,
@@ -11,6 +11,12 @@ mod rk3576;
 mod rk3588;
 
 type SharedCru = Arc<Mutex<Cru>>;
+
+fn lock_cru(cru: &SharedCru) -> RawSpinLockGuard<'_, Cru> {
+    // SAFETY: CRU operations are serialized by the platform discovery/control
+    // path, which excludes same-CPU re-entry around register transactions.
+    unsafe { cru.lock_raw() }
+}
 
 pub struct ClkDrv {
     name: &'static str,
@@ -53,22 +59,19 @@ impl rdif_clk::Interface for ClkDrv {
     fn perper_enable(&mut self) {}
 
     fn enable(&mut self, id: rdif_clk::ClockId) -> Result<(), KError> {
-        self.inner
-            .lock()
+        lock_cru(&self.inner)
             .clk_enable(clock_id(id))
             .map_err(|_| KError::InvalidArg { name: "clock_id" })
     }
 
     fn get_rate(&self, id: rdif_clk::ClockId) -> Result<u64, KError> {
-        self.inner
-            .lock()
+        lock_cru(&self.inner)
             .clk_get_rate(clock_id(id))
             .map_err(|_| KError::InvalidArg { name: "clock_id" })
     }
 
     fn set_rate(&mut self, id: rdif_clk::ClockId, rate: u64) -> Result<(), KError> {
-        self.inner
-            .lock()
+        lock_cru(&self.inner)
             .clk_set_rate(clock_id(id), rate)
             .map_err(|_| KError::InvalidArg { name: "clock_id" })?;
         Ok(())
@@ -78,8 +81,7 @@ impl rdif_clk::Interface for ClkDrv {
         &self,
         id: rdif_clk::ClockId,
     ) -> Option<Vec<rdif_clk::ClockMmioWriteProtection>> {
-        self.inner
-            .lock()
+        lock_cru(&self.inner)
             .assignment_mmio_write_protection(clock_id(id))
             .map(|protections| {
                 protections
@@ -92,12 +94,12 @@ impl rdif_clk::Interface for ClkDrv {
 
 impl rdif_reset::Interface for ResetDrv {
     fn assert(&mut self, id: rdif_reset::ResetId) -> Result<(), rdif_reset::ResetError> {
-        self.inner.lock().reset_assert(reset_id(id));
+        lock_cru(&self.inner).reset_assert(reset_id(id));
         Ok(())
     }
 
     fn deassert(&mut self, id: rdif_reset::ResetId) -> Result<(), rdif_reset::ResetError> {
-        self.inner.lock().reset_deassert(reset_id(id));
+        lock_cru(&self.inner).reset_deassert(reset_id(id));
         Ok(())
     }
 }

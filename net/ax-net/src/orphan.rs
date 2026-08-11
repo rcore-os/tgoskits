@@ -30,7 +30,6 @@ use smoltcp::{
     socket::tcp,
     time::Instant,
 };
-use spin::LazyLock;
 
 /// Orphaned TCP socket awaiting final cleanup.
 struct OrphanSocket {

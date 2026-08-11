@@ -3,13 +3,13 @@ use core::{
     time::Duration,
 };
 
-use spin::Once;
+use ax_lazyinit::OnceLock;
 
 pub trait BlockTimeProvider: Send + Sync {
     fn wall_time(&self) -> Duration;
 }
 
-static TIME_PROVIDER: Once<&'static dyn BlockTimeProvider> = Once::new();
+static TIME_PROVIDER: OnceLock<&'static dyn BlockTimeProvider> = OnceLock::new();
 static TIME_READY: AtomicBool = AtomicBool::new(false);
 
 pub fn set_time_provider(provider: &'static dyn BlockTimeProvider) {

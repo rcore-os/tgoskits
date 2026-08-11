@@ -17,8 +17,6 @@ axvm
 axvmconfig
 ax-cpumask
 irq-framework
-ax-kernel-guard
-ax-kspin
 ax-lazyinit
 ax-linked-list-r4l
 riscv-h

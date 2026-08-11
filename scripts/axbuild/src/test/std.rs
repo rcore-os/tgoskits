@@ -579,9 +579,18 @@ mod tests {
     }
 
     #[test]
-    fn host_irq_guard_packages_use_host_test_feature_profile() {
+    fn ax_sync_host_packages_use_host_test_feature_profile() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["arm_vgic".to_string(), "axdevice".to_string()];
+        let packages = [
+            "arm_vgic",
+            "axdevice",
+            "axfs-ng-vfs",
+            "rsext4",
+            "scope-local",
+            "ax-sync",
+        ]
+        .map(str::to_string)
+        .to_vec();
         let mut runner = FakeCargoRunner::succeeding();
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
@@ -597,6 +606,10 @@ mod tests {
             vec![
                 vec!["test", "-p", "arm_vgic", "--features", "host-test"],
                 vec!["test", "-p", "axdevice", "--features", "host-test"],
+                vec!["test", "-p", "axfs-ng-vfs", "--features", "host-test"],
+                vec!["test", "-p", "rsext4", "--features", "host-test"],
+                vec!["test", "-p", "scope-local", "--features", "host-test"],
+                vec!["test", "-p", "ax-sync", "--features", "host-test"],
             ]
         );
     }

@@ -303,7 +303,7 @@ impl TaskSystem {
             let Some(mut lock_state) = (unsafe {
                 // SAFETY: `blocked_on` pins the mutex identity until this
                 // registration is removed under the same task PI lock.
-                registration.lock.try_lock_state()
+                try_lock_raw_pi_mutex_waiters(registration.lock)
             }) else {
                 drop(waiter_sched);
                 core::hint::spin_loop();
@@ -318,7 +318,10 @@ impl TaskSystem {
                 .ok_or(TaskError::InvalidPiState)?;
             if urgency == registration.key.urgency && donation.same_source(&old_donation) {
                 return Ok(PiWaiterRefresh {
-                    owner: unsafe { registration.lock.core() }.owner_snapshot().owner(),
+                    owner: unsafe { registration.lock.core() }
+                        .owner_snapshot()
+                        .owner()
+                        .map(ThreadId::from),
                     changed: false,
                 });
             }
@@ -329,7 +332,10 @@ impl TaskSystem {
                 .ok_or(TaskError::InvalidPiState)?;
             let new_key = PiWaitKey::new(urgency, registration.key.sequence, waiter_core.id());
             lock_state.waiters.insert(new_key, donation, node);
-            let owner = unsafe { registration.lock.core() }.owner_snapshot().owner();
+            let owner = unsafe { registration.lock.core() }
+                .owner_snapshot()
+                .owner()
+                .map(ThreadId::from);
             if let Err(error) = self.publish_lock_top_change(
                 owner,
                 old_top.clone(),
@@ -414,14 +420,15 @@ impl TaskSystem {
                 let _origin_state = unsafe {
                     // SAFETY: the committed top-task registration keeps the
                     // origin mutex alive for this complete chain walk.
-                    origin.lock_state()
+                    lock_raw_pi_mutex_waiters(origin)
                 };
                 let origin_owner = unsafe {
                     // SAFETY: identical lifetime contract to `_origin_state`.
                     origin.core()
                 }
                 .owner_snapshot()
-                .owner();
+                .owner()
+                .map(ThreadId::from);
                 if origin_owner != Some(current) {
                     // Linux aborts rt_mutex_adjust_prio_chain() when the
                     // previous owner released the origin lock after the

@@ -7,7 +7,6 @@ use core::{cell::Cell, slice};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FileBackend;
-use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
 use ax_runtime::hal::{
     mem::phys_to_virt,
@@ -19,7 +18,10 @@ use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
     PopulateCallback, RssKind, alloc_frame, dealloc_frame, pages_in,
 };
-use crate::mm::paging_error_to_ax_error;
+use crate::{
+    mm::paging_error_to_ax_error,
+    sync::{IrqMutex, Mutex},
+};
 
 struct FrameRefCnt {
     count: u8,
@@ -57,7 +59,7 @@ impl FrameRefCnt {
 }
 
 struct FrameTableRefCount {
-    table: BTreeMap<PhysAddr, Arc<SpinNoIrq<FrameRefCnt>>>,
+    table: BTreeMap<PhysAddr, Arc<IrqMutex<FrameRefCnt>>>,
 }
 
 impl FrameTableRefCount {
@@ -69,7 +71,7 @@ impl FrameTableRefCount {
         }
     }
 
-    fn get_frame_ref(&mut self, paddr: PhysAddr) -> Option<Arc<SpinNoIrq<FrameRefCnt>>> {
+    fn get_frame_ref(&mut self, paddr: PhysAddr) -> Option<Arc<IrqMutex<FrameRefCnt>>> {
         self.table.get(&paddr).cloned()
     }
 
@@ -80,7 +82,7 @@ impl FrameTableRefCount {
         );
         self.table.insert(
             paddr,
-            Arc::new(SpinNoIrq::new(FrameRefCnt {
+            Arc::new(IrqMutex::new(FrameRefCnt {
                 count: Self::INITIAL_CNT,
             })),
         );
@@ -95,7 +97,7 @@ impl FrameTableRefCount {
     }
 }
 
-static FRAME_TABLE: SpinNoIrq<FrameTableRefCount> = SpinNoIrq::new(FrameTableRefCount::new());
+static FRAME_TABLE: IrqMutex<FrameTableRefCount> = IrqMutex::new(FrameTableRefCount::new());
 
 fn cow_file_max_read_len(
     file_len: u64,

@@ -58,6 +58,7 @@ use crate::{
         DeviceOps,
         dev::{IrqRegistration, request_shared_disabled},
     },
+    sync::IrqMutex,
 };
 
 /// 一个 TPU 推理任务（OS glue 侧）。
@@ -79,9 +80,9 @@ struct TpuTask {
 }
 
 /// 待执行任务队列（对应 Linux `task_list`）。
-static TASK_LIST: SpinNoIrq<VecDeque<TpuTask>> = SpinNoIrq::new(VecDeque::new());
+static TASK_LIST: IrqMutex<VecDeque<TpuTask>> = IrqMutex::new(VecDeque::new());
 /// 已完成任务队列（对应 Linux `done_list`）。
-static DONE_LIST: SpinNoIrq<VecDeque<TpuTask>> = SpinNoIrq::new(VecDeque::new());
+static DONE_LIST: IrqMutex<VecDeque<TpuTask>> = IrqMutex::new(VecDeque::new());
 /// `DONE_LIST` 上限。每个滞留完成项持有一个 `Arc<IonBuffer>`，提交后不 wait
 /// 的线程会令其无限累积；超限丢弃最旧项以释放 buffer（对应原驱动
 /// `DONE_LIST_MAX`）。

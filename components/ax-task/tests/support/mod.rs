@@ -199,13 +199,13 @@ impl TaskSystemClockTestExt for TaskSystem {
 }
 
 /// Commits a scheduler-only PI wait used by model tests.
-pub fn commit_pi_wait<'lock>(
+pub fn commit_pi_wait(
     system: &TaskSystem,
-    lock: &'lock PiMutexCore,
+    lock: &PiMutexCore,
     waiter: ThreadId,
     owner: ThreadId,
-) -> Result<PiWaitToken<'lock>, TaskError> {
-    if !lock.is_owned_by(owner) {
+) -> Result<PiWaitToken, TaskError> {
+    if !lock.is_owned_by(owner.into()) {
         if acquire_pi_for_thread(lock, owner)? != PiMutexAcquire::Acquired {
             return Err(TaskError::InvalidPiState);
         }
@@ -223,7 +223,7 @@ pub fn acquire_pi_for_thread(
 ) -> Result<PiMutexAcquire, TaskError> {
     // SAFETY: integration tests own the complete modeled scheduler and raw
     // mutex state, so no real execution context can concurrently own `lock`.
-    unsafe { lock.try_acquire_for_thread(thread) }
+    unsafe { Ok(lock.try_acquire_for_thread(thread)?) }
 }
 
 mod virtual_runtime;

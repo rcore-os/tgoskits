@@ -1,14 +1,14 @@
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicU64;
 
-use ax_kspin::SpinNoIrq;
+use crate::IrqMutex;
 
 static NEXT_NET_NS_ID: AtomicU64 = AtomicU64::new(0);
 
 /// The initial root network namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWNET)` or `clone(CLONE_NEWNET)`.
-pub static ROOT_NET_NS: spin::LazyLock<Arc<SpinNoIrq<NetNamespace>>> =
-    spin::LazyLock::new(|| Arc::new(SpinNoIrq::new(NetNamespace::new_root())));
+pub static ROOT_NET_NS: ax_lazyinit::LazyLock<Arc<IrqMutex<NetNamespace>>> =
+    ax_lazyinit::LazyLock::new(|| Arc::new(IrqMutex::new(NetNamespace::new_root())));
 
 /// Per-process network namespace.
 ///

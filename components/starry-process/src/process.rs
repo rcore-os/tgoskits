@@ -20,6 +20,8 @@ use crate::{
     relations::{ChildRelations, GroupMoveScope, ProcessRelationTxn, RelationLock},
 };
 
+const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
+
 #[derive(Default)]
 pub(crate) struct ThreadGroup {
     pub(crate) threads: BTreeSet<Pid>,
@@ -200,7 +202,7 @@ impl Process {
 impl Process {
     /// The parent [`Process`].
     pub fn parent(&self) -> Option<Arc<Process>> {
-        self.parent.lock().upgrade()
+        self.parent.lock_irqsave().upgrade()
     }
 
     /// Returns whether this process can still accept a newly published child.
@@ -231,7 +233,7 @@ impl Process {
 impl Process {
     /// The [`ProcessGroup`] that the [`Process`] belongs to.
     pub fn group(&self) -> Arc<ProcessGroup> {
-        self.group.lock().clone()
+        self.group.lock_irqsave().clone()
     }
 
     fn set_group(self: &Arc<Self>, group: &Arc<ProcessGroup>) {
@@ -310,7 +312,7 @@ impl Process {
 impl Process {
     /// Adds a thread to this [`Process`] with the given thread ID.
     pub fn add_thread(self: &Arc<Self>, tid: Pid) {
-        self.tg.lock().threads.insert(tid);
+        self.tg.lock_irqsave().threads.insert(tid);
     }
 
     /// Removes a thread that was registered for a child not yet published.
@@ -340,7 +342,7 @@ impl Process {
         exit_code: i32,
         cpu_time: ProcessCpuTime,
     ) -> ThreadExit {
-        let mut tg = self.tg.lock();
+        let mut tg = self.tg.lock_irqsave();
         if !tg.threads.remove(&tid) {
             return ThreadExit::AlreadyExited;
         }
@@ -378,14 +380,14 @@ impl Process {
     /// `new_tid` atomically inside the thread-group lock so there is no
     /// instant in which the caller is unrepresented in the group.
     pub fn rename_thread(self: &Arc<Self>, old_tid: Pid, new_tid: Pid) {
-        let mut tg = self.tg.lock();
+        let mut tg = self.tg.lock_irqsave();
         tg.threads.remove(&old_tid);
         tg.threads.insert(new_tid);
     }
 
     /// Returns `true` if the [`Process`] is group exited.
     pub fn is_group_exited(&self) -> bool {
-        self.tg.lock().group_exited
+        self.tg.lock_irqsave().group_exited
     }
 
     /// Starts a process-wide exit if one is not already in progress.
@@ -414,12 +416,12 @@ impl Process {
 
     /// Marks the [`Process`] as group exited.
     pub fn group_exit(&self) {
-        self.tg.lock().group_exited = true;
+        self.tg.lock_irqsave().group_exited = true;
     }
 
     /// The exit code of the [`Process`].
     pub fn exit_code(&self) -> i32 {
-        self.tg.lock().exit_code
+        self.tg.lock_irqsave().exit_code
     }
 }
 
@@ -469,7 +471,9 @@ impl Process {
     /// Reparents all children to `reaper`.
     ///
     /// The caller chooses the live subreaper because liveness belongs to the
-    /// OS PID-identity registry, not to this relationship-only component.
+    /// OS PID-identity registry, not to this relationship-only component. The
+    /// selected reaper must be an ancestor of this process; that hierarchy is
+    /// also the lock order for their same-class `children` locks.
     pub fn reparent_children_to(self: &Arc<Self>, reaper: &Arc<Process>) {
         drop(self.begin_exit_relations(reaper));
     }
@@ -488,7 +492,7 @@ impl fmt::Debug for Process {
         let mut builder = f.debug_struct("Process");
         builder.field("pid", &self.pid);
 
-        let tg = self.tg.lock();
+        let tg = self.tg.lock_irqsave();
         if tg.group_exited {
             builder.field("group_exited", &tg.group_exited);
         }
@@ -622,7 +626,7 @@ mod tests {
         let child = parent.fork(4);
         let child_pid = child.pid();
 
-        let reaper_children = reaper.children.lock();
+        let reaper_children = reaper.children.lock_irqsave();
         let start_exit = StdArc::new(Barrier::new(2));
         let exit_parent = parent.clone();
         let exit_reaper = reaper.clone();

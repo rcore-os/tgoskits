@@ -3,10 +3,10 @@ use core::ops::{Deref, DerefMut};
 
 use ::pcie::*;
 pub use ::pcie::{Endpoint, PciCapability, PciIntxRoute, PcieGeneric};
-use ax_kspin::SpinNoPreempt as Mutex;
+use ax_lazyinit::OnceLock;
+use ax_sync::SpinLock as Mutex;
 use mmio_api::{MapError, MmioOp};
 pub use rdif_pcie::{DriverGeneric, PciAddress, PciMem32, PciMem64, PcieController};
-use spin::Once;
 
 use crate::{
     Descriptor, Device, PlatformDevice, ProbeError, get_list,
@@ -14,7 +14,7 @@ use crate::{
     register::{DriverRegister, ProbeKind},
 };
 
-static PCIE: Once<Mutex<Vec<PcieEnumterator>>> = Once::new();
+static PCIE: OnceLock<Mutex<Vec<PcieEnumterator>>> = OnceLock::new();
 
 pub type FnOnProbe = fn(ProbePci<'_>) -> Result<(), OnProbeError>;
 

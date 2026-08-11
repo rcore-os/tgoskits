@@ -1,54 +1,13 @@
 //! Linux-style per-lock PI waiter ownership and bounded chain propagation.
 
-use core::{fmt, marker::PhantomData};
-
 use super::*;
-use crate::{PiMutexRef, PiMutexWaiters, PiWaitStateError, lock::PreemptScope};
+use crate::{
+    PiMutexClaimOutcome, PiMutexLockResult, PiMutexRef, PiMutexWaiters, PiTaskId,
+    PiWaitCancelOutcome, PiWaitStateError, lock::PreemptScope, lock_pi_mutex_waiters,
+    lock_raw_pi_mutex_waiters, try_lock_raw_pi_mutex_waiters,
+};
 
 const PI_RELEASE_WAKE_INVARIANT: u32 = 0x5049_574b;
-
-/// Result of entering the PI mutex slow path.
-#[must_use = "a registered PI waiter must be blocked, claimed, or cancelled"]
-pub enum PiMutexLockResult<'lock> {
-    /// A racing fast unlock let this caller acquire the mutex directly.
-    Acquired,
-    /// The caller is linked in the mutex-owned scheduler waiter tree.
-    Waiting(PiWaitToken<'lock>),
-}
-
-/// Result of serializing one ownerless PI-mutex claim on its waiter lock.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PiMutexClaimOutcome {
-    /// This waiter was still first and became the physical mutex owner.
-    Claimed,
-    /// The live owner or top waiter changed after the caller's optimistic check.
-    Retry,
-}
-
-/// Result of trying to cancel one committed PI waiter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PiWaitCancelOutcome {
-    /// The waiter was removed and every inherited donation was withdrawn.
-    Cancelled,
-    /// Unlock already published an ownerless handoff to this waiter.
-    ///
-    /// The caller must claim the mutex before observing interruption, matching
-    /// Linux `rt_mutex_slowlock_block()` trying the lock before checking the
-    /// pending task state.
-    HandoffPending,
-}
-
-impl fmt::Debug for PiMutexLockResult<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Acquired => formatter.write_str("Acquired"),
-            Self::Waiting(token) => formatter
-                .debug_tuple("Waiting")
-                .field(&token.thread_id())
-                .finish(),
-        }
-    }
-}
 
 #[derive(Clone, Copy)]
 enum PiRqFollowup {

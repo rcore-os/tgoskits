@@ -5,7 +5,7 @@
 
 use alloc::sync::Arc;
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use sdio_host::{SdioCardIrq, SdioHost};
 
 use crate::{

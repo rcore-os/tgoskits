@@ -8,6 +8,7 @@ use super::SimpleFs;
 use crate::{
     dyn_debug::{DynamicDebugOps, dynamic_debug_init},
     pseudofs::{DirectRwFsFileOps, SpecialFsFile},
+    sync::Mutex,
 };
 
 pub struct DynDebugControlObj {

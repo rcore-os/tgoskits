@@ -11,9 +11,9 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use ax_kernel_guard::NoPreempt;
+use ax_lazyinit::OnceLock;
 use ax_percpu::CpuPin;
-use spin::Once;
+use ax_sync::PreemptGuard;
 
 use crate::{
     boxed::ItemBox,
@@ -930,7 +930,7 @@ impl ActiveScope {
 }
 
 fn current_context_identity() -> usize {
-    let _guard = NoPreempt::new();
+    let _guard = PreemptGuard::new();
     // SAFETY: the guard keeps the current thread header stable while its opaque
     // identity is acquired. The header itself is pinned for the task lifetime,
     // so this identity remains valid if the task later migrates during an

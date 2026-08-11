@@ -1,7 +1,6 @@
 use alloc::{borrow::ToOwned, boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
-use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_runtime::hal::irq::{AutoEnable, IrqId, IrqRequest, ShareMode};
 use rdrive::DeviceId as RDriveDeviceId;
@@ -32,7 +31,7 @@ pub(super) struct UsbIrqSlot {
     handler: ax_driver::usb::UsbHostIrqHandler,
     event_gate: UsbEventGate,
     dirty: AtomicBool,
-    handle: SpinNoIrq<Option<ax_runtime::hal::irq::IrqHandle>>,
+    handle: IrqMutex<Option<ax_runtime::hal::irq::IrqHandle>>,
 }
 
 struct UsbEventGate {
@@ -138,7 +137,7 @@ impl UsbIrqRegistry {
                 handler: slot.handler,
                 event_gate: UsbEventGate::new(),
                 dirty: AtomicBool::new(false),
-                handle: SpinNoIrq::new(None),
+                handle: IrqMutex::new(None),
             });
         }
         Self {

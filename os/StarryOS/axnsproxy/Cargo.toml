@@ -11,14 +11,14 @@ authors.workspace = true
 [dependencies]
 ax-cgroup = { workspace = true }
 ax-errno = { workspace = true }
-ax-kspin = { workspace = true }
+ax-lazyinit.workspace = true
+ax-sync = { workspace = true }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "general",
     "no_std",
     "system",
 ] }
 log = "0.4"
-spin = { workspace = true }
 
 [build-dependencies]
 quote = { workspace = true }

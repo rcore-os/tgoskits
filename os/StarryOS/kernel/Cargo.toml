@@ -135,7 +135,7 @@ ax-runtime = { workspace = true, features = [
     "net",
     "serial",
 ] }
-ax-sync = { workspace = true, features = ["multitask"] }
+ax-sync = { workspace = true, features = ["sleep", "lock-api"] }
 ax-std = { workspace = true, default-features = false, features = [
     "alloc",
     "fd",
@@ -175,8 +175,6 @@ heapless.workspace = true
 indoc = "2"
 inherit-methods-macro = "0.1.0"
 kernel-elf-parser = "0.3.4"
-ax-kernel-guard.workspace = true
-ax-kspin = { workspace = true, features = ["lock_api"] }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
@@ -246,7 +244,7 @@ ax-memory-addr = { workspace = true, features = ["axtest"] }
 ax-memory-set = { workspace = true, features = ["axtest"] }
 axfs-ng-vfs = { workspace = true, features = ["axtest"] }
 ax-io = { workspace = true, features = ["axtest"] }
-ax-kernel-guard = { workspace = true, features = ["axtest"] }
+ax-sync = { workspace = true, features = ["axtest"] }
 ax-lazyinit = { workspace = true, features = ["axtest"] }
 ax-net = { workspace = true, features = ["axtest"] }
 axpoll = { workspace = true, features = ["axtest"] }

@@ -12,6 +12,8 @@ use sg200x_jpu::{
 
 use crate::{mm::vm_write_slice, task::UserTaskRef};
 
+use crate::sync::Mutex;
+
 const JPU_REG_BASE: usize = 0x0b00_0000;
 const VC_REG_BASE: usize = 0x0b03_0000;
 const REG_MMIO_SIZE: usize = 0x1000;

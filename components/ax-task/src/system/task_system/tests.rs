@@ -280,13 +280,13 @@ impl TaskSystemClockTestExt for TaskSystem {
     }
 }
 
-fn commit_pi_wait<'lock>(
+fn commit_pi_wait(
     system: &TaskSystem,
-    lock: &'lock PiMutexCore,
+    lock: &PiMutexCore,
     waiter: ThreadId,
     owner: ThreadId,
-) -> Result<PiWaitToken<'lock>, TaskError> {
-    if !lock.is_owned_by(owner) {
+) -> Result<PiWaitToken, TaskError> {
+    if !lock.is_owned_by(owner.into()) {
         if acquire_pi_for_thread(lock, owner)? != PiMutexAcquire::Acquired {
             return Err(TaskError::InvalidPiState);
         }
@@ -314,13 +314,13 @@ fn acquire_pi_for_thread(
 ) -> Result<PiMutexAcquire, TaskError> {
     // SAFETY: these unit tests own the complete modeled scheduler and raw PI
     // mutex state and serialize every explicit owner transition.
-    unsafe { lock.try_acquire_for_thread(thread) }
+    unsafe { Ok(lock.try_acquire_for_thread(thread)?) }
 }
 
 fn release_pi_for_thread(lock: &PiMutexCore, thread: ThreadId) -> Result<bool, TaskError> {
     // SAFETY: these unit tests release only an explicit owner installed by the
     // same single-threaded scheduler fixture.
-    unsafe { lock.try_release_for_thread(thread) }
+    unsafe { Ok(lock.try_release_for_thread(thread)?) }
 }
 
 fn publish_test_scheduler_work(
@@ -5777,7 +5777,7 @@ fn failed_pi_release_preserves_the_unselected_wait_transaction() {
                 waiter.id().as_u64(),
                 waiter.id()
             ),
-            generation: token.generation,
+            generation: token.generation(),
         })
     );
     assert!(
@@ -5847,7 +5847,7 @@ fn pi_release_atomically_selects_and_preserves_the_wait_transaction() {
                 waiter.id().as_u64(),
                 waiter.id()
             ),
-            generation: token.generation,
+            generation: token.generation(),
         })
     );
     assert!(

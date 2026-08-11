@@ -5,11 +5,11 @@ use alloc::{
 };
 use core::ptr::NonNull;
 
-use ax_kspin::SpinNoPreempt as Mutex;
+use ax_lazyinit::OnceLock;
+use ax_sync::SpinLock as Mutex;
 use fdt_edit::Node;
 pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeId, NodeType, Phandle, RegInfo, Status};
 use rdif_pinctrl::{PinctrlDevice, PinctrlError};
-use spin::Once;
 
 use super::ProbeError;
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
     register::{DriverRegister, ProbeKind, ProbePriority},
 };
 
-static SYSTEM: Once<System> = Once::new();
+static SYSTEM: OnceLock<System> = OnceLock::new();
 
 pub fn init(fdt_addr: NonNull<u8>) -> Result<(), DriverError> {
     let sys = System::new(fdt_addr)?;

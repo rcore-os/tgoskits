@@ -16,8 +16,7 @@ host-test = ["cpu-local/host-test"]
 [dependencies]
 cpu-local.workspace = true
 ax-percpu-macros = { workspace = true }
-spin.workspace = true
+ax-lazyinit.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-ax-lazyinit.workspace = true

@@ -10,19 +10,19 @@ use core::{
 
 use ax_errno::AxResult;
 use ax_fs_ng::vfs::{FileBackend, FileFlags, MountNamespace};
-use ax_kspin::SpinNoIrq;
+use ax_lazyinit::OnceLock;
 use axpoll::{IoEvents, PollSet, Pollable};
-use spin::Once;
 
 use super::{File, FileLike, IoDst, IoSrc, Kstat};
+use crate::sync::IrqMutex;
 
 const MOUNT_CHANGE_EVENTS: IoEvents = IoEvents::PRI.union(IoEvents::ERR);
 
-static MOUNT_NAMESPACE_EVENTS: Once<SpinNoIrq<BTreeMap<u64, Weak<MountNamespaceEvent>>>> =
-    Once::new();
+static MOUNT_NAMESPACE_EVENTS: OnceLock<IrqMutex<BTreeMap<u64, Weak<MountNamespaceEvent>>>> =
+    OnceLock::new();
 
-fn event_registry() -> &'static SpinNoIrq<BTreeMap<u64, Weak<MountNamespaceEvent>>> {
-    MOUNT_NAMESPACE_EVENTS.call_once(|| SpinNoIrq::new(BTreeMap::new()))
+fn event_registry() -> &'static IrqMutex<BTreeMap<u64, Weak<MountNamespaceEvent>>> {
+    MOUNT_NAMESPACE_EVENTS.call_once(|| IrqMutex::new(BTreeMap::new()))
 }
 
 fn event_for_open(namespace: &MountNamespace) -> Arc<MountNamespaceEvent> {

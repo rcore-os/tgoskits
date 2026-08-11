@@ -2,7 +2,6 @@ use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FS_CONTEXT;
-use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use axnsproxy::PidReservationKind;
 use bitflags::bitflags;

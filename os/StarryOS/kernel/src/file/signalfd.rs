@@ -81,7 +81,7 @@ impl SignalfdSiginfo {
 pub struct Signalfd {
     // SignalSet is a single Copy bitset, so a short project-visible spin lock
     // is enough for now. Revisit this when a lockdep-aware project RwLock exists.
-    mask: SpinNoIrq<SignalSet>,
+    mask: IrqMutex<SignalSet>,
     non_blocking: AtomicBool,
     poll_rx: PollSet,
 }
@@ -89,7 +89,7 @@ pub struct Signalfd {
 impl Signalfd {
     pub fn new(mask: SignalSet) -> Arc<Self> {
         Arc::new(Self {
-            mask: SpinNoIrq::new(mask),
+            mask: IrqMutex::new(mask),
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
         })

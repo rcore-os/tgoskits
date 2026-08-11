@@ -1154,7 +1154,7 @@ mod tests {
 
     #[test]
     fn dhcp_configured_is_true_once_any_interface_has_address() {
-        let routes = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
+        let routes = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
         let mut router = Router::new(routes.clone());
         let dev0 = router.add_device(InterfaceId::new(2), Box::new(LoopbackDevice::new()));
         let dev1 = router.add_device(InterfaceId::new(3), Box::new(LoopbackDevice::new()));
@@ -1183,7 +1183,7 @@ mod tests {
 
     #[test]
     fn interface_address_table_handles_loopback_and_two_ethernet_addresses() {
-        let routes = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
+        let routes = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
         let router = Router::new(routes.clone());
         let control = Arc::new(NetControl::new(Vec::new(), routes, Vec::new()));
         let mut service = Service::new(router, control);

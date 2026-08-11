@@ -19,10 +19,10 @@ license.workspace = true
 default = []
 
 smp = ["ax-runtime/smp"]
-irq = ["ax-runtime/irq"]
+irq = []
 alloc = ["dep:ax-alloc"]
-multitask = ["alloc", "irq", "ax-runtime/multitask", "ax-sync/multitask"]
-lockdep = ["multitask", "ax-sync/lockdep", "ax-kspin/lockdep"]
+multitask = ["alloc", "dep:ax-task", "ax-sync/sleep"]
+lockdep = ["multitask", "ax-sync/lockdep"]
 fd = ["alloc", "dep:scope-local"]
 fs = ["multitask", "dep:ax-fs-ng", "fd"]
 net = ["multitask", "dep:ax-net", "fd"]
@@ -38,19 +38,19 @@ eventfd = ["fd", "multitask"]
 ax-alloc = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
-ax-kspin.workspace = true
 ax-log.workspace = true
 ax-net = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
+ax-task = { workspace = true, optional = true }
 
 # Other crates
 ax-errno.workspace = true
 ax-io.workspace = true
+ax-lazyinit.workspace = true
 axpoll.workspace = true
 flatten_objects = "0.2"
 scope-local = { workspace = true, optional = true }
-spin.workspace = true
 
 [build-dependencies]
 bindgen.workspace = true

@@ -11,7 +11,7 @@ keywords = ["sg2002", "cvitek", "tpu", "ion"]
 
 [dependencies]
 ax-errno = { workspace = true }
-ax-kspin.workspace = true
+ax-sync.workspace = true
 ax-memory-addr = { workspace = true }
 axklib.workspace = true
 dma-api.workspace = true

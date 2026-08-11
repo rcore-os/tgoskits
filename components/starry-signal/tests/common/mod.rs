@@ -62,7 +62,7 @@ pub const TID: u32 = 7;
 
 pub fn new_test_env() -> (Arc<ProcessSignalManager>, Arc<ThreadSignalManager>) {
     let proc = Arc::new(ProcessSignalManager::new(
-        Arc::new(SpinNoIrq::new(SignalActions::default())),
+        Arc::new(SpinLock::new(SignalActions::default())),
         0,
     ));
     let thr = ThreadSignalManager::new(TID, proc.clone());

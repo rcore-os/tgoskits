@@ -151,7 +151,7 @@ impl Bind {
         local_addr: UnixSocketAddr,
         pid: u32,
         client_receive_credentials: Arc<AtomicBool>,
-    ) -> AxResult<Channel> {
+    ) -> AxResult<(Channel, Arc<PollSet>)> {
         if !self.listening.load(Ordering::Acquire) {
             return Err(AxError::ConnectionRefused);
         }
@@ -173,9 +173,9 @@ impl Bind {
                 receive_credentials: server_receive_credentials,
             })
             .map_err(|_| AxError::ConnectionRefused)?;
-        // The connection request is queued before waking accept waiters.
-        unsafe { self.poll_new_conn.wake(IoEvents::IN) };
-        Ok(client_chan)
+        // The caller wakes accept waiters after publishing the client endpoint
+        // and releasing namespace, bind-slot, and transport locks.
+        Ok((client_chan, self.poll_new_conn.clone()))
     }
 }
 
@@ -243,6 +243,11 @@ impl StreamTransport {
         let transport1 = StreamTransport::new_channel(Some(chan1), pid, credentials1);
         let transport2 = StreamTransport::new_channel(Some(chan2), pid, credentials2);
         (transport1, transport2)
+    }
+
+    pub(super) fn wake_connected(&self) {
+        // Connection state is published before waking local poll waiters.
+        unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
     }
 }
 
@@ -330,26 +335,25 @@ impl TransportOps for StreamTransport {
         self.listening.load(Ordering::Acquire)
     }
 
-    fn connect(&self, slot: &super::BindSlot, local_addr: &UnixSocketAddr) -> AxResult<()> {
+    fn connect(
+        &self,
+        slot: &super::BindSlot,
+        local_addr: &UnixSocketAddr,
+    ) -> AxResult<Option<Arc<PollSet>>> {
         let mut guard = self.channel.lock();
         if guard.is_some() {
             return Err(AxError::AlreadyConnected);
         }
-        *guard = Some(
-            slot.stream
-                .lock()
-                .as_ref()
-                .ok_or(AxError::NotConnected)?
-                .connect(
-                    local_addr.clone(),
-                    self.pid,
-                    self.receive_credentials.clone(),
-                )?,
-        );
-        drop(guard);
-        // Connection state is installed before waking poll waiters.
-        unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
-        Ok(())
+        let (channel, accept_poll) = {
+            let slot = slot.stream.lock();
+            slot.as_ref().ok_or(AxError::NotConnected)?.connect(
+                local_addr.clone(),
+                self.pid,
+                self.receive_credentials.clone(),
+            )?
+        };
+        *guard = Some(channel);
+        Ok(Some(accept_poll))
     }
 
     async fn accept(&self) -> AxResult<(Transport, UnixSocketAddr)> {

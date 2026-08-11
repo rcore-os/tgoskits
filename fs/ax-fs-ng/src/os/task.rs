@@ -5,7 +5,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinRwLock as RwLock;
+use ax_sync::SpinRwLock as RwLock;
 
 /// Wait/notify object created and owned by the block runtime.
 pub trait BlockNotification: Send + Sync + 'static {
@@ -16,11 +16,13 @@ pub trait BlockNotification: Send + Sync + 'static {
     fn notify_from_irq(&self);
 
     /// Blocks until a notification is pending and consumes that notification.
+    #[track_caller]
     fn wait(&self);
 
     /// Blocks until notified or the duration expires.
     ///
     /// Returns `true` when the wait timed out.
+    #[track_caller]
     fn wait_timeout(&self, duration: Duration) -> bool;
 }
 
@@ -160,6 +162,7 @@ mod tests {
             self.publish();
         }
 
+        #[track_caller]
         fn wait(&self) {
             let mut pending = self.pending.lock().unwrap();
             while !*pending {
@@ -168,6 +171,7 @@ mod tests {
             *pending = false;
         }
 
+        #[track_caller]
         fn wait_timeout(&self, duration: Duration) -> bool {
             TEST_WAIT_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
             let mut pending = self.pending.lock().unwrap();

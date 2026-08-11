@@ -671,7 +671,12 @@ pub fn sys_shmctl(
 
     // IPC_INFO: system-wide shared memory limits (no segment lookup).
     if cmd == IPC_INFO {
-        let shm_manager = SHM_MANAGER.lock();
+        let ns_count = SHM_MANAGER
+            .lock()
+            .shmid_inner
+            .values()
+            .filter(|inner| inner.lock().ns_id == ns_id)
+            .count();
         let info = ShmInfo64 {
             shmmax: usize::MAX as u64,
             shmmin: 1,
@@ -692,16 +697,19 @@ pub fn sys_shmctl(
 
     // SHM_INFO: shared memory usage statistics for this namespace.
     if cmd == SHM_INFO {
-        let shm_manager = SHM_MANAGER.lock();
-        let mut used_ids: i32 = 0;
-        let mut shm_tot: u64 = 0;
-        for inner in shm_manager.shmid_inner.values() {
-            let guard = inner.lock();
-            if guard.ns_id == ns_id {
-                used_ids += 1;
-                shm_tot += guard.page_num as u64;
+        let (used_ids, shm_tot) = {
+            let shm_manager = SHM_MANAGER.lock();
+            let mut used_ids: i32 = 0;
+            let mut shm_tot: u64 = 0;
+            for inner in shm_manager.shmid_inner.values() {
+                let guard = inner.lock();
+                if guard.ns_id == ns_id {
+                    used_ids += 1;
+                    shm_tot += guard.page_num as u64;
+                }
             }
-        }
+            (used_ids, shm_tot)
+        };
         let info = ShmInfo {
             used_ids,
             _pad: 0,

@@ -2,11 +2,13 @@ use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec, vec::Vec};
 
 use ax_sync::PiMutex;
 use axfs_ng_vfs::{NodePermission, VfsError, VfsResult};
-use spin::LazyLock;
 
-use crate::pseudofs::{
-    DirMaker, DirectRwFsFileOps, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
-    SimpleFileOperation, SimpleFileOps, SimpleFs, SpecialFsFile,
+use crate::{
+    pseudofs::{
+        DirMaker, DirectRwFsFileOps, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
+        SimpleFileOperation, SimpleFileOps, SimpleFs, SpecialFsFile,
+    },
+    sync::Mutex,
 };
 
 mod platform;

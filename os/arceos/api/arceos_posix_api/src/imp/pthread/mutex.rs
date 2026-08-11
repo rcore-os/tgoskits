@@ -10,7 +10,7 @@ use ax_errno::{LinuxError, LinuxResult};
 use ax_sync::{PiMutex, SpinMutex};
 use spin::LazyLock;
 
-use crate::{ctypes, utils::check_null_mut_ptr};
+use crate::{ctypes, sync::Mutex, utils::check_null_mut_ptr};
 
 const STATIC_MUTEX_SENTINEL: usize = usize::MAX;
 static STATIC_MUTEX_INIT_LOCK: AtomicBool = AtomicBool::new(false);

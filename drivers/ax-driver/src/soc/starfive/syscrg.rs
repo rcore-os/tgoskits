@@ -66,6 +66,18 @@ crate::model_register!(
 );
 
 crate::model_register!(
+    name: "StarFive JH7110 System Clock and Reset Controller",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::CLK,
+    probe_kinds: &[
+        ProbeKind::Fdt {
+            compatibles: &["starfive,jh7110-syscrg"],
+            on_probe: probe_syscrg
+        }
+    ],
+);
+
+crate::model_register!(
     name: "StarFive JH7110 Reset Controller",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,
@@ -233,6 +245,15 @@ fn probe_reset(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let base = map_first_reg(&info)?;
     plat_dev.register(rdif_reset::Reset::new(Jh7110SysReset::new(base)));
     info!("StarFive JH7110 SYS reset provider registered");
+    Ok(())
+}
+
+fn probe_syscrg(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
+    let base = map_first_reg(&info)?;
+    plat_dev.register(rdif_clk::Clk::new(Jh7110SysClock::new(base)));
+    plat_dev.register(rdif_reset::Reset::new(Jh7110SysReset::new(base)));
+    info!("StarFive JH7110 SYS clock/reset providers registered");
     Ok(())
 }
 

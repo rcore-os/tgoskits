@@ -18,6 +18,7 @@ extern crate alloc;
 pub mod utils;
 
 mod imp;
+mod sync;
 
 /// Platform-specific constants and parameters.
 pub mod config {
