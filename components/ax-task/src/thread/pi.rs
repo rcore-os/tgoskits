@@ -110,7 +110,6 @@ pub(crate) unsafe fn try_lock_raw_pi_mutex_waiters(
     .try_lock()
 }
 
-#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 pub(crate) unsafe fn drop_pi_mutex_wait_handle(wait_handle: *mut ()) {
     let wait_handle = wait_handle.cast::<PiMutexWaitHandle>();
     // SAFETY: PiMutexCore transferred the unique initialized inline object
@@ -204,12 +203,10 @@ impl PiWaitState {
             && self.granted_generation.load(Ordering::Acquire) != generation
     }
 
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     pub(crate) fn is_granted(&self, generation: u64) -> bool {
         self.granted_generation.load(Ordering::Acquire) == generation
     }
 
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     pub(crate) fn is_top(&self, generation: u64) -> bool {
         self.top_generation.load(Ordering::Acquire) == generation
     }

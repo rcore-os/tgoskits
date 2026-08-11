@@ -366,7 +366,6 @@ impl TaskSystem {
         Ok(PiMutexClaimOutcome::Claimed)
     }
 
-    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     pub(crate) fn pi_initial_owner_is_on_cpu(
         &self,
         token: &PiWaitToken,

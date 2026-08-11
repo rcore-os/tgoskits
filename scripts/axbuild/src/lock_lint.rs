@@ -11,7 +11,7 @@ use walkdir::{DirEntry, WalkDir};
 const REMOVED_LOCK_PACKAGES: &[&str] = &["ax-kspin", "ax-kernel-guard", "ax-lockdep"];
 const REMOVED_LOCK_IMPORTS: &[&str] = &["ax_kspin", "ax_kernel_guard", "ax_lockdep"];
 const DIRECT_SPIN_PATTERNS: &[&str] = &["use spin", "extern crate spin"];
-const PROVIDER_TRAITS: &[&str] = &["CriticalSectionOps", "MutexRuntimeOps", "LockdepOps"];
+const PROVIDER_TRAITS: &[&str] = &["CriticalSectionOps", "PiMutexTaskOps", "LockdepOps"];
 const RUNTIME_PROVIDER_PATH: &str = "os/arceos/modules/axruntime/src/sync.rs";
 const HOST_PROVIDER_PATHS: &[&str] = &[
     "os/arceos/modules/axsync/src/context.rs",
@@ -114,9 +114,44 @@ fn check_manifests(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow
         if path == workspace_root.join("Cargo.toml") {
             check_removed_workspace_members(path, &manifest, findings);
         }
+        check_ax_task_host_provider_selection(path, &manifest, findings);
         check_dependency_tables(path, &manifest, findings);
     }
     Ok(())
+}
+
+fn check_ax_task_host_provider_selection(
+    manifest_path: &Path,
+    manifest: &Value,
+    findings: &mut Vec<Finding>,
+) {
+    let package_name = manifest
+        .get("package")
+        .and_then(Value::as_table)
+        .and_then(|package| package.get("name"))
+        .and_then(Value::as_str);
+    if package_name != Some("ax-task") {
+        return;
+    }
+    let selects_host_provider = manifest
+        .get("features")
+        .and_then(Value::as_table)
+        .and_then(|features| features.get("host-test"))
+        .and_then(Value::as_array)
+        .is_some_and(|members| {
+            members
+                .iter()
+                .any(|member| member.as_str() == Some("ax-sync/host-test"))
+        });
+    if selects_host_provider {
+        findings.push(Finding::new(
+            manifest_path,
+            "features.host-test",
+            "ax-task must not select ax-sync's host PI provider",
+            "the final runtime owns PiMutexTaskOps provider selection; keep ax-task's host-test \
+             feature provider-neutral",
+        ));
+    }
 }
 
 fn check_removed_workspace_members(
@@ -413,7 +448,9 @@ fn check_provider_cfgs(workspace_root: &Path, findings: &mut Vec<Finding>) -> an
 
 fn is_allowed_test_provider(relative: &str, trait_name: &str) -> bool {
     (relative == "os/arceos/modules/axsync/src/context.rs" && trait_name == "CriticalSectionOps")
-        || (relative == "os/arceos/modules/axsync/src/mutex.rs" && trait_name == "MutexRuntimeOps")
+        || (relative == "os/arceos/modules/axsync/src/mutex.rs" && trait_name == "PiMutexTaskOps")
+        || (relative == "components/ax-task/src/test_runtime.rs" && trait_name == "PiMutexTaskOps")
+        || (relative == "components/ax-task/tests/support/mod.rs" && trait_name == "PiMutexTaskOps")
 }
 
 fn check_lockfile(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow::Result<()> {
@@ -559,7 +596,7 @@ edition = "2024"
 #[cfg(not(feature = "host-test"))]
 impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {}
 #[cfg(not(feature = "host-test"))]
-impl ax_sync::MutexRuntimeOps for RuntimeMutexOps {}
+impl ax_sync::PiMutexTaskOps for RuntimePiMutexTaskOps {}
 #[cfg(not(feature = "host-test"))]
 impl ax_sync::LockdepOps for RuntimeLockdepOps {}
 "#,
@@ -713,6 +750,49 @@ ax-sync = "0.1"
                 .iter()
                 .any(|finding| finding.message.contains("outside ax-runtime"))
         );
+    }
+
+    #[test]
+    fn rejects_pi_mutex_provider_outside_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "components/ax-task/src/provider.rs",
+            "impl ax_sync::PiMutexTaskOps for TaskProvider {}\n",
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("PiMutexTaskOps provider exists outside ax-runtime")
+        }));
+    }
+
+    #[test]
+    fn rejects_ax_task_selecting_the_independent_host_pi_provider() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "components/ax-task/Cargo.toml",
+            r#"
+[package]
+name = "ax-task"
+version = "0.1.0"
+edition = "2024"
+[features]
+host-test = ["ax-sync/host-test"]
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("ax-task must not select ax-sync's host PI provider")
+        }));
     }
 
     #[test]
