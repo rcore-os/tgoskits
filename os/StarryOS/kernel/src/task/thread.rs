@@ -4,9 +4,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 use ax_errno::AxResult;
-use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin};
-use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
 use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWriteGuard};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
@@ -21,7 +19,7 @@ use super::{
     scheduler_identity::SchedulerIdentity,
     user_memory_access::{UserMemoryAccessDepth, UserMemoryAccessGuard},
 };
-use crate::sync::PiMutex;
+use crate::sync::{IrqMutex, NoPreemptIrqSave, PiMutex};
 
 const KRETPROBE_STACK_CAPACITY: usize = 16;
 
@@ -202,7 +200,7 @@ impl ThreadSecurity {
 struct ThreadTrace {
     fault_dump_signo: AtomicU8,
     kretprobe_stack:
-        SpinNoIrq<BoundedStack<kprobe::retprobe::RetprobeInstance, KRETPROBE_STACK_CAPACITY>>,
+        IrqMutex<BoundedStack<kprobe::retprobe::RetprobeInstance, KRETPROBE_STACK_CAPACITY>>,
     #[cfg(target_arch = "aarch64")]
     perf: crate::perf::task_context::ThreadPerfContext,
 }
@@ -211,7 +209,7 @@ impl ThreadTrace {
     fn new() -> Self {
         Self {
             fault_dump_signo: AtomicU8::new(0),
-            kretprobe_stack: SpinNoIrq::new(BoundedStack::new()),
+            kretprobe_stack: IrqMutex::new(BoundedStack::new()),
             #[cfg(target_arch = "aarch64")]
             perf: crate::perf::task_context::ThreadPerfContext::new(),
         }
