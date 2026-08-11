@@ -3000,6 +3000,36 @@ core/handle/idle 分散 observation（约 6.0 次/switch）；下一阶段需要
 同一 owner transaction、哪些只是 Linux `READ_ONCE(rq->curr)` 级启发式，再建立确定性红绿，不能
 直接增加 current/rq 的 lockless mirror。
 
+继续按 Linux execution identity 与 scheduler identity 分层审计后，确认 `CurrentThreadPublication` 已是
+本分支的 architecture-selected task current：identity 和 owner Arc 在上下文可执行期间跨抢占、迁移
+保持不变。`begin_current_park_with_permit` 却仍通过 `CpuLocal::current_thread_handle()` 锁 rq 并克隆
+`rq.current_core()`，把执行身份错误放在 scheduler-owned `rq->curr` 下；随后 `prepare_park` 还会为
+park 状态读取 rq。Linux x86 的 `current` 来自 per-CPU `current_task`，`rq->curr` 只在 rq lock 下用于
+选择和切换，两者不能因为当前恰好相等就合并所有权。
+
+确定性回归要求真实 facade park 入口读取一次 task current publication。旧实现稳定为 0，修复把
+handle 捕获移动到 CPU owner/IRQ transaction 之前后转绿为 1；publication 契约保证这一强 handle
+在捕获与随后可能迁移后的 `prepare_park` 之间仍属于同一 task。`prepare_park` 继续在当前 owner CPU
+上验证 rq/thread 状态并发布 `Parking`，没有用 task current 替代 rq 权威状态。旧
+`CpuLocal::current_thread_handle()`、rq source、IRQ source、qperf leaf 与 Starry debugfs key 已全部
+删除，不保留恒零兼容字段或第二条 handle 路径。完整 ax-task qperf-feature 测试通过（444 unit、全部
+integration、21 loom、12 doctest），ax-task 与 Starry 31 项 clippy 全部通过。
+
+相同 marker 窗口验证该 acquisition 没有转移到另一种 rq observation：
+
+| qperf window | owner observation / switch | current core / switch | current thread / switch | idle / switch | 总 rq / switch | workload 进度 | host user |
+|---|---:|---:|---:|---:|---:|---|---:|
+| rq handle | 6.000 | 2.127 | 1.396 | 1.644 | 8.099 | `file-0474` | 87.611 s |
+| task current | 5.130 | 2.110 | 1.374 | 1.645 | 7.196 | `file-0474` | 88.125 s |
+
+修复前 handle leaf 为 100,756 次、0.833 次/switch；删除后 owner observation 每 switch 下降
+14.502%，总 rq 每 switch 下降 11.142%，而 current-core/current-thread/idle 均未上升到接收这批
+查询。两轮都由 60 秒 timeout 以状态 143 终止、完整观察 `file-0474`，host user 反而略升，因此
+仍只确认 task-current 所有权修正与 rq acquisition 消除，不宣称吞吐改善。剩余 owner observation
+中 current-core 为 2.110 次/switch、idle 为 1.645、current-thread 为 1.374；下一阶段优先处理
+schedule/yield/park 在 transaction 前为取得 `previous_sched` 而读取 current core、进入 transaction
+后又权威复核 `rq->curr` 的锁序问题，不能把后一次复核删除或增加 current-core mirror。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
