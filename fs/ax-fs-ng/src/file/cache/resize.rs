@@ -40,6 +40,12 @@ impl CachedFile {
         if let FileRangeOperation::Allocate(mode) = operation {
             return self.preallocate(offset, len, mode);
         }
+        if matches!(
+            operation,
+            FileRangeOperation::CollapseRange | FileRangeOperation::InsertRange
+        ) {
+            return self.operate_shifted_range(offset, len, operation);
+        }
         let end = offset
             .checked_add(len)
             .ok_or_else(|| VfsError::from(LinuxError::EFBIG))?;
@@ -54,6 +60,9 @@ impl CachedFile {
                 }
                 FileRangeOperation::ZeroRange(PreallocationMode::ExtendSize) => end,
                 FileRangeOperation::Allocate(_) => unreachable!(),
+                FileRangeOperation::CollapseRange | FileRangeOperation::InsertRange => {
+                    unreachable!()
+                }
             };
             let start_page = offset / PAGE_SIZE as u64;
             let end_page = visible_end.div_ceil(PAGE_SIZE as u64);
@@ -110,6 +119,83 @@ impl CachedFile {
             }
             return Ok(());
         }
+    }
+
+    fn operate_shifted_range(
+        &self,
+        offset: u64,
+        len: u64,
+        operation: FileRangeOperation,
+    ) -> VfsResult<()> {
+        let file = self.inner.entry().as_file()?;
+        let start_page = offset / PAGE_SIZE as u64;
+        loop {
+            let observed_len = self.shared.len();
+            let new_len = match operation {
+                FileRangeOperation::CollapseRange => observed_len
+                    .checked_sub(len)
+                    .ok_or(VfsError::InvalidInput)?,
+                FileRangeOperation::InsertRange => observed_len
+                    .checked_add(len)
+                    .ok_or_else(|| VfsError::from(LinuxError::EFBIG))?,
+                _ => unreachable!(),
+            };
+            let affected_pages = self.cached_pages_from(start_page);
+
+            self.shared
+                .protect_dirty_pages_before_writeback(&affected_pages)?;
+            if !self.in_memory && !affected_pages.is_empty() {
+                self.writeback_pages(&affected_pages)?;
+            }
+
+            let io = self.shared.io_lock.lock();
+            if self.shared.len() != observed_len {
+                continue;
+            }
+            let final_affected_pages = self.cached_pages_from(start_page);
+            if final_affected_pages != affected_pages {
+                continue;
+            }
+            if !self.in_memory {
+                let mut guard = self.shared.page_cache.lock();
+                if final_affected_pages
+                    .iter()
+                    .any(|page_number| guard.get(page_number).is_some_and(|page| page.dirty))
+                {
+                    continue;
+                }
+            }
+
+            file.operate_range(offset, len, operation)?;
+            self.shared.set_len(new_len);
+            let discarded = {
+                let mut guard = self.shared.page_cache.lock();
+                final_affected_pages
+                    .into_iter()
+                    .filter_map(|page_number| {
+                        guard.pop(&page_number).map(|mut page| {
+                            page.dirty = false;
+                            (page_number, page)
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            };
+            drop(io);
+            self.notify_discarded_pages(file, discarded)?;
+            return Ok(());
+        }
+    }
+
+    fn cached_pages_from(&self, start_page: u64) -> Vec<u32> {
+        let guard = self.shared.page_cache.lock();
+        let mut pages = guard
+            .iter()
+            .filter_map(|(&page_number, _)| {
+                (u64::from(page_number) >= start_page).then_some(page_number)
+            })
+            .collect::<Vec<_>>();
+        pages.sort_unstable();
+        pages
     }
 
     pub(super) fn zero_partial_page_locked(

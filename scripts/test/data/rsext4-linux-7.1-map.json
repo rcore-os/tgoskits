@@ -349,7 +349,8 @@
             "extent-mutation-rollback",
             "extent-unwritten-preallocation",
             "fallocate-preallocation-full-stack",
-            "fallocate-range-zero-punch"
+            "fallocate-range-zero-punch",
+            "fallocate-range-collapse-insert"
           ]
         }
       ]

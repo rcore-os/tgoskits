@@ -547,6 +547,9 @@ impl FileNodeOps for MemoryNode {
             }
             FileRangeOperation::PunchHole
             | FileRangeOperation::ZeroRange(PreallocationMode::KeepSize) => Ok(()),
+            FileRangeOperation::CollapseRange | FileRangeOperation::InsertRange => {
+                Err(VfsError::OperationNotSupported)
+            }
         }
     }
 

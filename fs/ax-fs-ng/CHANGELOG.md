@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inode-number adapter while keeping unsupported filesystems explicit.
 - Route typed zero-range and hole-punch requests through page-cache writeback,
   invalidation, and the ext4 inode adapter.
+- Serialize collapse-range and insert-range mapping shifts with cached I/O,
+  write back and invalidate every page from the shift point, and retry when a
+  page enters the cache between protection and the final sleepable lock.
+
+### Fixed
+
+- Enable the host `ax-sync` provider for `ax-fs-ng` tests after the sleepable
+  lock migration.
 
 ## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.6...ax-fs-ng-v0.8.7) - 2026-08-09
 

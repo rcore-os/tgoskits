@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep-size modes.
 - Extend the file range capability with typed zero-range and hole-punch
   operations while retaining the preallocation compatibility entry point.
+- Add typed collapse-range and insert-range operations without exposing
+  filesystem-specific extent structures through the VFS boundary.
 
 ## [0.5.8](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.7...axfs-ng-vfs-v0.5.8) - 2026-08-09
 

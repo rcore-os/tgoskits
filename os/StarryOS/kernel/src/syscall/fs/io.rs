@@ -11,7 +11,8 @@ use ax_task::current;
 use axfs_ng_vfs::{FileRangeOperation, NodePermission, NodeType, PreallocationMode};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
-    __kernel_off_t, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
+    __kernel_off_t, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, FALLOC_FL_KEEP_SIZE,
+    FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
 };
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
@@ -246,23 +247,24 @@ pub fn sys_fallocate(
     len: __kernel_off_t,
 ) -> AxResult<isize> {
     debug!("sys_fallocate <= fd: {fd}, mode: {mode}, offset: {offset}, len: {len}");
-    // Validate fd first: invalid/closed/dir/read-only → EBADF, pipe → ESPIPE.
-    // Linux errno priority: EBADF/ESPIPE > EOPNOTSUPP > EINVAL.
-    let f = file_or_espipe_write(fd)?;
+    // Linux resolves the descriptor before entering vfs_fallocate, but range
+    // and mode checks precede write access and inode-type checks after that.
     let f_like = get_file_like(fd)?;
-    memfd_check_write_seal(&f_like)?;
-
+    if offset < 0 || len <= 0 {
+        return Err(AxError::InvalidInput);
+    }
     let keep_size = mode & FALLOC_FL_KEEP_SIZE != 0;
     let operation = mode & !FALLOC_FL_KEEP_SIZE;
     let supported_mode = operation == 0
         || operation == FALLOC_FL_ZERO_RANGE
-        || operation == FALLOC_FL_PUNCH_HOLE && keep_size;
+        || operation == FALLOC_FL_PUNCH_HOLE && keep_size
+        || operation == FALLOC_FL_COLLAPSE_RANGE && !keep_size
+        || operation == FALLOC_FL_INSERT_RANGE && !keep_size;
     if !supported_mode {
         return Err(AxError::OperationNotSupported);
     }
-    if offset < 0 || len <= 0 {
-        return Err(AxError::InvalidInput);
-    }
+    let f = file_or_espipe_write(fd)?;
+    memfd_check_write_seal(&f_like)?;
     let end = (offset as u64)
         .checked_add(len as u64)
         .ok_or(AxError::from(LinuxError::EFBIG))?;
@@ -288,7 +290,19 @@ pub fn sys_fallocate(
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
     let old_len = file.location().len()?;
-    let new_len = if keep_size { old_len } else { old_len.max(end) };
+    let new_len = match operation {
+        FALLOC_FL_COLLAPSE_RANGE => old_len
+            .checked_sub(len as u64)
+            .ok_or(AxError::InvalidInput)?,
+        FALLOC_FL_INSERT_RANGE => old_len
+            .checked_add(len as u64)
+            .ok_or(AxError::from(LinuxError::EFBIG))?,
+        _ if keep_size => old_len,
+        _ => old_len.max(end),
+    };
+    if new_len > u32::MAX as u64 * 4096 {
+        return Err(AxError::from(LinuxError::EFBIG));
+    }
     memfd_check_resize_seals(&f_like, old_len, new_len)?;
 
     match operation {
@@ -323,6 +337,12 @@ pub fn sys_fallocate(
         }
         FALLOC_FL_PUNCH_HOLE => {
             file.operate_range(offset as u64, len as u64, FileRangeOperation::PunchHole)?;
+        }
+        FALLOC_FL_COLLAPSE_RANGE => {
+            file.operate_range(offset as u64, len as u64, FileRangeOperation::CollapseRange)?;
+        }
+        FALLOC_FL_INSERT_RANGE => {
+            file.operate_range(offset as u64, len as u64, FileRangeOperation::InsertRange)?;
         }
         _ => unreachable!(),
     }

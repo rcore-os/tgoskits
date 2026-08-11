@@ -42,9 +42,9 @@ pub use delete::{
     remove_inodeentry_from_parentdir, unlink,
 };
 pub use io::{
-    PreallocationOptions, RangeOperation, ZeroRangeOptions, operate_inode_range, preallocate_inode,
-    punch_hole_inode, read_file, read_inode_data_into, truncate, truncate_inode, write_file,
-    write_inode_data, zero_range_inode,
+    PreallocationOptions, RangeOperation, ZeroRangeOptions, collapse_range_inode,
+    insert_range_inode, operate_inode_range, preallocate_inode, punch_hole_inode, read_file,
+    read_inode_data_into, truncate, truncate_inode, write_file, write_inode_data, zero_range_inode,
 };
 pub(crate) use io::{recover_linked_truncate_inode, truncate_inode_for_reap};
 pub use link::link;

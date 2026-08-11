@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FALLOC_FL_KEEP_SIZE` requests instead of creating sparse files.
 - Implement ext4 `FALLOC_FL_ZERO_RANGE` and `FALLOC_FL_PUNCH_HOLE` with typed
   filesystem operations instead of userspace-visible zero-write emulation.
+- Implement ext4 `FALLOC_FL_COLLAPSE_RANGE` and `FALLOC_FL_INSERT_RANGE`,
+  including Linux-compatible range/mode/write-access errno ordering.
 
 ## [0.7.7](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.6...starry-kernel-v0.7.7) - 2026-08-09
 

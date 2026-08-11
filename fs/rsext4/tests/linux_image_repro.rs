@@ -1336,3 +1336,222 @@ fn unwritten_preallocation_partial_write_remounts_and_passes_e2fsck() {
     e2fsck_readonly_clean(&image, "remounted unwritten preallocation");
     fs::remove_dir_all(temp_dir).expect("remove unwritten temp dir");
 }
+
+fn shifted_range_geometry_round_trip(filesystem_block_size: u32) {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+    let (temp_dir, image) = create_ext4_geometry_image(
+        "rsext4-shifted-range-geometry",
+        "64M",
+        filesystem_block_size,
+    );
+    let block_size = filesystem_block_size as usize;
+    let mut original = vec![0; 4 * block_size];
+    for (index, block) in original.chunks_exact_mut(block_size).enumerate() {
+        block.fill(index as u8 + 1);
+    }
+    let mut expected = vec![0; 4 * block_size];
+    expected[..block_size].copy_from_slice(&original[..block_size]);
+    expected[2 * block_size..].copy_from_slice(&original[2 * block_size..]);
+
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = mount(&mut device).expect("mount shifted-range image");
+        mkfile(&mut device, &mut filesystem, "/shifted.bin", None, None)
+            .expect("create shifted-range file");
+        write_file(&mut device, &mut filesystem, "/shifted.bin", 0, &original)
+            .expect("write shifted-range fixture");
+        let inode_number = dir::get_inode_with_num(&mut filesystem, &mut device, "/shifted.bin")
+            .expect("lookup shifted-range file")
+            .expect("shifted-range file missing")
+            .0;
+        operate_inode_range(
+            &mut device,
+            &mut filesystem,
+            inode_number,
+            u64::from(filesystem_block_size),
+            u64::from(filesystem_block_size),
+            RangeOperation::Collapse,
+        )
+        .expect("collapse one filesystem block");
+        operate_inode_range(
+            &mut device,
+            &mut filesystem,
+            inode_number,
+            u64::from(filesystem_block_size),
+            u64::from(filesystem_block_size),
+            RangeOperation::Insert,
+        )
+        .expect("insert one filesystem block");
+        assert_eq!(
+            read_file(&mut device, &mut filesystem, "/shifted.bin")
+                .expect("read shifted-range result"),
+            expected
+        );
+        umount(filesystem, &mut device).expect("unmount shifted-range image");
+    }
+
+    e2fsck_readonly_clean(
+        &image,
+        &format!("{filesystem_block_size}-byte shifted ranges"),
+    );
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = mount(&mut device).expect("remount shifted-range image");
+        assert_eq!(
+            read_file(&mut device, &mut filesystem, "/shifted.bin")
+                .expect("read remounted shifted-range result"),
+            expected
+        );
+        umount(filesystem, &mut device).expect("unmount remounted shifted-range image");
+    }
+    e2fsck_readonly_clean(
+        &image,
+        &format!("remounted {filesystem_block_size}-byte shifted ranges"),
+    );
+    fs::remove_dir_all(temp_dir).expect("remove shifted-range temp dir");
+}
+
+#[test]
+fn shifted_ranges_round_trip_with_1k_filesystem_blocks() {
+    shifted_range_geometry_round_trip(1024);
+}
+
+#[test]
+fn shifted_ranges_round_trip_with_2k_filesystem_blocks() {
+    shifted_range_geometry_round_trip(2048);
+}
+
+#[test]
+fn shifted_ranges_round_trip_with_4k_filesystem_blocks() {
+    shifted_range_geometry_round_trip(4096);
+}
+
+#[test]
+fn shifted_ranges_rebuild_multiple_leaves_and_preserve_unwritten_state() {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+    const MARKERS: usize = 360;
+    const FILE_BLOCKS: usize = 722;
+    let (temp_dir, image) = create_ext4_test_image("rsext4-shifted-range-multileaf", "64M");
+    let path = "/shifted-multileaf.bin";
+    let mut expected = vec![0; FILE_BLOCKS * BLOCK_SIZE];
+    for marker in 0..MARKERS {
+        let original_lbn = marker * 2;
+        if original_lbn == 100 {
+            continue;
+        }
+        let final_lbn = if original_lbn < 100 {
+            original_lbn
+        } else if original_lbn < 202 {
+            original_lbn - 2
+        } else {
+            original_lbn
+        };
+        expected[final_lbn * BLOCK_SIZE] = (marker % 251 + 1) as u8;
+    }
+
+    let inode_number = {
+        let device = FileBlockDevice::open(image.clone());
+        let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = mount(&mut device).expect("mount multi-leaf image");
+        mkfile(&mut device, &mut filesystem, path, None, None).expect("create multi-leaf file");
+        for marker in 0..MARKERS {
+            write_file(
+                &mut device,
+                &mut filesystem,
+                path,
+                (marker * 2 * BLOCK_SIZE) as u64,
+                &[(marker % 251 + 1) as u8],
+            )
+            .expect("write sparse extent marker");
+        }
+        let inode_number = dir::get_inode_with_num(&mut filesystem, &mut device, path)
+            .expect("lookup multi-leaf file")
+            .expect("multi-leaf file missing")
+            .0;
+        preallocate_inode(
+            &mut device,
+            &mut filesystem,
+            inode_number,
+            721 * BLOCK_SIZE as u64,
+            BLOCK_SIZE as u64,
+            PreallocationOptions::EXTEND_SIZE,
+        )
+        .expect("append unwritten extent");
+        operate_inode_range(
+            &mut device,
+            &mut filesystem,
+            inode_number,
+            100 * BLOCK_SIZE as u64,
+            2 * BLOCK_SIZE as u64,
+            RangeOperation::Collapse,
+        )
+        .expect("collapse sparse extent range");
+        operate_inode_range(
+            &mut device,
+            &mut filesystem,
+            inode_number,
+            200 * BLOCK_SIZE as u64,
+            2 * BLOCK_SIZE as u64,
+            RangeOperation::Insert,
+        )
+        .expect("insert sparse extent range");
+        assert_eq!(
+            read_file(&mut device, &mut filesystem, path).expect("read multi-leaf result"),
+            expected
+        );
+
+        let mut inode = filesystem
+            .get_inode_by_num(&mut device, inode_number)
+            .expect("read shifted multi-leaf inode");
+        let mut tree =
+            extents_tree::ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number);
+        let root = tree.load_root_from_inode().expect("parse multi-leaf root");
+        match root {
+            extents_tree::ExtentNode::Index { entries, .. } => assert!(
+                entries.len() >= 2,
+                "shifted tree must span multiple external leaves"
+            ),
+            extents_tree::ExtentNode::Leaf { .. } => {
+                panic!("shifted tree unexpectedly fit in the inline root")
+            }
+        }
+        assert!(
+            tree.find_extent(&mut device, 721)
+                .expect("lookup shifted unwritten extent")
+                .expect("shifted unwritten extent missing")
+                .is_unwritten()
+        );
+        umount(filesystem, &mut device).expect("unmount multi-leaf image");
+        inode_number
+    };
+
+    e2fsck_readonly_clean(&image, "shifted multi-leaf extent tree");
+    {
+        let device = FileBlockDevice::open(image.clone());
+        let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = mount(&mut device).expect("remount multi-leaf image");
+        assert_eq!(
+            read_file(&mut device, &mut filesystem, path).expect("read remounted multi-leaf file"),
+            expected
+        );
+        let mut inode = filesystem
+            .get_inode_by_num(&mut device, inode_number)
+            .expect("read remounted multi-leaf inode");
+        assert!(
+            extents_tree::ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number,)
+                .find_extent(&mut device, 721)
+                .expect("lookup remounted unwritten extent")
+                .expect("remounted unwritten extent missing")
+                .is_unwritten()
+        );
+        umount(filesystem, &mut device).expect("unmount remounted multi-leaf image");
+    }
+    e2fsck_readonly_clean(&image, "remounted shifted multi-leaf extent tree");
+    fs::remove_dir_all(temp_dir).expect("remove multi-leaf temp dir");
+}

@@ -19,6 +19,8 @@ pub enum FileRangeOperation {
     Allocate(PreallocationMode),
     PunchHole,
     ZeroRange(PreallocationMode),
+    CollapseRange,
+    InsertRange,
 }
 
 pub trait FileNodeOps: NodeOps + FsPollable {
