@@ -102,9 +102,9 @@ pub use registration::{
 };
 pub use resources::{
     DevicePlanRequest, DeviceRequirement, DeviceRequirements, MsiResourceRequest,
-    ResolvedDeviceResources, ResolvedMsi, ResolvedWiredIrq, ResourceClaimSet, ResourceLease,
-    ResourceNamespace, ResourcePlanningError, ResourcePools, ResourceRequest, ResourceSlot,
-    VmResourcePlan, VmResourcePlanner,
+    ResolvedDeviceResources, ResolvedMsi, ResolvedSharedMemory, ResolvedWiredIrq, ResourceClaimSet,
+    ResourceLease, ResourceNamespace, ResourcePlanningError, ResourcePools, ResourceRequest,
+    ResourceSlot, SharedMemoryRequest, VmResourcePlan, VmResourcePlanner,
 };
 pub use serial::{
     NullSerialBackend, NullSerialBackendFactory, Pl011, SerialBackend, SerialBackendFactory,

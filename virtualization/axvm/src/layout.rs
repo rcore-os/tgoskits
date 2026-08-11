@@ -26,6 +26,8 @@ use axvm_types::*;
 
 use crate::{AxVmResult, ax_err_type};
 
+const SHARED_MEMORY_MAPPING_NAME: &str = "shared-memory";
+
 /// The ownership class of a guest physical range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmRegionKind {
@@ -320,13 +322,48 @@ impl GuestRegionPlanner {
             }
         }
 
-        let mut mapping = VmStage2Mapping::new(
-            base_gpa,
-            base_hpa,
-            size,
-            device_mapping_flags(),
-            VmRegionKind::Passthrough,
-        );
+        self.add_explicit_mapping(base_gpa, base_hpa, size, device_mapping_flags())
+    }
+
+    /// Adds a shared-RAM mapping, such as an ivshmem BAR.
+    pub fn add_shared_memory_mapping(
+        &mut self,
+        base_gpa: usize,
+        base_hpa: usize,
+        length: usize,
+    ) -> AxVmResult {
+        let (base_gpa, base_hpa, size) =
+            normalize_linear_range("shared memory", base_gpa, base_hpa, length)?;
+        self.ensure_guest_range("shared memory", base_gpa, size)?;
+
+        for region in &self.owned_regions {
+            if ranges_overlap(base_gpa, size, region.base, region.size) {
+                return Err(ax_err_type!(
+                    InvalidInput,
+                    format!(
+                        "shared memory range [{:#x}, {:#x}) conflicts with {} range [{:#x}, {:#x})",
+                        base_gpa,
+                        base_gpa + size,
+                        region.kind.name(),
+                        region.base,
+                        region.end()
+                    )
+                ));
+            }
+        }
+
+        self.add_explicit_mapping(base_gpa, base_hpa, size, shared_memory_mapping_flags())
+    }
+
+    fn add_explicit_mapping(
+        &mut self,
+        base_gpa: usize,
+        base_hpa: usize,
+        size: usize,
+        flags: MappingFlags,
+    ) -> AxVmResult {
+        let mut mapping =
+            VmStage2Mapping::new(base_gpa, base_hpa, size, flags, VmRegionKind::Passthrough);
         let mut index = 0;
         while index < self.explicit_mappings.len() {
             let existing = self.explicit_mappings[index];
@@ -483,7 +520,11 @@ pub(crate) fn build_address_layout(
     }
 
     for device in passthrough_devices {
-        planner.add_passthrough_mapping(device.base_gpa, device.base_hpa, device.length)?;
+        if device.name == SHARED_MEMORY_MAPPING_NAME {
+            planner.add_shared_memory_mapping(device.base_gpa, device.base_hpa, device.length)?;
+        } else {
+            planner.add_passthrough_mapping(device.base_gpa, device.base_hpa, device.length)?;
+        }
     }
 
     for address in passthrough_addresses {
@@ -495,6 +536,10 @@ pub(crate) fn build_address_layout(
 
 fn device_mapping_flags() -> MappingFlags {
     MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER
+}
+
+fn shared_memory_mapping_flags() -> MappingFlags {
+    MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER
 }
 
 fn normalize_guest_range(name: &str, base: usize, length: usize) -> AxVmResult<(usize, usize)> {

@@ -35,6 +35,36 @@ impl<'a> AddressAllocator<'a> {
         alignment: u64,
         request: ResourceRequest<u64>,
     ) -> Result<ResolvedResource, ResourcePlanningError> {
+        let base = self.allocate_mmio_base(requester, slot, size, alignment, request)?;
+        Ok(ResolvedResource::Mmio { base, size })
+    }
+
+    pub(super) fn allocate_shared_memory(
+        &mut self,
+        requester: &str,
+        slot: &ResourceSlot,
+        size: u64,
+        alignment: u64,
+        request: ResourceRequest<u64>,
+        shared: SharedMemoryRequest,
+    ) -> Result<ResolvedResource, ResourcePlanningError> {
+        let base = self.allocate_mmio_base(requester, slot, size, alignment, request)?;
+        Ok(ResolvedResource::SharedMemory(ResolvedSharedMemory::new(
+            base,
+            size,
+            shared.sharing_key(),
+            shared.host_backing(),
+        )))
+    }
+
+    fn allocate_mmio_base(
+        &mut self,
+        requester: &str,
+        slot: &ResourceSlot,
+        size: u64,
+        alignment: u64,
+        request: ResourceRequest<u64>,
+    ) -> Result<u64, ResourcePlanningError> {
         let base = match request {
             ResourceRequest::Auto => find_u64_range(
                 self.pools.auto_mmio(),
@@ -72,7 +102,7 @@ impl<'a> AddressAllocator<'a> {
             requester,
             ResourceNamespace::Mmio,
         )?;
-        Ok(ResolvedResource::Mmio { base, size })
+        Ok(base)
     }
 
     pub(super) fn allocate_pio(

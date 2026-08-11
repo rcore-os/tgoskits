@@ -113,9 +113,50 @@ impl ResolvedMsi {
     }
 }
 
+/// A resolved shared-memory guest physical window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResolvedSharedMemory {
+    base: u64,
+    size: u64,
+    sharing_key: u64,
+    host_backing: u64,
+}
+
+impl ResolvedSharedMemory {
+    pub(crate) const fn new(base: u64, size: u64, sharing_key: u64, host_backing: u64) -> Self {
+        Self {
+            base,
+            size,
+            sharing_key,
+            host_backing,
+        }
+    }
+
+    /// Returns the guest physical base address.
+    pub const fn base(self) -> u64 {
+        self.base
+    }
+
+    /// Returns the window size in bytes.
+    pub const fn size(self) -> u64 {
+        self.size
+    }
+
+    /// Returns the VM-global sharing key.
+    pub const fn sharing_key(self) -> u64 {
+        self.sharing_key
+    }
+
+    /// Returns the optional host physical backing address.
+    pub const fn host_backing(self) -> u64 {
+        self.host_backing
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ResolvedResource {
     Mmio { base: u64, size: u64 },
+    SharedMemory(ResolvedSharedMemory),
     Pio { base: u16, size: u16 },
     WiredIrq(ResolvedWiredIrq),
     HostIrq(HostIrqId),
@@ -126,6 +167,13 @@ impl ResolvedResource {
     pub(crate) const fn mmio(&self) -> Option<(u64, u64)> {
         match self {
             Self::Mmio { base, size } => Some((*base, *size)),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn shared_memory(&self) -> Option<ResolvedSharedMemory> {
+        match self {
+            Self::SharedMemory(shared) => Some(*shared),
             _ => None,
         }
     }
@@ -183,6 +231,22 @@ impl ResolvedDeviceResources {
         self.entries
             .iter()
             .filter_map(|(slot, resource)| resource.mmio().map(|(base, size)| (slot, base, size)))
+    }
+
+    /// Returns a resolved shared-memory window.
+    pub fn shared_memory(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedSharedMemory> {
+        self.resource(slot)?
+            .shared_memory()
+            .ok_or_else(|| resource_kind_error(slot, "shared memory"))
+    }
+
+    /// Iterates all resolved shared-memory slots in stable slot order.
+    pub fn shared_memory_ranges(
+        &self,
+    ) -> impl Iterator<Item = (&ResourceSlot, ResolvedSharedMemory)> {
+        self.entries
+            .iter()
+            .filter_map(|(slot, resource)| resource.shared_memory().map(|shared| (slot, shared)))
     }
 
     /// Returns a resolved PIO range.
@@ -275,9 +339,18 @@ fn hash_u64(value: &mut u64, field: u64) {
 fn hash_resource(value: &mut u64, resource: &ResolvedResource) {
     let fields = match resource {
         ResolvedResource::Mmio { base, size } => [0, *base, *size, 0, 0, 0, 0],
-        ResolvedResource::Pio { base, size } => [1, u64::from(*base), u64::from(*size), 0, 0, 0, 0],
+        ResolvedResource::SharedMemory(shared) => [
+            1,
+            shared.base,
+            shared.size,
+            shared.sharing_key,
+            shared.host_backing,
+            0,
+            0,
+        ],
+        ResolvedResource::Pio { base, size } => [2, u64::from(*base), u64::from(*size), 0, 0, 0, 0],
         ResolvedResource::WiredIrq(irq) => [
-            2,
+            3,
             irq.controller().value() as u64,
             irq.input().value() as u64,
             irq.trigger() as u64,
@@ -285,9 +358,9 @@ fn hash_resource(value: &mut u64, resource: &ResolvedResource) {
             0,
             0,
         ],
-        ResolvedResource::HostIrq(irq) => [3, irq.value() as u64, 0, 0, 0, 0, 0],
+        ResolvedResource::HostIrq(irq) => [4, irq.value() as u64, 0, 0, 0, 0, 0],
         ResolvedResource::Msi(msi) => [
-            4,
+            5,
             msi.controller().value() as u64,
             u64::from(msi.its().value()),
             u64::from(msi.device().value()),

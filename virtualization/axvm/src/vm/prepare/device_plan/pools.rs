@@ -64,6 +64,11 @@ pub(super) fn allow_fixed_requirements(
                     size,
                     request: ResourceRequest::Fixed(base),
                     ..
+                }
+                | DeviceRequirement::SharedMemory {
+                    size,
+                    request: ResourceRequest::Fixed(base),
+                    ..
                 } => {
                     pools.allow_fixed_mmio(fixed_u64_range(*base, *size, request.id(), "MMIO")?)?
                 }
@@ -104,6 +109,7 @@ pub(super) fn allow_fixed_requirements(
                     allow_fixed_msi(request.id(), *msi, pools)?
                 }
                 DeviceRequirement::Mmio { .. }
+                | DeviceRequirement::SharedMemory { .. }
                 | DeviceRequirement::Pio { .. }
                 | DeviceRequirement::WiredIrq { .. }
                 | DeviceRequirement::HostIrq { .. } => {}
