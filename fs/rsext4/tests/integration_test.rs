@@ -932,6 +932,66 @@ fn owned_empty_metadata_update_is_a_noop() {
 }
 
 #[test]
+fn owned_metadata_update_exposes_typed_flags_and_project_id() {
+    let mut filesystem = owned_test_filesystem();
+    let root = filesystem.root_inode();
+    let context = MutationContext::new(1000, 1001, 0, 0);
+    let inode = filesystem
+        .create_regular_file(
+            context,
+            root,
+            FileName::new(b"metadata-flags").expect("valid raw name"),
+            FilePermissions::new(0o644).expect("valid permissions"),
+        )
+        .expect("create regular file");
+    assert_eq!(inode.project_id, 0);
+    assert!(inode.flags.contains(InodeFlags::EXTENTS));
+
+    let default_project = filesystem
+        .update_inode_metadata(
+            context,
+            inode.number,
+            InodeMetadataUpdate {
+                project_id: Some(0),
+                ..Default::default()
+            },
+        )
+        .expect("default project ID is a no-op without the project feature");
+    assert_eq!(default_project, inode);
+
+    let requested = InodeFlags::NO_DUMP | InodeFlags::NO_ATIME;
+    let updated = filesystem
+        .update_inode_metadata(
+            context,
+            inode.number,
+            InodeMetadataUpdate {
+                flags: Some(requested),
+                project_id: Some(0),
+                ..Default::default()
+            },
+        )
+        .expect("update user-visible inode flags");
+    assert!(updated.flags.contains(InodeFlags::EXTENTS));
+    assert!(updated.flags.contains(requested));
+    assert_eq!(updated.project_id, 0);
+
+    let error = filesystem
+        .update_inode_metadata(
+            context,
+            inode.number,
+            InodeMetadataUpdate {
+                project_id: Some(7),
+                ..Default::default()
+            },
+        )
+        .expect_err("non-default project ID requires the project feature");
+    assert_eq!(error.kind(), Ext4ErrorKind::Unsupported);
+    let unchanged = filesystem.inode(inode.number).expect("inspect inode");
+    assert_eq!(unchanged.project_id, 0);
+    assert!(unchanged.flags.contains(requested));
+}
+
+#[test]
 fn owned_rmdir_keeps_open_directory_on_orphan_chain_until_reap() {
     let mut filesystem = owned_test_filesystem();
     let root = filesystem.root_inode();
