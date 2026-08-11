@@ -4411,6 +4411,45 @@ fn scheduler_shared_locks_use_the_irq_domain_without_preempt_guards() {
     );
 }
 
+#[cfg(feature = "qperf-metrics")]
+#[test]
+fn owner_selection_derives_deadline_without_relocking_runqueue() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    for _ in 0..2 {
+        let thread = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.make_ready(thread.id()).unwrap();
+        system.enqueue_at(cpu.as_mut(), thread.id(), 0).unwrap();
+    }
+    let initial = system.schedule_at(cpu.as_mut(), 0).unwrap();
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+    let before = crate::qperf_scheduler_metrics_snapshot();
+
+    let decision = system.yield_current_at(cpu.as_mut(), 1).unwrap();
+
+    let after = crate::qperf_scheduler_metrics_snapshot();
+    assert_ne!(
+        decision.next(),
+        initial.next(),
+        "yield must select the peer"
+    );
+    assert_eq!(
+        after.scheduler_deadline_derivation_schedule_selection_entries
+            - before.scheduler_deadline_derivation_schedule_selection_entries,
+        1,
+        "selection completion must still derive and publish its scheduler deadline",
+    );
+    assert_eq!(
+        after.irq_ticket_cpu_run_queue_timer_deadline_derivation_observation_entries
+            - before.irq_ticket_cpu_run_queue_timer_deadline_derivation_observation_entries,
+        0,
+        "Linux set_next_task derives the hrtick request while rq is already locked",
+    );
+}
+
 #[test]
 fn running_idle_to_normal_transition_uses_both_class_virtual_times() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
