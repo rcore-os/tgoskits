@@ -1296,21 +1296,21 @@ fn rsext4_tool_layout_and_blockgroup_disk_rules_hold() {
     };
     let layout0 = tool::calc_group_layout(0, &superblock, 8192, 64, 3, 4, 5, RESERVED_GDT_BLOCKS);
     ax_assert_eq!(layout0.group_start_block, 0);
-    ax_assert_eq!(layout0.group_blcok_bitmap_startblocks, 3);
-    ax_assert_eq!(layout0.group_inode_bitmap_startblocks, 4);
-    ax_assert_eq!(layout0.group_inode_table_startblocks, 5);
+    ax_assert_eq!(layout0.group_block_bitmap_start_block, 3);
+    ax_assert_eq!(layout0.group_inode_bitmap_start_block, 4);
+    ax_assert_eq!(layout0.group_inode_table_start_block, 5);
 
     let sparse = tool::calc_group_layout(3, &superblock, 8192, 64, 3, 4, 5, 2);
     ax_assert_eq!(sparse.group_start_block, 3 * 8192);
-    ax_assert_eq!(sparse.group_blcok_bitmap_startblocks, 3 * 8192 + 1 + 2);
-    ax_assert_eq!(sparse.group_inode_bitmap_startblocks, 3 * 8192 + 1 + 2 + 1);
+    ax_assert_eq!(sparse.group_block_bitmap_start_block, 3 * 8192 + 1 + 2);
+    ax_assert_eq!(sparse.group_inode_bitmap_start_block, 3 * 8192 + 1 + 2 + 1);
     ax_assert_eq!(sparse.metadata_blocks_in_group, 1 + 2 + 1 + 1 + 64);
 
     superblock.s_feature_ro_compat = 0;
     let dense = tool::calc_group_layout(3, &superblock, 8192, 64, 3, 4, 5, 2);
-    ax_assert_eq!(dense.group_blcok_bitmap_startblocks, 3 * 8192);
-    ax_assert_eq!(dense.group_inode_bitmap_startblocks, 3 * 8192 + 1);
-    ax_assert_eq!(dense.group_inode_table_startblocks, 3 * 8192 + 2);
+    ax_assert_eq!(dense.group_block_bitmap_start_block, 3 * 8192);
+    ax_assert_eq!(dense.group_inode_bitmap_start_block, 3 * 8192 + 1);
+    ax_assert_eq!(dense.group_inode_table_start_block, 3 * 8192 + 2);
     ax_assert_eq!(dense.metadata_blocks_in_group, 1 + 1 + 64);
 
     // Simplified group desc test - just verify basic functionality

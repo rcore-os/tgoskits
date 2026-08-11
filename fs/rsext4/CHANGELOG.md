@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add typed user-visible inode flags and project identifiers to the owned core
   metadata DTOs without exposing the on-disk inode representation.
 
+### Removed
+
+- Remove misspelled compatibility entry points and replace the misspelled
+  `BlcokGroupLayout` type and pluralized layout fields with the canonical
+  `BlockGroupLayout` API.
+
 ### Fixed
 
 - Restore filesystem metadata caches and allocation counters when an xattr

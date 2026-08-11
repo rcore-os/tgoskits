@@ -82,9 +82,9 @@ pub fn calc_group_layout(
     if gid == 0 {
         return BlockGroupLayout {
             group_start_block: u64::from(sb.s_first_data_block),
-            group_blcok_bitmap_startblocks: group0_block_bitmap as u64,
-            group_inode_bitmap_startblocks: group0_inode_bitmap as u64,
-            group_inode_table_startblocks: group0_inode_table as u64,
+            group_block_bitmap_start_block: group0_block_bitmap as u64,
+            group_inode_bitmap_start_block: group0_inode_bitmap as u64,
+            group_inode_table_start_block: group0_inode_table as u64,
             metadata_blocks_in_group: (group0_inode_table + inode_table_blocks)
                 .saturating_sub(sb.s_first_data_block),
         };
@@ -116,33 +116,9 @@ pub fn calc_group_layout(
 
     BlockGroupLayout {
         group_start_block: group_start,
-        group_blcok_bitmap_startblocks: block_bitmap,
-        group_inode_bitmap_startblocks: inode_bitmap,
-        group_inode_table_startblocks: inode_table,
+        group_block_bitmap_start_block: block_bitmap,
+        group_inode_bitmap_start_block: inode_bitmap,
+        group_inode_table_start_block: inode_table,
         metadata_blocks_in_group: meta_blocks,
     }
-}
-
-/// Group-layout calculation with the original misspelled API name.
-#[allow(clippy::too_many_arguments)]
-pub fn cloc_group_layout(
-    gid: u32,
-    sb: &Ext4Superblock,
-    blocks_per_group: u32,
-    inode_table_blocks: u32,
-    group0_block_bitmap: u32,
-    group0_inode_bitmap: u32,
-    group0_inode_table: u32,
-    gdt_blocks: u32,
-) -> BlockGroupLayout {
-    calc_group_layout(
-        gid,
-        sb,
-        blocks_per_group,
-        inode_table_blocks,
-        group0_block_bitmap,
-        group0_inode_bitmap,
-        group0_inode_table,
-        gdt_blocks,
-    )
 }

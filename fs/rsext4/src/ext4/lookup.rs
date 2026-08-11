@@ -52,17 +52,6 @@ pub fn file_entry_exist<B: BlockIo>(
     fs.file_entries_exist(device, path)
 }
 
-/// Return whether a path resolves to an inode.
-///
-/// Kept for compatibility with the original misspelled API.
-pub fn file_entry_exisr<B: BlockIo>(
-    fs: &mut Ext4FileSystem,
-    device: &mut Jbd2Dev<B>,
-    path: &str,
-) -> Ext4Result<bool> {
-    file_entry_exist(fs, device, path)
-}
-
 /// Look up an inode by path.
 pub fn find_file<B: BlockIo>(
     fs: &mut Ext4FileSystem,
