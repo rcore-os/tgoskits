@@ -6,15 +6,14 @@ use core::{
 };
 
 use ax_errno::{LinuxError, LinuxResult};
-use ax_kspin::SpinRwLock as RwLock;
+use ax_lazyinit::LazyLock;
 use ax_runtime::task::ThreadHandle;
-use spin::LazyLock;
 
-use crate::ctypes;
+use crate::{ctypes, sync::Mutex};
 
 pub mod mutex;
 
-static TID_TO_PTHREAD: LazyLock<RwLock<BTreeMap<u64, ForceSendSync<ctypes::pthread_t>>>> =
+static TID_TO_PTHREAD: LazyLock<Mutex<BTreeMap<u64, ForceSendSync<ctypes::pthread_t>>>> =
     LazyLock::new(|| {
         let mut map = BTreeMap::new();
         let main_task = ax_runtime::task::current_thread_handle()
@@ -29,7 +28,7 @@ static TID_TO_PTHREAD: LazyLock<RwLock<BTreeMap<u64, ForceSendSync<ctypes::pthre
         };
         let ptr = Box::into_raw(Box::new(main_thread)) as *mut c_void;
         map.insert(main_tid, ForceSendSync(ptr));
-        RwLock::new(map)
+        Mutex::new(map)
     });
 
 struct Packet<T> {
@@ -129,7 +128,7 @@ impl Pthread {
             join_state,
         };
         let ptr = Box::into_raw(Box::new(thread)) as *mut c_void;
-        TID_TO_PTHREAD.write().insert(tid, ForceSendSync(ptr));
+        TID_TO_PTHREAD.lock().insert(tid, ForceSendSync(ptr));
         registered.store(true, Ordering::Release);
         Ok(ptr)
     }
@@ -138,7 +137,7 @@ impl Pthread {
         let tid = ax_runtime::task::current_thread_id()
             .unwrap_or_else(|error| panic!("current pthread task is unavailable: {error}"))
             .as_u64();
-        match TID_TO_PTHREAD.read().get(&tid) {
+        match TID_TO_PTHREAD.lock().get(&tid) {
             None => core::ptr::null_mut(),
             Some(ptr) => ptr.0 as *mut Pthread,
         }
@@ -178,7 +177,7 @@ impl Pthread {
         let tid = thread.inner.id().as_u64();
         let retval = unsafe { *thread.retval.result.get() };
         let removed = {
-            let mut threads = TID_TO_PTHREAD.write();
+            let mut threads = TID_TO_PTHREAD.lock();
             if threads
                 .get(&tid)
                 .is_some_and(|registered| core::ptr::eq(registered.0, ptr))
@@ -211,7 +210,7 @@ impl Pthread {
 
     fn detach(ptr: ctypes::pthread_t) -> LinuxResult {
         let (tid, reap_completed) = {
-            let threads = TID_TO_PTHREAD.read();
+            let threads = TID_TO_PTHREAD.lock();
             let registered = threads
                 .values()
                 .find(|registered| core::ptr::eq(registered.0, ptr))
@@ -231,7 +230,7 @@ impl Pthread {
     }
 
     fn claim_join(ptr: ctypes::pthread_t) -> LinuxResult<&'static Pthread> {
-        let threads = TID_TO_PTHREAD.read();
+        let threads = TID_TO_PTHREAD.lock();
         let registered = threads
             .values()
             .find(|registered| core::ptr::eq(registered.0, ptr))
@@ -250,7 +249,7 @@ impl Pthread {
             .unwrap_or_else(|error| panic!("current pthread task is unavailable: {error}"))
             .as_u64();
         let ptr = TID_TO_PTHREAD
-            .read()
+            .lock()
             .get(&tid)
             .unwrap_or_else(|| panic!("detached pthread {tid} is not registered"))
             .0;
@@ -260,7 +259,7 @@ impl Pthread {
     }
 
     fn remove_registered(tid: u64, ptr: ctypes::pthread_t) -> Option<Box<Pthread>> {
-        let mut threads = TID_TO_PTHREAD.write();
+        let mut threads = TID_TO_PTHREAD.lock();
         if !threads
             .get(&tid)
             .is_some_and(|registered| core::ptr::eq(registered.0, ptr))

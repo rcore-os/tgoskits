@@ -8,7 +8,6 @@ use core::{
 use ax_errno::{LinuxError, LinuxResult};
 use ax_fs_ng::fops::OpenOptions;
 use ax_io::{PollState, SeekFrom};
-use ax_sync::PiMutex;
 
 use super::fd_ops::{FileLike, get_file_like};
 use crate::{ctypes, sync::Mutex, utils::char_ptr_to_str};
@@ -17,11 +16,11 @@ const UTIME_NOW: i64 = (1 << 30) - 1;
 const UTIME_OMIT: i64 = (1 << 30) - 2;
 
 pub struct File {
-    inner: PiMutex<ax_fs_ng::fops::File>,
+    inner: Mutex<ax_fs_ng::fops::File>,
 }
 
 pub struct Directory {
-    inner: PiMutex<ax_fs_ng::fops::Directory>,
+    inner: Mutex<ax_fs_ng::fops::Directory>,
 }
 
 #[repr(C, packed)]
@@ -118,7 +117,7 @@ fn duration_to_timespec(duration: Duration) -> ctypes::timespec {
 impl File {
     fn new(inner: ax_fs_ng::fops::File) -> Self {
         Self {
-            inner: PiMutex::new(inner),
+            inner: Mutex::new(inner),
         }
     }
 
@@ -137,7 +136,7 @@ impl File {
 impl Directory {
     fn new(inner: ax_fs_ng::fops::Directory) -> Self {
         Self {
-            inner: PiMutex::new(inner),
+            inner: Mutex::new(inner),
         }
     }
 

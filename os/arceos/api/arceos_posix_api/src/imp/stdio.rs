@@ -1,6 +1,6 @@
 use ax_errno::AxResult;
 use ax_io::{BufReader, prelude::*};
-use ax_sync::SpinMutex;
+use ax_lazyinit::OnceLock;
 #[cfg(feature = "fd")]
 use {alloc::sync::Arc, ax_errno::LinuxError, ax_errno::LinuxResult, ax_io::PollState};
 
@@ -54,7 +54,7 @@ impl Write for StdoutRaw {
 }
 
 pub struct Stdin {
-    inner: &'static SpinMutex<BufReader<StdinRaw>>,
+    inner: &'static Mutex<BufReader<StdinRaw>>,
 }
 
 impl Stdin {
@@ -82,7 +82,7 @@ impl Read for Stdin {
 }
 
 pub struct Stdout {
-    inner: &'static SpinMutex<StdoutRaw>,
+    inner: &'static Mutex<StdoutRaw>,
 }
 
 impl Write for Stdout {
@@ -97,15 +97,15 @@ impl Write for Stdout {
 
 /// Constructs a new handle to the standard input of the current process.
 pub fn stdin() -> Stdin {
-    static INSTANCE: spin::Once<SpinMutex<BufReader<StdinRaw>>> = spin::Once::new();
+    static INSTANCE: OnceLock<Mutex<BufReader<StdinRaw>>> = OnceLock::new();
     Stdin {
-        inner: INSTANCE.call_once(|| SpinMutex::new(BufReader::new(StdinRaw))),
+        inner: INSTANCE.call_once(|| Mutex::new(BufReader::new(StdinRaw))),
     }
 }
 
 /// Constructs a new handle to the standard output of the current process.
 pub fn stdout() -> Stdout {
-    static INSTANCE: SpinMutex<StdoutRaw> = SpinMutex::new(StdoutRaw);
+    static INSTANCE: Mutex<StdoutRaw> = Mutex::new(StdoutRaw);
     Stdout { inner: &INSTANCE }
 }
 

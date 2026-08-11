@@ -233,6 +233,14 @@ fn check_dependency_tables(manifest_path: &Path, value: &Value, findings: &mut V
                         "use std::sync normally and ax_std::os::arceos::sync in special contexts",
                     ));
                 }
+                if is_posix_api_manifest(manifest_path) && package_name == "ax-sync" {
+                    findings.push(Finding::new(
+                        manifest_path,
+                        &location,
+                        "ax-posix-api must not depend directly on ax-sync",
+                        "consume synchronization primitives through ax-runtime::sync",
+                    ));
+                }
             }
         }
 
@@ -320,6 +328,17 @@ fn check_source_boundaries(
                     format!("line {}", line_index + 1),
                     "Axvisor code bypasses its std/ax_std synchronization boundary",
                     "use std::sync normally or ax_std::os::arceos::sync for special contexts",
+                ));
+            }
+
+            if is_posix_api_source(&relative)
+                && (line.contains("ax_sync::") || line.contains("use ax_sync"))
+            {
+                findings.push(Finding::new(
+                    path,
+                    format!("line {}", line_index + 1),
+                    "ax-posix-api bypasses ax-runtime::sync",
+                    "import synchronization primitives from ax_runtime::sync or crate::sync",
                 ));
             }
         }
@@ -528,6 +547,16 @@ fn is_axvisor_source(relative: &str) -> bool {
     relative.starts_with("virtualization/axvm/src/") || relative.starts_with("os/axvisor/src/")
 }
 
+fn is_posix_api_manifest(path: &Path) -> bool {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .ends_with("/os/arceos/api/arceos_posix_api/Cargo.toml")
+}
+
+fn is_posix_api_source(relative: &str) -> bool {
+    relative.starts_with("os/arceos/api/arceos_posix_api/src/")
+}
+
 fn relative_path(workspace_root: &Path, path: &Path) -> String {
     path.strip_prefix(workspace_root)
         .unwrap_or(path)
@@ -732,6 +761,41 @@ ax-sync = "0.1"
                 .iter()
                 .any(|finding| finding.message.contains("Axvisor code"))
         );
+    }
+
+    #[test]
+    fn rejects_posix_api_bypassing_runtime_sync_facade() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "os/arceos/api/arceos_posix_api/Cargo.toml",
+            r#"
+[package]
+name = "ax-posix-api"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+ax-sync = "0.1"
+"#,
+        );
+        write_file(
+            root.path(),
+            "os/arceos/api/arceos_posix_api/src/lib.rs",
+            "use ax_sync::SpinLock;\n",
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("ax-posix-api must not depend directly on ax-sync")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("ax-posix-api bypasses ax-runtime::sync")
+        }));
     }
 
     #[test]
