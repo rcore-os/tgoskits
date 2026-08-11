@@ -2843,6 +2843,37 @@ CPU deadline-base acquisition，两次分别为 4.574（-11.097%）和 4.714（-
 87.882 秒。因此这里只确认空 base 锁放大被稳定消除，不把单次吞吐改善解释成剩余性能问题已经
 解决；下一阶段继续量化 CPU rq 和 thread scheduler state 的 acquisition source。
 
+### 2026-08-12 CPU runqueue acquisition source
+
+CPU runqueue 的普通 IRQ-save 入口继续按权威状态转换拆成 transaction、owner observation、timer
+observation、RT accounting、deadline accounting、membarrier 和 lifecycle；已经持有 scheduler
+baton 或处于 offline bootstrap 的 raw 入口不混入普通 IRQ ticket 统计。所有生产调用点必须显式
+提供来源，不保留无参数或 unknown/default 兼容入口；总数仍由七类 snapshot 求和，每次 acquisition
+只增加一个计数器。
+
+相同 x86_64 Q35/TCG、4 vCPU、1009 Hz 的 60.928 秒精确 marker 窗口推进到 `file-0474`，内部
+workload timeout 后仍完整输出 stop marker 并由 QMP 退出。CPU runqueue 的 1,298,480 次普通
+IRQ-save acquisition 可以完整归因：
+
+| runqueue source | entry 增量 | 占 CPU runqueue | 每次真实 switch |
+|---|---:|---:|---:|
+| transaction | 139,706 | 10.759% | 1.185 |
+| owner observation | 704,144 | 54.228% | 5.973 |
+| timer observation | 445,210 | 34.287% | 3.777 |
+| RT accounting | 9,404 | 0.724% | 0.080 |
+| deadline accounting | 0 | 0% | 0 |
+| membarrier | 0 | 0% | 0 |
+| lifecycle | 16 | 0.001% | 0.0001 |
+
+窗口内真实 switch 增量为 117,884，runqueue 普通 IRQ-save acquisition 平均每次 switch 进入
+11.015 次。owner/timer observation 合计 1,149,354 次，占 88.515%；真正改变 current、队列或
+调度类状态的 transaction 只有 10.759%。这排除了“Linux 等价的 rq transaction 本身就是主要
+放大源”的解释，也不能据此绕过 rq lock：Linux `task_rq_lock()`、`rq_lock_irqsave()` 和 scheduler
+owner 下的 raw rq lock 仍分别保护 task placement 与权威 runqueue 状态。下一阶段必须把两类
+observation 继续拆到具体入口，判断哪些只是查询 derived publication、哪些确实读取 current/queue
+权威状态；在此之前不增加 lockless mirror，也不改变事务路径的锁语义。本轮 host user 为
+88.386 秒，吞吐与 CPU 时间均未改善，因此这里只确认放大来源，不宣称性能问题已经解决。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
