@@ -6,8 +6,8 @@
 
 | 文件 | 内容 |
 |---|---|
-| `run-{1..6}.csv` | 6 组原始日志 CSV（run-1..3 = AI，run-4..6 = baseline） |
-| `ai-{1..3}.csv` / `baseline-{1..3}.csv` | 按模式整理的同数据 |
+| `run-{1..3}.csv` | AI 模式原始日志 CSV |
+| `run-{4..6}.csv` | baseline 模式原始日志 CSV |
 | `summary.csv` | 逐组 RMSE/调节时间/超调/RTT 汇总 |
 | `comparison.png` | AI vs baseline 响应曲线对比图 |
 
