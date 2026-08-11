@@ -464,3 +464,26 @@ RSEXT4_BENCH_SUMMARY commit=d2871bd7d arch=x86_64 backend=memory feature=metadat
 红项。该 callback 每次 metadata timestamp 才执行一次，尚不能仅凭此样本把尾
 延迟归因于动态分派；整体性能收敛阶段必须用最终 owned API harness、同机 dev
 对照和至少 20 次正式测量重新定位。
+
+### 7.17 typed rename 检查点
+
+采集时间：2026-08-11；被测实现 commit 为
+`e3181fb4dac47922ee68db7267182e141d92f763`，固定 CPU 2，环境与 7.8 相同。
+该检查点建立 core、VFS 与 Starry 的 typed rename flags/outcome，覆盖 same-path
+no-op、`NOREPLACE`、`EXCHANGE`、跨父目录 `..` 与 link count、替换目标 orphan
+生命周期和目录环检测。当前冻结 harness 仍调用 legacy path API，因此结果不构成
+typed rename 或最终 owned API 的因果性能证明。
+
+正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-typed-rename.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=e3181fb4dac47922ee68db7267182e141d92f763 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=7238489 write_p95_ns=7733222 read_median_ns=7235475 read_p95_ns=9102480 sync_median_ns=41238 sync_p95_ns=53439
+```
+
+相对 dev 基线，write median/p95 分别回退约 6.0%/5.4%，read median/p95 分别
+回退约 0.2%/7.3%，sync median/p95 分别回退约 59.7%/38.3%。write median
+超过 5% throughput 门槛，sync p95 超过 10% latency 门槛，因此本检查点原样登记
+为性能红项；未丢弃任何样本，也未用选择性复测覆盖。rename 不在该 sequential
+workload 的热路径，不能据此把回退归因于 rename 逻辑；整体性能收敛阶段必须迁移
+最终 owned API harness，并在同机 dev A/B 中定位波动与真实回退来源。
