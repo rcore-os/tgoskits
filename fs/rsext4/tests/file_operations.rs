@@ -715,6 +715,69 @@ mod file_functional_tests {
     }
 
     #[test]
+    fn failed_final_unlink_restores_dentry_link_count_and_orphan_head() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let contents = b"failed final unlink stays reachable";
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/unlink-fault",
+            Some(contents),
+            None,
+        )
+        .expect("file creation failed");
+        let (inode_number, inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/unlink-fault")
+                .expect("target lookup failed")
+                .expect("target missing");
+        assert_eq!(inode.i_links_count, 1);
+        let root_number = fs.root_inode;
+        let mut root_inode = fs
+            .get_inode_by_num(&mut jbd2_dev, root_number)
+            .expect("root inode");
+        let root_block =
+            loopfile::resolve_inode_block(&fs, &mut jbd2_dev, root_number, &mut root_inode, 0)
+                .expect("root block lookup failed")
+                .expect("root block missing");
+
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        jbd2_dev
+            .set_journal_use(false)
+            .expect("disable journal for direct fault injection");
+        fail_after_write_sector.set(Some(root_block.raw()));
+
+        let error = unlink(&mut fs, &mut jbd2_dev, "/unlink-fault")
+            .expect_err("directory write failure must abort final unlink");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        drop(fs);
+        let device = jbd2_dev.into_inner();
+        let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut remounted = mount(&mut remount_dev).expect("remount after failed unlink");
+        let (remounted_number, remounted_inode) =
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/unlink-fault")
+                .expect("remounted target lookup failed")
+                .expect("failed unlink must preserve the original name");
+        assert_eq!(remounted_number, inode_number);
+        assert_eq!(remounted_inode.i_links_count, 1);
+        assert_eq!(remounted.superblock.s_last_orphan, 0);
+        assert!(
+            remounted
+                .inode_num_already_allocated(&mut remount_dev, inode_number)
+                .expect("inode allocation lookup failed")
+        );
+        let restored =
+            read_file(&mut remount_dev, &mut remounted, "/unlink-fault").expect("restored read");
+        assert_eq!(restored, contents);
+    }
+
+    #[test]
     fn hard_link_propagates_corrupt_destination_parent_extent() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
