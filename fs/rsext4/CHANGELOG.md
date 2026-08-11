@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restore filesystem metadata caches and allocation counters when an xattr
+  journal handle aborts, and queue its inode, bitmap, group descriptor, and
+  superblock images under one bounded transaction.
+- Prevent dirty journal-owned metadata buffers from reaching home blocks before
+  commit or while rolling back a failed handle.
 - Preserve unmodeled inline-xattr bytes across inode-cache mutations and include
   the complete raw inode record in metadata checksums.
 - Preserve extent allocation and inode block accounting when publishing an

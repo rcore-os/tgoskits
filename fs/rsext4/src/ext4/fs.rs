@@ -31,7 +31,50 @@ pub struct Ext4FileSystem {
     pub(crate) system_zones: SystemZoneMap,
 }
 
+/// In-memory filesystem metadata restored when one journal handle aborts.
+///
+/// File data is deliberately excluded: metadata transactions must not mutate
+/// the data cache. Operations that update file contents need an ordered-data
+/// owner in addition to this metadata snapshot.
+struct MetadataTransactionSnapshot {
+    superblock: Ext4Superblock,
+    group_descs: Vec<Ext4GroupDesc>,
+    bitmap_cache: BitmapCache,
+    inodetable_cache: InodeCache,
+}
+
 impl Ext4FileSystem {
+    /// Runs one metadata state transition under a matching filesystem and
+    /// journal transaction owner.
+    ///
+    /// JBD2 restores its queued block images on error; this layer restores the
+    /// corresponding in-memory allocation, descriptor, inode, and superblock
+    /// state. The operation must publish every dirty metadata cache entry to
+    /// `block_dev` before returning success so all images consume the same
+    /// bounded journal handle.
+    pub(crate) fn with_metadata_transaction<B: BlockIo, T>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        credits: usize,
+        operation: impl FnOnce(&mut Self, &mut Jbd2Dev<B>) -> Ext4Result<T>,
+    ) -> Ext4Result<T> {
+        let snapshot = MetadataTransactionSnapshot {
+            superblock: self.superblock,
+            group_descs: self.group_descs.clone(),
+            bitmap_cache: self.bitmap_cache.clone(),
+            inodetable_cache: self.inodetable_cache.clone(),
+        };
+        let result =
+            block_dev.with_transaction_handle(credits, |block_dev| operation(self, block_dev));
+        if result.is_err() {
+            self.superblock = snapshot.superblock;
+            self.group_descs = snapshot.group_descs;
+            self.bitmap_cache = snapshot.bitmap_cache;
+            self.inodetable_cache = snapshot.inodetable_cache;
+        }
+        result
+    }
+
     /// Returns the validated filesystem block size for this mount.
     pub(crate) fn block_size(&self) -> usize {
         self.superblock.block_size() as usize
@@ -46,6 +89,17 @@ impl Ext4FileSystem {
             return Ok(());
         }
 
+        self.sync_group_descriptor(block_dev, group_id)
+    }
+
+    /// Writes the descriptor containing `group_id` regardless of cache mode.
+    /// Metadata transactions use this after flushing the matching bitmap so
+    /// both images are queued under the same journal handle.
+    pub(crate) fn sync_group_descriptor<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        group_id: BGIndex,
+    ) -> Ext4Result<()> {
         let idx = group_id.as_usize()?;
         if idx >= self.group_descs.len() {
             return Err(Ext4Error::corrupted());

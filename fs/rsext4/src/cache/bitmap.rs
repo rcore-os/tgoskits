@@ -79,6 +79,7 @@ impl CachedBitmap {
 /// The cache deliberately has no internal lock. Callers need mutable access to
 /// the mounted filesystem before changing cache state; an OS adapter may place
 /// its own sleepable lock around that owner.
+#[derive(Clone)]
 pub struct BitmapCache {
     cache: BTreeMap<CacheKey, CachedBitmap>,
     max_entries: usize,

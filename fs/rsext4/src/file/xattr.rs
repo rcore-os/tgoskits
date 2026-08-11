@@ -4,7 +4,8 @@ use alloc::vec::Vec;
 
 use crate::{
     BlockIo, Ext4FileSystem, Jbd2Dev,
-    bmalloc::{AbsoluteBN, InodeNumber},
+    bmalloc::{AbsoluteBN, BGIndex, InodeNumber},
+    cache::bitmap::CacheKey,
     checksum::ext4_metadata_csum32,
     crc32c::{ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum},
     disknode::Ext4Inode,
@@ -21,6 +22,7 @@ const XATTR_ENTRY_SIZE: usize = 16;
 const XATTR_TERMINATOR_SIZE: usize = 4;
 const XATTR_SIZE_MAX: u32 = 1 << 24;
 const XATTR_BLOCK_CHECKSUM_OFFSET: usize = 16;
+const XATTR_TRANSACTION_CREDITS: usize = 8;
 
 /// Namespace encoded by an ext4 xattr entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -191,7 +193,15 @@ pub(crate) fn set_inode_xattr<B: BlockIo>(
             value: StoredXattrValue::Local(value.to_vec()),
         });
     }
-    persist_xattrs(device, filesystem, inode_number, &inode, entries, external)
+    persist_xattrs(
+        device,
+        filesystem,
+        inode_number,
+        &inode,
+        entries,
+        external,
+        XATTR_TRANSACTION_CREDITS,
+    )
 }
 
 pub(crate) fn remove_inode_xattr<B: BlockIo>(
@@ -216,7 +226,15 @@ pub(crate) fn remove_inode_xattr<B: BlockIo>(
         return Err(Ext4Error::not_found().with_operation("xattr:remove"));
     };
     entries.remove(index);
-    persist_xattrs(device, filesystem, inode_number, &inode, entries, external)
+    persist_xattrs(
+        device,
+        filesystem,
+        inode_number,
+        &inode,
+        entries,
+        external,
+        XATTR_TRANSACTION_CREDITS,
+    )
 }
 
 fn persist_xattrs<B: BlockIo>(
@@ -226,6 +244,7 @@ fn persist_xattrs<B: BlockIo>(
     original_inode: &Ext4Inode,
     mut entries: Vec<StoredXattr>,
     external: Option<ExternalStore>,
+    transaction_credits: usize,
 ) -> Ext4Result<()> {
     let inode_size = filesystem.inode_disk_size() as usize;
     let inline_offset = usize::from(Ext4Inode::GOOD_OLD_INODE_SIZE)
@@ -264,8 +283,12 @@ fn persist_xattrs<B: BlockIo>(
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
 
-    device.with_transaction_handle(8, |device| {
+    let feature_was_missing =
+        filesystem.superblock.s_feature_compat & Ext4Superblock::EXT4_FEATURE_COMPAT_EXT_ATTR == 0;
+    filesystem.with_metadata_transaction(device, transaction_credits, |filesystem, device| {
         let mut allocated_block = None;
+        let mut touched_bitmap_groups = Vec::<BGIndex>::new();
+        let mut superblock_dirty = feature_was_missing;
         let target_block = if let Some(image) = external_image.as_mut() {
             let block = match external.as_ref() {
                 Some(store) if store.refcount == 1 => store.block,
@@ -275,6 +298,9 @@ fn persist_xattrs<B: BlockIo>(
                 _ => {
                     let block = filesystem.alloc_block(device)?;
                     allocated_block = Some(block);
+                    let (group, _) = filesystem.block_allocator.global_to_group(block)?;
+                    touched_bitmap_groups.push(group);
+                    superblock_dirty = true;
                     block
                 }
             };
@@ -349,9 +375,28 @@ fn persist_xattrs<B: BlockIo>(
             } else {
                 device.forget_detached_metadata(old.block);
                 filesystem.free_block(device, old.block)?;
+                let (group, _) = filesystem.block_allocator.global_to_group(old.block)?;
+                if !touched_bitmap_groups.contains(&group) {
+                    touched_bitmap_groups.push(group);
+                }
+                superblock_dirty = true;
             }
         }
         filesystem.superblock.s_feature_compat |= Ext4Superblock::EXT4_FEATURE_COMPAT_EXT_ATTR;
+
+        // Materialize every metadata image while the same bounded handle is
+        // active. A later filesystem-wide sync must not split one xattr state
+        // transition across journal transactions.
+        filesystem.inodetable_cache.flush(device, inode_number)?;
+        for group in touched_bitmap_groups {
+            filesystem
+                .bitmap_cache
+                .flush(device, &CacheKey::new_block(group))?;
+            filesystem.sync_group_descriptor(device, group)?;
+        }
+        if superblock_dirty {
+            filesystem.sync_superblock(device)?;
+        }
         Ok(())
     })
 }
@@ -761,6 +806,234 @@ fn round_up_4(value: usize) -> Ext4Result<usize> {
         .checked_add(3)
         .map(|value| value & !3)
         .ok_or_else(Ext4Error::overflow)
+}
+
+#[cfg(test)]
+mod fault_tests {
+    use alloc::{rc::Rc, vec, vec::Vec};
+    use core::cell::Cell;
+
+    use super::*;
+    use crate::{
+        BLOCK_SIZE, DeviceCapabilities, DeviceGeometry, Ext4Timestamp, SectorId, dir, mkfile, mkfs,
+        mount,
+    };
+
+    struct FailingMemoryDevice {
+        bytes: Vec<u8>,
+        fail_write_sector: Rc<Cell<Option<u64>>>,
+    }
+
+    impl FailingMemoryDevice {
+        fn new(blocks: usize) -> (Self, Rc<Cell<Option<u64>>>) {
+            let fail_write_sector = Rc::new(Cell::new(None));
+            (
+                Self {
+                    bytes: vec![0; blocks * BLOCK_SIZE],
+                    fail_write_sector: Rc::clone(&fail_write_sector),
+                },
+                fail_write_sector,
+            )
+        }
+    }
+
+    impl BlockIo for FailingMemoryDevice {
+        fn write(&mut self, buffer: &[u8], sector: SectorId, _count: u32) -> Ext4Result<()> {
+            if self.fail_write_sector.get() == Some(sector.raw()) {
+                self.fail_write_sector.set(None);
+                return Err(Ext4Error::io());
+            }
+            let start = sector.as_usize()? * BLOCK_SIZE;
+            let end = start
+                .checked_add(buffer.len())
+                .ok_or_else(Ext4Error::overflow)?;
+            self.bytes
+                .get_mut(start..end)
+                .ok_or_else(Ext4Error::io)?
+                .copy_from_slice(buffer);
+            Ok(())
+        }
+
+        fn read(&mut self, buffer: &mut [u8], sector: SectorId, _count: u32) -> Ext4Result<()> {
+            let start = sector.as_usize()? * BLOCK_SIZE;
+            let end = start
+                .checked_add(buffer.len())
+                .ok_or_else(Ext4Error::overflow)?;
+            buffer.copy_from_slice(self.bytes.get(start..end).ok_or_else(Ext4Error::io)?);
+            Ok(())
+        }
+
+        fn geometry(&self) -> DeviceGeometry {
+            DeviceGeometry::new(BLOCK_SIZE as u32, (self.bytes.len() / BLOCK_SIZE) as u64)
+        }
+
+        fn capabilities(&self) -> DeviceCapabilities {
+            DeviceCapabilities {
+                flush: true,
+                ..DeviceCapabilities::default()
+            }
+        }
+
+        fn flush(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Clock for FailingMemoryDevice {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
+            Ok(Ext4Timestamp::new(1_700_000_000, 0))
+        }
+    }
+
+    #[test]
+    fn inode_write_failure_does_not_publish_inline_xattr_in_cache() {
+        let (device, fail_write_sector) = FailingMemoryDevice::new(32 * 1024);
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut journal).expect("mkfs must succeed");
+        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        mkfile(&mut journal, &mut filesystem, "/victim", None, None).expect("create baseline file");
+        filesystem
+            .sync_filesystem(&mut journal)
+            .expect("sync baseline filesystem");
+        journal.umount_commit().expect("commit baseline metadata");
+        journal
+            .set_journal_use(false)
+            .expect("switch test to direct metadata writes");
+
+        let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/victim")
+            .expect("lookup victim")
+            .expect("victim must exist")
+            .0;
+        let (_, before_raw) = filesystem
+            .get_inode_record(&mut journal, inode_number)
+            .expect("read baseline inode");
+        let (group, _) = filesystem
+            .inode_allocator
+            .global_to_group(inode_number)
+            .expect("locate inode group");
+        let inode_table = filesystem
+            .get_group_desc(group)
+            .expect("inode group descriptor")
+            .inode_table();
+        let (inode_block, ..) = filesystem
+            .inodetable_cache
+            .calc_inode_location(
+                inode_number,
+                filesystem.superblock.s_inodes_per_group,
+                AbsoluteBN::new(inode_table),
+                filesystem.block_size(),
+            )
+            .expect("locate inode table block");
+        fail_write_sector.set(Some(inode_block.raw()));
+
+        let error = set_inode_xattr(
+            &mut journal,
+            &mut filesystem,
+            inode_number,
+            XattrNamespace::User,
+            b"atomic",
+            b"old-or-new-never-half",
+            XattrSetMode::Create,
+        )
+        .expect_err("injected inode-table write must fail");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        let (_, after_raw) = filesystem
+            .get_inode_record(&mut journal, inode_number)
+            .expect("read inode after rollback");
+        assert_eq!(
+            after_raw, before_raw,
+            "failed xattr leaked into inode cache"
+        );
+        assert_eq!(
+            get_inode_xattr(
+                &mut journal,
+                &mut filesystem,
+                inode_number,
+                XattrNamespace::User,
+                b"atomic",
+            )
+            .expect_err("failed xattr must remain absent")
+            .kind(),
+            Ext4ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn journal_credit_failure_restores_external_xattr_allocation() {
+        let (device, _) = FailingMemoryDevice::new(32 * 1024);
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut journal).expect("mkfs must succeed");
+        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        mkfile(&mut journal, &mut filesystem, "/victim", None, None).expect("create baseline file");
+        filesystem
+            .sync_filesystem(&mut journal)
+            .expect("sync baseline filesystem");
+        journal.umount_commit().expect("commit baseline metadata");
+
+        let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/victim")
+            .expect("lookup victim")
+            .expect("victim must exist")
+            .0;
+        let (inode, before_raw) = filesystem
+            .get_inode_record(&mut journal, inode_number)
+            .expect("read baseline inode");
+        let before_free_blocks = filesystem.statfs().free_blocks;
+        let entries = vec![StoredXattr {
+            name: XattrName {
+                namespace: XattrNamespace::User,
+                name: b"external".to_vec(),
+            },
+            value: StoredXattrValue::Local(vec![0x5a; 512]),
+        }];
+
+        let error = persist_xattrs(
+            &mut journal,
+            &mut filesystem,
+            inode_number,
+            &inode,
+            entries,
+            None,
+            2,
+        )
+        .expect_err("two credits cannot publish xattr, inode, bitmap, GDT, and superblock");
+        assert_eq!(error.kind(), Ext4ErrorKind::NoSpace);
+        assert_eq!(filesystem.statfs().free_blocks, before_free_blocks);
+        let (_, after_raw) = filesystem
+            .get_inode_record(&mut journal, inode_number)
+            .expect("read inode after journal rollback");
+        assert_eq!(after_raw, before_raw);
+        assert_eq!(
+            get_inode_xattr(
+                &mut journal,
+                &mut filesystem,
+                inode_number,
+                XattrNamespace::User,
+                b"external",
+            )
+            .expect_err("aborted external xattr must remain absent")
+            .kind(),
+            Ext4ErrorKind::NotFound
+        );
+
+        filesystem
+            .umount(&mut journal)
+            .expect("unmount rolled-back filesystem");
+        let mut remounted = mount(&mut journal).expect("remount rolled-back filesystem");
+        assert_eq!(remounted.statfs().free_blocks, before_free_blocks);
+        assert_eq!(
+            get_inode_xattr(
+                &mut journal,
+                &mut remounted,
+                inode_number,
+                XattrNamespace::User,
+                b"external",
+            )
+            .expect_err("external xattr must remain absent after remount")
+            .kind(),
+            Ext4ErrorKind::NotFound
+        );
+    }
 }
 
 #[cfg(test)]

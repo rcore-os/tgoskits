@@ -173,6 +173,13 @@ impl<B: BlockIo> BlockDev<B> {
             sector,
             sector_count,
         )?;
+        self.mark_active_clean(block_id);
+        Ok(())
+    }
+
+    /// Publishes the active buffer as a clean cached image without writing its
+    /// home block. JBD2 uses this after it has taken ownership of the image.
+    pub(crate) fn mark_active_clean(&mut self, block_id: AbsoluteBN) {
         for (index, entry) in self.entries.iter_mut().enumerate() {
             if index != self.active && entry.block_id == Some(block_id) {
                 entry.block_id = None;
@@ -184,7 +191,25 @@ impl<B: BlockIo> BlockDev<B> {
         active.block_id = Some(block_id);
         active.dirty = false;
         active.referenced = true;
-        Ok(())
+    }
+
+    /// Discards the active buffer without writing it to its previous home.
+    pub(crate) fn discard_active(&mut self) {
+        let active = &mut self.entries[self.active];
+        active.block_id = None;
+        active.dirty = false;
+        active.referenced = false;
+    }
+
+    /// Discards every cached buffer without writeback.
+    pub(crate) fn discard_cache(&mut self) {
+        for entry in &mut self.entries {
+            entry.block_id = None;
+            entry.dirty = false;
+            entry.referenced = false;
+        }
+        self.active = 0;
+        self.clock = 0;
     }
 
     /// Reads `count` blocks directly into `buffer` (bypasses the cache).
