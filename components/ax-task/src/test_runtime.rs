@@ -16,6 +16,9 @@ std::thread_local! {
     static IRQ_GUARD_ENTRIES: Cell<usize> = const { Cell::new(0) };
     static ACTIVE_PREEMPT_TOKENS: RefCell<std::vec::Vec<usize>> = const { RefCell::new(std::vec::Vec::new()) };
     static PREEMPT_GUARD_ENTRIES: Cell<usize> = const { Cell::new(0) };
+    static LOCAL_IRQ_ENABLED: Cell<bool> = const { Cell::new(true) };
+    static PREEMPT_EXIT_LOCAL_IRQ_ENABLED: Cell<Option<bool>> = const { Cell::new(None) };
+    static IRQ_RETURN_EXIT_LOCAL_IRQ_ENABLED: Cell<Option<bool>> = const { Cell::new(None) };
     static TASK_SYSTEM_HANDLE: Cell<usize> = const { Cell::new(0) };
     static CPU_LOCAL_HANDLE: Cell<usize> = const { Cell::new(0) };
     static CURRENT_CPU_REMOTE_HANDLE: Cell<usize> = const { Cell::new(0) };
@@ -37,6 +40,7 @@ std::thread_local! {
     static IDLE_WAIT_OBSERVED_POLLING: Cell<bool> = const { Cell::new(false) };
     static IDLE_WAIT_PUBLISH_RESCHEDULE: Cell<bool> = const { Cell::new(false) };
     static IN_HARD_IRQ: Cell<bool> = const { Cell::new(false) };
+    static HARDIRQ_DEPTH: Cell<usize> = const { Cell::new(0) };
     static CONTEXT_BIND_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
     static LAST_CONTEXT_BINDING: Cell<Option<ContextThreadBinding>> = const { Cell::new(None) };
     static IRQ_GUARDS_AT_CONTEXT_BIND: Cell<usize> = const { Cell::new(usize::MAX) };
@@ -297,6 +301,17 @@ impl TaskRuntime for UnitTestRuntime {
         CPU_OFFLINE_STATUS.with(Cell::get)
     }
 
+    fn local_irq_save_and_disable() -> LocalIrqState {
+        let was_enabled = LOCAL_IRQ_ENABLED.replace(false);
+        // SAFETY: the fake runtime accepts the encoded boolean in its matching
+        // restore operation.
+        unsafe { LocalIrqState::from_raw(usize::from(was_enabled)) }
+    }
+
+    unsafe fn local_irq_restore(state: LocalIrqState) {
+        LOCAL_IRQ_ENABLED.set(state.into_raw() != 0);
+    }
+
     fn irq_guard_enter() -> IrqGuardToken {
         IRQ_GUARD_ENTRIES.with(|entries| entries.set(entries.get() + 1));
         let scheduler_depth = SCHEDULER_FRAME_DEPTH.with(Cell::get);
@@ -354,6 +369,9 @@ impl TaskRuntime for UnitTestRuntime {
     }
 
     unsafe fn preempt_guard_exit(token: PreemptGuardToken) {
+        PREEMPT_EXIT_LOCAL_IRQ_ENABLED.with(|observed| {
+            observed.set(Some(LOCAL_IRQ_ENABLED.with(Cell::get)));
+        });
         assert!(
             !token.is_none(),
             "an inherited owner scope must not be exited as an ordinary preemption guard"
@@ -368,9 +386,34 @@ impl TaskRuntime for UnitTestRuntime {
         });
     }
 
+    unsafe fn preempt_guard_exit_irq_return(token: PreemptGuardToken) {
+        IRQ_RETURN_EXIT_LOCAL_IRQ_ENABLED.with(|observed| {
+            observed.set(Some(LOCAL_IRQ_ENABLED.with(Cell::get)));
+        });
+        // SAFETY: the IRQ-return model consumes the same active token as the
+        // ordinary fake-runtime exit while preserving raw IRQ state separately.
+        unsafe { Self::preempt_guard_exit(token) };
+    }
+
+    fn hardirq_enter() {
+        HARDIRQ_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    }
+
+    fn hardirq_exit() {
+        HARDIRQ_DEPTH.with(|depth| {
+            depth.set(
+                depth
+                    .get()
+                    .checked_sub(1)
+                    .expect("test hard-IRQ depth underflow"),
+            );
+        });
+    }
+
     fn publish_local_scheduler_work() -> bool {
         LOCAL_SCHEDULER_WORK_PUBLICATIONS.with(|count| count.set(count.get() + 1));
         IN_HARD_IRQ.with(Cell::get)
+            || HARDIRQ_DEPTH.with(|depth| depth.get() != 0)
             || IRQ_EXIT_SCHEDULE_REMAINING.with(|remaining| remaining.get() != 0)
     }
 
@@ -419,14 +462,14 @@ impl TaskRuntime for UnitTestRuntime {
     }
 
     fn in_hard_irq() -> bool {
-        IN_HARD_IRQ.with(Cell::get)
+        IN_HARD_IRQ.with(Cell::get) || HARDIRQ_DEPTH.with(|depth| depth.get() != 0)
     }
     fn validate_schedule_context(_origin: RuntimeScheduleOrigin) -> RuntimeStatus {
         let irq_clear = ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().is_empty());
         let preempt_clear = ACTIVE_PREEMPT_TOKENS.with(|tokens| tokens.borrow().is_empty());
         let scheduler_clear = SCHEDULER_FRAME_DEPTH.with(|depth| depth.get() == 0);
         if SCHEDULE_CONTEXT_SAFE.with(Cell::get)
-            && !IN_HARD_IRQ.with(Cell::get)
+            && !(IN_HARD_IRQ.with(Cell::get) || HARDIRQ_DEPTH.with(|depth| depth.get() != 0))
             && irq_clear
             && preempt_clear
             && scheduler_clear
@@ -720,6 +763,8 @@ pub(crate) fn irq_guard_entries() -> usize {
 pub(crate) fn reset_preempt_state() {
     ACTIVE_PREEMPT_TOKENS.with(|tokens| tokens.borrow_mut().clear());
     PREEMPT_GUARD_ENTRIES.with(|entries| entries.set(0));
+    PREEMPT_EXIT_LOCAL_IRQ_ENABLED.with(|observed| observed.set(None));
+    IRQ_RETURN_EXIT_LOCAL_IRQ_ENABLED.with(|observed| observed.set(None));
 }
 
 pub(crate) fn reset_preempt_guard_entries() {
@@ -732,6 +777,24 @@ pub(crate) fn active_preempt_guards() -> usize {
 
 pub(crate) fn preempt_guard_entries() -> usize {
     PREEMPT_GUARD_ENTRIES.with(Cell::get)
+}
+
+pub(crate) fn reset_local_irq_state() {
+    LOCAL_IRQ_ENABLED.set(true);
+    PREEMPT_EXIT_LOCAL_IRQ_ENABLED.with(|observed| observed.set(None));
+    IRQ_RETURN_EXIT_LOCAL_IRQ_ENABLED.with(|observed| observed.set(None));
+}
+
+pub(crate) fn local_irqs_enabled() -> bool {
+    LOCAL_IRQ_ENABLED.with(Cell::get)
+}
+
+pub(crate) fn preempt_exit_local_irqs_enabled() -> Option<bool> {
+    PREEMPT_EXIT_LOCAL_IRQ_ENABLED.with(Cell::get)
+}
+
+pub(crate) fn irq_return_exit_local_irqs_enabled() -> Option<bool> {
+    IRQ_RETURN_EXIT_LOCAL_IRQ_ENABLED.with(Cell::get)
 }
 
 pub(crate) fn reset_installed_address_space() {

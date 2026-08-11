@@ -284,8 +284,10 @@ std::thread_local! {
     static DEALLOCATED_TLS: Cell<usize> = const { Cell::new(0) };
     static ACTIVE_IRQ_TOKENS: RefCell<ActiveGuardTokens> = const { RefCell::new(ActiveGuardTokens::new()) };
     static ACTIVE_PREEMPT_TOKENS: RefCell<ActiveGuardTokens> = const { RefCell::new(ActiveGuardTokens::new()) };
+    static LOCAL_IRQ_ENABLED: Cell<bool> = const { Cell::new(true) };
     static CURRENT_CPU: Cell<u32> = const { Cell::new(0) };
     static IN_HARD_IRQ: Cell<bool> = const { Cell::new(false) };
+    static HARDIRQ_DEPTH: Cell<usize> = const { Cell::new(0) };
     static LAST_ONESHOT_NS: Cell<u64> = const { Cell::new(0) };
     static LAST_DEADLINE_GENERATION: Cell<u64> = const { Cell::new(0) };
     static MONOTONIC_NS: Cell<u64> = const { Cell::new(0) };
@@ -504,6 +506,17 @@ impl_trait! {
             })
         }
 
+        fn local_irq_save_and_disable() -> LocalIrqState {
+            let was_enabled = LOCAL_IRQ_ENABLED.replace(false);
+            // SAFETY: the fake runtime accepts this encoded boolean in its
+            // matching restore operation.
+            unsafe { LocalIrqState::from_raw(usize::from(was_enabled)) }
+        }
+
+        unsafe fn local_irq_restore(state: LocalIrqState) {
+            LOCAL_IRQ_ENABLED.set(state.into_raw() != 0);
+        }
+
         fn irq_guard_enter() -> IrqGuardToken {
             let token = NEXT_TOKEN.with(|next| {
                 let token = next.get();
@@ -540,6 +553,27 @@ impl_trait! {
             });
         }
 
+        unsafe fn preempt_guard_exit_irq_return(token: PreemptGuardToken) {
+            // SAFETY: the IRQ-return model consumes the same active token as
+            // the ordinary fake-runtime exit.
+            unsafe { Self::preempt_guard_exit(token) };
+        }
+
+        fn hardirq_enter() {
+            HARDIRQ_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        }
+
+        fn hardirq_exit() {
+            HARDIRQ_DEPTH.with(|depth| {
+                depth.set(
+                    depth
+                        .get()
+                        .checked_sub(1)
+                        .expect("integration hard-IRQ depth underflow"),
+                );
+            });
+        }
+
         fn publish_local_scheduler_work() -> bool {
             let cpu = CURRENT_CPU.with(Cell::get);
             VIRTUAL_RUNTIME.with(|runtime| {
@@ -548,7 +582,7 @@ impl_trait! {
                     .publish_scheduler_work(cpu)
                     .expect("current virtual CPU must exist");
             });
-            IN_HARD_IRQ.with(Cell::get)
+            IN_HARD_IRQ.with(Cell::get) || HARDIRQ_DEPTH.with(|depth| depth.get() != 0)
         }
 
         fn finish_context_switch_tail() {
@@ -641,9 +675,11 @@ impl_trait! {
             ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().is_empty())
         }
 
-        fn in_hard_irq() -> bool { IN_HARD_IRQ.with(Cell::get) }
+        fn in_hard_irq() -> bool {
+            IN_HARD_IRQ.with(Cell::get) || HARDIRQ_DEPTH.with(|depth| depth.get() != 0)
+        }
         fn validate_schedule_context(_origin: RuntimeScheduleOrigin) -> RuntimeStatus {
-            if IN_HARD_IRQ.with(Cell::get) {
+            if IN_HARD_IRQ.with(Cell::get) || HARDIRQ_DEPTH.with(|depth| depth.get() != 0) {
                 RuntimeStatus::UnsafeContext
             } else {
                 RuntimeStatus::Success

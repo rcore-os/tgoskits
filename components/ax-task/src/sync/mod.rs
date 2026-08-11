@@ -7,5 +7,6 @@
 pub mod api;
 #[doc(hidden)]
 pub mod bridge;
+mod context;
 
 pub use self::api::*;

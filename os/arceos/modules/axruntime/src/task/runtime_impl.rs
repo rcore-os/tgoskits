@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use ax_task::runtime::PreemptGuardToken;
+use ax_task::runtime::{LocalIrqState, PreemptGuardToken};
 
 use super::*;
 
@@ -110,6 +110,22 @@ impl_task_runtime! {
             RuntimeStatus::Success
         }
 
+        fn local_irq_save_and_disable() -> LocalIrqState {
+            let was_enabled = ax_hal::asm::irqs_enabled();
+            ax_hal::asm::disable_irqs();
+            // SAFETY: the provider restores only the boolean state encoded by
+            // this implementation's matching restore operation.
+            unsafe { LocalIrqState::from_raw(usize::from(was_enabled)) }
+        }
+
+        unsafe fn local_irq_restore(state: LocalIrqState) {
+            if state.into_raw() != 0 {
+                ax_hal::asm::enable_irqs();
+            } else {
+                ax_hal::asm::disable_irqs();
+            }
+        }
+
         fn irq_guard_enter() -> IrqGuardToken {
             #[cfg(test)]
             {
@@ -153,6 +169,25 @@ impl_task_runtime! {
             );
             #[cfg(not(test))]
             crate::guard::exit_preempt();
+        }
+
+        unsafe fn preempt_guard_exit_irq_return(token: PreemptGuardToken) {
+            assert!(
+                !token.is_none(),
+                "inherited owner scope passed to IRQ-return preemption exit"
+            );
+            #[cfg(not(test))]
+            crate::guard::exit_preempt_from_irq_return();
+        }
+
+        fn hardirq_enter() {
+            #[cfg(not(test))]
+            crate::irq_time::enter();
+        }
+
+        fn hardirq_exit() {
+            #[cfg(not(test))]
+            crate::irq_time::exit();
         }
 
         fn publish_local_scheduler_work() -> bool {

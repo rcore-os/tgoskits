@@ -427,6 +427,32 @@ opaque_handle!(
     PreemptGuardToken
 );
 
+/// Runtime-defined raw local-IRQ state saved by a synchronization guard.
+///
+/// Unlike [`IrqGuardToken`], this value does not own a scheduler publication
+/// scope. It only transports the architecture interrupt state back to the
+/// runtime that produced it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct LocalIrqState(usize);
+
+impl LocalIrqState {
+    /// Creates a saved local-IRQ state at the runtime provider boundary.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a state value accepted by the linked runtime's matching
+    /// local-IRQ restore operation.
+    pub const unsafe fn from_raw(raw: usize) -> Self {
+        Self(raw)
+    }
+
+    /// Returns the runtime-owned representation of this saved state.
+    pub const fn into_raw(self) -> usize {
+        self.0
+    }
+}
+
 /// Logical CPU identifier exchanged with the operating-system runtime.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]

@@ -81,9 +81,15 @@ external layout view。禁止 bridge 复制 owner、waiter、grant、donation �
 状态继续通过 `TaskRuntime` 能力边界取得。这样 native 锁属于调度层，但具体 OS/架构实现
 仍由 runtime 提供，Cargo 依赖方向不反转。
 
+context capability 必须区分两种 IRQ 所有权：raw local-IRQ save/restore 只传递架构中断
+状态，不进入 scheduler owner scope；scheduler IRQ guard 同时拥有 CPU pin、publication 和
+最终退出安全点。IRQ-return preempt guard 必须搭配前者，否则后者会把 preempt entry 判定
+为已有强 owner 并返回 `NONE`，从而丢掉 IRQ-return 调度点。两者不得共享 token 类型或
+互相兜底。
+
 ## 4. `ax-sync` 薄桥接层
 
-`ax-sync` 只拥有稳定 wrapper 所必需的表示与 Rust API：
+`ax-sync` 只拥有 OS 无关 wrapper 所必需的表示与 Rust API：
 
 - 泛型数据 `T`；
 - 固定布局的原子锁状态与 lock metadata；
@@ -99,6 +105,10 @@ external layout view。禁止 bridge 复制 owner、waiter、grant、donation �
 - IRQ/preempt 的硬件实现；
 - 生产 lockdep 图或 task held-lock stack；
 - fallback、超时重试或另一套生产 provider。
+
+这里不承诺兼容旧 `ax-sync` 接口。若旧接口要求 wrapper 执行算法、保存中间事务或复制
+task-owned 状态，直接调整接口并迁移调用方；不得为兼容保留第二套实现、转发算法或双重
+事实源。
 
 隐藏接口按完整事务划分：
 
@@ -244,11 +254,12 @@ task identity、runtime capability 和固定 external ABI 仍由本项目边界�
 迁移按可审计层次进行：
 
 1. 建立 `ax-task::sync::{api,bridge}` 命名空间，runtime 只经 bridge 使用 task 能力；
-2. 迁移 context 与 native spin/rwlock，不改变 external `ax-sync` API；
+2. 迁移 context 与 native spin/rwlock；按单一实现需要同步破坏性调整 external
+   `ax-sync` API；
 3. 迁移 lockdep 图和 task held-lock state，建立 external class view；
 4. 将当前 PI physical/task transaction 移入 ax-task，并建立 external PI layout view；
 5. 把 `ax-sync` 改为 wrapper/provider ABI，删除 `ax-task -> ax-sync`；
-6. 收紧 lint 与 Cargo feature，迁移 OS consumers，最后清理兼容路径。
+6. 收紧 lint 与 Cargo feature，迁移 OS consumers，并证明旧算法和兼容路径已删除。
 
 每一步必须有在旧实现上失败、在新实现上通过的确定性测试。最终验证至少包括：
 

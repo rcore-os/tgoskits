@@ -10,3 +10,12 @@ fn stable_api_and_runtime_bridge_are_separate_namespaces() {
     let _pi_mutex_lock_slow = ax_task::sync::bridge::pi_mutex_lock_slow;
     let _pi_mutex_release_owned = ax_task::sync::bridge::pi_mutex_release_owned;
 }
+
+#[test]
+fn execution_context_guards_are_native_task_types() {
+    assert!(
+        core::any::type_name::<ax_task::sync::PreemptGuard>()
+            .starts_with("ax_task::sync::context::"),
+        "execution-context ownership must not remain in the external bridge crate"
+    );
+}

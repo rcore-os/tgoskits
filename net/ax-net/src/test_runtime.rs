@@ -22,6 +22,7 @@ static TEST_RUNTIME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 std::thread_local! {
     static ACTIVE_PREEMPT_GUARDS: Cell<usize> = const { Cell::new(0) };
+    static LOCAL_IRQ_ENABLED: Cell<bool> = const { Cell::new(true) };
 }
 
 struct NetTestTaskRuntime;
@@ -90,6 +91,15 @@ impl_task_runtime! {
         unsafe fn current_cpu_id() -> RuntimeCpuId { RuntimeCpuId::new(0) }
         fn prepare_cpu_online(_cpu: RuntimeCpuId) -> RuntimeStatus { RuntimeStatus::Success }
         fn prepare_cpu_offline(_cpu: RuntimeCpuId) -> RuntimeStatus { RuntimeStatus::Success }
+        fn local_irq_save_and_disable() -> LocalIrqState {
+            let was_enabled = LOCAL_IRQ_ENABLED.replace(false);
+            // SAFETY: the test runtime accepts this encoded boolean in its
+            // matching restore operation.
+            unsafe { LocalIrqState::from_raw(usize::from(was_enabled)) }
+        }
+        unsafe fn local_irq_restore(state: LocalIrqState) {
+            LOCAL_IRQ_ENABLED.set(state.into_raw() != 0);
+        }
         fn irq_guard_enter() -> IrqGuardToken {
             // SAFETY: the monotonically issued token remains live until the
             // matching no-op test exit consumes its modeled guard scope.
@@ -107,6 +117,9 @@ impl_task_runtime! {
             }
         }
         unsafe fn preempt_guard_exit(_token: PreemptGuardToken) {}
+        unsafe fn preempt_guard_exit_irq_return(_token: PreemptGuardToken) {}
+        fn hardirq_enter() {}
+        fn hardirq_exit() {}
 
         fn publish_local_scheduler_work() -> bool {
             false
@@ -272,32 +285,6 @@ fn pure_model_exports_the_context_binding_symbol() {
         }),
         RuntimeStatus::Success
     );
-}
-
-struct NetTestKernelGuard;
-
-#[ax_crate_interface::impl_interface]
-impl ax_kernel_guard::KernelGuardIf for NetTestKernelGuard {
-    fn hardirq_enter() {}
-
-    fn hardirq_exit() {}
-
-    fn disable_preempt() {
-        ACTIVE_PREEMPT_GUARDS.with(|depth| depth.set(depth.get() + 1));
-    }
-
-    fn enable_preempt() {
-        let previous = ACTIVE_PREEMPT_GUARDS.with(|depth| {
-            let previous = depth.get();
-            depth.set(previous.saturating_sub(1));
-            previous
-        });
-        assert_ne!(previous, 0, "test preemption guard depth underflowed");
-    }
-
-    fn enable_preempt_from_irq_return() {
-        Self::enable_preempt();
-    }
 }
 
 pub(crate) fn reset_preempt_guards() {

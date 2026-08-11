@@ -108,6 +108,22 @@ pub trait TaskRuntime {
     /// or re-enter ax-task.
     fn prepare_cpu_offline(cpu: RuntimeCpuId) -> RuntimeStatus;
 
+    /// Saves the raw local-interrupt state and disables local interrupts.
+    ///
+    /// This operation does not enter the scheduler's nested IRQ-guard owner
+    /// scope. Synchronization guards need that narrower capability so an IRQ
+    /// return can still own and consume its explicit preemption depth.
+    fn local_irq_save_and_disable() -> LocalIrqState;
+
+    /// Restores a raw local-interrupt state.
+    ///
+    /// # Safety
+    ///
+    /// `state` must have been returned by
+    /// [`Self::local_irq_save_and_disable`] on this CPU and must be restored
+    /// exactly once in properly nested order.
+    unsafe fn local_irq_restore(state: LocalIrqState);
+
     /// Saves raw interrupt state, disables local IRQs and enters nested guards.
     fn irq_guard_enter() -> IrqGuardToken;
 
@@ -144,6 +160,25 @@ pub trait TaskRuntime {
     /// `preempt_guard_enter` on this task execution context and must be exited
     /// exactly once. Tokens may be exited in non-LIFO order.
     unsafe fn preempt_guard_exit(token: PreemptGuardToken);
+
+    /// Leaves one nested task-preemption guard at a hard-IRQ return boundary.
+    ///
+    /// Unlike [`Self::preempt_guard_exit`], the final exit may enter the
+    /// scheduler while hardware IRQs remain disabled and must return with IRQs
+    /// disabled for the architecture exception epilogue.
+    ///
+    /// # Safety
+    ///
+    /// A non-`NONE` `token` must have been returned by
+    /// [`Self::preempt_guard_enter`] on this task execution context and must be
+    /// exited exactly once.
+    unsafe fn preempt_guard_exit_irq_return(token: PreemptGuardToken);
+
+    /// Publishes entry into the runtime's hard-interrupt lifecycle.
+    fn hardirq_enter();
+
+    /// Publishes exit from the runtime's hard-interrupt lifecycle.
+    fn hardirq_exit();
 
     /// Publishes sticky scheduler work to the current CPU's architecture
     /// preemption state and reports whether a local safe point makes a self-IPI
