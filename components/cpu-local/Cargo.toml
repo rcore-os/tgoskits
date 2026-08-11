@@ -10,8 +10,9 @@ categories = ["os", "no-std"]
 license.workspace = true
 
 [features]
-# Select the no-userspace UnikernelTls register ownership model. Images that
-# leave this disabled use LinuxCurrent semantics.
+# Enable task-owned kernel TLS. Backends with an independent current register
+# retain Linux current semantics; TP-aliased backends publish current through
+# the CPU runtime anchor while TP carries the TLS base.
 tls = []
 
 # Use a thread-local register model for host-side tests.
