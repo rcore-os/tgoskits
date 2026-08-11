@@ -44,6 +44,13 @@ struct MetadataTransactionSnapshot {
     datablock_cache: DataBlockCache,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct GroupCounters {
+    free_blocks: u32,
+    free_inodes: u32,
+    used_dirs: u32,
+}
+
 impl Ext4FileSystem {
     /// Runs one metadata state transition under a matching filesystem and
     /// journal transaction owner.
@@ -76,6 +83,50 @@ impl Ext4FileSystem {
             self.datablock_cache = snapshot.datablock_cache;
         }
         result
+    }
+
+    pub(crate) fn group_counter_snapshot(&self) -> Vec<GroupCounters> {
+        self.group_descs
+            .iter()
+            .map(|descriptor| GroupCounters {
+                free_blocks: descriptor.free_blocks_count(),
+                free_inodes: descriptor.free_inodes_count(),
+                used_dirs: descriptor.used_dirs_count(),
+            })
+            .collect()
+    }
+
+    /// Publishes only allocation-group metadata changed since `before`.
+    pub(crate) fn flush_changed_group_metadata<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        before: &[GroupCounters],
+    ) -> Ext4Result<()> {
+        if before.len() != self.group_descs.len() {
+            return Err(Ext4Error::corrupted().with_operation("transaction:group_count"));
+        }
+        for (index, previous) in before.iter().copied().enumerate() {
+            let group = BGIndex::new(u32::try_from(index).map_err(|_| Ext4Error::overflow())?);
+            let descriptor = self
+                .get_group_desc(group)
+                .ok_or_else(Ext4Error::corrupted)?;
+            let free_blocks_changed = descriptor.free_blocks_count() != previous.free_blocks;
+            let free_inodes_changed = descriptor.free_inodes_count() != previous.free_inodes;
+            let used_dirs_changed = descriptor.used_dirs_count() != previous.used_dirs;
+
+            if free_blocks_changed {
+                self.bitmap_cache
+                    .flush(block_dev, &CacheKey::new_block(group))?;
+            }
+            if free_inodes_changed {
+                self.bitmap_cache
+                    .flush(block_dev, &CacheKey::new_inode(group))?;
+            }
+            if free_blocks_changed || free_inodes_changed || used_dirs_changed {
+                self.sync_group_descriptor(block_dev, group)?;
+            }
+        }
+        Ok(())
     }
 
     /// Returns the validated filesystem block size for this mount.

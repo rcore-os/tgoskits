@@ -23,6 +23,15 @@ use crate::{
     superblock::Ext4Superblock,
 };
 
+// Linux ext4_mkdir uses the same DATA + INDEX + inode-allocation budget as
+// create and symlink. Writable quota is not implemented yet.
+const MKDIR_TRANSACTION_CREDITS: usize = 39;
+
+struct CreatedDirectory {
+    number: InodeNumber,
+    inode: Ext4Inode,
+}
+
 struct DirectoryPublishRollback<'a> {
     parent: InodeNumber,
     parent_links: u16,
@@ -63,6 +72,22 @@ pub(crate) fn create_directory_at<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     request: CreateEntryRequest<'_>,
 ) -> Ext4Result<Ext4Inode> {
+    let counters_before = fs.group_counter_snapshot();
+    fs.with_metadata_transaction(device, MKDIR_TRANSACTION_CREDITS, |fs, device| {
+        let created = create_directory_at_inner(device, fs, request)?;
+        fs.inodetable_cache.flush(device, created.number)?;
+        fs.inodetable_cache.flush(device, request.parent)?;
+        fs.flush_changed_group_metadata(device, &counters_before)?;
+        fs.sync_superblock(device)?;
+        Ok(created.inode)
+    })
+}
+
+fn create_directory_at_inner<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    request: CreateEntryRequest<'_>,
+) -> Ext4Result<CreatedDirectory> {
     if request.name.is_reserved() || request.mode & Ext4Inode::S_IFMT != Ext4Inode::S_IFDIR {
         return Err(Ext4Error::invalid_input());
     }
@@ -302,7 +327,11 @@ pub(crate) fn create_directory_at<B: BlockIo>(
         ));
     }
 
-    fs.get_inode_by_num(device, new_dir_ino)
+    let inode = fs.get_inode_by_num(device, new_dir_ino)?;
+    Ok(CreatedDirectory {
+        number: new_dir_ino,
+        inode,
+    })
 }
 
 /// Creates a directory inode and links it into the namespace.
