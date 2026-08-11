@@ -17,3 +17,4 @@ mmio-api.workspace = true
 rdif-eth.workspace = true
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"
+zerocopy.workspace = true

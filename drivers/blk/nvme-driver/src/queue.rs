@@ -48,12 +48,8 @@ register_bitfields! [
 ];
 
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 pub struct NvmeSubmission([u8; 64]);
-
-// SAFETY: The transparent wrapper contains only bytes, accepts every bit
-// pattern, and owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for NvmeSubmission {}
 
 pub trait Submission {
     fn to_submission(self) -> NvmeSubmission;
@@ -222,7 +218,9 @@ impl Submission for CommandSet {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(
+    Debug, Copy, Clone, Default, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes,
+)]
 pub(crate) struct NvmeCompletion {
     pub result: u64,
     pub sq_head: u16,
@@ -231,13 +229,15 @@ pub(crate) struct NvmeCompletion {
     pub status: CompletionStatus,
 }
 
-// SAFETY: The C-layout completion contains only integer fields and a
-// transparent `u16` wrapper, so every bit pattern is valid.
-unsafe impl dma_api::DmaPod for NvmeCompletion {}
-
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(
+    Debug, Copy, Clone, Default, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes,
+)]
 pub(crate) struct CompletionStatus(pub u16);
+
+const _: () = assert!(core::mem::size_of::<NvmeSubmission>() == 64);
+const _: () = assert!(core::mem::size_of::<NvmeCompletion>() == 16);
+const _: () = assert!(core::mem::size_of::<CompletionStatus>() == 2);
 
 impl CompletionStatus {
     pub fn phase(&self) -> bool {

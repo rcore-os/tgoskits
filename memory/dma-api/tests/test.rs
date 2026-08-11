@@ -5,7 +5,17 @@ mod test_helpers;
 use dma_api::*;
 use test_helpers::{DmaOperation, TrackingDmaOp};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+)]
 #[repr(C)]
 struct Descriptor {
     addr: u64,
@@ -13,15 +23,8 @@ struct Descriptor {
     flags: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 struct ZeroSizedDmaPod;
-
-// SAFETY: The type has no bytes, invalid bit patterns, references, or owned resources.
-unsafe impl DmaPod for ZeroSizedDmaPod {}
-
-// SAFETY: `Descriptor` has a stable C layout, every field accepts all bit
-// patterns, and it contains no references or owned resources.
-unsafe impl DmaPod for Descriptor {}
 
 fn new_tracking_device() -> (DeviceDma, &'static TrackingDmaOp) {
     let tracker = Box::new(TrackingDmaOp::new());

@@ -17,6 +17,7 @@ mmio-api.workspace = true
 mbarrier = "0.1"
 rdif-block.workspace = true
 tock-registers = "0.10"
+zerocopy.workspace = true
 
 # bare-test integration test is temporarily disabled.
 # [[test]]

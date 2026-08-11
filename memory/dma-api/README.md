@@ -31,12 +31,14 @@ handles are split into `DmaAllocHandle` for owned allocations and
 their matching release operation consumes them, so safe code cannot release
 the same allocation or mapping twice.
 
-Typed DMA storage requires an explicit `DmaPod` implementation. Primitive
-integer and floating-point types, plus arrays of `DmaPod` elements, are
-provided by `dma-api`. Driver descriptor and wire-format structs must use a
-stable layout and provide their own safety justification. Types with invalid
-bit patterns, references, pointers, or owned resources must not implement
-`DmaPod`.
+Typed DMA storage requires `DmaPod`. Integer and floating-point scalars, plus
+arrays of valid elements, satisfy the contract automatically. Local driver
+descriptor and wire-format structs must use a stable layout and derive
+`zerocopy::FromBytes`, `zerocopy::IntoBytes`, and `zerocopy::Immutable`; this
+rejects invalid bit patterns, implicit padding, and interior mutability at
+compile time. Manual `DmaPod` implementations are reserved for audited foreign
+types that cannot derive these traits. References, pointers, padding, and owned
+resources are not permitted.
 
 All allocation and mapping entry points reject zero-sized buffers before
 calling the platform backend.

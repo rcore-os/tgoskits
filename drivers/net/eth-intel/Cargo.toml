@@ -16,6 +16,7 @@ log = "0.4"
 mmio-api.workspace = true
 rdif-eth.workspace = true
 thiserror = { version = "2", default-features = false }
+zerocopy.workspace = true
 
 [lib]
 test = false

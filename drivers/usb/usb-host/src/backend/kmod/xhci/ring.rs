@@ -16,13 +16,11 @@ pub(crate) const TRB_SIZE: usize = size_of::<TrbData>();
 pub(crate) const TRBS_PER_SEGMENT: usize = 256;
 const DEFAULT_RING_PAGES: usize = 2;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 #[repr(transparent)]
 pub struct TrbData([u32; TRB_LEN]);
 
-// SAFETY: The transparent wrapper contains only a `u32` array, accepts every
-// bit pattern, and owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for TrbData {}
+const _: () = assert!(core::mem::size_of::<TrbData>() == 16);
 
 impl TrbData {
     pub fn to_raw(self) -> [u32; TRB_LEN] {

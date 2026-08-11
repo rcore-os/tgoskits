@@ -18,6 +18,7 @@ volatile = { version = "0.6", features = ["derive"] }
 log.workspace = true
 dma-api.workspace = true
 mmio-api.workspace = true
+zerocopy.workspace = true
 
 [features]
 default = []

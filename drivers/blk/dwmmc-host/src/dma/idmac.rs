@@ -50,7 +50,17 @@ pub const IDMAC_MAX_TRANSFER_SIZE: usize = (IDMAC_RING_DESC_COUNT - 1) * IDMAC_D
 pub const IDMAC_MAX_BLOCKS: u32 = (IDMAC_MAX_TRANSFER_SIZE / BLOCK_SIZE) as u32;
 
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+)]
 pub struct IdmacDesc {
     pub(super) des0: u32,
     pub(super) des1: u32,
@@ -58,9 +68,8 @@ pub struct IdmacDesc {
     pub(super) des3: u32,
 }
 
-// SAFETY: The aligned C-layout descriptor contains only `u32` fields, accepts
-// every bit pattern, and owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for IdmacDesc {}
+const _: () = assert!(core::mem::size_of::<IdmacDesc>() == 16);
+const _: () = assert!(core::mem::align_of::<IdmacDesc>() == 16);
 
 pub(crate) struct IdmacRing {
     descriptors: CoherentArray<IdmacDesc>,

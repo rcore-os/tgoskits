@@ -156,6 +156,7 @@ dependencies = [
  "rdif-block",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
+ "zerocopy",
 ]
 
 [[package]]
@@ -2362,6 +2363,7 @@ dependencies = [
  "trait-ffi",
  "usb-if",
  "xhci",
+ "zerocopy",
 ]
 
 [[package]]
@@ -2979,6 +2981,7 @@ dependencies = [
  "log",
  "mbarrier",
  "thiserror 2.0.20",
+ "zerocopy",
 ]
 
 [[package]]
@@ -3063,6 +3066,7 @@ dependencies = [
  "sdio-host2",
  "sdmmc-protocol",
  "volatile 0.6.1",
+ "zerocopy",
 ]
 
 [[package]]
@@ -3270,6 +3274,7 @@ dependencies = [
  "mmio-api",
  "rdif-eth",
  "thiserror 2.0.20",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5410,6 +5415,7 @@ dependencies = [
  "mmio-api",
  "rdif-block",
  "tock-registers 0.10.1",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5788,6 +5794,7 @@ dependencies = [
  "sdio-host2",
  "sdmmc-protocol",
  "volatile 0.6.1",
+ "zerocopy",
 ]
 
 [[package]]
@@ -6626,6 +6633,7 @@ dependencies = [
  "rdif-eth",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
+ "zerocopy",
 ]
 
 [[package]]
@@ -7298,6 +7306,7 @@ dependencies = [
  "rdif-block",
  "sdio-host2",
  "sdmmc-protocol",
+ "zerocopy",
 ]
 
 [[package]]

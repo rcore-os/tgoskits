@@ -37,6 +37,7 @@ trait-ffi = "0.2.4"
 usb-if = {workspace = true}
 xhci = "0.9"
 libusb1-sys = {version = "0.7", optional = true}
+zerocopy.workspace = true
 
 [dev-dependencies]
 ax-sync = { workspace = true, features = ["host-test"] }

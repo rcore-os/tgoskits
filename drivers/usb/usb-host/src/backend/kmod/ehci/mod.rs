@@ -410,8 +410,11 @@ fn ehci_qh_link(addr: u32) -> u32 {
     (addr & !0x1f) | EHCI_QH_LINK_TYPE_QH
 }
 
-#[derive(Clone, Copy)]
-#[repr(C, align(32))]
+// EHCI requires queue-head and qTD allocation bases to be 32-byte aligned.
+// Keep their wire layouts padding-free and enforce that constraint at the
+// coherent allocation sites instead of adding trailing type padding.
+#[derive(Clone, Copy, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
+#[repr(C)]
 struct QueueHead {
     horizontal_link: u32,
     endpoint_chars: u32,
@@ -419,10 +422,6 @@ struct QueueHead {
     current_qtd: u32,
     overlay: QueueTransferDescriptor,
 }
-
-// SAFETY: The aligned C-layout queue head contains only integers and the
-// integer-only transfer descriptor, so every bit pattern is valid.
-unsafe impl dma_api::DmaPod for QueueHead {}
 
 impl QueueHead {
     fn async_head(addr: u32) -> Self {
@@ -462,8 +461,8 @@ impl QueueHead {
     }
 }
 
-#[derive(Clone, Copy)]
-#[repr(C, align(32))]
+#[derive(Clone, Copy, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
+#[repr(C)]
 struct QueueTransferDescriptor {
     next_qtd: u32,
     alt_next_qtd: u32,
@@ -471,10 +470,6 @@ struct QueueTransferDescriptor {
     buffer: [u32; 5],
     ext_buffer: [u32; 5],
 }
-
-// SAFETY: The aligned C-layout descriptor contains only integers and integer
-// arrays, so every bit pattern is valid and it owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for QueueTransferDescriptor {}
 
 impl QueueTransferDescriptor {
     const fn terminated() -> Self {
@@ -521,6 +516,9 @@ impl QueueTransferDescriptor {
         self.next_qtd = next.map(|addr| addr & !0x1f).unwrap_or(EHCI_LINK_TERMINATE);
     }
 }
+
+const _: () = assert!(core::mem::size_of::<QueueHead>() == 68);
+const _: () = assert!(core::mem::size_of::<QueueTransferDescriptor>() == 52);
 
 #[derive(Clone)]
 struct TransferWakeups {

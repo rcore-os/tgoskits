@@ -52,20 +52,16 @@ mod request;
 ///   4      address[31:0]
 /// ```
 #[repr(C, align(4))]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 pub(crate) struct Adma2Desc32 {
     attr: u16,
     length: u16,
     address: u32,
 }
 
-// SAFETY: The aligned C-layout descriptor contains only integer fields, so
-// every bit pattern is valid and it owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for Adma2Desc32 {}
-
 /// 96-bit ADMA2 descriptor used for 64-bit system addresses in pre-v4 mode.
 #[repr(C, align(4))]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 pub(crate) struct Adma2Desc64 {
     attr: u16,
     length: u16,
@@ -73,9 +69,8 @@ pub(crate) struct Adma2Desc64 {
     address_high: u32,
 }
 
-// SAFETY: The aligned C-layout descriptor contains only integer fields, so
-// every bit pattern is valid and it owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for Adma2Desc64 {}
+const _: () = assert!(core::mem::size_of::<Adma2Desc32>() == 8);
+const _: () = assert!(core::mem::size_of::<Adma2Desc64>() == 12);
 
 pub(crate) enum Adma2DescriptorTable {
     Addr32(CoherentArray<Adma2Desc32>),

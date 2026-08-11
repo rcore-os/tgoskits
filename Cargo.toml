@@ -321,6 +321,7 @@ fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
 trait-ffi = "0.2.11"
 tock-registers = "0.10"
+zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 sg200x-bsp = { version = "0.7.1", default-features = false }
 sg200x-jpu = { version = "0.1.3", path = "drivers/vpu/sg200x-jpu" }
 bcm2835-sdhci = "0.1.1-preview.1"

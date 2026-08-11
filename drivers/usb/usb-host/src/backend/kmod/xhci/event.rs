@@ -8,16 +8,14 @@ use super::ring::{Ring, TRBS_PER_SEGMENT};
 use crate::{err::*, osal::Kernel};
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 pub struct EventRingSte {
     pub addr: u64,
     pub size: u16,
     _reserved: [u8; 6],
 }
 
-// SAFETY: The C-layout event ring entry contains only integers and bytes, so
-// every bit pattern is valid and it owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for EventRingSte {}
+const _: () = assert!(core::mem::size_of::<EventRingSte>() == 16);
 
 pub struct EventRing {
     segments: Vec<Ring>,

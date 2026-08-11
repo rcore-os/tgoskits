@@ -39,7 +39,7 @@ const IDENTIFY_FLUSH_EXT_SUPPORTED: u16 = 1 << 13;
 const IDENTIFY_FUA_SUPPORTED: u16 = 1 << 6;
 const IDENTIFY_VALID_COMMAND_SET: u16 = 0x4000;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 #[repr(C)]
 pub(super) struct CommandHeader {
     options: u32,
@@ -49,14 +49,10 @@ pub(super) struct CommandHeader {
     reserved: [u32; 4],
 }
 
-// SAFETY: The C-layout command header contains only integer fields, accepts
-// every bit pattern, and owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for CommandHeader {}
-
 pub(super) type CommandList = [CommandHeader; 32];
 pub(super) type ReceivedFis = [u8; 256];
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 #[repr(C)]
 struct PhysicalRegionDescriptor {
     address_low: u32,
@@ -65,7 +61,7 @@ struct PhysicalRegionDescriptor {
     byte_count_and_flags: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 #[repr(C)]
 pub(super) struct CommandTable {
     command_fis: [u8; 64],
@@ -73,10 +69,6 @@ pub(super) struct CommandTable {
     reserved: [u8; 48],
     descriptors: [PhysicalRegionDescriptor; MAX_PRDS],
 }
-
-// SAFETY: The C-layout command table contains only byte arrays and C-layout
-// integer descriptors, so every bit pattern is valid.
-unsafe impl dma_api::DmaPod for CommandTable {}
 
 impl Default for CommandTable {
     fn default() -> Self {

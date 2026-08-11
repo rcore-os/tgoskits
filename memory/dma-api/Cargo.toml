@@ -20,6 +20,7 @@ derive_more.workspace = true
 log.workspace = true
 mbarrier = "0.1"
 thiserror.workspace = true
+zerocopy.workspace = true
 
 [dev-dependencies]
 ax-sync = { workspace = true, features = ["host-test"] }

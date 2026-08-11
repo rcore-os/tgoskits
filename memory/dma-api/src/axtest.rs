@@ -206,17 +206,23 @@ fn tracking_device() -> (DeviceDma, &'static TrackingDmaOp) {
     (DeviceDma::new_legacy(u64::MAX, op), op)
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+)]
 #[repr(C)]
 struct Descriptor {
     addr: u64,
     len: u32,
     flags: u32,
 }
-
-// SAFETY: `Descriptor` has a stable C layout, every field accepts all bit
-// patterns, and it contains no references or owned resources.
-unsafe impl crate::DmaPod for Descriptor {}
 
 #[axtest]
 fn dma_api_device_metadata_constraints_and_nop_cache_ops_are_callable() {

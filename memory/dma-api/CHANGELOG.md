@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Made allocation and mapping handles move-only, required explicit `DmaPod`
-  implementations for typed DMA data, and rejected zero-sized requests before
-  invoking DMA backends.
+- Made allocation and mapping handles move-only, required
+  representation-checked `DmaPod` types for typed DMA data, and rejected
+  zero-sized requests before invoking DMA backends.
 
 ## [0.9.5](https://github.com/rcore-os/tgoskits/compare/dma-api-v0.9.4...dma-api-v0.9.5) - 2026-08-09
 

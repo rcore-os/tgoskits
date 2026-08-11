@@ -11,16 +11,12 @@ const RX_PACKET_LEN_MASK: u32 = 0x3fff;
 const ETH_FCS_LEN: usize = 4;
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 pub struct TxDesc {
     pub opts1: u32,
     pub opts2: u32,
     pub addr: u64,
 }
-
-// SAFETY: The C-layout descriptor contains only integer fields, so every bit
-// pattern is valid and it owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for TxDesc {}
 
 impl TxDesc {
     pub fn new_cpu_owned(addr: u64, len: usize, ring_end: bool) -> Self {
@@ -50,16 +46,12 @@ impl TxDesc {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 pub struct RxDesc {
     pub opts1: u32,
     pub opts2: u32,
     pub addr: u64,
 }
-
-// SAFETY: The C-layout descriptor contains only integer fields, so every bit
-// pattern is valid and it owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for RxDesc {}
 
 impl RxDesc {
     pub fn new_cpu_owned(addr: u64, len: usize, ring_end: bool) -> Self {

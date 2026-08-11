@@ -10,33 +10,46 @@ use crate::{err::*, osal::Kernel};
 #[derive(Clone, Copy)]
 struct DeviceContext32Dma(Device32Byte);
 
-// SAFETY: xhci 0.9.2 defines `Device<8>` as a C-layout aggregate of
-// transparent `u32` arrays, so every bit pattern is valid.
+// SAFETY: xhci 0.9.2 defines `Device<8>` as a padding-free C-layout aggregate
+// of transparent `u32` arrays. It accepts every bit pattern and contains no
+// pointers, interior mutability, or owned resources.
 unsafe impl dma_api::DmaPod for DeviceContext32Dma {}
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 struct DeviceContext64Dma(Device64Byte);
 
-// SAFETY: xhci 0.9.2 defines `Device<16>` as a C-layout aggregate of
-// transparent `u32` arrays, so every bit pattern is valid.
+// SAFETY: xhci 0.9.2 defines `Device<16>` as a padding-free C-layout aggregate
+// of transparent `u32` arrays. It accepts every bit pattern and contains no
+// pointers, interior mutability, or owned resources.
 unsafe impl dma_api::DmaPod for DeviceContext64Dma {}
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 struct InputContext32Dma(Input32Byte);
 
-// SAFETY: xhci 0.9.2 defines `Input<8>` as a C-layout aggregate of
-// transparent `u32` arrays, so every bit pattern is valid.
+// SAFETY: xhci 0.9.2 defines `Input<8>` as a padding-free C-layout aggregate of
+// transparent `u32` arrays. It accepts every bit pattern and contains no
+// pointers, interior mutability, or owned resources.
 unsafe impl dma_api::DmaPod for InputContext32Dma {}
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 struct InputContext64Dma(Input64Byte);
 
-// SAFETY: xhci 0.9.2 defines `Input<16>` as a C-layout aggregate of
-// transparent `u32` arrays, so every bit pattern is valid.
+// SAFETY: xhci 0.9.2 defines `Input<16>` as a padding-free C-layout aggregate
+// of transparent `u32` arrays. It accepts every bit pattern and contains no
+// pointers, interior mutability, or owned resources.
 unsafe impl dma_api::DmaPod for InputContext64Dma {}
+
+const _: () = assert!(core::mem::size_of::<DeviceContext32Dma>() == 1024);
+const _: () = assert!(core::mem::size_of::<DeviceContext64Dma>() == 2048);
+const _: () = assert!(core::mem::size_of::<InputContext32Dma>() == 1056);
+const _: () = assert!(core::mem::size_of::<InputContext64Dma>() == 2112);
+const _: () = assert!(core::mem::align_of::<DeviceContext32Dma>() == 4);
+const _: () = assert!(core::mem::align_of::<DeviceContext64Dma>() == 4);
+const _: () = assert!(core::mem::align_of::<InputContext32Dma>() == 4);
+const _: () = assert!(core::mem::align_of::<InputContext64Dma>() == 4);
 
 pub struct DeviceContextList {
     pub dcbaa: CoherentArray<u64>,

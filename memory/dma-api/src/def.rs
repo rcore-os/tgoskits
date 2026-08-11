@@ -160,31 +160,49 @@ pub enum DmaError {
 /// require_dma_pod::<bool>();
 /// ```
 ///
+/// Raw pointers are also excluded from typed DMA storage.
+///
+/// ```compile_fail
+/// use dma_api::DmaPod;
+///
+/// fn require_dma_pod<T: DmaPod>() {}
+/// require_dma_pod::<*const u8>();
+/// ```
+///
+/// Representation derives reject implicit padding at compile time.
+///
+/// ```compile_fail
+/// use zerocopy::{FromBytes, Immutable, IntoBytes};
+///
+/// #[repr(C)]
+/// #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes)]
+/// struct Padded {
+///     tag: u8,
+///     value: u32,
+/// }
+/// ```
+///
 /// # Safety
 ///
-/// Implementors must be `Copy`, permit every possible bit pattern, and contain
-/// no references, pointers, or owned resources whose validity can be broken by
-/// raw device writes. Padding bytes are allowed, but drivers must not rely on
-/// their contents.
+/// Implementors must be `Copy`, permit every possible bit pattern, expose no
+/// uninitialized or padding bytes to the device, and contain no references,
+/// pointers, interior mutability, or owned resources whose validity can be
+/// broken by raw device writes.
+///
+/// Local wire-format types should derive [`zerocopy::FromBytes`],
+/// [`zerocopy::IntoBytes`], and [`zerocopy::Immutable`] instead of implementing
+/// this trait manually. Manual implementations are reserved for audited foreign
+/// types that cannot derive those traits.
 pub unsafe trait DmaPod: Copy {}
 
-macro_rules! impl_dma_pod_for_scalars {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            // SAFETY: Integer and floating-point scalars accept every bit pattern and
-            // contain no references or owned resources.
-            unsafe impl DmaPod for $ty {}
-        )+
-    };
+// SAFETY: `FromBytes` accepts every initialized bit pattern, `IntoBytes`
+// guarantees that the full representation contains initialized bytes without
+// padding, and `Immutable` excludes interior mutability. Together with `Copy`,
+// these bounds satisfy the `DmaPod` contract.
+unsafe impl<T> DmaPod for T where
+    T: Copy + zerocopy::FromBytes + zerocopy::IntoBytes + zerocopy::Immutable
+{
 }
-
-impl_dma_pod_for_scalars!(
-    u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64,
-);
-
-// SAFETY: An array has the same validity requirements as its elements and
-// contains no additional references or owned resources.
-unsafe impl<T: DmaPod, const N: usize> DmaPod for [T; N] {}
 
 /// Backend-owned token for one DMA allocation.
 ///

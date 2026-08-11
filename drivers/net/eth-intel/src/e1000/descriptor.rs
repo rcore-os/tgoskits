@@ -1,5 +1,5 @@
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 pub struct TxDesc {
     pub addr: u64,
     pub length: u16,
@@ -9,10 +9,6 @@ pub struct TxDesc {
     pub css: u8,
     pub special: u16,
 }
-
-// SAFETY: The C-layout descriptor contains only integer fields, so every bit
-// pattern is valid and it owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for TxDesc {}
 
 impl TxDesc {
     pub const CMD_EOP: u8 = 1 << 0;
@@ -39,7 +35,7 @@ impl TxDesc {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes)]
 pub struct RxDesc {
     pub addr: u64,
     pub length: u16,
@@ -49,9 +45,8 @@ pub struct RxDesc {
     pub special: u16,
 }
 
-// SAFETY: The C-layout descriptor contains only integer fields, so every bit
-// pattern is valid and it owns no CPU-side resources.
-unsafe impl dma_api::DmaPod for RxDesc {}
+const _: () = assert!(core::mem::size_of::<TxDesc>() == 16);
+const _: () = assert!(core::mem::size_of::<RxDesc>() == 16);
 
 impl RxDesc {
     pub const STATUS_DD: u8 = 1 << 0;
