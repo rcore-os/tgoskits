@@ -346,6 +346,18 @@ mod tests {
     }
 
     #[test]
+    fn inactive_period_callbacks_do_not_enter_irq_scope() {
+        let root = RootRtBandwidth::new(TaskSystemConfig::new(1));
+        crate::test_runtime::reset_irq_guard_entries();
+
+        for now_ns in 1..=128 {
+            assert!(root.begin_period(CpuId::new(0), instant(now_ns)).is_none());
+        }
+
+        assert_eq!(crate::test_runtime::irq_guard_entries(), 0);
+    }
+
+    #[test]
     fn firing_update_keeps_a_concurrent_activation_live() {
         let root = RootRtBandwidth::new(TaskSystemConfig::new(1));
         root.activate(CpuId::new(0), instant(0));
