@@ -2,6 +2,8 @@
 
 use alloc::vec::Vec;
 
+use bitflags::bitflags;
+
 use super::{Ext4FileSystem, FileSystemStats, MkfsOptions, MountOptions, mkfs_with_options};
 use crate::{
     blockdev::Jbd2Dev,
@@ -152,6 +154,34 @@ impl FilePermissions {
     }
 }
 
+bitflags! {
+    /// Stable user-visible ext4 inode flags.
+    ///
+    /// The core may preserve additional on-disk implementation flags, but they
+    /// never cross this boundary and cannot be changed by callers.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct InodeFlags: u32 {
+        const SYNC = Ext4Inode::EXT4_SYNC_FL;
+        const IMMUTABLE = Ext4Inode::EXT4_IMMUTABLE_FL;
+        const APPEND = Ext4Inode::EXT4_APPEND_FL;
+        const NO_DUMP = Ext4Inode::EXT4_NODUMP_FL;
+        const NO_ATIME = Ext4Inode::EXT4_NOATIME_FL;
+        const DIRECTORY_SYNC = Ext4Inode::EXT4_DIRSYNC_FL;
+        const TOP_DIRECTORY = Ext4Inode::EXT4_TOPDIR_FL;
+        const PROJECT_INHERIT = Ext4Inode::EXT4_PROJINHERIT_FL;
+        const DIRTY = Ext4Inode::EXT4_DIRTY_FL;
+        const COMPRESSED_BLOCKS = Ext4Inode::EXT4_COMPRBLK_FL;
+        const NO_COMPRESSION = Ext4Inode::EXT4_NOCOMPR_FL;
+        const ENCRYPTED = Ext4Inode::EXT4_ENCRYPT_FL;
+        const DIRECTORY_INDEX = Ext4Inode::EXT4_INDEX_FL;
+        const HUGE_FILE = Ext4Inode::EXT4_HUGE_FILE_FL;
+        const EXTENTS = Ext4Inode::EXT4_EXTENTS_FL;
+        const EA_INODE = Ext4Inode::EXT4_EA_INODE_FL;
+        const EOF_BLOCKS = Ext4Inode::EXT4_EOFBLOCKS_FL;
+        const INLINE_DATA = Ext4Inode::EXT4_INLINE_DATA_FL;
+    }
+}
+
 /// Stable inode inspection data returned across the portable core boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InodeInfo {
@@ -166,6 +196,8 @@ pub struct InodeInfo {
     pub ctime: u32,
     pub mtime: u32,
     pub btime: u32,
+    pub project_id: u32,
+    pub flags: InodeFlags,
     pub device_number: Option<DeviceNumber>,
 }
 
@@ -197,6 +229,8 @@ pub struct InodeMetadataUpdate {
     pub device_number: Option<DeviceNumber>,
     pub atime: Option<Ext4Timestamp>,
     pub mtime: Option<Ext4Timestamp>,
+    pub project_id: Option<u32>,
+    pub flags: Option<InodeFlags>,
 }
 
 /// Mounted ext4 instance that owns its device, caches, journal, and services.
@@ -439,11 +473,35 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         update: InodeMetadataUpdate,
     ) -> Ext4Result<InodeInfo> {
         let current = self.inode(number)?;
+        let has_project_feature = self.filesystem.superblock.has_feature_ro_compat(
+            crate::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT,
+        );
+        let mut update = update;
+        if !has_project_feature && update.project_id == Some(0) {
+            update.project_id = None;
+        }
         if update == InodeMetadataUpdate::default() {
             return Ok(current);
         }
         self.ensure_writable("inode:update_metadata")?;
         let mut inode = self.filesystem.get_inode_by_num(&mut self.device, number)?;
+        if let Some(project_id) = update.project_id {
+            if !has_project_feature && project_id != 0 {
+                return Err(Ext4Error::unsupported().with_operation("inode:project_feature"));
+            }
+            if has_project_feature {
+                self.filesystem
+                    .ensure_extra_isize_for_field(&mut inode, Ext4Inode::FIELD_END_I_PROJID)?;
+                inode.i_projid = project_id;
+            }
+        }
+        if let Some(flags) = update.flags {
+            let modifiable = Ext4Inode::mask_flags_for_mode(
+                inode.i_mode,
+                flags.bits() & Ext4Inode::EXT4_FL_USER_MODIFIABLE,
+            );
+            inode.i_flags = (inode.i_flags & !Ext4Inode::EXT4_FL_USER_MODIFIABLE) | modifiable;
+        }
         if let Some(device_number) = update.device_number {
             inode.set_device_number(device_number)?;
         }
@@ -818,6 +876,8 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
             ctime: inode.i_ctime,
             mtime: inode.i_mtime,
             btime: inode.i_crtime,
+            project_id: inode.i_projid,
+            flags: InodeFlags::from_bits_retain(inode.i_flags & Ext4Inode::EXT4_FL_USER_VISIBLE),
             device_number: inode.device_number()?,
         })
     }

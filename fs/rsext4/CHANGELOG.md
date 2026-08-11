@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dynamic block-size Linux-image coverage.
 - Add a durable external-xattr benchmark workload and retain machine-readable
   metadata copy-on-write performance samples for final Linux/dev comparison.
+- Add typed user-visible inode flags and project identifiers to the owned core
+  metadata DTOs without exposing the on-disk inode representation.
 
 ### Fixed
 

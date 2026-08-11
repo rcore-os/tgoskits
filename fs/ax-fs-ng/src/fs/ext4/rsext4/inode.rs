@@ -217,6 +217,7 @@ impl NodeOps for Inode {
                     .map_err(into_vfs_err)?,
                 atime: update.atime.map(Self::timestamp).transpose()?,
                 mtime: update.mtime.map(Self::timestamp).transpose()?,
+                ..Default::default()
             };
             state
                 .ext4

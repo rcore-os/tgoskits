@@ -39,8 +39,8 @@ pub use mkfs::{
 };
 pub use mount::{MountOptions, mount, mount_with_options, mount_with_options_and_observer};
 pub use owned::{
-    DirectoryEntry, DirectoryEntryType, Ext4, FilePermissions, InodeInfo, InodeMetadataUpdate,
-    MutationContext, SpecialInodeKind, format,
+    DirectoryEntry, DirectoryEntryType, Ext4, FilePermissions, InodeFlags, InodeInfo,
+    InodeMetadataUpdate, MutationContext, SpecialInodeKind, format,
 };
 pub use sync::umount;
 pub(crate) use system_zone::SystemZoneMap;
