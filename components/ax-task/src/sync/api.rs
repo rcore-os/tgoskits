@@ -1,8 +1,9 @@
-//! Public synchronization primitives backed by the task scheduler.
+//! Stable synchronization API exported by the scheduler layer.
 //!
-//! [`ax_sync`] remains the canonical lock crate. These re-exports let task and
-//! runtime consumers use the same concrete types without introducing another
-//! synchronization implementation.
+//! The concrete lock algorithms are migrated into this crate in independent
+//! stages. During that migration these exports preserve the current PI mutex
+//! and execution-context semantics rather than substituting the simpler
+//! wait-queue mutex from the layering reference.
 
 pub use ax_sync::{
     InterruptibleMutexExt, IrqMutex, IrqSaveGuard, LockSubclass, LockdepMutexExt, Mutex,

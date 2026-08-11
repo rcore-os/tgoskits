@@ -1,6 +1,6 @@
 //! ArceOS runtime providers for `ax-sync` capabilities.
 
-pub use ax_task::sync::*;
+pub use ax_task::sync::api::*;
 
 #[cfg(not(feature = "host-test"))]
 struct RuntimeCriticalSectionOps;
@@ -74,7 +74,7 @@ struct RuntimePiMutexTaskOps;
 impl ax_sync::PiMutexTaskOps for RuntimePiMutexTaskOps {
     fn current_task_id() -> u64 {
         pi_runtime_result(
-            ax_task::current_thread_id(),
+            ax_task::sync::bridge::current_thread_id(),
             "capture current PI mutex task",
         )
         .as_u64()
@@ -82,31 +82,34 @@ impl ax_sync::PiMutexTaskOps for RuntimePiMutexTaskOps {
 
     fn validate_blocking_context() {
         pi_runtime_result(
-            ax_task::validate_blocking_context(),
+            ax_task::sync::bridge::validate_blocking_context(),
             "validate PI mutex blocking context",
         );
     }
 
     fn lock_slow(lock: &ax_sync::PiMutexCore, sequence: u64) -> ax_sync::PiMutexLockResult {
-        let current = pi_runtime_result(ax_task::current_thread_token(), "capture PI mutex waiter");
+        let current = pi_runtime_result(
+            ax_task::sync::bridge::current_thread_token(),
+            "capture PI mutex waiter",
+        );
         let lock = pi_runtime_result(lock.mutex_ref(), "borrow PI mutex identity");
         pi_runtime_result(
-            ax_task::pi_mutex_lock_slow(lock, &current, sequence),
+            ax_task::sync::bridge::pi_mutex_lock_slow(lock, &current, sequence),
             "register PI mutex waiter",
         )
     }
 
     fn waiter_is_granted(token: &ax_sync::PiWaitToken) -> bool {
-        ax_task::pi_waiter_is_granted(token)
+        ax_task::sync::bridge::pi_waiter_is_granted(token)
     }
 
     fn waiter_is_top(token: &ax_sync::PiWaitToken) -> bool {
-        ax_task::pi_waiter_is_top(token)
+        ax_task::sync::bridge::pi_waiter_is_top(token)
     }
 
     fn initial_owner_is_on_cpu(token: &ax_sync::PiWaitToken) -> bool {
         pi_runtime_result(
-            ax_task::pi_initial_owner_is_on_cpu(token),
+            ax_task::sync::bridge::pi_initial_owner_is_on_cpu(token),
             "observe PI mutex owner execution state",
         )
     }
@@ -116,25 +119,33 @@ impl ax_sync::PiMutexTaskOps for RuntimePiMutexTaskOps {
             unsafe {
                 // SAFETY: the ax-sync owner-spin caller retains its
                 // PreemptGuard across this capability call.
-                ax_task::current_needs_reschedule_pinned()
+                ax_task::sync::bridge::current_needs_reschedule_pinned()
             },
             "observe pinned PI mutex reschedule state",
         )
     }
 
     fn park_current_once(token: &ax_sync::PiWaitToken) {
-        pi_runtime_result(ax_task::pi_park_current_once(token), "park PI mutex waiter");
+        pi_runtime_result(
+            ax_task::sync::bridge::pi_park_current_once(token),
+            "park PI mutex waiter",
+        );
     }
 
     fn try_cancel(token: &ax_sync::PiWaitToken) -> ax_sync::PiWaitCancelOutcome {
-        pi_runtime_result(ax_task::pi_wait_try_cancel(token), "cancel PI mutex waiter")
+        pi_runtime_result(
+            ax_task::sync::bridge::pi_wait_try_cancel(token),
+            "cancel PI mutex waiter",
+        )
     }
 
     fn claim(token: &ax_sync::PiWaitToken) -> ax_sync::PiMutexClaimOutcome {
-        let current =
-            pi_runtime_result(ax_task::current_thread_token(), "capture PI mutex claimant");
+        let current = pi_runtime_result(
+            ax_task::sync::bridge::current_thread_token(),
+            "capture PI mutex claimant",
+        );
         pi_runtime_result(
-            ax_task::pi_mutex_claim(token, &current),
+            ax_task::sync::bridge::pi_mutex_claim(token, &current),
             "claim ownerless PI mutex handoff",
         )
     }
@@ -145,7 +156,7 @@ impl ax_sync::PiMutexTaskOps for RuntimePiMutexTaskOps {
             unsafe {
                 // SAFETY: ax-sync produced `old_owner` from this core's
                 // owner-authorized release transition.
-                ax_task::pi_mutex_release_owned(lock, old_owner.into())
+                ax_task::sync::bridge::pi_mutex_release_owned(lock, old_owner.into())
             },
             "release contended PI mutex",
         );
@@ -155,7 +166,7 @@ impl ax_sync::PiMutexTaskOps for RuntimePiMutexTaskOps {
         unsafe {
             // SAFETY: ax-sync transfers the unique installed waiter handle
             // after the physical lock becomes unreachable.
-            ax_task::pi_drop_wait_handle(wait_handle)
+            ax_task::sync::bridge::pi_drop_wait_handle(wait_handle)
         };
     }
 }
@@ -190,15 +201,15 @@ impl ax_sync::LockdepOps for RuntimeLockdepOps {
     }
 
     fn collect_current_task_held_locks(snapshot: &mut ax_sync::HeldLockSnapshot) {
-        ax_task::collect_current_task_held_locks(snapshot);
+        ax_task::sync::bridge::collect_current_task_held_locks(snapshot);
     }
 
     fn push_current_task_held_lock(held: ax_sync::HeldLock) {
-        ax_task::push_current_task_held_lock(held);
+        ax_task::sync::bridge::push_current_task_held_lock(held);
     }
 
     fn pop_current_task_held_lock(lock_addr: usize) {
-        ax_task::pop_current_task_held_lock(lock_addr);
+        ax_task::sync::bridge::pop_current_task_held_lock(lock_addr);
     }
 
     fn console_write_str(s: &str) {
