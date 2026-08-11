@@ -2773,6 +2773,32 @@ typed caller baton 继续分类。此时不能把 `IrqTicketLock` 或 `PreemptTi
 普通 task context 仍需建立真实 exclusion，只有 API 已持有 scheduler/IRQ baton 的调用点才能选择
 raw/no-pin variant，这与 Linux `rq_lock_irqsave()` 和已持有 baton 的 raw rq 接口分层一致。
 
+### 2026-08-12 root RT period active publication
+
+按 authoritative state 继续拆分后，60 秒窗口中的 2,811,593 次 IRQ ticket acquisition 可以完整
+归因：thread sched 531,269，CPU rq 1,372,637，per-rq RT bandwidth 25,438，CPU deadline base
+641,087，root RT period 241,162，root RT runtime 与 root deadline index 均为 0。root period 在没有
+显式 task deadline event 的窗口内平均每次真实 switch 进入约 2.05 次，因此先用两项确定性红测分别
+覆盖 inactive deadline observation 和 inactive callback claim；旧实现连续 128 次操作都进入 128 次
+IRQ guard，期望为 0。
+
+Linux `rt_bandwidth` 在 root state 中维护 `rt_period_active`：start 在 runtime lock 内完成 timer 身份后
+置 active，idle callback 清 active；inactive 查询不需要进入 root lock。`RootRtBandwidth` 因此只增加
+一个 derived `AtomicBool`：owner、deadline、generation 和 firing 仍由原 `IrqTicketLock` 唯一拥有；
+activation 在锁内先完成权威状态，再 Release 发布 active；观察和 callback 以 Acquire 读取 false 后
+直接返回，true 仍回到权威锁复核；idle callback 清空权威状态后撤销 publication。没有复制 timer
+identity、增加第二套锁或保留旧接口。两项红测均转绿，active -> firing -> idle 的生命周期回归也确认
+撤销后两条路径都不再进入 IRQ guard。
+
+该修改没有被当作性能问题已经解决。相同 4-vCPU Q35/TCG、1009 Hz qperf 复测仍只到
+`file-0474`，root period ticket 增量为 234,620，基线为 241,162；CPU deadline 与 rq ticket 等其他
+分类也同步低约 2%，host user 仅从 87.837 秒降到 87.311 秒。两次窗口都由 workload timeout 终止，
+没有 stop marker，不能把这组小幅共同比例变化归因于 active gate。代码审计也解释了为何本 workload
+不是 inactive：每 CPU `ktimers/%u` 是 FIFO RT worker；period callback 只要 replenish 后
+`time_ns != 0`、rq 仍 throttled 或仍有 current/queued RT member 就继续 active。下一阶段必须量化
+CPU deadline base 与 rq 的具体 acquisition source，不能再把 root period 总数解释成空状态查询，
+也不能以本次正确但无可见吞吐收益的 publication 修复替代剩余性能根因。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
