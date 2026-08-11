@@ -4,7 +4,7 @@ use alloc::{
 };
 use core::fmt;
 
-use ax_sync::SpinLock;
+use ax_runtime::sync::SpinLock;
 use weak_map::WeakMap;
 
 use crate::{Pid, Process, Session};

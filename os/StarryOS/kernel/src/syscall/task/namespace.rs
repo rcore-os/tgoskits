@@ -13,7 +13,7 @@ use linux_raw_sys::general::{
 
 use crate::{
     file::{FD_TABLE, FileDescriptor, NsFd, PidFd, get_file_like},
-    sync::{Mutex, RwLock},
+    sync::{FsMutex, RwLock},
     task::{AX_FILE_LIMIT, AsThread, Thread, get_task},
 };
 
@@ -33,7 +33,7 @@ type SharedFileTable = Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>
 
 struct PreparedUnshare {
     file_table: Option<SharedFileTable>,
-    fs_context: Option<Arc<Mutex<FsContext>>>,
+    fs_context: Option<Arc<FsMutex<FsContext>>>,
     nsproxy: Option<NsProxy>,
 }
 
@@ -74,7 +74,7 @@ impl PreparedUnshare {
                     nsproxy.unshare_mnt();
                 }
             }
-            Some(Arc::new(Mutex::new(fs_context)))
+            Some(Arc::new(FsMutex::new(fs_context)))
         } else {
             None
         };

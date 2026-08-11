@@ -25,7 +25,6 @@ use ax_lazyinit::LazyInit;
 #[cfg(feature = "stack-guard-page")]
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{VirtAddr, align_up_4k};
-use ax_sync::SpinLock;
 use futures_util::task::AtomicWaker;
 
 #[cfg(feature = "lockdep")]
@@ -33,6 +32,7 @@ use crate::lockdep::HeldLockStack;
 use crate::{
     AxCpuMask, AxTask, AxTaskRef, WaitQueue,
     interrupt::{InterruptSnapshot, InterruptState},
+    sync::SpinLock,
 };
 
 #[cfg(target_pointer_width = "64")]
@@ -349,9 +349,9 @@ impl TaskInner {
     /// Checks whether the task has been interrupted without clearing
     /// the flag.
     ///
-    /// This is a non-consuming read, unlike [`take_interrupt`]. Use this
+    /// This is a non-consuming read, unlike [`Self::take_interrupt`]. Use this
     /// when the interrupt flag needs to remain set for subsequent
-    /// consumers (e.g., an [`interruptible`] future wrapper).
+    /// consumers (e.g., an [`crate::future::interruptible`] future wrapper).
     #[inline]
     pub fn interrupted(&self) -> bool {
         self.interrupted.is_pending()
@@ -626,7 +626,7 @@ impl TaskInner {
             // enter another preemption check on the interrupted task's stack.
             // The outer IRQ guard turns that chain into successive IRQ exits
             // instead of unbounded scheduler-stack growth.
-            let _irq_guard = ax_sync::IrqSaveGuard::new();
+            let _irq_guard = crate::sync::IrqSaveGuard::new();
             // If current task is pending to be preempted, do rescheduling.
             Self::current_check_preempt_pending();
         }
@@ -634,7 +634,7 @@ impl TaskInner {
 
     #[cfg(feature = "preempt")]
     fn current_check_preempt_pending() {
-        use ax_sync::PreemptIrqSaveState;
+        use crate::sync::PreemptIrqSaveState;
         let curr = crate::current();
         if (curr.force_resched_pending() || curr.need_resched.load(Ordering::Acquire))
             && curr.can_preempt(0)
@@ -927,7 +927,7 @@ fn flush_stack_guard_tlb(vaddr: VirtAddr) {
 
 #[cfg(all(feature = "stack-guard-page", feature = "smp", feature = "ipi"))]
 fn flush_stack_guard_tlb(vaddr: VirtAddr) {
-    let _guard = ax_sync::PreemptGuard::new();
+    let _guard = crate::sync::PreemptGuard::new();
     let current_cpu = ax_hal::percpu::this_cpu_id();
 
     core::sync::atomic::fence(Ordering::SeqCst);

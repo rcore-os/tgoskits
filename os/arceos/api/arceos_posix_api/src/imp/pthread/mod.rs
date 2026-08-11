@@ -7,7 +7,7 @@ use core::{
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_lazyinit::LazyLock;
-use ax_sync::SpinRwLock as RwLock;
+use ax_runtime::sync::SpinRwLock as RwLock;
 use ax_task::AxTaskRef;
 
 use crate::ctypes;

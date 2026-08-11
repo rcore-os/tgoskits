@@ -7,9 +7,6 @@ use core::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
 };
 
-#[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
-use ax_crate_interface::call_interface;
-
 use super::{
     backend::{
         collect_current_task_held_locks, lockdep_fatal, pop_current_task_held_lock,
@@ -18,17 +15,7 @@ use super::{
     types::*,
 };
 
-#[ax_crate_interface::def_interface]
-pub trait LockdepOps {
-    fn irq_save_and_disable() -> usize;
-    fn irq_restore(state: usize);
-    fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot);
-    fn push_current_task_held_lock(held: HeldLock);
-    fn pop_current_task_held_lock(lock_addr: usize);
-    fn console_write_str(s: &str);
-    fn fatal() -> !;
-}
-
+#[repr(C)]
 pub struct LockdepMap {
     class_id: AtomicU32,
     class_key: AtomicPtr<Location<'static>>,
@@ -56,6 +43,27 @@ impl LockdepMap {
             0 => None,
             id => Some(id),
         }
+    }
+
+    /// Borrows lock-class storage supplied by the `ax-sync` bridge.
+    ///
+    /// # Safety
+    ///
+    /// `class_id` and `class_key` must be the first two fields of one live
+    /// `#[repr(C)]` object with the same layout as `LockdepMap`. The object must
+    /// outlive the returned borrow and must not be moved while it is borrowed.
+    #[doc(hidden)]
+    pub unsafe fn from_external_parts<'a>(
+        class_id: &'a AtomicU32,
+        class_key: &'a AtomicPtr<Location<'static>>,
+    ) -> &'a Self {
+        // SAFETY: guaranteed by the caller's shared-layout contract.
+        let map = unsafe { &*(core::ptr::from_ref(class_id).cast::<Self>()) };
+        debug_assert_eq!(
+            core::ptr::from_ref(&map.class_key),
+            core::ptr::from_ref(class_key)
+        );
+        map
     }
 }
 
@@ -254,7 +262,7 @@ struct GraphGuard {
 impl GraphGuard {
     fn acquire() -> Self {
         #[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
-        let irq_state = call_interface!(LockdepOps::irq_save_and_disable);
+        let irq_state = crate::sync::irq_save_and_disable();
         while GRAPH_STATE
             .lock
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -275,7 +283,11 @@ impl Drop for GraphGuard {
     fn drop(&mut self) {
         GRAPH_STATE.lock.store(false, Ordering::Release);
         #[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
-        call_interface!(LockdepOps::irq_restore, self.irq_state);
+        // SAFETY: this is the matching, properly nested restore for the state
+        // saved when this graph guard was acquired.
+        unsafe {
+            crate::sync::irq_restore(self.irq_state)
+        };
     }
 }
 
@@ -427,7 +439,7 @@ pub(crate) fn prepare_acquire_with_snapshot_nested_mode(
     )
 }
 
-#[cfg(feature = "sleep")]
+#[cfg(feature = "multitask")]
 pub(crate) fn prepare_acquire_with_snapshot_nested_with_sleep(
     map: &LockdepMap,
     lock_kind: &'static str,

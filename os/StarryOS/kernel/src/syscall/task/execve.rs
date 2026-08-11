@@ -138,7 +138,7 @@ fn do_execve(
     // the holder has crossed into irreversible teardown — which we observe
     // by `zap_thread` setting our `exit_request`.
     //
-    // We can't use `ax_sync::Mutex::lock` directly: it sleeps on
+    // We can't use `Mutex::lock` directly: it sleeps on
     // `WaitQueue::wait_until`, which is not awakened by zap's
     // `task.interrupt()`, and (worse) on release the loser would acquire
     // the mutex and proceed with execve on top of the holder's already-

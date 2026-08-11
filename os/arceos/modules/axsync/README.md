@@ -26,7 +26,7 @@ ArceOS implements the production providers in `ax-runtime`; host tests use the
 - `sleep`: enable the sleepable mutex interface.
 - `lockdep`: enable held-lock and ordering diagnostics.
 - `lock-api`: enable the IRQ-save raw mutex adapter required by `lock_api`.
-- `host-test`: install deterministic host-side runtime providers.
+- `host-test`: use the deterministic host-side engine on non-bare-metal targets.
 - `axtest`: expose bare-metal coverage tests.
 
 ## License

@@ -12,10 +12,10 @@ license = "Apache-2.0"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
-ax-sync = { workspace = true, features = ["smp"] }
+ax-runtime.workspace = true
 ax-lazyinit = { workspace = true }
 weak-map = "0.1"
 
 [dev-dependencies]
 ctor = "0.4.1"
-ax-sync = { workspace = true, features = ["host-test", "lockdep", "smp"] }
+ax-runtime = { workspace = true, features = ["host-test", "smp", "lockdep", "multitask"] }

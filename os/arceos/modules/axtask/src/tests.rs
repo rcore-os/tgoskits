@@ -11,12 +11,12 @@ use std::{
 };
 
 use ax_errno::{AxError, AxResult};
-#[cfg(feature = "preempt")]
-use ax_sync::{PreemptGuard, SpinLock};
 use axpoll::{IoEvents, Pollable};
 
 #[cfg(feature = "irq")]
 use crate::IrqNotify;
+#[cfg(feature = "preempt")]
+use crate::sync::{PreemptGuard, SpinLock};
 use crate::{WaitQueue, api as ax_task, current};
 
 type TestResult = Result<(), Box<dyn core::any::Any + Send>>;

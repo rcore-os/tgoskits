@@ -15,11 +15,11 @@ use core::{
 };
 
 #[cfg(feature = "lockdep")]
-use crate::IrqSaveGuard;
-use crate::context::{GuardState, PendingGuardState};
+use crate::sync::IrqSaveGuard;
+use crate::sync::context::{GuardState, PendingGuardState};
 
 #[cfg(feature = "lockdep")]
-type LockdepAcquire = crate::spin::lockdep::Lockdep;
+type LockdepAcquire = crate::sync::spin::lockdep::Lockdep;
 
 #[cfg(not(feature = "lockdep"))]
 #[derive(Clone, Copy)]
@@ -111,7 +111,7 @@ pub struct BaseSpinLock<G: GuardState, T: ?Sized> {
     #[cfg(feature = "smp")]
     lock: AtomicBool,
     #[cfg(feature = "lockdep")]
-    lockdep: crate::spin::lockdep::LockdepMap,
+    lockdep: crate::sync::spin::lockdep::LockdepMap,
     data: UnsafeCell<T>,
 }
 
@@ -143,7 +143,7 @@ impl<G: GuardState, T> BaseSpinLock<G, T> {
             #[cfg(feature = "smp")]
             lock: AtomicBool::new(false),
             #[cfg(feature = "lockdep")]
-            lockdep: crate::spin::lockdep::LockdepMap::new(),
+            lockdep: crate::sync::spin::lockdep::LockdepMap::new(),
         }
     }
 
@@ -160,7 +160,7 @@ impl<G: GuardState, T> BaseSpinLock<G, T> {
 impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
     #[cfg(feature = "lockdep")]
     #[inline(always)]
-    pub(crate) fn lockdep_map(&self) -> &crate::spin::lockdep::LockdepMap {
+    pub(crate) fn lockdep_map(&self) -> &crate::sync::spin::lockdep::LockdepMap {
         &self.lockdep
     }
 
@@ -349,7 +349,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
         #[cfg(feature = "lockdep")]
         {
             let addr = self as *const _ as *const () as usize;
-            crate::spin::lockdep::force_release::<G>(addr);
+            crate::sync::spin::lockdep::force_release::<G>(addr);
         }
         #[cfg(feature = "smp")]
         self.lock.store(false, Ordering::Release);
@@ -419,7 +419,7 @@ impl<G: GuardState, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
             let _lockdep_irq_guard = IrqSaveGuard::new();
 
             #[cfg(feature = "lockdep")]
-            crate::spin::lockdep::release::<G>(self.lock_addr);
+            crate::sync::spin::lockdep::release::<G>(self.lock_addr);
             #[cfg(feature = "smp")]
             self.lock.store(false, Ordering::Release);
         }
@@ -442,13 +442,13 @@ mod tests {
 
     use super::*;
 
-    #[cfg(feature = "lockdep")]
+    #[cfg(all(feature = "lockdep", feature = "smp"))]
     struct TestGuardIrq;
 
-    #[cfg(feature = "lockdep")]
+    #[cfg(all(feature = "lockdep", feature = "smp"))]
     static mut IRQ_CNT: u32 = 0;
 
-    #[cfg(feature = "lockdep")]
+    #[cfg(all(feature = "lockdep", feature = "smp"))]
     impl GuardState for TestGuardIrq {
         type State = u32;
 
@@ -470,10 +470,10 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "lockdep")]
+    #[cfg(all(feature = "lockdep", feature = "smp"))]
     type TestSpinIrq<T> = BaseSpinLock<TestGuardIrq, T>;
 
-    type SpinMutex<T> = crate::SpinLock<T>;
+    type SpinMutex<T> = crate::sync::SpinLock<T>;
 
     #[cfg(all(not(feature = "smp"), target_pointer_width = "64"))]
     #[test]
@@ -544,6 +544,32 @@ mod tests {
 
     #[test]
     #[cfg(feature = "smp")]
+    fn lock_acquire_observes_released_writes() {
+        const THREADS: usize = 6;
+        const ITERATIONS: usize = 1_000;
+        let value = Arc::new(SpinMutex::new((0usize, 0usize)));
+        let mut workers = Vec::new();
+        for _ in 0..THREADS {
+            let value = value.clone();
+            workers.push(thread::spawn(move || {
+                for _ in 0..ITERATIONS {
+                    let mut guard = value.lock();
+                    assert_eq!(guard.0, guard.1);
+                    guard.0 += 1;
+                    guard.1 = guard.0;
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().expect("spin worker panicked");
+        }
+        let guard = value.lock();
+        assert_eq!(guard.0, THREADS * ITERATIONS);
+        assert_eq!(guard.1, guard.0);
+    }
+
+    #[test]
+    #[cfg(feature = "smp")]
     fn try_lock() {
         let mutex = SpinMutex::<_>::new(42);
 
@@ -581,14 +607,14 @@ mod tests {
     fn lockdep_panic_restores_spin_lock_context() {
         let lock = SpinMutex::new(42);
         let guard = lock.lock();
-        let held_context = crate::host_context_snapshot();
+        let held_context = crate::sync::host_context_snapshot();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lock.try_lock()));
         assert!(result.is_err());
-        assert_eq!(crate::host_context_snapshot(), held_context);
+        assert_eq!(crate::sync::host_context_snapshot(), held_context);
 
         drop(guard);
-        assert_eq!(crate::host_context_snapshot(), (0, true));
+        assert_eq!(crate::sync::host_context_snapshot(), (0, true));
         assert!(lock.try_lock().is_some());
     }
 
@@ -600,20 +626,20 @@ mod tests {
     ))]
     #[test]
     fn lockdep_finish_panic_rolls_back_spin_lock() {
-        let held_lock = crate::SpinRwLock::new(());
+        let held_lock = crate::sync::SpinRwLock::new(());
         let lock = SpinMutex::new(42);
-        let guards = (0..crate::lockdep::TEST_MAX_HELD_LOCKS)
+        let guards = (0..crate::sync::lockdep::TEST_MAX_HELD_LOCKS)
             .map(|_| held_lock.read())
             .collect::<Vec<_>>();
-        let held_context = crate::host_context_snapshot();
+        let held_context = crate::sync::host_context_snapshot();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lock.try_lock()));
         assert!(result.is_err());
-        assert_eq!(crate::host_context_snapshot(), held_context);
+        assert_eq!(crate::sync::host_context_snapshot(), held_context);
         assert!(!lock.is_locked());
 
         drop(guards);
-        assert_eq!(crate::host_context_snapshot(), (0, true));
+        assert_eq!(crate::sync::host_context_snapshot(), (0, true));
         assert!(lock.try_lock().is_some());
     }
 

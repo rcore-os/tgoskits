@@ -12,7 +12,7 @@ license = "Apache-2.0"
 axtest = ["dep:axtest"]
 default = []
 host-test = ["ax-sync/host-test"]
-lockdep = ["ax-sync/lockdep"]
+lockdep = []
 
 [dependencies]
 ax-errno = { workspace = true }

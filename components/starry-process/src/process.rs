@@ -10,7 +10,7 @@ use core::{
 };
 
 use ax_lazyinit::LazyInit;
-use ax_sync::SpinLock;
+use ax_runtime::sync::SpinLock;
 use weak_map::StrongMap;
 
 use crate::{Pid, ProcessGroup, Session};

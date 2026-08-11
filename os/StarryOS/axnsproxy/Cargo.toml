@@ -12,7 +12,7 @@ authors.workspace = true
 ax-cgroup = { workspace = true }
 ax-errno = { workspace = true }
 ax-lazyinit.workspace = true
-ax-sync = { workspace = true }
+ax-runtime.workspace = true
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "general",
     "no_std",

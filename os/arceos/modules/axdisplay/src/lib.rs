@@ -11,7 +11,7 @@ pub mod rdif;
 mod types;
 
 use ax_lazyinit::LazyInit;
-use ax_sync::SpinLock as Mutex;
+use ax_task::sync::SpinLock as Mutex;
 pub use device::{DisplayDevice, DisplayError, DisplayResult, ErasedDisplayDevice};
 pub use types::{DisplayInfo, PixelFormat};
 

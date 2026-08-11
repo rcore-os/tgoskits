@@ -12,7 +12,6 @@ axtest = ["dep:axtest", "irq"]
 smp = [
     "axplat-dyn/smp",
     "ax-plat/smp",
-    "ax-sync/smp",
 ]
 irq = [
     "ax-plat/irq",
@@ -36,7 +35,12 @@ hv = [
     "ax-cpu/exception-table",
     "axplat-dyn/hv",
 ]
-host-test = ["cpu-local/host-test", "ax-cpu/host-test", "ax-percpu/host-test", "ax-sync/host-test"]
+host-test = [
+    "cpu-local/host-test",
+    "ax-cpu/host-test",
+    "ax-percpu/host-test",
+    "ax-sync/host-test",
+]
 
 default = []
 ipi = ["irq"]

@@ -1,169 +1,175 @@
-//! Public spin-lock types whose acquisition methods express context policy.
+//! OS-independent non-sleeping lock wrappers.
 
-mod base;
-#[cfg(feature = "lockdep")]
-pub(crate) mod lockdep;
 #[cfg(feature = "lock-api")]
 mod raw;
-pub(crate) mod rwlock;
 
-use core::{fmt, ptr};
+use core::{
+    cell::UnsafeCell,
+    fmt,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+    panic::Location,
+    sync::atomic::{AtomicBool, AtomicUsize},
+};
 
 #[cfg(feature = "lock-api")]
 pub use self::raw::*;
-use self::{
-    base::{BaseSpinLock, BaseSpinLockGuard},
-    rwlock::{BaseSpinRwLock, BaseSpinRwLockReadGuard, BaseSpinRwLockWriteGuard},
+use crate::interface::{
+    CONTEXT_PREEMPT, CONTEXT_PREEMPT_IRQSAVE, CONTEXT_RAW, LOCK_MODE_READ, LOCK_MODE_WRITE,
+    LockMetadata,
 };
-use crate::context::{PreemptIrqSaveState, PreemptState, RawState};
 
 /// A non-sleeping mutual-exclusion lock.
-///
-/// The lock object does not bake in an execution-context policy. Callers
-/// choose the policy at the acquisition site with [`Self::lock`],
-/// [`Self::lock_irqsave`], or [`Self::lock_raw`].
-#[repr(transparent)]
-pub struct SpinLock<T: ?Sized>(BaseSpinLock<RawState, T>);
+#[repr(C)]
+pub struct SpinLock<T: ?Sized> {
+    locked: AtomicBool,
+    metadata: LockMetadata,
+    data: UnsafeCell<T>,
+}
 
-/// A guard returned by [`SpinLock::lock`].
-pub type SpinLockGuard<'a, T> = BaseSpinLockGuard<'a, PreemptState, T>;
+/// A guard returned by any [`SpinLock`] acquisition method.
+///
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<ax_sync::SpinLockGuard<'static, ()>>();
+/// ```
+pub struct SpinLockGuard<'a, T: ?Sized> {
+    lock: &'a SpinLock<T>,
+    context: u8,
+    context_state: usize,
+    _not_send: PhantomData<*mut ()>,
+}
 
 /// A guard returned by [`SpinLock::lock_irqsave`].
-pub type SpinLockIrqSaveGuard<'a, T> = BaseSpinLockGuard<'a, PreemptIrqSaveState, T>;
-
+pub type SpinLockIrqSaveGuard<'a, T> = SpinLockGuard<'a, T>;
 /// A guard returned by [`SpinLock::lock_raw`].
-pub type RawSpinLockGuard<'a, T> = BaseSpinLockGuard<'a, RawState, T>;
+pub type RawSpinLockGuard<'a, T> = SpinLockGuard<'a, T>;
+
+unsafe impl<T: ?Sized + Send> Send for SpinLock<T> {}
+unsafe impl<T: ?Sized + Send> Sync for SpinLock<T> {}
 
 impl<T> SpinLock<T> {
     /// Creates an unlocked spin lock.
-    #[inline(always)]
     #[track_caller]
     pub const fn new(data: T) -> Self {
-        Self(BaseSpinLock::new(data))
+        Self {
+            locked: AtomicBool::new(false),
+            metadata: LockMetadata::new(),
+            data: UnsafeCell::new(data),
+        }
     }
 
     /// Consumes the lock and returns the protected value.
-    #[inline(always)]
     pub fn into_inner(self) -> T {
-        self.0.into_inner()
+        self.data.into_inner()
     }
 }
 
 impl<T: ?Sized> SpinLock<T> {
     #[inline(always)]
-    fn with_state<G: crate::context::GuardState>(&self) -> &BaseSpinLock<G, T> {
-        // SAFETY: `BaseSpinLock` has a stable C layout, and its guard-state
-        // parameter is represented only by `PhantomData`. The atomic state,
-        // lockdep map, and protected value therefore have identical addresses
-        // for every `G`.
-        unsafe { &*(ptr::from_ref(&self.0) as *const BaseSpinLock<G, T>) }
-    }
-
-    #[inline(always)]
-    fn with_state_mut<G: crate::context::GuardState>(&mut self) -> &mut BaseSpinLock<G, T> {
-        // SAFETY: see `with_state`; the exclusive borrow prevents aliases.
-        unsafe { &mut *(ptr::from_mut(&mut self.0) as *mut BaseSpinLock<G, T>) }
+    #[track_caller]
+    fn acquire(&self, context: u8, subclass: u32, is_try: bool) -> Option<SpinLockGuard<'_, T>> {
+        let result = crate::interface::spin_acquire(
+            &self.locked,
+            &self.metadata,
+            self as *const Self as *const () as usize,
+            context,
+            subclass,
+            is_try,
+            Location::caller(),
+        );
+        result.acquired().then(|| SpinLockGuard {
+            lock: self,
+            context,
+            context_state: result.context_state(),
+            _not_send: PhantomData,
+        })
     }
 
     /// Acquires the lock after disabling kernel preemption.
-    #[inline(always)]
     #[track_caller]
     pub fn lock(&self) -> SpinLockGuard<'_, T> {
-        self.with_state::<PreemptState>().lock()
+        self.lock_nested(0)
     }
 
-    /// Acquires the lock after disabling preemption, using a lockdep subclass.
-    ///
-    /// This is intended for structurally nested acquisitions of different
-    /// locks with the same class. Without `lockdep`, `subclass` has no effect.
-    #[inline(always)]
+    /// Acquires the lock with a lockdep subclass.
     #[track_caller]
     pub fn lock_nested(&self, subclass: u32) -> SpinLockGuard<'_, T> {
-        self.with_state::<PreemptState>().lock_nested(subclass)
+        self.acquire(CONTEXT_PREEMPT, subclass, false)
+            .expect("blocking spin acquisition returned failure")
     }
 
-    /// Attempts to acquire the lock after disabling kernel preemption.
-    #[inline(always)]
+    /// Attempts to acquire the lock after disabling preemption.
     #[track_caller]
     pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
-        self.with_state::<PreemptState>().try_lock()
+        self.acquire(CONTEXT_PREEMPT, 0, true)
     }
 
-    /// Acquires the lock after disabling preemption and saving/disabling IRQs.
-    #[inline(always)]
+    /// Acquires after disabling preemption and saving/disabling IRQs.
     #[track_caller]
     pub fn lock_irqsave(&self) -> SpinLockIrqSaveGuard<'_, T> {
-        self.with_state::<PreemptIrqSaveState>().lock()
+        self.lock_irqsave_nested(0)
     }
 
-    /// Acquires the lock after disabling preemption and saving/disabling IRQs,
-    /// using a lockdep subclass.
-    ///
-    /// This is intended for structurally nested acquisitions of different
-    /// locks with the same class. Without `lockdep`, `subclass` has no effect.
-    #[inline(always)]
+    /// Acquires in IRQ-save mode with a lockdep subclass.
     #[track_caller]
     pub fn lock_irqsave_nested(&self, subclass: u32) -> SpinLockIrqSaveGuard<'_, T> {
-        self.with_state::<PreemptIrqSaveState>()
-            .lock_nested(subclass)
+        self.acquire(CONTEXT_PREEMPT_IRQSAVE, subclass, false)
+            .expect("blocking IRQ-save spin acquisition returned failure")
     }
 
-    /// Attempts to acquire the lock after disabling preemption and IRQs.
-    #[inline(always)]
+    /// Attempts an IRQ-save acquisition.
     #[track_caller]
     pub fn try_lock_irqsave(&self) -> Option<SpinLockIrqSaveGuard<'_, T>> {
-        self.with_state::<PreemptIrqSaveState>().try_lock()
+        self.acquire(CONTEXT_PREEMPT_IRQSAVE, 0, true)
     }
 
-    /// Acquires the lock without changing preemption or interrupt state.
+    /// Acquires without changing execution context.
     ///
     /// # Safety
     ///
-    /// The caller must prevent same-CPU re-entry and all concurrent access
-    /// which could violate exclusive access, including on single-core builds
-    /// where the atomic lock word is compiled out.
-    #[inline(always)]
+    /// The caller must prevent same-CPU re-entry and concurrent access which
+    /// could violate exclusive ownership.
     #[track_caller]
     pub unsafe fn lock_raw(&self) -> RawSpinLockGuard<'_, T> {
-        self.with_state::<RawState>().lock()
+        self.acquire(CONTEXT_RAW, 0, false)
+            .expect("blocking raw spin acquisition returned failure")
     }
 
-    /// Attempts a raw acquisition without changing execution context.
+    /// Attempts a raw acquisition.
     ///
     /// # Safety
     ///
     /// The caller must uphold the same exclusion contract as
-    /// [`Self::lock_raw`], even when this function returns `None`.
-    #[inline(always)]
+    /// [`Self::lock_raw`].
     #[track_caller]
     pub unsafe fn try_lock_raw(&self) -> Option<RawSpinLockGuard<'_, T>> {
-        self.with_state::<RawState>().try_lock()
+        self.acquire(CONTEXT_RAW, 0, true)
     }
 
     /// Returns whether the lock appears held.
-    ///
-    /// This is only a diagnostic snapshot and provides no synchronization.
-    #[inline(always)]
     pub fn is_locked(&self) -> bool {
-        self.0.is_locked()
+        crate::interface::spin_is_locked(&self.locked)
     }
 
-    /// Returns mutable access without locking.
-    #[inline(always)]
+    /// Returns exclusive access without locking.
     pub fn get_mut(&mut self) -> &mut T {
-        self.with_state_mut::<RawState>().get_mut()
+        self.data.get_mut()
     }
 
-    /// Releases a preemption-mode lock without consuming its guard.
+    /// Releases a deliberately leaked preemption-mode guard.
     ///
     /// # Safety
     ///
-    /// The caller must own exactly one guard returned by [`Self::lock`] and
-    /// must ensure that guard will never subsequently be dropped.
+    /// The caller must own exactly one forgotten guard and prove no reference
+    /// derived from it remains live.
     #[doc(hidden)]
-    #[inline(always)]
     pub unsafe fn force_unlock(&self) {
-        unsafe { self.with_state::<PreemptState>().force_unlock() };
+        crate::interface::spin_force_release(
+            &self.locked,
+            self as *const Self as *const () as usize,
+            CONTEXT_PREEMPT,
+        );
     }
 }
 
@@ -185,123 +191,195 @@ impl<T: fmt::Debug> fmt::Debug for SpinLock<T> {
     }
 }
 
-/// A non-sleeping read-write lock with acquisition-site context policy.
-#[repr(transparent)]
-pub struct SpinRwLock<T: ?Sized>(BaseSpinRwLock<RawState, T>);
+impl<T: ?Sized> Deref for SpinLockGuard<'_, T> {
+    type Target = T;
 
-/// A read guard returned by [`SpinRwLock::read`].
-pub type SpinRwLockReadGuard<'a, T> = BaseSpinRwLockReadGuard<'a, PreemptState, T>;
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the provider granted this guard shared access under the
+        // exclusive lock acquisition.
+        unsafe { &*self.lock.data.get() }
+    }
+}
 
-/// A write guard returned by [`SpinRwLock::write`].
-pub type SpinRwLockWriteGuard<'a, T> = BaseSpinRwLockWriteGuard<'a, PreemptState, T>;
+impl<T: ?Sized> DerefMut for SpinLockGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: this guard uniquely represents the exclusive acquisition.
+        unsafe { &mut *self.lock.data.get() }
+    }
+}
+
+impl<T: ?Sized> Drop for SpinLockGuard<'_, T> {
+    fn drop(&mut self) {
+        crate::interface::spin_release(
+            &self.lock.locked,
+            self.lock as *const SpinLock<T> as *const () as usize,
+            self.context,
+            self.context_state,
+        );
+    }
+}
+
+/// A non-sleeping read-write lock.
+#[repr(C)]
+pub struct SpinRwLock<T: ?Sized> {
+    state: AtomicUsize,
+    metadata: LockMetadata,
+    data: UnsafeCell<T>,
+}
+
+/// A read guard returned by [`SpinRwLock`].
+///
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<ax_sync::SpinRwLockReadGuard<'static, ()>>();
+/// ```
+pub struct SpinRwLockReadGuard<'a, T: ?Sized> {
+    lock: &'a SpinRwLock<T>,
+    context: u8,
+    context_state: usize,
+    _not_send: PhantomData<*mut ()>,
+}
+
+/// A write guard returned by [`SpinRwLock`].
+///
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<ax_sync::SpinRwLockWriteGuard<'static, ()>>();
+/// ```
+pub struct SpinRwLockWriteGuard<'a, T: ?Sized> {
+    lock: &'a SpinRwLock<T>,
+    context: u8,
+    context_state: usize,
+    _not_send: PhantomData<*mut ()>,
+}
 
 /// An IRQ-save read guard.
-pub type SpinRwLockIrqSaveReadGuard<'a, T> = BaseSpinRwLockReadGuard<'a, PreemptIrqSaveState, T>;
-
+pub type SpinRwLockIrqSaveReadGuard<'a, T> = SpinRwLockReadGuard<'a, T>;
 /// An IRQ-save write guard.
-pub type SpinRwLockIrqSaveWriteGuard<'a, T> = BaseSpinRwLockWriteGuard<'a, PreemptIrqSaveState, T>;
-
+pub type SpinRwLockIrqSaveWriteGuard<'a, T> = SpinRwLockWriteGuard<'a, T>;
 /// A raw read guard.
-pub type RawSpinRwLockReadGuard<'a, T> = BaseSpinRwLockReadGuard<'a, RawState, T>;
-
+pub type RawSpinRwLockReadGuard<'a, T> = SpinRwLockReadGuard<'a, T>;
 /// A raw write guard.
-pub type RawSpinRwLockWriteGuard<'a, T> = BaseSpinRwLockWriteGuard<'a, RawState, T>;
+pub type RawSpinRwLockWriteGuard<'a, T> = SpinRwLockWriteGuard<'a, T>;
+
+unsafe impl<T: ?Sized + Send + Sync> Send for SpinRwLock<T> {}
+unsafe impl<T: ?Sized + Send + Sync> Sync for SpinRwLock<T> {}
 
 impl<T> SpinRwLock<T> {
     /// Creates an unlocked spin read-write lock.
-    #[inline(always)]
     #[track_caller]
     pub const fn new(data: T) -> Self {
-        Self(BaseSpinRwLock::new(data))
+        Self {
+            state: AtomicUsize::new(0),
+            metadata: LockMetadata::new(),
+            data: UnsafeCell::new(data),
+        }
     }
 
     /// Consumes the lock and returns the protected value.
-    #[inline(always)]
     pub fn into_inner(self) -> T {
-        self.0.into_inner()
+        self.data.into_inner()
     }
 }
 
 impl<T: ?Sized> SpinRwLock<T> {
-    #[inline(always)]
-    fn with_state<G: crate::context::GuardState>(&self) -> &BaseSpinRwLock<G, T> {
-        // SAFETY: identical to `SpinLock::with_state`; the generic parameter
-        // is represented only by `PhantomData` in a stable C layout.
-        unsafe { &*(ptr::from_ref(&self.0) as *const BaseSpinRwLock<G, T>) }
+    #[track_caller]
+    fn acquire(&self, context: u8, mode: u8, is_try: bool) -> Option<usize> {
+        let result = crate::interface::rwlock_acquire(
+            &self.state,
+            &self.metadata,
+            self as *const Self as *const () as usize,
+            context,
+            mode,
+            is_try,
+            Location::caller(),
+        );
+        result.acquired().then(|| result.context_state())
     }
 
-    #[inline(always)]
-    fn with_state_mut<G: crate::context::GuardState>(&mut self) -> &mut BaseSpinRwLock<G, T> {
-        // SAFETY: see `with_state`; the exclusive borrow prevents aliases.
-        unsafe { &mut *(ptr::from_mut(&mut self.0) as *mut BaseSpinRwLock<G, T>) }
+    #[track_caller]
+    fn read_with(&self, context: u8, is_try: bool) -> Option<SpinRwLockReadGuard<'_, T>> {
+        self.acquire(context, LOCK_MODE_READ, is_try)
+            .map(|context_state| SpinRwLockReadGuard {
+                lock: self,
+                context,
+                context_state,
+                _not_send: PhantomData,
+            })
+    }
+
+    #[track_caller]
+    fn write_with(&self, context: u8, is_try: bool) -> Option<SpinRwLockWriteGuard<'_, T>> {
+        self.acquire(context, LOCK_MODE_WRITE, is_try)
+            .map(|context_state| SpinRwLockWriteGuard {
+                lock: self,
+                context,
+                context_state,
+                _not_send: PhantomData,
+            })
     }
 
     /// Acquires a read guard after disabling preemption.
-    #[inline(always)]
     #[track_caller]
     pub fn read(&self) -> SpinRwLockReadGuard<'_, T> {
-        self.with_state::<PreemptState>().read()
+        self.read_with(CONTEXT_PREEMPT, false)
+            .expect("blocking spin read acquisition returned failure")
     }
 
     /// Attempts a read acquisition after disabling preemption.
-    #[inline(always)]
     #[track_caller]
     pub fn try_read(&self) -> Option<SpinRwLockReadGuard<'_, T>> {
-        self.with_state::<PreemptState>().try_read()
+        self.read_with(CONTEXT_PREEMPT, true)
     }
 
     /// Acquires a write guard after disabling preemption.
-    #[inline(always)]
     #[track_caller]
     pub fn write(&self) -> SpinRwLockWriteGuard<'_, T> {
-        self.with_state::<PreemptState>().write()
+        self.write_with(CONTEXT_PREEMPT, false)
+            .expect("blocking spin write acquisition returned failure")
     }
 
     /// Attempts a write acquisition after disabling preemption.
-    #[inline(always)]
     #[track_caller]
     pub fn try_write(&self) -> Option<SpinRwLockWriteGuard<'_, T>> {
-        self.with_state::<PreemptState>().try_write()
+        self.write_with(CONTEXT_PREEMPT, true)
     }
 
     /// Acquires an IRQ-save read guard.
-    #[inline(always)]
     #[track_caller]
     pub fn read_irqsave(&self) -> SpinRwLockIrqSaveReadGuard<'_, T> {
-        self.with_state::<PreemptIrqSaveState>().read()
+        self.read_with(CONTEXT_PREEMPT_IRQSAVE, false)
+            .expect("blocking IRQ-save read acquisition returned failure")
     }
 
     /// Attempts an IRQ-save read acquisition.
-    #[inline(always)]
     #[track_caller]
     pub fn try_read_irqsave(&self) -> Option<SpinRwLockIrqSaveReadGuard<'_, T>> {
-        self.with_state::<PreemptIrqSaveState>().try_read()
+        self.read_with(CONTEXT_PREEMPT_IRQSAVE, true)
     }
 
     /// Acquires an IRQ-save write guard.
-    #[inline(always)]
     #[track_caller]
     pub fn write_irqsave(&self) -> SpinRwLockIrqSaveWriteGuard<'_, T> {
-        self.with_state::<PreemptIrqSaveState>().write()
+        self.write_with(CONTEXT_PREEMPT_IRQSAVE, false)
+            .expect("blocking IRQ-save write acquisition returned failure")
     }
 
     /// Attempts an IRQ-save write acquisition.
-    #[inline(always)]
     #[track_caller]
     pub fn try_write_irqsave(&self) -> Option<SpinRwLockIrqSaveWriteGuard<'_, T>> {
-        self.with_state::<PreemptIrqSaveState>().try_write()
+        self.write_with(CONTEXT_PREEMPT_IRQSAVE, true)
     }
 
-    /// Acquires a raw read guard without changing execution context.
+    /// Acquires a raw read guard.
     ///
     /// # Safety
     ///
-    /// The caller must prevent re-entry and uphold the read-side exclusion
-    /// contract, including on single-core builds.
-    #[inline(always)]
+    /// The caller must prevent re-entry and uphold shared exclusion.
     #[track_caller]
     pub unsafe fn read_raw(&self) -> RawSpinRwLockReadGuard<'_, T> {
-        self.with_state::<RawState>().read()
+        self.read_with(CONTEXT_RAW, false)
+            .expect("blocking raw read acquisition returned failure")
     }
 
     /// Attempts a raw read acquisition.
@@ -309,22 +387,20 @@ impl<T: ?Sized> SpinRwLock<T> {
     /// # Safety
     ///
     /// The caller must uphold the contract of [`Self::read_raw`].
-    #[inline(always)]
     #[track_caller]
     pub unsafe fn try_read_raw(&self) -> Option<RawSpinRwLockReadGuard<'_, T>> {
-        self.with_state::<RawState>().try_read()
+        self.read_with(CONTEXT_RAW, true)
     }
 
-    /// Acquires a raw write guard without changing execution context.
+    /// Acquires a raw write guard.
     ///
     /// # Safety
     ///
-    /// The caller must prevent re-entry and concurrent readers or writers,
-    /// including on single-core builds.
-    #[inline(always)]
+    /// The caller must prevent re-entry and concurrent readers or writers.
     #[track_caller]
     pub unsafe fn write_raw(&self) -> RawSpinRwLockWriteGuard<'_, T> {
-        self.with_state::<RawState>().write()
+        self.write_with(CONTEXT_RAW, false)
+            .expect("blocking raw write acquisition returned failure")
     }
 
     /// Attempts a raw write acquisition.
@@ -332,30 +408,29 @@ impl<T: ?Sized> SpinRwLock<T> {
     /// # Safety
     ///
     /// The caller must uphold the contract of [`Self::write_raw`].
-    #[inline(always)]
     #[track_caller]
     pub unsafe fn try_write_raw(&self) -> Option<RawSpinRwLockWriteGuard<'_, T>> {
-        self.with_state::<RawState>().try_write()
+        self.write_with(CONTEXT_RAW, true)
     }
 
-    /// Returns mutable access without locking.
-    #[inline(always)]
+    /// Returns exclusive access without locking.
     pub fn get_mut(&mut self) -> &mut T {
-        self.with_state_mut::<RawState>().get_mut()
+        self.data.get_mut()
     }
 
-    /// Removes one deliberately leaked raw read guard from the reader count.
+    /// Removes one deliberately leaked raw read guard.
     ///
     /// # Safety
     ///
-    /// The caller must own a deliberately forgotten guard returned by
-    /// [`Self::read_raw`] and must prove that no live reference from it remains.
+    /// The caller must own one forgotten raw read guard and prove that no live
+    /// reference derived from it remains.
     #[doc(hidden)]
-    #[inline(always)]
     pub unsafe fn force_read_decrement_raw(&self) {
-        unsafe {
-            self.with_state::<RawState>().force_read_decrement();
-        }
+        crate::interface::rwlock_force_read_decrement(
+            &self.state,
+            self as *const Self as *const () as usize,
+            CONTEXT_RAW,
+        );
     }
 }
 
@@ -386,108 +461,51 @@ impl<T: fmt::Debug> fmt::Debug for SpinRwLock<T> {
     }
 }
 
-#[cfg(all(test, feature = "host-test", not(target_os = "none")))]
-mod tests {
-    use std::{
-        sync::{Arc, mpsc},
-        thread,
-    };
+impl<T: ?Sized> Deref for SpinRwLockReadGuard<'_, T> {
+    type Target = T;
 
-    use super::{SpinLock, SpinRwLock};
-    use crate::context::host_context_snapshot;
-
-    #[test]
-    fn spin_lock_acquisition_method_selects_context_policy() {
-        let lock = SpinLock::new(());
-        assert_eq!(host_context_snapshot(), (0, true));
-
-        let guard = lock.lock();
-        assert_eq!(host_context_snapshot(), (1, true));
-        drop(guard);
-        assert_eq!(host_context_snapshot(), (0, true));
-
-        let guard = lock.lock_irqsave();
-        assert_eq!(host_context_snapshot(), (1, false));
-        drop(guard);
-        assert_eq!(host_context_snapshot(), (0, true));
-
-        let guard = lock.lock_irqsave_nested(1);
-        assert_eq!(host_context_snapshot(), (1, false));
-        drop(guard);
-        assert_eq!(host_context_snapshot(), (0, true));
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the provider granted this guard shared read access.
+        unsafe { &*self.lock.data.get() }
     }
+}
 
-    #[test]
-    fn spin_rwlock_acquisition_method_selects_context_policy() {
-        let lock = SpinRwLock::new(());
-
-        let reader = lock.read();
-        assert_eq!(host_context_snapshot(), (1, true));
-        drop(reader);
-        assert_eq!(host_context_snapshot(), (0, true));
-
-        let writer = lock.write_irqsave();
-        assert_eq!(host_context_snapshot(), (1, false));
-        drop(writer);
-        assert_eq!(host_context_snapshot(), (0, true));
+impl<T: ?Sized> Drop for SpinRwLockReadGuard<'_, T> {
+    fn drop(&mut self) {
+        crate::interface::rwlock_release(
+            &self.lock.state,
+            self.lock as *const SpinRwLock<T> as *const () as usize,
+            self.context,
+            self.context_state,
+            LOCK_MODE_READ,
+        );
     }
+}
 
-    #[test]
-    fn failed_spin_lock_try_modes_restore_context() {
-        let lock = Arc::new(SpinLock::new(()));
-        let holder_lock = Arc::clone(&lock);
-        let (held_sender, held_receiver) = mpsc::channel();
-        let (release_sender, release_receiver) = mpsc::channel();
-        let holder = thread::spawn(move || {
-            // SAFETY: this thread owns the raw guard and the channel protocol
-            // keeps it alive until the contending thread finishes its tries.
-            let held = unsafe { holder_lock.lock_raw() };
-            held_sender.send(()).unwrap();
-            release_receiver.recv().unwrap();
-            drop(held);
-        });
-        held_receiver.recv().unwrap();
+impl<T: ?Sized> Deref for SpinRwLockWriteGuard<'_, T> {
+    type Target = T;
 
-        assert!(lock.try_lock().is_none());
-        assert_eq!(host_context_snapshot(), (0, true));
-        assert!(lock.try_lock_irqsave().is_none());
-        assert_eq!(host_context_snapshot(), (0, true));
-        assert!(unsafe { lock.try_lock_raw() }.is_none());
-        assert_eq!(host_context_snapshot(), (0, true));
-
-        release_sender.send(()).unwrap();
-        holder.join().unwrap();
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the provider granted this guard exclusive write access.
+        unsafe { &*self.lock.data.get() }
     }
+}
 
-    #[test]
-    fn failed_spin_rwlock_try_modes_restore_context() {
-        let lock = Arc::new(SpinRwLock::new(()));
-        let holder_lock = Arc::clone(&lock);
-        let (held_sender, held_receiver) = mpsc::channel();
-        let (release_sender, release_receiver) = mpsc::channel();
-        let holder = thread::spawn(move || {
-            // SAFETY: this thread owns the raw writer and the channel protocol
-            // keeps it alive until the contending thread finishes its tries.
-            let held = unsafe { holder_lock.write_raw() };
-            held_sender.send(()).unwrap();
-            release_receiver.recv().unwrap();
-            drop(held);
-        });
-        held_receiver.recv().unwrap();
+impl<T: ?Sized> DerefMut for SpinRwLockWriteGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: this guard uniquely represents the write acquisition.
+        unsafe { &mut *self.lock.data.get() }
+    }
+}
 
-        assert!(lock.try_read().is_none());
-        assert_eq!(host_context_snapshot(), (0, true));
-        assert!(lock.try_write().is_none());
-        assert_eq!(host_context_snapshot(), (0, true));
-        assert!(lock.try_read_irqsave().is_none());
-        assert_eq!(host_context_snapshot(), (0, true));
-        assert!(lock.try_write_irqsave().is_none());
-        assert_eq!(host_context_snapshot(), (0, true));
-        assert!(unsafe { lock.try_read_raw() }.is_none());
-        assert!(unsafe { lock.try_write_raw() }.is_none());
-        assert_eq!(host_context_snapshot(), (0, true));
-
-        release_sender.send(()).unwrap();
-        holder.join().unwrap();
+impl<T: ?Sized> Drop for SpinRwLockWriteGuard<'_, T> {
+    fn drop(&mut self) {
+        crate::interface::rwlock_release(
+            &self.lock.state,
+            self.lock as *const SpinRwLock<T> as *const () as usize,
+            self.context,
+            self.context_state,
+            LOCK_MODE_WRITE,
+        );
     }
 }

@@ -21,8 +21,8 @@ default = []
 smp = []
 irq = []
 alloc = ["dep:ax-alloc"]
-multitask = ["alloc", "ax-task/multitask", "ax-sync/sleep"]
-lockdep = ["multitask", "ax-sync/lockdep"]
+multitask = ["alloc", "ax-task/multitask", "ax-runtime/multitask"]
+lockdep = ["multitask", "ax-runtime/lockdep"]
 fd = ["alloc", "dep:scope-local"]
 fs = ["dep:ax-fs-ng", "fd"]
 net = ["dep:ax-net", "fd"]
@@ -41,7 +41,6 @@ ax-hal.workspace = true
 ax-log.workspace = true
 ax-net = { workspace = true, optional = true }
 ax-runtime.workspace = true
-ax-sync.workspace = true
 ax-task = { workspace = true, optional = true }
 
 # Other crates

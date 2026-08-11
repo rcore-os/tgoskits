@@ -15,18 +15,17 @@ std-compat = []
 host-test = [
   "ax-hal/host-test",
   "ax-ipi?/host-test",
-  "ax-sync/host-test",
   "ax-percpu?/host-test",
-  "ax-task?/host-test",
+  "ax-task/host-test",
 ]
-ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task?/ipi"]
+ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task/ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
 # CPUs can wake and re-enter the scheduler. This intentionally does not enable
 # the ax-ipi callback queue.
 wake-ipi = ["irq", "ax-hal/ipi"]
 irq = [
   "ax-hal/irq",
-  "ax-task?/irq",
+  "ax-task/irq",
   "dep:ax-percpu",
   "dep:rdif-intc",
   "ax-driver/irq",
@@ -34,12 +33,12 @@ irq = [
 multitask = ["ax-task/multitask", "ax-sync/sleep"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
-smp = ["ax-hal/smp", "ax-task?/smp", "ax-sync/smp"]
-uspace = ["ax-hal/uspace", "ax-task?/uspace"]
-lockdep = ["multitask", "ax-sync/lockdep", "ax-task?/lockdep", "ax-fs-ng?/lockdep"]
-stack-guard-page = ["ipi", "multitask", "paging", "ax-task?/stack-guard-page"]
+smp = ["ax-hal/smp", "ax-task/smp"]
+uspace = ["ax-hal/uspace", "ax-task/uspace"]
+lockdep = ["multitask", "ax-task/lockdep", "ax-fs-ng?/lockdep"]
+stack-guard-page = ["ipi", "multitask", "paging", "ax-task/stack-guard-page"]
 stack-protector = []
-tls = ["ax-hal/tls", "ax-task?/tls"]
+tls = ["ax-hal/tls", "ax-task/tls"]
 
 display = ["paging", "dep:ax-display", "ax-driver/display"]
 fs = [
@@ -104,7 +103,7 @@ ax-net = {workspace = true, optional = true}
 ax-percpu = {workspace = true, optional = true}
 ax-plat = {workspace = true}
 ax-sync.workspace = true
-ax-task = {workspace = true, optional = true}
+ax-task = {workspace = true, features = ["lock-api"]}
 axbacktrace = {workspace = true}
 axpoll = {workspace = true, optional = true}
 axklib.workspace = true

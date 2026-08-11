@@ -61,7 +61,7 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 /// the IRQ preempted and triggers the slab from interrupt context.
 ///
 /// The IRQ hook here does only what is safe in interrupt context:
-/// flip a per-IRQ pending bit and `notify_one` a [`WaitQueue`].
+/// flip a per-IRQ pending bit and `notify_one` a [`crate::WaitQueue`].
 /// `WaitQueue::notify_one` just pops from a `VecDeque` under a
 /// `SpinNoIrq` (no allocation, deadlock-free because IRQs are
 /// already disabled in the holding paths) and re-queues the drain
@@ -72,10 +72,9 @@ pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) ->
     use alloc::{collections::BTreeMap, sync::Arc};
     use core::sync::atomic::{AtomicBool, Ordering};
 
-    use ax_sync::SpinLock;
     use axpoll::PollSet;
 
-    use crate::IrqNotify;
+    use crate::{IrqNotify, sync::SpinLock};
 
     static IRQ_NOTIFY: IrqNotify = IrqNotify::new();
     static DRAIN_SPAWNED: AtomicBool = AtomicBool::new(false);

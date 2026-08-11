@@ -23,14 +23,14 @@ pub use uts::{ROOT_UTS_NS, UtNamespace, build_utsname};
 
 /// StarryOS IRQ-save mutex shared by namespace and kernel components.
 #[repr(transparent)]
-pub struct IrqMutex<T: ?Sized>(ax_sync::SpinLock<T>);
+pub struct IrqMutex<T: ?Sized>(ax_runtime::sync::SpinLock<T>);
 
-pub type IrqMutexGuard<'a, T> = ax_sync::SpinLockIrqSaveGuard<'a, T>;
+pub type IrqMutexGuard<'a, T> = ax_runtime::sync::SpinLockIrqSaveGuard<'a, T>;
 
 impl<T> IrqMutex<T> {
     #[track_caller]
     pub const fn new(value: T) -> Self {
-        Self(ax_sync::SpinLock::new(value))
+        Self(ax_runtime::sync::SpinLock::new(value))
     }
 
     pub fn into_inner(self) -> T {

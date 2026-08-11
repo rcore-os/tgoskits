@@ -1,8 +1,9 @@
 use alloc::collections::VecDeque;
 
-use ax_sync::{PreemptIrqSaveState, SpinLock, SpinLockIrqSaveGuard};
-
-use crate::{AxTaskRef, CurrentTask, current_run_queue, select_wake_run_queue};
+use crate::{
+    AxTaskRef, CurrentTask, current_run_queue, select_wake_run_queue,
+    sync::{PreemptIrqSaveState, SpinLock, SpinLockIrqSaveGuard},
+};
 
 /// A queue to store sleeping tasks.
 ///

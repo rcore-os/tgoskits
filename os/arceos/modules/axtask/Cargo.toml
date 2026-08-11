@@ -18,18 +18,18 @@ multitask = [
   "dep:ax-cpumask",
   "dep:ax-crate-interface",
   "dep:futures-util",
-  "dep:ax-sync",
   "dep:ax-lazyinit",
   "dep:ax-memory-addr",
   "dep:ax-percpu",
 ]
 preempt = ["irq"]
-smp = ["ax-sync/smp"]
+smp = []
 stack-guard-page = ["multitask", "dep:ax-alloc", "dep:ax-mm", "ax-hal/paging"]
 lockdep = [
   "multitask",
-  "ax-sync/lockdep",
+  "dep:axpanic",
 ]
+lock-api = ["dep:lock_api"]
 task-ext = ["dep:extern-trait"]
 tls = ["ax-hal/tls"]
 # Cross-crate tracepoint hook for the scheduler context switch.
@@ -45,7 +45,6 @@ sched-rr = ["multitask", "preempt"]
 
 host-test = [
   "ax-hal/host-test",
-  "ax-sync?/host-test",
   "ax-percpu?/host-test",
 ]
 test = ["host-test"]
@@ -65,8 +64,8 @@ ax-lazyinit = {workspace = true, optional = true}
 ax-memory-addr = {workspace = true, optional = true}
 ax-mm = {workspace = true, optional = true}
 ax-percpu = {workspace = true, optional = true}
+axpanic = {workspace = true, optional = true}
 ax-sched = { workspace = true, optional = true }
-ax-sync = { workspace = true, optional = true }
 ax-timer-list = {workspace = true, optional = true}
 axtest = {workspace = true, optional = true}
 axpoll = {workspace = true, optional = true}
@@ -77,6 +76,10 @@ futures-util = {version = "0.3", default-features = false, optional = true, feat
   "async-await-macro",
 ]}
 log.workspace = true
+lock_api = {workspace = true, optional = true}
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+sbi-rt = { workspace = true, features = ["legacy"] }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-hal = { workspace = true, features = ["fp-simd"] }

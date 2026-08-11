@@ -16,7 +16,6 @@ use ax_driver::serial::SerialDevice;
 pub use ax_driver::serial::SerialDeviceInfo;
 use ax_errno::{AxError, AxResult};
 use ax_lazyinit::OnceLock;
-use ax_sync::SpinLock;
 use ax_task::{AxCpuMask, IrqNotify, TaskInner, WaitQueue};
 use axpoll::{IoEvents, PollSet};
 pub use rdif_serial::{Config, ConfigError, DataBits, Parity, RxFlag, StopBits};
@@ -29,6 +28,7 @@ use self::{
     state::{SerialIrqLatch, SerialStatsAtomic},
     worker::SerialWorker,
 };
+use crate::sync::SpinLock;
 
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
 const PANIC_TX_READY_SPINS: usize = 100_000;

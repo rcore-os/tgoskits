@@ -6,7 +6,10 @@
 //! unsafe contract. [`Mutex`] is always sleepable and never aliases a spin
 //! lock.
 
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(
+    not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))),
+    no_std
+)]
 
 #[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
 extern crate std;
@@ -15,21 +18,18 @@ extern crate std;
 pub mod axtest;
 
 mod context;
-#[cfg(feature = "lockdep")]
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+mod host;
+#[doc(hidden)]
+pub mod interface;
 mod lockdep;
 #[cfg(feature = "sleep")]
 mod mutex;
 mod spin;
 
-pub use self::context::*;
-#[cfg(feature = "lockdep")]
-pub use self::lockdep::*;
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+#[doc(hidden)]
+pub use self::host::host_preempt_depth;
 #[cfg(feature = "sleep")]
 pub use self::mutex::*;
-#[cfg(not(feature = "lockdep"))]
-/// No-op trace switch for builds without lockdep.
-pub const fn set_lockdep_trace_enabled(_enabled: bool) {}
-#[cfg(not(feature = "lockdep"))]
-/// No-op trace dump for builds without lockdep.
-pub const fn dump_lockdep_trace() {}
-pub use self::spin::*;
+pub use self::{context::*, lockdep::*, spin::*};

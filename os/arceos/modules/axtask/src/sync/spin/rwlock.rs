@@ -9,11 +9,11 @@ use core::{
 };
 
 #[cfg(feature = "lockdep")]
-use crate::IrqSaveGuard;
-use crate::context::{GuardState, PendingGuardState};
+use crate::sync::IrqSaveGuard;
+use crate::sync::context::{GuardState, PendingGuardState};
 
 #[cfg(feature = "lockdep")]
-type LockdepAcquire = crate::spin::lockdep::Lockdep;
+type LockdepAcquire = crate::sync::spin::lockdep::Lockdep;
 
 #[derive(Clone, Copy)]
 enum RwLockMode {
@@ -100,7 +100,7 @@ pub struct BaseSpinRwLock<G: GuardState, T: ?Sized> {
     _phantom: PhantomData<G>,
     state: AtomicUsize,
     #[cfg(feature = "lockdep")]
-    lockdep: crate::spin::lockdep::LockdepMap,
+    lockdep: crate::sync::spin::lockdep::LockdepMap,
     data: UnsafeCell<T>,
 }
 
@@ -136,7 +136,7 @@ impl<G: GuardState, T> BaseSpinRwLock<G, T> {
             _phantom: PhantomData,
             state: AtomicUsize::new(0),
             #[cfg(feature = "lockdep")]
-            lockdep: crate::spin::lockdep::LockdepMap::new(),
+            lockdep: crate::sync::spin::lockdep::LockdepMap::new(),
             data: UnsafeCell::new(data),
         }
     }
@@ -152,7 +152,7 @@ impl<G: GuardState, T> BaseSpinRwLock<G, T> {
 impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
     #[cfg(feature = "lockdep")]
     #[inline(always)]
-    pub(crate) fn lockdep_map(&self) -> &crate::spin::lockdep::LockdepMap {
+    pub(crate) fn lockdep_map(&self) -> &crate::sync::spin::lockdep::LockdepMap {
         &self.lockdep
     }
 
@@ -171,8 +171,8 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
         #[cfg(feature = "lockdep")]
         {
             let task_mode = match mode {
-                RwLockMode::Read => crate::spin::lockdep::HeldLockMode::Read,
-                RwLockMode::Write => crate::spin::lockdep::HeldLockMode::Write,
+                RwLockMode::Read => crate::sync::spin::lockdep::HeldLockMode::Read,
+                RwLockMode::Write => crate::sync::spin::lockdep::HeldLockMode::Write,
             };
             LockdepAcquire::prepare_map::<G>(
                 self.lockdep_map(),
@@ -180,7 +180,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
                 "spin-rwlock",
                 self.lock_addr(),
                 is_try,
-                crate::spin::lockdep::DEFAULT_LOCK_SUBCLASS,
+                crate::sync::spin::lockdep::DEFAULT_LOCK_SUBCLASS,
                 Some(task_mode),
             )
         }
@@ -359,7 +359,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
                     #[cfg(feature = "lockdep")]
                     {
                         let _lockdep_irq_guard = IrqSaveGuard::new();
-                        crate::spin::lockdep::release_trace_only::<G>(
+                        crate::sync::spin::lockdep::release_trace_only::<G>(
                             "spin-rwlock",
                             self.lock_addr(),
                         );
@@ -425,10 +425,10 @@ impl<G: GuardState, T: ?Sized> Drop for BaseSpinRwLockReadGuard<'_, G, T> {
         #[cfg(feature = "lockdep")]
         {
             let _lockdep_irq_guard = IrqSaveGuard::new();
-            crate::spin::lockdep::release_kind_mode::<G>(
+            crate::sync::spin::lockdep::release_kind_mode::<G>(
                 "spin-rwlock",
                 self.lock_addr,
-                crate::spin::lockdep::HeldLockMode::Read,
+                crate::sync::spin::lockdep::HeldLockMode::Read,
             );
         }
         self.state.fetch_sub(READER, Ordering::Release);
@@ -464,10 +464,10 @@ impl<G: GuardState, T: ?Sized> Drop for BaseSpinRwLockWriteGuard<'_, G, T> {
         #[cfg(feature = "lockdep")]
         {
             let _lockdep_irq_guard = IrqSaveGuard::new();
-            crate::spin::lockdep::release_kind_mode::<G>(
+            crate::sync::spin::lockdep::release_kind_mode::<G>(
                 "spin-rwlock",
                 self.lock_addr,
-                crate::spin::lockdep::HeldLockMode::Write,
+                crate::sync::spin::lockdep::HeldLockMode::Write,
             );
         }
         self.state.fetch_and(!WRITER, Ordering::Release);
@@ -485,7 +485,7 @@ mod tests {
         thread,
     };
 
-    type RwLock<T> = crate::SpinRwLock<T>;
+    type RwLock<T> = crate::sync::SpinRwLock<T>;
 
     #[test]
     fn readers_can_share() {
@@ -553,14 +553,14 @@ mod tests {
     fn lockdep_panic_restores_rwlock_context() {
         let lock = RwLock::new(1);
         let writer = lock.write();
-        let held_context = crate::host_context_snapshot();
+        let held_context = crate::sync::host_context_snapshot();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lock.try_read()));
         assert!(result.is_err());
-        assert_eq!(crate::host_context_snapshot(), held_context);
+        assert_eq!(crate::sync::host_context_snapshot(), held_context);
 
         drop(writer);
-        assert_eq!(crate::host_context_snapshot(), (0, true));
+        assert_eq!(crate::sync::host_context_snapshot(), (0, true));
         assert!(lock.try_read().is_some());
     }
 
@@ -574,17 +574,17 @@ mod tests {
     fn lockdep_finish_panic_rolls_back_rwlock() {
         let held_lock = RwLock::new(());
         let lock = RwLock::new(1);
-        let guards = (0..crate::lockdep::TEST_MAX_HELD_LOCKS)
+        let guards = (0..crate::sync::lockdep::TEST_MAX_HELD_LOCKS)
             .map(|_| held_lock.read())
             .collect::<Vec<_>>();
-        let held_context = crate::host_context_snapshot();
+        let held_context = crate::sync::host_context_snapshot();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lock.try_write()));
         assert!(result.is_err());
-        assert_eq!(crate::host_context_snapshot(), held_context);
+        assert_eq!(crate::sync::host_context_snapshot(), held_context);
 
         drop(guards);
-        assert_eq!(crate::host_context_snapshot(), (0, true));
+        assert_eq!(crate::sync::host_context_snapshot(), (0, true));
         assert!(lock.try_write().is_some());
     }
 
@@ -624,10 +624,10 @@ mod tests {
         core::mem::forget(guard);
 
         assert!(lock.try_write().is_none());
-        assert_eq!(crate::host_preempt_depth(), 0);
+        assert_eq!(crate::sync::host_preempt_depth(), 0);
 
         unsafe { lock.force_read_decrement_raw() };
-        assert_eq!(crate::host_preempt_depth(), 0);
+        assert_eq!(crate::sync::host_preempt_depth(), 0);
         assert!(lock.try_write().is_some());
     }
 
@@ -782,7 +782,7 @@ pub(crate) fn rwlock_lockdep_and_feature_config_hold_for_test() -> bool {
     // Test LockdepAcquire behavior based on feature flag
     #[cfg(feature = "lockdep")]
     {
-        // With lockdep feature, LockdepAcquire is crate::spin::lockdep::Lockdep
+        // With lockdep feature, LockdepAcquire is crate::sync::spin::lockdep::Lockdep
         let _acquire = LockdepAcquire;
     }
 

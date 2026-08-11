@@ -7,17 +7,17 @@ use ax_hal::percpu::{PreviousThreadBinding, this_cpu_id};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_sched::BaseScheduler;
+
 #[cfg(all(
     feature = "smp",
     feature = "ipi",
     feature = "preempt",
     not(feature = "host-test")
 ))]
-use ax_sync::RawState;
-use ax_sync::{GuardState, SpinLock, SpinLockIrqSaveGuard};
-
+use crate::sync::RawState;
 use crate::{
     AxCpuMask, AxTaskRef, Scheduler, TaskInner, WaitQueue,
+    sync::{GuardState, SpinLock, SpinLockIrqSaveGuard},
     task::{CurrentTask, TASK_STACK_ALIGN, TaskStack, TaskState},
     wait_queue::WaitQueueGuard,
 };
@@ -473,10 +473,9 @@ mod rr_tests {
     use core::{marker::PhantomData, ptr::NonNull};
 
     use ax_sched::BaseScheduler;
-    use ax_sync::RawState;
 
     use super::{AxRunQueue, AxRunQueueRef, RunQueueAccess, Scheduler, SpinLock, TaskInner};
-    use crate::task::TaskState;
+    use crate::{sync::RawState, task::TaskState};
 
     fn new_test_task(name: &str, state: TaskState) -> crate::AxTaskRef {
         let task =
@@ -840,7 +839,7 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
         assert!(curr.is_running());
 
         // When we call `preempt_resched()`, both IRQs and preemption must
-        // have been disabled by `ax_sync::PreemptIrqSaveState`. So we need
+        // have been disabled by `crate::sync::PreemptIrqSaveState`. So we need
         // to set `current_disable_count` to 1 in `can_preempt()` to obtain
         // the preemption permission.
         let can_preempt = curr.can_preempt(1);
@@ -1258,7 +1257,7 @@ fn gc_entry() {
     loop {
         // Drop all exited tasks and recycle resources.
         let n = {
-            let _guard = ax_sync::PreemptIrqSaveGuard::new();
+            let _guard = crate::sync::PreemptIrqSaveGuard::new();
             // SAFETY: the guard prevents migration and IRQ re-entry, and the
             // closure does not let the per-CPU borrow escape.
             unsafe {
@@ -1273,7 +1272,7 @@ fn gc_entry() {
         for _ in 0..n {
             // Do not do the slow drops in the critical section.
             let task = {
-                let _guard = ax_sync::PreemptIrqSaveGuard::new();
+                let _guard = crate::sync::PreemptIrqSaveGuard::new();
                 // SAFETY: the guard prevents migration and IRQ re-entry.
                 unsafe {
                     ax_hal::percpu::with_cpu_pin(|pin| {
@@ -1291,7 +1290,7 @@ fn gc_entry() {
                 } else {
                     // Otherwise (e.g, `switch_to` is not completed, held by the
                     // joiner, etc), push it back and wait for them to drop first.
-                    let _guard = ax_sync::PreemptIrqSaveGuard::new();
+                    let _guard = crate::sync::PreemptIrqSaveGuard::new();
                     // SAFETY: the guard prevents migration and IRQ re-entry.
                     unsafe {
                         ax_hal::percpu::with_cpu_pin(|pin| {
@@ -1335,7 +1334,7 @@ fn gc_entry() {
 /// then puts the task to the scheduler of target run queue.
 #[cfg(feature = "smp")]
 pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
-    let rq = select_run_queue::<ax_sync::PreemptIrqSaveState>(&migrated_task);
+    let rq = select_run_queue::<crate::sync::PreemptIrqSaveState>(&migrated_task);
     let cpu_id = rq.inner.cpu_id;
     migrated_task.set_cpu_id(cpu_id as _);
     // SAFETY: `rq` owns the target run-queue critical section.

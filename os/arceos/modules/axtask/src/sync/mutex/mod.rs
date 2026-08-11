@@ -9,13 +9,8 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
-/// Runtime operations required by the sleepable mutex.
-///
-/// The opaque wait-queue pointer is owned by the runtime implementation. A
-/// mutex installs its queue lazily on first contention, so uncontended locks
-/// and [`Mutex::try_lock`] neither allocate nor enter the scheduler.
-#[ax_crate_interface::def_interface]
-pub trait MutexRuntimeOps {
+/// Internal task-runtime operations used by the sleepable mutex.
+pub(crate) trait MutexRuntimeOps {
     /// Checks that the current context is allowed to sleep.
     fn might_sleep(caller: &'static Location<'static>);
 
@@ -37,19 +32,44 @@ pub trait MutexRuntimeOps {
     fn drop_wait_queue(wait_queue: *mut ());
 }
 
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+use host::HostMutexRuntimeOps as ActiveMutexOps;
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+use native::NativeMutexRuntimeOps as ActiveMutexOps;
+
+pub(crate) fn runtime_might_sleep(caller: &'static Location<'static>) {
+    ActiveMutexOps::might_sleep(caller);
+}
+
+pub(crate) fn runtime_current_task_id() -> u64 {
+    ActiveMutexOps::current_task_id()
+}
+
+pub(crate) fn runtime_wait_until_unlocked(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64) {
+    ActiveMutexOps::wait_until_unlocked(wait_queue, owner_id);
+}
+
+pub(crate) fn runtime_wake_one(wait_queue: &AtomicPtr<()>) {
+    ActiveMutexOps::wake_one(wait_queue);
+}
+
+pub(crate) fn runtime_drop_wait_queue(wait_queue: *mut ()) {
+    ActiveMutexOps::drop_wait_queue(wait_queue);
+}
+
 #[cfg(not(feature = "lockdep"))]
 /// A lockdep subclass identifier when lockdep is disabled.
 pub type LockSubclass = u32;
 
 #[cfg(feature = "lockdep")]
-use crate::lockdep::LockSubclass;
+use crate::sync::lockdep::LockSubclass;
 
 /// The raw ownership and wait-queue state of a [`Mutex`].
 pub struct RawMutex {
     wait_queue: AtomicPtr<()>,
     owner_id: AtomicU64,
     #[cfg(feature = "lockdep")]
-    pub(crate) lockdep: crate::spin::lockdep::LockdepMap,
+    pub(crate) lockdep: crate::sync::spin::lockdep::LockdepMap,
 }
 
 impl RawMutex {
@@ -60,13 +80,13 @@ impl RawMutex {
             wait_queue: AtomicPtr::new(ptr::null_mut()),
             owner_id: AtomicU64::new(0),
             #[cfg(feature = "lockdep")]
-            lockdep: crate::spin::lockdep::LockdepMap::new(),
+            lockdep: crate::sync::spin::lockdep::LockdepMap::new(),
         }
     }
 
     #[inline(always)]
     fn current_task_id() -> u64 {
-        let task_id = ax_crate_interface::call_interface!(MutexRuntimeOps::current_task_id);
+        let task_id = ActiveMutexOps::current_task_id();
         assert_ne!(task_id, 0, "mutex runtime returned the reserved owner id 0");
         task_id
     }
@@ -90,7 +110,7 @@ impl RawMutex {
     #[track_caller]
     fn lock(&self) {
         #[cfg(feature = "lockdep")]
-        self.lock_nested(crate::spin::lockdep::DEFAULT_LOCK_SUBCLASS);
+        self.lock_nested(crate::sync::spin::lockdep::DEFAULT_LOCK_SUBCLASS);
 
         #[cfg(not(feature = "lockdep"))]
         self.lock_plain();
@@ -100,7 +120,7 @@ impl RawMutex {
     #[track_caller]
     #[cfg(not(feature = "lockdep"))]
     fn lock_plain(&self) {
-        ax_crate_interface::call_interface!(MutexRuntimeOps::might_sleep, Location::caller());
+        ActiveMutexOps::might_sleep(Location::caller());
         self.lock_after_prepare(Self::current_task_id());
     }
 
@@ -108,9 +128,10 @@ impl RawMutex {
     #[track_caller]
     #[cfg(feature = "lockdep")]
     fn lock_nested(&self, subclass: LockSubclass) {
-        ax_crate_interface::call_interface!(MutexRuntimeOps::might_sleep, Location::caller());
+        ActiveMutexOps::might_sleep(Location::caller());
         let current_id = Self::current_task_id();
-        let lockdep = crate::lockdep::mutex::LockdepAcquire::prepare_nested(self, false, subclass);
+        let lockdep =
+            crate::sync::lockdep::mutex::LockdepAcquire::prepare_nested(self, false, subclass);
         self.lock_after_prepare(current_id);
         lockdep.finish(true);
     }
@@ -130,11 +151,7 @@ impl RawMutex {
                         owner_id, current_id,
                         "task {current_id} tried to recursively acquire a mutex"
                     );
-                    ax_crate_interface::call_interface!(
-                        MutexRuntimeOps::wait_until_unlocked,
-                        &self.wait_queue,
-                        &self.owner_id
-                    );
+                    ActiveMutexOps::wait_until_unlocked(&self.wait_queue, &self.owner_id);
                 }
             }
         }
@@ -146,10 +163,10 @@ impl RawMutex {
         let current_id = Self::current_task_id();
 
         #[cfg(feature = "lockdep")]
-        let lockdep = crate::lockdep::mutex::LockdepAcquire::prepare_nested(
+        let lockdep = crate::sync::lockdep::mutex::LockdepAcquire::prepare_nested(
             self,
             true,
-            crate::spin::lockdep::DEFAULT_LOCK_SUBCLASS,
+            crate::sync::spin::lockdep::DEFAULT_LOCK_SUBCLASS,
         );
 
         let acquired = self
@@ -173,10 +190,10 @@ impl RawMutex {
         );
 
         #[cfg(feature = "lockdep")]
-        crate::lockdep::mutex::release(self);
+        crate::sync::lockdep::mutex::release(self);
 
         self.owner_id.store(0, Ordering::Release);
-        ax_crate_interface::call_interface!(MutexRuntimeOps::wake_one, &self.wait_queue);
+        ActiveMutexOps::wake_one(&self.wait_queue);
     }
 
     /// Releases this mutex without consuming a guard.
@@ -209,7 +226,7 @@ impl Drop for RawMutex {
         if !wait_queue.is_null() {
             // SAFETY: mutable access proves the mutex and its wait-handle slot
             // are no longer observable through safe references.
-            ax_crate_interface::call_interface!(MutexRuntimeOps::drop_wait_queue, wait_queue);
+            ActiveMutexOps::drop_wait_queue(wait_queue);
         }
     }
 }
@@ -301,6 +318,11 @@ impl<T: Default> Default for Mutex<T> {
 }
 
 /// An RAII guard returned by [`Mutex::lock`] and [`Mutex::try_lock`].
+///
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<ax_task::sync::MutexGuard<'static, ()>>();
+/// ```
 pub struct MutexGuard<'a, T: ?Sized> {
     mutex: &'a Mutex<T>,
     not_send: PhantomData<*mut ()>,
@@ -364,6 +386,8 @@ impl<T: ?Sized> LockdepMutexExt<T> for Mutex<T> {
 
 #[cfg(all(feature = "host-test", not(target_os = "none")))]
 mod host {
+    #[cfg(test)]
+    use core::sync::atomic::AtomicBool;
     use core::{
         panic::Location,
         sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
@@ -393,6 +417,12 @@ mod host {
     }
 
     static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
+    #[cfg(test)]
+    static WAIT_BOUNDARY_OWNER: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(test)]
+    static WAIT_BOUNDARY_REACHED: AtomicBool = AtomicBool::new(false);
+    #[cfg(test)]
+    static WAIT_BOUNDARY_CONTINUE: AtomicBool = AtomicBool::new(false);
 
     std::thread_local! {
         static TASK_ID: Cell<u64> = const { Cell::new(0) };
@@ -402,15 +432,14 @@ mod host {
         };
     }
 
-    struct HostMutexRuntimeOps;
+    pub(super) struct HostMutexRuntimeOps;
 
-    #[ax_crate_interface::impl_interface]
     impl MutexRuntimeOps for HostMutexRuntimeOps {
         fn might_sleep(caller: &'static Location<'static>) {
             MIGHT_SLEEP_CALLS.set(MIGHT_SLEEP_CALLS.get() + 1);
             LAST_MIGHT_SLEEP_CALLER.set(Some(caller));
             assert_eq!(
-                crate::host_preempt_depth(),
+                crate::sync::host_preempt_depth(),
                 0,
                 "sleeping mutex acquired with preemption disabled at {caller}"
             );
@@ -430,6 +459,14 @@ mod host {
         fn wait_until_unlocked(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64) {
             let queue = ensure_wait_queue(wait_queue);
             queue.waiters.fetch_add(1, Ordering::AcqRel);
+            #[cfg(test)]
+            if WAIT_BOUNDARY_OWNER.load(Ordering::Acquire) == core::ptr::from_ref(owner_id) as usize
+            {
+                WAIT_BOUNDARY_REACHED.store(true, Ordering::Release);
+                while !WAIT_BOUNDARY_CONTINUE.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            }
             let mut state = queue.state.lock().expect("host wait queue poisoned");
             while owner_id.load(Ordering::Acquire) != 0 {
                 state = queue
@@ -509,6 +546,103 @@ mod host {
     pub(super) fn last_might_sleep_caller() -> Option<&'static Location<'static>> {
         LAST_MIGHT_SLEEP_CALLER.get()
     }
+
+    #[cfg(test)]
+    pub(super) fn pause_waiter_before_registration(owner_id: &AtomicU64) {
+        WAIT_BOUNDARY_REACHED.store(false, Ordering::Release);
+        WAIT_BOUNDARY_CONTINUE.store(false, Ordering::Release);
+        WAIT_BOUNDARY_OWNER.store(core::ptr::from_ref(owner_id) as usize, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_for_registration_boundary() {
+        while !WAIT_BOUNDARY_REACHED.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn resume_waiter_after_registration_boundary() {
+        WAIT_BOUNDARY_CONTINUE.store(true, Ordering::Release);
+        WAIT_BOUNDARY_OWNER.store(0, Ordering::Release);
+    }
+}
+
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+mod native {
+    use alloc::boxed::Box;
+    use core::{
+        panic::Location,
+        sync::atomic::{AtomicPtr, AtomicU64, Ordering},
+    };
+
+    use super::MutexRuntimeOps;
+
+    pub(super) struct NativeMutexRuntimeOps;
+
+    impl MutexRuntimeOps for NativeMutexRuntimeOps {
+        fn might_sleep(caller: &'static Location<'static>) {
+            crate::might_sleep_at(caller);
+        }
+
+        fn current_task_id() -> u64 {
+            crate::current().id().as_u64()
+        }
+
+        fn wait_until_unlocked(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64) {
+            let wait_queue = ensure_wait_queue(wait_queue);
+            wait_queue.wait_until(|| owner_id.load(Ordering::Acquire) == 0);
+        }
+
+        fn wake_one(wait_queue: &AtomicPtr<()>) {
+            let wait_queue = wait_queue
+                .load(Ordering::Acquire)
+                .cast::<crate::WaitQueue>();
+            if !wait_queue.is_null() {
+                // SAFETY: the queue stays allocated until the containing
+                // mutex is dropped, which safe Rust cannot race with this
+                // borrowed call.
+                unsafe { &*wait_queue }.notify_one(true);
+            }
+        }
+
+        fn drop_wait_queue(wait_queue: *mut ()) {
+            // SAFETY: the mutex drop contract transfers the uniquely owned
+            // queue pointer back to this implementation.
+            let wait_queue = unsafe { Box::from_raw(wait_queue.cast::<crate::WaitQueue>()) };
+            assert!(
+                wait_queue.is_empty(),
+                "dropping a mutex wait queue with blocked tasks"
+            );
+        }
+    }
+
+    fn ensure_wait_queue(slot: &AtomicPtr<()>) -> &crate::WaitQueue {
+        let existing = slot.load(Ordering::Acquire).cast::<crate::WaitQueue>();
+        if !existing.is_null() {
+            // SAFETY: installed queue pointers remain valid until mutex drop.
+            return unsafe { &*existing };
+        }
+
+        let candidate = Box::into_raw(Box::new(crate::WaitQueue::new()));
+        match slot.compare_exchange(
+            core::ptr::null_mut(),
+            candidate.cast::<()>(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                // SAFETY: `candidate` is now owned by `slot`.
+                unsafe { &*candidate }
+            }
+            Err(installed) => {
+                // SAFETY: the failed candidate was never published.
+                unsafe { drop(Box::from_raw(candidate)) };
+                // SAFETY: the winning queue pointer is installed in `slot`.
+                unsafe { &*installed.cast::<crate::WaitQueue>() }
+            }
+        }
+    }
 }
 
 #[cfg(all(test, feature = "host-test", not(target_os = "none")))]
@@ -516,7 +650,7 @@ mod tests {
     use std::{sync::Arc, thread};
 
     use super::{Mutex, host};
-    use crate::SpinLock;
+    use crate::sync::SpinLock;
 
     #[test]
     fn lock_rejects_preemption_disabled_context() {
@@ -549,6 +683,23 @@ mod tests {
             worker.join().expect("mutex worker panicked");
         }
         assert_eq!(*value.lock(), THREADS * ITERATIONS);
+    }
+
+    #[test]
+    fn unlock_before_waiter_registration_does_not_lose_wakeup() {
+        let value = Arc::new(Mutex::new(0usize));
+        let guard = value.lock();
+        host::pause_waiter_before_registration(&value.raw.owner_id);
+        let waiter_value = value.clone();
+        let waiter = thread::spawn(move || {
+            *waiter_value.lock() = 1;
+        });
+
+        host::wait_for_registration_boundary();
+        drop(guard);
+        host::resume_waiter_after_registration_boundary();
+        waiter.join().expect("boundary waiter panicked");
+        assert_eq!(*value.lock(), 1);
     }
 
     #[test]

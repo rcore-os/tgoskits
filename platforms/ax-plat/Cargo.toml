@@ -10,7 +10,7 @@ authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.
 license = "Apache-2.0"
 
 [features]
-smp = ["ax-sync/smp"]
+smp = []
 irq = ["dep:rdif-intc"]
 
 [dependencies]

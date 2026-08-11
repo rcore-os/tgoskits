@@ -134,7 +134,6 @@ ax-runtime = { workspace = true, features = [
     "net",
     "serial",
 ] }
-ax-sync = { workspace = true, features = ["sleep", "lock-api"] }
 ax-task = { workspace = true, features = [
     "multitask",
     "task-ext",
@@ -242,7 +241,6 @@ ax-memory-addr = { workspace = true, features = ["axtest"] }
 ax-memory-set = { workspace = true, features = ["axtest"] }
 axfs-ng-vfs = { workspace = true, features = ["axtest"] }
 ax-io = { workspace = true, features = ["axtest"] }
-ax-sync = { workspace = true, features = ["axtest"] }
 ax-lazyinit = { workspace = true, features = ["axtest"] }
 ax-net = { workspace = true, features = ["axtest"] }
 axpoll = { workspace = true, features = ["axtest"] }

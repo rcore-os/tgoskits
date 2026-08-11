@@ -1,9 +1,10 @@
 use alloc::{collections::VecDeque, sync::Arc};
 
 use ax_errno::{AxError, AxResult};
-use ax_sync::SpinLock;
 use ax_task::{IrqNotify, WaitQueue};
 use rdif_serial::Config;
+
+use crate::sync::SpinLock;
 
 pub(super) const CONTROL_QUEUE_CAPACITY: usize = 32;
 

@@ -9,9 +9,11 @@ use core::{
 };
 
 use ax_errno::AxError;
-use ax_sync::{PreemptIrqSaveState, SpinLock};
 
-use crate::{AxTaskRef, WeakAxTaskRef, current, current_run_queue, select_wake_run_queue};
+use crate::{
+    AxTaskRef, WeakAxTaskRef, current, current_run_queue, select_wake_run_queue,
+    sync::{PreemptIrqSaveState, SpinLock},
+};
 
 mod poll;
 pub use poll::*;

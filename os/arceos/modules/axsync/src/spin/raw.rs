@@ -1,147 +1,32 @@
-//! Raw spin locks that implement [`lock_api::RawMutex`].
-//!
-//! Unlike [`SpinLock`](crate::SpinLock), these locks do not own the
-//! protected data; they only provide the lock/unlock primitive so they can be
-//! plugged into foreign generic code that is parameterised over
-//! `lock_api::RawMutex` (for example the `kprobe` crate's `ProbeManager`).
-//!
-//! The guard semantics still come from a [`GuardState`]: acquiring the lock
-//! runs `G::acquire()` (e.g. disabling preemption and local IRQs) *before*
-//! spinning, and releasing it restores that state. This matches the behaviour
-//! of [`SpinLock::lock_irqsave`](crate::SpinLock::lock_irqsave) and is what makes the lock safe to take
-//! from contexts that may be re-entered by interrupts or trap handlers.
+//! IRQ-save adapter for crates parameterized by [`lock_api::RawMutex`].
 
-#[cfg(feature = "smp")]
-use core::sync::atomic::{AtomicBool, Ordering};
-use core::{cell::UnsafeCell, marker::PhantomData};
+use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicBool};
 
-use crate::context::{GuardState, PreemptIrqSaveState};
+use crate::interface::{CONTEXT_PREEMPT_IRQSAVE, LockMetadata};
 
-/// A raw spin lock implementing [`lock_api::RawMutex`], whose critical-section
-/// guard behaviour is determined by the [`GuardState`] type parameter `G`.
-///
-/// On a single-core build (without the `smp` feature) the atomic flag is
-/// elided, but `G::acquire()`/`G::release()` are still run so preemption and
-/// IRQ state are managed correctly.
-struct BaseRawSpinLock<G: GuardState> {
-    _phantom: PhantomData<G>,
-
-    #[cfg(feature = "smp")]
+/// A raw mutex whose acquisition disables preemption and saves local IRQs.
+#[repr(C)]
+pub struct RawIrqSaveMutex {
     locked: AtomicBool,
-
-    // Saved guard state from `G::acquire()`. Only the lock owner writes or
-    // reads this slot while the lock is held, so the lack of synchronisation
-    // is sound.
-    state: UnsafeCell<Option<G::State>>,
+    metadata: LockMetadata,
+    context_state: UnsafeCell<Option<usize>>,
 }
 
-// The `UnsafeCell<Option<G::State>>` is only ever touched by the thread that
-// owns the lock, so the lock as a whole is `Sync`.
-unsafe impl<G: GuardState> Sync for BaseRawSpinLock<G> {}
-
-impl<G: GuardState> BaseRawSpinLock<G> {
-    /// Creates a new, unlocked raw spin lock.
-    pub const fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-            #[cfg(feature = "smp")]
-            locked: AtomicBool::new(false),
-            state: UnsafeCell::new(None),
-        }
-    }
-
-    #[inline]
-    fn save_state(&self, state: G::State) {
-        // SAFETY: called only by the thread that just acquired the lock.
-        unsafe {
-            *self.state.get() = Some(state);
-        }
-    }
-
-    #[inline]
-    fn take_state(&self) -> G::State {
-        // SAFETY: called only by the thread that currently holds the lock,
-        // which is the same thread that stored the state in `lock()`.
-        unsafe {
-            (*self.state.get())
-                .take()
-                .expect("raw spinlock unlocked without saved guard state")
-        }
-    }
-}
-
-impl<G: GuardState> Default for BaseRawSpinLock<G> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-unsafe impl<G: GuardState + Send + Sync + 'static> lock_api::RawMutex for BaseRawSpinLock<G> {
-    const INIT: Self = Self::new();
-
-    type GuardMarker = lock_api::GuardNoSend;
-
-    fn lock(&self) {
-        let state = G::acquire();
-
-        #[cfg(feature = "smp")]
-        {
-            while self
-                .locked
-                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-            {
-                // Wait until the lock looks unlocked before retrying. Use
-                // `Acquire` (matching `BaseSpinLock::is_locked`) so this read
-                // does not mix Relaxed with the stronger orderings on `locked`.
-                while self.locked.load(Ordering::Acquire) {
-                    core::hint::spin_loop();
-                }
-            }
-        }
-
-        self.save_state(state);
-    }
-
-    fn try_lock(&self) -> bool {
-        let state = G::acquire();
-
-        #[cfg(feature = "smp")]
-        {
-            if self
-                .locked
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-            {
-                G::release(state);
-                return false;
-            }
-        }
-
-        self.save_state(state);
-        true
-    }
-
-    unsafe fn unlock(&self) {
-        let state = self.take_state();
-
-        #[cfg(feature = "smp")]
-        self.locked.store(false, Ordering::Release);
-
-        G::release(state);
-    }
-}
-
-/// A raw spin lock that disables kernel preemption and local IRQs while held,
-/// mirroring [`SpinLock::lock_irqsave`](crate::SpinLock::lock_irqsave) but exposed as a
-/// [`lock_api::RawMutex`] for use with foreign generic code.
-#[repr(transparent)]
-pub struct RawIrqSaveMutex(BaseRawSpinLock<PreemptIrqSaveState>);
+unsafe impl Sync for RawIrqSaveMutex {}
 
 impl RawIrqSaveMutex {
-    /// Creates a new, unlocked IRQ-save raw mutex.
+    /// Creates a new unlocked raw mutex.
+    #[track_caller]
     pub const fn new() -> Self {
-        Self(BaseRawSpinLock::new())
+        Self {
+            locked: AtomicBool::new(false),
+            metadata: LockMetadata::new(),
+            context_state: UnsafeCell::new(None),
+        }
+    }
+
+    fn addr(&self) -> usize {
+        self as *const Self as usize
     }
 }
 
@@ -156,18 +41,52 @@ unsafe impl lock_api::RawMutex for RawIrqSaveMutex {
 
     type GuardMarker = lock_api::GuardNoSend;
 
-    #[inline]
     fn lock(&self) {
-        self.0.lock();
+        let result = crate::interface::spin_acquire(
+            &self.locked,
+            &self.metadata,
+            self.addr(),
+            CONTEXT_PREEMPT_IRQSAVE,
+            0,
+            false,
+            Location::caller(),
+        );
+        assert!(result.acquired(), "blocking raw mutex acquisition failed");
+        // SAFETY: only the thread that acquired the raw mutex writes this
+        // slot, and no other owner can exist until `unlock`.
+        unsafe { *self.context_state.get() = Some(result.context_state()) };
     }
 
-    #[inline]
     fn try_lock(&self) -> bool {
-        self.0.try_lock()
+        let result = crate::interface::spin_acquire(
+            &self.locked,
+            &self.metadata,
+            self.addr(),
+            CONTEXT_PREEMPT_IRQSAVE,
+            0,
+            true,
+            Location::caller(),
+        );
+        if result.acquired() {
+            // SAFETY: this caller is now the unique raw mutex owner.
+            unsafe { *self.context_state.get() = Some(result.context_state()) };
+            true
+        } else {
+            false
+        }
     }
 
-    #[inline]
     unsafe fn unlock(&self) {
-        unsafe { self.0.unlock() };
+        // SAFETY: the RawMutex contract requires the current thread to own
+        // the mutex, so it is the unique accessor of this saved token.
+        let context_state = unsafe { &mut *self.context_state.get() }
+            .take()
+            .expect("raw mutex unlocked without a saved context state");
+        crate::interface::spin_release(
+            &self.locked,
+            self.addr(),
+            CONTEXT_PREEMPT_IRQSAVE,
+            context_state,
+        );
     }
 }

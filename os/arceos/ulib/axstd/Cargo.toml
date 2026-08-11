@@ -29,7 +29,7 @@ arceos = ["irq", "paging", "std-compat", "smp"]
 host-test = [
     "ax-api/host-test",
     "ax-hal/host-test",
-    "ax-sync/host-test",
+
     "ax-percpu/host-test",
     "ax-task/host-test",
 ]
@@ -38,7 +38,7 @@ host-test = [
 std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 
 # Multicore
-smp = ["ax-runtime/smp", "ax-sync/smp", "ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]
@@ -66,9 +66,8 @@ multitask = [
     "ax-api/multitask",
     "ax-posix-api/multitask",
     "ax-runtime/multitask",
-    "ax-sync/sleep",
 ]
-lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep", "ax-sync/lockdep"]
+lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep",]
 task-ext = ["ax-task/task-ext"]
 tracepoint-hooks = ["ax-task/tracepoint-hooks"]
 sched-rr = ["irq", "multitask", "ax-task/sched-rr"]
@@ -139,7 +138,6 @@ ax-driver.workspace = true
 ax-errno.workspace = true
 ax-hal.workspace = true
 ax-io.workspace = true
-ax-sync.workspace = true
 ax-lazyinit.workspace = true
 ax-percpu.workspace = true
 ax-posix-api.workspace = true

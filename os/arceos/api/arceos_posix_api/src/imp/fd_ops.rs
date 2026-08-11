@@ -3,7 +3,7 @@ use core::ffi::c_int;
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_io::PollState;
-use ax_sync::SpinRwLock as RwLock;
+use ax_runtime::sync::SpinRwLock as RwLock;
 use flatten_objects::FlattenObjects;
 use scope_local::scope_local;
 

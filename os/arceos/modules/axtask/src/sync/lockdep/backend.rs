@@ -9,7 +9,7 @@ mod imp {
     use std::cell::RefCell;
 
     use super::*;
-    use crate::lockdep::types::HeldLockStack;
+    use crate::sync::lockdep::types::HeldLockStack;
 
     std::thread_local! {
         static HELD_LOCKS: RefCell<HeldLockStack> = const { RefCell::new(HeldLockStack::new()) };
@@ -42,21 +42,27 @@ mod imp {
 
 #[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
 mod imp {
-    use ax_crate_interface::call_interface;
-
     use super::*;
-    use crate::__LockdepOps_mod;
 
     pub(crate) fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot) {
-        call_interface!(LockdepOps::collect_current_task_held_locks, snapshot);
+        let _irq_guard = crate::sync::IrqSaveGuard::new();
+        if let Some(curr) = crate::current_may_uninit() {
+            curr.with_held_locks(|stack| snapshot.extend(stack));
+        }
     }
 
     pub(crate) fn push_current_task_held_lock(held: HeldLock) {
-        call_interface!(LockdepOps::push_current_task_held_lock, held);
+        let _irq_guard = crate::sync::IrqSaveGuard::new();
+        if let Some(curr) = crate::current_may_uninit() {
+            curr.with_held_locks(|stack| stack.push(held));
+        }
     }
 
     pub(crate) fn pop_current_task_held_lock(lock_addr: usize) {
-        call_interface!(LockdepOps::pop_current_task_held_lock, lock_addr);
+        let _irq_guard = crate::sync::IrqSaveGuard::new();
+        if let Some(curr) = crate::current_may_uninit() {
+            curr.with_held_locks(|stack| stack.pop_checked(lock_addr));
+        }
     }
 
     pub(crate) fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
@@ -75,7 +81,7 @@ mod imp {
         let _ = fmt::Write::write_fmt(&mut writer, message);
         let _ = fmt::Write::write_str(&mut writer, "\n");
         emergency_write_str("lockdep fatal violation\n");
-        call_interface!(LockdepOps::fatal)
+        ax_hal::power::system_off()
     }
 
     #[cfg(target_arch = "riscv64")]
@@ -90,7 +96,7 @@ mod imp {
 
     #[cfg(not(target_arch = "riscv64"))]
     fn emergency_write_str(s: &str) {
-        call_interface!(LockdepOps::console_write_str, s);
+        ax_hal::console::write_bytes(s.as_bytes());
     }
 }
 

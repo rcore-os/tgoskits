@@ -15,7 +15,7 @@ bitflags = "2.6"
 cfg-if = "1"
 derive_more = { version = "2.0", default-features = false, features = ["full"] }
 event-listener = { version = "5.4", default-features = false }
-ax-sync = { workspace = true }
+ax-runtime.workspace = true
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "general",
     "no_std",
@@ -25,5 +25,5 @@ starry-vm = { workspace = true }
 strum = { version = "0.27", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test"] }
+ax-runtime = { workspace = true, features = ["host-test", "smp", "lockdep", "multitask"] }
 extern-trait = { workspace = true }

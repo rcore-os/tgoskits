@@ -22,7 +22,7 @@ crate-type = ["staticlib"]
 default = []
 
 # Multicore
-smp = ["ax-runtime/smp", "ax-sync/smp", "ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]
@@ -58,7 +58,6 @@ epoll = ["ax-posix-api/epoll", "fd"]
 [dependencies]
 ax-driver.workspace = true
 ax-hal.workspace = true
-ax-sync.workspace = true
 ax-posix-api.workspace = true
 ax-errno.workspace = true
 ax-io.workspace = true

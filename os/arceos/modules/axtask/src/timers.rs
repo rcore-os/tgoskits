@@ -2,12 +2,14 @@ use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_hal::time::{TimeValue, monotonic_time};
-use ax_sync::{PreemptIrqSaveGuard, RawState};
 use ax_timer_list::{TimerEvent, TimerList};
 
 #[cfg(feature = "smp")]
 use crate::select_run_queue;
-use crate::{AxTaskRef, current_run_queue};
+use crate::{
+    AxTaskRef, current_run_queue,
+    sync::{PreemptIrqSaveGuard, RawState},
+};
 
 static TIMER_TICKET_ID: AtomicU64 = AtomicU64::new(1);
 

@@ -20,7 +20,7 @@ irq = ["ax-task?/irq"]
 ipi = ["dep:ax-ipi"]
 alloc = ["dep:ax-alloc"]
 paging = ["dep:ax-mm"]
-multitask = ["ax-task/multitask", "ax-sync/sleep"]
+multitask = ["ax-task/multitask", "ax-runtime/multitask"]
 fs = ["dep:ax-fs-ng"]
 net = ["dep:ax-net"]
 display = ["dep:ax-display"]
@@ -43,7 +43,6 @@ ax-mm = { workspace = true, optional = true }
 ax-net = { workspace = true, optional = true }
 axpoll.workspace = true
 ax-runtime.workspace = true
-ax-sync.workspace = true
 ax-task = { workspace = true, optional = true }
 axklib.workspace = true
 dma-api.workspace = true

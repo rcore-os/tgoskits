@@ -9,7 +9,7 @@ use core::{
 };
 
 use ax_errno::AxResult;
-use ax_sync::SpinLock;
+use ax_runtime::sync::SpinLock;
 use linux_raw_sys::general::kernel_sigaction;
 use starry_vm::{VmMutPtr, VmPtr};
 

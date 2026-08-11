@@ -255,7 +255,9 @@ fn run_std_tests<R: CargoRunner>(
 fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeatureProfile]> {
     match package {
         "arm_vgic" | "axdevice" | "axfs-ng-vfs" | "rsext4" | "scope-local" | "ax-sync" | "axvm"
-        | "ax-ipi" | "ax-runtime" | "ax-api" => Some(HOST_TEST_FEATURE_PROFILES),
+        | "ax-display" | "ax-input" | "ax-ipi" | "ax-log" | "ax-runtime" | "ax-api" => {
+            Some(HOST_TEST_FEATURE_PROFILES)
+        }
         "ax-task" => Some(AX_TASK_FEATURE_PROFILES),
         "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
         _ => None,
@@ -734,9 +736,17 @@ mod tests {
     #[test]
     fn transitive_platform_consumers_use_host_test_feature_profile() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = ["axvm", "ax-ipi", "ax-runtime", "ax-api"]
-            .map(str::to_string)
-            .to_vec();
+        let packages = [
+            "axvm",
+            "ax-display",
+            "ax-input",
+            "ax-ipi",
+            "ax-log",
+            "ax-runtime",
+            "ax-api",
+        ]
+        .map(str::to_string)
+        .to_vec();
         let mut runner = FakeCargoRunner::succeeding();
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();

@@ -33,7 +33,7 @@ const TRACE_CMDLINE_CACHE_SIZE: usize = 4096;
 
 // The registry entry is locked from the tracepoint fire path, which for
 // `sched:sched_switch` runs inside `axtask::switch_to` (IRQ off,
-// preemption disabled). A sleeping `ax_sync::Mutex` would trip the
+// preemption disabled). A sleeping `Mutex` would trip the
 // "sleeping in atomic context" guard there, so this lock must be a
 // non-sleeping spinlock — the same kind the perf output path (`PERF_FILE`)
 // uses for exactly this reason.

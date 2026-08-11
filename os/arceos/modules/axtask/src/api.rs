@@ -8,11 +8,11 @@ use alloc::{
 use core::fmt;
 
 use ax_memory_addr::VirtAddr;
-use ax_sync::PreemptIrqSaveState;
 
 #[cfg(feature = "lockdep")]
 pub use crate::lockdep::{HeldLock, HeldLockStack};
 pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wake_run_queue};
+use crate::sync::PreemptIrqSaveState;
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "task-ext"))))]
 #[cfg(feature = "task-ext")]
 pub use crate::task::{AxTaskExt, TaskExt};
@@ -35,8 +35,8 @@ pub type AxTaskRef = Arc<AxTask>;
 pub type WeakAxTaskRef = Weak<AxTask>;
 
 #[cfg(feature = "multitask")]
-static TASK_REGISTRY: ax_lazyinit::LazyLock<ax_sync::SpinRwLock<BTreeMap<u64, WeakAxTaskRef>>> =
-    ax_lazyinit::LazyLock::new(|| ax_sync::SpinRwLock::new(BTreeMap::new()));
+static TASK_REGISTRY: ax_lazyinit::LazyLock<crate::sync::SpinRwLock<BTreeMap<u64, WeakAxTaskRef>>> =
+    ax_lazyinit::LazyLock::new(|| crate::sync::SpinRwLock::new(BTreeMap::new()));
 
 /// The wrapper type for [`ax_cpumask::CpuMask`] with SMP configuration.
 pub type AxCpuMask = ax_cpumask::CpuMask<{ crate::build_info::CPU_CAPACITY }>;
@@ -102,8 +102,8 @@ pub fn enable_preempt() {
 
 #[cfg(feature = "lockdep")]
 #[doc(hidden)]
-pub fn collect_current_task_held_locks(snapshot: &mut ax_sync::HeldLockSnapshot) {
-    let _irq_guard = ax_sync::IrqSaveGuard::new();
+pub fn collect_current_task_held_locks(snapshot: &mut crate::sync::HeldLockSnapshot) {
+    let _irq_guard = crate::sync::IrqSaveGuard::new();
     if let Some(curr) = current_may_uninit() {
         curr.with_held_locks(|stack| snapshot.extend(stack));
     }
@@ -111,8 +111,8 @@ pub fn collect_current_task_held_locks(snapshot: &mut ax_sync::HeldLockSnapshot)
 
 #[cfg(feature = "lockdep")]
 #[doc(hidden)]
-pub fn push_current_task_held_lock(held: ax_sync::HeldLock) {
-    let _irq_guard = ax_sync::IrqSaveGuard::new();
+pub fn push_current_task_held_lock(held: crate::sync::HeldLock) {
+    let _irq_guard = crate::sync::IrqSaveGuard::new();
     if let Some(curr) = current_may_uninit() {
         curr.with_held_locks(|stack| stack.push(held));
     }
@@ -121,7 +121,7 @@ pub fn push_current_task_held_lock(held: ax_sync::HeldLock) {
 #[cfg(feature = "lockdep")]
 #[doc(hidden)]
 pub fn pop_current_task_held_lock(lock_addr: usize) {
-    let _irq_guard = ax_sync::IrqSaveGuard::new();
+    let _irq_guard = crate::sync::IrqSaveGuard::new();
     if let Some(curr) = current_may_uninit() {
         curr.with_held_locks(|stack| stack.pop_checked(lock_addr));
     }
@@ -183,7 +183,7 @@ pub fn on_timer_irq(scheduler_tick: bool) {
     if scheduler_tick {
         // Since irq and preemption are both disabled here,
         // we can get the current run queue without another context transition.
-        current_run_queue::<ax_sync::RawState>().scheduler_timer_tick();
+        current_run_queue::<crate::sync::RawState>().scheduler_timer_tick();
     }
 }
 
@@ -464,7 +464,7 @@ impl AtomicContextSnapshot {
                 }
                 #[cfg(feature = "host-test")]
                 {
-                    task_depth + ax_sync::host_preempt_depth()
+                    task_depth + crate::sync::host_preempt_depth()
                 }
             }
             #[cfg(not(feature = "preempt"))]
@@ -561,7 +561,7 @@ fn panic_atomic_sleep(
     snapshot: AtomicContextSnapshot,
     caller: &'static core::panic::Location<'static>,
 ) -> ! {
-    let held_locks = ax_sync::current_task_held_lock_snapshot();
+    let held_locks = crate::sync::current_task_held_lock_snapshot();
     panic!(
         "sleeping or rescheduling is not allowed in atomic context: caller={}, reasons={}, \
          irq_enabled={}, irq_context={}, preempt_count={}, cpu_id={}, task_id={:?}, \
