@@ -3,10 +3,12 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use ax_sync::spin::SpinNoIrq;
-
 use super::ProcessData;
-use crate::{mm::AddrSpace, sync::PiMutex, task::futex::FutexDomain};
+use crate::{
+    mm::AddrSpace,
+    sync::{IrqMutex, PiMutex},
+    task::futex::FutexDomain,
+};
 
 /// One Linux mm generation and every facility whose identity follows it.
 ///
@@ -82,7 +84,7 @@ pub(crate) fn scheduler_address_space(
 
 /// Address-space state whose release must follow scheduler switch-tail rules.
 pub(super) struct ProcessMemoryState {
-    owner: SpinNoIrq<Arc<ProcessMemoryOwner>>,
+    owner: IrqMutex<Arc<ProcessMemoryOwner>>,
     heap_top: AtomicUsize,
     aspace_slot_released: AtomicBool,
 }
@@ -90,7 +92,7 @@ pub(super) struct ProcessMemoryState {
 impl ProcessMemoryState {
     pub(super) fn new(aspace: Arc<PiMutex<AddrSpace>>, shared: Option<ProcessMemoryShare>) -> Self {
         Self {
-            owner: SpinNoIrq::new(shared.map_or_else(
+            owner: IrqMutex::new(shared.map_or_else(
                 || Arc::new(ProcessMemoryOwner::new(aspace)),
                 |share| share.0,
             )),

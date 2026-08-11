@@ -3,13 +3,12 @@
 use alloc::sync::Arc;
 use core::{future::poll_fn, task::Poll};
 
-use ax_sync::spin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet};
 use starry_process::Pid;
 use starry_signal::Signo;
 
 use super::{ProcessData, current_user_task, future};
-use crate::sync::PiMutex;
+use crate::sync::{IrqMutex, PiMutex};
 
 struct VforkDone {
     done: bool,
@@ -30,8 +29,8 @@ pub(super) struct ProcessWaitState {
     exec_lock: PiMutex<()>,
     exit_signal: Option<Signo>,
     wait_parent_tid: Pid,
-    retired_leader_nice: SpinNoIrq<Option<i32>>,
-    vfork_done: SpinNoIrq<Option<VforkDone>>,
+    retired_leader_nice: IrqMutex<Option<i32>>,
+    vfork_done: IrqMutex<Option<VforkDone>>,
 }
 
 impl ProcessWaitState {
@@ -43,8 +42,8 @@ impl ProcessWaitState {
             exec_lock: PiMutex::new(()),
             exit_signal,
             wait_parent_tid,
-            retired_leader_nice: SpinNoIrq::new(None),
-            vfork_done: SpinNoIrq::new(None),
+            retired_leader_nice: IrqMutex::new(None),
+            vfork_done: IrqMutex::new(None),
         }
     }
 

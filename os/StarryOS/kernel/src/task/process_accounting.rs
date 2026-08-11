@@ -4,21 +4,20 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use ax_runtime::{hal::time::TimeValue, task::SchedulerTickGate};
-use ax_sync::spin::SpinNoIrq;
 
 use super::{
     AlarmChange, AlarmToken, CpuTimeDelta, ITimerSetting, ITimerType, PendingTimerActions,
     PosixTimerTable, ProcessCpuTimeAccounting, ProcessCpuTimeSnapshot, ProcessData,
     ProcessTimerManager, SetITimerOutcome, get_task,
 };
-use crate::sync::PiMutex;
+use crate::sync::{IrqMutex, PiMutex};
 
 const CPU_INTERVAL_TIMER_MASK: u8 =
     (1 << ITimerType::Virtual as usize) | (1 << ITimerType::Prof as usize);
 
 /// Accounting state and timer tables shared by a thread group.
 pub(super) struct ProcessAccountingState {
-    children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
+    children_cpu_time: IrqMutex<(TimeValue, TimeValue)>,
     process_cpu_time: ProcessCpuTimeAccounting,
     interval_timers: PiMutex<ProcessTimerManager>,
     active_interval_timers: AtomicU8,
@@ -29,7 +28,7 @@ pub(super) struct ProcessAccountingState {
 impl ProcessAccountingState {
     pub(super) fn new() -> Self {
         Self {
-            children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
+            children_cpu_time: IrqMutex::new((TimeValue::ZERO, TimeValue::ZERO)),
             process_cpu_time: ProcessCpuTimeAccounting::new(),
             interval_timers: PiMutex::new(ProcessTimerManager::new()),
             active_interval_timers: AtomicU8::new(0),

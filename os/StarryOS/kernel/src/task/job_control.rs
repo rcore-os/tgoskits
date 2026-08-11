@@ -2,12 +2,12 @@
 
 use alloc::sync::Arc;
 
-use ax_sync::spin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet};
 use starry_process::Pid;
 use starry_signal::Signo;
 
 use super::ProcessData;
+use crate::sync::IrqMutex;
 
 /// A pending job-control status change for `waitpid`.
 #[derive(Clone, Copy)]
@@ -30,14 +30,14 @@ struct JobControl {
 }
 
 pub(super) struct ProcessJobControl {
-    state: SpinNoIrq<JobControl>,
+    state: IrqMutex<JobControl>,
     continue_event: Arc<PollSet>,
 }
 
 impl ProcessJobControl {
     pub(super) fn new() -> Self {
         Self {
-            state: SpinNoIrq::new(JobControl::default()),
+            state: IrqMutex::new(JobControl::default()),
             continue_event: Arc::default(),
         }
     }
