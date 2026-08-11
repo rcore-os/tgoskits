@@ -21,6 +21,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 ax-errno = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
+ax-lazyinit.workspace = true
 ax-sync = { workspace = true, features = ["sleep"] }
 bitflags = "2.10"
 cfg-if = { workspace = true }

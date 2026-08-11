@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     block::{BlockRegion, FsBlockDevice},
-    os::sync::{PiMutex, PiMutexGuard, SpinMutex},
+    os::sync::{PiMutex, PiMutexGuard, SpinLock},
 };
 
 pub struct FatFilesystemInner {
@@ -36,7 +36,7 @@ impl FatFilesystemInner {
 pub struct FatFilesystem {
     inner: PiMutex<FatFilesystemInner>,
     disk_flusher: SeekableDiskFlusher,
-    root_dir: SpinMutex<Option<DirEntry>>,
+    root_dir: SpinLock<Option<DirEntry>>,
 }
 
 impl FatFilesystem {
@@ -53,7 +53,7 @@ impl FatFilesystem {
         let result = Arc::new(Self {
             inner: PiMutex::new(inner),
             disk_flusher,
-            root_dir: SpinMutex::new(None),
+            root_dir: SpinLock::new(None),
         });
 
         let root_dir = DirEntry::new_dir(

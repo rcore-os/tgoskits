@@ -23,7 +23,7 @@ use axfs_ng_vfs::{
 
 use crate::{
     file::File,
-    os::sync::{PiMutex, SpinMutex},
+    os::sync::{PiMutex, SpinLock},
 };
 
 /// Maximum number of symlinks that will be followed during path resolution.
@@ -39,7 +39,7 @@ pub static ROOT_FS_CONTEXT: OnceLock<FsContext> = OnceLock::new();
 /// [`FsContext::propagate_pivot_root`] to iterate over every task's
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
-static FS_REGISTRY: SpinMutex<Vec<Weak<PiMutex<FsContext>>>> = SpinMutex::new(Vec::new());
+static FS_REGISTRY: SpinLock<Vec<Weak<PiMutex<FsContext>>>> = SpinLock::new(Vec::new());
 #[cfg(feature = "vfs")]
 static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 

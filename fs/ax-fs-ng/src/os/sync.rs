@@ -1,9 +1,9 @@
 #[cfg(not(test))]
-pub use ax_sync::{PiMutex, PiMutexGuard, SpinMutex, SpinMutexGuard};
+pub use ax_sync::{PiMutex, PiMutexGuard, SpinLock, SpinLockGuard};
 #[cfg(test)]
 pub use tests::{
-    TestMutex as PiMutex, TestMutex as SpinMutex, TestMutexGuard as PiMutexGuard,
-    TestMutexGuard as SpinMutexGuard,
+    TestMutex as PiMutex, TestMutex as SpinLock, TestMutexGuard as PiMutexGuard,
+    TestMutexGuard as SpinLockGuard,
 };
 
 #[cfg(test)]

@@ -874,6 +874,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-errno",
  "ax-io",
+ "ax-lazyinit",
  "ax-sync",
  "axfs-ng-vfs",
  "bitflags 2.13.1",
