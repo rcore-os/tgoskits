@@ -1,5 +1,7 @@
 //! Linux-style root-domain and per-runqueue real-time bandwidth state.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 #[cfg(test)]
 use crate::lock::IrqTicketGuard;
 use crate::{
@@ -162,6 +164,7 @@ pub(crate) struct RootRtBandwidth {
     period_ns: u64,
     runtime_ns: u64,
     runtime_lock: IrqTicketLock<()>,
+    period_active: AtomicBool,
     state: IrqTicketLock<RootRtBandwidthState>,
 }
 
@@ -172,6 +175,7 @@ impl RootRtBandwidth {
             period_ns: config.rt_period_ns(),
             runtime_ns: config.rt_runtime_ns(),
             runtime_lock: IrqTicketLock::new(()),
+            period_active: AtomicBool::new(false),
             state: IrqTicketLock::new(RootRtBandwidthState {
                 owner: None,
                 deadline: None,
@@ -212,6 +216,10 @@ impl RootRtBandwidth {
             state.owner = Some(cpu);
             state.deadline =
                 Some(now.deadline_after(core::time::Duration::from_nanos(self.period_ns)));
+            // Publish only after the authoritative timer identity is complete.
+            // Readers use this Linux-style rt_period_active bit solely to
+            // reject the empty state without entering the IRQ-safe lock.
+            self.period_active.store(true, Ordering::Release);
         } else if state.firing {
             // Linux keeps rt_period_active set while the callback temporarily
             // drops rt_runtime_lock to scan runqueues. Remember an activation
@@ -223,6 +231,9 @@ impl RootRtBandwidth {
     }
 
     pub(crate) fn deadline_for(&self, cpu: CpuId) -> Option<MonotonicDeadline> {
+        if !self.period_active.load(Ordering::Acquire) {
+            return None;
+        }
         let state = self
             .state
             .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket);
@@ -233,6 +244,9 @@ impl RootRtBandwidth {
 
     /// Begins one due root-period callback on its pinned owner CPU.
     pub(crate) fn begin_period(&self, cpu: CpuId, now: MonotonicInstant) -> Option<RtPeriodFiring> {
+        if !self.period_active.load(Ordering::Acquire) {
+            return None;
+        }
         let mut state = self
             .state
             .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket);
@@ -274,6 +288,7 @@ impl RootRtBandwidth {
         state.owner = None;
         state.deadline = None;
         state.activation_during_firing = false;
+        self.period_active.store(false, Ordering::Release);
     }
 
     /// Moves an active pinned period timer away from an offlining CPU.
@@ -354,6 +369,24 @@ mod tests {
             assert!(root.begin_period(CpuId::new(0), instant(now_ns)).is_none());
         }
 
+        assert_eq!(crate::test_runtime::irq_guard_entries(), 0);
+    }
+
+    #[test]
+    fn idle_callback_withdraws_period_active_publication() {
+        let root = RootRtBandwidth::new(TaskSystemConfig::new(1));
+        assert!(root.activate(CpuId::new(0), instant(0)));
+        let firing = root
+            .begin_period(CpuId::new(0), instant(1_000_000_000))
+            .unwrap();
+        root.finish_period(firing, false);
+        crate::test_runtime::reset_irq_guard_entries();
+
+        assert_eq!(root.deadline_for(CpuId::new(0)), None);
+        assert!(
+            root.begin_period(CpuId::new(0), instant(2_000_000_000))
+                .is_none()
+        );
         assert_eq!(crate::test_runtime::irq_guard_entries(), 0);
     }
 
