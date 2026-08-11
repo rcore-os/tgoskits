@@ -128,8 +128,11 @@ impl TaskSystem {
         run_queue: &CpuRunQueueState,
     ) {
         #[cfg(test)]
-        LOAD_SUMMARY_PUBLICATIONS.set(LOAD_SUMMARY_PUBLICATIONS.get().saturating_add(1));
-        remote.publish_run_queue_load_summary(run_queue);
+        if remote.publish_run_queue_load_summary(run_queue) {
+            LOAD_SUMMARY_PUBLICATIONS.set(LOAD_SUMMARY_PUBLICATIONS.get().saturating_add(1));
+        }
+        #[cfg(not(test))]
+        let _ = remote.publish_run_queue_load_summary(run_queue);
         self.root_domain
             .publish_run_queue(remote.owner(), run_queue, remote.accepts_placement());
     }

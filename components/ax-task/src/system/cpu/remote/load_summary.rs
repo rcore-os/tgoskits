@@ -3,6 +3,7 @@ use super::*;
 const INCOMING_MIGRATION_OVERFLOW_INVARIANT: u32 = 0x4d49_474f;
 const INCOMING_MIGRATION_RELEASE_INVARIANT: u32 = 0x4d49_4752;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RunQueueLoadPublication {
     queued_count: usize,
     nr_running: usize,
@@ -34,10 +35,25 @@ impl RemoteLoadState {
             flags: AtomicU16::new(0),
         }
     }
+
+    fn matches(&self, publication: RunQueueLoadPublication) -> bool {
+        self.queued.load(Ordering::Relaxed) == publication.queued_count
+            && self.nr_running.load(Ordering::Relaxed) == publication.nr_running
+            && self.fair_demand.load(Ordering::Relaxed) == publication.fair_demand
+            && self.workload_demand.load(Ordering::Relaxed) == publication.workload_demand
+            && (self.flags.load(Ordering::Relaxed) & SUMMARY_FAIR_PUSHABLE != 0)
+                == publication.fair_pushable
+    }
 }
 
 impl CpuRemote {
-    fn publish_load_summary(&self, publication: RunQueueLoadPublication) {
+    fn publish_load_summary(&self, publication: RunQueueLoadPublication) -> bool {
+        // Every writer owns this CPU's rq lock, so the previously completed
+        // atomic fields are a stable comparison point. Readers still use the
+        // sequence protocol for a coherent multi-field snapshot.
+        if self.load.matches(publication) {
+            return false;
+        }
         let RunQueueLoadPublication {
             queued_count,
             nr_running,
@@ -64,6 +80,7 @@ impl CpuRemote {
         };
         self.load.flags.store(flags, Ordering::Relaxed);
         self.load.sequence.fetch_add(1, Ordering::Release);
+        true
     }
 
     /// Publishes the remotely observable load state while the caller owns this
@@ -71,8 +88,9 @@ impl CpuRemote {
     ///
     /// Taking the runqueue state by reference keeps queue membership, current
     /// priority, and load publication in one transaction for both owner and
-    /// direct remote wake paths.
-    pub(crate) fn publish_run_queue_load_summary(&self, run_queue: &CpuRunQueueState) {
+    /// direct remote wake paths. Returns whether the committed load state
+    /// changed and therefore advanced the publication sequence.
+    pub(crate) fn publish_run_queue_load_summary(&self, run_queue: &CpuRunQueueState) -> bool {
         let current = run_queue.current();
         let current_non_idle = current.is_some_and(|current| {
             self.idle_thread()
@@ -96,7 +114,7 @@ impl CpuRemote {
             fair_demand,
             workload_demand,
             fair_pushable: run_queue.has_pushable_fair(),
-        });
+        })
     }
 
     /// Returns one coherent remotely observable scheduling snapshot.

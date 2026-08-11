@@ -553,7 +553,7 @@ impl<'a> OwnerRqTxn<'a> {
             .run_queue
             .as_ref()
             .expect("an unfinished rq transaction must retain its lock");
-        self.remote.publish_run_queue_load_summary(run_queue);
+        let _ = self.remote.publish_run_queue_load_summary(run_queue);
         self.finished = true;
         drop(self.run_queue.take());
     }
