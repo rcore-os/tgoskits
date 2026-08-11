@@ -82,9 +82,8 @@ impl Ext4FileSystem {
         &mut self,
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
-    ) -> bool {
+    ) -> Ext4Result<bool> {
         self.inode_is_allocated_checked(device, inode_num)
-            .unwrap_or(false)
     }
 
     /// Checks the allocation bitmap without collapsing I/O or corruption into

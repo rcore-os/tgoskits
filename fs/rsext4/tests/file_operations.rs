@@ -538,7 +538,8 @@ mod file_functional_tests {
             "the directory entry must disappear"
         );
         assert!(
-            fs.inode_num_already_allocated(&mut jbd2_dev, inode_number),
+            fs.inode_num_already_allocated(&mut jbd2_dev, inode_number)
+                .expect("unlinked inode allocation lookup failed"),
             "the zero-link inode must remain allocated while an open reference may exist"
         );
         let mut output = [0u8; 26];
