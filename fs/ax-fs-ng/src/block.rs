@@ -38,6 +38,10 @@ pub(crate) trait FsBlockDevice: Send {
     fn name(&self) -> &str;
     fn num_blocks(&self) -> u64;
     fn block_size(&self) -> usize;
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    fn is_read_only(&self) -> bool;
+    #[cfg(feature = "ext4")]
+    fn supports_flush(&self) -> bool;
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult;
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult;
@@ -56,6 +60,16 @@ impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
 
     fn block_size(&self) -> usize {
         (**self).block_size()
+    }
+
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    fn is_read_only(&self) -> bool {
+        (**self).is_read_only()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn supports_flush(&self) -> bool {
+        (**self).supports_flush()
     }
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
@@ -125,6 +139,15 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
         self.inner.block_size()
     }
 
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn supports_flush(&self) -> bool {
+        self.inner.supports_flush()
+    }
+
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
         self.check_io_bounds(block_id, buf.len())?;
         let physical = self
@@ -165,12 +188,25 @@ impl FsBlockDevice for NativeHandleBlockDevice {
         self.handle.device_info().logical_block_size
     }
 
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    fn is_read_only(&self) -> bool {
+        self.handle.device_info().read_only
+    }
+
+    #[cfg(feature = "ext4")]
+    fn supports_flush(&self) -> bool {
+        self.handle.supports_flush()
+    }
+
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
         self.handle.read_blocks(block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
+        if self.is_read_only() {
+            return Err(AxError::ReadOnlyFilesystem);
+        }
         self.handle.write_blocks(block_id, buf)
     }
 

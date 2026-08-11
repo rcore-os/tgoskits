@@ -1207,6 +1207,16 @@ mod tests {
             512
         }
 
+        #[cfg(any(feature = "ext4", feature = "fat"))]
+        fn is_read_only(&self) -> bool {
+            false
+        }
+
+        #[cfg(feature = "ext4")]
+        fn supports_flush(&self) -> bool {
+            true
+        }
+
         fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
             if self.remaining_failures > 0 {
                 self.remaining_failures -= 1;

@@ -274,6 +274,10 @@ mod tests {
             512
         }
 
+        fn is_read_only(&self) -> bool {
+            false
+        }
+
         fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> FsBlockResult<()> {
             assert_eq!(block_id, 0);
             buf.copy_from_slice(&self.storage.lock().unwrap());
