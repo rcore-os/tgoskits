@@ -3,6 +3,13 @@ use ::alloc::collections::BTreeSet;
 use super::*;
 use crate::dir::{FileName, insert_dir_entry_raw};
 
+// Linux ext4_rename reserves two DATA_TRANS_BLOCKS owners, one index-growth
+// allowance, and two inode records. Writable quota is not implemented yet.
+const RENAME_TRANSACTION_CREDITS: usize = 2 * 24 + 12 + 2;
+
+// RENAME_EXCHANGE can update directory indices on both sides.
+const RENAME_EXCHANGE_TRANSACTION_CREDITS: usize = 2 * 24 + 2 * 12 + 2;
+
 /// Filesystem-level rename behavior selected by a VFS.
 ///
 /// The representation is private so invalid Linux flag combinations cannot be
@@ -263,49 +270,6 @@ fn replace_or_add_destination<B: BlockIo>(
     }
 }
 
-fn rollback_destination<B: BlockIo>(
-    fs: &mut Ext4FileSystem,
-    device: &mut Jbd2Dev<B>,
-    request: RenameEntryRequest<'_>,
-    source: ParentDirEntry,
-    new_parent_inode: &Ext4Inode,
-    destination: Option<ParentDirEntry>,
-) -> Ext4Result<()> {
-    let published = find_named_entry_in_parent(
-        fs,
-        device,
-        request.new_parent,
-        new_parent_inode,
-        request.new_name.as_bytes(),
-    )?;
-    if published.ino != source.ino {
-        return Err(Ext4Error::corrupted().with_operation("rename:rollback_destination"));
-    }
-    if let Some(destination) = destination {
-        replace_named_entry_at(
-            fs,
-            device,
-            request.new_parent,
-            new_parent_inode,
-            published,
-            request.new_name.as_bytes(),
-            DentryReplacement {
-                inode: destination.ino,
-                file_type: destination.file_type,
-            },
-        )
-    } else {
-        remove_named_entry_at(
-            fs,
-            device,
-            request.new_parent,
-            new_parent_inode,
-            published,
-            request.new_name.as_bytes(),
-        )
-    }
-}
-
 fn rename_replace<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
@@ -358,31 +322,14 @@ fn rename_replace<B: BlockIo>(
     };
 
     replace_or_add_destination(fs, device, request, source, &new_parent_inode, destination)?;
-    if let Err(error) = remove_named_entry_at(
+    remove_named_entry_at(
         fs,
         device,
         request.old_parent,
         &old_parent_inode,
         source,
         request.old_name.as_bytes(),
-    ) {
-        let source_still_present = matches!(
-            optional_entry(
-                fs,
-                device,
-                request.old_parent,
-                &old_parent_inode,
-                request.old_name,
-            ),
-            Ok(Some(found)) if found.ino == source.ino
-        );
-        if source_still_present {
-            let rollback =
-                rollback_destination(fs, device, request, source, &new_parent_inode, destination);
-            return Err(error_after_cleanup(error, rollback));
-        }
-        return Err(error);
-    }
+    )?;
     fs.touch_parent_dir_for_entry_change(device, request.old_parent)?;
 
     if source_inode.is_dir() && request.old_parent != request.new_parent {
@@ -484,7 +431,7 @@ fn rename_exchange<B: BlockIo>(
             file_type: source.file_type,
         },
     )?;
-    if let Err(error) = replace_named_entry_at(
+    replace_named_entry_at(
         fs,
         device,
         request.old_parent,
@@ -495,25 +442,7 @@ fn rename_exchange<B: BlockIo>(
             inode: target.ino,
             file_type: target.file_type,
         },
-    ) {
-        let published_target = ParentDirEntry {
-            ino: source.ino,
-            ..target
-        };
-        let rollback = replace_named_entry_at(
-            fs,
-            device,
-            request.new_parent,
-            &new_parent_inode,
-            published_target,
-            request.new_name.as_bytes(),
-            DentryReplacement {
-                inode: target.ino,
-                file_type: target.file_type,
-            },
-        );
-        return Err(error_after_cleanup(error, rollback));
-    }
+    )?;
     fs.touch_parent_dir_for_entry_change(device, request.old_parent)?;
     if request.old_parent != request.new_parent {
         fs.touch_parent_dir_for_entry_change(device, request.new_parent)?;
@@ -548,12 +477,11 @@ fn rename_exchange<B: BlockIo>(
     Ok(RenameOutcome::default())
 }
 
-/// Renames two entries after both parent directories have been resolved.
-pub(crate) fn rename_inode_at<B: BlockIo>(
+fn prepare_rename<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     request: RenameEntryRequest<'_>,
-) -> Ext4Result<RenameOutcome> {
+) -> Ext4Result<Option<ResolvedRename>> {
     if request.old_name.is_reserved() || request.new_name.is_reserved() {
         return Err(Ext4Error::invalid_input().with_operation("rename:reserved_name"));
     }
@@ -582,10 +510,10 @@ pub(crate) fn rename_inode_at<B: BlockIo>(
         return Err(Ext4Error::already_exists());
     }
     if destination.is_some_and(|entry| entry.ino == source.ino) {
-        return Ok(RenameOutcome::default());
+        return Ok(None);
     }
     if request.old_parent == request.new_parent && request.old_name == request.new_name {
-        return Ok(RenameOutcome::default());
+        return Ok(None);
     }
 
     if request.options.whiteout() {
@@ -596,19 +524,61 @@ pub(crate) fn rename_inode_at<B: BlockIo>(
         Some(entry) => Some(fs.get_inode_by_num(device, entry.ino)?),
         None => None,
     };
-    let resolved = ResolvedRename {
+    Ok(Some(ResolvedRename {
         old_parent_inode,
         source,
         source_inode,
         new_parent_inode,
         destination,
         destination_inode,
-    };
-    if request.options.exchange() {
-        rename_exchange(fs, device, request, resolved)
-    } else {
-        rename_replace(fs, device, request, resolved)
+    }))
+}
+
+fn flush_rename_metadata<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    request: RenameEntryRequest<'_>,
+    resolved: ResolvedRename,
+    counters_before: &[GroupCounters],
+) -> Ext4Result<()> {
+    let mut touched_inodes = BTreeSet::new();
+    touched_inodes.insert(request.old_parent);
+    touched_inodes.insert(request.new_parent);
+    touched_inodes.insert(resolved.source.ino);
+    if let Some(destination) = resolved.destination {
+        touched_inodes.insert(destination.ino);
     }
+    for inode in touched_inodes {
+        fs.inodetable_cache.flush(device, inode)?;
+    }
+    fs.flush_changed_group_metadata(device, counters_before)?;
+    fs.sync_superblock(device)
+}
+
+/// Renames two entries after both parent directories have been resolved.
+pub(crate) fn rename_inode_at<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    request: RenameEntryRequest<'_>,
+) -> Ext4Result<RenameOutcome> {
+    let Some(resolved) = prepare_rename(fs, device, request)? else {
+        return Ok(RenameOutcome::default());
+    };
+    let credits = if request.options.exchange() {
+        RENAME_EXCHANGE_TRANSACTION_CREDITS
+    } else {
+        RENAME_TRANSACTION_CREDITS
+    };
+    let counters_before = fs.group_counter_snapshot();
+    fs.with_metadata_transaction(device, credits, |fs, device| {
+        let outcome = if request.options.exchange() {
+            rename_exchange(fs, device, request, resolved)?
+        } else {
+            rename_replace(fs, device, request, resolved)?
+        };
+        flush_rename_metadata(fs, device, request, resolved, &counters_before)?;
+        Ok(outcome)
+    })
 }
 
 fn split_parent(path: &str) -> Ext4Result<(String, String)> {

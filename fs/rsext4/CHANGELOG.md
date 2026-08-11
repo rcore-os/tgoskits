@@ -74,6 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   namespace transaction with ordered payload publication and full cache undo.
 - Write and replay one JBD2 transaction across multiple descriptor blocks while
   accounting descriptor overhead in journal-ring credit reservations.
+- Publish replace and exchange rename operations atomically across both names,
+  parent links, directory parent records, target links, and orphan state.
 
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 
