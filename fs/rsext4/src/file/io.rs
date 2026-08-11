@@ -92,7 +92,13 @@ pub fn truncate_inode<B: BlockIo>(
     inode_num: InodeNumber,
     truncate_size: u64,
 ) -> Ext4Result<()> {
-    truncate_inode_mapping(device, fs, inode_num, truncate_size, false)
+    truncate_inode_mapping(
+        device,
+        fs,
+        inode_num,
+        truncate_size,
+        TruncatePurpose::UserResize,
+    )
 }
 
 pub(crate) fn recover_linked_truncate_inode<B: BlockIo>(
@@ -101,7 +107,38 @@ pub(crate) fn recover_linked_truncate_inode<B: BlockIo>(
     inode_num: InodeNumber,
     truncate_size: u64,
 ) -> Ext4Result<()> {
-    truncate_inode_mapping(device, fs, inode_num, truncate_size, true)
+    truncate_inode_mapping(
+        device,
+        fs,
+        inode_num,
+        truncate_size,
+        TruncatePurpose::OrphanRecovery,
+    )
+}
+
+pub(crate) fn truncate_inode_for_reap<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+) -> Ext4Result<()> {
+    truncate_inode_mapping(device, fs, inode_num, 0, TruncatePurpose::FinalReap)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TruncatePurpose {
+    UserResize,
+    OrphanRecovery,
+    FinalReap,
+}
+
+impl TruncatePurpose {
+    const fn force_mapping_cleanup(self) -> bool {
+        !matches!(self, Self::UserResize)
+    }
+
+    const fn accepts_non_file(self) -> bool {
+        matches!(self, Self::FinalReap)
+    }
 }
 
 fn truncate_inode_mapping<B: BlockIo>(
@@ -109,18 +146,18 @@ fn truncate_inode_mapping<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
     truncate_size: u64,
-    recover_committed_size: bool,
+    purpose: TruncatePurpose,
 ) -> Ext4Result<()> {
     let mut inode = fs.get_inode_by_num(device, inode_num)?;
 
-    if inode.is_symlink() {
+    if inode.is_symlink() && !purpose.accepts_non_file() {
         return Err(Ext4Error::unsupported());
-    } else if !inode.is_file() {
+    } else if !inode.is_file() && !purpose.accepts_non_file() {
         return Err(Ext4Error::invalid_input());
     }
 
     let old_size = inode.size();
-    if truncate_size == old_size && !recover_committed_size {
+    if truncate_size == old_size && !purpose.force_mapping_cleanup() {
         return Ok(());
     }
 
@@ -159,7 +196,7 @@ fn truncate_inode_mapping<B: BlockIo>(
 
     // Extent-backed files handle extent-aware shrinking here.
     if fs.superblock.has_extents() && inode.uses_extents() {
-        if truncate_size < old_size || recover_committed_size {
+        if truncate_size < old_size || purpose.force_mapping_cleanup() {
             // Delegate range removal to the extent tree so physical-block frees
             // stay consistent even when holes exist.
             let del_start_lbn = new_blocks as u32;
