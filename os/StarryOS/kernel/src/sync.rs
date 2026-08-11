@@ -6,8 +6,7 @@
 pub(crate) use ax_fs_ng::os::sync::Mutex as FsMutex;
 pub(crate) use ax_runtime::sync::{
     InterruptibleMutexExt, LockdepMutexExt, Mutex, PiMutex, PiMutexGuard,
-    PreemptGuard as NoPreempt, PreemptIrqSaveGuard as NoPreemptIrqSave, RawIrqSaveMutex, SpinLock,
-    SpinLockGuard, SpinRwLock,
+    PreemptIrqSaveGuard as NoPreemptIrqSave, RawIrqSaveMutex, SpinLock, SpinLockGuard, SpinRwLock,
 };
 pub(crate) use axnsproxy::IrqMutex;
 

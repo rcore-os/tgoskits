@@ -2,6 +2,47 @@
 mod tests {
     use super::*;
 
+    #[cfg(feature = "smp")]
+    #[test]
+    fn running_policy_update_waits_for_execution_transition_writer() {
+        use std::{
+            sync::{mpsc, Arc},
+            thread,
+            time::Duration as StdDuration,
+        };
+
+        let accounting = Arc::new(CpuTimeAccounting::new());
+        accounting.set_state_at(TimerState::User, 0);
+        accounting.scheduler_switch_in_at(true, 0);
+
+        let execution_writer = accounting.begin_write();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let policy_accounting = Arc::clone(&accounting);
+        let policy_writer = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let delta = policy_accounting.set_realtime_policy_at(false, 10);
+            completed_tx.send(delta).unwrap();
+        });
+
+        started_rx.recv().unwrap();
+        assert_eq!(
+            completed_rx.recv_timeout(StdDuration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "a remote policy writer must wait for the execution transition"
+        );
+
+        drop(execution_writer);
+        assert_eq!(
+            completed_rx.recv_timeout(StdDuration::from_secs(1)),
+            Ok(CpuTimeDelta {
+                user_ns: 10,
+                system_ns: 0,
+            })
+        );
+        policy_writer.join().unwrap();
+    }
+
     #[test]
     fn preemption_and_yield_preserve_rttime_but_block_resets_it() {
         let accounting = CpuTimeAccounting::new();

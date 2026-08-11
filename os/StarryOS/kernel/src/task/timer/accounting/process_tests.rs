@@ -157,13 +157,13 @@ mod process_tests {
         );
 
         process.record_transition(|| {
-            let writer = first.begin_owner_write();
+            let writer = first.begin_write();
             first.account_now_at(10);
             drop(writer);
             first.publish_committed_delta()
         });
         process.record_transition(|| {
-            let writer = second.begin_owner_write();
+            let writer = second.begin_write();
             second.account_now_at(10);
             drop(writer);
             second.publish_committed_delta()

@@ -14,7 +14,7 @@ use starry_signal::Signo;
 use strum::FromRepr;
 
 use crate::{
-    sync::{NoPreempt, PiMutex},
+    sync::{PiMutex, SpinLock, SpinLockGuard},
     task::poll_process_timer_for_alarm,
 };
 
