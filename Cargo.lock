@@ -395,6 +395,7 @@ dependencies = [
  "ax-net",
  "ax-std",
  "task2-net-protocol",
+ "task3-model",
 ]
 
 [[package]]
@@ -8274,6 +8275,10 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.20",
 ]
+
+[[package]]
+name = "task3-model"
+version = "0.1.0"
 
 [[package]]
 name = "tempfile"

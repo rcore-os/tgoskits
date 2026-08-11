@@ -1,0 +1,48 @@
+{
+  "architecture": {
+    "input": [
+      64,
+      4
+    ],
+    "conv1": {
+      "in": 4,
+      "out": 32,
+      "kernel": 5,
+      "padding": "same"
+    },
+    "conv2": {
+      "in": 32,
+      "out": 64,
+      "kernel": 5,
+      "padding": "same"
+    },
+    "pool": "global average",
+    "fc1": [
+      64,
+      32
+    ],
+    "fc2": [
+      32,
+      1
+    ],
+    "activation": "relu"
+  },
+  "params": 13089,
+  "macs_estimate": 698400,
+  "weights_file": "weights.bin",
+  "weights_sha256": "53760db8aff4e391018dbc3394b6ebcd8e87777cf76445ab6b3255a62adbded6",
+  "weights_bytes": 104712,
+  "trainer_sha256": "924f70ff11198a554c9cd17128997c550702c97aab2724cec25dc70700b869e4",
+  "normalization": {
+    "state_scale": 1000.0,
+    "target_scale": 1000.0,
+    "error_scale": 1000.0,
+    "output_scale": 1000.0,
+    "label_scale": 1000.0
+  },
+  "seed": 20260811,
+  "trainer": "dagger_train.py",
+  "dagger_iterations": 6,
+  "dagger_epochs": 25,
+  "dagger_closed_loop_weight": 3
+}

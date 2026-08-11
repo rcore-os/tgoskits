@@ -22,3 +22,4 @@ ax-errno = { workspace = true, optional = true }
 ax-net = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }
 task2-net-protocol.workspace = true
+task3-model.workspace = true

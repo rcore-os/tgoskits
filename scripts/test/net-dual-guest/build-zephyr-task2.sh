@@ -59,8 +59,16 @@ if [[ ! -x "$objcopy_bin" ]]; then
 fi
 "$objcopy_bin" -O binary "$elf" "$binary"
 chmod 0755 "$elf" "$binary"
-entry_point="$(readelf -hW "$elf" | awk '/Entry point address:/ {print $4}')"
-linked_base="$(readelf -lW "$elf" | awk '$1 == "LOAD" {print $3; exit}')"
+readelf_bin="${READELF:-$zephyr_sdk/gnu/aarch64-zephyr-elf/bin/aarch64-zephyr-elf-readelf}"
+if [[ ! -x "$readelf_bin" ]]; then
+    readelf_bin="$(command -v readelf || printf '')"
+fi
+if [[ -z "$readelf_bin" ]]; then
+    printf 'error: no usable readelf found\n' >&2
+    exit 1
+fi
+entry_point="$(LC_ALL=C "$readelf_bin" -hW "$elf" | awk '/Entry point address:/ {print $4}')"
+linked_base="$(LC_ALL=C "$readelf_bin" -lW "$elf" | awk '$1 == "LOAD" {print $3; exit}')"
 if [[ -z "$entry_point" || -z "$linked_base" ]]; then
     printf 'error: failed to extract Zephyr ELF entry/link base\n' >&2
     exit 1

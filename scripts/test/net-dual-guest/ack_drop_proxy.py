@@ -5,6 +5,12 @@ QEMU's stream socket backend prefixes every Ethernet frame with a four-byte
 big-endian length.  The proxy preserves that framing and inspects only the
 Ethernet/IPv4/UDP payload, so the injected loss occurs on the real Guest link
 between the two QEMU netdevs rather than inside either Guest protocol stack.
+
+The proxy can additionally enter a timed ``blackout``: while a blackout is
+active every frame in both directions is read and discarded, which emulates a
+runtime data-link outage on the real Guest link; when the window ends the relay
+resumes forwarding without touching the QEMU netdevs.  This is the M5 fault
+injection used to verify T2N1 safe-state entry and recovery.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ from datetime import datetime, timezone
 import socket
 import sys
 import threading
+import time
 from typing import TextIO
 
 from task2_responder import CONTROL_KIND, SESSION_ID, encode_frame
@@ -130,9 +137,13 @@ class AckDropProxy:
         drop_count: int,
         injection_mode: str,
         output: TextIO,
+        blackout_start_ms: int | None = None,
+        blackout_duration_ms: int = 0,
     ) -> None:
         if drop_count < 0:
             raise ValueError("drop_count must not be negative")
+        if blackout_start_ms is not None and blackout_duration_ms <= 0:
+            raise ValueError("blackout_duration_ms must be positive with a start")
         self.linux_port = linux_port
         self.rtos_port = rtos_port
         self.drop_direction = drop_direction
@@ -147,6 +158,13 @@ class AckDropProxy:
         self._stop = threading.Event()
         self.dropped = 0
         self.forwarded = 0
+        self.blackout_start_ms = blackout_start_ms
+        self.blackout_duration_ms = blackout_duration_ms
+        self.blackout_dropped = 0
+        self.started_monotonic: float | None = None
+        self._blackout_lock = threading.Lock()
+        self._blackout_start_logged = False
+        self._blackout_end_logged = False
 
     def serve(self) -> None:
         """Accept both QEMU endpoints and relay until either endpoint closes."""
@@ -155,19 +173,23 @@ class AckDropProxy:
         ) as rtos_listener:
             self.log(
                 "PROXY_READY linux_port={} rtos_port={} drop_direction={} "
-                "drop_kind={} drop_count={} injection={}".format(
+                "drop_kind={} drop_count={} injection={} "
+                "blackout_start_ms={} blackout_duration_ms={}".format(
                     self.linux_port,
                     self.rtos_port,
                     self.drop_direction,
                     self.drop_kind,
                     self.drop_remaining,
                     self.injection_mode,
+                    self.blackout_start_ms,
+                    self.blackout_duration_ms,
                 )
             )
             linux_stream, _ = linux_listener.accept()
             rtos_stream, _ = rtos_listener.accept()
             linux_stream.settimeout(1.0)
             rtos_stream.settimeout(1.0)
+            self.started_monotonic = time.monotonic()
             self.log("PROXY_CONNECTED")
             with linux_stream, rtos_stream:
                 threads = [
@@ -187,7 +209,8 @@ class AckDropProxy:
                 for thread in threads:
                     thread.join()
         self.log(
-            f"PROXY_SUMMARY dropped={self.dropped} forwarded={self.forwarded}"
+            f"PROXY_SUMMARY dropped={self.dropped} blackout_dropped={self.blackout_dropped} "
+            f"forwarded={self.forwarded}"
         )
 
     def _relay(
@@ -195,7 +218,12 @@ class AckDropProxy:
     ) -> None:
         try:
             while not self._stop.is_set():
+                elapsed_ms = self._elapsed_ms()
+                self._log_blackout_transition(elapsed_ms)
                 prefix, frame = read_qemu_frame(source)
+                if self.blackout_active_at(elapsed_ms):
+                    self.blackout_dropped += 1
+                    continue
                 metadata = task2_metadata(frame)
                 if self._should_drop(metadata, direction):
                     self.dropped += 1
@@ -224,6 +252,32 @@ class AckDropProxy:
                 destination.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+
+    def blackout_active_at(self, elapsed_ms: int) -> bool:
+        """Whether the full-frame blackout is active at an elapsed offset."""
+        if self.blackout_start_ms is None:
+            return False
+        end_ms = self.blackout_start_ms + self.blackout_duration_ms
+        return self.blackout_start_ms <= elapsed_ms < end_ms
+
+    def _elapsed_ms(self) -> int:
+        if self.started_monotonic is None:
+            return 0
+        return int((time.monotonic() - self.started_monotonic) * 1000)
+
+    def _log_blackout_transition(self, elapsed_ms: int) -> None:
+        with self._blackout_lock:
+            active = self.blackout_active_at(elapsed_ms)
+            if active and not self._blackout_start_logged:
+                self._blackout_start_logged = True
+                self.log(f"PROXY_BLACKOUT_START elapsed_ms={elapsed_ms}")
+            if (
+                not active
+                and self._blackout_start_logged
+                and not self._blackout_end_logged
+            ):
+                self._blackout_end_logged = True
+                self.log(f"PROXY_BLACKOUT_END elapsed_ms={elapsed_ms}")
 
     def _should_drop(
         self, metadata: Task2Metadata | None, direction: str
@@ -349,6 +403,18 @@ def main() -> int:
         default="none",
         help="inject one valid-wire but invalid-semantics control after seq=1",
     )
+    parser.add_argument(
+        "--blackout-start-ms",
+        type=int,
+        default=None,
+        help="drop every frame in both directions from this offset (ms after connect)",
+    )
+    parser.add_argument(
+        "--blackout-duration-ms",
+        type=int,
+        default=0,
+        help="keep the blackout active for this many milliseconds",
+    )
     parser.add_argument("--log", type=argparse.FileType("w"), default=sys.stdout)
     args = parser.parse_args()
     try:
@@ -360,6 +426,8 @@ def main() -> int:
             args.drop_count,
             args.inject,
             args.log,
+            args.blackout_start_ms,
+            args.blackout_duration_ms,
         )
         proxy.serve()
     except (OSError, ValueError, ProxyError) as error:

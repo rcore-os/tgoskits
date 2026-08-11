@@ -27,6 +27,29 @@
 #define HEARTBEAT_INTERVAL_MS 200
 #define PEER_TIMEOUT_MS 10000
 
+/*
+ * Task-3 virtual plant: a nonlinear thermal-like object in 0..1000.
+ *
+ *   loss(state) = base_loss + nonlinear_loss * state^2 / 1_000_000
+ *   state_next  = clamp(state + response * (output - state)
+ *                       - loss(state) + disturbance, 0, 1000)
+ *
+ * The plant runs inside the RTOS Guest; the Linux side only observes it
+ * through the T2N1 STATUS value.  Parameters are frozen (see
+ * book/design/task3-ai-control-todo.md M0) and must not be tuned after
+ * baseline/AI comparison runs start.
+ */
+#define PLANT_STATE_MIN 0
+#define PLANT_STATE_MAX 1000
+#define PLANT_BASE_LOSS 15
+#define PLANT_NONLINEAR_LOSS 120
+#define PLANT_RESPONSE 350
+#define PLANT_RESPONSE_DEN 1000
+#define PLANT_DISTURBANCE_MAX 150
+
+static int32_t plant_state = 300;
+static int32_t plant_disturbance = 0;
+
 static int task2_configure_network(void)
 {
 	struct net_if *iface = net_if_get_default();
@@ -224,6 +247,42 @@ static size_t make_heartbeat(uint8_t *frame, uint64_t uptime_ms)
 	return encode_frame(frame, KIND_HEARTBEAT, 0, 0, 0, 0, payload, sizeof(payload));
 }
 
+/*
+ * Fixed disturbance schedule (frozen in M0):
+ *   8 s  after boot: +150 load step
+ *   17 s after boot: -150 load step
+ */
+static void plant_update_disturbance(int64_t now_ms)
+{
+	int64_t scheduled = 0;
+
+	if (now_ms >= 8000 && now_ms < 17000) {
+		scheduled = PLANT_DISTURBANCE_MAX;
+	} else if (now_ms >= 17000) {
+		scheduled = 0;
+	}
+	if (scheduled != plant_disturbance) {
+		plant_disturbance = scheduled;
+		printk("TASK3_DISTURBANCE change=%d at_ms=%lld\n", (int)scheduled, (long long)now_ms);
+	}
+}
+
+static int32_t plant_update(int32_t output)
+{
+	int64_t loss = PLANT_BASE_LOSS +
+		       (int64_t)PLANT_NONLINEAR_LOSS * plant_state * plant_state / 1000000;
+	int64_t response = (int64_t)PLANT_RESPONSE * (output - plant_state) / PLANT_RESPONSE_DEN;
+	int64_t next = plant_state + response - loss + plant_disturbance;
+
+	if (next < PLANT_STATE_MIN) {
+		next = PLANT_STATE_MIN;
+	} else if (next > PLANT_STATE_MAX) {
+		next = PLANT_STATE_MAX;
+	}
+	plant_state = (int32_t)next;
+	return plant_state;
+}
+
 int main(void)
 {
 	struct sockaddr_in local = {0};
@@ -288,7 +347,21 @@ int main(void)
 				printk("TASK2_REJECTED malformed_frame\n");
 			} else {
 				last_rx = now;
+				int was_safe = state_safe;
 				state_safe = 0;
+				if (was_safe) {
+					/* Mirror the Rust endpoint's recovery resync: after a
+					 * data-link outage both sides restart the reliable
+					 * stream from sequence 1.  Otherwise a lost STATUS
+					 * (the peer advanced to n+1 while we still expect n)
+					 * loops on OutOfOrder forever after recovery. */
+					next_tx_sequence = 1;
+					expected_rx_sequence = 1;
+					last_acknowledged = 0;
+					pending_sequence = 0;
+					pending_length = 0;
+					retry_count = 0;
+				}
 				if (kind == KIND_ACK) {
 					if (pending_length > 0 && acknowledgement == pending_sequence) {
 						pending_length = 0;
@@ -325,22 +398,42 @@ int main(void)
 						size_t ack_length = make_ack(outbound, sequence);
 						(void)send_frame(socket, &source, outbound, ack_length);
 						if (kind == KIND_CONTROL) {
-							uint8_t status_payload[12] = {1, 0, 0, 0};
-							memcpy(status_payload + 4, payload + 4, 8);
-							pending_sequence = next_tx_sequence++;
-							if (pending_sequence == 0) {
-								pending_sequence = next_tx_sequence++;
-							}
-							pending_length = encode_frame(pending_frame, KIND_STATUS, 1,
-												pending_sequence, 0, 0, status_payload, 12);
-							pending_sent = now;
-							retry_count = 0;
-							(void)send_frame(socket, &source, pending_frame, pending_length);
-							last_tx = now;
-							printk("TASK2_CONTROL_RECEIVED seq=%u request=%u\n", sequence,
-							       read_u32(payload + 8));
-							printk("TASK2_STATUS_SENT seq=%u\n", pending_sequence);
+						int32_t output = (int32_t)read_u32(payload + 4);
+						uint32_t request = read_u32(payload + 8);
+						int32_t state_before = plant_state;
+
+						plant_update_disturbance(now);
+						if (output >= PLANT_STATE_MIN && output <= PLANT_STATE_MAX) {
+							plant_update(output);
+						} else {
+							/* Bounded values were validated on the wire;
+							 * keep a defensive clamp for the plant only. */
+							plant_update(output < PLANT_STATE_MIN ? PLANT_STATE_MIN :
+								       output > PLANT_STATE_MAX ? PLANT_STATE_MAX :
+								       output);
 						}
+
+						uint8_t status_payload[12] = {1, 0, 0, 0};
+						write_u32(status_payload + 4, (uint32_t)plant_state);
+						write_u32(status_payload + 8, request);
+						pending_sequence = next_tx_sequence++;
+						if (pending_sequence == 0) {
+							pending_sequence = next_tx_sequence++;
+						}
+						pending_length = encode_frame(pending_frame, KIND_STATUS, 1,
+											pending_sequence, 0, 0, status_payload, 12);
+						pending_sent = now;
+						retry_count = 0;
+						(void)send_frame(socket, &source, pending_frame, pending_length);
+						last_tx = now;
+						printk("TASK2_CONTROL_RECEIVED seq=%u request=%u\n", sequence,
+						       request);
+						printk("TASK3_CONTROL_APPLIED request=%u value=%d\n", request,
+						       output);
+						printk("TASK3_PLANT_STATE before=%d after=%d dist=%d\n",
+						       state_before, plant_state, plant_disturbance);
+						printk("TASK2_STATUS_SENT seq=%u\n", pending_sequence);
+					}
 					} else if (sequence == (expected_rx_sequence == 1 ? UINT32_MAX : expected_rx_sequence - 1)) {
 						size_t ack_length = make_ack(outbound, sequence);
 						(void)send_frame(socket, &source, outbound, ack_length);

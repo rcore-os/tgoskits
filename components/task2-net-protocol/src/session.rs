@@ -327,7 +327,22 @@ impl Endpoint {
         }
 
         self.last_rx_ms = now_ms;
+        let was_safe = self.state == EndpointState::Safe;
         self.state = EndpointState::Active;
+        if was_safe {
+            // The link was down long enough to enter safe mode, so the peer
+            // may have dropped an unacknowledged reliable frame on retry
+            // exhaustion and advanced its stream past our expectation (a lost
+            // STATUS followed by a fresh CONTROL produces STATUS n+1 while we
+            // still expect n).  Restart the whole reliable stream: heartbeats
+            // are unsequenced, so recovering through one is safe, and the
+            // next CONTROL/STATUS exchange then starts from FIRST on both
+            // sides instead of looping on OutOfOrder forever.
+            self.next_tx_sequence = SequenceNumber::FIRST;
+            self.last_acknowledged_tx_sequence = SequenceNumber::NONE;
+            self.next_rx_sequence = SequenceNumber::FIRST;
+            self.pending = None;
+        }
         match frame.kind() {
             MessageKind::Ack => self.handle_ack(frame),
             MessageKind::Control | MessageKind::Status => self.handle_reliable_frame(frame, output),
@@ -768,6 +783,55 @@ mod tests {
         let error = Frame::parse(&response[..result.response_len]).unwrap();
         assert_eq!(error.kind(), MessageKind::Error);
         assert_eq!(error.error_code(), ErrorCode::OutOfOrder);
+    }
+
+    #[test]
+    fn recovery_resynchronises_reliable_stream_after_safe_mode() {
+        let mut receiver = Endpoint::new(SessionId::new(1), POLICY, 0);
+        let payload = control_payload();
+        let mut wire = [0; MAX_DATAGRAM_LEN];
+        let mut response = [0; MAX_DATAGRAM_LEN];
+
+        for sequence in [SequenceNumber::FIRST, SequenceNumber::FIRST.next()] {
+            let frame =
+                Frame::reliable(MessageKind::Control, SessionId::new(1), sequence, &payload)
+                    .unwrap();
+            let len = frame.encode(&mut wire).unwrap();
+            let result = receiver.receive(&wire[..len], 1, &mut response).unwrap();
+            assert!(matches!(result.event, ReceiveEvent::Delivered { .. }));
+        }
+        assert_eq!(
+            receiver.next_rx_sequence(),
+            SequenceNumber::FIRST.next().next()
+        );
+
+        // The link drops after the managed side exhausted a lost STATUS and
+        // already advanced to the next one (CONTROL n+1 -> STATUS n+1), while
+        // the controller is still expecting the lost sequence.
+        receiver.state = EndpointState::Safe;
+
+        // A heartbeat after link recovery must restart both counters.
+        let heartbeat = Frame::heartbeat(SessionId::new(1), &[0; 8]);
+        let len = heartbeat.encode(&mut wire).unwrap();
+        let result = receiver.receive(&wire[..len], 2, &mut response).unwrap();
+        assert!(matches!(result.event, ReceiveEvent::Heartbeat { .. }));
+        assert_eq!(receiver.state(), EndpointState::Active);
+        assert_eq!(receiver.next_rx_sequence(), SequenceNumber::FIRST);
+        assert_eq!(receiver.next_tx_sequence(), SequenceNumber::FIRST);
+        assert!(!receiver.has_pending_frame());
+
+        // The restarted stream accepts the peer's fresh sequence 1 instead of
+        // rejecting it as OutOfOrder forever.
+        let frame = Frame::reliable(
+            MessageKind::Control,
+            SessionId::new(1),
+            SequenceNumber::FIRST,
+            &payload,
+        )
+        .unwrap();
+        let len = frame.encode(&mut wire).unwrap();
+        let result = receiver.receive(&wire[..len], 3, &mut response).unwrap();
+        assert!(matches!(result.event, ReceiveEvent::Delivered { .. }));
     }
 
     #[test]

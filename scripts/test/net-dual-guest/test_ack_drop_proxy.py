@@ -42,6 +42,53 @@ def test_drop_policy_is_bounded_to_direction_and_count() -> None:
     assert proxy._should_drop(metadata, "rtos-to-linux") is False
 
 
+def test_blackout_window_is_active_between_start_and_end() -> None:
+    proxy = AckDropProxy(
+        12731,
+        12732,
+        "rtos-to-linux",
+        4,
+        1,
+        "none",
+        StringIO(),
+        blackout_start_ms=1000,
+        blackout_duration_ms=500,
+    )
+
+    assert proxy.blackout_active_at(0) is False
+    assert proxy.blackout_active_at(999) is False
+    assert proxy.blackout_active_at(1000) is True
+    assert proxy.blackout_active_at(1499) is True
+    assert proxy.blackout_active_at(1500) is False
+    assert proxy.blackout_active_at(10000) is False
+
+
+def test_blackout_is_disabled_without_a_start() -> None:
+    proxy = AckDropProxy(12731, 12732, "rtos-to-linux", 4, 1, "none", StringIO())
+
+    assert proxy.blackout_active_at(0) is False
+    assert proxy.blackout_active_at(100000) is False
+
+
+def test_blackout_requires_a_positive_duration() -> None:
+    try:
+        AckDropProxy(
+            12731,
+            12732,
+            "rtos-to-linux",
+            4,
+            1,
+            "none",
+            StringIO(),
+            blackout_start_ms=1000,
+            blackout_duration_ms=0,
+        )
+    except ValueError as error:
+        assert "blackout_duration_ms" in str(error)
+    else:
+        raise AssertionError("expected ValueError for zero blackout duration")
+
+
 def test_fault_delta_accepts_exactly_one_dropped_ack() -> None:
     delivered = Counter({
         ("10.0.42.2", "10.0.42.15", 4, 0, 1): 1,
