@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use starry_signal::api::{ProcessSignalManager, SignalActions, ThreadSignalManager};
 use starry_vm::{VmError, VmIo, VmResult};
 

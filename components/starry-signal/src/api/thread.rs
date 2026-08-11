@@ -8,7 +8,7 @@ use core::{
 
 use ax_cpu::uspace::UserContext;
 use ax_errno::AxResult;
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use starry_vm::{VmIo, VmMutPtr, VmPtr};
 
 use super::ProcessSignalManager;
@@ -87,7 +87,7 @@ pub struct ThreadSignalManager {
     /// a coherent registration. The syscall still rechecks pending signals
     /// after installing the waker, matching Linux's state-publication then
     /// dequeue-again protocol without coupling this component to a scheduler.
-    sigwait: SpinNoIrq<SigwaitState>,
+    sigwait: SpinLock<SigwaitState>,
 }
 
 impl ThreadSignalManager {
@@ -109,7 +109,7 @@ impl ThreadSignalManager {
             stack_active_depth: SpinLock::new(0),
 
             possibly_has_signal: AtomicBool::new(false),
-            sigwait: SpinNoIrq::new(SigwaitState::default()),
+            sigwait: SpinLock::new(SigwaitState::default()),
         });
         proc.register_child(tid, Arc::downgrade(&this));
         this
@@ -158,33 +158,51 @@ impl ThreadSignalManager {
 
     /// Publishes the signal set consumed by one synchronous signal wait.
     pub fn begin_sigwait(&self, set: SignalSet) {
-        let mut state = self.sigwait.lock();
-        debug_assert!(
-            state.set.is_none(),
-            "one thread cannot own nested synchronous signal waits"
-        );
-        state.set = Some(set);
-        state.waker = None;
+        let old_waker = {
+            let mut state = self.sigwait.lock();
+            debug_assert!(
+                state.set.is_none(),
+                "one thread cannot own nested synchronous signal waits"
+            );
+            state.set = Some(set);
+            state.waker.take()
+        };
+        // A RawWaker drop is an external callback. Keep it outside the
+        // non-sleeping component lock.
+        drop(old_waker);
     }
 
     /// Registers the executor waker for the active synchronous signal wait.
     pub fn register_sigwait_waker(&self, waker: &Waker) {
-        let mut state = self.sigwait.lock();
-        if state.set.is_none() {
-            return;
-        }
-        if state
-            .waker
-            .as_ref()
-            .is_none_or(|current| !current.will_wake(waker))
-        {
-            state.waker = Some(waker.clone());
-        }
+        // RawWaker::clone may invoke an executor callback, so perform it before
+        // entering the non-sleeping component lock.
+        let mut replacement = Some(waker.clone());
+        let previous = {
+            let mut state = self.sigwait.lock();
+            if state.set.is_some()
+                && state
+                    .waker
+                    .as_ref()
+                    .is_none_or(|current| !current.will_wake(waker))
+            {
+                replacement
+                    .take()
+                    .and_then(|replacement| state.waker.replace(replacement))
+            } else {
+                None
+            }
+        };
+        drop(previous);
+        drop(replacement);
     }
 
     /// Clears the wait set and executor waker after a synchronous wait.
     pub fn finish_sigwait(&self) {
-        *self.sigwait.lock() = SigwaitState::default();
+        let previous = {
+            let mut state = self.sigwait.lock();
+            core::mem::take(&mut *state)
+        };
+        drop(previous);
     }
 
     /// Returns whether this thread synchronously waits for `signo`.
@@ -200,11 +218,11 @@ impl ThreadSignalManager {
     /// notification bit across that window.
     pub fn wake_sigwait(&self, signo: Signo) {
         let waker = {
-            let state = self.sigwait.lock();
+            let mut state = self.sigwait.lock();
             if !state.set.is_some_and(|set| set.has(signo)) {
                 return;
             }
-            state.waker.clone()
+            state.waker.take()
         };
         if let Some(waker) = waker {
             waker.wake();
@@ -418,7 +436,7 @@ impl ThreadSignalManager {
         *uctx = frame.uctx;
         frame.ucontext.mcontext.restore(uctx);
 
-        *self.blocked.lock() = frame.ucontext.sigmask;
+        *self.blocked.lock_irqsave() = frame.ucontext.sigmask;
         if frame.used_sigaltstack != 0 {
             self.leave_stack();
         }
@@ -493,7 +511,7 @@ impl ThreadSignalManager {
 
     /// Gets the signal stack.
     pub fn stack(&self) -> SignalStack {
-        let stack = *self.stack.lock();
+        let stack = *self.stack.lock_irqsave();
         if self.stack_active() {
             stack.on_stack()
         } else {
@@ -550,7 +568,7 @@ mod tests {
 
     #[test]
     fn sigwait_waker_only_fires_for_the_published_set() {
-        let actions = Arc::new(SpinNoIrq::new(SignalActions::default()));
+        let actions = Arc::new(SpinLock::new(SignalActions::default()));
         let process = Arc::new(ProcessSignalManager::new(actions, 0));
         let thread = ThreadSignalManager::new(1, process);
         let counter = Arc::new(CountWake(AtomicUsize::new(0)));

@@ -280,8 +280,8 @@ impl ProcessSignalManager {
                 *action = SignalAction::default();
             }
         }
-        let replacement = Arc::new(SpinNoIrq::new(new_actions));
-        let previous = core::mem::replace(&mut *self.actions_slot.lock(), replacement);
+        let replacement = Arc::new(SpinLock::new(new_actions));
+        let previous = core::mem::replace(&mut *self.actions_slot.lock_irqsave(), replacement);
         // The old Arc may own the final allocation reference.
         drop(previous);
     }
@@ -290,7 +290,7 @@ impl ProcessSignalManager {
     /// `execve`'s de_thread step so signals targeting the inherited leader
     /// TID resolve to the (renamed) caller thread.
     pub fn rename_child(&self, old_tid: u32, new_tid: u32) {
-        let mut children = self.children.lock_irqsave();
+        let mut children = self.children.lock();
         for entry in children.iter_mut() {
             if entry.0 == old_tid {
                 entry.0 = new_tid;
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn blocked_process_signal_wakes_the_matching_sigwait_future() {
-        let actions = Arc::new(SpinNoIrq::new(SignalActions::default()));
+        let actions = Arc::new(SpinLock::new(SignalActions::default()));
         let process = Arc::new(ProcessSignalManager::new(actions, 0));
         let mut blocked = SignalSet::default();
         blocked.add(Signo::SIGCHLD);
