@@ -19,6 +19,8 @@ const DIRECT_BLOCKS: u64 = 12;
 pub enum FileExtentState {
     Initialized,
     Unwritten,
+    /// Metadata resides directly in the inode body rather than in a block.
+    Inline,
 }
 
 /// On-disk mapping namespace selected for an extent query.
@@ -70,11 +72,19 @@ pub fn inspect_inode_extents<B: BlockIo>(
 
     let block_size = filesystem.block_size() as u64;
     let maximum_file_bytes = maximum_inode_bytes(filesystem, inode.uses_extents())?;
-    if start >= maximum_file_bytes {
+    if start > maximum_file_bytes {
         return Err(Ext4Error::file_too_large().with_operation("inode:extent_query_start"));
     }
     if target == FileExtentTarget::ExtendedAttributes {
-        return Err(Ext4Error::unsupported().with_operation("inode:extent_query_xattr"));
+        return super::xattr_extent::inspect_xattr_extent(
+            device,
+            filesystem,
+            inode_number,
+            &inode,
+            start,
+            length,
+            extent_limit,
+        );
     }
     let end = start
         .saturating_add(length)
@@ -146,6 +156,13 @@ pub fn inspect_inode_extents<B: BlockIo>(
         }
     }
 
+    finish_extent_map(mappings, extent_limit)
+}
+
+pub(super) fn finish_extent_map(
+    mut mappings: Vec<FileExtent>,
+    extent_limit: usize,
+) -> Ext4Result<FileExtentMap> {
     let total = mappings.len();
     if extent_limit == 0 {
         mappings.clear();
@@ -163,7 +180,10 @@ pub fn inspect_inode_extents<B: BlockIo>(
     })
 }
 
-fn maximum_inode_bytes(filesystem: &Ext4FileSystem, uses_extents: bool) -> Ext4Result<u64> {
+pub(super) fn maximum_inode_bytes(
+    filesystem: &Ext4FileSystem,
+    uses_extents: bool,
+) -> Ext4Result<u64> {
     let block_size = filesystem.block_size() as u64;
     if block_size < 512 || !block_size.is_power_of_two() {
         return Err(Ext4Error::bad_superblock().with_operation("inode:maximum_file_block_size"));
@@ -286,7 +306,7 @@ fn divide_round_up(value: u64, divisor: u64) -> Option<u64> {
         .map(|adjusted| adjusted / divisor)
 }
 
-fn push_overlapping_extent(
+pub(super) fn push_overlapping_extent(
     output: &mut Vec<FileExtent>,
     query_start: u64,
     query_end: u64,

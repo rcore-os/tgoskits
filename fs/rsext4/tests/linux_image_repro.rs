@@ -493,6 +493,161 @@ fn file_extent_map_geometry_round_trip(filesystem_block_size: u32) {
     fs::remove_dir_all(temp_dir).expect("remove FIEMAP temp dir");
 }
 
+fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) =
+        create_ext4_geometry_image("rsext4-file-xattr-extent-map", "64M", filesystem_block_size);
+    let source = temp_dir.join("source.bin");
+    fs::write(&source, b"xattr FIEMAP fixture").expect("write xattr FIEMAP source");
+    let external_value = "x".repeat(200);
+    run_debugfs_script(
+        &image,
+        &format!(
+            concat!(
+                "write {} /fiemap-xattr.bin\n",
+                "ea_set /fiemap-xattr.bin user.fiemap inline-value\n",
+                "write {} /fiemap-external-xattr.bin\n",
+                "ea_set /fiemap-external-xattr.bin user.fiemap {}\n",
+                "set_inode_field /fiemap-external-xattr.bin extra_isize 0\n",
+                "write {} /fiemap-no-xattr.bin\n"
+            ),
+            source.display(),
+            source.display(),
+            external_value,
+            source.display(),
+        ),
+        "create xattr FIEMAP fixtures",
+    );
+    e2fsck_readonly_clean(
+        &image,
+        &format!("{filesystem_block_size}-byte inline-xattr FIEMAP fixture"),
+    );
+
+    let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+    let services = MountServices::new(
+        TestClock(Cell::new(1_950_000_000)),
+        (),
+        (),
+        (),
+        NoopObserver,
+    );
+    let mut filesystem =
+        Ext4::mount(device, services, MountOptions::read_write()).expect("mount xattr image");
+    let file = filesystem
+        .lookup_child(
+            filesystem.root_inode(),
+            FileName::new(b"fiemap-xattr.bin").expect("valid file name"),
+        )
+        .expect("lookup xattr FIEMAP fixture")
+        .expect("xattr FIEMAP fixture must exist");
+    let mappings = filesystem
+        .inode_extents(
+            file.number,
+            0,
+            u64::MAX,
+            FileExtentTarget::ExtendedAttributes,
+            1,
+        )
+        .expect("inspect inline-xattr extent");
+    assert_eq!(mappings.mapped_extents, 1);
+    assert!(mappings.complete);
+    assert_eq!(mappings.extents.len(), 1);
+    let mapping = mappings.extents[0];
+    assert_eq!(mapping.logical_start, 0);
+    assert_eq!(mapping.state, FileExtentState::Inline);
+    assert_eq!(mapping.length, 96);
+    assert_eq!(
+        mapping.physical_start % u64::from(filesystem_block_size),
+        160,
+        "Linux 7.1 omits the inode-table slot offset from inline-xattr FIEMAP physical addresses"
+    );
+    assert!(!mapping.merged);
+
+    let count_only = filesystem
+        .inode_extents(
+            file.number,
+            0,
+            u64::MAX,
+            FileExtentTarget::ExtendedAttributes,
+            0,
+        )
+        .expect("count inline-xattr extent");
+    assert_eq!(count_only.mapped_extents, 1);
+    assert!(count_only.extents.is_empty());
+    assert!(count_only.complete);
+
+    let after_inline = filesystem
+        .inode_extents(
+            file.number,
+            mapping.length,
+            u64::MAX,
+            FileExtentTarget::ExtendedAttributes,
+            1,
+        )
+        .expect("query after inline-xattr extent");
+    assert_eq!(after_inline.mapped_extents, 0);
+    assert!(after_inline.extents.is_empty());
+    assert!(after_inline.complete);
+
+    let external_file = filesystem
+        .lookup_child(
+            filesystem.root_inode(),
+            FileName::new(b"fiemap-external-xattr.bin").expect("valid file name"),
+        )
+        .expect("lookup external-xattr FIEMAP fixture")
+        .expect("external-xattr FIEMAP fixture must exist");
+    let external = filesystem
+        .inode_extents(
+            external_file.number,
+            0,
+            u64::MAX,
+            FileExtentTarget::ExtendedAttributes,
+            1,
+        )
+        .expect("inspect external-xattr extent");
+    assert_eq!(external.mapped_extents, 1);
+    assert!(external.complete);
+    assert_eq!(external.extents.len(), 1);
+    assert_eq!(external.extents[0].logical_start, 0);
+    assert_eq!(external.extents[0].state, FileExtentState::Initialized);
+    assert_eq!(external.extents[0].length, u64::from(filesystem_block_size));
+    assert_eq!(
+        external.extents[0].physical_start % u64::from(filesystem_block_size),
+        0
+    );
+    assert!(!external.extents[0].merged);
+
+    let no_xattr_file = filesystem
+        .lookup_child(
+            filesystem.root_inode(),
+            FileName::new(b"fiemap-no-xattr.bin").expect("valid file name"),
+        )
+        .expect("lookup no-xattr FIEMAP fixture")
+        .expect("no-xattr FIEMAP fixture must exist");
+    let no_xattr = filesystem
+        .inode_extents(
+            no_xattr_file.number,
+            0,
+            u64::MAX,
+            FileExtentTarget::ExtendedAttributes,
+            1,
+        )
+        .expect("inspect inode without xattrs");
+    assert_eq!(no_xattr.mapped_extents, 0);
+    assert!(no_xattr.extents.is_empty());
+    assert!(no_xattr.complete);
+
+    filesystem.unmount().expect("unmount xattr image");
+    e2fsck_readonly_clean(
+        &image,
+        &format!("remounted {filesystem_block_size}-byte inline-xattr FIEMAP"),
+    );
+    fs::remove_dir_all(temp_dir).expect("remove xattr FIEMAP temp dir");
+}
+
 #[test]
 fn linux_image_round_trip_with_1k_filesystem_blocks() {
     linux_image_geometry_round_trip(1024);
@@ -536,6 +691,21 @@ fn file_extent_map_round_trip_with_2k_filesystem_blocks() {
 #[test]
 fn file_extent_map_round_trip_with_4k_filesystem_blocks() {
     file_extent_map_geometry_round_trip(4096);
+}
+
+#[test]
+fn file_xattr_extent_map_round_trip_with_1k_filesystem_blocks() {
+    file_xattr_extent_map_geometry_round_trip(1024);
+}
+
+#[test]
+fn file_xattr_extent_map_round_trip_with_2k_filesystem_blocks() {
+    file_xattr_extent_map_geometry_round_trip(2048);
+}
+
+#[test]
+fn file_xattr_extent_map_round_trip_with_4k_filesystem_blocks() {
+    file_xattr_extent_map_geometry_round_trip(4096);
 }
 
 #[test]

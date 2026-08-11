@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add cluster-aligned `COLLAPSE_RANGE` and `INSERT_RANGE` extent transforms with
   dynamic block-size, multi-leaf, unwritten-state, remount, and e2fsck coverage.
 - Add typed inode extent inspection for extent and legacy mappings, including
-  sparse, unwritten, directory, bounded, and dynamic block-size coverage.
+  sparse, unwritten, directory, bounded, inline/external xattr, and dynamic
+  block-size coverage.
 
 ### Fixed
 

@@ -28,6 +28,7 @@ pub enum FileRangeOperation {
 pub enum FileExtentState {
     Initialized,
     Unwritten,
+    Inline,
 }
 
 /// Mapping namespace selected for a file extent query.

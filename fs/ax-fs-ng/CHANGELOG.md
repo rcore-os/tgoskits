@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write back and invalidate every page from the shift point, and retry when a
   page enters the cache between protection and the final sleepable lock.
 - Route regular-file and directory extent inspection through the ext4 mount's
-  sleepable owner without exposing core disk structures.
+  sleepable owner without exposing core disk structures, including typed
+  inline and external xattr mappings.
 
 ### Fixed
 

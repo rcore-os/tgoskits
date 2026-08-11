@@ -27,6 +27,7 @@ mod extent_map;
 mod io;
 mod link;
 mod rename;
+mod xattr_extent;
 
 pub use blocks::build_file_block_mapping_with_inode_num;
 pub(crate) use create::{

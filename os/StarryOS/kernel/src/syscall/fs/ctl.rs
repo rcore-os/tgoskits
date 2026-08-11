@@ -20,8 +20,9 @@ use axfs_ng_vfs::{
 use linux_raw_sys::{
     general::*,
     ioctl::{
-        FIEMAP_EXTENT_LAST, FIEMAP_EXTENT_MERGED, FIEMAP_EXTENT_UNWRITTEN, FIEMAP_FLAG_CACHE,
-        FIEMAP_FLAG_SYNC, FIEMAP_FLAG_XATTR, FIEMAP_FLAGS_COMPAT, FIOASYNC, FIONBIO, FS_IOC_FIEMAP,
+        FIEMAP_EXTENT_DATA_INLINE, FIEMAP_EXTENT_LAST, FIEMAP_EXTENT_MERGED,
+        FIEMAP_EXTENT_NOT_ALIGNED, FIEMAP_EXTENT_UNWRITTEN, FIEMAP_FLAG_CACHE, FIEMAP_FLAG_SYNC,
+        FIEMAP_FLAG_XATTR, FIEMAP_FLAGS_COMPAT, FIOASYNC, FIONBIO, FS_IOC_FIEMAP,
     },
 };
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
@@ -205,6 +206,9 @@ fn ioctl_fiemap(fd: i32, arg: usize) -> AxResult<()> {
                 let mut flags = 0;
                 if mapping.state == axfs_ng_vfs::FileExtentState::Unwritten {
                     flags |= FIEMAP_EXTENT_UNWRITTEN;
+                }
+                if mapping.state == axfs_ng_vfs::FileExtentState::Inline {
+                    flags |= FIEMAP_EXTENT_DATA_INLINE | FIEMAP_EXTENT_NOT_ALIGNED;
                 }
                 if mapping.merged {
                     flags |= FIEMAP_EXTENT_MERGED;
