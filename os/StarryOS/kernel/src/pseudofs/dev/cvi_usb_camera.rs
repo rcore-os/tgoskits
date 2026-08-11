@@ -4,7 +4,6 @@ use core::{any::Any, time::Duration};
 use ax_errno::AxError;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, time::busy_wait};
-use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
     gpio::{Direction, GPIO, GPIO1_BASE},
@@ -24,7 +23,7 @@ use starry_vm::{VmMutPtr, vm_write_slice};
 use tock_registers::interfaces::Writeable;
 
 use super::cvi_jpu::CviJpu;
-use crate::pseudofs::DeviceOps;
+use crate::{pseudofs::DeviceOps, sync::Mutex};
 
 const IOBLK_G1_USB_VBUS_DET_OFF: usize = 0x020;
 

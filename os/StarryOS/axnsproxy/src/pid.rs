@@ -1,12 +1,12 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_kspin::SpinNoIrq;
+use crate::IrqMutex;
 
 /// The initial root PID namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWPID)` or `clone(CLONE_NEWPID)`.
-pub static ROOT_PID_NS: spin::LazyLock<Arc<SpinNoIrq<PidNamespace>>> =
-    spin::LazyLock::new(|| Arc::new(SpinNoIrq::new(PidNamespace::new_root())));
+pub static ROOT_PID_NS: ax_lazyinit::LazyLock<Arc<IrqMutex<PidNamespace>>> =
+    ax_lazyinit::LazyLock::new(|| Arc::new(IrqMutex::new(PidNamespace::new_root())));
 
 static NEXT_PID_NS_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -22,7 +22,7 @@ pub struct PidNamespace {
     /// PID namespace nesting level.  Root is 0, first child is 1, etc.
     pub level: u32,
     /// Parent namespace retained while this descendant namespace is live.
-    parent: Option<Arc<SpinNoIrq<PidNamespace>>>,
+    parent: Option<Arc<IrqMutex<PidNamespace>>>,
     /// Next local PID to allocate in this namespace (starts at 1).
     next_pid: u32,
     /// Map from global TID to namespace-local PID.
@@ -45,7 +45,7 @@ impl PidNamespace {
 
     /// Create a fresh child PID namespace (level + 1, empty pid map,
     /// next_pid starts at 1).
-    pub fn new_child(parent: Arc<SpinNoIrq<Self>>) -> Self {
+    pub fn new_child(parent: Arc<IrqMutex<Self>>) -> Self {
         let level = parent.lock().level + 1;
         Self {
             id: NEXT_PID_NS_ID.fetch_add(1, Ordering::Relaxed),
@@ -72,7 +72,7 @@ impl PidNamespace {
     ///
     /// PID namespaces assign local IDs to both thread-group leaders and
     /// non-leader threads.
-    pub fn alloc_pid_chain(namespace: &Arc<SpinNoIrq<Self>>, global_tid: u64) {
+    pub fn alloc_pid_chain(namespace: &Arc<IrqMutex<Self>>, global_tid: u64) {
         let mut current = namespace.clone();
         loop {
             let parent = {
@@ -104,8 +104,8 @@ impl PidNamespace {
     ///
     /// Returns [`None`] when `target` is not a descendant of `observer`.
     pub fn visible_pid_chain(
-        observer: &Arc<SpinNoIrq<Self>>,
-        target: &Arc<SpinNoIrq<Self>>,
+        observer: &Arc<IrqMutex<Self>>,
+        target: &Arc<IrqMutex<Self>>,
         global_tid: u64,
     ) -> Option<Vec<u32>> {
         let mut current = target.clone();

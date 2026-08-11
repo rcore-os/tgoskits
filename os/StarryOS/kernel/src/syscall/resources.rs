@@ -25,10 +25,14 @@ pub fn sys_prlimit64(
     }
 
     if let Some(old_limit) = old_limit.nullable() {
-        let limit = &proc_data.rlim.read()[resource];
+        let (current, max) = {
+            let limits = proc_data.rlim.read();
+            let limit = &limits[resource];
+            (limit.current, limit.max)
+        };
         old_limit.vm_write(rlimit64 {
-            rlim_cur: limit.current,
-            rlim_max: limit.max,
+            rlim_cur: current,
+            rlim_max: max,
         })?;
     }
 

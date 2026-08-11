@@ -5,7 +5,7 @@ use core::{
     ptr::NonNull,
 };
 
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 
 use super::{AllocResult, AllocatorOps, UsageKind, Usages};
 
@@ -21,7 +21,7 @@ pub type DefaultByteAllocator = ();
 
 /// The global allocator stub when no backend is enabled.
 pub struct GlobalAllocator {
-    usages: SpinNoIrq<Usages>,
+    usages: SpinLock<Usages>,
 }
 
 impl Default for GlobalAllocator {
@@ -34,7 +34,7 @@ impl GlobalAllocator {
     /// Creates a new empty stub allocator.
     pub const fn new() -> Self {
         Self {
-            usages: SpinNoIrq::new(Usages::new()),
+            usages: SpinLock::new(Usages::new()),
         }
     }
 
@@ -121,7 +121,7 @@ impl GlobalAllocator {
 
     /// Returns usage statistics.
     pub fn usages(&self) -> Usages {
-        *self.usages.lock()
+        *self.usages.lock_irqsave()
     }
 }
 

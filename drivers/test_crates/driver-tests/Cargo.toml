@@ -11,8 +11,8 @@ autotests = false
 
 [dev-dependencies]
 ax-driver = { workspace = true, features = ["serial"] }
-ax-kernel-guard = { workspace = true, features = ["host-test"] }
-ax-kspin.workspace = true
+ax-lazyinit.workspace = true
+ax-sync = { workspace = true, features = ["host-test"] }
 axklib.workspace = true
 eth-intel.workspace = true
 fdt-edit.workspace = true
@@ -22,7 +22,6 @@ rdif-serial.workspace = true
 rdrive.workspace = true
 rockchip-soc.workspace = true
 some-serial.workspace = true
-spin.workspace = true
 num-align = "0.1.0"
 
 [[test]]

@@ -15,9 +15,11 @@ use ax_runtime::hal::{
     paging::{MappingFlags, PageTable, PagingAllocator},
     trap::PageFaultFlags,
 };
-use ax_sync::{LockdepMutexExt, Mutex};
 
-use crate::mm::{ProcessVmStat, paging_error_to_ax_error};
+use crate::{
+    mm::{ProcessVmStat, paging_error_to_ax_error},
+    sync::{LockdepMutexExt, Mutex},
+};
 
 mod accounting;
 mod backend;

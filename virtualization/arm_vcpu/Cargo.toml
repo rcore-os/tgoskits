@@ -20,7 +20,6 @@ targets = ["aarch64-unknown-none-softfloat"]
 
 [dependencies]
 log = "0.4"
-spin = { workspace = true }
 
 aarch64-cpu = "11.0"
 aarch64_sysreg = { workspace = true }

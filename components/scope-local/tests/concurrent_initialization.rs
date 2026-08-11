@@ -11,15 +11,6 @@ use std::{
 
 use scope_local::scope_local;
 
-struct KernelGuardIfImpl;
-
-#[ax_crate_interface::impl_interface]
-impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
-    fn enable_preempt() {}
-
-    fn disable_preempt() {}
-}
-
 static INITIALIZER_ENTERED: OnceLock<Barrier> = OnceLock::new();
 static RELEASE_INITIALIZER: OnceLock<Barrier> = OnceLock::new();
 static WAITER_READY: OnceLock<Barrier> = OnceLock::new();

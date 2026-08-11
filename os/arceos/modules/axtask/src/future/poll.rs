@@ -61,7 +61,7 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 /// the IRQ preempted and triggers the slab from interrupt context.
 ///
 /// The IRQ hook here does only what is safe in interrupt context:
-/// flip a per-IRQ pending bit and `notify_one` a [`WaitQueue`].
+/// flip a per-IRQ pending bit and `notify_one` a [`crate::WaitQueue`].
 /// `WaitQueue::notify_one` just pops from a `VecDeque` under a
 /// `SpinNoIrq` (no allocation, deadlock-free because IRQs are
 /// already disabled in the holding paths) and re-queues the drain
@@ -72,15 +72,14 @@ pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) ->
     use alloc::{collections::BTreeMap, sync::Arc};
     use core::sync::atomic::{AtomicBool, Ordering};
 
-    use ax_kspin::SpinNoIrq;
     use axpoll::PollSet;
 
-    use crate::IrqNotify;
+    use crate::{IrqNotify, sync::SpinLock};
 
     static IRQ_NOTIFY: IrqNotify = IrqNotify::new();
     static DRAIN_SPAWNED: AtomicBool = AtomicBool::new(false);
-    static IRQ_STATE: SpinNoIrq<BTreeMap<ax_hal::irq::IrqId, IrqPollState>> =
-        SpinNoIrq::new(BTreeMap::new());
+    static IRQ_STATE: SpinLock<BTreeMap<ax_hal::irq::IrqId, IrqPollState>> =
+        SpinLock::new(BTreeMap::new());
 
     struct IrqPollState {
         pending: bool,
@@ -92,7 +91,7 @@ pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) ->
         // Runs in IRQ context with interrupts off. Only mark an already
         // registered slot and notify the drain task. The map entry is created
         // during task-context registration, so this path does not allocate.
-        if let Some(state) = IRQ_STATE.lock().get_mut(&ctx.irq) {
+        if let Some(state) = IRQ_STATE.lock_irqsave().get_mut(&ctx.irq) {
             state.pending = true;
             IRQ_NOTIFY.notify_irq();
             ax_hal::irq::IrqReturn::Handled
@@ -119,7 +118,7 @@ pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) ->
                     // scheduler).
                     let mut to_wake: alloc::vec::Vec<Arc<PollSet>> = alloc::vec::Vec::new();
                     {
-                        let mut map = IRQ_STATE.lock();
+                        let mut map = IRQ_STATE.lock_irqsave();
                         for state in map.values_mut() {
                             if state.pending {
                                 state.pending = false;
@@ -140,7 +139,7 @@ pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) ->
     ensure_drain_spawned();
 
     let (poll, should_install) = {
-        let mut map = IRQ_STATE.lock();
+        let mut map = IRQ_STATE.lock_irqsave();
         let state = map.entry(irq).or_insert_with(|| IrqPollState {
             pending: false,
             installed: false,

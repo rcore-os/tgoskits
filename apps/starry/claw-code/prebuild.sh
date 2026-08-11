@@ -64,7 +64,7 @@ inject_claw() {
     local img="$1"
     echo "  injecting into $img ..."
     debugfs -w "$img" -R "rm /usr/bin/claw" 2>/dev/null || true
-    debugfs -w "$img" -R "write $CLAW_BIN /usr/bin/claw"
+    debugfs -w "$img" -R "write $CLAW_BIN /usr/bin/claw" >/dev/null
     debugfs -w "$img" -R "sif /usr/bin/claw mode 0100755"
 }
 inject_claw "$CLAW_IMG"

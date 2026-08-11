@@ -19,7 +19,6 @@ use core::{
 use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
-use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -36,6 +35,7 @@ use crate::perf::BPFJitMemory;
 use crate::{
     ebpf::{BPF_HELPER_FUN_SET, error::BpfResultExt, prog::BpfProg},
     file::FileLike,
+    sync::IrqMutex,
 };
 
 /// Number of 4K pages reserved for x86_64 BPF JIT executable memory.
@@ -67,7 +67,7 @@ impl BpfPerfEventState {
 /// and emits an IRQ-safe worker notification.
 #[derive(Clone)]
 pub(super) struct BpfPerfOutput {
-    state: Arc<SpinNoIrq<BpfPerfEventState>>,
+    state: Arc<IrqMutex<BpfPerfEventState>>,
     poll_notify: Arc<IrqNotify>,
 }
 
@@ -112,7 +112,7 @@ impl BpfPerfOutput {
 /// access is gated on [`BpfPerfEventState::is_mapped`]), so a dangling pointer
 /// left after the pages free is harmless.
 pub struct BpfPerfEventWrapper {
-    state: Arc<SpinNoIrq<BpfPerfEventState>>,
+    state: Arc<IrqMutex<BpfPerfEventState>>,
     poll_ready: Arc<PollSet>,
     poll_notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
@@ -126,7 +126,7 @@ impl BpfPerfEventWrapper {
         let poll_alive = Arc::new(AtomicBool::new(true));
         start_bpf_perf_notify_worker(poll_ready.clone(), poll_notify.clone(), poll_alive.clone());
         Self {
-            state: Arc::new(SpinNoIrq::new(BpfPerfEventState { inner, pages: None })),
+            state: Arc::new(IrqMutex::new(BpfPerfEventState { inner, pages: None })),
             poll_ready,
             poll_notify,
             poll_alive,

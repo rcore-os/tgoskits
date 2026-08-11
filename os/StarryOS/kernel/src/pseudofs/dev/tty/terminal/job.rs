@@ -2,15 +2,14 @@ use alloc::sync::{Arc, Weak};
 use core::task::Context;
 
 use ax_errno::{AxResult, ax_bail};
-use ax_kspin::SpinNoIrq;
 use ax_task::current;
 use axpoll::{IoEvents, PollSet, Pollable};
 use starry_process::{ProcessGroup, Session};
 
-use crate::task::AsThread;
+use crate::{sync::IrqMutex, task::AsThread};
 
 pub struct JobControl {
-    state: SpinNoIrq<JobControlState>,
+    state: IrqMutex<JobControlState>,
     poll_fg: PollSet,
 }
 
@@ -28,7 +27,7 @@ impl Default for JobControl {
 impl JobControl {
     pub fn new() -> Self {
         Self {
-            state: SpinNoIrq::new(JobControlState {
+            state: IrqMutex::new(JobControlState {
                 foreground: Weak::new(),
                 session: Weak::new(),
             }),

@@ -17,7 +17,6 @@ members = [
 
     "bootloader/axloader",
 
-    "components/aic8800",
     "components/axtest/axtest",
     "components/axtest/axtest_macros",
     "components/cpu-local",
@@ -35,15 +34,9 @@ members = [
     "components/crate_interface",
     "components/irq-framework",
     "components/kasm-aarch64",
-    "components/kernel_guard",
     "components/kernutil",
-    "components/kspin",
     "components/linked_list_r4l",
-    "components/lockdep",
     "components/scope-local",
-    "components/sdhci-cv1800",
-    "components/sdio-host",
-    "components/sdio-host2",
     "components/starry-process",
     "components/starry-signal",
     "components/starry-vm",
@@ -155,9 +148,6 @@ irq-framework = { version = "0.3.2", path = "components/irq-framework" }
 ax-input = { version = "0.6.8", path = "os/arceos/modules/axinput" }
 ax-io = { version = "0.6.4", path = "components/axio" }
 ax-ipi = { version = "0.5.30", path = "os/arceos/modules/axipi" }
-ax-kernel-guard = { version = "0.3.13", path = "components/kernel_guard" }
-ax-lockdep = { version = "0.2.2", path = "components/lockdep" }
-ax-kspin = { version = "0.3.17", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.10", path = "components/ax-lazyinit" }
 ax-libc = { version = "0.5.31", path = "os/arceos/ulib/axlibc" }
 libc = { version = "0.2", default-features = false }
@@ -194,10 +184,13 @@ axklib = { version = "0.7.8", path = "components/axklib" }
 axplat-dyn = { version = "0.7.15", path = "platforms/axplat-dyn", default-features = false }
 axpoll = { version = "0.5.4", path = "components/axpoll" }
 axvisor = { version = "0.5.24", path = "os/axvisor" }
+axvirtio-common = { version = "0.1.0", path = "virtualization/axvirtio-common" }
+axvirtio-net = { version = "0.1.0", path = "virtualization/axvirtio-net" }
 axvm = { version = "0.5.26", path = "virtualization/axvm", default-features = false }
 axvm-types = { version = "0.7.3", path = "virtualization/axvm-types" }
 axvmconfig = { version = "0.8.4", path = "virtualization/axvmconfig", default-features = false }
 ahci-driver = { version = "0.1.2", path = "drivers/blk/ahci-driver" }
+
 bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
 define-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-weak-traits" }
@@ -250,10 +243,10 @@ rdrive = { version = "0.23.9", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4.3", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.7.8", path = "fs/rsext4" }
 scope-local = { version = "0.4.5", path = "components/scope-local" }
-sdio-host = { version = "0.1.0", package = "sdio-host-cv1800", path = "components/sdio-host" }
-sdio-host2 = { version = "0.1.6", path = "components/sdio-host2" }
-sdhci-cv1800 = { version = "0.1.1", path = "components/sdhci-cv1800" }
-aic8800 = { version = "0.2.7", path = "components/aic8800" }
+sdio-host = { version = "0.1.0", package = "sdio-host-cv1800", path = "drivers/blk/sdio-host" }
+sdio-host2 = { version = "0.1.6", path = "drivers/blk/sdio-host2" }
+sdhci-cv1800 = { version = "0.1.1", path = "drivers/blk/sdhci-cv1800" }
+aic8800 = { version = "0.2.7", path = "drivers/net/aic8800" }
 crab-usb = { version = "0.10.5", path = "drivers/usb/usb-host" }
 crab-uvc = { version = "0.1.1", path = "drivers/usb/usb-device/uvc" }
 ktest-helper = { version = "0.1.1", path = "drivers/usb/utils/ktest-helper" }
@@ -318,7 +311,6 @@ mmio-api = { version = "0.2.4", path = "memory/mmio-api" }
 cvi-vdec-uapi = { version = "0.1.0", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
-spin = { version = "=0.12.2", default-features = false, features = ["lock_api", "once", "lazylock"] }
 atomic-waker = { version = "1.1", default-features = false }
 ostool = { version = "0.27.1" }
 riscv = { version = "0.16.1", default-features = false }

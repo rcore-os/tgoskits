@@ -1,4 +1,6 @@
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+#[cfg(feature = "irq")]
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "irq")]
 use std::sync::{Arc, Barrier};
 use std::{
@@ -9,12 +11,12 @@ use std::{
 };
 
 use ax_errno::{AxError, AxResult};
-#[cfg(feature = "preempt")]
-use ax_kernel_guard::NoPreempt;
 use axpoll::{IoEvents, Pollable};
 
 #[cfg(feature = "irq")]
 use crate::IrqNotify;
+#[cfg(feature = "preempt")]
+use crate::sync::{PreemptGuard, SpinLock};
 use crate::{WaitQueue, api as ax_task, current};
 
 type TestResult = Result<(), Box<dyn core::any::Any + Send>>;
@@ -83,7 +85,7 @@ const RAW_TASK_STACK_SIZE: usize = 0x10000;
 const RAW_TASK_STACK_SIZE: usize = 0x1000;
 
 #[cfg(all(feature = "lockdep", feature = "preempt"))]
-static HELD_LOCK_DIAGNOSTIC_LOCK: ax_kspin::SpinNoPreempt<()> = ax_kspin::SpinNoPreempt::new(());
+static HELD_LOCK_DIAGNOSTIC_LOCK: SpinLock<()> = SpinLock::new(());
 
 #[cfg(feature = "preempt")]
 fn panic_payload_message(payload: &(dyn core::any::Any + Send)) -> &str {
@@ -128,7 +130,7 @@ fn might_sleep_reports_held_lock_stack() {
 fn might_sleep_reports_preempt_disabled_reason() {
     run_in_test_scheduler(|| {
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let _guard = NoPreempt::new();
+            let _guard = PreemptGuard::new();
             ax_task::might_sleep();
         }));
         let panic = result.expect_err("might_sleep should reject preempt-disabled context");

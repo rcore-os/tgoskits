@@ -15,10 +15,10 @@ use core::{
     task::{Context, Waker},
 };
 
-use ax_kspin::SpinNoIrq;
+use ax_lazyinit::OnceLock;
+use ax_sync::SpinLock;
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
-use spin::Once;
 
 bitflags! {
     /// I/O events.
@@ -174,7 +174,7 @@ impl Drop for Inner {
 }
 
 /// A data structure for waking up tasks that are waiting for I/O events.
-pub struct PollSet(Once<SpinNoIrq<Inner>>);
+pub struct PollSet(OnceLock<SpinLock<Inner>>);
 
 impl Default for PollSet {
     fn default() -> Self {
@@ -185,7 +185,7 @@ impl Default for PollSet {
 impl PollSet {
     /// Creates a new empty [`PollSet`].
     pub const fn new() -> Self {
-        Self(Once::new())
+        Self(OnceLock::new())
     }
 
     /// Registers a waker for the requested I/O events.
@@ -198,8 +198,8 @@ impl PollSet {
     pub unsafe fn register(&self, waker: &Waker, interests: IoEvents) {
         let replaced = {
             self.0
-                .call_once(|| SpinNoIrq::new(Inner::new()))
-                .lock()
+                .call_once(|| SpinLock::new(Inner::new()))
+                .lock_irqsave()
                 .register(waker, interests)
         };
         if let Some(entry) = replaced {
@@ -222,7 +222,7 @@ impl PollSet {
         };
         let mut ready_entries = Vec::with_capacity(POLL_SET_CAPACITY);
         {
-            inner.lock().drain_ready(ready, &mut ready_entries);
+            inner.lock_irqsave().drain_ready(ready, &mut ready_entries);
         }
         let woke = ready_entries.len();
         for entry in ready_entries {
@@ -248,7 +248,7 @@ impl PollSet {
         let Some(inner) = self.0.get() else {
             return 0;
         };
-        let ready_entry = inner.lock().take_one_ready(ready);
+        let ready_entry = inner.lock_irqsave().take_one_ready(ready);
         let Some(entry) = ready_entry else {
             return 0;
         };
@@ -268,7 +268,7 @@ impl PollSet {
         };
         let mut ready_entries = [const { MaybeUninit::<Entry>::uninit() }; POLL_SET_CAPACITY];
         let ready_len = {
-            let mut inner = inner.lock();
+            let mut inner = inner.lock_irqsave();
             let len = inner.len();
             if len == 0 {
                 return 0;

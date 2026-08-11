@@ -313,7 +313,10 @@ kernel_path = "{}"
         .unwrap();
 
         let mut qemu = QemuConfig {
-            args: vec!["id=disk0,if=none,format=raw,file=/old/tmp/rootfs.img".to_string()],
+            args: vec![
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/old/tmp/rootfs.img".to_string(),
+            ],
             ..Default::default()
         };
         patch_qemu_rootfs(
@@ -326,10 +329,10 @@ kernel_path = "{}"
 
         assert_eq!(
             qemu.args,
-            vec![format!(
-                "id=disk0,if=none,format=raw,file={}",
-                rootfs_path.display()
-            )]
+            vec![
+                "-drive".to_string(),
+                format!("id=disk0,if=none,format=raw,file={}", rootfs_path.display())
+            ]
         );
     }
 
@@ -339,7 +342,10 @@ kernel_path = "{}"
         write_test_image_config(root.path());
         let rootfs = managed_rootfs_path_for_test(root.path(), "rootfs-aarch64-alpine.img");
         let mut qemu = QemuConfig {
-            args: vec!["id=disk0,if=none,format=raw,file=/old/tmp/rootfs.img".to_string()],
+            args: vec![
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/old/tmp/rootfs.img".to_string(),
+            ],
             ..Default::default()
         };
 
@@ -347,10 +353,10 @@ kernel_path = "{}"
 
         assert_eq!(
             qemu.args,
-            vec![format!(
-                "id=disk0,if=none,format=raw,file={}",
-                rootfs.display()
-            )]
+            vec![
+                "-drive".to_string(),
+                format!("id=disk0,if=none,format=raw,file={}", rootfs.display())
+            ]
         );
     }
 

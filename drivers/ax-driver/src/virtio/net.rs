@@ -7,7 +7,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_kernel_guard::NoPreemptIrqSave;
+use ax_sync::PreemptIrqSaveGuard;
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(feature = "pci")]
@@ -21,6 +21,7 @@ use virtio_drivers::{
 #[cfg(feature = "pci")]
 use crate::{PciIrqRequirement, binding_info_from_pci};
 use crate::{
+    binding_info_from_fdt,
     net::PlatformDeviceNet,
     virtio::{self, VirtIoHalImpl, VirtIoTransport},
 };
@@ -133,7 +134,7 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
     }
 
     fn with_task<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> R {
-        let _guard = NoPreemptIrqSave::new();
+        let _guard = PreemptIrqSaveGuard::new();
         let _active = VirtioNetAccessGuard::enter_task(&self.access_active);
         // SAFETY: `access_active` serializes all mutable access to the shared
         // raw transport. Task-side callers also keep local IRQ/preemption off.
@@ -378,6 +379,18 @@ pub fn register_transport<T: Transport + 'static>(
 ) -> Result<(), OnProbeError> {
     let net = make_net(transport)?;
     let irq = plat_dev.register_net("virtio-net", net);
+    log::info!("registered virtio network device irq={irq:?}");
+    Ok(())
+}
+
+pub fn register_fdt_transport<T: Transport + 'static>(
+    info: &rdrive::register::FdtInfo<'_>,
+    plat_dev: PlatformDevice,
+    transport: T,
+) -> Result<(), OnProbeError> {
+    let net = make_net(transport)?;
+    let binding = binding_info_from_fdt(info)?;
+    let irq = plat_dev.register_net_with_info("virtio-net", net, binding);
     log::info!("registered virtio network device irq={irq:?}");
     Ok(())
 }

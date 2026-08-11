@@ -5,12 +5,12 @@ use core::{
     time::Duration,
 };
 
-use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_runtime::hal::irq::{AutoEnable, IrqId, IrqRequest, ShareMode};
 use rdrive::DeviceId as RDriveDeviceId;
 
 use super::manager::UsbFsManager;
+use crate::sync::IrqMutex;
 
 const USBFS_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
@@ -31,7 +31,7 @@ pub(super) struct UsbIrqSlot {
     bus_num: u8,
     handler: ax_driver::usb::UsbHostIrqHandler,
     dirty: AtomicBool,
-    handle: SpinNoIrq<Option<ax_runtime::hal::irq::IrqHandle>>,
+    handle: IrqMutex<Option<ax_runtime::hal::irq::IrqHandle>>,
 }
 
 pub(super) struct UsbIrqRegistry {
@@ -51,7 +51,7 @@ impl UsbIrqRegistry {
                 bus_num: slot.bus_num,
                 handler: slot.handler,
                 dirty: AtomicBool::new(false),
-                handle: SpinNoIrq::new(None),
+                handle: IrqMutex::new(None),
             });
         }
         Self {

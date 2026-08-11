@@ -3,15 +3,6 @@ use std::{any::Any, panic};
 
 use scope_local::scope_local;
 
-struct KernelGuardIfImpl;
-
-#[ax_crate_interface::impl_interface]
-impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
-    fn enable_preempt() {}
-
-    fn disable_preempt() {}
-}
-
 scope_local! {
     static RECURSION_TARGET: usize = 23;
     static RECURSIVE_VALUE: usize = {

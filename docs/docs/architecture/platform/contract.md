@@ -32,7 +32,7 @@ pub use ax_plat_macros::main;
 pub use ax_plat_macros::secondary_main;
 ```
 
-两个 feature：`smp`（多核，依赖 `ax-kspin/smp`）、`irq`（接入 `irq-framework` + `rdif-intc`）。
+两个 feature：`smp`（多核，依赖 `ax-sync/smp`）、`irq`（接入 `irq-framework` + `rdif-intc`）。
 
 ## 接口集合（trait 全签名）
 
@@ -49,7 +49,7 @@ pub use ax_plat_macros::secondary_main;
 | `IrqIf` | `irq.rs` | `set_enable`、`set_affinity`、`handle`、`send_ipi`、`ipi_irq`、`resolve_source`、`resolve_percpu` |
 | `LoongArchHvIrqIf` | `irq/loongarch64_hv.rs` | 虚拟中断注入 / guest IRQ 路由（仅 LoongArch hypervisor） |
 
-`IrqIf` 是体量最大的模块（`irq.rs` 约 470 行），它把 `irq_framework` 的整套 API 都 re-export，并维护一个静态的 `Registry<PlatIrqOps>`（`spin::Once` 包裹）。`PlatIrqOps` 是 `IrqOps` 的实现，桥接到平台层 `current_cpu`、`cpu_online`、`in_irq_context`、`local_irq_save`/`restore`、`run_on_cpu_sync`、`set_enabled`、`set_affinity` 等运行时事实。
+`IrqIf` 是体量最大的模块（`irq.rs` 约 470 行），它把 `irq_framework` 的整套 API 都 re-export，并维护一个静态的 `Registry<PlatIrqOps>`（`ax_lazyinit::OnceLock` 包裹）。`PlatIrqOps` 是 `IrqOps` 的实现，桥接到平台层 `current_cpu`、`cpu_online`、`in_irq_context`、`local_irq_save`/`restore`、`run_on_cpu_sync`、`set_enabled`、`set_affinity` 等运行时事实。
 
 ### IRQ domain 常量
 
@@ -107,7 +107,7 @@ bitflags! ConsoleIrqEvent: u32 {
 }
 ```
 
-并提供全局 `CONSOLE_LOCK: SpinNoIrq<()>`、`write_text_bytes`、`__simple_print`，以及导出宏 `console_print!` / `console_println!` 供内核早期日志使用。
+并提供全局 `CONSOLE_LOCK: SpinLock<()>`；写日志时通过 `lock_irqsave()` 获取。该模块还提供 `write_text_bytes`、`__simple_print`，以及导出宏 `console_print!` / `console_println!` 供内核早期日志使用。
 
 ## `def_plat_interface` 宏展开
 

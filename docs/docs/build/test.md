@@ -70,7 +70,7 @@ package
 aarch64_sysreg
 ax-errno
 ax-io
-ax-kspin
+ax-sync
 irq-framework
 memory_addr
 rsext4

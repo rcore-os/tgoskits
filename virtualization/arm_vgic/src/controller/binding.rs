@@ -25,7 +25,7 @@ impl core::fmt::Debug for GicV3VcpuBinding {
 
 impl Drop for GicV3VcpuBinding {
     fn drop(&mut self) {
-        let mut state = self.controller.inner.state.lock();
+        let mut state = self.controller.inner.state.lock_irqsave();
         state.active_vcpus.remove(&self.vcpu);
         state.redistributors.remove(&self.vcpu);
     }
@@ -44,7 +44,7 @@ impl GicV3VcpuBinding {
     /// Restores ICH state and refills empty LRs.
     pub fn load(&self) -> VgicResult {
         let state = {
-            let mut controller = self.controller.inner.state.lock();
+            let mut controller = self.controller.inner.state.lock_irqsave();
             controller.redistributor(self.vcpu, "load CPU interface")?;
             if !controller.active_vcpus.insert(self.vcpu) {
                 return Err(VgicError::ResourceConflict {
@@ -68,7 +68,7 @@ impl GicV3VcpuBinding {
                 .backend
                 .load_cpu_interface(self.vcpu, &state),
         ) {
-            let mut controller = self.controller.inner.state.lock();
+            let mut controller = self.controller.inner.state.lock_irqsave();
             let rollback = controller.rollback_cpu_interface_load(self.vcpu);
             controller.active_vcpus.remove(&self.vcpu);
             rollback?;
@@ -128,7 +128,7 @@ impl GicV3VcpuBinding {
     /// delivery is software-owned or backed by an assigned physical IRQ.
     pub fn deactivate(&self, intid: IntId) -> VgicResult {
         let mut saved = {
-            let controller = self.controller.inner.state.lock();
+            let controller = self.controller.inner.state.lock_irqsave();
             if !controller.active_vcpus.contains(&self.vcpu) {
                 return Err(VgicError::InvalidStateTransition {
                     intid,
@@ -153,7 +153,7 @@ impl GicV3VcpuBinding {
         )?;
 
         let (retirements, state) = {
-            let mut controller = self.controller.inner.state.lock();
+            let mut controller = self.controller.inner.state.lock_irqsave();
             let mut retirements = controller.merge_cpu_interface(self.vcpu, saved, false)?;
             if let Some(retirement) = controller.deactivate_interrupt(self.vcpu, intid)? {
                 retirements.push(retirement);
@@ -173,7 +173,7 @@ impl GicV3VcpuBinding {
     /// Applies a trapped DIR after the run loop has already saved ICH state.
     pub fn deactivate_saved(&self, intid: IntId) -> VgicResult {
         let retirements = {
-            let mut controller = self.controller.inner.state.lock();
+            let mut controller = self.controller.inner.state.lock_irqsave();
             if controller.active_vcpus.contains(&self.vcpu) {
                 return Err(VgicError::InvalidStateTransition {
                     intid,

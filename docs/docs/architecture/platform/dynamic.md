@@ -143,7 +143,7 @@ fn platform_name() -> &'static str {
 
 ## mem.rs — 内存视图构造
 
-`platforms/axplat-dyn/src/mem.rs` 在首次访问时通过 `spin::Once` + `heapless::Vec` 懒构造三张静态表：
+`platforms/axplat-dyn/src/mem.rs` 在首次访问时通过 `ax_lazyinit::OnceLock` + `heapless::Vec` 懒构造三张静态表：
 
 | 列表 | 容量 | 来源 |
 | --- | --- | --- |

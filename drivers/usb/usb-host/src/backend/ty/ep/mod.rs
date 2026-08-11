@@ -35,6 +35,18 @@ pub(crate) trait EndpointOp: Send + Any + 'static {
         Err(TransferError::NotSupported)
     }
 
+    /// Retires a request after the controller has stopped using this endpoint.
+    ///
+    /// The caller must first quiesce the endpoint in hardware, for example by
+    /// switching its interface to another alternate setting.
+    fn retire_request_after_quiesce(&mut self, _id: RequestId) -> Result<(), TransferError> {
+        Err(TransferError::NotSupported)
+    }
+
+    fn supports_retire_after_quiesce(&self) -> bool {
+        false
+    }
+
     fn reset(&mut self) -> EndpointResetFuture {
         Box::pin(async { Err(TransferError::NotSupported) })
     }
@@ -92,6 +104,14 @@ impl Endpoint {
 
     pub fn cancel(&mut self, id: RequestId) -> Result<(), TransferError> {
         self.raw.cancel_request(id)
+    }
+
+    pub fn retire_after_quiesce(&mut self, id: RequestId) -> Result<(), TransferError> {
+        self.raw.retire_request_after_quiesce(id)
+    }
+
+    pub fn supports_retire_after_quiesce(&self) -> bool {
+        self.raw.supports_retire_after_quiesce()
     }
 
     /// Resets host-controller state for this endpoint after a successful

@@ -27,7 +27,7 @@ sidebar_label: "检查机制总览"
 
 当前实现还没有完整覆盖所有“不能睡眠”的语义来源。特别是：
 
-- `SpinRaw` / `SpinRwLock<NoOp>` 这类 non-sleep lock 不一定改变 IRQ 或 preempt 状态；当前 lockdep build 已能在其他 atomic 条件触发时打印 held-lock stack，但还没有把 held non-sleep lock 本身作为直接触发条件。
+- raw `SpinLock` / `SpinRwLock` 这类 non-sleep lock 不一定改变 IRQ 或 preempt 状态；当前 lockdep build 已能在其他 atomic 条件触发时打印 held-lock stack，但还没有把 held non-sleep lock 本身作为直接触发条件。
 - 用户内存 fault、可能触发 reclaim 的分配、必须原子执行的 hook 入口还缺少独立语义注解。
 - preempt-disable 来源仍需后续阶段补充到诊断中。
 
@@ -64,7 +64,7 @@ sidebar_label: "检查机制总览"
 后续改进方向：
 
 - 继续补 QEMU 级 IRQ handler 回归，验证显式 IRQ context 路径。
-- 继续实现 held non-sleep lock 的直接判定，特别是 `SpinRaw`、`SpinRwLock<NoOp>` 和后续项目内 non-sleep rwlock。
+- 继续实现 held non-sleep lock 的直接判定，特别是 raw `SpinLock`、`SpinRwLock` 和后续项目内 non-sleep rwlock。
 - 继续改进 panic 信息，输出 preempt-disable 来源。
 - 增加 `might_fault()`、`might_alloc()`、`cant_sleep()` / non-block scope 等语义注解，减少跨模块间接阻塞路径的盲区。
 - 明确启动阶段 sleepability，区分早期启动限制和真实运行期 atomic sleep bug。
@@ -218,7 +218,8 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 - held-lock 栈溢出。
 - spin lock 与 mutex 混合使用时的锁顺序反转。
 
-当前实现已经抽出独立 `ax-lockdep` 组件，使用 task-held tracking 记录当前任务持有的锁，并通过 lock class / lock instance 区分锁顺序关系和具体锁实例。
+当前实现把 lockdep 状态机内聚到 `ax-sync`，并通过 runtime capability 维护当前任务的
+held-lock stack。lock class 与 lock instance 仍分别表示锁顺序关系和具体锁实例。
 
 检查流程大致是：
 
@@ -230,17 +231,16 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 
 接入范围包括：
 
-- `ax-kspin` spin lock。
-- `ax-sync` mutex。
+- `ax-sync` spin lock、spin rwlock 和 sleep mutex。
 - POSIX pthread mutex lockdep-aware 布局。
 - ArceOS lockdep QEMU 回归用例。
 
 主要入口：
 
-- `components/lockdep/src/state.rs`
-- `components/lockdep/src/trace.rs`
-- `components/kspin/src/lockdep.rs`
-- `os/arceos/modules/axsync/src/lockdep.rs`
+- `os/arceos/modules/axsync/src/lockdep_core.rs`
+- `os/arceos/modules/axsync/src/lockdep_state.rs`
+- `os/arceos/modules/axsync/src/spin_lockdep.rs`
+- `os/arceos/modules/axsync/src/mutex_lockdep.rs`
 - `os/arceos/modules/axtask/src/api.rs`
 - [`test-suit/arceos/rust/task/lockdep/`](https://github.com/rcore-os/tgoskits/tree/dev/test-suit/arceos/rust/task/lockdep)
 

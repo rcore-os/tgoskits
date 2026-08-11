@@ -134,7 +134,6 @@ ax-runtime = { workspace = true, features = [
     "net",
     "serial",
 ] }
-ax-sync = { workspace = true, features = ["multitask"] }
 ax-task = { workspace = true, features = [
     "multitask",
     "task-ext",
@@ -172,9 +171,7 @@ flatten_objects = "0.2.4"
 hashbrown = "0.16"
 indoc = "2"
 inherit-methods-macro = "0.1.0"
-ax-kernel-guard = { workspace = true }
 kernel-elf-parser = "0.3.4"
-ax-kspin = { workspace = true, features = ["lock_api"] }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
@@ -196,7 +193,6 @@ rand = { version = "0.10", default-features = false, features = ["alloc", "chach
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local = { workspace = true }
 slab = { version = "0.4.9", default-features = false }
-spin = { workspace = true }
 starry-process = { workspace = true }
 starry-signal = { workspace = true }
 starry-vm = { workspace = true }
@@ -231,7 +227,7 @@ axtest.workspace = true
 axbacktrace = { workspace = true, features = ["axtest"] }
 ax-cpumask = { workspace = true, features = ["axtest"] }
 ax-driver = { workspace = true, features = ["axtest"] }
-ax-hal.workspace = true
+ax-hal = { workspace = true, features = ["axtest"] }
 ax-std = { workspace = true, default-features = false, features = [
     "alloc",
     "fd",
@@ -245,7 +241,6 @@ ax-memory-addr = { workspace = true, features = ["axtest"] }
 ax-memory-set = { workspace = true, features = ["axtest"] }
 axfs-ng-vfs = { workspace = true, features = ["axtest"] }
 ax-io = { workspace = true, features = ["axtest"] }
-ax-kernel-guard = { workspace = true, features = ["axtest"] }
 ax-lazyinit = { workspace = true, features = ["axtest"] }
 ax-net = { workspace = true, features = ["axtest"] }
 axpoll = { workspace = true, features = ["axtest"] }

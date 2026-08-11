@@ -13,8 +13,9 @@ use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
     paging::{MappingFlags, PageTable},
 };
-use ax_sync::Mutex;
 use enum_dispatch::enum_dispatch;
+
+use crate::sync::Mutex;
 
 mod cow;
 mod file;

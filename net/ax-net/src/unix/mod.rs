@@ -27,12 +27,12 @@ use core::task::Context;
 use async_trait::async_trait;
 use ax_errno::{AxError, AxResult};
 use ax_io::{IoBuf, Read, Write};
+use ax_lazyinit::LazyLock;
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
-use axpoll::{IoEvents, Pollable};
+use axpoll::{IoEvents, PollSet, Pollable};
 use enum_dispatch::enum_dispatch;
 use hashbrown::HashMap;
-use spin::LazyLock;
 
 pub use self::{
     dgram::DgramTransport,
@@ -62,8 +62,13 @@ pub enum UnixSocketAddr {
 pub trait TransportOps: Configurable + Pollable + Send + Sync {
     /// Bind the transport to the given address.
     fn bind(&self, slot: &BindSlot, local_addr: &UnixSocketAddr) -> AxResult;
-    /// Connect the transport to a remote address.
-    fn connect(&self, slot: &BindSlot, local_addr: &UnixSocketAddr) -> AxResult;
+    /// Connect the transport to a remote address and return an accept poll set
+    /// that must be woken after the namespace and socket-state locks are released.
+    fn connect(
+        &self,
+        slot: &BindSlot,
+        local_addr: &UnixSocketAddr,
+    ) -> AxResult<Option<Arc<PollSet>>>;
 
     /// Marks a bound connection-oriented transport as accepting connections.
     fn listen(&self) -> AxResult {
@@ -101,6 +106,19 @@ pub enum Transport {
     Stream(StreamTransport),
     /// Datagram-oriented transport.
     Dgram(DgramTransport),
+}
+impl Transport {
+    fn finish_connect(&self, accept_poll: Option<Arc<PollSet>>) {
+        if let Some(poll) = accept_poll {
+            // The connection request and both endpoint states are visible, and
+            // no namespace or transport lock is held while wakers run.
+            unsafe { poll.wake(IoEvents::IN) };
+        }
+        match self {
+            Transport::Stream(stream) => stream.wake_connected(),
+            Transport::Dgram(dgram) => dgram.wake_connected(),
+        }
+    }
 }
 impl Pollable for Transport {
     fn poll(&self) -> IoEvents {
@@ -217,15 +235,18 @@ impl SocketOps for UnixSocket {
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
         let remote_addr = remote_addr.into_unix()?;
         let local_addr = self.local_addr.lock().clone();
-        let mut guard = self.remote_addr.lock();
-        if matches!(&*guard, UnixSocketAddr::Unnamed) {
-            with_slot(&remote_addr, |slot| {
+        let accept_poll = {
+            let mut guard = self.remote_addr.lock();
+            if !matches!(&*guard, UnixSocketAddr::Unnamed) {
+                return Err(AxError::InvalidInput);
+            }
+            let accept_poll = with_slot(&remote_addr, |slot| {
                 self.transport.connect(slot, &local_addr)
             })?;
             *guard = remote_addr;
-        } else {
-            return Err(AxError::InvalidInput);
-        }
+            accept_poll
+        };
+        self.transport.finish_connect(accept_poll);
         Ok(())
     }
 

@@ -3,8 +3,8 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::ops::Range;
 
-use ax_kspin::SpinRaw as Mutex;
 use ax_memory_addr::is_aligned_4k;
+use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
 use axvm_types::GuestPhysAddr;
 
 use crate::*;
@@ -38,6 +38,12 @@ pub struct GuestRangePool {
 }
 
 impl GuestRangePool {
+    fn ranges(&self) -> RawSpinLockGuard<'_, RangeAllocator> {
+        // SAFETY: VM device-resource planning serializes same-vCPU entry; the
+        // raw lock excludes concurrent resource operations on other CPUs.
+        unsafe { self.ranges.lock_raw() }
+    }
+
     /// Creates an allocator over one non-empty, page-aligned range.
     pub fn new(base: usize, length: usize) -> DeviceManagerResult<Self> {
         let end = base
@@ -68,8 +74,7 @@ impl GuestRangePool {
 impl GuestRangeAllocator for GuestRangePool {
     fn allocate(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
         validate_size(size, "allocate guest range")?;
-        self.ranges
-            .lock()
+        self.ranges()
             .allocate(size)
             .map(|range| GuestPhysAddr::from_usize(range.start))
             .ok_or(DeviceManagerError::OutOfMemory {
@@ -86,7 +91,7 @@ impl GuestRangeAllocator for GuestRangePool {
                     operation: "release guest range",
                     detail: "guest range end overflows the address space".into(),
                 })?;
-        if self.ranges.lock().release(addr.as_usize()..end) {
+        if self.ranges().release(addr.as_usize()..end) {
             Ok(())
         } else {
             Err(DeviceManagerError::InvalidInput {

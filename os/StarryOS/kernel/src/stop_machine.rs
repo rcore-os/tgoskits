@@ -5,11 +5,11 @@ use core::{
 };
 
 use ax_ipi::legacy::run_on_cpu;
-use ax_kernel_guard::NoPreemptIrqSave;
-use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::{cpu_num, percpu::this_cpu_id, time::monotonic_time_nanos};
 
-static STOP_MACHINE_LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
+use crate::sync::{IrqMutex, PreemptIrqSaveGuard};
+
+static STOP_MACHINE_LOCK: IrqMutex<()> = IrqMutex::new(());
 
 const STAGE_PARKED: u8 = 0;
 const STAGE_SYNC: u8 = 1;
@@ -36,7 +36,7 @@ impl StopMachineState {
 }
 
 fn park_remote_cpu(state: Arc<StopMachineState>) {
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
 
     state.parked.fetch_add(1, Ordering::SeqCst);
     while state.stage.load(Ordering::SeqCst) == STAGE_PARKED {

@@ -80,6 +80,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, ax_err_type};
+use ax_lazyinit::{LazyLock, OnceLock};
 use ax_sync::Mutex;
 use ax_task::{IrqNotify, WaitQueue};
 use axpoll::{IoEvents, PollSet};
@@ -87,7 +88,6 @@ use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
 };
-use spin::{LazyLock, Once};
 
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
@@ -120,8 +120,8 @@ pub use self::{
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
 static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
 
-static SERVICE: Once<Mutex<Service>> = Once::new();
-static NET_CONTROL: Once<Arc<NetControl>> = Once::new();
+static SERVICE: OnceLock<Mutex<Service>> = OnceLock::new();
+static NET_CONTROL: OnceLock<Arc<NetControl>> = OnceLock::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
 static NET_POLL_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -193,7 +193,7 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
 
     validate_config(&config);
 
-    let routes: SharedRouteTable = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
+    let routes: SharedRouteTable = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
     let mut router = Router::new(routes.clone());
     let mut interfaces = Vec::new();
     let mut dns = Vec::new();
@@ -1024,7 +1024,7 @@ pub(crate) mod test_support {
         static INIT: Once = Once::new();
 
         INIT.call_once(|| {
-            let routes: SharedRouteTable = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
+            let routes: SharedRouteTable = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
             let mut router = Router::new(routes.clone());
             let local_dev = router.add_device(LOCAL_IF, Box::new(LoopbackDevice::new()));
             let peer_dev = router.add_device(PEER_IF, Box::new(LoopbackDevice::new()));

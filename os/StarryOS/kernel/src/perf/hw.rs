@@ -148,7 +148,8 @@ impl HwAlloc {
 }
 
 #[cfg(target_arch = "aarch64")]
-static ALLOC: ax_kspin::SpinNoPreempt<HwAlloc> = ax_kspin::SpinNoPreempt::new(HwAlloc::new());
+static ALLOC: crate::sync::NoPreemptMutex<HwAlloc> =
+    crate::sync::NoPreemptMutex::new(HwAlloc::new());
 
 /// Reserve a programmable counter for the per-task path ([`super::task`]).
 ///

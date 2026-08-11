@@ -13,8 +13,6 @@ use core::{
     time::Duration,
 };
 
-use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
@@ -23,6 +21,8 @@ use axfs_ng_vfs::{
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
+
+use crate::sync::{IrqMutex, Mutex};
 
 const TMPFS_MAGIC: u32 = 0x0102_1994;
 const RAMFS_MAGIC: u32 = 0x8584_58f6;
@@ -84,10 +84,10 @@ pub struct MemoryFs {
     used_bytes: AtomicU64,
     // Inodes may be released from atomic cleanup paths, so the slab and
     // metadata locks must not sleep.
-    inodes: SpinNoIrq<Slab<Arc<Inode>>>,
+    inodes: IrqMutex<Slab<Arc<Inode>>>,
     // root_dir() is used while mounting pseudofs during early startup, before
     // Starry has reached a sleepable task context.
-    root: SpinNoIrq<Option<DirEntry>>,
+    root: IrqMutex<Option<DirEntry>>,
 }
 
 impl MemoryFs {
@@ -133,8 +133,8 @@ impl MemoryFs {
             fs_type,
             size_limit,
             used_bytes: AtomicU64::new(0),
-            inodes: SpinNoIrq::new(Slab::new()),
-            root: SpinNoIrq::new(None),
+            inodes: IrqMutex::new(Slab::new()),
+            root: IrqMutex::new(None),
         });
         let root_ino = Inode::new(
             &handle,
@@ -263,16 +263,16 @@ struct FileContent {
 
 struct DirContent {
     // VFS dentry-cache operations call tmpfs directory ops while holding
-    // SpinNoIrq guards, so this per-directory map must not use a blocking
+    // IrqMutex guards, so this per-directory map must not use a blocking
     // mutex.
-    entries: SpinNoIrq<HashMap<FileName, InodeRef>>,
+    entries: IrqMutex<HashMap<FileName, InodeRef>>,
     next_cookie: AtomicU64,
 }
 
 impl Default for DirContent {
     fn default() -> Self {
         Self {
-            entries: SpinNoIrq::new(HashMap::new()),
+            entries: IrqMutex::new(HashMap::new()),
             next_cookie: AtomicU64::new(3),
         }
     }
@@ -286,7 +286,7 @@ enum NodeContent {
 struct Inode {
     fs: Weak<MemoryFs>,
     ino: u64,
-    metadata: SpinNoIrq<Metadata>,
+    metadata: IrqMutex<Metadata>,
     content: NodeContent,
 }
 
@@ -328,7 +328,7 @@ impl Inode {
         let result = Arc::new(Self {
             fs: Arc::downgrade(fs),
             ino,
-            metadata: SpinNoIrq::new(metadata),
+            metadata: IrqMutex::new(metadata),
             content,
         });
         entry.insert(result.clone());

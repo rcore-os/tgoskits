@@ -15,7 +15,7 @@ libusb = ["umod"]
 umod = ["libusb1-sys"]
 
 [dependencies]
-ax-kspin = { workspace = true }
+ax-sync = { workspace = true }
 bitflags = "2.8"
 crossbeam = {version = "0.8", features = ["alloc"], default-features = false}
 crossbeam-skiplist = {version = "0.1", features = [
@@ -37,3 +37,6 @@ trait-ffi = "0.2.4"
 usb-if = {workspace = true}
 xhci = "0.9"
 libusb1-sys = {version = "0.7", optional = true}
+
+[dev-dependencies]
+ax-sync = { workspace = true, features = ["host-test"] }

@@ -1,0 +1,25 @@
+board_type = "OrangePi-5-Plus-robot"
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_init_cmd = '''
+marker=ROBOT_CI
+cd /home/orangepi/robot/aka-rk3588 &&
+./run_robot_ci_once.sh 28.0 || {
+  status=$?
+  echo "[${marker}] HARNESS=FAIL target=linux-guest status=${status}"
+}
+'''
+success_regex = [
+  '(?m)^\[ROBOT_CI\] RESULT=PASS attempts=[12]\s*$',
+]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  "Failed to initialize guest VM",
+  "VFS: Cannot open root device",
+  "Waiting for root device",
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  "exit with code: 139",
+  '(?m)^\[ROBOT_CI\] RESULT=FAIL .*$',
+  '(?m)^\[ROBOT_CI\] HARNESS=FAIL .*$',
+]
+timeout = 600

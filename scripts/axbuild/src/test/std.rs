@@ -47,6 +47,13 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     },
 ];
 
+const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "starfive-jh7110-dwmmc",
+    features: &["starfive-jh7110-dwmmc"],
+    name_filter: None,
+    expected_tests: &[],
+}];
+
 const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
     features: &["host-test"],
@@ -247,10 +254,12 @@ fn run_std_tests<R: CargoRunner>(
 
 fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeatureProfile]> {
     match package {
-        "arm_vgic" | "axdevice" | "axvm" | "ax-ipi" | "ax-runtime" | "ax-api" => {
+        "arm_vgic" | "axdevice" | "axfs-ng-vfs" | "rsext4" | "scope-local" | "ax-sync" | "axvm"
+        | "ax-display" | "ax-input" | "ax-ipi" | "ax-log" | "ax-runtime" | "ax-api" => {
             Some(HOST_TEST_FEATURE_PROFILES)
         }
         "ax-task" => Some(AX_TASK_FEATURE_PROFILES),
+        "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
         _ => None,
     }
 }
@@ -592,6 +601,27 @@ mod tests {
     }
 
     #[test]
+    fn ax_driver_uses_visionfive2_mmc_feature_profile() {
+        let root = PathBuf::from("/tmp/workspace");
+        let packages = vec!["ax-driver".to_string()];
+        let mut runner = FakeCargoRunner::succeeding();
+
+        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
+
+        assert!(failed.is_empty());
+        assert_eq!(
+            runner.invocations[0].1.args(),
+            vec![
+                "test",
+                "-p",
+                "ax-driver",
+                "--features",
+                "starfive-jh7110-dwmmc"
+            ]
+        );
+    }
+
+    #[test]
     fn ax_task_uses_task_initialization_and_might_sleep_feature_profiles() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec!["ax-task".to_string()];
@@ -668,9 +698,18 @@ mod tests {
     }
 
     #[test]
-    fn host_irq_guard_packages_use_host_test_feature_profile() {
+    fn ax_sync_host_packages_use_host_test_feature_profile() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["arm_vgic".to_string(), "axdevice".to_string()];
+        let packages = [
+            "arm_vgic",
+            "axdevice",
+            "axfs-ng-vfs",
+            "rsext4",
+            "scope-local",
+            "ax-sync",
+        ]
+        .map(str::to_string)
+        .to_vec();
         let mut runner = FakeCargoRunner::succeeding();
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
@@ -686,6 +725,10 @@ mod tests {
             vec![
                 vec!["test", "-p", "arm_vgic", "--features", "host-test"],
                 vec!["test", "-p", "axdevice", "--features", "host-test"],
+                vec!["test", "-p", "axfs-ng-vfs", "--features", "host-test"],
+                vec!["test", "-p", "rsext4", "--features", "host-test"],
+                vec!["test", "-p", "scope-local", "--features", "host-test"],
+                vec!["test", "-p", "ax-sync", "--features", "host-test"],
             ]
         );
     }
@@ -693,9 +736,17 @@ mod tests {
     #[test]
     fn transitive_platform_consumers_use_host_test_feature_profile() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = ["axvm", "ax-ipi", "ax-runtime", "ax-api"]
-            .map(str::to_string)
-            .to_vec();
+        let packages = [
+            "axvm",
+            "ax-display",
+            "ax-input",
+            "ax-ipi",
+            "ax-log",
+            "ax-runtime",
+            "ax-api",
+        ]
+        .map(str::to_string)
+        .to_vec();
         let mut runner = FakeCargoRunner::succeeding();
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();

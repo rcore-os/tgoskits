@@ -13,12 +13,12 @@ readme = "README.md"
 license = "Apache-2.0"
 
 [features]
-host-test = ["ax-kspin/host-test"]
+host-test = ["ax-sync/host-test"]
 
 [dependencies]
 log = "0.4"
 cfg-if = "1.0"
-ax-kspin.workspace = true
+ax-sync.workspace = true
 
 # System independent crates provided by ArceOS.
 ax-memory-addr = { workspace = true }
@@ -35,7 +35,7 @@ name = "lookup_DeviceRuntime"
 harness = false
 
 [dev-dependencies]
-ax-kspin = { workspace = true, features = ["host-test"] }
+ax-sync = { workspace = true, features = ["host-test"] }
 divan = "0.1.21"
 paste = "1.0"
 rand = { version = "0.10", features = ["std_rng"] }

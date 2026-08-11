@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 use core::sync::atomic::{Ordering as AtomicOrdering, fence};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use dma_api::CoherentArray;
 use log::{debug, info, warn};
 use rdif_eth::{DmaBuffer, IRxQueue, ITxQueue, NetError, QueueConfig};
@@ -211,7 +211,9 @@ impl IRxQueue for Rtl8125RxQueue {
         self.submitted = self.submitted.saturating_add(1);
         if self.submitted >= RX_START_THRESHOLD {
             let was_ready = {
-                let mut start = self.start.lock();
+                // SAFETY: queue completion runs with local re-entry excluded;
+                // the raw lock serializes concurrent queue state.
+                let mut start = unsafe { self.start.lock_raw() };
                 let was_ready = start.rx_ready;
                 start.rx_ready = true;
                 was_ready
@@ -340,7 +342,8 @@ fn acquire_dma_descriptor() {
 
 pub(crate) fn try_start_queues(regs: Regs, dma_mask: u64, start: &QueueStart) {
     let (tx_base, rx_base) = {
-        let mut start = start.lock();
+        // SAFETY: queue initialization is serialized before publication.
+        let mut start = unsafe { start.lock_raw() };
         if start.started || !start.rx_ready {
             return;
         }

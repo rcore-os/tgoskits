@@ -15,10 +15,8 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::FileFlags;
-use ax_kspin::SpinRwLock as RwLock;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::{paging::MappingFlags, time::wall_time};
-use ax_sync::Mutex;
 use ax_task::{
     WaitQueue,
     future::{block_on, interruptible, timeout_at_wall},
@@ -32,6 +30,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     file::{Directory, File, FileLike, event::EventFd, get_file_like, memfd::Memfd},
     mm::{AddrSpace, Backend, IoVec},
+    sync::{Mutex, RwLock},
     syscall::signal::check_sigset_size,
     task::{AsThread, with_blocked_signals},
     time::TimeValueLike,

@@ -5,6 +5,7 @@
  *   1. unshare(CLONE_NEWUTS) + sethostname does not affect the parent.
  *   2. clone(CLONE_NEWPID)  -> child getpid() returns the local PID.
  *   3. unshare(CLONE_NEWUSER) -> getuid() returns 65534 (nobody).
+ *   4. clone3(CLONE_THREAD | CLONE_NEWPID) is rejected with EINVAL.
  */
 
 #include "test_framework.h"
@@ -55,6 +56,33 @@ static pid_t clone3_child(unsigned long long flags)
     args.flags = flags;
     args.exit_signal = SIGCHLD;
     return (pid_t)syscall(__NR_clone3, &args, sizeof(args));
+}
+
+static void run_pid_namespace_flag_validation_test(void)
+{
+    pid_t verifier = fork();
+    CHECK(verifier >= 0, "fork for PID namespace flag validation");
+
+    if (verifier == 0)
+    {
+        struct clone3_args args;
+        memset(&args, 0, sizeof(args));
+        args.flags = CLONE_THREAD | CLONE_VM | CLONE_SIGHAND | CLONE_NEWPID;
+
+        errno = 0;
+        long result = syscall(__NR_clone3, &args, sizeof(args));
+        if (result == -1)
+            _exit(errno == EINVAL ? 0 : 2);
+
+        syscall(SYS_exit_group, 1);
+        __builtin_unreachable();
+    }
+
+    int status;
+    CHECK(waitpid(verifier, &status, 0) == verifier,
+          "wait for PID namespace flag verifier");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "clone3(CLONE_THREAD | CLONE_NEWPID) rejected with EINVAL");
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +217,7 @@ int main(void)
     TEST_START("namespace (UTS / PID / USER isolation)");
 
     run_uts_namespace_test();
+    run_pid_namespace_flag_validation_test();
     run_pid_namespace_test();
     run_user_namespace_test();
 

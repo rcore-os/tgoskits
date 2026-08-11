@@ -6,9 +6,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_kspin::{SpinNoIrq as Mutex, SpinRwLock as RwLock};
 use ax_runtime::hal::irq::IrqId;
-use ax_sync::Mutex as BlockingMutex;
 use ax_task::IrqNotify;
 use crab_usb::{
     Device, DeviceInfo, Endpoint, ProbedDevice,
@@ -34,6 +32,7 @@ use super::{
     },
     irq::{self, PendingUsbIrqSlot},
 };
+use crate::sync::{IrqMutex as Mutex, Mutex as BlockingMutex, RwLock};
 
 const ROOT_HUB_STABLE_DEVICE_ID: usize = usize::MAX;
 const USB_REQ_GET_DESCRIPTOR: u8 = 0x06;
@@ -92,6 +91,12 @@ pub(super) struct SubmittedTransfer {
     inner: SubmittedTransferInner,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum SubmittedTransferQueue {
+    Endpoint(usize),
+    Control(usize),
+}
+
 enum SubmittedTransferInner {
     Endpoint {
         endpoint: EndpointHandle,
@@ -126,6 +131,17 @@ impl Clone for SubmittedTransfer {
 }
 
 impl SubmittedTransfer {
+    pub(super) fn queue_key(&self) -> SubmittedTransferQueue {
+        match &self.inner {
+            SubmittedTransferInner::Endpoint { endpoint, .. } => {
+                SubmittedTransferQueue::Endpoint(Arc::as_ptr(endpoint) as usize)
+            }
+            SubmittedTransferInner::Control { live_device, .. } => {
+                SubmittedTransferQueue::Control(Arc::as_ptr(live_device) as usize)
+            }
+        }
+    }
+
     pub(super) fn try_reclaim(&self) -> AxResult<Option<TransferCompletion>> {
         match &self.inner {
             SubmittedTransferInner::Endpoint {
@@ -186,6 +202,28 @@ impl SubmittedTransfer {
                 .ctrl_ep_mut()
                 .cancel(*request_id)
                 .map_err(map_transfer_error),
+        }
+    }
+
+    pub(super) fn retire_after_quiesce(&self) -> AxResult<()> {
+        match &self.inner {
+            SubmittedTransferInner::Endpoint {
+                endpoint,
+                request_id,
+            } => endpoint
+                .lock()
+                .retire_after_quiesce(*request_id)
+                .map_err(map_transfer_error),
+            SubmittedTransferInner::Control { .. } => Err(AxError::Unsupported),
+        }
+    }
+
+    pub(super) fn supports_retire_after_quiesce(&self) -> bool {
+        match &self.inner {
+            SubmittedTransferInner::Endpoint { endpoint, .. } => {
+                endpoint.lock().supports_retire_after_quiesce()
+            }
+            SubmittedTransferInner::Control { .. } => false,
         }
     }
 }

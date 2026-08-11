@@ -22,9 +22,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::time::wall_time;
-use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io, timeout_at_wall};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::general::{
@@ -36,6 +34,7 @@ use starry_signal::{SignalInfo, Signo};
 
 use crate::{
     file::{FileLike, IoDst, IoSrc, Kstat},
+    sync::{IrqMutex, Mutex},
     task::{AsThread, send_signal_to_process},
 };
 
@@ -257,7 +256,7 @@ struct Message {
 /// (`pipelined_send` -> `__pipelined_op`, ipc/mqueue.c:993,1010), so the queue
 /// itself stays empty and no message is enqueued.
 ///
-/// The handoff slot is a `SpinNoIrq<Option<Message>>` because the shared `Arc`
+/// The handoff slot is a `IrqMutex<Option<Message>>` because the shared `Arc`
 /// is touched by two parties - the sender that fills it and the receiver that
 /// drains it - but *always* while the queue's [`Inner`] lock is held, so it is
 /// an uncontended leaf lock (acquired and released without ever sleeping),
@@ -267,13 +266,13 @@ struct Message {
 struct RecvWaiter {
     /// The directly-handed message (Linux `ext_wait_queue::msg`). `Some` means
     /// the waiter has been served and must consume this instead of the queue.
-    msg: SpinNoIrq<Option<Message>>,
+    msg: IrqMutex<Option<Message>>,
 }
 
 impl RecvWaiter {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            msg: SpinNoIrq::new(None),
+            msg: IrqMutex::new(None),
         })
     }
 

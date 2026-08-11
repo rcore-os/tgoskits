@@ -55,8 +55,14 @@ pub(crate) type AxVCpuRef<A = crate::arch::ArchVCpu> = Arc<AxVCpu<A>>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
 
-struct VmDmaAccess<'a> {
+pub(crate) struct VmDmaAccess<'a> {
     vm: &'a AxVM,
+}
+
+impl<'a> VmDmaAccess<'a> {
+    pub(crate) const fn new(vm: &'a AxVM) -> Self {
+        Self { vm }
+    }
 }
 
 impl DeviceAccess for VmDmaAccess<'_> {

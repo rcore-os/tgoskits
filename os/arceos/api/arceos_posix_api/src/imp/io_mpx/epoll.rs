@@ -8,11 +8,11 @@ use core::{ffi::c_int, time::Duration};
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_hal::time::wall_time;
-use ax_sync::Mutex;
 
 use crate::{
     ctypes,
     imp::fd_ops::{FileLike, add_file_like, get_file_like},
+    sync::Mutex,
 };
 
 const EPOLL_READ_EVENTS: u32 =

@@ -7,7 +7,6 @@ use alloc::{
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time_nanos};
-use ax_sync::Mutex;
 use ax_task::current;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
@@ -20,6 +19,7 @@ use super::{
 };
 use crate::{
     mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
+    sync::Mutex,
     task::AsThread,
 };
 
@@ -660,7 +660,12 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
 
     // IPC_INFO: system-wide shared memory limits (no segment lookup).
     if cmd == IPC_INFO {
-        let shm_manager = SHM_MANAGER.lock();
+        let ns_count = SHM_MANAGER
+            .lock()
+            .shmid_inner
+            .values()
+            .filter(|inner| inner.lock().ns_id == ns_id)
+            .count();
         let info = ShmInfo64 {
             shmmax: usize::MAX as u64,
             shmmin: 1,
@@ -670,27 +675,25 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
         };
         let ptr = buf.as_ptr() as *mut ShmInfo64;
         ptr.vm_write(info)?;
-        let ns_count = shm_manager
-            .shmid_inner
-            .values()
-            .filter(|inner| inner.lock().ns_id == ns_id)
-            .count();
         let max_idx = ns_count.saturating_sub(1) as isize;
         return Ok(max_idx);
     }
 
     // SHM_INFO: shared memory usage statistics for this namespace.
     if cmd == SHM_INFO {
-        let shm_manager = SHM_MANAGER.lock();
-        let mut used_ids: i32 = 0;
-        let mut shm_tot: u64 = 0;
-        for inner in shm_manager.shmid_inner.values() {
-            let guard = inner.lock();
-            if guard.ns_id == ns_id {
-                used_ids += 1;
-                shm_tot += guard.page_num as u64;
+        let (used_ids, shm_tot) = {
+            let shm_manager = SHM_MANAGER.lock();
+            let mut used_ids: i32 = 0;
+            let mut shm_tot: u64 = 0;
+            for inner in shm_manager.shmid_inner.values() {
+                let guard = inner.lock();
+                if guard.ns_id == ns_id {
+                    used_ids += 1;
+                    shm_tot += guard.page_num as u64;
+                }
             }
-        }
+            (used_ids, shm_tot)
+        };
         let info = ShmInfo {
             used_ids,
             _pad: 0,
@@ -709,23 +712,22 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
     // SHM_STAT: return the shmid_ds for the shmid at the given index,
     // counting only segments in this namespace.
     if cmd == SHM_STAT {
-        let shm_manager = SHM_MANAGER.lock();
-        let result = shm_manager
-            .shmid_inner
-            .iter()
-            .filter(|(_, inner)| inner.lock().ns_id == ns_id)
-            .nth(shmid as usize)
-            .ok_or(AxError::InvalidInput)
-            .and_then(|(actual_shmid, inner)| {
-                let guard = inner.lock();
-                if !has_ipc_permission(&guard.shmid_ds.shm_perm, cred.euid, cred.egid, false) {
-                    return Err(AxError::PermissionDenied);
-                }
-                let ptr = buf.as_ptr();
-                ptr.vm_write(guard.shmid_ds)?;
-                Ok(*actual_shmid as isize)
-            });
-        return result;
+        let (actual_shmid, shmid_ds) = {
+            let shm_manager = SHM_MANAGER.lock();
+            let (actual_shmid, inner) = shm_manager
+                .shmid_inner
+                .iter()
+                .filter(|(_, inner)| inner.lock().ns_id == ns_id)
+                .nth(shmid as usize)
+                .ok_or(AxError::InvalidInput)?;
+            let guard = inner.lock();
+            if !has_ipc_permission(&guard.shmid_ds.shm_perm, cred.euid, cred.egid, false) {
+                return Err(AxError::PermissionDenied);
+            }
+            (*actual_shmid, guard.shmid_ds)
+        };
+        buf.as_ptr().vm_write(shmid_ds)?;
+        return Ok(actual_shmid as isize);
     }
 
     if cmd == IPC_RMID {

@@ -1,7 +1,45 @@
 #[cfg(not(test))]
-pub use ax_kspin::{SpinNoIrq as IrqMutex, SpinNoIrqGuard as IrqMutexGuard};
-#[cfg(not(test))]
 pub use ax_sync::{Mutex as SleepMutex, MutexGuard as SleepMutexGuard};
+#[cfg(not(test))]
+pub use production::{IrqMutex, IrqMutexGuard};
+
+#[cfg(not(test))]
+mod production {
+    /// Filesystem-internal spin mutex for IRQ and completion paths.
+    #[repr(transparent)]
+    pub struct IrqMutex<T: ?Sized>(ax_sync::SpinLock<T>);
+
+    pub type IrqMutexGuard<'a, T> = ax_sync::SpinLockIrqSaveGuard<'a, T>;
+
+    impl<T> IrqMutex<T> {
+        #[track_caller]
+        pub const fn new(value: T) -> Self {
+            Self(ax_sync::SpinLock::new(value))
+        }
+
+        pub fn into_inner(self) -> T {
+            self.0.into_inner()
+        }
+    }
+
+    impl<T: ?Sized> IrqMutex<T> {
+        #[track_caller]
+        pub fn lock(&self) -> IrqMutexGuard<'_, T> {
+            self.0.lock_irqsave()
+        }
+
+        #[track_caller]
+        pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
+            self.0.try_lock_irqsave()
+        }
+    }
+
+    impl<T: Default> Default for IrqMutex<T> {
+        fn default() -> Self {
+            Self::new(T::default())
+        }
+    }
+}
 #[cfg(test)]
 pub use tests::{
     TestMutex as IrqMutex, TestMutex as SleepMutex, TestMutexGuard as IrqMutexGuard,
@@ -21,6 +59,7 @@ mod tests {
     pub struct TestMutexGuard<'a, T: ?Sized>(MutexGuard<'a, T>);
 
     impl<T> TestMutex<T> {
+        #[track_caller]
         pub const fn new(value: T) -> Self {
             Self(Mutex::new(value))
         }
@@ -37,10 +76,12 @@ mod tests {
     }
 
     impl<T: ?Sized> TestMutex<T> {
+        #[track_caller]
         pub fn lock(&self) -> TestMutexGuard<'_, T> {
             TestMutexGuard(self.0.lock().unwrap_or_else(|err| err.into_inner()))
         }
 
+        #[track_caller]
         pub fn try_lock(&self) -> Option<TestMutexGuard<'_, T>> {
             match self.0.try_lock() {
                 Ok(guard) => Some(TestMutexGuard(guard)),

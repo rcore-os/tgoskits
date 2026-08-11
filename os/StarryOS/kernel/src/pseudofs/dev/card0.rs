@@ -45,7 +45,6 @@ use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
 use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time};
-use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::bytes_of;
@@ -82,6 +81,7 @@ use super::drm::{
 use crate::{
     file::{FileLike, add_file_like},
     pseudofs::{DeviceMmap, DeviceOps},
+    sync::Mutex,
 };
 
 pub const DRIVER_NAME: &str = "starry-simpledrm";
@@ -372,7 +372,7 @@ pub struct Card0 {
     /// only one allocation lands in `system_blobs`.
     system_blobs_init: Mutex<()>,
     /// Registered virtio-gpu IRQ action, when the display backend advertises one.
-    irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
+    irq_handle: ax_lazyinit::OnceLock<ax_runtime::hal::irq::IrqHandle>,
 }
 
 impl Card0 {
@@ -397,7 +397,7 @@ impl Card0 {
             system_blobs: Mutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
             system_blobs_init: Mutex::new(()),
-            irq_handle: spin::Once::new(),
+            irq_handle: ax_lazyinit::OnceLock::new(),
         });
         card.register_irq();
         card

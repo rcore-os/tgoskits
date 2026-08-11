@@ -1,7 +1,8 @@
 use alloc::collections::VecDeque;
 
-use ax_kspin::SpinNoIrq;
 use ax_task::IrqNotify;
+
+use crate::sync::SpinLock;
 
 pub(super) const TX_FRAME_BYTES: usize = 256;
 const TX_FRAME_CAPACITY: usize = 16;
@@ -35,13 +36,13 @@ struct TxQueueState {
 
 /// The only runtime TX queue. Lock acquisition is the cross-CPU ordering point.
 pub(super) struct TxIngress {
-    state: SpinNoIrq<TxQueueState>,
+    state: SpinLock<TxQueueState>,
 }
 
 impl TxIngress {
     pub(super) fn new() -> Self {
         Self {
-            state: SpinNoIrq::new(TxQueueState {
+            state: SpinLock::new(TxQueueState {
                 accepting: false,
                 idle: true,
                 frames: VecDeque::with_capacity(TX_FRAME_CAPACITY),
@@ -50,7 +51,7 @@ impl TxIngress {
     }
 
     pub(super) fn try_write(&self, bytes: &[u8], notify: &IrqNotify) -> usize {
-        let accepted = submit_locked(&mut self.state.lock(), bytes);
+        let accepted = submit_locked(&mut self.state.lock_irqsave(), bytes);
         if accepted > 0 {
             notify.notify();
         }
@@ -58,7 +59,7 @@ impl TxIngress {
     }
 
     pub(super) fn try_write_text(&self, bytes: &[u8], notify: &IrqNotify) -> usize {
-        let accepted = submit_text_locked(&mut self.state.lock(), bytes);
+        let accepted = submit_text_locked(&mut self.state.lock_irqsave(), bytes);
         if accepted > 0 {
             notify.notify();
         }
@@ -66,7 +67,7 @@ impl TxIngress {
     }
 
     pub(super) fn try_write_log(&self, bytes: &[u8], notify: &IrqNotify) -> usize {
-        let Some(mut state) = self.state.try_lock() else {
+        let Some(mut state) = self.state.try_lock_irqsave() else {
             return 0;
         };
         let accepted = submit_text_locked(&mut state, bytes);
@@ -82,33 +83,33 @@ impl TxIngress {
     }
 
     pub(super) fn pop(&self) -> Option<TxFrame> {
-        self.state.lock().frames.pop_front()
+        self.state.lock_irqsave().frames.pop_front()
     }
 
     pub(super) fn has_pending(&self) -> bool {
-        !self.state.lock().frames.is_empty()
+        !self.state.lock_irqsave().frames.is_empty()
     }
 
     pub(super) fn start_accepting(&self) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         state.frames.clear();
         state.accepting = true;
         state.idle = true;
     }
 
     pub(super) fn stop_and_discard(&self) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         state.accepting = false;
         state.frames.clear();
         state.idle = true;
     }
 
     pub(super) fn discard_pending(&self) {
-        self.state.lock().frames.clear();
+        self.state.lock_irqsave().frames.clear();
     }
 
     pub(super) fn write_room(&self) -> usize {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         if !state.accepting {
             return 0;
         }
@@ -116,12 +117,12 @@ impl TxIngress {
     }
 
     pub(super) fn is_idle(&self) -> bool {
-        self.state.lock().idle
+        self.state.lock_irqsave().idle
     }
 
     /// Publishes idle under the same lock that producers use to enqueue.
     pub(super) fn mark_idle_if_empty(&self, worker_empty: bool, hardware_idle: bool) -> bool {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         publish_idle_locked(&mut state, worker_empty, hardware_idle)
     }
 }
@@ -269,13 +270,19 @@ mod tests {
     fn discard_pending_drops_queued_frames_without_stopping_ingress() {
         let ingress = TxIngress::new();
         ingress.start_accepting();
-        assert_eq!(submit_locked(&mut ingress.state.lock(), b"stale"), 5);
+        assert_eq!(
+            submit_locked(&mut ingress.state.lock_irqsave(), b"stale"),
+            5
+        );
 
         ingress.discard_pending();
 
         assert!(!ingress.has_pending());
         assert_eq!(ingress.write_room(), TX_FRAME_BYTES * TX_FRAME_CAPACITY);
-        assert_eq!(submit_locked(&mut ingress.state.lock(), b"fresh"), 5);
+        assert_eq!(
+            submit_locked(&mut ingress.state.lock_irqsave(), b"fresh"),
+            5
+        );
         assert_eq!(ingress.pop().unwrap().bytes(), b"fresh");
     }
 

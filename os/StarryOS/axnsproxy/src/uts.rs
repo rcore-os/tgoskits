@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ax_kspin::SpinNoIrq;
+use crate::IrqMutex;
 
 mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
@@ -12,8 +12,8 @@ mod build_info {
 
 /// The initial root UTS namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWUTS)`.
-pub static ROOT_UTS_NS: spin::LazyLock<Arc<SpinNoIrq<UtNamespace>>> =
-    spin::LazyLock::new(|| Arc::new(SpinNoIrq::new(UtNamespace::new_root())));
+pub static ROOT_UTS_NS: ax_lazyinit::LazyLock<Arc<IrqMutex<UtNamespace>>> =
+    ax_lazyinit::LazyLock::new(|| Arc::new(IrqMutex::new(UtNamespace::new_root())));
 
 const fn pad_str(info: &str) -> [c_char; 65] {
     let mut data: [c_char; 65] = [0; 65];

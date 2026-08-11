@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
 use usb_if::{
@@ -351,11 +351,19 @@ impl Device {
         let mut data = vec![0u8; 8];
 
         // DMA 传输
-        self.control_endpoint_mut()
+        let actual = self
+            .control_endpoint_mut()
             .get_descriptor(DescriptorType::DEVICE, 0, 0, data.as_mut_slice())
             .await?;
+        if actual != data.len() {
+            return Err(anyhow!(
+                "short device descriptor header: expected {} bytes, got {actual}",
+                data.len()
+            )
+            .into());
+        }
 
-        let desc = unsafe { *(data.as_mut_slice().as_ptr() as *const DeviceDescriptorBase) };
+        let desc = unsafe { (data.as_ptr() as *const DeviceDescriptorBase).read_unaligned() };
 
         Ok(desc)
     }
@@ -603,9 +611,8 @@ impl Device {
             EndpointType::Isochronous => {
                 match self.port_speed {
                     Speed::High | Speed::SuperSpeed | Speed::SuperSpeedPlus => {
-                        // HighSpeed, SuperSpeed, SuperSpeedPlus ISO 端点
-                        // Interval = max(1, min(16, bInterval))
-                        let interval = binterval.clamp(1, 16);
+                        // HS/SS bInterval is one-based; xHCI Interval is zero-based.
+                        let interval = binterval.clamp(1, 16) - 1;
                         debug!(
                             "ISO endpoint HS/SS: bInterval={} -> XHCI interval={}",
                             binterval, interval
@@ -613,53 +620,33 @@ impl Device {
                         interval
                     }
                     _ => {
-                        // FullSpeed/LowSpeed ISO 端点
-                        // Interval = max(1, min(16, floor(log2(bInterval)) + 3))
-                        if binterval == 0 {
-                            1
-                        } else {
-                            // 计算 floor(log2(bInterval))
-                            let log2_binterval = 31 - (binterval as u32).leading_zeros() as u8 - 1;
-                            let interval = (log2_binterval + 3).clamp(1, 16);
-                            debug!(
-                                "ISO endpoint FS/LS: bInterval={} -> log2={} -> XHCI interval={}",
-                                binterval, log2_binterval, interval
-                            );
-                            interval
-                        }
-                    }
-                }
-            }
-            EndpointType::Interrupt => {
-                match self.port_speed {
-                    Speed::High | Speed::SuperSpeed | Speed::SuperSpeedPlus => {
-                        // HighSpeed, SuperSpeed, SuperSpeedPlus 中断端点
-                        // Interval = max(1, min(16, bInterval))
-                        let interval = binterval.clamp(1, 16);
+                        let interval = binterval.max(1).ilog2() as u8 + 3;
                         debug!(
-                            "INT endpoint HS/SS: bInterval={} -> XHCI interval={}",
+                            "ISO endpoint FS/LS: bInterval={} -> XHCI interval={}",
                             binterval, interval
                         );
                         interval
                     }
-                    _ => {
-                        // FullSpeed/LowSpeed 中断端点
-                        // Interval = max(1, min(16, floor(log2(bInterval)) + 3))
-                        if binterval == 0 {
-                            1
-                        } else {
-                            // 计算 floor(log2(bInterval))
-                            let log2_binterval = 31 - (binterval as u32).leading_zeros() as u8 - 1;
-                            let interval = (log2_binterval + 3).clamp(1, 16);
-                            debug!(
-                                "INT endpoint FS/LS: bInterval={} -> log2={} -> XHCI interval={}",
-                                binterval, log2_binterval, interval
-                            );
-                            interval
-                        }
-                    }
                 }
             }
+            EndpointType::Interrupt => match self.port_speed {
+                Speed::High | Speed::SuperSpeed | Speed::SuperSpeedPlus => {
+                    let interval = binterval.clamp(1, 16) - 1;
+                    debug!(
+                        "INT endpoint HS/SS: bInterval={} -> XHCI interval={}",
+                        binterval, interval
+                    );
+                    interval
+                }
+                _ => {
+                    let interval = binterval.max(1).ilog2() as u8 + 3;
+                    debug!(
+                        "INT endpoint FS/LS: bInterval={} -> XHCI interval={}",
+                        binterval, interval
+                    );
+                    interval
+                }
+            },
             _ => {
                 // 控制和批量端点不使用 interval
                 default

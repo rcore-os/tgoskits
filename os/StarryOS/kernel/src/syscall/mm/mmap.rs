@@ -699,7 +699,7 @@ struct MremapMove<'a> {
 
 fn mremap_move(
     aspace: &mut crate::mm::AddrSpace,
-    aspace_ref: &Arc<ax_sync::Mutex<crate::mm::AddrSpace>>,
+    aspace_ref: &Arc<crate::sync::Mutex<crate::mm::AddrSpace>>,
     move_args: MremapMove<'_>,
 ) -> AxResult {
     let MremapMove {
@@ -1023,9 +1023,10 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
     // committed working set grows until OOM. DONTNEED_LOCKED behaves like
     // DONTNEED here (we do not honor mlock).
     let start_va = VirtAddr::from(addr);
-    match advice as u32 {
+    let remove_frags = match advice as u32 {
         MADV_DONTNEED | MADV_DONTNEED_LOCKED => {
             aspace.discard_range(start_va, align_up_4k(length))?;
+            None
         }
         MADV_FREE => {
             // Linux madvise_free_single_vma (mm/madvise.c:813): MADV_FREE may
@@ -1039,6 +1040,7 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
                 }
             }
             aspace.discard_range(start_va, length)?;
+            None
         }
         MADV_REMOVE => {
             // Linux madvise_remove (mm/madvise.c:1000): the range must be a
@@ -1054,14 +1056,31 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
                     _ => return Err(AxError::InvalidInput),
                 }
             }
-            for (fs, fl, _flags, backend) in frags {
-                if let Backend::File(fb) = &backend {
-                    let offset = fb.file_offset_at(fs);
-                    crate::file::memfd::punch_shared_file_backend(&backend, offset, fl)?;
-                }
-            }
+            Some(
+                frags
+                    .into_iter()
+                    .filter_map(|(fs, fl, _flags, backend)| {
+                        let Backend::File(fb) = &backend else {
+                            return None;
+                        };
+                        Some((backend.clone(), fb.file_offset_at(fs), fl))
+                    })
+                    .collect::<Vec<_>>(),
+            )
         }
-        _ => {}
+        _ => None,
+    };
+
+    // Keep the backing handles alive, but release the address-space lock before
+    // taking a memfd's truncate/seal lock. This follows Linux madvise_remove(),
+    // which pins the file and drops mmap_lock before vfs_fallocate() because the
+    // filesystem may take i_rwsem. User writes take the inverse order when they
+    // fault in source pages, so retaining `aspace` here would deadlock.
+    drop(aspace);
+    if let Some(frags) = remove_frags {
+        for (backend, offset, len) in frags {
+            crate::file::memfd::punch_shared_file_backend(&backend, offset, len)?;
+        }
     }
 
     Ok(0)

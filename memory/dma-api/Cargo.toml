@@ -14,7 +14,7 @@ axtest = ["dep:axtest"]
 
 [dependencies]
 axtest = { workspace = true, optional = true }
-ax-kspin.workspace = true
+ax-sync.workspace = true
 cfg-if.workspace = true
 derive_more.workspace = true
 log.workspace = true
@@ -22,7 +22,7 @@ mbarrier = "0.1"
 thiserror.workspace = true
 
 [dev-dependencies]
-ax-kspin = { workspace = true, features = ["host-test"] }
+ax-sync = { workspace = true, features = ["host-test"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"

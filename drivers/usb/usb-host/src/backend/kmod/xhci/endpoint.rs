@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use dma_api::DmaDirection;
 use mbarrier::mb;
 use usb_if::{
@@ -79,11 +79,17 @@ struct SubmittedTd {
     cancelled: bool,
 }
 
-#[derive(Clone)]
 enum SubmittedTdKind {
     Normal { completion_trb: TransferId },
     Control(ControlTd),
     Iso { packets: Vec<IsoPacketTd> },
+}
+
+#[derive(Clone, Copy)]
+enum ReclaimTarget {
+    Normal(TransferId),
+    Control(ControlTd),
+    Iso,
 }
 
 #[derive(Clone, Copy)]
@@ -170,7 +176,8 @@ impl Endpoint {
     fn doorbell(&mut self) {
         let mut bell = doorbell::Register::default();
         bell.set_doorbell_target(self.dci.into());
-        self.bell.lock().ring(bell);
+        // SAFETY: endpoint doorbell submission is serialized by the xHCI path.
+        unsafe { self.bell.lock_raw() }.ring(bell);
     }
 
     pub fn ring(&self) -> &SendRing<TransferEvent> {
@@ -239,7 +246,7 @@ impl Endpoint {
         event_trb: TransferId,
         event: TransferEvent,
     ) -> Result<Transfer, TransferError> {
-        let submitted = self.inflight.remove(&request_id).ok_or_else(|| {
+        let submitted = self.remove_request(request_id).ok_or_else(|| {
             warn!(
                 "xhci: completion for missing request dci={} request_id={} event_trb={:#x}",
                 self.dci.raw(),
@@ -248,6 +255,22 @@ impl Endpoint {
             );
             TransferError::InvalidEndpoint
         })?;
+
+        if submitted.cancelled {
+            return Err(TransferError::Cancelled);
+        }
+
+        if matches!(event.completion_code(), Ok(CompletionCode::StallError)) {
+            self.halted.store(true, Ordering::Release);
+        }
+        if !matches!(submitted.kind, SubmittedTdKind::Iso { .. }) {
+            self.validate_completion_code(event, &submitted.transfer)?;
+        }
+        self.transfer_from_completion(submitted, event_trb, event)
+    }
+
+    fn remove_request(&mut self, request_id: EndpointRequestId) -> Option<SubmittedTd> {
+        let submitted = self.inflight.remove(&request_id)?;
         self.outstanding_trbs = self.outstanding_trbs.saturating_sub(submitted.trb_count);
         match &submitted.kind {
             SubmittedTdKind::Normal { completion_trb } => {
@@ -264,18 +287,7 @@ impl Endpoint {
                 }
             }
         }
-
-        if submitted.cancelled {
-            return Err(TransferError::Cancelled);
-        }
-
-        if matches!(event.completion_code(), Ok(CompletionCode::StallError)) {
-            self.halted.store(true, Ordering::Release);
-        }
-        if !matches!(submitted.kind, SubmittedTdKind::Iso { .. }) {
-            self.validate_completion_code(event, &submitted.transfer)?;
-        }
-        self.transfer_from_completion(submitted, event_trb, event)
+        Some(submitted)
     }
 
     fn transfer_from_completion(
@@ -628,9 +640,7 @@ impl EndpointOp for Endpoint {
 
         let mut data_bus_addr = 0;
         if transfer.buffer_len() > 0 {
-            if matches!(transfer.direction, Direction::Out) {
-                transfer.prepare_for_device_all();
-            }
+            transfer.prepare_for_device_all();
             data_bus_addr = transfer.dma_addr();
             let buffer_end = data_bus_addr + transfer.buffer_len() as u64;
             if data_bus_addr > self.kernel.dma_mask() || buffer_end > self.kernel.dma_mask() {
@@ -784,19 +794,23 @@ impl EndpointOp for Endpoint {
         id: RequestId,
     ) -> Option<Result<TransferCompletion, TransferError>> {
         let request_id = Self::private_request_id(id);
-        let kind = self.inflight.get(&request_id)?.kind.clone();
-        match kind {
-            SubmittedTdKind::Normal { completion_trb } => {
+        let target = match &self.inflight.get(&request_id)?.kind {
+            SubmittedTdKind::Normal { completion_trb } => ReclaimTarget::Normal(*completion_trb),
+            SubmittedTdKind::Control(control_td) => ReclaimTarget::Control(*control_td),
+            SubmittedTdKind::Iso { .. } => ReclaimTarget::Iso,
+        };
+        match target {
+            ReclaimTarget::Normal(completion_trb) => {
                 let event = self.ring.get_finished(completion_trb.0)?;
                 Some(
                     self.complete_request(request_id, completion_trb, event)
                         .map(|transfer| transfer_to_completion(id, transfer)),
                 )
             }
-            SubmittedTdKind::Control(control_td) => {
+            ReclaimTarget::Control(control_td) => {
                 self.reclaim_control_request(id, request_id, control_td)
             }
-            SubmittedTdKind::Iso { .. } => self.reclaim_iso_request(id, request_id),
+            ReclaimTarget::Iso => self.reclaim_iso_request(id, request_id),
         }
     }
 
@@ -828,6 +842,17 @@ impl EndpointOp for Endpoint {
             .ok_or(TransferError::InvalidEndpoint)?;
         submitted.cancelled = true;
         Ok(())
+    }
+
+    fn retire_request_after_quiesce(&mut self, id: RequestId) -> Result<(), TransferError> {
+        let request_id = Self::private_request_id(id);
+        self.remove_request(request_id)
+            .map(drop)
+            .ok_or(TransferError::InvalidEndpoint)
+    }
+
+    fn supports_retire_after_quiesce(&self) -> bool {
+        true
     }
 
     fn reset(&mut self) -> EndpointResetFuture {
@@ -958,5 +983,149 @@ impl EndpointDescriptorExt for EndpointDescriptor {
                 usb_if::transfer::Direction::In => xhci::context::EndpointType::InterruptIn,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{
+        alloc::{alloc_zeroed, dealloc},
+        sync::Arc,
+        vec,
+        vec::Vec,
+    };
+    use core::{
+        alloc::Layout,
+        num::NonZeroUsize,
+        ptr::NonNull,
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
+    };
+
+    use ax_sync::{SpinLock as Mutex, SpinRwLock as RwLock};
+    use dma_api::{DmaAllocHandle, DmaConstraints, DmaError, DmaMapHandle, DmaOp};
+    use usb_if::{endpoint::TransferRequest, err::TransferError};
+
+    use super::*;
+    use crate::{backend::kmod::xhci::reg::XhciRegisters, osal::KernelOp};
+
+    struct TestKernel;
+
+    static TEST_DMA_ADDR: AtomicU64 = AtomicU64::new(0x1000);
+    static ACTIVE_STREAMING_MAPPINGS: AtomicUsize = AtomicUsize::new(0);
+
+    impl DmaOp for TestKernel {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            // SAFETY: The test kernel models contiguous DMA with the same heap-backed
+            // allocation used for coherent DMA below.
+            unsafe { self.alloc_coherent(constraints, layout) }
+        }
+
+        unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+            // SAFETY: Contiguous handles are allocated by `alloc_coherent` above.
+            unsafe { self.dealloc_coherent(handle) }
+                .expect("test coherent DMA release must succeed")
+        }
+
+        unsafe fn alloc_coherent(
+            &self,
+            constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            // SAFETY: Unit tests pass valid layouts, and the allocation remains owned by
+            // the returned DMA handle until `dealloc_coherent` consumes it.
+            let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+            let align = constraints.align.max(layout.align()).max(1) as u64;
+            let size = layout.size().max(1) as u64;
+            let current = TEST_DMA_ADDR.fetch_add(size + align, AtomicOrdering::Relaxed);
+            let dma_addr = (current + align - 1) & !(align - 1);
+            // SAFETY: `ptr` and `layout` describe the allocation above. The fake bus
+            // address is deterministic and never reaches hardware.
+            Some(unsafe { DmaAllocHandle::new(ptr, dma_addr.into(), layout) })
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
+            // SAFETY: The handle was allocated by `alloc_zeroed` with this exact layout.
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+            Ok(())
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            constraints: DmaConstraints,
+            addr: NonNull<u8>,
+            size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            let layout = Layout::from_size_align(size.get(), 1)?;
+            let align = constraints.align.max(1) as u64;
+            let current =
+                TEST_DMA_ADDR.fetch_add(size.get() as u64 + align, AtomicOrdering::Relaxed);
+            let dma_addr = (current + align - 1) & !(align - 1);
+            // SAFETY: The mapped buffer remains owned by the test until the request is
+            // retired, and the mapping is never submitted to real hardware.
+            let handle = unsafe { DmaMapHandle::new(addr, dma_addr.into(), layout, None) };
+            ACTIVE_STREAMING_MAPPINGS.fetch_add(1, AtomicOrdering::Relaxed);
+            Ok(handle)
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {
+            ACTIVE_STREAMING_MAPPINGS.fetch_sub(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    impl KernelOp for TestKernel {
+        fn delay(&self, _duration: core::time::Duration) {}
+    }
+
+    static TEST_KERNEL: TestKernel = TestKernel;
+
+    fn test_endpoint() -> (Vec<u32>, Endpoint) {
+        let mut mmio = vec![0u32; 4096];
+        // The xHCI accessor requires a doorbell entry for slot one and a port array.
+        mmio[1] = 2 | (1 << 24);
+        let mmio_base = NonNull::new(mmio.as_mut_ptr().cast::<u8>()).unwrap();
+        let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
+        let slot_id = SlotId::from(1);
+        let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
+        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let command_ring =
+            CommandRing::new(DmaDirection::Bidirectional, &kernel, registers).unwrap();
+        let endpoint = Endpoint::new(slot_id, Dci::from(2), &kernel, bell, command_ring).unwrap();
+        (mmio, endpoint)
+    }
+
+    #[test]
+    fn cancelled_iso_request_is_retired_exactly_once_after_endpoint_quiesce() {
+        let (_mmio, mut endpoint) = test_endpoint();
+        let payload = [0u8; 128];
+        let request_id = endpoint
+            .submit_request(TransferRequest::iso_out(&payload, &[64, 64]))
+            .unwrap();
+
+        assert_eq!(endpoint.inflight.len(), 1);
+        assert_eq!(endpoint.trb_to_request.len(), 2);
+        assert_eq!(endpoint.outstanding_trbs, 2);
+        assert_eq!(ACTIVE_STREAMING_MAPPINGS.load(AtomicOrdering::Relaxed), 1);
+
+        endpoint.cancel_request(request_id).unwrap();
+        endpoint.retire_request_after_quiesce(request_id).unwrap();
+
+        assert!(endpoint.inflight.is_empty());
+        assert!(endpoint.trb_to_request.is_empty());
+        assert_eq!(endpoint.outstanding_trbs, 0);
+        assert_eq!(ACTIVE_STREAMING_MAPPINGS.load(AtomicOrdering::Relaxed), 0);
+        assert!(endpoint.reclaim_request(request_id).is_none());
+        assert!(matches!(
+            endpoint.retire_request_after_quiesce(request_id),
+            Err(TransferError::InvalidEndpoint)
+        ));
     }
 }

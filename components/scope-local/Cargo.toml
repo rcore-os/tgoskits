@@ -10,16 +10,16 @@ license = "Apache-2.0"
 
 [features]
 axtest = ["dep:axtest"]
+host-test = ["ax-sync/host-test"]
 
 [dependencies]
-ax-kernel-guard.workspace = true
+ax-lazyinit.workspace = true
 ax-percpu.workspace = true
+ax-sync.workspace = true
 axtest = { workspace = true, optional = true }
-spin = { workspace = true }
 
 [dev-dependencies]
-ax-crate-interface.workspace = true
-ax-kernel-guard = { workspace = true, features = ["preempt"] }
+ax-sync.workspace = true
 ctor = "0.6"
 cpu-local = { workspace = true, features = ["host-test"] }
 ax-percpu = { workspace = true, features = ["host-test"] }

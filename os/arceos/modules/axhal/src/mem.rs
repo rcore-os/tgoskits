@@ -1,5 +1,6 @@
 //! Physical memory management.
 
+use ax_lazyinit::LazyLock;
 pub use ax_memory_addr::{
     MemoryAddr, PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange, pa, va,
 };
@@ -12,7 +13,6 @@ pub use ax_plat::mem::{
 };
 use ax_plat::mem::{check_sorted_ranges_overlap, ranges_difference};
 use heapless::Vec;
-use spin::LazyLock;
 
 #[allow(unused_imports)]
 const MAX_REGIONS: usize = 128;

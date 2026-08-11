@@ -366,10 +366,10 @@ jobs:
             container_image: base
             fetch_depth: full
             upload_xtask_bin_artifact: true
-          - name: Run spin-lint
+          - name: Run lock-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask spin-lint
+            command: cargo xtask lock-lint
             cache_key: ""
             container_image: base
             fetch_depth: "1"
@@ -768,6 +768,33 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
             command: cargo xtask starry test board --board orangepi-5-plus
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test OrangePi 5 Plus robot native StarryOS
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            timeout_minutes: 15
+            command: cargo xtask starry test board --board orangepi-5-plus-robot
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test OrangePi 5 Plus robot AxVisor StarryOS guest
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            timeout_minutes: 15
+            command: cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test OrangePi 5 Plus robot AxVisor Linux guest
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            timeout_minutes: 15
+            command: cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os

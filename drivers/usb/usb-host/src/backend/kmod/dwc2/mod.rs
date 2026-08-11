@@ -6,7 +6,7 @@ use core::{
     time::Duration,
 };
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use dma_api::CoherentArray;
 use futures::{FutureExt, future::BoxFuture, task::AtomicWaker};
 use mbarrier::mb;
@@ -2090,7 +2090,8 @@ impl Dwc2Endpoint {
 
         self.stats.record_stage();
         self.channel_completions.clear(self.channel);
-        let _guard = self.channel_gate.lock();
+        // SAFETY: channel allocation excludes local DWC2 event re-entry.
+        let _guard = unsafe { self.channel_gate.lock_raw() };
         self.regs.channel_write32(self.channel, HCSPLT, 0);
         self.regs
             .channel_write32(self.channel, HCINT, HCINT_ALL_W1C);
@@ -2303,7 +2304,8 @@ impl crate::backend::ty::ep::EndpointOp for Dwc2Endpoint {
         let result = if self.active.is_some() || self.completed.is_some() {
             Err(TransferError::QueueFull)
         } else {
-            let _guard = self.channel_gate.lock();
+            // SAFETY: channel teardown excludes local DWC2 event re-entry.
+            let _guard = unsafe { self.channel_gate.lock_raw() };
             self.channel_completions.clear(self.channel);
             self.regs
                 .channel_write32(self.channel, HCINT, HCINT_ALL_W1C);

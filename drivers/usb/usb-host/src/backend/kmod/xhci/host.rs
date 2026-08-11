@@ -6,7 +6,7 @@ use ::xhci::{
     registers::doorbell,
     ring::trb::{command, event::CommandCompletion},
 };
-use ax_kspin::SpinRwLock as RwLock;
+use ax_sync::SpinRwLock as RwLock;
 use dma_api::DmaDirection;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;

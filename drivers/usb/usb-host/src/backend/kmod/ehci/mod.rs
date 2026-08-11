@@ -6,7 +6,7 @@ use core::{
     time::Duration,
 };
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use dma_api::CoherentBox;
 use futures::{FutureExt, future::BoxFuture, task::AtomicWaker};
 use mbarrier::{mb, wmb};
@@ -367,11 +367,13 @@ impl AsyncSchedule {
     }
 
     fn head_addr(&self) -> u32 {
-        self.0.lock().head.dma_addr().as_u64() as u32
+        // SAFETY: EHCI schedule access is serialized by the controller path.
+        unsafe { self.0.lock_raw() }.head.dma_addr().as_u64() as u32
     }
 
     fn attach(&self, qh: &mut CoherentBox<QueueHead>) -> Result<()> {
-        let mut inner = self.0.lock();
+        // SAFETY: EHCI schedule mutation excludes local controller re-entry.
+        let mut inner = unsafe { self.0.lock_raw() };
         let qh_addr = qh.dma_addr().as_u64() as u32;
         if inner.active_qh.is_some_and(|active| active != qh_addr) {
             return Err(USBError::TransferError(TransferError::QueueFull));
@@ -390,7 +392,8 @@ impl AsyncSchedule {
     }
 
     fn detach(&self, qh_addr: u32) {
-        let mut inner = self.0.lock();
+        // SAFETY: EHCI schedule mutation excludes local controller re-entry.
+        let mut inner = unsafe { self.0.lock_raw() };
         if inner.active_qh != Some(qh_addr) {
             return;
         }

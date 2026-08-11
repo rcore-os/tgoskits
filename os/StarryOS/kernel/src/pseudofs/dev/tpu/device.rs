@@ -31,7 +31,6 @@ use core::{
     time::Duration,
 };
 
-use ax_kspin::SpinNoIrq;
 use ax_memory_addr::PhysAddr;
 use ax_task::WaitQueue;
 use sg2002_tpu::{
@@ -54,6 +53,7 @@ use crate::{
         DeviceOps,
         dev::{IrqRegistration, request_shared_disabled},
     },
+    sync::IrqMutex,
 };
 
 /// 一个 TPU 推理任务（OS glue 侧）。
@@ -75,9 +75,9 @@ struct TpuTask {
 }
 
 /// 待执行任务队列（对应 Linux `task_list`）。
-static TASK_LIST: SpinNoIrq<VecDeque<TpuTask>> = SpinNoIrq::new(VecDeque::new());
+static TASK_LIST: IrqMutex<VecDeque<TpuTask>> = IrqMutex::new(VecDeque::new());
 /// 已完成任务队列（对应 Linux `done_list`）。
-static DONE_LIST: SpinNoIrq<VecDeque<TpuTask>> = SpinNoIrq::new(VecDeque::new());
+static DONE_LIST: IrqMutex<VecDeque<TpuTask>> = IrqMutex::new(VecDeque::new());
 /// `DONE_LIST` 上限。每个滞留完成项持有一个 `Arc<IonBuffer>`，提交后不 wait
 /// 的线程会令其无限累积；超限丢弃最旧项以释放 buffer（对应原驱动
 /// `DONE_LIST_MAX`）。
@@ -218,7 +218,7 @@ fn register_tpu_irq(
             warn!("[TPU] TDMA IRQ {irq:?} reports error status");
         }
         // 唤醒在 IRQ_WQ 上睡眠的 worker。中断上下文不重调度（resched=false），
-        // 对齐 kpu.rs 的做法；WaitQueue 由 SpinNoIrq 守护，IRQ 内 notify 安全。
+        // 对齐 kpu.rs 的做法；WaitQueue 由 IrqMutex 守护，IRQ 内 notify 安全。
         IRQ_WQ.notify_all(false);
         ax_runtime::hal::irq::IrqReturn::Handled
     }) {

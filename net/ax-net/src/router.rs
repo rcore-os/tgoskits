@@ -49,8 +49,7 @@ use core::{
 };
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
-use ax_kspin::SpinRwLock as RwLock;
-use ax_sync::Mutex;
+use ax_sync::{Mutex, SpinRwLock as RwLock};
 use ax_task::WaitQueue;
 use axpoll::IoEvents;
 use smoltcp::{
@@ -977,18 +976,21 @@ fn dispatch_unicast_packet(
     packet: &[u8],
     sockets: &mut SocketSet<'_>,
 ) -> bool {
-    let routes = table.read();
-    let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
-        debug!(
-            "No route found for source {} destination {}",
-            src_addr, dst_addr
-        );
-        // The packet is dropped at the IP layer before reaching any device's
-        // ndo_start_xmit.  Linux accounts this via the system-wide SNMP counter
-        // IPSTATS_MIB_OUTNOROUTES (IpOutNoRoutes in /proc/net/snmp), never via
-        // per-device tx_dropped.  Once system-level SNMP counters are available
-        // this should update IpOutNoRoutes instead.
-        return false;
+    let route = {
+        let routes = table.read();
+        let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
+            debug!(
+                "No route found for source {} destination {}",
+                src_addr, dst_addr
+            );
+            // The packet is dropped at the IP layer before reaching any device's
+            // ndo_start_xmit.  Linux accounts this via the system-wide SNMP counter
+            // IPSTATS_MIB_OUTNOROUTES (IpOutNoRoutes in /proc/net/snmp), never via
+            // per-device tx_dropped.  Once system-level SNMP counters are available
+            // this should update IpOutNoRoutes instead.
+            return false;
+        };
+        route
     };
 
     let dev = &devices[route.dev];

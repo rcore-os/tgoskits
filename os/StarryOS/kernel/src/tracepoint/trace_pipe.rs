@@ -1,11 +1,10 @@
 use core::{future::poll_fn, task::Poll};
 
-use ax_sync::Mutex;
 use ax_task::future::{block_on, interruptible};
 use axfs_ng_vfs::VfsResult;
 use ktracepoint::TracePipeOps;
 
-use crate::pseudofs::DirectRwFsFileOps;
+use crate::{pseudofs::DirectRwFsFileOps, sync::Mutex};
 
 /// File representing the trace pipe.
 ///

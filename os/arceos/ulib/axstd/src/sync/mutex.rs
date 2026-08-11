@@ -1,8 +1,6 @@
-//! A naïve sleeping mutex.
+//! A non-poisoning sleeping mutex.
 
-use ax_api::task::AxRawMutex;
-
-/// An alias of [`lock_api::Mutex`].
-pub type Mutex<T> = lock_api::Mutex<AxRawMutex, T>;
-/// An alias of [`lock_api::MutexGuard`].
-pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, AxRawMutex, T>;
+/// An alias of [`ax_runtime::sync::Mutex`].
+pub type Mutex<T> = ax_runtime::sync::Mutex<T>;
+/// An alias of [`ax_runtime::sync::MutexGuard`].
+pub type MutexGuard<'a, T> = ax_runtime::sync::MutexGuard<'a, T>;

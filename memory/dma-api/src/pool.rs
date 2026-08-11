@@ -4,7 +4,7 @@ use alloc::{
 };
 use core::ops::{Deref, DerefMut};
 
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_sync::SpinLock as Mutex;
 
 use crate::{ContiguousArray, DeviceDma, DmaDirection, DmaError};
 
@@ -46,7 +46,7 @@ impl Drop for ContiguousBuffer {
         if let Some(data) = self.data.take()
             && let Some(pool) = self.pool.upgrade()
         {
-            let mut inner = pool.lock();
+            let mut inner = pool.lock_irqsave();
             inner.dealloc(data);
         }
     }
@@ -95,7 +95,7 @@ impl ContiguousBufferPool {
         let config;
         let dev;
         {
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner.lock_irqsave();
             if let Some(data) = inner.alloc() {
                 return Ok(ContiguousBuffer {
                     data: Some(data),

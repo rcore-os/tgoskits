@@ -44,9 +44,10 @@
 use core::sync::atomic::Ordering;
 
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
-use ax_kernel_guard::NoPreemptIrqSave;
 use ax_task::IrqNotify;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
+
+use crate::sync::PreemptIrqSaveGuard;
 
 fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
     ax_hal::pmu::irq()
@@ -243,7 +244,7 @@ pub fn register(n: usize, slot: SampleSlot) {
     if n > MAX_COUNTER {
         return;
     }
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     // SAFETY: preemption and local IRQs are disabled by `_guard`, so we hold
     // exclusive access to this CPU's `REGISTRY` for the critical section.
     unsafe { with_registry_mut(|registry| registry[n] = Some(slot)) };
@@ -258,7 +259,7 @@ pub fn unregister(n: usize) {
     if n > MAX_COUNTER {
         return;
     }
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     // SAFETY: see `register`.
     unsafe { with_registry_mut(|registry| registry[n] = None) };
 }
@@ -632,7 +633,7 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
 /// duration of the call (the event holds the backing `Arc` while the slot/ring is
 /// registered).
 pub unsafe fn ring_write_process(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     // SAFETY: caller upholds the ring liveness contract; IRQs are masked so the
     // overflow handler cannot race this write on the current core.
     unsafe { ring_write(ring_vaddr, ring_len, record) };

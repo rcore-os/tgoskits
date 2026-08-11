@@ -9,11 +9,13 @@ use core::{
     time::Duration,
 };
 
-use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
+use ax_runtime::sync::SpinLock;
 use weak_map::StrongMap;
 
 use crate::{Pid, ProcessGroup, Session};
+
+const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
 
 #[derive(Default)]
 pub(crate) struct ThreadGroup {
@@ -67,12 +69,12 @@ pub enum ThreadExit {
 pub struct Process {
     pid: Pid,
     is_child_subreaper: AtomicBool,
-    pub(crate) tg: SpinNoIrq<ThreadGroup>,
+    pub(crate) tg: SpinLock<ThreadGroup>,
 
-    children: SpinNoIrq<StrongMap<Pid, Arc<Process>>>,
-    parent: SpinNoIrq<Weak<Process>>,
+    children: SpinLock<StrongMap<Pid, Arc<Process>>>,
+    parent: SpinLock<Weak<Process>>,
 
-    group: SpinNoIrq<Arc<ProcessGroup>>,
+    group: SpinLock<Arc<ProcessGroup>>,
 }
 
 impl Process {
@@ -109,12 +111,12 @@ impl Process {
 impl Process {
     /// The parent [`Process`].
     pub fn parent(&self) -> Option<Arc<Process>> {
-        self.parent.lock().upgrade()
+        self.parent.lock_irqsave().upgrade()
     }
 
     /// The child [`Process`]es.
     pub fn children(&self) -> Vec<Arc<Process>> {
-        self.children.lock().values().cloned().collect()
+        self.children.lock_irqsave().values().cloned().collect()
     }
 }
 
@@ -122,15 +124,15 @@ impl Process {
 impl Process {
     /// The [`ProcessGroup`] that the [`Process`] belongs to.
     pub fn group(&self) -> Arc<ProcessGroup> {
-        self.group.lock().clone()
+        self.group.lock_irqsave().clone()
     }
 
     fn set_group(self: &Arc<Self>, group: &Arc<ProcessGroup>) {
-        let mut self_group = self.group.lock();
+        let mut self_group = self.group.lock_irqsave();
 
-        self_group.processes.lock().remove(&self.pid);
+        self_group.processes.lock_irqsave().remove(&self.pid);
 
-        group.processes.lock().insert(self.pid, self);
+        group.processes.lock_irqsave().insert(self.pid, self);
 
         *self_group = group.clone();
     }
@@ -149,7 +151,7 @@ impl Process {
     ///
     /// Checking [`Session`] conflicts is unnecessary.
     pub fn create_session(self: &Arc<Self>) -> Option<(Arc<Session>, Arc<ProcessGroup>)> {
-        if self.group.lock().session.sid() == self.pid {
+        if self.group.lock_irqsave().session.sid() == self.pid {
             return None;
         }
 
@@ -170,11 +172,11 @@ impl Process {
     /// The caller has to ensure that the new [`ProcessGroup`] does not conflict
     /// with any existing [`ProcessGroup`].
     pub fn create_group(self: &Arc<Self>) -> Option<Arc<ProcessGroup>> {
-        if self.group.lock().pgid() == self.pid {
+        if self.group.lock_irqsave().pgid() == self.pid {
             return None;
         }
 
-        let new_group = ProcessGroup::get_or_create(self.pid, &self.group.lock().session);
+        let new_group = ProcessGroup::get_or_create(self.pid, &self.group.lock_irqsave().session);
         self.set_group(&new_group);
 
         Some(new_group)
@@ -188,11 +190,11 @@ impl Process {
     /// If the [`Process`] is already in the specified [`ProcessGroup`], this
     /// method does nothing and returns `true`.
     pub fn move_to_group(self: &Arc<Self>, group: &Arc<ProcessGroup>) -> bool {
-        if Arc::ptr_eq(&self.group.lock(), group) {
+        if Arc::ptr_eq(&self.group.lock_irqsave(), group) {
             return true;
         }
 
-        if !Arc::ptr_eq(&self.group.lock().session, &group.session) {
+        if !Arc::ptr_eq(&self.group.lock_irqsave().session, &group.session) {
             return false;
         }
 
@@ -205,7 +207,7 @@ impl Process {
 impl Process {
     /// Adds a thread to this [`Process`] with the given thread ID.
     pub fn add_thread(self: &Arc<Self>, tid: Pid) {
-        self.tg.lock().threads.insert(tid);
+        self.tg.lock_irqsave().threads.insert(tid);
     }
 
     /// Removes a thread from this [`Process`], records its final CPU time, and
@@ -221,7 +223,7 @@ impl Process {
         exit_code: i32,
         cpu_time: ProcessCpuTime,
     ) -> ThreadExit {
-        let mut tg = self.tg.lock();
+        let mut tg = self.tg.lock_irqsave();
         if !tg.threads.remove(&tid) {
             return ThreadExit::AlreadyExited;
         }
@@ -238,7 +240,7 @@ impl Process {
 
     /// Get all threads in this [`Process`].
     pub fn threads(&self) -> Vec<Pid> {
-        self.tg.lock().threads.iter().cloned().collect()
+        self.tg.lock_irqsave().threads.iter().cloned().collect()
     }
 
     /// Renames a thread in the thread group.
@@ -249,14 +251,14 @@ impl Process {
     /// `new_tid` atomically inside the thread-group lock so there is no
     /// instant in which the caller is unrepresented in the group.
     pub fn rename_thread(self: &Arc<Self>, old_tid: Pid, new_tid: Pid) {
-        let mut tg = self.tg.lock();
+        let mut tg = self.tg.lock_irqsave();
         tg.threads.remove(&old_tid);
         tg.threads.insert(new_tid);
     }
 
     /// Returns `true` if the [`Process`] is group exited.
     pub fn is_group_exited(&self) -> bool {
-        self.tg.lock().group_exited
+        self.tg.lock_irqsave().group_exited
     }
 
     /// Starts a process-wide exit if one is not already in progress.
@@ -265,7 +267,7 @@ impl Process {
     /// state was first published. Later exiting threads must not overwrite the
     /// recorded process exit code.
     pub fn start_group_exit(&self, exit_code: i32) -> Option<Vec<Pid>> {
-        let mut tg = self.tg.lock();
+        let mut tg = self.tg.lock_irqsave();
         if tg.group_exited {
             return None;
         }
@@ -276,12 +278,12 @@ impl Process {
 
     /// Marks the [`Process`] as group exited.
     pub fn group_exit(&self) {
-        self.tg.lock().group_exited = true;
+        self.tg.lock_irqsave().group_exited = true;
     }
 
     /// The exit code of the [`Process`].
     pub fn exit_code(&self) -> i32 {
-        self.tg.lock().exit_code
+        self.tg.lock_irqsave().exit_code
     }
 }
 
@@ -290,7 +292,9 @@ impl Process {
     /// Reparents all children to `reaper`.
     ///
     /// The caller chooses the live subreaper because liveness belongs to the
-    /// OS PID-identity registry, not to this relationship-only component.
+    /// OS PID-identity registry, not to this relationship-only component. The
+    /// selected reaper must be an ancestor of this process; that hierarchy is
+    /// also the lock order for their same-class `children` locks.
     pub fn reparent_children_to(self: &Arc<Self>, reaper: &Arc<Process>) {
         if self.is_init() || Arc::ptr_eq(self, reaper) {
             return;
@@ -298,10 +302,15 @@ impl Process {
 
         let reaper_parent = Arc::downgrade(reaper);
 
-        let mut reaper_children = reaper.children.lock();
-        let mut children = self.children.lock();
+        let mut reaper_children = reaper.children.lock_irqsave();
+        // The reaper and exiting process own different instances of the same
+        // `children` lock class. The caller guarantees that `reaper` is an
+        // ancestor, so this acquisition is structurally nested below it.
+        let mut children = self
+            .children
+            .lock_irqsave_nested(NESTED_CHILDREN_LOCK_SUBCLASS);
         for (pid, child) in core::mem::take(&mut *children) {
-            *child.parent.lock() = reaper_parent.clone();
+            *child.parent.lock_irqsave() = reaper_parent.clone();
             reaper_children.insert(pid, child);
         }
     }
@@ -313,8 +322,8 @@ impl Process {
     pub fn retire(self: &Arc<Self>) {
         let parent = self.parent();
         let group = self.group();
-        let mut parent_children = parent.as_ref().map(|parent| parent.children.lock());
-        let mut group_members = group.processes.lock();
+        let mut parent_children = parent.as_ref().map(|parent| parent.children.lock_irqsave());
+        let mut group_members = group.processes.lock_irqsave();
 
         if let Some(children) = parent_children.as_mut()
             && children
@@ -329,7 +338,7 @@ impl Process {
         {
             group_members.remove(&self.pid);
         }
-        *self.parent.lock() = Weak::new();
+        *self.parent.lock_irqsave() = Weak::new();
     }
 }
 
@@ -338,7 +347,7 @@ impl fmt::Debug for Process {
         let mut builder = f.debug_struct("Process");
         builder.field("pid", &self.pid);
 
-        let tg = self.tg.lock();
+        let tg = self.tg.lock_irqsave();
         if tg.group_exited {
             builder.field("group_exited", &tg.group_exited);
         }
@@ -368,13 +377,13 @@ impl Process {
         let process = Arc::new(Process {
             pid,
             is_child_subreaper: AtomicBool::new(false),
-            tg: SpinNoIrq::new(ThreadGroup::default()),
-            children: SpinNoIrq::new(StrongMap::new()),
-            parent: SpinNoIrq::new(parent.map(Arc::downgrade).unwrap_or_default()),
-            group: SpinNoIrq::new(group.clone()),
+            tg: SpinLock::new(ThreadGroup::default()),
+            children: SpinLock::new(StrongMap::new()),
+            parent: SpinLock::new(parent.map(Arc::downgrade).unwrap_or_default()),
+            group: SpinLock::new(group.clone()),
         });
 
-        group.processes.lock().insert(pid, &process);
+        group.processes.lock_irqsave().insert(pid, &process);
         process
     }
 
@@ -382,7 +391,7 @@ impl Process {
         let process = Self::new_group_member(pid, parent.as_ref());
 
         if let Some(parent) = parent {
-            parent.children.lock().insert(pid, process.clone());
+            parent.children.lock_irqsave().insert(pid, process.clone());
         } else {
             INIT_PROC.init_once(process.clone());
         }
@@ -431,7 +440,7 @@ mod tests {
         time::Instant,
     };
 
-    use super::Process;
+    use super::{NESTED_CHILDREN_LOCK_SUBCLASS, Process};
 
     #[test]
     fn orphan_never_becomes_invisible_while_reparenting() {
@@ -442,7 +451,7 @@ mod tests {
         let child = parent.fork(4);
         let child_pid = child.pid();
 
-        let reaper_children = reaper.children.lock();
+        let reaper_children = reaper.children.lock_irqsave();
         let start_exit = StdArc::new(Barrier::new(2));
         let exit_parent = parent.clone();
         let exit_reaper = reaper.clone();
@@ -456,7 +465,10 @@ mod tests {
         let deadline = Instant::now() + Duration::from_millis(500);
         let mut observed_invisible = false;
         while Instant::now() < deadline {
-            let parent_has_child = parent.children.lock().contains_key(&child_pid);
+            let parent_has_child = parent
+                .children
+                .lock_irqsave_nested(NESTED_CHILDREN_LOCK_SUBCLASS)
+                .contains_key(&child_pid);
             let reaper_has_child = reaper_children.contains_key(&child_pid);
             if !parent_has_child && !reaper_has_child {
                 observed_invisible = true;
@@ -473,6 +485,6 @@ mod tests {
             "orphan was removed from its old parent before it became visible to the reaper"
         );
         assert!(Arc::ptr_eq(&reaper, &child.parent().unwrap()));
-        assert!(reaper.children.lock().contains_key(&child_pid));
+        assert!(reaper.children.lock_irqsave().contains_key(&child_pid));
     }
 }

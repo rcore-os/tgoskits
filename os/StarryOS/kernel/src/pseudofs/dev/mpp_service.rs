@@ -16,10 +16,9 @@ use core::{any::Any, ffi::c_int, mem::size_of};
 
 use ax_driver::jpeg::{self, mpp, registers};
 use ax_runtime::hal::cpu::asm::user_copy;
-use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 
-use crate::{file::dmabuf::resolve_contiguous_dmabuf, pseudofs::DeviceOps};
+use crate::{file::dmabuf::resolve_contiguous_dmabuf, pseudofs::DeviceOps, sync::Mutex};
 
 fn copy_from_user(dst: *mut u8, src: *const u8, size: usize) -> VfsResult<()> {
     if unsafe { user_copy(dst, src, size) } != 0 {

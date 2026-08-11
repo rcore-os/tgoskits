@@ -11,15 +11,6 @@ use std::{
 use ctor::ctor;
 use scope_local::{ActiveScope, Scope, scope_local};
 
-struct KernelGuardIfImpl;
-
-#[ax_crate_interface::impl_interface]
-impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
-    fn enable_preempt() {}
-
-    fn disable_preempt() {}
-}
-
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 static UNUSED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static PINNED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);

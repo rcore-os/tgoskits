@@ -18,9 +18,9 @@ async-trait = "0.1"
 ax-errno = { workspace = true }
 ax-hal = { workspace = true }
 ax-io = { workspace = true }
-ax-kspin = { workspace = true }
+ax-lazyinit.workspace = true
 axpoll = { workspace = true }
-ax-sync = { workspace = true }
+ax-sync = { workspace = true, features = ["sleep"] }
 ax-task = { workspace = true, features = ["irq", "multitask"] }
 bitflags = "2.9"
 cfg-if = { workspace = true }
@@ -32,7 +32,6 @@ log = { workspace = true }
 rd-net = { workspace = true }
 rdif-vsock = { workspace = true, optional = true }
 ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
-spin = { workspace = true }
 
 [dependencies.smoltcp]
 workspace = true
@@ -60,7 +59,7 @@ features = [
 
 [dev-dependencies]
 ax-hal = { workspace = true, features = ["host-test"] }
-ax-kspin = { workspace = true, features = ["host-test"] }
+ax-sync = { workspace = true, features = ["host-test"] }
 ax-task = { workspace = true, features = ["host-test"] }
 
 [lints.rust]

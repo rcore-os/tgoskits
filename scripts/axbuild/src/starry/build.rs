@@ -185,6 +185,8 @@ pub(crate) fn postprocess_starry_artifact(
         generate_uimage_from_its(workspace_root, &plan, &request.arch, &request.target, elf)?;
     }
 
+    validate_riscv_image_artifact(&request.arch, elf)?;
+
     Ok(())
 }
 
@@ -312,6 +314,67 @@ fn refresh_bin_if_present(kernel_elf: &Path) -> anyhow::Result<()> {
         .exec()
         .with_context(|| format!("failed to refresh {}", bin.display()))?;
     stage.done();
+    Ok(())
+}
+
+fn validate_riscv_image_artifact(arch: &str, kernel_elf: &Path) -> anyhow::Result<()> {
+    if arch != "riscv64" {
+        return Ok(());
+    }
+    let bin = kernel_elf.with_extension("bin");
+    if !bin.exists() {
+        bail!("RISC-V Image artifact is missing: {}", bin.display());
+    }
+    let image = fs::read(&bin).with_context(|| format!("failed to read {}", bin.display()))?;
+    validate_riscv_image_header(&image)
+        .with_context(|| format!("invalid RISC-V Image header in {}", bin.display()))?;
+    println!("[axbuild] validated RISC-V Image header: {}", bin.display());
+    Ok(())
+}
+
+fn validate_riscv_image_header(image: &[u8]) -> anyhow::Result<()> {
+    const HEADER_SIZE: usize = 0x40;
+    const TEXT_OFFSET: u64 = 0x20_0000;
+    const AUIPC_T0_FIXED_BITS: u32 = 0x297;
+    const JALR_ZERO_T0_FIXED_BITS: u32 = 0x0002_8067;
+
+    if image.len() < HEADER_SIZE {
+        bail!(
+            "image is only {} bytes, need at least {HEADER_SIZE}",
+            image.len()
+        );
+    }
+
+    let code0 = u32::from_le_bytes(image[0..4].try_into().unwrap());
+    let code1 = u32::from_le_bytes(image[4..8].try_into().unwrap());
+    if code0 & 0x0fff != AUIPC_T0_FIXED_BITS {
+        bail!("code0 is not `auipc t0, ...`: {code0:#010x}");
+    }
+    if code1 & 0x000f_ffff != JALR_ZERO_T0_FIXED_BITS {
+        bail!("code1 is not `jalr zero, ...(t0)`: {code1:#010x}");
+    }
+
+    let read_u64 =
+        |offset: usize| u64::from_le_bytes(image[offset..offset + 8].try_into().unwrap());
+    if read_u64(0x08) != TEXT_OFFSET {
+        bail!(
+            "text_offset at 0x08 is {:#x}, expected {TEXT_OFFSET:#x}",
+            read_u64(0x08)
+        );
+    }
+    let image_size = read_u64(0x10);
+    if image_size != image.len() as u64 {
+        bail!(
+            "image_size at 0x10 is {image_size:#x}, but the artifact is {} bytes",
+            image.len()
+        );
+    }
+    if &image[0x30..0x35] != b"RISCV" {
+        bail!("RISC-V magic at 0x30 is missing");
+    }
+    if &image[0x38..0x3c] != b"RSC\x05" {
+        bail!("RISC-V magic2 at 0x38 is missing");
+    }
     Ok(())
 }
 

@@ -225,10 +225,8 @@ A first subclass prototype was implemented with the following shape:
 The local verification for the revised packed-key implementation is:
 
 ```text
-cargo test -p ax-lockdep
-cargo xtask clippy --package ax-lockdep
+cargo test -p ax-sync --features "host-test,smp,sleep,lockdep,lock-api"
 cargo xtask clippy --package ax-sync
-cargo xtask clippy --package ax-kspin
 cargo xtask clippy --package starry-kernel
 ```
 
@@ -363,15 +361,14 @@ Current status:
 There is another possible filesystem lock-order issue that is not currently
 covered by lockdep.
 
-The relevant FAT32 implementation uses the project-local kernel spin lock:
+The relevant FAT32 implementation uses the project-local `ax-sync` spin lock:
 
 ```text
 fs/ax-fs-ng/src/fs/fat/fs.rs:
-  use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
+  use ax_sync::{SpinLock as Mutex, SpinLockGuard as MutexGuard};
 ```
 
-So the FAT filesystem lock is visible to lockdep when `ax-kspin/lockdep` is
-enabled.
+So the FAT filesystem lock is visible to lockdep when `ax-sync/lockdep` is enabled.
 
 At the time of this analysis, the VFS layer still imported the third-party
 `spin` crate directly:
@@ -389,15 +386,13 @@ fs/axfs-ng-vfs/Cargo.toml:
   spin = { version = "0.10", default-features = false, features = ["mutex"] }
 ```
 
-That `spin::Mutex` use has since been migrated to project-local `ax_kspin`
-locks. `ax-kspin` is related but not identical to the external `spin` crate:
-its `BaseSpinLock` is explicitly based on `spin::Mutex`, but it is a separate
-project-local implementation that adds kernel guard semantics and lockdep
+That `spin::Mutex` use has since been migrated to project-local `ax-sync`
+locks. `ax-sync` owns the spin algorithm, acquisition-context guards and lockdep
 acquire/release hooks.
 
 Before that migration, this created a lockdep blind spot:
 
-- `ax_kspin::SpinNoPreempt` locks are visible to lockdep;
+- `ax_sync::SpinLock` locks are visible to lockdep;
 - `spin::Mutex` locks in `axfs-ng-vfs` were not visible to lockdep;
 - any dependency edge involving a VFS `spin::Mutex` therefore could not be
   recorded.
@@ -444,12 +439,12 @@ Historical implication:
 The migration was not treated as a mechanical rename. The chosen lock type must
 continue to match the context:
 
-- `SpinNoPreempt` is probably the first candidate for VFS cache locks if they
-  are only used in task context;
-- `SpinNoIrq` may be needed only for locks that can be taken from IRQ-enabled
-  contexts where interrupt-side reentry is possible;
-- `SpinRaw` should remain reserved for contexts that already guarantee the
-  necessary preemption/IRQ state externally.
+- `SpinLock::lock()` is the first candidate for VFS cache locks used only in
+  task context;
+- `SpinLock::lock_irqsave()` is needed only for locks that can be taken from
+  IRQ-enabled contexts where interrupt-side reentry is possible;
+- `unsafe SpinLock::lock_raw()` remains reserved for contexts that already
+  guarantee the necessary preemption/IRQ state externally.
 
 Before changing the VFS lock type, the code paths that access `DirNode.cache`
 and `DirEntry` user data should be checked for:

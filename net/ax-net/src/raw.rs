@@ -40,7 +40,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError, ax_bail};
 use ax_io::prelude::*;
-use ax_kspin::{SpinNoIrq as Mutex, SpinRwLock as RwLock};
+use ax_sync::{SpinLock as Mutex, SpinRwLock as RwLock};
 use axpoll::{IoEvents, Pollable};
 pub use smoltcp::wire::{IpProtocol, IpVersion};
 use smoltcp::{
@@ -481,7 +481,7 @@ impl SocketOps for RawSocket {
                     .then(|| build_loopback_icmp_reply(&buf[header_len..header_len + written]))
                     .flatten()
                 {
-                    *self.loopback_rx.lock() = Some((local, reply));
+                    *self.loopback_rx.lock_irqsave() = Some((local, reply));
                 }
                 Ok(written)
             })?;
@@ -501,12 +501,12 @@ impl SocketOps for RawSocket {
             request_poll();
             self.with_smol_socket(|socket| {
                 if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
-                    self.deferred_rx.lock().clone()
+                    self.deferred_rx.lock_irqsave().clone()
                 } else {
-                    self.deferred_rx.lock().take()
+                    self.deferred_rx.lock_irqsave().take()
                 } {
                     if !self.source_matches_peer(source) {
-                        *self.deferred_rx.lock() = Some((source, packet));
+                        *self.deferred_rx.lock_irqsave() = Some((source, packet));
                         return Err(AxError::WouldBlock);
                     }
                     let (_, payload, hop_limit) = self.split_packet_for_delivery(&packet)?;
@@ -514,12 +514,12 @@ impl SocketOps for RawSocket {
                 }
 
                 if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
-                    self.loopback_rx.lock().clone()
+                    self.loopback_rx.lock_irqsave().clone()
                 } else {
-                    self.loopback_rx.lock().take()
+                    self.loopback_rx.lock_irqsave().take()
                 } {
                     if !self.source_matches_peer(source) {
-                        *self.loopback_rx.lock() = Some((source, packet));
+                        *self.loopback_rx.lock_irqsave() = Some((source, packet));
                         return Err(AxError::WouldBlock);
                     }
                     return self.deliver_packet(source, &packet, 64, &mut dst, &mut options);
@@ -540,7 +540,7 @@ impl SocketOps for RawSocket {
                 let (source, packet, hop_limit) = self.split_packet_for_delivery(wire_packet)?;
 
                 if !self.source_matches_peer(source) {
-                    *self.deferred_rx.lock() = Some((source, wire_packet.to_vec()));
+                    *self.deferred_rx.lock_irqsave() = Some((source, wire_packet.to_vec()));
                     return Err(AxError::WouldBlock);
                 }
 
@@ -592,12 +592,12 @@ impl Pollable for RawSocket {
             events.contains(IoEvents::IN)
                 || self
                     .loopback_rx
-                    .lock()
+                    .lock_irqsave()
                     .as_ref()
                     .is_some_and(|(source, _)| self.source_matches_peer(*source))
                 || self
                     .deferred_rx
-                    .lock()
+                    .lock_irqsave()
                     .as_ref()
                     .is_some_and(|(source, _)| self.source_matches_peer(*source)),
         );

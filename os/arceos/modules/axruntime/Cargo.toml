@@ -15,32 +15,30 @@ std-compat = []
 host-test = [
   "ax-hal/host-test",
   "ax-ipi?/host-test",
-  "ax-kspin?/host-test",
   "ax-percpu?/host-test",
-  "ax-task?/host-test",
+  "ax-task/host-test",
 ]
-ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task?/ipi"]
+ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task/ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
 # CPUs can wake and re-enter the scheduler. This intentionally does not enable
 # the ax-ipi callback queue.
 wake-ipi = ["irq", "ax-hal/ipi"]
 irq = [
   "ax-hal/irq",
-  "ax-task?/irq",
-  "dep:ax-kspin",
+  "ax-task/irq",
   "dep:ax-percpu",
   "dep:rdif-intc",
   "ax-driver/irq",
 ]
-multitask = ["ax-task/multitask"]
+multitask = ["ax-task/multitask", "ax-sync/sleep"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
-smp = ["ax-hal/smp", "ax-task?/smp"]
-uspace = ["ax-hal/uspace", "ax-task?/uspace"]
-lockdep = ["ax-fs-ng?/lockdep"]
-stack-guard-page = ["ipi", "multitask", "paging", "ax-task?/stack-guard-page"]
+smp = ["ax-hal/smp", "ax-task/smp"]
+uspace = ["ax-hal/uspace", "ax-task/uspace"]
+lockdep = ["multitask", "ax-task/lockdep", "ax-fs-ng?/lockdep"]
+stack-guard-page = ["ipi", "multitask", "paging", "ax-task/stack-guard-page"]
 stack-protector = []
-tls = ["ax-hal/tls", "ax-task?/tls"]
+tls = ["ax-hal/tls", "ax-task/tls"]
 
 display = ["paging", "dep:ax-display", "ax-driver/display"]
 fs = [
@@ -51,7 +49,6 @@ fs = [
   "dep:ax-fs-ng",
   "ax-fs-ng/vfs",
   "dep:axfs-ng-vfs",
-  "dep:spin",
   "dep:rdif-block",
   "ax-driver/block",
 ]
@@ -64,7 +61,6 @@ net = [
   "paging",
   "dep:ax-net",
   "dep:rd-net",
-  "dep:spin",
   "ax-driver/net",
 ]
 # SG2002 AIC8800 SoftAP Wi-Fi. Pulls the FDT probe into ax-driver and installs
@@ -83,7 +79,6 @@ serial = [
   "dep:ax-errno",
   "dep:axpoll",
   "dep:rdif-serial",
-  "dep:spin",
 ]
 
 [dependencies]
@@ -100,7 +95,6 @@ axfs-ng-vfs = {workspace = true, optional = true}
 ax-hal = {workspace = true}
 ax-input = {workspace = true, optional = true}
 ax-ipi = {workspace = true, optional = true}
-ax-kspin = {workspace = true, optional = true}
 ax-lazyinit = {workspace = true}
 ax-log = {workspace = true}
 ax-memory-addr = {workspace = true}
@@ -108,7 +102,8 @@ ax-mm = {workspace = true, optional = true}
 ax-net = {workspace = true, optional = true}
 ax-percpu = {workspace = true, optional = true}
 ax-plat = {workspace = true}
-ax-task = {workspace = true, optional = true}
+ax-sync.workspace = true
+ax-task = {workspace = true, features = ["lock-api"]}
 axbacktrace = {workspace = true}
 axpoll = {workspace = true, optional = true}
 axklib.workspace = true
@@ -123,7 +118,6 @@ rdif-intc = { workspace = true, optional = true }
 rdif-serial = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
-spin = {workspace = true, optional = true}
 
 [build-dependencies]
 quote = { workspace = true }
