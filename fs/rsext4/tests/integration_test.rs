@@ -219,10 +219,13 @@ type TestOwnedFilesystem = Ext4<
 >;
 
 fn owned_test_filesystem() -> TestOwnedFilesystem {
-    let device = TestBlockDevice::new(100 * 1024 * 1024);
-    let mut builder = Jbd2Dev::initial_jbd2dev(0, device, true);
-    mkfs(&mut builder).expect("mkfs failed");
-    let device = IoOnlyDevice::from(builder.into_inner());
+    let device = IoOnlyDevice::from(TestBlockDevice::new(100 * 1024 * 1024));
+    let device = format(
+        device,
+        SeparateClock(Cell::new(1_700_000_000)),
+        MkfsOptions::default(),
+    )
+    .expect("mkfs failed");
     let services = MountServices::new(
         SeparateClock(Cell::new(1_800_000_000)),
         UnavailableCapabilities,
@@ -235,10 +238,13 @@ fn owned_test_filesystem() -> TestOwnedFilesystem {
 
 #[test]
 fn owned_mount_injects_clock_separately_from_block_io() {
-    let device = TestBlockDevice::new(100 * 1024 * 1024);
-    let mut builder = Jbd2Dev::initial_jbd2dev(0, device, true);
-    mkfs(&mut builder).expect("mkfs failed");
-    let device = IoOnlyDevice::from(builder.into_inner());
+    let device = IoOnlyDevice::from(TestBlockDevice::new(100 * 1024 * 1024));
+    let device = format(
+        device,
+        SeparateClock(Cell::new(1_700_000_000)),
+        MkfsOptions::default(),
+    )
+    .expect("mkfs failed");
     let services = MountServices::new(
         SeparateClock(Cell::new(1_800_000_000)),
         UnavailableCapabilities,

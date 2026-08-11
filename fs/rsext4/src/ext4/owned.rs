@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use super::{Ext4FileSystem, FileSystemStats, MountOptions};
+use super::{Ext4FileSystem, FileSystemStats, MkfsOptions, MountOptions, mkfs_with_options};
 use crate::{
     blockdev::Jbd2Dev,
     bmalloc::InodeNumber,
@@ -185,6 +185,17 @@ pub struct Ext4<D: BlockIo, S> {
     device: Jbd2Dev<D>,
     services: S,
     options: MountOptions,
+}
+
+/// Formats a device with an OS-independent clock and returns device ownership.
+pub fn format<D, C>(device: D, clock: C, options: MkfsOptions) -> Ext4Result<D>
+where
+    D: BlockIo,
+    C: Clock + Send + 'static,
+{
+    let mut device = Jbd2Dev::with_clock(0, device, clock, true);
+    mkfs_with_options(&mut device, options)?;
+    Ok(device.into_inner())
 }
 
 impl<D, E, P, K, O> Ext4<D, MountedServices<E, P, K, O>>

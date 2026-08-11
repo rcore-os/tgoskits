@@ -8,8 +8,8 @@ use std::{
 };
 
 use rsext4::{
-    BLOCK_SIZE, BlockIo, Ext4Error, Ext4Result, Ext4Timestamp, Jbd2Dev, mkfile, mkfs, mount,
-    read_file, umount, write_file,
+    BLOCK_SIZE, BlockIo, Ext4, Ext4Error, Ext4Result, Ext4Timestamp, FileName, FilePermissions,
+    MkfsOptions, MountOptions, MountServices, MutationContext, NoopObserver, format,
 };
 
 const DEFAULT_BYTES: usize = 20 * 1024 * 1024;
@@ -19,14 +19,12 @@ const IMAGE_BYTES: usize = 128 * 1024 * 1024;
 
 struct MemoryDevice {
     bytes: Vec<u8>,
-    now: Cell<i64>,
 }
 
 impl MemoryDevice {
     fn new() -> Self {
         Self {
             bytes: vec![0; IMAGE_BYTES],
-            now: Cell::new(1_700_000_000),
         }
     }
 }
@@ -80,10 +78,12 @@ impl BlockIo for MemoryDevice {
     }
 }
 
-impl rsext4::Clock for MemoryDevice {
+struct BenchClock(Cell<i64>);
+
+impl rsext4::Clock for BenchClock {
     fn now(&self) -> Ext4Result<Ext4Timestamp> {
-        let seconds = self.now.get();
-        self.now.set(seconds + 1);
+        let seconds = self.0.get();
+        self.0.set(seconds + 1);
         Ok(Ext4Timestamp::new(seconds, 0))
     }
 }
@@ -116,38 +116,51 @@ fn marker_value(name: &str, default: &str) -> String {
 
 fn run_once(payload: &[u8]) -> Sample {
     let device = MemoryDevice::new();
-    let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
-    mkfs(&mut device).expect("benchmark mkfs must succeed");
-    let mut filesystem = mount(&mut device).expect("benchmark mount must succeed");
-    mkfile(
-        &mut device,
-        &mut filesystem,
-        "/rsext4-host-perf.bin",
-        None,
-        None,
+    let device = format(
+        device,
+        BenchClock(Cell::new(1_700_000_000)),
+        MkfsOptions::default(),
     )
-    .expect("benchmark file creation must succeed");
+    .expect("benchmark mkfs must succeed");
+    let services = MountServices::new(
+        BenchClock(Cell::new(1_700_000_000)),
+        (),
+        (),
+        (),
+        NoopObserver,
+    );
+    let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
+        .expect("benchmark mount must succeed");
+    let context = MutationContext::new(0, 0, 0, 0);
+    let file = filesystem
+        .create_regular_file(
+            context,
+            filesystem.root_inode(),
+            FileName::new(b"rsext4-host-perf.bin").expect("benchmark name must be valid"),
+            FilePermissions::new(0o644).expect("benchmark permissions must be valid"),
+        )
+        .expect("benchmark file creation must succeed");
 
     let start = Instant::now();
-    write_file(
-        &mut device,
-        &mut filesystem,
-        "/rsext4-host-perf.bin",
-        0,
-        payload,
-    )
-    .expect("benchmark write must succeed");
+    filesystem
+        .write_inode(context, file.number, 0, payload)
+        .expect("benchmark write must succeed");
     let write = start.elapsed();
 
     let start = Instant::now();
-    let read_back = read_file(&mut device, &mut filesystem, "/rsext4-host-perf.bin")
+    let mut read_back = vec![0; payload.len()];
+    let read = filesystem
+        .read_inode(file.number, 0, &mut read_back)
         .expect("benchmark read must succeed");
+    assert_eq!(read, read_back.len());
     black_box(&read_back);
     assert_eq!(read_back, payload);
     let read = start.elapsed();
 
     let start = Instant::now();
-    umount(filesystem, &mut device).expect("benchmark unmount must succeed");
+    filesystem
+        .unmount()
+        .expect("benchmark unmount must succeed");
     let sync = start.elapsed();
 
     Sample { write, read, sync }
