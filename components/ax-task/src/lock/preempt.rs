@@ -6,7 +6,7 @@ use core::{
 };
 
 use super::{RawTicketGuard, RawTicketLock};
-use crate::runtime::{PreemptGuardToken, enter_preempt_guard, task_runtime};
+use crate::runtime::{PreemptGuardSource, PreemptGuardToken, enter_preempt_guard, task_runtime};
 
 /// A private ticket lock for scheduler state that hard IRQs never acquire.
 #[derive(Debug)]
@@ -24,7 +24,7 @@ impl<T> PreemptTicketLock<T> {
 
     /// Prevents task migration and acquires the cross-CPU ticket lock.
     pub(crate) fn lock(&self) -> PreemptTicketGuard<'_, T> {
-        let scope = PreemptScope::enter();
+        let scope = PreemptScope::enter_ticket_lock();
         let raw = self.raw.lock();
         PreemptTicketGuard {
             raw: Some(raw),
@@ -36,7 +36,7 @@ impl<T> PreemptTicketLock<T> {
     /// Attempts acquisition and restores preemption state on failure.
     #[cfg(test)]
     pub(crate) fn try_lock(&self) -> Option<PreemptTicketGuard<'_, T>> {
-        let scope = PreemptScope::enter();
+        let scope = PreemptScope::enter_ticket_lock();
         match self.raw.try_lock() {
             Some(raw) => Some(PreemptTicketGuard {
                 raw: Some(raw),
@@ -61,8 +61,16 @@ pub(crate) struct PreemptScope {
 
 impl PreemptScope {
     pub(crate) fn enter() -> Self {
+        Self::enter_with_source(PreemptGuardSource::ExplicitScope)
+    }
+
+    fn enter_ticket_lock() -> Self {
+        Self::enter_with_source(PreemptGuardSource::TicketLock)
+    }
+
+    fn enter_with_source(source: PreemptGuardSource) -> Self {
         Self {
-            token: enter_preempt_guard(),
+            token: enter_preempt_guard(source),
             _not_send: PhantomData,
         }
     }

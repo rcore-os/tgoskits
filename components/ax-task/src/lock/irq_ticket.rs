@@ -27,7 +27,7 @@ impl<T> IrqTicketLock<T> {
 
     /// Disables local IRQs and acquires the lock in ticket order.
     pub(crate) fn lock(&self) -> IrqTicketGuard<'_, T> {
-        let irq = IrqScope::enter();
+        let irq = IrqScope::enter_ticket_lock();
         let raw = self.raw.lock();
         IrqTicketGuard {
             raw: Some(raw),
@@ -56,7 +56,7 @@ impl<T> IrqTicketLock<T> {
     /// Attempts acquisition and restores local IRQ state on failure.
     #[cfg(test)]
     pub(crate) fn try_lock(&self) -> Option<IrqTicketGuard<'_, T>> {
-        let irq = IrqScope::enter();
+        let irq = IrqScope::enter_ticket_lock();
         self.raw.try_lock().map(|raw| IrqTicketGuard {
             raw: Some(raw),
             irq: Some(irq),

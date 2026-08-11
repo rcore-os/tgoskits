@@ -605,7 +605,7 @@ impl SharedExecutor {
     }
 
     fn begin_ready_publish_guard(&self) -> Option<ReadyPublishGuard<'_>> {
-        let irq_token = crate::runtime::enter_irq_guard();
+        let irq_token = crate::runtime::enter_irq_guard(crate::runtime::IrqGuardSource::Executor);
         if self.begin_ready_publish() {
             Some(ReadyPublishGuard {
                 executor: self,

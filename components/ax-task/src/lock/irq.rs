@@ -2,7 +2,7 @@
 
 use core::marker::PhantomData;
 
-use crate::runtime::{IrqGuardToken, enter_irq_guard, task_runtime};
+use crate::runtime::{IrqGuardSource, IrqGuardToken, enter_irq_guard, task_runtime};
 
 /// Non-sleeping scope that excludes local scheduler preemption.
 ///
@@ -17,8 +17,16 @@ pub(crate) struct IrqScope {
 
 impl IrqScope {
     pub(crate) fn enter() -> Self {
+        Self::enter_with_source(IrqGuardSource::ExplicitScope)
+    }
+
+    pub(super) fn enter_ticket_lock() -> Self {
+        Self::enter_with_source(IrqGuardSource::TicketLock)
+    }
+
+    fn enter_with_source(source: IrqGuardSource) -> Self {
         Self {
-            token: enter_irq_guard(),
+            token: enter_irq_guard(source),
             _not_send: PhantomData,
         }
     }

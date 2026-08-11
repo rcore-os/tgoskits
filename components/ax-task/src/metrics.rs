@@ -2,7 +2,13 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::SwitchReason;
+use crate::{
+    SwitchReason,
+    runtime::{IrqGuardSource, PreemptGuardSource},
+};
+
+const PREEMPT_GUARD_SOURCE_COUNT: usize = 5;
+const IRQ_GUARD_SOURCE_COUNT: usize = 4;
 
 /// Aggregate scheduler counters captured without allocating or taking locks.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -10,8 +16,26 @@ pub struct QperfSchedulerMetricsSnapshot {
     pub current_thread_handle_queries: u64,
     pub runtime_preempt_guard_entries: u64,
     pub runtime_preempt_guard_none: u64,
+    pub preempt_guard_ticket_entries: u64,
+    pub preempt_guard_ticket_none: u64,
+    pub preempt_guard_explicit_entries: u64,
+    pub preempt_guard_explicit_none: u64,
+    pub preempt_guard_sync_entries: u64,
+    pub preempt_guard_sync_none: u64,
+    pub preempt_guard_activity_entries: u64,
+    pub preempt_guard_activity_none: u64,
+    pub preempt_guard_irq_return_entries: u64,
+    pub preempt_guard_irq_return_none: u64,
     pub runtime_irq_guard_entries: u64,
     pub runtime_irq_guard_none: u64,
+    pub irq_guard_ticket_entries: u64,
+    pub irq_guard_ticket_none: u64,
+    pub irq_guard_explicit_entries: u64,
+    pub irq_guard_explicit_none: u64,
+    pub irq_guard_runtime_cpu_entries: u64,
+    pub irq_guard_runtime_cpu_none: u64,
+    pub irq_guard_executor_entries: u64,
+    pub irq_guard_executor_none: u64,
     pub owner_rq_irqsave_transactions: u64,
     pub owner_rq_scheduler_transactions: u64,
     pub owner_rq_bootstrap_transactions: u64,
@@ -45,10 +69,10 @@ pub struct QperfSchedulerMetricsSnapshot {
 
 struct QperfSchedulerMetrics {
     current_thread_handle_queries: AtomicU64,
-    runtime_preempt_guard_entries: AtomicU64,
-    runtime_preempt_guard_none: AtomicU64,
-    runtime_irq_guard_entries: AtomicU64,
-    runtime_irq_guard_none: AtomicU64,
+    preempt_guard_entries: [AtomicU64; PREEMPT_GUARD_SOURCE_COUNT],
+    preempt_guard_none: [AtomicU64; PREEMPT_GUARD_SOURCE_COUNT],
+    irq_guard_entries: [AtomicU64; IRQ_GUARD_SOURCE_COUNT],
+    irq_guard_none: [AtomicU64; IRQ_GUARD_SOURCE_COUNT],
     owner_rq_irqsave_transactions: AtomicU64,
     owner_rq_scheduler_transactions: AtomicU64,
     owner_rq_bootstrap_transactions: AtomicU64,
@@ -84,10 +108,32 @@ impl QperfSchedulerMetrics {
     const fn new() -> Self {
         Self {
             current_thread_handle_queries: AtomicU64::new(0),
-            runtime_preempt_guard_entries: AtomicU64::new(0),
-            runtime_preempt_guard_none: AtomicU64::new(0),
-            runtime_irq_guard_entries: AtomicU64::new(0),
-            runtime_irq_guard_none: AtomicU64::new(0),
+            preempt_guard_entries: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
+            preempt_guard_none: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
+            irq_guard_entries: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
+            irq_guard_none: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
             owner_rq_irqsave_transactions: AtomicU64::new(0),
             owner_rq_scheduler_transactions: AtomicU64::new(0),
             owner_rq_bootstrap_transactions: AtomicU64::new(0),
@@ -121,16 +167,75 @@ impl QperfSchedulerMetrics {
     }
 
     fn snapshot(&self) -> QperfSchedulerMetricsSnapshot {
+        let preempt_entries = |source: PreemptGuardSource| {
+            self.preempt_guard_entries[source as usize].load(Ordering::Relaxed)
+        };
+        let preempt_none = |source: PreemptGuardSource| {
+            self.preempt_guard_none[source as usize].load(Ordering::Relaxed)
+        };
+        let irq_entries = |source: IrqGuardSource| {
+            self.irq_guard_entries[source as usize].load(Ordering::Relaxed)
+        };
+        let irq_none =
+            |source: IrqGuardSource| self.irq_guard_none[source as usize].load(Ordering::Relaxed);
+        let preempt_guard_ticket_entries = preempt_entries(PreemptGuardSource::TicketLock);
+        let preempt_guard_ticket_none = preempt_none(PreemptGuardSource::TicketLock);
+        let preempt_guard_explicit_entries = preempt_entries(PreemptGuardSource::ExplicitScope);
+        let preempt_guard_explicit_none = preempt_none(PreemptGuardSource::ExplicitScope);
+        let preempt_guard_sync_entries = preempt_entries(PreemptGuardSource::SyncContext);
+        let preempt_guard_sync_none = preempt_none(PreemptGuardSource::SyncContext);
+        let preempt_guard_activity_entries = preempt_entries(PreemptGuardSource::SchedulerActivity);
+        let preempt_guard_activity_none = preempt_none(PreemptGuardSource::SchedulerActivity);
+        let preempt_guard_irq_return_entries = preempt_entries(PreemptGuardSource::IrqReturn);
+        let preempt_guard_irq_return_none = preempt_none(PreemptGuardSource::IrqReturn);
+        let irq_guard_ticket_entries = irq_entries(IrqGuardSource::TicketLock);
+        let irq_guard_ticket_none = irq_none(IrqGuardSource::TicketLock);
+        let irq_guard_explicit_entries = irq_entries(IrqGuardSource::ExplicitScope);
+        let irq_guard_explicit_none = irq_none(IrqGuardSource::ExplicitScope);
+        let irq_guard_runtime_cpu_entries = irq_entries(IrqGuardSource::RuntimeCpu);
+        let irq_guard_runtime_cpu_none = irq_none(IrqGuardSource::RuntimeCpu);
+        let irq_guard_executor_entries = irq_entries(IrqGuardSource::Executor);
+        let irq_guard_executor_none = irq_none(IrqGuardSource::Executor);
         QperfSchedulerMetricsSnapshot {
             current_thread_handle_queries: self
                 .current_thread_handle_queries
                 .load(Ordering::Relaxed),
-            runtime_preempt_guard_entries: self
-                .runtime_preempt_guard_entries
-                .load(Ordering::Relaxed),
-            runtime_preempt_guard_none: self.runtime_preempt_guard_none.load(Ordering::Relaxed),
-            runtime_irq_guard_entries: self.runtime_irq_guard_entries.load(Ordering::Relaxed),
-            runtime_irq_guard_none: self.runtime_irq_guard_none.load(Ordering::Relaxed),
+            runtime_preempt_guard_entries: preempt_guard_ticket_entries
+                + preempt_guard_explicit_entries
+                + preempt_guard_sync_entries
+                + preempt_guard_activity_entries
+                + preempt_guard_irq_return_entries,
+            runtime_preempt_guard_none: preempt_guard_ticket_none
+                + preempt_guard_explicit_none
+                + preempt_guard_sync_none
+                + preempt_guard_activity_none
+                + preempt_guard_irq_return_none,
+            preempt_guard_ticket_entries,
+            preempt_guard_ticket_none,
+            preempt_guard_explicit_entries,
+            preempt_guard_explicit_none,
+            preempt_guard_sync_entries,
+            preempt_guard_sync_none,
+            preempt_guard_activity_entries,
+            preempt_guard_activity_none,
+            preempt_guard_irq_return_entries,
+            preempt_guard_irq_return_none,
+            runtime_irq_guard_entries: irq_guard_ticket_entries
+                + irq_guard_explicit_entries
+                + irq_guard_runtime_cpu_entries
+                + irq_guard_executor_entries,
+            runtime_irq_guard_none: irq_guard_ticket_none
+                + irq_guard_explicit_none
+                + irq_guard_runtime_cpu_none
+                + irq_guard_executor_none,
+            irq_guard_ticket_entries,
+            irq_guard_ticket_none,
+            irq_guard_explicit_entries,
+            irq_guard_explicit_none,
+            irq_guard_runtime_cpu_entries,
+            irq_guard_runtime_cpu_none,
+            irq_guard_executor_entries,
+            irq_guard_executor_none,
             owner_rq_irqsave_transactions: self
                 .owner_rq_irqsave_transactions
                 .load(Ordering::Relaxed),
@@ -175,6 +280,20 @@ impl QperfSchedulerMetrics {
         }
     }
 
+    fn record_preempt_guard_entry(&self, source: PreemptGuardSource, none: bool) {
+        self.preempt_guard_entries[source as usize].fetch_add(1, Ordering::Relaxed);
+        if none {
+            self.preempt_guard_none[source as usize].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_irq_guard_entry(&self, source: IrqGuardSource, none: bool) {
+        self.irq_guard_entries[source as usize].fetch_add(1, Ordering::Relaxed);
+        if none {
+            self.irq_guard_none[source as usize].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     fn record_context_switch(&self, reason: SwitchReason) {
         self.context_switches.fetch_add(1, Ordering::Relaxed);
         let reason_counter = match reason {
@@ -201,26 +320,12 @@ pub(crate) fn record_current_thread_handle_query() {
         .fetch_add(1, Ordering::Relaxed);
 }
 
-pub(crate) fn record_runtime_preempt_guard_entry(none: bool) {
-    QPERF_SCHEDULER_METRICS
-        .runtime_preempt_guard_entries
-        .fetch_add(1, Ordering::Relaxed);
-    if none {
-        QPERF_SCHEDULER_METRICS
-            .runtime_preempt_guard_none
-            .fetch_add(1, Ordering::Relaxed);
-    }
+pub(crate) fn record_runtime_preempt_guard_entry(source: PreemptGuardSource, none: bool) {
+    QPERF_SCHEDULER_METRICS.record_preempt_guard_entry(source, none);
 }
 
-pub(crate) fn record_runtime_irq_guard_entry(none: bool) {
-    QPERF_SCHEDULER_METRICS
-        .runtime_irq_guard_entries
-        .fetch_add(1, Ordering::Relaxed);
-    if none {
-        QPERF_SCHEDULER_METRICS
-            .runtime_irq_guard_none
-            .fetch_add(1, Ordering::Relaxed);
-    }
+pub(crate) fn record_runtime_irq_guard_entry(source: IrqGuardSource, none: bool) {
+    QPERF_SCHEDULER_METRICS.record_irq_guard_entry(source, none);
 }
 
 pub(crate) fn record_owner_rq_irqsave_transaction() {
@@ -408,18 +513,15 @@ mod tests {
     fn runtime_guard_and_owner_rq_entries_are_classified() {
         let metrics = QperfSchedulerMetrics::new();
 
-        metrics
-            .runtime_preempt_guard_entries
-            .fetch_add(2, Ordering::Relaxed);
-        metrics
-            .runtime_preempt_guard_none
-            .fetch_add(1, Ordering::Relaxed);
-        metrics
-            .runtime_irq_guard_entries
-            .fetch_add(3, Ordering::Relaxed);
-        metrics
-            .runtime_irq_guard_none
-            .fetch_add(2, Ordering::Relaxed);
+        metrics.record_preempt_guard_entry(PreemptGuardSource::TicketLock, false);
+        metrics.record_preempt_guard_entry(PreemptGuardSource::ExplicitScope, true);
+        metrics.record_preempt_guard_entry(PreemptGuardSource::SyncContext, false);
+        metrics.record_preempt_guard_entry(PreemptGuardSource::SchedulerActivity, true);
+        metrics.record_preempt_guard_entry(PreemptGuardSource::IrqReturn, false);
+        metrics.record_irq_guard_entry(IrqGuardSource::TicketLock, false);
+        metrics.record_irq_guard_entry(IrqGuardSource::ExplicitScope, true);
+        metrics.record_irq_guard_entry(IrqGuardSource::RuntimeCpu, false);
+        metrics.record_irq_guard_entry(IrqGuardSource::Executor, true);
         metrics
             .owner_rq_irqsave_transactions
             .fetch_add(4, Ordering::Relaxed);
@@ -433,10 +535,23 @@ mod tests {
         assert_eq!(
             metrics.snapshot(),
             QperfSchedulerMetricsSnapshot {
-                runtime_preempt_guard_entries: 2,
-                runtime_preempt_guard_none: 1,
-                runtime_irq_guard_entries: 3,
+                runtime_preempt_guard_entries: 5,
+                runtime_preempt_guard_none: 2,
+                preempt_guard_ticket_entries: 1,
+                preempt_guard_explicit_entries: 1,
+                preempt_guard_explicit_none: 1,
+                preempt_guard_sync_entries: 1,
+                preempt_guard_activity_entries: 1,
+                preempt_guard_activity_none: 1,
+                preempt_guard_irq_return_entries: 1,
+                runtime_irq_guard_entries: 4,
                 runtime_irq_guard_none: 2,
+                irq_guard_ticket_entries: 1,
+                irq_guard_explicit_entries: 1,
+                irq_guard_explicit_none: 1,
+                irq_guard_runtime_cpu_entries: 1,
+                irq_guard_executor_entries: 1,
+                irq_guard_executor_none: 1,
                 owner_rq_irqsave_transactions: 4,
                 owner_rq_scheduler_transactions: 5,
                 owner_rq_bootstrap_transactions: 6,

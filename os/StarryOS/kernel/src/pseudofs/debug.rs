@@ -51,6 +51,66 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "preempt_guard_ticket_entries {}",
+        task.preempt_guard_ticket_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "preempt_guard_ticket_none {}",
+        task.preempt_guard_ticket_none
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "preempt_guard_explicit_entries {}",
+        task.preempt_guard_explicit_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "preempt_guard_explicit_none {}",
+        task.preempt_guard_explicit_none
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "preempt_guard_sync_entries {}",
+        task.preempt_guard_sync_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "preempt_guard_sync_none {}",
+        task.preempt_guard_sync_none
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "preempt_guard_activity_entries {}",
+        task.preempt_guard_activity_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "preempt_guard_activity_none {}",
+        task.preempt_guard_activity_none
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "preempt_guard_irq_return_entries {}",
+        task.preempt_guard_irq_return_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "preempt_guard_irq_return_none {}",
+        task.preempt_guard_irq_return_none
+    )
+    .unwrap();
+    writeln!(
+        output,
         "runtime_irq_guard_entries {}",
         task.runtime_irq_guard_entries
     )
@@ -59,6 +119,54 @@ fn render_scheduler_metrics() -> alloc::string::String {
         output,
         "runtime_irq_guard_none {}",
         task.runtime_irq_guard_none
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_guard_ticket_entries {}",
+        task.irq_guard_ticket_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_guard_ticket_none {}",
+        task.irq_guard_ticket_none
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_guard_explicit_entries {}",
+        task.irq_guard_explicit_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_guard_explicit_none {}",
+        task.irq_guard_explicit_none
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_guard_runtime_cpu_entries {}",
+        task.irq_guard_runtime_cpu_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_guard_runtime_cpu_none {}",
+        task.irq_guard_runtime_cpu_none
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_guard_executor_entries {}",
+        task.irq_guard_executor_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_guard_executor_none {}",
+        task.irq_guard_executor_none
     )
     .unwrap();
     writeln!(
@@ -252,8 +360,26 @@ mod tests {
                 "current_thread_handle_queries",
                 "runtime_preempt_guard_entries",
                 "runtime_preempt_guard_none",
+                "preempt_guard_ticket_entries",
+                "preempt_guard_ticket_none",
+                "preempt_guard_explicit_entries",
+                "preempt_guard_explicit_none",
+                "preempt_guard_sync_entries",
+                "preempt_guard_sync_none",
+                "preempt_guard_activity_entries",
+                "preempt_guard_activity_none",
+                "preempt_guard_irq_return_entries",
+                "preempt_guard_irq_return_none",
                 "runtime_irq_guard_entries",
                 "runtime_irq_guard_none",
+                "irq_guard_ticket_entries",
+                "irq_guard_ticket_none",
+                "irq_guard_explicit_entries",
+                "irq_guard_explicit_none",
+                "irq_guard_runtime_cpu_entries",
+                "irq_guard_runtime_cpu_none",
+                "irq_guard_executor_entries",
+                "irq_guard_executor_none",
                 "owner_rq_irqsave_transactions",
                 "owner_rq_scheduler_transactions",
                 "owner_rq_bootstrap_transactions",

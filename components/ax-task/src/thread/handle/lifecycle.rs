@@ -65,7 +65,9 @@ impl ThreadCore {
 
     /// Enters one owner-side delivery section that must not overlap exit.
     pub(crate) fn try_scheduler_activity(&self) -> Option<ThreadSchedulerActivity<'_>> {
-        let preempt = crate::runtime::enter_preempt_guard();
+        let preempt = crate::runtime::enter_preempt_guard(
+            crate::runtime::PreemptGuardSource::SchedulerActivity,
+        );
         let mut observed = self.scheduler_activity_gate.load(Ordering::Acquire);
         loop {
             if observed & SCHEDULER_ACTIVITY_CLOSED != 0 {
@@ -97,7 +99,9 @@ impl ThreadCore {
     pub(crate) fn close_owned_scheduler_activity(
         self: &Arc<Self>,
     ) -> Option<OwnedThreadSchedulerExit> {
-        let preempt = crate::runtime::enter_preempt_guard();
+        let preempt = crate::runtime::enter_preempt_guard(
+            crate::runtime::PreemptGuardSource::SchedulerActivity,
+        );
         if !self.close_scheduler_activity_gate() {
             release_scheduler_preempt(preempt);
             return None;

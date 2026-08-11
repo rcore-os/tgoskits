@@ -10,16 +10,39 @@ pub use capability::*;
 pub use clock::*;
 pub use interface::*;
 
-pub(crate) fn enter_preempt_guard() -> PreemptGuardToken {
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub(crate) enum PreemptGuardSource {
+    TicketLock,
+    ExplicitScope,
+    SyncContext,
+    SchedulerActivity,
+    IrqReturn,
+}
+
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub(crate) enum IrqGuardSource {
+    TicketLock,
+    ExplicitScope,
+    RuntimeCpu,
+    Executor,
+}
+
+pub(crate) fn enter_preempt_guard(source: PreemptGuardSource) -> PreemptGuardToken {
     let token = task_runtime::preempt_guard_enter();
     #[cfg(feature = "qperf-metrics")]
-    crate::metrics::record_runtime_preempt_guard_entry(token.is_none());
+    crate::metrics::record_runtime_preempt_guard_entry(source, token.is_none());
+    #[cfg(not(feature = "qperf-metrics"))]
+    let _ = source;
     token
 }
 
-pub(crate) fn enter_irq_guard() -> IrqGuardToken {
+pub(crate) fn enter_irq_guard(source: IrqGuardSource) -> IrqGuardToken {
     let token = task_runtime::irq_guard_enter();
     #[cfg(feature = "qperf-metrics")]
-    crate::metrics::record_runtime_irq_guard_entry(token.is_none());
+    crate::metrics::record_runtime_irq_guard_entry(source, token.is_none());
+    #[cfg(not(feature = "qperf-metrics"))]
+    let _ = source;
     token
 }

@@ -2,7 +2,9 @@
 
 use core::marker::PhantomData;
 
-use crate::runtime::{LocalIrqState, PreemptGuardToken, enter_preempt_guard, task_runtime};
+use crate::runtime::{
+    LocalIrqState, PreemptGuardSource, PreemptGuardToken, enter_preempt_guard, task_runtime,
+};
 
 pub(crate) trait ContextBackend {
     type PreemptState: Copy;
@@ -22,7 +24,7 @@ impl ContextBackend for TaskRuntimeContext {
     type IrqState = LocalIrqState;
 
     fn preempt_enter(&self) -> Self::PreemptState {
-        enter_preempt_guard()
+        enter_preempt_guard(PreemptGuardSource::SyncContext)
     }
 
     fn preempt_exit(&self, state: Self::PreemptState) {
@@ -224,7 +226,7 @@ impl IrqSaveGuard {
     /// dedicated preemption exit has completed.
     pub fn disable_preempt_for_irq_return(&mut self) -> IrqReturnPreemptGuard<'_> {
         IrqReturnPreemptGuard {
-            token: enter_preempt_guard(),
+            token: enter_preempt_guard(PreemptGuardSource::IrqReturn),
             _irq_guard: PhantomData,
             _not_send: PhantomData,
         }
