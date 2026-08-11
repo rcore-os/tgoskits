@@ -34,6 +34,11 @@ struct ActiveJournalHandle {
     queue_snapshot: Vec<Jbd2Update>,
 }
 
+struct ActiveDirectHandle {
+    credits: usize,
+    before_images: Vec<Jbd2Update>,
+}
+
 struct JournalAbortState {
     cause: Ext4Error,
     replay_failure: Option<ReplayFailure>,
@@ -51,6 +56,7 @@ pub struct Jbd2Dev<B: BlockIo> {
     system: Option<JBD2DEVSYSTEM>,
     journal_blocks: Vec<AbsoluteBN>,
     active_handle: Option<ActiveJournalHandle>,
+    active_direct_handle: Option<ActiveDirectHandle>,
     abort_state: Option<JournalAbortState>,
     clock: ClockCallback<B>,
 }
@@ -239,6 +245,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             system: None,
             journal_blocks: Vec::new(),
             active_handle: None,
+            active_direct_handle: None,
             abort_state: None,
             clock,
         }
@@ -422,6 +429,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// Enables or disables journal use when no transaction is in flight.
     pub fn set_journal_use(&mut self, use_journal: bool) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:change_mode_after_abort")?;
+        if self.active_direct_handle.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:mode_with_direct_handle"));
+        }
         if !use_journal && self.journal_use {
             if self.active_handle.is_some() {
                 return Err(Ext4Error::busy().with_operation("jbd2:disable_with_active_handle"));
@@ -506,7 +516,31 @@ impl<B: BlockIo> Jbd2Dev<B> {
     ) -> Ext4Result<T> {
         self.ensure_not_aborted("jbd2:handle_after_abort")?;
         if !self.journal_use {
-            return operation(self);
+            if credits == 0 {
+                return Err(Ext4Error::invalid_input().with_operation("jbd2:handle_credits"));
+            }
+            if self.active_direct_handle.is_some() {
+                return Err(Ext4Error::busy().with_operation("jbd2:nested_direct_handle"));
+            }
+            self.active_direct_handle = Some(ActiveDirectHandle {
+                credits,
+                before_images: Vec::with_capacity(credits),
+            });
+            return match operation(self) {
+                Ok(value) => {
+                    self.active_direct_handle = None;
+                    Ok(value)
+                }
+                Err(operation_error) => {
+                    let handle = self.active_direct_handle.take().ok_or_else(|| {
+                        Ext4Error::corrupted().with_operation("jbd2:missing_direct_handle")
+                    })?;
+                    if self.restore_direct_handle(handle).is_err() {
+                        self.abort_journal(operation_error);
+                    }
+                    Err(operation_error)
+                }
+            };
         }
         if credits == 0 {
             return Err(Ext4Error::invalid_input().with_operation("jbd2:handle_credits"));
@@ -582,10 +616,52 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.with_journal_handle(credits, operation)
     }
 
+    fn capture_direct_preimage(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
+        let Some(handle) = self.active_direct_handle.as_ref() else {
+            return Ok(());
+        };
+        if handle
+            .before_images
+            .iter()
+            .any(|before| before.0 == block_id)
+        {
+            return Ok(());
+        }
+        if handle.before_images.len() >= handle.credits {
+            return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
+        }
+
+        let mut before = alloc::vec![0; self.inner.block_size() as usize];
+        self.inner.read_blocks(&mut before, block_id, 1)?;
+        self.active_direct_handle
+            .as_mut()
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:missing_direct_handle"))?
+            .before_images
+            .push(Jbd2Update(block_id, before.into_boxed_slice()));
+        Ok(())
+    }
+
+    fn restore_direct_handle(&mut self, handle: ActiveDirectHandle) -> Ext4Result<()> {
+        self.inner.discard_cache();
+        let mut first_error = None;
+        for before in handle.before_images.into_iter().rev() {
+            if let Err(error) = self.inner.write_blocks(&before.1, before.0, 1)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        self.inner.discard_cache();
+        first_error.map_or(Ok(()), Err)
+    }
+
     /// Writes the current internal block buffer.
     pub fn write_block(&mut self, block_id: AbsoluteBN, is_metadata: bool) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:write_after_abort")?;
         if !self.journal_use || !is_metadata {
+            if is_metadata {
+                self.capture_direct_preimage(block_id)?;
+            }
             return self.inner.write_block(block_id);
         }
 
@@ -700,6 +776,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
     ) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:write_after_abort")?;
         if !self.journal_use || !is_metadata {
+            if is_metadata {
+                for offset in 0..count {
+                    self.capture_direct_preimage(block_id.checked_add(offset)?)?;
+                }
+            }
             return self.inner.write_blocks(buf, block_id, count);
         }
 
@@ -733,6 +814,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// Forces the running journal transaction and its checkpoint to storage.
     pub fn flush(&mut self) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:flush_after_abort")?;
+        if self.active_direct_handle.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:flush_with_direct_handle"));
+        }
         if self.journal_use {
             if self.active_handle.is_some() {
                 return Err(Ext4Error::busy().with_operation("jbd2:flush_with_active_handle"));
@@ -2132,5 +2216,65 @@ mod tests {
             &inner.data[start..start + BLOCK_SIZE],
             &vec![0x5a; BLOCK_SIZE]
         );
+    }
+    #[test]
+    fn direct_metadata_handle_restores_all_touched_home_blocks_on_error() {
+        let first = AbsoluteBN::new(10);
+        let second = AbsoluteBN::new(11);
+        let first_before = vec![0x11; BLOCK_SIZE];
+        let second_before = vec![0x22; BLOCK_SIZE];
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), false);
+        dev.write_blocks(&first_before, first, 1, false)
+            .expect("write first baseline");
+        dev.write_blocks(&second_before, second, 1, false)
+            .expect("write second baseline");
+
+        let error = dev
+            .with_transaction_handle(2, |dev| {
+                dev.write_blocks(&vec![0xaa; BLOCK_SIZE], first, 1, true)?;
+                dev.write_blocks(&vec![0xbb; BLOCK_SIZE], second, 1, true)?;
+                Err::<(), _>(Ext4Error::io())
+            })
+            .expect_err("operation failure must abort direct metadata handle");
+        assert_eq!(error, Ext4Error::io());
+
+        let mut first_after = vec![0; BLOCK_SIZE];
+        let mut second_after = vec![0; BLOCK_SIZE];
+        dev.read_blocks(&mut first_after, first, 1)
+            .expect("read restored first block");
+        dev.read_blocks(&mut second_after, second, 1)
+            .expect("read restored second block");
+        assert_eq!(first_after, first_before);
+        assert_eq!(second_after, second_before);
+    }
+
+    #[test]
+    fn direct_metadata_handle_credit_overrun_restores_earlier_write() {
+        let first = AbsoluteBN::new(10);
+        let second = AbsoluteBN::new(11);
+        let first_before = vec![0x11; BLOCK_SIZE];
+        let second_before = vec![0x22; BLOCK_SIZE];
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), false);
+        dev.write_blocks(&first_before, first, 1, false)
+            .expect("write first baseline");
+        dev.write_blocks(&second_before, second, 1, false)
+            .expect("write second baseline");
+
+        let error = dev
+            .with_transaction_handle(1, |dev| {
+                dev.write_blocks(&vec![0xaa; BLOCK_SIZE], first, 1, true)?;
+                dev.write_blocks(&vec![0xbb; BLOCK_SIZE], second, 1, true)
+            })
+            .expect_err("second distinct block must exceed direct handle credits");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::NoSpace);
+
+        let mut first_after = vec![0; BLOCK_SIZE];
+        let mut second_after = vec![0; BLOCK_SIZE];
+        dev.read_blocks(&mut first_after, first, 1)
+            .expect("read restored first block");
+        dev.read_blocks(&mut second_after, second, 1)
+            .expect("read untouched second block");
+        assert_eq!(first_after, first_before);
+        assert_eq!(second_after, second_before);
     }
 }
