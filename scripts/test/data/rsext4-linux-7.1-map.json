@@ -258,7 +258,8 @@
           "rust_owner": "rsext4::extents_tree",
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
-            "extent-checked-codec"
+            "extent-checked-codec",
+            "extent-unwritten-preallocation"
           ]
         }
       ]
@@ -344,7 +345,9 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "extent-checked-codec",
-            "extent-mutation-rollback"
+            "extent-mutation-rollback",
+            "extent-unwritten-preallocation",
+            "fallocate-preallocation-full-stack"
           ]
         }
       ]
@@ -642,6 +645,8 @@
           "test_ids": [
             "legacy-indirect-13-blocks",
             "extent-mutation-rollback",
+            "extent-unwritten-preallocation",
+            "fallocate-preallocation-full-stack",
             "special-inode-rdev"
           ]
         }

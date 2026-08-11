@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add typed extent preallocation with Linux-compatible unwritten extent encoding,
+  `KEEP_SIZE`, partial-write conversion, remount, and e2fsck coverage.
+
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 
 ### Fixed

@@ -8,7 +8,7 @@ use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
-use axfs_ng_vfs::{NodePermission, NodeType};
+use axfs_ng_vfs::{NodePermission, NodeType, PreallocationMode};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
     __kernel_off_t, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
@@ -277,7 +277,7 @@ pub fn sys_fallocate(
 
     let keep_size = mode & FALLOC_FL_KEEP_SIZE != 0;
     let operation = mode & !FALLOC_FL_KEEP_SIZE;
-    let supported_mode = operation == 0 && !keep_size
+    let supported_mode = operation == 0
         || operation == FALLOC_FL_ZERO_RANGE
         || operation == FALLOC_FL_PUNCH_HOLE && keep_size;
     if !supported_mode {
@@ -316,8 +316,20 @@ pub fn sys_fallocate(
 
     match operation {
         0 => {
-            if new_len != old_len {
-                file.set_len(new_len)?;
+            if Memfd::from_fd(fd).is_ok() {
+                if keep_size {
+                    return Err(AxError::OperationNotSupported);
+                }
+                if new_len != old_len {
+                    file.set_len(new_len)?;
+                }
+            } else {
+                let mode = if keep_size {
+                    PreallocationMode::KeepSize
+                } else {
+                    PreallocationMode::ExtendSize
+                };
+                file.preallocate(offset as u64, len as u64, mode)?;
             }
         }
         FALLOC_FL_ZERO_RANGE => {

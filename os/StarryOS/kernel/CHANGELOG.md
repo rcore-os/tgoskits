@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Make ext4 `fallocate(2)` reserve unwritten blocks for normal and
+  `FALLOC_FL_KEEP_SIZE` requests instead of creating sparse files.
+
 ## [0.7.7](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.6...starry-kernel-v0.7.7) - 2026-08-09
 
 ### Fixed

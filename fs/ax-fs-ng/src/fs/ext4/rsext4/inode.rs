@@ -4,11 +4,12 @@ use core::any::Any;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, FilesystemOps,
     FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
-    Reference, RenameOptions as VfsRenameOptions, VfsError, VfsResult, WeakDirEntry,
+    PreallocationMode as VfsPreallocationMode, Reference, RenameOptions as VfsRenameOptions,
+    VfsError, VfsResult, WeakDirEntry,
 };
 use rsext4::{
     DeviceNumber, Ext4Timestamp, FileName, FilePermissions, InodeMetadataUpdate, InodeNumber,
-    MutationContext, SpecialInodeKind,
+    MutationContext, PreallocationOptions, SpecialInodeKind,
 };
 
 use super::{
@@ -224,6 +225,18 @@ impl FileNodeOps for Inode {
         state
             .ext4
             .truncate_inode(Self::authorized_mutation(), self.ino, len)
+            .map_err(into_vfs_err)
+    }
+
+    fn preallocate(&self, offset: u64, len: u64, mode: VfsPreallocationMode) -> VfsResult<()> {
+        let options = match mode {
+            VfsPreallocationMode::ExtendSize => PreallocationOptions::EXTEND_SIZE,
+            VfsPreallocationMode::KeepSize => PreallocationOptions::KEEP_SIZE,
+        };
+        let mut state = self.fs.lock();
+        state
+            .ext4
+            .preallocate_inode(Self::authorized_mutation(), self.ino, offset, len, options)
             .map_err(into_vfs_err)
     }
 
