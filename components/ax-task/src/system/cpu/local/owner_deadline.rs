@@ -91,8 +91,11 @@ impl CpuLocal {
     pub(crate) fn next_scheduler_deadline_update(
         mut self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
+        source: SchedulerDeadlineDerivationSource,
     ) -> Result<SchedulerDeadlineUpdate, TaskError> {
-        let publication = self.as_mut().scheduler_deadline_publication(monotonic_now);
+        let publication = self
+            .as_mut()
+            .scheduler_deadline_publication(monotonic_now, source);
         let mut task_deadlines = self.remote.lock_deadline_publication();
         if task_deadlines.publication == Some(publication) {
             return SchedulerDeadlineUpdate::try_new(
@@ -107,8 +110,11 @@ impl CpuLocal {
     pub(crate) fn next_scheduler_deadline_update_if_changed(
         mut self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
+        source: SchedulerDeadlineDerivationSource,
     ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
-        let publication = self.as_mut().scheduler_deadline_publication(monotonic_now);
+        let publication = self
+            .as_mut()
+            .scheduler_deadline_publication(monotonic_now, source);
         let mut task_deadlines = self.remote.lock_deadline_publication();
         if task_deadlines.publication == Some(publication) {
             return Ok(None);
@@ -119,7 +125,12 @@ impl CpuLocal {
     fn scheduler_deadline_publication(
         mut self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
+        source: SchedulerDeadlineDerivationSource,
     ) -> SchedulerDeadlinePublicationState {
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_scheduler_deadline_derivation(source);
+        #[cfg(not(feature = "qperf-metrics"))]
+        let _ = source;
         let deadline = self.as_mut().next_oneshot_deadline(monotonic_now);
         SchedulerDeadlinePublicationState { deadline }
     }

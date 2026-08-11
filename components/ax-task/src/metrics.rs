@@ -3,17 +3,27 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
-    SwitchReason,
+    SchedulerDeadlineDerivationSource, SwitchReason,
     runtime::{IrqGuardSource, PreemptGuardSource},
 };
 
 const PREEMPT_GUARD_SOURCE_COUNT: usize = 5;
 const IRQ_GUARD_SOURCE_COUNT: usize = 26;
+const SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT: usize = 8;
 
 /// Aggregate scheduler counters captured without allocating or taking locks.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct QperfSchedulerMetricsSnapshot {
     pub current_thread_handle_queries: u64,
+    pub scheduler_deadline_derivation_entries: u64,
+    pub scheduler_deadline_derivation_clock_event_entries: u64,
+    pub scheduler_deadline_derivation_park_arm_entries: u64,
+    pub scheduler_deadline_derivation_park_cancel_entries: u64,
+    pub scheduler_deadline_derivation_ktimer_service_entries: u64,
+    pub scheduler_deadline_derivation_enqueue_entries: u64,
+    pub scheduler_deadline_derivation_placement_entries: u64,
+    pub scheduler_deadline_derivation_schedule_selection_entries: u64,
+    pub scheduler_deadline_derivation_schedule_no_switch_entries: u64,
     pub runtime_preempt_guard_entries: u64,
     pub runtime_preempt_guard_none: u64,
     pub preempt_guard_ticket_entries: u64,
@@ -96,6 +106,7 @@ pub struct QperfSchedulerMetricsSnapshot {
 
 struct QperfSchedulerMetrics {
     current_thread_handle_queries: AtomicU64,
+    scheduler_deadline_derivations: [AtomicU64; SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT],
     preempt_guard_entries: [AtomicU64; PREEMPT_GUARD_SOURCE_COUNT],
     preempt_guard_none: [AtomicU64; PREEMPT_GUARD_SOURCE_COUNT],
     irq_guard_entries: [AtomicU64; IRQ_GUARD_SOURCE_COUNT],
@@ -135,6 +146,8 @@ impl QperfSchedulerMetrics {
     const fn new() -> Self {
         Self {
             current_thread_handle_queries: AtomicU64::new(0),
+            scheduler_deadline_derivations: [const { AtomicU64::new(0) };
+                SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT],
             preempt_guard_entries: [
                 AtomicU64::new(0),
                 AtomicU64::new(0),
@@ -195,6 +208,34 @@ impl QperfSchedulerMetrics {
         };
         let irq_none =
             |source: IrqGuardSource| self.irq_guard_none[source as usize].load(Ordering::Relaxed);
+        let deadline_derivations = |source: SchedulerDeadlineDerivationSource| {
+            self.scheduler_deadline_derivations[source as usize].load(Ordering::Relaxed)
+        };
+        let scheduler_deadline_derivation_clock_event_entries =
+            deadline_derivations(SchedulerDeadlineDerivationSource::ClockEvent);
+        let scheduler_deadline_derivation_park_arm_entries =
+            deadline_derivations(SchedulerDeadlineDerivationSource::ParkArm);
+        let scheduler_deadline_derivation_park_cancel_entries =
+            deadline_derivations(SchedulerDeadlineDerivationSource::ParkCancel);
+        let scheduler_deadline_derivation_ktimer_service_entries =
+            deadline_derivations(SchedulerDeadlineDerivationSource::KtimerService);
+        let scheduler_deadline_derivation_enqueue_entries =
+            deadline_derivations(SchedulerDeadlineDerivationSource::Enqueue);
+        let scheduler_deadline_derivation_placement_entries =
+            deadline_derivations(SchedulerDeadlineDerivationSource::Placement);
+        let scheduler_deadline_derivation_schedule_selection_entries =
+            deadline_derivations(SchedulerDeadlineDerivationSource::ScheduleSelection);
+        let scheduler_deadline_derivation_schedule_no_switch_entries =
+            deadline_derivations(SchedulerDeadlineDerivationSource::ScheduleNoSwitch);
+        let scheduler_deadline_derivation_entries =
+            scheduler_deadline_derivation_clock_event_entries
+                + scheduler_deadline_derivation_park_arm_entries
+                + scheduler_deadline_derivation_park_cancel_entries
+                + scheduler_deadline_derivation_ktimer_service_entries
+                + scheduler_deadline_derivation_enqueue_entries
+                + scheduler_deadline_derivation_placement_entries
+                + scheduler_deadline_derivation_schedule_selection_entries
+                + scheduler_deadline_derivation_schedule_no_switch_entries;
         let preempt_guard_ticket_entries = preempt_entries(PreemptGuardSource::TicketLock);
         let preempt_guard_ticket_none = preempt_none(PreemptGuardSource::TicketLock);
         let preempt_guard_explicit_entries = preempt_entries(PreemptGuardSource::ExplicitScope);
@@ -308,6 +349,15 @@ impl QperfSchedulerMetrics {
             current_thread_handle_queries: self
                 .current_thread_handle_queries
                 .load(Ordering::Relaxed),
+            scheduler_deadline_derivation_entries,
+            scheduler_deadline_derivation_clock_event_entries,
+            scheduler_deadline_derivation_park_arm_entries,
+            scheduler_deadline_derivation_park_cancel_entries,
+            scheduler_deadline_derivation_ktimer_service_entries,
+            scheduler_deadline_derivation_enqueue_entries,
+            scheduler_deadline_derivation_placement_entries,
+            scheduler_deadline_derivation_schedule_selection_entries,
+            scheduler_deadline_derivation_schedule_no_switch_entries,
             runtime_preempt_guard_entries: preempt_guard_ticket_entries
                 + preempt_guard_explicit_entries
                 + preempt_guard_sync_entries
@@ -429,6 +479,10 @@ impl QperfSchedulerMetrics {
         }
     }
 
+    fn record_scheduler_deadline_derivation(&self, source: SchedulerDeadlineDerivationSource) {
+        self.scheduler_deadline_derivations[source as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
     fn record_context_switch(&self, reason: SwitchReason) {
         self.context_switches.fetch_add(1, Ordering::Relaxed);
         let reason_counter = match reason {
@@ -453,6 +507,10 @@ pub(crate) fn record_current_thread_handle_query() {
     QPERF_SCHEDULER_METRICS
         .current_thread_handle_queries
         .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_scheduler_deadline_derivation(source: SchedulerDeadlineDerivationSource) {
+    QPERF_SCHEDULER_METRICS.record_scheduler_deadline_derivation(source);
 }
 
 pub(crate) fn record_runtime_preempt_guard_entry(source: PreemptGuardSource, none: bool) {
@@ -639,6 +697,41 @@ mod tests {
                 context_switches_blocked: 1,
                 context_switches_exited: 1,
                 context_switches_migrated: 1,
+                ..QperfSchedulerMetricsSnapshot::default()
+            }
+        );
+    }
+
+    #[test]
+    fn scheduler_deadline_derivations_are_classified_by_trigger() {
+        let metrics = QperfSchedulerMetrics::new();
+
+        metrics.record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::ClockEvent);
+        metrics.record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::ParkArm);
+        metrics.record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::ParkCancel);
+        metrics
+            .record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::KtimerService);
+        metrics.record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::Enqueue);
+        metrics.record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::Placement);
+        metrics.record_scheduler_deadline_derivation(
+            SchedulerDeadlineDerivationSource::ScheduleSelection,
+        );
+        metrics.record_scheduler_deadline_derivation(
+            SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
+        );
+
+        assert_eq!(
+            metrics.snapshot(),
+            QperfSchedulerMetricsSnapshot {
+                scheduler_deadline_derivation_entries: 8,
+                scheduler_deadline_derivation_clock_event_entries: 1,
+                scheduler_deadline_derivation_park_arm_entries: 1,
+                scheduler_deadline_derivation_park_cancel_entries: 1,
+                scheduler_deadline_derivation_ktimer_service_entries: 1,
+                scheduler_deadline_derivation_enqueue_entries: 1,
+                scheduler_deadline_derivation_placement_entries: 1,
+                scheduler_deadline_derivation_schedule_selection_entries: 1,
+                scheduler_deadline_derivation_schedule_no_switch_entries: 1,
                 ..QperfSchedulerMetricsSnapshot::default()
             }
         );

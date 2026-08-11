@@ -420,7 +420,10 @@ mod tests {
         let initial = {
             let _irq = RuntimeIrqGuard::enter();
             cpu.as_mut()
-                .next_scheduler_deadline_update(instant(0))
+                .next_scheduler_deadline_update(
+                    instant(0),
+                    crate::SchedulerDeadlineDerivationSource::ScheduleSelection,
+                )
                 .unwrap()
         };
         task_runtime::publish_scheduler_deadline(initial);
@@ -1708,7 +1711,10 @@ mod tests {
         let mut owner = runtime_current_cpu_mut(&mut irq).unwrap();
         let update = owner
             .as_mut()
-            .next_scheduler_deadline_update(instant(10))
+            .next_scheduler_deadline_update(
+                instant(10),
+                crate::SchedulerDeadlineDerivationSource::ClockEvent,
+            )
             .unwrap();
         assert_eq!(
             update.deadline(),

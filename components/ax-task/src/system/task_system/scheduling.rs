@@ -362,7 +362,10 @@ impl TaskSystem {
             if self.owner_balance_work_pending(cpu.as_ref().get_ref(), current) {
                 self.service_owner_balance(cpu.as_mut(), current)?;
             }
-            self.program_local_timer(cpu.as_mut())?;
+            self.program_local_timer(
+                cpu.as_mut(),
+                SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
+            )?;
             return Ok(if cpu.needs_reschedule() || cpu.has_remote_work() {
                 SchedulerOutcome::OwnerWorkPending
             } else {

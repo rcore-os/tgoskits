@@ -36,7 +36,13 @@ impl TaskSystem {
         {
             task_runtime::fatal_invariant(0x5343_0001, decision.next().as_u64() as usize);
         }
-        if self.program_local_timer(cpu.as_mut()).is_err() {
+        if self
+            .program_local_timer(
+                cpu.as_mut(),
+                SchedulerDeadlineDerivationSource::ScheduleSelection,
+            )
+            .is_err()
+        {
             task_runtime::fatal_invariant(0x5343_0002, decision.next().as_u64() as usize);
         }
         decision

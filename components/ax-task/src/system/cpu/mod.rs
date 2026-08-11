@@ -27,6 +27,7 @@ pub(crate) use dispatch::{
 use load::SUMMARY_FAIR_PUSHABLE;
 pub use load::{CpuLoadSummary, DeadlineBandwidthSnapshot, SchedulingClass};
 pub use local::CpuLocal;
+pub(crate) use local::SchedulerDeadlineDerivationSource;
 use remote::RqCurrentTick;
 pub use remote::{CpuLifecycleState, CpuLocalOwnerBorrow, CpuRemote};
 pub(crate) use remote::{

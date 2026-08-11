@@ -2877,7 +2877,12 @@ fn local_timer_is_programmed_from_scheduler_completion_time() {
 
     crate::test_runtime::set_monotonic_ns(COMPLETION_NOW_NS);
     crate::test_runtime::set_scheduler_ns(ENTRY_NOW_NS);
-    system.program_local_timer(cpu.as_mut()).unwrap();
+    system
+        .program_local_timer(
+            cpu.as_mut(),
+            SchedulerDeadlineDerivationSource::ScheduleSelection,
+        )
+        .unwrap();
     let update = crate::test_runtime::take_scheduler_deadline_update()
         .expect("local timer programming must publish one complete update");
     let deadline_ns = update

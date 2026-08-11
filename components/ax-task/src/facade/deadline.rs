@@ -1,5 +1,5 @@
 use super::*;
-use crate::DeadlineBaseGuardSource;
+use crate::{DeadlineBaseGuardSource, SchedulerDeadlineDerivationSource};
 
 /// Result of beginning an externally queued current-thread park transaction.
 ///
@@ -186,7 +186,9 @@ pub fn on_clock_event(
         .on_task_clock_event(now, budget.saturating_sub(hard_processed));
     let scheduler_due = cpu.as_mut().scheduler_work_due(now);
     let pending = hard_pending || batch.pending() || scheduler_due || rt_unthrottled;
-    let update = cpu.as_mut().next_scheduler_deadline_update(now)?;
+    let update = cpu
+        .as_mut()
+        .next_scheduler_deadline_update(now, SchedulerDeadlineDerivationSource::ClockEvent)?;
     Ok(TaskClockEventOutcome {
         slice_expired: charge.slice_expired(),
         deadline_overrun: charge.deadline_overrun(),
@@ -289,7 +291,10 @@ pub(crate) fn arm_current_park_deadline(
         let token = registration.token();
         thread.core.register_sleep_timer(owner, token.generation());
         let monotonic_now = task_runtime::monotonic_now();
-        let update = match cpu.as_mut().next_scheduler_deadline_update(monotonic_now) {
+        let update = match cpu.as_mut().next_scheduler_deadline_update(
+            monotonic_now,
+            SchedulerDeadlineDerivationSource::ParkArm,
+        ) {
             Ok(update) => update,
             Err(error) => {
                 let removed = cpu
@@ -429,7 +434,10 @@ pub(crate) fn cancel_current_park_deadline(
             }
         };
         let monotonic_now = task_runtime::monotonic_now();
-        let update = match cpu.as_mut().next_scheduler_deadline_update(monotonic_now) {
+        let update = match cpu.as_mut().next_scheduler_deadline_update(
+            monotonic_now,
+            SchedulerDeadlineDerivationSource::ParkCancel,
+        ) {
             Ok(update) => update,
             Err(error) => {
                 cancellation.rollback(

@@ -39,6 +39,60 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "scheduler_deadline_derivation_entries {}",
+        task.scheduler_deadline_derivation_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "scheduler_deadline_derivation_clock_event_entries {}",
+        task.scheduler_deadline_derivation_clock_event_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "scheduler_deadline_derivation_park_arm_entries {}",
+        task.scheduler_deadline_derivation_park_arm_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "scheduler_deadline_derivation_park_cancel_entries {}",
+        task.scheduler_deadline_derivation_park_cancel_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "scheduler_deadline_derivation_ktimer_service_entries {}",
+        task.scheduler_deadline_derivation_ktimer_service_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "scheduler_deadline_derivation_enqueue_entries {}",
+        task.scheduler_deadline_derivation_enqueue_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "scheduler_deadline_derivation_placement_entries {}",
+        task.scheduler_deadline_derivation_placement_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "scheduler_deadline_derivation_schedule_selection_entries {}",
+        task.scheduler_deadline_derivation_schedule_selection_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "scheduler_deadline_derivation_schedule_no_switch_entries {}",
+        task.scheduler_deadline_derivation_schedule_no_switch_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
         "runtime_preempt_guard_entries {}",
         task.runtime_preempt_guard_entries
     )
@@ -520,6 +574,15 @@ mod tests {
             keys,
             [
                 "current_thread_handle_queries",
+                "scheduler_deadline_derivation_entries",
+                "scheduler_deadline_derivation_clock_event_entries",
+                "scheduler_deadline_derivation_park_arm_entries",
+                "scheduler_deadline_derivation_park_cancel_entries",
+                "scheduler_deadline_derivation_ktimer_service_entries",
+                "scheduler_deadline_derivation_enqueue_entries",
+                "scheduler_deadline_derivation_placement_entries",
+                "scheduler_deadline_derivation_schedule_selection_entries",
+                "scheduler_deadline_derivation_schedule_no_switch_entries",
                 "runtime_preempt_guard_entries",
                 "runtime_preempt_guard_none",
                 "preempt_guard_ticket_entries",

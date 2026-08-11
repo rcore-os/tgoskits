@@ -10,6 +10,20 @@ mod owner_idle;
 
 use crate::system::cpu::remote::SchedulerDeadlinePublicationState;
 
+/// Outer owner-CPU transition that requested a fresh scheduler deadline derivation.
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub(crate) enum SchedulerDeadlineDerivationSource {
+    ClockEvent,
+    ParkArm,
+    ParkCancel,
+    KtimerService,
+    Enqueue,
+    Placement,
+    ScheduleSelection,
+    ScheduleNoSwitch,
+}
+
 /// Scheduler state that is created explicitly and mutated only by its owner CPU.
 ///
 /// The object is `!Unpin`; runtimes store it in per-CPU pinned allocations and

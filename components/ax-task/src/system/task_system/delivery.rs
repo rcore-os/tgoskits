@@ -144,7 +144,7 @@ impl TaskSystem {
             Arc::clone(&state.thread_record(thread)?.core)
         };
         self.enqueue_owner_thread(cpu.as_mut(), core, EnqueueReason::Wake)?;
-        self.program_local_timer(cpu.as_mut())
+        self.program_local_timer(cpu.as_mut(), SchedulerDeadlineDerivationSource::Enqueue)
     }
 
     /// Places a newly ready thread on an allowed active CPU.
@@ -234,7 +234,7 @@ impl TaskSystem {
             carrier.commit();
             return Ok(());
         }
-        self.program_local_timer(cpu.as_mut())
+        self.program_local_timer(cpu.as_mut(), SchedulerDeadlineDerivationSource::Placement)
     }
 
     /// Removes a ready thread from its owner run queue for migration or update.

@@ -605,9 +605,10 @@ impl TaskSystem {
         if pending {
             cpu.remote().publish_ktimer_work();
         }
-        let update = cpu
-            .as_mut()
-            .next_scheduler_deadline_update_if_changed(monotonic_now)?;
+        let update = cpu.as_mut().next_scheduler_deadline_update_if_changed(
+            monotonic_now,
+            SchedulerDeadlineDerivationSource::KtimerService,
+        )?;
         Ok(KtimerServiceBatch {
             processed,
             pending,
@@ -799,11 +800,15 @@ impl TaskSystem {
         Ok(())
     }
 
-    pub(super) fn program_local_timer(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<(), TaskError> {
+    pub(super) fn program_local_timer(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        source: SchedulerDeadlineDerivationSource,
+    ) -> Result<(), TaskError> {
         let monotonic_now = task_runtime::monotonic_now();
         let Some(update) = cpu
             .as_mut()
-            .next_scheduler_deadline_update_if_changed(monotonic_now)?
+            .next_scheduler_deadline_update_if_changed(monotonic_now, source)?
         else {
             return Ok(());
         };
