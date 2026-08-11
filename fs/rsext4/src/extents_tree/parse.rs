@@ -7,6 +7,13 @@ pub struct ExtentRun {
     pub len: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExtentBlockMapping {
+    Hole,
+    Initialized(AbsoluteBN),
+    Unwritten(AbsoluteBN),
+}
+
 impl<'a> ExtentTree<'a> {
     pub const MAX_DEPTH: u16 = 32;
 
@@ -121,6 +128,49 @@ impl<'a> ExtentTree<'a> {
         self.find_in_node(dev, &root, lblock)
     }
 
+    /// Finds the extent covering `lblock`, or the first extent after it.
+    pub(crate) fn find_extent_at_or_after<B: BlockIo>(
+        &mut self,
+        dev: &mut Jbd2Dev<B>,
+        lblock: u32,
+    ) -> Ext4Result<Option<Ext4Extent>> {
+        let root = self.load_root_from_inode()?;
+        self.validate_node(&root, None, None, dev.total_blocks(), true)?;
+        self.find_at_or_after_in_node(dev, &root, lblock)
+    }
+
+    /// Returns the external leaf block that owns `lblock`; inline leaves have
+    /// no block identity.
+    pub(crate) fn external_leaf_block<B: BlockIo>(
+        &mut self,
+        dev: &mut Jbd2Dev<B>,
+        lblock: u32,
+    ) -> Ext4Result<Option<AbsoluteBN>> {
+        let root = self.load_root_from_inode()?;
+        self.validate_node(&root, None, None, dev.total_blocks(), true)?;
+        self.external_leaf_block_in_node(dev, &root, lblock, None)
+    }
+
+    /// Resolves one logical block without collapsing unwritten extents into holes.
+    pub fn map_block<B: BlockIo>(
+        &mut self,
+        dev: &mut Jbd2Dev<B>,
+        lblock: u32,
+    ) -> Ext4Result<ExtentBlockMapping> {
+        let Some(extent) = self.find_extent(dev, lblock)? else {
+            return Ok(ExtentBlockMapping::Hole);
+        };
+        let offset = lblock
+            .checked_sub(extent.ee_block)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:mapping_offset"))?;
+        let physical = AbsoluteBN::new(extent.start_block()).checked_add(offset)?;
+        Ok(if extent.is_unwritten() {
+            ExtentBlockMapping::Unwritten(physical)
+        } else {
+            ExtentBlockMapping::Initialized(physical)
+        })
+    }
+
     pub fn initialized_runs_in_range<B: BlockIo>(
         &mut self,
         dev: &mut Jbd2Dev<B>,
@@ -173,6 +223,72 @@ impl<'a> ExtentTree<'a> {
                 let child = self.read_child_node(dev, chosen, header.eh_depth - 1)?;
 
                 self.find_in_node(dev, &child, lblock)
+            }
+        }
+    }
+
+    fn find_at_or_after_in_node<B: BlockIo>(
+        &self,
+        dev: &mut Jbd2Dev<B>,
+        node: &ExtentNode,
+        lblock: u32,
+    ) -> Ext4Result<Option<Ext4Extent>> {
+        match node {
+            ExtentNode::Leaf { entries, .. } => {
+                for extent in entries {
+                    let end = extent.ee_block.checked_add(extent.len()).ok_or_else(|| {
+                        Ext4Error::corrupted().with_operation("extent:logical_overflow")
+                    })?;
+                    if end > lblock {
+                        return Ok(Some(*extent));
+                    }
+                }
+                Ok(None)
+            }
+            ExtentNode::Index { header, entries } => {
+                let partition = entries.partition_point(|index| index.ei_block <= lblock);
+                let first = partition.saturating_sub(1);
+                for index in &entries[first..] {
+                    let child = self.read_child_node(dev, index, header.eh_depth - 1)?;
+                    if let Some(extent) = self.find_at_or_after_in_node(dev, &child, lblock)? {
+                        return Ok(Some(extent));
+                    }
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    fn external_leaf_block_in_node<B: BlockIo>(
+        &self,
+        dev: &mut Jbd2Dev<B>,
+        node: &ExtentNode,
+        lblock: u32,
+        physical_node: Option<AbsoluteBN>,
+    ) -> Ext4Result<Option<AbsoluteBN>> {
+        match node {
+            ExtentNode::Leaf { entries, .. } => {
+                let owns_block = entries.iter().any(|extent| {
+                    extent.ee_block <= lblock
+                        && lblock < extent.ee_block.saturating_add(extent.len())
+                });
+                if owns_block {
+                    Ok(physical_node)
+                } else {
+                    Err(Ext4Error::corrupted().with_operation("extent:leaf_mapping_missing"))
+                }
+            }
+            ExtentNode::Index { header, entries } => {
+                let partition = entries.partition_point(|index| index.ei_block <= lblock);
+                let position = partition.saturating_sub(1);
+                let index = entries
+                    .get(position)
+                    .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:empty_index"))?;
+                let child_block = AbsoluteBN::new(
+                    (u64::from(index.ei_leaf_hi) << 32) | u64::from(index.ei_leaf_lo),
+                );
+                let child = self.read_child_node(dev, index, header.eh_depth - 1)?;
+                self.external_leaf_block_in_node(dev, &child, lblock, Some(child_block))
             }
         }
     }

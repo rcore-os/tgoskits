@@ -2,6 +2,18 @@ use super::*;
 
 const MAX_RUN_IO_BYTES: usize = 1024 * 1024;
 
+/// Options for Linux-style extent preallocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreallocationOptions {
+    /// Preserve the current visible file size while reserving blocks.
+    pub keep_size: bool,
+}
+
+impl PreallocationOptions {
+    pub const EXTEND_SIZE: Self = Self { keep_size: false };
+    pub const KEEP_SIZE: Self = Self { keep_size: true };
+}
+
 pub fn truncate<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -582,6 +594,152 @@ pub fn write_file<B: BlockIo>(
     write_inode_data(device, fs, inode_num, offset, data)
 }
 
+/// Reserves physical blocks as unwritten extents without exposing old disk data.
+pub fn preallocate_inode<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    offset: u64,
+    len: u64,
+    options: PreallocationOptions,
+) -> Ext4Result<()> {
+    if len == 0 {
+        return Err(Ext4Error::invalid_input().with_operation("fallocate:zero_length"));
+    }
+    let end = offset
+        .checked_add(len)
+        .ok_or_else(Ext4Error::file_too_large)?;
+    let block_size = fs.block_size() as u64;
+    let start_lbn = offset / block_size;
+    let end_lbn = end.div_ceil(block_size);
+    if end_lbn > u64::from(u32::MAX) + 1 {
+        return Err(Ext4Error::file_too_large());
+    }
+
+    let mut inode = fs.get_inode_by_num(device, inode_num)?;
+    if !inode.is_file() {
+        return Err(Ext4Error::invalid_input().with_operation("fallocate:not_regular"));
+    }
+    if !inode.uses_extents() {
+        return Err(Ext4Error::unsupported().with_operation("fallocate:legacy_indirect"));
+    }
+    let original_inode = inode;
+    let huge_file_feature = fs
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+    let mut inserted_ranges = Vec::new();
+
+    let operation = (|| {
+        let mut logical = start_lbn;
+        while logical < end_lbn {
+            let logical_u32 = u32::try_from(logical).map_err(|_| Ext4Error::file_too_large())?;
+            let next_extent = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
+                .find_extent_at_or_after(device, logical_u32)?;
+            if let Some(extent) = next_extent {
+                let extent_end = u64::from(extent.ee_block)
+                    .checked_add(u64::from(extent.len()))
+                    .ok_or_else(|| {
+                        Ext4Error::corrupted().with_operation("extent:logical_overflow")
+                    })?;
+                if u64::from(extent.ee_block) <= logical && logical < extent_end {
+                    logical = core::cmp::min(extent_end, end_lbn);
+                    continue;
+                }
+            }
+            let max_run_end =
+                core::cmp::min(end_lbn, logical + u64::from(Ext4Extent::EXT_UNINIT_MAX_LEN));
+            let hole_end = next_extent
+                .map(|extent| u64::from(extent.ee_block))
+                .unwrap_or(end_lbn)
+                .min(max_run_end);
+            let requested = u32::try_from(hole_end - logical).map_err(|_| Ext4Error::overflow())?;
+            let mut accounting_check = inode;
+            add_inode_data_blocks(
+                &mut accounting_check,
+                u64::from(requested),
+                block_size as u32,
+                huge_file_feature,
+            )?;
+            let blocks = alloc_contiguous_run_best_effort(device, fs, requested)?;
+            let first = *blocks.first().ok_or_else(Ext4Error::no_space)?;
+            for pair in blocks.windows(2) {
+                if pair[1].raw() != pair[0].raw() + 1 {
+                    for block in blocks {
+                        fs.free_block(device, block)?;
+                    }
+                    return Err(
+                        Ext4Error::corrupted().with_operation("fallocate:noncontiguous_allocator")
+                    );
+                }
+            }
+            let allocated = u32::try_from(blocks.len()).map_err(|_| Ext4Error::overflow())?;
+            add_inode_data_blocks(
+                &mut inode,
+                u64::from(allocated),
+                block_size as u32,
+                huge_file_feature,
+            )?;
+            let extent = Ext4Extent::new_unwritten(logical_u32, first.raw(), allocated)
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("fallocate:extent_length"))?;
+            if let Err(error) = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
+                .insert_extent(fs, extent, device)
+            {
+                let mut cleanup = Ok(());
+                for block in blocks {
+                    if let Err(free_error) = fs.free_block(device, block)
+                        && cleanup.is_ok()
+                    {
+                        cleanup = Err(free_error);
+                    }
+                }
+                if cleanup.is_ok() {
+                    subtract_inode_data_blocks(
+                        &mut inode,
+                        u64::from(allocated),
+                        block_size as u32,
+                        huge_file_feature,
+                    )?;
+                }
+                return Err(error_after_cleanup(error, cleanup));
+            }
+            inserted_ranges.push((logical_u32, allocated));
+            logical += u64::from(allocated);
+        }
+
+        if !options.keep_size && end > inode.size() {
+            inode.i_size_lo = end as u32;
+            inode.i_size_high = (end >> 32) as u32;
+        }
+        fs.finalize_inode_update(
+            device,
+            inode_num,
+            &mut inode,
+            Ext4InodeMetadataUpdate::write_access(),
+        )
+    })();
+
+    if let Err(error) = operation {
+        let mut cleanup = Ok(());
+        for &(logical, blocks) in inserted_ranges.iter().rev() {
+            let range = Ext4Extent::new(logical, 0, blocks as u16);
+            if let Err(rollback_error) = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
+                .remove_extent(fs, range, device)
+                && cleanup.is_ok()
+            {
+                cleanup = Err(rollback_error);
+            }
+        }
+        if cleanup.is_ok()
+            && let Err(restore_error) =
+                fs.modify_inode(device, inode_num, |on_disk| *on_disk = original_inode)
+        {
+            cleanup = Err(restore_error);
+        }
+        return Err(error_after_cleanup(error, cleanup));
+    }
+    Ok(())
+}
+
 fn add_inode_data_blocks(
     inode: &mut Ext4Inode,
     blocks: u64,
@@ -595,6 +753,22 @@ fn add_inode_data_blocks(
     let next = current
         .checked_add(sectors)
         .ok_or_else(Ext4Error::overflow)?;
+    inode.set_blocks_count(next, block_size, huge_file_feature)
+}
+
+fn subtract_inode_data_blocks(
+    inode: &mut Ext4Inode,
+    blocks: u64,
+    block_size: u32,
+    huge_file_feature: bool,
+) -> Ext4Result<()> {
+    let sectors = blocks
+        .checked_mul(u64::from(block_size / 512))
+        .ok_or_else(Ext4Error::overflow)?;
+    let current = inode.blocks_count(block_size, huge_file_feature);
+    let next = current
+        .checked_sub(sectors)
+        .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:block_underflow"))?;
     inode.set_blocks_count(next, block_size, huge_file_feature)
 }
 
@@ -802,6 +976,244 @@ fn write_legacy_inode_data<B: BlockIo>(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PreparedUnwrittenRun {
+    logical_start: u32,
+    physical_start: AbsoluteBN,
+    len: u32,
+}
+
+struct ExtentMetadataSnapshot {
+    block: AbsoluteBN,
+    bytes: Vec<u8>,
+}
+
+fn snapshot_prepared_extent_leaves<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    prepared: &[PreparedUnwrittenRun],
+) -> Ext4Result<Vec<ExtentMetadataSnapshot>> {
+    let mut snapshots = Vec::new();
+    for run in prepared {
+        let block = ExtentTree::with_filesystem(inode, fs, inode_num)
+            .external_leaf_block(device, run.logical_start)?;
+        let Some(block) = block else {
+            continue;
+        };
+        if snapshots
+            .iter()
+            .any(|snapshot: &ExtentMetadataSnapshot| snapshot.block == block)
+        {
+            continue;
+        }
+        device.read_block(block)?;
+        snapshots.push(ExtentMetadataSnapshot {
+            block,
+            bytes: device.buffer().to_vec(),
+        });
+    }
+    Ok(snapshots)
+}
+
+fn restore_prepared_extent_state<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: Ext4Inode,
+    snapshots: &[ExtentMetadataSnapshot],
+) -> Ext4Result<()> {
+    let mut first_error = None;
+    for snapshot in snapshots {
+        if let Err(error) = device.write_blocks(&snapshot.bytes, snapshot.block, 1, true)
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    if let Err(error) = fs.modify_inode(device, inode_num, |on_disk| *on_disk = inode)
+        && first_error.is_none()
+    {
+        first_error = Some(error);
+    }
+    match first_error {
+        Some(error) => Err(error.with_operation("rollback:unwritten_conversion")),
+        None => Ok(()),
+    }
+}
+
+fn extent_write_needs_preparation<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    start_lbn: u32,
+    end_lbn: u32,
+) -> Ext4Result<bool> {
+    let mut logical = start_lbn;
+    loop {
+        let next = ExtentTree::with_filesystem(inode, fs, inode_num)
+            .find_extent_at_or_after(device, logical)?;
+        let Some(extent) = next else {
+            return Ok(true);
+        };
+        if extent.ee_block > logical || extent.is_unwritten() {
+            return Ok(true);
+        }
+        let extent_end = extent
+            .ee_block
+            .checked_add(extent.len())
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:logical_overflow"))?;
+        if extent_end > end_lbn {
+            return Ok(false);
+        }
+        logical = extent_end;
+    }
+}
+
+fn write_inode_data_through_unwritten<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    old_size: u64,
+    write: &WriteSlice<'_>,
+    start_lbn: u32,
+    end_lbn: u32,
+) -> Ext4Result<()> {
+    let block_size = fs.block_size();
+    let block_bytes = block_size as u64;
+    let aligned_offset = u64::from(start_lbn)
+        .checked_mul(block_bytes)
+        .ok_or_else(Ext4Error::file_too_large)?;
+    let block_count = u64::from(end_lbn)
+        .checked_sub(u64::from(start_lbn))
+        .and_then(|blocks| blocks.checked_add(1))
+        .ok_or_else(Ext4Error::file_too_large)?;
+    let aligned_len = block_count
+        .checked_mul(block_bytes)
+        .ok_or_else(Ext4Error::file_too_large)?;
+
+    // Fill every hole with an unwritten mapping first. A later data error can
+    // therefore leave a reachable reservation, but can never expose stale
+    // disk contents as initialized file data.
+    preallocate_inode(
+        device,
+        fs,
+        inode_num,
+        aligned_offset,
+        aligned_len,
+        PreallocationOptions::KEEP_SIZE,
+    )?;
+    let mut inode = fs.get_inode_by_num(device, inode_num)?;
+    let mut prepared = Vec::new();
+    let end_exclusive = end_lbn
+        .checked_add(1)
+        .ok_or_else(Ext4Error::file_too_large)?;
+    let mut logical = start_lbn;
+    while logical < end_exclusive {
+        let extent = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
+            .find_extent_at_or_after(device, logical)?
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("write:preallocation_hole"))?;
+        if extent.ee_block > logical {
+            return Err(Ext4Error::corrupted().with_operation("write:preallocation_hole"));
+        }
+        let extent_end = extent
+            .ee_block
+            .checked_add(extent.len())
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:logical_overflow"))?;
+        let run_end = core::cmp::min(extent_end, end_exclusive);
+        if extent.is_unwritten() {
+            let len = run_end - logical;
+            let physical_start =
+                AbsoluteBN::new(extent.start_block()).checked_add(logical - extent.ee_block)?;
+            let tree_depth = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
+                .load_root_from_inode()?
+                .header()
+                .eh_depth;
+            let prepare_credits = usize::from(tree_depth)
+                .checked_mul(2)
+                .and_then(|credits| credits.checked_add(8))
+                .ok_or_else(Ext4Error::overflow)?;
+            device.with_transaction_handle(prepare_credits, |device| {
+                {
+                    let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
+                    tree.prepare_unwritten_write(fs, device, logical, len)?;
+                }
+                // Publish the still-unwritten split in the same journal
+                // operation as its external extent-node updates.
+                fs.modify_inode(device, inode_num, |on_disk| *on_disk = inode)
+            })?;
+            prepared.push(PreparedUnwrittenRun {
+                logical_start: logical,
+                physical_start,
+                len,
+            });
+        }
+        logical = run_end;
+    }
+
+    let leaf_snapshots =
+        snapshot_prepared_extent_leaves(device, fs, inode_num, &mut inode, &prepared)?;
+
+    for lbn in start_lbn..=end_lbn {
+        let physical = if let Some(run) = prepared
+            .iter()
+            .find(|run| run.logical_start <= lbn && lbn < run.logical_start.saturating_add(run.len))
+        {
+            let physical = run.physical_start.checked_add(lbn - run.logical_start)?;
+            write_inode_block_data(device, fs, physical, u64::from(lbn), write, true)?;
+            continue;
+        } else {
+            match ExtentTree::with_filesystem(&mut inode, fs, inode_num).map_block(device, lbn)? {
+                ExtentBlockMapping::Initialized(physical) => physical,
+                ExtentBlockMapping::Hole | ExtentBlockMapping::Unwritten(_) => {
+                    return Err(Ext4Error::corrupted().with_operation("write:prepared_mapping"));
+                }
+            }
+        };
+        write_inode_block_data(device, fs, physical, u64::from(lbn), write, false)?;
+    }
+
+    let prepared_inode = inode;
+    let finish_credits = leaf_snapshots
+        .len()
+        .checked_add(1)
+        .ok_or_else(Ext4Error::overflow)?;
+    let finish = device.with_transaction_handle(finish_credits, |device| {
+        for run in &prepared {
+            ExtentTree::with_filesystem(&mut inode, fs, inode_num).finish_unwritten_write(
+                device,
+                run.logical_start,
+                run.len,
+            )?;
+        }
+        if write.end > old_size {
+            inode.i_size_lo = write.end as u32;
+            inode.i_size_high = (write.end >> 32) as u32;
+        }
+        fs.finalize_inode_update(
+            device,
+            inode_num,
+            &mut inode,
+            Ext4InodeMetadataUpdate::write_access(),
+        )
+    });
+    match finish {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let restore = restore_prepared_extent_state(
+                device,
+                fs,
+                inode_num,
+                prepared_inode,
+                &leaf_snapshots,
+            );
+            Err(error_after_cleanup(error, restore))
+        }
+    }
+}
+
 pub fn write_inode_data<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -834,11 +1246,25 @@ pub fn write_inode_data<B: BlockIo>(
         return write_legacy_inode_data(device, fs, inode_num, inode, write);
     }
 
-    let old_blocks = if old_size == 0 {
-        0
-    } else {
-        old_size.div_ceil(block_bytes)
-    };
+    if extent_write_needs_preparation(
+        device,
+        fs,
+        inode_num,
+        &mut inode,
+        start_lbn as u32,
+        end_lbn as u32,
+    )? {
+        return write_inode_data_through_unwritten(
+            device,
+            fs,
+            inode_num,
+            old_size,
+            &write,
+            start_lbn as u32,
+            end_lbn as u32,
+        );
+    }
+
     let use_existing_run_map = end <= old_size
         && offset.is_multiple_of(block_bytes)
         && end.is_multiple_of(block_bytes)
@@ -862,60 +1288,12 @@ pub fn write_inode_data<B: BlockIo>(
             continue;
         }
 
-        let phys = match resolve_inode_block(fs, device, inode_num, &mut inode, lbn as u32)? {
-            Some(b) => b,
-            None => {
-                let missing_len = if lbn >= old_blocks {
-                    end_lbn - lbn + 1
-                } else {
-                    1
-                };
-                let requested = core::cmp::min(missing_len, Ext4Extent::EXT_INIT_MAX_LEN as u64)
-                    .min(u32::MAX as u64) as u32;
-                let huge_file_feature = fs
-                    .superblock
-                    .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
-                let mut accounting_check = inode;
-                add_inode_data_blocks(
-                    &mut accounting_check,
-                    u64::from(requested),
-                    block_bytes as u32,
-                    huge_file_feature,
-                )?;
-                let blocks = alloc_contiguous_run_best_effort(device, fs, requested)?;
-                let first_phys = *blocks.first().ok_or(Ext4Error::no_space())?;
-                let run_len = u32::try_from(blocks.len()).map_err(|_| Ext4Error::overflow())?;
-
-                // Account data before tree mutation so checked encoding
-                // cannot fail after an extent has become reachable.
-                add_inode_data_blocks(
-                    &mut inode,
-                    u64::from(run_len),
-                    block_bytes as u32,
-                    huge_file_feature,
-                )?;
-
-                {
-                    let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
-                    let ext = Ext4Extent::new(lbn as u32, first_phys.raw(), run_len as u16);
-                    tree.insert_extent(fs, ext, device)?;
-                }
-
-                let run_start = lbn.saturating_mul(block_bytes);
-                let run_end = run_start.saturating_add(u64::from(run_len) * block_bytes);
-                let write_start = core::cmp::max(offset, run_start);
-                let write_end = core::cmp::min(end, run_end);
-                let covers_full_run = write_start == run_start && write_end == run_end;
-                if covers_full_run {
-                    write_full_block_run(device, fs, first_phys, lbn, offset, data, run_len)?;
-                } else {
-                    for (idx, &block) in blocks.iter().enumerate() {
-                        write_inode_block_data(device, fs, block, lbn + idx as u64, &write, true)?;
-                    }
-                }
-
-                lbn += u64::from(run_len);
-                continue;
+        let mapping =
+            ExtentTree::with_filesystem(&mut inode, fs, inode_num).map_block(device, lbn as u32)?;
+        let phys = match mapping {
+            ExtentBlockMapping::Initialized(block) => block,
+            ExtentBlockMapping::Hole | ExtentBlockMapping::Unwritten(_) => {
+                return Err(Ext4Error::corrupted().with_operation("write:unprepared_mapping"));
             }
         };
 

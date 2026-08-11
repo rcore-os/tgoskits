@@ -25,30 +25,10 @@ pub fn resolve_inode_block<B: BlockIo>(
 ) -> Ext4Result<Option<AbsoluteBN>> {
     if inode.uses_extents() {
         let mut tree = ExtentTree::with_filesystem(inode, fs, inode_num);
-        if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
-            let len = ext.len();
-            if len == 0 {
-                return Ok(None);
-            }
-
-            let start_lbn = ext.ee_block;
-            let end_lbn = start_lbn
-                .checked_add(len)
-                .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:logical_overflow"))?;
-            if logical_block < start_lbn || logical_block >= end_lbn {
-                return Ok(None);
-            }
-
-            if ext.is_unwritten() {
-                return Ok(None);
-            }
-
-            let base = ((ext.ee_start_hi as u64) << 32) | ext.ee_start_lo as u64;
-            return Ok(Some(
-                AbsoluteBN::new(base).checked_add(logical_block - start_lbn)?,
-            ));
+        match tree.map_block(block_dev, logical_block)? {
+            ExtentBlockMapping::Hole | ExtentBlockMapping::Unwritten(_) => Ok(None),
+            ExtentBlockMapping::Initialized(physical) => Ok(Some(physical)),
         }
-        Ok(None)
     } else {
         resolve_legacy_inode_block(fs, block_dev, inode_num, inode, logical_block)
     }
