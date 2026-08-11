@@ -555,7 +555,8 @@
           "rust_owner": "rsext4::allocator",
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
-            "mkdir-mutation-rollback"
+            "mkdir-mutation-rollback",
+            "special-inode-rdev"
           ]
         }
       ]
@@ -640,7 +641,8 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "legacy-indirect-13-blocks",
-            "extent-mutation-rollback"
+            "extent-mutation-rollback",
+            "special-inode-rdev"
           ]
         }
       ]
@@ -810,7 +812,8 @@
           "test_ids": [
             "mkdir-mutation-rollback",
             "rename-mutation-rollback",
-            "typed-rename-flags"
+            "typed-rename-flags",
+            "special-inode-rdev"
           ]
         }
       ]
