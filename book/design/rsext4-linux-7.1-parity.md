@@ -525,3 +525,28 @@ RSEXT4_BENCH_SUMMARY commit=c1da15b5ebfdee0dfc30d1e1d48932e7a0b58b91 arch=x86_64
 10.1%/12.4%，sync median/p95 分别回退约 13.6%/66.1%。因此
 median 与 p95 硬门槛均未通过，本检查点保持性能红项；20 个
 有效样本一个未丢弃，也不用继续复测覆盖。
+
+### 7.19 journal flush 与 remount 检查点
+
+采集时间：2026-08-11；被测实现 commit 为
+`6374efcebfa2d90a17996807b027877c19275775`，固定 CPU 2，环境、owned API
+harness 和 workload 与 7.18 相同。本检查点使 `Jbd2Dev::flush` 强制提交 pending
+metadata transaction，并把 owned `sync` 收口到单一 flush/commit 路径，删除一次
+空 commit 和多余设备 flush；同时加入 owned RO/RW remount 状态机。remount 不在
+该 sequential workload 的计时区间，因此结果只用于验证现有 write/read/sync
+工作负载未回退，不能把变化归因于 remount。
+
+正式检查使用 3 次预热与 20 次测量，全部有效原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-journal-flush-remount.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=6374efcebfa2d90a17996807b027877c19275775 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6488946 write_p95_ns=7037221 read_median_ns=6203958 read_p95_ns=7585968 sync_median_ns=32273 sync_p95_ns=35688
+```
+
+相对 dev 基线，write median/p95 分别回退约 3.7%/2.2%，read median/p95
+分别回退约 1.9%/6.2%，sync p95 回退约 3.4%，均在冻结门槛内；sync median
+回退约 13.3%，但 sync workload 的 latency 门槛按 p95 判定。相对 7.18 的 owned
+API 检查点，write median/p95 改善约 1.7%/9.0%，read median/p95 改善约
+7.4%/5.5%，sync p95 改善约 37.7%。本检查点使现有 sequential host workload
+重新通过，但完整 workload/feature、Linux 7.1 新功能开销和最终三架构矩阵仍未完成，
+不能作为最终性能验收。
