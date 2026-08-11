@@ -75,7 +75,6 @@ use ax_io::{Read, Write};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, pmu};
-use crate::sync::PiMutex;
 use axpoll::Pollable;
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
@@ -96,7 +95,7 @@ use crate::{
     file::{FileLike, Kstat, add_file_like, get_file_like},
     mm::{VmBytes, VmBytesMut},
     pseudofs::DeviceMmap,
-    sync::{IrqMutex, Mutex},
+    sync::{IrqMutex, Mutex, PiMutex},
 };
 
 /// Monotonic source of per-event `perf` ids (`PERF_EVENT_IOC_ID`,

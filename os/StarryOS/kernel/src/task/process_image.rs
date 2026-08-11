@@ -3,10 +3,10 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::mem;
 
-use crate::sync::PiMutex;
 use kernel_elf_parser::AuxEntry;
 
 use super::ProcessData;
+use crate::sync::PiMutex;
 
 /// Metadata supplied when a process image is created.
 pub struct ProcessImage {
@@ -126,9 +126,8 @@ impl ProcessData {
 
 #[cfg(test)]
 mod tests {
-    use crate::sync::PiMutex;
-
     use super::ProcessImageState;
+    use crate::sync::PiMutex;
 
     #[test]
     fn process_image_heap_fields_use_sleepable_pi_locks() {

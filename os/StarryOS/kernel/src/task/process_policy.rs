@@ -2,9 +2,8 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 
-use crate::sync::{PiMutex, PiMutexGuard};
-
 use super::{ProcessData, Rlimits};
+use crate::sync::{PiMutex, PiMutexGuard};
 
 pub(super) struct ProcessPolicyState {
     rlimits: PiMutex<Rlimits>,
@@ -74,9 +73,8 @@ impl ProcessData {
 
 #[cfg(test)]
 mod tests {
-    use crate::sync::PiMutex;
-
     use super::ProcessPolicyState;
+    use crate::sync::PiMutex;
 
     #[test]
     fn resource_limits_use_a_sleepable_pi_lock() {

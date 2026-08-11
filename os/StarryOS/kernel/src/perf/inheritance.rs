@@ -11,7 +11,6 @@ use alloc::sync::{Arc, Weak};
 use core::sync::atomic::Ordering;
 
 use ax_errno::{AxError, AxResult};
-use crate::sync::PiMutex;
 
 use super::{
     hw,
@@ -22,7 +21,7 @@ use super::{
         PERF_TASK_ACTIVE, PerTaskCounter, SamplingAnchors, attach, detach_unpublished, free_hw,
     },
 };
-use crate::task::Thread;
+use crate::{sync::PiMutex, task::Thread};
 
 const MAX_FAMILY_MEMBERS: usize = 32;
 

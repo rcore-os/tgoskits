@@ -6,11 +6,10 @@ use core::{
 };
 
 use ax_kspin::SpinNoPreempt;
-use crate::sync::PiMutex;
 use ktracepoint::{ExtTracePoint, TracePoint};
 
 use super::KernelTraceAux;
-use crate::task::future::IrqNotify;
+use crate::{sync::PiMutex, task::future::IrqNotify};
 
 /// Maximum retired callback snapshots reclaimed without yielding.
 const TRACEPOINT_RECLAIM_BATCH: usize = 64;

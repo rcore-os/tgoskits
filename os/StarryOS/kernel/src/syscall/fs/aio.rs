@@ -18,7 +18,6 @@ use ax_fs_ng::vfs::FileFlags;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::{paging::MappingFlags, time::wall_time};
 use ax_std::os::arceos::task::WaitQueue;
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::timespec;
 use starry_process::Pid;
@@ -27,6 +26,7 @@ use starry_signal::SignalSet;
 use crate::{
     file::{Directory, File, FileLike, event::EventFd, get_file_like, memfd::Memfd},
     mm::{AddrSpace, Backend, IoVec, VmMutPtr, VmPtr},
+    sync::PiMutex,
     syscall::signal::check_sigset_size,
     task::{
         future::{UserWaitOutcome, block_on, block_on_user_until_wall},

@@ -12,9 +12,9 @@ use core::{
 
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_std::os::arceos::task as scheduler;
-use crate::sync::PiMutex;
 
 use super::Thread;
+use crate::sync::PiMutex;
 
 const TASK_COMM_LEN: usize = 16;
 

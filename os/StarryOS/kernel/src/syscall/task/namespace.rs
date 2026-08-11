@@ -4,7 +4,6 @@ use core::ops::DerefMut;
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::{FS_CONTEXT, FsContext};
 use ax_kspin::SpinRwLock;
-use crate::sync::PiMutex;
 use axnsproxy::NsProxy;
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
@@ -14,6 +13,7 @@ use linux_raw_sys::general::{
 
 use crate::{
     file::{FD_TABLE, FileDescriptor, NsFd, PidFd, get_file_like},
+    sync::PiMutex,
     task::{AX_FILE_LIMIT, ProcessNamespaceUpdate, Thread, get_task},
 };
 

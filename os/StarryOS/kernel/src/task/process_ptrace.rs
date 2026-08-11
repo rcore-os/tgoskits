@@ -4,11 +4,11 @@ use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 use ax_runtime::hal::cpu::uspace::UserContext;
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 use starry_signal::{SignalInfo, Signo};
 
 use super::ProcessData;
+use crate::sync::PiMutex;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyscallTraceState {
@@ -771,9 +771,8 @@ impl ProcessData {
 
 #[cfg(test)]
 mod tests {
-    use crate::sync::PiMutex;
-
     use super::ProcessPtraceState;
+    use crate::sync::PiMutex;
 
     #[test]
     fn ptrace_heap_registries_use_sleepable_pi_locks() {

@@ -11,8 +11,6 @@ use axpoll::PollSet;
 use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWriteGuard};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
-use crate::sync::PiMutex;
-
 use super::{
     CpuTimeAccounting, CpuTimeDelta, Cred, ProcessData, RttimeWatchdog, SeccompDecision,
     SeccompState, SeccompStateStore, SockFilter, TimerState,
@@ -23,6 +21,7 @@ use super::{
     scheduler_identity::SchedulerIdentity,
     user_memory_access::{UserMemoryAccessDepth, UserMemoryAccessGuard},
 };
+use crate::sync::PiMutex;
 
 const KRETPROBE_STACK_CAPACITY: usize = 16;
 
@@ -743,10 +742,8 @@ impl Thread {
 mod tests {
     use core::sync::atomic::{AtomicBool, Ordering};
 
-    use crate::sync::PiMutex;
-
     use super::{NextSignalCheckBlock, ThreadSecurity};
-    use crate::task::SeccompStateStore;
+    use crate::{sync::PiMutex, task::SeccompStateStore};
 
     #[test]
     fn seccomp_reads_use_an_immutable_snapshot_store() {

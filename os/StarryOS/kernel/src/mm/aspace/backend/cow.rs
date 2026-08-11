@@ -12,7 +12,6 @@ use ax_runtime::hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageTable, PagingError},
 };
-use crate::sync::PiMutex;
 
 use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
@@ -20,7 +19,7 @@ use super::{
 };
 use crate::{
     mm::paging_error_to_ax_error,
-    sync::{IrqMutex, Mutex},
+    sync::{IrqMutex, Mutex, PiMutex},
 };
 
 struct FrameRefCnt {

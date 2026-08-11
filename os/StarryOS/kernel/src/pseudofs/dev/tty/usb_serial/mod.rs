@@ -5,7 +5,6 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 
 use self::backend::{UsbSerialPortInfo, find_usb_serial_port};
@@ -19,7 +18,7 @@ use super::{
 };
 use crate::{
     pseudofs::usbfs::{self, UsbDeviceHandle},
-    sync::{IrqMutex, Mutex},
+    sync::{IrqMutex, Mutex, PiMutex},
 };
 
 pub type UsbSerialTtyDriver = Tty<UsbSerialReader, UsbSerialWriter>;

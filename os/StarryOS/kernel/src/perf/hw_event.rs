@@ -35,8 +35,6 @@ use core::sync::atomic::Ordering;
 use ax_errno::{AxError, AxResult};
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
-#[cfg(target_arch = "aarch64")]
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 #[cfg(not(target_arch = "aarch64"))]
 use kbpf_basic::linux_bpf::perf_event_attr;
@@ -62,6 +60,8 @@ use super::{
     sampling::{SampleOutput, SampleSlot, SampleSlotConfig},
     sampling_lifecycle::SampleRegistration,
 };
+#[cfg(target_arch = "aarch64")]
+use crate::sync::PiMutex;
 
 /// Dynamically-assigned `perf_event_attr.type` for the ARM PMUv3 CPU PMU,
 /// exposed at `/sys/bus/event_source/devices/armv8_pmuv3_0/type`.

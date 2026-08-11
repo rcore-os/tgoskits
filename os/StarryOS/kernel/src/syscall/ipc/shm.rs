@@ -7,7 +7,6 @@ use alloc::{
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time_nanos};
-use crate::sync::PiMutex;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
@@ -16,7 +15,10 @@ use super::{
     IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, SHM_INFO,
     SHM_STAT, has_ipc_permission, next_ipc_id,
 };
-use crate::mm::{AddrSpace, Backend, SharedPages, UserPtr, VmMutPtr};
+use crate::{
+    mm::{AddrSpace, Backend, SharedPages, UserPtr, VmMutPtr},
+    sync::PiMutex,
+};
 
 bitflags::bitflags! {
     /// flags for sys_shmat

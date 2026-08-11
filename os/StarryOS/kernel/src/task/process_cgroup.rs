@@ -3,8 +3,9 @@
 use alloc::sync::Arc;
 
 use ax_cgroup::{CgroupNode, CgroupResult, ProcessMembership};
-use crate::sync::PiMutex;
 use starry_process::Pid;
+
+use crate::sync::PiMutex;
 
 /// Serializes migration and final exit for one stable process generation.
 pub(super) struct ProcessCgroupState {

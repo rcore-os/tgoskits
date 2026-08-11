@@ -4,13 +4,15 @@ use core::{any::Any, ops::Deref};
 use ax_errno::AxResult;
 use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
-use crate::sync::PiMutex;
 
 use super::{
     AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, RssKind, alloc_frame,
     dealloc_frame, divide_page, pages_in,
 };
-use crate::{mm::paging_error_to_ax_error, sync::Mutex};
+use crate::{
+    mm::paging_error_to_ax_error,
+    sync::{Mutex, PiMutex},
+};
 
 enum SharedPagesOwner {
     Allocated,

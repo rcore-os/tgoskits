@@ -10,7 +10,6 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FileFlags};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
-use crate::sync::PiMutex;
 use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
 
@@ -18,7 +17,7 @@ use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
     PopulateCallback, RssKind, pages_in,
 };
-use crate::mm::paging_error_to_ax_error;
+use crate::{mm::paging_error_to_ax_error, sync::PiMutex};
 
 #[doc(hidden)]
 pub struct FileBackendInner {

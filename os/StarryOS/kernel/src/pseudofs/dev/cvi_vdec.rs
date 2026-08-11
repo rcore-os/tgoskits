@@ -10,7 +10,6 @@ use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, mem::size_of};
 
 use ax_errno::AxError;
-use crate::sync::PiMutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use cvi_vdec_uapi::{
     COLOR_GAMUT_BT601, COMPRESS_MODE_NONE, CVI_VC_VDEC_CREATE_CHN, CVI_VC_VDEC_DESTROY_CHN,
@@ -32,6 +31,7 @@ use super::cvi_jpu::{CviJpu, DecodedJpuFrame};
 use crate::{
     mm::{VmMutPtr, VmPtr, vm_read_slice},
     pseudofs::DeviceOps,
+    sync::PiMutex,
 };
 
 const MAX_STREAM_BYTES: usize = 16 * 1024 * 1024;

@@ -9,7 +9,6 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext, current_fs_context};
 use ax_io::{Seek, SeekFrom};
-use crate::sync::PiMutex;
 use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
@@ -22,6 +21,7 @@ use crate::{
     file::{IoDst, IoSrc},
     mm::VmPtr,
     pseudofs::Device,
+    sync::PiMutex,
     task::{
         current_user_task,
         future::{block_on_user, poll_io},

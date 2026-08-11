@@ -15,13 +15,13 @@
 use core::{any::Any, ffi::c_int, mem::size_of};
 
 use ax_driver::jpeg::{self, mpp, registers};
-use crate::sync::PiMutex;
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 
 use crate::{
     file::dmabuf::resolve_contiguous_dmabuf,
     mm::{UserConstPtr, UserPtr},
     pseudofs::DeviceOps,
+    sync::PiMutex,
 };
 
 /// Char-device id for `/dev/mpp_service` (opened by path; id is informational).

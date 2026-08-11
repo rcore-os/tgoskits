@@ -1,10 +1,9 @@
-use crate::sync::PiMutex;
 use axfs_ng_vfs::{VfsError, VfsResult};
 use ktracepoint::{TraceFilterFile, TracePoint, TracePointEnableFile};
 
 use crate::{
     pseudofs::DirectRwFsFileOps,
-    sync::Mutex,
+    sync::{Mutex, PiMutex},
     tracepoint::{KernelExtTracePoint, KernelTraceAux},
 };
 

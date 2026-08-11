@@ -21,13 +21,15 @@ use ax_std::os::arceos::task::{
     self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, LocalExecutor,
     MonotonicDeadline, MonotonicInstant, WaitQueue,
 };
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 use spin::Once;
 
 pub use super::user_wait::{UserWaitError, UserWaitOutcome};
 use super::{UserTaskRef, user_wait::resolve_user_wait};
-use crate::time::{SleepClockSnapshot, SleepDeadline};
+use crate::{
+    sync::PiMutex,
+    time::{SleepClockSnapshot, SleepDeadline},
+};
 
 static TIMER_WAIT: WaitQueue = WaitQueue::new();
 static TIMER_RUNTIME: PiMutex<TimerRuntime> = PiMutex::new(TimerRuntime::new());

@@ -8,7 +8,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::{SpinNoIrq as Mutex, SpinRwLock as RwLock};
-use crate::sync::PiMutex;
 use crab_usb::{
     Device, DeviceInfo, Endpoint, ProbedDevice,
     usb_if::{
@@ -35,9 +34,9 @@ use super::{
 };
 use crate::{
     mm::{VmMutPtr, vm_load, vm_write_slice},
+    sync::{IrqMutex as Mutex, Mutex as BlockingMutex, PiMutex, RwLock},
     task::future::IrqNotify,
 };
-use crate::sync::{IrqMutex as Mutex, Mutex as BlockingMutex, RwLock};
 
 const ROOT_HUB_STABLE_DEVICE_ID: usize = usize::MAX;
 const USB_REQ_GET_DESCRIPTOR: u8 = 0x06;

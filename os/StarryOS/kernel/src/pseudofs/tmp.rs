@@ -14,7 +14,6 @@ use core::{
 };
 
 use ax_kspin::SpinNoIrq;
-use crate::sync::PiMutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
@@ -24,7 +23,7 @@ use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
-use crate::sync::{IrqMutex, Mutex};
+use crate::sync::{IrqMutex, Mutex, PiMutex};
 
 const TMPFS_MAGIC: u32 = 0x0102_1994;
 const RAMFS_MAGIC: u32 = 0x8584_58f6;

@@ -1,11 +1,11 @@
 use core::{future::poll_fn, task::Poll};
 
-use crate::sync::PiMutex;
 use axfs_ng_vfs::VfsResult;
 use ktracepoint::TracePipeOps;
 
 use crate::{
     pseudofs::DirectRwFsFileOps,
+    sync::PiMutex,
     task::{current_user_task, future::block_on_user},
 };
 

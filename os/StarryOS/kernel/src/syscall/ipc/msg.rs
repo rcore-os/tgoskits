@@ -2,7 +2,6 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_runtime::hal::time::monotonic_time_nanos;
-use crate::sync::PiMutex;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
@@ -13,6 +12,7 @@ use super::{
 };
 use crate::{
     mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
+    sync::PiMutex,
     task::WaitQueue as MsgWaitQueue,
 };
 

@@ -9,7 +9,6 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_io::prelude::*;
 use ax_net::{InterfaceId, InterfaceInfo, InterfaceKind};
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
@@ -23,6 +22,7 @@ use super::{
 use crate::{
     file::{IoDst, IoSrc, get_file_like},
     mm::{vm_read_slice, vm_write_slice},
+    sync::PiMutex,
     task::{
         current_user_task,
         future::{block_on_user, poll_io},

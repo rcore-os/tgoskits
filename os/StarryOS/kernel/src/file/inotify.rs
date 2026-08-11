@@ -12,7 +12,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{
@@ -26,6 +25,7 @@ use spin::LazyLock;
 use crate::{
     file::{FileLike, IoDst, IoSrc},
     mm::VmMutPtr,
+    sync::PiMutex,
     task::{
         current_user_task,
         future::{block_on_user, poll_io},

@@ -34,13 +34,12 @@ use ax_io::{IoBuf, SeekFrom, prelude::*};
 use ax_memory_addr::VirtAddr;
 use ax_memory_set::MemoryArea;
 use ax_runtime::hal::paging::MappingFlags;
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 
 use super::{File, FileLike, IoDst, IoSrc, Kstat, get_file_like};
 use crate::{
     mm::{AddrSpace, Backend},
-    sync::Mutex,
+    sync::{Mutex, PiMutex},
 };
 
 pub const F_SEAL_SEAL: u32 = 0x0001;

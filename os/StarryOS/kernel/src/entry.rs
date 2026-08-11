@@ -5,7 +5,6 @@ use alloc::{
 
 use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use crate::sync::PiMutex;
 use scope_local::Scope;
 use starry_process::{Pid, Process};
 
@@ -13,6 +12,7 @@ use crate::{
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty},
+    sync::PiMutex,
     task::{
         ProcessData, ProcessImage, Thread, add_task_to_table, join_kernel_thread, new_user_task,
         sleep, spawn_alarm_task, spawn_kernel_thread, spawn_kernel_thread_with_affinity,

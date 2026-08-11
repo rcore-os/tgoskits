@@ -18,7 +18,6 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_lazyinit::LazyInit;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
-use crate::sync::PiMutex;
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
 use ktracepoint::*;
@@ -27,6 +26,7 @@ use registry::TracepointReclaimer;
 
 use crate::{
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
+    sync::PiMutex,
     task::{future::IrqNotify, try_current_user_irq_view},
 };
 

@@ -8,7 +8,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
@@ -20,7 +19,10 @@ use ringbuf::{
 use starry_signal::SignalInfo;
 
 use super::{Terminal, termios::Termios2};
-use crate::task::{future::block_on, send_signal_to_process_group};
+use crate::{
+    sync::PiMutex,
+    task::{future::block_on, send_signal_to_process_group},
+};
 
 const BUF_SIZE: usize = 4096;
 const ECHO_QUEUE_CAP: usize = 4096;

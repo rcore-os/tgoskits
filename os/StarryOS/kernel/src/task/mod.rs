@@ -44,8 +44,6 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions},
 };
 
-use crate::sync::{PiMutex, PiMutexGuard};
-
 pub use self::{
     cred::*, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable,
     process_image::ProcessImage, process_wait::wait_on_pollset, resources::*, scheduler_task::*,
@@ -88,7 +86,10 @@ use self::{
 pub(crate) use self::{
     pid_namespace::*, process_identity::*, process_memory::scheduler_address_space,
 };
-use crate::mm::AddrSpace;
+use crate::{
+    mm::AddrSpace,
+    sync::{PiMutex, PiMutexGuard},
+};
 
 pub struct ProcessData {
     /// The process.

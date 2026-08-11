@@ -5,7 +5,6 @@ use ax_alloc::{UsageKind, global_allocator};
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, align_up_4k};
 use ax_runtime::hal::mem::virt_to_phys;
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::io_uring::{
     IORING_FEAT_RW_CUR_POS, IORING_FEAT_SUBMIT_STABLE, IORING_OFF_CQ_RING, IORING_OFF_SQ_RING,
@@ -13,7 +12,10 @@ use linux_raw_sys::io_uring::{
 };
 
 use super::FileLike;
-use crate::{pseudofs::DeviceMmap, sync::Mutex};
+use crate::{
+    pseudofs::DeviceMmap,
+    sync::{Mutex, PiMutex},
+};
 
 const SQ_HEAD_OFFSET: usize = 0;
 const SQ_TAIL_OFFSET: usize = 4;

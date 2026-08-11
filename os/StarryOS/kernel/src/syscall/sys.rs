@@ -6,7 +6,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::current_fs_context;
-use crate::sync::PiMutex;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
     system::{new_utsname, sysinfo},
@@ -18,6 +17,7 @@ use ringbuf::{
 
 use crate::{
     mm::{UserPtr, VmMutPtr, VmPtr, vm_read_slice, vm_write_slice},
+    sync::PiMutex,
     task::{SockFilter, SockFprog, get_task, processes},
 };
 

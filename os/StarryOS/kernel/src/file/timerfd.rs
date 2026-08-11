@@ -30,12 +30,12 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use event_listener::{Event, listener};
 
 use crate::{
     file::{FileLike, IoDst, IoSrc},
+    sync::PiMutex,
     task::{
         current_user_task,
         future::{block_on, block_on_user, poll_io, timeout_at_wall},

@@ -22,9 +22,10 @@ use core::mem::MaybeUninit;
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq as Mutex;
 
-use crate::mm::{vm_read_slice, vm_write_slice};
-
-use crate::sync::IrqMutex as Mutex;
+use crate::{
+    mm::{vm_read_slice, vm_write_slice},
+    sync::IrqMutex as Mutex,
+};
 
 // ---------------------------------------------------------------------------
 // Wireless-extensions ioctl numbers (not provided by linux_raw_sys).

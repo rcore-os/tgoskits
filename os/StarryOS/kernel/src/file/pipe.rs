@@ -7,7 +7,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PAGE_SIZE_4K;
-use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDONLY, O_WRONLY, S_IFIFO},
@@ -23,6 +22,7 @@ use super::{FileLike, Kstat};
 use crate::{
     file::{IoDst, IoSrc},
     mm::VmMutPtr,
+    sync::PiMutex,
     task::{
         current_user_task,
         future::{block_on_user, poll_io},

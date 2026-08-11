@@ -1,6 +1,5 @@
 use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec, vec::Vec};
 
-use crate::sync::PiMutex;
 use axfs_ng_vfs::{NodePermission, VfsError, VfsResult};
 
 use crate::{
@@ -8,7 +7,7 @@ use crate::{
         DirMaker, DirectRwFsFileOps, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFileOps, SimpleFs, SpecialFsFile,
     },
-    sync::Mutex,
+    sync::{Mutex, PiMutex},
 };
 
 mod platform;
