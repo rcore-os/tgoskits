@@ -145,6 +145,30 @@ mod scheduler_ipi_tests {
     }
 
     #[test]
+    fn pending_preemption_does_not_ring_a_second_doorbell() {
+        let remote = CpuRemote::create(CpuId::new(1), TaskSystemConfig::new(2));
+        assert!(remote.mark_online());
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
+
+        remote.request_remote_reschedule();
+        remote.request_remote_reschedule();
+
+        assert_eq!(
+            crate::test_runtime::scheduler_ipi_send_count(),
+            1,
+            "a sticky preemption request must retain the only required physical edge"
+        );
+        assert!(remote.take_preempt_requested());
+
+        remote.request_remote_reschedule();
+        assert_eq!(
+            crate::test_runtime::scheduler_ipi_send_count(),
+            2,
+            "a new preemption after owner acknowledgement requires a new edge"
+        );
+    }
+
+    #[test]
     fn request_published_between_claim_and_ack_remains_pending() {
         let remote = CpuRemote::create(CpuId::new(0), TaskSystemConfig::new(1));
         assert!(remote.mark_online());
