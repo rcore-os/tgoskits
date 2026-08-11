@@ -1877,6 +1877,26 @@ mod tests {
     }
 
     #[test]
+    fn public_wake_owns_one_preemption_lifetime() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        test_runtime::reset_preempt_guard_entries();
+
+        assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
+
+        assert_eq!(
+            test_runtime::preempt_guard_entries(),
+            1,
+            "one wake transaction must own one migration-prevention lifetime"
+        );
+    }
+
+    #[test]
     fn uncontended_pi_mutex_does_not_enter_a_cpu_preemption_scope() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
