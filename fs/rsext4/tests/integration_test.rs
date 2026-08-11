@@ -261,6 +261,33 @@ fn owned_mount_injects_clock_separately_from_block_io() {
     assert!(FileName::new(b"").is_err());
     assert!(FileName::new(b"a/b").is_err());
     assert!(FileName::new(b"a\0b").is_err());
+
+    let context = MutationContext::new(1000, 1001, 7, 0o027);
+    let raw_directory_name = FileName::new(&[b'd', 0xff]).expect("valid raw directory name");
+    let raw_directory = filesystem
+        .create_directory(
+            context,
+            root.number,
+            raw_directory_name,
+            FilePermissions::new(0o777).expect("valid directory permissions"),
+        )
+        .expect("raw directory create failed");
+    assert_eq!(raw_directory.mode & 0o7777, 0o750);
+    assert_eq!(raw_directory.uid, 1000);
+    assert_eq!(raw_directory.gid, 1001);
+
+    let raw_file_name = FileName::new(&[b'f', 0xfe]).expect("valid raw file name");
+    let raw_file = filesystem
+        .create_regular_file(
+            context,
+            raw_directory.number,
+            raw_file_name,
+            FilePermissions::new(0o666).expect("valid file permissions"),
+        )
+        .expect("raw file create failed");
+    assert_eq!(raw_file.mode & 0o7777, 0o640);
+    assert_eq!(raw_file.uid, 1000);
+    assert_eq!(raw_file.gid, 1001);
     filesystem.unmount().expect("owned unmount failed");
 }
 

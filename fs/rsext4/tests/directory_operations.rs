@@ -187,6 +187,63 @@ mod directory_functional_tests {
     }
 
     #[test]
+    fn failed_directory_publish_rolls_back_child_and_parent_accounting() {
+        let device = MockBlockDevice::new(64 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+
+        // Fifteen maximum-length records fit in each 4 KiB directory block
+        // after the root's built-in entries. Thirty records therefore leave
+        // the second block too small for one more maximum-length name.
+        for index in 0..30 {
+            let name = format!("{index:03}{}", "a".repeat(252));
+            mkfile(&mut jbd2_dev, &mut fs, &format!("/{name}"), None, None)
+                .expect("fill root directory");
+        }
+        let root = fs.root_inode;
+        let root_before = fs
+            .get_inode_by_num(&mut jbd2_dev, root)
+            .expect("read root before failed mkdir");
+        assert_eq!(root_before.size(), 2 * fs.superblock.block_size() as u64);
+
+        while fs.superblock.free_blocks_count() > 1 {
+            fs.alloc_block(&mut jbd2_dev)
+                .expect("reserve data block before rollback probe");
+        }
+        let free_inodes_before = fs.superblock.s_free_inodes_count;
+        let free_blocks_before = fs.superblock.free_blocks_count();
+        let used_dirs_before: u32 = fs
+            .group_descs
+            .iter()
+            .map(|descriptor| descriptor.used_dirs_count())
+            .sum();
+
+        let child = "z".repeat(255);
+        let error = mkdir(&mut jbd2_dev, &mut fs, &format!("/{child}"))
+            .expect_err("parent directory growth must run out of space");
+        assert_eq!(error.kind(), Ext4ErrorKind::NoSpace);
+
+        let root_after = fs
+            .get_inode_by_num(&mut jbd2_dev, root)
+            .expect("read root after failed mkdir");
+        let used_dirs_after: u32 = fs
+            .group_descs
+            .iter()
+            .map(|descriptor| descriptor.used_dirs_count())
+            .sum();
+        assert_eq!(root_after.i_links_count, root_before.i_links_count);
+        assert_eq!(used_dirs_after, used_dirs_before);
+        assert_eq!(fs.superblock.s_free_inodes_count, free_inodes_before);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        assert!(
+            get_inode_with_num(&mut fs, &mut jbd2_dev, &format!("/{child}"))
+                .expect("lookup after failed mkdir")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn created_directory_block_checksum_matches_persisted_inode_generation() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
