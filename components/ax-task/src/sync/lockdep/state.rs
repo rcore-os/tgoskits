@@ -324,6 +324,24 @@ pub struct LockdepMap {
     class_key: AtomicPtr<Location<'static>>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct LockdepMapView<'map> {
+    class_id: &'map AtomicU32,
+    class_key: &'map AtomicPtr<Location<'static>>,
+}
+
+impl<'map> LockdepMapView<'map> {
+    pub(crate) const fn new(
+        class_id: &'map AtomicU32,
+        class_key: &'map AtomicPtr<Location<'static>>,
+    ) -> Self {
+        Self {
+            class_id,
+            class_key,
+        }
+    }
+}
+
 impl LockdepMap {
     #[track_caller]
     pub const fn new() -> Self {
@@ -340,6 +358,10 @@ impl LockdepMap {
             class_id: AtomicU32::new(0),
             class_key: AtomicPtr::new(class_key as *mut Location<'static>),
         }
+    }
+
+    fn view(&self) -> LockdepMapView<'_> {
+        LockdepMapView::new(&self.class_id, &self.class_key)
     }
 }
 
@@ -561,7 +583,7 @@ fn with_graph<R>(f: impl FnOnce(&mut LockGraph) -> R) -> R {
 }
 
 fn ensure_class(
-    map: &LockdepMap,
+    map: LockdepMapView<'_>,
     class_key: *const Location<'static>,
     subclass: LockSubclass,
 ) -> LockdepState {
@@ -745,7 +767,27 @@ pub fn prepare_acquire_with_snapshot_nested_with_sleep(
     subclass: LockSubclass,
     sleep_forbidden: bool,
 ) -> PreparedAcquire {
-    prepare_acquire_with_snapshot_result(
+    prepare_acquire_with_snapshot_view_nested_with_sleep(
+        map.view(),
+        lock_kind,
+        addr,
+        caller,
+        held_before,
+        subclass,
+        sleep_forbidden,
+    )
+}
+
+pub(crate) fn prepare_acquire_with_snapshot_view_nested_with_sleep(
+    map: LockdepMapView<'_>,
+    lock_kind: &'static str,
+    addr: usize,
+    caller: &'static Location<'static>,
+    held_before: HeldLockSnapshot,
+    subclass: LockSubclass,
+    sleep_forbidden: bool,
+) -> PreparedAcquire {
+    prepare_acquire_with_snapshot_view_result(
         map,
         lock_kind,
         addr,
@@ -786,12 +828,20 @@ pub fn prepare_acquire_with_snapshot_checked_nested(
     held_before: HeldLockSnapshot,
     subclass: LockSubclass,
 ) -> Result<PreparedAcquire, LockdepCheckError> {
-    prepare_acquire_with_snapshot_result(map, _lock_kind, addr, caller, held_before, subclass, true)
-        .map_err(|(err, _state)| err)
+    prepare_acquire_with_snapshot_view_result(
+        map.view(),
+        _lock_kind,
+        addr,
+        caller,
+        held_before,
+        subclass,
+        true,
+    )
+    .map_err(|(err, _state)| err)
 }
 
-fn prepare_acquire_with_snapshot_result(
-    map: &LockdepMap,
+fn prepare_acquire_with_snapshot_view_result(
+    map: LockdepMapView<'_>,
     lock_kind: &'static str,
     addr: usize,
     caller: &'static Location<'static>,
@@ -1003,6 +1053,35 @@ mod tests {
             .unwrap();
             assert_ne!(prepared.class_id(), 0);
         }
+    }
+
+    #[test]
+    fn external_views_share_native_class_registration_state() {
+        let class_id = AtomicU32::new(0);
+        let class_key = AtomicPtr::new(ptr::null_mut());
+        let first = prepare_acquire_with_snapshot_view_nested_with_sleep(
+            LockdepMapView::new(&class_id, &class_key),
+            "external spin",
+            0x1000,
+            Location::caller(),
+            HeldLockSnapshot::new(),
+            DEFAULT_LOCK_SUBCLASS,
+            true,
+        );
+        let second = prepare_acquire_with_snapshot_view_nested_with_sleep(
+            LockdepMapView::new(&class_id, &class_key),
+            "external spin",
+            0x2000,
+            Location::caller(),
+            HeldLockSnapshot::new(),
+            DEFAULT_LOCK_SUBCLASS,
+            true,
+        );
+
+        assert_ne!(first.class_id(), 0);
+        assert_eq!(first.class_id(), second.class_id());
+        assert_eq!(class_id.load(Ordering::Acquire), first.class_id());
+        assert!(!class_key.load(Ordering::Acquire).is_null());
     }
 
     #[test]
