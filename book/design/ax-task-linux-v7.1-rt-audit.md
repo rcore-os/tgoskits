@@ -2712,6 +2712,42 @@ waiter 只 acquire-load。Linux generic ticket spinlock 与 queued spinlock 的 
 native lock 的 preempt guard、owner-rq IRQ guard、class queue 操作和 runtime CPU-area lookup，
 而不是继续微调 ticket lock 或添加 ext4/Fair workload 特判。
 
+### 2026-08-12 guard 与 owner-rq 事务计数
+
+为区分 rq 事务本身与外围 guard 固定成本，`qperf-metrics` 将所有生产代码的 runtime preempt/IRQ
+guard 入口收敛到各一个内部计数点，并按 provider 是否返回空 token 计数；`OwnerRqTxn` 则按普通
+irq-save、scheduler-frame 和 bootstrap 三种 typed constructor 分别计数。计数只观察现有所有权
+协议，不新增 guard、锁实现或 OS 侧状态镜像。完整 ax-task host/qperf、loom、doctest 和 ax-task、
+starry-kernel clippy matrix 均通过。
+
+相同 x86_64 Q35/TCG、4 vCPU、1009 Hz leaf-qperf 的 60.622 秒窗口仍到 `file-0474`。前后差分为：
+
+| 指标 | 增量 | 相对真实 switch |
+|---|---:|---:|
+| runtime preempt guard entry | 766,816 | 6.412 次/switch |
+| preempt guard empty token | 391,705 | entry 的 51.082% |
+| runtime IRQ guard entry | 2,950,834 | 24.676 次/switch |
+| IRQ guard empty token | 0 | entry 的 0% |
+| owner rq irq-save transaction | 140,332 | 1.174 次/switch |
+| owner rq scheduler transaction | 153,977 | 1.288 次/switch |
+| context switch | 119,582 | 1 |
+| Blocked / Preempted | 76,593 / 42,984 | 64.051% / 35.945% |
+| direct wake attempt / activation | 95,274 / 76,595 | — |
+
+该运行中的 Relaxed 全局计数本身增加热路径开销，因此不与未插桩窗口比较 host CPU 或吞吐；这里只
+使用同一窗口内的结构比例。约 29.4 万次 owner-rq transaction 没有解释约 295 万次 IRQ guard
+entry，且调用链审计没有发现同一 owner rq 已持有 transaction 后又无条件重新 `begin`。主要放大
+发生在 rq transaction 之外或 transaction 内的其他 typed locks/guards，而不是 transaction
+constructor 重复。
+
+`runtime_irq_guard_none == 0` 也不能成为“IRQ 已关闭就跳过 guard”的依据：每次 entry 都取得真实
+runtime IRQ owner，`RuntimeIrqGuard` 还绑定当前 CPU handle，`IrqTicketLock` 则用 move-only scope
+恢复精确 IRQ 状态。Linux v7.1 同样通过 `raw_spin_rq_lock_irqsave()`、已持有 baton 的 raw rq
+variant 与 `task_rq_lock()` 的分层接口表达所有权，不按现场 IF 状态猜测。下一检查点必须在 typed
+acquisition source 处区分 `RuntimeIrqGuard`、executor publication、各类 `IrqTicketLock` 和显式
+`IrqScope`，同时区分 public spin、scheduler activity、PI/wait 等 preempt guard；只有证明某类
+调用已经借用更强 baton，才允许从接口层删除重复 transaction，不能增加兼容快路或第二套锁实现。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
