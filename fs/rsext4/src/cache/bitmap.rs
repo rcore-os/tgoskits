@@ -1,6 +1,6 @@
 //! Bitmap cache helpers.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use crate::{
     BITMAP_CACHE_MAX,
@@ -46,7 +46,7 @@ impl CacheKey {
 #[derive(Debug, Clone)]
 pub struct CachedBitmap {
     /// Bitmap bytes.
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
     /// Whether the cache entry is dirty.
     pub dirty: bool,
     /// Physical block storing the bitmap.
@@ -60,7 +60,7 @@ pub struct CachedBitmap {
 impl CachedBitmap {
     pub fn new(data: Vec<u8>, block_num: AbsoluteBN) -> Self {
         Self {
-            data,
+            data: Arc::new(data),
             dirty: false,
             block_num,
             last_access: 0,
@@ -195,7 +195,7 @@ impl BitmapCache {
         self.touch(key);
 
         let bitmap = self.cache.get_mut(&key).ok_or(Ext4Error::corrupted())?;
-        f(&mut bitmap.data);
+        f(Arc::make_mut(&mut bitmap.data).as_mut_slice());
         bitmap.mark_dirty();
         bitmap.generation = bitmap.generation.saturating_add(1);
 
