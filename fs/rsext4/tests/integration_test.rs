@@ -727,6 +727,202 @@ fn owned_special_inode_persists_modern_device_number() {
 }
 
 #[test]
+fn owned_empty_metadata_update_is_a_noop() {
+    let mut filesystem = owned_test_filesystem();
+    let root = filesystem.root_inode();
+    let context = MutationContext::new(1000, 1001, 0, 0);
+    let inode = filesystem
+        .create_regular_file(
+            context,
+            root,
+            FileName::new(b"metadata-noop").expect("valid raw name"),
+            FilePermissions::new(0o644).expect("valid permissions"),
+        )
+        .expect("create regular file");
+
+    let updated = filesystem
+        .update_inode_metadata(context, inode.number, InodeMetadataUpdate::default())
+        .expect("empty metadata update");
+
+    assert_eq!(updated, inode);
+    assert_eq!(
+        filesystem.inode(inode.number).expect("inspect inode"),
+        inode
+    );
+}
+
+#[test]
+fn owned_rmdir_keeps_open_directory_on_orphan_chain_until_reap() {
+    let mut filesystem = owned_test_filesystem();
+    let root = filesystem.root_inode();
+    let context = MutationContext::new(1000, 1001, 0, 0);
+    let permissions = FilePermissions::new(0o755).expect("valid permissions");
+    let before_parent_links = filesystem.inode(root).expect("inspect root").links;
+    let directory = filesystem
+        .create_directory(
+            context,
+            root,
+            FileName::new(b"open-directory").expect("valid raw name"),
+            permissions,
+        )
+        .expect("create directory");
+
+    let outcome = filesystem
+        .remove_empty_directory(
+            context,
+            root,
+            FileName::new(b"open-directory").expect("valid raw name"),
+        )
+        .expect("remove empty directory");
+    assert_eq!(outcome.inode, directory.number);
+    assert!(outcome.requires_reap());
+    assert!(
+        filesystem
+            .lookup_child(
+                root,
+                FileName::new(b"open-directory").expect("valid raw name")
+            )
+            .expect("lookup removed directory")
+            .is_none()
+    );
+    let unlinked = filesystem
+        .inode(directory.number)
+        .expect("open directory inode must remain allocated");
+    assert_eq!(unlinked.links, 0);
+    assert_eq!(unlinked.size, 0);
+    assert_eq!(
+        filesystem.inode(root).expect("inspect updated root").links,
+        before_parent_links
+    );
+
+    filesystem
+        .reap_unlinked_inode(directory.number)
+        .expect("reap released directory");
+    assert_eq!(
+        filesystem.inode(directory.number).unwrap_err().kind(),
+        Ext4ErrorKind::NotFound
+    );
+}
+
+#[test]
+fn owned_rmdir_rejects_nonempty_directory_without_mutation() {
+    let mut filesystem = owned_test_filesystem();
+    let root = filesystem.root_inode();
+    let context = MutationContext::new(1000, 1001, 0, 0);
+    let directory = filesystem
+        .create_directory(
+            context,
+            root,
+            FileName::new(b"nonempty").expect("valid raw name"),
+            FilePermissions::new(0o755).expect("valid permissions"),
+        )
+        .expect("create directory");
+    filesystem
+        .create_regular_file(
+            context,
+            directory.number,
+            FileName::new(b"child").expect("valid raw name"),
+            FilePermissions::new(0o644).expect("valid permissions"),
+        )
+        .expect("create child");
+    let parent_before = filesystem.inode(root).expect("inspect root");
+    let directory_before = filesystem
+        .inode(directory.number)
+        .expect("inspect directory");
+
+    let error = filesystem
+        .remove_empty_directory(
+            context,
+            root,
+            FileName::new(b"nonempty").expect("valid raw name"),
+        )
+        .expect_err("nonempty directory must not be removed");
+    assert_eq!(error.kind(), Ext4ErrorKind::NotEmpty);
+    assert_eq!(filesystem.inode(root).expect("inspect root"), parent_before);
+    assert_eq!(
+        filesystem
+            .inode(directory.number)
+            .expect("inspect directory"),
+        directory_before
+    );
+    assert!(
+        filesystem
+            .lookup_child(root, FileName::new(b"nonempty").expect("valid raw name"))
+            .expect("lookup directory")
+            .is_some()
+    );
+}
+
+#[test]
+fn owned_symlink_uses_linux_fast_boundary_and_replaces_target() {
+    let mut filesystem = owned_test_filesystem();
+    let root = filesystem.root_inode();
+    let context = MutationContext::new(1000, 1001, 0, 0);
+    let target_59 = [b'a'; 59];
+    let target_60 = [b'b'; 60];
+
+    let fast = filesystem
+        .create_symlink(
+            context,
+            root,
+            FileName::new(b"fast-link").expect("valid raw name"),
+            &target_59,
+        )
+        .expect("create fast symlink");
+    let long = filesystem
+        .create_symlink(
+            context,
+            root,
+            FileName::new(b"long-link").expect("valid raw name"),
+            &target_60,
+        )
+        .expect("create long symlink");
+    assert_eq!(fast.blocks, 0);
+    assert_ne!(long.blocks, 0);
+
+    let mut output = [0u8; 80];
+    let read = filesystem
+        .read_inode(fast.number, 0, &mut output)
+        .expect("read fast symlink");
+    assert_eq!(&output[..read], &target_59);
+    let read = filesystem
+        .read_inode(long.number, 0, &mut output)
+        .expect("read long symlink");
+    assert_eq!(&output[..read], &target_60);
+
+    let replacement = [b'c'; 70];
+    filesystem
+        .set_symlink_target(context, fast.number, &replacement)
+        .expect("replace fast symlink with long target");
+    assert_ne!(
+        filesystem
+            .inode(fast.number)
+            .expect("inspect replaced symlink")
+            .blocks,
+        0
+    );
+    let read = filesystem
+        .read_inode(fast.number, 0, &mut output)
+        .expect("read replaced long symlink");
+    assert_eq!(&output[..read], &replacement);
+
+    filesystem
+        .set_symlink_target(context, fast.number, b"short")
+        .expect("replace long symlink with fast target");
+    assert_eq!(
+        filesystem
+            .inode(fast.number)
+            .expect("inspect fast replacement")
+            .blocks,
+        0
+    );
+    let read = filesystem
+        .read_inode(fast.number, 0, &mut output)
+        .expect("read fast replacement");
+    assert_eq!(&output[..read], b"short");
+}
+
+#[test]
 fn test_basic_mount_mkfs() {
     let device = TestBlockDevice::new(100 * 1024 * 1024); // 100MB
     let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);

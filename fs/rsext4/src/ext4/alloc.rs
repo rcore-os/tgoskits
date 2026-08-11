@@ -352,6 +352,9 @@ impl Ext4FileSystem {
         block_dev: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
     ) -> Ext4Result<()> {
+        // Persist the final zero-link/dtime image and remove it from the live
+        // inode cache before publishing the bitmap transition to free.
+        self.inodetable_cache.evict(block_dev, inode_num)?;
         let (group_idx, inode_in_group) = self.inode_allocator.global_to_group(inode_num)?;
         let bitmap_block;
         let cache_key;

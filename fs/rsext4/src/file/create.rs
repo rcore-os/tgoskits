@@ -274,17 +274,21 @@ pub(crate) fn create_inode_at<B: BlockIo>(
     }
     let inode_type = request.mode & Ext4Inode::S_IFMT;
     let supports_data_mapping = matches!(inode_type, Ext4Inode::S_IFREG | Ext4Inode::S_IFLNK);
-    let (initial_data, device_number) = match (inode_type, payload) {
-        (Ext4Inode::S_IFREG | Ext4Inode::S_IFLNK, CreateInodePayload::Empty) => (None, None),
-        (Ext4Inode::S_IFREG | Ext4Inode::S_IFLNK, CreateInodePayload::Data(data)) => {
-            (Some(data), None)
+    let (initial_data, device_number, fast_symlink) = match (inode_type, payload) {
+        (Ext4Inode::S_IFREG, CreateInodePayload::Empty) => (None, None, None),
+        (Ext4Inode::S_IFREG, CreateInodePayload::Data(data)) => (Some(data), None, None),
+        (Ext4Inode::S_IFLNK, CreateInodePayload::Empty) => (None, None, Some(&[][..])),
+        (Ext4Inode::S_IFLNK, CreateInodePayload::Data(data)) if data.len() < 60 => {
+            (None, None, Some(data))
         }
+        (Ext4Inode::S_IFLNK, CreateInodePayload::Data(data)) => (Some(data), None, None),
         (Ext4Inode::S_IFCHR | Ext4Inode::S_IFBLK, CreateInodePayload::Device(device)) => {
-            (None, Some(device))
+            (None, Some(device), None)
         }
-        (Ext4Inode::S_IFIFO | Ext4Inode::S_IFSOCK, CreateInodePayload::Empty) => (None, None),
+        (Ext4Inode::S_IFIFO | Ext4Inode::S_IFSOCK, CreateInodePayload::Empty) => (None, None, None),
         _ => return Err(Ext4Error::invalid_input().with_operation("inode:create_payload")),
     };
+    let uses_extent_mapping = supports_data_mapping && fast_symlink.is_none();
     let parent_inode = fs.get_inode_by_num(device, request.parent)?;
     if !parent_inode.is_dir() {
         return Err(Ext4Error::not_dir());
@@ -307,9 +311,16 @@ pub(crate) fn create_inode_at<B: BlockIo>(
     // Materialize the initial file payload block by block.
     let block_size = fs.block_size();
     let mut data_blocks: Vec<AbsoluteBN> = Vec::new();
-    let mut total_written: usize = 0;
+    let total_written = fast_symlink
+        .map(|target| target.len())
+        .or_else(|| initial_data.map(|data| data.len()))
+        .unwrap_or(0);
     if let Some(buf) = initial_data {
-        let mut remaining = buf.len();
+        let mut remaining = if inode_type == Ext4Inode::S_IFLNK {
+            buf.len().checked_add(1).ok_or_else(Ext4Error::overflow)?
+        } else {
+            buf.len()
+        };
         let mut src_off = 0usize;
 
         while remaining > 0 {
@@ -340,8 +351,9 @@ pub(crate) fn create_inode_at<B: BlockIo>(
                 for b in data.iter_mut() {
                     *b = 0;
                 }
-                let end = src_off + write_len;
-                data[..write_len].copy_from_slice(&buf[src_off..end]);
+                let copy_len = core::cmp::min(write_len, buf.len().saturating_sub(src_off));
+                let end = src_off + copy_len;
+                data[..copy_len].copy_from_slice(&buf[src_off..end]);
             }) {
                 fs.datablock_cache.invalidate(blk);
                 data_blocks.push(blk);
@@ -353,7 +365,6 @@ pub(crate) fn create_inode_at<B: BlockIo>(
             }
 
             data_blocks.push(blk);
-            total_written += write_len;
             remaining -= write_len;
             src_off += write_len;
         }
@@ -375,9 +386,16 @@ pub(crate) fn create_inode_at<B: BlockIo>(
             discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
         ));
     }
+    if let Some(target) = fast_symlink {
+        let mut inline = [0u8; 60];
+        inline[..target.len()].copy_from_slice(target);
+        for (word, bytes) in new_inode.i_block.iter_mut().zip(inline.as_chunks::<4>().0) {
+            *word = u32::from_le_bytes(*bytes);
+        }
+    }
 
     // Extent-enabled files start with an embedded extent root.
-    if supports_data_mapping && fs.superblock.has_extents() {
+    if uses_extent_mapping && fs.superblock.has_extents() {
         new_inode.write_extend_header();
     }
 
@@ -422,14 +440,14 @@ pub(crate) fn create_inode_at<B: BlockIo>(
         }
     } else {
         // Empty file starts with no data blocks.
-        new_inode.i_size_lo = 0;
-        new_inode.i_size_high = 0;
+        new_inode.i_size_lo = size_lo;
+        new_inode.i_size_high = size_hi;
         new_inode.i_blocks_lo = 0;
         new_inode.l_i_blocks_high = 0;
-        if supports_data_mapping && fs.superblock.has_extents() {
+        if uses_extent_mapping && fs.superblock.has_extents() {
             new_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
             new_inode.write_extend_header();
-        } else if device_number.is_none() {
+        } else if device_number.is_none() && fast_symlink.is_none() {
             new_inode.i_block = [0; 15];
         }
     }

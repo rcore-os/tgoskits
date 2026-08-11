@@ -228,6 +228,103 @@ pub(crate) fn unlink_inode_at<B: BlockIo>(
     })
 }
 
+fn restore_removed_directory_state<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    parent: InodeNumber,
+    parent_links: u16,
+    target: InodeNumber,
+    target_inode: Ext4Inode,
+) -> Ext4Result<()> {
+    let parent_result = fs
+        .set_inode_links_count(block_dev, parent, parent_links)
+        .map(|_| ());
+    let orphan_result = fs.remove_orphan(block_dev, target);
+    let inode_result = fs.modify_inode(block_dev, target, |inode| *inode = target_inode);
+    parent_result.and(orphan_result).and(inode_result)
+}
+
+/// Removes an empty directory name while retaining its zero-link inode on the
+/// orphan chain until the embedding VFS releases its final live reference.
+pub(crate) fn unlink_empty_directory_at<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    parent: InodeNumber,
+    name: FileName<'_>,
+) -> Ext4Result<UnlinkOutcome> {
+    if name.is_reserved() {
+        return Err(Ext4Error::invalid_input().with_operation("rmdir:reserved_name"));
+    }
+    let parent_inode = fs.get_inode_by_num(block_dev, parent)?;
+    if !parent_inode.is_dir() {
+        return Err(Ext4Error::not_dir());
+    }
+    let entry = find_named_entry_in_parent(fs, block_dev, parent, &parent_inode, name.as_bytes())?;
+    let target_inode = fs.get_inode_by_num(block_dev, entry.ino)?;
+    if !target_inode.is_dir() {
+        return Err(Ext4Error::not_dir().with_operation("rmdir:target"));
+    }
+    let mut target_for_scan = target_inode;
+    if !is_dir_empty(fs, block_dev, entry.ino, &mut target_for_scan)? {
+        return Err(Ext4Error::not_empty());
+    }
+    preflight_inode_free(fs, block_dev, entry.ino, &target_inode)?;
+    let parent_new_links = parent_inode.links_count_after_removing_directories(1)?;
+
+    let mut unlinked_target = target_inode;
+    unlinked_target.i_links_count = 0;
+    unlinked_target.i_size_lo = 0;
+    unlinked_target.i_size_high = 0;
+    fs.finalize_inode_update(
+        block_dev,
+        entry.ino,
+        &mut unlinked_target,
+        Ext4InodeMetadataUpdate::link_count_change(),
+    )?;
+    if let Err(error) = fs.add_orphan(block_dev, entry.ino) {
+        let rollback = fs.modify_inode(block_dev, entry.ino, |inode| *inode = target_inode);
+        return Err(error_after_cleanup(error, rollback));
+    }
+    if let Err(error) = fs.set_inode_links_count(block_dev, parent, parent_new_links) {
+        let rollback = fs
+            .remove_orphan(block_dev, entry.ino)
+            .and_then(|()| fs.modify_inode(block_dev, entry.ino, |inode| *inode = target_inode));
+        return Err(error_after_cleanup(error, rollback));
+    }
+
+    if let Err(error) =
+        remove_named_entry_at(fs, block_dev, parent, &parent_inode, entry, name.as_bytes())
+    {
+        let still_present = matches!(
+            find_named_entry_in_parent(
+                fs,
+                block_dev,
+                parent,
+                &parent_inode,
+                name.as_bytes(),
+            ),
+            Ok(found) if found.ino == entry.ino
+        );
+        if still_present {
+            let rollback = restore_removed_directory_state(
+                fs,
+                block_dev,
+                parent,
+                parent_inode.i_links_count,
+                entry.ino,
+                target_inode,
+            );
+            return Err(error_after_cleanup(error, rollback));
+        }
+        return Err(error);
+    }
+    fs.touch_parent_dir_for_entry_change(block_dev, parent)?;
+    Ok(UnlinkOutcome {
+        inode: entry.ino,
+        remaining_links: 0,
+    })
+}
+
 /// Remove a non-directory link from its parent directory.
 pub fn unlink<B: BlockIo>(
     fs: &mut Ext4FileSystem,
