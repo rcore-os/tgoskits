@@ -499,8 +499,16 @@ fn unclean_remount_reaps_the_persisted_classic_orphan_chain() {
     let mut remount_dev = new_jbd2_dev(device);
     let mut recovered = mount(&mut remount_dev).expect("orphan recovery mount failed");
     assert_eq!(recovered.superblock.s_last_orphan, 0);
-    assert!(!recovered.inode_num_already_allocated(&mut remount_dev, first_inode));
-    assert!(!recovered.inode_num_already_allocated(&mut remount_dev, second_inode));
+    assert!(
+        !recovered
+            .inode_num_already_allocated(&mut remount_dev, first_inode)
+            .expect("first orphan allocation lookup failed")
+    );
+    assert!(
+        !recovered
+            .inode_num_already_allocated(&mut remount_dev, second_inode)
+            .expect("second orphan allocation lookup failed")
+    );
     assert!(
         rsext4::dir::get_inode_with_num(&mut recovered, &mut remount_dev, "/orphan-a")
             .expect("post-recovery first lookup failed")
@@ -539,7 +547,11 @@ fn cyclic_classic_orphan_chain_is_rejected_before_recovery() {
     let reap_error = reap_unlinked_inode(&mut first_fs, &mut first_dev, outcome.inode)
         .expect_err("reap must validate the complete chain before mutation");
     assert_eq!(reap_error.kind(), Ext4ErrorKind::Corrupted);
-    assert!(first_fs.inode_num_already_allocated(&mut first_dev, outcome.inode));
+    assert!(
+        first_fs
+            .inode_num_already_allocated(&mut first_dev, outcome.inode)
+            .expect("cyclic orphan allocation lookup failed")
+    );
     first_fs
         .sync_filesystem(&mut first_dev)
         .expect("dirty sync failed");

@@ -2232,6 +2232,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     );
     ax_assert!(
         fs.inode_num_already_allocated(&mut device, rsext4::bmalloc::InodeNumber::new(2).unwrap())
+            .unwrap()
     );
     let saved_inode_bitmap = fs.group_descs[0].bg_inode_bitmap_lo;
     fs.group_descs[0].bg_inode_bitmap_lo = u32::MAX;
@@ -2245,10 +2246,13 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     let _ =
         fs.inode_num_already_allocated(&mut device, rsext4::bmalloc::InodeNumber::new(2).unwrap());
     fs.superblock.s_inodes_per_group = saved_inodes_per_group;
-    ax_assert!(!fs.inode_num_already_allocated(
-        &mut device,
-        rsext4::bmalloc::InodeNumber::new(u32::MAX).unwrap()
-    ));
+    ax_assert!(
+        fs.inode_num_already_allocated(
+            &mut device,
+            rsext4::bmalloc::InodeNumber::new(u32::MAX).unwrap()
+        )
+        .is_err()
+    );
     ax_assert!(
         fs.get_inode_by_num(
             &mut device,

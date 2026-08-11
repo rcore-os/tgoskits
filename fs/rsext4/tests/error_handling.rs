@@ -3,7 +3,7 @@
 //! These tests intentionally exercise unusual or degraded scenarios and record
 //! the current behavior, even when the behavior is not yet fully strict.
 
-use std::cell::Cell;
+use std::{cell::Cell, rc::Rc};
 
 use rsext4::{
     bmalloc::{AbsoluteBN, BGIndex},
@@ -16,7 +16,7 @@ struct ErrorMockDevice {
     data: Vec<u8>,
     block_size: u32,
     // Failure injection toggles.
-    fail_on_read: bool,
+    fail_on_read: Rc<Cell<bool>>,
     fail_on_write: bool,
     fail_on_specific_block: Option<SectorId>,
     fail_after_bytes: Option<usize>,
@@ -29,7 +29,7 @@ impl ErrorMockDevice {
         Self {
             data: vec![0; size],
             block_size: rsext4::BLOCK_SIZE as u32,
-            fail_on_read: false,
+            fail_on_read: Rc::new(Cell::new(false)),
             fail_on_write: false,
             fail_on_specific_block: None,
             fail_after_bytes: None,
@@ -37,11 +37,17 @@ impl ErrorMockDevice {
             now: Cell::new(1_700_000_000),
         }
     }
+
+    fn with_read_failure_switch(size: usize) -> (Self, Rc<Cell<bool>>) {
+        let device = Self::new(size);
+        let fail_on_read = Rc::clone(&device.fail_on_read);
+        (device, fail_on_read)
+    }
 }
 
 impl BlockIo for ErrorMockDevice {
     fn read(&mut self, buffer: &mut [u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
-        if self.fail_on_read {
+        if self.fail_on_read.get() {
             return Err(Ext4Error::io());
         }
 
@@ -125,6 +131,26 @@ impl rsext4::Clock for ErrorMockDevice {
 #[cfg(test)]
 mod error_handling_tests {
     use super::*;
+
+    #[test]
+    fn inode_bitmap_read_failure_is_not_reported_as_free() {
+        let (device, fail_on_read) = ErrorMockDevice::with_read_failure_switch(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        fs.bitmap_cache = rsext4::cache::BitmapCache::create_default();
+        fail_on_read.set(true);
+
+        let error = fs
+            .inode_num_already_allocated(
+                &mut jbd2_dev,
+                rsext4::bmalloc::InodeNumber::new(2).expect("valid root inode"),
+            )
+            .expect_err("inode bitmap I/O failure must remain distinguishable from a free inode");
+
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+    }
 
     /// Verifies that the filesystem still works on a normal device configured for
     /// fault injection, giving the suite a baseline before harsher error cases.
