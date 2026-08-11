@@ -186,6 +186,34 @@ fn block_transition_samples_the_owner_rq_clock_once() {
     );
 }
 
+#[test]
+fn ordinary_switch_tail_does_not_reopen_the_owner_runqueue() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+    system.block_current_at(cpu.as_mut(), 1).unwrap();
+    crate::test_runtime::reset_scheduler_reads();
+
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+
+    assert_eq!(
+        crate::test_runtime::scheduler_reads(),
+        0,
+        "Linux finish_task_switch releases the staged on_cpu claim without opening a new rq \
+         transaction",
+    );
+}
+
 impl TaskSystemClockTestExt for TaskSystem {
     fn enqueue_at(
         &self,
