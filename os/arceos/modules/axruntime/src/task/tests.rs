@@ -143,7 +143,7 @@ fn matching_runtime_ops_reject_malformed_extension_data() {
     );
 
     let data = RuntimeThreadData {
-        entry: SpinNoIrq::new(None),
+        entry: ax_sync::SpinLock::new(None),
         exit_code: AtomicI32::new(0),
         exit_completed: AtomicBool::new(false),
         join_wait: WaitQueue::new(),

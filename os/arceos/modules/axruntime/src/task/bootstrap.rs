@@ -54,8 +54,8 @@ pub(super) unsafe fn with_current_cpu_pin<R>(
 }
 
 fn with_irq_cpu_pin<R>(operation: impl for<'scope> FnOnce(&CpuPin<'scope>) -> R) -> R {
-    let _irq = IrqSave::new();
-    // SAFETY: IrqSave excludes scheduler migration for the complete callback.
+    let _irq = ax_sync::IrqSaveGuard::new();
+    // SAFETY: the local IRQ guard excludes scheduler migration for the complete callback.
     unsafe { with_current_cpu_pin(operation) }
 }
 

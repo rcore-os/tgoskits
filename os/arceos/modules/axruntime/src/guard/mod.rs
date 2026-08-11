@@ -172,7 +172,11 @@ pub(crate) fn publish_local_scheduler_work() -> bool {
         || read_state().local_scheduler_work_is_self_serviced(current_preempt_depth())
 }
 
-#[cfg(all(feature = "multitask", test))]
+#[cfg(all(
+    feature = "multitask",
+    test,
+    any(feature = "ipi", feature = "wake-ipi")
+))]
 pub(crate) const fn publish_local_scheduler_work() -> bool {
     false
 }
@@ -185,18 +189,21 @@ pub(crate) fn finish_initial_context_switch() {
     );
 }
 
+#[cfg(any(feature = "multitask", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PreemptExitOrigin {
     Task,
     IrqReturn,
 }
 
+#[cfg(any(feature = "multitask", test))]
 impl PreemptExitOrigin {
     const fn is_irq_return(self) -> bool {
         matches!(self, Self::IrqReturn)
     }
 }
 
+#[cfg(feature = "multitask")]
 fn exit_lock_preempt(origin: PreemptExitOrigin) {
     let irqs_were_enabled = ax_hal::asm::irqs_enabled();
     let irq_return = origin.is_irq_return();
@@ -286,6 +293,11 @@ pub(crate) fn enter_lock_preempt() -> bool {
     true
 }
 
+#[cfg(all(feature = "multitask", test))]
+pub(crate) const fn enter_lock_preempt() -> bool {
+    false
+}
+
 #[cfg(all(feature = "multitask", not(test)))]
 pub(crate) fn exit_preempt() {
     let exit = ax_hal::percpu::scheduler_prepare_preempt_guard_exit()
@@ -299,9 +311,19 @@ pub(crate) fn exit_preempt() {
     }
 }
 
+#[cfg(all(feature = "multitask", test))]
+pub(crate) fn exit_preempt() {
+    panic!("unit-test runtime cannot exit an unowned preemption guard")
+}
+
 #[cfg(all(feature = "multitask", not(test)))]
 pub(crate) fn exit_preempt_from_irq_return() {
     finish_kernel_preempt_guard(PreemptExitOrigin::IrqReturn);
+}
+
+#[cfg(all(feature = "multitask", test))]
+pub(crate) fn exit_preempt_from_irq_return() {
+    panic!("unit-test runtime cannot exit an unowned IRQ-return guard")
 }
 
 #[cfg(any(feature = "multitask", test))]
@@ -504,6 +526,7 @@ fn with_guard_state_mut<R>(
         .unwrap_or_else(|error| panic!("runtime guard CPU-local state is invalid: {error}"))
 }
 
+#[cfg(feature = "multitask")]
 fn finish_kernel_preempt_guard(origin: PreemptExitOrigin) {
     let Ok(exit) = ax_hal::percpu::scheduler_prepare_preempt_guard_exit() else {
         #[cfg(not(feature = "host-test"))]

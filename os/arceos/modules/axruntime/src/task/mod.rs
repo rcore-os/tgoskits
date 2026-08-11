@@ -8,8 +8,6 @@ use core::{
 };
 
 use ax_hal::percpu::CpuPin;
-use ax_kernel_guard::IrqSave;
-use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 pub use ax_task::{
     CpuId, CpuSet, CurrentParkResume, CurrentParkStart, CurrentThreadToken, DeadlineFlags,

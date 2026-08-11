@@ -10,7 +10,7 @@ pub fn exit_current(exit_code: i32) -> ! {
         .unwrap_or_else(|| panic!("primary bootstrap thread identity is not initialized"));
     if primary == current {
         debug!("main task exited: exit_code={exit_code}");
-        let _irq = IrqSave::new();
+        let _irq = ax_sync::IrqSaveGuard::new();
         #[cfg(feature = "irq")]
         crate::clock_event_runtime::take_current_clock_event_offline();
         ax_hal::power::system_off();
@@ -80,7 +80,7 @@ pub(in crate::task) unsafe extern "C" fn runtime_thread_entry() -> ! {
     }
     let entry = data
         .entry
-        .lock()
+        .lock_irqsave()
         .take()
         .unwrap_or_else(|| panic!("kernel thread entry was already consumed"));
     entry();

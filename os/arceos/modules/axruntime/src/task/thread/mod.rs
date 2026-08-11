@@ -42,7 +42,7 @@ pub(super) struct RuntimeThreadStart {
 }
 
 pub(super) struct RuntimeThreadData {
-    pub(super) entry: SpinNoIrq<Option<KernelThreadEntry>>,
+    pub(super) entry: ax_sync::SpinLock<Option<KernelThreadEntry>>,
     pub(super) exit_code: AtomicI32,
     pub(super) exit_completed: AtomicBool,
     pub(super) join_wait: WaitQueue,
@@ -99,7 +99,7 @@ impl RuntimeThreadData {
         start: Arc<RuntimeThreadStart>,
     ) -> Self {
         Self {
-            entry: SpinNoIrq::new(Some(entry)),
+            entry: ax_sync::SpinLock::new(Some(entry)),
             exit_code: AtomicI32::new(0),
             exit_completed: AtomicBool::new(false),
             join_wait: WaitQueue::new(),

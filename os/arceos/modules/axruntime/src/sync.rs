@@ -1,5 +1,7 @@
 //! ArceOS runtime providers for `ax-sync` capabilities.
 
+pub use ax_task::sync::*;
+
 #[cfg(not(feature = "host-test"))]
 struct RuntimeCriticalSectionOps;
 

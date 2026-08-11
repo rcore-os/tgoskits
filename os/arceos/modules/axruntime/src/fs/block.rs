@@ -12,8 +12,8 @@ use ax_fs_ng::{
         BlockRuntimeOps, BlockThread, BlockTimeProvider, FsPage, FsPageProvider,
     },
 };
-use ax_kspin::SpinNoPreempt;
 use ax_lazyinit::LazyInit;
+use ax_sync::SpinLock;
 use ax_task::runtime::RuntimeStatus;
 
 use crate::task::{
@@ -139,7 +139,7 @@ struct RuntimeBlockThread {
     // move-out and is always released before the potentially blocking join.
     // No IRQ path observes this state, so masking local IRQs would only widen
     // interrupt latency without adding serialization.
-    task: SpinNoPreempt<Option<ThreadHandle>>,
+    task: SpinLock<Option<ThreadHandle>>,
 }
 
 impl BlockThread for RuntimeBlockThread {
@@ -195,7 +195,7 @@ impl BlockRuntimeOps for RuntimeTaskOps {
         )
         .map_err(map_task_error)?;
         Ok(Box::new(RuntimeBlockThread {
-            task: SpinNoPreempt::new(Some(task)),
+            task: SpinLock::new(Some(task)),
         }))
     }
 }

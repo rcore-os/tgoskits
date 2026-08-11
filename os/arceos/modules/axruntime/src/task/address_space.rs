@@ -482,7 +482,7 @@ pub fn switch_current_address_space(address_space: TaskAddressSpace) -> Result<(
     {
         let mut address_space = address_space;
         let previous = {
-            let _irq = ax_kernel_guard::IrqSave::new();
+            let _irq = ax_sync::IrqSaveGuard::new();
             let next_handle = address_space.handle();
             validate_address_space_handle(next_handle).map_err(super::runtime_status_error)?;
             let previous = ax_task::replace_current_address_space(address_space.token_mut())?;
@@ -518,7 +518,7 @@ pub fn detach_current_address_space() -> Result<(), TaskError> {
     #[cfg(feature = "uspace")]
     {
         let previous = {
-            let _irq = ax_kernel_guard::IrqSave::new();
+            let _irq = ax_sync::IrqSaveGuard::new();
             let previous = ax_task::detach_current_address_space()?;
             let status = activate_runtime_address_space(AddressSpaceActivation::KERNEL_LAZY);
             assert_eq!(

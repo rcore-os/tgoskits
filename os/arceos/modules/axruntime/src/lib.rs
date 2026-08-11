@@ -74,10 +74,9 @@ pub mod irq;
 mod registers;
 #[cfg(feature = "serial")]
 pub mod serial;
-mod sync;
+pub mod sync;
 
 /// Task-backed synchronization primitives used by ArceOS runtime consumers.
-pub use ax_task::sync;
 pub use ax_task::{Mutex, MutexGuard, PiMutex, PiMutexGuard, SpinLock, SpinRwLock};
 
 #[cfg(feature = "multitask")]

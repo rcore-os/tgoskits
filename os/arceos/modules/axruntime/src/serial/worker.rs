@@ -2,7 +2,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::time::Duration;
 
 use ax_errno::{AxError, AxResult};
-use ax_kernel_guard::NoPreemptIrqSave;
+use ax_sync::PreemptIrqSaveGuard;
 use axpoll::IoEvents;
 use rdif_serial::{
     Config, ConfigError, RxErrorFlags, RxFlag, RxSample, SerialEventSet, UartPort, UartRegisterGate,
@@ -400,7 +400,7 @@ impl SerialWorker {
     fn service_tx(&mut self) -> TxServiceOutcome {
         let mut remaining_budget = TX_BUDGET;
         let mut woke_space = false;
-        let irq_guard = NoPreemptIrqSave::new();
+        let irq_guard = PreemptIrqSaveGuard::new();
         let Some(register_guard) = self.register_gate.try_enter() else {
             return TxServiceOutcome {
                 blocked: true,
@@ -503,7 +503,7 @@ fn access_port<R>(
     port: &mut dyn UartPort,
     operation: impl FnOnce(&mut dyn UartPort) -> R,
 ) -> Option<R> {
-    let _irq_guard = NoPreemptIrqSave::new();
+    let _irq_guard = PreemptIrqSaveGuard::new();
     let _register_guard = gate.try_enter()?;
     Some(operation(port))
 }
