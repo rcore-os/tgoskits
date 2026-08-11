@@ -21,11 +21,12 @@ fail_regex = [
     "(?i)unhandled page fault",
     "(?i)page fault",
     "Failed to initialize guest VM",
-    "(?m)^ivshmem bar2 smoke failed:",
-    "(?m)^Zephyr ivshmem failed:",
+    "(?m)^(\\[VM [0-9]+\\] )?ivshmem bar2 smoke failed:",
+    "(?m)^(\\[VM [0-9]+\\] )?ivshmem message protocol failed:",
+    "(?m)^(\\[VM [0-9]+\\] )?Zephyr ivshmem failed:",
 ]
 success_regex = [
-    "(?m)^ivshmem bar2 shared memory pass\\s*$",
+    "(?m)^(\\[VM [0-9]+\\] )?ivshmem message protocol pass\\s*$",
 ]
 to_bin = true
 uefi = false
