@@ -84,7 +84,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, ax_err_type};
-use ax_lazyinit::LazyLock;
+use ax_lazyinit::{LazyLock, OnceLock};
 use ax_sync::{Mutex, MutexGuard};
 use ax_task::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, quiesce_irq_wait};
 use axpoll::{IoEvents, PollSet};
@@ -92,7 +92,6 @@ use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
 };
-use spin::Once;
 
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
@@ -126,8 +125,8 @@ pub use self::{
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
 static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
 
-static SERVICE: Once<Mutex<Service>> = Once::new();
-static NET_CONTROL: Once<Arc<NetControl>> = Once::new();
+static SERVICE: OnceLock<Mutex<Service>> = OnceLock::new();
+static NET_CONTROL: OnceLock<Arc<NetControl>> = OnceLock::new();
 static NET_POLL: PollRuntime = PollRuntime::new();
 static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
@@ -165,7 +164,7 @@ static WIFI_CONTROLS: LazyLock<Mutex<Vec<(alloc::string::String, rd_net::WifiCon
 
 static NET_IRQ_EVENT: AtomicBool = AtomicBool::new(false);
 static NET_IRQ_WAIT: IrqWaitCell = IrqWaitCell::new();
-static NET_IRQ_REGISTRATION: Once<IrqWaitRegistration> = Once::new();
+static NET_IRQ_REGISTRATION: OnceLock<IrqWaitRegistration> = OnceLock::new();
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);

@@ -16,13 +16,13 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_lazyinit::OnceLock;
 use ax_runtime::hal::time::{TimeValue, epochoffset_nanos, monotonic_time};
 use ax_std::os::arceos::task::{
     self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, LocalExecutor,
     MonotonicDeadline, MonotonicInstant, WaitQueue,
 };
 use axpoll::{IoEvents, Pollable};
-use spin::Once;
 
 pub use super::user_wait::{UserWaitError, UserWaitOutcome};
 use super::{UserTaskRef, user_wait::resolve_user_wait};
@@ -183,7 +183,7 @@ fn user_executor(task: &UserTaskRef) -> LocalExecutor {
 pub struct IrqNotify {
     event: IrqWaitCell,
     park: WaitQueue,
-    waiter: Once<IrqNotifyWaiter>,
+    waiter: OnceLock<IrqNotifyWaiter>,
 }
 
 struct IrqNotifyWaiter {
@@ -197,7 +197,7 @@ impl IrqNotify {
         Self {
             event: IrqWaitCell::new(),
             park: WaitQueue::new(),
-            waiter: Once::new(),
+            waiter: OnceLock::new(),
         }
     }
 

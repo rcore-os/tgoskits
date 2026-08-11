@@ -963,7 +963,7 @@ impl Location {
     /// Mounts a filesystem with the source name exposed through mount metadata.
     pub fn mount_with_source(&self, fs: &Filesystem, source: &str) -> VfsResult<Arc<Mountpoint>> {
         // Filesystem callbacks may acquire sleepable locks. Prepare the
-        // unpublished mount before entering the non-preemptible topology
+        // unpublished mount before entering the serialized topology
         // transaction; only topology validation and publication belong inside
         // the global guard.
         let result = Mountpoint::new_with_source(fs, Some(self.clone()), source);
@@ -1097,38 +1097,6 @@ mod tests {
     use super::*;
     use crate::StatFs;
 
-    std::thread_local! {
-        static PREEMPT_DEPTH: Cell<usize> = const { Cell::new(0) };
-    }
-
-    struct KernelGuardIfImpl;
-
-    #[ax_crate_interface::impl_interface]
-    impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
-        fn hardirq_enter() {}
-
-        fn hardirq_exit() {}
-
-        fn enable_preempt() {
-            PREEMPT_DEPTH.with(|depth| {
-                depth.set(
-                    depth
-                        .get()
-                        .checked_sub(1)
-                        .expect("preemption depth must be balanced"),
-                );
-            });
-        }
-
-        fn enable_preempt_from_irq_return() {
-            Self::enable_preempt();
-        }
-
-        fn disable_preempt() {
-            PREEMPT_DEPTH.with(|depth| depth.set(depth.get() + 1));
-        }
-    }
-
     struct MockFs;
     struct ContextCheckingFs;
     struct MockNode;
@@ -1161,9 +1129,8 @@ mod tests {
         }
 
         fn root_dir(&self) -> DirEntry {
-            assert_eq!(
-                ax_sync::host_preempt_depth(),
-                0,
+            assert!(
+                !MOUNT_TOPOLOGY_MUTATION.is_locked(),
                 "filesystem callbacks must run outside the mount topology guard"
             );
             make_dir_entry("mounted-root")

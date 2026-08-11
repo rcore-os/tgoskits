@@ -870,7 +870,6 @@ dependencies = [
 name = "ax-fs-ng"
 version = "0.8.7"
 dependencies = [
- "ax-crate-interface",
  "ax-errno",
  "ax-io",
  "ax-lazyinit",
@@ -1040,7 +1039,6 @@ dependencies = [
  "rdif-vsock",
  "ringbuf",
  "smoltcp",
- "spin",
 ]
 
 [[package]]
@@ -7828,15 +7826,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "spin"
-version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8abadc99fd9c7bbb7d0ca2b31d72a067d0c0dcd7aad25ab8cac71ba91417694b"
-dependencies = [
- "lock_api",
-]
-
-[[package]]
 name = "spinning_top"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7977,7 +7966,6 @@ dependencies = [
  "sg200x-jpu",
  "slab",
  "some-serial",
- "spin",
  "starry-process",
  "starry-signal",
  "starry-vm",

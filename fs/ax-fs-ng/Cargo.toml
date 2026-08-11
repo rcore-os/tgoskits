@@ -45,6 +45,3 @@ version = "0.4.1-preview.2"
 default-features = false
 optional = true
 features = ["alloc", "lfn", "log_level_trace", "unicode"]
-
-[dev-dependencies]
-ax-crate-interface.workspace = true

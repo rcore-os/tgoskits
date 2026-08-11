@@ -19,6 +19,7 @@ pub fn input_device_count() -> u32 {
 
 use ax_errno::{AxError, AxResult};
 use ax_input::{ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError};
+use ax_lazyinit::OnceLock;
 use ax_runtime::hal::{irq::IrqId, time::wall_time};
 use ax_std::os::arceos::task::{self as scheduler, IrqWaitCell, IrqWaitRegistration, WaitQueue};
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
@@ -127,7 +128,7 @@ pub struct EventDev {
     waiters: PollSet,
     /// IRQ domain id the runtime resolved for the underlying driver.
     irq: Option<IrqId>,
-    irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
+    irq_handle: OnceLock<ax_runtime::hal::irq::IrqHandle>,
     irq_notify: IrqWaitCell,
     irq_service_park: WaitQueue,
     irq_service_state: AtomicU8,
@@ -191,7 +192,7 @@ impl EventDev {
             }),
             waiters: PollSet::new(),
             irq,
-            irq_handle: spin::Once::new(),
+            irq_handle: OnceLock::new(),
             irq_notify: IrqWaitCell::new(),
             irq_service_park: WaitQueue::new(),
             irq_service_state: AtomicU8::new(IRQ_SERVICE_STOPPED),
