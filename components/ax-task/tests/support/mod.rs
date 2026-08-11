@@ -868,6 +868,7 @@ impl_trait! {
         }
         fn flush_tlb_local(_start: usize, _size: usize) {}
         fn trace_sched_switch(_record: SchedSwitchRecord) {}
+        fn emergency_console_write(_message: &str) {}
         fn fatal_invariant(code: u32, argument: usize) -> ! {
             panic!("scheduler invariant {code:#010x} reported with argument {argument:#x}")
         }

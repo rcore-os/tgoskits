@@ -11,7 +11,8 @@ use walkdir::{DirEntry, WalkDir};
 const REMOVED_LOCK_PACKAGES: &[&str] = &["ax-kspin", "ax-kernel-guard", "ax-lockdep"];
 const REMOVED_LOCK_IMPORTS: &[&str] = &["ax_kspin", "ax_kernel_guard", "ax_lockdep"];
 const DIRECT_SPIN_PATTERNS: &[&str] = &["use spin", "extern crate spin"];
-const PROVIDER_TRAITS: &[&str] = &["CriticalSectionOps", "PiMutexTaskOps", "LockdepOps"];
+const PROVIDER_TRAITS: &[&str] = &["CriticalSectionOps", "PiMutexTaskOps"];
+const FORBIDDEN_PROVIDER_TRAITS: &[&str] = &["LockdepOps"];
 const RUNTIME_PROVIDER_PATH: &str = "os/arceos/modules/axruntime/src/sync.rs";
 const HOST_PROVIDER_PATHS: &[&str] = &[
     "os/arceos/modules/axsync/src/context.rs",
@@ -406,7 +407,7 @@ fn check_runtime_providers(
     workspace_root: &Path,
     findings: &mut Vec<Finding>,
 ) -> anyhow::Result<()> {
-    let mut runtime_counts = [0usize; 3];
+    let mut runtime_counts = [0usize; PROVIDER_TRAITS.len()];
 
     for entry in WalkDir::new(workspace_root)
         .into_iter()
@@ -429,6 +430,19 @@ fn check_runtime_providers(
         }
         let contents = fs::read_to_string(entry.path())
             .with_context(|| format!("failed to read {}", entry.path().display()))?;
+        for trait_name in FORBIDDEN_PROVIDER_TRAITS {
+            let qualified = format!("impl ax_sync::{trait_name} for");
+            let local = format!("impl {trait_name} for");
+            if contents.contains(&qualified) || contents.contains(&local) {
+                findings.push(Finding::new(
+                    entry.path(),
+                    trait_name.to_string(),
+                    format!("obsolete {trait_name} provider remains"),
+                    "lockdep graph, task-held state, IRQ exclusion, and diagnostics belong to \
+                     ax-task and TaskRuntime",
+                ));
+            }
+        }
         for (trait_index, trait_name) in PROVIDER_TRAITS.iter().enumerate() {
             let qualified = format!("impl ax_sync::{trait_name} for");
             let local = format!("impl {trait_name} for");
@@ -684,8 +698,6 @@ edition = "2024"
 impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {}
 #[cfg(not(feature = "host-test"))]
 impl ax_sync::PiMutexTaskOps for RuntimePiMutexTaskOps {}
-#[cfg(not(feature = "host-test"))]
-impl ax_sync::LockdepOps for RuntimeLockdepOps {}
 "#,
         );
     }
@@ -963,6 +975,30 @@ ax-sync = "0.1"
     }
 
     #[test]
+    fn rejects_obsolete_lockdep_provider() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            RUNTIME_PROVIDER_PATH,
+            r#"
+#[cfg(not(feature = "host-test"))]
+impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {}
+#[cfg(not(feature = "host-test"))]
+impl ax_sync::PiMutexTaskOps for RuntimePiMutexTaskOps {}
+impl ax_sync::LockdepOps for RuntimeLockdepOps {}
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("obsolete LockdepOps provider remains")
+        }));
+    }
+
+    #[test]
     fn rejects_ax_task_selecting_the_independent_host_pi_provider() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
@@ -998,7 +1034,6 @@ host-test = ["ax-sync/host-test"]
 #[cfg(target_os = "none")]
 impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {}
 impl ax_sync::MutexRuntimeOps for RuntimeMutexOps {}
-impl ax_sync::LockdepOps for RuntimeLockdepOps {}
 "#,
         );
         write_file(

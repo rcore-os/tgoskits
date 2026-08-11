@@ -33,18 +33,21 @@ const WAKE_STATE_PUBLISHED: u8 = WAKE_PENDING | PARK_NOTIFIED;
 
 #[cfg(feature = "lockdep")]
 struct ThreadHeldLocks {
-    stack: UnsafeCell<ax_sync::HeldLockStack>,
+    stack: UnsafeCell<crate::sync::lockdep::HeldLockStack>,
 }
 
 #[cfg(feature = "lockdep")]
 impl ThreadHeldLocks {
     const fn new() -> Self {
         Self {
-            stack: UnsafeCell::new(ax_sync::HeldLockStack::new()),
+            stack: UnsafeCell::new(crate::sync::lockdep::HeldLockStack::new()),
         }
     }
 
-    unsafe fn with_mut<R>(&self, operation: impl FnOnce(&mut ax_sync::HeldLockStack) -> R) -> R {
+    unsafe fn with_mut<R>(
+        &self,
+        operation: impl FnOnce(&mut crate::sync::lockdep::HeldLockStack) -> R,
+    ) -> R {
         // SAFETY: the caller owns the current-task and migration-exclusion
         // contract documented on `ThreadCore::with_held_locks`.
         unsafe { operation(&mut *self.stack.get()) }
@@ -544,7 +547,7 @@ impl ThreadCore {
     #[cfg(feature = "lockdep")]
     pub(crate) unsafe fn with_held_locks<R>(
         &self,
-        operation: impl FnOnce(&mut ax_sync::HeldLockStack) -> R,
+        operation: impl FnOnce(&mut crate::sync::lockdep::HeldLockStack) -> R,
     ) -> R {
         unsafe { self.held_locks.with_mut(operation) }
     }
@@ -573,9 +576,9 @@ mod tests {
     fn held_lock_stacks_are_owned_by_their_threads() {
         let first = test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default());
         let second = test_core(ThreadId::from_parts(1, 1), SchedulePolicy::default());
-        let held = ax_sync::HeldLock {
+        let held = crate::sync::lockdep::HeldLock {
             class_id: 1,
-            kind: ax_sync::HeldLockKind::Spin,
+            kind: crate::sync::lockdep::HeldLockKind::Spin,
             sleep_forbidden: true,
             addr: 0x1000,
             caller: core::panic::Location::caller(),

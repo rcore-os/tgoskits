@@ -43,7 +43,7 @@ pub(crate) use deadline::{
 };
 pub use ktimer::start_current_ktimer_service;
 #[cfg(feature = "lockdep")]
-pub use lockdep::{
+pub(crate) use lockdep::{
     collect_current_task_held_locks, pop_current_task_held_lock, push_current_task_held_lock,
 };
 pub use membarrier::{

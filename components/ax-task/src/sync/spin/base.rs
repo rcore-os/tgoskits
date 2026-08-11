@@ -441,6 +441,13 @@ mod tests {
         drop(m.lock());
     }
 
+    #[cfg(feature = "lockdep")]
+    #[test]
+    fn lockdep_native_algorithm_links_without_external_provider() {
+        let lock = SpinMutex::new(());
+        drop(lock.lock());
+    }
+
     #[test]
     #[cfg(feature = "smp")]
     fn lots_and_lots() {
@@ -487,6 +494,8 @@ mod tests {
     #[test]
     #[cfg(feature = "smp")]
     fn try_lock() {
+        #[cfg(feature = "lockdep")]
+        let _runtime = crate::test_runtime::InstalledDefaultTaskRuntime::new();
         let mutex = SpinMutex::<_>::new(42);
 
         // First lock succeeds
@@ -655,6 +664,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "recursive spin lock acquisition")]
     fn lockdep_rejects_recursive_acquire() {
+        let _runtime = crate::test_runtime::InstalledDefaultTaskRuntime::new();
         let lock = TestSpinIrq::new(0usize);
         let _guard = lock.lock();
         let _guard2 = lock.lock();
@@ -664,6 +674,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "lock order inversion detected")]
     fn lockdep_rejects_order_inversion() {
+        let _runtime = crate::test_runtime::InstalledDefaultTaskRuntime::new();
         let lock_a = TestSpinIrq::new(0usize);
         let lock_b = TestSpinIrq::new(0usize);
 
@@ -680,6 +691,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "lock order inversion detected")]
     fn lockdep_rejects_order_inversion_across_same_class_instances() {
+        let _runtime = crate::test_runtime::InstalledDefaultTaskRuntime::new();
         fn class_a() -> TestSpinIrq<usize> {
             TestSpinIrq::new(0)
         }
@@ -706,6 +718,7 @@ mod tests {
     #[cfg(all(feature = "lockdep", feature = "smp"))]
     #[test]
     fn lockdep_rejects_order_inversion_before_try_lock_failure() {
+        let _runtime = crate::test_runtime::InstalledDefaultTaskRuntime::new();
         struct LocalGuard;
         static LOCAL_IRQ_CNT: AtomicU32 = AtomicU32::new(0);
 
@@ -740,6 +753,7 @@ mod tests {
         let thread_lock_b = lock_b.clone();
 
         let result = thread::spawn(move || {
+            let _runtime = crate::test_runtime::InstalledDefaultTaskRuntime::new();
             let _guard_b = thread_lock_b.lock();
             let _guard_a = thread_lock_a.try_lock();
         })
@@ -754,6 +768,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "unlock order violation")]
     fn lockdep_rejects_out_of_order_unlock() {
+        let _runtime = crate::test_runtime::InstalledDefaultTaskRuntime::new();
         let lock_a = TestSpinIrq::new(0usize);
         let lock_b = TestSpinIrq::new(0usize);
 

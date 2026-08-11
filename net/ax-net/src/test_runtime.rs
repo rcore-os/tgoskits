@@ -210,6 +210,7 @@ impl_task_runtime! {
         }
         fn flush_tlb_local(_start: usize, _size: usize) {}
         fn trace_sched_switch(_record: SchedSwitchRecord) {}
+        fn emergency_console_write(_message: &str) {}
         fn fatal_invariant(code: u32, argument: usize) -> ! {
             panic!("ax-net test scheduler invariant {code} failed with {argument:#x}")
         }

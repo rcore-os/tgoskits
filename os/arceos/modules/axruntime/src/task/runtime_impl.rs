@@ -485,6 +485,10 @@ impl_task_runtime! {
             hook(record);
         }
 
+        fn emergency_console_write(message: &str) {
+            ax_hal::console::write_bytes(message.as_bytes());
+        }
+
         fn fatal_invariant(code: u32, argument: usize) -> ! {
             panic!("ax-task invariant {code} failed with argument {argument:#x}")
         }

@@ -1,5 +1,9 @@
 //! Fake TaskRuntime linked only into the ax-task unit-test binary.
 
+#[cfg(feature = "lockdep")]
+use alloc::boxed::Box;
+#[cfg(feature = "lockdep")]
+use core::pin::Pin;
 use core::{
     cell::{Cell, RefCell},
     sync::atomic::{AtomicUsize, Ordering},
@@ -664,6 +668,7 @@ impl TaskRuntime for UnitTestRuntime {
                 .push(SwitchObservation::Trace(record));
         });
     }
+    fn emergency_console_write(_message: &str) {}
     fn fatal_invariant(code: u32, argument: usize) -> ! {
         panic!("scheduler invariant {code:#010x} reported with argument {argument:#x}")
     }
@@ -913,6 +918,52 @@ pub(crate) fn install_task_handles(task_system: usize, cpu_local: usize) {
             .into_raw()
     };
     CURRENT_CPU_REMOTE_HANDLE.with(|handle| handle.set(remote));
+}
+
+#[cfg(feature = "lockdep")]
+pub(crate) struct InstalledDefaultTaskRuntime {
+    _cpu: Pin<Box<crate::CpuLocal>>,
+    _system: Pin<Box<crate::TaskSystem>>,
+}
+
+#[cfg(feature = "lockdep")]
+impl InstalledDefaultTaskRuntime {
+    pub(crate) fn new() -> Self {
+        let system = Box::pin(
+            crate::TaskSystem::new(crate::TaskSystemConfig::new(1))
+                .expect("lockdep test task system must initialize"),
+        );
+        let mut cpu = system
+            .create_cpu_local(crate::CpuId::new(0))
+            .expect("lockdep test CPU must initialize");
+        system
+            .install_bootstrap_thread(
+                cpu.as_mut(),
+                crate::ThreadSpec::new(crate::SchedulePolicy::default()),
+            )
+            .expect("lockdep test bootstrap thread must initialize");
+        system
+            .bring_cpu_online(cpu.as_mut())
+            .expect("lockdep test CPU must become online");
+        install_task_handles(
+            (system.as_ref().get_ref() as *const crate::TaskSystem).expose_provenance(),
+            // SAFETY: the returned fixture owns this pinned CPU until Drop
+            // clears the thread-local runtime handles.
+            (unsafe { Pin::get_unchecked_mut(cpu.as_mut()) } as *mut crate::CpuLocal)
+                .expose_provenance(),
+        );
+        Self {
+            _cpu: cpu,
+            _system: system,
+        }
+    }
+}
+
+#[cfg(feature = "lockdep")]
+impl Drop for InstalledDefaultTaskRuntime {
+    fn drop(&mut self) {
+        clear_task_handles();
+    }
 }
 
 pub(crate) fn reset_cpu_handle_reads() {

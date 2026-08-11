@@ -428,6 +428,8 @@ mod tests {
 
     #[test]
     fn writer_excludes_readers_and_writers() {
+        #[cfg(feature = "lockdep")]
+        let _runtime = crate::test_runtime::InstalledDefaultTaskRuntime::new();
         let lock = RwLock::new(1);
         let mut writer = lock.write();
         *writer = 2;

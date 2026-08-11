@@ -441,6 +441,10 @@ pub trait TaskRuntime {
     /// Emits an allocation-free context-switch trace record.
     fn trace_sched_switch(record: SchedSwitchRecord);
 
+    /// Writes directly to the runtime's emergency console without taking an
+    /// OS lock or re-entering the scheduler.
+    fn emergency_console_write(message: &str);
+
     /// Reports an unrecoverable scheduler invariant and terminates execution.
     fn fatal_invariant(code: u32, argument: usize) -> !;
 }

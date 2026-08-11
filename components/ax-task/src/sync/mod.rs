@@ -8,6 +8,8 @@ pub mod api;
 #[doc(hidden)]
 pub mod bridge;
 mod context;
+#[cfg(feature = "lockdep")]
+pub(crate) mod lockdep;
 mod spin;
 
 pub use self::api::*;

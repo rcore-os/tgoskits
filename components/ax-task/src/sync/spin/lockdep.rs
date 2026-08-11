@@ -1,16 +1,15 @@
 use core::{any::type_name, panic::Location};
 
-pub use ax_sync::{
-    DEFAULT_LOCK_SUBCLASS, LockdepMap, PreparedAcquire, current_task_held_lock_snapshot,
-};
-
 use super::base::BaseSpinLock;
 use crate::sync::context::GuardState;
+pub use crate::sync::lockdep::{
+    DEFAULT_LOCK_SUBCLASS, LockdepMap, PreparedAcquire, current_task_held_lock_snapshot,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Lockdep {
     addr: usize,
-    inner: ax_sync::ExternalLockdepTrace,
+    inner: crate::sync::lockdep::Lockdep,
     prepared: Option<PreparedAcquire>,
 }
 
@@ -55,7 +54,7 @@ impl Lockdep {
         track_task_lock: bool,
     ) -> Self {
         let prepared = if track_task_lock && tracks_task_locks::<G>() {
-            Some(ax_sync::prepare_acquire_with_snapshot_nested(
+            Some(crate::sync::lockdep::prepare_acquire_with_snapshot_nested(
                 map,
                 lock_kind,
                 addr,
@@ -68,7 +67,7 @@ impl Lockdep {
         };
         Self {
             addr,
-            inner: ax_sync::ExternalLockdepTrace::prepare(
+            inner: crate::sync::lockdep::Lockdep::prepare(
                 trace_kind,
                 addr,
                 is_try,
@@ -82,7 +81,7 @@ impl Lockdep {
     pub(crate) fn finish(&self, acquired: bool) {
         self.inner.finish(acquired);
         if let (true, Some(prepared)) = (acquired, self.prepared) {
-            ax_sync::finish_acquire_task(prepared, self.addr);
+            crate::sync::lockdep::finish_acquire_task(prepared, self.addr);
         }
     }
 
@@ -100,22 +99,22 @@ pub(crate) fn release<G: GuardState>(addr: usize) {
 #[inline(always)]
 pub(crate) fn release_kind<G: GuardState>(kind: &'static str, addr: usize) {
     if tracks_task_locks::<G>() {
-        ax_sync::release_task(addr);
+        crate::sync::lockdep::release_task(addr);
     }
-    ax_sync::ExternalLockdepTrace::release(kind, addr, Some(type_name::<G>()));
+    crate::sync::lockdep::Lockdep::release(kind, addr, Some(type_name::<G>()));
 }
 
 #[inline(always)]
 pub(crate) fn release_trace_only<G: GuardState>(kind: &'static str, addr: usize) {
-    ax_sync::ExternalLockdepTrace::release(kind, addr, Some(type_name::<G>()));
+    crate::sync::lockdep::Lockdep::release(kind, addr, Some(type_name::<G>()));
 }
 
 #[inline(always)]
 pub(crate) fn force_release<G: GuardState>(addr: usize) {
     if tracks_task_locks::<G>() {
-        ax_sync::force_release_task(addr);
+        crate::sync::lockdep::force_release_task(addr);
     }
-    ax_sync::ExternalLockdepTrace::release("spin", addr, Some(type_name::<G>()));
+    crate::sync::lockdep::Lockdep::release("spin", addr, Some(type_name::<G>()));
 }
 
 fn is_noop_guard<G: GuardState>() -> bool {

@@ -77,9 +77,9 @@ Axvisor special contexts --------> ax_std::os::arceos::sync
 native 路径直接使用本 crate 拥有的布局；bridge 路径把 `ax-sync` 的固定原子字段借用为
 external layout view。禁止 bridge 复制 owner、waiter、grant、donation 或 wake 状态。
 
-`ax-task` 不直接访问 `ax-hal`。IRQ、preempt、current-thread、scheduler entry 和硬中断
-状态继续通过 `TaskRuntime` 能力边界取得。这样 native 锁属于调度层，但具体 OS/架构实现
-仍由 runtime 提供，Cargo 依赖方向不反转。
+`ax-task` 不直接访问 `ax-hal`。IRQ、preempt、current-thread、scheduler entry、硬中断状态
+以及 lockdep 紧急诊断输出继续通过 `TaskRuntime` 能力边界取得。这样 native 锁属于调度层，
+但具体 OS/架构实现仍由 runtime 提供，Cargo 依赖方向不反转。
 
 context capability 必须区分两种 IRQ 所有权：raw local-IRQ save/restore 只传递架构中断
 状态，不进入 scheduler owner scope；scheduler IRQ guard 同时拥有 CPU pin、publication 和
@@ -201,9 +201,10 @@ cfg(all(feature = "host-test", not(target_os = "none")))
 该 backend 服务 OS 无关组件的 host test，不注册生产 provider，也不成为第二个算法事实
 源。`target_os = "none"` 即使误开 `host-test` 仍要求 runtime provider。
 
-`ax-task` host test 使用测试 `TaskRuntime` provider 验证 native 算法；不得通过依赖
-feature 反向选择 `ax-sync` host backend。最终 runtime 决定生产或 host 组合，底层 crate
-不能自行猜测 provider。
+`ax-task` host test 使用测试 `TaskRuntime` provider 和真实 `TaskSystem/ThreadCore` 当前任务
+验证 native 算法；不得另建 TLS held-lock stack，也不得通过依赖 feature 反向选择
+`ax-sync` host backend。最终 runtime 决定生产或 host 组合，底层 crate 不能自行猜测
+provider。
 
 ## 8. 子系统规则与机器约束
 

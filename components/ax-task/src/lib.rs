@@ -8,7 +8,7 @@
 extern crate alloc;
 extern crate self as ax_task;
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "host-test", not(target_os = "none"))))]
 extern crate std;
 
 mod config;

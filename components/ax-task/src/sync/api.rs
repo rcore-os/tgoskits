@@ -6,9 +6,18 @@
 //! wait-queue mutex from the layering reference.
 
 pub use ax_sync::{
-    InterruptibleMutexExt, LockSubclass, LockdepMutexExt, Mutex, MutexGuard, PiMutex, PiMutexGuard,
-    PiMutexLockInterrupted, RawMutex, RawPiMutex, dump_lockdep_trace, set_lockdep_trace_enabled,
+    InterruptibleMutexExt, LockdepMutexExt, Mutex, MutexGuard, PiMutex, PiMutexGuard,
+    PiMutexLockInterrupted, RawMutex, RawPiMutex,
 };
+
+#[cfg(feature = "lockdep")]
+pub use super::lockdep::{LockSubclass, dump_lockdep_trace, set_lockdep_trace_enabled};
+#[cfg(not(feature = "lockdep"))]
+pub type LockSubclass = u32;
+#[cfg(not(feature = "lockdep"))]
+pub const fn set_lockdep_trace_enabled(_enabled: bool) {}
+#[cfg(not(feature = "lockdep"))]
+pub const fn dump_lockdep_trace() {}
 
 pub use super::context::{
     IrqReturnPreemptGuard, IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard, hardirq_enter,
