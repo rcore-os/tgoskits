@@ -65,6 +65,8 @@ pub struct CpuRemote {
     #[cfg(test)]
     timer_deadline_rq_observations: AtomicU64,
     #[cfg(test)]
+    owner_current_core_rq_observations: AtomicU64,
+    #[cfg(test)]
     scheduler_deadline_derivations: AtomicU64,
 }
 
@@ -88,6 +90,8 @@ impl CpuRemote {
             #[cfg(test)]
             timer_deadline_rq_observations: AtomicU64::new(0),
             #[cfg(test)]
+            owner_current_core_rq_observations: AtomicU64::new(0),
+            #[cfg(test)]
             scheduler_deadline_derivations: AtomicU64::new(0),
         })
     }
@@ -102,9 +106,16 @@ impl CpuRemote {
         source: RunQueueGuardSource,
     ) -> IrqTicketGuard<'_, CpuRunQueueState> {
         #[cfg(test)]
-        if source == RunQueueGuardSource::TimerDeadlineDerivationObservation {
-            self.timer_deadline_rq_observations
-                .fetch_add(1, Ordering::Relaxed);
+        match source {
+            RunQueueGuardSource::TimerDeadlineDerivationObservation => {
+                self.timer_deadline_rq_observations
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            RunQueueGuardSource::OwnerCurrentCoreObservation => {
+                self.owner_current_core_rq_observations
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
         }
         self.run_queue.lock(source.irq_guard_source())
     }
@@ -112,6 +123,12 @@ impl CpuRemote {
     #[cfg(test)]
     pub(crate) fn timer_deadline_rq_observations(&self) -> u64 {
         self.timer_deadline_rq_observations.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owner_current_core_rq_observations(&self) -> u64 {
+        self.owner_current_core_rq_observations
+            .load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
