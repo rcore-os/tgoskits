@@ -17,8 +17,7 @@ pub(crate) enum RunQueueGuardSource {
     OwnerCurrentHandleObservation,
     OwnerIdleObservation,
     OwnerRunnableObservation,
-    TimerSchedulerClockEventObservation,
-    TimerFairBalanceObservation,
+    TimerDeadlineDerivationObservation,
     RtAccounting,
     DeadlineAccounting,
     Membarrier,
@@ -46,11 +45,8 @@ impl RunQueueGuardSource {
             Self::OwnerRunnableObservation => {
                 crate::runtime::IrqGuardSource::CpuRunQueueOwnerRunnableObservationTicket
             }
-            Self::TimerSchedulerClockEventObservation => {
-                crate::runtime::IrqGuardSource::CpuRunQueueTimerSchedulerClockEventObservationTicket
-            }
-            Self::TimerFairBalanceObservation => {
-                crate::runtime::IrqGuardSource::CpuRunQueueTimerFairBalanceObservationTicket
+            Self::TimerDeadlineDerivationObservation => {
+                crate::runtime::IrqGuardSource::CpuRunQueueTimerDeadlineDerivationObservationTicket
             }
             Self::RtAccounting => crate::runtime::IrqGuardSource::CpuRunQueueRtAccountingTicket,
             Self::DeadlineAccounting => {

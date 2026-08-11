@@ -9,6 +9,13 @@ fn earliest<T: Ord>(current: Option<T>, candidate: T) -> Option<T> {
     }
 }
 
+/// Deadline inputs derived coherently while one runqueue guard owns current,
+/// class membership, runtime accounting, and the periodic balance predicate.
+struct SchedulerDeadlineRqObservation {
+    clock_event: Option<SchedulerClockEvent>,
+    has_periodic_fair_balance_work: bool,
+}
+
 impl CpuLocal {
     pub(crate) fn scheduler_work_due(
         self: Pin<&mut Self>,
@@ -17,14 +24,12 @@ impl CpuLocal {
         // SAFETY: the scheduler owns this pinned runqueue while refreshing RT
         // bandwidth periods and querying its next local event.
         let this = unsafe { self.get_unchecked_mut() };
-        let scheduler_due = matches!(
-            this.scheduler_clock_event(monotonic_now),
-            Some(SchedulerClockEvent::Due)
-        );
+        let rq_observation = this.scheduler_deadline_rq_observation(monotonic_now);
+        let scheduler_due = matches!(rq_observation.clock_event, Some(SchedulerClockEvent::Due));
         if scheduler_due {
             this.remote.request_reschedule();
         }
-        let fair_balance_due = if this.has_periodic_fair_balance_work() {
+        let fair_balance_due = if rq_observation.has_periodic_fair_balance_work {
             let due = this.dispatch.publish_fair_balance_due(monotonic_now);
             if due {
                 this.remote.request_scheduler_work();
@@ -60,7 +65,8 @@ impl CpuLocal {
         } else {
             None
         };
-        let scheduler = match this.scheduler_clock_event(monotonic_now) {
+        let rq_observation = this.scheduler_deadline_rq_observation(monotonic_now);
+        let scheduler = match rq_observation.clock_event {
             // Deadline selection is a pure observation. An already-due hard
             // scheduler timer remains a physical clockevent source and the
             // runtime clamps it to the device minimum delta. Only the firing
@@ -71,7 +77,10 @@ impl CpuLocal {
             Some(SchedulerClockEvent::Future(deadline)) => Some(deadline),
             None => None,
         };
-        let fair_balance = this.fair_balance_clockevent_deadline();
+        let fair_balance = rq_observation
+            .has_periodic_fair_balance_work
+            .then(|| this.dispatch.fair_balance_deadline())
+            .flatten();
         let rt_period = this.rt_bandwidth.deadline_for(this.owner);
         [timer, scheduler, fair_balance, rt_period]
             .into_iter()
@@ -170,18 +179,19 @@ impl CpuLocal {
         self.remote.lock_deadline_publication().generation = generation;
     }
 
-    fn scheduler_clock_event(
+    fn scheduler_deadline_rq_observation(
         &self,
         monotonic_now: MonotonicInstant,
-    ) -> Option<SchedulerClockEvent> {
+    ) -> SchedulerDeadlineRqObservation {
         let run_queue = self
             .remote
-            .lock_run_queue(RunQueueGuardSource::TimerSchedulerClockEventObservation);
+            .lock_run_queue(RunQueueGuardSource::TimerDeadlineDerivationObservation);
         let mut due = false;
         let mut next = None;
 
-        let current_is_idle =
-            run_queue.current_thread().is_some() && run_queue.current_thread() == run_queue.idle();
+        let current_thread = run_queue.current_thread();
+        let idle = run_queue.idle();
+        let current_is_idle = current_thread.is_some() && current_thread == idle;
         if !current_is_idle && let Some(dispatch) = run_queue.current() {
             let current_entity = run_queue
                 .current_scheduling_entity()
@@ -220,27 +230,18 @@ impl CpuLocal {
                 }
             }
         }
-        if due {
+        let clock_event = if due {
             Some(SchedulerClockEvent::Due)
         } else {
             next.map(SchedulerClockEvent::Future)
+        };
+        let current_non_idle = current_thread.is_some() && current_thread != idle;
+        let has_periodic_fair_balance_work =
+            run_queue.has_fair() && run_queue.nr_running() > usize::from(current_non_idle);
+        SchedulerDeadlineRqObservation {
+            clock_event,
+            has_periodic_fair_balance_work,
         }
-    }
-
-    fn fair_balance_clockevent_deadline(&self) -> Option<MonotonicDeadline> {
-        if !self.has_periodic_fair_balance_work() {
-            return None;
-        }
-        self.dispatch.fair_balance_deadline()
-    }
-
-    fn has_periodic_fair_balance_work(&self) -> bool {
-        let run_queue = self
-            .remote
-            .lock_run_queue(RunQueueGuardSource::TimerFairBalanceObservation);
-        let current_non_idle =
-            run_queue.current_thread().is_some() && run_queue.current_thread() != run_queue.idle();
-        run_queue.has_fair() && run_queue.nr_running() > usize::from(current_non_idle)
     }
 
     /// Returns one coherent remotely observable scheduling snapshot.
@@ -257,7 +258,10 @@ impl CpuLocal {
     pub(crate) fn publish_fair_balance_due(self: Pin<&mut Self>, now: MonotonicInstant) -> bool {
         // SAFETY: this owner-only timer transition does not move CpuLocal.
         let this = unsafe { self.get_unchecked_mut() };
-        if !this.has_periodic_fair_balance_work() {
+        if !this
+            .scheduler_deadline_rq_observation(now)
+            .has_periodic_fair_balance_work
+        {
             return false;
         }
         let due = this.dispatch.publish_fair_balance_due(now);

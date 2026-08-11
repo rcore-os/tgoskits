@@ -201,14 +201,8 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
-        "irq_ticket_cpu_run_queue_timer_scheduler_clock_event_observation_entries {}",
-        task.irq_ticket_cpu_run_queue_timer_scheduler_clock_event_observation_entries
-    )
-    .unwrap();
-    writeln!(
-        output,
-        "irq_ticket_cpu_run_queue_timer_fair_balance_observation_entries {}",
-        task.irq_ticket_cpu_run_queue_timer_fair_balance_observation_entries
+        "irq_ticket_cpu_run_queue_timer_deadline_derivation_observation_entries {}",
+        task.irq_ticket_cpu_run_queue_timer_deadline_derivation_observation_entries
     )
     .unwrap();
     writeln!(
@@ -553,8 +547,7 @@ mod tests {
                 "irq_ticket_cpu_run_queue_owner_idle_observation_entries",
                 "irq_ticket_cpu_run_queue_owner_runnable_observation_entries",
                 "irq_ticket_cpu_run_queue_timer_observation_entries",
-                "irq_ticket_cpu_run_queue_timer_scheduler_clock_event_observation_entries",
-                "irq_ticket_cpu_run_queue_timer_fair_balance_observation_entries",
+                "irq_ticket_cpu_run_queue_timer_deadline_derivation_observation_entries",
                 "irq_ticket_cpu_run_queue_rt_accounting_entries",
                 "irq_ticket_cpu_run_queue_deadline_accounting_entries",
                 "irq_ticket_cpu_run_queue_membarrier_entries",
