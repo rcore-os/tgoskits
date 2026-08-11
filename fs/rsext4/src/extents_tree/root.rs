@@ -74,7 +74,7 @@ impl<'a> ExtentTree<'a> {
     ///
     /// Production paths must use [`Self::with_filesystem`] so physical-range,
     /// system-zone, and metadata-checksum validation carry mounted context.
-    #[cfg(any(test, axtest))]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn new(inode: &'a mut Ext4Inode, block_size: usize) -> Self {
         let generation = inode.i_generation;
         Self {

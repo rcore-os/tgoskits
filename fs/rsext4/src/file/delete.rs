@@ -1,6 +1,10 @@
 use super::*;
 use crate::hashtree::Ext4InodeHashTreeExt;
 
+// Linux uses EXT4_DATA_TRANS_BLOCKS for both unlink and rmdir. Extent
+// filesystems without writable quota support reserve 20 + 6 - 2 blocks.
+const UNLINK_TRANSACTION_CREDITS: usize = 24;
+
 /// A directory entry located by a single parent-directory scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ParentDirEntry {
@@ -193,71 +197,28 @@ pub(crate) fn unlink_inode_at<B: BlockIo>(
         return Err(Ext4Error::is_dir());
     }
 
-    let old_links = target_inode.i_links_count;
     let new_links = target_inode.decremented_links_count()?;
     if new_links == 0 {
         preflight_inode_free(fs, block_dev, entry.ino, &target_inode)?;
     }
-    fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
-    if new_links == 0
-        && let Err(error) = fs.add_orphan(block_dev, entry.ino)
-    {
-        let rollback = fs
-            .set_inode_links_count(block_dev, entry.ino, old_links)
-            .map(|_| ());
-        return Err(error_after_cleanup(error, rollback));
-    }
-
-    if let Err(error) =
-        remove_named_entry_at(fs, block_dev, parent, &parent_inode, entry, name.as_bytes())
-    {
-        // A failed write may still have published the directory-block change.
-        // Only roll back link/orphan state when lookup proves the name remains.
-        let still_present = matches!(
-            find_named_entry_in_parent(
-                fs,
-                block_dev,
-                parent,
-                &parent_inode,
-                name.as_bytes(),
-            ),
-            Ok(found) if found.ino == entry.ino
-        );
-        if still_present {
-            let orphan_rollback = if new_links == 0 {
-                fs.remove_orphan(block_dev, entry.ino)
-            } else {
-                Ok(())
-            };
-            let link_rollback = orphan_rollback.and_then(|()| {
-                fs.set_inode_links_count(block_dev, entry.ino, old_links)
-                    .map(|_| ())
-            });
-            return Err(error_after_cleanup(error, link_rollback));
+    fs.with_metadata_transaction(block_dev, UNLINK_TRANSACTION_CREDITS, |fs, block_dev| {
+        remove_named_entry_at(fs, block_dev, parent, &parent_inode, entry, name.as_bytes())?;
+        fs.touch_parent_dir_for_entry_change(block_dev, parent)?;
+        fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
+        if new_links == 0 {
+            fs.add_orphan(block_dev, entry.ino)?;
         }
-        return Err(error);
-    }
-    fs.touch_parent_dir_for_entry_change(block_dev, parent)?;
+        fs.inodetable_cache.flush(block_dev, parent)?;
+        fs.inodetable_cache.flush(block_dev, entry.ino)?;
+        if new_links == 0 {
+            fs.sync_superblock(block_dev)?;
+        }
+        Ok(())
+    })?;
     Ok(UnlinkOutcome {
         inode: entry.ino,
         remaining_links: new_links,
     })
-}
-
-fn restore_removed_directory_state<B: BlockIo>(
-    fs: &mut Ext4FileSystem,
-    block_dev: &mut Jbd2Dev<B>,
-    parent: InodeNumber,
-    parent_links: u16,
-    target: InodeNumber,
-    target_inode: Ext4Inode,
-) -> Ext4Result<()> {
-    let parent_result = fs
-        .set_inode_links_count(block_dev, parent, parent_links)
-        .map(|_| ());
-    let orphan_result = fs.remove_orphan(block_dev, target);
-    let inode_result = fs.modify_inode(block_dev, target, |inode| *inode = target_inode);
-    parent_result.and(orphan_result).and(inode_result)
 }
 
 /// Removes an empty directory name while retaining its zero-link inode on the
@@ -287,54 +248,26 @@ pub(crate) fn unlink_empty_directory_at<B: BlockIo>(
     preflight_inode_free(fs, block_dev, entry.ino, &target_inode)?;
     let parent_new_links = parent_inode.links_count_after_removing_directories(1)?;
 
-    let mut unlinked_target = target_inode;
-    unlinked_target.i_links_count = 0;
-    unlinked_target.i_size_lo = 0;
-    unlinked_target.i_size_high = 0;
-    fs.finalize_inode_update(
-        block_dev,
-        entry.ino,
-        &mut unlinked_target,
-        Ext4InodeMetadataUpdate::link_count_change(),
-    )?;
-    if let Err(error) = fs.add_orphan(block_dev, entry.ino) {
-        let rollback = fs.modify_inode(block_dev, entry.ino, |inode| *inode = target_inode);
-        return Err(error_after_cleanup(error, rollback));
-    }
-    if let Err(error) = fs.set_inode_links_count(block_dev, parent, parent_new_links) {
-        let rollback = fs
-            .remove_orphan(block_dev, entry.ino)
-            .and_then(|()| fs.modify_inode(block_dev, entry.ino, |inode| *inode = target_inode));
-        return Err(error_after_cleanup(error, rollback));
-    }
-
-    if let Err(error) =
-        remove_named_entry_at(fs, block_dev, parent, &parent_inode, entry, name.as_bytes())
-    {
-        let still_present = matches!(
-            find_named_entry_in_parent(
-                fs,
-                block_dev,
-                parent,
-                &parent_inode,
-                name.as_bytes(),
-            ),
-            Ok(found) if found.ino == entry.ino
-        );
-        if still_present {
-            let rollback = restore_removed_directory_state(
-                fs,
-                block_dev,
-                parent,
-                parent_inode.i_links_count,
-                entry.ino,
-                target_inode,
-            );
-            return Err(error_after_cleanup(error, rollback));
-        }
-        return Err(error);
-    }
-    fs.touch_parent_dir_for_entry_change(block_dev, parent)?;
+    fs.with_metadata_transaction(block_dev, UNLINK_TRANSACTION_CREDITS, |fs, block_dev| {
+        remove_named_entry_at(fs, block_dev, parent, &parent_inode, entry, name.as_bytes())?;
+        let mut unlinked_target = target_inode;
+        unlinked_target.i_links_count = 0;
+        unlinked_target.i_size_lo = 0;
+        unlinked_target.i_size_high = 0;
+        fs.finalize_inode_update(
+            block_dev,
+            entry.ino,
+            &mut unlinked_target,
+            Ext4InodeMetadataUpdate::link_count_change(),
+        )?;
+        fs.add_orphan(block_dev, entry.ino)?;
+        fs.set_inode_links_count(block_dev, parent, parent_new_links)?;
+        fs.touch_parent_dir_for_entry_change(block_dev, parent)?;
+        fs.inodetable_cache.flush(block_dev, entry.ino)?;
+        fs.inodetable_cache.flush(block_dev, parent)?;
+        fs.sync_superblock(block_dev)?;
+        Ok(())
+    })?;
     Ok(UnlinkOutcome {
         inode: entry.ino,
         remaining_links: 0,

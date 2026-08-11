@@ -66,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when directory publication fails.
 - Keep directory-growth block bitmaps, group descriptors, the superblock, and
   extent metadata inside the Linux-sized hard-link transaction boundary.
+- Publish unlink and empty-directory removal atomically with parent/target
+  inode updates and the classic orphan head under Linux-sized transactions.
 
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 
