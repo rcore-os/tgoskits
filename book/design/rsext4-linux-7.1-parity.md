@@ -106,7 +106,7 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 | --- | --- | --- | --- | --- |
 | `boundary-no-os-deps` | `ax-kspin`、`log` direct dependencies | boundary script passes | portable core skeleton | 绿：`RSEXT4_BOUNDARY_PASSED` |
 | `domain-error-no-errno` | core 公开并按 Linux `Errno` 分支 | typed domain error，errno 仅由 adapter 映射 | portable core skeleton | 绿：core 已无 `Errno`；`ax-fs-ng` 集中映射 |
-| `owned-mount-boundary` | caller 分别持有公开字段的 `Ext4FileSystem` 和公开 `Jbd2Dev`，且 block device 必须同时实现 `Clock` | 私有 `Ext4<D, S>` 独占 device/cache/journal/services；`BlockIo` 与 `Clock` 分离；只公开 typed operations/DTO | portable core skeleton | 进行中：`Ext4<D, MountedServices<...>>` 已消费 device 与 `MountServices`，独立 clock callback 驱动 metadata 链路；ax-fs-ng 现由一个 sleepable mutex 独占 `MountedExt4`，mount、inode I/O、readdir、namespace mutation、sync/unmount 不再 split 或访问 core cache/superblock/JBD2，手写 `unsafe Send/Sync` 已删除。旧 path/fd re-export、公开 `Ext4FileSystem`/`Jbd2Dev` 与 `initial_jbd2dev` 仍待 workspace 全消费者迁移后删除；RW 失败后同一 cache owner 的 RO fallback 也待恢复阶段证明，尚不能转绿 |
+| `owned-mount-boundary` | caller 分别持有公开字段的 `Ext4FileSystem` 和公开 `Jbd2Dev`，且 block device 必须同时实现 `Clock` | 私有 `Ext4<D, S>` 独占 device/cache/journal/services；`BlockIo` 与 `Clock` 分离；只公开 typed operations/DTO | portable core skeleton | 进行中：`Ext4<D, MountedServices<...>>` 已消费 device 与 `MountServices`，独立 clock callback 驱动 metadata 链路；ax-fs-ng 现由一个 sleepable mutex 独占 `MountedExt4`，mount、inode I/O、readdir、namespace mutation、sync/unmount 不再 split 或访问 core cache/superblock/JBD2，手写 `unsafe Send/Sync` 已删除。host harness 也已改用 typed `format` 与 owned inode I/O，不再依赖 legacy path/JBD2 proxy。旧 path/fd re-export、公开 `Ext4FileSystem`/`Jbd2Dev` 与 `initial_jbd2dev` 仍待 crate tests/axtest 迁移后删除；RW 失败后同一 cache owner 的 RO fallback 也待恢复阶段证明，尚不能转绿 |
 | `directory-name-no-truncate` | `insert_dir_entry` 对超过 255 byte 的名称静默截断并仍返回成功 | raw name 在任何 inode/dirent mutation 前校验；非 UTF-8 合法，空串、NUL、`/`、超过 255 byte 明确拒绝 | namespace boundary | 绿：256-byte 名称确定性红测证明旧实现创建截断 dentry；`FileName` 与 strict insert 现在在分配/插入前返回 `InvalidInput`，同一测试验证没有遗留 255-byte truncated entry |
 | `typed-namespace-create` | create/mkdir 接收 absolute UTF-8 path，core 自动创建父目录并在创建后由 adapter 二次修改 mode | `parent inode + FileName + FilePermissions + MutationContext`，path/permission policy 留在 VFS | namespace boundary | 进行中：owned API 已提供 raw-byte regular-file/directory/special-inode/symlink create，并在首次 metadata publish 时应用 uid/gid/umask；ax-fs-ng create 已迁移到 resolved parent inode 与 typed DTO，不再路径查找或二次直改 inode。VFS 现有 symlink create/set 两阶段合约、project inheritance/quota 与 caller context 贯通仍为红项 |
 | `special-inode-rdev` | extents-enabled filesystem 对 CHR/BLK/FIFO/SOCK 无条件写 extent header，且 core 没有 `i_rdev` codec，special inode 还能错误携带普通文件 payload | 仅 DIR/REG/normal symlink 初始化 extent tree；CHR/BLK 使用 Linux old/new device codec，FIFO/SOCK 保持空 `i_block`；typed create 拒绝类型/payload 不匹配 | inode codec/namespace boundary | 绿（typed primitive）：确定性红测证明旧 char inode 带 `EXT4_EXTENTS_FL`；同一测试现要求零 size/block 且拒绝 payload。`DeviceNumber` checked major/minor 与 old/new codec 单测通过，owned `create_special_inode` 持久化 259:511 后由 Linux `debugfs` 解码一致且 `e2fsck -fn` clean。rename whiteout 的同 transaction 创建/回滚仍归属 `typed-rename-flags` 与 `rename-mutation-rollback` 红项 |
@@ -490,3 +490,32 @@ RSEXT4_BENCH_SUMMARY commit=e3181fb4dac47922ee68db7267182e141d92f763 arch=x86_64
 为性能红项；未丢弃任何样本，也未用选择性复测覆盖。rename 不在该 sequential
 workload 的热路径，不能据此把回退归因于 rename 逻辑；整体性能收敛阶段必须迁移
 最终 owned API harness，并在同机 dev A/B 中定位波动与真实回退来源。
+
+### 7.18 owned API harness 检查点
+
+采集时间：2026-08-11；被测实现 commit 为
+`c1da15b5ebfdee0dfc30d1e1d48932e7a0b58b91`，固定 CPU 2，环境与 7.8
+相同。该检查点将冻结 harness 从 legacy `Jbd2Dev + absolute path`
+调用迁移到 `format(device, clock, options)` 和私有 `Ext4<D, S>`
+owner。format、mount 与 create 仍在计时外；write 计时为已打开
+inode 的 `write_inode`，read 计时保留了 read buffer 分配、`read_inode`
+和内容校验，sync 计时仍为一次 clean `unmount`，因此没有把
+`sync + unmount` 双重提交塞入旧 workload。数据量、随机内容、镜像、
+warmup/run 与 marker 字段未变。这是公共 API 边界迁移后的新
+frozen harness；dev 基线由旧 API 完成同一 sequential 语义，最终 PR
+必须同时报告这一 API 差异，不能宣称为指令级完全相同的 harness。
+
+正式检查使用 3 次预热与 20 次测量，全部有效原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-owned-api-harness.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=c1da15b5ebfdee0dfc30d1e1d48932e7a0b58b91 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6599015 write_p95_ns=7737093 read_median_ns=6700307 read_p95_ns=8030772 sync_median_ns=32339 sync_p95_ns=57306
+```
+
+首次采集因手工填写的完整 commit marker 错误而整组作废，之后以
+`git rev-parse HEAD` 的真实 SHA 重做完整 3+20；作废原因是元数据
+无效，不是选择性剔除性能样本。相对 dev 基线，write median/p95
+分别回退约 5.4%/12.3%，read median/p95 分别回退约
+10.1%/12.4%，sync median/p95 分别回退约 13.6%/66.1%。因此
+median 与 p95 硬门槛均未通过，本检查点保持性能红项；20 个
+有效样本一个未丢弃，也不用继续复测覆盖。
