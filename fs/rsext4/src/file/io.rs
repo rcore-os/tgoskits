@@ -32,6 +32,8 @@ pub enum RangeOperation {
     Allocate(PreallocationOptions),
     PunchHole,
     Zero(ZeroRangeOptions),
+    Collapse,
+    Insert,
 }
 
 /// Applies a typed byte-range operation to an already resolved inode.
@@ -51,7 +53,305 @@ pub fn operate_inode_range<B: BlockIo>(
         RangeOperation::Zero(options) => {
             zero_range_inode(device, fs, inode_num, offset, len, options)
         }
+        RangeOperation::Collapse => collapse_range_inode(device, fs, inode_num, offset, len),
+        RangeOperation::Insert => insert_range_inode(device, fs, inode_num, offset, len),
     }
+}
+
+/// Removes a byte range and shifts all later extent mappings to the left.
+pub fn collapse_range_inode<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    offset: u64,
+    len: u64,
+) -> Ext4Result<()> {
+    let end = checked_range_end(offset, len, "fallocate:collapse_zero_length")?;
+    let block_bytes = fs.block_size() as u64;
+    let alignment = fs.superblock.checked_cluster_size()?;
+    if !offset.is_multiple_of(alignment) || !len.is_multiple_of(alignment) {
+        return Err(Ext4Error::invalid_input().with_operation("fallocate:collapse_alignment"));
+    }
+    let mut inode = fs.get_inode_by_num(device, inode_num)?;
+    validate_extent_shift_inode(&inode, "fallocate:collapse_not_extent")?;
+    if end >= inode.size() {
+        return Err(Ext4Error::invalid_input().with_operation("fallocate:collapse_eof"));
+    }
+
+    let start_lbn = offset / block_bytes;
+    let end_lbn = end / block_bytes;
+    let new_size = inode
+        .size()
+        .checked_sub(len)
+        .ok_or_else(Ext4Error::overflow)?;
+    rebuild_shifted_extent_mapping(
+        device,
+        fs,
+        inode_num,
+        &mut inode,
+        ExtentRangeTransform::Collapse {
+            start: start_lbn,
+            end: end_lbn,
+        },
+        new_size,
+    )
+}
+
+/// Inserts a hole and shifts all later extent mappings to the right.
+pub fn insert_range_inode<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    offset: u64,
+    len: u64,
+) -> Ext4Result<()> {
+    checked_range_end(offset, len, "fallocate:insert_zero_length")?;
+    let block_bytes = fs.block_size() as u64;
+    let alignment = fs.superblock.checked_cluster_size()?;
+    if !offset.is_multiple_of(alignment) || !len.is_multiple_of(alignment) {
+        return Err(Ext4Error::invalid_input().with_operation("fallocate:insert_alignment"));
+    }
+    let mut inode = fs.get_inode_by_num(device, inode_num)?;
+    validate_extent_shift_inode(&inode, "fallocate:insert_not_extent")?;
+    if offset >= inode.size() {
+        return Err(Ext4Error::invalid_input().with_operation("fallocate:insert_eof"));
+    }
+    let new_size = inode
+        .size()
+        .checked_add(len)
+        .ok_or_else(Ext4Error::file_too_large)?;
+    if new_size.div_ceil(block_bytes) > u64::from(u32::MAX) + 1 {
+        return Err(Ext4Error::file_too_large());
+    }
+
+    rebuild_shifted_extent_mapping(
+        device,
+        fs,
+        inode_num,
+        &mut inode,
+        ExtentRangeTransform::Insert {
+            start: offset / block_bytes,
+            len: len / block_bytes,
+        },
+        new_size,
+    )
+}
+
+fn validate_extent_shift_inode(
+    inode: &Ext4Inode,
+    unsupported_operation: &'static str,
+) -> Ext4Result<()> {
+    if !inode.is_file() {
+        return Err(Ext4Error::invalid_input().with_operation("fallocate:not_regular"));
+    }
+    if !inode.uses_extents() {
+        return Err(Ext4Error::unsupported().with_operation(unsupported_operation));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ExtentRangeTransform {
+    Collapse { start: u64, end: u64 },
+    Insert { start: u64, len: u64 },
+}
+
+struct TransformedExtents {
+    mappings: Vec<Ext4Extent>,
+    released_data: Vec<(AbsoluteBN, u32)>,
+}
+
+fn rebuild_shifted_extent_mapping<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    transform: ExtentRangeTransform,
+    new_size: u64,
+) -> Ext4Result<()> {
+    let mut old_tree = ExtentTree::with_filesystem(inode, fs, inode_num);
+    let old_external_blocks = old_tree.external_node_blocks(device)?;
+    let old_extents = old_tree.all_extents(device)?;
+    let TransformedExtents {
+        mappings: new_extents,
+        released_data: removed_data,
+    } = transform_extents(&old_extents, transform)?;
+
+    // Build a replacement tree while the old external nodes remain allocated.
+    // This guarantees a failed allocation cannot make the durable inode point
+    // at a partially built tree, at the cost of temporary metadata headroom.
+    let mut rebuilt = *inode;
+    rebuilt.write_extend_header();
+    for extent in new_extents {
+        ExtentTree::with_filesystem(&mut rebuilt, fs, inode_num)
+            .insert_extent(fs, extent, device)?;
+    }
+    rebuilt.i_size_lo = new_size as u32;
+    rebuilt.i_size_high = (new_size >> 32) as u32;
+
+    let released_data_blocks = removed_data.iter().try_fold(0u64, |total, (_, count)| {
+        total
+            .checked_add(u64::from(*count))
+            .ok_or_else(Ext4Error::overflow)
+    })?;
+    let released_blocks = released_data_blocks
+        .checked_add(u64::try_from(old_external_blocks.len()).map_err(|_| Ext4Error::overflow())?)
+        .ok_or_else(Ext4Error::overflow)?;
+    let block_size = fs.block_size() as u32;
+    let huge_file_feature = fs
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+    subtract_inode_data_blocks(&mut rebuilt, released_blocks, block_size, huge_file_feature)?;
+
+    // Publish the replacement root before returning any old physical block to
+    // the allocator. Publish final i_blocks accounting with the new root so a
+    // later cleanup failure can only leak an unreachable allocation; it cannot
+    // expose stale inode accounting or a reference to an already reused block.
+    fs.finalize_inode_update(
+        device,
+        inode_num,
+        &mut rebuilt,
+        Ext4InodeMetadataUpdate::write_access(),
+    )?;
+
+    for (physical_start, count) in removed_data {
+        for offset in 0..count {
+            let block = physical_start.checked_add(offset)?;
+            fs.datablock_cache.invalidate(block);
+            fs.free_block(device, block)?;
+        }
+    }
+    for block in old_external_blocks {
+        device.forget_detached_metadata(block);
+        fs.datablock_cache.invalidate(block);
+        fs.free_block(device, block)?;
+    }
+
+    *inode = rebuilt;
+    Ok(())
+}
+
+fn transform_extents(
+    old_extents: &[Ext4Extent],
+    transform: ExtentRangeTransform,
+) -> Ext4Result<TransformedExtents> {
+    let mut new_extents = Vec::new();
+    let mut removed_data = Vec::new();
+    for extent in old_extents {
+        let extent_start = u64::from(extent.ee_block);
+        let extent_end = extent_start
+            .checked_add(u64::from(extent.len()))
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:logical_overflow"))?;
+        match transform {
+            ExtentRangeTransform::Collapse { start, end } => {
+                let shift = end
+                    .checked_sub(start)
+                    .ok_or_else(|| Ext4Error::invalid_input().with_operation("extent:collapse"))?;
+                if extent_end <= start {
+                    push_extent_slice(&mut new_extents, extent, extent_start, 0, extent.len())?;
+                } else if extent_start >= end {
+                    push_extent_slice(
+                        &mut new_extents,
+                        extent,
+                        extent_start
+                            .checked_sub(shift)
+                            .ok_or_else(Ext4Error::overflow)?,
+                        0,
+                        extent.len(),
+                    )?;
+                } else {
+                    if extent_start < start {
+                        let left_len = u32::try_from(start - extent_start)
+                            .map_err(|_| Ext4Error::overflow())?;
+                        push_extent_slice(&mut new_extents, extent, extent_start, 0, left_len)?;
+                    }
+
+                    let removed_start = core::cmp::max(extent_start, start);
+                    let removed_end = core::cmp::min(extent_end, end);
+                    if removed_start < removed_end {
+                        let physical_offset = u32::try_from(removed_start - extent_start)
+                            .map_err(|_| Ext4Error::overflow())?;
+                        let physical_start =
+                            AbsoluteBN::new(extent.start_block()).checked_add(physical_offset)?;
+                        let count = u32::try_from(removed_end - removed_start)
+                            .map_err(|_| Ext4Error::overflow())?;
+                        removed_data.push((physical_start, count));
+                    }
+
+                    if extent_end > end {
+                        let physical_offset =
+                            u32::try_from(end - extent_start).map_err(|_| Ext4Error::overflow())?;
+                        let right_len =
+                            u32::try_from(extent_end - end).map_err(|_| Ext4Error::overflow())?;
+                        push_extent_slice(
+                            &mut new_extents,
+                            extent,
+                            end.checked_sub(shift).ok_or_else(Ext4Error::overflow)?,
+                            physical_offset,
+                            right_len,
+                        )?;
+                    }
+                }
+            }
+            ExtentRangeTransform::Insert { start, len } => {
+                if extent_end <= start {
+                    push_extent_slice(&mut new_extents, extent, extent_start, 0, extent.len())?;
+                } else if extent_start >= start {
+                    push_extent_slice(
+                        &mut new_extents,
+                        extent,
+                        extent_start
+                            .checked_add(len)
+                            .ok_or_else(Ext4Error::file_too_large)?,
+                        0,
+                        extent.len(),
+                    )?;
+                } else {
+                    let left_len =
+                        u32::try_from(start - extent_start).map_err(|_| Ext4Error::overflow())?;
+                    push_extent_slice(&mut new_extents, extent, extent_start, 0, left_len)?;
+                    let right_len =
+                        u32::try_from(extent_end - start).map_err(|_| Ext4Error::overflow())?;
+                    push_extent_slice(
+                        &mut new_extents,
+                        extent,
+                        start
+                            .checked_add(len)
+                            .ok_or_else(Ext4Error::file_too_large)?,
+                        left_len,
+                        right_len,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(TransformedExtents {
+        mappings: new_extents,
+        released_data: removed_data,
+    })
+}
+
+fn push_extent_slice(
+    output: &mut Vec<Ext4Extent>,
+    original: &Ext4Extent,
+    logical_start: u64,
+    physical_offset: u32,
+    len: u32,
+) -> Ext4Result<()> {
+    if len == 0 {
+        return Ok(());
+    }
+    let logical_start = u32::try_from(logical_start).map_err(|_| Ext4Error::file_too_large())?;
+    let physical_start = AbsoluteBN::new(original.start_block()).checked_add(physical_offset)?;
+    let mut extent = *original;
+    extent.ee_block = logical_start;
+    extent.ee_len = original
+        .build_len_like(len)
+        .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:range_slice"))?;
+    extent.ee_start_lo = physical_start.raw() as u32;
+    extent.ee_start_hi = (physical_start.raw() >> 32) as u16;
+    output.push(extent);
+    Ok(())
 }
 
 /// Releases complete blocks inside a byte range while preserving file size.

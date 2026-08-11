@@ -31,6 +31,22 @@ impl Ext4Superblock {
         Ok(block_size)
     }
 
+    /// Returns the validated allocation-cluster size in bytes.
+    pub fn checked_cluster_size(&self) -> Ext4Result<u64> {
+        let block_size = u64::from(self.checked_block_size()?);
+        let cluster_size = 1024u64
+            .checked_shl(self.s_log_cluster_size)
+            .ok_or_else(|| Ext4Error::bad_superblock().with_operation("superblock:cluster_size"))?;
+        let has_bigalloc = self.has_feature_ro_compat(Self::EXT4_FEATURE_RO_COMPAT_BIGALLOC);
+        if cluster_size < block_size
+            || !cluster_size.is_multiple_of(block_size)
+            || (!has_bigalloc && cluster_size != block_size)
+        {
+            return Err(Ext4Error::bad_superblock().with_operation("superblock:cluster_size"));
+        }
+        Ok(cluster_size)
+    }
+
     /// Returns the 64-bit block count.
     pub fn blocks_count(&self) -> u64 {
         (self.s_blocks_count_hi as u64) << 32 | self.s_blocks_count_lo as u64
@@ -83,17 +99,9 @@ impl Ext4Superblock {
         }
 
         let bits_per_block = block_size.checked_mul(8).ok_or_else(Ext4Error::overflow)?;
-        let cluster_size = 1024u64
-            .checked_shl(self.s_log_cluster_size)
-            .ok_or_else(|| Ext4Error::bad_superblock().with_operation("superblock:cluster_size"))?;
+        let cluster_size = self.checked_cluster_size()?;
         let block_size_u64 = u64::from(block_size);
         let has_bigalloc = self.has_feature_ro_compat(Self::EXT4_FEATURE_RO_COMPAT_BIGALLOC);
-        if cluster_size < block_size_u64
-            || !cluster_size.is_multiple_of(block_size_u64)
-            || (!has_bigalloc && cluster_size != block_size_u64)
-        {
-            return Err(Ext4Error::bad_superblock().with_operation("superblock:cluster_size"));
-        }
 
         if self.s_blocks_per_group == 0
             || (!has_bigalloc && self.s_blocks_per_group > bits_per_block)

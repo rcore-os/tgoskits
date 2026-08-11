@@ -187,6 +187,37 @@ impl<'a> ExtentTree<'a> {
         Ok(runs)
     }
 
+    /// Returns every initialized or unwritten extent in logical order.
+    pub(crate) fn all_extents<B: BlockIo>(
+        &mut self,
+        dev: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<Vec<Ext4Extent>> {
+        let root = self.load_root_from_inode()?;
+        self.validate_node(&root, None, None, dev.total_blocks(), true)?;
+
+        fn collect<B: BlockIo>(
+            tree: &ExtentTree<'_>,
+            dev: &mut Jbd2Dev<B>,
+            node: &ExtentNode,
+            output: &mut Vec<Ext4Extent>,
+        ) -> Ext4Result<()> {
+            match node {
+                ExtentNode::Leaf { entries, .. } => output.extend_from_slice(entries),
+                ExtentNode::Index { header, entries } => {
+                    for index in entries {
+                        let child = tree.read_child_node(dev, index, header.eh_depth - 1)?;
+                        collect(tree, dev, &child, output)?;
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        let mut extents = Vec::new();
+        collect(self, dev, &root, &mut extents)?;
+        Ok(extents)
+    }
+
     /// Recursively searches one node for the extent covering `lblock`.
     #[allow(clippy::only_used_in_recursion)]
     fn find_in_node<B: BlockIo>(

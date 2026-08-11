@@ -7,7 +7,9 @@ use rsext4::{
     Ext4Timestamp, Jbd2Dev, PreallocationOptions, SectorId, ZeroRangeOptions, dir,
     disknode::{Ext4Extent, Ext4ExtentHeader},
     extents_tree::{ExtentBlockMapping, ExtentNode, ExtentTree},
-    mkfile, mkfs, mount, preallocate_inode, punch_hole_inode, read_file, read_inode_data_into,
+    mkfile, mkfs, mount, operate_inode_range, preallocate_inode, punch_hole_inode, read_file,
+    read_inode_data_into,
+    superblock::Ext4Superblock,
     truncate_inode, write_file, zero_range_inode,
 };
 
@@ -764,5 +766,173 @@ fn truncating_preallocated_unwritten_extents_releases_their_blocks() {
             .map_block(&mut journal, 0)
             .expect("truncated mapping lookup failed"),
         ExtentBlockMapping::Hole
+    );
+}
+
+#[test]
+fn collapse_range_removes_blocks_and_shifts_later_extents_left() {
+    let device = MemoryDevice::new(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(&mut journal, &mut filesystem, "/collapse", None, None).expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/collapse")
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+    let mut original = vec![0; 4 * BLOCK_SIZE];
+    for (index, block) in original.chunks_exact_mut(BLOCK_SIZE).enumerate() {
+        block.fill(index as u8 + 1);
+    }
+    write_file(&mut journal, &mut filesystem, "/collapse", 0, &original)
+        .expect("initial write failed");
+
+    operate_inode_range(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        BLOCK_SIZE as u64,
+        BLOCK_SIZE as u64,
+        rsext4::RangeOperation::Collapse,
+    )
+    .expect("collapse range failed");
+
+    let after =
+        read_file(&mut journal, &mut filesystem, "/collapse").expect("collapsed file read failed");
+    assert_eq!(after.len(), 3 * BLOCK_SIZE);
+    assert_eq!(&after[..BLOCK_SIZE], &original[..BLOCK_SIZE]);
+    assert_eq!(
+        &after[BLOCK_SIZE..],
+        &original[2 * BLOCK_SIZE..4 * BLOCK_SIZE]
+    );
+}
+
+#[test]
+fn insert_range_creates_a_hole_and_shifts_later_extents_right() {
+    let device = MemoryDevice::new(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(&mut journal, &mut filesystem, "/insert", None, None).expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/insert")
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+    let mut original = vec![0; 3 * BLOCK_SIZE];
+    for (index, block) in original.chunks_exact_mut(BLOCK_SIZE).enumerate() {
+        block.fill(index as u8 + 1);
+    }
+    write_file(&mut journal, &mut filesystem, "/insert", 0, &original)
+        .expect("initial write failed");
+
+    operate_inode_range(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        BLOCK_SIZE as u64,
+        BLOCK_SIZE as u64,
+        rsext4::RangeOperation::Insert,
+    )
+    .expect("insert range failed");
+
+    let after =
+        read_file(&mut journal, &mut filesystem, "/insert").expect("inserted file read failed");
+    assert_eq!(after.len(), 4 * BLOCK_SIZE);
+    assert_eq!(&after[..BLOCK_SIZE], &original[..BLOCK_SIZE]);
+    assert!(
+        after[BLOCK_SIZE..2 * BLOCK_SIZE]
+            .iter()
+            .all(|byte| *byte == 0)
+    );
+    assert_eq!(&after[2 * BLOCK_SIZE..], &original[BLOCK_SIZE..]);
+}
+
+#[test]
+fn collapse_range_requires_bigalloc_cluster_alignment() {
+    let device = MemoryDevice::new(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(
+        &mut journal,
+        &mut filesystem,
+        "/collapse-cluster",
+        None,
+        None,
+    )
+    .expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/collapse-cluster")
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+    write_file(
+        &mut journal,
+        &mut filesystem,
+        "/collapse-cluster",
+        0,
+        &vec![0x5a; 4 * BLOCK_SIZE],
+    )
+    .expect("initial write failed");
+    filesystem.superblock.s_feature_ro_compat |= Ext4Superblock::EXT4_FEATURE_RO_COMPAT_BIGALLOC;
+    filesystem.superblock.s_log_cluster_size = filesystem.superblock.s_log_block_size + 1;
+    filesystem.superblock.s_clusters_per_group /= 2;
+
+    let error = operate_inode_range(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        BLOCK_SIZE as u64,
+        BLOCK_SIZE as u64,
+        rsext4::RangeOperation::Collapse,
+    )
+    .expect_err("block-aligned but cluster-unaligned collapse must fail");
+    assert_eq!(error.kind(), rsext4::Ext4ErrorKind::InvalidInput);
+    assert_eq!(
+        error.context(),
+        Some(rsext4::ErrorContext::Operation {
+            op: "fallocate:collapse_alignment"
+        })
+    );
+}
+
+#[test]
+fn insert_range_requires_bigalloc_cluster_alignment() {
+    let device = MemoryDevice::new(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(&mut journal, &mut filesystem, "/insert-cluster", None, None)
+        .expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/insert-cluster")
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+    write_file(
+        &mut journal,
+        &mut filesystem,
+        "/insert-cluster",
+        0,
+        &vec![0xa5; 4 * BLOCK_SIZE],
+    )
+    .expect("initial write failed");
+    filesystem.superblock.s_feature_ro_compat |= Ext4Superblock::EXT4_FEATURE_RO_COMPAT_BIGALLOC;
+    filesystem.superblock.s_log_cluster_size = filesystem.superblock.s_log_block_size + 1;
+    filesystem.superblock.s_clusters_per_group /= 2;
+
+    let error = operate_inode_range(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        BLOCK_SIZE as u64,
+        BLOCK_SIZE as u64,
+        rsext4::RangeOperation::Insert,
+    )
+    .expect_err("block-aligned but cluster-unaligned insert must fail");
+    assert_eq!(error.kind(), rsext4::Ext4ErrorKind::InvalidInput);
+    assert_eq!(
+        error.context(),
+        Some(rsext4::ErrorContext::Operation {
+            op: "fallocate:insert_alignment"
+        })
     );
 }

@@ -240,6 +240,8 @@ impl FileNodeOps for Inode {
                 VfsPreallocationMode::ExtendSize => ZeroRangeOptions::EXTEND_SIZE,
                 VfsPreallocationMode::KeepSize => ZeroRangeOptions::KEEP_SIZE,
             }),
+            VfsRangeOperation::CollapseRange => RangeOperation::Collapse,
+            VfsRangeOperation::InsertRange => RangeOperation::Insert,
         };
         let mut state = self.fs.lock();
         state
