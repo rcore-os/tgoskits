@@ -32,5 +32,29 @@ pub fn ext4_group_desc_csum16(
     (checksum & 0xFFFF) as u16
 }
 
+/// Computes a group descriptor checksum while treating the stored checksum
+/// field as zero, exactly as Linux ext4 does during verification.
+pub(crate) fn ext4_group_desc_csum16_zeroed(
+    sb: &crate::superblock::Ext4Superblock,
+    group_id: u32,
+    desc_bytes: &[u8],
+) -> Option<u16> {
+    let before_checksum = desc_bytes.get(..30)?;
+    let after_checksum = desc_bytes.get(32..)?;
+    let seed = crate::crc32c::ext4_crc32c_seed_from_superblock(sb);
+    let group_id_le = group_id.to_le_bytes();
+    let zero_checksum = [0u8; 2];
+    let checksum = ext4_metadata_csum32(
+        seed,
+        &[
+            &group_id_le,
+            before_checksum,
+            &zero_checksum,
+            after_checksum,
+        ],
+    );
+    Some((checksum & 0xFFFF) as u16)
+}
+
 #[cfg(test)]
 mod tests;

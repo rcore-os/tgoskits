@@ -93,7 +93,6 @@ impl Ext4FileSystem {
             // Stream descriptors back in block order so a GDT block is read and
             // written at most once per contiguous chunk.
             let group_id = idx as u32;
-            desc.update_checksum(&self.superblock, group_id, None, None);
             let byte_offset = gdt_base + idx as u64 * desc_size as u64;
             let block_num = AbsoluteBN::new(byte_offset / block_size_u64);
             let in_block = (byte_offset % block_size_u64) as usize;
@@ -116,7 +115,13 @@ impl Ext4FileSystem {
                 return Err(Ext4Error::corrupted());
             }
 
-            desc.to_disk_bytes(&mut buffer[in_block..end]);
+            desc.encode_with_checksum(
+                &self.superblock,
+                group_id,
+                &mut buffer[in_block..end],
+                None,
+                None,
+            )?;
         }
 
         if let Some(last_block) = current_block

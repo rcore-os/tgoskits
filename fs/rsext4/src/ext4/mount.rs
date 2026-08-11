@@ -640,8 +640,9 @@ impl Ext4FileSystem {
                 return Err(Ext4Error::bad_superblock());
             }
 
-            let desc = Ext4GroupDesc::from_disk_bytes(&buffer[in_block..end]);
-            desc.verify_checksum(superblock, group_id)?;
+            let raw_record = &buffer[in_block..end];
+            let desc = Ext4GroupDesc::decode_checked(raw_record)?;
+            desc.verify_checksum_in_bytes(superblock, group_id, raw_record)?;
             group_descs.push(desc);
         }
 

@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove misspelled compatibility entry points and replace the misspelled
   `BlcokGroupLayout` type and pluralized layout fields with the canonical
   `BlockGroupLayout` API.
+- Remove prefix-only group-descriptor checksum methods; checksum ownership now
+  stays inside full-record mount and persistence paths.
 
 ### Fixed
 
@@ -53,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails, including shared external-xattr COW allocation and inode state.
 - Reject short inode records and invalid `i_extra_isize` values with typed
   corruption errors before the inode cache decodes any on-disk fields.
+- Validate Linux group-descriptor sizes before decoding, use 32-byte strides
+  without `64bit`, and preserve/checksum extension bytes through byte 1024.
 
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 

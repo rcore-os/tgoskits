@@ -133,14 +133,11 @@ impl Ext4Superblock {
         }
 
         let desc_size = self.get_desc_size();
-        let min_desc_size = if self.has_feature_incompat(Self::EXT4_FEATURE_INCOMPAT_64BIT) {
-            GROUP_DESC_SIZE
-        } else {
-            GROUP_DESC_SIZE_OLD
-        };
-        if desc_size < min_desc_size
-            || u32::from(desc_size) > block_size
-            || !desc_size.is_multiple_of(8)
+        let has_64bit = self.has_feature_incompat(Self::EXT4_FEATURE_INCOMPAT_64BIT);
+        if has_64bit
+            && (!(GROUP_DESC_SIZE..=GROUP_DESC_SIZE_MAX).contains(&desc_size)
+                || u32::from(desc_size) > block_size
+                || !desc_size.is_power_of_two())
         {
             return Err(Ext4Error::bad_superblock().with_operation("superblock:descriptor_size"));
         }
@@ -173,12 +170,8 @@ impl Ext4Superblock {
 
     /// Returns the on-disk group descriptor size in bytes.
     pub fn get_desc_size(&self) -> u16 {
-        if self.s_desc_size == 0 {
-            if self.has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT) {
-                return GROUP_DESC_SIZE;
-            } else {
-                return GROUP_DESC_SIZE_OLD;
-            }
+        if !self.has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT) {
+            return GROUP_DESC_SIZE_OLD;
         }
         self.s_desc_size
     }
@@ -286,5 +279,27 @@ mod tests {
             .validate_geometry()
             .expect_err("block and cluster group geometry must agree");
         assert_eq!(error.kind(), crate::Ext4ErrorKind::BadSuperblock);
+    }
+
+    #[test]
+    fn descriptor_size_matches_linux_64bit_negotiation() {
+        let mut legacy = valid_geometry(2, 0);
+        legacy.s_desc_size = 40;
+        assert_eq!(legacy.get_desc_size(), GROUP_DESC_SIZE_OLD);
+        legacy.validate_geometry().unwrap();
+
+        let mut extended = valid_geometry(2, 0);
+        extended.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT;
+        extended.s_desc_size = 128;
+        assert_eq!(extended.get_desc_size(), 128);
+        extended.validate_geometry().unwrap();
+
+        for invalid_size in [0, 40, 96] {
+            extended.s_desc_size = invalid_size;
+            let error = extended
+                .validate_geometry()
+                .expect_err("64-bit descriptors must use a supported power-of-two size");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::BadSuperblock);
+        }
     }
 }

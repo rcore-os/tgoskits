@@ -673,19 +673,18 @@ fn write_group_desc<B: BlockIo>(
     let block_bitmap_blk = desc.block_bitmap() as u32;
     block_dev.read_block(block_bitmap_blk.into())?;
     let block_bitmap_bytes = block_dev.buffer().to_vec();
-    desc.update_checksum(
-        &superblock,
-        group_id,
-        Some(&block_bitmap_bytes),
-        Some(&inode_bitmap_bytes),
-    );
-
     block_dev.read_block(AbsoluteBN::new(block_num))?;
     let buffer = block_dev.buffer_mut();
     if end > buffer.len() {
         return Err(Ext4Error::corrupted());
     }
-    desc.to_disk_bytes(&mut buffer[in_block..end]);
+    desc.encode_with_checksum(
+        &superblock,
+        group_id,
+        &mut buffer[in_block..end],
+        Some(&block_bitmap_bytes),
+        Some(&inode_bitmap_bytes),
+    )?;
     block_dev.write_block(AbsoluteBN::new(block_num), true)?;
 
     Ok(())

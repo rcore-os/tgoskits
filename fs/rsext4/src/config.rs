@@ -26,6 +26,8 @@ pub const LOG_BLOCK_SIZE: u32 = 2;
 pub const GROUP_DESC_SIZE: u16 = 64;
 /// Size of a legacy 32-bit ext4 group descriptor in bytes.
 pub const GROUP_DESC_SIZE_OLD: u16 = 32;
+/// Largest group descriptor accepted by Linux ext4.
+pub const GROUP_DESC_SIZE_MAX: u16 = 1024;
 // ============================================================================
 // Inode geometry
 // ============================================================================

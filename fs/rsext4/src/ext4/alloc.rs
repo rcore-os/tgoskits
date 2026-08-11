@@ -69,7 +69,7 @@ impl Ext4FileSystem {
                 let desc_mut = self
                     .get_group_desc_mut(group_idx)
                     .ok_or(Ext4Error::corrupted())?;
-                desc_mut.update_checksum(&sb, group_idx.raw(), Some(&updated_data), None);
+                desc_mut.update_bitmap_checksums(&sb, Some(&updated_data), None);
             }
 
             if let Some(desc_mut) = self.get_group_desc_mut(group_idx) {
@@ -200,7 +200,7 @@ impl Ext4FileSystem {
                 let desc_mut = self
                     .get_group_desc_mut(group_idx)
                     .ok_or(Ext4Error::corrupted())?;
-                desc_mut.update_checksum(&sb, group_idx.raw(), None, Some(&updated_data));
+                desc_mut.update_bitmap_checksums(&sb, None, Some(&updated_data));
             }
 
             let ipg = self.superblock.s_inodes_per_group;
@@ -324,7 +324,7 @@ impl Ext4FileSystem {
             let desc_mut = self
                 .get_group_desc_mut(group_idx)
                 .ok_or(Ext4Error::corrupted())?;
-            desc_mut.update_checksum(&sb, group_idx.raw(), Some(&updated_data), None);
+            desc_mut.update_bitmap_checksums(&sb, Some(&updated_data), None);
         }
         free_ok?;
 
@@ -409,7 +409,7 @@ impl Ext4FileSystem {
             let desc_mut = self
                 .get_group_desc_mut(group_idx)
                 .ok_or(Ext4Error::corrupted())?;
-            desc_mut.update_checksum(&sb, group_idx.raw(), None, Some(&updated_data));
+            desc_mut.update_bitmap_checksums(&sb, None, Some(&updated_data));
         }
         free_ok?;
 
