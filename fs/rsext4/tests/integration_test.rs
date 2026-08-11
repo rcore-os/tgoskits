@@ -379,6 +379,22 @@ fn owned_mount_injects_clock_separately_from_block_io() {
 }
 
 #[test]
+fn owned_remount_tracks_block_validity_option() {
+    let mut filesystem = owned_test_filesystem();
+    let disabled = filesystem.options().with_block_validity(false);
+    filesystem
+        .remount(disabled)
+        .expect("disable block validity");
+    assert!(!filesystem.options().block_validity);
+
+    let enabled = filesystem.options().with_block_validity(true);
+    filesystem
+        .remount(enabled)
+        .expect("reenable block validity");
+    assert!(filesystem.options().block_validity);
+}
+
+#[test]
 fn owned_rename_noreplace_preserves_both_entries() {
     let mut filesystem = owned_test_filesystem();
     let context = MutationContext::new(1000, 1001, 7, 0o022);

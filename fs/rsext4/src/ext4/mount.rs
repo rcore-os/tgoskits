@@ -4,6 +4,7 @@ use super::{mkfs::read_superblock, *};
 pub struct MountOptions {
     pub readonly: bool,
     pub replay_journal: bool,
+    pub block_validity: bool,
 }
 
 impl MountOptions {
@@ -11,6 +12,7 @@ impl MountOptions {
         Self {
             readonly: false,
             replay_journal: true,
+            block_validity: true,
         }
     }
 
@@ -18,7 +20,13 @@ impl MountOptions {
         Self {
             readonly: true,
             replay_journal: false,
+            block_validity: true,
         }
+    }
+
+    pub const fn with_block_validity(mut self, enabled: bool) -> Self {
+        self.block_validity = enabled;
+        self
     }
 }
 
@@ -67,11 +75,16 @@ impl Ext4FileSystem {
     fn reset_runtime_from_superblock<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
+        block_validity: bool,
     ) -> Ext4Result<()> {
         self.group_count = self.superblock.checked_block_groups_count()?;
         self.group_descs =
             Self::load_group_descriptors(block_dev, &self.superblock, self.group_count)?;
-        self.system_zones = SystemZoneMap::from_layout(&self.superblock, &self.group_descs)?;
+        self.system_zones = if block_validity {
+            SystemZoneMap::from_layout(&self.superblock, &self.group_descs)?
+        } else {
+            SystemZoneMap::default()
+        };
         self.block_allocator = BlockAllocator::new(&self.superblock);
         self.inode_allocator = InodeAllocator::new(&self.superblock);
         self.bitmap_cache = BitmapCache::create_default();
@@ -85,6 +98,7 @@ impl Ext4FileSystem {
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         read_only: bool,
+        block_validity: bool,
     ) -> Ext4Result<()> {
         self.superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
         self.superblock.verify_superblock()?;
@@ -92,7 +106,7 @@ impl Ext4FileSystem {
         if !read_only {
             Self::dirty_for_mount(&mut self.superblock);
         }
-        self.reset_runtime_from_superblock(block_dev)
+        self.reset_runtime_from_superblock(block_dev, block_validity)
     }
 
     fn check_mount_features<O: crate::runtime::Observer>(
@@ -169,12 +183,41 @@ impl Ext4FileSystem {
         let mut journal_inode = self.get_inode_by_num(block_dev, journal_inode_num)?;
         let journal_blocks =
             self.journal_blocks(block_dev, journal_inode_num, &mut journal_inode)?;
-        self.system_zones = self.system_zones.with_owned_blocks(
-            &self.superblock,
-            journal_inode_num,
-            &journal_blocks,
-        )?;
+        if !self.system_zones.is_empty() {
+            self.system_zones = self.system_zones.with_owned_blocks(
+                &self.superblock,
+                journal_inode_num,
+                &journal_blocks,
+            )?;
+        }
         Ok(journal_blocks)
+    }
+
+    pub(crate) fn set_block_validity<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        enabled: bool,
+    ) -> Ext4Result<()> {
+        if !enabled {
+            self.system_zones = SystemZoneMap::default();
+            return Ok(());
+        }
+
+        let mut system_zones = SystemZoneMap::from_layout(&self.superblock, &self.group_descs)?;
+        if self.superblock.has_journal() {
+            let journal_inode_num = InodeNumber::new(self.superblock.s_journal_inum)
+                .map_err(|_| Ext4Error::corrupted().with_operation("journal:inode_number"))?;
+            let mut journal_inode = self.get_inode_by_num(block_dev, journal_inode_num)?;
+            let journal_blocks =
+                self.journal_blocks(block_dev, journal_inode_num, &mut journal_inode)?;
+            system_zones = system_zones.with_owned_blocks(
+                &self.superblock,
+                journal_inode_num,
+                &journal_blocks,
+            )?;
+        }
+        self.system_zones = system_zones;
+        Ok(())
     }
 
     /// Mounts an ext4 filesystem from the given block device.
@@ -248,7 +291,11 @@ impl Ext4FileSystem {
         let group_count = superblock.checked_block_groups_count()?;
 
         let group_descs = Self::load_group_descriptors(block_dev, &superblock, group_count)?;
-        let system_zones = SystemZoneMap::from_layout(&superblock, &group_descs)?;
+        let system_zones = if options.block_validity {
+            SystemZoneMap::from_layout(&superblock, &group_descs)?
+        } else {
+            SystemZoneMap::default()
+        };
 
         let block_allocator = BlockAllocator::new(&superblock);
         let inode_allocator = InodeAllocator::new(&superblock);
@@ -375,7 +422,11 @@ impl Ext4FileSystem {
                     // descriptors, bitmaps, inode table, and directory blocks.
                     // Drop all metadata read before replay and continue
                     // mounting from the recovered on-disk state.
-                    fs.reload_after_journal_replay(block_dev, options.readonly)?;
+                    fs.reload_after_journal_replay(
+                        block_dev,
+                        options.readonly,
+                        options.block_validity,
+                    )?;
                     Self::check_mount_features(&fs.superblock, options.readonly, observer)?;
                     let recovered_journal_ino = InodeNumber::new(fs.superblock.s_journal_inum)
                         .map_err(|_| {

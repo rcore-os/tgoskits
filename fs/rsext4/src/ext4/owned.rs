@@ -251,6 +251,7 @@ where
         let read_only_replay = MountOptions {
             readonly: true,
             replay_journal: true,
+            block_validity: true,
         };
         let read_only_no_replay = MountOptions::read_only_no_journal_replay();
 
@@ -302,6 +303,20 @@ where
 impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
     pub const fn options(&self) -> MountOptions {
         self.options
+    }
+
+    /// Applies mount options whose state can be rebuilt without changing the
+    /// device ownership or the filesystem read/write mode.
+    pub fn remount(&mut self, options: MountOptions) -> Ext4Result<()> {
+        if options.readonly != self.options.readonly
+            || options.replay_journal != self.options.replay_journal
+        {
+            return Err(Ext4Error::unsupported().with_operation("remount:mode"));
+        }
+        self.filesystem
+            .set_block_validity(&mut self.device, options.block_validity)?;
+        self.options = options;
+        Ok(())
     }
 
     pub fn root_inode(&self) -> InodeNumber {
