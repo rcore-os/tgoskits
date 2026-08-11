@@ -698,6 +698,35 @@ fn observer_receives_typed_mount_and_unmount_transitions() {
 }
 
 #[test]
+fn owned_special_inode_persists_modern_device_number() {
+    let mut filesystem = owned_test_filesystem();
+    let root = filesystem.root_inode();
+    let context = MutationContext::new(1000, 1001, 0, 0o022);
+    let device = DeviceNumber::new(259, 65_537).expect("valid modern device number");
+
+    let inode = filesystem
+        .create_special_inode(
+            context,
+            root,
+            FileName::new(b"modern-device").expect("valid raw name"),
+            FilePermissions::new(0o666).expect("valid permissions"),
+            SpecialInodeKind::CharacterDevice(device),
+        )
+        .expect("special inode creation failed");
+
+    assert_eq!(
+        inode.mode & rsext4::disknode::Ext4Inode::S_IFMT,
+        rsext4::disknode::Ext4Inode::S_IFCHR
+    );
+    assert_eq!(inode.mode & 0o777, 0o644);
+    assert_eq!(inode.uid, 1000);
+    assert_eq!(inode.gid, 1001);
+    assert_eq!(inode.device_number, Some(device));
+    assert_eq!(inode.size, 0);
+    assert_eq!(inode.blocks, 0);
+}
+
+#[test]
 fn test_basic_mount_mkfs() {
     let device = TestBlockDevice::new(100 * 1024 * 1024); // 100MB
     let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);

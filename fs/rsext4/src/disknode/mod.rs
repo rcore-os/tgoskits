@@ -1,6 +1,7 @@
 //! On-disk inode, extent, and timestamp types.
 use crate::endian::*;
 
+mod device_number;
 mod disk_format;
 mod extent;
 mod inode;
@@ -8,6 +9,7 @@ mod inode_flags;
 mod inode_mode;
 mod time;
 
+pub use device_number::DeviceNumber;
 pub use extent::{Ext4Extent, Ext4ExtentHeader, Ext4ExtentIdx};
 pub use inode::Ext4Inode;
 pub use time::{Ext4TimeSpec, Ext4Timestamp};
@@ -25,6 +27,51 @@ mod tests {
 
         assert_eq!(inode.uid(), 0x1234_5678);
         assert_eq!(inode.gid(), 0x9abc_def0);
+    }
+
+    #[test]
+    fn device_number_codec_matches_ext4_legacy_and_modern_layouts() {
+        let mut inode = Ext4Inode {
+            i_mode: Ext4Inode::S_IFCHR | 0o600,
+            ..Default::default()
+        };
+        let legacy = DeviceNumber::new(1, 3).unwrap();
+        inode.set_device_number(legacy).unwrap();
+        assert_eq!(inode.i_block[0], 0x0103);
+        assert_eq!(inode.i_block[1], 0);
+        assert_eq!(inode.device_number().unwrap(), Some(legacy));
+
+        let modern = DeviceNumber::new(259, 65_537).unwrap();
+        inode.set_device_number(modern).unwrap();
+        assert_eq!(inode.i_block[0], 0);
+        assert_eq!(inode.i_block[1], 0x1001_0301);
+        assert_eq!(inode.i_block[2], 0);
+        assert_eq!(inode.device_number().unwrap(), Some(modern));
+    }
+
+    #[test]
+    fn device_number_codec_rejects_out_of_range_or_regular_inode_use() {
+        assert_eq!(
+            DeviceNumber::new(4096, 0).unwrap_err().kind(),
+            crate::Ext4ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            DeviceNumber::new(0, 1 << 20).unwrap_err().kind(),
+            crate::Ext4ErrorKind::InvalidInput
+        );
+
+        let mut inode = Ext4Inode {
+            i_mode: Ext4Inode::S_IFREG | 0o600,
+            ..Default::default()
+        };
+        assert_eq!(
+            inode
+                .set_device_number(DeviceNumber::ZERO)
+                .unwrap_err()
+                .kind(),
+            crate::Ext4ErrorKind::InvalidInput
+        );
+        assert_eq!(inode.device_number().unwrap(), None);
     }
 
     #[test]

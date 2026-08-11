@@ -1,6 +1,13 @@
 use super::*;
 use crate::dir::{CreateEntryRequest, FileName, insert_dir_entry_raw};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CreateInodePayload<'a> {
+    Empty,
+    Data(&'a [u8]),
+    Device(DeviceNumber),
+}
+
 pub(crate) fn discard_unpublished_inode_blocks<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
@@ -259,7 +266,7 @@ pub(crate) fn create_inode_at<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     request: CreateEntryRequest<'_>,
-    initial_data: Option<&[u8]>,
+    payload: CreateInodePayload<'_>,
     file_type: u8,
 ) -> Ext4Result<Ext4Inode> {
     if request.name.is_reserved() || request.mode & Ext4Inode::S_IFMT == Ext4Inode::S_IFDIR {
@@ -267,9 +274,17 @@ pub(crate) fn create_inode_at<B: BlockIo>(
     }
     let inode_type = request.mode & Ext4Inode::S_IFMT;
     let supports_data_mapping = matches!(inode_type, Ext4Inode::S_IFREG | Ext4Inode::S_IFLNK);
-    if initial_data.is_some() && !supports_data_mapping {
-        return Err(Ext4Error::invalid_input().with_operation("inode:special_data"));
-    }
+    let (initial_data, device_number) = match (inode_type, payload) {
+        (Ext4Inode::S_IFREG | Ext4Inode::S_IFLNK, CreateInodePayload::Empty) => (None, None),
+        (Ext4Inode::S_IFREG | Ext4Inode::S_IFLNK, CreateInodePayload::Data(data)) => {
+            (Some(data), None)
+        }
+        (Ext4Inode::S_IFCHR | Ext4Inode::S_IFBLK, CreateInodePayload::Device(device)) => {
+            (None, Some(device))
+        }
+        (Ext4Inode::S_IFIFO | Ext4Inode::S_IFSOCK, CreateInodePayload::Empty) => (None, None),
+        _ => return Err(Ext4Error::invalid_input().with_operation("inode:create_payload")),
+    };
     let parent_inode = fs.get_inode_by_num(device, request.parent)?;
     if !parent_inode.is_dir() {
         return Err(Ext4Error::not_dir());
@@ -347,10 +362,19 @@ pub(crate) fn create_inode_at<B: BlockIo>(
     // Build the final inode image in memory, then persist it through the
     // unified metadata finalization path.
     let mut new_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
+    new_inode.set_mode_full(request.mode);
     new_inode.i_flags = Ext4Inode::mask_flags_for_mode(
         request.mode,
         parent_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED,
     );
+    if let Some(device_number) = device_number
+        && let Err(error) = new_inode.set_device_number(device_number)
+    {
+        return Err(error_after_cleanup(
+            error,
+            discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+        ));
+    }
 
     // Extent-enabled files start with an embedded extent root.
     if supports_data_mapping && fs.superblock.has_extents() {
@@ -405,7 +429,7 @@ pub(crate) fn create_inode_at<B: BlockIo>(
         if supports_data_mapping && fs.superblock.has_extents() {
             new_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
             new_inode.write_extend_header();
-        } else {
+        } else if device_number.is_none() {
             new_inode.i_block = [0; 15];
         }
     }
@@ -505,6 +529,13 @@ pub fn mkfile_with_owner<B: BlockIo>(
         Ext4DirEntry2::EXT4_FT_SOCK => Ext4Inode::S_IFSOCK | 0o644,
         _ => Ext4Inode::S_IFREG | 0o644,
     };
+    let payload = match file_type {
+        Ext4DirEntry2::EXT4_FT_CHRDEV | Ext4DirEntry2::EXT4_FT_BLKDEV => match initial_data {
+            Some(data) => CreateInodePayload::Data(data),
+            None => CreateInodePayload::Device(DeviceNumber::ZERO),
+        },
+        _ => initial_data.map_or(CreateInodePayload::Empty, CreateInodePayload::Data),
+    };
     create_inode_at(
         device,
         fs,
@@ -515,7 +546,7 @@ pub fn mkfile_with_owner<B: BlockIo>(
             uid,
             gid,
         },
-        initial_data,
+        payload,
         file_type,
     )
 }

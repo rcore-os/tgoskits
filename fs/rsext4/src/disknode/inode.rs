@@ -262,6 +262,54 @@ impl Ext4Inode {
         self.i_mode & Self::S_IFMT == Self::S_IFLNK
     }
 
+    /// Returns true when this inode stores a character-device number.
+    pub fn is_character_device(&self) -> bool {
+        self.i_mode & Self::S_IFMT == Self::S_IFCHR
+    }
+
+    /// Returns true when this inode stores a block-device number.
+    pub fn is_block_device(&self) -> bool {
+        self.i_mode & Self::S_IFMT == Self::S_IFBLK
+    }
+
+    /// Returns true when this inode represents a FIFO.
+    pub fn is_fifo(&self) -> bool {
+        self.i_mode & Self::S_IFMT == Self::S_IFIFO
+    }
+
+    /// Returns true when this inode represents a socket.
+    pub fn is_socket(&self) -> bool {
+        self.i_mode & Self::S_IFMT == Self::S_IFSOCK
+    }
+
+    /// Decodes the device number stored in a character or block inode.
+    pub fn device_number(&self) -> Ext4Result<Option<DeviceNumber>> {
+        if !self.is_character_device() && !self.is_block_device() {
+            return Ok(None);
+        }
+        let device = if self.i_block[0] != 0 {
+            DeviceNumber::decode_legacy(self.i_block[0])
+        } else {
+            DeviceNumber::decode_modern(self.i_block[1])
+        };
+        Ok(Some(device))
+    }
+
+    /// Encodes a device number into the ext4 `i_block` union.
+    pub fn set_device_number(&mut self, device: DeviceNumber) -> Ext4Result<()> {
+        if !self.is_character_device() && !self.is_block_device() {
+            return Err(Ext4Error::invalid_input().with_operation("inode:set_device_number"));
+        }
+        self.i_block = [0; 15];
+        self.i_flags &= !Self::EXT4_EXTENTS_FL;
+        if device.has_legacy_encoding() {
+            self.i_block[0] = device.encode_legacy();
+        } else {
+            self.i_block[1] = device.encode_modern();
+        }
+        Ok(())
+    }
+
     pub fn permissions(&self) -> u16 {
         self.i_mode & !Self::S_IFMT
     }

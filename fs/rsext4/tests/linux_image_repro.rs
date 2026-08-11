@@ -100,6 +100,16 @@ impl rsext4::Clock for FileBlockDevice {
     }
 }
 
+struct TestClock(Cell<i64>);
+
+impl Clock for TestClock {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
+        let seconds = self.0.get();
+        self.0.set(seconds + 1);
+        Ok(Ext4Timestamp::new(seconds, 0))
+    }
+}
+
 fn command_text(output: &Output) -> String {
     format!(
         "stdout:\n{}\nstderr:\n{}",
@@ -395,6 +405,47 @@ fn rsext4_mkfs_round_trip_with_2k_filesystem_blocks() {
 #[test]
 fn rsext4_mkfs_round_trip_with_4k_filesystem_blocks() {
     rsext4_mkfs_geometry_round_trip(4096);
+}
+
+#[test]
+fn rsext4_special_device_is_linux_readable() {
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck"] {
+        require_tool(tool);
+    }
+    let (temp_dir, image) = create_ext4_test_image("rsext4-special-device", "64M");
+    let expected_device = DeviceNumber::new(259, 511).expect("valid modern device number");
+
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_800_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem =
+            Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
+        filesystem
+            .create_special_inode(
+                MutationContext::new(1000, 1001, 0, 0),
+                filesystem.root_inode(),
+                FileName::new(b"modern-device").expect("valid raw name"),
+                FilePermissions::new(0o600).expect("valid permissions"),
+                SpecialInodeKind::CharacterDevice(expected_device),
+            )
+            .expect("create special inode");
+        filesystem.unmount().expect("unmount special-device image");
+    }
+
+    e2fsck_readonly_clean(&image, "rsext4 special device");
+    let stat = debugfs_query(&image, "stat /modern-device");
+    assert!(stat.contains("Type: character special"), "{stat}");
+    assert!(
+        stat.contains("Device major/minor number: 259:511"),
+        "Linux did not decode the expected modern device number\n{stat}"
+    );
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
 }
 
 fn assert_debugfs_path_exists(image: &Path, path: &str) {

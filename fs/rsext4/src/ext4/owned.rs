@@ -8,13 +8,13 @@ use crate::{
     bmalloc::InodeNumber,
     checksum::{verify_ext4_dirblock_checksum, verify_ext4_dx_checksum},
     dir::{CreateEntryRequest, FileName, LinkEntryRequest, create_directory_at},
-    disknode::Ext4Inode,
+    disknode::{DeviceNumber, Ext4Inode},
     entries::Ext4DirEntry2,
     error::{Ext4Error, Ext4ErrorKind, Ext4Result},
     file::{
-        RenameEntryRequest, RenameOptions, RenameOutcome, UnlinkOutcome, create_inode_at,
-        find_named_entry_in_parent, link_inode_at, read_inode_data_into, reap_unlinked_inode,
-        rename_inode_at, truncate_inode, unlink_inode_at, write_inode_data,
+        CreateInodePayload, RenameEntryRequest, RenameOptions, RenameOutcome, UnlinkOutcome,
+        create_inode_at, find_named_entry_in_parent, link_inode_at, read_inode_data_into,
+        reap_unlinked_inode, rename_inode_at, truncate_inode, unlink_inode_at, write_inode_data,
     },
     hashtree::Ext4InodeHashTreeExt,
     io::BlockIo,
@@ -33,6 +33,44 @@ pub enum DirectoryEntryType {
     Fifo,
     Socket,
     Symlink,
+}
+
+/// Special inode kind accepted by the portable core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialInodeKind {
+    CharacterDevice(DeviceNumber),
+    BlockDevice(DeviceNumber),
+    Fifo,
+    Socket,
+}
+
+impl SpecialInodeKind {
+    const fn inode_type(self) -> u16 {
+        match self {
+            Self::CharacterDevice(_) => Ext4Inode::S_IFCHR,
+            Self::BlockDevice(_) => Ext4Inode::S_IFBLK,
+            Self::Fifo => Ext4Inode::S_IFIFO,
+            Self::Socket => Ext4Inode::S_IFSOCK,
+        }
+    }
+
+    const fn directory_entry_type(self) -> u8 {
+        match self {
+            Self::CharacterDevice(_) => Ext4DirEntry2::EXT4_FT_CHRDEV,
+            Self::BlockDevice(_) => Ext4DirEntry2::EXT4_FT_BLKDEV,
+            Self::Fifo => Ext4DirEntry2::EXT4_FT_FIFO,
+            Self::Socket => Ext4DirEntry2::EXT4_FT_SOCK,
+        }
+    }
+
+    const fn payload(self) -> CreateInodePayload<'static> {
+        match self {
+            Self::CharacterDevice(device) | Self::BlockDevice(device) => {
+                CreateInodePayload::Device(device)
+            }
+            Self::Fifo | Self::Socket => CreateInodePayload::Empty,
+        }
+    }
 }
 
 impl DirectoryEntryType {
@@ -122,6 +160,7 @@ pub struct InodeInfo {
     pub ctime: u32,
     pub mtime: u32,
     pub btime: u32,
+    pub device_number: Option<DeviceNumber>,
 }
 
 /// Mounted ext4 instance that owns its device, caches, journal, and services.
@@ -350,11 +389,39 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
                 uid: context.uid,
                 gid: context.gid,
             },
-            None,
+            CreateInodePayload::Empty,
             Ext4DirEntry2::EXT4_FT_REG_FILE,
         )?;
         self.lookup_child(parent, name)?.ok_or_else(|| {
             Ext4Error::corrupted().with_operation("inode:create_missing_directory_entry")
+        })
+    }
+
+    /// Creates a character device, block device, FIFO, or socket inode.
+    pub fn create_special_inode(
+        &mut self,
+        context: MutationContext,
+        parent: InodeNumber,
+        name: FileName<'_>,
+        permissions: FilePermissions,
+        kind: SpecialInodeKind,
+    ) -> Ext4Result<InodeInfo> {
+        self.ensure_writable("inode:create_special")?;
+        create_inode_at(
+            &mut self.device,
+            &mut self.filesystem,
+            CreateEntryRequest {
+                parent,
+                name,
+                mode: kind.inode_type() | permissions.masked_by(context.umask),
+                uid: context.uid,
+                gid: context.gid,
+            },
+            kind.payload(),
+            kind.directory_entry_type(),
+        )?;
+        self.lookup_child(parent, name)?.ok_or_else(|| {
+            Ext4Error::corrupted().with_operation("inode:create_missing_special_entry")
         })
     }
 
@@ -465,6 +532,7 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
             ctime: inode.i_ctime,
             mtime: inode.i_mtime,
             btime: inode.i_crtime,
+            device_number: inode.device_number()?,
         })
     }
 
