@@ -3,7 +3,8 @@ use core::{any::Any, mem, ops::Deref, time::Duration};
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FilesystemOps, Metadata, MetadataUpdate,
-    NodeFlags, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
+    NodeFlags, NodeOps, NodePermission, NodeType, Reference, RenameOptions, VfsError, VfsResult,
+    WeakDirEntry,
 };
 
 use super::{
@@ -208,18 +209,30 @@ impl DirNodeOps for FatDirNode {
         dir.remove(name).map_err(into_vfs_err)
     }
 
-    fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        src_name: &str,
+        dst_dir: &DirNode,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
+        if options.exchange() || options.whiteout() {
+            return Err(VfsError::OperationNotSupported);
+        }
         let fs = self.fs.lock();
         let dst_dir: Arc<Self> = dst_dir.downcast().map_err(|_| VfsError::InvalidInput)?;
 
         let dir = self.inner.borrow(&fs);
 
-        // The default implementation throws EEXIST if dst exists, so we need to
-        // handle it
-        match dst_dir.inner.borrow(&fs).remove(dst_name) {
-            Ok(_) => {}
-            Err(fatfs::Error::NotFound) => {}
-            Err(err) => return Err(into_vfs_err(err)),
+        if !options.no_replace() {
+            // fatfs rename rejects an existing destination, so ordinary rename
+            // removes it while NOREPLACE leaves the final check to fatfs under
+            // the same filesystem lock.
+            match dst_dir.inner.borrow(&fs).remove(dst_name) {
+                Ok(_) => {}
+                Err(fatfs::Error::NotFound) => {}
+                Err(err) => return Err(into_vfs_err(err)),
+            }
         }
 
         dir.rename(src_name, dst_dir.inner.borrow(&fs), dst_name)

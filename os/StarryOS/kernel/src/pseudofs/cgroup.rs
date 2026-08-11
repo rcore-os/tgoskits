@@ -5,8 +5,8 @@ use ax_cgroup::CgroupNode;
 use ax_errno::LinuxError;
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, Filesystem, FilesystemOps, Metadata,
-    MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult,
-    WeakDirEntry,
+    MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, RenameOptions, VfsError,
+    VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
@@ -256,7 +256,13 @@ impl DirNodeOps for CgroupDir {
             .map_err(crate::cgroup::cgroup_error)
     }
 
-    fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        _src_name: &str,
+        _dst_dir: &DirNode,
+        _dst_name: &str,
+        _options: RenameOptions,
+    ) -> VfsResult<()> {
         Err(VfsError::OperationNotPermitted)
     }
 }

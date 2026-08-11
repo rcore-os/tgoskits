@@ -208,6 +208,31 @@ impl Observer for RecordingObserver {
     }
 }
 
+type TestOwnedFilesystem = Ext4<
+    IoOnlyDevice,
+    MountedServices<
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        RecordingObserver,
+    >,
+>;
+
+fn owned_test_filesystem() -> TestOwnedFilesystem {
+    let device = TestBlockDevice::new(100 * 1024 * 1024);
+    let mut builder = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut builder).expect("mkfs failed");
+    let device = IoOnlyDevice::from(builder.into_inner());
+    let services = MountServices::new(
+        SeparateClock(Cell::new(1_800_000_000)),
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        RecordingObserver::default(),
+    );
+    Ext4::mount(device, services, MountOptions::read_write()).expect("owned mount failed")
+}
+
 #[test]
 fn owned_mount_injects_clock_separately_from_block_io() {
     let device = TestBlockDevice::new(100 * 1024 * 1024);
@@ -345,6 +370,298 @@ fn owned_mount_injects_clock_separately_from_block_io() {
         .expect_err("a reaped inode must not be reclaimed twice");
     assert_eq!(second_reap.kind(), Ext4ErrorKind::NotFound);
     filesystem.unmount().expect("owned unmount failed");
+}
+
+#[test]
+fn owned_rename_noreplace_preserves_both_entries() {
+    let mut filesystem = owned_test_filesystem();
+    let context = MutationContext::new(1000, 1001, 7, 0o022);
+    let root = filesystem.root_inode();
+    let source_name = FileName::new(b"source").expect("valid source name");
+    let target_name = FileName::new(b"target").expect("valid target name");
+    let permissions = FilePermissions::new(0o644).expect("valid file permissions");
+    let source = filesystem
+        .create_regular_file(context, root, source_name, permissions)
+        .expect("source create failed");
+    let target = filesystem
+        .create_regular_file(context, root, target_name, permissions)
+        .expect("target create failed");
+
+    let error = filesystem
+        .rename(
+            context,
+            root,
+            source_name,
+            root,
+            target_name,
+            RenameOptions::NO_REPLACE,
+        )
+        .expect_err("NOREPLACE must reject an existing target");
+
+    assert_eq!(error.kind(), Ext4ErrorKind::AlreadyExists);
+    assert_eq!(
+        filesystem
+            .lookup_child(root, source_name)
+            .expect("source lookup failed")
+            .expect("source disappeared")
+            .number,
+        source.number
+    );
+    assert_eq!(
+        filesystem
+            .lookup_child(root, target_name)
+            .expect("target lookup failed")
+            .expect("target disappeared")
+            .number,
+        target.number
+    );
+}
+
+#[test]
+fn owned_rename_exchange_swaps_raw_names_across_directories() {
+    let mut filesystem = owned_test_filesystem();
+    let context = MutationContext::new(1000, 1001, 7, 0o022);
+    let root = filesystem.root_inode();
+    let directory_permissions = FilePermissions::new(0o755).expect("valid directory permissions");
+    let file_permissions = FilePermissions::new(0o644).expect("valid file permissions");
+    let left = filesystem
+        .create_directory(
+            context,
+            root,
+            FileName::new(b"left").expect("valid left name"),
+            directory_permissions,
+        )
+        .expect("left directory create failed");
+    let right = filesystem
+        .create_directory(
+            context,
+            root,
+            FileName::new(b"right").expect("valid right name"),
+            directory_permissions,
+        )
+        .expect("right directory create failed");
+    let left_name = FileName::new(&[b'l', 0xff]).expect("valid raw left name");
+    let right_name = FileName::new(&[b'r', 0xfe]).expect("valid raw right name");
+    let left_file = filesystem
+        .create_regular_file(context, left.number, left_name, file_permissions)
+        .expect("left file create failed");
+    let right_file = filesystem
+        .create_regular_file(context, right.number, right_name, file_permissions)
+        .expect("right file create failed");
+
+    let outcome = filesystem
+        .rename(
+            context,
+            left.number,
+            left_name,
+            right.number,
+            right_name,
+            RenameOptions::EXCHANGE,
+        )
+        .expect("raw exchange failed");
+
+    assert_eq!(outcome.replaced, None);
+    assert_eq!(
+        filesystem
+            .lookup_child(left.number, left_name)
+            .expect("left lookup failed")
+            .expect("left entry disappeared")
+            .number,
+        right_file.number
+    );
+    assert_eq!(
+        filesystem
+            .lookup_child(right.number, right_name)
+            .expect("right lookup failed")
+            .expect("right entry disappeared")
+            .number,
+        left_file.number
+    );
+}
+
+#[test]
+fn owned_rename_directory_updates_dotdot_and_parent_links() {
+    let mut filesystem = owned_test_filesystem();
+    let context = MutationContext::new(1000, 1001, 7, 0o022);
+    let root = filesystem.root_inode();
+    let permissions = FilePermissions::new(0o755).expect("valid directory permissions");
+    let old_parent = filesystem
+        .create_directory(
+            context,
+            root,
+            FileName::new(b"old-parent").expect("valid old parent name"),
+            permissions,
+        )
+        .expect("old parent create failed");
+    let new_parent = filesystem
+        .create_directory(
+            context,
+            root,
+            FileName::new(b"new-parent").expect("valid new parent name"),
+            permissions,
+        )
+        .expect("new parent create failed");
+    let source_name = FileName::new(b"source-directory").expect("valid source name");
+    let moved_name = FileName::new(b"moved-directory").expect("valid moved name");
+    let moved = filesystem
+        .create_directory(context, old_parent.number, source_name, permissions)
+        .expect("source directory create failed");
+    let old_links = filesystem
+        .inode(old_parent.number)
+        .expect("old parent inspection failed")
+        .links;
+    let new_links = filesystem
+        .inode(new_parent.number)
+        .expect("new parent inspection failed")
+        .links;
+
+    let _ = filesystem
+        .rename(
+            context,
+            old_parent.number,
+            source_name,
+            new_parent.number,
+            moved_name,
+            RenameOptions::REPLACE,
+        )
+        .expect("cross-parent directory rename failed");
+
+    assert!(
+        filesystem
+            .lookup_child(old_parent.number, source_name)
+            .expect("old lookup failed")
+            .is_none()
+    );
+    assert_eq!(
+        filesystem
+            .lookup_child(new_parent.number, moved_name)
+            .expect("new lookup failed")
+            .expect("moved directory missing")
+            .number,
+        moved.number
+    );
+    assert_eq!(
+        filesystem
+            .lookup_child(
+                moved.number,
+                FileName::new(b"..").expect("valid parent entry name"),
+            )
+            .expect("parent entry lookup failed")
+            .expect("parent entry missing")
+            .number,
+        new_parent.number
+    );
+    assert_eq!(
+        filesystem
+            .inode(old_parent.number)
+            .expect("old parent inspection failed")
+            .links,
+        old_links - 1
+    );
+    assert_eq!(
+        filesystem
+            .inode(new_parent.number)
+            .expect("new parent inspection failed")
+            .links,
+        new_links + 1
+    );
+}
+
+#[test]
+fn owned_rename_replacement_returns_reapable_target() {
+    let mut filesystem = owned_test_filesystem();
+    let context = MutationContext::new(1000, 1001, 7, 0o022);
+    let root = filesystem.root_inode();
+    let permissions = FilePermissions::new(0o644).expect("valid file permissions");
+    let source_name = FileName::new(b"replacement-source").expect("valid source name");
+    let target_name = FileName::new(b"replacement-target").expect("valid target name");
+    let source = filesystem
+        .create_regular_file(context, root, source_name, permissions)
+        .expect("source create failed");
+    let target = filesystem
+        .create_regular_file(context, root, target_name, permissions)
+        .expect("target create failed");
+
+    let outcome = filesystem
+        .rename(
+            context,
+            root,
+            source_name,
+            root,
+            target_name,
+            RenameOptions::REPLACE,
+        )
+        .expect("replacement rename failed");
+    let replaced = outcome.replaced.expect("target outcome missing");
+
+    assert_eq!(replaced.inode, target.number);
+    assert!(replaced.requires_reap());
+    assert_eq!(
+        filesystem
+            .lookup_child(root, target_name)
+            .expect("target lookup failed")
+            .expect("renamed source missing")
+            .number,
+        source.number
+    );
+    assert_eq!(
+        filesystem
+            .inode(target.number)
+            .expect("detached target must remain allocated")
+            .links,
+        0
+    );
+    filesystem
+        .reap_unlinked_inode(target.number)
+        .expect("replacement target reap failed");
+    let error = filesystem
+        .reap_unlinked_inode(target.number)
+        .expect_err("reaped replacement target must not be reclaimed twice");
+    assert_eq!(error.kind(), Ext4ErrorKind::NotFound);
+}
+
+#[test]
+fn owned_rename_rejects_moving_directory_below_itself() {
+    let mut filesystem = owned_test_filesystem();
+    let context = MutationContext::new(1000, 1001, 7, 0o022);
+    let root = filesystem.root_inode();
+    let permissions = FilePermissions::new(0o755).expect("valid directory permissions");
+    let source_name = FileName::new(b"ancestor").expect("valid source name");
+    let source = filesystem
+        .create_directory(context, root, source_name, permissions)
+        .expect("source directory create failed");
+    let child_name = FileName::new(b"descendant").expect("valid child name");
+    let child = filesystem
+        .create_directory(context, source.number, child_name, permissions)
+        .expect("child directory create failed");
+    let nested_name = FileName::new(b"nested-ancestor").expect("valid nested name");
+
+    let error = filesystem
+        .rename(
+            context,
+            root,
+            source_name,
+            child.number,
+            nested_name,
+            RenameOptions::REPLACE,
+        )
+        .expect_err("moving a directory below itself must fail");
+
+    assert_eq!(error.kind(), Ext4ErrorKind::InvalidInput);
+    assert_eq!(
+        filesystem
+            .lookup_child(root, source_name)
+            .expect("source lookup failed")
+            .expect("source disappeared")
+            .number,
+        source.number
+    );
+    assert!(
+        filesystem
+            .lookup_child(child.number, nested_name)
+            .expect("nested lookup failed")
+            .is_none()
+    );
 }
 
 #[test]

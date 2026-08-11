@@ -214,7 +214,8 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "mkdir-mutation-rollback",
-            "rename-mutation-rollback"
+            "rename-mutation-rollback",
+            "typed-rename-flags"
           ]
         }
       ]
@@ -532,7 +533,8 @@
           "rust_owner": "rsext4::dir::hash",
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
-            "rename-mutation-rollback"
+            "rename-mutation-rollback",
+            "typed-rename-flags"
           ]
         }
       ]
@@ -807,7 +809,8 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "mkdir-mutation-rollback",
-            "rename-mutation-rollback"
+            "rename-mutation-rollback",
+            "typed-rename-flags"
           ]
         }
       ]

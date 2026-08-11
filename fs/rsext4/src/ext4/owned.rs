@@ -12,9 +12,9 @@ use crate::{
     entries::Ext4DirEntry2,
     error::{Ext4Error, Ext4ErrorKind, Ext4Result},
     file::{
-        UnlinkOutcome, create_inode_at, find_named_entry_in_parent, link_inode_at,
-        read_inode_data_into, reap_unlinked_inode, truncate_inode, unlink_inode_at,
-        write_inode_data,
+        RenameEntryRequest, RenameOptions, RenameOutcome, UnlinkOutcome, create_inode_at,
+        find_named_entry_in_parent, link_inode_at, read_inode_data_into, reap_unlinked_inode,
+        rename_inode_at, truncate_inode, unlink_inode_at, write_inode_data,
     },
     hashtree::Ext4InodeHashTreeExt,
     io::BlockIo,
@@ -415,6 +415,30 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
     ) -> Ext4Result<UnlinkOutcome> {
         self.ensure_writable("inode:unlink")?;
         unlink_inode_at(&mut self.filesystem, &mut self.device, parent, name)
+    }
+
+    /// Renames or exchanges two raw directory names below resolved parents.
+    pub fn rename(
+        &mut self,
+        _context: MutationContext,
+        old_parent: InodeNumber,
+        old_name: FileName<'_>,
+        new_parent: InodeNumber,
+        new_name: FileName<'_>,
+        options: RenameOptions,
+    ) -> Ext4Result<RenameOutcome> {
+        self.ensure_writable("inode:rename")?;
+        rename_inode_at(
+            &mut self.filesystem,
+            &mut self.device,
+            RenameEntryRequest {
+                old_parent,
+                old_name,
+                new_parent,
+                new_name,
+                options,
+            },
+        )
     }
 
     /// Reclaims an orphaned zero-link inode after the VFS releases its final

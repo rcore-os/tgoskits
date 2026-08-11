@@ -19,7 +19,8 @@ use inherit_methods_macro::inherit_methods;
 use crate::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, FsIoEvents,
     FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission,
-    NodeType, OpenOptions, Reference, ReferenceKey, TypeMap, VfsError, VfsResult, WeakDirEntry,
+    NodeType, OpenOptions, Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult,
+    WeakDirEntry,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -149,7 +150,13 @@ impl DirNodeOps for SyntheticMountDir {
         Err(VfsError::ReadOnlyFilesystem)
     }
 
-    fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        _src_name: &str,
+        _dst_dir: &DirNode,
+        _dst_name: &str,
+        _options: RenameOptions,
+    ) -> VfsResult<()> {
         Err(VfsError::ReadOnlyFilesystem)
     }
 }
@@ -914,25 +921,47 @@ impl Location {
     }
 
     pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
+        self.rename_with_options(src_name, dst_dir, dst_name, RenameOptions::REPLACE)
+    }
+
+    pub fn rename_with_options(
+        &self,
+        src_name: &str,
+        dst_dir: &Self,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
         if self.is_readonly() || dst_dir.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
             return Err(VfsError::CrossesDevices);
         }
+        let src_loc = self.lookup_no_follow(src_name)?;
         // Disallow moving a directory into one of its own descendants. Regular
         // files may still be renamed into child directories (e.g. Redis AOF
         // `temp-rewriteaof-*.aof` -> `appendonlydir/...`).
-        if let Ok(src_loc) = self.lookup_no_follow(src_name)
-            && src_loc.node_type() == NodeType::Directory
+        if src_loc.node_type() == NodeType::Directory
             && !self.ptr_eq(dst_dir)
             && src_loc.entry.is_ancestor_of(&dst_dir.entry)?
         {
             return Err(VfsError::InvalidInput);
         }
-        self.entry
-            .as_dir()?
-            .rename(src_name, dst_dir.entry.as_dir()?, dst_name)
+        if options.exchange() {
+            let dst_loc = dst_dir.lookup_no_follow(dst_name)?;
+            if dst_loc.node_type() == NodeType::Directory
+                && !self.ptr_eq(dst_dir)
+                && dst_loc.entry.is_ancestor_of(&self.entry)?
+            {
+                return Err(VfsError::InvalidInput);
+            }
+        }
+        self.entry.as_dir()?.rename_with_options(
+            src_name,
+            dst_dir.entry.as_dir()?,
+            dst_name,
+            options,
+        )
     }
 
     pub fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
@@ -1186,7 +1215,13 @@ mod tests {
         fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
-        fn rename(&self, _src: &str, _dst_dir: &DirNode, _dst: &str) -> VfsResult<()> {
+        fn rename(
+            &self,
+            _src: &str,
+            _dst_dir: &DirNode,
+            _dst: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
     }

@@ -16,7 +16,7 @@ use core::{
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
+    NodePermission, NodeType, Reference, RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
@@ -696,10 +696,22 @@ impl DirNodeOps for MemoryNode {
     }
 
     // TODO: atomicity
-    fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        src_name: &str,
+        dst_dir: &DirNode,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
+        if options.exchange() || options.whiteout() {
+            return Err(VfsError::OperationNotSupported);
+        }
         let dst_node = dst_dir.downcast::<Self>()?;
         if let Ok(entry) = dst_dir.lookup(dst_name) {
             let src_entry = self.lookup(src_name)?;
+            if options.no_replace() {
+                return Err(VfsError::AlreadyExists);
+            }
             if entry.inode() == src_entry.inode() {
                 return Ok(());
             }

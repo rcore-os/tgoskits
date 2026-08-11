@@ -33,6 +33,51 @@ impl<F: FnMut(&str, u64, NodeType, u64) -> bool> DirEntrySink for F {
 
 type DirChildren = HashMap<String, DirEntry>;
 
+/// Typed filesystem rename behavior independent from Linux numeric flags.
+///
+/// Only valid `renameat2` combinations are constructible. `NOREPLACE` can be
+/// combined with `WHITEOUT`, while `EXCHANGE` excludes both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenameOptions {
+    no_replace: bool,
+    exchange: bool,
+    whiteout: bool,
+}
+
+impl RenameOptions {
+    pub const REPLACE: Self = Self::new(false, false, false);
+    pub const NO_REPLACE: Self = Self::new(true, false, false);
+    pub const EXCHANGE: Self = Self::new(false, true, false);
+    pub const WHITEOUT: Self = Self::new(false, false, true);
+    pub const WHITEOUT_NO_REPLACE: Self = Self::new(true, false, true);
+
+    const fn new(no_replace: bool, exchange: bool, whiteout: bool) -> Self {
+        Self {
+            no_replace,
+            exchange,
+            whiteout,
+        }
+    }
+
+    pub const fn no_replace(self) -> bool {
+        self.no_replace
+    }
+
+    pub const fn exchange(self) -> bool {
+        self.exchange
+    }
+
+    pub const fn whiteout(self) -> bool {
+        self.whiteout
+    }
+}
+
+impl Default for RenameOptions {
+    fn default() -> Self {
+        Self::REPLACE
+    }
+}
+
 pub trait DirNodeOps: NodeOps {
     /// Reads directory entries.
     ///
@@ -103,7 +148,13 @@ pub trait DirNodeOps: NodeOps {
     ///   directory.
     /// - If `src` is not a directory, `dst` must not exist or not be a
     ///   directory.
-    fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()>;
+    fn rename(
+        &self,
+        src_name: &str,
+        dst_dir: &DirNode,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> VfsResult<()>;
 }
 
 /// Options for opening (or creating) a directory entry.
@@ -329,31 +380,38 @@ impl DirNode {
         self.create_entry(name, node_type, permission, uid, gid)
     }
 
-    /// Renames a directory entry.
-    pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
-        verify_entry_name(src_name)?;
-        verify_entry_name(dst_name)?;
-
-        let src = self.lookup(src_name)?;
-        if let Ok(dst) = dst_dir.lookup(dst_name) {
-            if src.node_type() == NodeType::Directory {
-                if let Ok(dir) = dst.as_dir()
-                    && dir.has_children()?
-                {
-                    return Err(VfsError::DirectoryNotEmpty);
-                }
-            } else if dst.node_type() == NodeType::Directory {
-                return Err(VfsError::IsADirectory);
-            }
+    fn transfer_cached_state(source: DirEntry, destination: &DirEntry) {
+        let user_data = {
+            let mut source_data = source.user_data();
+            mem::take(source_data.deref_mut())
+        };
+        *destination.user_data().deref_mut() = user_data;
+        if let (Ok(source_dir), Ok(destination_dir)) = (source.as_dir(), destination.as_dir()) {
+            // Child entries retain parent references and must be looked up
+            // again, but the mountpoint belongs to the moved directory.
+            let mountpoint = mem::take(source_dir.mountpoint.lock().deref_mut());
+            *destination_dir.mountpoint.lock().deref_mut() = mountpoint;
         }
+    }
 
-        self.ops.rename(src_name, dst_dir, dst_name).inspect(|_| {
-            let (src_entry, prev_entry) = if core::ptr::eq(self, dst_dir) && self.ops.is_cacheable()
-            {
+    fn update_cache_after_rename(
+        &self,
+        src_name: &str,
+        dst_dir: &Self,
+        dst_name: &str,
+        options: RenameOptions,
+    ) {
+        let (source_entry, target_entry) =
+            if core::ptr::eq(self, dst_dir) && self.ops.is_cacheable() {
                 let mut children = self.cache.lock();
-                let entries = (children.remove(src_name), children.remove(dst_name));
+                let source = children.remove(src_name);
+                let target = if src_name == dst_name {
+                    None
+                } else {
+                    children.remove(dst_name)
+                };
                 self.bump_cache_generation();
-                entries
+                (source, target)
             } else {
                 (
                     self.remove_cache_after_mutation(src_name),
@@ -361,30 +419,89 @@ impl DirNode {
                 )
             };
 
-            Self::forget_removed_entry(prev_entry);
-
-            if let Some(entry) = src_entry
+        if options.exchange() {
+            if let Some(source) = source_entry
                 && dst_dir.ops.is_cacheable()
-                && let Ok(fresh_entry) = dst_dir.ops.lookup(dst_name)
+                && let Ok(fresh_target) = dst_dir.ops.lookup(dst_name)
             {
-                let user_data = {
-                    let mut source = entry.user_data();
-                    mem::take(source.deref_mut())
-                };
-                *fresh_entry.user_data().deref_mut() = user_data;
-                if let (Ok(src_dir), Ok(fresh_dir)) = (entry.as_dir(), fresh_entry.as_dir()) {
-                    // Do NOT transfer children cache: child DirEntries retain
-                    // stale Reference.parent pointers to the old directory,
-                    // which makes path-based operations (unlink, rename) resolve
-                    // against the old (now-gone) path and fail with ENOENT.
-                    // Children will be lazily re-looked up from disk with correct
-                    // parent references on next access.
-                    let mountpoint = mem::take(src_dir.mountpoint.lock().deref_mut());
-                    *fresh_dir.mountpoint.lock().deref_mut() = mountpoint;
-                }
-                dst_dir.insert_cache(dst_name.to_owned(), fresh_entry);
+                Self::transfer_cached_state(source, &fresh_target);
+                dst_dir.insert_cache(dst_name.to_owned(), fresh_target);
             }
-        })
+            if let Some(target) = target_entry
+                && self.ops.is_cacheable()
+                && let Ok(fresh_source) = self.ops.lookup(src_name)
+            {
+                Self::transfer_cached_state(target, &fresh_source);
+                self.insert_cache(src_name.to_owned(), fresh_source);
+            }
+            return;
+        }
+
+        Self::forget_removed_entry(target_entry);
+        if let Some(source) = source_entry
+            && dst_dir.ops.is_cacheable()
+            && let Ok(fresh_destination) = dst_dir.ops.lookup(dst_name)
+        {
+            Self::transfer_cached_state(source, &fresh_destination);
+            dst_dir.insert_cache(dst_name.to_owned(), fresh_destination);
+        }
+    }
+
+    /// Renames a directory entry with ordinary replacement semantics.
+    pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
+        self.rename_with_options(src_name, dst_dir, dst_name, RenameOptions::REPLACE)
+    }
+
+    /// Renames a directory entry with typed `renameat2` behavior.
+    pub fn rename_with_options(
+        &self,
+        src_name: &str,
+        dst_dir: &Self,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
+        verify_entry_name(src_name)?;
+        verify_entry_name(dst_name)?;
+
+        let src = self.lookup(src_name)?;
+        let destination = match dst_dir.lookup(dst_name) {
+            Ok(destination) => Some(destination),
+            Err(error) if error.canonicalize() == VfsError::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        if options.no_replace() && destination.is_some() {
+            return Err(VfsError::AlreadyExists);
+        }
+        if options.exchange() && destination.is_none() {
+            return Err(VfsError::NotFound);
+        }
+        if !options.exchange()
+            && let Some(destination) = &destination
+        {
+            match (
+                src.node_type() == NodeType::Directory,
+                destination.node_type() == NodeType::Directory,
+            ) {
+                (true, false) => return Err(VfsError::NotADirectory),
+                (false, true) => return Err(VfsError::IsADirectory),
+                (true, true) if destination.as_dir()?.has_children()? => {
+                    return Err(VfsError::DirectoryNotEmpty);
+                }
+                _ => {}
+            }
+        }
+        if !options.no_replace()
+            && !options.whiteout()
+            && destination
+                .as_ref()
+                .is_some_and(|target| target.inode() == src.inode())
+        {
+            return Ok(());
+        }
+
+        self.ops
+            .rename(src_name, dst_dir, dst_name, options)
+            .inspect(|_| self.update_cache_after_rename(src_name, dst_dir, dst_name, options))
     }
 
     /// Opens (or creates) a file in the directory.

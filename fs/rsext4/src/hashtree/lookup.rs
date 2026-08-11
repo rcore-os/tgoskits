@@ -202,7 +202,9 @@ impl HashTreeManager {
                     .map_err(HashTreeError::from)?;
 
                 let block_data = &cached_block.data;
-                if let Some(entry) = classic_dir::find_entry(block_data, target_name) {
+                if let Some((entry, offset)) =
+                    classic_dir::find_entry_with_offset(block_data, target_name)
+                {
                     return Ok(HashTreeSearchResult {
                         entry: unsafe {
                             core::mem::transmute::<Ext4DirEntryInfo<'_>, Ext4DirEntryInfo<'_>>(
@@ -210,7 +212,7 @@ impl HashTreeManager {
                             )
                         },
                         block_num: phys,
-                        offset: 0,
+                        offset,
                     });
                 }
             }

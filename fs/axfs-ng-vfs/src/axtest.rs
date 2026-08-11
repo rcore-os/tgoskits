@@ -621,7 +621,13 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
             Ok(())
         }
 
-        fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+        fn rename(
+            &self,
+            _src_name: &str,
+            _dst_dir: &DirNode,
+            _dst_name: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
             Err(AxError::Unsupported)
         }
     }
@@ -954,7 +960,13 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
             Ok(())
         }
 
-        fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+        fn rename(
+            &self,
+            _src_name: &str,
+            _dst_dir: &DirNode,
+            _dst_name: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
             Err(AxError::Unsupported)
         }
     }
@@ -1413,6 +1425,7 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
         src_name: &str,
         dst_dir: &axfs_ng_vfs::DirNode,
         dst_name: &str,
+        _options: axfs_ng_vfs::RenameOptions,
     ) -> axfs_ng_vfs::VfsResult<()> {
         let entry = self.remove_child(src_name)?;
         if let Ok(existing) = dst_dir.lookup(dst_name) {
