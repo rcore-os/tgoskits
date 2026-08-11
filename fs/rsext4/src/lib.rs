@@ -36,10 +36,10 @@ pub use ext4::{
     mount_with_options, mount_with_options_and_observer, umount,
 };
 pub use file::{
-    create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file, free_inode,
-    is_dir_empty, link, mkfile, mkfile_with_owner, mv, read_file, read_inode_data_into,
-    remove_inodeentry_from_parentdir, rename, truncate, truncate_inode, unlink, write_file,
-    write_inode_data,
+    UnlinkOutcome, create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file,
+    free_inode, is_dir_empty, link, mkfile, mkfile_with_owner, mv, read_file, read_inode_data_into,
+    reap_unlinked_inode, remove_inodeentry_from_parentdir, rename, truncate, truncate_inode,
+    unlink, write_file, write_inode_data,
 };
 pub use io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, WriteFlags};
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};

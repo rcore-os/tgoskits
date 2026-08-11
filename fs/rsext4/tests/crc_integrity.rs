@@ -458,6 +458,110 @@ fn checksums_are_persisted_and_clean_remount_preserves_the_written_file() {
 }
 
 #[test]
+fn unclean_remount_reaps_the_persisted_classic_orphan_chain() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut first_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut first_dev).expect("mkfs failed");
+    let mut first_fs = mount(&mut first_dev).expect("mount failed");
+
+    mkfile(&mut first_dev, &mut first_fs, "/orphan-a", Some(b"a"), None)
+        .expect("first file create failed");
+    mkfile(&mut first_dev, &mut first_fs, "/orphan-b", Some(b"b"), None)
+        .expect("second file create failed");
+    let first_inode = rsext4::dir::get_inode_with_num(&mut first_fs, &mut first_dev, "/orphan-a")
+        .expect("first lookup failed")
+        .expect("first file missing")
+        .0;
+    let second_inode = rsext4::dir::get_inode_with_num(&mut first_fs, &mut first_dev, "/orphan-b")
+        .expect("second lookup failed")
+        .expect("second file missing")
+        .0;
+
+    let first_outcome =
+        unlink(&mut first_fs, &mut first_dev, "/orphan-a").expect("first unlink failed");
+    let second_outcome =
+        unlink(&mut first_fs, &mut first_dev, "/orphan-b").expect("second unlink failed");
+    assert!(first_outcome.requires_reap());
+    assert!(second_outcome.requires_reap());
+    assert_eq!(first_fs.superblock.s_last_orphan, second_inode.raw());
+
+    // Persist the dirty transaction but deliberately skip ext4 unmount. The
+    // next mount must replay JBD2 first and then drain both orphan entries.
+    first_fs
+        .sync_filesystem(&mut first_dev)
+        .expect("dirty sync failed");
+    first_dev
+        .umount_commit()
+        .expect("dirty journal commit failed");
+    drop(first_fs);
+    drop(first_dev);
+
+    let mut remount_dev = new_jbd2_dev(device);
+    let mut recovered = mount(&mut remount_dev).expect("orphan recovery mount failed");
+    assert_eq!(recovered.superblock.s_last_orphan, 0);
+    assert!(!recovered.inode_num_already_allocated(&mut remount_dev, first_inode));
+    assert!(!recovered.inode_num_already_allocated(&mut remount_dev, second_inode));
+    assert!(
+        rsext4::dir::get_inode_with_num(&mut recovered, &mut remount_dev, "/orphan-a")
+            .expect("post-recovery first lookup failed")
+            .is_none()
+    );
+    assert!(
+        rsext4::dir::get_inode_with_num(&mut recovered, &mut remount_dev, "/orphan-b")
+            .expect("post-recovery second lookup failed")
+            .is_none()
+    );
+    umount(recovered, &mut remount_dev).expect("recovered unmount failed");
+}
+
+#[test]
+fn cyclic_classic_orphan_chain_is_rejected_before_recovery() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut first_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut first_dev).expect("mkfs failed");
+    let mut first_fs = mount(&mut first_dev).expect("mount failed");
+    mkfile(
+        &mut first_dev,
+        &mut first_fs,
+        "/cycle",
+        Some(b"owned"),
+        None,
+    )
+    .expect("file create failed");
+    let outcome = unlink(&mut first_fs, &mut first_dev, "/cycle").expect("unlink failed");
+    assert!(outcome.requires_reap());
+
+    first_fs
+        .modify_inode(&mut first_dev, outcome.inode, |inode| {
+            inode.i_dtime = outcome.inode.raw();
+        })
+        .expect("cycle injection failed");
+    let reap_error = reap_unlinked_inode(&mut first_fs, &mut first_dev, outcome.inode)
+        .expect_err("reap must validate the complete chain before mutation");
+    assert_eq!(reap_error.kind(), Ext4ErrorKind::Corrupted);
+    assert!(first_fs.inode_num_already_allocated(&mut first_dev, outcome.inode));
+    first_fs
+        .sync_filesystem(&mut first_dev)
+        .expect("dirty sync failed");
+    first_dev
+        .umount_commit()
+        .expect("dirty journal commit failed");
+    drop(first_fs);
+    drop(first_dev);
+
+    let mut remount_dev = new_jbd2_dev(device);
+    let error = match mount(&mut remount_dev) {
+        Ok(_) => panic!("cyclic orphan chain must not mount"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
+    assert_eq!(
+        error.context(),
+        Some(ErrorContext::Operation { op: "orphan:cycle" })
+    );
+}
+
+#[test]
 fn mkfs_maps_ext4_metadata_checksum_and_64bit_features_to_jbd2() {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut dev = new_jbd2_dev(device.clone());

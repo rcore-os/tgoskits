@@ -83,35 +83,33 @@ impl Ext4FileSystem {
         device: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
     ) -> bool {
-        let (group_idx, inode_in_group) = match self.inode_allocator.global_to_group(inode_num) {
-            Ok(ids) => ids,
-            Err(_) => return false,
-        };
-        let desc = match group_idx
+        self.inode_is_allocated_checked(device, inode_num)
+            .unwrap_or(false)
+    }
+
+    /// Checks the allocation bitmap without collapsing I/O or corruption into
+    /// an ordinary "free" answer.
+    pub(crate) fn inode_is_allocated_checked<B: BlockIo>(
+        &mut self,
+        device: &mut Jbd2Dev<B>,
+        inode_num: InodeNumber,
+    ) -> Ext4Result<bool> {
+        let (group_idx, inode_in_group) = self.inode_allocator.global_to_group(inode_num)?;
+        let desc = group_idx
             .as_usize()
             .ok()
             .and_then(|idx| self.group_descs.get(idx))
-        {
-            Some(d) => d,
-            None => {
-                return false;
-            }
-        };
+            .ok_or_else(Ext4Error::corrupted)?;
         let bitmap_block = AbsoluteBN::new(desc.inode_bitmap());
         let cache_key = CacheKey::new_inode(group_idx);
 
-        let mut bitmap = match self
+        let mut bitmap = self
             .bitmap_cache
-            .get_or_load(device, cache_key, bitmap_block)
-        {
-            Ok(b) => b,
-            Err(_) => {
-                return false;
-            }
-        };
+            .get_or_load(device, cache_key, bitmap_block)?;
 
         let bm = InodeBitmap::new(&mut bitmap.data, self.superblock.s_inodes_per_group);
-        bm.is_allocated(inode_in_group.raw()).unwrap_or_default()
+        bm.is_allocated(inode_in_group.raw())
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:bitmap_range"))
     }
 
     /// Returns an immutable block-group descriptor by index.

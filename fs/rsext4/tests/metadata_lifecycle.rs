@@ -324,7 +324,7 @@ fn test_parent_directory_timestamps_follow_entry_changes() {
     );
 
     let parent_before_unlink = parent_after_link;
-    unlink(&mut fs, &mut dev, "/parent/file.link").expect("unlink failed");
+    let _ = unlink(&mut fs, &mut dev, "/parent/file.link").expect("unlink failed");
     let parent_after_unlink = lookup_inode(&mut dev, &mut fs, "/parent");
     assert!(
         parent_after_unlink.mtime_ts(INODE_SIZE).sec

@@ -8,7 +8,7 @@ use core::cell::OnceCell;
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
-use rsext4::{Jbd2Dev, MountOptions, bmalloc::InodeNumber, superblock::Ext4Superblock};
+use rsext4::{Jbd2Dev, MountOptions, bmalloc::InodeNumber};
 
 use super::{Ext4Disk, Ext4Observer, Inode, util::into_vfs_err};
 use crate::{
@@ -18,18 +18,73 @@ use crate::{
 
 const EXT4_ROOT_INO: u32 = 2;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReapClaim(InodeNumber);
+
+#[derive(Default)]
+struct InodeLifetimeTracker {
+    live_refs: BTreeMap<InodeNumber, usize>,
+    zero_link: BTreeSet<InodeNumber>,
+    reaping: BTreeSet<InodeNumber>,
+}
+
+impl InodeLifetimeTracker {
+    fn inc_ref(&mut self, inode: InodeNumber) {
+        self.live_refs
+            .entry(inode)
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
+    }
+
+    fn claim_if_ready(&mut self, inode: InodeNumber) -> Option<ReapClaim> {
+        (!self.live_refs.contains_key(&inode)
+            && self.zero_link.contains(&inode)
+            && self.reaping.insert(inode))
+        .then_some(ReapClaim(inode))
+    }
+
+    fn publish_zero_link(&mut self, inode: InodeNumber) -> Option<ReapClaim> {
+        self.zero_link.insert(inode);
+        self.claim_if_ready(inode)
+    }
+
+    fn release_ref(&mut self, inode: InodeNumber) -> Option<ReapClaim> {
+        use alloc::collections::btree_map::Entry;
+
+        let became_unreferenced = match self.live_refs.entry(inode) {
+            Entry::Occupied(mut entry) => {
+                let count = entry.get_mut();
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    entry.remove();
+                    true
+                } else {
+                    false
+                }
+            }
+            Entry::Vacant(_) => false,
+        };
+        became_unreferenced
+            .then(|| self.claim_if_ready(inode))
+            .flatten()
+    }
+
+    fn finish_reap(&mut self, claim: ReapClaim, succeeded: bool) {
+        self.reaping.remove(&claim.0);
+        if succeeded {
+            self.zero_link.remove(&claim.0);
+        }
+    }
+
+    fn has_pending_reaps(&self) -> bool {
+        !self.zero_link.is_empty()
+    }
+}
+
 pub(crate) struct Ext4State {
     pub fs: rsext4::Ext4FileSystem,
     pub dev: Jbd2Dev<Ext4Disk>,
-    /// Live `Inode` Arc reference count per inode number.
-    ///
-    /// Every `Inode::new` increments; every `Inode::drop` decrements.
-    /// When the count reaches 0 *and* the inode is zero-link (present in
-    /// `zero_link`), the inode is freed.
-    pub(crate) live_refs: BTreeMap<InodeNumber, usize>,
-    /// Inodes whose on-disk `i_links_count` has been driven to 0.
-    /// They remain allocated until the last live `Inode` Arc is dropped.
-    pub(crate) zero_link: BTreeSet<InodeNumber>,
+    lifetimes: InodeLifetimeTracker,
 }
 
 impl Ext4State {
@@ -39,58 +94,24 @@ impl Ext4State {
         unsafe { (&mut *fs, &mut *dev) }
     }
 
-    /// Increment the live-reference count for `ino`.
-    ///
-    /// Called from `Inode::new` every time an `Inode` Arc is created.
     pub(crate) fn inc_ref(&mut self, ino: InodeNumber) {
-        self.live_refs
-            .entry(ino)
-            .and_modify(|c| *c += 1)
-            .or_insert(1);
+        self.lifetimes.inc_ref(ino);
     }
 
-    /// Decrement the live-reference count for `ino`.
-    ///
-    /// Returns `true` when the count reaches 0 (the entry is removed).
-    /// The caller must also check `is_zero_link` before freeing the inode.
-    pub(crate) fn dec_ref(&mut self, ino: InodeNumber) -> bool {
-        use alloc::collections::btree_map::Entry;
-        match self.live_refs.entry(ino) {
-            Entry::Occupied(mut e) => {
-                let count = e.get_mut();
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    e.remove();
-                    true
-                } else {
-                    false
-                }
-            }
-            Entry::Vacant(_) => false,
-        }
+    pub(crate) fn release_ref(&mut self, ino: InodeNumber) -> Option<ReapClaim> {
+        self.lifetimes.release_ref(ino)
     }
 
-    /// Mark an inode as zero-link (its last directory entry was removed).
-    ///
-    /// Returns `true` if there are **no** live `Inode` Arcs for this inode
-    /// right now — the caller should `free_inode` immediately.  When
-    /// returning `false` the ino is inserted into `zero_link` for deferred
-    /// cleanup; when returning `true` it is NOT inserted (nothing to defer).
-    pub(crate) fn mark_zero_link(&mut self, ino: InodeNumber) -> bool {
-        if self.live_refs.contains_key(&ino) {
-            self.zero_link.insert(ino);
-            false
-        } else {
-            true
-        }
+    pub(crate) fn publish_zero_link(&mut self, ino: InodeNumber) -> Option<ReapClaim> {
+        self.lifetimes.publish_zero_link(ino)
     }
 
-    pub(crate) fn is_zero_link(&self, ino: InodeNumber) -> bool {
-        self.zero_link.contains(&ino)
+    fn finish_reap(&mut self, claim: ReapClaim, succeeded: bool) {
+        self.lifetimes.finish_reap(claim, succeeded);
     }
 
-    pub(crate) fn clear_zero_link(&mut self, ino: InodeNumber) {
-        self.zero_link.remove(&ino);
+    fn has_pending_reaps(&self) -> bool {
+        self.lifetimes.has_pending_reaps()
     }
 }
 
@@ -148,8 +169,7 @@ impl Ext4Filesystem {
             inner: Mutex::new(Ext4State {
                 fs,
                 dev,
-                live_refs: BTreeMap::new(),
-                zero_link: BTreeSet::new(),
+                lifetimes: InodeLifetimeTracker::default(),
             }),
             root_dir: OnceCell::new(),
             readonly,
@@ -215,18 +235,22 @@ impl Ext4Filesystem {
 
         let mut state = self.inner.lock();
         let (fs, dev) = state.split();
-        fs.datablock_cache.flush_all(dev).map_err(into_vfs_err)?;
-        fs.bitmap_cache.flush_all(dev).map_err(into_vfs_err)?;
-        fs.inodetable_cache.flush_all(dev).map_err(into_vfs_err)?;
-        // Mark the filesystem clean before writing the superblock so the
-        // on-disk state reflects a clean sync / unmount.
-        fs.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;
-        fs.sync_superblock(dev).map_err(into_vfs_err)?;
-        fs.sync_group_descriptors(dev).map_err(into_vfs_err)?;
+        fs.sync_filesystem_with_observer(dev, &mut Ext4Observer)
+            .map_err(into_vfs_err)?;
         if dev.is_use_journal() {
             dev.umount_commit().map_err(into_vfs_err)?;
         }
         dev.cantflush().map_err(into_vfs_err)
+    }
+
+    pub(crate) fn reap(&self, claim: ReapClaim) -> VfsResult<()> {
+        let mut state = self.inner.lock();
+        let result = {
+            let (fs, dev) = state.split();
+            rsext4::reap_unlinked_inode(fs, dev, claim.0).map_err(into_vfs_err)
+        };
+        state.finish_reap(claim, result.is_ok());
+        result
     }
 
     fn shutdown_filesystem(&self) -> VfsResult<()> {
@@ -235,9 +259,39 @@ impl Ext4Filesystem {
         }
 
         let mut state = self.inner.lock();
+        if state.has_pending_reaps() {
+            return Err(into_vfs_err(rsext4::Ext4Error::busy()));
+        }
         let (fs, dev) = state.split();
         fs.umount_with_observer(dev, &mut Ext4Observer)
             .map_err(into_vfs_err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_link_reap_claim_is_unique_and_retryable() {
+        let inode = InodeNumber::new(42).unwrap();
+        let mut tracker = InodeLifetimeTracker::default();
+        tracker.inc_ref(inode);
+        tracker.inc_ref(inode);
+
+        assert_eq!(tracker.publish_zero_link(inode), None);
+        assert_eq!(tracker.release_ref(inode), None);
+        let claim = tracker
+            .release_ref(inode)
+            .expect("last ref must claim reap");
+        assert_eq!(tracker.claim_if_ready(inode), None);
+
+        tracker.finish_reap(claim, false);
+        let retry = tracker
+            .claim_if_ready(inode)
+            .expect("failed reap must remain retryable");
+        tracker.finish_reap(retry, true);
+        assert!(!tracker.has_pending_reaps());
     }
 }
 
