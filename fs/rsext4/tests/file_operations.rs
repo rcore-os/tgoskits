@@ -777,6 +777,61 @@ mod file_functional_tests {
         assert_eq!(restored, contents);
     }
 
+    #[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
+    #[test]
+    fn failed_orphan_reap_does_not_lose_freed_block_accounting() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let free_blocks_before_file = fs.superblock.free_blocks_count();
+        let contents = vec![0x5a; 2 * BLOCK_SIZE];
+        mkfile(&mut jbd2_dev, &mut fs, "/reap-fault", Some(&contents), None)
+            .expect("file creation failed");
+        let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/reap-fault")
+            .expect("target lookup failed")
+            .expect("target missing")
+            .0;
+        let outcome = unlink(&mut fs, &mut jbd2_dev, "/reap-fault").expect("fixture unlink failed");
+        assert_eq!(outcome.inode, inode_number);
+        assert!(outcome.requires_reap());
+
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        let block_bitmap = fs.group_descs[0].block_bitmap();
+        jbd2_dev
+            .set_journal_use(false)
+            .expect("disable journal for direct fault injection");
+        fail_after_write_sector.set(Some(block_bitmap));
+
+        let error = reap_unlinked_inode(&mut fs, &mut jbd2_dev, inode_number)
+            .expect_err("block-bitmap write failure must abort orphan reap");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+        assert_eq!(fs.superblock.s_last_orphan, inode_number.raw());
+        assert!(
+            fs.inode_num_already_allocated(&mut jbd2_dev, inode_number)
+                .expect("failed reap allocation lookup")
+        );
+
+        drop(fs);
+        let device = jbd2_dev.into_inner();
+        let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut remounted = mount(&mut remount_dev).expect("orphan recovery mount failed");
+        assert_eq!(remounted.superblock.s_last_orphan, 0);
+        assert!(
+            !remounted
+                .inode_num_already_allocated(&mut remount_dev, inode_number)
+                .expect("recovered allocation lookup failed")
+        );
+        assert_eq!(
+            remounted.superblock.free_blocks_count(),
+            free_blocks_before_file,
+            "retrying a partially failed reap must account every freed block exactly once"
+        );
+    }
+
     #[test]
     fn hard_link_propagates_corrupt_destination_parent_extent() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);

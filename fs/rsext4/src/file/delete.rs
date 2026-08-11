@@ -1,9 +1,15 @@
 use super::*;
-use crate::hashtree::Ext4InodeHashTreeExt;
+use crate::{bmalloc::BGIndex, cache::bitmap::CacheKey, hashtree::Ext4InodeHashTreeExt};
 
 // Linux uses EXT4_DATA_TRANS_BLOCKS for both unlink and rmdir. Extent
 // filesystems without writable quota support reserve 20 + 6 - 2 blocks.
 const UNLINK_TRANSACTION_CREDITS: usize = 24;
+
+// ext4_evict_inode starts with ext4_blocks_for_truncate() plus six final
+// cleanup credits, subtracting the three bitmap/group/inode credits already
+// counted by truncate. Quota is not implemented yet, so the base is 24 + 3.
+const REAP_BASE_TRANSACTION_CREDITS: usize = 27;
+const REAP_MAX_TRANSACTION_DATA: u64 = 64;
 
 /// A directory entry located by a single parent-directory scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +101,69 @@ fn inode_owned_blocks<B: BlockIo>(
     Ok(used_blocks)
 }
 
+fn reap_transaction_credits(fs: &Ext4FileSystem, inode: &Ext4Inode) -> Ext4Result<usize> {
+    let block_size = u32::try_from(fs.superblock.block_size())
+        .map_err(|_| Ext4Error::corrupted().with_operation("orphan:reap_block_size"))?;
+    let sectors_per_block = u64::from(block_size / 512);
+    if sectors_per_block == 0 {
+        return Err(Ext4Error::corrupted().with_operation("orphan:reap_block_size"));
+    }
+    let huge_file = fs
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+    let data_credits = inode
+        .blocks_count(block_size, huge_file)
+        .div_ceil(sectors_per_block)
+        .clamp(2, REAP_MAX_TRANSACTION_DATA);
+    REAP_BASE_TRANSACTION_CREDITS
+        .checked_add(usize::try_from(data_credits).map_err(|_| Ext4Error::overflow())?)
+        .ok_or_else(Ext4Error::overflow)
+}
+
+fn group_counters(fs: &Ext4FileSystem) -> Vec<(u32, u32, u32)> {
+    fs.group_descs
+        .iter()
+        .map(|descriptor| {
+            (
+                descriptor.free_blocks_count(),
+                descriptor.free_inodes_count(),
+                descriptor.used_dirs_count(),
+            )
+        })
+        .collect()
+}
+
+fn flush_reap_metadata<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    counters_before: &[(u32, u32, u32)],
+    orphan_predecessor: Option<InodeNumber>,
+) -> Ext4Result<()> {
+    for (index, before) in counters_before.iter().copied().enumerate() {
+        let group = BGIndex::new(u32::try_from(index).map_err(|_| Ext4Error::overflow())?);
+        let descriptor = fs.get_group_desc(group).ok_or_else(Ext4Error::corrupted)?;
+        let free_blocks_changed = descriptor.free_blocks_count() != before.0;
+        let free_inodes_changed = descriptor.free_inodes_count() != before.1;
+        let used_dirs_changed = descriptor.used_dirs_count() != before.2;
+
+        if free_blocks_changed {
+            fs.bitmap_cache
+                .flush(block_dev, &CacheKey::new_block(group))?;
+        }
+        if free_inodes_changed {
+            fs.bitmap_cache
+                .flush(block_dev, &CacheKey::new_inode(group))?;
+        }
+        if free_blocks_changed || free_inodes_changed || used_dirs_changed {
+            fs.sync_group_descriptor(block_dev, group)?;
+        }
+    }
+    if let Some(predecessor) = orphan_predecessor {
+        fs.inodetable_cache.flush(block_dev, predecessor)?;
+    }
+    fs.sync_superblock(block_dev)
+}
+
 pub fn free_inode<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
@@ -144,40 +213,45 @@ pub fn reap_unlinked_inode<B: BlockIo>(
     if !fs.orphan_contains(block_dev, inode_num)? {
         return Err(Ext4Error::not_found().with_operation("orphan:reap_not_listed"));
     }
+    preflight_inode_free(fs, block_dev, inode_num, &inode)?;
+    let credits = reap_transaction_credits(fs, &inode)?;
+    let counters_before = group_counters(fs);
 
-    truncate_legacy_indirect_mapping_before_free(fs, block_dev, inode_num, &mut inode)?;
-    let used_blocks = inode_owned_blocks(fs, block_dev, inode_num, &mut inode)?;
-    for block in used_blocks {
-        fs.free_block(block_dev, block)?;
-    }
+    fs.with_metadata_transaction(block_dev, credits, |fs, block_dev| {
+        truncate_legacy_indirect_mapping_before_free(fs, block_dev, inode_num, &mut inode)?;
+        let used_blocks = inode_owned_blocks(fs, block_dev, inode_num, &mut inode)?;
+        for block in used_blocks {
+            fs.free_block(block_dev, block)?;
+        }
 
-    // Keep i_dtime intact while the inode is on the orphan chain: it is the
-    // next-inode pointer, not a wall-clock deletion time.
-    inode.i_block = [0; 15];
-    inode.i_blocks_lo = 0;
-    inode.l_i_blocks_high = 0;
-    inode.i_size_lo = 0;
-    inode.i_size_high = 0;
-    fs.finalize_inode_update(
-        block_dev,
-        inode_num,
-        &mut inode,
-        Ext4InodeMetadataUpdate::link_count_change(),
-    )?;
+        // Keep i_dtime intact while the inode is on the orphan chain: it is
+        // the next-inode pointer, not a wall-clock deletion time.
+        inode.i_block = [0; 15];
+        inode.i_blocks_lo = 0;
+        inode.l_i_blocks_high = 0;
+        inode.i_size_lo = 0;
+        inode.i_size_high = 0;
+        fs.finalize_inode_update(
+            block_dev,
+            inode_num,
+            &mut inode,
+            Ext4InodeMetadataUpdate::link_count_change(),
+        )?;
 
-    fs.remove_orphan(block_dev, inode_num)?;
-    fs.apply_inode_dtime(block_dev, inode_num, Ext4DtimeUpdate::SetNow)?;
-    fs.free_inode(block_dev, inode_num)?;
-    if was_directory {
-        let (group, _) = fs.inode_allocator.global_to_group(inode_num)?;
-        let descriptor = fs
-            .get_group_desc_mut(group)
-            .ok_or_else(Ext4Error::corrupted)?;
-        let used = descriptor.used_dirs_count().saturating_sub(1);
-        descriptor.bg_used_dirs_count_lo = (used & 0xffff) as u16;
-        descriptor.bg_used_dirs_count_hi = (used >> 16) as u16;
-    }
-    Ok(())
+        let orphan_predecessor = fs.remove_orphan(block_dev, inode_num)?;
+        fs.apply_inode_dtime(block_dev, inode_num, Ext4DtimeUpdate::SetNow)?;
+        fs.free_inode(block_dev, inode_num)?;
+        if was_directory {
+            let (group, _) = fs.inode_allocator.global_to_group(inode_num)?;
+            let descriptor = fs
+                .get_group_desc_mut(group)
+                .ok_or_else(Ext4Error::corrupted)?;
+            let used = descriptor.used_dirs_count().saturating_sub(1);
+            descriptor.bg_used_dirs_count_lo = (used & 0xffff) as u16;
+            descriptor.bg_used_dirs_count_hi = (used >> 16) as u16;
+        }
+        flush_reap_metadata(fs, block_dev, &counters_before, orphan_predecessor)
+    })
 }
 
 /// Removes one raw name below an already resolved parent directory.

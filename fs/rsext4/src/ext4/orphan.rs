@@ -100,7 +100,7 @@ impl Ext4FileSystem {
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         target: InodeNumber,
-    ) -> Ext4Result<()> {
+    ) -> Ext4Result<Option<InodeNumber>> {
         self.validate_orphan_chain(block_dev)?;
         let mut previous = None;
         let mut current = self.checked_orphan_number(self.superblock.s_last_orphan)?;
@@ -120,7 +120,7 @@ impl Ext4FileSystem {
                     self.superblock.s_last_orphan = next.map_or(0, InodeNumber::raw);
                 }
                 self.modify_inode(block_dev, target, |inode| inode.i_dtime = 0)?;
-                return Ok(());
+                return Ok(previous);
             }
             previous = Some(inode_num);
             current = next;
@@ -145,7 +145,7 @@ impl Ext4FileSystem {
             let inode = self.get_inode_by_num(block_dev, head)?;
             if inode.i_links_count != 0 {
                 crate::file::recover_linked_truncate_inode(block_dev, self, head, inode.size())?;
-                self.remove_orphan(block_dev, head)?;
+                let _ = self.remove_orphan(block_dev, head)?;
                 continue;
             }
             crate::file::reap_unlinked_inode(self, block_dev, head)?;
