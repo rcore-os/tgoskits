@@ -1,7 +1,6 @@
 //! JBD2-aware block device facade.
 
 use alloc::{boxed::Box, vec::Vec};
-use core::mem::size_of;
 
 use super::cached_device::BlockDev;
 use crate::{
@@ -14,9 +13,8 @@ use crate::{
         jbd2::{ReplayFailure, ReplayStatus},
         jbdstruct::{
             JBD2_BLOCKTYPE_SUPERBLOCK_V1, JBD2_BLOCKTYPE_SUPERBLOCK_V2, JBD2_CRC32C_CHKSUM,
-            JBD2_DESCRIPTOR_HEADER_SIZE, JBD2_FEATURE_INCOMPAT_64BIT,
-            JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_MAGIC, JBD2_TAG_BLOCKNR_HIGH_SIZE, JBD2_TAG_SIZE,
-            JBD2_TAG3_SIZE, JBD2_UUID_SIZE, JBD2DEVSYSTEM, Jbd2Update, JournalSuperBlock,
+            JBD2_FEATURE_INCOMPAT_64BIT, JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_MAGIC, JBD2DEVSYSTEM,
+            Jbd2Update, JournalSuperBlock,
         },
     },
     runtime::{Clock, JournalReplayPhase},
@@ -195,29 +193,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         block_size: usize,
         mapped_blocks: usize,
     ) -> Ext4Result<usize> {
-        let feature_incompat = if superblock.is_v1() {
-            0
-        } else {
-            superblock.s_feature_incompat
-        };
-        let has_csum_v3 = feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0;
-        let has_64bit = feature_incompat & JBD2_FEATURE_INCOMPAT_64BIT != 0;
-        let descriptor_tail = usize::from(has_csum_v3) * size_of::<u32>();
-        let descriptor_end = block_size
-            .checked_sub(descriptor_tail)
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:descriptor_capacity"))?;
-        let fixed_descriptor_bytes = JBD2_DESCRIPTOR_HEADER_SIZE
-            .checked_add(JBD2_UUID_SIZE)
-            .ok_or_else(Ext4Error::overflow)?;
-        let tag_bytes = if has_csum_v3 {
-            JBD2_TAG3_SIZE
-        } else {
-            JBD2_TAG_SIZE + usize::from(has_64bit) * JBD2_TAG_BLOCKNR_HIGH_SIZE
-        };
-        let descriptor_capacity = descriptor_end
-            .checked_sub(fixed_descriptor_bytes)
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:descriptor_capacity"))?
-            / tag_bytes;
+        let descriptor_capacity = superblock.descriptor_tag_capacity(block_size)?;
 
         let declared_blocks =
             usize::try_from(superblock.s_maxlen).map_err(|_| Ext4Error::overflow())?;
@@ -226,10 +202,28 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .min(mapped_blocks)
             .checked_sub(first)
             .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:ring_capacity"))?;
-        let ring_capacity = ring_records
-            .checked_sub(2)
-            .ok_or_else(|| Ext4Error::no_space().with_operation("jbd2:ring_capacity"))?;
-        let capacity = descriptor_capacity.min(ring_capacity);
+
+        // A transaction occupies one log record per payload, one descriptor
+        // for each descriptor-sized payload chunk, and one final commit block.
+        // Credits continue to count distinct metadata payloads, not descriptor
+        // overhead, so find the largest payload count whose complete record set
+        // fits in the ring.
+        let mut lower = 0usize;
+        let mut upper = ring_records;
+        while lower < upper {
+            let midpoint = lower + (upper - lower).div_ceil(2);
+            let descriptors = midpoint.div_ceil(descriptor_capacity);
+            let required = midpoint
+                .checked_add(descriptors)
+                .and_then(|records| records.checked_add(1))
+                .ok_or_else(Ext4Error::overflow)?;
+            if required <= ring_records {
+                lower = midpoint;
+            } else {
+                upper = midpoint - 1;
+            }
+        }
+        let capacity = lower;
         if capacity == 0 {
             return Err(Ext4Error::no_space().with_operation("jbd2:transaction_capacity"));
         }
@@ -1400,7 +1394,7 @@ mod tests {
         };
         assert_eq!(
             Jbd2Dev::<MemBlockDev>::transaction_capacity(&large_ring, 1024, 4096).unwrap(),
-            62
+            4027
         );
 
         let small = small_journal_superblock();
@@ -1408,6 +1402,135 @@ mod tests {
             Jbd2Dev::<MemBlockDev>::transaction_capacity(&small, BLOCK_SIZE, 16).unwrap(),
             13
         );
+    }
+
+    #[test]
+    fn one_transaction_can_span_multiple_descriptor_blocks() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(1024), true);
+        let mut superblock = JournalSuperBlock {
+            s_maxlen: 512,
+            ..csum_v3_superblock()
+        };
+        crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(512))
+            .expect("install journal with room for multiple descriptors");
+
+        let target = AbsoluteBN::new(10);
+        let payload_count = 255usize;
+        dev.with_transaction_handle(payload_count, |device| {
+            for index in 0..payload_count {
+                let payload = vec![(index + 1) as u8; BLOCK_SIZE];
+                device.write_blocks(
+                    &payload,
+                    target.checked_add(u32::try_from(index).unwrap()).unwrap(),
+                    1,
+                    true,
+                )?;
+            }
+            Ok(())
+        })
+        .expect("one handle may exceed one descriptor's tag capacity");
+        dev.umount_commit()
+            .expect("commit multi-descriptor transaction");
+
+        assert_eq!(dev.journal_sequence(), Some(2));
+        let mut inner = dev.into_inner();
+        let second_descriptor = &inner.data[767 * BLOCK_SIZE..768 * BLOCK_SIZE];
+        let header = JournalHeaderS::from_disk_bytes(second_descriptor);
+        assert_eq!(
+            header.h_blocktype,
+            crate::jbd2::jbdstruct::JBD2_BLOCKTYPE_DESCRIPTOR
+        );
+        assert_eq!(header.h_sequence, 1);
+        let second_tag_offset = JBD2_DESCRIPTOR_HEADER_SIZE + JBD2_TAG3_SIZE + JBD2_UUID_SIZE;
+        let second_tag = JournalBlockTag3S::from_disk_bytes(
+            &second_descriptor[second_tag_offset..second_tag_offset + JBD2_TAG3_SIZE],
+        );
+        assert_ne!(
+            second_tag.t_flags & u32::from(crate::jbd2::jbdstruct::JBD2_FLAG_LAST_TAG),
+            0
+        );
+
+        for index in 0..payload_count {
+            let block = target.checked_add(u32::try_from(index).unwrap()).unwrap();
+            let start = block.as_usize().unwrap() * BLOCK_SIZE;
+            inner.data[start..start + BLOCK_SIZE].fill(0);
+        }
+        let mut replay_superblock = superblock;
+        replay_superblock.s_start = replay_superblock.s_first;
+        replay_superblock.s_sequence = 1;
+        crate::checksum::jbd2_update_superblock_checksum(&mut replay_superblock);
+        replay_superblock.to_disk_bytes(&mut inner.data[512 * BLOCK_SIZE..][..1024]);
+
+        let mut replay = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        replay
+            .set_journal_superblock_with_mapping(
+                replay_superblock,
+                (512..1024).map(AbsoluteBN::new).collect(),
+            )
+            .expect("install committed multi-descriptor journal");
+        assert_eq!(replay.journal_replay_checked(), ReplayStatus::Complete);
+        let inner = replay.into_inner();
+        for index in 0..payload_count {
+            let block = target.checked_add(u32::try_from(index).unwrap()).unwrap();
+            let start = block.as_usize().unwrap() * BLOCK_SIZE;
+            assert!(
+                inner.data[start..start + BLOCK_SIZE]
+                    .iter()
+                    .all(|byte| *byte == (index + 1) as u8)
+            );
+        }
+    }
+
+    #[test]
+    fn second_descriptor_write_failure_never_checkpoints_the_first_chunk() {
+        let mut inner = MemBlockDev::new(1024);
+        inner.fail_next_write_at_block(AbsoluteBN::new(767));
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        let mut superblock = JournalSuperBlock {
+            s_maxlen: 512,
+            ..csum_v3_superblock()
+        };
+        crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(512))
+            .expect("install journal with room for multiple descriptors");
+
+        let target = AbsoluteBN::new(10);
+        let payload_count = 255usize;
+        dev.with_transaction_handle(payload_count, |device| {
+            for index in 0..payload_count {
+                let payload = vec![(index + 1) as u8; BLOCK_SIZE];
+                device.write_blocks(
+                    &payload,
+                    target.checked_add(u32::try_from(index).unwrap()).unwrap(),
+                    1,
+                    true,
+                )?;
+            }
+            Ok(())
+        })
+        .expect("queue one multi-descriptor transaction");
+
+        let error = dev
+            .umount_commit()
+            .expect_err("second descriptor fault must abort before commit");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+        let later = dev
+            .write_block(AbsoluteBN::new(300), true)
+            .expect_err("descriptor write fault must latch journal abort");
+        assert_eq!(later.kind(), crate::Ext4ErrorKind::JournalAborted);
+
+        let inner = dev.into_inner();
+        for index in 0..payload_count {
+            let block = target.checked_add(u32::try_from(index).unwrap()).unwrap();
+            let start = block.as_usize().unwrap() * BLOCK_SIZE;
+            assert!(
+                inner.data[start..start + BLOCK_SIZE]
+                    .iter()
+                    .all(|byte| *byte == 0),
+                "uncommitted descriptor prefix must not reach home block {block:?}"
+            );
+        }
     }
 
     #[test]

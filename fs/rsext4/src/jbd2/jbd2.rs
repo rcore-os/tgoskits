@@ -490,16 +490,6 @@ impl JBD2DEVSYSTEM {
         }
 
         let block_size = block_dev.block_size();
-        let mut desc_buffer = vec![0; block_size];
-
-        // Build the descriptor block in memory first.
-        let new_jbd_header = JournalHeaderS {
-            h_blocktype: JBD2_BLOCKTYPE_DESCRIPTOR,
-            h_sequence: tid,
-            ..Default::default()
-        };
-        new_jbd_header.to_disk_bytes(&mut desc_buffer[0..JournalHeaderS::disk_size()]);
-
         let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
         let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
         let descriptor_end = if has_csum_v3 {
@@ -523,91 +513,103 @@ impl JBD2DEVSYSTEM {
             journal_payloads.push((update.0, journal_data, escaped));
         }
 
-        let mut current_offset = JBD2_DESCRIPTOR_HEADER_SIZE;
-        let mut first_tag = true;
-        // Emit one tag per metadata block queued for this transaction.
-        for (idx, (target, journal_data, escaped)) in journal_payloads.iter().enumerate() {
-            let target_raw = target.raw();
-            let block_high = (target_raw >> 32) as u32;
-            if !has_64bit && block_high != 0 {
-                return Err(Ext4Error::unsupported().with_operation("jbd2:64bit_block_number"));
+        let descriptor_capacity = self.jbd2_super_block.descriptor_tag_capacity(block_size)?;
+        let mut payload_offset = 0usize;
+        while payload_offset < journal_payloads.len() {
+            let payload_end = payload_offset
+                .checked_add(descriptor_capacity)
+                .ok_or_else(Ext4Error::overflow)?
+                .min(journal_payloads.len());
+            let payload_chunk = &journal_payloads[payload_offset..payload_end];
+            let mut desc_buffer = vec![0; block_size];
+            JournalHeaderS {
+                h_blocktype: JBD2_BLOCKTYPE_DESCRIPTOR,
+                h_sequence: tid,
+                ..Default::default()
             }
-            let mut flags = if *escaped {
-                u32::from(JOURNAL_ESCAPE)
-            } else {
-                0
-            };
-            if idx == journal_payloads.len() - 1 {
-                flags |= u32::from(JBD2_FLAG_LAST_TAG);
-            }
-            if !first_tag {
-                flags |= u32::from(JBD2_FLAG_SAME_UUID);
+            .to_disk_bytes(&mut desc_buffer[0..JournalHeaderS::disk_size()]);
+
+            let mut current_offset = JBD2_DESCRIPTOR_HEADER_SIZE;
+            for (index, (target, journal_data, escaped)) in payload_chunk.iter().enumerate() {
+                let target_raw = target.raw();
+                let block_high = (target_raw >> 32) as u32;
+                if !has_64bit && block_high != 0 {
+                    return Err(Ext4Error::unsupported().with_operation("jbd2:64bit_block_number"));
+                }
+                let mut flags = if *escaped {
+                    u32::from(JOURNAL_ESCAPE)
+                } else {
+                    0
+                };
+                if index + 1 == payload_chunk.len() {
+                    flags |= u32::from(JBD2_FLAG_LAST_TAG);
+                }
+                if index != 0 {
+                    flags |= u32::from(JBD2_FLAG_SAME_UUID);
+                }
+
+                if has_csum_v3 {
+                    JournalBlockTag3S {
+                        t_blocknr: target_raw as u32,
+                        t_flags: flags,
+                        t_blocknr_high: block_high,
+                        t_checksum: jbd2_tag_csum32(
+                            &self.jbd2_super_block.s_uuid,
+                            tid,
+                            journal_data,
+                        ),
+                    }
+                    .to_disk_bytes(
+                        &mut desc_buffer[current_offset..current_offset + JBD2_TAG3_SIZE],
+                    );
+                    current_offset += JBD2_TAG3_SIZE;
+                } else {
+                    JournalBlockTagS {
+                        t_blocknr: target_raw as u32,
+                        t_checksum: 0,
+                        t_flags: flags as u16,
+                    }
+                    .to_disk_bytes(
+                        &mut desc_buffer[current_offset..current_offset + JBD2_TAG_SIZE],
+                    );
+                    current_offset += JBD2_TAG_SIZE;
+                    if has_64bit {
+                        desc_buffer[current_offset..current_offset + JBD2_TAG_BLOCKNR_HIGH_SIZE]
+                            .copy_from_slice(&block_high.to_be_bytes());
+                        current_offset += JBD2_TAG_BLOCKNR_HIGH_SIZE;
+                    }
+                }
+
+                if index == 0 {
+                    desc_buffer[current_offset..current_offset + JBD2_UUID_SIZE]
+                        .copy_from_slice(&self.jbd2_super_block.s_uuid);
+                    current_offset += JBD2_UUID_SIZE;
+                }
             }
 
-            let tag_size = if has_csum_v3 {
-                JBD2_TAG3_SIZE
-            } else {
-                JBD2_TAG_SIZE + usize::from(has_64bit) * JBD2_TAG_BLOCKNR_HIGH_SIZE
-            };
-            let uuid_len = if first_tag { JBD2_UUID_SIZE } else { 0 };
-            let tag_end = current_offset
-                .checked_add(tag_size + uuid_len)
-                .ok_or_else(Ext4Error::overflow)?;
-            if tag_end > descriptor_end {
+            if current_offset > descriptor_end {
                 return Err(Ext4Error::no_space().with_operation("jbd2:descriptor_full"));
             }
-
             if has_csum_v3 {
-                JournalBlockTag3S {
-                    t_blocknr: target_raw as u32,
-                    t_flags: flags,
-                    t_blocknr_high: block_high,
-                    t_checksum: jbd2_tag_csum32(&self.jbd2_super_block.s_uuid, tid, journal_data),
-                }
-                .to_disk_bytes(&mut desc_buffer[current_offset..current_offset + JBD2_TAG3_SIZE]);
-            } else {
-                JournalBlockTagS {
-                    t_blocknr: target_raw as u32,
-                    t_checksum: 0,
-                    t_flags: flags as u16,
-                }
-                .to_disk_bytes(&mut desc_buffer[current_offset..current_offset + JBD2_TAG_SIZE]);
-                if has_64bit {
-                    let high_offset = current_offset + JBD2_TAG_SIZE;
-                    desc_buffer[high_offset..high_offset + JBD2_TAG_BLOCKNR_HIGH_SIZE]
-                        .copy_from_slice(&block_high.to_be_bytes());
-                }
+                let checksum =
+                    jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, &desc_buffer)
+                        .ok_or_else(|| {
+                            Ext4Error::corrupted().with_operation("jbd2:descriptor_checksum")
+                        })?;
+                desc_buffer[descriptor_end..].copy_from_slice(&checksum.to_be_bytes());
             }
-            current_offset += tag_size;
 
-            if first_tag {
-                desc_buffer[current_offset..current_offset + JBD2_UUID_SIZE]
-                    .copy_from_slice(&self.jbd2_super_block.s_uuid);
-                current_offset += JBD2_UUID_SIZE;
-                first_tag = false;
-            }
-        }
-
-        if has_csum_v3 {
-            let checksum =
-                jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, &desc_buffer)
-                    .ok_or_else(|| {
-                        Ext4Error::corrupted().with_operation("jbd2:descriptor_checksum")
-                    })?;
-            desc_buffer[descriptor_end..].copy_from_slice(&checksum.to_be_bytes());
-        }
-
-        // Persist the descriptor first.
-        let block_id = self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
-
-        block_dev.write(&desc_buffer, block_id, 1)?;
-
-        // Then write the journaled metadata payload blocks.
-        for up in &journal_payloads {
-            let metadata_journal_block_id =
+            // Linux interleaves every descriptor with the payload blocks
+            // described by that descriptor, then writes one final commit.
+            let descriptor_block =
                 self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
-
-            block_dev.write(&up.1, metadata_journal_block_id, 1)?;
+            block_dev.write(&desc_buffer, descriptor_block, 1)?;
+            for payload in payload_chunk {
+                let payload_block =
+                    self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
+                block_dev.write(&payload.1, payload_block, 1)?;
+            }
+            payload_offset = payload_end;
         }
 
         block_dev.flush()?;
