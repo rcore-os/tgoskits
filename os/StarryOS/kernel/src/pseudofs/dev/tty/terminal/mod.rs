@@ -3,13 +3,9 @@
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicU32;
 
-#[cfg(not(all(test, not(target_os = "none"))))]
-use ax_kspin::SpinNoIrq as TerminalStateLock;
-#[cfg(all(test, not(target_os = "none")))]
-use ax_kspin::SpinRaw as TerminalStateLock;
 use bytemuck::AnyBitPattern;
 
-use crate::sync::IrqMutex;
+use crate::sync::IrqMutex as TerminalStateLock;
 
 pub mod job;
 pub mod ldisc;
