@@ -1156,13 +1156,48 @@ fn write_inode_data_through_unwritten<B: BlockIo>(
     let leaf_snapshots =
         snapshot_prepared_extent_leaves(device, fs, inode_num, &mut inode, &prepared)?;
 
-    for lbn in start_lbn..=end_lbn {
+    let mut lbn = start_lbn;
+    while lbn <= end_lbn {
         let physical = if let Some(run) = prepared
             .iter()
             .find(|run| run.logical_start <= lbn && lbn < run.logical_start.saturating_add(run.len))
         {
-            let physical = run.physical_start.checked_add(lbn - run.logical_start)?;
-            write_inode_block_data(device, fs, physical, u64::from(lbn), write, true)?;
+            let run_offset = lbn - run.logical_start;
+            let run_blocks = run
+                .len
+                .checked_sub(run_offset)
+                .ok_or_else(Ext4Error::overflow)?
+                .min(end_lbn - lbn + 1);
+            let physical = run.physical_start.checked_add(run_offset)?;
+            let run_start = u64::from(lbn)
+                .checked_mul(block_bytes)
+                .ok_or_else(Ext4Error::file_too_large)?;
+            let run_end = run_start
+                .checked_add(u64::from(run_blocks) * block_bytes)
+                .ok_or_else(Ext4Error::file_too_large)?;
+            if write.offset <= run_start && write.end >= run_end {
+                write_full_block_run(
+                    device,
+                    fs,
+                    physical,
+                    u64::from(lbn),
+                    write.offset,
+                    write.data,
+                    run_blocks,
+                )?;
+            } else {
+                for offset in 0..run_blocks {
+                    write_inode_block_data(
+                        device,
+                        fs,
+                        physical.checked_add(offset)?,
+                        u64::from(lbn + offset),
+                        write,
+                        true,
+                    )?;
+                }
+            }
+            lbn += run_blocks;
             continue;
         } else {
             match ExtentTree::with_filesystem(&mut inode, fs, inode_num).map_block(device, lbn)? {
@@ -1173,6 +1208,7 @@ fn write_inode_data_through_unwritten<B: BlockIo>(
             }
         };
         write_inode_block_data(device, fs, physical, u64::from(lbn), write, false)?;
+        lbn += 1;
     }
 
     let prepared_inode = inode;
