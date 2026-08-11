@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(test)]
 pub(crate) fn wake_thread_direct(
     core: &Arc<ThreadCore>,
     preferred: Option<crate::CpuId>,
@@ -11,18 +12,10 @@ pub(crate) fn wake_thread_direct(
 }
 
 pub(crate) fn wake_thread_from_current_cpu(core: &Arc<ThreadCore>) -> WakeResult {
-    if task_runtime::in_hard_irq() {
-        // SAFETY: hard-IRQ execution cannot migrate until this complete wake
-        // transaction returns.
-        let waker = CpuId::new(unsafe { task_runtime::current_cpu_id() }.as_u32());
-        return wake_thread_direct(core, Some(waker));
-    }
-
-    let _pin = PreemptScope::enter();
-    // SAFETY: `_pin` prevents task migration until target selection and the
-    // runnable publication have both completed.
-    let waker = CpuId::new(unsafe { task_runtime::current_cpu_id() }.as_u32());
-    wake_thread_direct(core, Some(waker))
+    let Ok(system) = runtime_task_system() else {
+        return WakeResult::Unavailable;
+    };
+    system.wake_thread_from_current_cpu(Arc::clone(core))
 }
 
 pub(crate) fn wake_wait_claim_from_task(
@@ -34,11 +27,7 @@ pub(crate) fn wake_wait_claim_from_task(
         claim.cancel_selected();
         return WaitWakeDelivery::Unavailable;
     };
-    let _pin = PreemptScope::enter();
-    // SAFETY: `_pin` prevents migration until the selected claim has either
-    // been cancelled or published on the chosen runqueue.
-    let waker = CpuId::new(unsafe { task_runtime::current_cpu_id() }.as_u32());
-    system.wake_wait_claim_direct(Arc::clone(core), claim, Some(waker))
+    system.wake_wait_claim_from_current_cpu(Arc::clone(core), claim)
 }
 
 pub(crate) fn runtime_task_system() -> Result<&'static TaskSystem, TaskError> {

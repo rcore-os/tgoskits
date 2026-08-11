@@ -34,6 +34,27 @@ static WAKE_DURING_FINAL_PARK_PUBLICATION_ENTERED: core::sync::atomic::AtomicBoo
 static WAKE_DURING_FINAL_PARK_PUBLICATION_COMPLETED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+#[derive(Clone, Copy)]
+enum WakerCpuSource {
+    Current,
+    Explicit(Option<CpuId>),
+}
+
+impl WakerCpuSource {
+    fn resolve(self, _activity: &ThreadSchedulerActivity<'_>) -> Option<CpuId> {
+        match self {
+            Self::Current => {
+                // SAFETY: `ThreadSchedulerActivity` owns the wake transaction's
+                // preemption guard. If a stronger IRQ or scheduler owner scope
+                // supplied that guard, the same scope already retains this CPU.
+                let runtime_cpu = unsafe { task_runtime::current_cpu_id() };
+                Some(CpuId::new(runtime_cpu.as_u32()))
+            }
+            Self::Explicit(waker) => waker,
+        }
+    }
+}
+
 #[cfg(test)]
 pub(in crate::system::task_system) fn arm_wake_before_thread_lock_race(
     system: &TaskSystem,
@@ -186,8 +207,9 @@ impl TaskSystem {
     /// This scheduler currently exposes one flat root domain and no cache or
     /// capacity topology. Moving a wakee to the waker is therefore justified
     /// only when the waker owns strictly less instantaneous demand; a tie
-    /// preserves the previous CPU's cache locality. The facade supplies the
-    /// migration-pinned waker identity but does not own this policy decision.
+    /// preserves the previous CPU's cache locality. The wake transaction
+    /// samples the waker identity under its activity guard but does not fold
+    /// that identity into placement ownership.
     fn select_fair_wake_cpu(
         &self,
         affinity: &CpuSet,
@@ -228,14 +250,23 @@ impl TaskSystem {
         core: Arc<ThreadCore>,
         waker: Option<CpuId>,
     ) -> WakeResult {
+        self.wake_thread(core, WakerCpuSource::Explicit(waker))
+    }
+
+    pub(crate) fn wake_thread_from_current_cpu(&self, core: Arc<ThreadCore>) -> WakeResult {
+        self.wake_thread(core, WakerCpuSource::Current)
+    }
+
+    fn wake_thread(&self, core: Arc<ThreadCore>, waker: WakerCpuSource) -> WakeResult {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_direct_wake_attempt();
         if core.state() == ThreadState::Exited {
             return WakeResult::Exited;
         }
-        let Some(_activity) = core.try_scheduler_activity() else {
+        let Some(activity) = core.try_scheduler_activity() else {
             return WakeResult::Exited;
         };
+        let waker = waker.resolve(&activity);
         #[cfg(test)]
         wake_during_final_park_publication_hook(self, core.id());
         #[cfg(test)]
@@ -295,11 +326,10 @@ impl TaskSystem {
     /// Selection is owned by the wait-queue lock. This scheduler transaction
     /// publishes `Delivered` only after every recoverable placement step has
     /// succeeded and immediately before the no-fail runnable publication.
-    pub(crate) fn wake_wait_claim_direct(
+    pub(crate) fn wake_wait_claim_from_current_cpu(
         &self,
         core: Arc<ThreadCore>,
         claim: &WaitWakeClaim,
-        waker: Option<CpuId>,
     ) -> WaitWakeDelivery {
         if claim.thread() != core.id() {
             claim.cancel_selected();
@@ -309,10 +339,11 @@ impl TaskSystem {
             claim.cancel_selected();
             return WaitWakeDelivery::Exited;
         }
-        let Some(_activity) = core.try_scheduler_activity() else {
+        let Some(activity) = core.try_scheduler_activity() else {
             claim.cancel_selected();
             return WaitWakeDelivery::Exited;
         };
+        let waker = WakerCpuSource::Current.resolve(&activity);
         let mut sched = core.sched().lock();
         if core.park_generation() != claim.park_generation() {
             claim.cancel_selected();

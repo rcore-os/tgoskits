@@ -2573,6 +2573,31 @@ bandwidth lock，新实现为 0；optimistic period snapshot 与随后 rq thrott
 replenishment 测试继续约束行为。该阶段只删除无关锁获取并统一事实所有权；端到端耗时仍需用
 相同 QEMU case 与 `origin/dev`、Linux PREEMPT_RT 分别复测，不能从锁计数直接宣称性能完成。
 
+### 2026-08-12 wake transaction 的唯一 preempt lifetime
+
+固定 qperf 窗口继续把 `preempt_guard_enter`、`enter_lock_preempt` 指向 direct-wake 热点。完整
+公共调用链显示，普通 task-context 的 `ThreadWakeHandle::wake()` 先在 facade 建立
+`PreemptScope` 以读取 waker CPU，随后 `TaskSystem::wake_thread_direct()` 又通过
+`try_scheduler_activity()` 建立第二个 preempt guard。后者除了稳定 CPU，还负责阻止 thread exit
+关闭 scheduler activity gate，因此不能从内部删除；只删内部 guard 会把性能问题改成退出竞态。
+
+Linux v7.1 `try_to_wake_up()` 自身先用 `guard(preempt)()` 稳定 waker CPU，再取得 `p->pi_lock`
+串行化 wakee 的 lifecycle、affinity 与 `on_cpu` 等待。调用者不为同一唤醒另建 preempt lifetime。
+ax-task 据此把 current CPU 采样移入唯一 scheduler activity transaction：
+
+- `WakerCpuSource::Current` 只能在拿到 `ThreadSchedulerActivity` 后解析；解析接口显式借用该 guard，
+  使 waker identity 不能在迁移仍开放时提前采样；
+- hard IRQ 或 scheduler frame 已拥有更强 CPU scope 时，activity guard 复用该 scope 的空 token，
+  不重复修改 suspended task 的 preempt word；普通 task context 则由 activity guard 建立唯一 token；
+- 显式 CPU hint、current-CPU wake 与 wait-claim 只选择 waker identity 的来源，后续都进入同一
+  task sched lock、target publication、`on_cpu` Acquire 等待和 target-rq enqueue 算法；没有保留
+  facade pin、备用 wake 实现或兼容分支。
+
+公共 facade 回归 `public_wake_owns_one_preemption_lifetime` 在旧实现确定性观测 2 次 preempt
+entry，要求同一次 wake 只能观测 1 次；修改后由同一回归验证为 1。该测试约束的是实际
+`ThreadWakeHandle::wake()`，不是绕过 facade 的内部 helper。完整 host-test、clippy 与 QEMU 性能
+结果在阶段提交前继续验证，不能仅由 guard 计数宣称端到端回退已经消失。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
