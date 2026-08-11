@@ -10,4 +10,3 @@ success_regex = ["ARCEOS_VIRTIO_BLK_PASS"]
 timeout = 120
 to_bin = true
 uefi = false
-

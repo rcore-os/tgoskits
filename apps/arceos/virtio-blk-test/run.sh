@@ -19,4 +19,3 @@ cargo xtask arceos build -p arceos-virtio-blk-test \
 exec cargo xtask axvisor qemu \
     --config os/axvisor/configs/board/qemu-aarch64-virtio-blk-test.toml \
     --qemu-config os/axvisor/configs/qemu/qemu-aarch64-virtio-blk-test.toml
-
