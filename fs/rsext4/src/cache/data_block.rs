@@ -630,7 +630,19 @@ mod tests {
 
         assert_eq!(dst[..BLOCK_SIZE], [0xaa; BLOCK_SIZE]);
         assert_eq!(dst[BLOCK_SIZE..], [0xbb; BLOCK_SIZE]);
-        assert_eq!(cache.stats().dirty_entries, 1);
+        assert_eq!(
+            cache.stats().dirty_entries,
+            usize::from(USE_MULTILEVEL_CACHE)
+        );
+
+        if !USE_MULTILEVEL_CACHE {
+            cache.clear();
+            let mut persisted = alloc::vec![0; BLOCK_SIZE];
+            cache
+                .read_run(&mut jbd2_dev, AbsoluteBN::new(101), 1, &mut persisted)
+                .expect("write-through data remains after cache clear");
+            assert_eq!(persisted, [0xbb; BLOCK_SIZE]);
+        }
     }
 
     #[test]
@@ -649,6 +661,7 @@ mod tests {
         assert_eq!(cache.stats().max_entries, 2);
     }
 
+    #[cfg(feature = "USE_MULTILEVEL_CACHE")]
     #[test]
     fn dirty_eviction_write_failure_preserves_victim() {
         let mut cache = DataBlockCache::new(1, BLOCK_SIZE);
@@ -671,5 +684,25 @@ mod tests {
         assert!(cached.data.iter().all(|byte| *byte == 0xa5));
         assert!(cache.get(replacement).is_none());
         assert_eq!(cache.stats().total_entries, 1);
+    }
+
+    #[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
+    #[test]
+    fn write_through_failure_preserves_dirty_cache_for_retry() {
+        let mut cache = DataBlockCache::new(1, BLOCK_SIZE);
+        let device = TestBlockDevice::failing_writes(1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let block = AbsoluteBN::new(10);
+
+        let error = cache
+            .modify_new(&mut jbd2_dev, block, |data| data.fill(0xa5))
+            .expect_err("write-through must propagate the device write error");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        let cached = cache.get(block).expect("failed write keeps retry state");
+        assert!(cached.dirty);
+        assert!(cached.data.iter().all(|byte| *byte == 0xa5));
+        assert_eq!(cache.stats().total_entries, 1);
+        assert_eq!(cache.stats().dirty_entries, 1);
     }
 }

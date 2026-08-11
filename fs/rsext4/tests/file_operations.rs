@@ -794,7 +794,7 @@ mod file_functional_tests {
     }
 
     #[test]
-    fn shrinking_legacy_inode_with_hidden_indirect_root_is_preflight_only() {
+    fn shrinking_legacy_inode_frees_hidden_indirect_tree() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
@@ -807,26 +807,233 @@ mod file_functional_tests {
             .unwrap()
             .0;
         let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
+        let hidden_data = fs.alloc_block(&mut jbd2_dev).unwrap();
+        jbd2_dev.read_block(indirect_root).unwrap();
+        jbd2_dev.buffer_mut().fill(0);
+        jbd2_dev.buffer_mut()[..core::mem::size_of::<u32>()]
+            .copy_from_slice(&hidden_data.to_u32().unwrap().to_le_bytes());
+        jbd2_dev.write_block(indirect_root, true).unwrap();
         fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
             inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
             inode.i_block = [0; 15];
             inode.i_block[12] = indirect_root.to_u32().unwrap();
             inode.i_size_lo = 1;
             inode.i_size_high = 0;
-            inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
+            inode.i_blocks_lo = 2 * (BLOCK_SIZE / 512) as u32;
         })
         .unwrap();
         let free_blocks_before = fs.superblock.free_blocks_count();
 
-        let error = truncate(&mut jbd2_dev, &mut fs, "/legacy-hidden-root", 0)
-            .expect_err("recursive indirect shrink remains transaction-gated");
-        assert_eq!(error.kind(), Ext4ErrorKind::Unsupported);
+        truncate(&mut jbd2_dev, &mut fs, "/legacy-hidden-root", 0)
+            .expect("truncate must free hidden indirect data and metadata");
 
         let inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
-        assert_eq!(inode.size(), 1);
-        assert_eq!(inode.i_block[12], indirect_root.to_u32().unwrap());
-        assert_eq!(inode.i_blocks_lo, (BLOCK_SIZE / 512) as u32);
-        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        assert_eq!(inode.size(), 0);
+        assert_eq!(inode.i_block[12], 0);
+        assert_eq!(inode.i_blocks_lo, 0);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before + 2);
+    }
+
+    #[test]
+    fn shrinking_legacy_inode_prunes_partial_indirect_leaf() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let pointers = BLOCK_SIZE / core::mem::size_of::<u32>();
+        let cases = [
+            ("/truncate-single-leaf", 12u32, 1usize, 12usize),
+            ("/truncate-double-leaf", (12 + pointers) as u32, 2, 13),
+            (
+                "/truncate-triple-leaf",
+                (12 + pointers + pointers * pointers) as u32,
+                3,
+                14,
+            ),
+        ];
+
+        for (path, first_logical, metadata_depth, root_slot) in cases {
+            mkfile(&mut jbd2_dev, &mut fs, path, None, None).expect("file creation failed");
+            let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, path)
+                .unwrap()
+                .unwrap()
+                .0;
+            fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+                inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+                inode.i_block = [0; 15];
+                inode.i_blocks_lo = 0;
+            })
+            .unwrap();
+            let free_blocks_before = fs.superblock.free_blocks_count();
+
+            for logical in [first_logical, first_logical + 1] {
+                write_file(
+                    &mut jbd2_dev,
+                    &mut fs,
+                    path,
+                    u64::from(logical) * BLOCK_SIZE as u64,
+                    &[logical as u8],
+                )
+                .unwrap();
+            }
+            let free_blocks_before_truncate = fs.superblock.free_blocks_count();
+            truncate(
+                &mut jbd2_dev,
+                &mut fs,
+                path,
+                (u64::from(first_logical) + 1) * BLOCK_SIZE as u64,
+            )
+            .expect("partial indirect leaf truncate failed");
+
+            let mut inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+            assert_ne!(inode.i_block[root_slot], 0);
+            assert!(
+                loopfile::resolve_inode_block(
+                    &fs,
+                    &mut jbd2_dev,
+                    inode_number,
+                    &mut inode,
+                    first_logical,
+                )
+                .unwrap()
+                .is_some()
+            );
+            assert_eq!(
+                loopfile::resolve_inode_block(
+                    &fs,
+                    &mut jbd2_dev,
+                    inode_number,
+                    &mut inode,
+                    first_logical + 1,
+                )
+                .unwrap(),
+                None
+            );
+            let huge_file = fs.superblock.has_feature_ro_compat(
+                superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE,
+            );
+            assert_eq!(
+                inode.blocks_count(BLOCK_SIZE as u32, huge_file),
+                (metadata_depth as u64 + 1) * (BLOCK_SIZE / 512) as u64
+            );
+            assert_eq!(
+                fs.superblock.free_blocks_count(),
+                free_blocks_before_truncate + 1
+            );
+
+            truncate(&mut jbd2_dev, &mut fs, path, 0).expect("full indirect truncate failed");
+            let inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+            assert_eq!(inode.i_block, [0; 15]);
+            assert_eq!(inode.i_blocks_lo, 0);
+            assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        }
+    }
+
+    #[test]
+    fn shrinking_legacy_inode_prunes_right_indirect_subtrees() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let pointers = BLOCK_SIZE / core::mem::size_of::<u32>();
+        let double = pointers * pointers;
+        let cases = [
+            (
+                "/truncate-double-subtree",
+                (12 + pointers) as u32,
+                pointers as u32,
+                3u64,
+                2u64,
+                13usize,
+            ),
+            (
+                "/truncate-triple-subtree",
+                (12 + pointers + double) as u32,
+                double as u32,
+                4u64,
+                3u64,
+                14usize,
+            ),
+        ];
+
+        for (path, first_logical, subtree_stride, kept_blocks, freed_blocks, root_slot) in cases {
+            mkfile(&mut jbd2_dev, &mut fs, path, None, None).expect("file creation failed");
+            let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, path)
+                .unwrap()
+                .unwrap()
+                .0;
+            fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+                inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+                inode.i_block = [0; 15];
+                inode.i_blocks_lo = 0;
+            })
+            .unwrap();
+            let free_blocks_before = fs.superblock.free_blocks_count();
+            let right_logical = first_logical + subtree_stride;
+
+            for logical in [first_logical, right_logical] {
+                write_file(
+                    &mut jbd2_dev,
+                    &mut fs,
+                    path,
+                    u64::from(logical) * BLOCK_SIZE as u64,
+                    &[logical as u8],
+                )
+                .unwrap();
+            }
+            let free_blocks_before_truncate = fs.superblock.free_blocks_count();
+            truncate(
+                &mut jbd2_dev,
+                &mut fs,
+                path,
+                u64::from(right_logical) * BLOCK_SIZE as u64,
+            )
+            .expect("right indirect subtree truncate failed");
+
+            let mut inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+            assert_ne!(inode.i_block[root_slot], 0);
+            assert!(
+                loopfile::resolve_inode_block(
+                    &fs,
+                    &mut jbd2_dev,
+                    inode_number,
+                    &mut inode,
+                    first_logical,
+                )
+                .unwrap()
+                .is_some()
+            );
+            assert_eq!(
+                loopfile::resolve_inode_block(
+                    &fs,
+                    &mut jbd2_dev,
+                    inode_number,
+                    &mut inode,
+                    right_logical,
+                )
+                .unwrap(),
+                None
+            );
+            let huge_file = fs.superblock.has_feature_ro_compat(
+                superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE,
+            );
+            assert_eq!(
+                inode.blocks_count(BLOCK_SIZE as u32, huge_file),
+                kept_blocks * (BLOCK_SIZE / 512) as u64
+            );
+            assert_eq!(
+                fs.superblock.free_blocks_count(),
+                free_blocks_before_truncate + freed_blocks
+            );
+
+            truncate(&mut jbd2_dev, &mut fs, path, 0).expect("full indirect truncate failed");
+            let inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+            assert_eq!(inode.i_block, [0; 15]);
+            assert_eq!(inode.i_blocks_lo, 0);
+            assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        }
     }
 
     #[test]
@@ -1098,6 +1305,79 @@ mod file_functional_tests {
             inode.blocks_count(BLOCK_SIZE as u32, true),
             (BLOCK_SIZE / 512) as u64
         );
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+    }
+
+    #[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
+    #[test]
+    fn failed_legacy_truncate_finalize_restores_pointer_and_inode_before_freeing() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/legacy-truncate-finalize",
+            None,
+            None,
+        )
+        .expect("file creation failed");
+        let inode_number =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-truncate-finalize")
+                .unwrap()
+                .unwrap()
+                .0;
+        fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_blocks_lo = 0;
+        })
+        .unwrap();
+        for logical in [12u64, 13] {
+            write_file(
+                &mut jbd2_dev,
+                &mut fs,
+                "/legacy-truncate-finalize",
+                logical * BLOCK_SIZE as u64,
+                &[logical as u8],
+            )
+            .unwrap();
+        }
+        jbd2_dev.umount_commit().unwrap();
+        jbd2_dev.set_journal_use(false).unwrap();
+
+        let original_inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+        let indirect_root = bmalloc::AbsoluteBN::from(original_inode.i_block[12]);
+        jbd2_dev.read_block(indirect_root).unwrap();
+        let original_pointers = jbd2_dev.buffer()[..2 * core::mem::size_of::<u32>()].to_vec();
+        let free_blocks_before = fs.superblock.free_blocks_count();
+        let inode_table = fs.group_descs[0].inode_table();
+
+        fail_after_write_sector.set(Some(inode_table));
+        let error = truncate(
+            &mut jbd2_dev,
+            &mut fs,
+            "/legacy-truncate-finalize",
+            13 * BLOCK_SIZE as u64,
+        )
+        .expect_err("inode finalize failure must abort legacy truncate");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        jbd2_dev.read_block(indirect_root).unwrap();
+        assert_eq!(
+            &jbd2_dev.buffer()[..original_pointers.len()],
+            &original_pointers,
+            "the indirect pointer block must be restored before returning"
+        );
+        let inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+        assert_eq!(inode.size(), original_inode.size());
+        assert_eq!(inode.i_block, original_inode.i_block);
+        assert_eq!(inode.i_blocks_lo, original_inode.i_blocks_lo);
+        assert_eq!(inode.l_i_blocks_high, original_inode.l_i_blocks_high);
+        assert_eq!(inode.i_flags, original_inode.i_flags);
         assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
     }
 
