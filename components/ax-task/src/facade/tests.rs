@@ -343,6 +343,48 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "qperf-metrics")]
+    #[test]
+    fn empty_deadline_base_probes_do_not_enter_irq_scope() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let before = crate::qperf_scheduler_metrics_snapshot();
+
+        assert_eq!(cpu.as_mut().next_oneshot_deadline(instant(1)), None);
+        assert_eq!(cpu.as_mut().next_oneshot_deadline(instant(2)), None);
+        assert_eq!(
+            cpu.as_mut().take_due_scheduler_deadline(instant(2)),
+            (None, false)
+        );
+        let soft = cpu.as_mut().promote_due_task_deadlines(instant(2), 1);
+        assert_eq!(soft.processed(), 0);
+        assert_eq!(soft.expired(), 0);
+        assert!(!soft.pending());
+        assert_eq!(soft.next_deadline(), None);
+
+        let after = crate::qperf_scheduler_metrics_snapshot();
+        let observation_entries = after.irq_ticket_cpu_deadline_observation_entries
+            - before.irq_ticket_cpu_deadline_observation_entries;
+        let hard_expiry_entries = after.irq_ticket_cpu_deadline_hard_expiry_entries
+            - before.irq_ticket_cpu_deadline_hard_expiry_entries;
+        let soft_expiry_entries = after.irq_ticket_cpu_deadline_soft_expiry_entries
+            - before.irq_ticket_cpu_deadline_soft_expiry_entries;
+        assert_eq!(
+            (
+                observation_entries,
+                hard_expiry_entries,
+                soft_expiry_entries
+            ),
+            (0, 0, 0),
+            "an empty deadline base must not be locked for observation or expiry"
+        );
+    }
+
     #[test]
     fn scheduler_fast_path_does_not_read_the_physical_clock_without_task_deadlines() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
