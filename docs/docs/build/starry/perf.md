@@ -65,6 +65,22 @@ flowchart TD
 | `--smp <N>` | CPU 核数 |
 | `--debug` | debug 构建 |
 
+## Guest 调度指标
+
+`--qperf-metrics` 会启用 `/sys/kernel/debug/scheduler_metrics`。该文件输出从启动开始累计的无锁诊断计数；快照使用 relaxed 读取，不代表跨字段的事务一致性。测量一个工作负载时，应在窗口前后各读取一次并对相同字段作差。
+
+`context_switches` 记录已经进入架构 `switch_context` 的真实切换总数；以下字段按 outgoing task 的稳定 `SwitchReason` 对总数分类：
+
+| 字段 | 含义 |
+|------|------|
+| `context_switches_preempted` | 更高优先级或更符合当前调度策略的任务触发抢占 |
+| `context_switches_yield` | 当前任务主动让出 CPU |
+| `context_switches_blocked` | 当前任务提交 park 或其他阻塞操作 |
+| `context_switches_exited` | 当前任务退出且不再运行 |
+| `context_switches_migrated` | affinity 或负载均衡将当前任务移出本 CPU |
+
+五个分类字段来自 ax-task 的唯一真实切换点；Starry debugfs 只展示同一份 snapshot，不单独维护计数状态。
+
 ## 采样模式
 
 | 模式 | 说明 |

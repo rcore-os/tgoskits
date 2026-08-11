@@ -139,8 +139,16 @@ impl QperfSchedulerMetrics {
         }
     }
 
-    fn record_context_switch(&self, _reason: SwitchReason) {
+    fn record_context_switch(&self, reason: SwitchReason) {
         self.context_switches.fetch_add(1, Ordering::Relaxed);
+        let reason_counter = match reason {
+            SwitchReason::Preempted => &self.context_switches_preempted,
+            SwitchReason::Yield => &self.context_switches_yield,
+            SwitchReason::Blocked => &self.context_switches_blocked,
+            SwitchReason::Exited => &self.context_switches_exited,
+            SwitchReason::Migrated => &self.context_switches_migrated,
+        };
+        reason_counter.fetch_add(1, Ordering::Relaxed);
     }
 }
 

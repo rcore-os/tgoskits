@@ -161,6 +161,36 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(output, "clockevent_irqs {}", metrics.clockevent_irqs).unwrap();
     writeln!(output, "context_switches {}", task.context_switches).unwrap();
+    writeln!(
+        output,
+        "context_switches_preempted {}",
+        task.context_switches_preempted
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "context_switches_yield {}",
+        task.context_switches_yield
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "context_switches_blocked {}",
+        task.context_switches_blocked
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "context_switches_exited {}",
+        task.context_switches_exited
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "context_switches_migrated {}",
+        task.context_switches_migrated
+    )
+    .unwrap();
     output
 }
 
@@ -202,6 +232,11 @@ mod tests {
                 "scheduler_ipi_consumes",
                 "clockevent_irqs",
                 "context_switches",
+                "context_switches_preempted",
+                "context_switches_yield",
+                "context_switches_blocked",
+                "context_switches_exited",
+                "context_switches_migrated",
             ]
         );
     }
