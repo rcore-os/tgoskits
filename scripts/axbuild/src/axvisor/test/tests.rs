@@ -1133,3 +1133,57 @@ fn board_case_config_is_also_valid_board_run_config() {
     assert_eq!(config.board_type, "PhytiumPi");
     assert_eq!(config.shell_prefix.as_deref(), Some("login:"));
 }
+
+#[test]
+fn qemu_build_groups_preserve_distinct_executable_artifacts() {
+    let root = tempdir().unwrap();
+    let build_output = root.path().join("target/release/axvisor");
+    let artifact_directory = root.path().join("preserved");
+    fs::create_dir_all(build_output.parent().unwrap()).unwrap();
+
+    fs::write(&build_output, b"first VM config").unwrap();
+    let first =
+        super::qemu::preserve_qemu_build_artifact(&build_output, &artifact_directory, 0).unwrap();
+    fs::write(&build_output, b"second VM config").unwrap();
+    let second =
+        super::qemu::preserve_qemu_build_artifact(&build_output, &artifact_directory, 1).unwrap();
+
+    assert_ne!(first, second);
+    assert_eq!(fs::read(first).unwrap(), b"first VM config");
+    assert_eq!(fs::read(second).unwrap(), b"second VM config");
+}
+
+#[test]
+fn qemu_cases_activate_their_build_group_artifact_and_conversion_mode() {
+    let first = false;
+    let second = true;
+    let third = false;
+    let first_group = [&first, &second];
+    let second_group = [&third];
+    let groups = [first_group.as_slice(), second_group.as_slice()];
+    let artifacts = [
+        PathBuf::from("group-0/axvisor"),
+        PathBuf::from("group-1/axvisor"),
+    ];
+
+    let plan =
+        super::qemu::plan_qemu_case_artifacts(&groups, &artifacts, |to_bin| *to_bin).unwrap();
+
+    assert_eq!(plan.len(), 3);
+    assert_eq!(plan[0].build_group_index, 0);
+    assert_eq!(plan[0].build_artifact, artifacts[0]);
+    assert!(!plan[0].to_bin);
+    assert_eq!(plan[1].build_group_index, 0);
+    assert_eq!(plan[1].build_artifact, artifacts[0]);
+    assert!(plan[1].to_bin);
+    assert_eq!(plan[2].build_group_index, 1);
+    assert_eq!(plan[2].build_artifact, artifacts[1]);
+    assert!(!plan[2].to_bin);
+
+    let err = super::qemu::plan_qemu_case_artifacts(&groups, &artifacts[..1], |to_bin| *to_bin)
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("does not match preserved artifact count")
+    );
+}

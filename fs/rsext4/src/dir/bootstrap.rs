@@ -195,7 +195,6 @@ pub fn create_lost_found_directory<B: BlockIo>(
         &[data_block],
         block_dev,
     )?;
-
     // Carry project inheritance only when the feature bit and parent flag both allow it.
     let mut create_update = Ext4InodeMetadataUpdate::create(dir_mode);
     if fs

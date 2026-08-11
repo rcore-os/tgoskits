@@ -439,8 +439,14 @@ impl JBD2DEVSYSTEM {
 
         // The first commit initializes `s_start` in the journal superblock.
         if self.jbd2_super_block.s_start == 0 {
+            let previous_superblock = self.jbd2_super_block;
             self.jbd2_super_block.s_start = self.jbd2_super_block.s_first;
-            self.write_journal_superblock_with_mapping(block_dev, journal_blocks)?;
+            if let Err(error) =
+                self.write_journal_superblock_with_mapping(block_dev, journal_blocks)
+            {
+                self.jbd2_super_block = previous_superblock;
+                return Err(error);
+            }
             self.head += 1;
             let mut rel = self
                 .jbd2_super_block
@@ -1056,7 +1062,6 @@ pub fn create_journal_entry<B: BlockIo>(
         &free_block,
         block_dev,
     )?;
-
     fs.finalize_inode_update(
         block_dev,
         InodeNumber::new(journal_inode_num as u32)?,

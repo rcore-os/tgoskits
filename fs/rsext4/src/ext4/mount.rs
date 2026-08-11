@@ -392,23 +392,9 @@ impl Ext4FileSystem {
                 let journal_inode_num = InodeNumber::new(fs.superblock.s_journal_inum)
                     .map_err(|_| Ext4Error::corrupted().with_operation("journal:inode_number"))?;
                 let journal_inode = fs.get_inode_by_num(block_dev, journal_inode_num)?;
-                let journal_exists = journal_inode.i_mode != 0;
-
-                if fs
-                    .superblock
-                    .has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL)
-                    && !journal_exists
-                {
-                    if needs_recovery {
-                        observer.event(Event::Recovery(RecoveryEvent::JournalMissing));
-                        return Err(Ext4Error::corrupted());
-                    }
-                    if journal_inode_num.raw() != JOURNAL_FILE_INODE as u32 {
-                        return Err(
-                            Ext4Error::corrupted().with_operation("journal:missing_custom_inode")
-                        );
-                    }
-                    create_journal_entry(&mut fs, block_dev)?;
+                if !journal_inode.is_file() || journal_inode.i_links_count == 0 {
+                    observer.event(Event::Recovery(RecoveryEvent::JournalMissing));
+                    return Err(Ext4Error::corrupted().with_operation("journal:invalid_inode"));
                 }
 
                 let journal_blocks = fs.protect_journal_blocks(block_dev, journal_inode_num)?;

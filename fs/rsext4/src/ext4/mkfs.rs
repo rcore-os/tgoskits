@@ -310,7 +310,15 @@ pub fn mkfs_with_options<B: BlockIo>(
 
         // Write the primary superblock and any sparse backups first so every later
         // descriptor/bitmap write can assume a valid superblock image exists.
-        let superblock = build_superblock(total_blocks, &layout);
+        let mut superblock = build_superblock(total_blocks, &layout);
+        let create_internal_journal = superblock.has_journal();
+        if create_internal_journal {
+            // A normal mount must never repair a missing journal inode. Build
+            // the ordinary filesystem first, then publish HAS_JOURNAL only
+            // after the preallocated inode and JBD2 superblock are durable.
+            superblock.s_feature_compat &= !Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL;
+            superblock.update_checksum();
+        }
         write_superblock(block_dev, &superblock)?;
 
         write_superblock_redundant_backup(block_dev, &superblock, total_groups, &layout)?;
@@ -348,11 +356,26 @@ pub fn mkfs_with_options<B: BlockIo>(
             &layout,
         )?;
 
-        // Reuse the normal mount/bootstrap path to create root and lost+found so
-        // mkfs and mount share the same initialization logic.
+        // Reuse the normal namespace bootstrap path for root and lost+found.
+        // The internal journal is created explicitly while journaling remains
+        // disabled; publishing HAS_JOURNAL is the final filesystem transition.
         {
             let mut fs = Ext4FileSystem::mount(block_dev)?;
+            if create_internal_journal {
+                create_journal_entry(&mut fs, block_dev)?;
+                fs.superblock.s_feature_compat |= Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL;
+                fs.superblock.s_journal_inum = JOURNAL_FILE_INODE as u32;
+            }
             fs.umount(block_dev)?;
+            if create_internal_journal {
+                write_superblock_redundant_backup(
+                    block_dev,
+                    &fs.superblock,
+                    total_groups,
+                    &layout,
+                )?;
+                block_dev.flush()?;
+            }
         }
 
         // Final sanity check: read back the superblock and validate the magic.

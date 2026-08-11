@@ -43,7 +43,6 @@ impl<'a> ExtentTree<'a> {
         if header.eh_depth > 0 && entries == 0 {
             return Err(Ext4Error::corrupted().with_operation("extent:empty_index"));
         }
-
         let mut offset = hdr_size;
 
         if header.eh_depth == 0 {
@@ -525,6 +524,12 @@ mod tests {
         bytes
     }
 
+    fn write_raw_inline_node(inode: &mut Ext4Inode, bytes: &[u8; 60]) {
+        for (word, raw) in inode.i_block.iter_mut().zip(bytes.chunks_exact(4)) {
+            *word = u32::from_le_bytes(raw.try_into().unwrap());
+        }
+    }
+
     #[test]
     fn checked_codec_rejects_unordered_and_overlapping_extents() {
         let unordered = raw_leaf(&[Ext4Extent::new(8, 200, 2), Ext4Extent::new(3, 100, 2)], 0);
@@ -886,5 +891,78 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn insert_rejects_empty_internal_root_without_mutating_inode() {
+        let (mut dev, mut fs) = setup_fs(16 * 1024);
+        let block_size = fs.block_size();
+        let mut inode = new_extent_inode();
+        write_raw_inline_node(&mut inode, &raw_leaf(&[], 1));
+        let inode_before = inode.i_block;
+
+        let result = ExtentTree::new(&mut inode, block_size).insert_extent(
+            &mut fs,
+            Ext4Extent::new(0, 1, 1),
+            &mut dev,
+        );
+
+        assert_eq!(result.unwrap_err().kind(), Ext4ErrorKind::Corrupted);
+        assert_eq!(inode.i_block, inode_before);
+    }
+
+    #[test]
+    fn insert_rejects_parent_with_empty_internal_child_without_mutating_metadata() {
+        let (mut dev, mut fs) = setup_fs(16 * 1024);
+        let block_size = fs.block_size();
+        let mut inode = new_extent_inode();
+        let child_block = fs.alloc_block(&mut dev).unwrap();
+        let child_max = ExtentTree::new(&mut inode, block_size).calc_block_eh_max();
+        let mut empty_child = vec![0u8; block_size];
+        Ext4ExtentHeader {
+            eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+            eh_entries: 0,
+            eh_max: child_max,
+            eh_depth: 1,
+            eh_generation: 0,
+        }
+        .to_disk_bytes(&mut empty_child[..Ext4ExtentHeader::disk_size()]);
+        let root = ExtentNode::Index {
+            header: Ext4ExtentHeader {
+                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+                eh_entries: 1,
+                eh_max: 4,
+                eh_depth: 2,
+                eh_generation: 0,
+            },
+            entries: vec![Ext4ExtentIdx {
+                ei_block: 0,
+                ei_leaf_lo: child_block.raw() as u32,
+                ei_leaf_hi: (child_block.raw() >> 32) as u16,
+                ei_unused: 0,
+            }],
+        };
+        dev.read_block(child_block).unwrap();
+        dev.buffer_mut().copy_from_slice(&empty_child);
+        dev.write_block(child_block, false).unwrap();
+        {
+            let mut tree = ExtentTree::new(&mut inode, block_size);
+            tree.store_root_to_inode(&root).unwrap();
+        }
+
+        let inode_before = inode.i_block;
+        dev.read_block(child_block).unwrap();
+        let child_before = dev.buffer().to_vec();
+
+        let result = ExtentTree::new(&mut inode, block_size).insert_extent(
+            &mut fs,
+            Ext4Extent::new(0, child_block.raw(), 1),
+            &mut dev,
+        );
+
+        assert_eq!(result.unwrap_err().kind(), Ext4ErrorKind::Corrupted);
+        assert_eq!(inode.i_block, inode_before);
+        dev.read_block(child_block).unwrap();
+        assert_eq!(dev.buffer(), child_before);
     }
 }

@@ -2061,4 +2061,52 @@ mod tests {
             &vec![0x5a; BLOCK_SIZE]
         );
     }
+
+    #[test]
+    fn umount_commit_returns_journal_superblock_write_failure_without_panicking() {
+        let journal_superblock = AbsoluteBN::new(128);
+        let mut inner = MemBlockDev::new(256);
+        inner.fail_next_write_at_block(journal_superblock);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        dev.set_journal_superblock(small_journal_superblock(), journal_superblock)
+            .expect("install journal state");
+        dev.write_block(AbsoluteBN::new(10), true)
+            .expect("queue metadata update");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dev.umount_commit()));
+
+        assert!(result.is_ok(), "journal I/O failure must not panic");
+        assert_eq!(result.unwrap(), Err(Ext4Error::io()));
+    }
+
+    #[test]
+    fn umount_commit_returns_cache_invalidation_failure_without_panicking() {
+        let cached_block = AbsoluteBN::new(20);
+        let mut inner = MemBlockDev::new(256);
+        inner.fail_next_write_at_block(cached_block);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install journal state");
+        dev.read_block(cached_block).expect("prime cached block");
+        dev.buffer_mut()[0] = 1;
+        dev.write_blocks(&vec![0x5a; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
+            .expect("queue metadata update");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dev.umount_commit()));
+
+        assert!(result.is_ok(), "cache invalidation failure must not panic");
+        assert_eq!(result.unwrap(), Err(Ext4Error::io()));
+    }
+
+    #[test]
+    fn rejects_an_empty_journal_mapping() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+
+        let error = dev
+            .set_journal_superblock_with_mapping(JournalSuperBllockS::default(), Vec::new())
+            .expect_err("empty journal mappings are corrupt");
+
+        assert_eq!(error, Ext4Error::corrupted());
+        assert_eq!(dev.journal_sequence(), None);
+    }
 }
