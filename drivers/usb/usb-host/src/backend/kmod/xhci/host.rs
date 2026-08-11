@@ -13,7 +13,7 @@ use ::xhci::{
     },
     ring::trb::{command, event::CommandCompletion},
 };
-use ax_kspin::{SpinRaw, SpinRawGuard, SpinRwLock as RwLock};
+use ax_sync::{RawSpinLockGuard, SpinLock, SpinLockGuard, SpinRwLock as RwLock};
 use dma_api::DmaDirection;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
@@ -552,7 +552,7 @@ impl Xhci {
 
 pub struct EventHandler {
     event_reg: UnsafeCell<XhciRegisters>,
-    irq_ack_reg: SpinRaw<XhciRegisters>,
+    irq_ack_reg: SpinLock<XhciRegisters>,
     irq_rearm_reg: UnsafeCell<XhciRegisters>,
     cmd_finished: Finished<CommandCompletion>,
     event_ring: UnsafeCell<EventRing>,
@@ -560,8 +560,8 @@ pub struct EventHandler {
     ports: PortChangeWaker,
     irq_state: ControllerIrqState,
     irq_mask: Arc<XhciIrqMaskState>,
-    task_gate: SpinRaw<()>,
-    event_gate: SpinRaw<()>,
+    task_gate: SpinLock<()>,
+    event_gate: SpinLock<()>,
 }
 
 // SAFETY: `task_gate` serializes every task-context entry. `event_gate`
@@ -700,7 +700,7 @@ impl EventHandler {
     ) -> Self {
         Self {
             event_reg: UnsafeCell::new(reg.clone()),
-            irq_ack_reg: SpinRaw::new(reg.clone()),
+            irq_ack_reg: SpinLock::new(reg.clone()),
             irq_rearm_reg: UnsafeCell::new(reg),
             cmd_finished,
             event_ring: UnsafeCell::new(event_ring),
@@ -708,19 +708,19 @@ impl EventHandler {
             ports,
             irq_state,
             irq_mask,
-            task_gate: SpinRaw::new(()),
-            event_gate: SpinRaw::new(()),
+            task_gate: SpinLock::new(()),
+            event_gate: SpinLock::new(()),
         }
     }
 
     #[allow(clippy::mut_from_ref)]
-    fn event_ring(&self, _guard: &SpinRawGuard<'_, ()>) -> &mut EventRing {
+    fn event_ring(&self, _guard: &SpinLockGuard<'_, ()>) -> &mut EventRing {
         // SAFETY: the private entry points can obtain this guard only from
         // `register_gate`, which serializes every event-ring access.
         unsafe { &mut *self.event_ring.get() }
     }
 
-    fn update_erdp(&self, guard: &SpinRawGuard<'_, ()>, clear_ehb: bool) {
+    fn update_erdp(&self, guard: &SpinLockGuard<'_, ()>, clear_ehb: bool) {
         let erdp = self.event_ring(guard).erdp();
         let segment_index = self.event_ring(guard).segment_index();
         // SAFETY: `guard` proves that `event_gate` serializes this register
@@ -741,7 +741,7 @@ impl EventHandler {
             });
     }
 
-    fn clean_event_ring(&self, guard: &SpinRawGuard<'_, ()>) -> Event {
+    fn clean_event_ring(&self, guard: &SpinLockGuard<'_, ()>) -> Event {
         use xhci::ring::trb::event::Allowed;
         let mut event = Event::Nothing;
         let mut command_events = 0usize;
@@ -827,7 +827,12 @@ impl EventHandler {
 
 impl EventHandlerOp for EventHandler {
     fn acknowledge_irq(&self) -> bool {
-        let Some(mut irq_reg) = self.irq_ack_reg.try_lock() else {
+        let Some(mut irq_reg): Option<RawSpinLockGuard<'_, XhciRegisters>> = (unsafe {
+            // SAFETY: hard IRQ is the only context which accesses this
+            // independently mapped acknowledgement endpoint. Interrupt and
+            // preemption exclusion are therefore already owned by the caller.
+            self.irq_ack_reg.try_lock_raw()
+        }) else {
             // Only another acknowledgement can own this endpoint. That owner
             // will mask and acknowledge the same level-triggered source.
             return false;
