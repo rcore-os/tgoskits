@@ -176,11 +176,16 @@ impl CowBackend {
 
     /// PTE flags applied by [`super::Backend::protect`].
     ///
-    /// File-backed private mappings keep PTEs read-only after `mprotect(+W)` so
-    /// the first store still faults into [`Self::handle_cow_fault`] for RSS
-    /// reclassify without touching charge at mprotect time (fork sibling case).
+    /// Every private (Cow) mapping — file-backed AND anonymous — keeps its PTEs
+    /// read-only after `mprotect(+W)`, so the first store faults into
+    /// [`Self::handle_cow_fault`], which COW-breaks a shared frame (refcount > 1,
+    /// after fork: copy + remap + drop the shared ref) or simply re-enables write
+    /// on an exclusive frame (refcount == 1). Without this an anonymous COW-shared
+    /// page got a writable PTE on the shared frame with no break, so a store in one
+    /// forked process was visible in the other (inter-process corruption). File-backed
+    /// mappings additionally use the deferred fault for RSS reclassify.
     pub(super) fn pte_flags_for_protect(&self, new_flags: MappingFlags) -> MappingFlags {
-        if self.file.is_some() && new_flags.contains(MappingFlags::WRITE) {
+        if new_flags.contains(MappingFlags::WRITE) {
             new_flags - MappingFlags::WRITE
         } else {
             new_flags
