@@ -140,9 +140,9 @@ pub(crate) fn begin_current_park_with_permit(
     _permit: &BlockingPermit,
 ) -> Result<CurrentParkStart, TaskError> {
     let system = runtime_task_system()?;
+    let thread = current_thread_handle()?;
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    let thread = cpu.current_thread_handle()?;
     match system.prepare_park(cpu.as_mut())? {
         ParkPrepare::Notified => Ok(CurrentParkStart::Notified),
         ParkPrepare::Prepared(ticket) => Ok(CurrentParkStart::Prepared(PreparedCurrentPark {

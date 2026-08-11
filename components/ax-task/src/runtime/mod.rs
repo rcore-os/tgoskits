@@ -28,7 +28,6 @@ pub(crate) enum IrqGuardSource {
     CpuRunQueueTransactionTicket,
     CpuRunQueueOwnerCurrentThreadObservationTicket,
     CpuRunQueueOwnerCurrentCoreObservationTicket,
-    CpuRunQueueOwnerCurrentHandleObservationTicket,
     CpuRunQueueOwnerIdleObservationTicket,
     CpuRunQueueOwnerRunnableObservationTicket,
     CpuRunQueueTimerDeadlineDerivationObservationTicket,

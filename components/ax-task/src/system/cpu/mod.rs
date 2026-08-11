@@ -42,7 +42,7 @@ pub(crate) use transaction::{OwnerRqEntry, OwnerRqTxn};
 use crate::{
     ActiveSchedulingState, CpuId, CpuSet, FairMode, QueuedThread, RootRtBandwidth, RqTaskMetadata,
     RtRunQueueBandwidth, RunQueue, SchedulePolicy, SchedulingEntity, TaskError, TaskSystemConfig,
-    ThreadHandle, ThreadId, ThreadState,
+    ThreadId, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult, SchedulerInbox},
     lock::{IrqScope, IrqTicketGuard, IrqTicketLock},
     runtime::{

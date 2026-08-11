@@ -16,19 +16,6 @@ impl CpuLocal {
             .current_core()
     }
 
-    /// Clones a strong handle for the currently executing thread.
-    ///
-    /// This owner-side lookup never consults the generation registry. The
-    /// stable core retained by `CpuLocal` pins the registry record and any OS
-    /// extension until the returned handle is dropped.
-    pub(crate) fn current_thread_handle(&self) -> Result<ThreadHandle, TaskError> {
-        self.remote
-            .lock_run_queue(RunQueueGuardSource::OwnerCurrentHandleObservation)
-            .current_core()
-            .map(ThreadHandle::from_core)
-            .ok_or(TaskError::NoRunnableThread)
-    }
-
     /// Returns the configured CPU idle thread, if any.
     pub(crate) fn idle(&self) -> Option<ThreadId> {
         self.remote
