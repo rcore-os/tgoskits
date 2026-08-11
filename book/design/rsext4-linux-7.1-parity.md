@@ -603,3 +603,43 @@ median/p95 分别回退约 8.1%/4.4%，read median/p95 分别回退约 6.4%/0.4%
 sync median 回退约 3.7%，sync p95 改善约 19.7%。8.533 ms write 与 57.090 us
 sync 最大样本均保留，未选择性剔除或复测覆盖；7.20 及更早红检查点也保持原始结论。
 当前检查点通过 sequential host 门槛，但完整 workload/feature 与最终同机 A/B 仍未完成。
+
+### 7.22 unwritten extent 与 preallocation 检查点
+
+采集时间：2026-08-11；未优化实现 commit 为
+`e4f4286d6b079fd639fcd14a7bd74691aa1dbbc2`，批处理优化后 commit 为
+`dadce8ebee8ae8e985e2acfeb59d075aebb7f8ae`，固定 CPU 2，环境、owned API harness
+和 workload 与 7.19 相同。本检查点引入 Linux 格式的 unwritten extent、
+`KEEP_SIZE`/extend-size preallocation、部分写前精确切分和数据持久化后
+转 initialized 的两阶段发布。新分配顺序写会经过该路径，因此本 workload
+可以捕捉共享热路径回退；它不包含单独 fallocate syscall 或部分覆盖的
+延迟分布，不能替代新语义的 Linux 7.1 differential 开销报告。
+
+首次 3 次预热与 20 次测量暴露出 20 MiB 新分配连续区间被拆成
+5120 次单块 cache 修改：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=e4f4286d6b079fd639fcd14a7bd74691aa1dbbc2 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=13151344 write_p95_ns=14424605 read_median_ns=6525344 read_p95_ns=6983230 sync_median_ns=283976 sync_p95_ns=345254
+```
+
+该结果的全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-unwritten-preallocation-red.csv`；相对 dev
+基线，write median/p95 分别回退约 92.6%/96.6%，sync p95 回退约 793%，
+原样登记为性能红项。之后将已准备的完整物理 run 批量写入 cache，不改变
+转换与事务边界。
+
+优化后重新执行完整 3+20；一组 commit marker 不匹配真实 HEAD 的输出作废，
+并以 `git rev-parse HEAD` 填充 marker 重新采集，作废不是因为样本结果。
+全部有效样本保存在
+`book/design/data/rsext4-perf/2026-08-11-unwritten-preallocation.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=dadce8ebee8ae8e985e2acfeb59d075aebb7f8ae arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6524295 write_p95_ns=8584700 read_median_ns=6960653 read_p95_ns=9592953 sync_median_ns=32947 sync_p95_ns=41631
+```
+
+相对未优化检查点，write median/p95 分别改善约 50.4%/40.5%，sync
+median/p95 分别改善约 88.4%/87.9%。相对 dev 基线，write/read median
+分别改善约 4.4%/3.6%，sync p95 回退约 7.7%；但 write/read p95 分别
+回退约 17.0%/13.1%，超过 10% latency 门槛。所有高延迟样本均保留，
+不用作废组或选择性复测覆盖；本检查点仍登记为性能红项，留待完整
+workload 与最终同机 dev A/B 的整体性能收敛。
