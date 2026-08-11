@@ -25,7 +25,7 @@ use crate::{
     file::{fd_is_path, resolve_at},
     mm::{vm_load_path_string, vm_load_string, vm_read_slice, vm_write_slice},
     pseudofs::overlay,
-    sync::{Mutex, PiMutex},
+    sync::PiMutex,
 };
 
 type XattrMap = BTreeMap<String, Vec<u8>>;

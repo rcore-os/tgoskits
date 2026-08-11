@@ -6,6 +6,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::current_fs_context;
+use ax_lazyinit::LazyLock;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
     system::{new_utsname, sysinfo},
@@ -125,8 +126,8 @@ impl SyslogState {
     }
 }
 
-static SYSLOG_STATE: spin::LazyLock<PiMutex<SyslogState>> =
-    spin::LazyLock::new(|| PiMutex::new(SyslogState::new()));
+static SYSLOG_STATE: LazyLock<PiMutex<SyslogState>> =
+    LazyLock::new(|| PiMutex::new(SyslogState::new()));
 
 pub fn sys_reboot(
     current: &crate::task::UserTaskRef,

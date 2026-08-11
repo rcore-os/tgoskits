@@ -85,3 +85,19 @@ fn tty_blocking_ownership_uses_pi_mutexes() {
         "the interrupt-driven reader owner crosses backend waits and must use PiMutex"
     );
 }
+
+#[test]
+fn exec_cloexec_table_guard_does_not_cross_the_commit_boundary() {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let execve = std::fs::read_to_string(source_root.join("syscall/task/execve.rs"))
+        .expect("execve source must be readable");
+    let commit_boundary = execve
+        .find("Phase 2: point of no return")
+        .expect("execve must name its commit boundary");
+    let preparation = &execve[..commit_boundary];
+
+    assert!(
+        !preparation.contains("let fd_table_owner = current_fd_table();"),
+        "exec preparation must not retain the FD table write guard across address-space commit"
+    );
+}

@@ -21,10 +21,7 @@ use super::{
         termios::{Termios2, TermiosParity},
     },
 };
-use crate::{
-    pseudofs::DeviceOps,
-    sync::{Mutex, PiMutex},
-};
+use crate::{pseudofs::DeviceOps, sync::PiMutex};
 
 pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 

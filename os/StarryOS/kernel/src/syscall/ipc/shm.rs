@@ -688,11 +688,6 @@ pub fn sys_shmctl(
         };
         let ptr = buf.as_ptr() as *mut ShmInfo64;
         ptr.vm_write(current, info)?;
-        let ns_count = shm_manager
-            .shmid_inner
-            .values()
-            .filter(|inner| inner.lock().ns_id == ns_id)
-            .count();
         let max_idx = ns_count.saturating_sub(1) as isize;
         return Ok(max_idx);
     }

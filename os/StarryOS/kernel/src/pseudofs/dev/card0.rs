@@ -81,7 +81,7 @@ use crate::{
     file::{FileLike, add_file_like},
     mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
     pseudofs::{DeviceMmap, DeviceOps},
-    sync::{Mutex, PiMutex},
+    sync::PiMutex,
 };
 
 pub const DRIVER_NAME: &str = "starry-simpledrm";
@@ -397,7 +397,7 @@ impl Card0 {
             system_blobs: PiMutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
             system_blobs_init: PiMutex::new(()),
-            irq_handle: spin::Once::new(),
+            irq_handle: ax_lazyinit::OnceLock::new(),
         });
         card.register_irq();
         card

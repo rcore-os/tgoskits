@@ -39,7 +39,7 @@ use axpoll::{IoEvents, Pollable};
 use super::{File, FileLike, IoDst, IoSrc, Kstat, get_file_like};
 use crate::{
     mm::{AddrSpace, Backend},
-    sync::{Mutex, PiMutex},
+    sync::PiMutex,
 };
 
 pub const F_SEAL_SEAL: u32 = 0x0001;

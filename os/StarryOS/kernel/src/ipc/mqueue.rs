@@ -33,7 +33,7 @@ use starry_signal::{SignalInfo, Signo};
 
 use crate::{
     file::{FileLike, IoDst, IoSrc, Kstat},
-    sync::{PiMutex, SpinLock},
+    sync::{IrqMutex, PiMutex, SpinLock},
     task::{
         current_user_task,
         future::{UserWaitOutcome, block_on_user_until_wall, poll_io},

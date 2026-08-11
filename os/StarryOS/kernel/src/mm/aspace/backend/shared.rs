@@ -9,10 +9,7 @@ use super::{
     AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, RssKind, alloc_frame,
     dealloc_frame, divide_page, pages_in,
 };
-use crate::{
-    mm::paging_error_to_ax_error,
-    sync::{Mutex, PiMutex},
-};
+use crate::{mm::paging_error_to_ax_error, sync::PiMutex};
 
 enum SharedPagesOwner {
     Allocated,

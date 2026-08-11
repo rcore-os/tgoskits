@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     mm::paging_error_to_ax_error,
-    sync::{IrqMutex, Mutex, PiMutex},
+    sync::{IrqMutex, PiMutex},
 };
 
 struct FrameRefCnt {

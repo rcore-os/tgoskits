@@ -23,7 +23,7 @@ use crate::{
     file::{FileLike, get_file_like},
     mm::{UserPtr, VmMutPtr, VmPtr},
     pseudofs::{DeviceMmap, DeviceOps},
-    sync::{Mutex, PiMutex},
+    sync::PiMutex,
 };
 
 /// HDIO_GETGEO ioctl command (get drive geometry).

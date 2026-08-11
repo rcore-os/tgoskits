@@ -12,6 +12,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_lazyinit::LazyLock;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{
@@ -20,7 +21,6 @@ use linux_raw_sys::{
     },
     ioctl::FIONREAD,
 };
-use spin::LazyLock;
 
 use crate::{
     file::{FileLike, IoDst, IoSrc},

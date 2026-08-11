@@ -95,7 +95,7 @@ use crate::{
     file::{FileLike, Kstat, add_file_like, get_file_like},
     mm::{VmBytes, VmBytesMut},
     pseudofs::DeviceMmap,
-    sync::{IrqMutex, Mutex, PiMutex},
+    sync::{IrqMutex, PiMutex},
 };
 
 /// Monotonic source of per-event `perf` ids (`PERF_EVENT_IOC_ID`,

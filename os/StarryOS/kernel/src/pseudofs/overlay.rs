@@ -27,7 +27,7 @@ use axfs_ng_vfs::{
 
 use crate::{
     pseudofs::dummy_stat_fs,
-    sync::{IrqMutex, Mutex, SpinLock},
+    sync::{IrqMutex, SpinLock},
 };
 
 const COPY_BUF_SIZE: usize = 4096;

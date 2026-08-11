@@ -9,11 +9,7 @@ use sg200x_jpu::{
     FrameLayout, FrameLayoutError, JpuCreateError, JpuDecodeError, JpuDecoder, JpuMmio, JpuScale,
 };
 
-use crate::{
-    mm::vm_write_slice,
-    sync::{Mutex, PiMutex},
-    task::UserTaskRef,
-};
+use crate::{mm::vm_write_slice, sync::PiMutex, task::UserTaskRef};
 
 const JPU_REG_BASE: usize = 0x0b00_0000;
 const VC_REG_BASE: usize = 0x0b03_0000;

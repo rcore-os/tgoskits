@@ -50,9 +50,10 @@ use core::{
 };
 
 use ax_errno::AxError;
+use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 
-use crate::sync::{Mutex, PiMutex};
+use crate::sync::PiMutex;
 
 #[cfg(feature = "sg2002")]
 pub static ION_DEVICE: OnceLock<Arc<ion::IonDevice>> = OnceLock::new();

@@ -33,7 +33,7 @@ use super::{
 };
 use crate::{
     mm::{VmMutPtr, vm_load, vm_write_slice},
-    sync::{IrqMutex as Mutex, Mutex as BlockingMutex, PiMutex, RwLock},
+    sync::{IrqMutex as Mutex, PiMutex, RwLock},
     task::future::IrqNotify,
 };
 

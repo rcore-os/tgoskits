@@ -3,7 +3,7 @@ use ktracepoint::{TraceFilterFile, TracePoint, TracePointEnableFile};
 
 use crate::{
     pseudofs::DirectRwFsFileOps,
-    sync::{Mutex, PiMutex},
+    sync::PiMutex,
     tracepoint::{KernelExtTracePoint, KernelTraceAux},
 };
 

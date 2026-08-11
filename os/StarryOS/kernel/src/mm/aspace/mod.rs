@@ -21,7 +21,7 @@ use ax_runtime::{
 
 use crate::{
     mm::{ProcessVmStat, paging_error_to_ax_error},
-    sync::{LockdepMutexExt, Mutex, PiMutex},
+    sync::{LockdepMutexExt, PiMutex},
 };
 
 mod accounting;

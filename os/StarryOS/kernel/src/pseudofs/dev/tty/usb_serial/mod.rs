@@ -4,6 +4,7 @@ use alloc::{collections::VecDeque, string::ToString, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
+use ax_lazyinit::LazyLock;
 use axpoll::{IoEvents, PollSet};
 
 use self::backend::{UsbSerialPortInfo, find_usb_serial_port};
@@ -17,7 +18,7 @@ use super::{
 };
 use crate::{
     pseudofs::usbfs::{self, UsbDeviceHandle},
-    sync::{IrqMutex, Mutex, PiMutex},
+    sync::{IrqMutex, PiMutex},
 };
 
 pub type UsbSerialTtyDriver = Tty<UsbSerialReader, UsbSerialWriter>;

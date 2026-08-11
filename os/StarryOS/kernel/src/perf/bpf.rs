@@ -34,6 +34,7 @@ use crate::perf::BPFJitMemory;
 use crate::{
     ebpf::{BPF_HELPER_FUN_SET, error::BpfResultExt, prog::BpfProg},
     file::FileLike,
+    sync::IrqMutex,
     task::future::IrqNotify,
 };
 

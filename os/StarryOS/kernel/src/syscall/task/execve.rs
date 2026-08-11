@@ -21,7 +21,7 @@ use starry_process::Pid;
 
 use crate::{
     config::USER_HEAP_BASE,
-    file::{ResolveAtResult, current_fd_table, memfd::Memfd, resolve_at},
+    file::{ResolveAtResult, memfd::Memfd, resolve_at},
     mm::{
         copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string, vm_load_until_nul,
     },
@@ -272,20 +272,6 @@ fn do_execve(
             }
         }));
     }
-
-    // Collect CLOEXEC fds to close *after* sibling teardown. Snapshotting
-    // before teardown would miss any fd a sibling promoted to CLOEXEC (via
-    // `open(... O_CLOEXEC)`, `fcntl(F_SETFD)`, or `close_range(..., CLOEXEC)`)
-    // between our snapshot and its own exit, leaking those fds into the new
-    // image. Once all siblings are reaped, the snapshot reflects the final
-    // post-quiescence table. The close pass below runs under the same
-    // `FD_TABLE.write()` guard so no new fds appear between scan and close.
-    let fd_table_owner = current_fd_table();
-    let mut fd_table = fd_table_owner.write();
-    let cloexec_fds: Vec<_> = fd_table
-        .ids()
-        .filter(|it| fd_table.get(*it).unwrap().cloexec)
-        .collect();
 
     // ----------------------------------------------------------------
     // Phase 2: point of no return — commit all changes.

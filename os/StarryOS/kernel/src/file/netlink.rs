@@ -44,6 +44,7 @@ use linux_raw_sys::{
 
 use crate::{
     file::{FileLike, IoDst, IoSrc, net::in_root_net_ns},
+    sync::Mutex,
     task::{
         current_user_task,
         future::{block_on_user, poll_io},

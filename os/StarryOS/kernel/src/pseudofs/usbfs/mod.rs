@@ -32,7 +32,7 @@ use crate::{
     file::{File as KernelFile, FileLike, IoDst, IoSrc, Kstat},
     mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
     pseudofs::{SimpleDir, SimpleFs},
-    sync::{IrqMutex as Mutex, Mutex as BlockingMutex, PiMutex},
+    sync::{IrqMutex as Mutex, PiMutex},
 };
 
 fn create_filesystem(manager: Arc<UsbFsManager>) -> Filesystem {

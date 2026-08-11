@@ -9,7 +9,7 @@ use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 
 use super::fs::{SimpleFs, SimpleFsNode};
-use crate::sync::{Mutex, PiMutex};
+use crate::sync::PiMutex;
 
 fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
     IoEvents::from_bits_truncate(events.bits())

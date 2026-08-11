@@ -6,7 +6,7 @@ use ax_runtime::hal::irq::{AutoEnable, IrqId, IrqRequest, ShareMode};
 use rdrive::DeviceId as RDriveDeviceId;
 
 use super::manager::UsbFsManager;
-use crate::task::future::IrqNotify;
+use crate::{sync::IrqMutex, task::future::IrqNotify};
 
 const USBFS_EVENT_BATCH_LIMIT: usize = 64;
 const USB_EVENT_ACTIVE: u8 = 1 << 0;
