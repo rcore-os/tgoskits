@@ -21,7 +21,6 @@ use ax_errno::{AxError, AxResult};
 use ax_input::{ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError};
 use ax_runtime::hal::{irq::IrqId, time::wall_time};
 use ax_std::os::arceos::task::{self as scheduler, IrqWaitCell, IrqWaitRegistration, WaitQueue};
-use ax_sync::spin::SpinNoIrq as Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bitmaps::Bitmap;
@@ -36,6 +35,7 @@ use crate::{
     pseudofs::{
         Device, DeviceOps, DirMapping, SimpleFs, dev::irq_service::complete_irq_service_cycle,
     },
+    sync::IrqMutex,
 };
 const KEY_CNT: usize = EventType::Key.bits_count();
 
@@ -123,7 +123,7 @@ struct InputAbsInfo {
 const ABS_MAX: usize = 0x40;
 
 pub struct EventDev {
-    inner: Mutex<Inner>,
+    inner: IrqMutex<Inner>,
     waiters: PollSet,
     /// IRQ domain id the runtime resolved for the underlying driver.
     irq: Option<IrqId>,
@@ -184,7 +184,7 @@ impl EventDev {
 
         let irq = device.irq_id();
         Self {
-            inner: Mutex::new(Inner {
+            inner: IrqMutex::new(Inner {
                 device,
                 read_ahead: VecDeque::with_capacity(READ_AHEAD_CAP),
                 key_state: Bitmap::new(),

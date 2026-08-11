@@ -13,9 +13,9 @@ use super::*;
 /// into the task's ring only while the task runs. (If the ring is not mapped yet,
 /// the slice is skipped — `perf` always mmaps before enable, so this is a rare race.)
 ///
-/// Runs with IRQs disabled inside `switch_to` and uses only
-/// [`SpinNoIrq`](ax_sync::spin::SpinNoIrq), atomics, and sysreg writes; it does
-/// not allocate. `sampling::register` nests a further local-IRQ-off section.
+/// Runs with IRQs disabled inside `switch_to` and uses only IRQ-safe spin locks,
+/// atomics, and sysreg writes; it does not allocate. `sampling::register` nests
+/// a further local-IRQ-off section.
 pub fn perf_sched_in(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;

@@ -13,7 +13,6 @@ use alloc::{borrow::Cow, collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use core::{any::Any, ffi::c_int, task::Context};
 
 use ax_errno::AxResult;
-use ax_sync::SpinMutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use rockchip_rga::{
@@ -30,6 +29,7 @@ use crate::{
     },
     mm::{VmMutPtr, VmPtr},
     pseudofs::DeviceOps,
+    sync::SpinLock,
     task::UserTaskRef,
 };
 
@@ -122,22 +122,22 @@ struct RgaFile {
     /// Backing file: keeps the node alive and serves the trivial `FileLike` methods.
     base: KernelFile,
     /// Handles assigned by `RGA_IOC_IMPORT_BUFFER`, keyed by handle id (this open's namespace).
-    handle_table: SpinMutex<BTreeMap<u32, ImportedBuf>>,
-    next_handle: SpinMutex<u32>,
+    handle_table: SpinLock<BTreeMap<u32, ImportedBuf>>,
+    next_handle: SpinLock<u32>,
     /// Requests created by `RGA_IOC_REQUEST_CREATE`, keyed by request id. An entry's presence
     /// marks the id as live; the `Vec` holds tasks staged via `RGA_IOC_REQUEST_CONFIG`.
-    requests: SpinMutex<BTreeMap<u32, Vec<librga_abi::RgaReq>>>,
-    next_request_id: SpinMutex<u32>,
+    requests: SpinLock<BTreeMap<u32, Vec<librga_abi::RgaReq>>>,
+    next_request_id: SpinLock<u32>,
 }
 
 impl RgaFile {
     fn new(base: KernelFile) -> Self {
         Self {
             base,
-            handle_table: SpinMutex::new(BTreeMap::new()),
-            next_handle: SpinMutex::new(1),
-            requests: SpinMutex::new(BTreeMap::new()),
-            next_request_id: SpinMutex::new(1),
+            handle_table: SpinLock::new(BTreeMap::new()),
+            next_handle: SpinLock::new(1),
+            requests: SpinLock::new(BTreeMap::new()),
+            next_request_id: SpinLock::new(1),
         }
     }
 
