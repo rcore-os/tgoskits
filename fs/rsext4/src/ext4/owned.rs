@@ -7,13 +7,13 @@ use crate::{
     blockdev::Jbd2Dev,
     bmalloc::InodeNumber,
     checksum::{verify_ext4_dirblock_checksum, verify_ext4_dx_checksum},
-    dir::{CreateEntryRequest, FileName, create_directory_at},
+    dir::{CreateEntryRequest, FileName, LinkEntryRequest, create_directory_at},
     disknode::Ext4Inode,
     entries::Ext4DirEntry2,
     error::{Ext4Error, Ext4ErrorKind, Ext4Result},
     file::{
-        create_inode_at, find_named_entry_in_parent, read_inode_data_into, truncate_inode,
-        write_inode_data,
+        create_inode_at, find_named_entry_in_parent, link_inode_at, read_inode_data_into,
+        truncate_inode, write_inode_data,
     },
     hashtree::Ext4InodeHashTreeExt,
     io::BlockIo,
@@ -380,6 +380,28 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         self.lookup_child(parent, name)?.ok_or_else(|| {
             Ext4Error::corrupted().with_operation("directory:create_missing_directory_entry")
         })
+    }
+
+    /// Adds a hard link to a non-directory inode.
+    pub fn hard_link(
+        &mut self,
+        _context: MutationContext,
+        target: InodeNumber,
+        parent: InodeNumber,
+        name: FileName<'_>,
+    ) -> Ext4Result<InodeInfo> {
+        self.ensure_writable("inode:link")?;
+        link_inode_at(
+            &mut self.filesystem,
+            &mut self.device,
+            LinkEntryRequest {
+                parent,
+                name,
+                target,
+            },
+        )?;
+        self.lookup_child(parent, name)?
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("link:missing_directory_entry"))
     }
 
     fn inspect_inode(&self, number: InodeNumber, inode: Ext4Inode) -> Ext4Result<InodeInfo> {

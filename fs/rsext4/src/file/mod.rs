@@ -38,4 +38,5 @@ pub use io::{
     read_file, read_inode_data_into, truncate, truncate_inode, write_file, write_inode_data,
 };
 pub use link::link;
+pub(crate) use link::link_inode_at;
 pub use rename::{mv, rename};

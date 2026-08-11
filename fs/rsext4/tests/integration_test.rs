@@ -288,6 +288,21 @@ fn owned_mount_injects_clock_separately_from_block_io() {
     assert_eq!(raw_file.mode & 0o7777, 0o640);
     assert_eq!(raw_file.uid, 1000);
     assert_eq!(raw_file.gid, 1001);
+
+    let raw_link_name = FileName::new(&[b'l', 0xfd]).expect("valid raw link name");
+    let linked = filesystem
+        .hard_link(context, raw_file.number, root.number, raw_link_name)
+        .expect("raw hard link failed");
+    assert_eq!(linked.number, raw_file.number);
+    assert_eq!(linked.links, 2);
+    assert_eq!(
+        filesystem
+            .lookup_child(root.number, raw_link_name)
+            .expect("raw hard-link lookup failed")
+            .expect("raw hard-link entry missing")
+            .number,
+        raw_file.number
+    );
     filesystem.unmount().expect("owned unmount failed");
 }
 
