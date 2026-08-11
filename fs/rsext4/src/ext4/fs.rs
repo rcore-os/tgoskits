@@ -113,20 +113,21 @@ impl Ext4FileSystem {
         let in_block = (byte_offset % block_size) as usize;
         let end = in_block + desc_size;
 
-        let mut desc = self.group_descs[idx];
-        desc.update_checksum(&self.superblock, group_id.raw(), None, None);
-        self.group_descs[idx] = desc;
-
-        let mut raw_desc_bytes = [0u8; Ext4GroupDesc::EXT4_DESC_SIZE_64BIT];
-        desc.to_disk_bytes(&mut raw_desc_bytes);
-
         block_dev.read_block(block_num)?;
         let buffer = block_dev.buffer_mut();
         if end > buffer.len() {
             return Err(Ext4Error::corrupted());
         }
 
-        buffer[in_block..end].copy_from_slice(&raw_desc_bytes[..desc_size]);
+        let mut desc = self.group_descs[idx];
+        desc.encode_with_checksum(
+            &self.superblock,
+            group_id.raw(),
+            &mut buffer[in_block..end],
+            None,
+            None,
+        )?;
+        self.group_descs[idx] = desc;
         block_dev.write_block(block_num, true)?;
         Ok(())
     }

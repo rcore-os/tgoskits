@@ -1,8 +1,7 @@
 //! Block group descriptor definition and descriptor-local helpers.
 use crate::{
-    checksum::{ext4_block_bitmap_csum32, ext4_group_desc_csum16, ext4_inode_bitmap_csum32},
+    checksum::{ext4_block_bitmap_csum32, ext4_group_desc_csum16_zeroed, ext4_inode_bitmap_csum32},
     crc32c::crc32c::ext4_superblock_has_metadata_csum,
-    endian::DiskFormat,
     error::{Ext4Error, Ext4Result},
     superblock::Ext4Superblock,
 };
@@ -52,18 +51,12 @@ impl Ext4GroupDesc {
     /// Inode table has already been zeroed.
     pub const EXT4_BG_INODE_ZEROED: u16 = 0x0004;
 
-    /// Updates the descriptor checksum and optional bitmap checksum fields.
-    pub fn update_checksum(
+    pub(crate) fn update_bitmap_checksums(
         &mut self,
         superblock: &Ext4Superblock,
-        group_id: u32,
         block_bitmap: Option<&[u8]>,
         inode_bitmap: Option<&[u8]>,
     ) {
-        if !ext4_superblock_has_metadata_csum(superblock) {
-            return;
-        }
-
         if let Some(bm) = block_bitmap {
             let csum = ext4_block_bitmap_csum32(superblock, bm);
             self.bg_block_bitmap_csum_lo = (csum & 0xFFFF) as u16;
@@ -74,34 +67,58 @@ impl Ext4GroupDesc {
             self.bg_inode_bitmap_csum_lo = (csum & 0xFFFF) as u16;
             self.bg_inode_bitmap_csum_hi = ((csum >> 16) & 0xFFFF) as u16;
         }
-
-        let mut desc_for_csum = *self;
-        desc_for_csum.bg_checksum = 0;
-
-        let desc_size = superblock.get_desc_size() as usize;
-        let desc_size = core::cmp::min(desc_size, Ext4GroupDesc::EXT4_DESC_SIZE_64BIT);
-
-        let mut raw_desc_bytes = [0u8; Ext4GroupDesc::EXT4_DESC_SIZE_64BIT];
-        desc_for_csum.to_disk_bytes(&mut raw_desc_bytes);
-        self.bg_checksum =
-            ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size]);
     }
 
-    /// Verifies the descriptor checksum when `metadata_csum` is enabled.
-    pub fn verify_checksum(&self, superblock: &Ext4Superblock, group_id: u32) -> Ext4Result<()> {
+    /// Updates known fields and the checksum inside a full on-disk record.
+    ///
+    /// Extension bytes beyond byte 64 remain unchanged and participate in the
+    /// checksum, matching Linux's `s_desc_size` coverage.
+    pub(crate) fn encode_with_checksum(
+        &mut self,
+        superblock: &Ext4Superblock,
+        group_id: u32,
+        raw_record: &mut [u8],
+        block_bitmap: Option<&[u8]>,
+        inode_bitmap: Option<&[u8]>,
+    ) -> Ext4Result<()> {
+        if raw_record.len() != superblock.get_desc_size() as usize {
+            return Err(Ext4Error::corrupted().with_operation("group_descriptor:record_size"));
+        }
+
+        if ext4_superblock_has_metadata_csum(superblock) {
+            self.update_bitmap_checksums(superblock, block_bitmap, inode_bitmap);
+            self.bg_checksum = 0;
+        }
+        self.encode_checked(raw_record)?;
+
+        if ext4_superblock_has_metadata_csum(superblock) {
+            self.bg_checksum = ext4_group_desc_csum16_zeroed(superblock, group_id, raw_record)
+                .ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("group_descriptor:checksum_size")
+                })?;
+            self.encode_checked(raw_record)?;
+        }
+        Ok(())
+    }
+
+    /// Verifies the checksum over the complete on-disk descriptor record.
+    pub(crate) fn verify_checksum_in_bytes(
+        &self,
+        superblock: &Ext4Superblock,
+        group_id: u32,
+        raw_record: &[u8],
+    ) -> Ext4Result<()> {
+        if raw_record.len() != superblock.get_desc_size() as usize {
+            return Err(Ext4Error::corrupted().with_operation("group_descriptor:record_size"));
+        }
         if !ext4_superblock_has_metadata_csum(superblock) {
             return Ok(());
         }
 
-        let mut desc_for_csum = *self;
-        desc_for_csum.bg_checksum = 0;
-
-        let desc_size = superblock.get_desc_size() as usize;
-        let desc_size = core::cmp::min(desc_size, Ext4GroupDesc::EXT4_DESC_SIZE_64BIT);
-
-        let mut raw_desc_bytes = [0u8; Ext4GroupDesc::EXT4_DESC_SIZE_64BIT];
-        desc_for_csum.to_disk_bytes(&mut raw_desc_bytes);
-        let expected = ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size]);
+        let expected =
+            ext4_group_desc_csum16_zeroed(superblock, group_id, raw_record).ok_or_else(|| {
+                Ext4Error::corrupted().with_operation("group_descriptor:checksum_size")
+            })?;
         if expected != self.bg_checksum {
             return Err(Ext4Error::checksum());
         }

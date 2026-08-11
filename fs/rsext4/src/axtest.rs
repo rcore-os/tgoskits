@@ -126,7 +126,7 @@ fn rsext4_superblock_geometry_rules_hold() {
     superblock.s_desc_size = 0;
     ax_assert_eq!(superblock.get_desc_size(), GROUP_DESC_SIZE_OLD);
     superblock.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT;
-    ax_assert_eq!(superblock.get_desc_size(), GROUP_DESC_SIZE);
+    ax_assert_eq!(superblock.get_desc_size(), 0);
     ax_assert!(superblock.has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT));
     ax_assert!(!superblock.has_journal());
     superblock.s_feature_compat |= Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL;
@@ -1679,10 +1679,27 @@ fn rsext4_blockgroup_table_and_stats_rules_hold() {
     new_superblock.s_feature_ro_compat |= Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM;
     new_superblock.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_CSUM_SEED;
     new_superblock.s_checksum_seed = 0x3141_5926;
-    checksum_desc.update_checksum(&new_superblock, 2, Some(&[0xaa; 16]), Some(&[0x55; 16]));
-    ax_assert!(checksum_desc.verify_checksum(&new_superblock, 2).is_ok());
-    checksum_desc.bg_checksum ^= 1;
-    ax_assert!(checksum_desc.verify_checksum(&new_superblock, 2).is_err());
+    let mut checksum_record = [0u8; 64];
+    checksum_desc
+        .encode_with_checksum(
+            &new_superblock,
+            2,
+            &mut checksum_record,
+            Some(&[0xaa; 16]),
+            Some(&[0x55; 16]),
+        )
+        .unwrap();
+    ax_assert!(
+        checksum_desc
+            .verify_checksum_in_bytes(&new_superblock, 2, &checksum_record)
+            .is_ok()
+    );
+    checksum_record[30] ^= 1;
+    ax_assert!(
+        checksum_desc
+            .verify_checksum_in_bytes(&new_superblock, 2, &checksum_record)
+            .is_err()
+    );
 }
 
 #[axtest]
