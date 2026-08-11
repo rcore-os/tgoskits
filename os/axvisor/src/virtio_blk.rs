@@ -333,15 +333,7 @@ fn open_file_backend(
             )
         })?;
     }
-    let mut bytes = vec![
-        0;
-        usize::try_from(capacity).map_err(|_| {
-            invalid_device_config(
-                "load virtio-blk backing file",
-                "capacity does not fit the host address space",
-            )
-        })?
-    ];
+    let mut bytes = allocate_file_mirror(capacity)?;
     let read = ax_api::fs::ax_read_file_at(&file, 0, &mut bytes).map_err(|error| {
         invalid_device_config(
             "load virtio-blk backing file",
@@ -355,6 +347,25 @@ fn open_file_backend(
         ));
     }
     FileBackend::spawn(file, bytes, capacity / SECTOR_SIZE as u64).map(VirtioBlkBackend::File)
+}
+
+#[cfg(feature = "fs")]
+fn allocate_file_mirror(capacity: u64) -> DeviceManagerResult<Vec<u8>> {
+    let byte_len = usize::try_from(capacity).map_err(|_| {
+        invalid_device_config(
+            "allocate virtio-blk file mirror",
+            "capacity does not fit the host address space",
+        )
+    })?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(byte_len).map_err(|_| {
+        invalid_device_config(
+            "allocate virtio-blk file mirror",
+            "capacity cannot be allocated in the host address space",
+        )
+    })?;
+    bytes.resize(byte_len, 0);
+    Ok(bytes)
 }
 
 #[cfg(not(feature = "fs"))]
