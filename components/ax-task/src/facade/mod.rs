@@ -41,6 +41,7 @@ use deadline::{arm_current_park_deadline, cancel_current_park_deadline, prepare_
 pub(crate) use deadline::{
     begin_current_park_with_permit, cancel_current_park, commit_current_park,
 };
+pub use irq_worker::IrqWorkerWaiter;
 pub use ktimer::start_current_ktimer_service;
 #[cfg(feature = "lockdep")]
 pub(crate) use lockdep::{

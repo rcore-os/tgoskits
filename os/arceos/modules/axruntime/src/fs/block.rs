@@ -17,10 +17,7 @@ use ax_task::runtime::RuntimeStatus;
 
 use crate::{
     sync::SpinLock,
-    task::{
-        CpuId, CpuSet, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, TaskError,
-        ThreadHandle, ThreadId, WaitQueue, quiesce_irq_wait,
-    },
+    task::{CpuId, CpuSet, IrqWaitCell, IrqWorkerWaiter, TaskError, ThreadHandle, ThreadId},
 };
 
 struct RuntimeTimeProvider;
@@ -57,8 +54,7 @@ struct RuntimeNotification {
 
 struct RuntimeNotificationWaiter {
     owner: ThreadId,
-    registration: IrqWaitRegistration,
-    park: WaitQueue,
+    irq: IrqWorkerWaiter,
 }
 
 impl RuntimeNotification {
@@ -82,8 +78,7 @@ impl RuntimeNotification {
             .unwrap_or_else(|error| panic!("block notification has no scheduler thread: {error}"));
         let waiter = self.waiter.get_or_init(|| RuntimeNotificationWaiter {
             owner: current.id(),
-            registration: IrqWaitRegistration::new(current.wake_handle()),
-            park: WaitQueue::new(),
+            irq: IrqWorkerWaiter::new(current.wake_handle()),
         });
         assert_eq!(
             waiter.owner,
@@ -91,26 +86,17 @@ impl RuntimeNotification {
             "one block notification must be consumed by one fixed service thread"
         );
 
-        match self.event.register(&waiter.registration) {
-            IrqRegisterResult::ConsumedPending => false,
-            IrqRegisterResult::Registered(token)
-            | IrqRegisterResult::NotificationInFlight(token) => {
-                let timed_out = match timeout {
-                    Some(timeout) => waiter
-                        .park
-                        .wait_timeout_until(timeout, || !token.is_attached()),
-                    None => {
-                        waiter.park.wait_until(|| !token.is_attached());
-                        false
-                    }
-                };
-                quiesce_irq_wait(token).unwrap_or_else(|error| {
-                    panic!("block IRQ notification could not quiesce: {error}")
-                });
-                timed_out
-            }
-            IrqRegisterResult::Occupied => {
-                panic!("block notification waiter was registered concurrently")
+        match timeout {
+            Some(timeout) => waiter
+                .irq
+                .wait_timeout(&self.event, timeout)
+                .unwrap_or_else(|error| panic!("block notification wait failed: {error}")),
+            None => {
+                waiter
+                    .irq
+                    .wait(&self.event)
+                    .unwrap_or_else(|error| panic!("block notification wait failed: {error}"));
+                false
             }
         }
     }
