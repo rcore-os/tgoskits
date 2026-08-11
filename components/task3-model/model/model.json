@@ -32,7 +32,7 @@
   "weights_file": "weights.bin",
   "weights_sha256": "53760db8aff4e391018dbc3394b6ebcd8e87777cf76445ab6b3255a62adbded6",
   "weights_bytes": 104712,
-  "trainer_sha256": "924f70ff11198a554c9cd17128997c550702c97aab2724cec25dc70700b869e4",
+  "trainer_sha256": "7aaf8967e55a508dea338c30ddb7ee53cfe3ee2f586c9421e3e938c032a06692",
   "normalization": {
     "state_scale": 1000.0,
     "target_scale": 1000.0,

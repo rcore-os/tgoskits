@@ -710,11 +710,13 @@ fn send_datagram(
     destination: &SocketAddr,
     datagram: &[u8],
 ) -> Result<(), &'static str> {
-    let deadline = Instant::now() + Duration::from_millis(500);
+    let started = Instant::now();
     loop {
         match socket.send_to(datagram, destination) {
             Ok(_) => return Ok(()),
-            Err(error) if is_would_block(&error) && Instant::now() < deadline => {
+            Err(error)
+                if is_would_block(&error) && started.elapsed() < Duration::from_millis(500) =>
+            {
                 thread::sleep(Duration::from_millis(10));
             }
             Err(error) => {

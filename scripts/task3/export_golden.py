@@ -9,6 +9,7 @@ the exact `weights.bin` blob the Rust guest embeds.
 
 import json
 import struct
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -233,6 +234,7 @@ def main():
     lines.append("}")
     lines.append("")
     (MODEL_DIR / "golden_vectors.rs").write_text("\n".join(lines) + "\n")
+    _format_rust(MODEL_DIR / "golden_vectors.rs")
     (REPO_ROOT / "tmp" / "task3-data" / "golden.json").write_text(
         json.dumps(
             {
@@ -245,6 +247,18 @@ def main():
     )
     print("outputs:", [round(v, 12) for v in outputs])
     print(f"wrote {MODEL_DIR / 'golden_vectors.rs'}")
+
+
+def _format_rust(path: Path) -> None:
+    """Best-effort rustfmt pass so regenerated files stay CI-clean."""
+    try:
+        subprocess.run(
+            ["rustfmt", "--edition", "2024", str(path)],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"warning: rustfmt on {path} failed: {error}")
 
 
 if __name__ == "__main__":

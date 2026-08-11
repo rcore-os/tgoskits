@@ -16,6 +16,7 @@ the end for the final evaluation so the reported number is not tuned against.
 """
 
 import argparse
+import hashlib
 import json
 import random
 import struct
@@ -264,8 +265,38 @@ def main():
             f"val_mse={val_loss:.6f} fixed_scenario_rmse={scenario_rmse:.1f}"
         )
 
-    weights_path.write_bytes(freeze_blob(model))
+    blob = freeze_blob(model)
+    weights_path.write_bytes(blob)
+    _update_model_manifest(model_dir, weights_path, blob, args)
     print(f"wrote {weights_path} ({weights_path.stat().st_size} bytes)")
+
+
+def _update_model_manifest(
+    model_dir: Path, weights_path: Path, blob: bytes, args: argparse.Namespace
+) -> None:
+    """Refresh model.json so its hashes describe the DAgger-final artifact.
+
+    train_model.py writes model.json for its intermediate weights; DAgger then
+    overwrites weights.bin, so this function updates the manifest in place
+    (structure/normalization are unchanged) and drops the pre-DAgger metric
+    fields that no longer describe the committed blob.
+    """
+    manifest = json.loads((model_dir / "model.json").read_text())
+    manifest.update(
+        {
+            "weights_sha256": hashlib.sha256(blob).hexdigest(),
+            "weights_bytes": len(blob),
+            "trainer": "dagger_train.py",
+            "trainer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "seed": args.seed,
+            "dagger_iterations": args.iterations,
+            "dagger_epochs": args.epochs,
+            "dagger_closed_loop_weight": args.closed_loop_weight,
+        }
+    )
+    for key in ("best_val_mse", "val_label_mae", "epochs"):
+        manifest.pop(key, None)
+    (model_dir / "model.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 if __name__ == "__main__":

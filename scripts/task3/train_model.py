@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import json
 import struct
+import subprocess
 import time
 from pathlib import Path
 
@@ -129,6 +130,19 @@ def export_rust_forward_tests(model_path, out_path, inputs, outputs):
     lines.append("}")
     lines.append("")
     out_path.write_text("\n".join(lines) + "\n")
+    _format_rust(out_path)
+
+
+def _format_rust(path: Path) -> None:
+    """Best-effort rustfmt pass so regenerated files stay CI-clean."""
+    try:
+        subprocess.run(
+            ["rustfmt", "--edition", "2024", str(path)],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"warning: rustfmt on {path} failed: {error}")
 
 
 def main():
