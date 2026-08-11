@@ -1,0 +1,1303 @@
+{
+  "schema": 1,
+  "linux_version": "v7.1",
+  "linux_commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+  "source_roots": [
+    "fs/ext4",
+    "fs/jbd2"
+  ],
+  "files": [
+    {
+      "path": "fs/ext4/.kunitconfig",
+      "blob": "bf51da7cd9fc7d9acf9cb7015a34c65dc11fe34b",
+      "line_count": 3,
+      "review_status": "reviewed",
+      "segments": [
+        {
+          "start": 1,
+          "end": 3,
+          "symbol": "<whole-file>",
+          "classification": "not-applicable",
+          "state_machine": "none",
+          "invariant": "all lines are deliberately excluded from portable runtime ownership",
+          "rust_owner": "Linux-only build or KUnit material",
+          "reason": "Linux build metadata or Linux KUnit code is evidence, not portable rsext4 runtime code",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/Kconfig",
+      "blob": "01873c2a34ad2734eda869495ecc2fce42964606",
+      "line_count": 92,
+      "review_status": "reviewed",
+      "segments": [
+        {
+          "start": 1,
+          "end": 92,
+          "symbol": "<whole-file>",
+          "classification": "not-applicable",
+          "state_machine": "none",
+          "invariant": "all lines are deliberately excluded from portable runtime ownership",
+          "rust_owner": "Linux-only build or KUnit material",
+          "reason": "Linux build metadata or Linux KUnit code is evidence, not portable rsext4 runtime code",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/Makefile",
+      "blob": "3baee4e7c1cfbe07e078d1850dd3538d045da79c",
+      "line_count": 21,
+      "review_status": "reviewed",
+      "segments": [
+        {
+          "start": 1,
+          "end": 21,
+          "symbol": "<whole-file>",
+          "classification": "not-applicable",
+          "state_machine": "none",
+          "invariant": "all lines are deliberately excluded from portable runtime ownership",
+          "rust_owner": "Linux-only build or KUnit material",
+          "reason": "Linux build metadata or Linux KUnit code is evidence, not portable rsext4 runtime code",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/acl.c",
+      "blob": "3bffe862f9549919a4ac38fe301becd3ac846775",
+      "line_count": 304,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 304,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::metadata::acl",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/acl.h",
+      "blob": "0c5a79c3b5d4806f9a76241c7fd1ee5a971b9dba",
+      "line_count": 74,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 74,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::metadata::acl",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/balloc.c",
+      "blob": "8040c731b3e45d1c54fda8bb5493604e03c969bd",
+      "line_count": 1003,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 1003,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::allocator",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "extent-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/bitmap.c",
+      "blob": "87760fabdd2eba8a59673de6258fdb7ef6c340ed",
+      "line_count": 99,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 99,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::bitmap",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "extent-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/block_validity.c",
+      "blob": "3a31e3d718c95ae5fa93fa82f0094271f170588e",
+      "line_count": 370,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 370,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::block_validity",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "extent-system-zone-validity",
+            "mount-option-block-validity"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/crypto.c",
+      "blob": "f41f320f4437b9969781ef06e1fd6f08b056de40",
+      "line_count": 248,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 248,
+          "symbol": "<whole-file>",
+          "classification": "capability",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::runtime::{CryptoProvider,KeyProvider}",
+          "reason": "rsext4 owns on-disk orchestration while injected providers perform algorithms or key lookup",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/dir.c",
+      "blob": "17edd678fa87b8f024232081888c4054d42a7bd9",
+      "line_count": 694,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 694,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::dir",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "mkdir-mutation-rollback",
+            "rename-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/ext4.h",
+      "blob": "94283a991e5c4f0fe5ad2ccdd6646960702d1af9",
+      "line_count": 3954,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 3954,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::ext4",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "feature-gate-strict",
+            "filesystem-block-dynamic"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/ext4_extents.h",
+      "blob": "ebaf7cc42430fa2c36c08dedfc6767f651431442",
+      "line_count": 280,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 280,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::extents_tree",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "extent-checked-codec"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/ext4_jbd2.c",
+      "blob": "9a8c225f275309860d626433b1b8ce899b2991c2",
+      "line_count": 408,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 408,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "journal-no-direct-fallback",
+            "jbd2-abort-sticky"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/ext4_jbd2.h",
+      "blob": "63d17c5201b56e6e29b211959bc547febe464300",
+      "line_count": 461,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 461,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/extents-test.c",
+      "blob": "6b53a3f39fcd69519d43753a8e92677cba7599e7",
+      "line_count": 1055,
+      "review_status": "reviewed",
+      "segments": [
+        {
+          "start": 1,
+          "end": 1055,
+          "symbol": "<whole-file>",
+          "classification": "not-applicable",
+          "state_machine": "none",
+          "invariant": "all lines are deliberately excluded from portable runtime ownership",
+          "rust_owner": "Linux-only build or KUnit material",
+          "reason": "Linux build metadata or Linux KUnit code is evidence, not portable rsext4 runtime code",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/extents.c",
+      "blob": "125f628e738ab19049aed199f6ea7cf1a7c3f424",
+      "line_count": 6308,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 6308,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::extents_tree",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "extent-checked-codec",
+            "extent-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/extents_status.c",
+      "blob": "6e4a191e821915d2b61646f46304ffab6d531126",
+      "line_count": 2392,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 2392,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::extents_tree::status",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "extent-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/extents_status.h",
+      "blob": "f3396cf32b446492f6f6769e0479fe8d3712a039",
+      "line_count": 254,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 254,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::extents_tree::status",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "extent-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/fast_commit.c",
+      "blob": "b3c22636251dde7e36262212204c0e3b3ff73c78",
+      "line_count": 2313,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 2313,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::fast_commit",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/fast_commit.h",
+      "blob": "2f77a37fb101802d3faac323eae852f23fdf9604",
+      "line_count": 189,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 189,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::fast_commit",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/file.c",
+      "blob": "eb1a323962b101c8bf68f598a6dd5daea8f19d6b",
+      "line_count": 1007,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 1007,
+          "symbol": "<whole-file>",
+          "classification": "glue",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "ax-fs-ng::ext4",
+          "reason": "Linux VFS, page-cache, security-policy, or runtime integration belongs above the portable core",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/fsmap.c",
+      "blob": "8b1138d2dc8efe25d45ff5393a2e4ef9d8a3fd7e",
+      "line_count": 792,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 792,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::admin::fsmap",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/fsmap.h",
+      "blob": "ac642be2302efd9ef18eead18654fbeb1a4f3dad",
+      "line_count": 56,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 56,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::admin::fsmap",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/fsync.c",
+      "blob": "924726dcc85ff57cf4906e6cb48095ce7f6fa184",
+      "line_count": 190,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 190,
+          "symbol": "<whole-file>",
+          "classification": "glue",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "ax-fs-ng::ext4",
+          "reason": "Linux VFS, page-cache, security-policy, or runtime integration belongs above the portable core",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/hash.c",
+      "blob": "48483cd015d3c70d44ba26fa09a0d1619d03f1dd",
+      "line_count": 323,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 323,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::dir::hash",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "rename-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/ialloc.c",
+      "blob": "3fd8f00998521fb4ec1bcab7d718b3b1e1fc5e76",
+      "line_count": 1626,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 1626,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::allocator",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "mkdir-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/indirect.c",
+      "blob": "5aec759eed7055dbe954c25da0181ebd04bb0be3",
+      "line_count": 1474,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 1474,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::indirect",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "legacy-indirect-13-blocks"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/inline.c",
+      "blob": "8045e4ff270c7fad4507ae5ba52993e37e4c9f7b",
+      "line_count": 2000,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 2000,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::inline",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "legacy-indirect-13-blocks"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/inode-test.c",
+      "blob": "749af7ad4e09c2a90e78e998fdbb8d3836cf3896",
+      "line_count": 283,
+      "review_status": "reviewed",
+      "segments": [
+        {
+          "start": 1,
+          "end": 283,
+          "symbol": "<whole-file>",
+          "classification": "not-applicable",
+          "state_machine": "none",
+          "invariant": "all lines are deliberately excluded from portable runtime ownership",
+          "rust_owner": "Linux-only build or KUnit material",
+          "reason": "Linux build metadata or Linux KUnit code is evidence, not portable rsext4 runtime code",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/inode.c",
+      "blob": "c2c2d6ac7f3d13ccc7469e7fd87400b9b996092c",
+      "line_count": 6826,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 6826,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::file",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "legacy-indirect-13-blocks",
+            "extent-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/ioctl.c",
+      "blob": "1d0c3d4bdf472715a7070b184fdc7d9bf5885950",
+      "line_count": 2019,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 2019,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::admin",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/mballoc-test.c",
+      "blob": "90ed505fa4b1a3e5b4c5778628b8e813ffcd40a1",
+      "line_count": 1003,
+      "review_status": "reviewed",
+      "segments": [
+        {
+          "start": 1,
+          "end": 1003,
+          "symbol": "<whole-file>",
+          "classification": "not-applicable",
+          "state_machine": "none",
+          "invariant": "all lines are deliberately excluded from portable runtime ownership",
+          "rust_owner": "Linux-only build or KUnit material",
+          "reason": "Linux build metadata or Linux KUnit code is evidence, not portable rsext4 runtime code",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/mballoc.c",
+      "blob": "ed1bd00e11cd5f540952d3c58aeae6fff54e9f37",
+      "line_count": 7283,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 7283,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::allocator",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "extent-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/mballoc.h",
+      "blob": "39333ce72cbd50ece96909db1358e9e49c62f0fa",
+      "line_count": 303,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 303,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::allocator",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "extent-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/migrate.c",
+      "blob": "477d43d7e2942b2286d0c81d0f9ea2379c968c9d",
+      "line_count": 684,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 684,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::file",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/mmp.c",
+      "blob": "6f57c181ff778d30632ab5a181c83cb660948ec2",
+      "line_count": 404,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 404,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::lifecycle::mmp",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/move_extent.c",
+      "blob": "3329b7ad5dbd832e72dfcf86073205e1331b9f97",
+      "line_count": 658,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 658,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::admin::move_extent",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/namei.c",
+      "blob": "4a47fbd8dd30ceb0f8635827a049208a05a1f472",
+      "line_count": 4249,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 4249,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::dir",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "mkdir-mutation-rollback",
+            "rename-mutation-rollback"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/orphan.c",
+      "blob": "64ea4762423386db79e739a2448bf70c12415ef8",
+      "line_count": 659,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 659,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::lifecycle::orphan",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "legacy-indirect-13-blocks"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/page-io.c",
+      "blob": "dc82e7b57e75689b557f2b644831af72651ac031",
+      "line_count": 613,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 613,
+          "symbol": "<whole-file>",
+          "classification": "glue",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "ax-fs-ng::ext4",
+          "reason": "Linux VFS, page-cache, security-policy, or runtime integration belongs above the portable core",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/readpage.c",
+      "blob": "dd3627c717329698401bbeb619f426652077b3ed",
+      "line_count": 455,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 455,
+          "symbol": "<whole-file>",
+          "classification": "glue",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "ax-fs-ng::ext4",
+          "reason": "Linux VFS, page-cache, security-policy, or runtime integration belongs above the portable core",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/resize.c",
+      "blob": "2c5b851c552a6c6d1869caff6d12686a22c43184",
+      "line_count": 2192,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 2192,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::admin::resize",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/super.c",
+      "blob": "6a77db4d3124ec89eefec768e1a515caac3055fa",
+      "line_count": 7606,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 7606,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::ext4",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "feature-gate-strict",
+            "filesystem-block-dynamic"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/symlink.c",
+      "blob": "b612262719ede35d2612c5834d2bef7f18215516",
+      "line_count": 136,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 136,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::dir",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/sysfs.c",
+      "blob": "923b375e017faaa8d06b809708bd623b3926ad71",
+      "line_count": 698,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 698,
+          "symbol": "<whole-file>",
+          "classification": "glue",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "ax-fs-ng::ext4",
+          "reason": "Linux VFS, page-cache, security-policy, or runtime integration belongs above the portable core",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/truncate.h",
+      "blob": "ce84aa2786c7e631fc48fecdafe9a9ccbb2be26e",
+      "line_count": 52,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 52,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::file",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "legacy-indirect-13-blocks"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/verity.c",
+      "blob": "ca61da53f313fa8c41cc832ad328dc5ec1d69694",
+      "line_count": 391,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 391,
+          "symbol": "<whole-file>",
+          "classification": "capability",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::runtime::{CryptoProvider,KeyProvider}",
+          "reason": "rsext4 owns on-disk orchestration while injected providers perform algorithms or key lookup",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/xattr.c",
+      "blob": "982a1f831e2282fdaf61ab286708b16485cb4f49",
+      "line_count": 3230,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 3230,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::metadata::xattr",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/xattr.h",
+      "blob": "1fedf44d4fb65ec89093016401bfc9aa07adf8ce",
+      "line_count": 236,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 236,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::metadata::xattr",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/xattr_hurd.c",
+      "blob": "8a5842e4cd95c6a06f346f7c74767199be3316b3",
+      "line_count": 52,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 52,
+          "symbol": "<whole-file>",
+          "classification": "glue",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "ax-fs-ng::ext4",
+          "reason": "Linux VFS, page-cache, security-policy, or runtime integration belongs above the portable core",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/xattr_security.c",
+      "blob": "776cf11d24ca10e016184304a15979d2c2898b94",
+      "line_count": 66,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 66,
+          "symbol": "<whole-file>",
+          "classification": "glue",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "ax-fs-ng::ext4",
+          "reason": "Linux VFS, page-cache, security-policy, or runtime integration belongs above the portable core",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/xattr_trusted.c",
+      "blob": "9811eb0ab276232cf2ec249f333184fb773c23f1",
+      "line_count": 47,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 47,
+          "symbol": "<whole-file>",
+          "classification": "glue",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "ax-fs-ng::ext4",
+          "reason": "Linux VFS, page-cache, security-policy, or runtime integration belongs above the portable core",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/ext4/xattr_user.c",
+      "blob": "4b70bf4e76263383c437994b37f49bd48766ce9d",
+      "line_count": 50,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 50,
+          "symbol": "<whole-file>",
+          "classification": "glue",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "ax-fs-ng::ext4",
+          "reason": "Linux VFS, page-cache, security-policy, or runtime integration belongs above the portable core",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/jbd2/Kconfig",
+      "blob": "9c19e1512101ee719ecd67688defe46f3e436902",
+      "line_count": 34,
+      "review_status": "reviewed",
+      "segments": [
+        {
+          "start": 1,
+          "end": 34,
+          "symbol": "<whole-file>",
+          "classification": "not-applicable",
+          "state_machine": "none",
+          "invariant": "all lines are deliberately excluded from portable runtime ownership",
+          "rust_owner": "Linux-only build or KUnit material",
+          "reason": "Linux build metadata or Linux KUnit code is evidence, not portable rsext4 runtime code",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/jbd2/Makefile",
+      "blob": "126b4da6c7de875be834cc96b63179a26ac0214c",
+      "line_count": 8,
+      "review_status": "reviewed",
+      "segments": [
+        {
+          "start": 1,
+          "end": 8,
+          "symbol": "<whole-file>",
+          "classification": "not-applicable",
+          "state_machine": "none",
+          "invariant": "all lines are deliberately excluded from portable runtime ownership",
+          "rust_owner": "Linux-only build or KUnit material",
+          "reason": "Linux build metadata or Linux KUnit code is evidence, not portable rsext4 runtime code",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/jbd2/checkpoint.c",
+      "blob": "1508e2f544621120f4ce212fa5b73360dc46c711",
+      "line_count": 729,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 729,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::checkpoint",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-abort-sticky"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/jbd2/commit.c",
+      "blob": "8cf61e7185c4419cd0b4a036cfdf6e1379cdff99",
+      "line_count": 1189,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 1189,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::transaction",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-handle-credits",
+            "jbd2-abort-sticky"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/jbd2/journal.c",
+      "blob": "4f397fcdb13c51494added4bdd6026546b7ed5d5",
+      "line_count": 3178,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 3178,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-abort-sticky",
+            "jbd2-csum-v3-write-replay"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/jbd2/recovery.c",
+      "blob": "cac8c2cd4a92a749aa860eedf35b7f643ab345b4",
+      "line_count": 996,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 996,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::recovery",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay",
+            "jbd2-abort-sticky"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/jbd2/revoke.c",
+      "blob": "e4c2fbd381f123002a47f8ab4e037561ae7546f1",
+      "line_count": 745,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 745,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::revoke",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "fs/jbd2/transaction.c",
+      "blob": "4885903bbd10cae2c1dec5bc1a7490dce80b4b83",
+      "line_count": 2831,
+      "review_status": "coarse",
+      "segments": [
+        {
+          "start": 1,
+          "end": 2831,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::transaction",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -68,9 +68,14 @@ offset、长度和已经校验过的 mutation context。
 | `fs/jbd2/transaction.c`, `commit.c` | handles/credits、ordered data、commit record ordering | journal transaction owner | core | phase fault injection |
 | `fs/jbd2/recovery.c`, `revoke.c`, `checkpoint.c` | scan/revoke/replay、tail/checkpoint reclamation | journal recovery owner | core | Linux-created journal replay |
 
-`scripts/test/check_rsext4_linux_map.py` 将把该表扩展为固定 commit 的源码区间
-清单，并验证 `fs/ext4` 与 `fs/jbd2` 没有未分类行。该检查在映射清单完整前保持
-Draft 红项，不得通过跳过源码文件来转绿。
+`scripts/test/data/rsext4-linux-7.1-map.json` 将该表扩展为固定 commit 的源码区间
+清单。每个区间必须记录符号、状态机、不变量、Rust owner、差异理由和测试 ID。
+`scripts/test/check_rsext4_linux_map.py` 的普通 CI 模式检查冻结 inventory、blob、
+区间连续性和字段完整性；`--linux-src <path>` 进一步对照真实 Linux checkout 的
+HEAD、完整文件集合、blob 和行数。最终门禁必须增加 `--require-reviewed`，拒绝
+任何仍用 `coarse` 整文件占位的条目。当前清单覆盖 61 个 tracked 文件、77,895
+行，其中 8 个 Linux build/KUnit 文件已完成排除审阅，其余文件仍必须按顶层
+符号和预处理分支拆分，因此 `linux-map-complete` 继续保持红项。
 
 ## 4. 公共 API 迁移
 
@@ -105,7 +110,7 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 | `device-sector-map` | filesystem block number 被直接作为 device sector，512-byte 设备只读一个 sector | typed `SectorId` + private filesystem-block mapper | portable I/O core | 绿：512-byte sector 聚合与 byte-offset superblock 红绿回归通过 |
 | `filesystem-block-dynamic` | core 算法仍大量引用 4 KiB 常量 | 1/2/4 KiB geometry、cache、JBD2 与 codec 全部按 mount 派生 | codec/geometry | 绿：Linux 与 rsext4 各自创建的 1/2/4 KiB 镜像均在 512-byte sector 上完成跨块写入、rename、remount 与 `e2fsck -fn`；cache、extent 与 JBD2 buffer 均按 mount geometry 分配 |
 | `linux-default-rocompat-rw` | Linux mkfs 默认设置 `HUGE_FILE`、`DIR_NLINK` | 完整读写语义后纳入 writable mask | inode/namespace lifecycle | 绿：`HUGE_FILE` 统一按 Linux 的 32-bit sector、48-bit sector、filesystem-block 三级 codec 读写，所有 block accounting mutation 使用 checked 状态转换；`DIR_NLINK` 覆盖 65000 到 sentinel 1、连续 mutation 保持 sentinel、无 feature 时分配前返回 `EMLINK`；Linux 默认 feature 的 1/2/4 KiB round-trip、extent/JBD2 replay 与 `e2fsck -fn` 全部通过 |
-| `linux-map-complete` | 仅有 subsystem mapping，缺少逐区间清单 | every source line classified | design/traceability | 红：尚未加入逐区间 manifest |
+| `linux-map-complete` | 仅有 subsystem mapping，缺少逐区间清单 | every source line classified | design/traceability | 进行中：冻结 inventory 已覆盖 Linux v7.1 的 61 个 tracked 文件、77,895 行，并由普通 CI 与本地源码双模式检查 gap、overlap、blob、行数和文件集合；8 个 build/KUnit 文件已审阅，其余 53 个 `coarse` 条目使 `--require-reviewed` 确定性失败，必须按符号/预处理区间完成语义审阅后才能转绿 |
 | `journal-no-direct-fallback` | uninitialized JBD2 performs home write | typed journal-aborted error | JBD2 rewrite | 绿：确定性红绿回归已覆盖 write/umount |
 | `jbd2-handle-credits` | metadata queue 满时会在一个 bulk mutation 中间自动提交，失败后替换过的 pending image 无法恢复 | operation handle 预留 credits，禁止 operation 内切 transaction，并在 operation error 时恢复 running queue | JBD2 rewrite | 进行中：私有 in-memory handle 已按 distinct metadata block 计 credit；bulk write 在任何预提交前校验输入，预留不足时先提交旧 queue，handle 内禁止 auto-commit，credit overrun/operation error 恢复 queue snapshot，nested handle 与 active-handle umount 明确返回 busy。固定且公开的 10-buffer 上限已删除，当前 single-descriptor writer 从 block size、tag/UUID/checksum tail 与 journal ring geometry 推导安全容量；连续与 mapped journal 安装都在发布 state 前验证容量，exact-capacity 与 capacity+1 的两次 commit 均逐 home block 验证。该层尚未拥有 filesystem cache/bitmap/inode undo、Linux running/committing/checkpoint transaction 或 revoke，因此不能解除 recursive indirect truncate 红项 |
 | `jbd2-abort-sticky` | descriptor/payload flush 失败只返回一次 I/O error，随后仍可从已推进的 ring cursor 重试、继续 metadata write 或关闭 journal 绕过错误 | 首次提交/恢复错误保留原始 cause；同一 mount 的后续 mutation、handle、flush、unmount 全部稳定拒绝，并持久化 journal errno | JBD2 rewrite | 进行中：所有 auto-commit、handle precommit 与 unmount commit 已收口到单一 transaction owner；任一 commit/cache-coherence failure 锁存首个 cause，本次返回原始 typed error，后续 write/handle/flush/unmount/reinstall 返回 `JournalAborted`。journal mode 切换改为 fallible state transition：abort 时拒绝，pending queue 或 active handle 时返回 busy，不能再关闭 journal 后绕过未提交 metadata。replay 现在以 typed `JournalReplayPhase` 区分 initialize/scan/revoke/replay/persist/cache，保留 I/O、checksum 与 corruption 原始 domain cause、事务 restart 位置和 progress 持久化次错；mount 返回首错并通过 `Observer` 发送完整 typed failure，不再统一伪装为 corruption，越界 `s_start` 也不再清日志报成功。descriptor read 确定性红测已在旧实现证明 `Corrupted != Io`，payload read、home write、checksum+flush 首错优先、final flush 与 replay superblock write fault 均有定点测试。首次 abort 同时以私有 JBD2 wire code 持久化 `s_errno`，重新计算 checksum，并通过原生 FUA 或明确的 write-then-flush fallback 等待 durability；两种能力都缺失时返回 unsupported，record 失败单独保存且不覆盖首次 cause。当前 single-payload transaction 的 open-superblock、descriptor、payload、commit、checkpoint、close-superblock 六次 write 与四个 flush barrier 已逐项注入并验证 sticky first-error。精细 on-disk error mapping、Linux 独立 scan/revoke/replay 三遍及 pass-end 一致性、`ACK_ERR`/shutdown、ext4 `continue`/`remount-ro` policy，以及 multi-payload checkpoint/revoke 的完整 fault matrix 仍为红项 |
