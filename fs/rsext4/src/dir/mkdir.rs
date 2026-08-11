@@ -157,7 +157,13 @@ fn mkdir_internal<B: BlockDevice>(
         dir_mode,
         parent_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED,
     );
-    build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_dir_ino, &[data_block], device);
+    build_file_block_mapping_with_inode_num(
+        fs,
+        &mut new_inode,
+        new_dir_ino,
+        &[data_block],
+        device,
+    )?;
     let mut create_update = Ext4InodeMetadataUpdate::create(dir_mode);
     create_update.uid = Some(uid);
     create_update.gid = Some(gid);
