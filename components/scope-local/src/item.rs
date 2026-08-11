@@ -105,7 +105,7 @@ impl<T: Send + Sync + 'static> LocalItem<T> {
         let mut operation = Some(operation);
         loop {
             let guard = PreemptGuard::new();
-            // SAFETY: `NoPreempt` prevents migration for this complete access.
+            // SAFETY: `PreemptGuard` prevents migration for this complete access.
             let result = unsafe {
                 ax_percpu::with_cpu_pin(|pin| {
                     ActiveScope::try_with_item(self.item, pin, |item| {

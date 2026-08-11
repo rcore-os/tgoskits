@@ -417,7 +417,7 @@ impl ScopeCell {
     /// Attempts to acquire an ordinary shared scope reference while preventing
     /// migration. It returns immediately when an exclusive lease is active.
     pub fn try_read(&self) -> Result<ScopeCellReadGuard<'_>, ScopeCellBusy> {
-        let preempt = NoPreempt::new();
+        let preempt = PreemptGuard::new();
         if !self.scope.inner().gate.try_lock_shared() {
             return Err(ScopeCellBusy);
         }
@@ -430,7 +430,7 @@ impl ScopeCell {
     /// Attempts to acquire an ordinary exclusive scope reference while
     /// preventing migration. It returns immediately while any lease is live.
     pub fn try_write(&self) -> Result<ScopeCellWriteGuard<'_>, ScopeCellBusy> {
-        let preempt = NoPreempt::new();
+        let preempt = PreemptGuard::new();
         let inner = self.scope.inner();
         if !inner.try_lock_exclusive() {
             return Err(ScopeCellBusy);
@@ -651,7 +651,7 @@ impl Drop for ScopeCell {
 /// Shared ordinary-access guard returned by [`ScopeCell::try_read`].
 pub struct ScopeCellReadGuard<'a> {
     scope: &'a Scope,
-    _preempt: NoPreempt,
+    _preempt: PreemptGuard,
 }
 
 impl ScopeCellReadGuard<'_> {
@@ -678,7 +678,7 @@ impl Drop for ScopeCellReadGuard<'_> {
 /// item-level mutation capability authorized by the exclusive gate.
 pub struct ScopeCellWriteGuard<'a> {
     inner: &'a ScopeInner,
-    _preempt: Option<NoPreempt>,
+    _preempt: Option<PreemptGuard>,
     owns_exclusive: bool,
 }
 
@@ -725,7 +725,7 @@ impl ItemSlot {
     }
 }
 
-static GLOBAL_SCOPE: Once<Scope> = Once::new();
+static GLOBAL_SCOPE: OnceLock<Scope> = OnceLock::new();
 static GLOBAL_SCOPE_STATE: AtomicUsize = AtomicUsize::new(GlobalScopeState::Uninitialized as usize);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -783,9 +783,9 @@ impl ActiveScope {
     /// the duration in which it is set as the active scope, and that no data
     /// races or aliasing violations occur.
     pub unsafe fn set(scope: &Scope) {
-        let _guard = NoPreempt::new();
+        let _guard = PreemptGuard::new();
         // SAFETY: the public contract supplies the scope lifetime and aliasing
-        // invariants; NoPreempt keeps the guarded callback on this CPU.
+        // invariants; PreemptGuard keeps the guarded callback on this CPU.
         unsafe {
             ax_percpu::with_cpu_pin(|pin| Self::set_pinned(scope, pin))
                 .expect("scope-local access requires an installed CPU area")
@@ -814,7 +814,7 @@ impl ActiveScope {
     /// function must not clear a scheduler-managed [`ScopeCell`] activation;
     /// that activation must be released through [`ScopeCell::deactivate_pinned`].
     pub unsafe fn set_global() {
-        let _guard = NoPreempt::new();
+        let _guard = PreemptGuard::new();
         // SAFETY: forwarded caller ownership applies to this pinned CPU.
         unsafe {
             ax_percpu::with_cpu_pin(|pin| Self::set_global_pinned(pin))
@@ -834,8 +834,8 @@ impl ActiveScope {
 
     /// Returns true if the active scope is the global scope.
     pub fn is_global() -> bool {
-        let _guard = NoPreempt::new();
-        // SAFETY: NoPreempt prevents migration for the complete callback.
+        let _guard = PreemptGuard::new();
+        // SAFETY: PreemptGuard prevents migration for the complete callback.
         unsafe { ax_percpu::with_cpu_pin(Self::is_global_pinned) }
             .expect("scope-local access requires an installed CPU area")
     }
