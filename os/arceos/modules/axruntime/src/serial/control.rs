@@ -1,10 +1,9 @@
 use alloc::{collections::VecDeque, sync::Arc};
 
 use ax_errno::{AxError, AxResult};
-use ax_sync::PiMutex;
 use rdif_serial::Config;
 
-use crate::task::WaitQueue;
+use crate::{sync::PiMutex, task::WaitQueue};
 
 pub(super) const CONTROL_QUEUE_CAPACITY: usize = 32;
 

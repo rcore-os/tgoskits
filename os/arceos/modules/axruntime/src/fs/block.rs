@@ -13,12 +13,14 @@ use ax_fs_ng::{
     },
 };
 use ax_lazyinit::LazyInit;
-use ax_sync::SpinLock;
 use ax_task::runtime::RuntimeStatus;
 
-use crate::task::{
-    CpuId, CpuSet, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, TaskError, ThreadHandle,
-    ThreadId, WaitQueue, quiesce_irq_wait,
+use crate::{
+    sync::SpinLock,
+    task::{
+        CpuId, CpuSet, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, TaskError,
+        ThreadHandle, ThreadId, WaitQueue, quiesce_irq_wait,
+    },
 };
 
 struct RuntimeTimeProvider;

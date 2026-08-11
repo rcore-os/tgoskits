@@ -470,12 +470,21 @@ fn run_debugfs_script(
     commands: &[String],
     context_message: &str,
 ) -> anyhow::Result<()> {
+    run_debugfs_script_with_program(Path::new("debugfs"), rootfs_img, commands, context_message)
+}
+
+fn run_debugfs_script_with_program(
+    debugfs_program: &Path,
+    rootfs_img: &Path,
+    commands: &[String],
+    context_message: &str,
+) -> anyhow::Result<()> {
     eprintln!("debugfs -w {}", rootfs_img.display());
-    let mut child = Command::new("debugfs")
+    let mut child = Command::new(debugfs_program)
         .arg("-w")
         .arg(rootfs_img)
         .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?;
@@ -689,6 +698,35 @@ mod tests {
         assert!(!status_has_effective_cap_chown(
             "Name:\ttg-xtask\nCapEff:\tinvalid\n"
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn debugfs_script_discards_normal_stdout_and_receives_all_commands() {
+        let root = tempdir().unwrap();
+        let debugfs = root.path().join("debugfs");
+        let received_commands = root.path().join("received-commands");
+        write_executable(
+            &debugfs,
+            &format!(
+                "#!/bin/sh\ntest \"$(readlink /proc/$$/fd/1)\" = /dev/null || exit 91\ncat > '{}'
+",
+                received_commands.display()
+            ),
+        );
+
+        run_debugfs_script_with_program(
+            &debugfs,
+            Path::new("rootfs.img"),
+            &["rm /usr/bin/app".into(), "write app /usr/bin/app".into()],
+            "failed to inject test overlay",
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(received_commands).unwrap(),
+            "rm /usr/bin/app\nwrite app /usr/bin/app\nquit\n"
+        );
     }
 
     #[cfg(unix)]

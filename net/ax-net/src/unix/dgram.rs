@@ -450,17 +450,21 @@ impl TransportOps for DgramTransport {
             *self.connected.write() = Some(client_chan);
             return Ok(Some(accept_poll));
         }
-        let mut guard = self.connected.write();
-        if guard.is_some() {
+        if self.connected.read().is_some() {
             return Err(AxError::AlreadyConnected);
         }
-        *guard = Some(
+        let connected = {
             slot.dgram
                 .lock()
                 .as_ref()
                 .ok_or(AxError::NotConnected)?
-                .connect(),
-        );
+                .connect()
+        };
+        let mut guard = self.connected.write();
+        if guard.is_some() {
+            return Err(AxError::AlreadyConnected);
+        }
+        *guard = Some(connected);
         Ok(None)
     }
 
@@ -709,5 +713,21 @@ impl Drop for DgramTransport {
             // Connection teardown is visible before waking the peer.
             unsafe { chan.poll_update.wake(IoEvents::IN | IoEvents::OUT) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::unix::BindSlot;
+
+    #[test]
+    fn datagram_connect_does_not_lock_a_mutex_with_preemption_disabled() {
+        let slot = BindSlot::default();
+        let server = DgramTransport::new(1);
+        server.bind(&slot, &UnixSocketAddr::Unnamed).unwrap();
+
+        let client = DgramTransport::new(2);
+        client.connect(&slot, &UnixSocketAddr::Unnamed).unwrap();
     }
 }

@@ -8,13 +8,14 @@ description = "Macros for multi-level formatted logging used by ArceOS"
 license.workspace = true
 
 [features]
-std = ["dep:chrono"]
 default = []
+host-test = ["ax-task/host-test"]
+std = ["dep:chrono"]
 
 [dependencies]
 axpanic.workspace = true
 cfg-if.workspace = true
 chrono = { workspace = true, default-features = true, optional = true }
 ax-crate-interface.workspace = true
-ax-sync.workspace = true
+ax-task.workspace = true
 log.workspace = true

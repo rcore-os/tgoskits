@@ -16,7 +16,6 @@ use ax_driver::serial::SerialDevice;
 pub use ax_driver::serial::SerialDeviceInfo;
 use ax_errno::{AxError, AxResult};
 use ax_lazyinit::OnceLock;
-use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 pub use rdif_serial::{Config, ConfigError, DataBits, Parity, RxFlag, StopBits, UartRegisterGate};
 pub use state::SerialStats;
@@ -28,9 +27,12 @@ use self::{
     state::{SerialIrqLatch, SerialStatsAtomic},
     worker::SerialWorker,
 };
-use crate::task::{
-    CpuId, CpuSet, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, ThreadHandle, ThreadId,
-    WaitQueue, quiesce_irq_wait,
+use crate::{
+    sync::PiMutex,
+    task::{
+        CpuId, CpuSet, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, ThreadHandle, ThreadId,
+        WaitQueue, quiesce_irq_wait,
+    },
 };
 
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;

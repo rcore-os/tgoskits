@@ -4,7 +4,7 @@ use alloc::{
 };
 
 #[cfg(feature = "multitask")]
-use ax_sync::LockdepMutexExt;
+use ax_runtime::sync::LockdepMutexExt;
 
 use crate::{Pid, Process, ProcessGroup};
 
@@ -12,9 +12,9 @@ use crate::{Pid, Process, ProcessGroup};
 // PI because a transaction may hold several ordered locks while another task
 // blocks on them; single-task builds need only preemption-safe exclusion.
 #[cfg(feature = "multitask")]
-pub(crate) type RelationLock<T> = ax_sync::PiMutex<T>;
+pub(crate) type RelationLock<T> = ax_runtime::sync::PiMutex<T>;
 #[cfg(not(feature = "multitask"))]
-pub(crate) type RelationLock<T> = ax_sync::SpinLock<T>;
+pub(crate) type RelationLock<T> = ax_runtime::sync::SpinLock<T>;
 
 // Relationship writers use one order:
 // process group binding -> parent child sets (ascending PID) -> child parent

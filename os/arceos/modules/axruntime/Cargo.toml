@@ -37,14 +37,9 @@ qperf-metrics = ["multitask", "ax-task/qperf-metrics"]
 fp-simd = ["ax-hal/fp-simd"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
-smp = ["ax-hal/smp", "ax-sync/smp", "ax-task/smp", "wake-ipi"]
+smp = ["ax-hal/smp", "ax-task/smp", "wake-ipi"]
 uspace = ["ax-hal/uspace"]
-lockdep = [
-  "multitask",
-  "ax-sync/lockdep",
-  "ax-task/lockdep",
-  "ax-fs-ng?/lockdep",
-]
+lockdep = ["multitask", "ax-task/lockdep", "ax-fs-ng?/lockdep"]
 stack-guard-page = ["ipi", "multitask", "paging"]
 stack-protector = []
 tls = ["ax-hal/tls"]

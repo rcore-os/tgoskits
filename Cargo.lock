@@ -393,7 +393,6 @@ dependencies = [
  "ax-driver",
  "ax-hal",
  "ax-std",
- "ax-sync",
  "axbacktrace",
  "axfs-ng-vfs",
  "embedded-graphics",
@@ -703,7 +702,7 @@ dependencies = [
  "ax-mm",
  "ax-net",
  "ax-runtime",
- "ax-sync",
+ "ax-task",
  "axklib",
  "axpoll",
  "dma-api",
@@ -785,7 +784,7 @@ name = "ax-display"
 version = "0.6.8"
 dependencies = [
  "ax-lazyinit",
- "ax-sync",
+ "ax-task",
  "irq-framework",
  "log",
  "rdif-display",
@@ -920,7 +919,7 @@ name = "ax-input"
 version = "0.6.8"
 dependencies = [
  "ax-lazyinit",
- "ax-sync",
+ "ax-task",
  "irq-framework",
  "log",
  "rdif-input",
@@ -964,7 +963,6 @@ dependencies = [
  "ax-io",
  "ax-posix-api",
  "ax-runtime",
- "ax-sync",
  "bindgen 0.72.1",
 ]
 
@@ -977,7 +975,7 @@ name = "ax-log"
 version = "0.5.20"
 dependencies = [
  "ax-crate-interface",
- "ax-sync",
+ "ax-task",
  "axpanic",
  "cfg-if",
  "chrono",
@@ -1193,12 +1191,8 @@ name = "ax-sync"
 version = "0.5.31"
 dependencies = [
  "ax-crate-interface",
- "axpanic",
  "axtest",
- "cfg-if",
  "lock_api",
- "loom",
- "sbi-rt",
 ]
 
 [[package]]
@@ -7913,7 +7907,6 @@ dependencies = [
  "ax-percpu",
  "ax-runtime",
  "ax-std",
- "ax-sync",
  "axbacktrace",
  "axfs-ng-vfs",
  "axklib",
@@ -8007,7 +8000,7 @@ name = "starry-process"
 version = "0.4.16"
 dependencies = [
  "ax-lazyinit",
- "ax-sync",
+ "ax-runtime",
  "ctor 0.4.3",
  "weak-map",
 ]
@@ -8018,12 +8011,13 @@ version = "0.8.13"
 dependencies = [
  "ax-cpu",
  "ax-errno",
- "ax-sync",
+ "ax-runtime",
  "bitflags 2.13.1",
  "bytemuck",
  "cfg-if",
  "derive_more",
  "event-listener",
+ "extern-trait",
  "linux-raw-sys 0.12.1",
  "log",
  "starry-vm",

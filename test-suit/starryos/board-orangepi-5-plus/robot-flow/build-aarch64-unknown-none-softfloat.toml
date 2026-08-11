@@ -1,0 +1,18 @@
+# Match the deployed robot configuration while keeping kernel logging quiet
+# enough for repeatable userspace performance checks.
+target = "aarch64-unknown-none-softfloat"
+features = [
+  "ax-driver/list-pci-devices",
+  "ax-driver/rk3588-pcie",
+  "ax-driver/realtek-rtl8125",
+  "ax-driver/rockchip-soc",
+  "ax-driver/rockchip-dwc-xhci",
+  "ax-driver/rockchip-ehci",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rockchip-dwmmc",
+  "ax-driver/rk3588-cpufreq",
+  "rknpu",
+  "rk3588-pwm",
+]
+log = "Warn"
+max_cpu_num = 8

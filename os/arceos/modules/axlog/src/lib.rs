@@ -302,7 +302,7 @@ impl Log for Logger {
 }
 
 fn write_console_fmt_locked(args: fmt::Arguments) -> fmt::Result {
-    use ax_sync::SpinLock;
+    use ax_task::sync::SpinLock;
     static LOCK: SpinLock<()> = SpinLock::new(());
 
     // Panic and oops paths must not re-enter the normal print lock because its

@@ -70,10 +70,11 @@ test-suit/starryos/
         src/
   board-orangepi-5-plus/
     build-aarch64-unknown-none-softfloat.toml
-    npu-yolov8/
+    native-hardware-smoke/
       board-orangepi-5-plus.toml
-    pcie-enumerate/
+    native-network-smoke/
       board-orangepi-5-plus.toml
+      iperf-smoke.sh
 ```
 
 `qemu/system` 是统一的 SMP4 聚合 QEMU case。`qemu/` 根目录只放四架构 build
@@ -413,14 +414,15 @@ App 的 `board-<name>.toml` 默认复用
 
 ```bash
 cargo xtask starry test board --board orangepi-5-plus
-cargo xtask starry test board -c board-orangepi-5-plus/pcie-enumerate --board orangepi-5-plus
-cargo xtask starry test board -c iperf-smoke --board orangepi-5-plus --server 10.3.10.194 --port 2999
+cargo xtask starry test board -c native-hardware-smoke --board orangepi-5-plus
+cargo xtask starry test board -c native-network-smoke --board orangepi-5-plus --server 10.3.10.194 --port 2999
 ```
 
-`iperf-smoke` 会等待 OrangePi 的 `eth0` 通过 DHCP 获得板测网段地址，再从 session
-HTTP 端点下载同名脚本，并连接 `${boardServerIp}:5201` 执行 2 秒、1 Mbit/s 的
-iperf3 UDP JSON 测试。该用例只验证下载、执行和网络连通性，不设置吞吐门槛；服务端
-需预先运行 iperf3 server。
+`native-hardware-smoke` 在一次启动中依次验证启动、PCIe、USB2、PWM 和 NPU。
+`native-network-smoke` 会等待 OrangePi 的 `eth0` 通过 DHCP 获得板测网段地址，再从
+session HTTP 端点下载 iperf 脚本，连接 `${boardServerIp}:5201` 执行 2 秒、1 Mbit/s
+的 iperf3 UDP JSON 测试，随后在 `eth1` 上验证 rtnetlink 地址增删。iperf 只验证
+下载、执行和网络连通性，不设置吞吐门槛；服务端需预先运行 iperf3 server。
 
 ROCK 4D 使用板卡服务名称 `Rock-4D`、仓库内的 RK3576 DTB 和 1,500,000 baud
 串口。维护的单核启动回归命令为：
@@ -465,7 +467,7 @@ cargo xtask starry test board -l
 
 # board
 cargo xtask starry test board --board orangepi-5-plus
-cargo xtask starry test board -c board-orangepi-5-plus/npu-yolov8 --board orangepi-5-plus
+cargo xtask starry test board -c native-hardware-smoke --board orangepi-5-plus
 
 # 迁出的 heavy app
 cargo xtask starry app qemu -t stress/git --arch riscv64

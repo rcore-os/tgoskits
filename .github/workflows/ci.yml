@@ -772,6 +772,33 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
+          - name: Test OrangePi 5 Plus robot native StarryOS
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            timeout_minutes: 15
+            command: cargo xtask starry test board --board orangepi-5-plus-robot
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test OrangePi 5 Plus robot AxVisor StarryOS guest
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            timeout_minutes: 15
+            command: cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test OrangePi 5 Plus robot AxVisor Linux guest
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            timeout_minutes: 15
+            command: cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
           # - name: Test starry self-hosted board rock-4d
           #   use_container: false
           #   runs_on: '["self-hosted","linux","board"]'

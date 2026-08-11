@@ -13,7 +13,6 @@ mod uts;
 use alloc::sync::Arc;
 
 pub use ax_cgroup::{CgroupNamespace, CgroupNode};
-pub use ax_runtime::sync::IrqMutex;
 pub use cgroup::{ROOT_CGROUP_NS, new_cgroup_namespace};
 pub use ipc::{IpcNamespace, ROOT_IPC_NS};
 pub use mnt::{MntNamespace, ROOT_MNT_NS};
@@ -23,6 +22,55 @@ pub use pid::{
 };
 pub use user::{ROOT_USER_NS, UserNamespace};
 pub use uts::{ROOT_UTS_NS, UtNamespace, build_utsname};
+
+/// StarryOS IRQ-save mutex shared by namespace and kernel components.
+#[repr(transparent)]
+pub struct IrqMutex<T: ?Sized>(ax_runtime::sync::SpinLock<T>);
+
+pub type IrqMutexGuard<'a, T> = ax_runtime::sync::SpinLockIrqSaveGuard<'a, T>;
+
+impl<T> IrqMutex<T> {
+    #[track_caller]
+    pub const fn new(value: T) -> Self {
+        Self(ax_runtime::sync::SpinLock::new(value))
+    }
+
+    pub fn into_inner(self) -> T {
+        self.0.into_inner()
+    }
+
+    #[track_caller]
+    pub fn lock(&self) -> IrqMutexGuard<'_, T> {
+        self.0.lock_irqsave()
+    }
+
+    /// Acquires this IRQ-save mutex using a lockdep subclass.
+    #[track_caller]
+    pub fn lock_nested(&self, subclass: u32) -> IrqMutexGuard<'_, T> {
+        self.0.lock_irqsave_nested(subclass)
+    }
+
+    #[track_caller]
+    pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
+        self.0.try_lock_irqsave()
+    }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        self.0.get_mut()
+    }
+}
+
+impl<T: Default> Default for IrqMutex<T> {
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+}
+
+impl<T: core::fmt::Debug> core::fmt::Debug for IrqMutex<T> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
 
 fn restore_if_empty<T>(slot: &mut Option<T>, value: T) -> bool {
     if slot.is_some() {

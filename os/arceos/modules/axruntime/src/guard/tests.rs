@@ -3,7 +3,7 @@ use super::*;
 #[cfg(feature = "host-test")]
 #[test]
 fn host_spin_guard_before_runtime_bootstrap_is_noop() {
-    let lock = ax_sync::SpinLock::new(());
+    let lock = crate::sync::SpinLock::new(());
     let _guard = lock.lock_irqsave();
 }
 

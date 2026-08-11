@@ -71,7 +71,7 @@ fn apply_clock_event_action(action: crate::clock_event::ClockEventAction) {
 #[cfg(feature = "irq")]
 pub(crate) fn take_current_clock_event_offline() {
     run_clock_event_transaction(
-        ax_sync::IrqSaveGuard::new,
+        crate::sync::IrqSaveGuard::new,
         || {
             (
                 (),
@@ -115,7 +115,7 @@ fn commit_local_clock_event<R>(
     ) -> (R, crate::clock_event::ClockEventAction),
 ) -> R {
     run_clock_event_transaction(
-        ax_sync::IrqSaveGuard::new,
+        crate::sync::IrqSaveGuard::new,
         || with_local_clock_event_mut(operation),
         apply_clock_event_action,
     )
@@ -226,7 +226,7 @@ pub(crate) fn publish_local_scheduler_deadline(update: ax_task::runtime::Schedul
 #[cfg(feature = "irq")]
 pub(crate) fn init_timer() {
     run_clock_event_transaction(
-        ax_sync::IrqSaveGuard::new,
+        crate::sync::IrqSaveGuard::new,
         || {
             let now = monotonic_now();
             let periodic = initial_periodic_deadline(now, periodic_interval_nanos());
@@ -287,7 +287,7 @@ pub(crate) fn next_periodic_deadline(
 
 #[cfg(feature = "irq")]
 pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
-    run_clock_event_irq_scope(ax_sync::IrqSaveGuard::new, || {
+    run_clock_event_irq_scope(crate::sync::IrqSaveGuard::new, || {
         let _ = ctx;
         // Claiming first invalidates the armed device state, matching Linux
         // `hrtimer_interrupt()` setting `expires_next = KTIME_MAX` before it

@@ -2,7 +2,6 @@ use alloc::{boxed::Box, sync::Arc};
 use core::time::Duration;
 
 use ax_errno::{AxError, AxResult};
-use ax_sync::PreemptIrqSaveGuard;
 use axpoll::IoEvents;
 use rdif_serial::{
     Config, ConfigError, RxErrorFlags, RxFlag, RxSample, SerialEventSet, UartPort, UartRegisterGate,
@@ -14,6 +13,7 @@ use super::{
     ingress::TxFrameCursor,
     spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
 };
+use crate::sync::PreemptIrqSaveGuard;
 
 const RX_BUDGET: usize = 256;
 const TX_BUDGET: usize = 64;

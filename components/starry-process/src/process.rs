@@ -11,11 +11,11 @@ use core::{
 
 use ax_lazyinit::LazyInit;
 #[cfg(feature = "multitask")]
-use ax_sync::PiMutex as ThreadGroupLock;
+use ax_runtime::sync::PiMutex as ThreadGroupLock;
 // Thread-group state has the same task-context contract as relationship state:
 // PI in multitask kernels, preemption-safe spinning in single-task builds.
 #[cfg(not(feature = "multitask"))]
-use ax_sync::SpinLock as ThreadGroupLock;
+use ax_runtime::sync::SpinLock as ThreadGroupLock;
 
 use crate::{
     Pid, ProcessGroup, Session,
@@ -599,7 +599,7 @@ mod tests {
     };
 
     #[cfg(feature = "multitask")]
-    use ax_sync::LockdepMutexExt;
+    use ax_runtime::sync::LockdepMutexExt;
 
     use super::Process;
     use crate::ProcessGroup;
@@ -615,7 +615,7 @@ mod tests {
     #[cfg(feature = "multitask")]
     #[test]
     fn multitask_thread_group_uses_a_sleepable_pi_lock() {
-        fn assert_pi_mutex<T>(_: &ax_sync::PiMutex<T>) {}
+        fn assert_pi_mutex<T>(_: &ax_runtime::sync::PiMutex<T>) {}
 
         let process = test_init();
         assert_pi_mutex(&process.tg);

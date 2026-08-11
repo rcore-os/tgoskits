@@ -392,7 +392,8 @@ pub mod modules {
     #[cfg(feature = "net")]
     pub use ax_net;
     pub use ax_runtime;
-    pub use ax_sync;
+    #[cfg(feature = "multitask")]
+    pub use ax_task;
     pub use axklib;
     pub use dma_api;
 }

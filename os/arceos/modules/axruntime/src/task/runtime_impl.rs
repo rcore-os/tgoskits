@@ -337,7 +337,7 @@ impl_task_runtime! {
             // in which case the tick stays stopped just as in Linux do_idle().
             // Work that makes the idle thread yield restarts the tick before
             // the scheduler can select a non-idle thread.
-            let irq_guard = ax_sync::IrqSaveGuard::new();
+            let irq_guard = crate::sync::IrqSaveGuard::new();
             now = crate::clock_event_runtime::monotonic_now();
             needs_reschedule = ax_task::current_cpu_needs_resched()
                 .expect("idle wake requires an initialized current CPU");

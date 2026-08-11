@@ -1,0 +1,8 @@
+features = [
+  "ax-driver/rockchip-dwmmc",
+  "ax-driver/rockchip-sdhci",
+  "fs",
+]
+log = "Warn"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["os/axvisor/configs/vms/orangepi-5-plus/starry-smp1.toml"]

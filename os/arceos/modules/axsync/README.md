@@ -5,14 +5,29 @@ components.
 
 ## Primitives
 
-- **SpinMutex**: A non-sleeping, IRQ-safe `ax_kspin::SpinNoIrq` lock.
-- **PiMutex**: With `multitask`, an urgency-ordered sleeping mutex with targeted ownership handoff. It reports ownership and wait edges to `ax-task`, which owns transitive donation, scheduler requeue, and Deadline donor-budget semantics.
-- **spin**: Re-export of the [ax-kspin](https://crates.io/crates/ax-kspin) crate (spinlocks).
+- `SpinLock<T>` and `SpinRwLock<T>` select execution-context policy at each
+  acquisition: ordinary methods disable preemption, `*_irqsave` methods also
+  save and disable local interrupts, and `unsafe *_raw` methods leave context
+  management to the caller.
+- `Mutex<T>` is always a non-poisoning sleepable mutex. It is available only
+  with the `sleep` feature and never aliases a spin lock.
+- `PreemptGuard`, `IrqSaveGuard`, and `PreemptIrqSaveGuard` provide explicit
+  critical-section guards.
+- With `lockdep`, all lock types share lock-class, held-lock, ordering, and
+  diagnostic support.
+
+The crate declares runtime capabilities through `ax-crate-interface`.
+ArceOS implements the production providers in `ax-runtime`; host tests use the
+`host-test` providers in this crate.
 
 ## Features
 
-- `multitask`: Enable the task scheduler's PI mutex protocol. `ax-task`'s per-lock `PiMutexCore` is the single owner of the physical owner word and urgency-ordered waiter tree; waiter linkage lives in the blocked thread. Registration, donation, deboost, and handoff are committed in one scheduler transaction, while blocking and targeted wake run after all metadata gates have been released.
-- `lockdep`: Enable sleeping-lock dependency validation in addition to PI.
+- `smp`: enable atomic multi-CPU exclusion.
+- `sleep`: enable the sleepable mutex interface.
+- `lockdep`: enable held-lock and ordering diagnostics.
+- `lock-api`: enable the IRQ-save raw mutex adapter required by `lock_api`.
+- `host-test`: use the deterministic host-side engine on non-bare-metal targets.
+- `axtest`: expose bare-metal coverage tests.
 
 ## License
 

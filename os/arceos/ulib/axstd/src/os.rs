@@ -29,6 +29,8 @@ pub mod arceos {
 
     /// Non-sleeping synchronization for ArceOS kernel contexts.
     pub mod sync {
+        pub use ax_runtime::sync::*;
+
         /// A mutex that disables preemption and local interrupts while held.
         #[repr(transparent)]
         pub struct IrqSafeMutex<T: ?Sized>(ax_runtime::sync::SpinLock<T>);

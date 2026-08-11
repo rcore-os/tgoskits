@@ -9,7 +9,7 @@ use std::{
     vec::Vec,
 };
 
-use ax_sync::SpinLock;
+use ax_std::os::arceos::sync::SpinLock;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FilesystemOps, Metadata, MetadataUpdate,
     NodeFlags, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult,

@@ -1,181 +1,166 @@
-//! ArceOS runtime providers for `ax-sync` capabilities.
+//! Native ArceOS lock facade and `ax-sync` bridge provider.
+
+#[cfg(feature = "multitask")]
+use core::sync::atomic::{AtomicPtr, AtomicU64};
+use core::{
+    panic::Location,
+    sync::atomic::{AtomicBool, AtomicUsize},
+};
 
 pub use ax_task::sync::api::*;
 
-#[cfg(not(feature = "host-test"))]
-struct RuntimeCriticalSectionOps;
+struct RuntimeContextOps;
 
-#[cfg(not(feature = "host-test"))]
 #[ax_crate_interface::impl_interface]
-impl ax_sync::CriticalSectionOps for RuntimeCriticalSectionOps {
-    fn preempt_guard_enter() -> ax_sync::PreemptGuardToken {
-        #[cfg(feature = "multitask")]
-        {
-            return ax_sync::PreemptGuardToken::from_entered(crate::guard::enter_lock_preempt());
-        }
-        #[cfg(not(feature = "multitask"))]
-        ax_sync::PreemptGuardToken::from_entered(false)
+impl ax_sync::interface::ContextOps for RuntimeContextOps {
+    fn enter(context: u8) -> usize {
+        ax_task::sync::bridge::context_enter(context)
     }
 
-    fn preempt_guard_exit(token: ax_sync::PreemptGuardToken) {
-        #[cfg(feature = "multitask")]
-        if !token.is_none() {
-            crate::guard::exit_preempt();
-        }
-        #[cfg(not(feature = "multitask"))]
-        assert!(
-            token.is_none(),
-            "uniprocessor runtime received a preemption token"
-        );
-    }
-
-    fn preempt_guard_exit_irq_return(token: ax_sync::PreemptGuardToken) {
-        #[cfg(feature = "multitask")]
-        if !token.is_none() {
-            crate::guard::exit_preempt_from_irq_return();
-        }
-        #[cfg(not(feature = "multitask"))]
-        assert!(
-            token.is_none(),
-            "uniprocessor runtime received an IRQ-return token"
-        );
-    }
-
-    fn hardirq_enter() {
-        #[cfg(feature = "multitask")]
-        crate::irq_time::enter();
-    }
-
-    fn hardirq_exit() {
-        #[cfg(feature = "multitask")]
-        crate::irq_time::exit();
-    }
-
-    fn irq_save_and_disable() -> usize {
-        let was_enabled = ax_hal::asm::irqs_enabled();
-        ax_hal::asm::disable_irqs();
-        usize::from(was_enabled)
-    }
-
-    fn irq_restore(state: usize) {
-        if state != 0 {
-            ax_hal::asm::enable_irqs();
-        } else {
-            ax_hal::asm::disable_irqs();
-        }
+    fn exit(context: u8, state: usize) {
+        ax_task::sync::bridge::context_exit(context, state);
     }
 }
 
-#[cfg(not(feature = "host-test"))]
-struct RuntimePiMutexTaskOps;
+struct RuntimeSpinOps;
 
-#[cfg(not(feature = "host-test"))]
 #[ax_crate_interface::impl_interface]
-impl ax_sync::PiMutexTaskOps for RuntimePiMutexTaskOps {
-    fn current_task_id() -> u64 {
-        pi_runtime_result(
-            ax_task::sync::bridge::current_thread_id(),
-            "capture current PI mutex task",
-        )
-        .as_u64()
+impl ax_sync::interface::SpinOps for RuntimeSpinOps {
+    fn acquire(
+        locked: &AtomicBool,
+        metadata: &ax_sync::interface::LockMetadata,
+        lock_addr: usize,
+        context: u8,
+        subclass: u32,
+        is_try: bool,
+        caller: &'static Location<'static>,
+    ) -> ax_sync::interface::AcquireResult {
+        let (acquired, context_state) =
+            ax_task::sync::bridge::spin_acquire(ax_task::sync::bridge::SpinAcquireRequest {
+                locked,
+                class: ax_task::sync::bridge::LockClass {
+                    class_id: metadata.class_id(),
+                    class_key: metadata.class_key(),
+                },
+                lock_addr,
+                context,
+                subclass,
+                is_try,
+                caller,
+            });
+        ax_sync::interface::AcquireResult::new(acquired, context_state)
     }
 
-    fn validate_blocking_context() {
-        pi_runtime_result(
-            ax_task::sync::bridge::validate_blocking_context(),
-            "validate PI mutex blocking context",
-        );
+    fn release(locked: &AtomicBool, lock_addr: usize, context: u8, context_state: usize) {
+        ax_task::sync::bridge::spin_release(locked, lock_addr, context, context_state);
     }
 
-    fn lock_slow(lock: &ax_sync::PiMutexCore, sequence: u64) -> ax_sync::PiMutexLockResult {
-        let current = pi_runtime_result(
-            ax_task::sync::bridge::current_thread_token(),
-            "capture PI mutex waiter",
-        );
-        let lock = pi_runtime_result(lock.mutex_ref(), "borrow PI mutex identity");
-        pi_runtime_result(
-            ax_task::sync::bridge::pi_mutex_lock_slow(lock, &current, sequence),
-            "register PI mutex waiter",
-        )
+    fn force_release(locked: &AtomicBool, lock_addr: usize, context: u8) {
+        ax_task::sync::bridge::spin_force_release(locked, lock_addr, context);
     }
 
-    fn waiter_is_granted(token: &ax_sync::PiWaitToken) -> bool {
-        ax_task::sync::bridge::pi_waiter_is_granted(token)
-    }
-
-    fn waiter_is_top(token: &ax_sync::PiWaitToken) -> bool {
-        ax_task::sync::bridge::pi_waiter_is_top(token)
-    }
-
-    fn initial_owner_is_on_cpu(token: &ax_sync::PiWaitToken) -> bool {
-        pi_runtime_result(
-            ax_task::sync::bridge::pi_initial_owner_is_on_cpu(token),
-            "observe PI mutex owner execution state",
-        )
-    }
-
-    fn current_needs_reschedule_pinned() -> bool {
-        pi_runtime_result(
-            unsafe {
-                // SAFETY: the ax-sync owner-spin caller retains its
-                // PreemptGuard across this capability call.
-                ax_task::sync::bridge::current_needs_reschedule_pinned()
-            },
-            "observe pinned PI mutex reschedule state",
-        )
-    }
-
-    fn park_current_once(token: &ax_sync::PiWaitToken) {
-        pi_runtime_result(
-            ax_task::sync::bridge::pi_park_current_once(token),
-            "park PI mutex waiter",
-        );
-    }
-
-    fn try_cancel(token: &ax_sync::PiWaitToken) -> ax_sync::PiWaitCancelOutcome {
-        pi_runtime_result(
-            ax_task::sync::bridge::pi_wait_try_cancel(token),
-            "cancel PI mutex waiter",
-        )
-    }
-
-    fn claim(token: &ax_sync::PiWaitToken) -> ax_sync::PiMutexClaimOutcome {
-        let current = pi_runtime_result(
-            ax_task::sync::bridge::current_thread_token(),
-            "capture PI mutex claimant",
-        );
-        pi_runtime_result(
-            ax_task::sync::bridge::pi_mutex_claim(token, &current),
-            "claim ownerless PI mutex handoff",
-        )
-    }
-
-    fn release_owned(lock: &ax_sync::PiMutexCore, old_owner: ax_sync::PiTaskId) {
-        let lock = pi_runtime_result(lock.mutex_ref(), "borrow PI mutex release identity");
-        pi_runtime_result(
-            unsafe {
-                // SAFETY: ax-sync produced `old_owner` from this core's
-                // owner-authorized release transition.
-                ax_task::sync::bridge::pi_mutex_release_owned(lock, old_owner.into())
-            },
-            "release contended PI mutex",
-        );
-    }
-
-    fn drop_wait_handle(wait_handle: *mut ()) {
-        unsafe {
-            // SAFETY: ax-sync transfers the unique installed waiter handle
-            // after the physical lock becomes unreachable.
-            ax_task::sync::bridge::pi_drop_wait_handle(wait_handle)
-        };
+    fn is_locked(locked: &AtomicBool) -> bool {
+        ax_task::sync::bridge::spin_is_locked(locked)
     }
 }
 
-#[cfg(not(feature = "host-test"))]
-#[track_caller]
-fn pi_runtime_result<T, E>(result: Result<T, E>, operation: &'static str) -> T
-where
-    E: core::fmt::Display,
-{
-    result.unwrap_or_else(|error| panic!("{operation} failed: {error}"))
+struct RuntimeRwLockOps;
+
+#[ax_crate_interface::impl_interface]
+impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
+    fn acquire(
+        state: &AtomicUsize,
+        metadata: &ax_sync::interface::LockMetadata,
+        lock_addr: usize,
+        context: u8,
+        mode: u8,
+        is_try: bool,
+        caller: &'static Location<'static>,
+    ) -> ax_sync::interface::AcquireResult {
+        let (acquired, context_state) =
+            ax_task::sync::bridge::rwlock_acquire(ax_task::sync::bridge::RwLockAcquireRequest {
+                state,
+                class: ax_task::sync::bridge::LockClass {
+                    class_id: metadata.class_id(),
+                    class_key: metadata.class_key(),
+                },
+                lock_addr,
+                context,
+                mode,
+                is_try,
+                caller,
+            });
+        ax_sync::interface::AcquireResult::new(acquired, context_state)
+    }
+
+    fn release(state: &AtomicUsize, lock_addr: usize, context: u8, context_state: usize, mode: u8) {
+        ax_task::sync::bridge::rwlock_release(state, lock_addr, context, context_state, mode);
+    }
+
+    fn force_read_decrement(state: &AtomicUsize, lock_addr: usize, context: u8) {
+        ax_task::sync::bridge::rwlock_force_read_decrement(state, lock_addr, context);
+    }
+}
+
+#[cfg(feature = "multitask")]
+struct RuntimeMutexOps;
+
+#[cfg(feature = "multitask")]
+#[ax_crate_interface::impl_interface]
+impl ax_sync::interface::MutexOps for RuntimeMutexOps {
+    fn acquire(
+        wait_queue: &AtomicPtr<()>,
+        owner_id: &AtomicU64,
+        metadata: &ax_sync::interface::LockMetadata,
+        lock_addr: usize,
+        subclass: u32,
+        is_try: bool,
+        caller: &'static Location<'static>,
+    ) -> bool {
+        ax_task::sync::bridge::mutex_acquire(ax_task::sync::bridge::MutexAcquireRequest {
+            wait_queue,
+            owner_id,
+            class: ax_task::sync::bridge::LockClass {
+                class_id: metadata.class_id(),
+                class_key: metadata.class_key(),
+            },
+            lock_addr,
+            subclass,
+            is_try,
+            caller,
+        })
+    }
+
+    fn release(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64, lock_addr: usize) {
+        ax_task::sync::bridge::mutex_release(wait_queue, owner_id, lock_addr);
+    }
+
+    fn force_release(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64, lock_addr: usize) {
+        ax_task::sync::bridge::mutex_force_release(wait_queue, owner_id, lock_addr);
+    }
+
+    fn is_owned_by_current(owner_id: &AtomicU64) -> bool {
+        ax_task::sync::bridge::mutex_is_owned_by_current(owner_id)
+    }
+
+    fn is_locked(owner_id: &AtomicU64) -> bool {
+        ax_task::sync::bridge::mutex_is_locked(owner_id)
+    }
+
+    fn drop_wait_queue(wait_queue: *mut ()) {
+        ax_task::sync::bridge::mutex_drop_wait_queue(wait_queue);
+    }
+}
+
+struct RuntimeLockdepOps;
+
+#[ax_crate_interface::impl_interface]
+impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {
+    fn set_trace_enabled(enabled: bool) {
+        ax_task::sync::bridge::set_lockdep_trace_enabled(enabled);
+    }
+
+    fn dump_trace() {
+        ax_task::sync::bridge::dump_lockdep_trace();
+    }
 }
