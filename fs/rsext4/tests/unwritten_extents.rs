@@ -4,11 +4,11 @@ use std::{cell::Cell, rc::Rc};
 
 use rsext4::{
     BLOCK_SIZE, BlockIo, Clock, DeviceCapabilities, DeviceGeometry, Ext4Error, Ext4Result,
-    Ext4Timestamp, Jbd2Dev, PreallocationOptions, SectorId, dir,
+    Ext4Timestamp, Jbd2Dev, PreallocationOptions, SectorId, ZeroRangeOptions, dir,
     disknode::{Ext4Extent, Ext4ExtentHeader},
-    extents_tree::{ExtentNode, ExtentTree},
-    mkfile, mkfs, mount, preallocate_inode, read_file, read_inode_data_into, truncate_inode,
-    write_file,
+    extents_tree::{ExtentBlockMapping, ExtentNode, ExtentTree},
+    mkfile, mkfs, mount, preallocate_inode, punch_hole_inode, read_file, read_inode_data_into,
+    truncate_inode, write_file, zero_range_inode,
 };
 
 struct MemoryDevice {
@@ -557,4 +557,212 @@ fn owned_core_exposes_preallocation_without_os_types() {
     assert_eq!(copied, output.len());
     assert!(output.iter().all(|byte| *byte == 0));
     filesystem.unmount().expect("owned unmount failed");
+}
+
+#[test]
+fn punch_hole_zeros_partial_edges_and_releases_complete_blocks() {
+    let device = MemoryDevice::new(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(&mut journal, &mut filesystem, "/punch", None, None).expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/punch")
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+    let original = vec![0xa5; 5 * BLOCK_SIZE];
+    write_file(&mut journal, &mut filesystem, "/punch", 0, &original)
+        .expect("initial write failed");
+    let before = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("inode read failed");
+    let free_before = filesystem.superblock.free_blocks_count();
+    let offset = BLOCK_SIZE as u64 + 123;
+    let len = 2 * BLOCK_SIZE as u64;
+
+    punch_hole_inode(&mut journal, &mut filesystem, inode_number, offset, len)
+        .expect("punch hole failed");
+
+    let mut inode = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("updated inode read failed");
+    assert_eq!(inode.size(), before.size());
+    assert_eq!(
+        inode.i_blocks_lo,
+        before.i_blocks_lo - (BLOCK_SIZE / 512) as u32
+    );
+    assert_eq!(filesystem.superblock.free_blocks_count(), free_before + 1);
+    assert_eq!(
+        ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number)
+            .map_block(&mut journal, 2)
+            .expect("punched mapping lookup failed"),
+        ExtentBlockMapping::Hole
+    );
+    let after =
+        read_file(&mut journal, &mut filesystem, "/punch").expect("punched file read failed");
+    let end = usize::try_from(offset + len).expect("test range fits usize");
+    let start = usize::try_from(offset).expect("test range fits usize");
+    assert_eq!(&after[..start], &original[..start]);
+    assert!(after[start..end].iter().all(|byte| *byte == 0));
+    assert_eq!(&after[end..], &original[end..]);
+}
+
+#[test]
+fn zero_range_zeros_partial_edges_but_keeps_unwritten_allocation() {
+    let device = MemoryDevice::new(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(&mut journal, &mut filesystem, "/zero", None, None).expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/zero")
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+    let original = vec![0x5a; 5 * BLOCK_SIZE];
+    write_file(&mut journal, &mut filesystem, "/zero", 0, &original).expect("initial write failed");
+    let before = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("inode read failed");
+    let free_before = filesystem.superblock.free_blocks_count();
+    let offset = BLOCK_SIZE as u64 + 123;
+    let len = 2 * BLOCK_SIZE as u64;
+
+    zero_range_inode(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        offset,
+        len,
+        ZeroRangeOptions::KEEP_SIZE,
+    )
+    .expect("zero range failed");
+
+    let mut inode = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("updated inode read failed");
+    assert_eq!(inode.size(), before.size());
+    assert_eq!(inode.i_blocks_lo, before.i_blocks_lo);
+    assert_eq!(filesystem.superblock.free_blocks_count(), free_before);
+    assert!(matches!(
+        ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number)
+            .map_block(&mut journal, 2)
+            .expect("zeroed mapping lookup failed"),
+        ExtentBlockMapping::Unwritten(_)
+    ));
+    let after = read_file(&mut journal, &mut filesystem, "/zero").expect("zeroed file read failed");
+    let end = usize::try_from(offset + len).expect("test range fits usize");
+    let start = usize::try_from(offset).expect("test range fits usize");
+    assert_eq!(&after[..start], &original[..start]);
+    assert!(after[start..end].iter().all(|byte| *byte == 0));
+    assert_eq!(&after[end..], &original[end..]);
+}
+
+#[test]
+fn punch_hole_prunes_a_finite_range_across_legacy_direct_and_indirect_blocks() {
+    let device = MemoryDevice::new(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(&mut journal, &mut filesystem, "/legacy-punch", None, None)
+        .expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/legacy-punch")
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+    filesystem
+        .modify_inode(&mut journal, inode_number, |inode| {
+            inode.i_flags &= !rsext4::disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+        })
+        .expect("legacy inode conversion failed");
+    let original = vec![0x3c; 15 * BLOCK_SIZE];
+    write_file(&mut journal, &mut filesystem, "/legacy-punch", 0, &original)
+        .expect("legacy write failed");
+    let before = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("legacy inode read failed");
+    assert_ne!(
+        before.i_block[12], 0,
+        "fixture needs a single-indirect root"
+    );
+    let free_before = filesystem.superblock.free_blocks_count();
+
+    punch_hole_inode(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        10 * BLOCK_SIZE as u64,
+        4 * BLOCK_SIZE as u64,
+    )
+    .expect("legacy punch failed");
+
+    let inode = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("updated legacy inode read failed");
+    assert_eq!(inode.size(), before.size());
+    assert_eq!(
+        inode.i_blocks_lo,
+        before.i_blocks_lo - (4 * BLOCK_SIZE / 512) as u32
+    );
+    assert_eq!(inode.i_block[10], 0);
+    assert_eq!(inode.i_block[11], 0);
+    assert_ne!(inode.i_block[12], 0, "remaining block 14 needs the root");
+    assert_eq!(filesystem.superblock.free_blocks_count(), free_before + 4);
+    let after = read_file(&mut journal, &mut filesystem, "/legacy-punch")
+        .expect("legacy punched read failed");
+    assert_eq!(&after[..10 * BLOCK_SIZE], &original[..10 * BLOCK_SIZE]);
+    assert!(
+        after[10 * BLOCK_SIZE..14 * BLOCK_SIZE]
+            .iter()
+            .all(|byte| *byte == 0)
+    );
+    assert_eq!(&after[14 * BLOCK_SIZE..], &original[14 * BLOCK_SIZE..]);
+}
+
+#[test]
+fn truncating_preallocated_unwritten_extents_releases_their_blocks() {
+    let device = MemoryDevice::new(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(
+        &mut journal,
+        &mut filesystem,
+        "/truncate-unwritten",
+        None,
+        None,
+    )
+    .expect("file creation failed");
+    let inode_number =
+        dir::get_inode_with_num(&mut filesystem, &mut journal, "/truncate-unwritten")
+            .expect("lookup failed")
+            .expect("created inode missing")
+            .0;
+    let free_before = filesystem.superblock.free_blocks_count();
+    preallocate_inode(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        0,
+        4 * BLOCK_SIZE as u64,
+        PreallocationOptions::EXTEND_SIZE,
+    )
+    .expect("unwritten preallocation failed");
+    assert_eq!(filesystem.superblock.free_blocks_count(), free_before - 4);
+
+    truncate_inode(&mut journal, &mut filesystem, inode_number, 0)
+        .expect("truncate unwritten extents failed");
+
+    let mut inode = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("truncated inode read failed");
+    assert_eq!(inode.size(), 0);
+    assert_eq!(inode.i_blocks_lo, 0);
+    assert_eq!(filesystem.superblock.free_blocks_count(), free_before);
+    assert_eq!(
+        ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number)
+            .map_block(&mut journal, 0)
+            .expect("truncated mapping lookup failed"),
+        ExtentBlockMapping::Hole
+    );
 }

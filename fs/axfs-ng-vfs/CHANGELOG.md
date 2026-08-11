@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add a typed file preallocation capability with explicit extend-size and
   keep-size modes.
+- Extend the file range capability with typed zero-range and hole-punch
+  operations while retaining the preallocation compatibility entry point.
 
 ## [0.5.8](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.7...axfs-ng-vfs-v0.5.8) - 2026-08-09
 

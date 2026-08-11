@@ -109,9 +109,30 @@ pub(crate) fn plan_legacy_inode_truncate<B: BlockIo>(
     inode: &Ext4Inode,
     first_free_logical: u64,
 ) -> Ext4Result<LegacyTruncatePlan> {
+    plan_legacy_inode_range_removal(
+        filesystem,
+        device,
+        inode_number,
+        inode,
+        first_free_logical,
+        u64::MAX,
+    )
+}
+
+/// Validates the complete legacy tree and plans removal of mappings inside
+/// the finite half-open logical range `start..end`.
+pub(crate) fn plan_legacy_inode_range_removal<B: BlockIo>(
+    filesystem: &Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    inode_number: InodeNumber,
+    inode: &Ext4Inode,
+    start: u64,
+    end: u64,
+) -> Ext4Result<LegacyTruncatePlan> {
     if inode.uses_extents() || is_fast_symlink(filesystem, inode) {
         return Err(Ext4Error::unsupported().with_operation("indirect:truncate_format"));
     }
+    let removal = LogicalRemovalRange::new(start, end)?;
 
     // This full ownership pass is intentionally separate from range planning:
     // corruption in hidden siblings, cycles, or duplicate physical ownership
@@ -126,15 +147,9 @@ pub(crate) fn plan_legacy_inode_truncate<B: BlockIo>(
         remaining_allocated_blocks: 0,
     };
 
-    plan_direct_blocks(inode, first_free_logical, &mut plan);
-    LegacyTruncatePlanner::new(
-        filesystem,
-        device,
-        inode_number,
-        first_free_logical,
-        &mut plan,
-    )?
-    .plan_indirect_roots()?;
+    plan_direct_blocks(inode, removal, &mut plan);
+    LegacyTruncatePlanner::new(filesystem, device, inode_number, removal, &mut plan)?
+        .plan_indirect_roots()?;
     plan.remaining_allocated_blocks = allocated_blocks
         .checked_sub(blocks_to_free(&plan)?)
         .ok_or_else(|| Ext4Error::corrupted().with_operation("indirect:truncate_accounting"))?;
@@ -155,14 +170,40 @@ fn blocks_to_free(plan: &LegacyTruncatePlan) -> Ext4Result<u64> {
     data.checked_add(metadata).ok_or_else(Ext4Error::overflow)
 }
 
-fn plan_direct_blocks(inode: &Ext4Inode, first_free_logical: u64, plan: &mut LegacyTruncatePlan) {
-    let first_direct_to_free = core::cmp::min(first_free_logical, DIRECT_BLOCKS as u64) as usize;
-    for slot in (first_direct_to_free..DIRECT_BLOCKS).rev() {
+fn plan_direct_blocks(
+    inode: &Ext4Inode,
+    removal: LogicalRemovalRange,
+    plan: &mut LegacyTruncatePlan,
+) {
+    for slot in (0..DIRECT_BLOCKS).rev() {
         let pointer = inode.i_block[slot];
-        if pointer != 0 {
+        if pointer != 0 && removal.contains(slot as u64) {
             plan.data_blocks_to_free.push(AbsoluteBN::from(pointer));
             plan.updated_inode_pointers[slot] = 0;
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct LogicalRemovalRange {
+    start: u64,
+    end: u64,
+}
+
+impl LogicalRemovalRange {
+    fn new(start: u64, end: u64) -> Ext4Result<Self> {
+        if start > end {
+            return Err(Ext4Error::invalid_input().with_operation("indirect:removal_range"));
+        }
+        Ok(Self { start, end })
+    }
+
+    const fn contains(self, logical: u64) -> bool {
+        self.start <= logical && logical < self.end
+    }
+
+    const fn intersects(self, start: u64, end: u64) -> bool {
+        self.start < end && start < self.end
     }
 }
 
@@ -176,7 +217,7 @@ struct LegacyIndirectRoot {
 
 struct LegacyTruncatePlanner<'fs, 'dev, 'plan, B: BlockIo> {
     reader: LegacyBlockReader<'fs, 'dev, B>,
-    first_free_logical: u64,
+    removal: LogicalRemovalRange,
     plan: &'plan mut LegacyTruncatePlan,
 }
 
@@ -185,12 +226,12 @@ impl<'fs, 'dev, 'plan, B: BlockIo> LegacyTruncatePlanner<'fs, 'dev, 'plan, B> {
         filesystem: &'fs Ext4FileSystem,
         device: &'dev mut Jbd2Dev<B>,
         inode_number: InodeNumber,
-        first_free_logical: u64,
+        removal: LogicalRemovalRange,
         plan: &'plan mut LegacyTruncatePlan,
     ) -> Ext4Result<Self> {
         Ok(Self {
             reader: LegacyBlockReader::new(filesystem, device, inode_number)?,
-            first_free_logical,
+            removal,
             plan,
         })
     }
@@ -238,7 +279,7 @@ impl<'fs, 'dev, 'plan, B: BlockIo> LegacyTruncatePlanner<'fs, 'dev, 'plan, B> {
                     .ok_or_else(Ext4Error::overflow)?,
             )
             .ok_or_else(Ext4Error::overflow)?;
-        if logical_end <= self.first_free_logical {
+        if !self.removal.intersects(root.logical_base, logical_end) {
             return Ok(());
         }
 
@@ -285,7 +326,7 @@ impl<'fs, 'dev, 'plan, B: BlockIo> LegacyTruncatePlanner<'fs, 'dev, 'plan, B> {
                 .ok_or_else(Ext4Error::overflow)?;
             let physical = AbsoluteBN::from(pointer);
             if depth == 1 {
-                if logical >= self.first_free_logical {
+                if self.removal.contains(logical) {
                     self.plan.data_blocks_to_free.push(physical);
                     updated[index] = 0;
                 }
@@ -295,7 +336,7 @@ impl<'fs, 'dev, 'plan, B: BlockIo> LegacyTruncatePlanner<'fs, 'dev, 'plan, B> {
             let child_end = logical
                 .checked_add(stride)
                 .ok_or_else(Ext4Error::overflow)?;
-            if child_end <= self.first_free_logical {
+            if !self.removal.intersects(logical, child_end) {
                 continue;
             }
 

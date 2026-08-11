@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Route typed preallocation through cached/direct file backends and the ext4
   inode-number adapter while keeping unsupported filesystems explicit.
+- Route typed zero-range and hole-punch requests through page-cache writeback,
+  invalidation, and the ext4 inode adapter.
 
 ## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.6...ax-fs-ng-v0.8.7) - 2026-08-09
 

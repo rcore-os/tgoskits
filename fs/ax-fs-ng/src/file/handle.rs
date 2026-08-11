@@ -7,7 +7,8 @@ use core::{
 
 use ax_io::{SeekFrom, prelude::*};
 use axfs_ng_vfs::{
-    FsIoEvents, FsPollable, Location, NodeFlags, PreallocationMode, VfsError, VfsResult, path::Path,
+    FileRangeOperation, FsIoEvents, FsPollable, Location, NodeFlags, PreallocationMode, VfsError,
+    VfsResult, path::Path,
 };
 
 use super::{
@@ -168,9 +169,19 @@ impl FileBackend {
 
     /// Reserves backing storage for a byte range.
     pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        self.operate_range(offset, len, FileRangeOperation::Allocate(mode))
+    }
+
+    /// Applies a storage or mapping operation to a byte range.
+    pub fn operate_range(
+        &self,
+        offset: u64,
+        len: u64,
+        operation: FileRangeOperation,
+    ) -> VfsResult<()> {
         match self {
-            Self::Cached(cached) => cached.preallocate(offset, len, mode),
-            Self::Direct(loc) => loc.entry().as_file()?.preallocate(offset, len, mode),
+            Self::Cached(cached) => cached.operate_range(offset, len, operation),
+            Self::Direct(loc) => loc.entry().as_file()?.operate_range(offset, len, operation),
         }
     }
 }
@@ -293,8 +304,18 @@ impl File {
 
     /// Reserves backing storage for a byte range.
     pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        self.operate_range(offset, len, FileRangeOperation::Allocate(mode))
+    }
+
+    /// Applies a storage or mapping operation to a byte range.
+    pub fn operate_range(
+        &self,
+        offset: u64,
+        len: u64,
+        operation: FileRangeOperation,
+    ) -> VfsResult<()> {
         self.access(FileFlags::WRITE)?
-            .preallocate(offset, len, mode)
+            .operate_range(offset, len, operation)
     }
 
     /// Attempts to sync OS-internal file content and metadata to disk.

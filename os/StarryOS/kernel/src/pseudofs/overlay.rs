@@ -20,10 +20,10 @@ use core::{any::Any, task::Context};
 
 use ax_fs_ng::vfs::OpenOptions;
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-    FilesystemOps, FsIoEvents, FsPollable, Location, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, PreallocationMode, Reference, RenameOptions, StatFs, VfsError,
-    VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps,
+    FileRangeOperation, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Location, Metadata,
+    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference, RenameOptions, StatFs,
+    VfsError, VfsResult, WeakDirEntry,
 };
 
 use crate::{
@@ -852,10 +852,10 @@ impl FileNodeOps for OverlayFile {
         open_write(self.ensure_upper()?)?.backend()?.set_len(len)
     }
 
-    fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+    fn operate_range(&self, offset: u64, len: u64, operation: FileRangeOperation) -> VfsResult<()> {
         open_write(self.ensure_upper()?)?
             .backend()?
-            .preallocate(offset, len, mode)
+            .operate_range(offset, len, operation)
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
