@@ -1,0 +1,480 @@
+ ▐▛███▜▌   Claude Code v2.1.226
+▝▜█████▛▘  Fable 5 · API Usage Billing
+  ▘▘ ▝▝    ~/tgoskits-realtime
+
+
+❯ 我们这个赛题的主要目的是为了提升它的实时性和稳定性，这个操作系统的，你来分析  
+  一下这个赛题吧，它是让我们改造成 RTOS 还是其他的什么呢？                      
+
+  Thought for 23s (ctrl+o to expand)
+
+● 我来先看看仓库里关于这个赛题的资料（分支名是
+  openrace/realtime-virq-ab，docs/my/
+  下有相关状态文档），再结合已有工作来分析赛题定位。
+
+  Thought for 3m 46s, searched for 1 pattern, read 3 files (ctrl+o to expand)
+
+● 赛题原文、执行计划都看完了。下面是我的分析。
+
+  结论：不是让你把它改造成 RTOS，而是做"实时虚拟化"
+
+  赛题（《智能化工控中基于虚拟化的混合系统部署及联动实现》，见
+  docs/my/openrace2026-axvisor-topics.md）的改造对象是 AxVisor 这个 
+  hypervisor，不是某个内核本身。它要的是：让 RTOS 以客户机身份跑在 AxVisor
+  上时，实时性不被虚拟化层毁掉；同一块硬件上还要同时跑 Linux/Starry 做 AI
+  推理。这在业界叫混合关键性系统（mixed-criticality）/ 实时 hypervisor，对标
+  Jailhouse、Bao、Xen 的 RTDS、PikeOS 这一类东西，而不是"再造一个 RTOS"。
+
+  从赛题文本里可以直接读出四条证据：
+
+  1. RTOS 已经是现成的 guest，不是交付物。 起始基线写明"已支持 RT-Thread 作为
+  Guest OS"；任务一第 5 条要求选 Zephyr/RT-Thread/FreeRTOS
+  做对照基线，评分点是"与原生 RTOS 基线的对比合理且可复现（5 分）"。RTOS
+  在这个赛题里是尺子——用来量化"虚拟化引入了多少延迟/抖动开销"——而不是产物。
+  2. 改造点全部在 hypervisor 层。
+  任务一列的关键路径是"调度、抢占、定时器、中断路径、CPU
+  亲和性、锁临界区、后台任务"——这些都是 AxVisor（宿主侧 ArceOS
+  运行时）的机制，优化它们是为了给 guest 提供确定性的服务。
+  3. 不允许把系统削成纯 RTOS。 任务一硬性要求改造后的 AxVisor 能稳定启动 ≥2 vCPU
+  的多核 Linux 客户机（占 4 分）。也就是说 GPOS 和 RTOS
+  必须共存，题眼是"混合部署下的隔离与确定性"，单跑一个 RTOS 反而不满足要求。
+  4. 三个任务是一条工控链路。 实时性改造只占 30 分，后面还有跨客户机 IP 通信（25
+  分）和"AI 推理 → 网络 → RTOS 控制 → 状态回传"闭环（25
+  分）。实时底座是第一环，不是全部。
+
+  "实时性和稳定性"在这个赛题里的确切含义
+
+  赛题用词很精确："提升系统运行的确定性和最坏情况响应能力"。这正是实时系统理论的
+  核心——衡量指标不是平均性能，而是：
+
+  - 有界的尾延迟：p99 / p99.9 / max 中断响应延迟、调度延迟；
+  - 抖动（jitter）：周期任务的周期偏差；
+  - 长稳：长时间高压下不丢中断、不溢出、不 panic。
+
+  所以"改造"意味着把 RTOS 的设计手法施加到 hypervisor
+  上：定向唤醒代替广播唤醒、有界队列代替无界队列、缩小锁临界区、vCPU
+  绑核隔离干扰、中断注入路径去掉不确定环节——但产物依然是一个 hypervisor。
+
+  和你们当前工作的对应关系
+
+  当前分支 openrace/realtime-virq-ab 的方向和赛题是对得上的：
+
+  - vIRQ A/B 实验（notify_all + 无界 VM 队列 vs 定向 notify + 64 深度 per-vCPU
+  有界队列）正是任务一"中断路径 +
+  锁/队列"的实质改造，对应评分表里分值最高的一项（8 分）；有界队列 + overflow
+  计数同时也是"稳定性"的直接证据。
+  - 双 vCPU guest 启动（NEXT.md 3.1
+  标为当前最大阻塞项）不只是实验需要——它直接对应赛题"多核 Linux
+  客户机稳定启动"这条 4 分的硬性要求，值得优先打通。
+  - virq_latency_stats.py 输出的 p99/p99.9/max/overrun/lost/overflow
+  指标口径，和赛题第 3、4 条的测量要求一致；还缺的是赛题要求的改造前后完整 A/B 
+  数据、原生 RTOS（native Zephyr）对照、空载 vs stress 对比、30 
+  分钟以上长稳——这些在 plan.md 的任务一清单里也已经列出来了。
+
+  一句话总结：赛题要的不是"把 ArceOS/AxVisor 变成 RTOS"，而是把 AxVisor 
+  打造成一个能承载 RTOS 客户机、并用数据证明其确定性的实时 hypervisor，RTOS
+  本身既是被服务的对象，也是衡量你做得好不好的基线。
+
+✻ Baked for 5m 56s
+
+❯ 那么现在这里的双 vcpu 打通了吗？                                              
+
+  Thought for 1m 0s (ctrl+o to expand)
+
+● 我来查一下最新状态——git 记录里有一条 docs(openrace): record dual-vCPU startup 
+  fix 提交，说明有进展，我确认一下修到什么程度、当前工作区还有什么在改。
+
+  Thought for 2m 22s, read 1 file, listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+● 打通了——而且比"打通"更进一步：跨 vCPU
+  的定向唤醒实验（E1）也已经跑出结果了。分支在对话快照之后又推进了三个提交，之前
+  工作区里的改动现在都已提交。具体状态如下（依据
+  docs/my/openrace-virq-ab-status.md 第 7、8 节）：
+
+  启动链路：已打通，A/B 双方验收通过
+
+  NEXT.md 3.1 说的"最大阻塞项"由三个根因修复解决：
+
+  1. 20e83803a（arm_vgic）：vGIC 给每个 redistributor 都置了
+  GICR_TYPER_LAST，guest 扫到第一个 GICR 帧就停止，secondary CPU 找不到自己的
+  redistributor（gic_get_rdist() 返回 NULL，FAR=0x14 data
+  abort）。改为只在最后一个 redistributor 置位。
+  2. f837d3ad0（arm_vcpu）：这是主根因——HVC/SMC 的返回地址被重复 +4。硬件的 ELR
+  本来就指向 hvc 的下一条指令，trap 层又加了 4 字节，导致 Zephyr PSCI CPU_ON
+  返回后跳过一条 ldr x9,[sp]，随后拿着 x9=0 去 store 触发 FAR=0
+  卡死。修复带了"旧实现必然失败、修复后通过"的单测。
+  3. 415cc4109（axvm）：secondary vCPU 的启动屏障改回 VM 级等待队列——B 的
+  per-vCPU 队列在 PSCI 启动握手完成前不安全，会死锁在 "waiting for running"。
+
+  验收证据（/tmp/ab-A-dual-boot.log、/tmp/ab-B-dual-boot.log）：A、B
+  都能完整启动 SMP2 Zephyr guest，出现 Secondary CPU core 1 (MPID:0x1) is up 和
+  SOFTWARE VIRQ READY streams=2，不再有 ELR/FAR panic。
+
+  但注意一个边界：标准注入场景在双 vCPU 下测不了，用了 E1 绕过
+
+  双核启动后发现新限制（状态文档 7.4）：guest 的 k_sleep 只执行 WFI，而 HCR_EL2
+  没设 TWI，guest 睡眠不产生 VM exit——vCPU task 连续占核且屏蔽 host
+  中断，把同核的 injector 饿死，结果标准注入器一个 vIRQ 都送不进去；把 vCPU
+  挪核又会改变 MPIDR（它和 phys_cpu_id 绑定），SMP guest 不再走 primary boot。
+
+  所以团队做了 E1 实验（新增 scripts/test/zephyr-soft-virq-suspend/
+  workload）：用 PSCI CPU_SUSPEND(standby) 让两个 vCPU 真正 park 到 host
+  等待队列，使 notify 路径承重。vCPU0 纯空闲、vCPU1 收中断，3 轮干净数据全部
+  300/300 闭环，消融结论：
+
+  - 条件 wait 是功能性关键：A 的旧无条件 wait() 在 park
+  场景下直接无法完成（中断搁浅 + 61 次虚假重入 guest）；加条件 wait 后 A
+  也能闭环。
+  - 定向 notify 的收益拿到了 trace 证据：B 对空闲 vCPU0 的 host 侧唤醒是 0 
+  次，A（即使加了条件 wait）仍有约 124 次——被条件检查吸收、不重入 guest，但在多
+  vCPU 下会随 notify_all 按 O(N) 放大。这正是 NEXT.md 3.2 要的"B 不唤醒无关
+  vCPU"的证据。
+  - 端到端延迟 A/B 无稳定差异（park 路径延迟由唤醒/排空周期主导）。
+
+  还没解决的（文档 8.4 记录在案）
+
+  - 偶发（约 1/4 轮）vGIC 投递竞态：LR 停在 Active、guest 停摆，A/B
+  都会出现，根治需要 KVM 式 per-vCPU software pending + maintenance interrupt
+  模型。
+  - AxVM 定时器轮盘会把共享物理 CNTP"停驻"到 1 秒后，这是真实架构 bug，目前
+  sleep_until 只是实验级绕过。
+  - 若要做"非 suspend 的标准双 vCPU 注入"，仍需 TWI trap WFI、或 injector/vCPU
+  分核 + MPIDR 独立配置，这条路径当前数据不覆盖。
+
+  对照赛题任务一的要求，现在"实质改造（定向唤醒 + 有界队列 + 条件 wait）+
+  可复现测量 + 消融证据"这条线已经立住了；下一个和评分直接挂钩的缺口是 ≥2 vCPU 
+  的多核 Linux guest（目前打通的是 Zephyr SMP2）、空载 vs stress 对比和 30
+  分钟以上长稳。
+
+✻ Crunched for 4m 12s
+
+❯ 但是现在实时性上面还是没有体现出来，就是优越性，对吧？                        
+
+  Thought for 1m 38s (ctrl+o to expand)
+
+● 对，也不全对——要把"优越性"拆开看。在端到端延迟/抖动这个最直观的指标上，确实还
+  没有：正式 A/B 里 B 的 mean 低 3~12% 但跨轮波动大、p99 基本持平、max
+  互有胜负；E1 里 A/B 延迟差异也在噪声内。这个判断文档自己也承认（"不能作为强性
+  能结论"）。但另外两类实时性证据其实已经到手了，只是还没被当成主角来表述：
+
+  1. 最坏情况行为的改善（已有，而且是最强的一条）：E1 消融里，A 的旧路径（无条件
+  wait + notify_all）在 vCPU park 场景下会把队列里的中断"搁浅"——没有人再唤醒，
+  永远不会送达。用实时性的语言说，这是最坏情况延迟无穷大；改造后是有界完成（300/
+  300）。"从无界/丢失到有界"正是赛题说的"最坏情况响应能力"，比 mean
+  降几个百分点值钱得多。
+  2. 干扰隔离的机制证据（已有）：B 对无关 vCPU 的唤醒 0 次 vs A 的 ~124
+  次，且该代价随 vCPU 数按 O(N) 放大。
+  3. 端到端延迟/抖动改善（还没有）——你说的就是这个缺口。
+
+  为什么延迟上测不出来
+
+  这不是改造没用，而是实验把信号放错了地方：
+
+  - 信噪比太低。改动影响的是 notify/唤醒这一段（µs 级甚至 ns
+  级），但测的是端到端分布——mean 约 300µs、p99 约 1ms，QEMU 平台和 host
+  调度噪声主导整个分布，几 µs 的改善直接被淹没。
+  - 场景没给 notify_all 制造受害者。单 vCPU 下没有别人可以被误唤醒；E1 里 vCPU0
+  虽然被 A 唤醒了 124 次，但它是纯空闲的，条件 wait 把唤醒吸收在 host
+  侧，代价接近零——所以延迟上看不出差别是符合预期的。
+  - 全程空载。唤醒风暴和锁竞争的代价只有在系统忙碌时才显形：空载下多唤醒一个闲
+  task 没人受害。
+  - A 的无界队列缺陷需要突发/长时才显形。10ms/2ms 的平稳注入下队列深度基本为
+  0，无界 vs 有界当然测不出差异。
+
+  怎么把优越性"做出来"
+
+  对着赛题评分口径（"体现最坏情况延迟或抖动改善"+"空载与 stress
+  对比"）设计，而不是继续在现有场景上加轮次：
+
+  1. 换成干扰隔离实验（受害者视角）：vCPU0 跑周期实时任务、测它的
+  jitter（这本身就是赛题要求上报的指标），vCPU1 承接高频注入流。预期：A 下 vCPU0
+  的 jitter 随注入频率劣化（每次注入都唤醒它的 host task），B
+  下不受影响。再叠加 host 背景负载做 stress 版——受害者忙起来，124
+  次/轮的虚假唤醒才有可测代价。
+  2. 分段测量代替端到端：trace 已经有 enqueue→notify→ipi→running→drain
+  各事件，按段统计延迟分布。B 的收益集中在 notify/唤醒段，段内分布对比能把 µs
+  级差异从 ms 级平台噪声里剥出来；端到端只作为"无回归"证明。
+  3. 突发 + 长稳让有界 vs 无界显形：burst 注入和 1ms 周期 10~30
+  分钟长稳（NEXT.md 3.3 已有设计），量化 A 的队列增长/尾延迟拉长 vs B
+  的有界背压。
+  4. 把"A 搁浅中断"固化为证据：写成确定性回归测试 + 完成率/搁浅率数据，作为
+  worst-case 改善的正式材料，而不是只埋在消融表里。
+  5. 先修 8.4 的两个共有 bug：vGIC LR 竞态（约 1/4 轮 guest
+  停摆）和定时器轮盘停驻 CNTP。不修它们长稳根本过不了；而且这两个本身就是货真价
+  实的"实时性实质改造"素材——停摆 = 最坏情况无穷大，修复前后可以直接出对比数据。
+  6. 记住赛题的对照轴是三方：Native RTOS / 改造前(A) / 改造后(B)。A/B
+  只是其中一条边，原生 Zephyr 基线那条边同时给你"虚拟化开销有多大"的叙事。
+
+  一句话：改造的实时性收益目前只兑现了"确定性/有界性"，还没兑现"延迟/抖动"——缺的
+  不是更多轮次，而是让收益落在可测指标上的实验设计（受害者负载 + stress +
+  分段测量），以及先把两个会毁掉长稳的共有 bug 修掉。
+
+✻ Brewed for 2m 35s
+
+❯ 不是，我说的就是P99/MEAN这种的硬指标                                          
+
+  Thought for 1m 24s (ctrl+o to expand)
+
+● 对，确认。就 p99/mean 这种硬指标而言，现在没有任何一组数据能支撑 B
+  的优越性，把三组数据摆平了看甚至更难看：
+
+  ┌───────────────────────┬──────────────────┬───────────────────┬─────────┐
+  │         场景          │       mean       │        p99        │   max   │
+  ├───────────────────────┼──────────────────┼───────────────────┼─────────┤
+  │ 正式 A/B（10ms，各 2  │ B 低 4.3%        │ 持平（B 高        │ B 低    │
+  │ 轮）                  │                  │ 0.08%）           │ 11.8%   │
+  ├───────────────────────┼──────────────────┼───────────────────┼─────────┤
+  │ 双流 2ms（各 3 轮）   │ B 低 12.3%       │ B 高 3.2%         │ B 更差  │
+  ├───────────────────────┼──────────────────┼───────────────────┼─────────┤
+  │ 修复后双流复测（各 3  │ B 低 3.2%        │ 持平              │ B 高    │
+  │ 轮）                  │                  │                   │ 18%     │
+  ├───────────────────────┼──────────────────┼───────────────────┼─────────┤
+  │ E1 park 场景          │ B 高 21%（662k   │ B 更差（1.34M vs  │ —       │
+  │                       │ vs 545k）        │ 1.23M）           │         │
+  └───────────────────────┴──────────────────┴───────────────────┴─────────┘
+
+  而且单轮波动远大于组间差异：B 的 p99 在同一场景内能从 499k 摆到
+  1,013k（两倍），A/B 之间那 ±3~12% 完全在波动带里。这些数字什么结论都支撑不了。
+
+  但要说透一层：在当前实验里，B 本来就赢不了 p99/mean
+
+  这不是"再多跑几轮就能显出来"的问题。对被测的那一个中断，A 和 B
+  的关键路径几乎等长：都是 enqueue → 唤醒目标 vCPU → IPI → drain →
+  inject。notify_all 也会唤醒目标 vCPU，无界队列在深度≈1
+  时和有界队列没有任何区别。B 改掉的两样东西——不吵醒无关
+  vCPU、过载时有界——收益根本不落在这条被测路径上。继续在现在的场景里堆轮次，最诚
+  实的预期结果就是"无显著差异"。
+
+  p99/mean 要赢，必须制造 B 有物理赢面的条件
+
+  每一条都对应一个真正的硬指标赢面，不是换概念：
+
+  1. 过载/突发场景（最直接的 p99 赢面）。当注入速率超过排空速率，A
+  的无界队列按排队论延迟无界增长——p99/max 会爆炸；B 拒掉超额（记 overflow），已
+  接受样本的延迟保持有界。这是教科书式的"有界队列用丢失换尾延迟"，NEXT.md 3.3 的
+  1ms 长稳压测就是为这个准备的，跑它。
+  2. 受害者视角的 p99/jitter。多 vCPU + host 背景负载下，A 每次注入把所有 parked
+  vCPU 的 host task 都唤醒一遍；测 vCPU0 上周期任务的抖动和调度延迟
+  p99——这同样是 p99/mean
+  硬指标（而且是赛题明文要求上报的"周期任务抖动"），只是测量对象换成被干扰方。E1
+  已经证明 A 有 124
+  次/轮的无关唤醒，现在缺的只是让受害者"忙起来"使这些唤醒变成可测的延迟。
+  3. 放大 N。vCPU 数上到 4~8，notify_all 每次要遍历全部等待队列、锁持有时间随 N
+  增长，注入路径 host 段（enqueue→notify→ipi）延迟随 N 上升而 B
+  恒定。配合分段统计（trace 事件都在了），µs 级差异能直接呈现。
+  4. 降噪，否则一切免谈。QEMU TCG 下端到端 mean ≈300µs、p99 ≈1ms，这个地板上 µs
+  级改善物理上不可见。赛题给的真实板子（香橙派 5 Plus、RK3568 等）上裸金属
+  hypervisor 的地板是几~几十 µs，同样的改善量在那里才落在可测范围内。
+  5. 或者把改造点挪到 p99 的真正来源上。现在 1ms 级的 p99 大概率不是 notify
+  方式贡献的，而是定时器轮盘停驻 CNTP（8.4 承认的架构 bug，直接造成 ms
+  级唤醒误差）、vGIC LR 竞态、vCPU
+  任务无优先级抢占这些东西。修它们的前后对比，才会在现有场景的 p99
+  上直接出数字。
+
+  所以你的判断成立："硬指标优越性"目前为零。但它是实验设计的必然结果，不是改造无
+  效的证明——下一步要么把场景换到 B 有赢面的地方（过载、多
+  vCPU、受害者、真板），要么把改造点换到直接压 p99
+  的地方（定时器/vGIC/调度优先级），赛题"改造前后最坏情况延迟或抖动改善"这条 5
+  分评分项两条路都认。
+
+✻ Churned for 2m 17s
+
+❯ 好的，你的意思是我们的这个workload能做的不是这个指标，而是其他的对吧，想要这  
+  个测量时长的指标更好，这个实验是做不到的？                                    
+
+  Thought for 2m 49s (ctrl+o to expand)
+
+● 对，但要把"做不到"钉在准确的层面上——是工况做不到，不是 workload
+  做不到，更不是指标要换。拆成三层说：
+
+  1. 当前工况下的这个实验：确实做不到
+
+  平稳低速注入（10ms/2ms 远低于排空能力）+ 单消费者 + 空载 + QEMU
+  TCG，这个工况里 A 和 B 对被测中断走的路径物理上等价（队列深度≈1
+  时有界无界没区别，notify_all 也照样唤醒目标）。没有差异存在，测量方法再好也测
+  不出差异。这就是三组数据全是噪声的原因。
+
+  2. 同一个 workload，换工况：p99/max 这个硬指标就能出数字
+
+  不用换指标，也不用换 workload，把工况推到 A 的弱点显形的区域：
+
+  - 过载/burst：注入速率压过排空速率（周期降到百 µs 级或一次灌一串）。A
+  的无界队列开始堆积，排在队里的中断 requested_ns
+  越来越旧——测出来的响应延迟随队列深度线性增长，p99/max
+  不是差几个百分点，是数量级劣化；B 封顶
+  64、超额显式拒绝，已接受样本的延迟保持有界。这测的还是同一个"测量时长"指标。
+  - 一个已知的坑要先设计掉：同 vector 的 edge 中断背靠背注入会被 GIC 合并（5.1
+  节已经踩过）。所以过载实验要么用多 vector 分摊（双流 workload
+  已支持，可以再扩），要么把合并明确计为 A 的丢失——顺带这本身就是叙事点：A 
+  过载时静默丢/延迟无界，B 
+  过载时在入口显式拒绝、生产者可感知，实时系统里准入控制优于静默劣化。
+  - 受害者负载版 E1：vCPU0 跑周期任务，测它的 jitter/调度延迟 p99——还是 p99/mean
+  硬指标，只是测量对象从"被注入的流"换成"被打扰的流"。
+
+  3. 但如果你要的是"正常工况下被测中断本身的 p99/mean 更好"——那 B 
+  这个改造永远做不到
+
+  这一点要想清楚：定向唤醒 + 有界队列从设计上就不是加速器，是隔离器和稳定器，它
+  不缩短任何一纳秒的关键路径。想在正常负载下把 p99/mean
+  本身压下去，需要的是另一类改造——作用在延迟关键路径上的那种：
+
+  - 定时器轮盘停驻 CNTP 的 bug（8.4 承认的，直接制造 ms 级唤醒误差）；
+  - vGIC LR 竞态/注入路径；
+  - vCPU 任务的优先级与抢占（RT 调度）。
+
+  修这些，现有的平稳工况实验反而立刻变得有用——因为它们真的动了被测路径。
+
+  一句话总结：同改造 + 换工况（过载/受害者）→ p99/max 能赢；同工况 + 
+  换改造（timer/vGIC/调度）→ p99/mean 能赢；同改造 + 同工况 →
+  永远是噪声。现在的实验和 workload
+  都是好资产，缺的是把这两条路里至少一条走出来。
+
+✻ Sautéed for 3m 38s
+
+❯ 好的，那么你来分析一下你提到的延迟关键路径的这三个吧，看看哪一个真的可以做到  
+  延迟降低，修改的具体方法又是什么                                              
+
+  Thought for 2m 16s (ctrl+o to expand)
+
+● 这个问题需要落到代码上才能回答准确。我分三路并行去查：定时器权威路径、vGIC
+  注入路径、host 调度器唤醒路径，拿到 file:line 证据后再做综合判断。
+
+● 3 background agents launched (↓ to manage)
+   ├ Trace host/guest timer paths
+   ├ Trace vGIC vIRQ injection path
+   └ Trace host scheduler wake path
+
+  Thought for 2m 33s (ctrl+o to expand)
+
+● 三个排查方向已经并行展开（定时器、vGIC 注入、调度器唤醒路径），等它们带着
+  file:line 证据回来后我再做综合分析和排序。稍等。
+
+✻ Brewed for 5m 35s
+
+● Agent "Trace host/guest timer paths" failed: Agent terminated early due to an
+API error: API Error: Request rejected (429) · Service Unavailable
+
+  Thought for 22s (ctrl+o to expand)
+
+● 定时器方向的子任务因 API 限流失败了，另外两路还在跑。定时器这条我直接自己查。
+
+  Thought for 9m 48s, searched for 6 patterns, read 3 files, listed 1 directory, ran 5 shell commands (ctrl+o to expand)
+
+● Agent "Trace vGIC vIRQ injection path" failed: Agent terminated early due to
+an API error: API Error: Request rejected (429) · Service Unavailable
+
+● Agent "Trace host scheduler wake path" failed: Agent terminated early due to
+an API error: API Error: Request rejected (429) · Service Unavailable
+● 轮盘冲突的实锤拿到了。再确认两个细节：park 时长常量、注入器现在的 sleep 实现。
+
+  Thought for 3m 21s, searched for 2 patterns, ran 1 shell command (ctrl+o to expand)
+
+● 定时器这条线已经查透了（三个互不知情的定时器写入方、1s park、100Hz
+  tick），vGIC 和调度器两路子任务还在跑。等它们的 file:line
+  证据回来我就给出三个候选的完整对比分析。
+
+✻ Crunched for 20m 40s
+
+❯ 现在呢，结果是什么？                                                          
+
+  Thought for 5m 5s (ctrl+o to expand)
+
+● 两路后台排查其实都因为 API 限流挂掉了（和定时器那路一样的
+  429），只有定时器是我自己查完的。现在我直接把 vGIC
+  和调度器这两条也自己查掉，然后给你完整结论。
+
+  Thought for 6m 15s, searched for 4 patterns, read 1 file, ran 3 shell commands (ctrl+o to expand)
+
+● 三条路径现在全部查完了（后台子任务全因 API
+  限流挂掉，我直接自己查的）。结论先行：
+
+  三个候选里，真正能在"现有实验、现有工况"下压低 p99/max 的是 vGIC 
+  注入路径；定时器权威能压低的是 guest 
+  周期任务抖动（另一个赛题硬指标）；调度器改造真实且改动最小，但必须配 stress 
+  工况才能出数字。
+
+  1. vGIC 注入路径 —— 能直接降当前实验的 p99.9/max ✅
+
+  现状机制（都有代码实锤）：
+  - 注入就是从 host 直写 ICH_LR：找空 LR 写 VINTID + 
+  Pending（virtualization/axvm/src/arch/aarch64/gic.rs:54-90）。
+  - 同 vector 已在 LR 里 Pending/Active 时 → busy →
+  跳过并计数（gic.rs:59-63），调用方把边沿重入队（commit 041210b5f 修复
+  #3，之前是静默丢）。
+  - 全仓库没有任何 maintenance interrupt 支持：ICH_HCR_EL2 只开了 EN
+  位（gic.rs:84-87），UIE/NPIE/LRENPIE 没人碰，PPI 25 没有 handler。
+  - arm_vcpu 的 world switch 不保存/恢复 ICH_LR 和 AP1R（grep 全仓库，LR
+  寄存器只在 gic.rs 出现）——这就是 1/4 轮"LR 停在 Active、AP1R≠0"停摆的土壤。
+
+  为什么这是当前 p99/max 的直接来源：busy 被重入队的中断，只能等"下一次随机
+  guest exit"（下一发注入 IPI，或 10ms host tick）才有机会重试。也就是说一次
+  back-to-back 注入的尾延迟直接被拉到一个注入周期量级（2ms 场景里观测到的
+  1.2~1.7ms max 与此吻合），停摆轮更是 max=∞。这些正是现在尾部统计里的大样本。
+
+  具体修法（KVM 式，三步）：
+  1. world switch 增加 per-vCPU 的 ICH_LR*/ICH_AP1R* 保存恢复——修停摆根因；
+  2. pcpu 初始化注册 PPI 25 handler；drain 因 busy/无空 LR 而重入队时置
+  ICH_HCR_EL2.NPIE（或 UIE），guest EOI 腾出 LR → maintenance IRQ → 立即 exit →
+  马上补注入 → 清位。busy-defer 延迟从"最多一个周期"变成"ISR 时长 + 一次
+  exit（µs 级）"；
+  3. exit 时收割已 Invalid 的 LR、给仍 Active 的记账，让软件 pending 队列和 LR
+  状态一致，消除 busy 误判。
+
+  回归测试：host-test 模拟 busy 重入队后断言 NPIE
+  被置位（旧实现必然失败）；实测看 lr_skip 计数、p99.9/max、停摆轮消失（这也是
+  30 分钟长稳的先决条件——不修它长稳根本过不了）。
+
+  2. 定时器单一权威 —— 降的是 guest 周期任务 jitter，不是 vIRQ 响应延迟 ⚠️
+
+  现状机制：同一个物理比较器有三个互不知情的写入方：
+  - axruntime program_next_timer = min(100Hz tick, axtask
+  睡眠)（axruntime/src/lib.rs，tick=10ms，defconfig.toml: ticks-per-sec=100）；
+  - axtask maybe_reprogram_timer 带 per-CPU
+  已编程缓存，只在"自认为更早"时写（axtask/src/timers.rs:86-95）；
+  - axvm 轮盘 rearm_host_timer：只看自己的 wheel，空了就 park 到 
+  now+1s（axvm/src/timer.rs:205-216，HOST_TIMER_PARK_DELAY=1s 在
+  timer.rs:26），注释自己承认是靠"覆盖别人"来清除 stale deadline。
+
+  双向都会丢：host 任务的 2ms sleep 被 park 覆盖 → 永不醒（injector
+  已咬过，vcpus.rs:160-166 的 sleep_until 绕过注释直说"wheel
+  是唯一重编程共享物理定时器的路径"）；反向，guest 仿真定时器的 deadline 对
+  axruntime 不可见，每次 timer IRQ 收尾都可能把比较器推到 guest deadline
+  之后——guest 的周期 tick 最多迟到一个 tick 
+  周期（10ms），直接灌进"周期任务抖动"这个赛题一等指标。
+
+  具体修法：建一个 per-CPU arbiter program_physical_timer() = min(tick, axtask 
+  next, axvm wheel next)，三处写点全部收敛到它，删掉 1s park（tick
+  恒为上界）。改动小、边界清晰。更彻底的方案是把 axvm wheel 并进 axtask
+  TimerList，删掉 axvm 侧的 set_oneshot_timer。
+
+  回归测试：单测——axvm wheel 置空触发 rearm 后，断言 axtask 更早的 deadline
+  仍是编程值（旧实现必然失败）。指标兑现：zephyr-periodic 的抖动 p99/max
+  前后对比 + 撤掉 injector 的 sleep_until 绕过。注意：当前 vIRQ 响应实验是 IPI
+  驱动的，这个修复不会动那组 p99。
+
+  3. 调度器 —— 改动最小，但空载下不可见，要配 stress ⚠️
+
+  现状机制：axvisor 的 ax-std 特性没选
+  sched-rr/sched-cfs（os/axvisor/Cargo.toml:73-85）→ 默认 FIFO 协作式调度，无 
+  preempt（axtask/Cargo.toml:47-48：preempt 只随 rr/cfs 启用）。远程唤醒明确忽略
+  resched（run_queue.rs:672 注释），kick_remote_cpu 需要未启用的 ipi
+  特性；set_priority API 存在但 FIFO
+  下无效。后果：目标核空闲时唤醒很快（所以当前空载实验测不出问题），目标核忙时被
+  唤醒任务要等对方自愿让出——无界优先级反转（E1 里"injector 连 before-inject
+  都打不出"就是极端表现）。
+
+  具体修法：基本是接线活——启用 sched-rr + preempt + ipi（代码全都已存在），vCPU
+  任务与 injector 用 set_priority 提优先级，远程唤醒走
+  request_remote_reschedule。想做成"实质改造"叙事可以再进一步为 vCPU
+  任务加固定优先级抢占类。指标兑现：host 加背景负载的 stress 场景下，注入 p99
+  和受害者抖动会出现数量级差异——赛题正好要求空载 vs stress 对比。
+
+  落地顺序建议
+
+  1. vGIC（唯一直接压现有 p99.9/max 的，且是长稳先决条件）→ 2. 定时器权威（拿下
+  jitter 指标 + 修正确性债）→ 3. 调度器（开关级改动，配 stress
+  出数量级对比）。三个都按仓库规则先写"旧实现必然失败"的确定性回归，改造前后数据
+  正好填赛题"关键机制实质改造 8 分 + 前后数据 5 分 + 空载/stress 对比 4
+  分"三个格子。
+
+✻ Baked for 13m 18s
