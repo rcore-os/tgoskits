@@ -1,6 +1,6 @@
 //! JBD2 transaction commit and replay logic.
 
-use alloc::{collections::BTreeSet, vec, vec::Vec};
+use alloc::{collections::BTreeMap, vec, vec::Vec};
 
 use crate::{
     blockdev::*,
@@ -86,6 +86,11 @@ impl ReplayFailure {
         self.persistence_error = Some(error);
         self
     }
+
+    fn with_restart_rel(mut self, restart_rel: u32) -> Self {
+        self.restart_rel = Some(restart_rel);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,11 +109,20 @@ impl ReplayStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
+struct ReplayTransaction {
+    start_rel: u32,
+    sequence: u32,
+    next_rel: u32,
+    payloads: Vec<ReplayPayload>,
+    revoked_blocks: Vec<AbsoluteBN>,
+}
+
+#[derive(Debug)]
 enum ReplayScan {
     CleanEnd,
     Incomplete(ReplayFailure),
-    Applied { next_rel: u32, next_seq: u32 },
+    Committed(ReplayTransaction),
 }
 
 struct ReplayRing<'a> {
@@ -643,7 +657,7 @@ impl JBD2DEVSYSTEM {
         Ok(true)
     }
 
-    fn replay_one_transaction<D: FilesystemBlockIo>(
+    fn scan_one_transaction<D: FilesystemBlockIo>(
         &self,
         block_dev: &mut D,
         ring: &ReplayRing<'_>,
@@ -652,7 +666,7 @@ impl JBD2DEVSYSTEM {
     ) -> ReplayScan {
         let mut record_rel = start_rel;
         let mut payloads: Vec<ReplayPayload> = Vec::new();
-        let mut revoked_blocks = BTreeSet::new();
+        let mut revoked_blocks = Vec::new();
         let Some(max_records) = ring
             .last_rel
             .checked_sub(ring.first_rel)
@@ -741,105 +755,15 @@ impl JBD2DEVSYSTEM {
                         }
                     }
 
-                    // Validate every payload in the committed transaction before
-                    // issuing the first home-block write. A later corrupt payload
-                    // must not leave a partially replayed transaction behind.
-                    let mut committed: Vec<(ReplayPayload, Vec<u8>)> = Vec::new();
-                    for payload in payloads.iter().copied() {
-                        if revoked_blocks.contains(&payload.tag.block) {
-                            continue;
-                        }
-
-                        let meta_phys = match ring.phys(payload.journal_rel) {
-                            Ok(block) => block,
-                            Err(error) => {
-                                return ReplayScan::Incomplete(ReplayFailure::at(
-                                    JournalReplayPhase::Replay,
-                                    error,
-                                    start_rel,
-                                ));
-                            }
-                        };
-                        let mut data = vec![0u8; block_size];
-                        if let Err(error) = block_dev.read(&mut data, meta_phys, 1) {
-                            return ReplayScan::Incomplete(ReplayFailure::at(
-                                JournalReplayPhase::Replay,
-                                error,
-                                start_rel,
-                            ));
-                        }
-                        if let Some(stored) = payload.tag.checksum
-                            && jbd2_tag_csum32(&self.jbd2_super_block.s_uuid, expect_seq, &data)
-                                != stored
-                        {
-                            return ReplayScan::Incomplete(ReplayFailure::at(
-                                JournalReplayPhase::Replay,
-                                Ext4Error::checksum()
-                                    .with_operation("jbd2:replay_payload_checksum"),
-                                start_rel,
-                            ));
-                        }
-                        committed.push((payload, data));
-                    }
-
-                    let mut pos = 0usize;
-                    while pos < committed.len() {
-                        let run_start = pos;
-                        let mut run_end = pos + 1;
-                        while run_end < committed.len()
-                            && committed[run_end].0.tag.block.raw()
-                                == committed[run_end - 1].0.tag.block.raw().saturating_add(1)
-                        {
-                            run_end += 1;
-                        }
-
-                        let run_len = run_end - run_start;
-                        let first_home = committed[run_start].0.tag.block;
-                        let run_bytes = match run_len.checked_mul(block_size) {
-                            Some(bytes) => bytes,
-                            None => {
-                                return ReplayScan::Incomplete(ReplayFailure::at(
-                                    JournalReplayPhase::Replay,
-                                    Ext4Error::overflow(),
-                                    start_rel,
-                                ));
-                            }
-                        };
-                        let mut data = Vec::with_capacity(run_bytes);
-                        for (payload, payload_data) in &committed[run_start..run_end] {
-                            let offset = data.len();
-                            data.extend_from_slice(payload_data);
-                            if (payload.tag.flags & u32::from(JOURNAL_ESCAPE)) != 0 {
-                                data[offset..offset + 4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
-                            }
-                        }
-                        let run_count = match u32::try_from(run_len) {
-                            Ok(count) => count,
-                            Err(_) => {
-                                return ReplayScan::Incomplete(ReplayFailure::at(
-                                    JournalReplayPhase::Replay,
-                                    Ext4Error::overflow(),
-                                    start_rel,
-                                ));
-                            }
-                        };
-                        if let Err(error) = block_dev.write(&data, first_home, run_count) {
-                            return ReplayScan::Incomplete(ReplayFailure::at(
-                                JournalReplayPhase::Replay,
-                                error,
-                                start_rel,
-                            ));
-                        }
-
-                        pos = run_end;
-                    }
-
                     let mut next_rel = record_rel;
                     ring.advance(&mut next_rel);
-                    return ReplayScan::Applied {
+                    return ReplayScan::Committed(ReplayTransaction {
+                        start_rel,
+                        sequence: expect_seq,
                         next_rel,
-                        next_seq: expect_seq.wrapping_add(1),
-                    };
+                        payloads,
+                        revoked_blocks,
+                    });
                 }
                 JBD2_BLOCKTYPE_REVOKE => {
                     let blocks = match self.parse_revoke_blocks(&record_buf) {
@@ -869,22 +793,136 @@ impl JBD2DEVSYSTEM {
         ))
     }
 
+    fn transaction_id_after(candidate: u32, reference: u32) -> bool {
+        (candidate.wrapping_sub(reference) as i32) > 0
+    }
+
+    fn build_revoke_table(transactions: &[ReplayTransaction]) -> BTreeMap<AbsoluteBN, u32> {
+        let mut revoke_table = BTreeMap::new();
+        for transaction in transactions {
+            for &block in &transaction.revoked_blocks {
+                revoke_table
+                    .entry(block)
+                    .and_modify(|sequence| {
+                        if Self::transaction_id_after(transaction.sequence, *sequence) {
+                            *sequence = transaction.sequence;
+                        }
+                    })
+                    .or_insert(transaction.sequence);
+            }
+        }
+        revoke_table
+    }
+
+    fn payload_is_revoked(
+        revoke_table: &BTreeMap<AbsoluteBN, u32>,
+        block: AbsoluteBN,
+        payload_sequence: u32,
+    ) -> bool {
+        revoke_table.get(&block).is_some_and(|revoke_sequence| {
+            !Self::transaction_id_after(payload_sequence, *revoke_sequence)
+        })
+    }
+
+    fn replay_transaction<D: FilesystemBlockIo>(
+        &self,
+        block_dev: &mut D,
+        ring: &ReplayRing<'_>,
+        transaction: &ReplayTransaction,
+        revoke_table: &BTreeMap<AbsoluteBN, u32>,
+    ) -> Result<(), ReplayFailure> {
+        let block_size = block_dev.block_size();
+        // Validate every non-revoked payload in this transaction before the
+        // first home-block write. Corruption must not partially replay one
+        // transaction.
+        let mut committed: Vec<(ReplayPayload, Vec<u8>)> = Vec::new();
+        for payload in transaction.payloads.iter().copied() {
+            if Self::payload_is_revoked(revoke_table, payload.tag.block, transaction.sequence) {
+                continue;
+            }
+
+            let meta_phys = ring.phys(payload.journal_rel).map_err(|error| {
+                ReplayFailure::at(JournalReplayPhase::Replay, error, transaction.start_rel)
+            })?;
+            let mut data = vec![0u8; block_size];
+            block_dev.read(&mut data, meta_phys, 1).map_err(|error| {
+                ReplayFailure::at(JournalReplayPhase::Replay, error, transaction.start_rel)
+            })?;
+            if let Some(stored) = payload.tag.checksum
+                && jbd2_tag_csum32(&self.jbd2_super_block.s_uuid, transaction.sequence, &data)
+                    != stored
+            {
+                return Err(ReplayFailure::at(
+                    JournalReplayPhase::Replay,
+                    Ext4Error::checksum().with_operation("jbd2:replay_payload_checksum"),
+                    transaction.start_rel,
+                ));
+            }
+            committed.push((payload, data));
+        }
+
+        let mut pos = 0usize;
+        while pos < committed.len() {
+            let run_start = pos;
+            let mut run_end = pos + 1;
+            while run_end < committed.len()
+                && committed[run_end].0.tag.block.raw()
+                    == committed[run_end - 1].0.tag.block.raw().saturating_add(1)
+            {
+                run_end += 1;
+            }
+
+            let run_len = run_end - run_start;
+            let first_home = committed[run_start].0.tag.block;
+            let run_bytes = run_len.checked_mul(block_size).ok_or_else(|| {
+                ReplayFailure::at(
+                    JournalReplayPhase::Replay,
+                    Ext4Error::overflow(),
+                    transaction.start_rel,
+                )
+            })?;
+            let mut data = Vec::with_capacity(run_bytes);
+            for (payload, payload_data) in &committed[run_start..run_end] {
+                let offset = data.len();
+                data.extend_from_slice(payload_data);
+                if (payload.tag.flags & u32::from(JOURNAL_ESCAPE)) != 0 {
+                    data[offset..offset + 4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+                }
+            }
+            let run_count = u32::try_from(run_len).map_err(|_| {
+                ReplayFailure::at(
+                    JournalReplayPhase::Replay,
+                    Ext4Error::overflow(),
+                    transaction.start_rel,
+                )
+            })?;
+            block_dev
+                .write(&data, first_home, run_count)
+                .map_err(|error| {
+                    ReplayFailure::at(JournalReplayPhase::Replay, error, transaction.start_rel)
+                })?;
+
+            pos = run_end;
+        }
+        Ok(())
+    }
+
     /// Replays committed transactions using the journal inode logical-block map.
     pub(crate) fn replay_with_mapping<D: FilesystemBlockIo>(
         &mut self,
         block_dev: &mut D,
         journal_blocks: &[AbsoluteBN],
     ) -> ReplayStatus {
-        let mut journal_rel = self.jbd2_super_block.s_start;
-        if journal_rel == 0 {
+        let initial_rel = self.jbd2_super_block.s_start;
+        if initial_rel == 0 {
             return ReplayStatus::Complete;
         }
 
-        if !journal_blocks.is_empty() && journal_rel as usize >= journal_blocks.len() {
+        if !journal_blocks.is_empty() && initial_rel as usize >= journal_blocks.len() {
             return ReplayStatus::Incomplete(ReplayFailure::at(
                 JournalReplayPhase::Initialize,
                 Ext4Error::corrupted().with_operation("jbd2:replay_start_mapping"),
-                journal_rel,
+                initial_rel,
             ));
         }
 
@@ -893,40 +931,70 @@ impl JBD2DEVSYSTEM {
             return ReplayStatus::Incomplete(ReplayFailure::at(
                 JournalReplayPhase::Initialize,
                 Ext4Error::corrupted().with_operation("jbd2:replay_maxlen"),
-                journal_rel,
+                initial_rel,
             ));
         }
         let Some(ring) = ReplayRing::new(self, journal_blocks) else {
             return ReplayStatus::Incomplete(ReplayFailure::at(
                 JournalReplayPhase::Initialize,
                 Ext4Error::corrupted().with_operation("jbd2:replay_ring"),
-                journal_rel,
+                initial_rel,
             ));
         };
-        let mut expect_seq = self.jbd2_super_block.s_sequence;
+        let initial_sequence = self.jbd2_super_block.s_sequence;
+        let mut journal_rel = initial_rel;
+        let mut expect_seq = initial_sequence;
+        let mut transactions = Vec::new();
 
-        let status = loop {
-            match self.replay_one_transaction(block_dev, &ring, journal_rel, expect_seq) {
-                ReplayScan::Applied { next_rel, next_seq } => {
-                    journal_rel = next_rel;
-                    expect_seq = next_seq;
-                    self.jbd2_super_block.s_start = journal_rel;
-                    self.jbd2_super_block.s_sequence = expect_seq;
-                    self.sequence = expect_seq;
+        // Pass 1: discover and validate the complete committed transaction
+        // range. No home block is written in this pass.
+        let scan_failure = loop {
+            match self.scan_one_transaction(block_dev, &ring, journal_rel, expect_seq) {
+                ReplayScan::Committed(transaction) => {
+                    journal_rel = transaction.next_rel;
+                    expect_seq = transaction.sequence.wrapping_add(1);
+                    transactions.push(transaction);
                 }
-                ReplayScan::CleanEnd => {
-                    self.jbd2_super_block.s_start = 0;
-                    self.jbd2_super_block.s_sequence = expect_seq;
-                    self.sequence = expect_seq;
-                    break ReplayStatus::Complete;
+                ReplayScan::CleanEnd => break None,
+                ReplayScan::Incomplete(failure) => break Some(failure),
+            }
+        };
+
+        let status = if let Some(failure) = scan_failure {
+            // None of the scanned transactions has reached its home block yet,
+            // so persist the original restart point even when the diagnostic
+            // failure belongs to a later transaction.
+            self.jbd2_super_block.s_start = initial_rel;
+            self.jbd2_super_block.s_sequence = initial_sequence;
+            self.sequence = initial_sequence;
+            ReplayStatus::Incomplete(failure.with_restart_rel(initial_rel))
+        } else {
+            // Pass 2: retain the latest revoke transaction for every block.
+            let revoke_table = Self::build_revoke_table(&transactions);
+            let mut replay_failure = None;
+
+            // Pass 3: apply payloads in transaction order, consulting the
+            // sequence-aware global revoke table built from the whole log.
+            for transaction in &transactions {
+                if let Err(failure) =
+                    self.replay_transaction(block_dev, &ring, transaction, &revoke_table)
+                {
+                    self.jbd2_super_block.s_start =
+                        failure.restart_rel().unwrap_or(transaction.start_rel);
+                    self.jbd2_super_block.s_sequence = transaction.sequence;
+                    self.sequence = transaction.sequence;
+                    replay_failure = Some(failure);
+                    break;
                 }
-                ReplayScan::Incomplete(failure) => {
-                    let restart_rel = failure.restart_rel().unwrap_or(journal_rel);
-                    self.jbd2_super_block.s_start = restart_rel;
-                    self.jbd2_super_block.s_sequence = expect_seq;
-                    self.sequence = expect_seq;
-                    break ReplayStatus::Incomplete(failure);
-                }
+            }
+
+            if let Some(failure) = replay_failure {
+                ReplayStatus::Incomplete(failure)
+            } else {
+                self.jbd2_super_block.s_start = 0;
+                self.jbd2_super_block.s_sequence = expect_seq;
+                self.sequence = expect_seq;
+                ReplayStatus::Complete
             }
         };
 
@@ -1027,4 +1095,193 @@ pub fn create_journal_entry<B: BlockIo>(
         })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{vec, vec::Vec};
+
+    use super::*;
+    use crate::{
+        config::BLOCK_SIZE,
+        io::{DeviceCapabilities, DeviceGeometry, SectorId},
+        runtime::Clock,
+    };
+
+    const JOURNAL_START: u64 = 128;
+    const JOURNAL_LEN: u32 = 16;
+    const HOME_BLOCK: u64 = 10;
+
+    struct ReplayDevice {
+        blocks: Vec<u8>,
+    }
+
+    impl ReplayDevice {
+        fn new(block_count: usize) -> Self {
+            Self {
+                blocks: vec![0; block_count * BLOCK_SIZE],
+            }
+        }
+
+        fn block_mut(&mut self, block: u64) -> &mut [u8] {
+            let start = usize::try_from(block).expect("test block fits usize") * BLOCK_SIZE;
+            &mut self.blocks[start..start + BLOCK_SIZE]
+        }
+
+        fn block(&self, block: u64) -> &[u8] {
+            let start = usize::try_from(block).expect("test block fits usize") * BLOCK_SIZE;
+            &self.blocks[start..start + BLOCK_SIZE]
+        }
+    }
+
+    impl BlockIo for ReplayDevice {
+        fn read(&mut self, buffer: &mut [u8], block: SectorId, _count: u32) -> Ext4Result<()> {
+            let start = block.as_usize()? * BLOCK_SIZE;
+            let end = start
+                .checked_add(buffer.len())
+                .ok_or_else(Ext4Error::overflow)?;
+            buffer.copy_from_slice(
+                self.blocks
+                    .get(start..end)
+                    .ok_or_else(Ext4Error::invalid_input)?,
+            );
+            Ok(())
+        }
+
+        fn write(&mut self, buffer: &[u8], block: SectorId, _count: u32) -> Ext4Result<()> {
+            let start = block.as_usize()? * BLOCK_SIZE;
+            let end = start
+                .checked_add(buffer.len())
+                .ok_or_else(Ext4Error::overflow)?;
+            self.blocks
+                .get_mut(start..end)
+                .ok_or_else(Ext4Error::invalid_input)?
+                .copy_from_slice(buffer);
+            Ok(())
+        }
+
+        fn geometry(&self) -> DeviceGeometry {
+            DeviceGeometry::new(BLOCK_SIZE as u32, (self.blocks.len() / BLOCK_SIZE) as u64)
+        }
+
+        fn capabilities(&self) -> DeviceCapabilities {
+            DeviceCapabilities {
+                flush: true,
+                ..DeviceCapabilities::default()
+            }
+        }
+
+        fn flush(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Clock for ReplayDevice {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
+            Ok(Ext4Timestamp::new(0, 0))
+        }
+    }
+
+    fn replay_superblock() -> JournalSuperBllockS {
+        JournalSuperBllockS {
+            s_maxlen: JOURNAL_LEN,
+            s_first: 1,
+            s_start: 1,
+            s_sequence: 1,
+            ..JournalSuperBllockS::default()
+        }
+    }
+
+    fn write_descriptor(device: &mut ReplayDevice, relative: u32, sequence: u32) {
+        let block = device.block_mut(JOURNAL_START + u64::from(relative));
+        JournalHeaderS {
+            h_magic: JBD2_MAGIC,
+            h_blocktype: JBD2_BLOCKTYPE_DESCRIPTOR,
+            h_sequence: sequence,
+        }
+        .to_disk_bytes(&mut block[..JBD2_DESCRIPTOR_HEADER_SIZE]);
+        JournalBlockTagS {
+            t_blocknr: HOME_BLOCK as u32,
+            t_checksum: 0,
+            t_flags: JBD2_FLAG_LAST_TAG,
+        }
+        .to_disk_bytes(
+            &mut block[JBD2_DESCRIPTOR_HEADER_SIZE..JBD2_DESCRIPTOR_HEADER_SIZE + JBD2_TAG_SIZE],
+        );
+    }
+
+    fn write_commit(device: &mut ReplayDevice, relative: u32, sequence: u32) {
+        JournalHeaderS {
+            h_magic: JBD2_MAGIC,
+            h_blocktype: JBD2_BLOCKTYPE_COMMIT,
+            h_sequence: sequence,
+        }
+        .to_disk_bytes(
+            &mut device.block_mut(JOURNAL_START + u64::from(relative))
+                [..JBD2_DESCRIPTOR_HEADER_SIZE],
+        );
+    }
+
+    fn write_revoke(device: &mut ReplayDevice, relative: u32, sequence: u32) {
+        let block = device.block_mut(JOURNAL_START + u64::from(relative));
+        Jbd2JournalRevokeHeadS {
+            r_header: JournalHeaderS {
+                h_magic: JBD2_MAGIC,
+                h_blocktype: JBD2_BLOCKTYPE_REVOKE,
+                h_sequence: sequence,
+            },
+            r_count: 20,
+        }
+        .to_disk_bytes(&mut block[..16]);
+        block[16..20].copy_from_slice(&(HOME_BLOCK as u32).to_be_bytes());
+    }
+
+    fn replay_fixture(device: ReplayDevice) -> (ReplayStatus, ReplayDevice) {
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let journal_blocks = (JOURNAL_START..JOURNAL_START + u64::from(JOURNAL_LEN))
+            .map(AbsoluteBN::new)
+            .collect();
+        journal
+            .set_journal_superblock_with_mapping(replay_superblock(), journal_blocks)
+            .expect("install replay journal");
+        let status = journal.journal_replay_checked();
+        (status, journal.into_inner())
+    }
+
+    #[test]
+    fn later_revoke_suppresses_earlier_transaction_payload() {
+        let mut device = ReplayDevice::new(256);
+        device.block_mut(HOME_BLOCK).fill(0x11);
+        write_descriptor(&mut device, 1, 1);
+        device.block_mut(JOURNAL_START + 2).fill(0xa5);
+        write_commit(&mut device, 3, 1);
+        write_revoke(&mut device, 4, 2);
+        write_commit(&mut device, 5, 2);
+
+        let (status, device) = replay_fixture(device);
+        assert_eq!(status, ReplayStatus::Complete);
+        assert!(device.block(HOME_BLOCK).iter().all(|byte| *byte == 0x11));
+    }
+
+    #[test]
+    fn earlier_revoke_does_not_suppress_later_transaction_payload() {
+        let mut device = ReplayDevice::new(256);
+        device.block_mut(HOME_BLOCK).fill(0x11);
+        write_revoke(&mut device, 1, 1);
+        write_commit(&mut device, 2, 1);
+        write_descriptor(&mut device, 3, 2);
+        device.block_mut(JOURNAL_START + 4).fill(0xa5);
+        write_commit(&mut device, 5, 2);
+
+        let (status, device) = replay_fixture(device);
+        assert_eq!(status, ReplayStatus::Complete);
+        assert!(device.block(HOME_BLOCK).iter().all(|byte| *byte == 0xa5));
+    }
+
+    #[test]
+    fn transaction_id_order_wraps_like_linux_tid_gt() {
+        assert!(JBD2DEVSYSTEM::transaction_id_after(0, u32::MAX));
+        assert!(!JBD2DEVSYSTEM::transaction_id_after(u32::MAX, 0));
+        assert!(!JBD2DEVSYSTEM::transaction_id_after(7, 7));
+    }
 }
