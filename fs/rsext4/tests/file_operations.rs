@@ -500,6 +500,350 @@ mod file_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
+    #[test]
+    fn failed_cross_directory_rename_restores_both_names_after_remount() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/old-parent").expect("old parent mkdir failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/new-parent").expect("new parent mkdir failed");
+        let payload = b"rename must publish atomically";
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/old-parent/source",
+            Some(payload),
+            None,
+        )
+        .expect("source creation failed");
+
+        let free_blocks_before = fs.superblock.free_blocks_count();
+        let free_inodes_before = fs.superblock.s_free_inodes_count;
+        let (source_number, _) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/old-parent/source")
+                .expect("source lookup failed")
+                .expect("source missing");
+        let (old_parent_number, mut old_parent_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/old-parent")
+                .expect("old parent lookup failed")
+                .expect("old parent missing");
+        let old_parent_block = loopfile::resolve_inode_block(
+            &fs,
+            &mut jbd2_dev,
+            old_parent_number,
+            &mut old_parent_inode,
+            0,
+        )
+        .expect("old parent block lookup failed")
+        .expect("old parent block missing");
+
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        jbd2_dev
+            .set_journal_use(false)
+            .expect("disable journal for direct fault injection");
+        fail_after_write_sector.set(Some(old_parent_block.raw()));
+
+        let error = rename(
+            &mut jbd2_dev,
+            &mut fs,
+            "/old-parent/source",
+            "/new-parent/destination",
+        )
+        .expect_err("old-directory write failure must abort the whole rename");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        drop(fs);
+        let device = jbd2_dev.into_inner();
+        let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut remounted = mount(&mut remount_dev).expect("remount after failed rename");
+        let (remounted_source, _) =
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/old-parent/source")
+                .expect("remounted source lookup failed")
+                .expect("failed rename must retain its source name");
+        assert_eq!(remounted_source, source_number);
+        assert_eq!(
+            read_file(&mut remount_dev, &mut remounted, "/old-parent/source")
+                .expect("retained source must stay readable"),
+            payload
+        );
+        assert!(
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/new-parent/destination")
+                .expect("remounted destination lookup failed")
+                .is_none(),
+            "failed rename must not publish the destination name"
+        );
+        assert_eq!(remounted.superblock.free_blocks_count(), free_blocks_before);
+        assert_eq!(remounted.superblock.s_free_inodes_count, free_inodes_before);
+    }
+
+    #[test]
+    fn failed_rename_exchange_restores_both_entries_after_remount() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/exchange-old").expect("old parent mkdir failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/exchange-new").expect("new parent mkdir failed");
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/exchange-old/source",
+            Some(b"source payload"),
+            None,
+        )
+        .expect("source creation failed");
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/exchange-new/target",
+            Some(b"target payload"),
+            None,
+        )
+        .expect("target creation failed");
+
+        let (source_number, _) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/exchange-old/source")
+                .expect("source lookup failed")
+                .expect("source missing");
+        let (target_number, _) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/exchange-new/target")
+                .expect("target lookup failed")
+                .expect("target missing");
+        let (old_parent_number, mut old_parent_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/exchange-old")
+                .expect("old parent lookup failed")
+                .expect("old parent missing");
+        let old_parent_block = loopfile::resolve_inode_block(
+            &fs,
+            &mut jbd2_dev,
+            old_parent_number,
+            &mut old_parent_inode,
+            0,
+        )
+        .expect("old parent block lookup failed")
+        .expect("old parent block missing");
+
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        jbd2_dev
+            .set_journal_use(false)
+            .expect("disable journal for direct fault injection");
+        fail_after_write_sector.set(Some(old_parent_block.raw()));
+
+        let error = rename_with_options(
+            &mut jbd2_dev,
+            &mut fs,
+            "/exchange-old/source",
+            "/exchange-new/target",
+            RenameOptions::EXCHANGE,
+        )
+        .expect_err("second exchange-side write failure must abort both replacements");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        drop(fs);
+        let device = jbd2_dev.into_inner();
+        let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut remounted = mount(&mut remount_dev).expect("remount after failed exchange");
+        let (source_after, _) =
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/exchange-old/source")
+                .expect("remounted source lookup failed")
+                .expect("source must remain after failed exchange");
+        let (target_after, _) =
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/exchange-new/target")
+                .expect("remounted target lookup failed")
+                .expect("target must remain after failed exchange");
+        assert_eq!(source_after, source_number);
+        assert_eq!(target_after, target_number);
+        assert_eq!(
+            read_file(&mut remount_dev, &mut remounted, "/exchange-old/source")
+                .expect("source must stay readable"),
+            b"source payload"
+        );
+        assert_eq!(
+            read_file(&mut remount_dev, &mut remounted, "/exchange-new/target")
+                .expect("target must stay readable"),
+            b"target payload"
+        );
+    }
+
+    #[test]
+    fn failed_replacing_rename_restores_target_links_and_orphan_head() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/replace-old").expect("old parent mkdir failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/replace-new").expect("new parent mkdir failed");
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/replace-old/source",
+            Some(b"replacement source"),
+            None,
+        )
+        .expect("source creation failed");
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/replace-new/target",
+            Some(b"original target"),
+            None,
+        )
+        .expect("target creation failed");
+
+        let (source_number, _) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/replace-old/source")
+                .expect("source lookup failed")
+                .expect("source missing");
+        let (target_number, target_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/replace-new/target")
+                .expect("target lookup failed")
+                .expect("target missing");
+        let orphan_head_before = fs.superblock.s_last_orphan;
+        let inode_table = fs.group_descs[0].inode_table();
+
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        jbd2_dev
+            .set_journal_use(false)
+            .expect("disable journal for direct fault injection");
+        fail_after_write_sector.set(Some(inode_table));
+
+        let error = rename(
+            &mut jbd2_dev,
+            &mut fs,
+            "/replace-old/source",
+            "/replace-new/target",
+        )
+        .expect_err("inode-table write failure must abort replacement rename");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        drop(fs);
+        let device = jbd2_dev.into_inner();
+        let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut remounted = mount(&mut remount_dev).expect("remount after failed replacement");
+        let (source_after, _) =
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/replace-old/source")
+                .expect("remounted source lookup failed")
+                .expect("source must remain after failed replacement");
+        let (target_after, target_inode_after) =
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/replace-new/target")
+                .expect("remounted target lookup failed")
+                .expect("target must remain after failed replacement");
+        assert_eq!(source_after, source_number);
+        assert_eq!(target_after, target_number);
+        assert_eq!(target_inode_after.i_links_count, target_inode.i_links_count);
+        assert_eq!(remounted.superblock.s_last_orphan, orphan_head_before);
+        assert_eq!(
+            read_file(&mut remount_dev, &mut remounted, "/replace-old/source")
+                .expect("source must stay readable"),
+            b"replacement source"
+        );
+        assert_eq!(
+            read_file(&mut remount_dev, &mut remounted, "/replace-new/target")
+                .expect("target must stay readable"),
+            b"original target"
+        );
+    }
+
+    #[test]
+    fn failed_directory_move_restores_dotdot_and_parent_links_after_remount() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/directory-old").expect("old parent mkdir failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/directory-new").expect("new parent mkdir failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/directory-old/moved")
+            .expect("moved directory creation failed");
+
+        let (old_parent_number, old_parent_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/directory-old")
+                .expect("old parent lookup failed")
+                .expect("old parent missing");
+        let (new_parent_number, new_parent_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/directory-new")
+                .expect("new parent lookup failed")
+                .expect("new parent missing");
+        let (moved_number, mut moved_inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/directory-old/moved")
+                .expect("moved directory lookup failed")
+                .expect("moved directory missing");
+        let moved_block =
+            loopfile::resolve_inode_block(&fs, &mut jbd2_dev, moved_number, &mut moved_inode, 0)
+                .expect("moved directory block lookup failed")
+                .expect("moved directory block missing");
+
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        jbd2_dev
+            .set_journal_use(false)
+            .expect("disable journal for direct fault injection");
+        fail_after_write_sector.set(Some(moved_block.raw()));
+
+        let error = rename(
+            &mut jbd2_dev,
+            &mut fs,
+            "/directory-old/moved",
+            "/directory-new/moved",
+        )
+        .expect_err("dotdot write failure must abort the directory move");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        drop(fs);
+        let device = jbd2_dev.into_inner();
+        let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut remounted = mount(&mut remount_dev).expect("remount after failed directory move");
+        let (moved_after, _) =
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/directory-old/moved")
+                .expect("remounted moved-directory lookup failed")
+                .expect("failed move must retain the old directory name");
+        assert_eq!(moved_after, moved_number);
+        assert!(
+            dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/directory-new/moved")
+                .expect("remounted destination lookup failed")
+                .is_none()
+        );
+        let mut moved_directory_data = vec![0; rsext4::BLOCK_SIZE];
+        remount_dev
+            .read_blocks(&mut moved_directory_data, moved_block, 1)
+            .expect("read remounted moved-directory block");
+        let dot_rec_len = usize::from(u16::from_le_bytes([
+            moved_directory_data[4],
+            moved_directory_data[5],
+        ]));
+        let dotdot_raw = u32::from_le_bytes(
+            moved_directory_data[dot_rec_len..dot_rec_len + 4]
+                .try_into()
+                .expect("dotdot inode field"),
+        );
+        assert_eq!(dotdot_raw, old_parent_number.raw());
+        let old_parent_after = remounted
+            .get_inode_by_num(&mut remount_dev, old_parent_number)
+            .expect("remounted old parent inode");
+        let new_parent_after = remounted
+            .get_inode_by_num(&mut remount_dev, new_parent_number)
+            .expect("remounted new parent inode");
+        assert_eq!(
+            old_parent_after.i_links_count,
+            old_parent_inode.i_links_count
+        );
+        assert_eq!(
+            new_parent_after.i_links_count,
+            new_parent_inode.i_links_count
+        );
+    }
+
     /// Verifies cross-directory moves by checking that the source path disappears
     /// and the destination path keeps the original payload.
     #[test]
