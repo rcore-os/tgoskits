@@ -434,3 +434,26 @@ RSEXT4_BENCH_SUMMARY commit=d7eaa40eb3950506744e62b277dd36069873d182 arch=x86_64
 但 sync latency 门槛按 p95 判定；因此本检查点满足冻结的 host 门槛。7.9 的
 legacy allocator 与 7.14 的一次 sync p95 红项仍原样保留，未被本次通过结果
 覆盖或改判。
+
+### 7.16 owned mount boundary 探索性检查点
+
+采集时间：2026-08-11；被测实现 commit 为 `d2871bd7d`，固定 CPU 2，环境与
+7.8 相同。该检查点让 `Jbd2Dev` 的内部 timestamp 调用使用 mount 注入的独立
+`Clock` callback，并建立消费 device、cache、journal 和 services 的私有
+`Ext4<D, S>` owner。当前冻结 harness 仍调用 legacy path API，因此这里只测量
+内部 callback 对既有 workload 的影响；待 harness 随公共 API 一并迁移后必须
+重新做最终 A/B，不能把本结果视为新 API 性能证明。
+
+本次探索使用 3 次预热与 10 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-11-owned-mount-boundary.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=d2871bd7d arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=7272243 write_p95_ns=11335665 read_median_ns=6987463 read_p95_ns=7625277 sync_median_ns=37096 sync_p95_ns=46288
+```
+
+相对 dev 基线，read median/p95 分别改善约 3.2%/10.1%；write median 回退约
+6.5%，write p95 回退约 54.5%，sync p95 回退约 19.8%，均超过相应硬门槛。
+11.336 ms write 尾延迟样本未丢弃，也未用选择性复测覆盖；本检查点登记为性能
+红项。该 callback 每次 metadata timestamp 才执行一次，尚不能仅凭此样本把尾
+延迟归因于动态分派；整体性能收敛阶段必须用最终 owned API harness、同机 dev
+对照和至少 20 次正式测量重新定位。
