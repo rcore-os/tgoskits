@@ -360,7 +360,7 @@ impl LockdepMap {
         }
     }
 
-    fn view(&self) -> LockdepMapView<'_> {
+    pub(crate) fn view(&self) -> LockdepMapView<'_> {
         LockdepMapView::new(&self.class_id, &self.class_key)
     }
 }
@@ -737,25 +737,6 @@ pub fn current_task_held_lock_snapshot() -> HeldLockSnapshot {
     let mut snapshot = HeldLockSnapshot::new();
     collect_current_task_held_locks(&mut snapshot);
     snapshot
-}
-
-pub fn prepare_acquire_with_snapshot_nested(
-    map: &LockdepMap,
-    lock_kind: &'static str,
-    addr: usize,
-    caller: &'static Location<'static>,
-    held_before: HeldLockSnapshot,
-    subclass: LockSubclass,
-) -> PreparedAcquire {
-    prepare_acquire_with_snapshot_nested_with_sleep(
-        map,
-        lock_kind,
-        addr,
-        caller,
-        held_before,
-        subclass,
-        true,
-    )
 }
 
 pub fn prepare_acquire_with_snapshot_nested_with_sleep(

@@ -1,9 +1,9 @@
 use crate::sync::context::{ContextBackend, enter_preempt_irqsave, exit_preempt_irqsave};
 
-const CONTEXT_RAW: u8 = 0;
-const CONTEXT_PREEMPT: u8 = 1;
-const CONTEXT_IRQSAVE: u8 = 2;
-const CONTEXT_PREEMPT_IRQSAVE: u8 = 3;
+pub(super) const CONTEXT_RAW: u8 = 0;
+pub(super) const CONTEXT_PREEMPT: u8 = 1;
+pub(super) const CONTEXT_IRQSAVE: u8 = 2;
+pub(super) const CONTEXT_PREEMPT_IRQSAVE: u8 = 3;
 
 /// Runtime callbacks used by the external synchronization provider.
 #[derive(Clone, Copy)]

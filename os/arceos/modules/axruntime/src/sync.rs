@@ -140,8 +140,8 @@ impl ax_sync::interface::SpinOps for RuntimeSpinOps {
         is_try: bool,
         caller: &'static Location<'static>,
     ) -> ax_sync::interface::AcquireResult {
-        let (acquired, context_state) =
-            ax_task::sync::bridge::spin_acquire(ax_task::sync::bridge::SpinAcquireRequest {
+        let (acquired, context_state) = ax_task::sync::bridge::spin_acquire(
+            ax_task::sync::bridge::SpinAcquireRequest {
                 locked,
                 class: ax_task::sync::bridge::LockClass {
                     class_id: metadata.class_id(),
@@ -152,7 +152,9 @@ impl ax_sync::interface::SpinOps for RuntimeSpinOps {
                 subclass,
                 is_try,
                 caller,
-            });
+            },
+            &context_operations(),
+        );
         ax_sync::interface::AcquireResult::new(acquired, into_sync_context_state(context_state))
     }
 
@@ -167,6 +169,7 @@ impl ax_sync::interface::SpinOps for RuntimeSpinOps {
             lock_addr,
             context,
             into_task_context_state(context_state),
+            &context_operations(),
         );
     }
 
@@ -192,8 +195,8 @@ impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
         is_try: bool,
         caller: &'static Location<'static>,
     ) -> ax_sync::interface::AcquireResult {
-        let (acquired, context_state) =
-            ax_task::sync::bridge::rwlock_acquire(ax_task::sync::bridge::RwLockAcquireRequest {
+        let (acquired, context_state) = ax_task::sync::bridge::rwlock_acquire(
+            ax_task::sync::bridge::RwLockAcquireRequest {
                 state,
                 class: ax_task::sync::bridge::LockClass {
                     class_id: metadata.class_id(),
@@ -204,7 +207,9 @@ impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
                 mode,
                 is_try,
                 caller,
-            });
+            },
+            &context_operations(),
+        );
         ax_sync::interface::AcquireResult::new(acquired, into_sync_context_state(context_state))
     }
 
@@ -221,6 +226,7 @@ impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
             context,
             into_task_context_state(context_state),
             mode,
+            &context_operations(),
         );
     }
 

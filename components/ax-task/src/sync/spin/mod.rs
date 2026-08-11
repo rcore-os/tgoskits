@@ -8,10 +8,10 @@ use self::{
 };
 use super::context::{GuardState, PreemptIrqSaveState, PreemptState, RawState};
 
-mod atomic;
+pub(crate) mod atomic;
 mod base;
 #[cfg(feature = "lockdep")]
-mod lockdep;
+pub(crate) mod lockdep;
 mod raw;
 mod rwlock;
 
