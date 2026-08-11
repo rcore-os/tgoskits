@@ -20,7 +20,7 @@ args = [
   "-device", "virtio-net-device,netdev=net-rtos,mac=52:54:00:12:34:02",
   "-object", "filter-dump,id=fd-rtos,netdev=net-rtos,file=${workspace}/tmp/net-dual-guest/rtos-p3-final.pcap",
 ]
-fail_regex = []
-success_regex = []
+fail_regex = ["TASK2_ERROR=", "(?i)panic"]
+success_regex = ["TASK2_STATUS_RECEIVED"]
 to_bin = true
 uefi = false

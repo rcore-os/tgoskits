@@ -55,7 +55,19 @@ const SEND_P1_PROBE: bool = option_env!("TASK2_SEND_P1_PROBE").is_some();
 
 fn main() {
     if let Err(message) = run() {
-        println!("TASK2_ERROR={message}");
+        report_failure(message);
+    }
+}
+
+fn report_failure(message: &'static str) -> ! {
+    println!("TASK2_ERROR={message}");
+    #[cfg(feature = "arceos")]
+    {
+        ax_std::process::exit(1);
+    }
+    #[cfg(not(feature = "arceos"))]
+    {
+        std::process::exit(1);
     }
 }
 
