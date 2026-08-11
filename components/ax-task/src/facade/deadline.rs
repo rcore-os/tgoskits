@@ -273,7 +273,8 @@ pub(crate) fn arm_current_park_deadline(
     let (registration, update) = {
         let owner = cpu.owner();
         let registration = cpu
-            .lock_deadline_base(DeadlineBaseGuardSource::Registration)
+            .remote()
+            .lock_deadline_activity(DeadlineBaseGuardSource::Registration)
             .queue
             .arm(
                 thread.sleep_timer(),
@@ -292,7 +293,8 @@ pub(crate) fn arm_current_park_deadline(
             Ok(update) => update,
             Err(error) => {
                 let removed = cpu
-                    .lock_deadline_base(DeadlineBaseGuardSource::Registration)
+                    .remote()
+                    .lock_deadline_activity(DeadlineBaseGuardSource::Registration)
                     .queue
                     .cancel(&registration);
                 let completed = thread.core.complete_sleep_timer(token.generation());
@@ -343,7 +345,7 @@ pub(crate) fn cancel_current_park_deadline(
             .expect("the deadline registration remains owned until cancellation");
         let (cancellation, expired) = {
             let mut deadline_base =
-                remote.lock_deadline_base(DeadlineBaseGuardSource::Registration);
+                remote.lock_deadline_activity(DeadlineBaseGuardSource::Registration);
             let cancellation = deadline_base.queue.begin_cancel(registration);
             let expired = if cancellation.is_none() {
                 deadline_base
@@ -388,7 +390,9 @@ pub(crate) fn cancel_current_park_deadline(
             .deadline()
             .expect("the deadline registration remains owned until cancellation");
         let cancellation_state = {
-            let mut deadline_base = cpu.lock_deadline_base(DeadlineBaseGuardSource::Registration);
+            let mut deadline_base = cpu
+                .remote()
+                .lock_deadline_activity(DeadlineBaseGuardSource::Registration);
             let cancellation = deadline_base.queue.begin_cancel(registration);
             let expired = if cancellation.is_none() {
                 deadline_base
@@ -430,7 +434,8 @@ pub(crate) fn cancel_current_park_deadline(
             Err(error) => {
                 cancellation.rollback(
                     &mut cpu
-                        .lock_deadline_base(DeadlineBaseGuardSource::Registration)
+                        .remote()
+                        .lock_deadline_activity(DeadlineBaseGuardSource::Registration)
                         .queue,
                 );
                 cpu.as_mut().invalidate_scheduler_deadline_publication();

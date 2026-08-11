@@ -52,6 +52,15 @@ pub struct TaskDeadlineExpireBatch {
 }
 
 impl TaskDeadlineExpireBatch {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            processed: 0,
+            expired: 0,
+            pending: false,
+            next_deadline: None,
+        }
+    }
+
     /// Returns heap nodes removed during this pass.
     pub const fn processed(self) -> usize {
         self.processed

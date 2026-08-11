@@ -40,6 +40,104 @@ impl DeadlineBaseGuardSource {
     }
 }
 
+/// One authoritative per-CPU deadline base plus its empty-base publication.
+///
+/// `active` is derived from state protected by `state`; it does not own timer
+/// identity or expiry progress. Writers publish the derived bit before
+/// releasing the state lock, while readers use it only to reject a definitely
+/// empty base without entering an IRQ-disabled critical section.
+#[derive(Debug)]
+pub(crate) struct CpuDeadlineBase {
+    state: IrqTicketLock<CpuDeadlineState>,
+    active: AtomicBool,
+}
+
+pub(crate) struct CpuDeadlineReadGuard<'a> {
+    state: IrqTicketGuard<'a, CpuDeadlineState>,
+}
+
+impl core::ops::Deref for CpuDeadlineReadGuard<'_> {
+    type Target = CpuDeadlineState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+pub(crate) struct CpuDeadlineActivityGuard<'a> {
+    state: IrqTicketGuard<'a, CpuDeadlineState>,
+    active: &'a AtomicBool,
+}
+
+impl core::ops::Deref for CpuDeadlineActivityGuard<'_> {
+    type Target = CpuDeadlineState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl core::ops::DerefMut for CpuDeadlineActivityGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
+impl Drop for CpuDeadlineActivityGuard<'_> {
+    fn drop(&mut self) {
+        self.active
+            .store(self.state.has_active_work(), Ordering::Release);
+    }
+}
+
+impl CpuDeadlineBase {
+    pub(crate) fn new(config: TaskSystemConfig) -> Self {
+        Self {
+            state: IrqTicketLock::new(CpuDeadlineState::new(config)),
+            active: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn read(&self, source: DeadlineBaseGuardSource) -> CpuDeadlineReadGuard<'_> {
+        CpuDeadlineReadGuard {
+            state: self.state.lock(source.irq_guard_source()),
+        }
+    }
+
+    pub(crate) fn read_if_active(
+        &self,
+        source: DeadlineBaseGuardSource,
+    ) -> Option<CpuDeadlineReadGuard<'_>> {
+        self.active
+            .load(Ordering::Acquire)
+            .then(|| self.read(source))
+    }
+
+    pub(crate) fn lock_publication(&self) -> IrqTicketGuard<'_, CpuDeadlineState> {
+        self.state
+            .lock(DeadlineBaseGuardSource::Publication.irq_guard_source())
+    }
+
+    pub(crate) fn lock_activity(
+        &self,
+        source: DeadlineBaseGuardSource,
+    ) -> CpuDeadlineActivityGuard<'_> {
+        CpuDeadlineActivityGuard {
+            state: self.state.lock(source.irq_guard_source()),
+            active: &self.active,
+        }
+    }
+
+    pub(crate) fn lock_activity_if_active(
+        &self,
+        source: DeadlineBaseGuardSource,
+    ) -> Option<CpuDeadlineActivityGuard<'_>> {
+        self.active
+            .load(Ordering::Acquire)
+            .then(|| self.lock_activity(source))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SchedulerDeadlinePublicationState {
     pub(crate) deadline: Option<MonotonicDeadline>,
@@ -74,6 +172,10 @@ impl CpuDeadlineState {
             #[cfg(test)]
             expire_passes: 0,
         }
+    }
+
+    fn has_active_work(&self) -> bool {
+        !self.queue.is_empty() || self.expired_count != 0 || self.softirq_activated
     }
 
     pub(crate) fn peek_buffered_expiration(&self) -> Option<ExpiredTaskDeadline> {

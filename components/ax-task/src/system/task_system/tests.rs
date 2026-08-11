@@ -496,7 +496,7 @@ fn scheduler_safe_point_does_not_expire_a_future_monotonic_deadline() {
         .unwrap();
     let registration = cpu
         .remote()
-        .lock_deadline_base(DeadlineBaseGuardSource::TestInspection)
+        .lock_deadline_activity(DeadlineBaseGuardSource::TestInspection)
         .queue
         .arm(
             timer_owner.sleep_timer(),
@@ -510,7 +510,7 @@ fn scheduler_safe_point_does_not_expire_a_future_monotonic_deadline() {
 
     assert!(
         cpu.remote()
-            .lock_deadline_base(DeadlineBaseGuardSource::TestInspection)
+            .lock_deadline_activity(DeadlineBaseGuardSource::TestInspection)
             .queue
             .cancel(&registration),
         "rq clock 1000 must not be interpreted as monotonic time past deadline 50"

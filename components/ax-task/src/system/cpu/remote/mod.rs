@@ -13,7 +13,8 @@ mod run_queue;
 mod scheduler;
 
 pub(crate) use deadline::{
-    CpuDeadlineState, DeadlineBaseGuardSource, SchedulerDeadlinePublicationState,
+    CpuDeadlineActivityGuard, CpuDeadlineBase, CpuDeadlineReadGuard, CpuDeadlineState,
+    DeadlineBaseGuardSource, SchedulerDeadlinePublicationState,
 };
 pub(crate) use delivery::PreparedMigrationDelivery;
 pub(crate) use idle_pull::IdlePullReservation;
@@ -51,7 +52,7 @@ pub struct CpuRemote {
     owner: CpuId,
     run_queue: IrqTicketLock<CpuRunQueueState>,
     rt_bandwidth: IrqTicketLock<RtRunQueueBandwidth>,
-    deadline: IrqTicketLock<CpuDeadlineState>,
+    deadline: CpuDeadlineBase,
     /// Linux `dl_rq.extra_bw`: root-domain bandwidth published for this rq.
     deadline_extra_bw_scaled: AtomicU64,
     owner_state: owner::OwnerState,
@@ -71,7 +72,7 @@ impl CpuRemote {
             owner,
             run_queue: IrqTicketLock::new(CpuRunQueueState::new(owner, config)),
             rt_bandwidth: IrqTicketLock::new(RtRunQueueBandwidth::offline()),
-            deadline: IrqTicketLock::new(CpuDeadlineState::new(config)),
+            deadline: CpuDeadlineBase::new(config),
             deadline_extra_bw_scaled: AtomicU64::new(deadline_max_bw_scaled),
             owner_state: owner::OwnerState::new(),
             publication: lifecycle::CpuPublicationState::new(),
@@ -113,11 +114,45 @@ impl CpuRemote {
     /// The rq lock precedes this lock when both are required. Timer IRQ code
     /// takes only this lock; soft-timer callbacks release it before acquiring a
     /// task control lock or rq lock.
-    pub(crate) fn lock_deadline_base(
+    pub(crate) fn read_deadline_base(
         &self,
         source: DeadlineBaseGuardSource,
-    ) -> IrqTicketGuard<'_, CpuDeadlineState> {
-        self.deadline.lock(source.irq_guard_source())
+    ) -> CpuDeadlineReadGuard<'_> {
+        self.deadline.read(source)
+    }
+
+    /// Skips the IRQ-disabled deadline-base read when no timer, expiration, or
+    /// softirq ownership has been published.
+    pub(crate) fn read_active_deadline_base(
+        &self,
+        source: DeadlineBaseGuardSource,
+    ) -> Option<CpuDeadlineReadGuard<'_>> {
+        self.deadline.read_if_active(source)
+    }
+
+    /// Locks physical clockevent publication metadata.
+    ///
+    /// Publication changes neither the logical timer queue nor expiry
+    /// ownership, so it must not rewrite the derived active bit.
+    pub(crate) fn lock_deadline_publication(&self) -> IrqTicketGuard<'_, CpuDeadlineState> {
+        self.deadline.lock_publication()
+    }
+
+    /// Locks a transition that may change queue, buffered expiry, or softirq
+    /// ownership and republishes the derived active bit before unlock.
+    pub(crate) fn lock_deadline_activity(
+        &self,
+        source: DeadlineBaseGuardSource,
+    ) -> CpuDeadlineActivityGuard<'_> {
+        self.deadline.lock_activity(source)
+    }
+
+    /// Skips an expiry transition when the derived base publication is empty.
+    pub(crate) fn lock_active_deadline_activity(
+        &self,
+        source: DeadlineBaseGuardSource,
+    ) -> Option<CpuDeadlineActivityGuard<'_>> {
+        self.deadline.lock_activity_if_active(source)
     }
 
     /// Locks Linux `rt_rq::rt_runtime_lock` after the owner rq lock when both

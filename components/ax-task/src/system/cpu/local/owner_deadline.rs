@@ -43,10 +43,10 @@ impl CpuLocal {
         // SAFETY: clockevent selection is an owner-only transition. The
         // mutable queue/scheduler projections cannot move CpuLocal.
         let this = unsafe { self.get_unchecked_mut() };
-        let timer = {
-            let deadlines = this
-                .remote
-                .lock_deadline_base(DeadlineBaseGuardSource::Observation);
+        let timer = if let Some(deadlines) = this
+            .remote
+            .read_active_deadline_base(DeadlineBaseGuardSource::Observation)
+        {
             if deadlines.softirq_activated {
                 // Linux suppresses `softirq_expires_next` only after the hard
                 // hrtimer path has set `softirq_activated` and woken
@@ -57,6 +57,8 @@ impl CpuLocal {
             } else {
                 deadlines.queue.next_deadline()
             }
+        } else {
+            None
         };
         let scheduler = match this.scheduler_clock_event(monotonic_now) {
             // Deadline selection is a pure observation. An already-due hard
@@ -82,9 +84,7 @@ impl CpuLocal {
         monotonic_now: MonotonicInstant,
     ) -> Result<SchedulerDeadlineUpdate, TaskError> {
         let publication = self.as_mut().scheduler_deadline_publication(monotonic_now);
-        let mut task_deadlines = self
-            .remote
-            .lock_deadline_base(DeadlineBaseGuardSource::Publication);
+        let mut task_deadlines = self.remote.lock_deadline_publication();
         if task_deadlines.publication == Some(publication) {
             return SchedulerDeadlineUpdate::try_new(
                 task_deadlines.generation,
@@ -100,9 +100,7 @@ impl CpuLocal {
         monotonic_now: MonotonicInstant,
     ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
         let publication = self.as_mut().scheduler_deadline_publication(monotonic_now);
-        let mut task_deadlines = self
-            .remote
-            .lock_deadline_base(DeadlineBaseGuardSource::Publication);
+        let mut task_deadlines = self.remote.lock_deadline_publication();
         if task_deadlines.publication == Some(publication) {
             return Ok(None);
         }
@@ -133,9 +131,7 @@ impl CpuLocal {
     }
 
     pub(crate) fn invalidate_scheduler_deadline_publication(self: Pin<&mut Self>) {
-        self.remote
-            .lock_deadline_base(DeadlineBaseGuardSource::Publication)
-            .publication = None;
+        self.remote.lock_deadline_publication().publication = None;
     }
 
     pub(crate) fn publish_hard_timer_work(&self) {
@@ -152,16 +148,18 @@ impl CpuLocal {
 
     pub(crate) fn has_due_task_deadline(&self, now: MonotonicInstant) -> bool {
         self.remote
-            .lock_deadline_base(DeadlineBaseGuardSource::Observation)
-            .queue
-            .has_immediately_actionable_soft_entry(now)
+            .read_active_deadline_base(DeadlineBaseGuardSource::Observation)
+            .is_some_and(|deadlines| deadlines.queue.has_immediately_actionable_soft_entry(now))
     }
 
     pub(crate) fn has_due_scheduler_deadline(&self, now: MonotonicInstant) -> bool {
         self.remote
-            .lock_deadline_base(DeadlineBaseGuardSource::Observation)
-            .queue
-            .has_immediately_actionable_scheduler_entry(now)
+            .read_active_deadline_base(DeadlineBaseGuardSource::Observation)
+            .is_some_and(|deadlines| {
+                deadlines
+                    .queue
+                    .has_immediately_actionable_scheduler_entry(now)
+            })
     }
 
     #[cfg(test)]
@@ -169,9 +167,7 @@ impl CpuLocal {
         self: Pin<&mut Self>,
         generation: u64,
     ) {
-        self.remote
-            .lock_deadline_base(DeadlineBaseGuardSource::Publication)
-            .generation = generation;
+        self.remote.lock_deadline_publication().generation = generation;
     }
 
     fn scheduler_clock_event(
@@ -313,13 +309,6 @@ impl CpuLocal {
         self.dispatch_state_mut().clear_fair_balance();
     }
 
-    pub(crate) fn lock_deadline_base(
-        &self,
-        source: DeadlineBaseGuardSource,
-    ) -> IrqTicketGuard<'_, crate::system::cpu::remote::CpuDeadlineState> {
-        self.remote.lock_deadline_base(source)
-    }
-
     /// Expires one bounded batch of task-context park timeouts.
     ///
     /// CBS and zero-lag timers are consumed separately in the hard clockevent
@@ -346,9 +335,12 @@ impl CpuLocal {
         budget: usize,
     ) -> TaskDeadlineExpireBatch {
         let batch_limit = self.drain.batch_limit();
-        let mut task_deadlines = self
+        let Some(mut task_deadlines) = self
             .remote
-            .lock_deadline_base(DeadlineBaseGuardSource::SoftExpiry);
+            .lock_active_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
+        else {
+            return TaskDeadlineExpireBatch::empty();
+        };
         #[cfg(test)]
         {
             task_deadlines.expire_passes += 1;
@@ -378,9 +370,12 @@ impl CpuLocal {
         self: Pin<&mut Self>,
         now: MonotonicInstant,
     ) -> (Option<ExpiredTaskDeadline>, bool) {
-        let mut task_deadlines = self
+        let Some(mut task_deadlines) = self
             .remote
-            .lock_deadline_base(DeadlineBaseGuardSource::HardExpiry);
+            .lock_active_deadline_activity(DeadlineBaseGuardSource::HardExpiry)
+        else {
+            return (None, false);
+        };
         let mut event = [ExpiredTaskDeadline::EMPTY; 1];
         let batch = task_deadlines
             .queue
@@ -391,7 +386,7 @@ impl CpuLocal {
     #[cfg(test)]
     pub(crate) fn deadline_expire_passes_for_test(&self) -> usize {
         self.remote
-            .lock_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
+            .read_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
             .expire_passes
     }
 
@@ -406,7 +401,7 @@ impl CpuLocal {
     ) -> usize {
         let mut task_deadlines = self
             .remote
-            .lock_deadline_base(DeadlineBaseGuardSource::SoftExpiry);
+            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry);
         let buffered = task_deadlines.expired_count;
         let count = buffered.min(output.len());
         output[..count].copy_from_slice(&task_deadlines.expired_buffer[..count]);
@@ -427,15 +422,14 @@ impl CpuLocal {
         registration: &TaskDeadlineRegistration,
     ) -> Option<ExpiredTaskDeadline> {
         self.remote
-            .lock_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
+            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
             .take_buffered_expiration(registration)
     }
 
     pub(crate) fn has_expired_task_deadlines(&self) -> bool {
         self.remote
-            .lock_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
-            .expired_count
-            != 0
+            .read_active_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
+            .is_some_and(|deadlines| deadlines.expired_count != 0)
     }
 
     /// Completes one Linux-style soft hrtimer drain transaction.
@@ -444,7 +438,7 @@ impl CpuLocal {
     /// again owns its earliest physical clockevent deadline.
     pub(crate) fn finish_task_deadline_softirq(self: Pin<&mut Self>, pending: bool) {
         self.remote
-            .lock_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
+            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
             .softirq_activated = pending;
     }
 }

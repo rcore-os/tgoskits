@@ -33,7 +33,7 @@ mod tests {
         kind: TaskDeadlineKind,
     ) -> crate::timer::TaskDeadlineRegistration {
         cpu.remote()
-            .lock_deadline_base(crate::DeadlineBaseGuardSource::TestInspection)
+            .lock_deadline_activity(crate::DeadlineBaseGuardSource::TestInspection)
             .queue
             .arm(node, deadline, kind)
             .unwrap()
@@ -41,7 +41,7 @@ mod tests {
 
     fn next_test_deadline(cpu: Pin<&CpuLocal>) -> Option<MonotonicDeadline> {
         cpu.remote()
-            .lock_deadline_base(crate::DeadlineBaseGuardSource::TestInspection)
+            .read_deadline_base(crate::DeadlineBaseGuardSource::TestInspection)
             .queue
             .next_deadline()
     }
@@ -759,7 +759,7 @@ mod tests {
         let mut passes = 0;
         while !cpu
             .remote()
-            .lock_deadline_base(crate::DeadlineBaseGuardSource::TestInspection)
+            .read_deadline_base(crate::DeadlineBaseGuardSource::TestInspection)
             .queue
             .is_empty()
             || cpu.has_expired_task_deadlines()
@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(processed, 3);
         assert!(
             cpu.remote()
-                .lock_deadline_base(crate::DeadlineBaseGuardSource::TestInspection)
+                .read_deadline_base(crate::DeadlineBaseGuardSource::TestInspection)
                 .queue
                 .is_empty()
         );
