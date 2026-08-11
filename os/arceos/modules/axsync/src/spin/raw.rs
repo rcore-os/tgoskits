@@ -1,6 +1,6 @@
 //! Raw spin locks that implement [`lock_api::RawMutex`].
 //!
-//! Unlike [`BaseSpinLock`](crate::BaseSpinLock), these locks do not own the
+//! Unlike [`SpinLock`](crate::SpinLock), these locks do not own the
 //! protected data; they only provide the lock/unlock primitive so they can be
 //! plugged into foreign generic code that is parameterised over
 //! `lock_api::RawMutex` (for example the `kprobe` crate's `ProbeManager`).
@@ -23,7 +23,7 @@ use crate::context::{GuardState, PreemptIrqSaveState};
 /// On a single-core build (without the `smp` feature) the atomic flag is
 /// elided, but `G::acquire()`/`G::release()` are still run so preemption and
 /// IRQ state are managed correctly.
-pub struct BaseRawSpinLock<G: GuardState> {
+struct BaseRawSpinLock<G: GuardState> {
     _phantom: PhantomData<G>,
 
     #[cfg(feature = "smp")]
@@ -135,4 +135,39 @@ unsafe impl<G: GuardState + Send + Sync + 'static> lock_api::RawMutex for BaseRa
 /// A raw spin lock that disables kernel preemption and local IRQs while held,
 /// mirroring [`SpinLock::lock_irqsave`](crate::SpinLock::lock_irqsave) but exposed as a
 /// [`lock_api::RawMutex`] for use with foreign generic code.
-pub type RawIrqSaveMutex = BaseRawSpinLock<PreemptIrqSaveState>;
+#[repr(transparent)]
+pub struct RawIrqSaveMutex(BaseRawSpinLock<PreemptIrqSaveState>);
+
+impl RawIrqSaveMutex {
+    /// Creates a new, unlocked IRQ-save raw mutex.
+    pub const fn new() -> Self {
+        Self(BaseRawSpinLock::new())
+    }
+}
+
+impl Default for RawIrqSaveMutex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+unsafe impl lock_api::RawMutex for RawIrqSaveMutex {
+    const INIT: Self = Self::new();
+
+    type GuardMarker = lock_api::GuardNoSend;
+
+    #[inline]
+    fn lock(&self) {
+        self.0.lock();
+    }
+
+    #[inline]
+    fn try_lock(&self) -> bool {
+        self.0.try_lock()
+    }
+
+    #[inline]
+    unsafe fn unlock(&self) {
+        unsafe { self.0.unlock() };
+    }
+}

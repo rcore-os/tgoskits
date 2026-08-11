@@ -16,10 +16,10 @@ use core::{
 
 #[cfg(feature = "lockdep")]
 use crate::IrqSaveGuard;
-use crate::context::GuardState;
+use crate::context::{GuardState, PendingGuardState};
 
 #[cfg(feature = "lockdep")]
-type LockdepAcquire = crate::spin_lockdep::Lockdep;
+type LockdepAcquire = crate::spin::lockdep::Lockdep;
 
 #[cfg(not(feature = "lockdep"))]
 #[derive(Clone, Copy)]
@@ -43,9 +43,57 @@ impl LockdepAcquire {
         Self
     }
 
-    #[cfg(feature = "smp")]
     #[inline(always)]
     fn finish(&self, _acquired: bool) {}
+}
+
+/// Rolls back a partially completed lock acquisition during unwinding.
+struct PendingSpinLockAcquire<'a, G: GuardState> {
+    context: Option<PendingGuardState<G>>,
+    acquired: bool,
+    #[cfg(feature = "smp")]
+    lock: &'a AtomicBool,
+    _lock_lifetime: PhantomData<&'a ()>,
+}
+
+impl<'a, G: GuardState> PendingSpinLockAcquire<'a, G> {
+    #[inline(always)]
+    fn new<T: ?Sized>(lock: &'a BaseSpinLock<G, T>) -> Self {
+        #[cfg(not(feature = "smp"))]
+        let _ = lock;
+        Self {
+            context: Some(PendingGuardState::acquire()),
+            acquired: false,
+            #[cfg(feature = "smp")]
+            lock: &lock.lock,
+            _lock_lifetime: PhantomData,
+        }
+    }
+
+    #[inline(always)]
+    fn mark_acquired(&mut self) {
+        self.acquired = true;
+    }
+
+    #[inline(always)]
+    fn into_state(mut self) -> G::State {
+        debug_assert!(self.acquired);
+        self.acquired = false;
+        self.context
+            .take()
+            .expect("pending lock context must be present")
+            .into_state()
+    }
+}
+
+impl<G: GuardState> Drop for PendingSpinLockAcquire<'_, G> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        if self.acquired {
+            #[cfg(feature = "smp")]
+            self.lock.store(false, Ordering::Release);
+        }
+    }
 }
 
 /// A [spin lock](https://en.m.wikipedia.org/wiki/Spinlock) providing mutually
@@ -63,7 +111,7 @@ pub struct BaseSpinLock<G: GuardState, T: ?Sized> {
     #[cfg(feature = "smp")]
     lock: AtomicBool,
     #[cfg(feature = "lockdep")]
-    lockdep: crate::spin_lockdep::LockdepMap,
+    lockdep: crate::spin::lockdep::LockdepMap,
     data: UnsafeCell<T>,
 }
 
@@ -95,7 +143,7 @@ impl<G: GuardState, T> BaseSpinLock<G, T> {
             #[cfg(feature = "smp")]
             lock: AtomicBool::new(false),
             #[cfg(feature = "lockdep")]
-            lockdep: crate::spin_lockdep::LockdepMap::new(),
+            lockdep: crate::spin::lockdep::LockdepMap::new(),
         }
     }
 
@@ -112,28 +160,32 @@ impl<G: GuardState, T> BaseSpinLock<G, T> {
 impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
     #[cfg(feature = "lockdep")]
     #[inline(always)]
-    pub(crate) fn lockdep_map(&self) -> &crate::spin_lockdep::LockdepMap {
+    pub(crate) fn lockdep_map(&self) -> &crate::spin::lockdep::LockdepMap {
         &self.lockdep
     }
 
     #[inline(always)]
     #[cfg(not(feature = "smp"))]
-    fn finish_lockdep_with_irqsave(lockdep: LockdepAcquire) {
+    fn finish_lockdep(lockdep: LockdepAcquire, acquired: bool) {
         #[cfg(feature = "lockdep")]
         {
             let _lockdep_irq_guard = IrqSaveGuard::new();
-            lockdep.finish(true);
+            lockdep.finish(acquired);
         }
 
         #[cfg(not(feature = "lockdep"))]
         {
-            let _ = lockdep;
+            lockdep.finish(acquired);
         }
     }
 
     #[inline(always)]
     #[cfg(feature = "smp")]
-    fn acquire_once_weak(&self, lockdep: LockdepAcquire) -> bool {
+    fn acquire_once_weak(
+        &self,
+        pending: &mut PendingSpinLockAcquire<'_, G>,
+        lockdep: LockdepAcquire,
+    ) -> bool {
         #[cfg(feature = "lockdep")]
         let _lockdep_irq_guard = IrqSaveGuard::new();
         let acquired = self
@@ -141,6 +193,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok();
         if acquired {
+            pending.mark_acquired();
             lockdep.finish(true);
         }
         acquired
@@ -148,7 +201,11 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
 
     #[inline(always)]
     #[cfg(feature = "smp")]
-    fn acquire_once_strong(&self, lockdep: LockdepAcquire) -> bool {
+    fn acquire_once_strong(
+        &self,
+        pending: &mut PendingSpinLockAcquire<'_, G>,
+        lockdep: LockdepAcquire,
+    ) -> bool {
         #[cfg(feature = "lockdep")]
         let _lockdep_irq_guard = IrqSaveGuard::new();
         let acquired = self
@@ -156,38 +213,49 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok();
         if acquired {
-            lockdep.finish(true);
+            pending.mark_acquired();
         }
+        lockdep.finish(acquired);
         acquired
     }
 
     #[inline(always)]
-    fn blocking_acquire(&self, lockdep: LockdepAcquire) {
+    fn blocking_acquire(
+        &self,
+        pending: &mut PendingSpinLockAcquire<'_, G>,
+        lockdep: LockdepAcquire,
+    ) {
         cfg_if::cfg_if! {
             if #[cfg(feature = "smp")] {
                 // Can fail to lock even if the spinlock is not locked. May be
                 // more efficient than `try_lock` when called in a loop.
-                while !self.acquire_once_weak(lockdep) {
+                while !self.acquire_once_weak(pending, lockdep) {
                     // Wait until the lock looks unlocked before retrying.
                     while self.is_locked() {
                         core::hint::spin_loop();
                     }
                 }
             } else {
-                Self::finish_lockdep_with_irqsave(lockdep);
+                pending.mark_acquired();
+                Self::finish_lockdep(lockdep, true);
             }
         }
     }
 
     #[inline(always)]
-    fn try_acquire(&self, lockdep: LockdepAcquire) -> bool {
+    fn try_acquire(
+        &self,
+        pending: &mut PendingSpinLockAcquire<'_, G>,
+        lockdep: LockdepAcquire,
+    ) -> bool {
         cfg_if::cfg_if! {
             if #[cfg(feature = "smp")] {
                 // The reason for using a strong compare_exchange is explained here:
                 // https://github.com/Amanieu/parking_lot/pull/207#issuecomment-575869107
-                self.acquire_once_strong(lockdep)
+                self.acquire_once_strong(pending, lockdep)
             } else {
-                Self::finish_lockdep_with_irqsave(lockdep);
+                pending.mark_acquired();
+                Self::finish_lockdep(lockdep, true);
                 true
             }
         }
@@ -211,9 +279,10 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
     #[inline(always)]
     #[track_caller]
     pub fn lock_nested(&self, subclass: u32) -> BaseSpinLockGuard<'_, G, T> {
-        let irq_state = G::acquire();
+        let mut pending = PendingSpinLockAcquire::new(self);
         let lockdep = LockdepAcquire::prepare_nested(self, false, subclass);
-        self.blocking_acquire(lockdep);
+        self.blocking_acquire(&mut pending, lockdep);
+        let irq_state = pending.into_state();
         BaseSpinLockGuard {
             _phantom: &PhantomData,
             irq_state,
@@ -246,15 +315,12 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
     #[inline(always)]
     #[track_caller]
     pub fn try_lock(&self) -> Option<BaseSpinLockGuard<'_, G, T>> {
-        let irq_state = G::acquire();
+        let mut pending = PendingSpinLockAcquire::new(self);
         let lockdep = LockdepAcquire::prepare(self, true);
-        let is_unlocked = self.try_acquire(lockdep);
-        #[cfg(feature = "lockdep")]
-        if !is_unlocked {
-            lockdep.finish(false);
-        }
+        let is_unlocked = self.try_acquire(&mut pending, lockdep);
 
         if is_unlocked {
+            let irq_state = pending.into_state();
             Some(BaseSpinLockGuard {
                 _phantom: &PhantomData,
                 irq_state,
@@ -265,7 +331,6 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
                 lock: &self.lock,
             })
         } else {
-            G::release(irq_state);
             None
         }
     }
@@ -284,7 +349,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
         #[cfg(feature = "lockdep")]
         {
             let addr = self as *const _ as *const () as usize;
-            crate::spin_lockdep::force_release::<G>(addr);
+            crate::spin::lockdep::force_release::<G>(addr);
         }
         #[cfg(feature = "smp")]
         self.lock.store(false, Ordering::Release);
@@ -354,7 +419,7 @@ impl<G: GuardState, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
             let _lockdep_irq_guard = IrqSaveGuard::new();
 
             #[cfg(feature = "lockdep")]
-            crate::spin_lockdep::release::<G>(self.lock_addr);
+            crate::spin::lockdep::release::<G>(self.lock_addr);
             #[cfg(feature = "smp")]
             self.lock.store(false, Ordering::Release);
         }
@@ -504,6 +569,52 @@ mod tests {
         ::core::mem::drop(a);
         let c = mutex.try_lock();
         assert_eq!(c.as_ref().map(|r| **r), Some(42));
+    }
+
+    #[cfg(all(
+        feature = "host-test",
+        feature = "lockdep",
+        feature = "smp",
+        not(target_os = "none")
+    ))]
+    #[test]
+    fn lockdep_panic_restores_spin_lock_context() {
+        let lock = SpinMutex::new(42);
+        let guard = lock.lock();
+        let held_context = crate::host_context_snapshot();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lock.try_lock()));
+        assert!(result.is_err());
+        assert_eq!(crate::host_context_snapshot(), held_context);
+
+        drop(guard);
+        assert_eq!(crate::host_context_snapshot(), (0, true));
+        assert!(lock.try_lock().is_some());
+    }
+
+    #[cfg(all(
+        feature = "host-test",
+        feature = "lockdep",
+        feature = "smp",
+        not(target_os = "none")
+    ))]
+    #[test]
+    fn lockdep_finish_panic_rolls_back_spin_lock() {
+        let held_lock = crate::SpinRwLock::new(());
+        let lock = SpinMutex::new(42);
+        let guards = (0..crate::lockdep::TEST_MAX_HELD_LOCKS)
+            .map(|_| held_lock.read())
+            .collect::<Vec<_>>();
+        let held_context = crate::host_context_snapshot();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lock.try_lock()));
+        assert!(result.is_err());
+        assert_eq!(crate::host_context_snapshot(), held_context);
+        assert!(!lock.is_locked());
+
+        drop(guards);
+        assert_eq!(crate::host_context_snapshot(), (0, true));
+        assert!(lock.try_lock().is_some());
     }
 
     #[test]

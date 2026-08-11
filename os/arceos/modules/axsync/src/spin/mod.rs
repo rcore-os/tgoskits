@@ -1,12 +1,21 @@
 //! Public spin-lock types whose acquisition methods express context policy.
 
+mod base;
+#[cfg(feature = "lockdep")]
+pub(crate) mod lockdep;
+#[cfg(feature = "lock-api")]
+mod raw;
+pub(crate) mod rwlock;
+
 use core::{fmt, ptr};
 
-use crate::{
-    context::{PreemptIrqSaveState, PreemptState, RawState},
-    spin_base::{BaseSpinLock, BaseSpinLockGuard},
-    spin_rwlock::{BaseSpinRwLock, BaseSpinRwLockReadGuard, BaseSpinRwLockWriteGuard},
+#[cfg(feature = "lock-api")]
+pub use self::raw::*;
+use self::{
+    base::{BaseSpinLock, BaseSpinLockGuard},
+    rwlock::{BaseSpinRwLock, BaseSpinRwLockReadGuard, BaseSpinRwLockWriteGuard},
 };
+use crate::context::{PreemptIrqSaveState, PreemptState, RawState};
 
 /// A non-sleeping mutual-exclusion lock.
 ///

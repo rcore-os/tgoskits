@@ -1,9 +1,9 @@
 use core::panic::Location;
 
-pub(crate) use crate::spin_lockdep::LockSubclass;
+pub(crate) use crate::spin::lockdep::LockSubclass;
 use crate::{
     mutex::RawMutex,
-    spin_lockdep::{self as common, HeldLockSnapshot, PreparedAcquire},
+    spin::lockdep::{self as common, HeldLockSnapshot, PreparedAcquire},
 };
 
 fn current_held_locks() -> HeldLockSnapshot {
@@ -13,7 +13,7 @@ fn current_held_locks() -> HeldLockSnapshot {
 pub(crate) struct LockdepAcquire {
     addr: usize,
     prepared: PreparedAcquire,
-    inner: crate::lockdep_core::Lockdep,
+    inner: crate::lockdep::Lockdep,
 }
 
 impl LockdepAcquire {
@@ -21,7 +21,7 @@ impl LockdepAcquire {
     #[track_caller]
     pub(crate) fn prepare_nested(lock: &RawMutex, is_try: bool, subclass: LockSubclass) -> Self {
         let addr = lock as *const _ as *const () as usize;
-        let prepared = crate::lockdep_core::prepare_acquire_with_snapshot_nested_with_sleep(
+        let prepared = crate::lockdep::prepare_acquire_with_snapshot_nested_with_sleep(
             &lock.lockdep,
             "mutex",
             addr,
@@ -30,7 +30,7 @@ impl LockdepAcquire {
             subclass,
             false,
         );
-        let inner = crate::lockdep_core::Lockdep::prepare("mutex", addr, is_try, None);
+        let inner = crate::lockdep::Lockdep::prepare("mutex", addr, is_try, None);
         Self {
             addr,
             prepared,
@@ -42,7 +42,7 @@ impl LockdepAcquire {
     pub(crate) fn finish(self, acquired: bool) {
         self.inner.finish(acquired);
         if acquired {
-            crate::lockdep_core::finish_acquire_task(self.prepared, self.addr);
+            crate::lockdep::finish_acquire_task(self.prepared, self.addr);
         }
     }
 }
@@ -50,6 +50,6 @@ impl LockdepAcquire {
 #[inline(always)]
 pub(crate) fn release(lock: &RawMutex) {
     let addr = lock as *const _ as *const () as usize;
-    crate::lockdep_core::release_task(addr);
-    crate::lockdep_core::Lockdep::release("mutex", addr, None);
+    crate::lockdep::release_task(addr);
+    crate::lockdep::Lockdep::release("mutex", addr, None);
 }

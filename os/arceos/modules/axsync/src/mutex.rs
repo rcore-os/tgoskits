@@ -42,15 +42,14 @@ pub trait MutexRuntimeOps {
 pub type LockSubclass = u32;
 
 #[cfg(feature = "lockdep")]
-/// A lockdep subclass identifier.
-pub type LockSubclass = crate::spin_lockdep::LockSubclass;
+use crate::lockdep::LockSubclass;
 
 /// The raw ownership and wait-queue state of a [`Mutex`].
 pub struct RawMutex {
     wait_queue: AtomicPtr<()>,
     owner_id: AtomicU64,
     #[cfg(feature = "lockdep")]
-    pub(crate) lockdep: crate::spin_lockdep::LockdepMap,
+    pub(crate) lockdep: crate::spin::lockdep::LockdepMap,
 }
 
 impl RawMutex {
@@ -61,7 +60,7 @@ impl RawMutex {
             wait_queue: AtomicPtr::new(ptr::null_mut()),
             owner_id: AtomicU64::new(0),
             #[cfg(feature = "lockdep")]
-            lockdep: crate::spin_lockdep::LockdepMap::new(),
+            lockdep: crate::spin::lockdep::LockdepMap::new(),
         }
     }
 
@@ -91,7 +90,7 @@ impl RawMutex {
     #[track_caller]
     fn lock(&self) {
         #[cfg(feature = "lockdep")]
-        self.lock_nested(crate::spin_lockdep::DEFAULT_LOCK_SUBCLASS);
+        self.lock_nested(crate::spin::lockdep::DEFAULT_LOCK_SUBCLASS);
 
         #[cfg(not(feature = "lockdep"))]
         self.lock_plain();
@@ -111,7 +110,7 @@ impl RawMutex {
     fn lock_nested(&self, subclass: LockSubclass) {
         ax_crate_interface::call_interface!(MutexRuntimeOps::might_sleep, Location::caller());
         let current_id = Self::current_task_id();
-        let lockdep = crate::mutex_lockdep::LockdepAcquire::prepare_nested(self, false, subclass);
+        let lockdep = crate::lockdep::mutex::LockdepAcquire::prepare_nested(self, false, subclass);
         self.lock_after_prepare(current_id);
         lockdep.finish(true);
     }
@@ -147,10 +146,10 @@ impl RawMutex {
         let current_id = Self::current_task_id();
 
         #[cfg(feature = "lockdep")]
-        let lockdep = crate::mutex_lockdep::LockdepAcquire::prepare_nested(
+        let lockdep = crate::lockdep::mutex::LockdepAcquire::prepare_nested(
             self,
             true,
-            crate::spin_lockdep::DEFAULT_LOCK_SUBCLASS,
+            crate::spin::lockdep::DEFAULT_LOCK_SUBCLASS,
         );
 
         let acquired = self
@@ -174,7 +173,7 @@ impl RawMutex {
         );
 
         #[cfg(feature = "lockdep")]
-        crate::mutex_lockdep::release(self);
+        crate::lockdep::mutex::release(self);
 
         self.owner_id.store(0, Ordering::Release);
         ax_crate_interface::call_interface!(MutexRuntimeOps::wake_one, &self.wait_queue);

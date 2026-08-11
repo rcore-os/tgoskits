@@ -21,7 +21,9 @@
 ## 2. 边界与依赖方向
 
 `ax-sync` 是唯一公共锁 crate。它拥有锁算法、guard、可睡眠 mutex 和 lockdep 状态机，
-但不拥有硬件或调度器：
+但不拥有硬件或调度器。实现按领域目录分层：`spin/` 收口 spin、rwlock、raw adapter 和
+lockdep adapter，`lockdep/` 收口类型、依赖图、runtime backend、trace 和 mutex adapter；
+各目录由 `mod.rs` 通过受控的 glob re-export 形成内部门面，crate 根只保留既有稳定导出。
 
 ```text
 ax-task ────────> ax-sync <──────── drivers / fs / net / components
@@ -61,8 +63,9 @@ ax-task ────────> ax-sync <──────── drivers / fs
 | `unsafe lock_raw()` / `try_lock_raw()` | 不改变上下文 | 不改变上下文 | 调用方已证明无同 CPU 重入或外层已完成保护 |
 
 三类 guard 具有不同类型，不能混淆释放策略。raw 获取是 `unsafe`，因为在 UP 构建中
-原子锁字可能被裁掉；调用方仍必须证明独占性。`SpinRwLock<T>` 对 read/write 提供相同
-三类获取方法。
+原子锁字可能被裁掉；调用方仍必须证明独占性。所有执行上下文 guard 都是 `!Send`，
+不能把 IRQ/preempt 恢复责任移动到另一线程或 CPU。`SpinRwLock<T>` 对 read/write 提供
+相同三类获取方法。
 
 读写锁继续使用原有非公平算法，不增加 writer preference。公开的瞬时 reader/writer
 计数和未使用的强制写解锁被删除；Starry task scope 需要的“释放一个已泄漏读 guard”
@@ -98,6 +101,13 @@ release: irq_restore -> enable_preempt
 
 逆序恢复保证 IRQ handler 不会在抢占已经恢复、临界区仍未完全退出时观察中间状态。
 IRQ state 是逐次保存的，因此嵌套 IRQ-save guard 不会错误地提前打开中断。
+guard 的 `!Send` 约束由编译失败测试固定，避免未来字段重构重新获得自动 `Send`。
+
+锁 guard 完成构造前，获取路径由内部 pending RAII 对象暂时拥有执行上下文；原子锁成功后
+再完成 lockdep 登记，最后才把上下文转交给公开 guard。host-test 中 lockdep 诊断以 panic
+模拟 runtime fatal，若 prepare 或 finish 在这一阶段 unwind，pending 对象会先回滚已经获取的
+原子锁，再恢复 IRQ/preempt 状态，避免诊断路径污染后续测试。生产 runtime 的 fatal 仍为
+不返回路径，这一回滚不改变正常锁语义。
 
 ## 4. Runtime 能力接口
 
@@ -126,7 +136,14 @@ ArceOS 的实现位于 `ax-runtime/src/sync.rs`。`lock-lint` 要求三个生产
 - 释放时校验 held-lock 栈顶与实例地址；
 - 动态锁实例共享 class，不按实例消耗 class 槽位。
 
-raw spin 获取仍进入 lockdep trace，但其上下文正确性由 `unsafe` 调用契约保证。
+held-lock 条目同时记录 `Exclusive`、`Read` 或 `Write` 模式。不同实例之间的 read/write
+获取都建立锁序边；同一任务可以嵌套获取同一把读锁，但 read-to-write、write-to-read
+和 write-to-write 都作为递归获取诊断。嵌套 reader 各自保留栈条目，以保证每个 guard
+释放都能严格配对，但不会重复建立同类自环。
+
+raw spin 获取仍进入 lockdep trace，但其上下文正确性由 `unsafe` 调用契约保证。普通 raw
+独占获取仍参与 task held-lock 栈；Starry context-switch wrapper 会把 raw reader guard
+跨任务切换泄漏后由专用接口释放，因此该 raw read 路径只记录 trace，不绑定当前任务栈。
 lockdep 关闭时 trace 控制入口是无操作函数，便于 OS facade 保持稳定接口。
 
 ## 6. 子系统策略
@@ -138,7 +155,10 @@ lockdep 关闭时 trace 控制入口是无操作函数，便于 OS facade 保持
 - StarryOS：kernel 生产代码不得直接导入 `ax_sync`，特殊适配只存在于
   `crate::sync` 及其明确实现层。用户态 ABI 和 syscall 返回行为不变。
 - Axvisor：普通状态使用真实 Rust `std::sync`。只有 IRQ/guest-entry/no-preempt 路径
-  使用 `ax_std::os::arceos::sync::{IrqSafeMutex, NoPreemptMutex, RawSpinLock}`。
+  使用 `ax_std::os::arceos::sync::{IrqSafeMutex, NoPreemptMutex, RawSpinLock}`。x86 中会被
+  host IRQ handler 与 vCPU/配置路径共同访问的 interrupt-domain forwarding、input、hook
+  和 host IRQ lease 状态必须使用 `IrqSafeMutex`，不能依赖外层隐含关闭 IRQ 后使用 raw
+  lock。
 
 ## 7. Prior art 与方案比较
 
@@ -165,8 +185,11 @@ lockdep 关闭时 trace 控制入口是无操作函数，便于 OS facade 保持
 
 主要风险是 IRQ/preempt 恢复错误、raw 调用无重入证明、mutex 注册边界丢唤醒、provider
 重复链接、Starry facade 绕过以及 Axvisor 把普通状态重新放回内核 spin 锁。
-验证覆盖 public spin/rwlock 上下文状态、SMP 可见性、try 失败清理、mutex 多 waiter、
-注册边界、非分配 try、owner 诊断、强制解锁、drop、lockdep 顺序和各 OS smoke。
+验证覆盖 public spin/rwlock 上下文状态、guard `!Send` 编译失败、SMP 可见性、try 失败
+清理、lockdep prepare/finish unwind 回滚、mutex 多 waiter、注册边界、非分配 try、owner
+诊断、强制解锁、drop、rwlock
+read/write 锁序反转与嵌套 reader，以及各 OS smoke。AxVM x86 另以类型级回归固定所有
+IRQ 共享 forwarding 状态必须由 `IrqSafeMutex` 保护。
 
 本次明确不做：
 

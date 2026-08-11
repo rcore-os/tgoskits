@@ -5,10 +5,10 @@ use core::{
 };
 
 #[cfg(any(test, doctest, not(target_arch = "riscv64")))]
-#[path = "lockdep_trace/dummy.rs"]
+#[path = "trace/dummy.rs"]
 mod dummy;
 #[cfg(all(target_arch = "riscv64", not(any(test, doctest))))]
-#[path = "lockdep_trace/riscv64.rs"]
+#[path = "trace/riscv64.rs"]
 mod riscv64;
 
 const TRACE_BUFFER_CAP: usize = 65536;
@@ -114,7 +114,7 @@ fn trace_event(kind: &str, args: fmt::Arguments<'_>) {
     trace_buffer_write(writer.as_bytes());
 }
 
-pub fn set_trace_enabled(enabled: bool) {
+pub(crate) fn set_trace_enabled(enabled: bool) {
     if enabled {
         TRACE_EVENT_SEQ.store(0, Ordering::Relaxed);
         TRACE_LEN.store(0, Ordering::Relaxed);
@@ -123,7 +123,7 @@ pub fn set_trace_enabled(enabled: bool) {
     TRACE_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-pub fn dump_trace_buffer() {
+pub(crate) fn dump_trace_buffer() {
     let len = TRACE_LEN.load(Ordering::Relaxed).min(TRACE_BUFFER_CAP);
     if len != 0 {
         // SAFETY: reading a prefix of the static buffer after tracing is disabled.
@@ -136,7 +136,7 @@ pub fn dump_trace_buffer() {
     }
 }
 
-pub fn trace_lock_begin(kind: &str, addr: usize, is_try: bool, detail: Option<&str>) {
+pub(crate) fn trace_lock_begin(kind: &str, addr: usize, is_try: bool, detail: Option<&str>) {
     if let Some(detail) = detail {
         trace_event(
             kind,
@@ -161,7 +161,7 @@ pub fn trace_lock_begin(kind: &str, addr: usize, is_try: bool, detail: Option<&s
     }
 }
 
-pub fn trace_lock_finish(
+pub(crate) fn trace_lock_finish(
     kind: &str,
     addr: usize,
     is_try: bool,
@@ -194,7 +194,7 @@ pub fn trace_lock_finish(
     }
 }
 
-pub fn trace_unlock(kind: &str, addr: usize, detail: Option<&str>) {
+pub(crate) fn trace_unlock(kind: &str, addr: usize, detail: Option<&str>) {
     if let Some(detail) = detail {
         trace_event(
             kind,

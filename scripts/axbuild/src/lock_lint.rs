@@ -234,8 +234,11 @@ fn check_source_boundaries(
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
 
+        let mut internal_use_tree_depth = 0usize;
         for (line_index, line) in source_lines_without_comments(&contents).iter().enumerate() {
-            if contains_direct_spin_path(line) {
+            let in_internal_use_tree =
+                line_is_in_internal_use_tree(line, &mut internal_use_tree_depth);
+            if !in_internal_use_tree && contains_direct_spin_path(line) {
                 findings.push(Finding::new(
                     path,
                     format!("line {}", line_index + 1),
@@ -308,6 +311,35 @@ fn contains_direct_spin_path(line: &str) -> bool {
             .next_back()
             .is_some_and(|character| character.is_alphanumeric() || character == '_')
     })
+}
+
+fn line_is_in_internal_use_tree(line: &str, depth: &mut usize) -> bool {
+    let starts_internal_tree = *depth == 0 && starts_internal_use_tree(line);
+    let in_internal_tree = *depth != 0 || starts_internal_tree;
+    if !in_internal_tree {
+        return false;
+    }
+
+    let opens = line.bytes().filter(|byte| *byte == b'{').count();
+    let closes = line.bytes().filter(|byte| *byte == b'}').count();
+    *depth = depth.saturating_add(opens).saturating_sub(closes);
+    in_internal_tree
+}
+
+fn starts_internal_use_tree(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(use_index) = trimmed.find("use ") else {
+        return false;
+    };
+    if use_index != 0 && !trimmed[..use_index].starts_with("pub") {
+        return false;
+    }
+
+    let path = &trimmed[use_index + "use ".len()..];
+    path.contains('{')
+        && ["crate::", "self::", "super::"]
+            .iter()
+            .any(|root| path.starts_with(root))
 }
 
 fn check_runtime_providers(
@@ -616,6 +648,34 @@ spin = "0.12"
             findings
                 .iter()
                 .any(|finding| finding.message.contains("direct crates.io"))
+        );
+    }
+
+    #[test]
+    fn accepts_internal_spin_module_use_trees() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "crate/src/lib.rs",
+            r#"
+use crate::{
+    mutex::RawMutex,
+    spin::lockdep::LockdepMap,
+};
+pub use self::{
+    context::Guard,
+    spin::*,
+};
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(
+            findings
+                .iter()
+                .all(|finding| !finding.message.contains("direct crates.io")),
+            "internal spin module was mistaken for crates.io spin: {findings:?}"
         );
     }
 

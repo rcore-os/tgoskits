@@ -1,6 +1,6 @@
 use std::vec::Vec;
 
-use ax_std::os::arceos::sync::{RawSpinLock as Mutex, RawSpinLockGuard};
+use ax_std::os::arceos::sync::{IrqSafeMutex as Mutex, IrqSafeMutexGuard};
 use axdevice::*;
 use axvm_types::VmArchVcpuOps;
 
@@ -86,10 +86,8 @@ struct HostIrqLease {
 
 static HOST_IRQ_FORWARDING_LEASES: Mutex<Vec<HostIrqLease>> = Mutex::new(Vec::new());
 
-fn host_irq_forwarding_leases() -> RawSpinLockGuard<'static, Vec<HostIrqLease>> {
-    // SAFETY: host IRQ lease changes are serialized by forwarding lifecycle
-    // operations, which exclude local re-entry before reaching this table.
-    unsafe { HOST_IRQ_FORWARDING_LEASES.lock_raw() }
+fn host_irq_forwarding_leases() -> IrqSafeMutexGuard<'static, Vec<HostIrqLease>> {
+    HOST_IRQ_FORWARDING_LEASES.lock()
 }
 
 fn should_register_ioapic_gsi_hook(gsi: usize) -> bool {
@@ -975,7 +973,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use ax_std::os::arceos::sync::RawSpinLock as Mutex;
+    use ax_std::os::arceos::sync::{IrqSafeMutex, RawSpinLock as Mutex};
     use axdevice::X86IoApicDeviceOps;
 
     use super::{
@@ -1016,6 +1014,13 @@ mod tests {
 
     fn new_domain() -> X86InterruptDomain {
         X86InterruptDomain::new(1, Arc::new(FakeIoApic))
+    }
+
+    #[test]
+    fn host_irq_lease_table_uses_an_irq_safe_lock() {
+        fn assert_irq_safe_lock<T: ?Sized>(_: &IrqSafeMutex<T>) {}
+
+        assert_irq_safe_lock(&super::HOST_IRQ_FORWARDING_LEASES);
     }
 
     fn reset_forwarding_routes() {

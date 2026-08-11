@@ -10,10 +10,16 @@ use core::{
 
 #[cfg(feature = "lockdep")]
 use crate::IrqSaveGuard;
-use crate::context::GuardState;
+use crate::context::{GuardState, PendingGuardState};
 
 #[cfg(feature = "lockdep")]
-type LockdepAcquire = crate::spin_lockdep::Lockdep;
+type LockdepAcquire = crate::spin::lockdep::Lockdep;
+
+#[derive(Clone, Copy)]
+enum RwLockMode {
+    Read,
+    Write,
+}
 
 #[cfg(not(feature = "lockdep"))]
 #[derive(Clone, Copy)]
@@ -31,6 +37,54 @@ impl LockdepAcquire {
     fn finish(&self, _acquired: bool) {}
 }
 
+/// Rolls back a partially completed read or write acquisition during unwind.
+struct PendingRwLockAcquire<'a, G: GuardState> {
+    context: Option<PendingGuardState<G>>,
+    state: &'a AtomicUsize,
+    mode: Option<RwLockMode>,
+}
+
+impl<'a, G: GuardState> PendingRwLockAcquire<'a, G> {
+    #[inline(always)]
+    fn new(state: &'a AtomicUsize) -> Self {
+        Self {
+            context: Some(PendingGuardState::acquire()),
+            state,
+            mode: None,
+        }
+    }
+
+    #[inline(always)]
+    fn mark_acquired(&mut self, mode: RwLockMode) {
+        self.mode = Some(mode);
+    }
+
+    #[inline(always)]
+    fn into_state(mut self) -> G::State {
+        debug_assert!(self.mode.is_some());
+        self.mode = None;
+        self.context
+            .take()
+            .expect("pending rwlock context must be present")
+            .into_state()
+    }
+}
+
+impl<G: GuardState> Drop for PendingRwLockAcquire<'_, G> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        match self.mode {
+            Some(RwLockMode::Read) => {
+                self.state.fetch_sub(READER, Ordering::Release);
+            }
+            Some(RwLockMode::Write) => {
+                self.state.fetch_and(!WRITER, Ordering::Release);
+            }
+            None => {}
+        }
+    }
+}
+
 const READER: usize = 1;
 const WRITER: usize = 1 << (usize::BITS - 1);
 const MAX_READER: usize = 1 << (usize::BITS - 2);
@@ -46,7 +100,7 @@ pub struct BaseSpinRwLock<G: GuardState, T: ?Sized> {
     _phantom: PhantomData<G>,
     state: AtomicUsize,
     #[cfg(feature = "lockdep")]
-    lockdep: crate::spin_lockdep::LockdepMap,
+    lockdep: crate::spin::lockdep::LockdepMap,
     data: UnsafeCell<T>,
 }
 
@@ -82,7 +136,7 @@ impl<G: GuardState, T> BaseSpinRwLock<G, T> {
             _phantom: PhantomData,
             state: AtomicUsize::new(0),
             #[cfg(feature = "lockdep")]
-            lockdep: crate::spin_lockdep::LockdepMap::new(),
+            lockdep: crate::spin::lockdep::LockdepMap::new(),
             data: UnsafeCell::new(data),
         }
     }
@@ -98,7 +152,7 @@ impl<G: GuardState, T> BaseSpinRwLock<G, T> {
 impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
     #[cfg(feature = "lockdep")]
     #[inline(always)]
-    pub(crate) fn lockdep_map(&self) -> &crate::spin_lockdep::LockdepMap {
+    pub(crate) fn lockdep_map(&self) -> &crate::spin::lockdep::LockdepMap {
         &self.lockdep
     }
 
@@ -110,20 +164,24 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
 
     #[inline(always)]
     #[track_caller]
-    fn prepare_lockdep(&self, is_try: bool, track_task_lock: bool) -> LockdepAcquire {
+    fn prepare_lockdep(&self, is_try: bool, mode: RwLockMode) -> LockdepAcquire {
         #[cfg(not(feature = "lockdep"))]
-        let _ = track_task_lock;
+        let _ = mode;
 
         #[cfg(feature = "lockdep")]
         {
+            let task_mode = match mode {
+                RwLockMode::Read => crate::spin::lockdep::HeldLockMode::Read,
+                RwLockMode::Write => crate::spin::lockdep::HeldLockMode::Write,
+            };
             LockdepAcquire::prepare_map::<G>(
                 self.lockdep_map(),
                 "spin rwlock",
                 "spin-rwlock",
                 self.lock_addr(),
                 is_try,
-                crate::spin_lockdep::DEFAULT_LOCK_SUBCLASS,
-                track_task_lock,
+                crate::spin::lockdep::DEFAULT_LOCK_SUBCLASS,
+                Some(task_mode),
             )
         }
 
@@ -169,14 +227,16 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
     #[inline(always)]
     #[track_caller]
     pub fn read(&self) -> BaseSpinRwLockReadGuard<'_, G, T> {
-        let guard_state = G::acquire();
-        let lockdep = self.prepare_lockdep(false, false);
+        let mut pending = PendingRwLockAcquire::<G>::new(&self.state);
+        let lockdep = self.prepare_lockdep(false, RwLockMode::Read);
         while !self.try_acquire_read() {
             while self.is_write_locked() {
                 core::hint::spin_loop();
             }
         }
+        pending.mark_acquired(RwLockMode::Read);
         Self::finish_lockdep(lockdep, true);
+        let guard_state = pending.into_state();
         BaseSpinRwLockReadGuard {
             _phantom: &PhantomData,
             guard_state,
@@ -191,14 +251,16 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
     #[inline(always)]
     #[track_caller]
     pub fn write(&self) -> BaseSpinRwLockWriteGuard<'_, G, T> {
-        let guard_state = G::acquire();
-        let lockdep = self.prepare_lockdep(false, true);
+        let mut pending = PendingRwLockAcquire::<G>::new(&self.state);
+        let lockdep = self.prepare_lockdep(false, RwLockMode::Write);
         while !self.try_acquire_write() {
             while self.state.load(Ordering::Acquire) != 0 {
                 core::hint::spin_loop();
             }
         }
+        pending.mark_acquired(RwLockMode::Write);
         Self::finish_lockdep(lockdep, true);
+        let guard_state = pending.into_state();
         BaseSpinRwLockWriteGuard {
             _phantom: &PhantomData,
             guard_state,
@@ -213,12 +275,16 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
     #[inline(always)]
     #[track_caller]
     pub fn try_read(&self) -> Option<BaseSpinRwLockReadGuard<'_, G, T>> {
-        let guard_state = G::acquire();
-        let lockdep = self.prepare_lockdep(true, false);
+        let mut pending = PendingRwLockAcquire::<G>::new(&self.state);
+        let lockdep = self.prepare_lockdep(true, RwLockMode::Read);
         let acquired = self.try_acquire_read();
+        if acquired {
+            pending.mark_acquired(RwLockMode::Read);
+        }
         Self::finish_lockdep(lockdep, acquired);
 
         if acquired {
+            let guard_state = pending.into_state();
             Some(BaseSpinRwLockReadGuard {
                 _phantom: &PhantomData,
                 guard_state,
@@ -228,7 +294,6 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
                 state: &self.state,
             })
         } else {
-            G::release(guard_state);
             None
         }
     }
@@ -237,12 +302,16 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
     #[inline(always)]
     #[track_caller]
     pub fn try_write(&self) -> Option<BaseSpinRwLockWriteGuard<'_, G, T>> {
-        let guard_state = G::acquire();
-        let lockdep = self.prepare_lockdep(true, true);
+        let mut pending = PendingRwLockAcquire::<G>::new(&self.state);
+        let lockdep = self.prepare_lockdep(true, RwLockMode::Write);
         let acquired = self.try_acquire_write();
+        if acquired {
+            pending.mark_acquired(RwLockMode::Write);
+        }
         Self::finish_lockdep(lockdep, acquired);
 
         if acquired {
+            let guard_state = pending.into_state();
             Some(BaseSpinRwLockWriteGuard {
                 _phantom: &PhantomData,
                 guard_state,
@@ -252,7 +321,6 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
                 state: &self.state,
             })
         } else {
-            G::release(guard_state);
             None
         }
     }
@@ -291,7 +359,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
                     #[cfg(feature = "lockdep")]
                     {
                         let _lockdep_irq_guard = IrqSaveGuard::new();
-                        crate::spin_lockdep::release_trace_only::<G>(
+                        crate::spin::lockdep::release_trace_only::<G>(
                             "spin-rwlock",
                             self.lock_addr(),
                         );
@@ -357,7 +425,11 @@ impl<G: GuardState, T: ?Sized> Drop for BaseSpinRwLockReadGuard<'_, G, T> {
         #[cfg(feature = "lockdep")]
         {
             let _lockdep_irq_guard = IrqSaveGuard::new();
-            crate::spin_lockdep::release_trace_only::<G>("spin-rwlock", self.lock_addr);
+            crate::spin::lockdep::release_kind_mode::<G>(
+                "spin-rwlock",
+                self.lock_addr,
+                crate::spin::lockdep::HeldLockMode::Read,
+            );
         }
         self.state.fetch_sub(READER, Ordering::Release);
         G::release(self.guard_state);
@@ -392,7 +464,11 @@ impl<G: GuardState, T: ?Sized> Drop for BaseSpinRwLockWriteGuard<'_, G, T> {
         #[cfg(feature = "lockdep")]
         {
             let _lockdep_irq_guard = IrqSaveGuard::new();
-            crate::spin_lockdep::release_kind::<G>("spin-rwlock", self.lock_addr);
+            crate::spin::lockdep::release_kind_mode::<G>(
+                "spin-rwlock",
+                self.lock_addr,
+                crate::spin::lockdep::HeldLockMode::Write,
+            );
         }
         self.state.fetch_and(!WRITER, Ordering::Release);
         G::release(self.guard_state);
@@ -419,7 +495,26 @@ mod tests {
 
         assert_eq!(*first, 7);
         assert_eq!(*second, 7);
-        assert!(lock.try_write().is_none());
+    }
+
+    #[cfg(all(feature = "lockdep", feature = "smp"))]
+    #[test]
+    fn lockdep_allows_nested_read_acquisitions() {
+        let lock = RwLock::new(7);
+        let first = lock.read();
+        let second = lock.try_read().expect("nested reader should enter");
+
+        assert_eq!(*first, 7);
+        assert_eq!(*second, 7);
+    }
+
+    #[cfg(all(feature = "lockdep", feature = "smp"))]
+    #[test]
+    #[should_panic(expected = "recursive spin rwlock acquisition")]
+    fn lockdep_rejects_read_to_write_upgrade() {
+        let lock = RwLock::new(7);
+        let _reader = lock.read();
+        let _writer = lock.write();
     }
 
     #[test]
@@ -428,9 +523,11 @@ mod tests {
         let mut writer = lock.write();
         *writer = 2;
 
-        assert!(lock.try_read().is_none());
         #[cfg(feature = "lockdep")]
         {
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lock.try_read())).is_err()
+            );
             assert!(
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lock.try_write()))
                     .is_err()
@@ -438,6 +535,7 @@ mod tests {
         }
         #[cfg(not(feature = "lockdep"))]
         {
+            assert!(lock.try_read().is_none());
             assert!(lock.try_write().is_none());
         }
         drop(writer);
@@ -445,17 +543,78 @@ mod tests {
         assert_eq!(*lock.read(), 2);
     }
 
+    #[cfg(all(
+        feature = "host-test",
+        feature = "lockdep",
+        feature = "smp",
+        not(target_os = "none")
+    ))]
+    #[test]
+    fn lockdep_panic_restores_rwlock_context() {
+        let lock = RwLock::new(1);
+        let writer = lock.write();
+        let held_context = crate::host_context_snapshot();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lock.try_read()));
+        assert!(result.is_err());
+        assert_eq!(crate::host_context_snapshot(), held_context);
+
+        drop(writer);
+        assert_eq!(crate::host_context_snapshot(), (0, true));
+        assert!(lock.try_read().is_some());
+    }
+
+    #[cfg(all(
+        feature = "host-test",
+        feature = "lockdep",
+        feature = "smp",
+        not(target_os = "none")
+    ))]
+    #[test]
+    fn lockdep_finish_panic_rolls_back_rwlock() {
+        let held_lock = RwLock::new(());
+        let lock = RwLock::new(1);
+        let guards = (0..crate::lockdep::TEST_MAX_HELD_LOCKS)
+            .map(|_| held_lock.read())
+            .collect::<Vec<_>>();
+        let held_context = crate::host_context_snapshot();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lock.try_write()));
+        assert!(result.is_err());
+        assert_eq!(crate::host_context_snapshot(), held_context);
+
+        drop(guards);
+        assert_eq!(crate::host_context_snapshot(), (0, true));
+        assert!(lock.try_write().is_some());
+    }
+
     #[test]
     fn try_write_waits_for_all_readers() {
-        let lock = RwLock::new(());
-        let first = lock.read();
-        let second = lock.read();
+        let lock = Arc::new(RwLock::new(()));
+        let reader_lock = lock.clone();
+        let (state_tx, state_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let reader = thread::spawn(move || {
+            let first = reader_lock.read();
+            let second = reader_lock.read();
+            state_tx.send(2).unwrap();
+            release_rx.recv().unwrap();
+            drop(first);
+            state_tx.send(1).unwrap();
+            release_rx.recv().unwrap();
+            drop(second);
+            state_tx.send(0).unwrap();
+        });
 
+        assert_eq!(state_rx.recv().unwrap(), 2);
         assert!(lock.try_write().is_none());
-        drop(first);
+        release_tx.send(()).unwrap();
+        assert_eq!(state_rx.recv().unwrap(), 1);
         assert!(lock.try_write().is_none());
-        drop(second);
+        release_tx.send(()).unwrap();
+        assert_eq!(state_rx.recv().unwrap(), 0);
         assert!(lock.try_write().is_some());
+        reader.join().unwrap();
     }
 
     #[test]
@@ -507,6 +666,22 @@ mod tests {
 
         assert_eq!(*lock.read(), THREADS * ITERS);
         assert!(observed.load(Ordering::Relaxed) <= THREADS * ITERS);
+    }
+
+    #[cfg(all(feature = "lockdep", feature = "smp"))]
+    #[test]
+    #[should_panic(expected = "lock order inversion detected")]
+    fn lockdep_rejects_read_to_write_order_inversion() {
+        let lock_a = RwLock::new(0usize);
+        let lock_b = RwLock::new(0usize);
+
+        {
+            let _read_a = lock_a.read();
+            let _write_b = lock_b.write();
+        }
+
+        let _write_b = lock_b.write();
+        let _write_a = lock_a.write();
     }
 }
 
@@ -607,7 +782,7 @@ pub(crate) fn rwlock_lockdep_and_feature_config_hold_for_test() -> bool {
     // Test LockdepAcquire behavior based on feature flag
     #[cfg(feature = "lockdep")]
     {
-        // With lockdep feature, LockdepAcquire is crate::spin_lockdep::Lockdep
+        // With lockdep feature, LockdepAcquire is crate::spin::lockdep::Lockdep
         let _acquire = LockdepAcquire;
     }
 

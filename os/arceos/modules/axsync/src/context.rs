@@ -1,5 +1,7 @@
 //! Execution-context guards used by the synchronization primitives.
 
+use core::marker::PhantomData;
+
 /// Runtime operations required to enter and leave kernel critical sections.
 ///
 /// The operating-system runtime provides this interface. Keeping the
@@ -58,6 +60,40 @@ pub trait GuardState {
     /// Returns whether locks using this state participate in task lockdep.
     fn lockdep_enabled() -> bool {
         false
+    }
+}
+
+/// Owns an entered critical section until a lock guard takes it over.
+///
+/// Lockdep validation can panic in host tests. Keeping the state in this
+/// temporary guard ensures that every acquisition path restores its execution
+/// context while unwinding.
+pub(crate) struct PendingGuardState<G: GuardState> {
+    state: Option<G::State>,
+}
+
+impl<G: GuardState> PendingGuardState<G> {
+    #[inline(always)]
+    pub(crate) fn acquire() -> Self {
+        Self {
+            state: Some(G::acquire()),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn into_state(mut self) -> G::State {
+        self.state
+            .take()
+            .expect("pending guard state must be present")
+    }
+}
+
+impl<G: GuardState> Drop for PendingGuardState<G> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        if let Some(state) = self.state.take() {
+            G::release(state);
+        }
     }
 }
 
@@ -140,13 +176,25 @@ impl GuardState for PreemptIrqSaveState {
 }
 
 /// An RAII guard which disables kernel preemption while it is alive.
-pub struct PreemptGuard;
+///
+/// The guard is bound to the task that acquires it and cannot be transferred
+/// to another execution context:
+///
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<ax_sync::PreemptGuard>();
+/// ```
+pub struct PreemptGuard {
+    _not_send: PhantomData<*mut ()>,
+}
 
 impl PreemptGuard {
     /// Disables preemption and creates a guard which restores it on drop.
     pub fn new() -> Self {
         PreemptState::acquire();
-        Self
+        Self {
+            _not_send: PhantomData,
+        }
     }
 }
 
@@ -163,8 +211,17 @@ impl Drop for PreemptGuard {
 }
 
 /// An RAII guard which saves and disables local interrupts while it is alive.
+///
+/// The saved IRQ state belongs to the acquiring CPU, so the guard cannot be
+/// transferred to another execution context:
+///
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<ax_sync::IrqSaveGuard>();
+/// ```
 pub struct IrqSaveGuard {
     state: <IrqSaveState as GuardState>::State,
+    _not_send: PhantomData<*mut ()>,
 }
 
 impl IrqSaveGuard {
@@ -172,6 +229,7 @@ impl IrqSaveGuard {
     pub fn new() -> Self {
         Self {
             state: IrqSaveState::acquire(),
+            _not_send: PhantomData,
         }
     }
 }
@@ -192,8 +250,17 @@ impl Drop for IrqSaveGuard {
 ///
 /// Entry disables preemption before interrupts. Drop restores interrupts
 /// before re-enabling preemption, matching Linux spin-lock IRQ-save ordering.
+///
+/// Both saved states belong to the acquiring task and CPU, so the guard cannot
+/// be transferred to another execution context:
+///
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<ax_sync::PreemptIrqSaveGuard>();
+/// ```
 pub struct PreemptIrqSaveGuard {
     state: <PreemptIrqSaveState as GuardState>::State,
+    _not_send: PhantomData<*mut ()>,
 }
 
 impl PreemptIrqSaveGuard {
@@ -201,6 +268,7 @@ impl PreemptIrqSaveGuard {
     pub fn new() -> Self {
         Self {
             state: PreemptIrqSaveState::acquire(),
+            _not_send: PhantomData,
         }
     }
 }
