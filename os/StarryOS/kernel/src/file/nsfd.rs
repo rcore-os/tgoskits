@@ -28,9 +28,9 @@ pub enum NsFd {
         fs_ns: Arc<FsMountNamespace>,
     },
     Pid(PidNamespaceRef),
-    Net(Arc<SpinNoIrq<NetNamespace>>),
-    User(Arc<SpinNoIrq<UserNamespace>>),
-    Cgroup(Arc<SpinNoIrq<CgroupNamespace>>),
+    Net(Arc<IrqMutex<NetNamespace>>),
+    User(Arc<IrqMutex<UserNamespace>>),
+    Cgroup(Arc<IrqMutex<CgroupNamespace>>),
 }
 
 impl NsFd {
