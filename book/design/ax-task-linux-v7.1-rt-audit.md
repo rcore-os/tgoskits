@@ -2825,6 +2825,24 @@ expiry 探测，再参照 Linux hrtimer `active_bases` 的派生 publication，�
 仍入锁复核。publication 负责物理 clockevent generation/deadline 的唯一所有权，registration 负责
 队列状态转换；不能仅因为 `task_work_deadline_events` 为 0 就删锁或复制 deadline identity。
 
+确定性回归先在真实 1-CPU facade fixture 的空 base 上执行两次 next-event observation、一次 hard
+expiry probe 和一次 soft expiry probe；旧实现稳定得到三类 IRQ ticket 增量 `(2, 1, 1)`，期望
+`(0, 0, 0)`。修复把 derived active publication 与唯一 `CpuDeadlineBase` owner 封装在一起：
+Registration、HardExpiry 和 SoftExpiry 只能通过 activity guard 修改 queue、expired buffer/count 或
+softirq ownership，guard 在原锁释放前按三者的权威状态 Release 发布；false fast path 以 Acquire
+拒绝，true 时仍进入原锁复核。普通 observation 只取得不可变 guard；旧通用可变
+`lock_deadline_base` 接口被删除。物理 clockevent generation/publication 使用独立固定入口，不重写
+active，也没有第二套 timer identity、锁算法或兼容路径。同一红测转绿，完整 host/qperf、loom、
+doctest 和 clippy 均通过。
+
+相同配置的两个 60.8 秒修复后窗口继续使用真实 switch 归一化。相对修复前每 switch 5.145 次
+CPU deadline-base acquisition，两次分别为 4.574（-11.097%）和 4.714（-8.382%）；observation
+分别下降 23.098% 和 20.852%，hard expiry 分别下降 19.466% 和 18.480%。publication 分别变化
+-1.360% 和 +0.732%，证明物理 deadline publication 没有被错误绕开。第一轮推进到 `file-0538`，
+第二轮仍只到与基线相同的 `file-0474`；host user 分别为 88.032 秒和 88.365 秒，基线为
+87.882 秒。因此这里只确认空 base 锁放大被稳定消除，不把单次吞吐改善解释成剩余性能问题已经
+解决；下一阶段继续量化 CPU rq 和 thread scheduler state 的 acquisition source。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
