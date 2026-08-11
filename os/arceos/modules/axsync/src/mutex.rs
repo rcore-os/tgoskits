@@ -410,6 +410,11 @@ mod host {
         fn might_sleep(caller: &'static Location<'static>) {
             MIGHT_SLEEP_CALLS.set(MIGHT_SLEEP_CALLS.get() + 1);
             LAST_MIGHT_SLEEP_CALLER.set(Some(caller));
+            assert_eq!(
+                crate::host_preempt_depth(),
+                0,
+                "sleeping mutex acquired with preemption disabled at {caller}"
+            );
         }
 
         fn current_task_id() -> u64 {
@@ -512,6 +517,18 @@ mod tests {
     use std::{sync::Arc, thread};
 
     use super::{Mutex, host};
+    use crate::SpinLock;
+
+    #[test]
+    fn lock_rejects_preemption_disabled_context() {
+        let spin = SpinLock::new(());
+        let mutex = Mutex::new(());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _spin_guard = spin.lock();
+            let _mutex_guard = mutex.lock();
+        }));
+        assert!(result.is_err());
+    }
 
     #[test]
     fn contended_mutex_wakes_waiters_without_lost_wakeups() {
