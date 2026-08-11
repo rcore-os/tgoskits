@@ -39,6 +39,38 @@ mod scheduler_ipi_tests {
         );
     }
 
+    #[cfg(feature = "qperf-metrics")]
+    #[test]
+    fn deadline_selection_enters_one_coherent_runqueue_scope() {
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let contender = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.make_ready(contender.id()).unwrap();
+        system.enqueue(cpu.as_mut(), contender.id()).unwrap();
+        let deadline = cpu
+            .fair_balance_deadline_for_test()
+            .expect("online fair balancing must own a monotonic deadline");
+        let before = crate::qperf_scheduler_metrics_snapshot();
+
+        let _ = cpu.as_mut().next_oneshot_deadline(
+            MonotonicInstant::from_nanos(deadline.as_nanos()).unwrap(),
+        );
+
+        let after = crate::qperf_scheduler_metrics_snapshot();
+        assert_eq!(
+            after.irq_ticket_cpu_run_queue_timer_observation_entries
+                - before.irq_ticket_cpu_run_queue_timer_observation_entries,
+            1,
+            "one scheduler deadline derivation must observe current runtime and fair balance under one runqueue guard"
+        );
+    }
+
     #[test]
     fn deadline_selection_does_not_claim_an_overdue_fair_timer() {
         let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
