@@ -92,6 +92,25 @@ pub fn truncate_inode<B: BlockIo>(
     inode_num: InodeNumber,
     truncate_size: u64,
 ) -> Ext4Result<()> {
+    truncate_inode_mapping(device, fs, inode_num, truncate_size, false)
+}
+
+pub(crate) fn recover_linked_truncate_inode<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    truncate_size: u64,
+) -> Ext4Result<()> {
+    truncate_inode_mapping(device, fs, inode_num, truncate_size, true)
+}
+
+fn truncate_inode_mapping<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    truncate_size: u64,
+    recover_committed_size: bool,
+) -> Ext4Result<()> {
     let mut inode = fs.get_inode_by_num(device, inode_num)?;
 
     if inode.is_symlink() {
@@ -101,7 +120,7 @@ pub fn truncate_inode<B: BlockIo>(
     }
 
     let old_size = inode.size();
-    if truncate_size == old_size {
+    if truncate_size == old_size && !recover_committed_size {
         return Ok(());
     }
 
@@ -140,7 +159,7 @@ pub fn truncate_inode<B: BlockIo>(
 
     // Extent-backed files handle extent-aware shrinking here.
     if fs.superblock.has_extents() && inode.uses_extents() {
-        if truncate_size < old_size {
+        if truncate_size < old_size || recover_committed_size {
             // Delegate range removal to the extent tree so physical-block frees
             // stay consistent even when holes exist.
             let del_start_lbn = new_blocks as u32;
