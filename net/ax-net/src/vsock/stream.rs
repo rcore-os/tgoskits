@@ -20,7 +20,7 @@
 use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
-use ax_sync::PiMutex;
+use ax_sync::Mutex;
 
 use super::connection_manager::Connection;
 use crate::{
@@ -36,9 +36,9 @@ mod poll;
 /// Stream transport for vsock sockets.
 pub struct VsockStreamTransport {
     /// Connection id registered with the vsock manager.
-    conn_id: PiMutex<Option<VsockConnId>>,
+    conn_id: Mutex<Option<VsockConnId>>,
     /// Shared connection state once bound, connecting, or connected.
-    connection: PiMutex<Option<Arc<Connection>>>,
+    connection: Mutex<Option<Arc<Connection>>>,
     /// Public POSIX-facing stream state.
     state: StateLock,
     /// Shared socket options.
@@ -49,8 +49,8 @@ impl VsockStreamTransport {
     /// Create a new idle vsock stream transport.
     pub fn new() -> Self {
         Self {
-            conn_id: PiMutex::new(None),
-            connection: PiMutex::new(None),
+            conn_id: Mutex::new(None),
+            connection: Mutex::new(None),
             state: StateLock::new(State::Idle),
             general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
         }

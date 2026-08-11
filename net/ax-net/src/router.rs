@@ -49,7 +49,7 @@ use core::{
 };
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
-use ax_sync::{PiMutex, SpinLock, SpinRwLock as RwLock};
+use ax_sync::{Mutex, SpinLock, SpinRwLock as RwLock};
 use ax_task::WaitQueue;
 use axpoll::IoEvents;
 use smoltcp::{
@@ -263,7 +263,7 @@ struct DeviceHandle {
     /// Device name used for logs and userspace queries.
     name: String,
     /// Concrete device implementation.
-    inner: Arc<PiMutex<Box<dyn Device>>>,
+    inner: Arc<Mutex<Box<dyn Device>>>,
     /// Shared router RX queue.
     rx_queue: Arc<BoundedPacketQueue<RxPacket>>,
     /// Per-device TX queue.
@@ -345,7 +345,7 @@ impl DeviceHandle {
         Arc::new_cyclic(|weak| Self {
             interface_id,
             name,
-            inner: Arc::new(PiMutex::new(device)),
+            inner: Arc::new(Mutex::new(device)),
             rx_queue: queues.rx.clone(),
             tx_queue: Arc::new(BoundedPacketQueue::new(DEVICE_TX_QUEUE_SIZE)),
             rx_wake: Arc::new(WaitQueue::new()),

@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_sync::PiMutex;
+use ax_sync::Mutex;
 use ax_task::WaitQueue;
 use rdif_vsock::{VsockConnId, VsockError, VsockEvent};
 
@@ -18,7 +18,7 @@ use crate::vsock::connection_manager::{
 
 const VSOCK_RX_TMPBUF_SIZE: usize = 0x1000; // 4KiB buffer for vsock receive
 
-static POLL_TASK_STATE: PiMutex<PollTaskState> = PiMutex::new(PollTaskState::new());
+static POLL_TASK_STATE: Mutex<PollTaskState> = Mutex::new(PollTaskState::new());
 static POLL_ACTIVE_USERS: AtomicUsize = AtomicUsize::new(0);
 static POLL_TASK_WAIT: WaitQueue = WaitQueue::new();
 static POLL_FREQUENCY: PollFrequencyController = PollFrequencyController::new();

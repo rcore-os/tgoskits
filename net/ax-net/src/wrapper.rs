@@ -26,7 +26,7 @@
 use alloc::{vec, vec::Vec};
 
 use ax_errno::{AxError, AxResult};
-use ax_sync::PiMutex;
+use ax_sync::Mutex;
 use hashbrown::HashMap;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
@@ -50,17 +50,17 @@ struct UdpBoundEntry {
 /// Global socket container plus protocol-specific side tables.
 pub(crate) struct SocketSetWrapper<'a> {
     /// The shared smoltcp socket set.
-    pub inner: PiMutex<SocketSet<'a>>,
+    pub inner: Mutex<SocketSet<'a>>,
     /// UDP bind ownership tracked with Linux-style wildcard/reuseport conflicts.
-    udp_binds: PiMutex<HashMap<u16, Vec<UdpBoundEntry>>>,
+    udp_binds: Mutex<HashMap<u16, Vec<UdpBoundEntry>>>,
 }
 
 impl<'a> SocketSetWrapper<'a> {
     /// Creates an empty wrapper around smoltcp's socket set.
     pub fn new() -> Self {
         Self {
-            inner: PiMutex::new(SocketSet::new(vec![])),
-            udp_binds: PiMutex::new(HashMap::new()),
+            inner: Mutex::new(SocketSet::new(vec![])),
+            udp_binds: Mutex::new(HashMap::new()),
         }
     }
 

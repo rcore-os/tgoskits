@@ -32,7 +32,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
 use ax_io::prelude::*;
-use ax_sync::{Mutex, PiMutex, SpinLock};
+use ax_sync::{Mutex, SpinLock};
 use axpoll::{IoEvents, Pollable};
 use smoltcp::{
     iface::SocketHandle,
@@ -87,7 +87,7 @@ pub struct UdpSocket {
     // Linux serializes UDP corking with the process-context socket lock. This
     // state may remain held while the global protocol socket is contended, so
     // it must be sleepable rather than an IRQ-disabling raw spin lock.
-    cork: PiMutex<Option<CorkState>>,
+    cork: Mutex<Option<CorkState>>,
 }
 
 impl UdpSocket {
@@ -104,7 +104,7 @@ impl UdpSocket {
 
             general: GeneralOptions::new(2, 2, 17), // SOCK_DGRAM
             tos_keys: SpinLock::new(Vec::new()),
-            cork: PiMutex::new(None),
+            cork: Mutex::new(None),
         }
     }
 

@@ -2,7 +2,7 @@
 
 use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
 use ax_io::prelude::*;
-use ax_sync::PiMutex;
+use ax_sync::Mutex;
 
 use super::VsockStreamTransport;
 use crate::{
@@ -97,8 +97,8 @@ impl VsockStreamTransport {
 
             // create new VsockStreamTransport
             let new_transport = VsockStreamTransport {
-                conn_id: PiMutex::new(Some(conn_id)),
-                connection: PiMutex::new(Some(conn)),
+                conn_id: Mutex::new(Some(conn_id)),
+                connection: Mutex::new(Some(conn)),
                 state: StateLock::new(State::Connected),
                 general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
             };

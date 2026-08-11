@@ -85,7 +85,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_lazyinit::LazyLock;
-use ax_sync::{PiMutex, PiMutexGuard};
+use ax_sync::{Mutex, MutexGuard};
 use ax_task::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, quiesce_irq_wait};
 use axpoll::{IoEvents, PollSet};
 use smoltcp::{
@@ -126,15 +126,15 @@ pub use self::{
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
 static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
 
-static SERVICE: Once<PiMutex<Service>> = Once::new();
+static SERVICE: Once<Mutex<Service>> = Once::new();
 static NET_CONTROL: Once<Arc<NetControl>> = Once::new();
 static NET_POLL: PollRuntime = PollRuntime::new();
 static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
 type DeferredPollEntry = (Arc<PollSet>, IoEvents);
 static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
-static DEFERRED_POLL_WAKES: LazyLock<PiMutex<Vec<DeferredPollEntry>>> =
-    LazyLock::new(|| PiMutex::new(Vec::new()));
+static DEFERRED_POLL_WAKES: LazyLock<Mutex<Vec<DeferredPollEntry>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 pub(crate) struct DeferPollWake {
     pub(crate) poll: Arc<PollSet>,
@@ -160,8 +160,8 @@ impl Wake for DeferPollWake {
 /// [`rd_net::WifiControlHandle`] before the `Net` is consumed into the data-plane
 /// driver). Lets runtime mode switching (e.g. a StarryOS wireless-extensions
 /// `ioctl`) reach the device's [`WifiControl`] by name.
-static WIFI_CONTROLS: LazyLock<PiMutex<Vec<(alloc::string::String, rd_net::WifiControlHandle)>>> =
-    LazyLock::new(|| PiMutex::new(Vec::new()));
+static WIFI_CONTROLS: LazyLock<Mutex<Vec<(alloc::string::String, rd_net::WifiControlHandle)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 static NET_IRQ_EVENT: AtomicBool = AtomicBool::new(false);
 static NET_IRQ_WAIT: IrqWaitCell = IrqWaitCell::new();
@@ -174,7 +174,7 @@ fn net_poll_device_waker() -> &'static Waker {
     &NET_POLL_DEVICE_WAKER
 }
 
-fn get_service() -> PiMutexGuard<'static, Service> {
+fn get_service() -> MutexGuard<'static, Service> {
     SERVICE
         .get()
         .expect("Network service not initialized")
@@ -318,7 +318,7 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
     let workers = service.prepare_device_workers();
     workers.register_device_waker(net_poll_device_waker());
     NET_CONTROL.call_once(|| control);
-    SERVICE.call_once(|| PiMutex::new(service));
+    SERVICE.call_once(|| Mutex::new(service));
     workers.start();
     spawn_permanent_worker("net-poll".to_owned(), net_poll_worker)
         .unwrap_or_else(|error| panic!("failed to start net poll worker: {error}"));
@@ -1027,7 +1027,7 @@ pub(crate) mod test_support {
     use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
     use std::sync::{Mutex as StdMutex, MutexGuard, Once, PoisonError};
 
-    use ax_sync::PiMutex;
+    use ax_sync::Mutex;
     use smoltcp::wire::{IpAddress, Ipv4Address, Ipv4Cidr};
 
     use crate::{
@@ -1123,7 +1123,7 @@ pub(crate) mod test_support {
             });
 
             NET_CONTROL.call_once(|| control);
-            SERVICE.call_once(|| PiMutex::new(service));
+            SERVICE.call_once(|| Mutex::new(service));
         });
     }
 }

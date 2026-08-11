@@ -17,7 +17,7 @@
 //! handled through its own connection manager and socket transport layer.
 
 use ax_errno::{AxError, AxResult, ax_bail};
-use ax_sync::PiMutex;
+use ax_sync::Mutex;
 use rdif_vsock::{Interface, VsockAddr, VsockConnId, VsockError};
 
 mod poll;
@@ -28,7 +28,7 @@ pub type VsockDevice = alloc::boxed::Box<dyn Interface>;
 pub type VsockDeviceList = alloc::vec::Vec<VsockDevice>;
 
 // we need a global and static only one vsock device
-static VSOCK_DEVICE: PiMutex<Option<VsockDevice>> = PiMutex::new(None);
+static VSOCK_DEVICE: Mutex<Option<VsockDevice>> = Mutex::new(None);
 
 /// Registers the single vsock device used by the system.
 pub fn register_vsock_device(dev: VsockDevice) -> AxResult {

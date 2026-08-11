@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 
-use ax_sync::{PiMutex, PiMutexGuard};
+use ax_sync::{Mutex, MutexGuard};
 use axpoll::{IoEvents, PollSet};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::*};
 
@@ -30,10 +30,10 @@ pub enum ConnectionState {
 /// Poll registrations live outside mutable connection state so task-context
 /// wake publication never runs while owning `state`.
 pub struct Connection {
-    state: PiMutex<ConnectionData>,
-    rx_wakers: PiMutex<PollSet>,
-    tx_wakers: PiMutex<PollSet>,
-    connect_wakers: PiMutex<PollSet>,
+    state: Mutex<ConnectionData>,
+    rx_wakers: Mutex<PollSet>,
+    tx_wakers: Mutex<PollSet>,
+    connect_wakers: Mutex<PollSet>,
     _poll_lease: VsockPollLease,
 }
 
@@ -74,7 +74,7 @@ impl Connection {
         let rb = HeapRb::<u8>::new(VSOCK_RX_BUFFER_SIZE);
         let (rx_producer, rx_consumer) = rb.split();
         Arc::new(Self {
-            state: PiMutex::new(ConnectionData {
+            state: Mutex::new(ConnectionData {
                 state,
                 local_addr,
                 peer_addr,
@@ -86,14 +86,14 @@ impl Connection {
                 tx_bytes: 0,
                 dropped_bytes: 0,
             }),
-            rx_wakers: PiMutex::new(PollSet::new()),
-            tx_wakers: PiMutex::new(PollSet::new()),
-            connect_wakers: PiMutex::new(PollSet::new()),
+            rx_wakers: Mutex::new(PollSet::new()),
+            tx_wakers: Mutex::new(PollSet::new()),
+            connect_wakers: Mutex::new(PollSet::new()),
             _poll_lease: poll_lease,
         })
     }
 
-    pub(crate) fn lock(&self) -> PiMutexGuard<'_, ConnectionData> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, ConnectionData> {
         self.state.lock()
     }
 

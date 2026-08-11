@@ -20,7 +20,7 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
 use ax_errno::{AxError, AxResult, ax_bail};
-use ax_sync::PiMutex;
+use ax_sync::Mutex;
 
 use super::{VsockAddr, VsockConnId};
 use crate::device::VsockPollLease;
@@ -36,7 +36,7 @@ type RetiredConnections = heapless::Vec<(VsockConnId, Arc<Connection>), VSOCK_AC
 pub(crate) struct IncomingConnection {
     conn_id: VsockConnId,
     connection: Arc<Connection>,
-    queue: Arc<PiMutex<ListenQueue>>,
+    queue: Arc<Mutex<ListenQueue>>,
 }
 
 impl IncomingConnection {
@@ -74,7 +74,7 @@ pub(crate) fn retire_connection(conn_id: VsockConnId, connection: Arc<Connection
 /// Global connection manager
 pub struct VsockConnectionManager {
     connections: BTreeMap<VsockConnId, Arc<Connection>>,
-    listen_queues: BTreeMap<u32, Arc<PiMutex<ListenQueue>>>,
+    listen_queues: BTreeMap<u32, Arc<Mutex<ListenQueue>>>,
     next_ephemeral_port: u32,
 }
 
@@ -91,7 +91,7 @@ impl VsockConnectionManager {
     }
 
     /// Get listen queue from specified port
-    pub fn get_listen_queue(&self, port: u32) -> Option<Arc<PiMutex<ListenQueue>>> {
+    pub fn get_listen_queue(&self, port: u32) -> Option<Arc<Mutex<ListenQueue>>> {
         self.listen_queues.get(&port).cloned()
     }
 
@@ -127,7 +127,7 @@ impl VsockConnectionManager {
             ax_bail!(AddrInUse, "port already in use");
         }
 
-        let queue = Arc::new(PiMutex::new(ListenQueue::new(local_addr)));
+        let queue = Arc::new(Mutex::new(ListenQueue::new(local_addr)));
         self.listen_queues.insert(local_addr.port, queue);
         Ok(())
     }
@@ -272,8 +272,8 @@ impl VsockConnectionManager {
     }
 }
 
-pub static VSOCK_CONN_MANAGER: PiMutex<VsockConnectionManager> =
-    PiMutex::new(VsockConnectionManager::new());
+pub static VSOCK_CONN_MANAGER: Mutex<VsockConnectionManager> =
+    Mutex::new(VsockConnectionManager::new());
 
 #[cfg(test)]
 mod tests {
