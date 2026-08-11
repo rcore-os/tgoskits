@@ -1513,8 +1513,8 @@ dependencies = [
 name = "axvirtio-blk"
 version = "0.1.0"
 dependencies = [
- "ax-kspin",
  "ax-memory-addr",
+ "ax-sync",
  "axaddrspace",
  "axdevice_base",
  "axvirtio-common",

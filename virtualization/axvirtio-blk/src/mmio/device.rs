@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec};
 
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use axaddrspace::GuestMemoryAccessor;
 use axvirtio_common::{
     AddressSpaceMemory, MmioReadOutcome, MmioWriteAction, VirtioDeviceID, VirtioError,
@@ -43,7 +43,7 @@ pub struct VirtioMmioBlockDevice<B: BlockBackend, T: GuestMemoryAccessor + Clone
     backend: B,
     /// Guest memory accessor.
     accessor: Arc<T>,
-    pending_head: SpinNoIrq<Option<u16>>,
+    pending_head: SpinLock<Option<u16>>,
 }
 
 impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T> {
@@ -72,7 +72,7 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
             block_config,
             backend: block_backend,
             accessor,
-            pending_head: SpinNoIrq::new(None),
+            pending_head: SpinLock::new(None),
         })
     }
 
