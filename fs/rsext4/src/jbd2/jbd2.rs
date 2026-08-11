@@ -953,7 +953,7 @@ impl JBD2DEVSYSTEM {
 }
 
 /// Creates the journal inode and writes its initial journal superblock.
-pub fn create_journal_entry<B: BlockIo + crate::runtime::Clock>(
+pub fn create_journal_entry<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
 ) -> Ext4Result<()> {

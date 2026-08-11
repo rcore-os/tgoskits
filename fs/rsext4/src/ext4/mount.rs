@@ -46,10 +46,7 @@ impl Ext4FileSystem {
     }
 
     /// Creates the root directory tree during bootstrap.
-    fn create_root_dir<B: BlockIo + crate::runtime::Clock>(
-        &mut self,
-        block_dev: &mut Jbd2Dev<B>,
-    ) -> Ext4Result<()> {
+    fn create_root_dir<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         // The actual on-disk initialization lives in the dedicated directory
         // bootstrap helper.
         create_root_directory_entry(self, block_dev)
@@ -181,13 +178,11 @@ impl Ext4FileSystem {
     }
 
     /// Mounts an ext4 filesystem from the given block device.
-    pub fn mount<B: BlockIo + crate::runtime::Clock>(
-        block_dev: &mut Jbd2Dev<B>,
-    ) -> Result<Self, Ext4Error> {
+    pub fn mount<B: BlockIo>(block_dev: &mut Jbd2Dev<B>) -> Result<Self, Ext4Error> {
         Self::mount_with_options(block_dev, MountOptions::read_write())
     }
 
-    pub fn mount_with_options<B: BlockIo + crate::runtime::Clock>(
+    pub fn mount_with_options<B: BlockIo>(
         block_dev: &mut Jbd2Dev<B>,
         options: MountOptions,
     ) -> Result<Self, Ext4Error> {
@@ -195,10 +190,7 @@ impl Ext4FileSystem {
         Self::mount_with_options_and_observer(block_dev, options, &mut observer)
     }
 
-    pub fn mount_with_options_and_observer<
-        B: BlockIo + crate::runtime::Clock,
-        O: crate::runtime::Observer,
-    >(
+    pub fn mount_with_options_and_observer<B: BlockIo, O: crate::runtime::Observer>(
         block_dev: &mut Jbd2Dev<B>,
         options: MountOptions,
         observer: &mut O,
@@ -218,7 +210,7 @@ impl Ext4FileSystem {
         }
     }
 
-    fn mount_inner<B: BlockIo + crate::runtime::Clock, O: crate::runtime::Observer>(
+    fn mount_inner<B: BlockIo, O: crate::runtime::Observer>(
         block_dev: &mut Jbd2Dev<B>,
         options: MountOptions,
         observer: &mut O,
@@ -559,23 +551,18 @@ impl Ext4FileSystem {
 }
 
 /// Thin compatibility wrapper around [`Ext4FileSystem::mount`].
-pub fn mount<B: BlockIo + crate::runtime::Clock>(
-    block_dev: &mut Jbd2Dev<B>,
-) -> Ext4Result<Ext4FileSystem> {
+pub fn mount<B: BlockIo>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<Ext4FileSystem> {
     mount_with_options(block_dev, MountOptions::read_write())
 }
 
-pub fn mount_with_options<B: BlockIo + crate::runtime::Clock>(
+pub fn mount_with_options<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     options: MountOptions,
 ) -> Ext4Result<Ext4FileSystem> {
     Ext4FileSystem::mount_with_options(block_dev, options)
 }
 
-pub fn mount_with_options_and_observer<
-    B: BlockIo + crate::runtime::Clock,
-    O: crate::runtime::Observer,
->(
+pub fn mount_with_options_and_observer<B: BlockIo, O: crate::runtime::Observer>(
     block_dev: &mut Jbd2Dev<B>,
     options: MountOptions,
     observer: &mut O,

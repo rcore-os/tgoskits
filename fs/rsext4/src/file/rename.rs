@@ -16,7 +16,7 @@ use super::{
 /// - rename(dir, file)  → EISDIR
 /// - rename(dir, dir)   → ENOTEMPTY if dst is non-empty
 /// - rename(file, file) → overwrite
-pub fn rename<B: BlockIo + crate::runtime::Clock>(
+pub fn rename<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     old_path: &str,
@@ -68,7 +68,7 @@ pub fn rename<B: BlockIo + crate::runtime::Clock>(
     Ok(())
 }
 
-pub fn mv<B: BlockIo + crate::runtime::Clock>(
+pub fn mv<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     old_path: &str,

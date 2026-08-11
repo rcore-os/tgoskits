@@ -1,9 +1,7 @@
 use super::*;
 
 /// Mounts an ext4 filesystem from the given block device.
-pub fn fs_mount<B: BlockIo + crate::runtime::Clock>(
-    dev: &mut Jbd2Dev<B>,
-) -> Ext4Result<Ext4FileSystem> {
+pub fn fs_mount<B: BlockIo>(dev: &mut Jbd2Dev<B>) -> Ext4Result<Ext4FileSystem> {
     ext4::mount(dev)
 }
 

@@ -272,7 +272,7 @@ impl Default for MkfsOptions {
     }
 }
 
-pub fn mkfs<B: BlockIo + crate::runtime::Clock>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+pub fn mkfs<B: BlockIo>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
     mkfs_with_options(block_dev, MkfsOptions::default())
 }
 
@@ -282,7 +282,7 @@ pub fn mkfs<B: BlockIo + crate::runtime::Clock>(block_dev: &mut Jbd2Dev<B>) -> E
 ///
 /// Returns an error when the geometry is unsupported, the device is too small,
 /// or any metadata write, bootstrap mount, or durability operation fails.
-pub fn mkfs_with_options<B: BlockIo + crate::runtime::Clock>(
+pub fn mkfs_with_options<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
     options: MkfsOptions,
 ) -> Ext4Result<()> {

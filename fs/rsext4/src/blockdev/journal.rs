@@ -1,6 +1,6 @@
 //! JBD2-aware block device facade.
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use core::mem::size_of;
 
 use super::cached_device::BlockDev;
@@ -40,6 +40,8 @@ struct JournalAbortState {
     persistence_error: Option<Ext4Error>,
 }
 
+type ClockCallback<B> = Box<dyn Fn(&B) -> Ext4Result<Ext4Timestamp> + Send>;
+
 /// Block device proxy that optionally routes metadata writes through JBD2.
 pub struct Jbd2Dev<B: BlockIo> {
     _mode: u8,
@@ -50,6 +52,7 @@ pub struct Jbd2Dev<B: BlockIo> {
     journal_blocks: Vec<AbsoluteBN>,
     active_handle: Option<ActiveJournalHandle>,
     abort_state: Option<JournalAbortState>,
+    clock: ClockCallback<B>,
 }
 
 impl<B: BlockIo> Jbd2Dev<B> {
@@ -221,8 +224,12 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
     }
 
-    /// Creates a new JBD2 block device proxy.
-    pub fn initial_jbd2dev(_mode: u8, block_dev: B, use_journal: bool) -> Self {
+    fn with_clock_callback(
+        _mode: u8,
+        block_dev: B,
+        use_journal: bool,
+        clock: ClockCallback<B>,
+    ) -> Self {
         let block_dev = BlockDev::new(block_dev);
         Self {
             _mode,
@@ -233,7 +240,36 @@ impl<B: BlockIo> Jbd2Dev<B> {
             journal_blocks: Vec::new(),
             active_handle: None,
             abort_state: None,
+            clock,
         }
+    }
+
+    /// Creates the private journal owner with a separately injected clock.
+    pub(crate) fn with_clock<C>(mode: u8, block_dev: B, clock: C, use_journal: bool) -> Self
+    where
+        C: Clock + Send + 'static,
+    {
+        Self::with_clock_callback(
+            mode,
+            block_dev,
+            use_journal,
+            Box::new(move |_device| clock.now()),
+        )
+    }
+
+    /// Creates the legacy public journal proxy.
+    ///
+    /// New mount code must inject `Clock` separately through `Ext4::mount`.
+    pub fn initial_jbd2dev(mode: u8, block_dev: B, use_journal: bool) -> Self
+    where
+        B: Clock,
+    {
+        Self::with_clock_callback(
+            mode,
+            block_dev,
+            use_journal,
+            Box::new(|device| device.now()),
+        )
     }
 
     pub fn into_inner(self) -> B {
@@ -676,9 +712,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
     }
 }
 
-impl<B: BlockIo + Clock> Clock for Jbd2Dev<B> {
+impl<B: BlockIo> Clock for Jbd2Dev<B> {
     fn now(&self) -> Ext4Result<Ext4Timestamp> {
-        self.inner._device().now()
+        (self.clock)(self.inner._device())
     }
 }
 

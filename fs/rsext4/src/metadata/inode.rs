@@ -9,7 +9,6 @@ use crate::{
     disknode::{Ext4Inode, Ext4Timestamp},
     error::{Ext4Error, Ext4Result},
     ext4::Ext4FileSystem,
-    runtime::Clock,
 };
 
 fn deletion_time(now_sec: i64, last_write_time: u32, inode_count: u32) -> u32 {
@@ -71,7 +70,7 @@ impl Ext4FileSystem {
     /// The update order mirrors Linux-style setattr handling: grow extra inode
     /// space for requested fields, apply identity and mode changes, resolve
     /// timestamps lazily from the device clock, and finally maintain `i_dtime`.
-    pub(crate) fn apply_loaded_inode_metadata<B: BlockIo + Clock>(
+    pub(crate) fn apply_loaded_inode_metadata<B: BlockIo>(
         &self,
         device: &Jbd2Dev<B>,
         inode: &mut Ext4Inode,
