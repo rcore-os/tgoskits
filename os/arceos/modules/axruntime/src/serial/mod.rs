@@ -15,10 +15,10 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ax_driver::serial::SerialDevice;
 pub use ax_driver::serial::SerialDeviceInfo;
 use ax_errno::{AxError, AxResult};
+use ax_lazyinit::OnceLock;
 use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 pub use rdif_serial::{Config, ConfigError, DataBits, Parity, RxFlag, StopBits, UartRegisterGate};
-use spin::Once;
 pub use state::SerialStats;
 
 use self::{
@@ -61,7 +61,7 @@ struct RuntimeIrqBridge {
     register_retry: AtomicBool,
     doorbell: IrqWaitCell,
     park: WaitQueue,
-    waiter: Once<SerialWorkerWaiter>,
+    waiter: OnceLock<SerialWorkerWaiter>,
 }
 
 impl RuntimeIrqBridge {
@@ -72,7 +72,7 @@ impl RuntimeIrqBridge {
             register_retry: AtomicBool::new(false),
             doorbell: IrqWaitCell::new(),
             park: WaitQueue::new(),
-            waiter: Once::new(),
+            waiter: OnceLock::new(),
         }
     }
 
@@ -273,7 +273,7 @@ impl SerialRuntimeHandle {
 
     /// Takes the only RX subscription. Starry serializes its readers above it.
     pub fn take_rx_subscription(&self) -> Option<SerialRxSubscription> {
-        let consumer = self.shared.rx_subscription.lock_irqsave().take()?;
+        let consumer = self.shared.rx_subscription.lock().take()?;
         Some(SerialRxSubscription {
             consumer: PiMutex::new(Some(consumer)),
             shared: self.shared.clone(),
@@ -428,13 +428,13 @@ impl SerialRxSubscription {
         self.shared.ensure_started()?;
         self.shared.rx_progress.wait_until(|| {
             self.consumer
-                .lock_irqsave()
+                .lock()
                 .as_ref()
                 .is_some_and(|consumer| !consumer.is_empty())
                 || !self.shared.started()
         });
         self.consumer
-            .lock_irqsave()
+            .lock()
             .as_ref()
             .is_some_and(|consumer| !consumer.is_empty())
             .then_some(())
@@ -457,7 +457,7 @@ impl SerialRxSubscription {
     }
 
     fn clear_pending(&self) {
-        if let Some(consumer) = self.consumer.lock_irqsave().as_mut() {
+        if let Some(consumer) = self.consumer.lock().as_mut() {
             consumer.clear();
         }
         self.shared.bridge.notify();
@@ -469,7 +469,7 @@ impl Drop for SerialRxSubscription {
         let Some(consumer) = self.consumer.get_mut().take() else {
             return;
         };
-        let mut available = self.shared.rx_subscription.lock_irqsave();
+        let mut available = self.shared.rx_subscription.lock();
         debug_assert!(
             available.is_none(),
             "serial runtime cannot have two RX consumers"

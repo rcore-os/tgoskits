@@ -1161,7 +1161,6 @@ dependencies = [
  "rdif-serial",
  "rdrive",
  "sdhci-cv1800",
- "spin",
  "thiserror 2.0.20",
 ]
 

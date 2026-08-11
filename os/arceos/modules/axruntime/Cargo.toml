@@ -127,7 +127,6 @@ rdif-intc = { workspace = true, optional = true }
 rdif-serial = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
-spin = {workspace = true, optional = true}
 thiserror.workspace = true
 
 [build-dependencies]
