@@ -11,12 +11,11 @@ use alloc::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet};
 use starry_process::{Pid, Process, ProcessCpuTime, init_proc};
 
 use super::{Cred, ProcessData, current_user_task};
-use crate::sync::PiMutex;
+use crate::sync::{IrqMutex, PiMutex};
 
 /// Generation-specific identity retained by the PID registry and pidfds.
 pub(crate) struct ProcessIdentity {
