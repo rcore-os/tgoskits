@@ -4,15 +4,13 @@ use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
-use ax_sync::{SpinMutex, SpinMutexGuard};
 
 use super::epoll::EpollInner;
-use crate::sync::{IrqMutex, Mutex, MutexGuard};
+use crate::sync::{IrqMutex, SpinLock, SpinLockGuard};
 
 const MAX_NESTED_EPOLL_EDGES: usize = 4;
 
-static EPOLL_TOPOLOGY_LOCK: SpinMutex<()> = SpinMutex::new(());
+static EPOLL_TOPOLOGY_LOCK: SpinLock<()> = SpinLock::new(());
 static NEXT_EPOLL_EDGE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -41,7 +39,7 @@ struct TopologyScan {
     reached_target: bool,
 }
 
-pub(super) fn lock_epoll_topology() -> SpinMutexGuard<'static, ()> {
+pub(super) fn lock_epoll_topology() -> SpinLockGuard<'static, ()> {
     EPOLL_TOPOLOGY_LOCK.lock()
 }
 
