@@ -11,6 +11,9 @@ std::thread_local! {
     static PRIORITY_INDEX_LOOKUPS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
     };
+    static DEADLINE_INDEX_PUBLICATIONS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
 }
 
 #[cfg(test)]
@@ -21,6 +24,16 @@ pub(super) fn reset_priority_index_lookups() {
 #[cfg(test)]
 pub(super) fn priority_index_lookups() -> usize {
     PRIORITY_INDEX_LOOKUPS.get()
+}
+
+#[cfg(test)]
+pub(super) fn reset_deadline_index_publications() {
+    DEADLINE_INDEX_PUBLICATIONS.set(0);
+}
+
+#[cfg(test)]
+pub(super) fn deadline_index_publications() -> usize {
+    DEADLINE_INDEX_PUBLICATIONS.get()
 }
 
 const RT_NORMAL_LEVEL: u8 = 0;
@@ -62,11 +75,15 @@ impl RootDomainPriorityIndex {
             highest_rt_priority,
             earliest_deadline.is_some(),
         );
+        #[cfg(test)]
+        DEADLINE_INDEX_PUBLICATIONS.set(DEADLINE_INDEX_PUBLICATIONS.get().saturating_add(1));
         self.deadline.lock().publish(cpu, online, earliest_deadline);
     }
 
     pub(super) fn publish_offline(&self, cpu: CpuId) {
         self.rt.publish(cpu, false, None, false);
+        #[cfg(test)]
+        DEADLINE_INDEX_PUBLICATIONS.set(DEADLINE_INDEX_PUBLICATIONS.get().saturating_add(1));
         self.deadline.lock().publish(cpu, false, None);
     }
 

@@ -1095,6 +1095,43 @@ fn task_context_fair_wake_keeps_the_sleep_cpu_when_load_is_equal() {
 }
 
 #[test]
+fn fair_wake_does_not_republish_an_unchanged_deadline_index() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+    let sleeper = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(sleeper.id()).unwrap();
+    system.enqueue_at(cpu.as_mut(), sleeper.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule_at(cpu.as_mut(), 1).unwrap().next(),
+        sleeper.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+    system.block_current_at(cpu.as_mut(), 2).unwrap();
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+
+    let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu.as_mut());
+    priority_index::reset_deadline_index_publications();
+    assert_eq!(
+        sleeper.wake_handle().wake_from_task(),
+        crate::WakeResult::Notified
+    );
+    assert_eq!(
+        priority_index::deadline_index_publications(),
+        0,
+        "a Fair-only rq transaction must not take the cpudl heap lock when the published Deadline \
+         state is unchanged"
+    );
+}
+
+#[test]
 fn task_context_fair_wake_uses_the_less_loaded_waker_cpu() {
     crate::test_runtime::reset_irq_state();
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
