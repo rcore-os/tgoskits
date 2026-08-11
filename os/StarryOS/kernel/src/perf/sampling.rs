@@ -36,7 +36,6 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
-use ax_kernel_guard::NoPreemptIrqSave;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 use super::{
@@ -45,7 +44,10 @@ use super::{
     sampling_registry::{RegisterError, SamplingRegistry, UnregisterError},
     target::PerfCpuId,
 };
-use crate::task::{future::IrqNotify, try_current_user_irq_view};
+use crate::{
+    sync::NoPreemptIrqSave,
+    task::{future::IrqNotify, try_current_user_irq_view},
+};
 
 fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
     ax_hal::pmu::irq()

@@ -32,7 +32,6 @@ use alloc::{
 use core::ffi::c_int;
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_kspin::SpinRwLock as RwLock;
 use linux_raw_sys::general::{
     F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_RDLCK, F_SETLK, F_SETLKW, F_UNLCK, F_WRLCK,
     LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY, SEEK_CUR, SEEK_END,
@@ -43,6 +42,7 @@ use starry_process::Pid;
 use crate::{
     file::{File, FileLike, get_file_like},
     mm::UserPtr,
+    sync::RwLock,
     task::futex::WaitQueue,
 };
 

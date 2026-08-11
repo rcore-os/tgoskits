@@ -10,7 +10,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoPreempt;
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::time::monotonic_time;
 use ax_std::os::arceos::task::{
@@ -19,7 +18,7 @@ use ax_std::os::arceos::task::{
 
 use crate::{
     mm::{AddrSpace, Backend, SharedPages},
-    sync::{LockdepMutexExt, PiMutex},
+    sync::{LockdepMutexExt, PiMutex, SpinLock},
     task::{ProcessData, UserTaskRef, process_memory::ProcessMemoryShare},
 };
 
@@ -152,7 +151,7 @@ pub(crate) struct ThreadWaitState {
     // No IRQ path observes it and the guard is never held while taking the
     // table or wait-queue locks, so a short preemption-only spin lock is the
     // narrow capability this metadata needs.
-    cleanup: SpinNoPreempt<Option<FutexWaitCleanup>>,
+    cleanup: SpinLock<Option<FutexWaitCleanup>>,
 }
 
 impl ThreadWaitState {
@@ -161,7 +160,7 @@ impl ThreadWaitState {
         Self {
             generation: AtomicU64::new(0),
             phase: AtomicU8::new(WAIT_IDLE),
-            cleanup: SpinNoPreempt::new(None),
+            cleanup: SpinLock::new(None),
         }
     }
 

@@ -9,12 +9,12 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
 
 use super::{
     task::PerTaskCounter,
     task_context_state::{PerfAttachError, PerfTaskContextState},
 };
+use crate::sync::IrqMutex;
 
 const PERF_COUNTER_CAPACITY: usize = 32;
 
@@ -23,14 +23,14 @@ pub(super) static PERF_TASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// One task's fixed, IRQ-safe scheduler list and exit admission state.
 pub(crate) struct ThreadPerfContext {
-    state: SpinNoIrq<PerfTaskContextState<Arc<PerTaskCounter>, PERF_COUNTER_CAPACITY>>,
+    state: IrqMutex<PerfTaskContextState<Arc<PerTaskCounter>, PERF_COUNTER_CAPACITY>>,
 }
 
 impl ThreadPerfContext {
     /// Creates an empty context that accepts event installation.
     pub(crate) const fn new() -> Self {
         Self {
-            state: SpinNoIrq::new(PerfTaskContextState::new()),
+            state: IrqMutex::new(PerfTaskContextState::new()),
         }
     }
 

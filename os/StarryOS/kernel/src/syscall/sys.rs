@@ -707,9 +707,9 @@ pub fn sys_setgroups(
 
 pub fn sys_uname(current: &crate::task::UserTaskRef, name: *mut new_utsname) -> AxResult<isize> {
     let curr = current;
-    // Build the utsname inside a block so the SpinNoIrq guard is dropped
+    // Build the utsname inside a block so the IRQ-save guard is dropped
     // before we touch user memory via vm_write (access_user_memory requires
-    // IRQs enabled, but SpinNoIrq disables them).
+    // IRQs enabled, but the namespace lock disables them).
     let uts = {
         let nsproxy = curr.as_thread().proc_data.namespace_snapshot();
         let ns = nsproxy.uts_ns.lock();

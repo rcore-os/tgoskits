@@ -29,11 +29,11 @@ struct FrameRefCnt {
 pub(crate) struct DeferredFrameRelease {
     paddr: PhysAddr,
     page_size: usize,
-    frame_ref: Arc<SpinNoIrq<FrameRefCnt>>,
+    frame_ref: Arc<IrqMutex<FrameRefCnt>>,
 }
 
 impl DeferredFrameRelease {
-    fn new(paddr: PhysAddr, page_size: usize, frame_ref: Arc<SpinNoIrq<FrameRefCnt>>) -> Self {
+    fn new(paddr: PhysAddr, page_size: usize, frame_ref: Arc<IrqMutex<FrameRefCnt>>) -> Self {
         Self {
             paddr,
             page_size,

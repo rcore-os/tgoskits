@@ -41,7 +41,7 @@ pub struct PerTaskCounter {
     /// Userspace wants this event counting (see the struct-level state machine).
     pub(super) enabled: AtomicBool,
     /// Sole owner of schedule-in, schedule-out, remote stop, and close state.
-    pub(super) run_state: SpinNoIrq<PmuRunState>,
+    pub(super) run_state: IrqMutex<PmuRunState>,
     /// Sum of completed-slice deltas (raw event count).
     pub(super) accumulated: AtomicU64,
     /// Accumulated enabled time across past windows (ns).
@@ -87,7 +87,7 @@ pub struct PerTaskCounter {
     inherit: bool,
     /// Weak fd-owned family identity. The family owns members strongly, so a
     /// weak back-reference avoids a root/member cycle.
-    family: SpinNoIrq<Option<FamilyBinding>>,
+    family: IrqMutex<Option<FamilyBinding>>,
     /// Ensures the reserved PMU slot and global active count are reclaimed once
     /// when fd close races task exit.
     pub(super) resources: PmuResourceRelease,
@@ -99,13 +99,13 @@ pub struct PerTaskCounter {
     /// The own ring is weakly retained so `munmap` permits a later mmap; a
     /// redirect is strongly retained while this event can publish into it.
     /// Scheduler/sideband readers clone one complete effective output.
-    pub(super) output: SpinNoIrq<PerfOutputRoute>,
+    pub(super) output: IrqMutex<PerfOutputRoute>,
     /// An inherited redirect targets the root event's poll worker, unlike an
     /// explicit `SET_OUTPUT` redirect whose wake ownership belongs to the target
     /// event.
     inherited_output_wake: AtomicBool,
     /// Strong notification and deferred poll machinery.
-    anchors: SpinNoIrq<Option<SamplingAnchors>>,
+    anchors: IrqMutex<Option<SamplingAnchors>>,
 }
 
 #[derive(Clone, Debug)]
@@ -224,7 +224,7 @@ impl PerTaskCounter {
             enable_on_exec: cfg.enable_on_exec,
             cpu_filter: cfg.cpu_filter,
             enabled: AtomicBool::new(cfg.enabled),
-            run_state: SpinNoIrq::new(PmuRunState::new()),
+            run_state: IrqMutex::new(PmuRunState::new()),
             accumulated: AtomicU64::new(0),
             time_enabled_ns: AtomicU64::new(0),
             time_running_ns: AtomicU64::new(0),
@@ -241,12 +241,12 @@ impl PerTaskCounter {
             want_task: cfg.want_task,
             sample_id_all: cfg.sample_id_all,
             inherit: cfg.inherit,
-            family: SpinNoIrq::new(None),
+            family: IrqMutex::new(None),
             resources: PmuResourceRelease::new(),
             rdpmc: RdpmcMapping::new(),
-            output: SpinNoIrq::new(PerfOutputRoute::new()),
+            output: IrqMutex::new(PerfOutputRoute::new()),
             inherited_output_wake: AtomicBool::new(false),
-            anchors: SpinNoIrq::new(None),
+            anchors: IrqMutex::new(None),
         }
     }
 

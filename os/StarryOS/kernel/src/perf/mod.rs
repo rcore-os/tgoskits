@@ -610,7 +610,7 @@ static PERF_FILE: LazyInit<IrqMutex<HashMap<usize, alloc::sync::Weak<dyn FileLik
 
 /// Initialize the perf-event runtime: build the fd→event lookup table.
 pub fn perf_event_init() {
-    PERF_FILE.init_once(SpinNoIrq::new(HashMap::new()));
+    PERF_FILE.init_once(IrqMutex::new(HashMap::new()));
     #[cfg(target_arch = "aarch64")]
     cpu_worker::init();
 }

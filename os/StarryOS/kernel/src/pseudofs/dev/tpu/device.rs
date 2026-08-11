@@ -31,7 +31,6 @@ use core::{
     time::Duration,
 };
 
-use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::PhysAddr;
 use ax_std::os::arceos::task::{

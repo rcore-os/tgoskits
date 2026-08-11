@@ -19,7 +19,6 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_kspin::{RawSpinNoIrq, SpinNoIrq};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{
@@ -34,12 +33,14 @@ use kprobe::{
     unregister_kretprobe as kprobe_crate_unregister_kretprobe,
 };
 
+use crate::sync::{IrqMutex, RawSpinNoIrq};
+
 /// Raw mutex used as the `L` type parameter for the `kprobe` crate's
 /// `ProbeManager` / `Kprobe` / `Kretprobe` (the perf subsystem refers to the
 /// concrete probe types parameterized on it — see [`KernelKprobe`] /
 /// [`KernelKretprobe`]).
 ///
-/// Backed by [`ax_kspin::RawSpinNoIrq`], which disables kernel preemption and
+/// Backed by [`RawSpinNoIrq`], which disables kernel preemption and
 /// local IRQs across the critical section (`PreemptIrqGuard` semantics, the
 /// same as the rest of the kernel's spin locks). This matters because the lock
 /// is taken on trap / kprobe-callback paths: a plain atomic spin lock that left
@@ -227,11 +228,11 @@ pub type KernelKretprobe = kprobe::Kretprobe<KernelRawMutex, KernelKprobeOps>;
 pub type KprobeAuxiliary = KernelKprobeOps;
 
 static KPROBE_MANAGER: KprobeManager = KprobeManager::new();
-static KPROBE_POINT_LIST: SpinNoIrq<KprobePointList> = SpinNoIrq::new(KprobePointList::new());
+static KPROBE_POINT_LIST: IrqMutex<KprobePointList> = IrqMutex::new(KprobePointList::new());
 const KERNEL_KRETPROBE_STACK_CAPACITY: usize = 64;
-static INSTANCE: LazyInit<SpinNoIrq<Vec<RetprobeInstance>>> = LazyInit::new();
+static INSTANCE: LazyInit<IrqMutex<Vec<RetprobeInstance>>> = LazyInit::new();
 
-fn kernel_kretprobe_stack() -> &'static SpinNoIrq<Vec<RetprobeInstance>> {
+fn kernel_kretprobe_stack() -> &'static IrqMutex<Vec<RetprobeInstance>> {
     INSTANCE
         .get()
         .expect("kernel kretprobe stack must be prepared before probes are armed")
@@ -269,7 +270,7 @@ pub fn unregister_kprobe(kprobe: Arc<KernelKprobe>) {
 /// Register a kretprobe and return its live handle.
 #[inline(never)]
 pub fn register_kretprobe(builder: KretprobeBuilder<KernelRawMutex>) -> Arc<KernelKretprobe> {
-    INSTANCE.get_or_init(|| SpinNoIrq::new(Vec::with_capacity(KERNEL_KRETPROBE_STACK_CAPACITY)));
+    INSTANCE.get_or_init(|| IrqMutex::new(Vec::with_capacity(KERNEL_KRETPROBE_STACK_CAPACITY)));
     with_manager_and_list(|mgr, list| {
         kprobe_crate_register_kretprobe(mgr, list, builder).expect("Failed to register kretprobe")
     })

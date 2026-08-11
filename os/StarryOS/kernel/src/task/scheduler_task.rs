@@ -10,11 +10,10 @@ use core::{
     time::Duration,
 };
 
-use ax_kernel_guard::NoPreemptIrqSave;
 use ax_std::os::arceos::task as scheduler;
 
 use super::Thread;
-use crate::sync::PiMutex;
+use crate::sync::{NoPreemptIrqSave, PiMutex};
 
 const TASK_COMM_LEN: usize = 16;
 

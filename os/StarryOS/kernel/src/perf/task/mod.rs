@@ -68,7 +68,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
 use ax_memory_addr::PhysAddr;
 
 pub use super::inheritance::on_clone_inherit;
@@ -86,7 +85,10 @@ use super::{
     sideband::{self, SidebandTarget},
     target::PerfCpuId,
 };
-use crate::task::{Thread, future::IrqNotify};
+use crate::{
+    sync::IrqMutex,
+    task::{Thread, future::IrqNotify},
+};
 
 mod attachment;
 mod control;

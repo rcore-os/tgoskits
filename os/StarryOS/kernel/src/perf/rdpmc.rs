@@ -15,11 +15,11 @@ use core::{
 use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
-use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 use super::hw_owner::Counter;
+use crate::sync::IrqMutex;
 
 /// Values published atomically to one perf mmap page.
 #[derive(Clone, Copy, Debug)]
@@ -38,7 +38,7 @@ pub(super) struct PerfRdpmcPage {
     /// Serializes the bounded ABI publication transaction across scheduler and
     /// sleepable control paths. The lock never covers PMU access, allocation,
     /// wakeup, or an owner-CPU rendezvous.
-    publish_gate: SpinNoIrq<()>,
+    publish_gate: IrqMutex<()>,
 }
 
 impl core::fmt::Debug for PerfRdpmcPage {
@@ -62,7 +62,7 @@ impl PerfRdpmcPage {
             kernel_address,
             physical_address,
             active_index,
-            publish_gate: SpinNoIrq::new(()),
+            publish_gate: IrqMutex::new(()),
         });
 
         let header = page.header();
@@ -124,13 +124,13 @@ impl PerfRdpmcPage {
 /// Weak event-side publication for at most one live VMA.
 #[derive(Debug)]
 pub(super) struct RdpmcMapping {
-    page: SpinNoIrq<Option<Weak<PerfRdpmcPage>>>,
+    page: IrqMutex<Option<Weak<PerfRdpmcPage>>>,
 }
 
 impl RdpmcMapping {
     pub(super) const fn new() -> Self {
         Self {
-            page: SpinNoIrq::new(None),
+            page: IrqMutex::new(None),
         }
     }
 

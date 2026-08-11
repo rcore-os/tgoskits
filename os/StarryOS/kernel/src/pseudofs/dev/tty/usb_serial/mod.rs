@@ -4,7 +4,6 @@ use alloc::{collections::VecDeque, string::ToString, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet};
 
 use self::backend::{UsbSerialPortInfo, find_usb_serial_port};

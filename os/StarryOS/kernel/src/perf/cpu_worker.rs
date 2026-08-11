@@ -3,8 +3,6 @@
 use alloc::{collections::VecDeque, format, sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult};
-use ax_kernel_guard::NoPreemptIrqSave;
-use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_runtime::task::{CpuId, CpuSet, WaitQueue};
 
@@ -17,20 +15,21 @@ use super::{
     target::PerfCpuId,
     task::{self, PerTaskCounter},
 };
+use crate::sync::{IrqMutex, NoPreemptIrqSave};
 
 const COMMAND_CAPACITY: usize = 64;
 
 static CPU_WORKERS: LazyInit<Vec<Arc<PerfCpuWorker>>> = LazyInit::new();
 
 struct PerfCompletion<T> {
-    result: SpinNoIrq<Option<AxResult<T>>>,
+    result: IrqMutex<Option<AxResult<T>>>,
     waiters: WaitQueue,
 }
 
 impl<T> PerfCompletion<T> {
     const fn new() -> Self {
         Self {
-            result: SpinNoIrq::new(None),
+            result: IrqMutex::new(None),
             waiters: WaitQueue::new(),
         }
     }
@@ -164,7 +163,7 @@ fn try_local<T>(owner: PerfCpuId, operation: impl FnOnce() -> AxResult<T>) -> Op
 }
 
 struct PerfCpuWorker {
-    queue: SpinNoIrq<VecDeque<PerfCpuCommand>>,
+    queue: IrqMutex<VecDeque<PerfCpuCommand>>,
     ready: WaitQueue,
     space: WaitQueue,
 }
@@ -172,7 +171,7 @@ struct PerfCpuWorker {
 impl PerfCpuWorker {
     fn new() -> Self {
         Self {
-            queue: SpinNoIrq::new(VecDeque::with_capacity(COMMAND_CAPACITY)),
+            queue: IrqMutex::new(VecDeque::with_capacity(COMMAND_CAPACITY)),
             ready: WaitQueue::new(),
             space: WaitQueue::new(),
         }
