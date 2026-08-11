@@ -1001,7 +1001,7 @@ mod tests {
         sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
     };
 
-    use ax_kspin::{SpinRaw as Mutex, SpinRwLock as RwLock};
+    use ax_sync::{SpinLock as Mutex, SpinRwLock as RwLock};
     use dma_api::{DmaAllocHandle, DmaConstraints, DmaError, DmaMapHandle, DmaOp};
     use usb_if::{endpoint::TransferRequest, err::TransferError};
 
