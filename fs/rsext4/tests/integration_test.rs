@@ -260,7 +260,8 @@ fn owned_mount_injects_clock_separately_from_block_io() {
         .expect("root inode inspection failed");
 
     assert_eq!(root.number.raw(), 2);
-    assert_ne!(root.mode & rsext4::disknode::Ext4Inode::S_IFDIR, 0);
+    assert_eq!(root.file_type(), DirectoryEntryType::Directory);
+    assert!(root.is_directory());
     let lost_found = filesystem
         .lookup_child(
             root.number,
@@ -268,7 +269,7 @@ fn owned_mount_injects_clock_separately_from_block_io() {
         )
         .expect("child lookup failed")
         .expect("lost+found missing");
-    assert_ne!(lost_found.mode & rsext4::disknode::Ext4Inode::S_IFDIR, 0);
+    assert_eq!(lost_found.file_type(), DirectoryEntryType::Directory);
 
     let entries = filesystem
         .read_directory(root.number, 0, 16)
@@ -736,10 +737,7 @@ fn owned_special_inode_persists_modern_device_number() {
         )
         .expect("special inode creation failed");
 
-    assert_eq!(
-        inode.mode & rsext4::disknode::Ext4Inode::S_IFMT,
-        rsext4::disknode::Ext4Inode::S_IFCHR
-    );
+    assert_eq!(inode.file_type(), DirectoryEntryType::CharacterDevice);
     assert_eq!(inode.mode & 0o777, 0o644);
     assert_eq!(inode.uid, 1000);
     assert_eq!(inode.gid, 1001);

@@ -166,6 +166,26 @@ pub struct InodeInfo {
     pub device_number: Option<DeviceNumber>,
 }
 
+impl InodeInfo {
+    /// Returns the stable inode kind without exposing the on-disk mode layout.
+    pub const fn file_type(&self) -> DirectoryEntryType {
+        match self.mode & Ext4Inode::S_IFMT {
+            Ext4Inode::S_IFREG => DirectoryEntryType::RegularFile,
+            Ext4Inode::S_IFDIR => DirectoryEntryType::Directory,
+            Ext4Inode::S_IFCHR => DirectoryEntryType::CharacterDevice,
+            Ext4Inode::S_IFBLK => DirectoryEntryType::BlockDevice,
+            Ext4Inode::S_IFIFO => DirectoryEntryType::Fifo,
+            Ext4Inode::S_IFSOCK => DirectoryEntryType::Socket,
+            Ext4Inode::S_IFLNK => DirectoryEntryType::Symlink,
+            _ => DirectoryEntryType::Unknown,
+        }
+    }
+
+    pub const fn is_directory(&self) -> bool {
+        matches!(self.file_type(), DirectoryEntryType::Directory)
+    }
+}
+
 /// Metadata changes already authorized and normalized by the embedding VFS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InodeMetadataUpdate {
