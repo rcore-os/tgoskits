@@ -1,15 +1,60 @@
 //! Owned, OS-independent mounted filesystem boundary.
 
+use alloc::vec::Vec;
+
 use super::{Ext4FileSystem, FileSystemStats, MountOptions};
 use crate::{
     blockdev::Jbd2Dev,
     bmalloc::InodeNumber,
+    checksum::{verify_ext4_dirblock_checksum, verify_ext4_dx_checksum},
+    dir::FileName,
     disknode::Ext4Inode,
-    error::{Ext4Error, Ext4Result},
-    file::{read_inode_data_into, truncate_inode, write_inode_data},
+    error::{Ext4Error, Ext4ErrorKind, Ext4Result},
+    file::{find_named_entry_in_parent, read_inode_data_into, truncate_inode, write_inode_data},
+    hashtree::Ext4InodeHashTreeExt,
     io::BlockIo,
+    loopfile::resolve_inode_blocks,
     runtime::{Clock, MountServices, MountedServices, Observer},
 };
+
+/// Stable directory-entry type independent from VFS or Linux ABI enums.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectoryEntryType {
+    Unknown,
+    RegularFile,
+    Directory,
+    CharacterDevice,
+    BlockDevice,
+    Fifo,
+    Socket,
+    Symlink,
+}
+
+impl DirectoryEntryType {
+    fn from_disk(value: u8) -> Ext4Result<Self> {
+        match value {
+            0 => Ok(Self::Unknown),
+            1 => Ok(Self::RegularFile),
+            2 => Ok(Self::Directory),
+            3 => Ok(Self::CharacterDevice),
+            4 => Ok(Self::BlockDevice),
+            5 => Ok(Self::Fifo),
+            6 => Ok(Self::Socket),
+            7 => Ok(Self::Symlink),
+            _ => Err(Ext4Error::corrupted().with_operation("directory:file_type")),
+        }
+    }
+}
+
+/// One directory record returned by [`Ext4::read_directory`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    pub inode: InodeNumber,
+    pub file_type: DirectoryEntryType,
+    pub name: Vec<u8>,
+    /// Byte offset of the next record, suitable as the next readdir cookie.
+    pub next_offset: u64,
+}
 
 /// Pure caller metadata associated with one filesystem mutation.
 ///
@@ -110,6 +155,151 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
     pub fn inode(&mut self, number: InodeNumber) -> Ext4Result<InodeInfo> {
         let inode = self.filesystem.get_inode_by_num(&mut self.device, number)?;
         self.inspect_inode(number, inode)
+    }
+
+    /// Looks up one raw child name without performing path traversal.
+    pub fn lookup_child(
+        &mut self,
+        parent: InodeNumber,
+        name: FileName<'_>,
+    ) -> Ext4Result<Option<InodeInfo>> {
+        let parent_inode = self.filesystem.get_inode_by_num(&mut self.device, parent)?;
+        let entry = match find_named_entry_in_parent(
+            &mut self.filesystem,
+            &mut self.device,
+            parent,
+            &parent_inode,
+            name.as_bytes(),
+        ) {
+            Ok(entry) => entry,
+            Err(error) if error.kind() == Ext4ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let inode = self
+            .filesystem
+            .get_inode_by_num(&mut self.device, entry.ino)?;
+        self.inspect_inode(entry.ino, inode).map(Some)
+    }
+
+    /// Reads directory records from an ext4 byte offset.
+    ///
+    /// Deleted records and checksum tails advance the cookie but are not
+    /// returned. Malformed records and checksum mismatches are corruption,
+    /// never an implicit end-of-directory.
+    pub fn read_directory(
+        &mut self,
+        directory: InodeNumber,
+        offset: u64,
+        max_entries: usize,
+    ) -> Ext4Result<Vec<DirectoryEntry>> {
+        let mut inode = self
+            .filesystem
+            .get_inode_by_num(&mut self.device, directory)?;
+        if !inode.is_dir() {
+            return Err(Ext4Error::not_dir());
+        }
+        if max_entries == 0 || offset >= inode.size() {
+            return Ok(Vec::new());
+        }
+
+        let block_size = self.filesystem.block_size();
+        let mappings = resolve_inode_blocks(
+            &mut self.filesystem,
+            &mut self.device,
+            directory,
+            &mut inode,
+        )?;
+        let mut output = Vec::new();
+        for (logical_block, physical_block) in mappings {
+            let block_base = u64::from(logical_block)
+                .checked_mul(block_size as u64)
+                .ok_or_else(Ext4Error::overflow)?;
+            let block_end = block_base
+                .checked_add(block_size as u64)
+                .ok_or_else(Ext4Error::overflow)?;
+            if block_end <= offset {
+                continue;
+            }
+
+            let cached = self
+                .filesystem
+                .datablock_cache
+                .get_or_load(&mut self.device, physical_block)?;
+            let data = &cached.data;
+            let checksum_ok = if inode.is_htree_indexed() {
+                verify_ext4_dx_checksum(
+                    &self.filesystem.superblock,
+                    directory.raw(),
+                    inode.i_generation,
+                    data,
+                )
+                .unwrap_or_else(|| {
+                    verify_ext4_dirblock_checksum(
+                        &self.filesystem.superblock,
+                        directory.raw(),
+                        inode.i_generation,
+                        data,
+                    )
+                })
+            } else {
+                verify_ext4_dirblock_checksum(
+                    &self.filesystem.superblock,
+                    directory.raw(),
+                    inode.i_generation,
+                    data,
+                )
+            };
+            if !checksum_ok {
+                return Err(Ext4Error::checksum().with_operation("directory:block"));
+            }
+
+            let mut position = 0usize;
+            while position < data.len() {
+                let header = data.get(position..position + 8).ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("directory:record_header")
+                })?;
+                let inode_raw = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+                let record_len = usize::from(u16::from_le_bytes([header[4], header[5]]));
+                let name_len = usize::from(header[6]);
+                let file_type = header[7];
+                let record_end = position.checked_add(record_len).ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("directory:record_overflow")
+                })?;
+                if record_len < 8
+                    || !record_len.is_multiple_of(4)
+                    || record_end > data.len()
+                    || name_len > record_len - 8
+                {
+                    return Err(Ext4Error::corrupted().with_operation("directory:record"));
+                }
+
+                let entry_offset = block_base
+                    .checked_add(position as u64)
+                    .ok_or_else(Ext4Error::overflow)?;
+                let next_offset = block_base
+                    .checked_add(record_end as u64)
+                    .ok_or_else(Ext4Error::overflow)?;
+                if inode_raw != 0 && entry_offset >= offset {
+                    let inode_number = InodeNumber::new(inode_raw)
+                        .map_err(|_| Ext4Error::corrupted().with_operation("directory:inode"))?;
+                    let name = data[position + 8..position + 8 + name_len].to_vec();
+                    FileName::new(&name).map_err(|_| {
+                        Ext4Error::corrupted().with_operation("directory:stored_name")
+                    })?;
+                    output.push(DirectoryEntry {
+                        inode: inode_number,
+                        file_type: DirectoryEntryType::from_disk(file_type)?,
+                        name,
+                        next_offset,
+                    });
+                    if output.len() == max_entries {
+                        return Ok(output);
+                    }
+                }
+                position = record_end;
+            }
+        }
+        Ok(output)
     }
 
     fn inspect_inode(&self, number: InodeNumber, inode: Ext4Inode) -> Ext4Result<InodeInfo> {

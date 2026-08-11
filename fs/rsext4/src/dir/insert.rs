@@ -1,4 +1,5 @@
 //! Directory entry insertion helpers.
+use super::FileName;
 use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
@@ -28,15 +29,36 @@ pub fn insert_dir_entry<B: BlockIo>(
     child_name: &str,
     file_type: u8,
 ) -> Ext4Result<()> {
+    insert_dir_entry_raw(
+        fs,
+        device,
+        parent_ino_num,
+        parent_inode,
+        child_ino,
+        FileName::new(child_name.as_bytes())?,
+        file_type,
+    )
+}
+
+/// Inserts one validated raw child name into a parent directory.
+pub(crate) fn insert_dir_entry_raw<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    parent_ino_num: InodeNumber,
+    parent_inode: &mut Ext4Inode,
+    child_ino: InodeNumber,
+    child_name: FileName<'_>,
+    file_type: u8,
+) -> Ext4Result<()> {
     let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
     let name_bytes = child_name.as_bytes();
-    let name_len = core::cmp::min(name_bytes.len(), Ext4DirEntry2::MAX_NAME_LEN as usize);
+    let name_len = name_bytes.len();
     let new_rec_len = Ext4DirEntry2::entry_len(name_len as u8) as usize;
     let new_entry = Ext4DirEntry2::new(
         child_ino.raw(),
         Ext4DirEntry2::entry_len(name_len as u8),
         file_type,
-        &name_bytes[..name_len],
+        name_bytes,
     );
 
     let total_size = parent_inode.size() as usize;

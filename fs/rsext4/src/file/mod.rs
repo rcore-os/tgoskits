@@ -29,6 +29,7 @@ mod rename;
 
 pub use blocks::build_file_block_mapping_with_inode_num;
 pub use create::{create_symbol_link, create_symbol_link_with_owner, mkfile, mkfile_with_owner};
+pub(crate) use delete::find_named_entry_in_parent;
 pub use delete::{
     delete_dir, delete_file, free_inode, is_dir_empty, remove_inodeentry_from_parentdir, unlink,
 };

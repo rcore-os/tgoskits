@@ -230,6 +230,37 @@ fn owned_mount_injects_clock_separately_from_block_io() {
 
     assert_eq!(root.number.raw(), 2);
     assert_ne!(root.mode & rsext4::disknode::Ext4Inode::S_IFDIR, 0);
+    let lost_found = filesystem
+        .lookup_child(
+            root.number,
+            FileName::new(b"lost+found").expect("valid raw name"),
+        )
+        .expect("child lookup failed")
+        .expect("lost+found missing");
+    assert_ne!(lost_found.mode & rsext4::disknode::Ext4Inode::S_IFDIR, 0);
+
+    let entries = filesystem
+        .read_directory(root.number, 0, 16)
+        .expect("root readdir failed");
+    assert!(entries.iter().any(|entry| entry.name == b"."));
+    assert!(entries.iter().any(|entry| entry.name == b".."));
+    assert!(entries.iter().any(|entry| entry.name == b"lost+found"));
+    assert!(
+        entries
+            .windows(2)
+            .all(|pair| pair[0].next_offset < pair[1].next_offset)
+    );
+
+    let raw_non_utf8 = FileName::new(&[0xff]).expect("ext4 names are raw bytes");
+    assert!(
+        filesystem
+            .lookup_child(root.number, raw_non_utf8)
+            .expect("raw lookup failed")
+            .is_none()
+    );
+    assert!(FileName::new(b"").is_err());
+    assert!(FileName::new(b"a/b").is_err());
+    assert!(FileName::new(b"a\0b").is_err());
     filesystem.unmount().expect("owned unmount failed");
 }
 
@@ -286,6 +317,25 @@ fn test_basic_mount_mkfs() {
     assert_eq!(read_data, data.to_vec());
 
     umount(fs, &mut jbd2_dev).expect("umount failed");
+}
+
+#[test]
+fn overlong_directory_name_is_rejected_without_truncation() {
+    let device = TestBlockDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+    let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+    let overlong = "a".repeat(256);
+    let path = format!("/{overlong}");
+
+    let error = mkfile(&mut jbd2_dev, &mut fs, &path, None, None)
+        .expect_err("an overlong name must not be truncated");
+    assert_eq!(error.kind(), Ext4ErrorKind::InvalidInput);
+    assert!(
+        rsext4::loopfile::get_file_inode(&mut fs, &mut jbd2_dev, &format!("/{}", "a".repeat(255)),)
+            .expect("lookup failed")
+            .is_none()
+    );
 }
 
 #[test]
