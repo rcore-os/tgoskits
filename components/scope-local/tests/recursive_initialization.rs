@@ -3,21 +3,6 @@ use std::{any::Any, panic};
 
 use scope_local::scope_local;
 
-struct KernelGuardIfImpl;
-
-#[ax_crate_interface::impl_interface]
-impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
-    fn hardirq_enter() {}
-
-    fn hardirq_exit() {}
-
-    fn enable_preempt() {}
-
-    fn enable_preempt_from_irq_return() {}
-
-    fn disable_preempt() {}
-}
-
 scope_local! {
     static RECURSION_TARGET: usize = 23;
     static RECURSIVE_VALUE: usize = {

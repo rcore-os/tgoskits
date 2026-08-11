@@ -11,21 +11,6 @@ use std::{
 
 use scope_local::{ActiveScope, ScopeActivationError, ScopeCell, ScopeCellBusy, scope_local};
 
-struct KernelGuardIfImpl;
-
-#[ax_crate_interface::impl_interface]
-impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
-    fn hardirq_enter() {}
-
-    fn hardirq_exit() {}
-
-    fn enable_preempt() {}
-
-    fn enable_preempt_from_irq_return() {}
-
-    fn disable_preempt() {}
-}
-
 scope_local! {
     static VALUE: usize = 7;
 }

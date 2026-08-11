@@ -11,27 +11,6 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 static EAGER_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static PINNED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-struct KernelGuardIfImpl;
-
-#[ax_crate_interface::impl_interface]
-impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
-    fn hardirq_enter() {}
-
-    fn hardirq_exit() {}
-
-    fn enable_preempt() {
-        PREEMPT_DEPTH.fetch_sub(1, Ordering::AcqRel);
-    }
-
-    fn enable_preempt_from_irq_return() {
-        Self::enable_preempt();
-    }
-
-    fn disable_preempt() {
-        PREEMPT_DEPTH.fetch_add(1, Ordering::AcqRel);
-    }
-}
-
 scope_local! {
     static INIT_PREEMPT_DEPTH: usize = ax_sync::host_preempt_depth();
     static EAGER_VALUE: usize = {

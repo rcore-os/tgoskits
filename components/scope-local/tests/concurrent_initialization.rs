@@ -11,21 +11,6 @@ use std::{
 
 use scope_local::scope_local;
 
-struct KernelGuardIfImpl;
-
-#[ax_crate_interface::impl_interface]
-impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
-    fn hardirq_enter() {}
-
-    fn hardirq_exit() {}
-
-    fn enable_preempt() {}
-
-    fn enable_preempt_from_irq_return() {}
-
-    fn disable_preempt() {}
-}
-
 static INITIALIZER_ENTERED: OnceLock<Barrier> = OnceLock::new();
 static RELEASE_INITIALIZER: OnceLock<Barrier> = OnceLock::new();
 static WAITER_READY: OnceLock<Barrier> = OnceLock::new();
