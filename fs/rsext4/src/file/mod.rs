@@ -23,6 +23,7 @@ use crate::{
 mod blocks;
 mod create;
 mod delete;
+mod extent_map;
 mod io;
 mod link;
 mod rename;
@@ -40,6 +41,9 @@ pub(crate) use delete::{
 pub use delete::{
     UnlinkOutcome, delete_dir, delete_file, free_inode, is_dir_empty, reap_unlinked_inode,
     remove_inodeentry_from_parentdir, unlink,
+};
+pub use extent_map::{
+    FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, inspect_inode_extents,
 };
 pub use io::{
     PreallocationOptions, RangeOperation, ZeroRangeOptions, collapse_range_inode,

@@ -580,6 +580,20 @@ impl NodeOps for OverlayDir {
 }
 
 impl DirNodeOps for OverlayDir {
+    fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: axfs_ng_vfs::FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<axfs_ng_vfs::FileExtentMap> {
+        self.current_dir()?
+            .entry()
+            .as_dir()?
+            .inner()
+            .map_extents(offset, len, target, extent_limit)
+    }
+
     /// Return the merged directory view.
     ///
     /// Lower layers are merged first from bottom to top, then upper entries
@@ -856,6 +870,19 @@ impl FileNodeOps for OverlayFile {
         open_write(self.ensure_upper()?)?
             .backend()?
             .operate_range(offset, len, operation)
+    }
+
+    fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: axfs_ng_vfs::FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<axfs_ng_vfs::FileExtentMap> {
+        self.current()?
+            .entry()
+            .as_file()?
+            .map_extents(offset, len, target, extent_limit)
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {

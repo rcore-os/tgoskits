@@ -12,12 +12,12 @@ use crate::{
     entries::Ext4DirEntry2,
     error::{Ext4Error, Ext4ErrorKind, Ext4Result},
     file::{
-        CreateInodePayload, PreallocationOptions, RangeOperation, RenameEntryRequest,
-        RenameOptions, RenameOutcome, UnlinkOutcome, build_file_block_mapping_with_inode_num,
-        create_inode_at, discard_unpublished_inode_blocks, error_after_cleanup,
-        find_named_entry_in_parent, link_inode_at, operate_inode_range, read_inode_data_into,
-        reap_unlinked_inode, rename_inode_at, truncate_inode, unlink_empty_directory_at,
-        unlink_inode_at, write_inode_data,
+        CreateInodePayload, FileExtentMap, FileExtentTarget, PreallocationOptions, RangeOperation,
+        RenameEntryRequest, RenameOptions, RenameOutcome, UnlinkOutcome,
+        build_file_block_mapping_with_inode_num, create_inode_at, discard_unpublished_inode_blocks,
+        error_after_cleanup, find_named_entry_in_parent, inspect_inode_extents, link_inode_at,
+        operate_inode_range, read_inode_data_into, reap_unlinked_inode, rename_inode_at,
+        truncate_inode, unlink_empty_directory_at, unlink_inode_at, write_inode_data,
     },
     hashtree::Ext4InodeHashTreeExt,
     io::BlockIo,
@@ -346,6 +346,26 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         }
         let inode = self.filesystem.get_inode_by_num(&mut self.device, number)?;
         self.inspect_inode(number, inode)
+    }
+
+    /// Returns a bounded, byte-addressed view of allocated file mappings.
+    pub fn inode_extents(
+        &mut self,
+        number: InodeNumber,
+        start: u64,
+        length: u64,
+        target: FileExtentTarget,
+        extent_limit: usize,
+    ) -> Ext4Result<FileExtentMap> {
+        inspect_inode_extents(
+            &mut self.device,
+            &mut self.filesystem,
+            number,
+            start,
+            length,
+            target,
+            extent_limit,
+        )
     }
 
     /// Applies VFS-authorized metadata fields through the checked inode codec.

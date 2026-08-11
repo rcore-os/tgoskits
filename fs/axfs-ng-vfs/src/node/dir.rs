@@ -7,7 +7,7 @@ use core::{
 
 use hashbrown::HashMap;
 
-use super::DirEntry;
+use super::{DirEntry, FileExtentMap, FileExtentTarget};
 use crate::{
     Mountpoint, Mutex, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
     path::{DOT, DOTDOT, verify_entry_name},
@@ -79,6 +79,17 @@ impl Default for RenameOptions {
 }
 
 pub trait DirNodeOps: NodeOps {
+    /// Queries allocated mappings for a filesystem-backed directory inode.
+    fn map_extents(
+        &self,
+        _offset: u64,
+        _len: u64,
+        _target: FileExtentTarget,
+        _extent_limit: usize,
+    ) -> VfsResult<FileExtentMap> {
+        Err(VfsError::OperationNotSupported)
+    }
+
     /// Reads directory entries.
     ///
     /// Returns the number of entries read.

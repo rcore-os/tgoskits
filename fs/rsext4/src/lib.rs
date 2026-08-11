@@ -38,9 +38,10 @@ pub use ext4::{
     umount,
 };
 pub use file::{
-    PreallocationOptions, RangeOperation, RenameOptions, RenameOutcome, UnlinkOutcome,
-    ZeroRangeOptions, create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file,
-    free_inode, is_dir_empty, link, mkfile, mkfile_with_owner, mv, operate_inode_range,
+    FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, PreallocationOptions,
+    RangeOperation, RenameOptions, RenameOutcome, UnlinkOutcome, ZeroRangeOptions,
+    create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file, free_inode,
+    inspect_inode_extents, is_dir_empty, link, mkfile, mkfile_with_owner, mv, operate_inode_range,
     preallocate_inode, punch_hole_inode, read_file, read_inode_data_into, reap_unlinked_inode,
     remove_inodeentry_from_parentdir, rename, rename_with_options, truncate, truncate_inode,
     unlink, write_file, write_inode_data, zero_range_inode,

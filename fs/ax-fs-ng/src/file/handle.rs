@@ -7,8 +7,8 @@ use core::{
 
 use ax_io::{SeekFrom, prelude::*};
 use axfs_ng_vfs::{
-    FileRangeOperation, FsIoEvents, FsPollable, Location, NodeFlags, PreallocationMode, VfsError,
-    VfsResult, path::Path,
+    FileExtentMap, FileExtentTarget, FileRangeOperation, FsIoEvents, FsPollable, Location,
+    NodeFlags, PreallocationMode, VfsError, VfsResult, path::Path,
 };
 
 use super::{
@@ -184,6 +184,20 @@ impl FileBackend {
             Self::Direct(loc) => loc.entry().as_file()?.operate_range(offset, len, operation),
         }
     }
+
+    /// Queries the backing filesystem's allocated extent mappings.
+    pub fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<FileExtentMap> {
+        self.location()
+            .entry()
+            .as_file()?
+            .map_extents(offset, len, target, extent_limit)
+    }
 }
 
 /// Provides `std::fs::File`-like interface.
@@ -316,6 +330,18 @@ impl File {
     ) -> VfsResult<()> {
         self.access(FileFlags::WRITE)?
             .operate_range(offset, len, operation)
+    }
+
+    /// Queries allocated file-to-device mappings without changing file state.
+    pub fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<FileExtentMap> {
+        self.access(FileFlags::empty())?
+            .map_extents(offset, len, target, extent_limit)
     }
 
     /// Attempts to sync OS-internal file content and metadata to disk.

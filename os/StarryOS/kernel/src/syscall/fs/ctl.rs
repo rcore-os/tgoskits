@@ -6,20 +6,25 @@ use alloc::{
 };
 use core::{
     ffi::{c_char, c_int},
-    mem::offset_of,
+    mem::{offset_of, size_of},
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::{FsContext, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use ax_task::current;
-use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, RenameOptions, path::Path};
+use axfs_ng_vfs::{
+    DeviceId, FileExtentTarget, MetadataUpdate, NodePermission, NodeType, RenameOptions, path::Path,
+};
 use linux_raw_sys::{
     general::*,
-    ioctl::{FIOASYNC, FIONBIO},
+    ioctl::{
+        FIEMAP_EXTENT_LAST, FIEMAP_EXTENT_MERGED, FIEMAP_EXTENT_UNWRITTEN, FIEMAP_FLAG_CACHE,
+        FIEMAP_FLAG_SYNC, FIEMAP_FLAG_XATTR, FIEMAP_FLAGS_COMPAT, FIOASYNC, FIONBIO, FS_IOC_FIEMAP,
+    },
 };
-use starry_vm::{VmPtr, vm_write_slice};
+use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
     file::{Directory, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
@@ -33,6 +38,34 @@ use crate::{
 /// use these on freshly-opened fds; Linux implements them generically for any fd.
 pub const FIOCLEX: u32 = 0x5451;
 pub const FIONCLEX: u32 = 0x5450;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::AnyBitPattern)]
+struct FiemapHeader {
+    start: u64,
+    length: u64,
+    flags: u32,
+    mapped_extents: u32,
+    extent_count: u32,
+    reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FiemapExtent {
+    logical: u64,
+    physical: u64,
+    length: u64,
+    reserved64: [u64; 2],
+    flags: u32,
+    reserved: [u32; 3],
+}
+
+const _: () = {
+    assert!(size_of::<FiemapHeader>() == 32);
+    assert!(size_of::<FiemapExtent>() == 56);
+    assert!(offset_of!(FiemapExtent, flags) == 40);
+};
 
 #[cfg(axtest)]
 pub(crate) fn ctl_ioctl_constants_hold_for_test() -> bool {
@@ -71,6 +104,9 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         f.set_async_mode(val != 0)?;
         return Ok(0);
     }
+    if cmd == FS_IOC_FIEMAP {
+        return ioctl_fiemap(fd, arg).map(|()| 0);
+    }
     // FIOCLEX/FIONCLEX are fd-table operations (close-on-exec), not device commands —
     // handle them here so any fd (not just ttys) accepts them, as Linux does. Without
     // this, curses/CPython (glances) hit "Unsupported ioctl command".
@@ -94,6 +130,110 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
                 debug!("ioctl {cmd} on non-tty fd {fd} -> ENOTTY (probe)");
             }
         })
+}
+
+fn ioctl_fiemap(fd: i32, arg: usize) -> AxResult<()> {
+    let (file, directory) = match crate::file::File::from_fd(fd) {
+        Ok(file) => (Some(file), None),
+        Err(AxError::IsADirectory) => (None, Some(Directory::from_fd(fd)?)),
+        Err(AxError::InvalidInput) => return Err(AxError::OperationNotSupported),
+        Err(error) => return Err(error),
+    };
+    let header_ptr = arg as *mut FiemapHeader;
+    let mut header = header_ptr.vm_read()?;
+    if header.extent_count > u32::MAX / size_of::<FiemapExtent>() as u32 {
+        return Err(AxError::InvalidInput);
+    }
+
+    // ext4 consumes CACHE before generic compatibility checking. rsext4 has no
+    // separate extent-status cache; this query warms its checked metadata cache.
+    header.flags &= !FIEMAP_FLAG_CACHE;
+    let incompatible = header.flags & !(FIEMAP_FLAGS_COMPAT | FIEMAP_FLAG_SYNC);
+    let mut result = if incompatible != 0 {
+        header.flags = incompatible;
+        Err(AxError::from(LinuxError::EBADR))
+    } else {
+        (|| {
+            if header.flags & FIEMAP_FLAG_SYNC != 0 {
+                if let Some(file) = &file {
+                    file.inner().sync(false)?;
+                } else if let Some(directory) = &directory {
+                    directory.inner().sync(false)?;
+                }
+            }
+            let target = if header.flags & FIEMAP_FLAG_XATTR != 0 {
+                header.flags &= !FIEMAP_FLAG_XATTR;
+                FileExtentTarget::ExtendedAttributes
+            } else {
+                FileExtentTarget::Data
+            };
+            if let Some(file) = &file {
+                file.inner().map_extents(
+                    header.start,
+                    header.length,
+                    target,
+                    header.extent_count as usize,
+                )
+            } else {
+                directory
+                    .as_ref()
+                    .ok_or(AxError::OperationNotSupported)?
+                    .inner()
+                    .entry()
+                    .as_dir()?
+                    .inner()
+                    .map_extents(
+                        header.start,
+                        header.length,
+                        target,
+                        header.extent_count as usize,
+                    )
+            }
+        })()
+    };
+
+    let mut copied = 0u32;
+    if let Ok(mappings) = &result {
+        if header.extent_count == 0 {
+            copied = u32::try_from(mappings.mapped_extents)
+                .map_err(|_| AxError::from(LinuxError::EOVERFLOW))?;
+        } else {
+            let extent_address = arg
+                .checked_add(size_of::<FiemapHeader>())
+                .ok_or(AxError::BadAddress)?;
+            for (index, mapping) in mappings.extents.iter().enumerate() {
+                let mut flags = 0;
+                if mapping.state == axfs_ng_vfs::FileExtentState::Unwritten {
+                    flags |= FIEMAP_EXTENT_UNWRITTEN;
+                }
+                if mapping.merged {
+                    flags |= FIEMAP_EXTENT_MERGED;
+                }
+                if mappings.complete && index + 1 == mappings.extents.len() {
+                    flags |= FIEMAP_EXTENT_LAST;
+                }
+                let extent = FiemapExtent {
+                    logical: mapping.logical_start,
+                    physical: mapping.physical_start,
+                    length: mapping.length,
+                    flags,
+                    ..Default::default()
+                };
+                let byte_offset = index
+                    .checked_mul(size_of::<FiemapExtent>())
+                    .and_then(|offset| extent_address.checked_add(offset))
+                    .ok_or(AxError::BadAddress)?;
+                if let Err(error) = (byte_offset as *mut FiemapExtent).vm_write(extent) {
+                    result = Err(error.into());
+                    break;
+                }
+                copied += 1;
+            }
+        }
+    }
+    header.mapped_extents = copied;
+    header_ptr.vm_write(header)?;
+    result.map(|_| ())
 }
 
 #[ddebug::named]

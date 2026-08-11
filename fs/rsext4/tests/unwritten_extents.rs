@@ -562,6 +562,234 @@ fn owned_core_exposes_preallocation_without_os_types() {
 }
 
 #[test]
+fn owned_core_reports_sparse_and_unwritten_file_extents() {
+    let device = rsext4::format(
+        MemoryDevice::new(32 * 1024),
+        StaticClock(Cell::new(1_700_000_000)),
+        rsext4::MkfsOptions::default(),
+    )
+    .expect("owned format failed");
+    let services = rsext4::MountServices::new(
+        StaticClock(Cell::new(1_800_000_000)),
+        (),
+        (),
+        (),
+        rsext4::NoopObserver,
+    );
+    let mut filesystem = rsext4::Ext4::mount(device, services, rsext4::MountOptions::read_write())
+        .expect("owned mount failed");
+    let context = rsext4::MutationContext::new(1000, 1000, 0, 0o022);
+    let file = filesystem
+        .create_regular_file(
+            context,
+            filesystem.root_inode(),
+            rsext4::FileName::new(b"owned-extents").expect("valid file name"),
+            rsext4::FilePermissions::new(0o666).expect("valid permissions"),
+        )
+        .expect("owned file creation failed");
+    filesystem
+        .write_inode(context, file.number, 0, &vec![0x11; BLOCK_SIZE])
+        .expect("first extent write failed");
+    filesystem
+        .write_inode(
+            context,
+            file.number,
+            2 * BLOCK_SIZE as u64,
+            &vec![0x22; BLOCK_SIZE],
+        )
+        .expect("sparse extent write failed");
+    filesystem
+        .preallocate_inode(
+            context,
+            file.number,
+            4 * BLOCK_SIZE as u64,
+            BLOCK_SIZE as u64,
+            PreallocationOptions::EXTEND_SIZE,
+        )
+        .expect("unwritten extent allocation failed");
+
+    let mappings = filesystem
+        .inode_extents(
+            file.number,
+            BLOCK_SIZE as u64 / 2,
+            5 * BLOCK_SIZE as u64,
+            rsext4::FileExtentTarget::Data,
+            8,
+        )
+        .expect("file extent inspection failed");
+    assert_eq!(mappings.mapped_extents, 3);
+    assert!(mappings.complete);
+    assert_eq!(mappings.extents.len(), 3);
+    assert_eq!(mappings.extents[0].logical_start, 0);
+    assert_eq!(mappings.extents[0].length, BLOCK_SIZE as u64);
+    assert_eq!(
+        mappings.extents[0].state,
+        rsext4::FileExtentState::Initialized
+    );
+    assert_eq!(mappings.extents[1].logical_start, 2 * BLOCK_SIZE as u64);
+    assert_eq!(
+        mappings.extents[1].state,
+        rsext4::FileExtentState::Initialized
+    );
+    assert_eq!(mappings.extents[2].logical_start, 4 * BLOCK_SIZE as u64);
+    assert_eq!(
+        mappings.extents[2].state,
+        rsext4::FileExtentState::Unwritten
+    );
+
+    let count_only = filesystem
+        .inode_extents(file.number, 0, u64::MAX, rsext4::FileExtentTarget::Data, 0)
+        .expect("count-only extent inspection failed");
+    assert_eq!(count_only.mapped_extents, 3);
+    assert!(count_only.extents.is_empty());
+    assert!(count_only.complete);
+
+    let bounded = filesystem
+        .inode_extents(file.number, 0, u64::MAX, rsext4::FileExtentTarget::Data, 2)
+        .expect("bounded extent inspection failed");
+    assert_eq!(bounded.mapped_extents, 2);
+    assert_eq!(bounded.extents.len(), 2);
+    assert!(!bounded.complete);
+
+    let zero_length = filesystem
+        .inode_extents(file.number, 0, 0, rsext4::FileExtentTarget::Data, 1)
+        .expect_err("zero-length extent query must fail");
+    assert_eq!(zero_length.kind(), rsext4::Ext4ErrorKind::InvalidInput);
+
+    let zero_length_xattr = filesystem
+        .inode_extents(
+            file.number,
+            0,
+            0,
+            rsext4::FileExtentTarget::ExtendedAttributes,
+            1,
+        )
+        .expect_err("range validation must precede xattr capability rejection");
+    assert_eq!(
+        zero_length_xattr.kind(),
+        rsext4::Ext4ErrorKind::InvalidInput
+    );
+
+    let unsupported_xattr = filesystem
+        .inode_extents(
+            file.number,
+            0,
+            u64::MAX,
+            rsext4::FileExtentTarget::ExtendedAttributes,
+            1,
+        )
+        .expect_err("xattr extent inspection is not implemented yet");
+    assert_eq!(unsupported_xattr.kind(), rsext4::Ext4ErrorKind::Unsupported);
+
+    let directory_mappings = filesystem
+        .inode_extents(
+            filesystem.root_inode(),
+            0,
+            u64::MAX,
+            rsext4::FileExtentTarget::Data,
+            8,
+        )
+        .expect("directory inode extent inspection failed");
+    assert!(!directory_mappings.extents.is_empty());
+    assert!(directory_mappings.complete);
+    assert!(
+        directory_mappings
+            .extents
+            .iter()
+            .all(|extent| extent.state == rsext4::FileExtentState::Initialized)
+    );
+
+    let maximum_extent_bytes = u64::from(u32::MAX) * BLOCK_SIZE as u64;
+    let error = filesystem
+        .inode_extents(
+            file.number,
+            maximum_extent_bytes,
+            1,
+            rsext4::FileExtentTarget::Data,
+            1,
+        )
+        .expect_err("extent FIEMAP at the ee_block limit must fail");
+    assert_eq!(error.kind(), rsext4::Ext4ErrorKind::FileTooLarge);
+}
+
+#[test]
+fn file_extent_inspection_merges_legacy_indirect_block_runs() {
+    let device = MemoryDevice::new(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(&mut journal, &mut filesystem, "/legacy-map", None, None).expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/legacy-map")
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+    filesystem
+        .modify_inode(&mut journal, inode_number, |inode| {
+            inode.i_flags &= !rsext4::disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+        })
+        .expect("legacy inode conversion failed");
+    write_file(
+        &mut journal,
+        &mut filesystem,
+        "/legacy-map",
+        0,
+        &vec![0x5a; 15 * BLOCK_SIZE],
+    )
+    .expect("legacy write failed");
+
+    let mappings = rsext4::inspect_inode_extents(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        0,
+        u64::MAX,
+        rsext4::FileExtentTarget::Data,
+        usize::MAX,
+    )
+    .expect("legacy extent inspection failed");
+    assert!(mappings.complete);
+    assert_eq!(mappings.mapped_extents, mappings.extents.len());
+    assert!(!mappings.extents.is_empty());
+    assert!(mappings.extents.iter().all(|extent| extent.merged));
+    assert!(
+        mappings
+            .extents
+            .iter()
+            .all(|extent| { extent.state == rsext4::FileExtentState::Initialized })
+    );
+    assert_eq!(mappings.extents[0].logical_start, 0);
+    assert_eq!(
+        mappings
+            .extents
+            .iter()
+            .map(|extent| extent.length)
+            .sum::<u64>(),
+        15 * BLOCK_SIZE as u64
+    );
+    for pair in mappings.extents.windows(2) {
+        assert_eq!(
+            pair[0].logical_start + pair[0].length,
+            pair[1].logical_start
+        );
+    }
+
+    let pointers = (BLOCK_SIZE / core::mem::size_of::<u32>()) as u64;
+    let maximum_legacy_blocks = 12 + pointers + pointers.pow(2) + pointers.pow(3);
+    let error = rsext4::inspect_inode_extents(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        maximum_legacy_blocks * BLOCK_SIZE as u64,
+        1,
+        rsext4::FileExtentTarget::Data,
+        1,
+    )
+    .expect_err("legacy FIEMAP at the indirect-tree limit must fail");
+    assert_eq!(error.kind(), rsext4::Ext4ErrorKind::FileTooLarge);
+}
+
+#[test]
 fn punch_hole_zeros_partial_edges_and_releases_complete_blocks() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);

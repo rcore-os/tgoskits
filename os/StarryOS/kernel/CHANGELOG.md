@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Implement ext4 data `FS_IOC_FIEMAP` for regular files and directories,
+  including count-only, sparse, unwritten, bounded, range, and error semantics;
+  xattr mapping remains explicitly unsupported.
+
 ### Fixed
 
 - Make ext4 `fallocate(2)` reserve unwritten blocks for normal and

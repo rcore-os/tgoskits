@@ -23,6 +23,38 @@ pub enum FileRangeOperation {
     InsertRange,
 }
 
+/// Allocation state of one file-to-device extent mapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileExtentState {
+    Initialized,
+    Unwritten,
+}
+
+/// Mapping namespace selected for a file extent query.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileExtentTarget {
+    Data,
+    ExtendedAttributes,
+}
+
+/// One byte-addressed extent mapping returned by a filesystem backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileExtent {
+    pub logical_start: u64,
+    pub physical_start: u64,
+    pub length: u64,
+    pub state: FileExtentState,
+    pub merged: bool,
+}
+
+/// Bounded result of a file extent query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileExtentMap {
+    pub extents: alloc::vec::Vec<FileExtent>,
+    pub mapped_extents: usize,
+    pub complete: bool,
+}
+
 pub trait FileNodeOps: NodeOps + FsPollable {
     /// Reads a number of bytes starting from a given offset.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
@@ -52,6 +84,17 @@ pub trait FileNodeOps: NodeOps + FsPollable {
     /// Reserves backing storage for a byte range.
     fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
         self.operate_range(offset, len, FileRangeOperation::Allocate(mode))
+    }
+
+    /// Queries allocated mappings without exposing filesystem disk structs.
+    fn map_extents(
+        &self,
+        _offset: u64,
+        _len: u64,
+        _target: FileExtentTarget,
+        _extent_limit: usize,
+    ) -> VfsResult<FileExtentMap> {
+        Err(VfsError::OperationNotSupported)
     }
 
     /// Sets the file's symlink target.

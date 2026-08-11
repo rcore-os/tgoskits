@@ -377,6 +377,122 @@ fn rsext4_mkfs_geometry_round_trip(filesystem_block_size: u32) {
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
 }
 
+fn file_extent_map_geometry_round_trip(filesystem_block_size: u32) {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) =
+        create_ext4_geometry_image("rsext4-file-extent-map", "64M", filesystem_block_size);
+    let block_size = u64::from(filesystem_block_size);
+    let inode_number = {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_800_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem =
+            Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
+        let context = MutationContext::new(1000, 1000, 0, 0o022);
+        let file = filesystem
+            .create_regular_file(
+                context,
+                filesystem.root_inode(),
+                FileName::new(b"fiemap.bin").expect("valid file name"),
+                FilePermissions::new(0o600).expect("valid permissions"),
+            )
+            .expect("create FIEMAP fixture");
+        filesystem
+            .write_inode(context, file.number, 0, &vec![0x11; block_size as usize])
+            .expect("write first initialized extent");
+        filesystem
+            .write_inode(
+                context,
+                file.number,
+                2 * block_size,
+                &vec![0x22; block_size as usize],
+            )
+            .expect("write sparse initialized extent");
+        filesystem
+            .preallocate_inode(
+                context,
+                file.number,
+                4 * block_size,
+                block_size,
+                PreallocationOptions::EXTEND_SIZE,
+            )
+            .expect("create unwritten extent");
+
+        let mappings = filesystem
+            .inode_extents(file.number, 0, u64::MAX, FileExtentTarget::Data, 8)
+            .expect("inspect Linux-image file extents");
+        assert_eq!(mappings.mapped_extents, 3);
+        assert!(mappings.complete);
+        assert_eq!(mappings.extents[0].logical_start, 0);
+        assert_eq!(mappings.extents[1].logical_start, 2 * block_size);
+        assert_eq!(mappings.extents[2].logical_start, 4 * block_size);
+        assert!(
+            mappings
+                .extents
+                .iter()
+                .all(|extent| extent.length == block_size)
+        );
+        assert_eq!(mappings.extents[2].state, FileExtentState::Unwritten);
+
+        let partial = filesystem
+            .inode_extents(
+                file.number,
+                block_size / 2,
+                2 * block_size,
+                FileExtentTarget::Data,
+                8,
+            )
+            .expect("inspect non-aligned extent range");
+        assert_eq!(partial.mapped_extents, 2);
+        assert!(partial.complete);
+        assert_eq!(partial.extents[0].logical_start, 0);
+        assert_eq!(partial.extents[0].length, block_size);
+        assert_eq!(partial.extents[1].logical_start, 2 * block_size);
+        assert_eq!(partial.extents[1].length, block_size);
+
+        filesystem.unmount().expect("unmount FIEMAP image");
+        file.number
+    };
+
+    e2fsck_readonly_clean(
+        &image,
+        &format!("{filesystem_block_size}-byte file extent map"),
+    );
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_900_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
+            .expect("remount FIEMAP image");
+        let mappings = filesystem
+            .inode_extents(inode_number, 0, u64::MAX, FileExtentTarget::Data, 0)
+            .expect("count remounted file extents");
+        assert_eq!(mappings.mapped_extents, 3);
+        assert!(mappings.extents.is_empty());
+        filesystem
+            .unmount()
+            .expect("unmount remounted FIEMAP image");
+    }
+    e2fsck_readonly_clean(
+        &image,
+        &format!("remounted {filesystem_block_size}-byte file extent map"),
+    );
+    fs::remove_dir_all(temp_dir).expect("remove FIEMAP temp dir");
+}
+
 #[test]
 fn linux_image_round_trip_with_1k_filesystem_blocks() {
     linux_image_geometry_round_trip(1024);
@@ -405,6 +521,21 @@ fn rsext4_mkfs_round_trip_with_2k_filesystem_blocks() {
 #[test]
 fn rsext4_mkfs_round_trip_with_4k_filesystem_blocks() {
     rsext4_mkfs_geometry_round_trip(4096);
+}
+
+#[test]
+fn file_extent_map_round_trip_with_1k_filesystem_blocks() {
+    file_extent_map_geometry_round_trip(1024);
+}
+
+#[test]
+fn file_extent_map_round_trip_with_2k_filesystem_blocks() {
+    file_extent_map_geometry_round_trip(2048);
+}
+
+#[test]
+fn file_extent_map_round_trip_with_4k_filesystem_blocks() {
+    file_extent_map_geometry_round_trip(4096);
 }
 
 #[test]
