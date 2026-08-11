@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unlinked, or non-regular journal inodes on mount instead of repairing them.
 - Copy only metadata payloads touched by a transaction while retaining complete
   rollback ownership for allocator, bitmap, inode, and superblock state.
+- Restore physical metadata preimages when a journal-disabled transaction
+  fails, including shared external-xattr COW allocation and inode state.
 
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 

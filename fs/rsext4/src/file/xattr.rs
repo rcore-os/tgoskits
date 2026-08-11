@@ -885,6 +885,88 @@ mod fault_tests {
         }
     }
 
+    fn create_shared_external_xattr(
+        journal: &mut Jbd2Dev<FailingMemoryDevice>,
+        filesystem: &mut Ext4FileSystem,
+    ) -> (InodeNumber, InodeNumber, AbsoluteBN) {
+        mkfile(journal, filesystem, "/first", None, None).expect("create first file");
+        mkfile(journal, filesystem, "/second", None, None).expect("create second file");
+        filesystem
+            .sync_filesystem(journal)
+            .expect("sync baseline files");
+        journal
+            .umount_commit()
+            .expect("commit baseline file metadata");
+
+        let first = dir::get_inode_with_num(filesystem, journal, "/first")
+            .expect("lookup first file")
+            .expect("first file must exist")
+            .0;
+        let second = dir::get_inode_with_num(filesystem, journal, "/second")
+            .expect("lookup second file")
+            .expect("second file must exist")
+            .0;
+        set_inode_xattr(
+            journal,
+            filesystem,
+            first,
+            XattrNamespace::User,
+            b"shared",
+            &vec![0x5a; 512],
+            XattrSetMode::Create,
+        )
+        .expect("create external xattr");
+        filesystem
+            .sync_filesystem(journal)
+            .expect("sync external xattr");
+        journal.umount_commit().expect("commit external xattr");
+
+        let (first_inode, _) = filesystem
+            .get_inode_record(journal, first)
+            .expect("read first inode");
+        let external = read_external_store(journal, filesystem, &first_inode)
+            .expect("read external xattr")
+            .expect("xattr must be external");
+        let shared_block = external.block;
+        let block_size = filesystem.block_size() as u32;
+        let huge_file = filesystem
+            .superblock
+            .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+        let mut shared_image = external.raw;
+        shared_image[4..8].copy_from_slice(&2u32.to_le_bytes());
+        set_external_block_checksum(&filesystem.superblock, shared_block, &mut shared_image)
+            .expect("checksum shared xattr block");
+
+        filesystem
+            .with_metadata_transaction(journal, 2, |filesystem, journal| {
+                journal.write_blocks(&shared_image, shared_block, 1, true)?;
+                filesystem.modify_inode_record(journal, second, |inode, _| {
+                    let sectors = inode
+                        .blocks_count(block_size, huge_file)
+                        .checked_add(u64::from(block_size / 512))
+                        .ok_or_else(Ext4Error::overflow)?;
+                    inode.set_blocks_count(sectors, block_size, huge_file)?;
+                    inode.set_file_acl(shared_block.raw())?;
+                    Ok(())
+                })?;
+                filesystem.inodetable_cache.flush(journal, second)
+            })
+            .expect("publish shared xattr reference");
+        filesystem
+            .sync_filesystem(journal)
+            .expect("sync shared xattr fixture");
+        journal
+            .umount_commit()
+            .expect("commit shared xattr fixture");
+
+        assert_eq!(
+            get_inode_xattr(journal, filesystem, second, XattrNamespace::User, b"shared",)
+                .expect("second inode must share xattr"),
+            vec![0x5a; 512]
+        );
+        (first, second, shared_block)
+    }
+
     #[test]
     fn inode_write_failure_does_not_publish_inline_xattr_in_cache() {
         let (device, fail_write_sector) = FailingMemoryDevice::new(32 * 1024);
@@ -1033,6 +1115,233 @@ mod fault_tests {
             .kind(),
             Ext4ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn shared_external_xattr_cow_preserves_the_other_inode() {
+        let (device, _) = FailingMemoryDevice::new(32 * 1024);
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut journal).expect("mkfs must succeed");
+        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let (first, second, shared_block) =
+            create_shared_external_xattr(&mut journal, &mut filesystem);
+        let before_free_blocks = filesystem.statfs().free_blocks;
+
+        set_inode_xattr(
+            &mut journal,
+            &mut filesystem,
+            first,
+            XattrNamespace::User,
+            b"shared",
+            &vec![0x33; 512],
+            XattrSetMode::Replace,
+        )
+        .expect("copy shared xattr block");
+
+        let first_inode = filesystem
+            .get_inode_by_num(&mut journal, first)
+            .expect("read first inode after COW");
+        let first_store = read_external_store(&mut journal, &filesystem, &first_inode)
+            .expect("read first external store")
+            .expect("first xattr remains external");
+        let second_inode = filesystem
+            .get_inode_by_num(&mut journal, second)
+            .expect("read second inode after COW");
+        let second_store = read_external_store(&mut journal, &filesystem, &second_inode)
+            .expect("read second external store")
+            .expect("second xattr remains external");
+        assert_ne!(first_store.block, shared_block);
+        assert_eq!(first_store.refcount, 1);
+        assert_eq!(second_store.block, shared_block);
+        assert_eq!(second_store.refcount, 1);
+        assert_eq!(filesystem.statfs().free_blocks + 1, before_free_blocks);
+        assert_eq!(
+            get_inode_xattr(
+                &mut journal,
+                &mut filesystem,
+                first,
+                XattrNamespace::User,
+                b"shared",
+            )
+            .expect("read copied xattr"),
+            vec![0x33; 512]
+        );
+        assert_eq!(
+            get_inode_xattr(
+                &mut journal,
+                &mut filesystem,
+                second,
+                XattrNamespace::User,
+                b"shared",
+            )
+            .expect("read retained shared xattr"),
+            vec![0x5a; 512]
+        );
+
+        filesystem
+            .umount(&mut journal)
+            .expect("unmount copied xattr filesystem");
+        let mut remounted = mount(&mut journal).expect("remount copied xattr filesystem");
+        assert_eq!(
+            get_inode_xattr(
+                &mut journal,
+                &mut remounted,
+                first,
+                XattrNamespace::User,
+                b"shared",
+            )
+            .expect("read copied xattr after remount"),
+            vec![0x33; 512]
+        );
+        assert_eq!(
+            get_inode_xattr(
+                &mut journal,
+                &mut remounted,
+                second,
+                XattrNamespace::User,
+                b"shared",
+            )
+            .expect("read retained xattr after remount"),
+            vec![0x5a; 512]
+        );
+    }
+
+    #[test]
+    fn shared_external_xattr_credit_failure_restores_both_references() {
+        let (device, _) = FailingMemoryDevice::new(32 * 1024);
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut journal).expect("mkfs must succeed");
+        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let (first, second, shared_block) =
+            create_shared_external_xattr(&mut journal, &mut filesystem);
+        let before_free_blocks = filesystem.statfs().free_blocks;
+        let (first_inode, first_raw) = filesystem
+            .get_inode_record(&mut journal, first)
+            .expect("read first inode before failed COW");
+        let (_, second_raw) = filesystem
+            .get_inode_record(&mut journal, second)
+            .expect("read second inode before failed COW");
+        let external = read_external_store(&mut journal, &filesystem, &first_inode)
+            .expect("read shared store")
+            .expect("shared store must exist");
+        let entries = vec![StoredXattr {
+            name: XattrName {
+                namespace: XattrNamespace::User,
+                name: b"shared".to_vec(),
+            },
+            value: StoredXattrValue::Local(vec![0x33; 512]),
+        }];
+
+        let error = persist_xattrs(
+            &mut journal,
+            &mut filesystem,
+            first,
+            &first_inode,
+            entries,
+            Some(external),
+            2,
+        )
+        .expect_err("two credits cannot publish a shared-block COW");
+        assert_eq!(error.kind(), Ext4ErrorKind::NoSpace);
+        assert_eq!(filesystem.statfs().free_blocks, before_free_blocks);
+        assert_eq!(
+            filesystem
+                .get_inode_record(&mut journal, first)
+                .expect("read first inode after rollback")
+                .1,
+            first_raw
+        );
+        assert_eq!(
+            filesystem
+                .get_inode_record(&mut journal, second)
+                .expect("read second inode after rollback")
+                .1,
+            second_raw
+        );
+        let restored_inode = filesystem
+            .get_inode_by_num(&mut journal, first)
+            .expect("read restored first inode");
+        let restored_store = read_external_store(&mut journal, &filesystem, &restored_inode)
+            .expect("read restored shared store")
+            .expect("shared store remains present");
+        assert_eq!(restored_store.block, shared_block);
+        assert_eq!(restored_store.refcount, 2);
+
+        filesystem
+            .umount(&mut journal)
+            .expect("unmount rolled-back shared xattr filesystem");
+        let mut remounted = mount(&mut journal).expect("remount rolled-back filesystem");
+        for inode_number in [first, second] {
+            assert_eq!(
+                get_inode_xattr(
+                    &mut journal,
+                    &mut remounted,
+                    inode_number,
+                    XattrNamespace::User,
+                    b"shared",
+                )
+                .expect("shared xattr survives failed COW"),
+                vec![0x5a; 512]
+            );
+        }
+        assert_eq!(remounted.statfs().free_blocks, before_free_blocks);
+    }
+
+    #[test]
+    fn shared_external_xattr_direct_write_failure_restores_disk_state() {
+        let (device, fail_write_sector) = FailingMemoryDevice::new(32 * 1024);
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut journal).expect("mkfs must succeed");
+        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let (first, second, shared_block) =
+            create_shared_external_xattr(&mut journal, &mut filesystem);
+        let before_free_blocks = filesystem.statfs().free_blocks;
+        journal
+            .set_journal_use(false)
+            .expect("switch test to direct metadata writes");
+        fail_write_sector.set(Some(shared_block.raw()));
+
+        let error = set_inode_xattr(
+            &mut journal,
+            &mut filesystem,
+            first,
+            XattrNamespace::User,
+            b"shared",
+            &vec![0x33; 512],
+            XattrSetMode::Replace,
+        )
+        .expect_err("old shared-block refcount write must fail");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        drop(filesystem);
+        let device = journal.into_inner();
+        let mut remount_journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut remounted = mount(&mut remount_journal).expect("remount after failed direct COW");
+        assert_eq!(remounted.statfs().free_blocks, before_free_blocks);
+        for inode_number in [first, second] {
+            let inode = remounted
+                .get_inode_by_num(&mut remount_journal, inode_number)
+                .expect("read inode after failed direct COW");
+            assert_eq!(inode.file_acl(), shared_block.raw());
+            assert_eq!(
+                get_inode_xattr(
+                    &mut remount_journal,
+                    &mut remounted,
+                    inode_number,
+                    XattrNamespace::User,
+                    b"shared",
+                )
+                .expect("old shared value must survive direct COW failure"),
+                vec![0x5a; 512]
+            );
+        }
+        let first_inode = remounted
+            .get_inode_by_num(&mut remount_journal, first)
+            .expect("read first restored inode");
+        let restored_store = read_external_store(&mut remount_journal, &remounted, &first_inode)
+            .expect("read restored shared store")
+            .expect("shared store must remain present");
+        assert_eq!(restored_store.refcount, 2);
     }
 }
 
