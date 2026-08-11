@@ -27,7 +27,7 @@ pub mod os;
 pub mod root;
 pub mod volume;
 
-static MOUNTED_FILESYSTEMS: os::sync::PiMutex<Vec<Filesystem>> = os::sync::PiMutex::new(Vec::new());
+static MOUNTED_FILESYSTEMS: os::sync::Mutex<Vec<Filesystem>> = os::sync::Mutex::new(Vec::new());
 
 fn register_mounted_filesystem(fs: Filesystem) {
     MOUNTED_FILESYSTEMS.lock().push(fs);

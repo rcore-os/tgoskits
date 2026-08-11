@@ -23,7 +23,7 @@ use axfs_ng_vfs::{
 
 use crate::{
     file::File,
-    os::sync::{PiMutex, SpinLock},
+    os::sync::{Mutex, SpinLock},
 };
 
 /// Maximum number of symlinks that will be followed during path resolution.
@@ -35,16 +35,16 @@ pub static ROOT_FS_CONTEXT: OnceLock<FsContext> = OnceLock::new();
 /// Registry of all live `FsContext` instances (weak references).
 ///
 /// Each time a task-local [`FS_CONTEXT`] is created, it registers its
-/// `Arc<PiMutex<FsContext>>` here via [`register_fs_context`]. This allows
+/// `Arc<Mutex<FsContext>>` here via [`register_fs_context`]. This allows
 /// [`FsContext::propagate_pivot_root`] to iterate over every task's
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
-static FS_REGISTRY: SpinLock<Vec<Weak<PiMutex<FsContext>>>> = SpinLock::new(Vec::new());
+static FS_REGISTRY: SpinLock<Vec<Weak<Mutex<FsContext>>>> = SpinLock::new(Vec::new());
 #[cfg(feature = "vfs")]
 static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Register an `FsContext` in the global [`FS_REGISTRY`].
-fn register_fs_context(ctx: &Arc<PiMutex<FsContext>>) {
+fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
     let mut registry = FS_REGISTRY.lock();
     // Prune dead weak references so the registry does not grow unboundedly
     // in long-running scenarios where pivot_root is never invoked.
@@ -56,7 +56,7 @@ fn register_fs_context(ctx: &Arc<PiMutex<FsContext>>) {
 /// inside the given `mountpoint`.
 #[cfg(feature = "vfs")]
 pub fn is_mount_busy(mp: &Arc<Mountpoint>) -> bool {
-    let refs: Vec<Arc<PiMutex<FsContext>>> = {
+    let refs: Vec<Arc<Mutex<FsContext>>> = {
         let mut registry = FS_REGISTRY.lock();
         registry.retain(|weak| weak.upgrade().is_some());
         registry.iter().filter_map(|weak| weak.upgrade()).collect()
@@ -128,8 +128,8 @@ impl MountNamespace {
 
 scope_local::scope_local! {
     /// Task-local filesystem context, defaulting to a clone of [`ROOT_FS_CONTEXT`].
-    pub static FS_CONTEXT: Arc<PiMutex<FsContext>> = {
-        let ctx = Arc::new(PiMutex::new(
+    pub static FS_CONTEXT: Arc<Mutex<FsContext>> = {
+        let ctx = Arc::new(Mutex::new(
             ROOT_FS_CONTEXT
                 .get()
                 .expect("Root FS context not initialized")
@@ -144,7 +144,7 @@ scope_local::scope_local! {
 ///
 /// CPU pinning only covers the `Arc` clone. Callers may therefore acquire the
 /// sleepable filesystem lock after preemption has been restored.
-pub fn current_fs_context() -> Arc<PiMutex<FsContext>> {
+pub fn current_fs_context() -> Arc<Mutex<FsContext>> {
     FS_CONTEXT.clone_current()
 }
 
@@ -616,7 +616,7 @@ impl FsContext {
     ) {
         // 1. Collect strong references while holding the registry lock, then
         //    release it so we never nest two PI mutex guards.
-        let refs: Vec<Arc<PiMutex<FsContext>>> = {
+        let refs: Vec<Arc<Mutex<FsContext>>> = {
             let mut registry = FS_REGISTRY.lock();
             registry.retain(|weak| weak.upgrade().is_some());
             registry.iter().filter_map(|weak| weak.upgrade()).collect()

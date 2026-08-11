@@ -41,7 +41,7 @@ use super::{
 };
 use crate::os::{
     BlockIrqRegistration, BlockNotification, BlockThread, register_block_irq, runtime_ops,
-    sync::PiMutex, wall_time,
+    sync::Mutex, wall_time,
 };
 
 const CONTROLLER_CHANNEL_DEPTH: usize = 64;
@@ -202,8 +202,8 @@ impl BlockRuntime {
 
 struct BlockGroupHandle {
     name: String,
-    controller: PiMutex<Option<Box<dyn BlockControllerGroup>>>,
-    registrations: PiMutex<Vec<Box<dyn BlockIrqRegistration>>>,
+    controller: Mutex<Option<Box<dyn BlockControllerGroup>>>,
+    registrations: Mutex<Vec<Box<dyn BlockIrqRegistration>>>,
     members: Vec<Arc<BlockDeviceHandle>>,
     stopped: AtomicBool,
 }
@@ -329,8 +329,8 @@ impl BlockGroupHandle {
         }
         Ok(Self {
             name,
-            controller: PiMutex::new(Some(controller)),
-            registrations: PiMutex::new(registrations),
+            controller: Mutex::new(Some(controller)),
+            registrations: Mutex::new(registrations),
             members: ready,
             stopped: AtomicBool::new(false),
         })
@@ -499,16 +499,16 @@ impl Drop for BlockDeviceHandle {
 
 struct DeviceInner {
     name: String,
-    info: PiMutex<DeviceInfo>,
+    info: Mutex<DeviceInfo>,
     max_io_queues: usize,
     irq_ownership: IrqOwnership,
     irq_sources: Vec<BlockIrqSource>,
-    hctxs: PiMutex<Vec<Arc<Hctx>>>,
-    detached_queues: PiMutex<Vec<Box<dyn HardwareQueue>>>,
-    cpu_channels: PiMutex<Vec<CpuSubmissionChannel>>,
-    irq_registrations: PiMutex<Vec<InstalledIrqSource>>,
+    hctxs: Mutex<Vec<Arc<Hctx>>>,
+    detached_queues: Mutex<Vec<Box<dyn HardwareQueue>>>,
+    cpu_channels: Mutex<Vec<CpuSubmissionChannel>>,
+    irq_registrations: Mutex<Vec<InstalledIrqSource>>,
     controller: Arc<ControllerPort>,
-    controller_thread: PiMutex<Option<Box<dyn BlockThread>>>,
+    controller_thread: Mutex<Option<Box<dyn BlockThread>>>,
     state: AtomicU8,
     accepting: AtomicBool,
     active_data: AtomicUsize,
@@ -587,20 +587,20 @@ impl BlockDeviceHandle {
             )
             .map_err(|_| BlkError::NoMemory)?,
             notification: controller_notification,
-            irq_latches: PiMutex::new(Vec::new()),
+            irq_latches: Mutex::new(Vec::new()),
         });
         let inner = Arc::new(DeviceInner {
             name,
-            info: PiMutex::new(info),
+            info: Mutex::new(info),
             max_io_queues,
             irq_ownership,
             irq_sources: irqs,
-            hctxs: PiMutex::new(Vec::new()),
-            detached_queues: PiMutex::new(Vec::new()),
-            cpu_channels: PiMutex::new(Vec::new()),
-            irq_registrations: PiMutex::new(Vec::new()),
+            hctxs: Mutex::new(Vec::new()),
+            detached_queues: Mutex::new(Vec::new()),
+            cpu_channels: Mutex::new(Vec::new()),
+            irq_registrations: Mutex::new(Vec::new()),
             controller: Arc::clone(&controller_port),
-            controller_thread: PiMutex::new(None),
+            controller_thread: Mutex::new(None),
             state: AtomicU8::new(DEVICE_STARTING),
             accepting: AtomicBool::new(false),
             active_data: AtomicUsize::new(0),

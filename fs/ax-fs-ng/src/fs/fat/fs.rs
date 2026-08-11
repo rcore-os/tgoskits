@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     block::{BlockRegion, FsBlockDevice},
-    os::sync::{PiMutex, PiMutexGuard, SpinLock},
+    os::sync::{Mutex, MutexGuard, SpinLock},
 };
 
 pub struct FatFilesystemInner {
@@ -34,7 +34,7 @@ impl FatFilesystemInner {
 }
 
 pub struct FatFilesystem {
-    inner: PiMutex<FatFilesystemInner>,
+    inner: Mutex<FatFilesystemInner>,
     disk_flusher: SeekableDiskFlusher,
     root_dir: SpinLock<Option<DirEntry>>,
 }
@@ -51,7 +51,7 @@ impl FatFilesystem {
         };
         let root_inode = inner.alloc_inode();
         let result = Arc::new(Self {
-            inner: PiMutex::new(inner),
+            inner: Mutex::new(inner),
             disk_flusher,
             root_dir: SpinLock::new(None),
         });
@@ -77,7 +77,7 @@ impl FatFilesystem {
     ///
     /// FAT operations may block on channel-backed block completion while this
     /// guard is held, so this state must never use an IRQ-disabling lock.
-    pub(crate) fn lock(&self) -> PiMutexGuard<'_, FatFilesystemInner> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, FatFilesystemInner> {
         self.inner.lock()
     }
 }

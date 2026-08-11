@@ -5,7 +5,7 @@ use ax_errno::{AxError as FsBlockError, AxResult as FsBlockResult};
 
 use crate::{
     block::{BlockRegion, FsBlockDevice, RegionBlockDevice},
-    os::sync::PiMutex,
+    os::sync::Mutex,
 };
 
 fn take<'a>(buf: &mut &'a [u8], cnt: usize) -> &'a [u8] {
@@ -23,12 +23,12 @@ fn take_mut<'a>(buf: &mut &'a mut [u8], cnt: usize) -> &'a mut [u8] {
 
 /// A disk device with a cursor.
 pub struct SeekableDisk {
-    state: Arc<PiMutex<SeekableDiskState>>,
+    state: Arc<Mutex<SeekableDiskState>>,
 }
 
 #[derive(Clone)]
 pub struct SeekableDiskFlusher {
-    state: Arc<PiMutex<SeekableDiskState>>,
+    state: Arc<Mutex<SeekableDiskState>>,
 }
 
 struct SeekableDiskState {
@@ -54,7 +54,7 @@ impl SeekableDisk {
         let read_buffer = vec![0u8; block_size].into_boxed_slice();
         let write_buffer = vec![0u8; block_size].into_boxed_slice();
         Self {
-            state: Arc::new(PiMutex::new(SeekableDiskState {
+            state: Arc::new(Mutex::new(SeekableDiskState {
                 dev: RegionBlockDevice::new(dev, region),
                 block_id: 0,
                 offset: 0,

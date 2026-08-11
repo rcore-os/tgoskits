@@ -441,11 +441,11 @@ fn register_retry_advances_only_register_state_and_posts_controller_event() {
     crate::os::task::install_test_runtime_ops();
     let ops = runtime_ops().unwrap();
     let state = HctxState {
-        info: PiMutex::new(test_queue_info(1)),
-        submission_channels: PiMutex::new(Vec::new()),
+        info: Mutex::new(test_queue_info(1)),
+        submission_channels: Mutex::new(Vec::new()),
         notification: ops.notification(),
         lifecycle_notification: ops.notification(),
-        irq_latches: PiMutex::new(Vec::new()),
+        irq_latches: Mutex::new(Vec::new()),
         quiescing: AtomicBool::new(false),
         quiesced: AtomicBool::new(false),
         stopping: AtomicBool::new(false),
@@ -514,11 +514,11 @@ fn retry_backlog_does_not_starve_fresh_cpu_channel_submissions() {
     let channel =
         Arc::new(BoundedChannel::with_item_notification(4, Arc::clone(&notification)).unwrap());
     let state = HctxState {
-        info: PiMutex::new(test_queue_info(2)),
-        submission_channels: PiMutex::new(vec![Arc::clone(&channel)]),
+        info: Mutex::new(test_queue_info(2)),
+        submission_channels: Mutex::new(vec![Arc::clone(&channel)]),
         notification,
         lifecycle_notification: ops.notification(),
-        irq_latches: PiMutex::new(Vec::new()),
+        irq_latches: Mutex::new(Vec::new()),
         quiescing: AtomicBool::new(false),
         quiesced: AtomicBool::new(false),
         stopping: AtomicBool::new(false),

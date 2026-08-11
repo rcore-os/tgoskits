@@ -1080,14 +1080,14 @@ fn barrier_test_inner() -> Arc<DeviceInner> {
     let controller_notification = ops.notification();
     Arc::new(DeviceInner {
         name: String::from("barrier-test"),
-        info: PiMutex::new(test_queue_info().device),
+        info: Mutex::new(test_queue_info().device),
         max_io_queues: 1,
         irq_ownership: IrqOwnership::Device,
         irq_sources: Vec::new(),
-        hctxs: PiMutex::new(Vec::new()),
-        detached_queues: PiMutex::new(Vec::new()),
-        cpu_channels: PiMutex::new(Vec::new()),
-        irq_registrations: PiMutex::new(Vec::new()),
+        hctxs: Mutex::new(Vec::new()),
+        detached_queues: Mutex::new(Vec::new()),
+        cpu_channels: Mutex::new(Vec::new()),
+        irq_registrations: Mutex::new(Vec::new()),
         controller: Arc::new(ControllerPort {
             commands: BoundedChannel::with_item_notification(
                 1,
@@ -1095,9 +1095,9 @@ fn barrier_test_inner() -> Arc<DeviceInner> {
             )
             .unwrap(),
             notification: controller_notification,
-            irq_latches: PiMutex::new(Vec::new()),
+            irq_latches: Mutex::new(Vec::new()),
         }),
-        controller_thread: PiMutex::new(None),
+        controller_thread: Mutex::new(None),
         state: AtomicU8::new(DEVICE_READY),
         accepting: AtomicBool::new(true),
         active_data: AtomicUsize::new(0),

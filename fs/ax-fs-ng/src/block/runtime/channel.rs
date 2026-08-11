@@ -1,7 +1,7 @@
 use alloc::{collections::VecDeque, sync::Arc};
 
 use super::waiters::CapacityWaiters;
-use crate::os::{BlockNotification, runtime_ops, sync::PiMutex};
+use crate::os::{BlockNotification, runtime_ops, sync::Mutex};
 
 pub(super) enum SendError<T> {
     Full(T),
@@ -9,7 +9,7 @@ pub(super) enum SendError<T> {
 }
 
 pub(super) struct BoundedChannel<T> {
-    state: PiMutex<ChannelState<T>>,
+    state: Mutex<ChannelState<T>>,
     capacity: usize,
     item_ready: Arc<dyn BlockNotification>,
     space_waiters: CapacityWaiters,
@@ -33,7 +33,7 @@ impl<T> BoundedChannel<T> {
 
     fn new(capacity: usize, item_ready: Arc<dyn BlockNotification>) -> Self {
         Self {
-            state: PiMutex::new(ChannelState {
+            state: Mutex::new(ChannelState {
                 queue: VecDeque::with_capacity(capacity),
                 closed: false,
             }),

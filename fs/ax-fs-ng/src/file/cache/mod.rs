@@ -27,7 +27,7 @@ pub use reclaim::{page_cache_reclaim, sync_all_cached_files};
 use super::page::PageCache;
 #[cfg(feature = "ext4")]
 use crate::os::sync::SpinLock;
-use crate::os::{memory::PAGE_SIZE, sync::PiMutex};
+use crate::os::{memory::PAGE_SIZE, sync::Mutex};
 
 const DISK_PAGE_CACHE_CAP: usize = 512;
 
@@ -54,9 +54,9 @@ struct EvictListener {
 intrusive_adapter!(EvictListenerAdapter = Box<EvictListener>: EvictListener { link: LinkedListAtomicLink });
 
 struct CachedFileShared {
-    page_cache: PiMutex<LruCache<u32, PageCache>>,
-    io_lock: PiMutex<()>,
-    evict_listeners: PiMutex<LinkedList<EvictListenerAdapter>>,
+    page_cache: Mutex<LruCache<u32, PageCache>>,
+    io_lock: Mutex<()>,
+    evict_listeners: Mutex<LinkedList<EvictListenerAdapter>>,
     backing: Option<FileNode>,
     len: AtomicU64,
 }
@@ -64,11 +64,11 @@ struct CachedFileShared {
 impl CachedFileShared {
     pub fn new(len: u64, backing: FileNode) -> Self {
         Self {
-            page_cache: PiMutex::new(LruCache::new(
+            page_cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(DISK_PAGE_CACHE_CAP).unwrap(),
             )),
-            io_lock: PiMutex::new(()),
-            evict_listeners: PiMutex::new(LinkedList::default()),
+            io_lock: Mutex::new(()),
+            evict_listeners: Mutex::new(LinkedList::default()),
             backing: Some(backing),
             len: AtomicU64::new(len),
         }
@@ -76,9 +76,9 @@ impl CachedFileShared {
 
     pub fn new_unbounded(len: u64) -> Self {
         Self {
-            page_cache: PiMutex::new(LruCache::unbounded()),
-            io_lock: PiMutex::new(()),
-            evict_listeners: PiMutex::new(LinkedList::default()),
+            page_cache: Mutex::new(LruCache::unbounded()),
+            io_lock: Mutex::new(()),
+            evict_listeners: Mutex::new(LinkedList::default()),
             backing: None,
             len: AtomicU64::new(len),
         }
@@ -134,7 +134,7 @@ impl CachedFileShared {
 pub struct CachedFile {
     inner: Location,
     shared: Arc<CachedFileShared>,
-    readahead: Arc<PiMutex<ReadAheadState>>,
+    readahead: Arc<Mutex<ReadAheadState>>,
     in_memory: bool,
 }
 
@@ -181,7 +181,7 @@ impl CachedFile {
             return Ok(Self {
                 inner: location,
                 shared,
-                readahead: Arc::new(PiMutex::new(ReadAheadState::new())),
+                readahead: Arc::new(Mutex::new(ReadAheadState::new())),
                 in_memory,
             });
         }
@@ -235,7 +235,7 @@ impl CachedFile {
         Ok(Self {
             inner: location,
             shared,
-            readahead: Arc::new(PiMutex::new(ReadAheadState::new())),
+            readahead: Arc::new(Mutex::new(ReadAheadState::new())),
             in_memory,
         })
     }

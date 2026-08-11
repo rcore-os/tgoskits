@@ -12,7 +12,7 @@ use super::{
     cache::CachedFile,
     open::{FileFlags, OpenOptions, OpenResult},
 };
-use crate::{fs_core::FsContext, os::sync::PiMutex};
+use crate::{fs_core::FsContext, os::sync::Mutex};
 
 /// Low-level interface for file operations.
 #[derive(Clone)]
@@ -169,7 +169,7 @@ impl FileBackend {
 pub struct File {
     inner: FileBackend,
     flags: AtomicU8,
-    position: Option<PiMutex<u64>>,
+    position: Option<Mutex<u64>>,
     access_flags: AtomicU8,
 }
 
@@ -185,7 +185,7 @@ impl File {
         let position = if inner.location().flags().contains(NodeFlags::STREAM) {
             None
         } else {
-            Some(PiMutex::new(0))
+            Some(Mutex::new(0))
         };
         Self {
             inner,

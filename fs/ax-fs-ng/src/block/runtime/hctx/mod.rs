@@ -25,7 +25,7 @@ use super::{
     completion::CompletionSender,
     irq::{IrqEventLatch, IrqRearmEpisode, IrqTarget, LatchedIrqEvent},
 };
-use crate::os::{BlockNotification, BlockThread, runtime_ops, sync::PiMutex, wall_time};
+use crate::os::{BlockNotification, BlockThread, runtime_ops, sync::Mutex, wall_time};
 
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -54,7 +54,7 @@ pub(super) struct Hctx {
     id: usize,
     cpu: usize,
     state: Arc<HctxState>,
-    thread: PiMutex<Option<Box<dyn BlockThread>>>,
+    thread: Mutex<Option<Box<dyn BlockThread>>>,
 }
 
 pub(super) struct HctxStartError {
@@ -79,11 +79,11 @@ impl fmt::Debug for HctxStartError {
 }
 
 struct HctxState {
-    info: PiMutex<QueueInfo>,
-    submission_channels: PiMutex<Vec<Arc<BoundedChannel<Submission>>>>,
+    info: Mutex<QueueInfo>,
+    submission_channels: Mutex<Vec<Arc<BoundedChannel<Submission>>>>,
     notification: Arc<dyn BlockNotification>,
     lifecycle_notification: Arc<dyn BlockNotification>,
-    irq_latches: PiMutex<Vec<Arc<IrqEventLatch>>>,
+    irq_latches: Mutex<Vec<Arc<IrqEventLatch>>>,
     quiescing: AtomicBool,
     quiesced: AtomicBool,
     stopping: AtomicBool,
@@ -127,11 +127,11 @@ impl Hctx {
         };
         let notification = ops.notification();
         let state = Arc::new(HctxState {
-            info: PiMutex::new(info),
-            submission_channels: PiMutex::new(Vec::new()),
+            info: Mutex::new(info),
+            submission_channels: Mutex::new(Vec::new()),
             notification,
             lifecycle_notification: ops.notification(),
-            irq_latches: PiMutex::new(Vec::new()),
+            irq_latches: Mutex::new(Vec::new()),
             quiescing: AtomicBool::new(false),
             quiesced: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
@@ -141,10 +141,10 @@ impl Hctx {
             id: info.id,
             cpu,
             state: Arc::clone(&state),
-            thread: PiMutex::new(None),
+            thread: Mutex::new(None),
         });
         let name = format!("blk-hctx/{}", info.id);
-        let queue_slot = Arc::new(PiMutex::new(Some(queue)));
+        let queue_slot = Arc::new(Mutex::new(Some(queue)));
         let worker_queue_slot = Arc::clone(&queue_slot);
         let thread = match ops.spawn_pinned(
             name,
