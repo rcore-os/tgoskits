@@ -6,7 +6,7 @@
 use std::cell::Cell;
 
 use rsext4::{
-    checksum::verify_ext4_dirblock_checksum,
+    checksum::{update_ext4_dirblock_csum32, verify_ext4_dirblock_checksum},
     dir::get_inode_with_num,
     disknode::Ext4Inode,
     error::{Ext4Error, Ext4Result},
@@ -278,6 +278,36 @@ mod directory_functional_tests {
         );
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
+    }
+
+    #[test]
+    fn empty_directory_rejects_dot_entry_for_another_inode() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/victim").expect("mkdir failed");
+
+        let (inode_num, mut inode) = get_inode_with_num(&mut fs, &mut jbd2_dev, "/victim")
+            .expect("lookup failed")
+            .expect("victim directory missing");
+        let block = resolve_inode_block(&fs, &mut jbd2_dev, inode_num, &mut inode, 0)
+            .expect("resolve directory block")
+            .expect("directory must have a first block");
+        let superblock = fs.superblock;
+        let generation = inode.i_generation;
+        let wrong_inode = fs.root_inode.raw();
+        assert_ne!(wrong_inode, inode_num.raw());
+        fs.datablock_cache
+            .modify(&mut jbd2_dev, block, |data| {
+                data[..4].copy_from_slice(&wrong_inode.to_le_bytes());
+                update_ext4_dirblock_csum32(&superblock, inode_num.raw(), generation, data);
+            })
+            .expect("corrupt dot entry");
+
+        let error = is_dir_empty(&mut fs, &mut jbd2_dev, inode_num, &mut inode)
+            .expect_err("a dot entry naming another inode is corruption");
+        assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
     }
 
     /// Verifies empty-directory deletion and records the current behavior for

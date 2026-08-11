@@ -1,4 +1,5 @@
 use super::*;
+use crate::hashtree::Ext4InodeHashTreeExt;
 
 /// A directory entry located by a single parent-directory scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -813,22 +814,123 @@ pub fn delete_dir<B: BlockIo>(
 /// Check whether a directory inode is empty (contains only `.` and `..`).
 ///
 /// Returns `Ok(true)` if the directory has no real children, `Ok(false)` otherwise.
+fn checked_directory_record(
+    data: &[u8],
+    offset: usize,
+    inode_count: u32,
+) -> Ext4Result<(u32, &[u8], usize)> {
+    const HEADER_LEN: usize = 8;
+    const MIN_RECORD_LEN: usize = 12;
+
+    let header = data
+        .get(offset..offset + HEADER_LEN)
+        .ok_or_else(|| Ext4Error::corrupted().with_operation("directory:record_header"))?;
+    let inode = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    let record_len = usize::from(u16::from_le_bytes([header[4], header[5]]));
+    let name_len = usize::from(header[6]);
+    let minimum_len = HEADER_LEN
+        .checked_add(name_len)
+        .and_then(|length| length.checked_add(3))
+        .map(|length| length & !3)
+        .ok_or_else(Ext4Error::overflow)?;
+    let record_end = offset
+        .checked_add(record_len)
+        .ok_or_else(Ext4Error::overflow)?;
+    let name_end = offset
+        .checked_add(HEADER_LEN)
+        .and_then(|start| start.checked_add(name_len))
+        .ok_or_else(Ext4Error::overflow)?;
+    let last_valid_start = data.len().saturating_sub(MIN_RECORD_LEN);
+    if record_len < HEADER_LEN
+        || !record_len.is_multiple_of(4)
+        || record_len < minimum_len
+        || record_end > data.len()
+        || (record_end > last_valid_start && record_end != data.len())
+        || name_end > record_end
+        || inode > inode_count
+    {
+        return Err(Ext4Error::corrupted().with_operation("directory:record"));
+    }
+    Ok((inode, &data[offset + HEADER_LEN..name_end], record_end))
+}
+
 pub fn is_dir_empty<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<bool> {
+    const DOT_RECORD_LEN: u64 = 12;
+    const DOTDOT_RECORD_LEN: u64 = 12;
+
+    if !inode.is_dir() {
+        return Err(Ext4Error::not_dir());
+    }
+    if inode.size() < DOT_RECORD_LEN + DOTDOT_RECORD_LEN {
+        return Err(Ext4Error::corrupted().with_operation("directory:empty_size"));
+    }
+
+    let block_size = fs.block_size();
+    let total_blocks = inode.size().div_ceil(block_size as u64);
     let dir_blocks = resolve_inode_blocks(fs, block_dev, inode_num, inode)?;
-    for &phys in dir_blocks.values() {
+    if !dir_blocks.contains_key(&0) {
+        return Err(Ext4Error::corrupted().with_operation("directory:first_block_hole"));
+    }
+    let superblock = fs.superblock;
+    let inode_count = superblock.s_inodes_count;
+    let generation = inode.i_generation;
+    let indexed = inode.is_htree_indexed();
+    let mut first_block_entries = 0usize;
+
+    for logical in 0..total_blocks {
+        let logical = u32::try_from(logical).map_err(|_| Ext4Error::file_too_large())?;
+        let Some(&phys) = dir_blocks.get(&logical) else {
+            continue;
+        };
         let cached = fs.datablock_cache.get_or_load(block_dev, phys)?;
         let data = &cached.data;
-        let iter = DirEntryIterator::new(data);
-        for (entry, _) in iter {
-            if !entry.is_dot() && !entry.is_dotdot() {
+        let dx_checksum = if indexed {
+            crate::checksum::verify_ext4_dx_checksum(&superblock, inode_num.raw(), generation, data)
+        } else {
+            None
+        };
+        let checksum_ok = dx_checksum.unwrap_or_else(|| {
+            let has_required_tail = !crate::crc32c::ext4_superblock_has_metadata_csum(&superblock)
+                || data.get(data.len().saturating_sub(5)) == Some(&Ext4DirEntryTail::RESERVED_FT);
+            has_required_tail
+                && crate::checksum::verify_ext4_dirblock_checksum(
+                    &superblock,
+                    inode_num.raw(),
+                    generation,
+                    data,
+                )
+        });
+        if !checksum_ok {
+            return Err(Ext4Error::checksum().with_operation("directory:block"));
+        };
+
+        let mut offset = 0usize;
+        while offset < data.len() {
+            let (entry_inode, name, next_offset) =
+                checked_directory_record(data, offset, inode_count)?;
+            if logical == 0 && first_block_entries == 0 {
+                if entry_inode != inode_num.raw() || name != b"." {
+                    return Err(Ext4Error::corrupted().with_operation("directory:dot"));
+                }
+                first_block_entries += 1;
+            } else if logical == 0 && first_block_entries == 1 {
+                if entry_inode == 0 || name != b".." {
+                    return Err(Ext4Error::corrupted().with_operation("directory:dotdot"));
+                }
+                first_block_entries += 1;
+            } else if entry_inode != 0 {
                 return Ok(false);
             }
+            offset = next_offset;
         }
+    }
+    if first_block_entries != 2 {
+        return Err(Ext4Error::corrupted().with_operation("directory:dot_entries"));
     }
     Ok(true)
 }
