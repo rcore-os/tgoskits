@@ -144,7 +144,9 @@ impl Ext4FileSystem {
             }
             let inode = self.get_inode_by_num(block_dev, head)?;
             if inode.i_links_count != 0 {
-                return Err(Ext4Error::unsupported().with_operation("orphan:linked_inode_recovery"));
+                crate::file::recover_linked_truncate_inode(block_dev, self, head, inode.size())?;
+                self.remove_orphan(block_dev, head)?;
+                continue;
             }
             crate::file::reap_unlinked_inode(self, block_dev, head)?;
         }

@@ -26,7 +26,7 @@ use rsext4::{
         JBD2_FLAG_SAME_UUID, JBD2_MAGIC, JBD2_UUID_SIZE, JournalBlockTag3S, JournalBlockTagS,
         JournalHeaderS, JournalSuperBllockS,
     },
-    loopfile::resolve_inode_block,
+    loopfile::{resolve_inode_block, resolve_inode_blocks},
     superblock::Ext4Superblock,
     *,
 };
@@ -509,6 +509,66 @@ fn unclean_remount_reaps_the_persisted_classic_orphan_chain() {
             .expect("post-recovery second lookup failed")
             .is_none()
     );
+    umount(recovered, &mut remount_dev).expect("recovered unmount failed");
+}
+
+#[test]
+fn unclean_remount_finishes_linked_extent_truncate_from_classic_orphan() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut first_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut first_dev).expect("mkfs failed");
+    let mut first_fs = mount(&mut first_dev).expect("mount failed");
+    let block_size = first_fs.superblock.block_size() as usize;
+    let payload = vec![0x5a; block_size * 3];
+    mkfile(
+        &mut first_dev,
+        &mut first_fs,
+        "/linked",
+        Some(&payload),
+        None,
+    )
+    .expect("file create failed");
+    let inode_num = rsext4::dir::get_inode_with_num(&mut first_fs, &mut first_dev, "/linked")
+        .expect("lookup failed")
+        .expect("linked file missing")
+        .0;
+
+    first_fs
+        .modify_inode(&mut first_dev, inode_num, |inode| {
+            inode.i_size_lo = block_size as u32;
+            inode.i_size_high = 0;
+            inode.i_dtime = 0;
+        })
+        .expect("commit shortened inode size");
+    first_fs.superblock.s_last_orphan = inode_num.raw();
+    first_fs
+        .sync_filesystem(&mut first_dev)
+        .expect("dirty sync failed");
+    first_dev
+        .umount_commit()
+        .expect("dirty journal commit failed");
+    drop(first_fs);
+    let device = first_dev.into_inner();
+
+    let mut remount_dev = new_jbd2_dev(device);
+    let mut recovered = mount(&mut remount_dev).expect("linked truncate recovery mount failed");
+    assert_eq!(recovered.superblock.s_last_orphan, 0);
+    let mut inode = recovered
+        .get_inode_by_num(&mut remount_dev, inode_num)
+        .expect("recovered linked inode missing");
+    assert_eq!(inode.i_links_count, 1);
+    assert_eq!(inode.i_dtime, 0);
+    assert_eq!(inode.size(), block_size as u64);
+    let mappings = resolve_inode_blocks(&mut recovered, &mut remount_dev, inode_num, &mut inode)
+        .expect("resolve recovered mappings");
+    assert_eq!(mappings.len(), 1);
+    assert_eq!(
+        mappings.first_key_value().map(|(&logical, _)| logical),
+        Some(0)
+    );
+    let read_back =
+        read_file(&mut remount_dev, &mut recovered, "/linked").expect("read recovered linked file");
+    assert_eq!(read_back, payload[..block_size]);
     umount(recovered, &mut remount_dev).expect("recovered unmount failed");
 }
 
