@@ -88,11 +88,33 @@ impl CpuRemote {
         let Some(_publication) = self.begin_publication() else {
             return;
         };
-        self.request_reschedule_owned();
+        let _ = self.request_reschedule_owned();
     }
 
-    fn request_reschedule_owned(&self) -> SchedulerRequestPublication {
-        self.publish_scheduler_request_owned(REQUEST_PREEMPT)
+    fn request_reschedule_owned(&self) -> Option<SchedulerRequestPublication> {
+        let publication = self.scheduler_request.request.try_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |word| {
+                if word & REQUEST_PREEMPT != 0 {
+                    return None;
+                }
+                let generation = request_generation(word).checked_add(1)?;
+                if generation > REQUEST_GENERATION_MAX {
+                    return None;
+                }
+                Some(
+                    (generation << REQUEST_GENERATION_SHIFT)
+                        | (word & REQUEST_FLAGS_MASK)
+                        | REQUEST_PREEMPT,
+                )
+            },
+        );
+        match publication {
+            Ok(previous) => Some(Self::scheduler_request_publication(previous)),
+            Err(current) if current & REQUEST_PREEMPT != 0 => None,
+            Err(_) => panic!("scheduler request generation exhausted"),
+        }
     }
 
     /// Publishes a remote preemption and rings the target doorbell only after
@@ -102,8 +124,9 @@ impl CpuRemote {
             return;
         };
         let _irq = IrqScope::enter();
-        let publication = self.request_reschedule_owned();
-        self.deliver_scheduler_work_owned(publication);
+        if let Some(publication) = self.request_reschedule_owned() {
+            self.deliver_scheduler_work_owned(publication);
+        }
     }
 
     pub(crate) fn request_scheduler_work(&self) {
@@ -132,6 +155,10 @@ impl CpuRemote {
                 )
             })
             .unwrap_or_else(|_| panic!("scheduler request generation exhausted"));
+        Self::scheduler_request_publication(previous)
+    }
+
+    fn scheduler_request_publication(previous: u64) -> SchedulerRequestPublication {
         let delivery = if previous & REQUEST_IDLE_POLLING != 0 {
             SchedulerRequestDelivery::PollingOwner
         } else {

@@ -2598,6 +2598,41 @@ entry，要求同一次 wake 只能观测 1 次；修改后由同一回归验证
 `ThreadWakeHandle::wake()`，不是绕过 facade 的内部 helper。完整 host-test、clippy 与 QEMU 性能
 结果在阶段提交前继续验证，不能仅由 guard 计数宣称端到端回退已经消失。
 
+### 2026-08-12 sticky preemption 与物理 IPI edge
+
+固定 qperf 窗口中 wake-preemption decision 明显多于 scheduler IPI send，但 runtime
+`DeliveryEdge` 只能合并尚未被 handler claim 的物理边。handler 在入口释放 edge ownership 后，
+owner scheduler 可能尚未取得 rq lock 并 claim ax-task 的逻辑 request；这个窗口中的后续 wake
+过去会推进逻辑 generation 并再次请求物理 IPI，即使 `REQUEST_PREEMPT` 已经保持 sticky。
+
+Linux v7.1 `__resched_curr()` 在 current 已有 `_TIF_NEED_RESCHED` 时立即返回；Fair
+`wakeup_preempt_fair()` 也在 current need-resched 时跳过重复 preemption decision。这里不能把
+逻辑判断下放给 `DeliveryEdge`：物理 edge 与 scheduler generation 已有意解耦，runtime 不知道
+target owner 是否已经消费逻辑 request。
+
+ax-task 现在以 `REQUEST_PREEMPT` 的 `0 -> 1` transition 作为唯一 preemption publication：
+
+- 第一个 producer 原子推进 generation、设置 sticky bit，并根据 idle-polling/local-owner 状态决定
+  是否请求物理 edge；
+- bit 尚未被 owner claim 时，后续 producer 不推进 generation、不请求新 edge；
+- owner 在 rq transaction 入口通过 `claim_scheduler_request()` 清除 entry bit。此后的新 wake 会
+  重新执行 `0 -> 1`、推进 generation 并请求新 edge，因此 claim 与 acknowledge 之间的并发请求
+  仍保留给下一次 scheduler pass；
+- `REQUEST_OWNER_WORK` 继续按每次有界 producer publication 推进 generation。preemption sticky
+  合并不改变 owner-work batch 或 physical `DeliveryEdge` 的所有权。
+
+确定性回归 `pending_preemption_does_not_ring_a_second_doorbell` 先在旧实现观测同一 pending
+preemption 发送 2 个 IPI，要求为 1；随后 claim/ack，再发布一个 preemption，必须观察总发送数
+变为 2。这样同时约束重复 edge 与丢失新 request 两个方向。完整 ax-task host-test 通过 441 个
+unit、全部 integration、21 个 loom 与 12 个 doctest；五组 clippy 通过。
+
+正式 x86_64 `test-ext4-inode-unique` 从上一检查点 guest 84s/QEMU 89.92s 降到
+guest 79s/QEMU 84.82s；同机 warm `dev` 为 guest 67s，剩余差距仍约 18%。相同 leaf-qperf
+60.657s 窗口推进到同一个 `file-0474`，scheduler IPI send 从 18,751 降到 16,986，consume 从
+17,872 降到 16,259；context switch 则从 117,890 变为 118,053，未下降。结果说明 sticky
+preemption 合并确实减少物理中断放大，但剩余回退主要仍在真实切换/唤醒链。full-stack qperf
+在 shell prompt 前触发 QEMU plugin `SIGSEGV`、没有产生样本，因此不能据该失败构造 caller 结论。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
