@@ -220,6 +220,59 @@ impl Ext4FileSystem {
         Ok(())
     }
 
+    pub(crate) fn remount_read_only<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<()> {
+        if self.superblock.s_last_orphan != 0 {
+            return Err(Ext4Error::busy().with_operation("remount:live_orphans"));
+        }
+
+        let previous_superblock = self.superblock;
+        self.superblock.s_state = (self.superblock.s_state & Ext4Superblock::EXT4_ERROR_FS)
+            | Ext4Superblock::EXT4_VALID_FS;
+        self.clear_recovery_state();
+        if let Err(error) = self.sync_filesystem(block_dev) {
+            self.superblock = previous_superblock;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remount_read_write<B: BlockIo, O: crate::runtime::Observer>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        observer: &mut O,
+    ) -> Ext4Result<()> {
+        if block_dev.device_is_read_only() {
+            return Err(Ext4Error::read_only().with_operation("remount:device_read_only"));
+        }
+        Self::check_mount_features(&self.superblock, false, observer)?;
+        if self
+            .superblock
+            .has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER)
+        {
+            return Err(Ext4Error::busy().with_operation("remount:recovery_required"));
+        }
+        if self.superblock.s_last_orphan != 0 {
+            return Err(Ext4Error::busy().with_operation("remount:live_orphans"));
+        }
+        if self.superblock.has_journal() && !block_dev.is_use_journal() {
+            return Err(Ext4Error::unsupported().with_operation("remount:journal_disabled"));
+        }
+
+        let previous_superblock = self.superblock;
+        Self::dirty_for_mount(&mut self.superblock);
+        if self.superblock.has_journal() {
+            self.set_recovery_state();
+        }
+        if let Err(error) = self.sync_filesystem(block_dev) {
+            self.superblock = previous_superblock;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Mounts an ext4 filesystem from the given block device.
     pub fn mount<B: BlockIo>(block_dev: &mut Jbd2Dev<B>) -> Result<Self, Ext4Error> {
         Self::mount_with_options(block_dev, MountOptions::read_write())

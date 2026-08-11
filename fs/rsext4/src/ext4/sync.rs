@@ -64,6 +64,20 @@ impl Ext4FileSystem {
         Ok(())
     }
 
+    pub(crate) fn finish_read_only_unmount<O: crate::runtime::Observer>(
+        &mut self,
+        observer: &mut O,
+    ) {
+        use crate::runtime::{Event, MountEvent};
+
+        if !self.mounted {
+            return;
+        }
+        observer.event(Event::Mount(MountEvent::UnmountStarted));
+        self.mounted = false;
+        observer.event(Event::Mount(MountEvent::Unmounted));
+    }
+
     pub fn sync_group_descriptors<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,

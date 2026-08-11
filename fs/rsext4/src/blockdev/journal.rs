@@ -289,6 +289,10 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.journal_use
     }
 
+    pub(crate) fn device_is_read_only(&self) -> bool {
+        self.inner._device().capabilities().read_only
+    }
+
     /// Returns the current journal transaction sequence if journal is active.
     pub fn journal_sequence(&self) -> Option<u32> {
         self.system.as_ref().map(|s| s.sequence)
