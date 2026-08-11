@@ -247,6 +247,16 @@ impl Ext4Inode {
         (self.l_i_file_acl_high as u64) << 32 | self.i_file_acl_lo as u64
     }
 
+    /// Stores a checked 48-bit extended-attribute block pointer.
+    pub fn set_file_acl(&mut self, block: u64) -> Ext4Result<()> {
+        if block >= 1_u64 << 48 {
+            return Err(Ext4Error::overflow().with_operation("inode:set_file_acl"));
+        }
+        self.i_file_acl_lo = block as u32;
+        self.l_i_file_acl_high = (block >> 32) as u16;
+        Ok(())
+    }
+
     /// Returns true when the inode type is directory.
     pub fn is_dir(&self) -> bool {
         self.i_mode & Self::S_IFMT == Self::S_IFDIR

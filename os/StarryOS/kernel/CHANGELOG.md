@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Implement ext4 data `FS_IOC_FIEMAP` for regular files and directories,
   including count-only, sparse, unwritten, bounded, range, and error semantics;
   support inline/external `FIEMAP_FLAG_XATTR` mappings and Linux inline flags.
+- Back xattr syscalls with filesystem inode capabilities instead of dentry side
+  storage, including persistent ext4 data, inode-owned tmpfs hard-link state,
+  and overlay copy-up without read-only or missing-remove side effects.
 
 ### Fixed
 

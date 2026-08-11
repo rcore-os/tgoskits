@@ -142,6 +142,23 @@ impl Ext4FileSystem {
         B: BlockIo,
         F: FnOnce(&mut Ext4Inode),
     {
+        self.modify_inode_record(block_dev, inode_num, |inode, _raw_inode| {
+            f(inode);
+            Ok(())
+        })
+    }
+
+    /// Mutates modeled fields and unmodeled bytes in one raw inode record.
+    pub(crate) fn modify_inode_record<B, F>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        inode_num: InodeNumber,
+        f: F,
+    ) -> Ext4Result<()>
+    where
+        B: BlockIo,
+        F: FnOnce(&mut Ext4Inode, &mut [u8]) -> Ext4Result<()>,
+    {
         // Resolve the owning group first so the inode-table start block can be
         // derived from the matching group descriptor.
         let (group_idx, _idx_in_group) = self.inode_allocator.global_to_group(inode_num)?;
@@ -163,7 +180,7 @@ impl Ext4FileSystem {
         let has_csum = ext4_superblock_has_metadata_csum(&sb);
 
         let wrapped_f = move |inode: &mut Ext4Inode, raw_inode: &mut [u8]| {
-            f(inode);
+            f(inode, raw_inode)?;
             if has_csum {
                 ext4_update_raw_inode_checksum(&sb, inode_num, inode, raw_inode)?;
             } else {
@@ -182,6 +199,16 @@ impl Ext4FileSystem {
         block_dev: &mut Jbd2Dev<B>,
         inode_num: InodeNumber,
     ) -> Ext4Result<Ext4Inode> {
+        self.get_inode_record(block_dev, inode_num)
+            .map(|(inode, _)| inode)
+    }
+
+    /// Loads one inode and its complete raw record through the inode-table cache.
+    pub(crate) fn get_inode_record<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        inode_num: InodeNumber,
+    ) -> Ext4Result<(Ext4Inode, Vec<u8>)> {
         let (group_idx, _idx_in_group) = self.inode_allocator.global_to_group(inode_num)?;
 
         let inode_table_start = self
@@ -200,7 +227,7 @@ impl Ext4FileSystem {
         let cached = self
             .inodetable_cache
             .get_or_load(block_dev, inode_num, block_num, offset)?;
-        Ok(cached.inode)
+        Ok((cached.inode, cached.raw_inode().to_vec()))
     }
 
     /// Returns an aggregated statfs-style snapshot.

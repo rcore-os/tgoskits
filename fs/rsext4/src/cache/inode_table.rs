@@ -56,6 +56,10 @@ impl CachedInode {
             inode_num: self.inode_num,
         }
     }
+
+    pub(crate) fn raw_inode(&self) -> &[u8] {
+        &self.raw_inode
+    }
 }
 
 /// Lightweight cached inode handle.

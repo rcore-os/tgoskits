@@ -2,24 +2,22 @@
 
 use alloc::vec::Vec;
 
-use super::extent_map::{
-    FileExtent, FileExtentMap, FileExtentState, finish_extent_map, maximum_inode_bytes,
-    push_overlapping_extent,
+use super::{
+    extent_map::{
+        FileExtent, FileExtentMap, FileExtentState, finish_extent_map, maximum_inode_bytes,
+        push_overlapping_extent,
+    },
+    xattr::has_valid_inline_store,
 };
 use crate::{
     BlockIo, Ext4FileSystem, Jbd2Dev,
     bmalloc::{AbsoluteBN, InodeNumber},
     disknode::Ext4Inode,
-    endian::{read_u16_le, read_u32_le},
     error::{Ext4Error, Ext4Result},
-    superblock::Ext4Superblock,
 };
 
-const XATTR_MAGIC: u32 = 0xea02_0000;
 const XATTR_IBODY_HEADER_SIZE: usize = 4;
-const XATTR_ENTRY_SIZE: usize = 16;
 const XATTR_TERMINATOR_SIZE: usize = 4;
-const XATTR_SIZE_MAX: u32 = 1 << 24;
 
 pub(super) fn inspect_xattr_extent<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
@@ -113,208 +111,18 @@ fn inline_xattr_location<B: BlockIo>(
         .get(group.as_usize()?)
         .ok_or_else(Ext4Error::corrupted)?
         .inode_table();
-    let (block, inode_offset, _) = filesystem.inodetable_cache.calc_inode_location(
+    let (block, _inode_offset, _) = filesystem.inodetable_cache.calc_inode_location(
         inode_number,
         filesystem.superblock.s_inodes_per_group,
         AbsoluteBN::new(inode_table_start),
         filesystem.block_size(),
     )?;
-    let mut block_bytes = alloc::vec![0u8; filesystem.block_size()];
-    device.read_blocks(&mut block_bytes, block, 1)?;
-    let inode_end = inode_offset
-        .checked_add(inode_size)
-        .ok_or_else(Ext4Error::overflow)?;
-    let inode_bytes = block_bytes
-        .get(inode_offset..inode_end)
-        .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:xattr_inode_bounds"))?;
-    let xattr_bytes = inode_bytes
-        .get(xattr_offset..)
-        .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:xattr_header_bounds"))?;
-    if read_u32_le(&xattr_bytes[..XATTR_IBODY_HEADER_SIZE]) != XATTR_MAGIC {
+    let (_, inode_bytes) = filesystem.get_inode_record(device, inode_number)?;
+    if inode_bytes.len() != inode_size {
+        return Err(Ext4Error::corrupted().with_operation("inode:xattr_inode_bounds"));
+    }
+    if !has_valid_inline_store(filesystem, inode, &inode_bytes)? {
         return Ok(None);
     }
-
-    validate_inline_xattrs(&filesystem.superblock, filesystem.root_inode, xattr_bytes)?;
     Ok(Some((block, xattr_offset, inode_size - xattr_offset)))
-}
-
-fn validate_inline_xattrs(
-    superblock: &Ext4Superblock,
-    root_inode: InodeNumber,
-    xattrs: &[u8],
-) -> Ext4Result<()> {
-    if xattrs.len() < XATTR_IBODY_HEADER_SIZE + XATTR_TERMINATOR_SIZE
-        || read_u32_le(&xattrs[..XATTR_IBODY_HEADER_SIZE]) != XATTR_MAGIC
-    {
-        return Err(Ext4Error::corrupted().with_operation("inode:xattr_header"));
-    }
-
-    let mut entry_offset = XATTR_IBODY_HEADER_SIZE;
-    loop {
-        let prefix_end = entry_offset
-            .checked_add(XATTR_TERMINATOR_SIZE)
-            .ok_or_else(Ext4Error::overflow)?;
-        let entry_prefix = xattrs
-            .get(entry_offset..prefix_end)
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:xattr_entry_bounds"))?;
-        if read_u32_le(entry_prefix) == 0 {
-            break;
-        }
-        let entry_end = entry_offset
-            .checked_add(XATTR_ENTRY_SIZE)
-            .ok_or_else(Ext4Error::overflow)?;
-        let entry = xattrs
-            .get(entry_offset..entry_end)
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:xattr_entry_bounds"))?;
-        let name_len = usize::from(entry[0]);
-        let entry_length = round_up_4(
-            XATTR_ENTRY_SIZE
-                .checked_add(name_len)
-                .ok_or_else(Ext4Error::overflow)?,
-        )?;
-        let next = entry_offset
-            .checked_add(entry_length)
-            .ok_or_else(Ext4Error::overflow)?;
-        let name_end = entry_end
-            .checked_add(name_len)
-            .ok_or_else(Ext4Error::overflow)?;
-        let name = xattrs
-            .get(entry_end..name_end)
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:xattr_name_bounds"))?;
-        if name.contains(&0)
-            || next
-                .checked_add(XATTR_TERMINATOR_SIZE)
-                .is_none_or(|end| end > xattrs.len())
-        {
-            return Err(Ext4Error::corrupted().with_operation("inode:xattr_name"));
-        }
-        entry_offset = next;
-    }
-    let names_end = entry_offset
-        .checked_add(XATTR_TERMINATOR_SIZE)
-        .ok_or_else(Ext4Error::overflow)?;
-
-    entry_offset = XATTR_IBODY_HEADER_SIZE;
-    loop {
-        let prefix_end = entry_offset
-            .checked_add(XATTR_TERMINATOR_SIZE)
-            .ok_or_else(Ext4Error::overflow)?;
-        let entry_prefix = xattrs
-            .get(entry_offset..prefix_end)
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:xattr_entry_bounds"))?;
-        if read_u32_le(entry_prefix) == 0 {
-            break;
-        }
-        let entry_end = entry_offset
-            .checked_add(XATTR_ENTRY_SIZE)
-            .ok_or_else(Ext4Error::overflow)?;
-        let entry = xattrs
-            .get(entry_offset..entry_end)
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:xattr_entry_bounds"))?;
-        let name_len = usize::from(entry[0]);
-        let value_offset = usize::from(read_u16_le(&entry[2..4]));
-        let value_inode = read_u32_le(&entry[4..8]);
-        let value_size = read_u32_le(&entry[8..12]);
-        if value_size > XATTR_SIZE_MAX {
-            return Err(Ext4Error::corrupted().with_operation("inode:xattr_value_size"));
-        }
-        if value_inode != 0 {
-            if !superblock.has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_EA_INODE)
-                || value_inode == root_inode.raw()
-                || value_inode < superblock.s_first_ino
-                || value_inode > superblock.s_inodes_count
-                || value_size == 0
-            {
-                return Err(Ext4Error::corrupted().with_operation("inode:xattr_value_inode"));
-            }
-        } else if value_size != 0 {
-            let value_size = usize::try_from(value_size).map_err(|_| Ext4Error::overflow())?;
-            let padded_size = round_up_4(value_size)?;
-            let value_end = value_offset
-                .checked_add(value_size)
-                .ok_or_else(Ext4Error::overflow)?;
-            let padded_end = value_offset
-                .checked_add(padded_size)
-                .ok_or_else(Ext4Error::overflow)?;
-            if value_offset < names_end || value_end > xattrs.len() || padded_end > xattrs.len() {
-                return Err(Ext4Error::corrupted().with_operation("inode:xattr_value_bounds"));
-            }
-        }
-        entry_offset = entry_offset
-            .checked_add(round_up_4(
-                XATTR_ENTRY_SIZE
-                    .checked_add(name_len)
-                    .ok_or_else(Ext4Error::overflow)?,
-            )?)
-            .ok_or_else(Ext4Error::overflow)?;
-    }
-    Ok(())
-}
-
-fn round_up_4(value: usize) -> Ext4Result<usize> {
-    value
-        .checked_add(3)
-        .map(|value| value & !3)
-        .ok_or_else(Ext4Error::overflow)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn inline_xattr_fixture() -> Vec<u8> {
-        let mut bytes = alloc::vec![0u8; 64];
-        bytes[..4].copy_from_slice(&XATTR_MAGIC.to_le_bytes());
-        bytes[4] = 3;
-        bytes[5] = 1;
-        bytes[6..8].copy_from_slice(&28u16.to_le_bytes());
-        bytes[12..16].copy_from_slice(&4u32.to_le_bytes());
-        bytes[20..23].copy_from_slice(b"key");
-        bytes[28..32].copy_from_slice(b"data");
-        bytes
-    }
-
-    fn xattr_superblock() -> Ext4Superblock {
-        Ext4Superblock {
-            s_first_ino: 11,
-            s_inodes_count: 128,
-            ..Ext4Superblock::default()
-        }
-    }
-
-    #[test]
-    fn checked_inline_xattr_accepts_linux_layout() {
-        validate_inline_xattrs(
-            &xattr_superblock(),
-            InodeNumber::new(2).expect("root inode"),
-            &inline_xattr_fixture(),
-        )
-        .expect("valid inline xattr");
-    }
-
-    #[test]
-    fn checked_inline_xattr_rejects_value_overlapping_names() {
-        let mut bytes = inline_xattr_fixture();
-        bytes[6..8].copy_from_slice(&24u16.to_le_bytes());
-        let error = validate_inline_xattrs(
-            &xattr_superblock(),
-            InodeNumber::new(2).expect("root inode"),
-            &bytes,
-        )
-        .expect_err("overlapping xattr value must be rejected");
-        assert_eq!(error.kind(), crate::error::Ext4ErrorKind::Corrupted);
-    }
-
-    #[test]
-    fn checked_inline_xattr_rejects_embedded_name_terminator() {
-        let mut bytes = inline_xattr_fixture();
-        bytes[21] = 0;
-        let error = validate_inline_xattrs(
-            &xattr_superblock(),
-            InodeNumber::new(2).expect("root inode"),
-            &bytes,
-        )
-        .expect_err("embedded xattr name terminator must be rejected");
-        assert_eq!(error.kind(), crate::error::Ext4ErrorKind::Corrupted);
-    }
 }

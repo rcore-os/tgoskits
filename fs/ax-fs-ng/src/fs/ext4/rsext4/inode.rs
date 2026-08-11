@@ -1,4 +1,4 @@
-use alloc::{borrow::ToOwned, sync::Arc};
+use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
 use core::any::Any;
 
 use axfs_ng_vfs::{
@@ -8,11 +8,12 @@ use axfs_ng_vfs::{
     FileRangeOperation as VfsRangeOperation, FilesystemOps, FsIoEvents, FsPollable, Metadata,
     MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
     PreallocationMode as VfsPreallocationMode, Reference, RenameOptions as VfsRenameOptions,
-    VfsError, VfsResult, WeakDirEntry,
+    VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode as VfsXattrSetMode,
 };
 use rsext4::{
     DeviceNumber, Ext4Timestamp, FileName, FilePermissions, InodeMetadataUpdate, InodeNumber,
-    MutationContext, PreallocationOptions, RangeOperation, SpecialInodeKind, ZeroRangeOptions,
+    MutationContext, PreallocationOptions, RangeOperation, SpecialInodeKind, XattrNamespace,
+    XattrSetMode, ZeroRangeOptions,
 };
 
 use super::{
@@ -129,6 +130,25 @@ impl Inode {
                 .collect(),
         })
     }
+
+    fn user_xattr_name(name: &[u8]) -> VfsResult<&[u8]> {
+        const PREFIX: &[u8] = b"user.";
+        let component = name
+            .strip_prefix(PREFIX)
+            .ok_or(VfsError::OperationNotSupported)?;
+        if component.is_empty() {
+            return Err(VfsError::InvalidInput);
+        }
+        Ok(component)
+    }
+
+    fn xattr_error(error: rsext4::Ext4Error) -> VfsError {
+        if error.kind() == rsext4::Ext4ErrorKind::NotFound {
+            VfsError::from(ax_errno::LinuxError::ENODATA).canonicalize()
+        } else {
+            into_vfs_err(error)
+        }
+    }
 }
 
 impl Drop for Inode {
@@ -229,6 +249,73 @@ impl NodeOps for Inode {
 
     fn flags(&self) -> NodeFlags {
         NodeFlags::BLOCKING
+    }
+
+    fn xattr_ops(&self) -> Option<&dyn XattrOps> {
+        Some(self)
+    }
+}
+
+impl XattrOps for Inode {
+    fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>> {
+        let name = Self::user_xattr_name(name)?;
+        let mut state = self.fs.lock();
+        state
+            .ext4
+            .get_xattr(self.ino, XattrNamespace::User, name)
+            .map_err(Self::xattr_error)
+    }
+
+    fn list_xattrs(&self) -> VfsResult<Vec<Vec<u8>>> {
+        let mut state = self.fs.lock();
+        let names = state
+            .ext4
+            .list_xattrs(self.ino)
+            .map_err(Self::xattr_error)?;
+        Ok(names
+            .into_iter()
+            .filter(|name| name.namespace == XattrNamespace::User)
+            .map(|name| {
+                let mut full_name = b"user.".to_vec();
+                full_name.extend_from_slice(&name.name);
+                full_name
+            })
+            .collect())
+    }
+
+    fn set_xattr(&self, name: &[u8], value: &[u8], mode: VfsXattrSetMode) -> VfsResult<()> {
+        let name = Self::user_xattr_name(name)?;
+        let mode = match mode {
+            VfsXattrSetMode::Upsert => XattrSetMode::Upsert,
+            VfsXattrSetMode::Create => XattrSetMode::Create,
+            VfsXattrSetMode::Replace => XattrSetMode::Replace,
+        };
+        let mut state = self.fs.lock();
+        state
+            .ext4
+            .set_xattr(
+                Self::authorized_mutation(),
+                self.ino,
+                XattrNamespace::User,
+                name,
+                value,
+                mode,
+            )
+            .map_err(Self::xattr_error)
+    }
+
+    fn remove_xattr(&self, name: &[u8]) -> VfsResult<()> {
+        let name = Self::user_xattr_name(name)?;
+        let mut state = self.fs.lock();
+        state
+            .ext4
+            .remove_xattr(
+                Self::authorized_mutation(),
+                self.ino,
+                XattrNamespace::User,
+                name,
+            )
+            .map_err(Self::xattr_error)
     }
 }
 

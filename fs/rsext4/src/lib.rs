@@ -39,12 +39,12 @@ pub use ext4::{
 };
 pub use file::{
     FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, PreallocationOptions,
-    RangeOperation, RenameOptions, RenameOutcome, UnlinkOutcome, ZeroRangeOptions,
-    create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file, free_inode,
-    inspect_inode_extents, is_dir_empty, link, mkfile, mkfile_with_owner, mv, operate_inode_range,
-    preallocate_inode, punch_hole_inode, read_file, read_inode_data_into, reap_unlinked_inode,
-    remove_inodeentry_from_parentdir, rename, rename_with_options, truncate, truncate_inode,
-    unlink, write_file, write_inode_data, zero_range_inode,
+    RangeOperation, RenameOptions, RenameOutcome, UnlinkOutcome, XattrName, XattrNamespace,
+    XattrSetMode, ZeroRangeOptions, create_symbol_link, create_symbol_link_with_owner, delete_dir,
+    delete_file, free_inode, inspect_inode_extents, is_dir_empty, link, mkfile, mkfile_with_owner,
+    mv, operate_inode_range, preallocate_inode, punch_hole_inode, read_file, read_inode_data_into,
+    reap_unlinked_inode, remove_inodeentry_from_parentdir, rename, rename_with_options, truncate,
+    truncate_inode, unlink, write_file, write_inode_data, zero_range_inode,
 };
 pub use io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, WriteFlags};
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};

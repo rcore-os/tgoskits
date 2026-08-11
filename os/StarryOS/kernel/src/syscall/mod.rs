@@ -161,7 +161,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::sync => sys_sync(),
         Sysno::syncfs => sys_syncfs(uctx.arg0() as _),
 
-        // xattr stubs — rsext4 has no extended attributes, return empty/ENODATA/EOPNOTSUPP
+        // Extended attributes: syscall policy delegates persistent storage to VFS capabilities.
         Sysno::listxattr => sys_listxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::llistxattr => sys_llistxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::flistxattr => sys_flistxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
