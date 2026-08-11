@@ -575,7 +575,7 @@ pub fn sys_readlinkat(
 
     debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
 
-    let link = with_fs(dirfd, |fs| {
+    with_fs(dirfd, |fs| {
         let entry = fs.resolve_no_follow(path)?;
         let link = entry.read_link()?;
         let read = size.min(link.len());
