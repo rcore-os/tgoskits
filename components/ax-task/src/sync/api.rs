@@ -22,10 +22,10 @@ pub use super::context::{
     hardirq_exit,
 };
 pub use crate::sync::spin::{
-    RawSpinLockGuard, SpinLock, SpinLockGuard, SpinLockIrqSaveGuard, SpinRwLock,
-    SpinRwLockIrqSaveReadGuard, SpinRwLockIrqSaveWriteGuard, SpinRwLockReadGuard,
-    SpinRwLockWriteGuard,
+    RawIrqSaveMutex, RawSpinLockGuard, RawSpinRwLockReadGuard, RawSpinRwLockWriteGuard, SpinLock,
+    SpinLockGuard, SpinLockIrqSaveGuard, SpinRwLock, SpinRwLockIrqSaveReadGuard,
+    SpinRwLockIrqSaveWriteGuard, SpinRwLockReadGuard, SpinRwLockWriteGuard,
 };
 
 /// A non-sleeping mutex whose guard saves and disables local IRQs.
-pub type IrqMutex<T> = lock_api::Mutex<super::spin::RawIrqSaveMutex, T>;
+pub type IrqMutex<T> = lock_api::Mutex<RawIrqSaveMutex, T>;

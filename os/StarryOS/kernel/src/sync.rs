@@ -3,7 +3,7 @@
 //! Kernel code imports locks only through this module so the type name and
 //! acquisition operation preserve sleep, preemption, and IRQ semantics.
 
-pub(crate) use ax_fs_ng::os::sync::SleepMutex as FsMutex;
+pub(crate) use ax_fs_ng::os::sync::Mutex as FsMutex;
 pub(crate) use ax_runtime::sync::{
     InterruptibleMutexExt, LockdepMutexExt, Mutex, PiMutex, PiMutexGuard,
     PreemptGuard as NoPreempt, PreemptIrqSaveGuard as NoPreemptIrqSave, RawIrqSaveMutex,
