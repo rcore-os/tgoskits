@@ -2961,6 +2961,45 @@ arm/cancel 仍是 deadline queue registration/cancellation 的独立事务，不
 9.017 次/switch，仍推进到 `file-0538`，host user 为 87.799 秒；这里只定位到结构性二次 rq
 acquisition，不宣称整体性能问题已经解决。
 
+确定性回归随后构造两条真实 Fair 线程并执行一次 yield selection，同时约束两个事实：
+`ScheduleSelection` deadline derivation 必须仍增加 1，而 transaction 释放后的 timer-rq acquisition
+必须为 0。旧实现稳定得到 `1/1`；修复让 `OwnerRqTxn` 在最终 current/class/runtime 状态已经形成、
+但 rq guard 仍然持有时产出唯一 `SchedulerDeadlineRqObservation`，同一测试转绿为 `1/0`。这份
+observation 只保存 due/相对 runtime delay 与 periodic fair predicate，不复制 current、runqueue 或
+timer identity；selection tail 以 scheduler completion 的 monotonic time 把相对 delay 转为绝对
+deadline，因此没有把 rq observation 到物理 rearm 之间的执行时间漏掉。
+
+所有 schedule、yield、park、exit 与 no-switch 提交点都走同一 observation 边界。可选 balance pass
+返回 typed `OwnerBalanceOutcome`：只有 RT/Deadline/Fair 实际迁移并改变本地 rq 时，tail 才通过原
+通用路径重新派生；idle-pull request 或无候选 balance 继续使用 transaction observation。没有保留
+旧 selection 重取 rq 的兼容路径。两个并行回归使用各自 fixture 的 `CpuRemote` 测试计数，避免全局
+qperf 计数被其他 fixture 污染；这些字段只在 `cfg(test)` 下存在，production 布局和热路径不变。
+完整 ax-task qperf-feature 测试通过（443 unit、全部 integration、21 loom、12 doctest），ax-task 与
+Starry 31 项 clippy 全部通过。
+
+相同 x86_64/4-vCPU/1009 Hz marker 窗口的结构对照如下；两轮 workload 都由 60 秒 timeout 以状态
+143 终止，start/stop marker 完整：
+
+| qperf window | deadline derivation / switch | timer rq / switch | 总 rq / switch | owner observation / switch | workload 进度 | host user |
+|---|---:|---:|---:|---:|---|---:|
+| 修复前 | 1.753 | 1.873 | 9.017 | 5.933 | `file-0538` | 87.799 s |
+| transaction observation | 1.773 | 0.853 | 8.099 | 6.000 | `file-0474` | 87.611 s |
+
+修复前后 deadline derivation 仍分别为 219,906/214,483，说明没有靠跳过 timer update 降低计数；
+timer-rq acquisition 从 234,880 降至 103,196，每 switch 下降 54.452%，总 rq 每 switch 下降
+10.188%。候选窗口中的 `ScheduleSelection` 与 `ScheduleNoSwitch` 合计仍有 133,839 次推导；扣除
+80,644 次非 selection 推导和约 14,903 次 clock-event 前置 rq due observation 后，只剩约 7.65k
+次 timer-rq acquisition，与“balance 实际迁移后必须重读已改变 rq”的保留分支一致。该分解来自
+调用边界与现有计数的合并推断，后续若继续优化这一小部分，必须先增加 balance outcome 分类，不能
+把它当作无条件重复删除。
+
+本轮 workload 只推进到 `file-0474`，没有复现前一轮 `file-0538`；host user 基本不变。因此这里只
+确认 Linux rq-lock 边界不一致和每 switch 约一次额外 rq acquisition 已被消除，不把单轮结构下降
+宣称为吞吐改善，更不能认为相对 dev 的整体性能问题已经解决。剩余最大项重新集中到 owner current/
+core/handle/idle 分散 observation（约 6.0 次/switch）；下一阶段需要沿完整调用链判断哪些查询属于
+同一 owner transaction、哪些只是 Linux `READ_ONCE(rq->curr)` 级启发式，再建立确定性红绿，不能
+直接增加 current/rq 的 lockless mirror。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
