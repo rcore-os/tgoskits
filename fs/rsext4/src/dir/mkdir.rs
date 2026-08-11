@@ -111,43 +111,52 @@ pub(crate) fn create_directory_at<B: BlockIo>(
         }
     };
 
-    if let Err(error) = fs.datablock_cache.modify_new(device, data_block, |data| {
-        let block_size = data.len();
-        let dot_rec_len = Ext4DirEntry2::entry_len(1);
-        let dot = Ext4DirEntry2::new(
-            new_dir_ino.raw(),
-            dot_rec_len,
-            Ext4DirEntry2::EXT4_FT_DIR,
-            b".",
-        );
-        let dotdot_rec_len = if has_checksum {
-            (block_size as u16)
-                .saturating_sub(dot_rec_len)
-                .saturating_sub(Ext4DirEntryTail::TAIL_LEN)
-        } else {
-            (block_size as u16).saturating_sub(dot_rec_len)
-        };
-        let dotdot = Ext4DirEntry2::new(
-            request.parent.raw(),
-            dotdot_rec_len,
-            Ext4DirEntry2::EXT4_FT_DIR,
-            b"..",
-        );
-
-        dot.to_disk_bytes(&mut data[0..8]);
-        data[8] = b'.';
-        let offset = dot_rec_len as usize;
-        dotdot.to_disk_bytes(&mut data[offset..offset + 8]);
-        data[offset + 8..offset + 10].copy_from_slice(b"..");
-        if has_checksum {
-            let tail = Ext4DirEntryTail::new();
-            let tail_offset = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
-            tail.to_disk_bytes(
-                &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
+    if let Err(error) = fs
+        .datablock_cache
+        .modify_new_metadata(device, data_block, |data| {
+            let block_size = data.len();
+            let dot_rec_len = Ext4DirEntry2::entry_len(1);
+            let dot = Ext4DirEntry2::new(
+                new_dir_ino.raw(),
+                dot_rec_len,
+                Ext4DirEntry2::EXT4_FT_DIR,
+                b".",
             );
-            update_ext4_dirblock_csum32(&fs.superblock, new_dir_ino.raw(), new_dir_gen, data);
-        }
-    }) {
+            let dotdot_rec_len = if has_checksum {
+                (block_size as u16)
+                    .saturating_sub(dot_rec_len)
+                    .saturating_sub(Ext4DirEntryTail::TAIL_LEN)
+            } else {
+                (block_size as u16).saturating_sub(dot_rec_len)
+            };
+            let dotdot = Ext4DirEntry2::new(
+                request.parent.raw(),
+                dotdot_rec_len,
+                Ext4DirEntry2::EXT4_FT_DIR,
+                b"..",
+            );
+
+            dot.to_disk_bytes(&mut data[0..8]);
+            data[8] = b'.';
+            let offset = dot_rec_len as usize;
+            dotdot.to_disk_bytes(&mut data[offset..offset + 8]);
+            data[offset + 8..offset + 10].copy_from_slice(b"..");
+            if has_checksum {
+                let tail = Ext4DirEntryTail::new();
+                let tail_offset = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
+                tail.to_disk_bytes(
+                    &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
+                );
+                update_ext4_dirblock_csum32(&fs.superblock, new_dir_ino.raw(), new_dir_gen, data);
+            }
+        })
+    {
+        return Err(error_after_cleanup(
+            error,
+            discard_unpublished_inode(fs, device, new_dir_ino, &child_blocks),
+        ));
+    }
+    if let Err(error) = fs.datablock_cache.flush_metadata(device, data_block) {
         return Err(error_after_cleanup(
             error,
             discard_unpublished_inode(fs, device, new_dir_ino, &child_blocks),

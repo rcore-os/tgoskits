@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without `64bit`, and preserve/checksum extension bytes through byte 1024.
 - Decode and encode JBD2 superblocks through checked 1024-byte prefixes and
   accept Linux V1 journals without interpreting their V2-only extension area.
+- Publish hard-link target and parent inode records together with the directory
+  metadata block under one bounded transaction, restoring disk and cache state
+  when directory publication fails.
 
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 

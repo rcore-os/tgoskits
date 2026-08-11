@@ -41,6 +41,7 @@ struct MetadataTransactionSnapshot {
     group_descs: Vec<Ext4GroupDesc>,
     bitmap_cache: BitmapCache,
     inodetable_cache: InodeCache,
+    datablock_cache: DataBlockCache,
 }
 
 impl Ext4FileSystem {
@@ -63,6 +64,7 @@ impl Ext4FileSystem {
             group_descs: self.group_descs.clone(),
             bitmap_cache: self.bitmap_cache.clone(),
             inodetable_cache: self.inodetable_cache.clone(),
+            datablock_cache: self.datablock_cache.clone(),
         };
         let result =
             block_dev.with_transaction_handle(credits, |block_dev| operation(self, block_dev));
@@ -71,6 +73,7 @@ impl Ext4FileSystem {
             self.group_descs = snapshot.group_descs;
             self.bitmap_cache = snapshot.bitmap_cache;
             self.inodetable_cache = snapshot.inodetable_cache;
+            self.datablock_cache = snapshot.datablock_cache;
         }
         result
     }

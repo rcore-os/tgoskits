@@ -459,16 +459,20 @@ fn try_remove_dentry_in_block<B: BlockIo>(
 ) -> Ext4Result<bool> {
     let superblock = &fs.superblock;
     let mut removed = false;
-    fs.datablock_cache.modify(block_dev, entry.phys, |data| {
-        removed = remove_dentry_in_dir_block(
-            superblock,
-            parent_ino_num,
-            parent_inode,
-            data,
-            entry,
-            name_bytes,
-        );
-    })?;
+    fs.datablock_cache
+        .modify_metadata(block_dev, entry.phys, |data| {
+            removed = remove_dentry_in_dir_block(
+                superblock,
+                parent_ino_num,
+                parent_inode,
+                data,
+                entry,
+                name_bytes,
+            );
+        })?;
+    if removed {
+        fs.datablock_cache.flush_metadata(block_dev, entry.phys)?;
+    }
     Ok(removed)
 }
 
@@ -582,40 +586,42 @@ pub(crate) fn replace_named_entry_at<B: BlockIo>(
 ) -> Ext4Result<()> {
     let superblock = &fs.superblock;
     let mut replaced = false;
-    fs.datablock_cache.modify(block_dev, entry.phys, |data| {
-        let offset = entry.offset;
-        let Some(header) = data.get(offset..offset + 8) else {
-            return;
-        };
-        let inode = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-        let record_len = usize::from(u16::from_le_bytes([header[4], header[5]]));
-        let name_len = usize::from(header[6]);
-        let Some(record_end) = offset.checked_add(record_len) else {
-            return;
-        };
-        let Some(name_end) = offset.checked_add(8 + name_len) else {
-            return;
-        };
-        if record_len < 8
-            || record_end > data.len()
-            || name_end > record_end
-            || inode != entry.ino.raw()
-            || &data[offset + 8..name_end] != name_bytes
-        {
-            return;
-        }
+    fs.datablock_cache
+        .modify_metadata(block_dev, entry.phys, |data| {
+            let offset = entry.offset;
+            let Some(header) = data.get(offset..offset + 8) else {
+                return;
+            };
+            let inode = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+            let record_len = usize::from(u16::from_le_bytes([header[4], header[5]]));
+            let name_len = usize::from(header[6]);
+            let Some(record_end) = offset.checked_add(record_len) else {
+                return;
+            };
+            let Some(name_end) = offset.checked_add(8 + name_len) else {
+                return;
+            };
+            if record_len < 8
+                || record_end > data.len()
+                || name_end > record_end
+                || inode != entry.ino.raw()
+                || &data[offset + 8..name_end] != name_bytes
+            {
+                return;
+            }
 
-        data[offset..offset + 4].copy_from_slice(&replacement.inode.raw().to_le_bytes());
-        data[offset + 7] = replacement.file_type;
-        update_ext4_dirblock_csum32(
-            superblock,
-            parent_ino.raw(),
-            parent_inode.i_generation,
-            data,
-        );
-        replaced = true;
-    })?;
+            data[offset..offset + 4].copy_from_slice(&replacement.inode.raw().to_le_bytes());
+            data[offset + 7] = replacement.file_type;
+            update_ext4_dirblock_csum32(
+                superblock,
+                parent_ino.raw(),
+                parent_inode.i_generation,
+                data,
+            );
+            replaced = true;
+        })?;
     if replaced {
+        fs.datablock_cache.flush_metadata(block_dev, entry.phys)?;
         Ok(())
     } else {
         Err(Ext4Error::corrupted().with_operation("directory:stale_entry_location"))
