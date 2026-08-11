@@ -150,6 +150,15 @@ fn new_jbd2_dev(device: SharedCrcDevice) -> Jbd2Dev<SharedCrcDevice> {
     Jbd2Dev::initial_jbd2dev(0, device, true)
 }
 
+#[derive(Clone, Copy)]
+struct OwnedTestClock;
+
+impl Clock for OwnedTestClock {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
+        Ok(Ext4Timestamp::new(1_700_000_000, 0))
+    }
+}
+
 fn build_filesystem_with_written_file() -> (SharedCrcDevice, Vec<u8>) {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let payload = b"crc integration payload".to_vec();
@@ -880,6 +889,36 @@ fn readonly_no_replay_mount_can_inspect_unrecoverable_journal() {
         on_disk_sb.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
         0
     );
+}
+
+#[test]
+fn owned_readonly_fallback_preserves_unrecoverable_journal_error() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut format_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut format_dev).expect("mkfs failed");
+
+    let mut first_mount_dev = new_jbd2_dev(device.clone());
+    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let journal_block = fs
+        .journal_sb_block_start
+        .expect("journal superblock should be mapped")
+        .raw();
+    umount(fs, &mut first_mount_dev).expect("umount failed");
+
+    let mut sb = read_superblock(&device);
+    sb.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+    sb.update_checksum();
+    write_superblock(&device, &sb);
+    write_journal_start(&device, journal_block, 1);
+    write_invalid_journal_revoke(&device, journal_block);
+
+    let services = MountServices::new(OwnedTestClock, (), (), (), NoopObserver);
+    let error = match Ext4::mount_with_readonly_fallback(device, services) {
+        Ok(_) => panic!("fallback must not hide an unrecoverable journal"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
 }
 
 #[test]

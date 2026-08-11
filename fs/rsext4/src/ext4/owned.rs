@@ -230,8 +230,12 @@ where
         })
     }
 
-    /// Attempts a read-write mount and keeps the same private device/cache
-    /// owner for the Linux-compatible read-only fallback paths.
+    /// Selects read-only replay before mounting when the on-disk filesystem
+    /// has recorded errors; otherwise performs one read-write mount attempt.
+    ///
+    /// A failed mount is never retried through the same journal/cache owner.
+    /// Replay may already have updated home blocks or latched an abort, so a
+    /// second attempt would lose the first error and observe polluted state.
     pub fn mount_with_readonly_fallback<C>(
         device: D,
         services: MountServices<C, E, P, K, O>,
@@ -253,43 +257,13 @@ where
             replay_journal: true,
             block_validity: true,
         };
-        let read_only_no_replay = MountOptions::read_only_no_journal_replay();
-
-        let (filesystem, options) = match Ext4FileSystem::device_has_error_state(&mut device) {
-            Ok(true) => (
-                Ext4FileSystem::mount_with_options_and_observer(
-                    &mut device,
-                    read_only_replay,
-                    &mut observer,
-                )?,
-                read_only_replay,
-            ),
-            Ok(false) => match Ext4FileSystem::mount_with_options_and_observer(
-                &mut device,
-                read_write,
-                &mut observer,
-            ) {
-                Ok(filesystem) => (filesystem, read_write),
-                Err(error) if error.is_corruption() => (
-                    Ext4FileSystem::mount_with_options_and_observer(
-                        &mut device,
-                        read_only_no_replay,
-                        &mut observer,
-                    )?,
-                    read_only_no_replay,
-                ),
-                Err(error) => return Err(error),
-            },
-            Err(error) if error.is_corruption() => (
-                Ext4FileSystem::mount_with_options_and_observer(
-                    &mut device,
-                    read_only_no_replay,
-                    &mut observer,
-                )?,
-                read_only_no_replay,
-            ),
-            Err(error) => return Err(error),
+        let options = if Ext4FileSystem::device_has_error_state(&mut device)? {
+            read_only_replay
+        } else {
+            read_write
         };
+        let filesystem =
+            Ext4FileSystem::mount_with_options_and_observer(&mut device, options, &mut observer)?;
 
         Ok(Self {
             filesystem,
