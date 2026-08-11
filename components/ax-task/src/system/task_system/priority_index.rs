@@ -1,7 +1,7 @@
 //! Root-domain priority indexes for RT and Deadline placement.
 
 use alloc::{vec, vec::Vec};
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use super::*;
 use crate::RtPriority;
@@ -41,6 +41,9 @@ const RT_NORMAL_LEVEL: u8 = 0;
 const RT_HIGHER_LEVEL: u8 = 100;
 const RT_LEVEL_COUNT: usize = 101;
 const RT_OFFLINE_LEVEL: u8 = u8::MAX;
+const DEADLINE_CPU_OFFLINE: u8 = 0;
+const DEADLINE_CPU_FREE: u8 = 1;
+const DEADLINE_CPU_BUSY: u8 = 2;
 
 /// Derived root-domain indexes used by class-specific wake placement.
 ///
@@ -52,6 +55,7 @@ const RT_OFFLINE_LEVEL: u8 = u8::MAX;
 pub(super) struct RootDomainPriorityIndex {
     rt: RtCpuPriorityIndex,
     deadline: IrqTicketLock<DeadlineCpuHeap>,
+    published_deadline: Vec<DeadlineCpuPublication>,
 }
 
 impl RootDomainPriorityIndex {
@@ -59,6 +63,9 @@ impl RootDomainPriorityIndex {
         Self {
             rt: RtCpuPriorityIndex::new(cpu_count),
             deadline: IrqTicketLock::new(DeadlineCpuHeap::new(cpu_count)),
+            published_deadline: (0..cpu_count)
+                .map(|_| DeadlineCpuPublication::new())
+                .collect(),
         }
     }
 
@@ -75,16 +82,26 @@ impl RootDomainPriorityIndex {
             highest_rt_priority,
             earliest_deadline.is_some(),
         );
-        #[cfg(test)]
-        DEADLINE_INDEX_PUBLICATIONS.set(DEADLINE_INDEX_PUBLICATIONS.get().saturating_add(1));
-        self.deadline.lock().publish(cpu, online, earliest_deadline);
+        self.publish_deadline(cpu, online, earliest_deadline);
     }
 
     pub(super) fn publish_offline(&self, cpu: CpuId) {
         self.rt.publish(cpu, false, None, false);
+        self.publish_deadline(cpu, false, None);
+    }
+
+    fn publish_deadline(&self, cpu: CpuId, online: bool, earliest_deadline: Option<u64>) {
+        let Some(published) = self.published_deadline.get(cpu.as_usize()) else {
+            return;
+        };
+        if published.matches(online, earliest_deadline) {
+            return;
+        }
+
+        self.deadline.lock().publish(cpu, online, earliest_deadline);
+        published.record(online, earliest_deadline);
         #[cfg(test)]
         DEADLINE_INDEX_PUBLICATIONS.set(DEADLINE_INDEX_PUBLICATIONS.get().saturating_add(1));
-        self.deadline.lock().publish(cpu, false, None);
     }
 
     pub(super) fn has_multiple_online_cpus(&self) -> bool {
@@ -122,6 +139,53 @@ impl RootDomainPriorityIndex {
         self.deadline
             .lock()
             .find_later(absolute_deadline_ns, affinity, preferred, accepts)
+    }
+}
+
+/// Lockless mirror of one CPU's last committed cpudl state.
+///
+/// Writers are serialized by that CPU's rq ownership (including the final
+/// hotplug transition). The mirror is recorded only after the heap mutation,
+/// so an equal observation may skip the heap lock without hiding an
+/// unpublished transition.
+#[derive(Debug)]
+struct DeadlineCpuPublication {
+    state: AtomicU8,
+    absolute_deadline_ns: AtomicU64,
+}
+
+impl DeadlineCpuPublication {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(DEADLINE_CPU_OFFLINE),
+            absolute_deadline_ns: AtomicU64::new(0),
+        }
+    }
+
+    fn matches(&self, online: bool, earliest_deadline: Option<u64>) -> bool {
+        let expected = Self::state_for(online, earliest_deadline);
+        self.state.load(Ordering::Acquire) == expected
+            && (expected != DEADLINE_CPU_BUSY
+                || self.absolute_deadline_ns.load(Ordering::Acquire)
+                    == earliest_deadline.expect("busy cpudl state must carry a deadline"))
+    }
+
+    fn record(&self, online: bool, earliest_deadline: Option<u64>) {
+        let state = Self::state_for(online, earliest_deadline);
+        if let Some(deadline) = earliest_deadline {
+            self.absolute_deadline_ns.store(deadline, Ordering::Release);
+        }
+        self.state.store(state, Ordering::Release);
+    }
+
+    const fn state_for(online: bool, earliest_deadline: Option<u64>) -> u8 {
+        if !online {
+            DEADLINE_CPU_OFFLINE
+        } else if earliest_deadline.is_some() {
+            DEADLINE_CPU_BUSY
+        } else {
+            DEADLINE_CPU_FREE
+        }
     }
 }
 
@@ -456,6 +520,30 @@ mod tests {
             Some(cpu),
             "removing the last Deadline entity must restore the published RT priority"
         );
+    }
+
+    #[test]
+    fn cpudl_publication_only_locks_for_state_transitions() {
+        let index = RootDomainPriorityIndex::new(1);
+        let cpu = CpuId::new(0);
+        reset_deadline_index_publications();
+
+        index.publish_run_queue(cpu, None, None, true);
+        assert_eq!(deadline_index_publications(), 1);
+        index.publish_run_queue(cpu, None, None, true);
+        assert_eq!(deadline_index_publications(), 1);
+
+        index.publish_run_queue(cpu, None, Some(100), true);
+        assert_eq!(deadline_index_publications(), 2);
+        index.publish_run_queue(cpu, None, Some(100), true);
+        assert_eq!(deadline_index_publications(), 2);
+        index.publish_run_queue(cpu, None, Some(200), true);
+        assert_eq!(deadline_index_publications(), 3);
+
+        index.publish_offline(cpu);
+        assert_eq!(deadline_index_publications(), 4);
+        index.publish_offline(cpu);
+        assert_eq!(deadline_index_publications(), 4);
     }
 
     #[test]
