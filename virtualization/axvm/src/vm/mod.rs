@@ -179,6 +179,7 @@ pub(crate) enum PendingInterrupt {
 /// Runtime-only resources owned by Running/Paused/Stopping lifecycle states.
 pub(crate) struct VmRuntimeHandle {
     wait_queue: crate::WaitQueue,
+    notification_generation: AtomicUsize,
     vcpu_threads: Mutex<VcpuThreadRegistry>,
     cpu_on_start_acks: StdMutex<BTreeMap<usize, Arc<crate::runtime::vcpus::CpuOnStartAck>>>,
     cpu_off_exit_reservations: StdMutex<BTreeSet<usize>>,
@@ -226,6 +227,7 @@ impl VmRuntimeHandle {
     pub(crate) fn new() -> Self {
         Self {
             wait_queue: crate::WaitQueue::new(),
+            notification_generation: AtomicUsize::new(0),
             vcpu_threads: Mutex::new(VcpuThreadRegistry::default()),
             cpu_on_start_acks: StdMutex::new(BTreeMap::new()),
             cpu_off_exit_reservations: StdMutex::new(BTreeSet::new()),
@@ -419,11 +421,18 @@ impl VmRuntimeHandle {
         self.wait_queue.wait_until(condition);
     }
 
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(crate) fn notification_generation(&self) -> usize {
+        self.notification_generation.load(Ordering::Acquire)
+    }
+
     pub(crate) fn notify_one(&self) {
+        self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_one();
     }
 
     pub(crate) fn notify_all(&self) {
+        self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_all();
     }
 
@@ -2048,6 +2057,16 @@ mod tests {
 
         assert!(matches!(result, Err(AxVmError::ResourceUnavailable { .. })));
         assert_eq!(*events.borrow(), ["enqueue"]);
+    }
+
+    #[test]
+    fn runtime_notification_advances_wake_generation_without_waiters() {
+        let runtime = VmRuntimeHandle::new();
+        let observed = runtime.notification_generation();
+
+        runtime.notify_one();
+
+        assert_ne!(runtime.notification_generation(), observed);
     }
 
     #[test]

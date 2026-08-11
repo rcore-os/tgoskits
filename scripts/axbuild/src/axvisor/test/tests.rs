@@ -1152,3 +1152,37 @@ fn qemu_build_groups_preserve_distinct_executable_artifacts() {
     assert_eq!(fs::read(first).unwrap(), b"first VM config");
     assert_eq!(fs::read(second).unwrap(), b"second VM config");
 }
+#[test]
+fn qemu_cases_activate_their_build_group_artifact_and_conversion_mode() {
+    let first = false;
+    let second = true;
+    let third = false;
+    let first_group = [&first, &second];
+    let second_group = [&third];
+    let groups = [first_group.as_slice(), second_group.as_slice()];
+    let artifacts = [
+        PathBuf::from("group-0/axvisor"),
+        PathBuf::from("group-1/axvisor"),
+    ];
+
+    let plan =
+        super::qemu::plan_qemu_case_artifacts(&groups, &artifacts, |to_bin| *to_bin).unwrap();
+
+    assert_eq!(plan.len(), 3);
+    assert_eq!(plan[0].build_group_index, 0);
+    assert_eq!(plan[0].build_artifact, artifacts[0]);
+    assert!(!plan[0].to_bin);
+    assert_eq!(plan[1].build_group_index, 0);
+    assert_eq!(plan[1].build_artifact, artifacts[0]);
+    assert!(plan[1].to_bin);
+    assert_eq!(plan[2].build_group_index, 1);
+    assert_eq!(plan[2].build_artifact, artifacts[1]);
+    assert!(!plan[2].to_bin);
+
+    let err = super::qemu::plan_qemu_case_artifacts(&groups, &artifacts[..1], |to_bin| *to_bin)
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("does not match preserved artifact count")
+    );
+}

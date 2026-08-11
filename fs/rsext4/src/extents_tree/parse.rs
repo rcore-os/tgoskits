@@ -40,6 +40,10 @@ impl<'a> ExtentTree<'a> {
             error!("Extent header entries overflow: entries={entries}, max={max}");
             return None;
         }
+        if header.eh_depth != 0 && entries == 0 {
+            error!("Extent internal node has no child indexes");
+            return None;
+        }
 
         let mut offset = hdr_size;
 
@@ -393,5 +397,82 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn insert_rejects_empty_internal_root_without_mutating_inode() {
+        let (mut dev, mut fs) = setup_fs(16 * 1024);
+        let mut inode = new_extent_inode();
+        let empty_root = ExtentNode::Index {
+            header: Ext4ExtentHeader {
+                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+                eh_entries: 0,
+                eh_max: 4,
+                eh_depth: 1,
+                eh_generation: 0,
+            },
+            entries: Vec::new(),
+        };
+        ExtentTree::new(&mut inode).store_root_to_inode(&empty_root);
+        let inode_before = inode.i_block;
+
+        let result =
+            ExtentTree::new(&mut inode).insert_extent(&mut fs, Ext4Extent::new(0, 1, 1), &mut dev);
+
+        assert_eq!(result, Err(Ext4Error::corrupted()));
+        assert_eq!(inode.i_block, inode_before);
+    }
+
+    #[test]
+    fn insert_rejects_parent_with_empty_internal_child_without_mutating_metadata() {
+        let (mut dev, mut fs) = setup_fs(16 * 1024);
+        let mut inode = new_extent_inode();
+        let child_block = fs.alloc_block(&mut dev).unwrap();
+        let empty_child = ExtentNode::Index {
+            header: Ext4ExtentHeader {
+                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+                eh_entries: 0,
+                eh_max: ExtentTree::calc_block_eh_max(),
+                eh_depth: 1,
+                eh_generation: 0,
+            },
+            entries: Vec::new(),
+        };
+        let root = ExtentNode::Index {
+            header: Ext4ExtentHeader {
+                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+                eh_entries: 1,
+                eh_max: 4,
+                eh_depth: 1,
+                eh_generation: 0,
+            },
+            entries: vec![Ext4ExtentIdx {
+                ei_block: 0,
+                ei_leaf_lo: child_block.raw() as u32,
+                ei_leaf_hi: (child_block.raw() >> 32) as u16,
+                ei_unused: 0,
+            }],
+        };
+        {
+            let mut tree = ExtentTree::new(&mut inode);
+            tree.write_node_to_block(&mut dev, child_block, &empty_child)
+                .unwrap();
+            tree.store_root_to_inode(&root);
+        }
+
+        let inode_before = inode.i_block;
+        dev.read_block(child_block).unwrap();
+        let child_before = dev.buffer().to_vec();
+
+        let result = ExtentTree::new(&mut inode).insert_extent(
+            &mut fs,
+            Ext4Extent::new(0, child_block.raw(), 1),
+            &mut dev,
+        );
+
+        assert_eq!(result, Err(Ext4Error::corrupted()));
+        assert_eq!(inode.i_block, inode_before);
+        dev.read_block(child_block).unwrap();
+        assert_eq!(dev.buffer(), child_before);
     }
 }

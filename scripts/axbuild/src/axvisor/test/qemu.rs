@@ -169,43 +169,50 @@ impl Axvisor {
         }
 
         // Phase 2: Run all QEMU tests now that every artifact is available.
+        let case_groups = build_groups
+            .iter()
+            .map(|build_group| build_group.group.cases.as_slice())
+            .collect::<Vec<_>>();
+        let case_artifacts =
+            plan_qemu_case_artifacts(&case_groups, &build_artifacts, |case| case.qemu.to_bin)?;
         let mut completed = 0;
-        for (build_group, build_artifact) in build_groups.iter().zip(&build_artifacts) {
-            for case in &build_group.group.cases {
-                completed += 1;
-                let case_name = &case.case.case.name;
-                println!("[{completed}/{total}] axvisor qemu {case_name}");
+        for case_artifact in case_artifacts {
+            completed += 1;
+            let build_group = &build_groups[case_artifact.build_group_index];
+            let case = case_artifact.case;
+            let case_name = &case.case.case.name;
+            println!("[{completed}/{total}] axvisor qemu {case_name}");
 
-                let case_started = Instant::now();
-                let result = async {
-                    self.app
-                        .prepare_elf_artifact(build_artifact.clone(), case.qemu.to_bin)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "failed to activate Axvisor qemu artifact for case `{case_name}`"
-                            )
-                        })?;
-                    self.run_qemu_case(
-                        &build_group.request,
-                        &build_group.cargo,
-                        case,
-                        &asset_config,
+            let case_started = Instant::now();
+            let result = async {
+                self.app
+                    .prepare_elf_artifact(
+                        case_artifact.build_artifact.to_path_buf(),
+                        case_artifact.to_bin,
                     )
                     .await
-                }
+                    .with_context(|| {
+                        format!("failed to activate Axvisor qemu artifact for case `{case_name}`")
+                    })?;
+                self.run_qemu_case(
+                    &build_group.request,
+                    &build_group.cargo,
+                    case,
+                    &asset_config,
+                )
                 .await
-                .with_context(|| format!("axvisor qemu test failed for case `{case_name}`"));
-                let duration = case_started.elapsed();
-                match result {
-                    Ok(()) => {
-                        println!("ok: {case_name} ({duration:.2?})");
-                        summary.pass_with_detail(case_name, format!("{duration:.2?}"));
-                    }
-                    Err(err) => {
-                        eprintln!("failed: {}: {err:#}", case_name);
-                        summary.fail_with_detail(case_name, format!("{duration:.2?}"));
-                    }
+            }
+            .await
+            .with_context(|| format!("axvisor qemu test failed for case `{case_name}`"));
+            let duration = case_started.elapsed();
+            match result {
+                Ok(()) => {
+                    println!("ok: {case_name} ({duration:.2?})");
+                    summary.pass_with_detail(case_name, format!("{duration:.2?}"));
+                }
+                Err(err) => {
+                    eprintln!("failed: {}: {err:#}", case_name);
+                    summary.fail_with_detail(case_name, format!("{duration:.2?}"));
                 }
             }
         }
@@ -385,4 +392,41 @@ pub(super) fn preserve_qemu_build_artifact(
         )
     })?;
     Ok(destination)
+}
+
+#[derive(Debug)]
+pub(super) struct QemuCaseArtifact<'case, 'artifact, T> {
+    pub(super) build_group_index: usize,
+    pub(super) case: &'case T,
+    pub(super) build_artifact: &'artifact Path,
+    pub(super) to_bin: bool,
+}
+
+pub(super) fn plan_qemu_case_artifacts<'case, 'artifact, T>(
+    case_groups: &[&[&'case T]],
+    build_artifacts: &'artifact [PathBuf],
+    to_bin: impl Fn(&T) -> bool,
+) -> anyhow::Result<Vec<QemuCaseArtifact<'case, 'artifact, T>>> {
+    anyhow::ensure!(
+        case_groups.len() == build_artifacts.len(),
+        "Axvisor qemu build-group count ({}) does not match preserved artifact count ({})",
+        case_groups.len(),
+        build_artifacts.len()
+    );
+    Ok(case_groups
+        .iter()
+        .zip(build_artifacts)
+        .enumerate()
+        .flat_map(|(build_group_index, (cases, build_artifact))| {
+            cases.iter().map({
+                let to_bin = &to_bin;
+                move |case| QemuCaseArtifact {
+                    build_group_index,
+                    case: *case,
+                    build_artifact,
+                    to_bin: to_bin(*case),
+                }
+            })
+        })
+        .collect())
 }

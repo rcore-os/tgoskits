@@ -7,12 +7,12 @@ pub fn build_file_block_mapping_with_inode_num<B: BlockDevice>(
     inode_num: InodeNumber,
     data_blocks: &[AbsoluteBN],
     block_dev: &mut Jbd2Dev<B>,
-) {
+) -> Ext4Result<()> {
     if data_blocks.is_empty() {
         inode.i_blocks_lo = 0;
         inode.l_i_blocks_high = 0;
         inode.i_block = [0; 15];
-        return;
+        return Ok(());
     }
 
     if fs.superblock.has_extents() {
@@ -60,10 +60,12 @@ pub fn build_file_block_mapping_with_inode_num<B: BlockDevice>(
         // receives the same serialized structure as runtime writes.
         let mut tree = ExtentTree::with_checksum(inode, &fs.superblock, inode_num);
         for extend in exts_vec {
-            tree.insert_extent(fs, extend, block_dev)
-                .expect("Extent insert failed!");
+            tree.insert_extent(fs, extend, block_dev)?;
         }
     } else {
         error!("not support traditional block pointer");
+        return Err(Ext4Error::unsupported());
     }
+
+    Ok(())
 }

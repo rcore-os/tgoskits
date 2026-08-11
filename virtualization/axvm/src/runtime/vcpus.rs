@@ -141,6 +141,10 @@ where
     vm_vcpus.wait_until(condition);
 }
 
+fn vcpu_start_is_ready(vm_running: bool, task_registered: bool) -> bool {
+    vm_running && task_registered
+}
+
 /// Notifies the primary VCpu task associated with the specified VM to wake up and resume execution.
 /// This function is used to notify the primary VCpu of a VM to start running after the VM has been booted.
 ///
@@ -570,7 +574,7 @@ fn vcpu_run() {
     info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
     let cpu_on_start_ack = runtime.cpu_on_start_ack(vcpu_id);
     wait_for(&runtime, || {
-        vm.running()
+        vcpu_start_is_ready(vm.running(), runtime.has_vcpu_task(vcpu_id))
             || cpu_on_start_ack
                 .as_ref()
                 .is_some_and(|ack| ack.is_cancelled())
@@ -723,6 +727,11 @@ fn vcpu_run() {
 }
 
 pub(super) fn poll_vm_devices(vm: &VMRef) {
+    poll_vm_input_devices(vm);
+    poll_vm_dma_devices(vm);
+}
+
+pub(super) fn poll_vm_input_devices(vm: &VMRef) {
     let Ok(devices) = vm.get_devices() else {
         return;
     };
@@ -732,6 +741,13 @@ pub(super) fn poll_vm_devices(vm: &VMRef) {
             warn!("VM[{}] failed to poll virtual device: {error}", vm.id());
         }
     }
+}
+
+fn poll_vm_dma_devices(vm: &VMRef) {
+    let Ok(devices) = vm.get_devices() else {
+        return;
+    };
+    let now_ns = ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos();
     let mut memory = crate::vm::VmDmaAccess::new(vm);
     devices.poll_dma_devices(now_ns, &mut memory, |result| {
         if let Err(error) = result {
@@ -741,8 +757,15 @@ pub(super) fn poll_vm_devices(vm: &VMRef) {
 }
 
 #[cfg(test)]
-mod cpu_on_start_ack_tests {
+mod tests {
     use super::*;
+
+    #[test]
+    fn vcpu_waits_for_runtime_registration_before_entering_guest() {
+        assert!(!vcpu_start_is_ready(true, false));
+        assert!(vcpu_start_is_ready(true, true));
+        assert!(!vcpu_start_is_ready(false, true));
+    }
 
     #[test]
     fn cpu_on_start_ack_cancel_before_startup_blocks_late_startup() {
