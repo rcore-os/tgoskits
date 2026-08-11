@@ -10,23 +10,6 @@ use core::{
 use super::*;
 use crate::{DEADLINE_UTILIZATION_SCALE, RootRtBandwidth, RtPriority, lock::PreemptTicketGuard};
 
-#[cfg(test)]
-std::thread_local! {
-    static DETACHED_RT_LEDGER_READS: core::cell::Cell<usize> = const {
-        core::cell::Cell::new(0)
-    };
-}
-
-#[cfg(test)]
-pub(super) fn reset_detached_rt_ledger_reads() {
-    DETACHED_RT_LEDGER_READS.set(0);
-}
-
-#[cfg(test)]
-pub(super) fn detached_rt_ledger_reads() -> usize {
-    DETACHED_RT_LEDGER_READS.get()
-}
-
 /// The scheduler-wide owner corresponding to Linux `struct root_domain`.
 ///
 /// Runqueues remain the physical owner of runnable entities and local
@@ -174,11 +157,7 @@ impl RootDomain {
     }
 
     pub(super) fn publish_run_queue(&self, cpu: CpuId, run_queue: &CpuRunQueueState, online: bool) {
-        #[cfg(test)]
-        DETACHED_RT_LEDGER_READS.set(DETACHED_RT_LEDGER_READS.get().saturating_add(1));
-        let rt_throttled = self.runqueues[cpu.as_usize()]
-            .lock_rt_runtime()
-            .is_throttled();
+        let rt_throttled = run_queue.rt_is_throttled();
         let rt_effectively_throttled = rt_throttled && !run_queue.has_exempt_rt();
         let highest_rt = if rt_effectively_throttled {
             None

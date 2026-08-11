@@ -8,13 +8,16 @@ use crate::{
     runtime::{MonotonicDeadline, MonotonicInstant},
 };
 
-/// Linux `rt_rq` runtime ledger protected by the owning rq lock.
+/// Linux `rt_rq` runtime-transfer ledger protected by `rt_runtime_lock`.
+///
+/// Owner execution holds the rq lock before this nested lock. The authoritative
+/// throttled state belongs to the rq itself, so Fair-only rq publication never
+/// enters the RT bandwidth lock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RtRunQueueBandwidth {
     enabled: bool,
     runtime_ns: u64,
     time_ns: u64,
-    throttled: bool,
 }
 
 impl RtRunQueueBandwidth {
@@ -24,7 +27,6 @@ impl RtRunQueueBandwidth {
             enabled: runtime_ns < period_ns,
             runtime_ns,
             time_ns: 0,
-            throttled: false,
         }
     }
 
@@ -33,7 +35,6 @@ impl RtRunQueueBandwidth {
             enabled: false,
             runtime_ns: 0,
             time_ns: 0,
-            throttled: false,
         }
     }
 
@@ -43,7 +44,6 @@ impl RtRunQueueBandwidth {
         self.enabled = runtime_ns < period_ns;
         self.runtime_ns = runtime_ns;
         self.time_ns = 0;
-        self.throttled = false;
     }
 
     /// Linux `__disable_runtime()` terminal state. Runtime loans must already
@@ -52,7 +52,6 @@ impl RtRunQueueBandwidth {
         self.enabled = false;
         self.runtime_ns = 0;
         self.time_ns = 0;
-        self.throttled = false;
     }
 
     /// Accounts current RT execution and reports a raw throttle transition.
@@ -69,7 +68,7 @@ impl RtRunQueueBandwidth {
         self.time_ns > self.runtime_ns
     }
 
-    pub(crate) fn throttle_if_exceeded(&mut self) -> bool {
+    pub(crate) fn should_throttle(&mut self) -> bool {
         if !self.enabled || self.time_ns <= self.runtime_ns {
             return false;
         }
@@ -78,22 +77,15 @@ impl RtRunQueueBandwidth {
             // bandwidth domain with no assigned runtime. Such execution is
             // possible only through PI boosting, and a zero-period
             // replenishment could never make a throttled rq runnable again.
-            debug_assert!(!self.throttled);
             self.time_ns = 0;
             return false;
         }
-        let changed = !self.throttled;
-        self.throttled = true;
-        changed
-    }
-
-    pub(crate) const fn is_throttled(self) -> bool {
-        self.throttled
+        true
     }
 
     /// Returns time until the strict Linux throttle edge.
     pub(crate) const fn runtime_until_throttle(self) -> Option<u64> {
-        if self.throttled || !self.enabled {
+        if !self.enabled {
             None
         } else {
             Some(self.runtime_ns - self.time_ns + 1)
@@ -105,11 +97,7 @@ impl RtRunQueueBandwidth {
         let replenishment = (u128::from(self.runtime_ns) * u128::from(overruns))
             .min(u128::from(self.time_ns)) as u64;
         self.time_ns -= replenishment;
-        let unthrottled = self.throttled && self.time_ns < self.runtime_ns;
-        if unthrottled {
-            self.throttled = false;
-        }
-        unthrottled
+        self.time_ns < self.runtime_ns
     }
 
     pub(crate) const fn time_ns(self) -> u64 {
@@ -308,11 +296,9 @@ mod tests {
         let mut rq = RtRunQueueBandwidth::new(100, 95);
 
         assert!(!rq.account(95));
-        assert!(!rq.throttle_if_exceeded());
-        assert!(!rq.is_throttled());
+        assert!(!rq.should_throttle());
         assert!(rq.account(1));
-        assert!(rq.throttle_if_exceeded());
-        assert!(rq.is_throttled());
+        assert!(rq.should_throttle());
     }
 
     #[test]
@@ -320,22 +306,19 @@ mod tests {
         let mut rq = RtRunQueueBandwidth::new(100, 0);
 
         assert!(rq.account(1));
-        assert!(!rq.throttle_if_exceeded());
+        assert!(!rq.should_throttle());
         assert_eq!(rq.time_ns(), 0);
-        assert!(!rq.is_throttled());
     }
 
     #[test]
     fn period_unthrottles_only_below_runtime() {
         let mut rq = RtRunQueueBandwidth::new(100, 95);
         assert!(rq.account(191));
-        assert!(rq.throttle_if_exceeded());
+        assert!(rq.should_throttle());
 
         assert!(!rq.replenish(1));
-        assert!(rq.is_throttled());
         assert_eq!(rq.time_ns(), 96);
         assert!(rq.replenish(1));
-        assert!(!rq.is_throttled());
     }
 
     #[test]

@@ -492,6 +492,9 @@ impl<'a> OwnerRqTxn<'a> {
                     && self
                         .system
                         .charge_rt_runtime(self.remote.owner(), runtime_ns);
+                if rt_throttled {
+                    self.run_queue_mut().set_rt_throttled(true);
+                }
                 self.remote.charge_busy_runtime(runtime_ns);
                 if request_reschedule || (rt_throttled && !rt_quota_exempt) {
                     self.remote.request_reschedule();
@@ -502,8 +505,15 @@ impl<'a> OwnerRqTxn<'a> {
     }
 
     pub(crate) fn rt_is_effectively_throttled(&self) -> bool {
-        self.system
-            .rt_is_effectively_throttled(self.remote.owner(), self.run_queue().has_exempt_rt())
+        self.run_queue().rt_is_throttled() && !self.run_queue().has_exempt_rt()
+    }
+
+    pub(crate) fn rt_is_throttled(&self) -> bool {
+        self.run_queue().rt_is_throttled()
+    }
+
+    pub(crate) fn set_rt_throttled(&mut self, throttled: bool) -> bool {
+        self.run_queue_mut().set_rt_throttled(throttled)
     }
 
     pub(crate) fn settle_current(&mut self, reclaimed_ns: u64) -> DispatchCharge {

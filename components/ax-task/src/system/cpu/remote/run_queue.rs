@@ -45,6 +45,7 @@ pub(crate) struct CpuRunQueueState {
     owner: CpuId,
     clock: RunQueueClock,
     queue: RunQueue,
+    rt_throttled: bool,
     idle: Option<IdleRqTask>,
     membarrier_state: AddressSpaceMembarrierState,
 }
@@ -70,6 +71,7 @@ impl CpuRunQueueState {
                 u64::from(config.deadline_cap_percent()) * 10_000_000,
                 config.thread_capacity(),
             ),
+            rt_throttled: false,
             idle: None,
             membarrier_state: AddressSpaceMembarrierState::NONE,
         }
@@ -513,6 +515,16 @@ impl CpuRunQueueState {
 
     pub(crate) fn has_exempt_rt(&self) -> bool {
         self.queue.has_exempt_rt()
+    }
+
+    pub(crate) const fn rt_is_throttled(&self) -> bool {
+        self.rt_throttled
+    }
+
+    pub(crate) fn set_rt_throttled(&mut self, throttled: bool) -> bool {
+        let changed = self.rt_throttled != throttled;
+        self.rt_throttled = throttled;
+        changed
     }
 
     pub(crate) fn has_runnable_rt(&self) -> bool {

@@ -33,6 +33,8 @@ pub(crate) use remote::{
     CpuRemotePublication, CpuRunQueueState, IdlePullReservation, PreparedMigrationDelivery,
     SchedulerRequestClaim, WakePreemptionDecision,
 };
+#[cfg(test)]
+pub(crate) use remote::{reset_rt_bandwidth_lock_acquisitions, rt_bandwidth_lock_acquisitions};
 pub use snapshot::CpuSnapshot;
 pub(crate) use transaction::{OwnerRqEntry, OwnerRqTxn};
 

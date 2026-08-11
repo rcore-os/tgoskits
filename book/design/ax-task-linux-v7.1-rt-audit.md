@@ -363,9 +363,12 @@ registration、`this_bw/running_bw/member`，提交源派生索引，再在目�
 RT bandwidth 仍按 Linux `struct rt_rq` 保持 per-CPU 事实源；Linux 的共享
 `rt_bandwidth` 负责 period timer 和 runtime balancing，并不意味着所有 CPU 共用一份
 `rt_time`。当前 `RootRtBandwidth` 独占 monotonic period timer、base runtime 和
-`rt_runtime_lock`，per-rq `RtRunQueueBandwidth` 独占 `rt_time/runtime/throttled`；quota 边缘
-按 Linux `do_balance_runtime()` 在 root lock 下从 span 内 donor 借取 1/N spare，CPU offline
-按 `__disable_runtime()` 贪婪收回 loan。迁移线程不携带源 CPU 的 `rt_time`。
+runtime-sharing 总锁，per-rq `RtRunQueueBandwidth` 独占 `rt_time/runtime` 借贷账本；
+`CpuRunQueueState::rt_throttled` 是 rq eligibility 的唯一事实源。quota 边缘在 owner rq 事务内
+取得嵌套 bandwidth lock，按 Linux `do_balance_runtime()` 从 span 内 donor 借取 1/N spare，
+再在同一 rq 事务中发布 throttle transition。CPU offline 按 `__disable_runtime()` 贪婪收回
+loan。迁移线程不携带源 CPU 的 `rt_time`，Fair/root publication 也不为读取 eligibility 进入
+RT bandwidth lock。
 
 旧实现对 128 个 Deadline runnable thread 的一次 EDF pick 稳定访问 128 个实体；确定性
 红测要求访问数不随 runnable 数线性增长，新实现只访问有序树头。另一个既有迁移回滚测试
@@ -2328,12 +2331,12 @@ identity 热点收敛固定成本。
   把 reservation owner 当作 placement fallback；
 - Linux v7.1 的 root `sched_rt_period_timer()` 明确使用 `HRTIMER_MODE_REL_HARD`，并在
   `do_sched_rt_period_timer()` 中扫描 online span。ax-task 因而保留同一 hard scheduler timer：
-  每个 rq 先以 `rt_time==0 && !rt_nr_running` 快速跳过，必要时才取得 rq/runtime lock、补充
-  quota 并发布 reschedule；不能误改成通用 task soft timer。sleep/park/wait timeout 仍只由
-  soft-timer worker 唤醒。`rt_rq` runtime ledger 继续使用独立 raw `rt_runtime_lock`，而不是
-  错误并入 rq 主锁：这与 Linux `rt_rq->rt_runtime_lock` 及 root
-  `rt_bandwidth.rt_runtime_lock` 的 runtime sharing/period 扫描锁域一致；ledger 仍只属于对应
-  rq，不是第二份带宽状态；
+  每个 rq 先以 `rt_time==0 && !rt_nr_running && !rt_throttled` 快速跳过，必要时才取得 rq 与
+  嵌套 runtime lock、补充 quota 并发布 reschedule；不能误改成通用 task soft timer。
+  sleep/park/wait timeout 仍只由 soft-timer worker 唤醒。`rt_time/rt_runtime` 借贷账本继续使用
+  独立 raw `rt_runtime_lock`，与 Linux `rt_rq->rt_runtime_lock` 及 root
+  `rt_bandwidth.rt_runtime_lock` 的 runtime sharing/period 扫描锁域一致；rq eligibility 则只由
+  owner rq 事务中的 `rt_throttled` 发布，二者不是同一事实的两份副本；
 - ax-runtime 的 current-thread 读取不再把寄存器/anchor mismatch 转成空指针或 NONE。
   NONE 只表示永久 early bootstrap header 尚未绑定 scheduler cookie；已绑定 runtime context
   的 cookie/publication 不一致是致命架构不变量。IRQ guard 与 scheduler-tail 查询失败同样
@@ -2397,9 +2400,10 @@ entity 由 owner-local `DeadlineServer` 和 donor-parameter `DeadlineServer` 组
   账本单次扣费并在 boosted exhaustion 时立即 replenish。不存在 task-side overlay、donor
   runtime 扣费或第二份 rq accounting；
 - RT bandwidth 保留 Linux 的两级 owner：root `rt_bandwidth` 独占 period hard timer 与
-  runtime-sharing 总锁，每个 `rt_rq` 独占 `rt_time/rt_runtime/throttled`。hotplug 的
-  loan reclaim、period scan 和 strict `rt_time > rt_runtime` 都经过这两个正式锁域，不存在
-  task-owned quota 副本或周期轮询恢复；
+  runtime-sharing 总锁，每个 `rt_rq` 的嵌套 bandwidth lock 独占 `rt_time/rt_runtime`，owner
+  rq 主锁独占 `rt_throttled` eligibility。hotplug loan reclaim、period scan 和 strict
+  `rt_time > rt_runtime` 只在 owner rq 事务中把 ledger decision 转换为 throttle transition，
+  不存在 task-owned quota 副本、原子 throttle 镜像或周期轮询恢复；
 - scheduler request 的 generation word 是逻辑 request/ack 唯一 authority；runtime IPI
   doorbell 只运输该 generation 的物理边。task-work 的 work queues 是 payload authority，
   doorbell epoch 只表示 worker 尚未承认的通知，`IrqWaitCell` 只负责可合并的物理 wake；
@@ -2529,6 +2533,39 @@ Fair-current/RT-running 留队差异的枚举。
    loom 覆盖，确认任何进度都不依赖偶然 tick 或 task-context 查询；
 4. 统一编译 ax-task、ax-runtime、ax-sync 及 mandatory callers，随后运行 x86 ArceOS/Starry
    QEMU；只有架构闭环后才定位具体测试和性能回退。
+
+### 2026-08-12 RT eligibility 与 runtime ledger 分层
+
+`test-ext4-inode-unique` 的 owner-rq 计数红测证明，一次只更新 rq clock、没有修改 runnable
+事实的事务仍会取得一次独立 RT runtime lock。原因不是 RT accounting 本身，而是
+root-domain publication 为读取 `throttled` 进入了与 rq 分离的 ledger；Fair-only wake、pick
+和 clock transaction 因此都承担一条无关锁链。Linux v7.1 把 `rt_time/rt_runtime/throttled`
+放在同一个 `rt_rq` 中，并规定 `rt_runtime_lock` 嵌套在 rq lock 内，但它没有 TGOSKits 这种
+“rq 事务完成后再由另一个 facade 重取 ledger 来发布 cpupri/overload”的分裂调用链。不能只把
+旧字段复制到 rq 或增加 atomic cache，否则会形成两套 throttle authority。
+
+当前实现按事实用途做一次性迁移，不保留兼容读取：
+
+- `CpuRunQueueState::rt_throttled` 是 class eligibility、cpupri 和 overload publication 的唯一
+  authority，只能在 owner rq transaction 内读写；
+- per-rq `RtRunQueueBandwidth` 只保存 `rt_time/rt_runtime`、enable state 与 runtime loan，仍由
+  嵌套的 IRQ-safe bandwidth lock 保护；root `RootRtBandwidth` 仍独占 period timer、base quota
+  和跨 rq loan serialization；
+- RT runtime charge 在已经持有 rq lock 时进入 bandwidth ledger，完成 strict
+  `rt_time > rt_runtime` 和 Linux 式 runtime sharing，再在释放 rq 前提交 throttle transition；
+- period owner 的无锁前置快照必须同时观察 rq throttle bit。`rt_time==0 && !rt_nr_running`
+  只能在 rq 也未 throttled 时跳过；否则 optimistic ledger snapshot 与并发 rq publication
+  交错会把清除 transition 推迟一个完整 period；
+- CPU enable 在 rq -> bandwidth 锁序中同时重置 ledger 和 throttle。CPU disable 先在已经关闭
+  publication 的 hotplug 生命周期内回收 loan、禁用 ledger，再清除不可再被 scheduler 观察的
+  rq bit；不建立 bandwidth -> rq 的在线反向锁序。
+
+两条确定性红绿测试约束该边界。clock-only owner transaction 在旧实现稳定取得一次 RT
+bandwidth lock，新实现为 0；optimistic period snapshot 与随后 rq throttle publication 的模型
+在旧 fast path 会留下 `rt_throttled=true`，新实现由同一次 period owner transaction 清除。
+既有 strict quota、period unthrottle、普通 RT throttling、PI quota exemption 与 dedicated-idle
+replenishment 测试继续约束行为。该阶段只删除无关锁获取并统一事实所有权；端到端耗时仍需用
+相同 QEMU case 与 `origin/dev`、Linux PREEMPT_RT 分别复测，不能从锁计数直接宣称性能完成。
 
 ## 模块化结果
 

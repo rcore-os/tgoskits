@@ -199,7 +199,8 @@ impl CpuLocal {
             }
             if dispatch.is_rt()
                 && !dispatch.rt_quota_exempt()
-                && let Some(remaining) = self.remote.lock_rt_runtime().runtime_until_throttle()
+                && !run_queue.rt_is_throttled()
+                && let Some(remaining) = self.remote.lock_rt_bandwidth().runtime_until_throttle()
             {
                 if remaining == 0 {
                     due = true;

@@ -198,8 +198,8 @@ impl TaskSystem {
     pub fn rt_run_queue_may_run(&self, cpu: Pin<&mut CpuLocal>) -> Result<bool, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let has_boosted = cpu.remote().lock_run_queue().has_exempt_rt();
-        Ok(!self.rt_is_effectively_throttled(cpu.owner(), has_boosted))
+        let run_queue = cpu.remote().lock_run_queue();
+        Ok(!run_queue.rt_is_throttled() || run_queue.has_exempt_rt())
     }
 
     /// Selects the next thread according to strict class precedence.

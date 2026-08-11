@@ -22,6 +22,23 @@ pub(in crate::system::cpu) use run_queue::RqCurrentTick;
 pub(crate) use run_queue::{CpuRunQueueState, WakePreemptionDecision};
 pub(crate) use scheduler::SchedulerRequestClaim;
 
+#[cfg(test)]
+std::thread_local! {
+    static RT_BANDWIDTH_LOCK_ACQUISITIONS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_rt_bandwidth_lock_acquisitions() {
+    RT_BANDWIDTH_LOCK_ACQUISITIONS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn rt_bandwidth_lock_acquisitions() -> usize {
+    RT_BANDWIDTH_LOCK_ACQUISITIONS.get()
+}
+
 /// Stable cross-CPU publication endpoint for one scheduler owner.
 ///
 /// This object owns the IRQ-safe target runqueue, atomic delivery state, and
@@ -31,7 +48,7 @@ pub(crate) use scheduler::SchedulerRequestClaim;
 pub struct CpuRemote {
     owner: CpuId,
     run_queue: IrqTicketLock<CpuRunQueueState>,
-    rt_runtime: IrqTicketLock<RtRunQueueBandwidth>,
+    rt_bandwidth: IrqTicketLock<RtRunQueueBandwidth>,
     deadline: IrqTicketLock<CpuDeadlineState>,
     /// Linux `dl_rq.extra_bw`: root-domain bandwidth published for this rq.
     deadline_extra_bw_scaled: AtomicU64,
@@ -51,7 +68,7 @@ impl CpuRemote {
         Arc::new(Self {
             owner,
             run_queue: IrqTicketLock::new(CpuRunQueueState::new(owner, config)),
-            rt_runtime: IrqTicketLock::new(RtRunQueueBandwidth::offline()),
+            rt_bandwidth: IrqTicketLock::new(RtRunQueueBandwidth::offline()),
             deadline: IrqTicketLock::new(CpuDeadlineState::new(config)),
             deadline_extra_bw_scaled: AtomicU64::new(deadline_max_bw_scaled),
             owner_state: owner::OwnerState::new(),
@@ -97,8 +114,12 @@ impl CpuRemote {
         self.deadline.lock()
     }
 
-    pub(crate) fn lock_rt_runtime(&self) -> IrqTicketGuard<'_, RtRunQueueBandwidth> {
-        self.rt_runtime.lock()
+    /// Locks Linux `rt_rq::rt_runtime_lock` after the owner rq lock when both
+    /// are required. Fair-only rq transactions never enter this ledger.
+    pub(crate) fn lock_rt_bandwidth(&self) -> IrqTicketGuard<'_, RtRunQueueBandwidth> {
+        #[cfg(test)]
+        RT_BANDWIDTH_LOCK_ACQUISITIONS.set(RT_BANDWIDTH_LOCK_ACQUISITIONS.get().saturating_add(1));
+        self.rt_bandwidth.lock()
     }
 
     pub(crate) fn publish_deadline_extra_bw(&self, extra_bw_scaled: u64) {

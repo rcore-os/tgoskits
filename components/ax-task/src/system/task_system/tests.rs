@@ -96,6 +96,32 @@ fn cpu_online_transition_samples_the_owner_rq_clock_once() {
 }
 
 #[test]
+fn rt_period_observes_rq_throttle_after_an_optimistic_empty_snapshot() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system.bring_cpu_online_at(cpu.as_mut(), 0).unwrap();
+
+    // Model the interleaving where the period owner first observes an empty
+    // runtime ledger, then the rq owner publishes the throttle transition and
+    // removes the last RT entity before the period owner acquires the rq lock.
+    cpu.lock_run_queue().set_rt_throttled(true);
+    assert!(
+        system
+            .root_domain
+            .activate_rt_period(CpuId::new(0), MonotonicInstant::from_nanos(0).unwrap())
+    );
+
+    assert!(!system.service_rt_period(
+        cpu.as_ref().get_ref(),
+        MonotonicInstant::from_nanos(1_000_000_000).unwrap(),
+    ));
+    assert!(
+        !cpu.lock_run_queue().rt_is_throttled(),
+        "the rq-owned throttle fact must participate in the period fast-path decision"
+    );
+}
+
+#[test]
 fn offline_bootstrap_rq_setup_does_not_enter_runtime_irq_service() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -5286,7 +5312,7 @@ fn clock_only_owner_transaction_does_not_republish_unchanged_load() {
     system.bring_cpu_online_at(cpu.as_mut(), 0).unwrap();
 
     balance::reset_load_summary_publications();
-    root_domain::reset_detached_rt_ledger_reads();
+    crate::system::cpu::reset_rt_bandwidth_lock_acquisitions();
     let _clock = system.sample_owner_rq_clock(cpu.as_ref().get_ref());
 
     assert_eq!(
@@ -5296,7 +5322,7 @@ fn clock_only_owner_transaction_does_not_republish_unchanged_load() {
          seqlock"
     );
     assert_eq!(
-        root_domain::detached_rt_ledger_reads(),
+        crate::system::cpu::rt_bandwidth_lock_acquisitions(),
         0,
         "a clock-only rq transaction must not acquire a detached RT runtime ledger lock"
     );
