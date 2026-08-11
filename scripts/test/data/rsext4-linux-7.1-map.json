@@ -350,7 +350,8 @@
             "extent-unwritten-preallocation",
             "fallocate-preallocation-full-stack",
             "fallocate-range-zero-punch",
-            "fallocate-range-collapse-insert"
+            "fallocate-range-collapse-insert",
+            "fiemap-full-stack"
           ]
         }
       ]
@@ -371,7 +372,8 @@
           "rust_owner": "rsext4::extents_tree::status",
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
-            "extent-mutation-rollback"
+            "extent-mutation-rollback",
+            "fiemap-full-stack"
           ]
         }
       ]
@@ -456,7 +458,8 @@
           "reason": "Linux VFS, page-cache, security-policy, or runtime integration belongs above the portable core",
           "test_ids": [
             "linux-map-complete",
-            "fallocate-range-zero-punch"
+            "fallocate-range-zero-punch",
+            "fiemap-full-stack"
           ]
         }
       ]
@@ -652,7 +655,8 @@
             "extent-unwritten-preallocation",
             "fallocate-preallocation-full-stack",
             "fallocate-range-zero-punch",
-            "special-inode-rdev"
+            "special-inode-rdev",
+            "fiemap-full-stack"
           ]
         }
       ]
@@ -673,7 +677,8 @@
           "rust_owner": "rsext4::admin",
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
-            "linux-map-complete"
+            "linux-map-complete",
+            "fiemap-full-stack"
           ]
         }
       ]
@@ -825,7 +830,8 @@
             "typed-rename-flags",
             "special-inode-rdev",
             "typed-rmdir-open-lifecycle",
-            "symlink-target-transaction"
+            "symlink-target-transaction",
+            "fiemap-full-stack"
           ]
         }
       ]

@@ -2,7 +2,9 @@ use alloc::{borrow::ToOwned, sync::Arc};
 use core::any::Any;
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileExtent as VfsFileExtent,
+    FileExtentMap as VfsFileExtentMap, FileExtentState as VfsFileExtentState,
+    FileExtentTarget as VfsFileExtentTarget, FileNode, FileNodeOps,
     FileRangeOperation as VfsRangeOperation, FilesystemOps, FsIoEvents, FsPollable, Metadata,
     MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
     PreallocationMode as VfsPreallocationMode, Reference, RenameOptions as VfsRenameOptions,
@@ -82,6 +84,49 @@ impl Inode {
             .ok_or(VfsError::NotFound)?;
         state.inc_ref(info.number);
         Ok(self.create_entry(info, name))
+    }
+
+    fn inspect_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: VfsFileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<VfsFileExtentMap> {
+        let mut state = self.fs.lock();
+        let mappings = state
+            .ext4
+            .inode_extents(
+                self.ino,
+                offset,
+                len,
+                match target {
+                    VfsFileExtentTarget::Data => rsext4::FileExtentTarget::Data,
+                    VfsFileExtentTarget::ExtendedAttributes => {
+                        rsext4::FileExtentTarget::ExtendedAttributes
+                    }
+                },
+                extent_limit,
+            )
+            .map_err(into_vfs_err)?;
+        Ok(VfsFileExtentMap {
+            mapped_extents: mappings.mapped_extents,
+            complete: mappings.complete,
+            extents: mappings
+                .extents
+                .into_iter()
+                .map(|extent| VfsFileExtent {
+                    logical_start: extent.logical_start,
+                    physical_start: extent.physical_start,
+                    length: extent.length,
+                    state: match extent.state {
+                        rsext4::FileExtentState::Initialized => VfsFileExtentState::Initialized,
+                        rsext4::FileExtentState::Unwritten => VfsFileExtentState::Unwritten,
+                    },
+                    merged: extent.merged,
+                })
+                .collect(),
+        })
     }
 }
 
@@ -256,6 +301,16 @@ impl FileNodeOps for Inode {
             .map_err(into_vfs_err)
     }
 
+    fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: VfsFileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<VfsFileExtentMap> {
+        self.inspect_extents(offset, len, target, extent_limit)
+    }
+
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
         let mut state = self.fs.lock();
         state
@@ -276,6 +331,16 @@ impl FsPollable for Inode {
 }
 
 impl DirNodeOps for Inode {
+    fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: VfsFileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<VfsFileExtentMap> {
+        self.inspect_extents(offset, len, target, extent_limit)
+    }
+
     fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         const BATCH_SIZE: usize = 64;
 

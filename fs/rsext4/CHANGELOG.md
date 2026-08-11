@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   finite legacy-indirect hole punching, and unwritten-aware truncate cleanup.
 - Add cluster-aligned `COLLAPSE_RANGE` and `INSERT_RANGE` extent transforms with
   dynamic block-size, multi-leaf, unwritten-state, remount, and e2fsck coverage.
+- Add typed inode extent inspection for extent and legacy mappings, including
+  sparse, unwritten, directory, bounded, and dynamic block-size coverage.
 
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 
