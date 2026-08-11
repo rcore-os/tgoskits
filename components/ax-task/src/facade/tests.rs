@@ -438,6 +438,26 @@ mod tests {
     }
 
     #[test]
+    fn forced_yield_obtains_previous_thread_from_task_current_publication() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        test_runtime::reset_current_thread_publication_reads();
+
+        yield_current_cpu().unwrap();
+
+        assert_eq!(
+            test_runtime::current_thread_publication_reads(),
+            1,
+            "Linux-style scheduler entry must source the previous thread from task current",
+        );
+    }
+
+    #[test]
     fn current_affinity_update_does_not_service_unrelated_deadlines() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
