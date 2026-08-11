@@ -156,7 +156,7 @@ impl TaskRuntime for UnitTestRuntime {
             unsafe { CpuRemoteHandle::from_raw(handle.get()) }
         })
     }
-    unsafe fn current_thread_publication() -> CurrentThreadPublication {
+    fn current_thread_publication() -> CurrentThreadPublication {
         let raw = CPU_LOCAL_HANDLE.with(Cell::get);
         if raw == 0 {
             return CurrentThreadPublication::NONE;

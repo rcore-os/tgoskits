@@ -1845,7 +1845,7 @@ mod tests {
     }
 
     #[test]
-    fn current_thread_identity_uses_one_migration_pin_without_claiming_the_cpu_owner() {
+    fn current_thread_identity_uses_task_current_without_pinning_a_cpu() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
         let bootstrap = system
@@ -1870,13 +1870,34 @@ mod tests {
         );
         assert_eq!(
             test_runtime::preempt_guard_entries(),
-            1,
-            "an unpinned current identity read must use one migration pin"
+            0,
+            "task identity must remain stable across migration without a CPU pin"
         );
     }
 
     #[test]
-    fn current_thread_handle_uses_one_migration_pin_without_claiming_the_cpu_owner() {
+    fn uncontended_pi_mutex_does_not_enter_a_cpu_preemption_scope() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let mutex = crate::Mutex::new(());
+        test_runtime::reset_preempt_guard_entries();
+
+        drop(mutex.lock());
+
+        assert_eq!(
+            test_runtime::preempt_guard_entries(),
+            0,
+            "Linux-style PI owner acquisition must use task identity without pinning a CPU"
+        );
+    }
+
+    #[test]
+    fn current_thread_handle_uses_task_current_without_pinning_a_cpu() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
         let bootstrap = system
@@ -1901,8 +1922,8 @@ mod tests {
         );
         assert_eq!(
             test_runtime::preempt_guard_entries(),
-            1,
-            "an unpinned current handle acquisition must use one migration pin"
+            0,
+            "the scheduler retains the current task owner across migration"
         );
     }
 

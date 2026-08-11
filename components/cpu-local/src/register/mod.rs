@@ -303,6 +303,28 @@ pub unsafe fn scheduler_current_thread() -> Result<NonNull<CurrentThreadHeader>,
     }
 }
 
+/// Runs `f` with the task-owned header selected by the architecture `current`
+/// source.
+///
+/// Unlike a current-CPU observation, this does not pin the caller. A preemption
+/// may suspend and migrate the task, but execution can resume in this function
+/// only through the same pinned task context. The scheduler therefore retains
+/// the header for the complete call, matching Linux's stable `current` task
+/// identity across migration.
+#[doc(hidden)]
+#[inline(always)]
+pub fn with_scheduler_current_thread<R>(
+    f: impl for<'current> FnOnce(&'current CurrentThreadHeader) -> R,
+) -> Result<R, CpuLocalError> {
+    // SAFETY: synchronous execution cannot outlive its current scheduler
+    // context. Preemption may move that context between CPUs, but the context
+    // allocation remains pinned and live until this stack resumes and returns.
+    let current = unsafe { scheduler_current_thread()? };
+    // SAFETY: the argument above establishes the header lifetime for this call,
+    // and the higher-ranked closure cannot return a borrow of the header.
+    Ok(f(unsafe { current.as_ref() }))
+}
+
 #[inline(always)]
 fn scheduler_header_from_raw(
     raw: usize,

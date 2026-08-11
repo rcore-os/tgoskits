@@ -43,6 +43,15 @@ pub unsafe fn scheduler_current_thread_unpinned()
     unsafe { cpu_local::scheduler_current_thread() }
 }
 
+/// Runs `f` with the task-owned header selected by the architecture `current`
+/// source without pinning the task to a CPU.
+#[inline(always)]
+pub fn with_scheduler_current_thread<R>(
+    f: impl for<'current> FnOnce(&'current CurrentThreadHeader) -> R,
+) -> Result<R, CpuLocalError> {
+    cpu_local::with_scheduler_current_thread(f)
+}
+
 /// Reads the logical CPU ID before constructing a scheduler guard.
 ///
 /// # Safety

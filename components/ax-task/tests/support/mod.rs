@@ -336,7 +336,7 @@ impl_trait! {
             unsafe { CpuRemoteHandle::from_raw(raw) }
         }
 
-        unsafe fn current_thread_publication() -> CurrentThreadPublication {
+        fn current_thread_publication() -> CurrentThreadPublication {
             let index = CURRENT_CPU.with(|cpu| cpu.get() as usize);
             let raw = CPU_REMOTES.with(|handles| handles.borrow().get(index).copied().unwrap_or(0));
             if raw == 0 {

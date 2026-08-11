@@ -91,49 +91,25 @@ pub use task_work::{
 pub fn current_thread_handle() -> Result<ThreadHandle, TaskError> {
     #[cfg(feature = "qperf-metrics")]
     crate::metrics::record_current_thread_handle_query();
-    let _pin = PreemptScope::enter();
-    // SAFETY: `_pin` prevents the architecture-selected current context from
-    // changing until `acquire_handle` has cloned its owner-side strong Arc.
-    let publication = unsafe { current_thread_publication_pinned()? };
+    let publication = current_thread_publication()?;
+    // SAFETY: the scheduler retains the executing task's owner-side Arc across
+    // preemption and migration until this synchronous operation returns.
     unsafe { publication.acquire_handle() }
 }
 
 /// Returns the generation-bearing identity of the calling scheduler thread.
 pub fn current_thread_id() -> Result<ThreadId, TaskError> {
-    Ok(current_thread_token()?.id())
+    let identity = current_thread_publication()?.identity();
+    Ok(ThreadId::from_parts(identity.slot, identity.generation))
 }
 
 /// Captures the scheduler thread executing this task context.
 pub fn current_thread_token() -> Result<CurrentThreadToken, TaskError> {
-    let _pin = PreemptScope::enter();
-    // SAFETY: `_pin` prevents task migration until the generation-bearing
-    // current identity has been copied from the CPU's remote publication.
-    let thread = unsafe { current_thread_id_pinned()? };
-    Ok(CurrentThreadToken::new(thread))
+    Ok(CurrentThreadToken::new(current_thread_id()?))
 }
 
-/// Returns the calling scheduler thread while the caller retains a CPU pin.
-///
-/// This is the scheduler-adjacent fast path used by primitives that already
-/// hold migration exclusion. It reads the generation-bearing identity directly
-/// from the runtime context selected by the architecture current-thread
-/// register, without entering either the remote runqueue endpoint or the
-/// IRQ-guarded mutable owner facade.
-///
-/// # Safety
-///
-/// The caller must prevent migration from before this call until it has
-/// completed the local state transition associated with the returned identity.
-/// Task-context callers normally satisfy this with a preemption guard or an
-/// IRQ-aware metadata lock.
-pub unsafe fn current_thread_id_pinned() -> Result<ThreadId, TaskError> {
-    let identity = unsafe { current_thread_publication_pinned()? }.identity();
-    Ok(ThreadId::from_parts(identity.slot, identity.generation))
-}
-
-unsafe fn current_thread_publication_pinned()
--> Result<crate::runtime::CurrentThreadPublication, TaskError> {
-    let publication = unsafe { task_runtime::current_thread_publication() };
+fn current_thread_publication() -> Result<crate::runtime::CurrentThreadPublication, TaskError> {
+    let publication = task_runtime::current_thread_publication();
     let identity = publication.identity();
     if !identity.is_bound() {
         if !publication.owner().is_none() {

@@ -33,6 +33,7 @@ pub use register::{
     scheduler_consume_final_preempt_guard, scheduler_current_cpu_index, scheduler_current_thread,
     scheduler_enter_preempt_guard, scheduler_preempt_guard_depth,
     scheduler_prepare_preempt_guard_exit, scheduler_set_preempt_need_resched,
+    with_scheduler_current_thread,
 };
 pub use switch::{PreparedThreadSwitch, PreviousThreadBinding, prepare_thread_switch};
 #[doc(hidden)]

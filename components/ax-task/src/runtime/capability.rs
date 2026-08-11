@@ -685,8 +685,8 @@ pub struct ThreadIdentityV1 {
 ///
 /// This is the Rust equivalent of Linux's architecture-selected `current`
 /// pointer: the identity and its Arc-backed owner address are installed once
-/// before the context can run, then read only while context switches are
-/// excluded. The owner address is never a standalone weak or strong handle.
+/// before the context can run, then remain immutable across preemption and
+/// migration. The owner address is never a standalone weak or strong handle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct CurrentThreadPublication {
@@ -715,7 +715,7 @@ impl CurrentThreadPublication {
         let owner = Arc::as_ptr(core).expose_provenance();
         // SAFETY: `core` supplies the live Arc allocation. Consumers may
         // dereference this address only through `acquire_handle` while the
-        // matching runtime context remains current under a preemption pin.
+        // matching runtime context remains the caller's executing task.
         let owner = unsafe { CurrentThreadOwnerHandle::from_raw(owner) };
         Self {
             identity: ThreadIdentityV1::new(identity.slot(), identity.generation()),
@@ -728,10 +728,9 @@ impl CurrentThreadPublication {
     ///
     /// # Safety
     ///
-    /// The caller must prevent context switches from before obtaining this
-    /// publication until this method returns. The runtime must have copied the
-    /// publication from the architecture-selected current context, and the
-    /// scheduler must retain that thread's owner-side `Arc` for the interval.
+    /// The runtime must have copied the publication from the architecture-
+    /// selected current task context. The scheduler must retain that thread's
+    /// owner-side `Arc` while the caller can execute or resume this operation.
     pub(crate) unsafe fn acquire_handle(self) -> Result<crate::ThreadHandle, crate::TaskError> {
         if !self.identity.is_bound() {
             return Err(crate::TaskError::NoRunnableThread);
@@ -740,8 +739,8 @@ impl CurrentThreadPublication {
             return Err(crate::TaskError::InvalidRuntimeHandle);
         }
         let core = core::ptr::with_exposed_provenance::<crate::ThreadCore>(self.owner.into_raw());
-        // SAFETY: the caller's current-context pin and the runtime publication
-        // contract prove that an owner-side strong reference is still live.
+        // SAFETY: the current-task publication contract proves that an owner-
+        // side strong reference remains live across preemption and migration.
         unsafe { Arc::increment_strong_count(core) };
         // SAFETY: the increment above created exactly one strong reference for
         // this reconstruction.

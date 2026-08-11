@@ -51,7 +51,7 @@ impl_task_runtime! {
             // cached endpoint until InstalledTestRuntime is dropped.
             unsafe { CpuRemoteHandle::from_raw(CPU_REMOTE.load(Ordering::Acquire)) }
         }
-        unsafe fn current_thread_publication() -> CurrentThreadPublication {
+        fn current_thread_publication() -> CurrentThreadPublication {
             let raw = CPU_REMOTE.load(Ordering::Acquire);
             if raw == 0 {
                 return CurrentThreadPublication::NONE;

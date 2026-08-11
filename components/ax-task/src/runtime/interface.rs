@@ -59,13 +59,10 @@ pub trait TaskRuntime {
     /// publication through a remote runqueue endpoint.
     /// [`CurrentThreadPublication::NONE`] denotes an unbound bootstrap context.
     ///
-    /// # Safety
-    ///
-    /// The caller must prevent migration and context switches until the value
-    /// has been copied. A bound result must match the scheduler core retained
-    /// by the current CPU and remain immutable for the complete lifetime of
-    /// that runtime context.
-    unsafe fn current_thread_publication() -> CurrentThreadPublication;
+    /// A bound result must match the scheduler core retained by the current
+    /// task and remain immutable for the complete lifetime of that runtime
+    /// context. Preemption and migration must not change this task identity.
+    fn current_thread_publication() -> CurrentThreadPublication;
 
     /// Returns the Arc-backed [`crate::CpuRemote`] endpoint for `cpu`.
     ///

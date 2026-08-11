@@ -65,10 +65,8 @@ impl_task_runtime! {
             unsafe { scheduler_current_cpu_remote_handle() }
         }
 
-        unsafe fn current_thread_publication() -> CurrentThreadPublication {
-            // SAFETY: ax-task retains the migration pin required by the
-            // runtime-context current publication boundary.
-            unsafe { scheduler_current_thread_publication() }
+        fn current_thread_publication() -> CurrentThreadPublication {
+            scheduler_current_thread_publication()
         }
 
         unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
