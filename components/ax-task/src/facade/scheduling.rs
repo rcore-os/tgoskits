@@ -186,7 +186,7 @@ pub(super) fn execute_switch_plan(
         next.thread(),
     );
     #[cfg(feature = "qperf-metrics")]
-    crate::metrics::record_context_switch();
+    crate::metrics::record_context_switch(decision.switch_reason());
     let switch = ContextSwitch::new(previous.context(), next.context())
         .unwrap_or_else(|| task_runtime::fatal_invariant(6, next.thread().as_u64() as usize));
     // SAFETY: the scheduler committed both endpoint states before releasing its

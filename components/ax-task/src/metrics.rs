@@ -2,6 +2,8 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use crate::SwitchReason;
+
 /// Aggregate scheduler counters captured without allocating or taking locks.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct QperfSchedulerMetricsSnapshot {
@@ -27,6 +29,11 @@ pub struct QperfSchedulerMetricsSnapshot {
     pub task_work_coroutine_reclaims: u64,
     pub task_work_address_space_reclaims: u64,
     pub context_switches: u64,
+    pub context_switches_preempted: u64,
+    pub context_switches_yield: u64,
+    pub context_switches_blocked: u64,
+    pub context_switches_exited: u64,
+    pub context_switches_migrated: u64,
 }
 
 struct QperfSchedulerMetrics {
@@ -52,6 +59,11 @@ struct QperfSchedulerMetrics {
     task_work_coroutine_reclaims: AtomicU64,
     task_work_address_space_reclaims: AtomicU64,
     context_switches: AtomicU64,
+    context_switches_preempted: AtomicU64,
+    context_switches_yield: AtomicU64,
+    context_switches_blocked: AtomicU64,
+    context_switches_exited: AtomicU64,
+    context_switches_migrated: AtomicU64,
 }
 
 impl QperfSchedulerMetrics {
@@ -79,6 +91,11 @@ impl QperfSchedulerMetrics {
             task_work_coroutine_reclaims: AtomicU64::new(0),
             task_work_address_space_reclaims: AtomicU64::new(0),
             context_switches: AtomicU64::new(0),
+            context_switches_preempted: AtomicU64::new(0),
+            context_switches_yield: AtomicU64::new(0),
+            context_switches_blocked: AtomicU64::new(0),
+            context_switches_exited: AtomicU64::new(0),
+            context_switches_migrated: AtomicU64::new(0),
         }
     }
 
@@ -114,7 +131,16 @@ impl QperfSchedulerMetrics {
                 .task_work_address_space_reclaims
                 .load(Ordering::Relaxed),
             context_switches: self.context_switches.load(Ordering::Relaxed),
+            context_switches_preempted: self.context_switches_preempted.load(Ordering::Relaxed),
+            context_switches_yield: self.context_switches_yield.load(Ordering::Relaxed),
+            context_switches_blocked: self.context_switches_blocked.load(Ordering::Relaxed),
+            context_switches_exited: self.context_switches_exited.load(Ordering::Relaxed),
+            context_switches_migrated: self.context_switches_migrated.load(Ordering::Relaxed),
         }
+    }
+
+    fn record_context_switch(&self, _reason: SwitchReason) {
+        self.context_switches.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -239,10 +265,8 @@ pub(crate) fn record_task_work_classes(
         .fetch_add(address_space_reclaims as u64, Ordering::Relaxed);
 }
 
-pub(crate) fn record_context_switch() {
-    QPERF_SCHEDULER_METRICS
-        .context_switches
-        .fetch_add(1, Ordering::Relaxed);
+pub(crate) fn record_context_switch(reason: SwitchReason) {
+    QPERF_SCHEDULER_METRICS.record_context_switch(reason);
 }
 
 #[cfg(test)]
@@ -267,6 +291,30 @@ mod tests {
                 current_thread_handle_queries: 3,
                 direct_wake_attempts: 2,
                 direct_wake_activations: 1,
+                ..QperfSchedulerMetricsSnapshot::default()
+            }
+        );
+    }
+
+    #[test]
+    fn context_switches_are_classified_by_reason() {
+        let metrics = QperfSchedulerMetrics::new();
+
+        metrics.record_context_switch(SwitchReason::Preempted);
+        metrics.record_context_switch(SwitchReason::Yield);
+        metrics.record_context_switch(SwitchReason::Blocked);
+        metrics.record_context_switch(SwitchReason::Exited);
+        metrics.record_context_switch(SwitchReason::Migrated);
+
+        assert_eq!(
+            metrics.snapshot(),
+            QperfSchedulerMetricsSnapshot {
+                context_switches: 5,
+                context_switches_preempted: 1,
+                context_switches_yield: 1,
+                context_switches_blocked: 1,
+                context_switches_exited: 1,
+                context_switches_migrated: 1,
                 ..QperfSchedulerMetricsSnapshot::default()
             }
         );
