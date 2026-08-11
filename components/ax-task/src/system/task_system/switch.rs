@@ -19,6 +19,7 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         decision: ScheduleDecision,
+        rq_observation: SchedulerDeadlineRqObservation,
     ) -> ScheduleDecision {
         // Selection, lifecycle, and switch-handoff state are already committed
         // before this tail. Reporting a recoverable error would let block or
@@ -29,20 +30,31 @@ impl TaskSystem {
             decision.previous_urgency,
             decision.next_urgency,
         );
-        if self.owner_balance_work_pending(cpu.as_ref().get_ref(), decision.next())
-            && self
-                .service_owner_balance(cpu.as_mut(), decision.next())
-                .is_err()
+        let run_queue_changed = if self
+            .owner_balance_work_pending(cpu.as_ref().get_ref(), decision.next())
         {
-            task_runtime::fatal_invariant(0x5343_0001, decision.next().as_u64() as usize);
-        }
-        if self
-            .program_local_timer(
+            match self.service_owner_balance(cpu.as_mut(), decision.next()) {
+                Ok(outcome) => outcome.run_queue_changed(),
+                Err(_) => {
+                    task_runtime::fatal_invariant(0x5343_0001, decision.next().as_u64() as usize);
+                }
+            }
+        } else {
+            false
+        };
+        let timer_result = if run_queue_changed {
+            self.program_local_timer(
                 cpu.as_mut(),
                 SchedulerDeadlineDerivationSource::ScheduleSelection,
             )
-            .is_err()
-        {
+        } else {
+            self.program_local_timer_from_rq_observation(
+                cpu.as_mut(),
+                rq_observation,
+                SchedulerDeadlineDerivationSource::ScheduleSelection,
+            )
+        };
+        if timer_result.is_err() {
             task_runtime::fatal_invariant(0x5343_0002, decision.next().as_u64() as usize);
         }
         decision

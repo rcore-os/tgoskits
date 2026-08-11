@@ -80,6 +80,7 @@ use crate::{
         CpuRunQueueState, CurrentClassState, CurrentDispatch, CurrentDispatchState,
         DeadlineBaseGuardSource, IdlePullReservation, OwnerRqEntry, OwnerRqTxn,
         PreparedMigrationDelivery, RqTaskTime, RunQueueClockSnapshot, RunQueueGuardSource,
+        SchedulerDeadlineRqObservation,
     },
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
     timer::{

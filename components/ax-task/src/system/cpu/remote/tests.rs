@@ -39,7 +39,6 @@ mod scheduler_ipi_tests {
         );
     }
 
-    #[cfg(feature = "qperf-metrics")]
     #[test]
     fn deadline_selection_enters_one_coherent_runqueue_scope() {
         let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
@@ -56,16 +55,15 @@ mod scheduler_ipi_tests {
         let deadline = cpu
             .fair_balance_deadline_for_test()
             .expect("online fair balancing must own a monotonic deadline");
-        let before = crate::qperf_scheduler_metrics_snapshot();
+        let before = cpu.remote().timer_deadline_rq_observations();
 
         let _ = cpu.as_mut().next_oneshot_deadline(
             MonotonicInstant::from_nanos(deadline.as_nanos()).unwrap(),
         );
 
-        let after = crate::qperf_scheduler_metrics_snapshot();
+        let after = cpu.remote().timer_deadline_rq_observations();
         assert_eq!(
-            after.irq_ticket_cpu_run_queue_timer_observation_entries
-                - before.irq_ticket_cpu_run_queue_timer_observation_entries,
+            after - before,
             1,
             "one scheduler deadline derivation must observe current runtime and fair balance under one runqueue guard"
         );

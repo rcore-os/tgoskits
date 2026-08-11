@@ -271,6 +271,8 @@ impl TaskSystem {
         } else {
             SwitchReason::Preempted
         };
+        let deadline_rq_observation =
+            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
         transaction.commit_and_acknowledge_scheduler_request();
         drop(previous_sched);
         let decision = Self::owner_switch_plan(
@@ -282,7 +284,7 @@ impl TaskSystem {
             now_ns,
         );
         self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
-        let decision = self.finish_owner_selection(cpu.as_mut(), decision);
+        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
         Ok(decision)
     }
 
@@ -353,19 +355,33 @@ impl TaskSystem {
         }
         if previous_core.is_some() && !switch_requested {
             let runtime_overrun_work = self.sync_owner_current_dispatch_in_rq(&mut transaction);
+            let deadline_rq_observation =
+                transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
             transaction.commit_and_acknowledge_scheduler_request();
             drop(previous_sched);
             if let Some(core) = runtime_overrun_work {
                 self.publish_deadline_overrun_work(core);
             }
             let current = previous.expect("a current core must retain its thread identity");
-            if self.owner_balance_work_pending(cpu.as_ref().get_ref(), current) {
-                self.service_owner_balance(cpu.as_mut(), current)?;
+            let run_queue_changed =
+                if self.owner_balance_work_pending(cpu.as_ref().get_ref(), current) {
+                    self.service_owner_balance(cpu.as_mut(), current)?
+                        .run_queue_changed()
+                } else {
+                    false
+                };
+            if run_queue_changed {
+                self.program_local_timer(
+                    cpu.as_mut(),
+                    SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
+                )?;
+            } else {
+                self.program_local_timer_from_rq_observation(
+                    cpu.as_mut(),
+                    deadline_rq_observation,
+                    SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
+                )?;
             }
-            self.program_local_timer(
-                cpu.as_mut(),
-                SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
-            )?;
             return Ok(if cpu.needs_reschedule() || cpu.has_remote_work() {
                 SchedulerOutcome::OwnerWorkPending
             } else {
@@ -405,6 +421,8 @@ impl TaskSystem {
         } else {
             SwitchReason::Preempted
         };
+        let deadline_rq_observation =
+            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
         transaction.commit_and_acknowledge_scheduler_request();
         drop(previous_sched);
         let decision = Self::owner_switch_plan(
@@ -416,7 +434,7 @@ impl TaskSystem {
             now_ns,
         );
         self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
-        let decision = self.finish_owner_selection(cpu.as_mut(), decision);
+        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
         Ok(SchedulerOutcome::Decision(decision))
     }
 
@@ -485,6 +503,8 @@ impl TaskSystem {
                 // the owner through Ready and the runqueue here would
                 // forfeit its request even though no peer could consume the
                 // yielded service.
+                let deadline_rq_observation =
+                    transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
                 transaction.commit_and_acknowledge_scheduler_request();
                 drop(previous_sched);
                 let endpoint = previous_endpoint.unwrap_or_else(|| {
@@ -503,7 +523,8 @@ impl TaskSystem {
                     dispatch_commit,
                     clock.wall().as_nanos(),
                 );
-                let decision = self.finish_owner_selection(cpu.as_mut(), decision);
+                let decision =
+                    self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
                 return Ok(decision);
             }
         }
@@ -593,6 +614,8 @@ impl TaskSystem {
         } else {
             SwitchReason::Yield
         };
+        let deadline_rq_observation =
+            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
         transaction.commit_and_acknowledge_scheduler_request();
         drop(previous_sched);
         let decision = Self::owner_switch_plan(
@@ -604,7 +627,7 @@ impl TaskSystem {
             now_ns,
         );
         self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
-        let decision = self.finish_owner_selection(cpu.as_mut(), decision);
+        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
         Ok(decision)
     }
 }

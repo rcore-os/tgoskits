@@ -13,6 +13,19 @@ pub(super) struct OwnerBalanceSelection {
     reason: BalanceReason,
 }
 
+/// Whether one optional balance pass changed the owner runqueue after the
+/// preceding selection transaction captured its deadline inputs.
+#[derive(Clone, Copy)]
+pub(super) struct OwnerBalanceOutcome {
+    run_queue_changed: bool,
+}
+
+impl OwnerBalanceOutcome {
+    pub(super) const fn run_queue_changed(self) -> bool {
+        self.run_queue_changed
+    }
+}
+
 impl OwnerBalanceSelection {
     pub(super) const fn target(&self) -> CpuId {
         self.target
@@ -488,26 +501,26 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         next: ThreadId,
-    ) -> Result<(), TaskError> {
+    ) -> Result<OwnerBalanceOutcome, TaskError> {
         #[cfg(test)]
         OWNER_BALANCE_PASSES.set(OWNER_BALANCE_PASSES.get().saturating_add(1));
         let push_claim = self.root_domain.claim_rt_deadline_push(cpu.owner());
-        let balance = (|| -> Result<Option<ThreadId>, TaskError> {
+        let balance = (|| -> Result<(Option<ThreadId>, Option<ThreadId>), TaskError> {
             if cpu.idle() == Some(next) {
                 let _requested = self.request_idle_pull(cpu.as_mut())?;
-                let _fair = self.balance_fair(cpu.as_mut())?;
-                Ok(None)
+                let fair = self.balance_fair(cpu.as_mut())?;
+                Ok((None, fair))
             } else {
                 let class = push_claim
                     .as_ref()
                     .map(|claim| claim.class().scheduling_class());
                 let pushed = self.push_rt_deadline_from_root_domain(cpu.as_mut(), class)?;
-                let _fair = self.balance_fair(cpu.as_mut())?;
-                Ok(pushed)
+                let fair = self.balance_fair(cpu.as_mut())?;
+                Ok((pushed, fair))
             }
         })();
-        let pushed = match balance {
-            Ok(pushed) => pushed,
+        let (pushed, fair) = match balance {
+            Ok(outcome) => outcome,
             Err(error) => {
                 if let Some(claim) = push_claim {
                     self.root_domain.finish_rt_deadline_push(claim, false);
@@ -525,7 +538,9 @@ impl TaskSystem {
             // scheduler entry.
             cpu.request_scheduler_work();
         }
-        Ok(())
+        Ok(OwnerBalanceOutcome {
+            run_queue_changed: pushed.is_some() || fair.is_some(),
+        })
     }
 
     pub(super) fn balance_fair(

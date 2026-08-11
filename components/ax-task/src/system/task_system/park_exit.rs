@@ -356,6 +356,8 @@ impl TaskSystem {
             Arc::clone(&next_core),
             None,
         );
+        let deadline_rq_observation =
+            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
         transaction.commit_and_acknowledge_scheduler_request();
         drop(previous_sched);
         let decision = Self::owner_switch_plan(
@@ -367,7 +369,7 @@ impl TaskSystem {
             now_ns,
         );
         self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
-        let decision = self.finish_owner_selection(cpu.as_mut(), decision);
+        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
         token.mark_resolved();
         Ok(ParkCommit::Blocked(decision))
     }
@@ -597,6 +599,8 @@ impl TaskSystem {
             Arc::clone(&next_core),
             None,
         );
+        let deadline_rq_observation =
+            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
         transaction.commit_and_acknowledge_scheduler_request();
         drop(exited_sched);
         let decision = Self::owner_switch_plan(
@@ -626,7 +630,7 @@ impl TaskSystem {
         self.root_domain.lock().release_deadline(held_reservation);
         exited_core.notify_affinity_waiters();
         drop(permit);
-        let decision = self.finish_owner_selection(cpu.as_mut(), decision);
+        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
         Ok(decision)
     }
 

@@ -815,4 +815,25 @@ impl TaskSystem {
         task_runtime::publish_scheduler_deadline(update);
         Ok(())
     }
+
+    pub(super) fn program_local_timer_from_rq_observation(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        rq_observation: SchedulerDeadlineRqObservation,
+        source: SchedulerDeadlineDerivationSource,
+    ) -> Result<(), TaskError> {
+        let monotonic_now = task_runtime::monotonic_now();
+        let Some(update) = cpu
+            .as_mut()
+            .next_scheduler_deadline_update_if_changed_from_rq_observation(
+                monotonic_now,
+                rq_observation,
+                source,
+            )?
+        else {
+            return Ok(());
+        };
+        task_runtime::publish_scheduler_deadline(update);
+        Ok(())
+    }
 }

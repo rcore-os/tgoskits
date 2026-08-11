@@ -147,6 +147,18 @@ impl<'a> OwnerRqTxn<'a> {
         self.remote.owner()
     }
 
+    pub(crate) fn scheduler_deadline_rq_observation(
+        &self,
+        cpu: &CpuLocal,
+    ) -> SchedulerDeadlineRqObservation {
+        assert_eq!(
+            cpu.owner(),
+            self.owner(),
+            "scheduler deadline observation must use its owner CPU transaction"
+        );
+        cpu.scheduler_deadline_rq_observation_in_run_queue(self.run_queue())
+    }
+
     pub(crate) fn claim_scheduler_request(&mut self) -> SchedulerRequestClaim {
         let claim = self.remote.claim_scheduler_request();
         self.request = Some(self.request.map_or(claim, |current| current.merge(claim)));

@@ -11,9 +11,16 @@ fn earliest<T: Ord>(current: Option<T>, candidate: T) -> Option<T> {
 
 /// Deadline inputs derived coherently while one runqueue guard owns current,
 /// class membership, runtime accounting, and the periodic balance predicate.
-struct SchedulerDeadlineRqObservation {
-    clock_event: Option<SchedulerClockEvent>,
+#[derive(Clone, Copy)]
+pub(crate) struct SchedulerDeadlineRqObservation {
+    clock_event: Option<SchedulerDeadlineRqClockEvent>,
     has_periodic_fair_balance_work: bool,
+}
+
+#[derive(Clone, Copy)]
+enum SchedulerDeadlineRqClockEvent {
+    Due,
+    After(core::time::Duration),
 }
 
 impl CpuLocal {
@@ -24,8 +31,11 @@ impl CpuLocal {
         // SAFETY: the scheduler owns this pinned runqueue while refreshing RT
         // bandwidth periods and querying its next local event.
         let this = unsafe { self.get_unchecked_mut() };
-        let rq_observation = this.scheduler_deadline_rq_observation(monotonic_now);
-        let scheduler_due = matches!(rq_observation.clock_event, Some(SchedulerClockEvent::Due));
+        let rq_observation = this.scheduler_deadline_rq_observation();
+        let scheduler_due = matches!(
+            rq_observation.clock_event,
+            Some(SchedulerDeadlineRqClockEvent::Due)
+        );
         if scheduler_due {
             this.remote.request_reschedule();
         }
@@ -41,13 +51,22 @@ impl CpuLocal {
         scheduler_due || fair_balance_due
     }
 
+    #[cfg(test)]
     pub(crate) fn next_oneshot_deadline(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
     ) -> Option<MonotonicDeadline> {
-        // SAFETY: clockevent selection is an owner-only transition. The
-        // mutable queue/scheduler projections cannot move CpuLocal.
-        let this = unsafe { self.get_unchecked_mut() };
+        let rq_observation = self.scheduler_deadline_rq_observation();
+        self.as_mut()
+            .next_oneshot_deadline_from_rq_observation(monotonic_now, rq_observation)
+    }
+
+    fn next_oneshot_deadline_from_rq_observation(
+        self: Pin<&mut Self>,
+        monotonic_now: MonotonicInstant,
+        rq_observation: SchedulerDeadlineRqObservation,
+    ) -> Option<MonotonicDeadline> {
+        let this = self.as_ref().get_ref();
         let timer = if let Some(deadlines) = this
             .remote
             .read_active_deadline_base(DeadlineBaseGuardSource::Observation)
@@ -65,16 +84,17 @@ impl CpuLocal {
         } else {
             None
         };
-        let rq_observation = this.scheduler_deadline_rq_observation(monotonic_now);
         let scheduler = match rq_observation.clock_event {
             // Deadline selection is a pure observation. An already-due hard
             // scheduler timer remains a physical clockevent source and the
             // runtime clamps it to the device minimum delta. Only the firing
             // owner may convert it into sticky scheduler work.
-            Some(SchedulerClockEvent::Due) => {
+            Some(SchedulerDeadlineRqClockEvent::Due) => {
                 MonotonicDeadline::from_nanos(monotonic_now.as_nanos())
             }
-            Some(SchedulerClockEvent::Future(deadline)) => Some(deadline),
+            Some(SchedulerDeadlineRqClockEvent::After(delay)) => {
+                Some(monotonic_now.deadline_after(delay))
+            }
             None => None,
         };
         let fair_balance = rq_observation
@@ -122,16 +142,55 @@ impl CpuLocal {
         Self::commit_scheduler_deadline_publication(&mut task_deadlines, publication).map(Some)
     }
 
+    pub(crate) fn next_scheduler_deadline_update_if_changed_from_rq_observation(
+        mut self: Pin<&mut Self>,
+        monotonic_now: MonotonicInstant,
+        rq_observation: SchedulerDeadlineRqObservation,
+        source: SchedulerDeadlineDerivationSource,
+    ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
+        let publication = self
+            .as_mut()
+            .scheduler_deadline_publication_from_rq_observation(
+                monotonic_now,
+                rq_observation,
+                source,
+            );
+        let mut task_deadlines = self.remote.lock_deadline_publication();
+        if task_deadlines.publication == Some(publication) {
+            return Ok(None);
+        }
+        Self::commit_scheduler_deadline_publication(&mut task_deadlines, publication).map(Some)
+    }
+
     fn scheduler_deadline_publication(
         mut self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
         source: SchedulerDeadlineDerivationSource,
     ) -> SchedulerDeadlinePublicationState {
+        let rq_observation = self.scheduler_deadline_rq_observation();
+        self.as_mut()
+            .scheduler_deadline_publication_from_rq_observation(
+                monotonic_now,
+                rq_observation,
+                source,
+            )
+    }
+
+    fn scheduler_deadline_publication_from_rq_observation(
+        mut self: Pin<&mut Self>,
+        monotonic_now: MonotonicInstant,
+        rq_observation: SchedulerDeadlineRqObservation,
+        source: SchedulerDeadlineDerivationSource,
+    ) -> SchedulerDeadlinePublicationState {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_scheduler_deadline_derivation(source);
+        #[cfg(test)]
+        self.remote.record_scheduler_deadline_derivation_for_test();
         #[cfg(not(feature = "qperf-metrics"))]
         let _ = source;
-        let deadline = self.as_mut().next_oneshot_deadline(monotonic_now);
+        let deadline = self
+            .as_mut()
+            .next_oneshot_deadline_from_rq_observation(monotonic_now, rq_observation);
         SchedulerDeadlinePublicationState { deadline }
     }
 
@@ -190,13 +249,17 @@ impl CpuLocal {
         self.remote.lock_deadline_publication().generation = generation;
     }
 
-    fn scheduler_deadline_rq_observation(
-        &self,
-        monotonic_now: MonotonicInstant,
-    ) -> SchedulerDeadlineRqObservation {
+    fn scheduler_deadline_rq_observation(&self) -> SchedulerDeadlineRqObservation {
         let run_queue = self
             .remote
             .lock_run_queue(RunQueueGuardSource::TimerDeadlineDerivationObservation);
+        self.scheduler_deadline_rq_observation_in_run_queue(&run_queue)
+    }
+
+    pub(crate) fn scheduler_deadline_rq_observation_in_run_queue(
+        &self,
+        run_queue: &CpuRunQueueState,
+    ) -> SchedulerDeadlineRqObservation {
         let mut due = false;
         let mut next = None;
 
@@ -220,10 +283,7 @@ impl CpuLocal {
                 if delta_ns == 0 {
                     due = true;
                 } else {
-                    next = earliest(
-                        next,
-                        monotonic_now.deadline_after(core::time::Duration::from_nanos(delta_ns)),
-                    );
+                    next = earliest(next, core::time::Duration::from_nanos(delta_ns));
                 }
             }
             if dispatch.is_rt()
@@ -234,17 +294,14 @@ impl CpuLocal {
                 if remaining == 0 {
                     due = true;
                 } else {
-                    next = earliest(
-                        next,
-                        monotonic_now.deadline_after(core::time::Duration::from_nanos(remaining)),
-                    );
+                    next = earliest(next, core::time::Duration::from_nanos(remaining));
                 }
             }
         }
         let clock_event = if due {
-            Some(SchedulerClockEvent::Due)
+            Some(SchedulerDeadlineRqClockEvent::Due)
         } else {
-            next.map(SchedulerClockEvent::Future)
+            next.map(SchedulerDeadlineRqClockEvent::After)
         };
         let current_non_idle = current_thread.is_some() && current_thread != idle;
         let has_periodic_fair_balance_work =
@@ -270,7 +327,7 @@ impl CpuLocal {
         // SAFETY: this owner-only timer transition does not move CpuLocal.
         let this = unsafe { self.get_unchecked_mut() };
         if !this
-            .scheduler_deadline_rq_observation(now)
+            .scheduler_deadline_rq_observation()
             .has_periodic_fair_balance_work
         {
             return false;

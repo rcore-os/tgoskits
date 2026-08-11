@@ -2875,11 +2875,16 @@ fn local_timer_is_programmed_from_scheduler_completion_time() {
         .enqueue_at(cpu.as_mut(), contender.id(), ENTRY_NOW_NS)
         .unwrap();
 
-    crate::test_runtime::set_monotonic_ns(COMPLETION_NOW_NS);
     crate::test_runtime::set_scheduler_ns(ENTRY_NOW_NS);
+    let remote = Arc::clone(cpu.remote());
+    let transaction = OwnerRqTxn::begin(system.as_ref().get_ref(), &remote);
+    let rq_observation = transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
+    transaction.commit();
+    crate::test_runtime::set_monotonic_ns(COMPLETION_NOW_NS);
     system
-        .program_local_timer(
+        .program_local_timer_from_rq_observation(
             cpu.as_mut(),
+            rq_observation,
             SchedulerDeadlineDerivationSource::ScheduleSelection,
         )
         .unwrap();
@@ -4411,7 +4416,6 @@ fn scheduler_shared_locks_use_the_irq_domain_without_preempt_guards() {
     );
 }
 
-#[cfg(feature = "qperf-metrics")]
 #[test]
 fn owner_selection_derives_deadline_without_relocking_runqueue() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
@@ -4426,25 +4430,25 @@ fn owner_selection_derives_deadline_without_relocking_runqueue() {
     }
     let initial = system.schedule_at(cpu.as_mut(), 0).unwrap();
     system.complete_context_switch(cpu.as_mut()).unwrap();
-    let before = crate::qperf_scheduler_metrics_snapshot();
+    let before_rq_observations = cpu.remote().timer_deadline_rq_observations();
+    let before_derivations = cpu.remote().scheduler_deadline_derivations();
 
     let decision = system.yield_current_at(cpu.as_mut(), 1).unwrap();
 
-    let after = crate::qperf_scheduler_metrics_snapshot();
+    let after_rq_observations = cpu.remote().timer_deadline_rq_observations();
+    let after_derivations = cpu.remote().scheduler_deadline_derivations();
     assert_ne!(
         decision.next(),
         initial.next(),
         "yield must select the peer"
     );
     assert_eq!(
-        after.scheduler_deadline_derivation_schedule_selection_entries
-            - before.scheduler_deadline_derivation_schedule_selection_entries,
+        after_derivations - before_derivations,
         1,
-        "selection completion must still derive and publish its scheduler deadline",
+        "selection completion must still derive its scheduler deadline",
     );
     assert_eq!(
-        after.irq_ticket_cpu_run_queue_timer_deadline_derivation_observation_entries
-            - before.irq_ticket_cpu_run_queue_timer_deadline_derivation_observation_entries,
+        after_rq_observations - before_rq_observations,
         0,
         "Linux set_next_task derives the hrtick request while rq is already locked",
     );
