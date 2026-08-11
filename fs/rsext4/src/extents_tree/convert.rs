@@ -21,7 +21,35 @@ impl<'a> ExtentTree<'a> {
 
         let mut root = self.load_root_from_inode()?;
         self.validate_node(&root, None, None, block_dev.total_blocks(), true)?;
-        let split = self.split_unwritten_recursive(fs, block_dev, &mut root, start, len, None)?;
+        let split =
+            self.split_extent_recursive(fs, block_dev, &mut root, start, len, true, true, None)?;
+        match split {
+            None => self.store_root_to_inode(&root),
+            Some(right) => self.promote_split_root(fs, block_dev, root, right),
+        }
+    }
+
+    /// Splits an initialized extent and marks the exact selected range
+    /// unwritten without changing its physical allocation.
+    pub(crate) fn prepare_initialized_zero<B: BlockIo>(
+        &mut self,
+        fs: &mut Ext4FileSystem,
+        block_dev: &mut Jbd2Dev<B>,
+        start: u32,
+        len: u32,
+    ) -> Ext4Result<()> {
+        self.bind_geometry(&fs.superblock);
+        if len == 0 || len > Ext4Extent::EXT_UNINIT_MAX_LEN.into() {
+            return Err(Ext4Error::invalid_input().with_operation("extent:zero_length"));
+        }
+        start
+            .checked_add(len)
+            .ok_or_else(Ext4Error::file_too_large)?;
+
+        let mut root = self.load_root_from_inode()?;
+        self.validate_node(&root, None, None, block_dev.total_blocks(), true)?;
+        let split =
+            self.split_extent_recursive(fs, block_dev, &mut root, start, len, false, true, None)?;
         match split {
             None => self.store_root_to_inode(&root),
             Some(right) => self.promote_split_root(fs, block_dev, root, right),
@@ -42,13 +70,16 @@ impl<'a> ExtentTree<'a> {
         self.store_root_to_inode(&root)
     }
 
-    fn split_unwritten_recursive<B: BlockIo>(
+    #[allow(clippy::too_many_arguments)]
+    fn split_extent_recursive<B: BlockIo>(
         &mut self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
         node: &mut ExtentNode,
         start: u32,
         len: u32,
+        expected_unwritten: bool,
+        middle_unwritten: bool,
         physical_node: Option<AbsoluteBN>,
     ) -> Ext4Result<Option<SplitInfo>> {
         match node {
@@ -63,10 +94,8 @@ impl<'a> ExtentTree<'a> {
                         Ext4Error::invalid_input().with_operation("extent:unwritten_missing")
                     })?;
                 let original = entries[position];
-                if !original.is_unwritten() {
-                    return Err(
-                        Ext4Error::invalid_input().with_operation("extent:unwritten_initialized")
-                    );
+                if original.is_unwritten() != expected_unwritten {
+                    return Err(Ext4Error::invalid_input().with_operation("extent:rewrite_state"));
                 }
                 let original_end =
                     original
@@ -87,37 +116,37 @@ impl<'a> ExtentTree<'a> {
                 let mut replacement = Vec::with_capacity(3);
                 let left_len = start - original.ee_block;
                 if left_len != 0 {
-                    replacement.push(
-                        Ext4Extent::new_unwritten(
-                            original.ee_block,
-                            original.start_block(),
-                            left_len,
-                        )
-                        .ok_or_else(|| {
-                            Ext4Error::corrupted().with_operation("extent:unwritten_left")
-                        })?,
-                    );
+                    replacement.push(build_extent_with_state(
+                        original.ee_block,
+                        original.start_block(),
+                        left_len,
+                        original.is_unwritten(),
+                        "extent:rewrite_left",
+                    )?);
                 }
                 let middle_physical = original
                     .start_block()
                     .checked_add(u64::from(left_len))
                     .ok_or_else(Ext4Error::overflow)?;
-                replacement.push(
-                    Ext4Extent::new_unwritten(start, middle_physical, len).ok_or_else(|| {
-                        Ext4Error::corrupted().with_operation("extent:unwritten_middle")
-                    })?,
-                );
+                replacement.push(build_extent_with_state(
+                    start,
+                    middle_physical,
+                    len,
+                    middle_unwritten,
+                    "extent:rewrite_middle",
+                )?);
                 let right_len = original_end - write_end;
                 if right_len != 0 {
                     let right_physical = middle_physical
                         .checked_add(u64::from(len))
                         .ok_or_else(Ext4Error::overflow)?;
-                    replacement.push(
-                        Ext4Extent::new_unwritten(write_end, right_physical, right_len)
-                            .ok_or_else(|| {
-                                Ext4Error::corrupted().with_operation("extent:unwritten_right")
-                            })?,
-                    );
+                    replacement.push(build_extent_with_state(
+                        write_end,
+                        right_physical,
+                        right_len,
+                        original.is_unwritten(),
+                        "extent:rewrite_right",
+                    )?);
                 }
 
                 entries.splice(position..=position, replacement);
@@ -148,12 +177,14 @@ impl<'a> ExtentTree<'a> {
                 );
                 let mut child =
                     self.read_child_node(block_dev, &child_index, header.eh_depth - 1)?;
-                let child_split = self.split_unwritten_recursive(
+                let child_split = self.split_extent_recursive(
                     fs,
                     block_dev,
                     &mut child,
                     start,
                     len,
+                    expected_unwritten,
+                    middle_unwritten,
                     Some(child_block),
                 )?;
                 entries[position].ei_block = Self::get_node_start_block(&child);
@@ -357,4 +388,21 @@ impl<'a> ExtentTree<'a> {
             }
         }
     }
+}
+
+fn build_extent_with_state(
+    logical: u32,
+    physical: u64,
+    len: u32,
+    unwritten: bool,
+    operation: &'static str,
+) -> Ext4Result<Ext4Extent> {
+    let extent = if unwritten {
+        Ext4Extent::new_unwritten(logical, physical, len)
+    } else {
+        u16::try_from(len)
+            .ok()
+            .map(|len| Ext4Extent::new(logical, physical, len))
+    };
+    extent.ok_or_else(|| Ext4Error::corrupted().with_operation(operation))
 }

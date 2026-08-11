@@ -259,7 +259,8 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "extent-checked-codec",
-            "extent-unwritten-preallocation"
+            "extent-unwritten-preallocation",
+            "fallocate-range-zero-punch"
           ]
         }
       ]
@@ -347,7 +348,8 @@
             "extent-checked-codec",
             "extent-mutation-rollback",
             "extent-unwritten-preallocation",
-            "fallocate-preallocation-full-stack"
+            "fallocate-preallocation-full-stack",
+            "fallocate-range-zero-punch"
           ]
         }
       ]
@@ -452,7 +454,8 @@
           "rust_owner": "ax-fs-ng::ext4",
           "reason": "Linux VFS, page-cache, security-policy, or runtime integration belongs above the portable core",
           "test_ids": [
-            "linux-map-complete"
+            "linux-map-complete",
+            "fallocate-range-zero-punch"
           ]
         }
       ]
@@ -647,6 +650,7 @@
             "extent-mutation-rollback",
             "extent-unwritten-preallocation",
             "fallocate-preallocation-full-stack",
+            "fallocate-range-zero-punch",
             "special-inode-rdev"
           ]
         }

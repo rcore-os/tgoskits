@@ -2,14 +2,15 @@ use alloc::{borrow::ToOwned, sync::Arc};
 use core::any::Any;
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, FilesystemOps,
-    FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps,
+    FileRangeOperation as VfsRangeOperation, FilesystemOps, FsIoEvents, FsPollable, Metadata,
+    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
     PreallocationMode as VfsPreallocationMode, Reference, RenameOptions as VfsRenameOptions,
     VfsError, VfsResult, WeakDirEntry,
 };
 use rsext4::{
     DeviceNumber, Ext4Timestamp, FileName, FilePermissions, InodeMetadataUpdate, InodeNumber,
-    MutationContext, PreallocationOptions, SpecialInodeKind,
+    MutationContext, PreallocationOptions, RangeOperation, SpecialInodeKind, ZeroRangeOptions,
 };
 
 use super::{
@@ -228,15 +229,28 @@ impl FileNodeOps for Inode {
             .map_err(into_vfs_err)
     }
 
-    fn preallocate(&self, offset: u64, len: u64, mode: VfsPreallocationMode) -> VfsResult<()> {
-        let options = match mode {
-            VfsPreallocationMode::ExtendSize => PreallocationOptions::EXTEND_SIZE,
-            VfsPreallocationMode::KeepSize => PreallocationOptions::KEEP_SIZE,
+    fn operate_range(&self, offset: u64, len: u64, operation: VfsRangeOperation) -> VfsResult<()> {
+        let operation = match operation {
+            VfsRangeOperation::Allocate(mode) => RangeOperation::Allocate(match mode {
+                VfsPreallocationMode::ExtendSize => PreallocationOptions::EXTEND_SIZE,
+                VfsPreallocationMode::KeepSize => PreallocationOptions::KEEP_SIZE,
+            }),
+            VfsRangeOperation::PunchHole => RangeOperation::PunchHole,
+            VfsRangeOperation::ZeroRange(mode) => RangeOperation::Zero(match mode {
+                VfsPreallocationMode::ExtendSize => ZeroRangeOptions::EXTEND_SIZE,
+                VfsPreallocationMode::KeepSize => ZeroRangeOptions::KEEP_SIZE,
+            }),
         };
         let mut state = self.fs.lock();
         state
             .ext4
-            .preallocate_inode(Self::authorized_mutation(), self.ino, offset, len, options)
+            .operate_inode_range(
+                Self::authorized_mutation(),
+                self.ino,
+                offset,
+                len,
+                operation,
+            )
             .map_err(into_vfs_err)
     }
 

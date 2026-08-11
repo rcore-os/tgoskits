@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "test_framework.h"
 #include <fcntl.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/vfs.h>
@@ -350,66 +351,87 @@ int main(void)
     }
 
     /* ================================================================
-     * 18. mode = FALLOC_FL_ZERO_RANGE
-     *     支持时应把已有范围清零，并按需要扩展文件。
+     * 18. ext4 FALLOC_FL_ZERO_RANGE
+     *     读取为零但保留物理预留，不能退化成普通写零或 punch。
      * ================================================================ */
     {
-        char tmpl[] = "/tmp/test-fallocate-XXXXXX";
+        enum { BLOCK = 4096, BLOCKS = 5 };
+        char tmpl[] = "/root/test-fallocate-XXXXXX";
+        unsigned char original[BLOCKS * BLOCK];
+        unsigned char after[BLOCKS * BLOCK];
+        memset(original, 0x5a, sizeof(original));
         int fd = mkstemp(tmpl);
         CHECK(fd >= 0, "mkstemp 应成功");
 
-        CHECK_RET(write(fd, "abcdefghij", 10), 10, "写入 10 字节");
-
-        errno = 0;
-        long ret = (long)call_fallocate(fd, FALLOC_FL_ZERO_RANGE, 2, 4);
-        {
-            const int ok[] = { EOPNOTSUPP };
-            check_ret_or_err(ret, 1, ok, __FILE__, __LINE__,
-                             "FALLOC_FL_ZERO_RANGE: 期望 0 或 EOPNOTSUPP");
-        }
-        if (ret == 0) {
-            char buf[11] = {0};
-            CHECK_RET(pread(fd, buf, 10, 0), 10, "ZERO_RANGE 后读回完整内容");
-            CHECK(memcmp(buf, "ab\0\0\0\0ghij", 10) == 0,
-                  "ZERO_RANGE 把指定范围清零");
-        }
+        CHECK_RET(write(fd, original, sizeof(original)), sizeof(original),
+                  "写入 ZERO_RANGE extent fixture");
+        CHECK_RET(fsync(fd), 0, "ZERO_RANGE fixture fsync");
+        struct stat before, st;
+        CHECK_RET(fstat(fd, &before), 0, "ZERO_RANGE 前 fstat");
+        CHECK_RET(call_fallocate(fd, FALLOC_FL_ZERO_RANGE,
+                                 BLOCK + 123, 2 * BLOCK),
+                  0, "ext4 ZERO_RANGE 必须成功");
+        CHECK_RET(fstat(fd, &st), 0, "ZERO_RANGE 后 fstat");
+        CHECK(st.st_size == (off_t)sizeof(original),
+              "ZERO_RANGE KEEP_SIZE 缺省时范围未越 EOF，size 不变");
+        CHECK(st.st_blocks == before.st_blocks,
+              "ZERO_RANGE 应保留物理块计数");
+        CHECK_RET(pread(fd, after, sizeof(after), 0), sizeof(after),
+                  "ZERO_RANGE 后读回完整内容");
+        CHECK(memcmp(after, original, BLOCK + 123) == 0,
+              "ZERO_RANGE 左边界外数据保持不变");
+        bool zeroed = true;
+        for (size_t i = BLOCK + 123; i < 3 * BLOCK + 123; i++)
+            zeroed &= after[i] == 0;
+        CHECK(zeroed, "ZERO_RANGE 把非对齐范围读为零");
+        CHECK(memcmp(after + 3 * BLOCK + 123,
+                     original + 3 * BLOCK + 123,
+                     sizeof(after) - (3 * BLOCK + 123)) == 0,
+              "ZERO_RANGE 右边界外数据保持不变");
 
         close(fd);
         unlink(tmpl);
     }
 
     /* ================================================================
-     * 19. mode = FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE
-     *     Linux: 返回 0 (tmpfs/ext4 支持) 或 EOPNOTSUPP (不支持)
+     * 19. ext4 FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE
+     *     与 ZERO_RANGE 都读零，但 PUNCH 必须释放完整中间块。
      * ================================================================ */
     {
-        char tmpl[] = "/tmp/test-fallocate-XXXXXX";
+        enum { BLOCK = 4096, BLOCKS = 5 };
+        char tmpl[] = "/root/test-fallocate-XXXXXX";
+        unsigned char original[BLOCKS * BLOCK];
+        unsigned char after[BLOCKS * BLOCK];
+        memset(original, 0xa5, sizeof(original));
         int fd = mkstemp(tmpl);
         CHECK(fd >= 0, "mkstemp 应成功");
 
-        CHECK_RET(write(fd, "1234567890", 10), 10, "写入 10 字节");
-
-        errno = 0;
-        long ret = (long)call_fallocate(fd,
-                                        FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
-                                        0, 5);
-        {
-            const int ok[] = { EOPNOTSUPP };
-            check_ret_or_err(ret, 1, ok, __FILE__, __LINE__,
-                             "FALLOC_FL_PUNCH_HOLE|KEEP_SIZE: 期望 0 或 EOPNOTSUPP");
-        }
-        if (ret == 0) {
-            char buf[11] = {0};
-            const char expected[10] = {
-                0, 0, 0, 0, 0, '6', '7', '8', '9', '0',
-            };
-            struct stat st;
-            CHECK_RET(fstat(fd, &st), 0, "PUNCH_HOLE 后 fstat 成功");
-            CHECK(st.st_size == 10, "PUNCH_HOLE|KEEP_SIZE 不改变文件大小");
-            CHECK_RET(pread(fd, buf, 10, 0), 10, "PUNCH_HOLE 后读回完整内容");
-            CHECK(memcmp(buf, expected, sizeof(expected)) == 0,
-                  "PUNCH_HOLE 把洞范围读为零");
-        }
+        CHECK_RET(write(fd, original, sizeof(original)), sizeof(original),
+                  "写入 PUNCH_HOLE extent fixture");
+        CHECK_RET(fsync(fd), 0, "PUNCH_HOLE fixture fsync");
+        struct stat before, st;
+        CHECK_RET(fstat(fd, &before), 0, "PUNCH_HOLE 前 fstat");
+        CHECK_RET(call_fallocate(fd,
+                                 FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+                                 BLOCK + 123, 2 * BLOCK),
+                  0, "ext4 PUNCH_HOLE|KEEP_SIZE 必须成功");
+        CHECK_RET(fstat(fd, &st), 0, "PUNCH_HOLE 后 fstat 成功");
+        CHECK(st.st_size == (off_t)sizeof(original),
+              "PUNCH_HOLE|KEEP_SIZE 不改变文件大小");
+        CHECK(st.st_blocks + 8 <= before.st_blocks,
+              "PUNCH_HOLE 必须至少释放一个 4 KiB 完整块");
+        CHECK_RET(pread(fd, after, sizeof(after), 0), sizeof(after),
+                  "PUNCH_HOLE 后读回完整内容");
+        CHECK(memcmp(after, original, BLOCK + 123) == 0,
+              "PUNCH_HOLE 左边界外数据保持不变");
+        bool zeroed = true;
+        for (size_t i = BLOCK + 123; i < 3 * BLOCK + 123; i++)
+            zeroed &= after[i] == 0;
+        CHECK(zeroed, "PUNCH_HOLE 把非对齐范围读为零");
+        CHECK(memcmp(after + 3 * BLOCK + 123,
+                     original + 3 * BLOCK + 123,
+                     sizeof(after) - (3 * BLOCK + 123)) == 0,
+              "PUNCH_HOLE 右边界外数据保持不变");
 
         close(fd);
         unlink(tmpl);

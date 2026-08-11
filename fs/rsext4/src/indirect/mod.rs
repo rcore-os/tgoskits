@@ -22,7 +22,7 @@ const TRIPLE_INDIRECT_SLOT: usize = 14;
 
 mod truncate;
 
-pub(crate) use truncate::plan_legacy_inode_truncate;
+pub(crate) use truncate::{plan_legacy_inode_range_removal, plan_legacy_inode_truncate};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct IndirectPath {

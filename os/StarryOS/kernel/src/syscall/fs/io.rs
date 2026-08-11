@@ -5,10 +5,10 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
-use axfs_ng_vfs::{NodePermission, NodeType, PreallocationMode};
+use axfs_ng_vfs::{FileRangeOperation, NodePermission, NodeType, PreallocationMode};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
     __kernel_off_t, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
@@ -68,29 +68,6 @@ fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
     {
         pos_l
     }
-}
-
-// Writes zero-filled chunks into the file over the requested byte range.
-fn write_zero_range(file: &FileBackend, mut offset: u64, len: u64) -> AxResult<()> {
-    const ZERO_CHUNK_SIZE: usize = 64 * 1024;
-
-    let zeroes = vec![0; ZERO_CHUNK_SIZE];
-    let mut remaining = len;
-    while remaining > 0 {
-        let chunk = remaining.min(ZERO_CHUNK_SIZE as u64) as usize;
-        let mut written = 0;
-        while written < chunk {
-            let n = file.write_at(&zeroes[written..chunk], offset)?;
-            if n == 0 {
-                return Err(AxError::WriteZero);
-            }
-            written += n;
-            offset += n as u64;
-            remaining -= n as u64;
-        }
-    }
-
-    Ok(())
 }
 
 struct DummyFd;
@@ -333,19 +310,19 @@ pub fn sys_fallocate(
             }
         }
         FALLOC_FL_ZERO_RANGE => {
-            if new_len != old_len {
-                file.set_len(new_len)?;
-            }
-            let zero_end = old_len.min(end);
-            if (offset as u64) < zero_end {
-                write_zero_range(file, offset as u64, zero_end - offset as u64)?;
-            }
+            let mode = if keep_size {
+                PreallocationMode::KeepSize
+            } else {
+                PreallocationMode::ExtendSize
+            };
+            file.operate_range(
+                offset as u64,
+                len as u64,
+                FileRangeOperation::ZeroRange(mode),
+            )?;
         }
         FALLOC_FL_PUNCH_HOLE => {
-            let zero_end = old_len.min(end);
-            if (offset as u64) < zero_end {
-                write_zero_range(file, offset as u64, zero_end - offset as u64)?;
-            }
+            file.operate_range(offset as u64, len as u64, FileRangeOperation::PunchHole)?;
         }
         _ => unreachable!(),
     }

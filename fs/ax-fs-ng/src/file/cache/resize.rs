@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use ax_errno::LinuxError;
-use axfs_ng_vfs::{FileNode, PreallocationMode, VfsError, VfsResult};
+use axfs_ng_vfs::{FileNode, FileRangeOperation, PreallocationMode, VfsError, VfsResult};
 
 use super::{CachedFile, PAGE_SIZE, PageCache};
 
@@ -27,6 +27,89 @@ impl CachedFile {
             self.shared.update_len_max(end);
         }
         Ok(())
+    }
+
+    /// Applies a mapping-changing range operation without allowing cached
+    /// dirty pages to restore the old backing mapping during later writeback.
+    pub fn operate_range(
+        &self,
+        offset: u64,
+        len: u64,
+        operation: FileRangeOperation,
+    ) -> VfsResult<()> {
+        if let FileRangeOperation::Allocate(mode) = operation {
+            return self.preallocate(offset, len, mode);
+        }
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| VfsError::from(LinuxError::EFBIG))?;
+        let file = self.inner.entry().as_file()?;
+
+        loop {
+            let observed_len = self.shared.len();
+            let visible_end = match operation {
+                FileRangeOperation::PunchHole
+                | FileRangeOperation::ZeroRange(PreallocationMode::KeepSize) => {
+                    core::cmp::min(end, observed_len)
+                }
+                FileRangeOperation::ZeroRange(PreallocationMode::ExtendSize) => end,
+                FileRangeOperation::Allocate(_) => unreachable!(),
+            };
+            let start_page = offset / PAGE_SIZE as u64;
+            let end_page = visible_end.div_ceil(PAGE_SIZE as u64);
+            let affected_pages = {
+                let guard = self.shared.page_cache.lock();
+                guard
+                    .iter()
+                    .filter_map(|(&page_number, _)| {
+                        let page = u64::from(page_number);
+                        (start_page <= page && page < end_page).then_some(page_number)
+                    })
+                    .collect::<Vec<_>>()
+            };
+
+            self.shared
+                .protect_dirty_pages_before_writeback(&affected_pages)?;
+            if !self.in_memory && !affected_pages.is_empty() {
+                self.writeback_pages(&affected_pages)?;
+            }
+
+            let _io = self.shared.io_lock.lock();
+            if self.shared.len() != observed_len {
+                continue;
+            }
+            if !self.in_memory {
+                let mut guard = self.shared.page_cache.lock();
+                if affected_pages
+                    .iter()
+                    .any(|page_number| guard.get(page_number).is_some_and(|page| page.dirty))
+                {
+                    continue;
+                }
+            }
+
+            file.operate_range(offset, len, operation)?;
+            let mut guard = self.shared.page_cache.lock();
+            for page_number in affected_pages {
+                let Some(page) = guard.get_mut(&page_number) else {
+                    continue;
+                };
+                let page_start = u64::from(page_number) * PAGE_SIZE as u64;
+                let page_end = page_start + PAGE_SIZE as u64;
+                let zero_start = core::cmp::max(offset, page_start) - page_start;
+                let zero_end = core::cmp::min(visible_end, page_end) - page_start;
+                if zero_start < zero_end {
+                    page.data()[zero_start as usize..zero_end as usize].fill(0);
+                    page.dirty = false;
+                    page.dirty_generation = page.dirty_generation.wrapping_add(1);
+                }
+            }
+            drop(guard);
+            if operation == FileRangeOperation::ZeroRange(PreallocationMode::ExtendSize) {
+                self.shared.update_len_max(end);
+            }
+            return Ok(());
+        }
     }
 
     pub(super) fn zero_partial_page_locked(

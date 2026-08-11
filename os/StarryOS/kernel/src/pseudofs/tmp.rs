@@ -14,10 +14,10 @@ use core::{
 };
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-    FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, PreallocationMode, Reference, RenameOptions, StatFs, VfsError,
-    VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps,
+    FileRangeOperation, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata,
+    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode, Reference,
+    RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
@@ -534,13 +534,20 @@ impl FileNodeOps for MemoryNode {
         Ok(())
     }
 
-    fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
-        if mode == PreallocationMode::KeepSize {
-            return Err(VfsError::OperationNotSupported);
-        }
+    fn operate_range(&self, offset: u64, len: u64, operation: FileRangeOperation) -> VfsResult<()> {
         let end = offset.checked_add(len).ok_or(VfsError::InvalidInput)?;
-        let current = self.inode.as_file()?.length.load(AtomicOrdering::Acquire);
-        self.set_len(current.max(end))
+        match operation {
+            FileRangeOperation::Allocate(PreallocationMode::KeepSize) => {
+                Err(VfsError::OperationNotSupported)
+            }
+            FileRangeOperation::Allocate(PreallocationMode::ExtendSize)
+            | FileRangeOperation::ZeroRange(PreallocationMode::ExtendSize) => {
+                let current = self.inode.as_file()?.length.load(AtomicOrdering::Acquire);
+                self.set_len(current.max(end))
+            }
+            FileRangeOperation::PunchHole
+            | FileRangeOperation::ZeroRange(PreallocationMode::KeepSize) => Ok(()),
+        }
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {

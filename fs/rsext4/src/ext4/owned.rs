@@ -12,12 +12,12 @@ use crate::{
     entries::Ext4DirEntry2,
     error::{Ext4Error, Ext4ErrorKind, Ext4Result},
     file::{
-        CreateInodePayload, PreallocationOptions, RenameEntryRequest, RenameOptions, RenameOutcome,
-        UnlinkOutcome, build_file_block_mapping_with_inode_num, create_inode_at,
-        discard_unpublished_inode_blocks, error_after_cleanup, find_named_entry_in_parent,
-        link_inode_at, preallocate_inode, read_inode_data_into, reap_unlinked_inode,
-        rename_inode_at, truncate_inode, unlink_empty_directory_at, unlink_inode_at,
-        write_inode_data,
+        CreateInodePayload, PreallocationOptions, RangeOperation, RenameEntryRequest,
+        RenameOptions, RenameOutcome, UnlinkOutcome, build_file_block_mapping_with_inode_num,
+        create_inode_at, discard_unpublished_inode_blocks, error_after_cleanup,
+        find_named_entry_in_parent, link_inode_at, operate_inode_range, read_inode_data_into,
+        reap_unlinked_inode, rename_inode_at, truncate_inode, unlink_empty_directory_at,
+        unlink_inode_at, write_inode_data,
     },
     hashtree::Ext4InodeHashTreeExt,
     io::BlockIo,
@@ -789,14 +789,32 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         len: u64,
         options: PreallocationOptions,
     ) -> Ext4Result<()> {
-        self.ensure_writable("inode:preallocate")?;
-        preallocate_inode(
+        self.operate_inode_range(
+            _context,
+            number,
+            offset,
+            len,
+            RangeOperation::Allocate(options),
+        )
+    }
+
+    /// Applies one allocation or mapping operation to a byte range.
+    pub fn operate_inode_range(
+        &mut self,
+        _context: MutationContext,
+        number: InodeNumber,
+        offset: u64,
+        len: u64,
+        operation: RangeOperation,
+    ) -> Ext4Result<()> {
+        self.ensure_writable("inode:operate_range")?;
+        operate_inode_range(
             &mut self.device,
             &mut self.filesystem,
             number,
             offset,
             len,
-            options,
+            operation,
         )
     }
 
