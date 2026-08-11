@@ -217,47 +217,38 @@ fn truncate_inode_mapping<B: BlockIo>(
         return zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size);
     }
 
-    // Legacy indirect shrink needs recursive pointer removal and remains a
-    // later transaction milestone. Validate the full hidden tree before
-    // returning so no inode or allocation state has been changed.
-    if crate::indirect::has_legacy_indirect_mapping(fs, &inode) {
-        crate::indirect::collect_legacy_inode_ownership(fs, device, inode_num, &inode)?;
-        return Err(Ext4Error::unsupported().with_operation("indirect:truncate"));
-    }
-
-    // Free every direct pointer beyond the new EOF, including inconsistent
-    // pointers already hidden beyond the old on-disk size.
-    let first_free_slot = core::cmp::min(new_blocks, 12) as usize;
-    for lbn in first_free_slot..12 {
-        let phys = inode.i_block[lbn];
-        if phys != 0 {
-            fs.free_block(device, AbsoluteBN::from(phys))?;
-        }
-        inode.i_block[lbn] = 0;
-    }
-
+    let original_inode = inode;
+    let truncate_plan =
+        crate::indirect::plan_legacy_inode_truncate(fs, device, inode_num, &inode, new_blocks)?;
+    // Linux zeros the retained partial EOF block before detaching later
+    // mappings. A corrupt hidden branch therefore still fails during the plan
+    // preflight before any data or metadata is changed.
+    zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
+    truncate_plan.apply_inode_mapping(&mut inode, block_bytes as u32, huge_file_feature)?;
     inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
     inode.i_size_high = (truncate_size >> 32) as u32;
-    let allocated_blocks = u64::try_from(
-        inode.i_block[..12]
-            .iter()
-            .filter(|&&pointer| pointer != 0)
-            .count(),
-    )
-    .map_err(|_| Ext4Error::overflow())?;
-    let iblocks_used = allocated_blocks
-        .checked_mul(block_bytes / 512)
-        .ok_or_else(Ext4Error::overflow)?;
-    inode.set_blocks_count(iblocks_used, block_bytes as u32, huge_file_feature)?;
+    truncate_plan.apply_pointer_edits(device)?;
 
-    fs.finalize_inode_update(
+    if let Err(operation_error) = fs.finalize_inode_update(
         device,
         inode_num,
         &mut inode,
         Ext4InodeMetadataUpdate::truncate_access(),
-    )?;
+    ) {
+        let mut rollback_error = truncate_plan.restore_pointer_edits(device).err();
+        if let Err(error) = fs.modify_inode(device, inode_num, |on_disk| {
+            *on_disk = original_inode;
+        }) && rollback_error.is_none()
+        {
+            rollback_error = Some(error);
+        }
+        return Err(match rollback_error {
+            Some(error) => error.with_operation("rollback:indirect_truncate"),
+            None => operation_error,
+        });
+    }
 
-    zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)
+    truncate_plan.free_removed_blocks(fs, device)
 }
 
 fn read_symlink_target<B: BlockIo>(
