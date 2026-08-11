@@ -2799,6 +2799,32 @@ identity、增加第二套锁或保留旧接口。两项红测均转绿，active
 CPU deadline base 与 rq 的具体 acquisition source，不能再把 root period 总数解释成空状态查询，
 也不能以本次正确但无可见吞吐收益的 publication 修复替代剩余性能根因。
 
+### 2026-08-12 CPU deadline base acquisition source
+
+为避免把 CPU deadline base 的 64 万次 acquisition 当成单一问题，所有生产调用点先按权威状态
+转换分类为 observation、publication、registration、hard expiry、soft expiry 和 lifecycle。分类仍沿用
+每次 entry 只更新一个计数器的约束，总数由 snapshot 求和，不在锁热路径叠加第二次总数原子操作；
+每个 `lock_deadline_base` 调用点必须显式提供来源，不保留 unknown/default 兼容入口。
+
+相同 x86_64 Q35/TCG、4 vCPU、1009 Hz 的 60.805 秒精确 marker 窗口仍到 `file-0474`，workload
+由内部 60 秒 timeout 终止，但 stop marker、QMP quit 与 qperf 窗口均完整。CPU deadline base 的
+637,975 次增量可以完整归因：
+
+| deadline base source | entry 增量 | 占 CPU deadline base |
+|---|---:|---:|
+| observation | 245,434 | 38.472% |
+| publication | 219,249 | 34.366% |
+| registration | 71,261 | 11.171% |
+| hard expiry | 15,398 | 2.414% |
+| soft expiry | 86,633 | 13.579% |
+| lifecycle | 0 | 0% |
+
+窗口内真实 switch 增量为 124,001，CPU deadline base 平均每次 switch 进入 5.145 次；其中 observation
+与 soft/hard expiry 合计 347,465 次，占 54.464%。下一阶段先用确定性回归覆盖空 base 的观察和
+expiry 探测，再参照 Linux hrtimer `active_bases` 的派生 publication，在 false 时跳过权威锁、true 时
+仍入锁复核。publication 负责物理 clockevent generation/deadline 的唯一所有权，registration 负责
+队列状态转换；不能仅因为 `task_work_deadline_events` 为 0 就删锁或复制 deadline identity。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
