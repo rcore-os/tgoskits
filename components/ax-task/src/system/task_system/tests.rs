@@ -5286,6 +5286,7 @@ fn clock_only_owner_transaction_does_not_republish_unchanged_load() {
     system.bring_cpu_online_at(cpu.as_mut(), 0).unwrap();
 
     balance::reset_load_summary_publications();
+    root_domain::reset_detached_rt_ledger_reads();
     let _clock = system.sample_owner_rq_clock(cpu.as_ref().get_ref());
 
     assert_eq!(
@@ -5293,6 +5294,11 @@ fn clock_only_owner_transaction_does_not_republish_unchanged_load() {
         0,
         "updating rq->clock without changing runnable state must not rewrite the remote load \
          seqlock"
+    );
+    assert_eq!(
+        root_domain::detached_rt_ledger_reads(),
+        0,
+        "a clock-only rq transaction must not acquire a detached RT runtime ledger lock"
     );
 }
 
