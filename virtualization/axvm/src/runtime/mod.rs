@@ -110,16 +110,12 @@ pub fn start_vm(vm_id: usize) -> AxVmResult {
 
 /// Wake the primary vCPU of a VM.
 pub fn notify_vm(vm_id: usize) -> AxVmResult {
-    let vm = vm_by_id(vm_id)?;
-    notify_vm_with_device_poll(
-        || vcpus::poll_vm_devices(&vm),
-        || vcpus::notify_primary_vcpu(vm_id),
-    );
+    vm_by_id(vm_id)?;
+    notify_vm_with_wake(|| vcpus::notify_primary_vcpu(vm_id));
     Ok(())
 }
 
-fn notify_vm_with_device_poll(poll_devices: impl FnOnce(), wake_vcpu: impl FnOnce()) {
-    poll_devices();
+fn notify_vm_with_wake(wake_vcpu: impl FnOnce()) {
     wake_vcpu();
 }
 
@@ -194,15 +190,12 @@ mod tests {
     }
 
     #[test]
-    fn console_notification_polls_devices_before_waking_vcpu() {
+    fn console_notification_does_not_poll_devices_from_the_host_input_task() {
         let steps = RefCell::new(Vec::new());
-        notify_vm_with_device_poll(
-            || steps.borrow_mut().push("poll"),
-            || {
-                assert_eq!(steps.borrow().as_slice(), ["poll"]);
-                steps.borrow_mut().push("wake");
-            },
-        );
-        assert_eq!(steps.into_inner(), ["poll", "wake"]);
+        notify_vm_with_wake(|| {
+            assert!(steps.borrow().is_empty());
+            steps.borrow_mut().push("wake");
+        });
+        assert_eq!(steps.into_inner(), ["wake"]);
     }
 }

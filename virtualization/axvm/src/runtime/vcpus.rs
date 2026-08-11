@@ -38,6 +38,10 @@ where
     vm_vcpus.wait_until(condition);
 }
 
+fn vcpu_start_is_ready(vm_running: bool, task_registered: bool) -> bool {
+    vm_running && task_registered
+}
+
 /// Notifies the primary VCpu task associated with the specified VM to wake up and resume execution.
 /// This function is used to notify the primary VCpu of a VM to start running after the VM has been booted.
 ///
@@ -290,11 +294,8 @@ pub(crate) fn vcpu_on(
             .insert_cpu_on_start_ack(vcpu_id, ack.clone())
             .map_err(|_| VcpuOnError::StartFailed)?;
 
-        let vcpu_task = alloc_vcpu_task(&vm, vcpu.clone());
-        if runtime.add_vcpu_task(vcpu_id, vcpu_task).is_err() {
-            runtime.remove_cpu_on_start_ack(vcpu_id);
-            return Err(VcpuOnError::StartFailed);
-        }
+        let vcpu_task = build_vcpu_task(&vm, vcpu.clone());
+        spawn_registered_vcpu_task(vm.id(), vcpu_id, runtime.clone(), vcpu_task);
         runtime.notify_all();
 
         runtime.wait_until(|| ack.is_complete() || !vm.running());
@@ -335,9 +336,19 @@ pub(crate) fn vcpu_on(
     }
     start_result
 }
-#[allow(dead_code)]
-pub(crate) fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
-    crate::host::task::spawn_task(build_vcpu_task(vm, vcpu))
+pub(crate) fn spawn_registered_vcpu_task(
+    vm_id: usize,
+    vcpu_id: usize,
+    runtime: std::sync::Arc<VmRuntimeHandle>,
+    task: crate::TaskInner,
+) -> crate::AxTaskRef {
+    crate::host::task::spawn_task_with(task, |task_ref| {
+        runtime
+            .add_vcpu_task(vcpu_id, task_ref.clone())
+            .unwrap_or_else(|error| {
+                panic!("VM[{vm_id}] vCPU[{vcpu_id}] task registration failed: {error}")
+            });
+    })
 }
 
 fn spawn_deferred_reset_task(vm_id: usize) {
@@ -429,7 +440,7 @@ fn vcpu_run() {
     info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
     let cpu_on_start_ack = runtime.cpu_on_start_ack(vcpu_id);
     wait_for(&runtime, || {
-        vm.running()
+        vcpu_start_is_ready(vm.running(), runtime.has_vcpu_task(vcpu_id))
             || cpu_on_start_ack
                 .as_ref()
                 .is_some_and(|ack| ack.is_cancelled())
@@ -584,6 +595,11 @@ fn vcpu_run() {
 }
 
 pub(super) fn poll_vm_devices(vm: &VMRef) {
+    poll_vm_input_devices(vm);
+    poll_vm_dma_devices(vm);
+}
+
+pub(super) fn poll_vm_input_devices(vm: &VMRef) {
     let Ok(devices) = vm.get_devices() else {
         return;
     };
@@ -593,6 +609,13 @@ pub(super) fn poll_vm_devices(vm: &VMRef) {
             warn!("VM[{}] failed to poll virtual device: {error}", vm.id());
         }
     }
+}
+
+fn poll_vm_dma_devices(vm: &VMRef) {
+    let Ok(devices) = vm.get_devices() else {
+        return;
+    };
+    let now_ns = ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos();
     let mut memory = crate::vm::VmDmaAccess::new(vm);
     devices.poll_dma_devices(now_ns, &mut memory, |result| {
         if let Err(error) = result {
@@ -602,8 +625,15 @@ pub(super) fn poll_vm_devices(vm: &VMRef) {
 }
 
 #[cfg(test)]
-mod cpu_on_start_ack_tests {
+mod tests {
     use super::*;
+
+    #[test]
+    fn vcpu_waits_for_runtime_registration_before_entering_guest() {
+        assert!(!vcpu_start_is_ready(true, false));
+        assert!(vcpu_start_is_ready(true, true));
+        assert!(!vcpu_start_is_ready(false, true));
+    }
 
     #[test]
     fn cpu_on_start_ack_cancel_before_startup_blocks_late_startup() {

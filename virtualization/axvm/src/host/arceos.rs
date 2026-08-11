@@ -142,6 +142,13 @@ pub(crate) fn spawn_task(task: ArceOsTaskInner) -> ArceOsAxTaskRef {
     modules::ax_task::spawn_task(task)
 }
 
+pub(crate) fn spawn_task_with(
+    task: ArceOsTaskInner,
+    initialize: impl FnOnce(&ArceOsAxTaskRef),
+) -> ArceOsAxTaskRef {
+    modules::ax_task::spawn_task_with(task, initialize)
+}
+
 pub(crate) fn yield_now() {
     thread::yield_now();
 }

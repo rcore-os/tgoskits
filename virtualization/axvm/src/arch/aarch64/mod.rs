@@ -245,44 +245,45 @@ impl ArchOps for Aarch64Arch {
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         runtime: &crate::vm::VmRuntimeHandle,
     ) {
+        let observed_generation = runtime.notification_generation();
+        if !vm.running() {
+            return;
+        }
+        match vcpu.get_arch_vcpu().has_pending_interrupt() {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                warn!(
+                    "VM[{}] VCpu[{}] cannot query VGIC pending state before WFI wait: {error:?}",
+                    vm.id(),
+                    vcpu.id()
+                );
+                return;
+            }
+        }
+        if let Err(error) = vcpu.get_arch_vcpu().arm_timer_wait() {
+            warn!(
+                "VM[{}] VCpu[{}] cannot rearm architectural timer before WFI wait: {error:?}",
+                vm.id(),
+                vcpu.id()
+            );
+            return;
+        }
+        match vcpu.get_arch_vcpu().has_pending_interrupt() {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                warn!(
+                    "VM[{}] VCpu[{}] cannot recheck VGIC after arming timer: {error:?}",
+                    vm.id(),
+                    vcpu.id()
+                );
+                return;
+            }
+        }
+
         runtime.wait_until(|| {
-            if !vm.running() {
-                return true;
-            }
-            match vcpu.get_arch_vcpu().has_pending_interrupt() {
-                Ok(true) => true,
-                Ok(false) => match vcpu.get_arch_vcpu().arm_timer_wait() {
-                    Ok(()) => match vcpu.get_arch_vcpu().has_pending_interrupt() {
-                        Ok(pending) => pending,
-                        Err(error) => {
-                            warn!(
-                                "VM[{}] VCpu[{}] cannot recheck VGIC after arming timer: {error:?}",
-                                vm.id(),
-                                vcpu.id()
-                            );
-                            true
-                        }
-                    },
-                    Err(error) => {
-                        warn!(
-                            "VM[{}] VCpu[{}] cannot rearm architectural timer before WFI wait: \
-                             {error:?}",
-                            vm.id(),
-                            vcpu.id()
-                        );
-                        true
-                    }
-                },
-                Err(error) => {
-                    warn!(
-                        "VM[{}] VCpu[{}] cannot query VGIC pending state before WFI wait: \
-                         {error:?}",
-                        vm.id(),
-                        vcpu.id()
-                    );
-                    true
-                }
-            }
+            !vm.running() || runtime.notification_generation() != observed_generation
         });
     }
 }
