@@ -921,11 +921,7 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
 
     pub fn sync(&mut self) -> Ext4Result<()> {
         self.filesystem
-            .sync_filesystem_with_observer(&mut self.device, &mut self.services.observer)?;
-        if self.device.is_use_journal() {
-            self.device.commit()?;
-        }
-        self.device.flush()
+            .sync_filesystem_with_observer(&mut self.device, &mut self.services.observer)
     }
 
     pub fn unmount(&mut self) -> Ext4Result<()> {
