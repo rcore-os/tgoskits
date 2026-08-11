@@ -695,9 +695,17 @@ impl<B: BlockIo> Jbd2Dev<B> {
         Ok(())
     }
 
-    /// Flushes the inner cached device.
+    /// Forces the running journal transaction and its checkpoint to storage.
     pub fn flush(&mut self) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:flush_after_abort")?;
+        if self.journal_use {
+            if self.active_handle.is_some() {
+                return Err(Ext4Error::busy().with_operation("jbd2:flush_with_active_handle"));
+            }
+            if self.commit_pending_transaction()? {
+                return Ok(());
+            }
+        }
         self.inner.flush()
     }
 
@@ -1562,6 +1570,25 @@ mod tests {
         assert_eq!(error, Ext4Error::io());
     }
 
+    #[test]
+    fn flush_forces_pending_journal_transaction() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let target = AbsoluteBN::new(10);
+        let payload = vec![0x5a; BLOCK_SIZE];
+        let sequence = dev.journal_sequence().expect("journal sequence");
+        dev.write_blocks(&payload, target, 1, true)
+            .expect("queue metadata update");
+
+        dev.flush().expect("flush pending transaction");
+
+        assert_eq!(dev.journal_sequence(), Some(sequence.wrapping_add(1)));
+        let inner = dev.into_inner();
+        let start = target.as_usize().expect("target offset") * BLOCK_SIZE;
+        assert_eq!(&inner.data[start..start + BLOCK_SIZE], payload);
+    }
+
     fn assert_commit_stage_fault_aborts_journal(device: MemBlockDev, stage: &str) {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, device, true);
         dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
@@ -1943,7 +1970,7 @@ mod tests {
     }
 
     #[test]
-    fn active_journal_handle_rejects_unmount_commit_without_state_change() {
+    fn active_journal_handle_rejects_commit_and_flush_without_state_change() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
         dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
             .expect("install small journal");
@@ -1954,6 +1981,11 @@ mod tests {
             let error = dev
                 .umount_commit()
                 .expect_err("unmount cannot commit an active operation");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
+            assert_eq!(dev.journal_sequence(), sequence);
+            let error = dev
+                .flush()
+                .expect_err("flush cannot commit an active operation");
             assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
             assert_eq!(dev.journal_sequence(), sequence);
             dev.write_blocks(&vec![0x5a; BLOCK_SIZE], target, 1, true)
