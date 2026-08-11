@@ -69,6 +69,7 @@ pub struct InodeHandle {
 }
 
 /// Inode cache owned exclusively by one mounted filesystem.
+#[derive(Clone)]
 pub struct InodeCache {
     cache: BTreeMap<InodeCacheKey, CachedInode>,
     max_entries: usize,

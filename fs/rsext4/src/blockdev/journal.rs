@@ -563,12 +563,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
                     );
                 };
                 system.commit_queue = handle.queue_snapshot;
-                match self.inner.invalidate_cache() {
-                    Ok(()) => Err(operation_error),
-                    Err(rollback_error) => {
-                        Err(rollback_error.with_operation("rollback:jbd2_handle"))
-                    }
-                }
+                // The active cache may contain buffers dirtied after journal
+                // write access was acquired. They must be discarded, never
+                // flushed to home locations from an aborted handle.
+                self.inner.discard_cache();
+                Err(operation_error)
             }
         }
     }
@@ -593,8 +592,15 @@ impl<B: BlockIo> Jbd2Dev<B> {
         let new_buf = self.inner.buffer().to_vec().into_boxed_slice();
         let updates = Jbd2Update(block_id, new_buf);
         let transaction_capacity = self.journal_transaction_capacity()?;
-
-        self.enqueue_journal_update(updates, transaction_capacity)
+        if let Err(error) = self.enqueue_journal_update(updates, transaction_capacity) {
+            self.inner.discard_active();
+            return Err(error);
+        }
+        // The journal queue now owns the modified image. Keeping the same
+        // buffer dirty in the generic device cache could write it to the home
+        // block before commit.
+        self.inner.mark_active_clean(block_id);
+        Ok(())
     }
 
     /// Drops an uncommitted update for a newly allocated metadata block.
@@ -1928,6 +1934,31 @@ mod tests {
                     .all(|&byte| byte == 0)
             );
         }
+    }
+
+    #[test]
+    fn failed_journal_handle_does_not_write_dirty_metadata_cache_home() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let target = AbsoluteBN::new(10);
+        dev.read_block(target).expect("cache clean home block");
+
+        let error = dev
+            .with_journal_handle(1, |dev| {
+                dev.buffer_mut()[0] = 0x5a;
+                dev.write_block(target, true)?;
+                Err::<(), _>(Ext4Error::io())
+            })
+            .expect_err("operation failure must abort the handle update");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+
+        let inner = dev.into_inner();
+        let start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            inner.data[start], 0,
+            "aborted journal metadata reached its home block"
+        );
     }
 
     #[test]
