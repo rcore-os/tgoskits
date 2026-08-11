@@ -19,7 +19,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet};
 use bitflags::bitflags;
 use hashbrown::HashMap;
@@ -33,6 +32,7 @@ use super::epoll_topology::{
 };
 use crate::{
     file::{FileLike, get_file_like, signalfd::Signalfd},
+    sync::IrqMutex,
     task::{ProcessData, current_user_task},
 };
 
