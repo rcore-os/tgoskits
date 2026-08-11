@@ -141,6 +141,11 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 Draft 期间这些测试可以保持失败，但测试本身不得 `ignore`、弱化断言或伪造成功。
 PR 转 Ready 前本表必须为空。
 
+Linux image create/write/rename/e2fsck 回归已移除唯一的 `#[ignore]` 与默认镜像缺失时的
+静默 skip。未设置 `RSEXT4_TEST_IMAGE` 时由固定参数的 host `mkfs.ext4` 创建 64 MiB、
+4 KiB block fixture；显式 fixture 仍复制后执行。`mkfs.ext4`、`debugfs`、`e2fsck` 或
+`truncate` 缺失会直接使测试失败，不能把未验证当作通过。
+
 当前 core 尚未实现 HTree，因此会在插入时清除 `EXT4_INDEX_FL`。在进入
 `DIR_NLINK` sentinel 1 后，core 暂时把这个持久值作为“目录已经进入不精确链接
 计数模式”的事实来源，即使 flag 已被降级也继续保持 1；否则下一次 mkdir 会把

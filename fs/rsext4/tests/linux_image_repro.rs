@@ -879,31 +879,26 @@ fn e2fsck_clean_after_exact_32768_block_extent() {
 }
 
 #[test]
-#[ignore = "requires a Linux-created ext4 rootfs image"]
 fn repro_linux_image_create_write_rename_then_e2fsck() {
-    let src_from_env = std::env::var_os("RSEXT4_TEST_IMAGE").map(PathBuf::from);
-    let src = src_from_env.clone().unwrap_or_else(|| {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        manifest_dir
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("repo root")
-            .join("target/rootfs/rootfs-aarch64-debian.img")
-    });
-
-    if !src.exists() {
-        if src_from_env.is_some() {
-            panic!("test image does not exist: {}", src.display());
-        }
-        eprintln!("skip: default test image does not exist: {}", src.display());
-        return;
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
     }
 
-    let dst = std::env::temp_dir().join(format!(
-        "rsext4-linux-image-repro-{}.img",
-        std::process::id()
-    ));
-    fs::copy(&src, &dst).expect("copy test image");
+    let (temp_dir, dst) = match std::env::var_os("RSEXT4_TEST_IMAGE").map(PathBuf::from) {
+        Some(src) => {
+            assert!(src.exists(), "test image does not exist: {}", src.display());
+            let temp_dir = std::env::temp_dir()
+                .join(format!("rsext4-linux-image-fixture-{}", std::process::id()));
+            if temp_dir.exists() {
+                fs::remove_dir_all(&temp_dir).expect("remove stale fixture temp dir");
+            }
+            fs::create_dir(&temp_dir).expect("create fixture temp dir");
+            let dst = temp_dir.join("fs.img");
+            fs::copy(&src, &dst).expect("copy test image");
+            (temp_dir, dst)
+        }
+        None => create_ext4_test_image("rsext4-linux-image-repro", "64M"),
+    };
     repair_baseline_image(&dst);
 
     {
@@ -911,7 +906,14 @@ fn repro_linux_image_create_write_rename_then_e2fsck() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
         let mut fs = mount(&mut dev).expect("mount image");
 
-        let probe = "/root/codex-fsck-probe";
+        if dir::get_inode_with_num(&mut fs, &mut dev, "/root")
+            .expect("lookup root fixture directory")
+            .is_none()
+        {
+            mkdir(&mut dev, &mut fs, "/root").expect("create root fixture directory");
+        }
+
+        let probe = "/root/rsext4-fsck-probe";
         let _ = delete_dir(&mut fs, &mut dev, probe);
         mkdir(&mut dev, &mut fs, &format!("{probe}/sub")).expect("mkdir probe");
         mkfile(
@@ -951,5 +953,5 @@ fn repro_linux_image_create_write_rename_then_e2fsck() {
         command_text(&output)
     );
 
-    let _ = fs::remove_file(dst);
+    fs::remove_dir_all(temp_dir).expect("remove Linux image temp dir");
 }
