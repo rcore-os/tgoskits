@@ -2678,6 +2678,40 @@ sync bridge 约 8.59%、CPU-local/percpu 约 15.02%、scheduler queue 约 6.56%�
 窗口也正常完成。因此这里只保留低频竞态证据，不据一次不可复现停顿修改锁算法，也不把 qperf
 进程返回 0 当作该次 guest 启动通过。
 
+### 2026-08-12 dev switch 计数与 ticket unlock
+
+两边原始 qperf 记录都只有定频 PC sample，没有 guest task identity 或 `sched_switch` event，不能从
+`qperf.bin` 反推真实切换次数。为避免把采样占比当事件数，`dev@fad09ebd3` 的临时诊断构建只在
+旧实现唯一真实 `AxRunQueue::switch_to()`、且 `prev != next` 后增加计数，并通过 debugfs 在同一
+workload 窗口前后读取。该补丁未进入 PR，诊断后已还原干净 worktree。
+
+相同 x86_64 Q35/TCG、4 vCPU、1009 Hz leaf-qperf 的 60 秒窗口结果为：
+
+| 实现 | 窗口 | 最后观测进度 | 真实 switch 增量 | host user | scheduler/wait/preempt leaf |
+|---|---:|---:|---:|---:|---:|
+| current，修复前 | 60.605s | `file-0474` | 121,350 | 88.154s | 46.758% |
+| `dev@fad09ebd3` | 60.636s | `file-0666` | 217,773 | 72.312s | 31.509% |
+
+两边都由 workload timeout 截断，不能把约 60 秒窗口误报为完成耗时。`dev` 在观测到更多文件进度
+的同时执行了约 1.79 倍真实 switch，却只消耗约 82% host user CPU；因此剩余回退不是 current
+制造了更多切换，而是每次真实 block/wake/switch 放大的固定实现成本。timer/clockevent leaf 在
+两边都约 1.21%，且 `dev` 的 `timer_set_deadline_in_ticks` 样本更多，也不支持把主因归给 current
+统一 selection tail 的 deadline 检查。
+
+owner rq 和 task scheduler state 使用的 `RawTicketLock` 在取 ticket 时必须执行一次 atomic RMW，
+但旧 unlock 又用 `owner.fetch_add(Release)` 执行第二次 RMW。holder 是唯一可推进 `owner` 的上下文；
+waiter 只 acquire-load。Linux generic ticket spinlock 与 queued spinlock 的 unlock 都是
+`smp_store_release`，并不要求第二次 RMW。因此红测 `uncontended_unlock_uses_release_store` 先在旧
+策略稳定得到 `ReadModifyWrite`、期望 `Store`；修复删除 RMW 分支，只保留 Relaxed 读取当前 owner
+后 Release-store successor 的实现。failed try-lock rollback、4×1000 concurrent writers、ax-task
+完整 host/qperf、loom 与 clippy 均通过。
+
+修复后的同配置 qperf 窗口为 60.621 秒，仍只到 `file-0474`，真实 switch 增量 122,825，host user
+88.124 秒，scheduler/wait/preempt leaf 47.324%。因此 release-store 是四架构都需要的正确锁语义与
+固定成本修复，但本次结果没有可见吞吐收益，不能把它标记为剩余回退主因。下一层证据必须量化
+native lock 的 preempt guard、owner-rq IRQ guard、class queue 操作和 runtime CPU-area lookup，
+而不是继续微调 ticket lock 或添加 ext4/Fair workload 特判。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
