@@ -37,15 +37,46 @@ impl PiMutexWaitStorage {
         }
     }
 
+    /// Returns a borrowed view over this scheduler-owned inline storage.
+    #[doc(hidden)]
+    pub const fn view(&self) -> PiMutexWaitStorageView<'_> {
+        PiMutexWaitStorageView::from_parts(&self.state, &self.words)
+    }
+
+    fn take_initialized(&mut self) -> Option<*mut ()> {
+        take_initialized_wait_storage(self.state.get_mut(), self.words.get_mut())
+    }
+}
+
+/// Borrowed scheduler-owned waiter storage for one physical PI mutex.
+///
+/// Both native locks and fixed-layout external wrappers use this view, so the
+/// initialization and destruction state machine has exactly one owner.
+#[derive(Clone, Copy, Debug)]
+pub struct PiMutexWaitStorageView<'lock> {
+    state: &'lock AtomicU8,
+    words: &'lock UnsafeCell<[MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS]>,
+}
+
+impl<'lock> PiMutexWaitStorageView<'lock> {
+    /// Creates a view over storage whose lifetime is owned by the physical lock.
+    #[doc(hidden)]
+    const fn from_parts(
+        state: &'lock AtomicU8,
+        words: &'lock UnsafeCell<[MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS]>,
+    ) -> Self {
+        Self { state, words }
+    }
+
     /// Returns the stable address of the provider-owned inline object.
     #[doc(hidden)]
-    pub const fn as_ptr(&self) -> *mut () {
+    pub const fn as_ptr(self) -> *mut () {
         self.words.get().cast()
     }
 
     /// Returns whether a provider object has been published.
     #[doc(hidden)]
-    pub fn is_initialized(&self) -> bool {
+    pub fn is_initialized(self) -> bool {
         self.state.load(Ordering::Acquire) == WAIT_STORAGE_READY
     }
 
@@ -57,7 +88,7 @@ impl PiMutexWaitStorage {
     /// this storage must use the same `T`, and the provider must destroy it
     /// through the task scheduler's waiter-handle destructor.
     #[doc(hidden)]
-    pub unsafe fn get_or_init<T>(&self, init: impl FnOnce() -> T) -> &T {
+    pub unsafe fn get_or_init<T>(self, init: impl FnOnce() -> T) -> &'lock T {
         assert!(
             core::mem::size_of::<T>()
                 <= PI_MUTEX_WAIT_STORAGE_WORDS * core::mem::size_of::<usize>(),
@@ -104,23 +135,26 @@ impl PiMutexWaitStorage {
     ///
     /// `T` must be the same concrete type used by the successful initializer.
     #[doc(hidden)]
-    pub unsafe fn get<T>(&self) -> Option<&T> {
+    pub unsafe fn get<T>(self) -> Option<&'lock T> {
         if self.state.load(Ordering::Acquire) != WAIT_STORAGE_READY {
             return None;
         }
         // SAFETY: READY publishes the initialized provider object.
         Some(unsafe { &*self.as_ptr().cast::<T>() })
     }
+}
 
-    fn take_initialized(&mut self) -> Option<*mut ()> {
-        match *self.state.get_mut() {
-            WAIT_STORAGE_UNINITIALIZED => None,
-            WAIT_STORAGE_READY => {
-                *self.state.get_mut() = WAIT_STORAGE_UNINITIALIZED;
-                Some(self.as_ptr())
-            }
-            _ => panic!("destroying PI mutex while waiter storage initializes"),
+fn take_initialized_wait_storage(
+    state: &mut u8,
+    words: &mut [MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS],
+) -> Option<*mut ()> {
+    match *state {
+        WAIT_STORAGE_UNINITIALIZED => None,
+        WAIT_STORAGE_READY => {
+            *state = WAIT_STORAGE_UNINITIALIZED;
+            Some(words.as_mut_ptr().cast())
         }
+        _ => panic!("destroying PI mutex while waiter storage initializes"),
     }
 }
 
@@ -192,18 +226,36 @@ pub struct PiMutexCore {
     wait_storage: PiMutexWaitStorage,
 }
 
-impl PiMutexCore {
-    /// Creates an unlocked PI mutex core without allocating waiter state.
-    pub const fn new() -> Self {
+/// Borrowed storage of one native PI-mutex state machine.
+///
+/// The view keeps the algorithm independent from the physical wrapper. Native
+/// [`PiMutexCore`] values and OS-independent fixed-layout storage therefore
+/// execute the same owner, generation, and waiter-lifecycle transitions.
+#[derive(Clone, Copy, Debug)]
+pub struct PiMutexCoreView<'lock> {
+    owner: &'lock AtomicU64,
+    generation: &'lock AtomicU64,
+    wait_storage: PiMutexWaitStorageView<'lock>,
+}
+
+impl<'lock> PiMutexCoreView<'lock> {
+    /// Creates a PI core view over one physical lock's complete storage.
+    #[doc(hidden)]
+    pub(in crate::sync) const fn from_parts(
+        owner: &'lock AtomicU64,
+        generation: &'lock AtomicU64,
+        wait_state: &'lock AtomicU8,
+        wait_words: &'lock UnsafeCell<[MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS]>,
+    ) -> Self {
         Self {
-            owner: AtomicU64::new(0),
-            generation: AtomicU64::new(0),
-            wait_storage: PiMutexWaitStorage::new(),
+            owner,
+            generation,
+            wait_storage: PiMutexWaitStorageView::from_parts(wait_state, wait_words),
         }
     }
 
     /// Attempts the atomic uncontended acquisition path.
-    pub fn try_acquire(&self, current: PiTaskId) -> Result<PiMutexAcquire, PiMutexStateError> {
+    pub fn try_acquire(self, current: PiTaskId) -> Result<PiMutexAcquire, PiMutexStateError> {
         match self
             .owner
             .compare_exchange(0, current.get(), Ordering::Acquire, Ordering::Relaxed)
@@ -224,7 +276,7 @@ impl PiMutexCore {
     /// this physical mutex's executing owner.
     #[doc(hidden)]
     pub unsafe fn try_acquire_for_thread<T>(
-        &self,
+        self,
         current: T,
     ) -> Result<PiMutexAcquire, PiMutexStateError>
     where
@@ -240,7 +292,7 @@ impl PiMutexCore {
     /// The caller must own scheduler authority for `current` and serialize the
     /// transition with the physical mutex owner.
     #[doc(hidden)]
-    pub unsafe fn try_release_for_thread<T>(&self, current: T) -> Result<bool, PiMutexStateError>
+    pub unsafe fn try_release_for_thread<T>(self, current: T) -> Result<bool, PiMutexStateError>
     where
         T: Into<PiTaskId>,
     {
@@ -261,7 +313,7 @@ impl PiMutexCore {
     ///
     /// The caller must own this mutex through a higher-level raw-mutex
     /// contract and retain that authority through any contended handoff.
-    pub unsafe fn try_release_owned(&self) -> Result<PiMutexOwnedRelease, PiMutexStateError> {
+    pub unsafe fn try_release_owned(self) -> Result<PiMutexOwnedRelease, PiMutexStateError> {
         let observed = self.owner.load(Ordering::Acquire);
         let owner = owner_from_word(observed).ok_or(PiMutexStateError::InvalidState)?;
         match self
@@ -277,17 +329,17 @@ impl PiMutexCore {
     }
 
     /// Returns whether `current` is the physical owner.
-    pub fn is_owned_by(&self, current: PiTaskId) -> bool {
+    pub fn is_owned_by(self, current: PiTaskId) -> bool {
         owner_from_word(self.owner.load(Ordering::Acquire)) == Some(current)
     }
 
     /// Returns whether the mutex is owned or in an ownerless handoff window.
-    pub fn is_locked(&self) -> bool {
+    pub fn is_locked(self) -> bool {
         self.owner.load(Ordering::Relaxed) != 0
     }
 
     /// Borrows this physical lock's generation-bearing scheduler identity.
-    pub fn mutex_ref(&self) -> Result<PiMutexRef<'_>, PiMutexStateError> {
+    pub fn mutex_ref(self) -> Result<PiMutexRef<'lock>, PiMutexStateError> {
         let observed = self.generation.load(Ordering::Acquire);
         if observed != 0 {
             return Ok(PiMutexRef {
@@ -320,7 +372,7 @@ impl PiMutexCore {
 
     /// Returns the lock-local owner snapshot protected by a provider wait lock.
     #[doc(hidden)]
-    pub fn owner_snapshot(&self) -> PiMutexOwnerSnapshot {
+    pub fn owner_snapshot(self) -> PiMutexOwnerSnapshot {
         let word = self.owner.load(Ordering::Acquire);
         PiMutexOwnerSnapshot {
             word,
@@ -330,7 +382,7 @@ impl PiMutexCore {
 
     /// Attempts to acquire an unlocked snapshot while the wait lock is held.
     #[doc(hidden)]
-    pub fn try_acquire_snapshot(&self, snapshot: PiMutexOwnerSnapshot, current: PiTaskId) -> bool {
+    pub fn try_acquire_snapshot(self, snapshot: PiMutexOwnerSnapshot, current: PiTaskId) -> bool {
         debug_assert_eq!(snapshot.word, 0);
         self.owner
             .compare_exchange(
@@ -344,7 +396,7 @@ impl PiMutexCore {
 
     /// Publishes the waiter bit while the provider wait lock is held.
     #[doc(hidden)]
-    pub fn try_mark_waiters(&self, snapshot: PiMutexOwnerSnapshot) -> bool {
+    pub fn try_mark_waiters(self, snapshot: PiMutexOwnerSnapshot) -> bool {
         if snapshot.has_waiters() {
             return self.owner.load(Ordering::Acquire) == snapshot.word;
         }
@@ -360,7 +412,7 @@ impl PiMutexCore {
 
     /// Publishes an owned state after a serialized handoff claim.
     #[doc(hidden)]
-    pub fn publish_owner(&self, owner: PiTaskId, has_waiters: bool) {
+    pub fn publish_owner(self, owner: PiTaskId, has_waiters: bool) {
         self.owner.store(
             owner.get() | if has_waiters { OWNER_HAS_WAITERS } else { 0 },
             Ordering::Release,
@@ -369,26 +421,157 @@ impl PiMutexCore {
 
     /// Publishes the reserved ownerless handoff state.
     #[doc(hidden)]
-    pub fn publish_ownerless(&self) {
+    pub fn publish_ownerless(self) {
         self.owner.store(OWNER_HAS_WAITERS, Ordering::Release);
     }
 
     /// Ends an ownerless handoff after its final waiter is removed.
     #[doc(hidden)]
-    pub fn publish_unlocked(&self) {
+    pub fn publish_unlocked(self) {
         self.owner.store(0, Ordering::Release);
     }
 
     /// Clears the waiter bit while retaining an existing owner.
     #[doc(hidden)]
-    pub fn clear_waiters_bit(&self, owner: PiTaskId) {
+    pub fn clear_waiters_bit(self, owner: PiTaskId) {
         self.owner.store(owner.get(), Ordering::Release);
     }
 
     /// Returns the inline scheduler-owned waiter storage.
     #[doc(hidden)]
-    pub const fn wait_storage(&self) -> &PiMutexWaitStorage {
-        &self.wait_storage
+    pub const fn wait_storage(self) -> PiMutexWaitStorageView<'lock> {
+        self.wait_storage
+    }
+}
+
+impl PiMutexCore {
+    /// Creates an unlocked PI mutex core without allocating waiter state.
+    pub const fn new() -> Self {
+        Self {
+            owner: AtomicU64::new(0),
+            generation: AtomicU64::new(0),
+            wait_storage: PiMutexWaitStorage::new(),
+        }
+    }
+
+    /// Attempts the atomic uncontended acquisition path.
+    pub fn try_acquire(&self, current: PiTaskId) -> Result<PiMutexAcquire, PiMutexStateError> {
+        self.view().try_acquire(current)
+    }
+
+    /// Attempts acquisition for an explicitly scheduler-authorized identity.
+    ///
+    /// # Safety
+    ///
+    /// The caller must own the scheduler authority to establish `current` as
+    /// this physical mutex's executing owner.
+    #[doc(hidden)]
+    pub unsafe fn try_acquire_for_thread<T>(
+        &self,
+        current: T,
+    ) -> Result<PiMutexAcquire, PiMutexStateError>
+    where
+        T: Into<PiTaskId>,
+    {
+        unsafe { self.view().try_acquire_for_thread(current) }
+    }
+
+    /// Attempts release for an explicitly scheduler-authorized identity.
+    ///
+    /// # Safety
+    ///
+    /// The caller must own scheduler authority for `current` and serialize the
+    /// transition with the physical mutex owner.
+    #[doc(hidden)]
+    pub unsafe fn try_release_for_thread<T>(&self, current: T) -> Result<bool, PiMutexStateError>
+    where
+        T: Into<PiTaskId>,
+    {
+        unsafe { self.view().try_release_for_thread(current) }
+    }
+
+    /// Releases the physical owner named by this mutex's owner word.
+    ///
+    /// # Safety
+    ///
+    /// The caller must own this mutex through a higher-level raw-mutex
+    /// contract and retain that authority through any contended handoff.
+    pub unsafe fn try_release_owned(&self) -> Result<PiMutexOwnedRelease, PiMutexStateError> {
+        unsafe { self.view().try_release_owned() }
+    }
+
+    /// Returns whether `current` is the physical owner.
+    pub fn is_owned_by(&self, current: PiTaskId) -> bool {
+        self.view().is_owned_by(current)
+    }
+
+    /// Returns whether the mutex is owned or in an ownerless handoff window.
+    pub fn is_locked(&self) -> bool {
+        self.view().is_locked()
+    }
+
+    /// Borrows this physical lock's generation-bearing scheduler identity.
+    pub fn mutex_ref(&self) -> Result<PiMutexRef<'_>, PiMutexStateError> {
+        self.view().mutex_ref()
+    }
+
+    /// Returns the lock-local owner snapshot protected by a provider wait lock.
+    #[doc(hidden)]
+    pub fn owner_snapshot(&self) -> PiMutexOwnerSnapshot {
+        self.view().owner_snapshot()
+    }
+
+    /// Attempts to acquire an unlocked snapshot while the wait lock is held.
+    #[doc(hidden)]
+    pub fn try_acquire_snapshot(&self, snapshot: PiMutexOwnerSnapshot, current: PiTaskId) -> bool {
+        self.view().try_acquire_snapshot(snapshot, current)
+    }
+
+    /// Publishes the waiter bit while the provider wait lock is held.
+    #[doc(hidden)]
+    pub fn try_mark_waiters(&self, snapshot: PiMutexOwnerSnapshot) -> bool {
+        self.view().try_mark_waiters(snapshot)
+    }
+
+    /// Publishes an owned state after a serialized handoff claim.
+    #[doc(hidden)]
+    pub fn publish_owner(&self, owner: PiTaskId, has_waiters: bool) {
+        self.view().publish_owner(owner, has_waiters);
+    }
+
+    /// Publishes the reserved ownerless handoff state.
+    #[doc(hidden)]
+    pub fn publish_ownerless(&self) {
+        self.view().publish_ownerless();
+    }
+
+    /// Ends an ownerless handoff after its final waiter is removed.
+    #[doc(hidden)]
+    pub fn publish_unlocked(&self) {
+        self.view().publish_unlocked();
+    }
+
+    /// Clears the waiter bit while retaining an existing owner.
+    #[doc(hidden)]
+    pub fn clear_waiters_bit(&self, owner: PiTaskId) {
+        self.view().clear_waiters_bit(owner);
+    }
+
+    /// Returns the inline scheduler-owned waiter storage.
+    #[doc(hidden)]
+    pub const fn wait_storage(&self) -> PiMutexWaitStorageView<'_> {
+        self.wait_storage.view()
+    }
+
+    /// Returns a borrowed view over this physical lock's complete PI storage.
+    #[doc(hidden)]
+    pub const fn view(&self) -> PiMutexCoreView<'_> {
+        PiMutexCoreView::from_parts(
+            &self.owner,
+            &self.generation,
+            &self.wait_storage.state,
+            &self.wait_storage.words,
+        )
     }
 }
 
@@ -425,7 +608,7 @@ impl Drop for PiMutexCore {
 /// Borrowed scheduler capability of one physical PI mutex.
 #[derive(Clone, Copy, Debug)]
 pub struct PiMutexRef<'lock> {
-    core: &'lock PiMutexCore,
+    core: PiMutexCoreView<'lock>,
     id: PiMutexId,
 }
 
@@ -437,7 +620,7 @@ impl<'lock> PiMutexRef<'lock> {
 
     /// Returns the borrowed physical core.
     #[doc(hidden)]
-    pub const fn core(self) -> &'lock PiMutexCore {
+    pub const fn core(self) -> PiMutexCoreView<'lock> {
         self.core
     }
 
@@ -445,7 +628,10 @@ impl<'lock> PiMutexRef<'lock> {
     #[doc(hidden)]
     pub fn raw(self) -> PiMutexRaw {
         PiMutexRaw {
-            core: NonNull::from(self.core),
+            owner: NonNull::from(self.core.owner),
+            generation: NonNull::from(self.core.generation),
+            wait_state: NonNull::from(self.core.wait_storage.state),
+            wait_words: NonNull::from(self.core.wait_storage.words),
             id: self.id,
         }
     }
@@ -454,7 +640,10 @@ impl<'lock> PiMutexRef<'lock> {
 /// Raw generation-checked reference retained by a registered waiter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PiMutexRaw {
-    core: NonNull<PiMutexCore>,
+    owner: NonNull<AtomicU64>,
+    generation: NonNull<AtomicU64>,
+    wait_state: NonNull<AtomicU8>,
+    wait_words: NonNull<UnsafeCell<[MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS]>>,
     id: PiMutexId,
 }
 
@@ -471,8 +660,20 @@ impl PiMutexRaw {
     /// The caller must hold the registration whose token retained this raw
     /// capability and must not outlive the physical mutex.
     #[doc(hidden)]
-    pub unsafe fn core(self) -> &'static PiMutexCore {
-        unsafe { self.core.as_ref() }
+    pub unsafe fn core(self) -> PiMutexCoreView<'static> {
+        PiMutexCoreView {
+            // SAFETY: the live scheduler registration retains every storage
+            // field from the same physical mutex for this complete borrow.
+            owner: unsafe { self.owner.as_ref() },
+            // SAFETY: identical registration lifetime to `owner` above.
+            generation: unsafe { self.generation.as_ref() },
+            wait_storage: PiMutexWaitStorageView {
+                // SAFETY: identical registration lifetime to `owner` above.
+                state: unsafe { self.wait_state.as_ref() },
+                // SAFETY: identical registration lifetime to `owner` above.
+                words: unsafe { self.wait_words.as_ref() },
+            },
+        }
     }
 }
 
@@ -651,4 +852,45 @@ pub enum PiWaitCancelOutcome {
 
 fn owner_from_word(state: u64) -> Option<PiTaskId> {
     PiTaskId::new(state & OWNER_ID_MASK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_core_view_keeps_external_fields_authoritative() {
+        let owner = AtomicU64::new(0);
+        let generation = AtomicU64::new(0);
+        let wait_state = AtomicU8::new(WAIT_STORAGE_UNINITIALIZED);
+        let wait_words = UnsafeCell::new([MaybeUninit::uninit(); PI_MUTEX_WAIT_STORAGE_WORDS]);
+        let core = PiMutexCoreView::from_parts(&owner, &generation, &wait_state, &wait_words);
+        let task = PiTaskId::new(7).unwrap();
+
+        assert_eq!(core.try_acquire(task), Ok(PiMutexAcquire::Acquired));
+        assert_eq!(owner.load(Ordering::Relaxed), task.get());
+        let lock = core.mutex_ref().unwrap();
+        let recovered = unsafe {
+            // SAFETY: `raw` remains bounded by all local backing fields.
+            lock.raw().core()
+        };
+        assert_eq!(recovered.mutex_ref().unwrap().id(), lock.id());
+        assert!(recovered.is_owned_by(task));
+        assert!(
+            unsafe {
+                // SAFETY: this test established `task` as the physical owner.
+                recovered.try_release_for_thread(task)
+            }
+            .unwrap()
+        );
+        assert_eq!(owner.load(Ordering::Relaxed), 0);
+
+        let waiter = unsafe {
+            // SAFETY: this local storage is used only with `u64`, which fits
+            // the published inline size and alignment.
+            core.wait_storage().get_or_init(|| 0x5a5a_u64)
+        };
+        assert_eq!(*waiter, 0x5a5a);
+        assert!(core.wait_storage().is_initialized());
+    }
 }

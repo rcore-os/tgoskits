@@ -3,9 +3,9 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::sync::{
-    PI_MUTEX_WAIT_STORAGE_WORDS, PiMutexAcquire, PiMutexClaimOutcome, PiMutexCore, PiMutexId,
-    PiMutexLockResult, PiMutexOwnedRelease, PiMutexOwnerSnapshot, PiMutexRaw, PiMutexRef,
-    PiMutexStateError, PiTaskId, PiWaitCancelOutcome, PiWaitToken,
+    PI_MUTEX_WAIT_STORAGE_WORDS, PiMutexAcquire, PiMutexClaimOutcome, PiMutexCore, PiMutexCoreView,
+    PiMutexId, PiMutexLockResult, PiMutexOwnedRelease, PiMutexOwnerSnapshot, PiMutexRaw,
+    PiMutexRef, PiMutexStateError, PiTaskId, PiWaitCancelOutcome, PiWaitToken,
 };
 use crate::{
     PiWaitStateError, PiWaitTree, TaskError, ThreadId,
@@ -116,7 +116,7 @@ pub(crate) unsafe fn drop_pi_mutex_wait_handle(wait_handle: *mut ()) {
     unsafe { wait_handle.drop_in_place() };
 }
 
-fn ensure_pi_mutex_wait_handle(core: &PiMutexCore) -> &PiMutexWaitHandle {
+fn ensure_pi_mutex_wait_handle<'lock>(core: PiMutexCoreView<'lock>) -> &'lock PiMutexWaitHandle {
     const _: () = assert!(
         core::mem::size_of::<PiMutexWaitHandle>()
             <= PI_MUTEX_WAIT_STORAGE_WORDS * core::mem::size_of::<usize>()
@@ -131,7 +131,7 @@ fn ensure_pi_mutex_wait_handle(core: &PiMutexCore) -> &PiMutexWaitHandle {
     }
 }
 
-fn installed_pi_mutex_wait_handle(core: &PiMutexCore) -> &PiMutexWaitHandle {
+fn installed_pi_mutex_wait_handle<'lock>(core: PiMutexCoreView<'lock>) -> &'lock PiMutexWaitHandle {
     unsafe {
         // SAFETY: a raw waiter registration is created only after the slow path
         // initialized this exact concrete handle type.

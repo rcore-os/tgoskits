@@ -16,7 +16,8 @@ mod spin;
 pub use self::api::*;
 #[doc(hidden)]
 pub use self::mutex::{
-    PI_MUTEX_WAIT_STORAGE_WORDS, PiMutexAcquire, PiMutexClaimOutcome, PiMutexCore, PiMutexId,
-    PiMutexLockResult, PiMutexOwnedRelease, PiMutexOwnerSnapshot, PiMutexRaw, PiMutexRef,
-    PiMutexStateError, PiTaskId, PiWaitCancelOutcome, PiWaitToken,
+    PI_MUTEX_WAIT_STORAGE_WORDS, PiMutexAcquire, PiMutexClaimOutcome, PiMutexCore, PiMutexCoreView,
+    PiMutexId, PiMutexLockResult, PiMutexOwnedRelease, PiMutexOwnerSnapshot, PiMutexRaw,
+    PiMutexRef, PiMutexStateError, PiMutexWaitStorageView, PiTaskId, PiWaitCancelOutcome,
+    PiWaitToken,
 };
