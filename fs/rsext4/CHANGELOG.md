@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve unmodeled inline-xattr bytes across inode-cache mutations and include
+  the complete raw inode record in metadata checksums.
 - Preserve extent allocation and inode block accounting when publishing an
   updated external extent leaf fails during removal.
 - Replay JBD2 in scan, revoke, and replay passes so a later transaction can

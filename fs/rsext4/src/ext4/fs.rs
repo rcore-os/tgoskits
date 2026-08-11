@@ -160,14 +160,16 @@ impl Ext4FileSystem {
         )?;
 
         let sb = self.superblock;
-        let inode_size = self.inode_disk_size() as usize;
         let has_csum = ext4_superblock_has_metadata_csum(&sb);
 
-        let wrapped_f = move |inode: &mut Ext4Inode| {
+        let wrapped_f = move |inode: &mut Ext4Inode, raw_inode: &mut [u8]| {
             f(inode);
             if has_csum {
-                ext4_update_inode_checksum(&sb, inode_num, inode.i_generation, inode, inode_size);
+                ext4_update_raw_inode_checksum(&sb, inode_num, inode, raw_inode)?;
+            } else {
+                inode.to_disk_bytes(raw_inode);
             }
+            Ok(())
         };
 
         self.inodetable_cache
