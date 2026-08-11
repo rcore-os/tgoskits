@@ -64,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Publish hard-link target and parent inode records together with the directory
   metadata block under one bounded transaction, restoring disk and cache state
   when directory publication fails.
+- Keep directory-growth block bitmaps, group descriptors, the superblock, and
+  extent metadata inside the Linux-sized hard-link transaction boundary.
 
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 
