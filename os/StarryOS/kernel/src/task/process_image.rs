@@ -3,7 +3,7 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::mem;
 
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use kernel_elf_parser::AuxEntry;
 
 use super::ProcessData;
@@ -126,7 +126,7 @@ impl ProcessData {
 
 #[cfg(test)]
 mod tests {
-    use ax_sync::PiMutex;
+    use crate::sync::PiMutex;
 
     use super::ProcessImageState;
 

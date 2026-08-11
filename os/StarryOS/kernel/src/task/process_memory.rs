@@ -3,10 +3,10 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use ax_sync::{PiMutex, spin::SpinNoIrq};
+use ax_sync::spin::SpinNoIrq;
 
 use super::ProcessData;
-use crate::{mm::AddrSpace, task::futex::FutexDomain};
+use crate::{mm::AddrSpace, sync::PiMutex, task::futex::FutexDomain};
 
 /// One Linux mm generation and every facility whose identity follows it.
 ///

@@ -7,7 +7,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PAGE_SIZE_4K;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDONLY, O_WRONLY, S_IFIFO},

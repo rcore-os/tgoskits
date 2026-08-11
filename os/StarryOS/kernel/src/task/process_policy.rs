@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 
-use ax_sync::{PiMutex, PiMutexGuard};
+use crate::sync::{PiMutex, PiMutexGuard};
 
 use super::{ProcessData, Rlimits};
 
@@ -74,7 +74,7 @@ impl ProcessData {
 
 #[cfg(test)]
 mod tests {
-    use ax_sync::PiMutex;
+    use crate::sync::PiMutex;
 
     use super::ProcessPolicyState;
 

@@ -6,7 +6,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::current_fs_context;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
     system::{new_utsname, sysinfo},

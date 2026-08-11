@@ -34,7 +34,7 @@ use ax_io::{IoBuf, SeekFrom, prelude::*};
 use ax_memory_addr::VirtAddr;
 use ax_memory_set::MemoryArea;
 use ax_runtime::hal::paging::MappingFlags;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 
 use super::{File, FileLike, IoDst, IoSrc, Kstat, get_file_like};

@@ -236,7 +236,7 @@ impl LocalPidReservations {
         Ok(Some(reservations))
     }
 
-    fn publish(&self, _publication: &ax_sync::PiMutexGuard<'static, ()>) -> AxResult<()> {
+    fn publish(&self, _publication: &crate::sync::PiMutexGuard<'static, ()>) -> AxResult<()> {
         for entry in &self.entries {
             entry
                 .namespace

@@ -12,7 +12,7 @@ use core::{
 
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_std::os::arceos::task as scheduler;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 
 use super::Thread;
 
@@ -936,7 +936,7 @@ mod tests {
 
     #[test]
     fn task_name_uses_a_sleepable_snapshot_lock() {
-        fn assert_name_lock(_: &ax_sync::PiMutex<alloc::sync::Arc<str>>) {}
+        fn assert_name_lock(_: &crate::sync::PiMutex<alloc::sync::Arc<str>>) {}
         fn assert_extension_name_lock(extension: &StarryUserTaskExtension) {
             assert_name_lock(&extension.name);
         }

@@ -12,7 +12,7 @@ use alloc::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 use starry_process::{Pid, Process, ProcessCpuTime, init_proc};
 

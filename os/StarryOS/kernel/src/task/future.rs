@@ -21,7 +21,7 @@ use ax_std::os::arceos::task::{
     self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, LocalExecutor,
     MonotonicDeadline, MonotonicInstant, WaitQueue,
 };
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 use spin::Once;
 

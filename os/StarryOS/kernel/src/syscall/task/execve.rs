@@ -14,7 +14,6 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::{InterruptibleMutexExt, PiMutex};
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
@@ -26,6 +25,7 @@ use crate::{
     mm::{
         copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string, vm_load_until_nul,
     },
+    sync::{InterruptibleMutexExt, PiMutex},
     task::{future::block_on, rebind_task_tid, release_thread_pid, zap_thread},
 };
 

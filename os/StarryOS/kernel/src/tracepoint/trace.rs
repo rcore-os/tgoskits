@@ -1,6 +1,6 @@
 use core::sync::atomic::Ordering;
 
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::VfsResult;
 use ktracepoint::{TraceCmdLineCacheSnapshot, TracePipeSnapshot};
 

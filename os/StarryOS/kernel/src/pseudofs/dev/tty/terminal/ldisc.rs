@@ -8,7 +8,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,

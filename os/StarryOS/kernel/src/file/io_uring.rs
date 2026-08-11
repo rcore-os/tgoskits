@@ -5,7 +5,7 @@ use ax_alloc::{UsageKind, global_allocator};
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, align_up_4k};
 use ax_runtime::hal::mem::virt_to_phys;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::io_uring::{
     IORING_FEAT_RW_CUR_POS, IORING_FEAT_SUBMIT_STABLE, IORING_OFF_CQ_RING, IORING_OFF_SQ_RING,

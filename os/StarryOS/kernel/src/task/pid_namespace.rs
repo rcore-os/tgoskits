@@ -3,9 +3,9 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_std::os::arceos::task::WaitQueue;
-use ax_sync::{PiMutex, PiMutexGuard};
 
 use super::ProcessIdentity;
+use crate::sync::{PiMutex, PiMutexGuard};
 
 pub(crate) type PidNamespaceRef = axnsproxy::PidNamespaceRef;
 

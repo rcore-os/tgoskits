@@ -10,7 +10,7 @@ use ax_runtime::{
     hal::{cpu_num, percpu::this_cpu_id},
     task::{CpuId, CpuSet, SchedulePolicy, WaitQueue},
 };
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 
 static STOP_MACHINE_LOCK: PiMutex<()> = PiMutex::new(());
 static CPU_STOPPERS: LazyInit<Vec<Arc<CpuStopper>>> = LazyInit::new();

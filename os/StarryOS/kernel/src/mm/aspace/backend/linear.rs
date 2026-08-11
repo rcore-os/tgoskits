@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use ax_errno::AxResult;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 
 use super::{AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, pages_in};
 use crate::{mm::paging_error_to_ax_error, sync::Mutex};

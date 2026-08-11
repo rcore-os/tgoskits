@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 
 use self::backend::{UsbSerialPortInfo, find_usb_serial_port};

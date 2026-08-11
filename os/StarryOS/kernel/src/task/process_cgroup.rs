@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 
 use ax_cgroup::{CgroupNode, CgroupResult, ProcessMembership};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use starry_process::Pid;
 
 /// Serializes migration and final exit for one stable process generation.

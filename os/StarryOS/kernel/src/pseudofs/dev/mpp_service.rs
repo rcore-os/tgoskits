@@ -15,7 +15,7 @@
 use core::{any::Any, ffi::c_int, mem::size_of};
 
 use ax_driver::jpeg::{self, mpp, registers};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 
 use crate::{

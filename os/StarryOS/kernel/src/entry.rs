@@ -5,7 +5,7 @@ use alloc::{
 
 use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use scope_local::Scope;
 use starry_process::{Pid, Process};
 

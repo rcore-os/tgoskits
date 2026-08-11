@@ -9,7 +9,7 @@ use core::{
 use ax_kernel_guard::NoPreempt;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_std::os::arceos::task::{self as scheduler, WaitQueue};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use spin::LazyLock;
 use starry_process::Pid;
 use starry_signal::Signo;

@@ -7,7 +7,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FileBackend, current_fs_context};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;

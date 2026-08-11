@@ -10,7 +10,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{NANOS_PER_SEC, monotonic_time_nanos, wall_time};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use linux_raw_sys::general::{
     CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,
     CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID,

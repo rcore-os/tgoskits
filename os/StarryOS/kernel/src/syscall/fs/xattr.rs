@@ -15,7 +15,7 @@ use alloc::{
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::Location;
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, XATTR_CREATE, XATTR_LIST_MAX, XATTR_NAME_MAX,

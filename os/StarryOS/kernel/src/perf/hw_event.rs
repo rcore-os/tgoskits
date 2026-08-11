@@ -36,7 +36,7 @@ use ax_errno::{AxError, AxResult};
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
 #[cfg(target_arch = "aarch64")]
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 #[cfg(not(target_arch = "aarch64"))]
 use kbpf_basic::linux_bpf::perf_event_attr;

@@ -1,4 +1,4 @@
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::{VfsError, VfsResult};
 use ktracepoint::{TraceFilterFile, TracePoint, TracePointEnableFile};
 

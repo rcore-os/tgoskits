@@ -4,7 +4,7 @@ use core::{any::Any, ops::Deref};
 use ax_errno::AxResult;
 use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 
 use super::{
     AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, RssKind, alloc_frame,

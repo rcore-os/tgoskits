@@ -35,7 +35,7 @@ mod user_wait;
 
 use alloc::sync::Arc;
 
-use ax_sync::{PiMutex, PiMutexGuard, spin::SpinNoIrq};
+use ax_sync::spin::SpinNoIrq;
 pub(crate) use process_ptrace::PtraceAttachMode;
 pub use process_ptrace::{PtraceStopFpData, SyscallTraceState};
 use starry_process::{Pid, Process};
@@ -43,6 +43,8 @@ use starry_signal::{
     Signo,
     api::{ProcessSignalManager, SignalActions},
 };
+
+use crate::sync::{PiMutex, PiMutexGuard};
 
 pub use self::{
     cred::*, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable,

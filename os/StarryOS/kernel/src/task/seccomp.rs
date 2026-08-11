@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use syscalls::Sysno;
 
 const BPF_MAXINSNS: usize = 4096;

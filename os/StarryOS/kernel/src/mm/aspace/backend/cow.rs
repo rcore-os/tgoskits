@@ -12,7 +12,7 @@ use ax_runtime::hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageTable, PagingError},
 };
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 
 use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,

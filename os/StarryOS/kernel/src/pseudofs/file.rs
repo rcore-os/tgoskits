@@ -1,7 +1,7 @@
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::{any::Any, cmp::Ordering, task::Context};
 
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::{
     FileNodeOps, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags,
     NodeOps, NodePermission, NodeType, VfsError, VfsResult,

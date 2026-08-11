@@ -705,7 +705,7 @@ struct MremapMove<'a> {
 
 fn mremap_move(
     aspace: &mut crate::mm::AddrSpace,
-    aspace_ref: &Arc<ax_sync::PiMutex<crate::mm::AddrSpace>>,
+    aspace_ref: &Arc<crate::sync::PiMutex<crate::mm::AddrSpace>>,
     move_args: MremapMove<'_>,
 ) -> AxResult {
     let MremapMove {

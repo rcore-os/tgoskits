@@ -11,7 +11,7 @@ use alloc::sync::{Arc, Weak};
 use core::sync::atomic::Ordering;
 
 use ax_errno::{AxError, AxResult};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 
 use super::{
     hw,

@@ -2,7 +2,7 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_runtime::hal::time::monotonic_time_nanos;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
 use starry_process::Pid;

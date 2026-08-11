@@ -1,6 +1,6 @@
 use core::{future::poll_fn, task::Poll};
 
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::VfsResult;
 use ktracepoint::TracePipeOps;
 

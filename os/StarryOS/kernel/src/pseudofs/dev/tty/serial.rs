@@ -10,7 +10,7 @@ use ax_runtime::{
         SerialTxSender, StopBits,
     },
 };
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use rdrive::DeviceId as RDriveDeviceId;
 use starry_process::Process;
 

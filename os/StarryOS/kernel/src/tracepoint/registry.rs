@@ -6,7 +6,7 @@ use core::{
 };
 
 use ax_kspin::SpinNoPreempt;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use ktracepoint::{ExtTracePoint, TracePoint};
 
 use super::KernelTraceAux;

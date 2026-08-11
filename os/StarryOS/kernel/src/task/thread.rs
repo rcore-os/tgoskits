@@ -6,10 +6,12 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize
 use ax_errno::AxResult;
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin};
-use ax_sync::{PiMutex, spin::SpinNoIrq};
+use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
 use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWriteGuard};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
+
+use crate::sync::PiMutex;
 
 use super::{
     CpuTimeAccounting, CpuTimeDelta, Cred, ProcessData, RttimeWatchdog, SeccompDecision,
@@ -741,7 +743,7 @@ impl Thread {
 mod tests {
     use core::sync::atomic::{AtomicBool, Ordering};
 
-    use ax_sync::PiMutex;
+    use crate::sync::PiMutex;
 
     use super::{NextSignalCheckBlock, ThreadSecurity};
     use crate::task::SeccompStateStore;

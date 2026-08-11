@@ -1,6 +1,6 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::{NodePermission, VfsError, VfsResult};
 use ddebug::ControlFile;
 

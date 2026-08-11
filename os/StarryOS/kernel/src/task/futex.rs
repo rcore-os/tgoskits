@@ -16,10 +16,10 @@ use ax_runtime::hal::time::monotonic_time;
 use ax_std::os::arceos::task::{
     self as scheduler, CurrentParkStart, MonotonicInstant, ThreadWakeBatch,
 };
-use ax_sync::{LockdepMutexExt, PiMutex};
 
 use crate::{
     mm::{AddrSpace, Backend, SharedPages},
+    sync::{LockdepMutexExt, PiMutex},
     task::{ProcessData, UserTaskRef, process_memory::ProcessMemoryShare},
 };
 

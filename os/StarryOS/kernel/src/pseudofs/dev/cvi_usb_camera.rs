@@ -4,7 +4,7 @@ use core::{any::Any, time::Duration};
 use ax_errno::AxError;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, time::busy_wait};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
     gpio::{Direction, GPIO, GPIO1_BASE},

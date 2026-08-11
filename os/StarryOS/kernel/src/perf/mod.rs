@@ -75,7 +75,7 @@ use ax_io::{Read, Write};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, pmu};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::Pollable;
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;

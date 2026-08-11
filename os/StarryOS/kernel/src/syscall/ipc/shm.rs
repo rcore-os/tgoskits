@@ -7,7 +7,7 @@ use alloc::{
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time_nanos};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
 use starry_process::Pid;

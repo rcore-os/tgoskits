@@ -3,12 +3,13 @@
 use alloc::sync::Arc;
 use core::{future::poll_fn, task::Poll};
 
-use ax_sync::{PiMutex, spin::SpinNoIrq};
+use ax_sync::spin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet};
 use starry_process::Pid;
 use starry_signal::Signo;
 
 use super::{ProcessData, current_user_task, future};
+use crate::sync::PiMutex;
 
 struct VforkDone {
     done: bool,

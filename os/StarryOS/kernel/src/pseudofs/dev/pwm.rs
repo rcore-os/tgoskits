@@ -1,6 +1,6 @@
 use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec, vec::Vec};
 
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::{NodePermission, VfsError, VfsResult};
 
 use crate::{

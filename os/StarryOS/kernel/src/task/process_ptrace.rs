@@ -4,7 +4,7 @@ use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 use starry_signal::{SignalInfo, Signo};
 
@@ -771,7 +771,7 @@ impl ProcessData {
 
 #[cfg(test)]
 mod tests {
-    use ax_sync::PiMutex;
+    use crate::sync::PiMutex;
 
     use super::ProcessPtraceState;
 

@@ -9,7 +9,7 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext, current_fs_context};
 use ax_io::{Seek, SeekFrom};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{

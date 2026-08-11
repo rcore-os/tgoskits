@@ -18,11 +18,10 @@ use ax_runtime::{
     },
     task::AddressSpaceCpuState,
 };
-use ax_sync::{LockdepMutexExt, PiMutex};
 
 use crate::{
     mm::{ProcessVmStat, paging_error_to_ax_error},
-    sync::{LockdepMutexExt, Mutex},
+    sync::{LockdepMutexExt, Mutex, PiMutex},
 };
 
 mod accounting;

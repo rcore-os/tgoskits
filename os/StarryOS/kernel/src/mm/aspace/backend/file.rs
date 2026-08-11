@@ -10,7 +10,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FileFlags};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
 

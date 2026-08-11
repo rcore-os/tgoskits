@@ -8,7 +8,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::{SpinNoIrq as Mutex, SpinRwLock as RwLock};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use crab_usb::{
     Device, DeviceInfo, Endpoint, ProbedDevice,
     usb_if::{

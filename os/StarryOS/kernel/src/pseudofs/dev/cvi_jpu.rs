@@ -2,7 +2,7 @@
 
 use ax_errno::AxError;
 use ax_memory_addr::PhysAddr;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::VfsResult;
 use dma_api::DmaError;
 use sg200x_bsp::soc::TOP_BASE;

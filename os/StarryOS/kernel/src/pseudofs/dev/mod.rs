@@ -50,7 +50,7 @@ use core::{
 };
 
 use ax_errno::AxError;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 
 use crate::sync::Mutex;

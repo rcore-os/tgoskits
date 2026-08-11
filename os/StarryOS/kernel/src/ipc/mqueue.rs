@@ -23,7 +23,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_runtime::hal::time::wall_time;
-use ax_sync::{PiMutex, SpinMutex};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::general::{
     O_ACCMODE, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, S_IFREG, SIGEV_NONE, SIGEV_SIGNAL,
@@ -34,6 +33,7 @@ use starry_signal::{SignalInfo, Signo};
 
 use crate::{
     file::{FileLike, IoDst, IoSrc, Kstat},
+    sync::{PiMutex, SpinLock},
     task::{
         current_user_task,
         future::{UserWaitOutcome, block_on_user_until_wall, poll_io},
@@ -161,7 +161,7 @@ fn mq_bytes(max_msg: usize, msg_size: usize) -> Option<u64> {
 /// `ucounts` (`inc_rlimit_ucounts(UCOUNT_RLIMIT_MSGQUEUE, ...)`); with no
 /// ucounts abstraction here, a global uid-keyed map is the faithful
 /// equivalent. Entries are removed when a user's charge returns to zero.
-static MQ_USER_BYTES: SpinMutex<BTreeMap<u32, u64>> = SpinMutex::new(BTreeMap::new());
+static MQ_USER_BYTES: SpinLock<BTreeMap<u32, u64>> = SpinLock::new(BTreeMap::new());
 
 /// Charge `bytes` for `uid` against `limit` (the caller's `RLIMIT_MSGQUEUE`
 /// soft limit). Returns `EMFILE` without mutating state when the charge would

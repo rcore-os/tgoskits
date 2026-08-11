@@ -6,7 +6,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::FileBackend;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
     general::{O_ACCMODE, O_RDONLY},

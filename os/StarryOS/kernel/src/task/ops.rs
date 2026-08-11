@@ -8,7 +8,7 @@ use core::ffi::c_long;
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::TimeValue;
 use ax_std::os::arceos::task::yield_current_cpu;
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::IoEvents;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;

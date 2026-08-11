@@ -18,7 +18,7 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_lazyinit::LazyInit;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
 use ktracepoint::*;

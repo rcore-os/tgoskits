@@ -9,7 +9,7 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_io::prelude::*;
 use ax_net::{InterfaceId, InterfaceInfo, InterfaceKind};
-use ax_sync::PiMutex;
+use crate::sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
