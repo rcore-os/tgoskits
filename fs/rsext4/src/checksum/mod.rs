@@ -14,6 +14,7 @@ pub use dirblock::{
     ext4_dirblock_csum32, ext4_metadata_block_csum32, ext4_update_dirblock_tail_checksum,
     update_ext4_dirblock_csum32, verify_ext4_dirblock_checksum, verify_ext4_dx_checksum,
 };
+pub(crate) use inode::ext4_update_raw_inode_checksum;
 pub use inode::{ext4_inode_csum32, ext4_update_inode_checksum};
 pub(crate) use journal::{jbd2_commit_block_csum32, jbd2_descriptor_block_csum32, jbd2_tag_csum32};
 pub use journal::{jbd2_superblock_csum32, jbd2_update_superblock_checksum};

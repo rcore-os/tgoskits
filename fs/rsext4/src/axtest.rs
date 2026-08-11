@@ -796,14 +796,16 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
         inode.i_generation,
         &inode,
         256,
-    );
+    )
+    .unwrap();
     rsext4::checksum::ext4_update_inode_checksum(
         &superblock,
         inode_num,
         inode.i_generation,
         &mut inode,
         256,
-    );
+    )
+    .unwrap();
     ax_assert_eq!(inode.l_i_checksum_lo, (checksum & 0xffff) as u16);
     ax_assert_eq!(inode.i_checksum_hi, (checksum >> 16) as u16);
 

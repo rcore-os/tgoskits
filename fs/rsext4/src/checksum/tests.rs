@@ -93,9 +93,9 @@ fn inode_checksum_is_split_and_persisted_to_disk() {
     let mut inode = sample_inode();
     inode.i_generation = generation;
 
-    ext4_update_inode_checksum(&sb, inode_num, generation, &mut inode, inode_size);
+    ext4_update_inode_checksum(&sb, inode_num, generation, &mut inode, inode_size).unwrap();
 
-    let expected = ext4_inode_csum32(&sb, inode_num, generation, &inode, inode_size);
+    let expected = ext4_inode_csum32(&sb, inode_num, generation, &inode, inode_size).unwrap();
     assert_eq!(inode.l_i_checksum_lo, (expected & 0xFFFF) as u16);
     assert_eq!(inode.i_checksum_hi, ((expected >> 16) & 0xFFFF) as u16);
 
@@ -109,6 +109,28 @@ fn inode_checksum_is_split_and_persisted_to_disk() {
         u16::from_le_bytes(bytes[130..132].try_into().unwrap()),
         inode.i_checksum_hi
     );
+}
+
+#[test]
+fn inode_checksum_covers_unmodeled_inline_xattr_bytes() {
+    // Test idea: Linux protects the complete inode record, including the
+    // inline-xattr tail that is intentionally not modeled by Ext4Inode.
+    let sb = metadata_csum_superblock();
+    let inode_num = InodeNumber::new(42).unwrap();
+    let mut inode = sample_inode();
+    let mut first = [0u8; Ext4Inode::LARGE_INODE_SIZE as usize];
+    inode.to_disk_bytes(&mut first);
+    first[200] = 0x5a;
+    ext4_update_raw_inode_checksum(&sb, inode_num, &mut inode, &mut first).unwrap();
+    let first_checksum = (u32::from(inode.i_checksum_hi) << 16) | u32::from(inode.l_i_checksum_lo);
+
+    let mut second = first;
+    second[200] ^= 0xff;
+    ext4_update_raw_inode_checksum(&sb, inode_num, &mut inode, &mut second).unwrap();
+    let second_checksum = (u32::from(inode.i_checksum_hi) << 16) | u32::from(inode.l_i_checksum_lo);
+
+    assert_ne!(first_checksum, second_checksum);
+    assert_eq!(second[200], first[200] ^ 0xff);
 }
 
 #[test]

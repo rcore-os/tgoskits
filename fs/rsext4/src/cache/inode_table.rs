@@ -18,6 +18,7 @@ pub type InodeCacheKey = InodeNumber;
 #[derive(Debug, Clone)]
 pub struct CachedInode {
     pub inode: Ext4Inode,
+    raw_inode: Vec<u8>,
     pub dirty: bool,
     pub block_num: AbsoluteBN,
     pub offset_in_block: usize,
@@ -29,12 +30,14 @@ pub struct CachedInode {
 impl CachedInode {
     pub fn new(
         inode: Ext4Inode,
+        raw_inode: Vec<u8>,
         inode_num: InodeNumber,
         block_num: AbsoluteBN,
         offset_in_block: usize,
     ) -> Self {
         Self {
             inode,
+            raw_inode,
             dirty: false,
             block_num,
             offset_in_block,
@@ -106,14 +109,15 @@ impl InodeCache {
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
         offset: usize,
-    ) -> Ext4Result<Ext4Inode> {
+    ) -> Ext4Result<(Ext4Inode, Vec<u8>)> {
         let mut buffer = alloc::vec![0u8; block_dev.block_size() as usize];
         block_dev.read_blocks(&mut buffer, block_num, 1)?;
         let end = offset
             .checked_add(self.inode_size)
             .ok_or(Ext4Error::corrupted())?;
         let bytes = buffer.get(offset..end).ok_or(Ext4Error::corrupted())?;
-        Ok(Ext4Inode::from_disk_bytes(bytes))
+        let raw_inode = bytes.to_vec();
+        Ok((Ext4Inode::from_disk_bytes(&raw_inode), raw_inode))
     }
 
     pub fn get_or_load<B: BlockIo>(
@@ -143,7 +147,7 @@ impl InodeCache {
         }
 
         // A failed load leaves the previous cache contents untouched.
-        let inode = self.load_inode(block_dev, block_num, offset)?;
+        let (inode, raw_inode) = self.load_inode(block_dev, block_num, offset)?;
 
         if self.cache.len() >= self.max_entries
             && let Some(victim_num) = self.lru_inode()
@@ -154,12 +158,11 @@ impl InodeCache {
                 .cloned()
                 .ok_or(Ext4Error::corrupted())?;
             if victim.dirty {
-                let data = self.encode_inode(&victim.inode);
                 Self::write_inode_bytes_static(
                     block_dev,
                     victim.block_num,
                     victim.offset_in_block,
-                    &data,
+                    &victim.raw_inode,
                 )?;
             }
             self.cache.remove(&victim_num);
@@ -167,15 +170,9 @@ impl InodeCache {
 
         self.cache.insert(
             inode_num,
-            CachedInode::new(inode, inode_num, block_num, offset),
+            CachedInode::new(inode, raw_inode, inode_num, block_num, offset),
         );
         Ok(())
-    }
-
-    fn encode_inode(&self, inode: &Ext4Inode) -> Vec<u8> {
-        let mut data = alloc::vec![0u8; self.inode_size];
-        inode.to_disk_bytes(&mut data);
-        data
     }
 
     fn lru_inode(&self) -> Option<InodeNumber> {
@@ -219,7 +216,7 @@ impl InodeCache {
     ) -> Ext4Result<()>
     where
         B: BlockIo,
-        F: FnOnce(&mut Ext4Inode),
+        F: FnOnce(&mut Ext4Inode, &mut [u8]) -> Ext4Result<()>,
     {
         self.ensure_loaded(block_dev, inode_num, block_num, offset)?;
         self.touch(inode_num);
@@ -228,15 +225,20 @@ impl InodeCache {
             .cache
             .get_mut(&inode_num)
             .ok_or(Ext4Error::corrupted())?;
-        f(&mut cached.inode);
+        let previous_inode = cached.inode;
+        let previous_raw_inode = cached.raw_inode.clone();
+        if let Err(error) = f(&mut cached.inode, &mut cached.raw_inode) {
+            cached.inode = previous_inode;
+            cached.raw_inode = previous_raw_inode;
+            return Err(error);
+        }
         cached.mark_dirty();
         cached.generation = cached.generation.saturating_add(1);
 
         if !USE_MULTILEVEL_CACHE {
             let block_num = cached.block_num;
             let offset = cached.offset_in_block;
-            let inode = cached.inode;
-            let data = self.encode_inode(&inode);
+            let data = cached.raw_inode.clone();
             Self::write_inode_bytes_static(block_dev, block_num, offset, &data)?;
             let cached = self
                 .cache
@@ -258,7 +260,7 @@ impl InodeCache {
     ) -> Ext4Result<()>
     where
         B: BlockIo,
-        F: FnOnce(&mut Ext4Inode),
+        F: FnOnce(&mut Ext4Inode, &mut [u8]) -> Ext4Result<()>,
     {
         self.modify(block_dev, handle.inode_num, block_num, offset, f)
     }
@@ -272,12 +274,11 @@ impl InodeCache {
             return Ok(());
         };
         if cached.dirty {
-            let data = self.encode_inode(&cached.inode);
             Self::write_inode_bytes_static(
                 block_dev,
                 cached.block_num,
                 cached.offset_in_block,
-                &data,
+                &cached.raw_inode,
             )?;
         }
         self.cache.remove(&inode_num);
@@ -294,7 +295,7 @@ impl InodeCache {
                     *inode_num,
                     cached.block_num,
                     cached.offset_in_block,
-                    self.encode_inode(&cached.inode),
+                    cached.raw_inode.clone(),
                 )
             })
             .collect::<Vec<_>>();
@@ -319,12 +320,11 @@ impl InodeCache {
             return Ok(());
         };
         if cached.dirty {
-            let data = self.encode_inode(&cached.inode);
             Self::write_inode_bytes_static(
                 block_dev,
                 cached.block_num,
                 cached.offset_in_block,
-                &data,
+                &cached.raw_inode,
             )?;
             let cached = self
                 .cache

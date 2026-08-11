@@ -640,7 +640,21 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
     assert!(no_xattr.extents.is_empty());
     assert!(no_xattr.complete);
 
+    filesystem
+        .write_inode(
+            MutationContext::new(1000, 1000, 0, 0o022),
+            file.number,
+            0,
+            b"updated",
+        )
+        .expect("mutate inode with inline xattr");
+
     filesystem.unmount().expect("unmount xattr image");
+    let inline_attrs = debugfs_query(&image, "ea_list /fiemap-xattr.bin");
+    assert!(
+        inline_attrs.contains("user.fiemap") && inline_attrs.contains("inline-value"),
+        "ordinary inode updates must preserve inline xattrs\n{inline_attrs}"
+    );
     e2fsck_readonly_clean(
         &image,
         &format!("remounted {filesystem_block_size}-byte inline-xattr FIEMAP"),
