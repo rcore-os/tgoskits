@@ -3,12 +3,18 @@ use alloc::{
     vec::Vec,
 };
 
+#[cfg(feature = "multitask")]
+use ax_sync::LockdepMutexExt;
+
 use crate::{Pid, Process, ProcessGroup};
 
+// Relationship transactions run only in task context. Multitask kernels need
+// PI because a transaction may hold several ordered locks while another task
+// blocks on them; single-task builds need only preemption-safe exclusion.
 #[cfg(feature = "multitask")]
 pub(crate) type RelationLock<T> = ax_sync::PiMutex<T>;
 #[cfg(not(feature = "multitask"))]
-pub(crate) type RelationLock<T> = ax_kspin::SpinNoIrq<T>;
+pub(crate) type RelationLock<T> = ax_sync::SpinLock<T>;
 
 // Relationship writers use one order:
 // process group binding -> parent child sets (ascending PID) -> child parent
@@ -16,6 +22,10 @@ pub(crate) type RelationLock<T> = ax_kspin::SpinNoIrq<T>;
 // published only when a group is created and is never nested with the process
 // relationship locks. Capacity is reserved before entering this order, and
 // removed storage is released only after every guard has gone away.
+
+const CHILD_RELATION_LOCK_SUBCLASS: u32 = 1;
+const PARENT_RELATION_LOCK_SUBCLASS: u32 = 2;
+const MEMBER_RELATION_LOCK_SUBCLASS: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ChildPublication {
@@ -333,8 +343,8 @@ impl ProcessRelationTxn {
                 drop(group_binding);
                 continue;
             }
-            let mut children = parent.children.lock();
-            let parent_binding = process.parent.lock();
+            let mut children = parent.children.lock_nested(CHILD_RELATION_LOCK_SUBCLASS);
+            let parent_binding = process.parent.lock_nested(PARENT_RELATION_LOCK_SUBCLASS);
             if parent_binding.as_ptr() != Arc::as_ptr(&parent) {
                 drop(parent_binding);
                 drop(children);
@@ -344,7 +354,7 @@ impl ProcessRelationTxn {
             if !children.is_open() {
                 return false;
             }
-            let mut members = group.processes.lock();
+            let mut members = group.processes.lock_nested(MEMBER_RELATION_LOCK_SUBCLASS);
             if !children.has_capacity_for(1) || !members.has_capacity_for(1) {
                 drop(members);
                 drop(parent_binding);
@@ -379,7 +389,7 @@ impl ProcessRelationTxn {
                 drop(group_binding);
                 continue;
             }
-            let mut members = group.processes.lock();
+            let mut members = group.processes.lock_nested(CHILD_RELATION_LOCK_SUBCLASS);
             if !members.has_capacity_for(1) {
                 drop(members);
                 drop(group_binding);
@@ -422,8 +432,9 @@ impl ProcessRelationTxn {
             );
 
             let commit = if source.pgid() < target.pgid() {
-                let mut source_members = source.processes.lock();
-                let mut target_members = target.processes.lock();
+                let mut source_members = source.processes.lock_nested(CHILD_RELATION_LOCK_SUBCLASS);
+                let mut target_members =
+                    target.processes.lock_nested(PARENT_RELATION_LOCK_SUBCLASS);
                 Self::move_group_locked(
                     process,
                     target,
@@ -432,8 +443,9 @@ impl ProcessRelationTxn {
                     &mut target_members,
                 )
             } else {
-                let mut target_members = target.processes.lock();
-                let mut source_members = source.processes.lock();
+                let mut target_members = target.processes.lock_nested(CHILD_RELATION_LOCK_SUBCLASS);
+                let mut source_members =
+                    source.processes.lock_nested(PARENT_RELATION_LOCK_SUBCLASS);
                 Self::move_group_locked(
                     process,
                     target,
@@ -505,11 +517,11 @@ impl ProcessRelationTxn {
 
             let result = if process.pid() < reaper.pid() {
                 let mut children = process.children.lock();
-                let mut reaper_children = reaper.children.lock();
+                let mut reaper_children = reaper.children.lock_nested(CHILD_RELATION_LOCK_SUBCLASS);
                 Self::reparent_locked(&mut children, &mut reaper_children, reaper, &mut reparented)
             } else {
                 let mut reaper_children = reaper.children.lock();
-                let mut children = process.children.lock();
+                let mut children = process.children.lock_nested(CHILD_RELATION_LOCK_SUBCLASS);
                 Self::reparent_locked(&mut children, &mut reaper_children, reaper, &mut reparented)
             };
 
@@ -565,7 +577,7 @@ impl ProcessRelationTxn {
         children.close_for_exit();
         let reaper_parent = Arc::downgrade(reaper);
         while let Some((pid, child)) = children.pop_last() {
-            *child.parent.lock() = reaper_parent.clone();
+            *child.parent.lock_nested(PARENT_RELATION_LOCK_SUBCLASS) = reaper_parent.clone();
             reparented.push(child.clone());
             reaper_children.insert_unique_reserved(pid, child);
         }
@@ -583,15 +595,15 @@ impl ProcessRelationTxn {
             }
 
             let (removed_child, removed_member, old_parent) = if let Some(parent) = parent {
-                let mut children = parent.children.lock();
-                let mut parent_binding = process.parent.lock();
+                let mut children = parent.children.lock_nested(CHILD_RELATION_LOCK_SUBCLASS);
+                let mut parent_binding = process.parent.lock_nested(PARENT_RELATION_LOCK_SUBCLASS);
                 if parent_binding.as_ptr() != Arc::as_ptr(&parent) {
                     drop(parent_binding);
                     drop(children);
                     drop(group_binding);
                     continue;
                 }
-                let mut members = group.processes.lock();
+                let mut members = group.processes.lock_nested(MEMBER_RELATION_LOCK_SUBCLASS);
                 let removed_child = children
                     .contains_process(process.pid(), process)
                     .then(|| children.remove(process.pid()))
@@ -603,13 +615,13 @@ impl ProcessRelationTxn {
                 let old_parent = core::mem::take(&mut *parent_binding);
                 (removed_child, removed_member, old_parent)
             } else {
-                let mut parent_binding = process.parent.lock();
+                let mut parent_binding = process.parent.lock_nested(CHILD_RELATION_LOCK_SUBCLASS);
                 if parent_binding.strong_count() != 0 {
                     drop(parent_binding);
                     drop(group_binding);
                     continue;
                 }
-                let mut members = group.processes.lock();
+                let mut members = group.processes.lock_nested(PARENT_RELATION_LOCK_SUBCLASS);
                 let removed_member = members
                     .contains_process(process.pid(), process)
                     .then(|| members.remove(process.pid()))

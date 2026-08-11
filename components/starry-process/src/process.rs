@@ -9,18 +9,18 @@ use core::{
     time::Duration,
 };
 
-#[cfg(not(feature = "multitask"))]
-use ax_kspin::SpinNoIrq as ThreadGroupLock;
 use ax_lazyinit::LazyInit;
 #[cfg(feature = "multitask")]
 use ax_sync::PiMutex as ThreadGroupLock;
+// Thread-group state has the same task-context contract as relationship state:
+// PI in multitask kernels, preemption-safe spinning in single-task builds.
+#[cfg(not(feature = "multitask"))]
+use ax_sync::SpinLock as ThreadGroupLock;
 
 use crate::{
     Pid, ProcessGroup, Session,
     relations::{ChildRelations, GroupMoveScope, ProcessRelationTxn, RelationLock},
 };
-
-const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
 
 #[derive(Default)]
 pub(crate) struct ThreadGroup {
@@ -202,7 +202,7 @@ impl Process {
 impl Process {
     /// The parent [`Process`].
     pub fn parent(&self) -> Option<Arc<Process>> {
-        self.parent.lock_irqsave().upgrade()
+        self.parent.lock().upgrade()
     }
 
     /// Returns whether this process can still accept a newly published child.
@@ -233,7 +233,7 @@ impl Process {
 impl Process {
     /// The [`ProcessGroup`] that the [`Process`] belongs to.
     pub fn group(&self) -> Arc<ProcessGroup> {
-        self.group.lock_irqsave().clone()
+        self.group.lock().clone()
     }
 
     fn set_group(self: &Arc<Self>, group: &Arc<ProcessGroup>) {
@@ -312,7 +312,7 @@ impl Process {
 impl Process {
     /// Adds a thread to this [`Process`] with the given thread ID.
     pub fn add_thread(self: &Arc<Self>, tid: Pid) {
-        self.tg.lock_irqsave().threads.insert(tid);
+        self.tg.lock().threads.insert(tid);
     }
 
     /// Removes a thread that was registered for a child not yet published.
@@ -342,7 +342,7 @@ impl Process {
         exit_code: i32,
         cpu_time: ProcessCpuTime,
     ) -> ThreadExit {
-        let mut tg = self.tg.lock_irqsave();
+        let mut tg = self.tg.lock();
         if !tg.threads.remove(&tid) {
             return ThreadExit::AlreadyExited;
         }
@@ -380,14 +380,14 @@ impl Process {
     /// `new_tid` atomically inside the thread-group lock so there is no
     /// instant in which the caller is unrepresented in the group.
     pub fn rename_thread(self: &Arc<Self>, old_tid: Pid, new_tid: Pid) {
-        let mut tg = self.tg.lock_irqsave();
+        let mut tg = self.tg.lock();
         tg.threads.remove(&old_tid);
         tg.threads.insert(new_tid);
     }
 
     /// Returns `true` if the [`Process`] is group exited.
     pub fn is_group_exited(&self) -> bool {
-        self.tg.lock_irqsave().group_exited
+        self.tg.lock().group_exited
     }
 
     /// Starts a process-wide exit if one is not already in progress.
@@ -416,12 +416,12 @@ impl Process {
 
     /// Marks the [`Process`] as group exited.
     pub fn group_exit(&self) {
-        self.tg.lock_irqsave().group_exited = true;
+        self.tg.lock().group_exited = true;
     }
 
     /// The exit code of the [`Process`].
     pub fn exit_code(&self) -> i32 {
-        self.tg.lock_irqsave().exit_code
+        self.tg.lock().exit_code
     }
 }
 
@@ -492,7 +492,7 @@ impl fmt::Debug for Process {
         let mut builder = f.debug_struct("Process");
         builder.field("pid", &self.pid);
 
-        let tg = self.tg.lock_irqsave();
+        let tg = self.tg.lock();
         if tg.group_exited {
             builder.field("group_exited", &tg.group_exited);
         }
@@ -593,15 +593,19 @@ mod tests {
     extern crate std;
 
     use alloc::sync::Arc;
-    use core::time::Duration;
     use std::{
         sync::{Arc as StdArc, Barrier, OnceLock},
         thread,
-        time::Instant,
     };
+
+    #[cfg(feature = "multitask")]
+    use ax_sync::LockdepMutexExt;
 
     use super::Process;
     use crate::ProcessGroup;
+
+    const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
+    const NESTED_GROUP_MEMBERS_LOCK_SUBCLASS: u32 = 1;
 
     fn test_init() -> Arc<Process> {
         static TEST_INIT: OnceLock<Arc<Process>> = OnceLock::new();
@@ -626,7 +630,7 @@ mod tests {
         let child = parent.fork(4);
         let child_pid = child.pid();
 
-        let reaper_children = reaper.children.lock_irqsave();
+        let reaper_children = reaper.children.lock();
         let start_exit = StdArc::new(Barrier::new(2));
         let exit_parent = parent.clone();
         let exit_reaper = reaper.clone();
@@ -637,24 +641,17 @@ mod tests {
         });
 
         start_exit.wait();
-        let deadline = Instant::now() + Duration::from_millis(500);
-        let mut observed_invisible = false;
-        while Instant::now() < deadline {
-            let parent_has_child = parent.children.lock().contains(child_pid);
-            let reaper_has_child = reaper_children.contains(child_pid);
-            if !parent_has_child && !reaper_has_child {
-                observed_invisible = true;
-                break;
-            }
-            thread::yield_now();
-        }
+        let parent_has_child = parent
+            .children
+            .lock_nested(NESTED_CHILDREN_LOCK_SUBCLASS)
+            .contains(child_pid);
 
         drop(reaper_children);
         exit_thread.join().unwrap();
 
         assert!(
-            !observed_invisible,
-            "orphan was removed from its old parent before it became visible to the reaper"
+            parent_has_child,
+            "the old parent must retain the orphan while the reaper lock blocks publication"
         );
         assert!(Arc::ptr_eq(&reaper, &child.parent().unwrap()));
         assert!(reaper.children.lock().contains(child_pid));
@@ -737,7 +734,7 @@ mod tests {
         let process = init.fork(91);
         let source = process.group();
         let target = ProcessGroup::get_or_create(92, &source.session());
-        let target_members = target.processes.lock();
+        let source_members = source.processes.lock();
         let start = StdArc::new(Barrier::new(2));
         let move_start = start.clone();
         let moving_process = process.clone();
@@ -748,24 +745,19 @@ mod tests {
         });
 
         start.wait();
-        let deadline = Instant::now() + Duration::from_millis(500);
-        let mut observed_invisible = false;
-        while Instant::now() < deadline {
-            let source_has_process = source.processes.lock().get(process.pid()).is_some();
-            let target_has_process = target_members.get(process.pid()).is_some();
-            if !source_has_process && !target_has_process {
-                observed_invisible = true;
-                break;
-            }
-            thread::yield_now();
-        }
+        let source_has_process = source_members.get(process.pid()).is_some();
+        let target_has_process = target
+            .processes
+            .lock_nested(NESTED_GROUP_MEMBERS_LOCK_SUBCLASS)
+            .get(process.pid())
+            .is_some();
 
-        drop(target_members);
+        drop(source_members);
         move_thread.join().unwrap();
 
         assert!(
-            !observed_invisible,
-            "group move removed the process before the destination membership was reserved"
+            source_has_process && !target_has_process,
+            "the source membership must remain published while its lock blocks the move"
         );
         assert!(source.processes.lock().get(process.pid()).is_none());
         assert!(target.processes.lock().get(process.pid()).is_some());
