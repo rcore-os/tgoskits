@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn traversal_rejects_extent_into_system_metadata() {
-        let (mut dev, fs) = setup_fs(16 * 1024);
+        let (mut dev, mut fs) = setup_fs(16 * 1024);
         let inode_num = InodeNumber::new(12).unwrap();
         let mut inode = new_extent_inode();
         let block_bitmap = fs.group_descs[0].block_bitmap();
@@ -541,6 +541,24 @@ mod tests {
         let error = ExtentTree::with_filesystem(&mut inode, &fs, inode_num)
             .find_extent(&mut dev, 0)
             .expect_err("ordinary inode must not map the block bitmap");
+        assert_eq!(
+            error.context(),
+            Some(ErrorContext::Operation {
+                op: "extent:system_metadata",
+            })
+        );
+
+        fs.set_block_validity(&mut dev, false).unwrap();
+        let extent = ExtentTree::with_filesystem(&mut inode, &fs, inode_num)
+            .find_extent(&mut dev, 0)
+            .expect("noblock_validity must bypass the system-zone index")
+            .expect("crafted extent must remain present");
+        assert_eq!(extent.start_block(), block_bitmap);
+
+        fs.set_block_validity(&mut dev, true).unwrap();
+        let error = ExtentTree::with_filesystem(&mut inode, &fs, inode_num)
+            .find_extent(&mut dev, 0)
+            .expect_err("reenabling block validity must rebuild the system-zone index");
         assert_eq!(
             error.context(),
             Some(ErrorContext::Operation {
