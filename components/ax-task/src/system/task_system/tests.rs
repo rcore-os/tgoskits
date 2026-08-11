@@ -5277,6 +5277,26 @@ fn load_summary_publication_does_not_scan_runnable_threads() {
 }
 
 #[test]
+fn clock_only_owner_transaction_does_not_republish_unchanged_load() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online_at(cpu.as_mut(), 0).unwrap();
+
+    balance::reset_load_summary_publications();
+    let _clock = system.sample_owner_rq_clock(cpu.as_ref().get_ref());
+
+    assert_eq!(
+        balance::load_summary_publications(),
+        0,
+        "updating rq->clock without changing runnable state must not rewrite the remote load \
+         seqlock"
+    );
+}
+
+#[test]
 fn one_owner_selection_publishes_one_load_summary() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
