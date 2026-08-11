@@ -173,6 +173,24 @@ fn invalid_device_config(operation: &'static str, detail: &str) -> DeviceManager
     }
 }
 
+fn allocate_zeroed_backend_buffer(
+    capacity: u64,
+    operation: &'static str,
+) -> DeviceManagerResult<Vec<u8>> {
+    let byte_len = usize::try_from(capacity).map_err(|_| {
+        invalid_device_config(operation, "capacity does not fit the host address space")
+    })?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(byte_len).map_err(|_| {
+        invalid_device_config(
+            operation,
+            "capacity cannot be allocated in the host address space",
+        )
+    })?;
+    bytes.resize(byte_len, 0);
+    Ok(bytes)
+}
+
 struct VirtioBlkModel {
     backend: Mutex<Option<VirtioBlkBackend>>,
     controller: axdevice_base::InterruptControllerId,
@@ -351,21 +369,7 @@ fn open_file_backend(
 
 #[cfg(feature = "fs")]
 fn allocate_file_mirror(capacity: u64) -> DeviceManagerResult<Vec<u8>> {
-    let byte_len = usize::try_from(capacity).map_err(|_| {
-        invalid_device_config(
-            "allocate virtio-blk file mirror",
-            "capacity does not fit the host address space",
-        )
-    })?;
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(byte_len).map_err(|_| {
-        invalid_device_config(
-            "allocate virtio-blk file mirror",
-            "capacity cannot be allocated in the host address space",
-        )
-    })?;
-    bytes.resize(byte_len, 0);
-    Ok(bytes)
+    allocate_zeroed_backend_buffer(capacity, "allocate virtio-blk file mirror")
 }
 
 #[cfg(not(feature = "fs"))]
@@ -420,14 +424,11 @@ struct RamDiskBackend {
 
 impl RamDiskBackend {
     fn new(capacity_bytes: u64) -> DeviceManagerResult<Self> {
-        let byte_len = usize::try_from(capacity_bytes).map_err(|_| {
-            invalid_device_config(
-                "allocate virtio-blk ramdisk",
-                "capacity does not fit the host address space",
-            )
-        })?;
         Ok(Self {
-            bytes: Mutex::new(vec![0; byte_len]),
+            bytes: Mutex::new(allocate_zeroed_backend_buffer(
+                capacity_bytes,
+                "allocate virtio-blk ramdisk",
+            )?),
             capacity_sectors: capacity_bytes / SECTOR_SIZE as u64,
         })
     }
@@ -454,7 +455,7 @@ impl RamDiskBackend {
 #[cfg(feature = "fs")]
 struct FileBackend {
     bytes: Mutex<Vec<u8>>,
-    writes: Arc<ax_sync::Mutex<VecDeque<FileWrite>>>,
+    writes: Arc<Mutex<VecDeque<FileWrite>>>,
     pending_writes: Arc<AtomicUsize>,
     writeback_failed: Arc<AtomicBool>,
     capacity_sectors: u64,
@@ -473,7 +474,7 @@ impl FileBackend {
         bytes: Vec<u8>,
         capacity_sectors: u64,
     ) -> DeviceManagerResult<Self> {
-        let writes = Arc::new(ax_sync::Mutex::new(VecDeque::<FileWrite>::new()));
+        let writes = Arc::new(Mutex::new(VecDeque::<FileWrite>::new()));
         let worker_writes = writes.clone();
         let pending_writes = Arc::new(AtomicUsize::new(0));
         let worker_pending = pending_writes.clone();
@@ -483,7 +484,11 @@ impl FileBackend {
             .name("virtio-blk-file".into())
             .spawn(move || {
                 loop {
-                    if let Some(write) = worker_writes.lock().pop_front() {
+                    if let Some(write) = worker_writes
+                        .lock()
+                        .expect("virtio-blk file queue mutex poisoned")
+                        .pop_front()
+                    {
                         let result =
                             ax_api::fs::ax_write_file_at(&file, write.offset, &write.bytes)
                                 .and_then(|written| {
@@ -556,10 +561,13 @@ impl BlockBackend for FileBackend {
             .expect("virtio-blk file mirror mutex poisoned")[range.clone()]
         .copy_from_slice(buffer);
         self.pending_writes.fetch_add(1, Ordering::AcqRel);
-        self.writes.lock().push_back(FileWrite {
-            offset: range.start as u64,
-            bytes: buffer.to_vec(),
-        });
+        self.writes
+            .lock()
+            .expect("virtio-blk file queue mutex poisoned")
+            .push_back(FileWrite {
+                offset: range.start as u64,
+                bytes: buffer.to_vec(),
+            });
         Ok(buffer.len())
     }
 
@@ -736,7 +744,7 @@ fn map_virtio_error(error: VirtioError) -> DeviceError {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_capacity_bytes;
+    use super::{allocate_zeroed_backend_buffer, parse_capacity_bytes};
 
     #[test]
     fn parses_decimal_and_binary_capacity_suffixes() {
@@ -750,5 +758,10 @@ mod tests {
         assert!(parse_capacity_bytes("0GB").is_err());
         assert!(parse_capacity_bytes("1XB").is_err());
         assert!(parse_capacity_bytes("1KB").is_err());
+    }
+
+    #[test]
+    fn oversized_backend_capacity_returns_configuration_error() {
+        assert!(allocate_zeroed_backend_buffer(u64::MAX, "test virtio-blk allocation").is_err());
     }
 }
