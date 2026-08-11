@@ -7,7 +7,6 @@ use crate::{
     bmalloc::{AbsoluteBN, BGIndex, InodeNumber},
     config::*,
     disknode::*,
-    endian::DiskFormat,
     error::*,
 };
 
@@ -122,7 +121,7 @@ impl InodeCache {
             .ok_or(Ext4Error::corrupted())?;
         let bytes = buffer.get(offset..end).ok_or(Ext4Error::corrupted())?;
         let raw_inode = bytes.to_vec();
-        Ok((Ext4Inode::from_disk_bytes(&raw_inode), raw_inode))
+        Ok((Ext4Inode::decode_checked(&raw_inode)?, raw_inode))
     }
 
     pub fn get_or_load<B: BlockIo>(
