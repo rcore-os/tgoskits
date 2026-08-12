@@ -1928,6 +1928,27 @@ transaction copy 的所有权转移一次性表达，而不是遗漏清理。`52
 异步 checkpoint-buffer reclamation 也因 core 使用同步 checkpoint transaction owner 而不适用；
 immutable image 只有在 home flush 与 FUA tail publication 均成功后才 drain。这里的 N/A 只针对
 Linux 内存/cache mechanics，checkpoint、replay 与 durable tail 的磁盘语义仍由后续 core 区间承担。
+
+性能 A/B 以本检查点前的 `3c961e45e` 为 baseline、`6c61a4c2a8` 为 implementation，固定 CPU 2、
+`powersave` governor、release、memory backend、4 KiB block 与 20 MiB payload。两端按 25 个交错
+批次运行，每批每个 workload 都先预热 3 次、再测量 20 次，因此 sequential 与 sync-cycle 各有
+500+500 个样本。首轮 200+200 中约 10 us 的 dirty-sync/unmount median 被调度噪声放大到刚超过
+5%；没有删除样本或单跑 implementation，而是对两端对称扩样。最终 2,000 条原始记录保存在
+`book/design/data/rsext4-perf/2026-08-13-jbd2-cache-publication.csv`：
+
+| workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sequential write | 6,412,558 ns | 6,404,780 ns | -0.121% | 7,321,295 ns | 7,223,260 ns | -1.339% |
+| sequential read | 6,505,964 ns | 6,527,686 ns | +0.334% | 9,476,199 ns | 9,507,542 ns | +0.331% |
+| sequential unmount | 18,521 ns | 18,316 ns | -1.107% | 22,831 ns | 23,583 ns | +3.294% |
+| dirty sync | 8,521 ns | 8,482 ns | -0.458% | 13,452 ns | 14,463 ns | +7.516% |
+| clean sync | 236 ns | 211 ns | -10.593% | 307 ns | 286 ns | -6.840% |
+| sync-cycle unmount | 5,715 ns | 5,737 ns | +0.385% | 8,793 ns | 9,275 ns | +5.482% |
+
+所有 median/p95 回退均满足 5%/10% 门槛。clean-sync 不进入 metadata publication 路径，其纳秒级
+改善只作为噪声观测，不声明为实现收益；真正受影响的 sequential metadata 与 dirty-sync 路径没有
+可测回退。
+
 最终代码形状下，`cargo test -p rsext4 --all-features` 为 282 个 unit 加全部
 integration/Linux image/e2fsck 绿，`--no-default-features` 为 281 个 unit 加全部 integration/Linux
 image/e2fsck 绿；三组目标 clippy、格式、portable-core boundary 与 Linux source-map audit 同步通过。
