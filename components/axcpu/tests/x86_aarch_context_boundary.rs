@@ -19,7 +19,7 @@ fn x86_task_context_does_not_own_address_space_selection() {
 }
 
 #[test]
-fn aarch64_task_context_does_not_own_address_space_selection() {
+fn aarch64_task_context_restores_current_without_owning_address_space_selection() {
     let source = read_arch_source("aarch64/context.rs");
     let rust_switch = function_body(&source, "pub fn prepare_switch_to");
     let naked_switch = function_body(&source, r#"unsafe extern "C" fn context_switch_raw"#);
@@ -28,6 +28,8 @@ fn aarch64_task_context_does_not_own_address_space_selection() {
     assert!(!rust_switch.contains("write_user_page_table"));
     assert!(!naked_switch.contains("write_user_page_table"));
     assert!(naked_switch.contains("tpidr_el0"));
+    assert!(naked_switch.contains("sp_el0"));
+    assert!(naked_switch.contains("current_header_offset"));
     assert!(!source.contains("pub fn switch_to("));
     assert!(!task_context_definition(&source).contains("ttbr0_el1"));
 }

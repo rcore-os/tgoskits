@@ -379,29 +379,33 @@ mod tests {
     }
 
     #[test]
-    fn aarch64_current_register_is_independent_of_kernel_tls() {
-        let aarch64 = ArchitectureCurrentModel {
+    fn independent_current_register_ignores_kernel_tls_feature() {
+        let independent = ArchitectureCurrentModel {
             current_source_aliases_kernel_tls: false,
         };
         assert_eq!(
-            aarch64.current_thread_source(true),
+            independent.current_thread_source(false),
             CurrentThreadSource::Architecture,
-            "Linux AArch64 keeps current in SP_EL0 while TPIDR_EL0 independently owns kernel TLS",
+        );
+        assert_eq!(
+            independent.current_thread_source(true),
+            CurrentThreadSource::Architecture,
+            "an independent current register must not follow the kernel TLS feature",
         );
     }
 
     #[test]
-    fn tls_aliased_task_register_uses_the_cpu_anchor() {
-        let tls_aliased = ArchitectureCurrentModel {
+    fn aliased_current_register_follows_kernel_tls_feature() {
+        let aliased = ArchitectureCurrentModel {
             current_source_aliases_kernel_tls: true,
         };
         assert_eq!(
-            tls_aliased.current_thread_source(true),
-            CurrentThreadSource::CpuRuntimeAnchor,
+            aliased.current_thread_source(false),
+            CurrentThreadSource::Architecture,
         );
         assert_eq!(
-            tls_aliased.current_thread_source(false),
-            CurrentThreadSource::Architecture,
+            aliased.current_thread_source(true),
+            CurrentThreadSource::CpuRuntimeAnchor,
         );
     }
 
