@@ -96,7 +96,7 @@ impl LegacyTruncatePlan {
             filesystem.free_block(device, block)?;
         }
         for &block in &self.metadata_blocks_to_free {
-            device.forget_detached_metadata(block);
+            device.forget_detached_metadata(block)?;
             filesystem.datablock_cache.invalidate(block);
             filesystem.free_block(device, block)?;
         }
@@ -127,9 +127,16 @@ impl LegacyTruncatePlan {
         filesystem: &Ext4FileSystem,
     ) -> Ext4Result<LegacyTransactionFootprint> {
         let allocation_groups = self.allocation_groups(filesystem)?;
+        let detached_metadata_credits = self
+            .metadata_blocks_to_free
+            .iter()
+            .filter(|block| !self.pointer_edits.iter().any(|edit| edit.block == **block))
+            .count();
         let credits = self
             .pointer_edits
             .len()
+            .checked_add(detached_metadata_credits)
+            .ok_or_else(Ext4Error::overflow)?
             .checked_add(
                 allocation_groups
                     .len()

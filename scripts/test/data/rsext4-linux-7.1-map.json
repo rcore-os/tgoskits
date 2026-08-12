@@ -1399,7 +1399,7 @@
       "segments": [
         {
           "start": 1,
-          "end": 729,
+          "end": 125,
           "symbol": "<whole-file>",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
@@ -1408,6 +1408,45 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "jbd2-abort-sticky"
+          ]
+        },
+        {
+          "start": 126,
+          "end": 353,
+          "symbol": "__flush_batch; jbd2_log_do_checkpoint; jbd2_cleanup_journal_tail",
+          "classification": "core",
+          "state_machine": "committed transaction -> home writes -> durable tail advance",
+          "invariant": "a committed transaction remains replayable until every required home write and barrier complete",
+          "rust_owner": "rsext4::jbd2::jbd2::checkpoint_transactions_with_mapping",
+          "reason": "the portable owner keeps committed images separate from the running queue and reclaims the ring only after durable checkpoint",
+          "test_ids": [
+            "jbd2-writer-revoke-checkpoint"
+          ]
+        },
+        {
+          "start": 354,
+          "end": 558,
+          "symbol": "checkpoint shrink helpers",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::checkpoint",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-abort-sticky"
+          ]
+        },
+        {
+          "start": 559,
+          "end": 729,
+          "symbol": "__jbd2_journal_remove_checkpoint; __jbd2_journal_insert_checkpoint; __jbd2_journal_drop_transaction",
+          "classification": "core",
+          "state_machine": "committed buffer -> checkpoint list -> transaction release",
+          "invariant": "transaction log ownership ends only after its checkpoint list is empty and the transaction is finished",
+          "rust_owner": "rsext4::jbd2::Jbd2CheckpointTransaction",
+          "reason": "the in-memory checkpoint transaction owns committed images until checkpoint completion",
+          "test_ids": [
+            "jbd2-writer-revoke-checkpoint"
           ]
         }
       ]
@@ -1420,8 +1459,62 @@
       "segments": [
         {
           "start": 1,
-          "end": 1189,
+          "end": 113,
           "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::transaction",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-handle-credits",
+            "jbd2-abort-sticky"
+          ]
+        },
+        {
+          "start": 114,
+          "end": 175,
+          "symbol": "journal_submit_commit_record; journal_wait_on_commit_record",
+          "classification": "core",
+          "state_machine": "descriptor and payload durable -> commit record FUA publication -> wait",
+          "invariant": "with barriers enabled and without async commit, the commit record is submitted with preflush and FUA ordering",
+          "rust_owner": "rsext4::jbd2::jbd2::commit_transaction_with_mapping",
+          "reason": "the portable writer uses an explicit flush before a METADATA|FUA commit write and propagates unsupported durability capabilities",
+          "test_ids": [
+            "jbd2-writer-revoke-checkpoint"
+          ]
+        },
+        {
+          "start": 176,
+          "end": 537,
+          "symbol": "commit helpers and jbd2_journal_commit_transaction prefix",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::transaction",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-handle-credits",
+            "jbd2-abort-sticky"
+          ]
+        },
+        {
+          "start": 538,
+          "end": 605,
+          "symbol": "jbd2_journal_commit_transaction revoke-table switch and phase transition",
+          "classification": "core",
+          "state_machine": "running -> flushing -> committing",
+          "invariant": "ordered data precedes revoke records; revoke ownership switches before metadata descriptor logging",
+          "rust_owner": "rsext4::jbd2::jbd2::commit_transaction_with_mapping",
+          "reason": "the synchronous portable owner preserves Linux record ordering while exposing committed work separately for checkpoint",
+          "test_ids": [
+            "jbd2-writer-revoke-checkpoint"
+          ]
+        },
+        {
+          "start": 606,
+          "end": 1189,
+          "symbol": "jbd2_journal_commit_transaction remainder",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",
@@ -1442,8 +1535,35 @@
       "segments": [
         {
           "start": 1,
-          "end": 3178,
+          "end": 1055,
           "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-abort-sticky",
+            "jbd2-csum-v3-write-replay"
+          ]
+        },
+        {
+          "start": 1056,
+          "end": 1091,
+          "symbol": "__jbd2_update_log_tail",
+          "classification": "core",
+          "state_machine": "checkpoint complete -> durable tail publication -> ring reuse",
+          "invariant": "the journal superblock tail update uses FUA before the corresponding log records become reusable",
+          "rust_owner": "rsext4::jbd2::jbd2::checkpoint_transactions_with_mapping",
+          "reason": "portable durability flags preserve Linux's power-fail ordering without depending on a Linux block layer",
+          "test_ids": [
+            "jbd2-writer-revoke-checkpoint"
+          ]
+        },
+        {
+          "start": 1092,
+          "end": 3178,
+          "symbol": "journal lifecycle remainder",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",
@@ -1486,8 +1606,61 @@
       "segments": [
         {
           "start": 1,
-          "end": 745,
+          "end": 299,
           "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::revoke",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay"
+          ]
+        },
+        {
+          "start": 300,
+          "end": 479,
+          "symbol": "jbd2_journal_revoke; jbd2_journal_cancel_revoke",
+          "classification": "core",
+          "state_machine": "metadata detach -> running revoke; later metadata write -> revoke cancellation",
+          "invariant": "revoke is recorded before allocator reuse and a same-transaction metadata write cancels it",
+          "rust_owner": "rsext4::blockdev::journal::{forget_detached_metadata,enqueue_journal_update}",
+          "reason": "typed block ownership and transaction handles replace Linux buffer-head flags while preserving revoke semantics",
+          "test_ids": [
+            "jbd2-writer-revoke-checkpoint"
+          ]
+        },
+        {
+          "start": 480,
+          "end": 660,
+          "symbol": "jbd2_clear_buffer_revoked_flags; jbd2_journal_switch_revoke_table; jbd2_journal_write_revoke_records",
+          "classification": "core",
+          "state_machine": "running revoke table -> committing revoke records -> next running table",
+          "invariant": "revoke records use 32/64-bit entries, reserve checksum tail space, and are durable before the commit record",
+          "rust_owner": "rsext4::jbd2::jbd2::write_revoke_records",
+          "reason": "the portable writer serializes Linux-compatible revoke blocks without Linux hash tables or buffer heads",
+          "test_ids": [
+            "jbd2-writer-revoke-checkpoint"
+          ]
+        },
+        {
+          "start": 661,
+          "end": 721,
+          "symbol": "jbd2_journal_set_revoke; jbd2_journal_test_revoke",
+          "classification": "core",
+          "state_machine": "recovery scan -> latest revoke tid table -> replay filter",
+          "invariant": "a revoke suppresses the same and earlier transaction payloads but never a later payload",
+          "rust_owner": "rsext4::jbd2::jbd2::{build_revoke_table,payload_is_revoked}",
+          "reason": "three-phase replay and runtime checkpoint consult the same transaction-id ordering",
+          "test_ids": [
+            "jbd2-writer-revoke-checkpoint",
+            "jbd2-csum-v3-write-replay"
+          ]
+        },
+        {
+          "start": 722,
+          "end": 745,
+          "symbol": "revoke recovery cleanup",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",

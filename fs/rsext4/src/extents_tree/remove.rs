@@ -423,7 +423,7 @@ impl<'a> ExtentTree<'a> {
                                     tree.can_sub_inode_sectors_for_blocks(fs, 1)?;
                                     entries.remove(idx_pos);
                                     header.eh_entries = entries.len() as u16;
-                                    dev.forget_detached_metadata(child_phy);
+                                    dev.forget_detached_metadata(child_phy)?;
                                     fs.free_block(dev, child_phy)?;
                                     tree.sub_inode_sectors_for_block(fs)?;
                                 } else {
@@ -556,7 +556,7 @@ impl<'a> ExtentTree<'a> {
 
                         self.can_sub_inode_sectors_for_blocks(fs, 1)?;
                         self.store_root_to_inode(&child_node)?;
-                        block_dev.forget_detached_metadata(child_phy);
+                        block_dev.forget_detached_metadata(child_phy)?;
                         fs.free_block(block_dev, child_phy)?;
                         self.sub_inode_sectors_for_block(fs)?;
                         return Ok(());

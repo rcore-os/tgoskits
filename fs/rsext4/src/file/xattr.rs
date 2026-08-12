@@ -373,7 +373,7 @@ fn persist_xattrs<B: BlockIo>(
                 set_external_block_checksum(&filesystem.superblock, old.block, &mut old_image)?;
                 device.write_blocks(&old_image, old.block, 1, true)?;
             } else {
-                device.forget_detached_metadata(old.block);
+                device.forget_detached_metadata(old.block)?;
                 filesystem.free_block(device, old.block)?;
                 let (group, _) = filesystem.block_allocator.global_to_group(old.block)?;
                 if !touched_bitmap_groups.contains(&group) {

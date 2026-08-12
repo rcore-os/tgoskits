@@ -302,7 +302,11 @@ fn undersized_journal_rejects_restart_before_publishing_truncate_intent() {
 #[test]
 fn large_legacy_truncate_restarts_across_allocation_groups() {
     let mut fixture = build_large_legacy_fixture("/legacy-restart");
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 7);
+    // The current bounded handle reserves every distinct revoked block as a
+    // conservative credit until reserved-credit accounting is split by record
+    // type. Keep the ring small enough to force restart while allowing one
+    // complete child-first removal chunk.
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 10);
     fixture.power_cut.reset_observation();
     let sequence_before = fixture.journal.journal_sequence();
 
@@ -355,7 +359,7 @@ fn large_legacy_truncate_restarts_across_allocation_groups() {
 #[test]
 fn large_legacy_truncate_recovery_resumes_after_committed_bitmap_power_cut() {
     let mut fixture = build_large_legacy_fixture("/legacy-restart-crash");
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 7);
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 10);
     fixture
         .power_cut
         .arm_checkpoint_power_cut(fixture.checkpoint_bitmap, 1);
@@ -443,7 +447,7 @@ fn zero_link_legacy_reap_restarts_before_final_inode_transaction() {
         .filesystem
         .sync_filesystem(&mut fixture.journal)
         .expect("orphan fixture sync failed");
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 8);
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 11);
     fixture.power_cut.reset_observation();
 
     reap_unlinked_inode(

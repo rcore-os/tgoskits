@@ -274,7 +274,7 @@ fn rebuild_shifted_extent_mapping_transaction<B: BlockIo>(
         }
     }
     for block in old_external_blocks {
-        device.forget_detached_metadata(block);
+        device.forget_detached_metadata(block)?;
         fs.datablock_cache.invalidate(block);
         fs.free_block(device, block)?;
     }
@@ -297,16 +297,18 @@ fn shifted_extent_transaction_credits(
         .checked_add(replacement_nodes)
         .ok_or_else(Ext4Error::overflow)?
         .min(group_count);
+    let changed_group_credits = changed_groups
+        .checked_mul(2)
+        .ok_or_else(Ext4Error::overflow)?;
 
-    // Every replacement node has one home block. Each potentially affected
-    // allocation group contributes at most one bitmap and one primary GDT
-    // block; the inode-table block and primary superblock are fixed credits.
+    // Every replacement node has one home block, while every old external
+    // node is detached through an independent revoke before allocator reuse.
+    // Each potentially affected allocation group contributes at most one
+    // bitmap and one primary GDT block; the inode-table block and primary
+    // superblock are fixed credits.
     replacement_nodes
-        .checked_add(
-            changed_groups
-                .checked_mul(2)
-                .ok_or_else(Ext4Error::overflow)?,
-        )
+        .checked_add(plan.old_external_blocks.len())
+        .and_then(|credits| credits.checked_add(changed_group_credits))
         .and_then(|credits| credits.checked_add(2))
         .ok_or_else(Ext4Error::overflow)
 }
@@ -942,8 +944,9 @@ fn extent_removal_chunk_credits(
     // One removal step can dirty one extent node per tree level and detach at
     // most one node per level. Every released data or metadata block can dirty
     // one block bitmap and one group descriptor; the inode-table block and
-    // superblock consume the final two credits. Revoke records are not a
-    // separate payload in the current synchronous-checkpoint journal owner.
+    // superblock consume the final two credits. A detached node is either
+    // already one of the touched extent nodes or consumes its reserved depth
+    // credit as a revoke, so no additional per-level term is required here.
     let allocation_groups = data_groups
         .checked_add(depth)
         .ok_or_else(Ext4Error::overflow)?;

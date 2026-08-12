@@ -460,6 +460,10 @@ impl JBD2DEVSYSTEM {
                 rel = self.jbd2_super_block.s_start;
             }
             let target_use = self.journal_phys_block(journal_blocks, rel)?;
+            self.used_log_records = self
+                .used_log_records
+                .checked_add(1)
+                .ok_or_else(Ext4Error::overflow)?;
             Ok(target_use)
         } else {
             self.head += 1;
@@ -474,9 +478,83 @@ impl JBD2DEVSYSTEM {
                 rel = self.jbd2_super_block.s_start;
             }
             let target_use = self.journal_phys_block(journal_blocks, rel)?;
+            self.used_log_records = self
+                .used_log_records
+                .checked_add(1)
+                .ok_or_else(Ext4Error::overflow)?;
             Ok(target_use)
         }
     }
+
+    fn write_revoke_records<D: FilesystemBlockIo>(
+        &mut self,
+        block_dev: &mut D,
+        journal_blocks: &[AbsoluteBN],
+        tid: u32,
+        block_size: usize,
+    ) -> Ext4Result<()> {
+        let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
+        let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
+        let entry_size = if has_64bit { 8 } else { 4 };
+        let record_end = if has_csum_v3 {
+            block_size
+                .checked_sub(core::mem::size_of::<u32>())
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_size"))?
+        } else {
+            block_size
+        };
+        let capacity = record_end
+            .checked_sub(core::mem::size_of::<Jbd2JournalRevokeHeadS>())
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_size"))?
+            / entry_size;
+        if !self.revoke_queue.is_empty() && capacity == 0 {
+            return Err(Ext4Error::no_space().with_operation("jbd2:revoke_capacity"));
+        }
+
+        let revoke_entries = self.revoke_queue.clone();
+        for revoked in revoke_entries.chunks(capacity.max(1)) {
+            let mut revoke_buffer = vec![0_u8; block_size];
+            let record_bytes = revoked
+                .len()
+                .checked_mul(entry_size)
+                .and_then(|bytes| bytes.checked_add(core::mem::size_of::<Jbd2JournalRevokeHeadS>()))
+                .ok_or_else(Ext4Error::overflow)?;
+            Jbd2JournalRevokeHeadS {
+                r_header: JournalHeaderS {
+                    h_magic: JBD2_MAGIC,
+                    h_blocktype: JBD2_BLOCKTYPE_REVOKE,
+                    h_sequence: tid,
+                },
+                r_count: u32::try_from(record_bytes).map_err(|_| Ext4Error::overflow())?,
+            }
+            .to_disk_bytes(&mut revoke_buffer[..core::mem::size_of::<Jbd2JournalRevokeHeadS>()]);
+            let mut offset = core::mem::size_of::<Jbd2JournalRevokeHeadS>();
+            for block in revoked {
+                let raw = block.raw();
+                if has_64bit {
+                    revoke_buffer[offset..offset + 8].copy_from_slice(&raw.to_be_bytes());
+                } else {
+                    let block32 = u32::try_from(raw).map_err(|_| {
+                        Ext4Error::unsupported().with_operation("jbd2:64bit_revoke")
+                    })?;
+                    revoke_buffer[offset..offset + 4].copy_from_slice(&block32.to_be_bytes());
+                }
+                offset += entry_size;
+            }
+            if has_csum_v3 {
+                let checksum =
+                    jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, &revoke_buffer)
+                        .ok_or_else(|| {
+                            Ext4Error::corrupted().with_operation("jbd2:revoke_checksum")
+                        })?;
+                revoke_buffer[record_end..].copy_from_slice(&checksum.to_be_bytes());
+            }
+            let revoke_block = self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
+            block_dev.write(&revoke_buffer, revoke_block, 1)?;
+        }
+        Ok(())
+    }
+
     /// Commits the currently queued metadata updates using the journal inode mapping.
     pub(crate) fn commit_transaction_with_mapping<D: FilesystemBlockIo>(
         &mut self,
@@ -485,7 +563,7 @@ impl JBD2DEVSYSTEM {
     ) -> Ext4Result<bool> {
         let tid = self.sequence;
 
-        if self.commit_queue.is_empty() {
+        if self.commit_queue.is_empty() && self.revoke_queue.is_empty() {
             return Ok(false);
         }
 
@@ -499,6 +577,55 @@ impl JBD2DEVSYSTEM {
         } else {
             block_size
         };
+        let descriptor_capacity = self.jbd2_super_block.descriptor_tag_capacity(block_size)?;
+        let revoke_entry_size = if has_64bit { 8 } else { 4 };
+        let revoke_end = if has_csum_v3 {
+            block_size
+                .checked_sub(core::mem::size_of::<u32>())
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_size"))?
+        } else {
+            block_size
+        };
+        let revoke_capacity = revoke_end
+            .checked_sub(core::mem::size_of::<Jbd2JournalRevokeHeadS>())
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_size"))?
+            / revoke_entry_size;
+        if !self.revoke_queue.is_empty() && revoke_capacity == 0 {
+            return Err(Ext4Error::no_space().with_operation("jbd2:revoke_capacity"));
+        }
+        let descriptor_records = if self.commit_queue.is_empty() {
+            0
+        } else {
+            self.commit_queue.len().div_ceil(descriptor_capacity)
+        };
+        let revoke_records = if self.revoke_queue.is_empty() {
+            0
+        } else {
+            self.revoke_queue.len().div_ceil(revoke_capacity)
+        };
+        let required_log_records = self
+            .commit_queue
+            .len()
+            .checked_add(descriptor_records)
+            .and_then(|records| records.checked_add(revoke_records))
+            .and_then(|records| records.checked_add(1))
+            .ok_or_else(Ext4Error::overflow)?;
+        let ring_records = self
+            .last_logical_block(journal_blocks)
+            .and_then(|last| last.checked_sub(self.jbd2_super_block.s_first))
+            .and_then(|records| records.checked_add(1))
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:ring_capacity"))?;
+        let used_after_commit = self
+            .used_log_records
+            .checked_add(required_log_records)
+            .ok_or_else(Ext4Error::overflow)?;
+        if used_after_commit > usize::try_from(ring_records).map_err(|_| Ext4Error::overflow())? {
+            return Err(Ext4Error::no_space().with_operation("jbd2:log_space"));
+        }
+
+        // Linux switches the committing transaction's revoke table first and
+        // emits those records before descriptor/payload logging.
+        self.write_revoke_records(block_dev, journal_blocks, tid, block_size)?;
 
         let mut journal_payloads: Vec<(AbsoluteBN, Vec<u8>, bool)> = Vec::new();
         for update in &self.commit_queue {
@@ -513,7 +640,6 @@ impl JBD2DEVSYSTEM {
             journal_payloads.push((update.0, journal_data, escaped));
         }
 
-        let descriptor_capacity = self.jbd2_super_block.descriptor_tag_capacity(block_size)?;
         let mut payload_offset = 0usize;
         while payload_offset < journal_payloads.len() {
             let payload_end = payload_offset
@@ -642,24 +768,59 @@ impl JBD2DEVSYSTEM {
         }
         let commit_block_id = self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
 
-        block_dev.write(&commit_buffer, commit_block_id, 1)?;
+        block_dev.write_with_flags(
+            &commit_buffer,
+            commit_block_id,
+            1,
+            WriteFlags::METADATA | WriteFlags::FUA,
+        )?;
         block_dev.flush()?;
         self.sequence = self.sequence.wrapping_add(1);
 
-        // Checkpoint: write metadata back to home blocks now that the commit
-        // record is safely on disk. If the system crashes here the journal
-        // replay will redo these writes, so partial checkpoints are safe.
-        for update in self.commit_queue.iter() {
-            block_dev.write(&update.1[..], update.0, 1)?;
+        self.checkpoint_transactions
+            .push(Jbd2CheckpointTransaction {
+                sequence: tid,
+                updates: core::mem::take(&mut self.commit_queue),
+                revoked_blocks: core::mem::take(&mut self.revoke_queue),
+            });
+
+        Ok(true)
+    }
+
+    /// Writes every committed transaction to its home locations and advances
+    /// the on-disk journal tail only after those writes are durable.
+    pub(crate) fn checkpoint_transactions_with_mapping<D: FilesystemBlockIo>(
+        &mut self,
+        block_dev: &mut D,
+        journal_blocks: &[AbsoluteBN],
+    ) -> Ext4Result<bool> {
+        if self.checkpoint_transactions.is_empty() {
+            return Ok(false);
         }
-        block_dev.flush()?;
 
-        self.commit_queue.clear();
+        for transaction in &self.checkpoint_transactions {
+            for update in &transaction.updates {
+                let superseded = self.checkpoint_transactions.iter().any(|later| {
+                    Self::transaction_id_after(later.sequence, transaction.sequence)
+                        && later.revoked_blocks.contains(&update.0)
+                });
+                if !superseded {
+                    block_dev.write(&update.1[..], update.0, 1)?;
+                }
+            }
+            block_dev.flush()?;
+        }
 
+        self.checkpoint_transactions.clear();
         self.jbd2_super_block.s_sequence = self.sequence;
         self.jbd2_super_block.s_start = 0;
         self.head = 0;
-        self.write_journal_superblock_with_mapping(block_dev, journal_blocks)?;
+        self.used_log_records = 0;
+        self.write_journal_superblock_with_mapping_flags(
+            block_dev,
+            journal_blocks,
+            WriteFlags::METADATA | WriteFlags::FUA,
+        )?;
         block_dev.flush()?;
 
         Ok(true)

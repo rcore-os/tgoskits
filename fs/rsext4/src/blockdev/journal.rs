@@ -30,6 +30,7 @@ struct ActiveJournalHandle {
     credits: usize,
     touched_blocks: Vec<AbsoluteBN>,
     queue_snapshot: Vec<Jbd2Update>,
+    revoke_snapshot: Vec<AbsoluteBN>,
 }
 
 struct ActiveDirectHandle {
@@ -143,6 +144,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             let system = self.system.as_mut().ok_or_else(|| {
                 Ext4Error::journal_aborted().with_operation("jbd2:write_without_state")
             })?;
+            system.revoke_queue.retain(|block| *block != update.0);
             if let Some(existing) = system
                 .commit_queue
                 .iter_mut()
@@ -159,6 +161,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             let system = self.system.as_mut().ok_or_else(|| {
                 Ext4Error::journal_aborted().with_operation("jbd2:write_without_state")
             })?;
+            system.revoke_queue.retain(|block| *block != update.0);
             if let Some(existing) = system
                 .commit_queue
                 .iter_mut()
@@ -167,16 +170,18 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 *existing = update;
                 return Ok(());
             }
-            system.commit_queue.len() >= transaction_capacity
+            Self::running_transaction_credits(system)? >= transaction_capacity
         };
 
         if needs_commit {
             self.commit_pending_transaction()?;
+            self.checkpoint_pending_transactions()?;
         }
 
         let system = self.system.as_mut().ok_or_else(|| {
             Ext4Error::journal_aborted().with_operation("jbd2:write_without_state")
         })?;
+        system.revoke_queue.retain(|block| *block != update.0);
         system.commit_queue.push(update);
         Ok(())
     }
@@ -188,13 +193,45 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .collect()
     }
 
+    fn visible_checkpoint_update(
+        system: &JBD2DEVSYSTEM,
+        block_id: AbsoluteBN,
+    ) -> Option<&Jbd2Update> {
+        let mut revoked = system.revoke_queue.contains(&block_id);
+        for transaction in system.checkpoint_transactions.iter().rev() {
+            if transaction.revoked_blocks.contains(&block_id) {
+                revoked = true;
+            }
+            if !revoked
+                && let Some(update) = transaction
+                    .updates
+                    .iter()
+                    .find(|queued| queued.0 == block_id)
+            {
+                return Some(update);
+            }
+        }
+        None
+    }
+
+    fn running_transaction_credits(system: &JBD2DEVSYSTEM) -> Ext4Result<usize> {
+        let distinct_revokes = system
+            .revoke_queue
+            .iter()
+            .filter(|block| !system.commit_queue.iter().any(|update| update.0 == **block))
+            .count();
+        system
+            .commit_queue
+            .len()
+            .checked_add(distinct_revokes)
+            .ok_or_else(Ext4Error::overflow)
+    }
+
     fn transaction_capacity(
         superblock: &JournalSuperBlock,
         block_size: usize,
         mapped_blocks: usize,
     ) -> Ext4Result<usize> {
-        let descriptor_capacity = superblock.descriptor_tag_capacity(block_size)?;
-
         let declared_blocks =
             usize::try_from(superblock.s_maxlen).map_err(|_| Ext4Error::overflow())?;
         let first = usize::try_from(superblock.s_first).map_err(|_| Ext4Error::overflow())?;
@@ -202,6 +239,15 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .min(mapped_blocks)
             .checked_sub(first)
             .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:ring_capacity"))?;
+        Self::transaction_capacity_in_records(superblock, block_size, ring_records)
+    }
+
+    fn transaction_capacity_in_records(
+        superblock: &JournalSuperBlock,
+        block_size: usize,
+        ring_records: usize,
+    ) -> Ext4Result<usize> {
+        let descriptor_capacity = superblock.descriptor_tag_capacity(block_size)?;
 
         // A transaction occupies one log record per payload, one descriptor
         // for each descriptor-sized payload chunk, and one final commit block.
@@ -241,6 +287,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
             sequence: super_block.s_sequence,
             jbd2_super_block: super_block,
             commit_queue: Vec::new(),
+            revoke_queue: Vec::new(),
+            checkpoint_transactions: Vec::new(),
+            used_log_records: 0,
         }
     }
 
@@ -372,6 +421,32 @@ impl<B: BlockIo> Jbd2Dev<B> {
         Ok(committed)
     }
 
+    fn checkpoint_pending_transactions(&mut self) -> Ext4Result<bool> {
+        self.ensure_not_aborted("jbd2:checkpoint_after_abort")?;
+        if !self.journal_use {
+            return Ok(false);
+        }
+        let Some(system) = self.system.as_mut() else {
+            return Err(
+                Ext4Error::journal_aborted().with_operation("jbd2:checkpoint_without_state")
+            );
+        };
+        let result =
+            system.checkpoint_transactions_with_mapping(&mut self.inner, &self.journal_blocks);
+        let checkpointed = match result {
+            Ok(checkpointed) => checkpointed,
+            Err(error) => {
+                self.abort_journal(error);
+                return Err(error);
+            }
+        };
+        if checkpointed && let Err(error) = self.inner.invalidate_cache() {
+            self.abort_journal(error);
+            return Err(error);
+        }
+        Ok(checkpointed)
+    }
+
     fn journal_transaction_capacity(&self) -> Ext4Result<usize> {
         self.ensure_not_aborted("jbd2:capacity_after_abort")?;
         let system = self.system.as_ref().ok_or_else(|| {
@@ -391,6 +466,49 @@ impl<B: BlockIo> Jbd2Dev<B> {
             self.inner.block_size() as usize,
             mapped_blocks,
         )
+    }
+
+    fn journal_available_transaction_capacity(&self) -> Ext4Result<usize> {
+        self.ensure_not_aborted("jbd2:capacity_after_abort")?;
+        let system = self.system.as_ref().ok_or_else(|| {
+            Ext4Error::journal_aborted().with_operation("jbd2:capacity_without_state")
+        })?;
+        let available_records = self.journal_available_log_records()?;
+        if available_records < 3 {
+            return Ok(0);
+        }
+        Self::transaction_capacity_in_records(
+            &system.jbd2_super_block,
+            self.inner.block_size() as usize,
+            available_records,
+        )
+    }
+
+    fn journal_available_log_records(&self) -> Ext4Result<usize> {
+        let system = self.system.as_ref().ok_or_else(|| {
+            Ext4Error::journal_aborted().with_operation("jbd2:capacity_without_state")
+        })?;
+        let mapped_blocks = if self.journal_blocks.is_empty() {
+            let available = self
+                .total_blocks()
+                .checked_sub(system.start_block.raw())
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:mapping_capacity"))?;
+            usize::try_from(available).map_err(|_| Ext4Error::overflow())?
+        } else {
+            self.journal_blocks.len()
+        };
+        let declared_blocks =
+            usize::try_from(system.jbd2_super_block.s_maxlen).map_err(|_| Ext4Error::overflow())?;
+        let first =
+            usize::try_from(system.jbd2_super_block.s_first).map_err(|_| Ext4Error::overflow())?;
+        let ring_records = declared_blocks
+            .min(mapped_blocks)
+            .checked_sub(first)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:ring_capacity"))?;
+        let available_records = ring_records
+            .checked_sub(system.used_log_records)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:log_accounting"))?;
+        Ok(available_records)
     }
 
     /// Returns the largest metadata handle supported by the active journal.
@@ -462,11 +580,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
             if self.active_handle.is_some() {
                 return Err(Ext4Error::busy().with_operation("jbd2:disable_with_active_handle"));
             }
-            if self
-                .system
-                .as_ref()
-                .is_some_and(|system| !system.commit_queue.is_empty())
-            {
+            if self.system.as_ref().is_some_and(|system| {
+                !system.commit_queue.is_empty()
+                    || !system.revoke_queue.is_empty()
+                    || !system.checkpoint_transactions.is_empty()
+            }) {
                 return Err(Ext4Error::busy().with_operation("jbd2:disable_with_pending_commit"));
             }
         }
@@ -509,9 +627,13 @@ impl<B: BlockIo> Jbd2Dev<B> {
         Ok(())
     }
 
-    /// Commits every buffered journal update without ending the mount.
+    /// Forces the running transaction's commit record without checkpointing it.
+    ///
+    /// Reads continue to observe the committed images through this journal
+    /// owner. `flush` and `umount_commit` additionally write home blocks and
+    /// advance the durable log tail.
     pub fn commit(&mut self) -> Ext4Result<()> {
-        self.ensure_not_aborted("jbd2:unmount_after_abort")?;
+        self.ensure_not_aborted("jbd2:commit_after_abort")?;
         if !self.journal_use {
             return Ok(());
         }
@@ -523,9 +645,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
         Ok(())
     }
 
-    /// Commits all buffered journal transactions during unmount.
+    /// Commits and checkpoints all buffered journal transactions during unmount.
     pub fn umount_commit(&mut self) -> Ext4Result<()> {
-        self.commit()
+        self.commit()?;
+        self.checkpoint_pending_transactions()?;
+        Ok(())
     }
 
     /// Runs one metadata operation with a bounded number of queue credits.
@@ -578,6 +702,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if self.active_handle.is_some() {
             return Err(Ext4Error::busy().with_operation("jbd2:nested_handle"));
         }
+        let available_capacity = self.journal_available_transaction_capacity()?;
 
         let needs_commit = {
             let Some(system) = self.system.as_mut() else {
@@ -585,15 +710,14 @@ impl<B: BlockIo> Jbd2Dev<B> {
                     Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
                 );
             };
-            let reserved = system
-                .commit_queue
-                .len()
+            let reserved = Self::running_transaction_credits(system)?
                 .checked_add(credits)
                 .ok_or_else(Ext4Error::overflow)?;
-            reserved > transaction_capacity
+            reserved > available_capacity
         };
         if needs_commit {
             self.commit_pending_transaction()?;
+            self.checkpoint_pending_transactions()?;
         }
 
         let queue_snapshot = {
@@ -602,10 +726,19 @@ impl<B: BlockIo> Jbd2Dev<B> {
             })?;
             Self::clone_commit_queue(&system.commit_queue)
         };
+        let revoke_snapshot = self
+            .system
+            .as_ref()
+            .ok_or_else(|| {
+                Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
+            })?
+            .revoke_queue
+            .clone();
         self.active_handle = Some(ActiveJournalHandle {
             credits,
             touched_blocks: Vec::with_capacity(credits),
             queue_snapshot,
+            revoke_snapshot,
         });
 
         match operation(self) {
@@ -623,6 +756,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                     );
                 };
                 system.commit_queue = handle.queue_snapshot;
+                system.revoke_queue = handle.revoke_snapshot;
                 // The active cache may contain buffers dirtied after journal
                 // write access was acquired. They must be discarded, never
                 // flushed to home locations from an aborted handle.
@@ -693,7 +827,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
         let new_buf = self.inner.buffer().to_vec().into_boxed_slice();
         let updates = Jbd2Update(block_id, new_buf);
-        let transaction_capacity = self.journal_transaction_capacity()?;
+        let transaction_capacity = self.journal_available_transaction_capacity()?;
         if let Err(error) = self.enqueue_journal_update(updates, transaction_capacity) {
             self.inner.discard_active();
             return Err(error);
@@ -717,18 +851,41 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.inner.invalidate_block(block_id);
     }
 
-    /// Forgets a pending home update after published metadata is detached.
+    /// Records a revoke after published metadata is detached.
     ///
-    /// The current journal owner has one running queue and checkpoints every
-    /// committed transaction synchronously. Removing the queued image is
-    /// therefore sufficient to prevent a later checkpoint from overwriting a
-    /// new owner after allocator reuse. A pipelined running/committing journal
-    /// must replace this with a real revoke record.
-    pub(crate) fn forget_detached_metadata(&mut self, block_id: AbsoluteBN) {
+    /// A running handle keeps earlier committed transactions available for
+    /// checkpoint while the revoke protects allocator reuse. Calls without a
+    /// handle first close the existing boundary so detachment cannot be split
+    /// from an unrelated running transaction.
+    pub(crate) fn forget_detached_metadata(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
+        self.ensure_not_aborted("jbd2:revoke_after_abort")?;
+        let needs_boundary = self.journal_use
+            && self.active_handle.is_none()
+            && self.system.as_ref().is_some_and(|system| {
+                !system.commit_queue.is_empty()
+                    || !system.revoke_queue.is_empty()
+                    || !system.checkpoint_transactions.is_empty()
+            });
+        if needs_boundary {
+            self.commit_pending_transaction()?;
+            self.checkpoint_pending_transactions()?;
+        }
+        if let Some(handle) = self.active_handle.as_mut()
+            && !handle.touched_blocks.contains(&block_id)
+        {
+            if handle.touched_blocks.len() >= handle.credits {
+                return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
+            }
+            handle.touched_blocks.push(block_id);
+        }
         if let Some(system) = self.system.as_mut() {
             system.commit_queue.retain(|update| update.0 != block_id);
+            if self.journal_use && !system.revoke_queue.contains(&block_id) {
+                system.revoke_queue.push(block_id);
+            }
         }
         self.inner.invalidate_block(block_id);
+        Ok(())
     }
 
     /// Reads one block through the cached inner device.
@@ -739,6 +896,15 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 .commit_queue
                 .iter()
                 .find(|queued| queued.0 == block_id)
+        {
+            self.inner.cache_clean_block(block_id, &update.1[..])?;
+            return Ok(());
+        }
+        if self.journal_use
+            && let Some(update) = self
+                .system
+                .as_ref()
+                .and_then(|system| Self::visible_checkpoint_update(system, block_id))
         {
             self.inner.cache_clean_block(block_id, &update.1[..])?;
             return Ok(());
@@ -781,7 +947,12 @@ impl<B: BlockIo> Jbd2Dev<B> {
         };
         for i in 0..count {
             let bid = block_id.checked_add(i)?;
-            if let Some(update) = system.commit_queue.iter().find(|queued| queued.0 == bid) {
+            let update = system
+                .commit_queue
+                .iter()
+                .find(|queued| queued.0 == bid)
+                .or_else(|| Self::visible_checkpoint_update(system, bid));
+            if let Some(update) = update {
                 if update.1.len() != block_size {
                     return Err(Ext4Error::corrupted().with_operation("jbd2:update_block_size"));
                 }
@@ -819,7 +990,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
         let credits = usize::try_from(count).map_err(|_| Ext4Error::overflow())?;
-        let transaction_capacity = self.journal_transaction_capacity()?;
+        let transaction_capacity = self.journal_available_transaction_capacity()?;
         if self.active_handle.is_none() && credits > 1 && credits <= transaction_capacity {
             return self.with_journal_handle(credits, |device| {
                 device.write_blocks(buf, block_id, count, is_metadata)
@@ -847,9 +1018,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
             if self.active_handle.is_some() {
                 return Err(Ext4Error::busy().with_operation("jbd2:flush_with_active_handle"));
             }
-            if self.commit_pending_transaction()? {
-                return Ok(());
-            }
+            self.commit_pending_transaction()?;
+            self.checkpoint_pending_transactions()?;
         }
         self.inner.flush()
     }
@@ -1058,6 +1228,9 @@ mod tests {
         dev.umount_commit().expect("commit csum-v3 metadata");
 
         let mut inner = dev.into_inner();
+        inner.write_calls = 0;
+        inner.flush_calls = 0;
+        inner.fua_writes = 0;
         let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
         inner.data[target_start..target_start + BLOCK_SIZE].fill(0);
 
@@ -1940,6 +2113,268 @@ mod tests {
         assert_eq!(&inner.data[start..start + BLOCK_SIZE], payload);
     }
 
+    #[test]
+    fn commit_keeps_transaction_for_later_checkpoint() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let target = AbsoluteBN::new(10);
+        let target_offset = target.as_usize().expect("target offset") * BLOCK_SIZE;
+        let payload = vec![0x6b; BLOCK_SIZE];
+        let sequence = dev.journal_sequence().expect("journal sequence");
+        dev.write_blocks(&payload, target, 1, true)
+            .expect("queue metadata update");
+
+        dev.commit().expect("commit running transaction");
+
+        assert_eq!(dev.journal_sequence(), Some(sequence.wrapping_add(1)));
+        assert_ne!(
+            dev.system
+                .as_ref()
+                .expect("journal state")
+                .jbd2_super_block
+                .s_start,
+            0,
+            "the oldest committed transaction must remain discoverable"
+        );
+        assert!(
+            dev.inner._device().data[target_offset..target_offset + BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0),
+            "commit must not synchronously checkpoint the home block"
+        );
+
+        let mut visible = vec![0; BLOCK_SIZE];
+        dev.read_blocks(&mut visible, target, 1)
+            .expect("read committed metadata through journal owner");
+        assert_eq!(visible, payload);
+
+        dev.flush().expect("checkpoint committed transaction");
+        assert_eq!(
+            &dev.inner._device().data[target_offset..target_offset + BLOCK_SIZE],
+            payload
+        );
+        assert_eq!(
+            dev.system
+                .as_ref()
+                .expect("journal state")
+                .jbd2_super_block
+                .s_start,
+            0,
+            "checkpoint must reclaim the journal tail"
+        );
+    }
+
+    #[test]
+    fn commit_record_uses_fua_after_descriptor_flush() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
+            .expect("install checksummed journal");
+        dev.write_blocks(&vec![0x67; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
+            .expect("queue metadata update");
+
+        dev.commit().expect("commit metadata transaction");
+
+        assert_eq!(
+            dev.inner._device().fua_writes,
+            1,
+            "the commit record must be the transaction's FUA publication"
+        );
+        assert_eq!(
+            dev.inner._device().flush_calls,
+            2,
+            "descriptor/payload and commit publication keep separate barriers"
+        );
+    }
+
+    #[test]
+    fn later_writer_revoke_preserves_reused_home_block_after_replay() {
+        let superblock = csum_v3_superblock();
+        let journal_start = AbsoluteBN::new(128);
+        let target = AbsoluteBN::new(10);
+        let target_offset = target.as_usize().expect("target offset") * BLOCK_SIZE;
+        let old_metadata = vec![0x41; BLOCK_SIZE];
+        let new_owner = vec![0xb7; BLOCK_SIZE];
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(superblock, journal_start)
+            .expect("install small journal");
+
+        dev.write_blocks(&old_metadata, target, 1, true)
+            .expect("queue old metadata image");
+        dev.commit().expect("commit old metadata transaction");
+        dev.with_transaction_handle(1, |dev| {
+            dev.forget_detached_metadata(target)?;
+            dev.write_blocks(&new_owner, target, 1, false)
+        })
+        .expect("detach metadata and reuse its block in one transaction");
+        dev.commit().expect("commit later revoke transaction");
+
+        let inner = dev.into_inner();
+        assert_eq!(
+            &inner.data[target_offset..target_offset + BLOCK_SIZE],
+            new_owner,
+            "new owner must reach its home block before the revoke commit"
+        );
+        let revoke_offset = (journal_start.as_usize().expect("journal offset") + 4) * BLOCK_SIZE;
+        let revoke_block = &inner.data[revoke_offset..revoke_offset + BLOCK_SIZE];
+        let revoke = Jbd2JournalRevokeHeadS::from_disk_bytes(revoke_block);
+        assert_eq!(revoke.r_header.h_blocktype, JBD2_BLOCKTYPE_REVOKE);
+        assert_eq!(revoke.r_header.h_sequence, 2);
+        assert_eq!(
+            revoke.r_count, 24,
+            "64-bit revoke must contain one u64 entry"
+        );
+        assert_eq!(
+            u64::from_be_bytes(revoke_block[16..24].try_into().expect("revoke entry")),
+            target.raw()
+        );
+        assert_eq!(
+            u32::from_be_bytes(
+                revoke_block[BLOCK_SIZE - 4..]
+                    .try_into()
+                    .expect("revoke checksum")
+            ),
+            reference_jbd2_block_checksum(&superblock.s_uuid, revoke_block, BLOCK_SIZE - 4)
+        );
+
+        let mut replay_dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        let mut replay_superblock = superblock;
+        replay_superblock.s_start = replay_superblock.s_first;
+        replay_superblock.s_sequence = 1;
+        crate::checksum::jbd2_update_superblock_checksum(&mut replay_superblock);
+        replay_dev
+            .set_journal_superblock(replay_superblock, journal_start)
+            .expect("restore pre-crash journal state");
+        assert_eq!(replay_dev.journal_replay_checked(), ReplayStatus::Complete);
+
+        let inner = replay_dev.into_inner();
+        assert_eq!(
+            &inner.data[target_offset..target_offset + BLOCK_SIZE],
+            new_owner,
+            "the later revoke must suppress replay of the detached metadata image"
+        );
+    }
+
+    #[test]
+    fn later_writer_revoke_suppresses_older_checkpoint_write() {
+        let superblock = csum_v3_superblock();
+        let journal_start = AbsoluteBN::new(128);
+        let target = AbsoluteBN::new(10);
+        let target_offset = target.as_usize().expect("target offset") * BLOCK_SIZE;
+        let old_metadata = vec![0x31; BLOCK_SIZE];
+        let new_owner = vec![0xc4; BLOCK_SIZE];
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(superblock, journal_start)
+            .expect("install checksummed journal");
+
+        dev.write_blocks(&old_metadata, target, 1, true)
+            .expect("queue old metadata image");
+        dev.commit().expect("commit old metadata transaction");
+        dev.with_transaction_handle(1, |dev| {
+            dev.forget_detached_metadata(target)?;
+            dev.write_blocks(&new_owner, target, 1, false)
+        })
+        .expect("detach metadata and reuse its block");
+        dev.commit().expect("commit revoke transaction");
+
+        dev.flush().expect("checkpoint both committed transactions");
+
+        assert_eq!(
+            &dev.inner._device().data[target_offset..target_offset + BLOCK_SIZE],
+            new_owner,
+            "checkpoint must skip an older image covered by a later revoke"
+        );
+        assert_eq!(
+            dev.system
+                .as_ref()
+                .expect("journal state")
+                .jbd2_super_block
+                .s_start,
+            0
+        );
+    }
+
+    #[test]
+    fn metadata_reuse_cancels_same_transaction_revoke() {
+        let superblock = csum_v3_superblock();
+        let journal_start = AbsoluteBN::new(128);
+        let target = AbsoluteBN::new(10);
+        let target_offset = target.as_usize().expect("target offset") * BLOCK_SIZE;
+        let old_metadata = vec![0x21; BLOCK_SIZE];
+        let new_metadata = vec![0xd9; BLOCK_SIZE];
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(superblock, journal_start)
+            .expect("install checksummed journal");
+
+        dev.write_blocks(&old_metadata, target, 1, true)
+            .expect("queue old metadata image");
+        dev.commit().expect("commit old metadata transaction");
+        dev.with_transaction_handle(1, |dev| {
+            dev.forget_detached_metadata(target)?;
+            dev.write_blocks(&new_metadata, target, 1, true)
+        })
+        .expect("reuse metadata block in the running transaction");
+        dev.commit().expect("commit replacement metadata");
+
+        let inner = dev.into_inner();
+        assert!(
+            inner.data[target_offset..target_offset + BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0),
+            "metadata must remain journal-only before checkpoint"
+        );
+        let mut replay_dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        let mut replay_superblock = superblock;
+        replay_superblock.s_start = replay_superblock.s_first;
+        replay_superblock.s_sequence = 1;
+        crate::checksum::jbd2_update_superblock_checksum(&mut replay_superblock);
+        replay_dev
+            .set_journal_superblock(replay_superblock, journal_start)
+            .expect("restore pre-crash journal state");
+        assert_eq!(replay_dev.journal_replay_checked(), ReplayStatus::Complete);
+
+        let inner = replay_dev.into_inner();
+        assert_eq!(
+            &inner.data[target_offset..target_offset + BLOCK_SIZE],
+            new_metadata,
+            "journaling the reused block must cancel its same-transaction revoke"
+        );
+    }
+
+    #[test]
+    fn existing_running_revoke_is_accounted_before_handle_reservation() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let sequence = dev.journal_sequence().expect("journal sequence");
+        dev.forget_detached_metadata(AbsoluteBN::new(10))
+            .expect("queue standalone revoke");
+
+        dev.with_transaction_handle(13, |dev| {
+            for offset in 0..13 {
+                let target = AbsoluteBN::new(20 + offset);
+                dev.write_blocks(&vec![offset as u8; BLOCK_SIZE], target, 1, true)?;
+            }
+            Ok(())
+        })
+        .expect("reserve a full metadata handle after closing the revoke transaction");
+
+        assert_eq!(
+            dev.journal_sequence(),
+            Some(sequence.wrapping_add(1)),
+            "the running revoke must be committed before the full handle starts"
+        );
+        dev.commit().expect("commit full metadata handle");
+        dev.flush().expect("checkpoint both transactions");
+        for offset in 0..13 {
+            let target_offset = (20 + offset) as usize * BLOCK_SIZE;
+            assert_eq!(
+                &dev.inner._device().data[target_offset..target_offset + BLOCK_SIZE],
+                vec![offset as u8; BLOCK_SIZE]
+            );
+        }
+    }
+
     fn assert_commit_stage_fault_aborts_journal(device: MemBlockDev, stage: &str) {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, device, true);
         dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
@@ -1962,7 +2397,17 @@ mod tests {
             .expect("stage fault must abort journal");
         assert_eq!(state.cause.kind(), crate::Ext4ErrorKind::Io, "{stage}");
         assert_eq!(state.persistence_error, None, "{stage}");
-        assert_eq!(dev.inner._device().fua_writes, 1, "{stage}");
+        let expected_fua_writes = match stage {
+            "open-superblock" | "descriptor" | "payload" | "descriptor-payload-barrier" => 1,
+            "commit" | "checkpoint" | "commit-barrier" | "checkpoint-barrier" => 2,
+            "close-superblock" | "superblock-barrier" => 3,
+            _ => panic!("unknown commit fault stage: {stage}"),
+        };
+        assert_eq!(
+            dev.inner._device().fua_writes,
+            expected_fua_writes,
+            "{stage}"
+        );
         assert_eq!(dev.inner._device().fail_write_call, None, "{stage}");
         assert_eq!(dev.inner._device().fail_flush_call, None, "{stage}");
 
