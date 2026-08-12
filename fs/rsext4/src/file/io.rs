@@ -249,7 +249,7 @@ fn rebuild_shifted_extent_mapping_transaction<B: BlockIo>(
 
     let new_external_blocks =
         ExtentTree::with_filesystem(&mut rebuilt, fs, inode_num).external_node_blocks(device)?;
-    let allocation_groups = shifted_extent_allocation_groups(
+    let allocation_groups = extent_allocation_groups(
         fs,
         &released_data,
         &old_external_blocks,
@@ -291,8 +291,7 @@ fn shifted_extent_transaction_credits(
 ) -> Ext4Result<usize> {
     let replacement_nodes = replacement_extent_metadata_blocks(fs, plan.mappings.len())?;
     let released_groups =
-        shifted_extent_allocation_groups(fs, &plan.released_data, &plan.old_external_blocks, &[])?
-            .len();
+        extent_allocation_groups(fs, &plan.released_data, &plan.old_external_blocks, &[])?.len();
     let group_count = usize::try_from(fs.group_count).map_err(|_| Ext4Error::overflow())?;
     let changed_groups = released_groups
         .checked_add(replacement_nodes)
@@ -372,9 +371,9 @@ fn external_nodes_for_sorted_entries(
         .ok_or_else(Ext4Error::overflow)
 }
 
-fn shifted_extent_allocation_groups(
+fn extent_allocation_groups(
     fs: &Ext4FileSystem,
-    released_data: &[(AbsoluteBN, u32)],
+    data_ranges: &[(AbsoluteBN, u32)],
     old_external_blocks: &[AbsoluteBN],
     new_external_blocks: &[AbsoluteBN],
 ) -> Ext4Result<Vec<BGIndex>> {
@@ -386,7 +385,7 @@ fn shifted_extent_allocation_groups(
     {
         insert_shifted_extent_group(fs, &mut groups, block)?;
     }
-    for (start, count) in released_data.iter().copied() {
+    for (start, count) in data_ranges.iter().copied() {
         if count == 0 {
             continue;
         }
@@ -578,16 +577,31 @@ pub fn punch_hole_inode<B: BlockIo>(
     if !inode.uses_extents() {
         return punch_legacy_blocks(device, fs, inode_num, inode, offset, end);
     }
+    let removal = if full_start < full_end {
+        Some(prepare_extent_mapping_removal(
+            device, fs, inode_num, &inode, full_start, full_end,
+        )?)
+    } else {
+        None
+    };
     zero_partial_mapped_blocks(device, fs, inode_num, &mut inode, offset, end)?;
-    if full_start >= full_end {
-        return fs.finalize_inode_update(
+    match removal {
+        None => fs.finalize_inode_update(
             device,
             inode_num,
             &mut inode,
             Ext4InodeMetadataUpdate::write_access(),
-        );
+        ),
+        Some(plan) => commit_extent_mapping_removal(
+            device,
+            fs,
+            inode_num,
+            &mut inode,
+            Ext4InodeMetadataUpdate::write_access(),
+            None,
+            plan,
+        ),
     }
-    punch_extent_blocks(device, fs, inode_num, &mut inode, full_start, full_end)
 }
 
 /// Converts complete blocks inside a byte range to unwritten extents.
@@ -701,45 +715,42 @@ fn zero_mapped_inode_block_slice<B: BlockIo>(
         .modify(device, physical, |block| block[start..end].fill(0))
 }
 
-fn punch_extent_blocks<B: BlockIo>(
-    device: &mut Jbd2Dev<B>,
-    fs: &mut Ext4FileSystem,
-    inode_num: InodeNumber,
-    inode: &mut Ext4Inode,
-    full_start: u64,
-    full_end: u64,
-) -> Ext4Result<()> {
-    remove_extent_mapping_range(device, fs, inode_num, inode, full_start, full_end)?;
-    fs.finalize_inode_update(
-        device,
-        inode_num,
-        inode,
-        Ext4InodeMetadataUpdate::write_access(),
-    )
+#[derive(Clone, Copy)]
+struct ExtentRemovalSegment {
+    logical_start: u32,
+    physical_start: AbsoluteBN,
+    len: u16,
 }
 
-/// Removes every allocated extent segment in a logical block range.
+struct ExtentRemovalPlan {
+    segments: Vec<ExtentRemovalSegment>,
+    credits: usize,
+}
+
+/// Validates and records every initialized or unwritten mapping in a range.
 ///
-/// Unlike `resolve_inode_blocks`, this walker deliberately includes unwritten
-/// extents. Each bounded edit publishes the updated inode root in the same
-/// transaction as the extent-tree edit; operation-specific timestamps and file
-/// size are finalized by the caller after the complete range is detached.
-fn remove_extent_mapping_range<B: BlockIo>(
+/// The durable tree is read completely before any data or metadata mutation.
+/// The returned credit budget covers every existing extent node, every block
+/// allocation group that may change, the inode-table block, and superblock.
+fn prepare_extent_mapping_removal<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
-    inode: &mut Ext4Inode,
+    inode: &Ext4Inode,
     full_start: u64,
     full_end: u64,
-) -> Ext4Result<()> {
-    let mut logical = full_start;
-    while logical < full_end {
-        let logical_u32 = u32::try_from(logical).map_err(|_| Ext4Error::file_too_large())?;
-        let Some(extent) = ExtentTree::with_filesystem(inode, fs, inode_num)
-            .find_extent_at_or_after(device, logical_u32)?
-        else {
-            break;
-        };
+) -> Ext4Result<ExtentRemovalPlan> {
+    if full_start >= full_end {
+        return Err(Ext4Error::invalid_input().with_operation("extent:remove_range"));
+    }
+    let mut inode_copy = *inode;
+    let mut tree = ExtentTree::with_filesystem(&mut inode_copy, fs, inode_num);
+    let external_blocks = tree.external_node_blocks(device)?;
+    let extents = tree.all_extents(device)?;
+    let mut segments = Vec::new();
+    let mut physical_ranges = Vec::new();
+
+    for extent in extents {
         let extent_start = u64::from(extent.ee_block);
         if extent_start >= full_end {
             break;
@@ -747,44 +758,89 @@ fn remove_extent_mapping_range<B: BlockIo>(
         let extent_end = extent_start
             .checked_add(u64::from(extent.len()))
             .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:logical_overflow"))?;
-        let segment_start = core::cmp::max(logical, extent_start);
-        let segment_end = core::cmp::min(extent_end, full_end).min(
-            segment_start
-                .checked_add(u64::from(Ext4Extent::EXT_UNINIT_MAX_LEN))
-                .ok_or_else(Ext4Error::file_too_large)?,
-        );
-        let segment_len =
-            u32::try_from(segment_end - segment_start).map_err(|_| Ext4Error::overflow())?;
-        let physical_start = AbsoluteBN::new(extent.start_block()).checked_add(
-            u32::try_from(segment_start - extent_start).map_err(|_| Ext4Error::overflow())?,
-        )?;
-        let depth = ExtentTree::with_filesystem(inode, fs, inode_num)
-            .load_root_from_inode()?
-            .header()
-            .eh_depth;
-        let credits = usize::from(depth)
-            .checked_mul(2)
-            .and_then(|value| value.checked_add(12))
-            .ok_or_else(Ext4Error::overflow)?;
-        device.with_transaction_handle(credits, |device| {
-            ExtentTree::with_filesystem(inode, fs, inode_num).remove_extent(
+        let mut segment_start = core::cmp::max(full_start, extent_start);
+        let removal_end = core::cmp::min(extent_end, full_end);
+        while segment_start < removal_end {
+            let segment_end = removal_end.min(
+                segment_start
+                    .checked_add(u64::from(Ext4Extent::EXT_UNINIT_MAX_LEN))
+                    .ok_or_else(Ext4Error::file_too_large)?,
+            );
+            let segment_len =
+                u32::try_from(segment_end - segment_start).map_err(|_| Ext4Error::overflow())?;
+            let physical_start = AbsoluteBN::new(extent.start_block()).checked_add(
+                u32::try_from(segment_start - extent_start).map_err(|_| Ext4Error::overflow())?,
+            )?;
+            segments.push(ExtentRemovalSegment {
+                logical_start: u32::try_from(segment_start)
+                    .map_err(|_| Ext4Error::file_too_large())?,
+                physical_start,
+                len: u16::try_from(segment_len).map_err(|_| Ext4Error::overflow())?,
+            });
+            physical_ranges.push((physical_start, segment_len));
+            segment_start = segment_end;
+        }
+    }
+
+    let credits = if segments.is_empty() {
+        1
+    } else {
+        let allocation_groups =
+            extent_allocation_groups(fs, &physical_ranges, &external_blocks, &[])?;
+        external_blocks
+            .len()
+            .checked_add(
+                allocation_groups
+                    .len()
+                    .checked_mul(2)
+                    .ok_or_else(Ext4Error::overflow)?,
+            )
+            .and_then(|credits| credits.checked_add(2))
+            .ok_or_else(Ext4Error::overflow)?
+    };
+    Ok(ExtentRemovalPlan { segments, credits })
+}
+
+fn commit_extent_mapping_removal<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    metadata_update: Ext4InodeMetadataUpdate,
+    new_size: Option<u64>,
+    plan: ExtentRemovalPlan,
+) -> Ext4Result<()> {
+    let ExtentRemovalPlan { segments, credits } = plan;
+    let original_inode = *inode;
+    let counters_before = fs.group_counter_snapshot();
+    let updated = fs.with_metadata_transaction(device, credits, |fs, device| {
+        let mut updated = original_inode;
+        for segment in &segments {
+            ExtentTree::with_filesystem(&mut updated, fs, inode_num).remove_extent(
                 fs,
-                Ext4Extent::new(
-                    u32::try_from(segment_start).map_err(|_| Ext4Error::file_too_large())?,
-                    0,
-                    u16::try_from(segment_len).map_err(|_| Ext4Error::overflow())?,
-                ),
+                Ext4Extent::new(segment.logical_start, 0, segment.len),
                 device,
             )?;
-            let updated = *inode;
-            fs.modify_inode(device, inode_num, |on_disk| *on_disk = updated)
-        })?;
-        for offset in 0..segment_len {
-            fs.datablock_cache
-                .invalidate(physical_start.checked_add(offset)?);
         }
-        logical = segment_end;
-    }
+        if let Some(size) = new_size {
+            updated.i_size_lo = size as u32;
+            updated.i_size_high = (size >> 32) as u32;
+        }
+        fs.finalize_inode_update(device, inode_num, &mut updated, metadata_update)?;
+        fs.inodetable_cache.flush(device, inode_num)?;
+        if !segments.is_empty() {
+            fs.flush_changed_group_metadata(device, &counters_before)?;
+            fs.sync_superblock(device)?;
+        }
+        for segment in &segments {
+            for offset in 0..u32::from(segment.len) {
+                fs.datablock_cache
+                    .invalidate(segment.physical_start.checked_add(offset)?);
+            }
+        }
+        Ok(updated)
+    })?;
+    *inode = updated;
     Ok(())
 }
 
@@ -1088,18 +1144,26 @@ fn truncate_inode_mapping<B: BlockIo>(
     // Extent-backed files handle extent-aware shrinking here.
     if fs.superblock.has_extents() && inode.uses_extents() {
         if truncate_size < old_size || purpose.force_mapping_cleanup() {
-            // Clear the retained partial EOF before detaching later mappings,
-            // then enumerate the extent tree directly so unwritten allocations
-            // are released rather than being mistaken for holes.
+            // Validate and plan the complete initialized/unwritten removal
+            // before changing the retained tail or any filesystem metadata.
+            let removal = prepare_extent_mapping_removal(
+                device,
+                fs,
+                inode_num,
+                &inode,
+                new_blocks,
+                u64::from(u32::MAX) + 1,
+            )?;
             zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
-            remove_extent_mapping_range(
+            return commit_extent_mapping_removal(
                 device,
                 fs,
                 inode_num,
                 &mut inode,
-                new_blocks,
-                u64::from(u32::MAX) + 1,
-            )?;
+                Ext4InodeMetadataUpdate::truncate_access(),
+                Some(truncate_size),
+                removal,
+            );
         }
 
         inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;

@@ -33,9 +33,10 @@ pub struct Ext4FileSystem {
 
 /// In-memory filesystem metadata restored when one journal handle aborts.
 ///
-/// File data is deliberately excluded: metadata transactions must not mutate
-/// the data cache. Operations that update file contents need an ordered-data
-/// owner in addition to this metadata snapshot.
+/// File payload writes are not journalled by this owner. Data-cache state is
+/// snapshotted because a metadata transition may invalidate blocks after it
+/// detaches their mappings; abort must restore the old cache visibility.
+/// Operations that change payload bytes still need an ordered-data owner.
 struct MetadataTransactionSnapshot {
     superblock: Ext4Superblock,
     group_descs: Vec<Ext4GroupDesc>,
