@@ -1,4 +1,5 @@
 use super::*;
+use crate::{bmalloc::BGIndex, endian::DiskFormat};
 
 const MAX_RUN_IO_BYTES: usize = 1024 * 1024;
 
@@ -164,6 +165,12 @@ struct TransformedExtents {
     released_data: Vec<(AbsoluteBN, u32)>,
 }
 
+struct ShiftedExtentPlan {
+    mappings: Vec<Ext4Extent>,
+    released_data: Vec<(AbsoluteBN, u32)>,
+    old_external_blocks: Vec<AbsoluteBN>,
+}
+
 fn rebuild_shifted_extent_mapping<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -180,19 +187,41 @@ fn rebuild_shifted_extent_mapping<B: BlockIo>(
         released_data: removed_data,
     } = transform_extents(&old_extents, transform)?;
 
-    // Build a replacement tree while the old external nodes remain allocated.
-    // This guarantees a failed allocation cannot make the durable inode point
-    // at a partially built tree, at the cost of temporary metadata headroom.
-    let mut rebuilt = *inode;
-    rebuilt.write_extend_header();
-    for extent in new_extents {
-        ExtentTree::with_filesystem(&mut rebuilt, fs, inode_num)
-            .insert_extent(fs, extent, device)?;
-    }
-    rebuilt.i_size_lo = new_size as u32;
-    rebuilt.i_size_high = (new_size >> 32) as u32;
+    let plan = ShiftedExtentPlan {
+        mappings: new_extents,
+        released_data: removed_data,
+        old_external_blocks,
+    };
+    let credits = shifted_extent_transaction_credits(fs, &plan)?;
+    let original_inode = *inode;
+    let rebuilt = fs.with_metadata_transaction(device, credits, |fs, device| {
+        rebuild_shifted_extent_mapping_transaction(
+            device,
+            fs,
+            inode_num,
+            original_inode,
+            plan,
+            new_size,
+        )
+    })?;
+    *inode = rebuilt;
+    Ok(())
+}
 
-    let released_data_blocks = removed_data.iter().try_fold(0u64, |total, (_, count)| {
+fn rebuild_shifted_extent_mapping_transaction<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    original_inode: Ext4Inode,
+    plan: ShiftedExtentPlan,
+    new_size: u64,
+) -> Ext4Result<Ext4Inode> {
+    let ShiftedExtentPlan {
+        mappings,
+        released_data,
+        old_external_blocks,
+    } = plan;
+    let released_data_blocks = released_data.iter().try_fold(0u64, |total, (_, count)| {
         total
             .checked_add(u64::from(*count))
             .ok_or_else(Ext4Error::overflow)
@@ -200,16 +229,36 @@ fn rebuild_shifted_extent_mapping<B: BlockIo>(
     let released_blocks = released_data_blocks
         .checked_add(u64::try_from(old_external_blocks.len()).map_err(|_| Ext4Error::overflow())?)
         .ok_or_else(Ext4Error::overflow)?;
+
+    // Build the replacement while the old tree remains allocated. The outer
+    // filesystem transaction owns every fresh node until the new inode root,
+    // allocation bitmaps, descriptors, and superblock are published together.
+    let mut rebuilt = original_inode;
+    rebuilt.write_extend_header();
+    for extent in mappings {
+        ExtentTree::with_filesystem(&mut rebuilt, fs, inode_num)
+            .insert_extent(fs, extent, device)?;
+    }
+    rebuilt.i_size_lo = new_size as u32;
+    rebuilt.i_size_high = (new_size >> 32) as u32;
     let block_size = fs.block_size() as u32;
     let huge_file_feature = fs
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
     subtract_inode_data_blocks(&mut rebuilt, released_blocks, block_size, huge_file_feature)?;
 
+    let new_external_blocks =
+        ExtentTree::with_filesystem(&mut rebuilt, fs, inode_num).external_node_blocks(device)?;
+    let allocation_groups = shifted_extent_allocation_groups(
+        fs,
+        &released_data,
+        &old_external_blocks,
+        &new_external_blocks,
+    )?;
+
     // Publish the replacement root before returning any old physical block to
-    // the allocator. Publish final i_blocks accounting with the new root so a
-    // later cleanup failure can only leak an unreachable allocation; it cannot
-    // expose stale inode accounting or a reference to an already reused block.
+    // the allocator. Any later error still rolls the complete transaction back
+    // to the original inode, allocator, cache, and device images.
     fs.finalize_inode_update(
         device,
         inode_num,
@@ -217,7 +266,7 @@ fn rebuild_shifted_extent_mapping<B: BlockIo>(
         Ext4InodeMetadataUpdate::write_access(),
     )?;
 
-    for (physical_start, count) in removed_data {
+    for (physical_start, count) in released_data {
         for offset in 0..count {
             let block = physical_start.checked_add(offset)?;
             fs.datablock_cache.invalidate(block);
@@ -230,7 +279,147 @@ fn rebuild_shifted_extent_mapping<B: BlockIo>(
         fs.free_block(device, block)?;
     }
 
-    *inode = rebuilt;
+    fs.inodetable_cache.flush(device, inode_num)?;
+    fs.flush_block_allocation_groups(device, &allocation_groups)?;
+    fs.sync_superblock(device)?;
+    Ok(rebuilt)
+}
+
+fn shifted_extent_transaction_credits(
+    fs: &Ext4FileSystem,
+    plan: &ShiftedExtentPlan,
+) -> Ext4Result<usize> {
+    let replacement_nodes = replacement_extent_metadata_blocks(fs, plan.mappings.len())?;
+    let released_groups =
+        shifted_extent_allocation_groups(fs, &plan.released_data, &plan.old_external_blocks, &[])?
+            .len();
+    let group_count = usize::try_from(fs.group_count).map_err(|_| Ext4Error::overflow())?;
+    let changed_groups = released_groups
+        .checked_add(replacement_nodes)
+        .ok_or_else(Ext4Error::overflow)?
+        .min(group_count);
+
+    // Every replacement node has one home block. Each potentially affected
+    // allocation group contributes at most one bitmap and one primary GDT
+    // block; the inode-table block and primary superblock are fixed credits.
+    replacement_nodes
+        .checked_add(
+            changed_groups
+                .checked_mul(2)
+                .ok_or_else(Ext4Error::overflow)?,
+        )
+        .and_then(|credits| credits.checked_add(2))
+        .ok_or_else(Ext4Error::overflow)
+}
+
+fn replacement_extent_metadata_blocks(
+    fs: &Ext4FileSystem,
+    extent_count: usize,
+) -> Ext4Result<usize> {
+    const INLINE_ROOT_ENTRIES: usize = 4;
+    const FIRST_SPLIT_LEFT_ENTRIES: usize = 2;
+
+    if extent_count <= INLINE_ROOT_ENTRIES {
+        return Ok(0);
+    }
+    let header_size = Ext4ExtentHeader::disk_size();
+    let entry_size = core::cmp::max(Ext4Extent::disk_size(), Ext4ExtentIdx::disk_size());
+    let node_capacity = fs
+        .block_size()
+        .checked_sub(header_size)
+        .ok_or_else(|| Ext4Error::bad_superblock().with_operation("extent:node_capacity"))?
+        / entry_size;
+    if node_capacity < INLINE_ROOT_ENTRIES {
+        return Err(Ext4Error::bad_superblock().with_operation("extent:node_capacity"));
+    }
+    let split_occupancy = node_capacity
+        .checked_add(1)
+        .ok_or_else(Ext4Error::overflow)?
+        / 2;
+
+    let mut depth = 1u16;
+    let mut level_nodes =
+        external_nodes_for_sorted_entries(extent_count, split_occupancy, FIRST_SPLIT_LEFT_ENTRIES)?;
+    let mut total_nodes = level_nodes;
+    while level_nodes > INLINE_ROOT_ENTRIES {
+        depth = depth.checked_add(1).ok_or_else(Ext4Error::overflow)?;
+        if depth > ExtentTree::MAX_DEPTH {
+            return Err(Ext4Error::file_too_large().with_operation("extent:depth_overflow"));
+        }
+        level_nodes = external_nodes_for_sorted_entries(
+            level_nodes,
+            split_occupancy,
+            FIRST_SPLIT_LEFT_ENTRIES,
+        )?;
+        total_nodes = total_nodes
+            .checked_add(level_nodes)
+            .ok_or_else(Ext4Error::overflow)?;
+    }
+    Ok(total_nodes)
+}
+
+fn external_nodes_for_sorted_entries(
+    entries: usize,
+    split_occupancy: usize,
+    first_split_left_entries: usize,
+) -> Ext4Result<usize> {
+    let trailing_entries = entries
+        .checked_sub(first_split_left_entries)
+        .ok_or_else(Ext4Error::overflow)?;
+    trailing_entries
+        .div_ceil(split_occupancy)
+        .checked_add(1)
+        .ok_or_else(Ext4Error::overflow)
+}
+
+fn shifted_extent_allocation_groups(
+    fs: &Ext4FileSystem,
+    released_data: &[(AbsoluteBN, u32)],
+    old_external_blocks: &[AbsoluteBN],
+    new_external_blocks: &[AbsoluteBN],
+) -> Ext4Result<Vec<BGIndex>> {
+    let mut groups = Vec::new();
+    for block in old_external_blocks
+        .iter()
+        .chain(new_external_blocks.iter())
+        .copied()
+    {
+        insert_shifted_extent_group(fs, &mut groups, block)?;
+    }
+    for (start, count) in released_data.iter().copied() {
+        if count == 0 {
+            continue;
+        }
+        let (first_group, _) = fs.block_allocator.global_to_group(start)?;
+        let last = start.checked_add(count - 1)?;
+        let (last_group, _) = fs.block_allocator.global_to_group(last)?;
+        for raw_group in first_group.raw()..=last_group.raw() {
+            insert_group_once(fs, &mut groups, BGIndex::new(raw_group))?;
+        }
+    }
+    Ok(groups)
+}
+
+fn insert_shifted_extent_group(
+    fs: &Ext4FileSystem,
+    groups: &mut Vec<BGIndex>,
+    block: AbsoluteBN,
+) -> Ext4Result<()> {
+    let (group, _) = fs.block_allocator.global_to_group(block)?;
+    insert_group_once(fs, groups, group)
+}
+
+fn insert_group_once(
+    fs: &Ext4FileSystem,
+    groups: &mut Vec<BGIndex>,
+    group: BGIndex,
+) -> Ext4Result<()> {
+    if group.raw() >= fs.group_count {
+        return Err(Ext4Error::corrupted().with_operation("extent:block_group"));
+    }
+    if !groups.contains(&group) {
+        groups.push(group);
+    }
     Ok(())
 }
 
