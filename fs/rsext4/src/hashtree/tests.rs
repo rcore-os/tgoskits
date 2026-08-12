@@ -319,6 +319,19 @@ fn test_dx_entry_parsing() {
 }
 
 #[test]
+fn linux_dx_block_keeps_all_28_logical_bits() {
+    let fs = create_test_fs();
+    let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
+    let mut data = [0_u8; 8];
+    data[..2].copy_from_slice(&1_u16.to_le_bytes());
+    data[2..4].copy_from_slice(&1_u16.to_le_bytes());
+    data[4..8].copy_from_slice(&0x0100_0001_u32.to_le_bytes());
+
+    let entries = manager.parse_dx_entries(&data, 0, 1).unwrap();
+    assert_eq!(entries[0].block, 0x0100_0001);
+}
+
+#[test]
 fn linux_htree_root_layout_is_parsed() {
     let fs = create_test_fs();
     let manager = HashTreeManager::new(fs.superblock.s_hash_seed);

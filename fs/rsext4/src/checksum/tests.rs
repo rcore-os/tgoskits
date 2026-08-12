@@ -223,6 +223,41 @@ fn dx_checksum_uses_counted_entries_and_tail() {
 }
 
 #[test]
+fn dx_checksum_decodes_64k_internal_record_length() {
+    let sb = metadata_csum_superblock();
+    let ino = 704258_u32;
+    let generation = 7817325_u32;
+    let mut block = alloc::vec![0_u8; 65_536];
+    let count_offset = 8;
+    let entry_size = ::core::mem::size_of::<Ext4DxEntry>();
+    let limit = ((block.len() - count_offset - 8) / entry_size) as u16;
+    let tail_offset = count_offset + usize::from(limit) * entry_size;
+
+    block[..4].fill(0);
+    block[4..6].copy_from_slice(&0_u16.to_le_bytes());
+    block[count_offset..count_offset + 2].copy_from_slice(&limit.to_le_bytes());
+    block[count_offset + 2..count_offset + 4].copy_from_slice(&1_u16.to_le_bytes());
+    block[count_offset + 4..count_offset + 8].copy_from_slice(&1_u32.to_le_bytes());
+
+    let expected = ext4_metadata_csum32(
+        ext4_crc32c_seed_from_superblock(&sb),
+        &[
+            &ino.to_le_bytes(),
+            &generation.to_le_bytes(),
+            &block[..count_offset + entry_size],
+            &block[tail_offset..tail_offset + 4],
+            &[0, 0, 0, 0],
+        ],
+    );
+    block[tail_offset + 4..tail_offset + 8].copy_from_slice(&expected.to_le_bytes());
+
+    assert_eq!(
+        verify_ext4_dx_checksum(&sb, ino, generation, &block),
+        Some(true)
+    );
+}
+
+#[test]
 fn journal_superblock_checksum_uses_raw_crc_accumulator() {
     // Test idea: JBD2 stores the raw ext2fs_crc32c_le(~0, superblock) accumulator, not
     // the finalized CRC32C value. This keeps the value accepted by e2fsck.

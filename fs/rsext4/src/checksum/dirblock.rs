@@ -4,7 +4,7 @@ use super::core::ext4_metadata_csum32;
 use crate::{
     crc32c::{ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum},
     endian::read_u16_le,
-    entries::{Ext4DirEntryTail, Ext4DxEntry, Ext4DxRootInfo},
+    entries::{Ext4DirEntryTail, Ext4DxEntry, Ext4DxRootInfo, decode_directory_record_length},
     superblock::Ext4Superblock,
 };
 
@@ -166,7 +166,7 @@ fn dx_countlimit_offset(block_bytes: &[u8]) -> Option<usize> {
         return None;
     }
     let block_size = block_bytes.len();
-    let rec_len = read_u16_le(&block_bytes[4..6]) as usize;
+    let rec_len = decode_directory_record_length(read_u16_le(&block_bytes[4..6]), block_size);
     if rec_len == block_size {
         return Some(8);
     }

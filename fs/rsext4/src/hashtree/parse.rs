@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use super::{HashTreeError, HashTreeManager, HashTreeNode};
 use crate::{
     endian::{read_u16_le, read_u32_le},
-    entries::{Ext4DxEntry, Ext4DxRootInfo},
+    entries::{Ext4DxEntry, Ext4DxRootInfo, decode_directory_record_length},
 };
 
 const DIRENT_HEADER_LEN: usize = 8;
@@ -16,7 +16,7 @@ const ROOT_COUNTLIMIT_OFFSET: usize = 32;
 const NODE_COUNTLIMIT_OFFSET: usize = 8;
 const DX_ENTRY_LEN: usize = 8;
 const DX_TAIL_LEN: usize = 8;
-const DX_BLOCK_MASK: u32 = 0x00ff_ffff;
+const DX_BLOCK_MASK: u32 = 0x0fff_ffff;
 
 impl HashTreeManager {
     pub(super) fn parse_root_node(
@@ -128,7 +128,7 @@ impl HashTreeManager {
             return Err(HashTreeError::BufferTooSmall);
         }
         let inode = read_u32_le(&data[..4]);
-        let record_len = decode_record_len(read_u16_le(&data[4..6]), data.len());
+        let record_len = decode_directory_record_length(read_u16_le(&data[4..6]), data.len());
         if inode != 0 || record_len != data.len() || data[6] != 0 || data[7] != 0 {
             return Err(HashTreeError::CorruptedHashTree);
         }
@@ -150,7 +150,7 @@ fn validate_root_dirent(
         .get(offset..offset + DIRENT_HEADER_LEN)
         .ok_or(HashTreeError::BufferTooSmall)?;
     let inode = read_u32_le(&header[..4]);
-    let record_len = decode_record_len(read_u16_le(&header[4..6]), data.len());
+    let record_len = decode_directory_record_length(read_u16_le(&header[4..6]), data.len());
     let name_len = usize::from(header[6]);
     let name = data
         .get(offset + DIRENT_HEADER_LEN..offset + DIRENT_HEADER_LEN + name_len)
@@ -163,14 +163,6 @@ fn validate_root_dirent(
         return Err(HashTreeError::CorruptedHashTree);
     }
     Ok(())
-}
-
-fn decode_record_len(encoded: u16, block_size: usize) -> usize {
-    if block_size == 65_536 && (encoded == 0 || encoded == u16::MAX) {
-        block_size
-    } else {
-        usize::from(encoded)
-    }
 }
 
 fn dx_limit(

@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Validate HTree root and internal-node geometry, count/limit headers, entry
   ordering, logical block ranges, cycles, and index/data checksums before lookup,
   including mandatory directory-entry tails on metadata-checksummed leaf blocks.
+- Preserve all 28 logical block bits in HTree index entries and decode Linux's
+  compact directory record lengths when checking large index blocks.
 - Reject invalid default directory-hash versions during feature negotiation and
   persist an unambiguous signed-byte policy on writable indexed filesystems.
 - Reuse the current Linux-style JBD2 owner for nested metadata helpers without
