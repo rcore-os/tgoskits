@@ -129,6 +129,24 @@ impl Ext4FileSystem {
         Ok(())
     }
 
+    /// Publishes allocation metadata for an explicit set of block groups.
+    ///
+    /// Callers that allocate and free blocks in one transaction cannot infer
+    /// dirty bitmaps from the final free-block counters: both changes may
+    /// cancel while the bitmap still replaces one physical block with another.
+    pub(crate) fn flush_block_allocation_groups<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        groups: &[BGIndex],
+    ) -> Ext4Result<()> {
+        for group in groups.iter().copied() {
+            self.bitmap_cache
+                .flush(block_dev, &CacheKey::new_block(group))?;
+            self.sync_group_descriptor(block_dev, group)?;
+        }
+        Ok(())
+    }
+
     /// Returns the validated filesystem block size for this mount.
     pub(crate) fn block_size(&self) -> usize {
         self.superblock.block_size() as usize

@@ -4,7 +4,7 @@ use std::{cell::Cell, rc::Rc};
 
 use rsext4::{
     BLOCK_SIZE, BlockIo, Clock, DeviceCapabilities, DeviceGeometry, Ext4Error, Ext4Result,
-    Ext4Timestamp, Jbd2Dev, PreallocationOptions, SectorId, ZeroRangeOptions, dir,
+    Ext4Timestamp, Jbd2Dev, PreallocationOptions, RangeOperation, SectorId, ZeroRangeOptions, dir,
     disknode::{Ext4Extent, Ext4ExtentHeader},
     extents_tree::{ExtentBlockMapping, ExtentNode, ExtentTree},
     mkfile, mkfs, mount, operate_inode_range, preallocate_inode, punch_hole_inode, read_file,
@@ -695,6 +695,136 @@ fn failed_preallocation_split_restores_unpublished_metadata_allocation() {
     let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
     let mut remounted = mount(&mut remount_device).expect("remount after failed preallocation");
     assert_eq!(remounted.superblock.free_blocks_count(), free_before);
+    let extents_after = rsext4::inspect_inode_extents(
+        &mut remount_device,
+        &mut remounted,
+        inode_number,
+        0,
+        u64::MAX,
+        rsext4::FileExtentTarget::Data,
+        usize::MAX,
+    )
+    .expect("remounted extent inspection failed");
+    assert_eq!(extents_after, extents_before);
+}
+
+#[test]
+fn failed_insert_range_rebuild_restores_old_tree_and_allocation() {
+    let (device, fail_after_write) = MemoryDevice::with_post_write_failure(32 * 1024);
+    assert_failed_insert_range_restores_old_tree(device, move |_| {
+        fail_after_write.set(Some(1));
+    });
+}
+
+#[test]
+fn failed_insert_range_bitmap_publish_restores_old_tree_and_allocation() {
+    let (device, fail_write) = MemoryDevice::with_write_failure(32 * 1024);
+    assert_failed_insert_range_restores_old_tree(device, move |filesystem| {
+        let bitmap_block = filesystem.group_descs[0].block_bitmap();
+        fail_write.set(Some((bitmap_block, 1)));
+    });
+}
+
+fn assert_failed_insert_range_restores_old_tree(
+    device: MemoryDevice,
+    arm_failure: impl FnOnce(&rsext4::Ext4FileSystem),
+) {
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(
+        &mut journal,
+        &mut filesystem,
+        "/insert-rebuild-failure",
+        None,
+        None,
+    )
+    .expect("file creation failed");
+    let inode_number =
+        dir::get_inode_with_num(&mut filesystem, &mut journal, "/insert-rebuild-failure")
+            .expect("lookup failed")
+            .expect("created inode missing")
+            .0;
+    let mut inode = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("inode read failed");
+    let huge_file = filesystem
+        .superblock
+        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+    let sectors_per_block = (BLOCK_SIZE / 512) as u64;
+    for logical in [0, 2, 4, 6, 8] {
+        let physical = filesystem
+            .alloc_block(&mut journal)
+            .expect("data allocation failed");
+        ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number)
+            .insert_extent(
+                &mut filesystem,
+                Ext4Extent::new(logical, physical.raw(), 1),
+                &mut journal,
+            )
+            .expect("extent insertion failed");
+        let current_blocks = inode.blocks_count(BLOCK_SIZE as u32, huge_file);
+        inode
+            .set_blocks_count(
+                current_blocks + sectors_per_block,
+                BLOCK_SIZE as u32,
+                huge_file,
+            )
+            .expect("data block accounting failed");
+    }
+    inode.i_size_lo = (9 * BLOCK_SIZE) as u32;
+    filesystem
+        .modify_inode(&mut journal, inode_number, |on_disk| *on_disk = inode)
+        .expect("inode publication failed");
+    filesystem
+        .sync_filesystem(&mut journal)
+        .expect("fixture sync failed");
+    journal
+        .set_journal_use(false)
+        .expect("disable journal for direct failure injection");
+
+    let free_before = filesystem.superblock.free_blocks_count();
+    let inode_before = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("inode snapshot failed");
+    let extents_before = rsext4::inspect_inode_extents(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        0,
+        u64::MAX,
+        rsext4::FileExtentTarget::Data,
+        usize::MAX,
+    )
+    .expect("extent snapshot failed");
+
+    arm_failure(&filesystem);
+    let error = operate_inode_range(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        BLOCK_SIZE as u64,
+        BLOCK_SIZE as u64,
+        RangeOperation::Insert,
+    )
+    .expect_err("replacement-tree write failure must abort insert range");
+    assert_eq!(error.kind(), rsext4::Ext4ErrorKind::Io);
+
+    filesystem
+        .umount(&mut journal)
+        .expect("unmount after failed insert range");
+    let device = journal.into_inner();
+    let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut remounted = mount(&mut remount_device).expect("remount after failed insert range");
+    assert_eq!(remounted.superblock.free_blocks_count(), free_before);
+    let inode_after = remounted
+        .get_inode_by_num(&mut remount_device, inode_number)
+        .expect("remounted inode read failed");
+    assert_eq!(inode_after.size(), inode_before.size());
+    assert_eq!(
+        inode_after.blocks_count(BLOCK_SIZE as u32, huge_file),
+        inode_before.blocks_count(BLOCK_SIZE as u32, huge_file)
+    );
     let extents_after = rsext4::inspect_inode_extents(
         &mut remount_device,
         &mut remounted,
