@@ -16,18 +16,19 @@ impl CpuLocal {
             .current_core()
     }
 
-    /// Returns the configured CPU idle thread, if any.
-    pub(crate) fn idle(&self) -> Option<ThreadId> {
-        self.remote
-            .lock_run_queue(RunQueueGuardSource::OwnerIdleObservation)
-            .idle()
-    }
-
     /// Returns the number of runnable non-idle threads.
     pub(crate) fn runnable_count(&self) -> usize {
         self.remote
             .lock_run_queue(RunQueueGuardSource::OwnerRunnableObservation)
             .nr_running()
+    }
+
+    /// Returns whether this owner is in a coherent idle-pull target state.
+    pub(crate) fn idle_pull_eligible(&self) -> bool {
+        let run_queue = self
+            .remote
+            .lock_run_queue(RunQueueGuardSource::OwnerRunnableObservation);
+        run_queue.current_thread() == run_queue.idle() && run_queue.nr_running() == 0
     }
 
     pub(crate) fn is_quiescent_for_offline(&self) -> bool {

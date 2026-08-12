@@ -267,7 +267,6 @@ fn exit_prepare_uses_explicit_task_current_identity() {
     let before = (
         remote.owner_current_thread_rq_observations(),
         remote.owner_current_core_rq_observations(),
-        remote.owner_idle_rq_observations(),
     );
 
     let _permit = system
@@ -278,9 +277,8 @@ fn exit_prepare_uses_explicit_task_current_identity() {
         (
             remote.owner_current_thread_rq_observations() - before.0,
             remote.owner_current_core_rq_observations() - before.1,
-            remote.owner_idle_rq_observations() - before.2,
         ),
-        (0, 0, 0),
+        (0, 0),
         "exit preparation must use one explicit task-current handle and the immutable idle \
          identity",
     );
@@ -337,7 +335,7 @@ fn idle_pull_admission_uses_coherent_owner_rq_observations() {
             ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
         )
         .unwrap();
-    system
+    let idle1 = system
         .register_idle_thread(
             cpu1.as_mut(),
             ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
@@ -345,10 +343,13 @@ fn idle_pull_admission_uses_coherent_owner_rq_observations() {
         .unwrap();
     system.bring_cpu_online(cpu0.as_mut()).unwrap();
     system.bring_cpu_online(cpu1.as_mut()).unwrap();
+    assert_eq!(
+        system.schedule(cpu1.as_mut(), None).unwrap().next(),
+        idle1.id()
+    );
     let remote = Arc::clone(cpu1.remote());
     let before = (
         remote.owner_current_thread_rq_observations(),
-        remote.owner_idle_rq_observations(),
         remote.owner_runnable_rq_observations(),
     );
 
@@ -357,10 +358,9 @@ fn idle_pull_admission_uses_coherent_owner_rq_observations() {
     assert_eq!(
         (
             remote.owner_current_thread_rq_observations() - before.0,
-            remote.owner_idle_rq_observations() - before.1,
-            remote.owner_runnable_rq_observations() - before.2,
+            remote.owner_runnable_rq_observations() - before.1,
         ),
-        (0, 0, 1),
+        (0, 2),
         "each idle-pull admission check must use one coherent runnable snapshot instead of \
          separately observing rq->curr and rq->idle",
     );
@@ -377,10 +377,13 @@ fn selected_idle_balance_uses_fixed_idle_identity() {
         )
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), None).unwrap().next(),
+        idle.id()
+    );
     let remote = Arc::clone(cpu.remote());
     let before = (
         remote.owner_current_thread_rq_observations(),
-        remote.owner_idle_rq_observations(),
         remote.owner_runnable_rq_observations(),
     );
 
@@ -392,10 +395,9 @@ fn selected_idle_balance_uses_fixed_idle_identity() {
     assert_eq!(
         (
             remote.owner_current_thread_rq_observations() - before.0,
-            remote.owner_idle_rq_observations() - before.1,
-            remote.owner_runnable_rq_observations() - before.2,
+            remote.owner_runnable_rq_observations() - before.1,
         ),
-        (0, 0, 1),
+        (0, 2),
         "an already-selected idle thread must be classified by its fixed identity, while the \
          nested idle-pull admission uses coherent runnable snapshots",
     );
@@ -2029,7 +2031,7 @@ fn lowering_rt_priority_notifies_overloaded_root_domain_owner() {
     let decision = system.block_current_at(cpu1.as_mut(), 4).unwrap();
     assert_ne!(
         Some(decision.next()),
-        cpu1.idle(),
+        cpu1.remote().idle_thread(),
         "the regression requires a priority drop to a non-idle task"
     );
     assert_eq!(
@@ -2118,7 +2120,7 @@ fn priority_drop_serializes_root_domain_push_delivery() {
     let lowering_handles = InstalledTaskHandles::new(system.as_ref(), cpus[1].as_mut());
     crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     let decision = system.block_current_at(cpus[1].as_mut(), 6).unwrap();
-    assert_ne!(Some(decision.next()), cpus[1].idle());
+    assert_ne!(Some(decision.next()), cpus[1].remote().idle_thread());
     assert_eq!(
         crate::test_runtime::scheduler_ipi_send_count(),
         1,
@@ -3622,7 +3624,7 @@ fn last_non_idle_exit_publishes_work_only_after_switch_tail() {
     drop(idle);
 
     let decision = system.exit_current_at(cpu.as_mut(), 0).unwrap();
-    assert_eq!(decision.next(), cpu.idle().unwrap());
+    assert_eq!(decision.next(), cpu.remote().idle_thread().unwrap());
     assert!(
         !system.deferred_task_work_pending(),
         "the outgoing stack remains on_cpu until switch tail"
@@ -3888,7 +3890,7 @@ fn switch_handoff_core_reference_does_not_block_detached_reaping() {
     drop(idle);
 
     let decision = system.exit_current_at(cpu.as_mut(), 0).unwrap();
-    assert_eq!(decision.next(), cpu.idle().unwrap());
+    assert_eq!(decision.next(), cpu.remote().idle_thread().unwrap());
     let barrier: &'static crate::task_work::TestPublishBarrier =
         Box::leak(Box::new(crate::task_work::TestPublishBarrier::new()));
     system.task_work.install_test_publish_barrier(barrier);

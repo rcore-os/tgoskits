@@ -490,7 +490,7 @@ impl TaskSystem {
         if task_runtime::in_hard_irq() {
             return false;
         }
-        if cpu.idle() == Some(next) || cpu.fair_balance_pending() {
+        if cpu.remote().idle_thread() == Some(next) || cpu.fair_balance_pending() {
             return true;
         }
         self.root_domain.cpu_has_rt_deadline_overload(cpu.owner())
@@ -506,7 +506,7 @@ impl TaskSystem {
         OWNER_BALANCE_PASSES.set(OWNER_BALANCE_PASSES.get().saturating_add(1));
         let push_claim = self.root_domain.claim_rt_deadline_push(cpu.owner());
         let balance = (|| -> Result<(Option<ThreadId>, Option<ThreadId>), TaskError> {
-            if cpu.idle() == Some(next) {
+            if cpu.remote().idle_thread() == Some(next) {
                 let _requested = self.request_idle_pull(cpu.as_mut())?;
                 let fair = self.balance_fair(cpu.as_mut())?;
                 Ok((None, fair))
@@ -652,7 +652,8 @@ mod tests {
                 .unwrap();
             system.bring_cpu_online(cpu.as_mut()).unwrap();
             let idle = cpu
-                .idle()
+                .remote()
+                .idle_thread()
                 .expect("registered CPU must retain its idle task");
             assert_eq!(system.schedule(cpu.as_mut(), None).unwrap().next(), idle);
         }

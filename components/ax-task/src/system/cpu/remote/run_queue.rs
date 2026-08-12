@@ -14,7 +14,6 @@ pub(crate) enum RunQueueGuardSource {
     Transaction,
     OwnerCurrentThreadObservation,
     OwnerCurrentCoreObservation,
-    OwnerIdleObservation,
     OwnerRunnableObservation,
     TimerDeadlineDerivationObservation,
     RtAccounting,
@@ -34,9 +33,6 @@ impl RunQueueGuardSource {
             }
             Self::OwnerCurrentCoreObservation => {
                 crate::runtime::IrqGuardSource::CpuRunQueueOwnerCurrentCoreObservationTicket
-            }
-            Self::OwnerIdleObservation => {
-                crate::runtime::IrqGuardSource::CpuRunQueueOwnerIdleObservationTicket
             }
             Self::OwnerRunnableObservation => {
                 crate::runtime::IrqGuardSource::CpuRunQueueOwnerRunnableObservationTicket

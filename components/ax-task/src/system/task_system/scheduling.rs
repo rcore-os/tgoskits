@@ -14,7 +14,7 @@ impl TaskSystem {
             return Ok(false);
         }
         self.ensure_owner_cpu_online(&cpu)?;
-        if cpu.current() != cpu.idle() || cpu.has_remote_work() || cpu.queued_summary() != 0 {
+        if !cpu.idle_pull_eligible() || cpu.has_remote_work() {
             cpu.as_mut().reset_idle_pull_scan();
             return Ok(false);
         }
@@ -24,7 +24,7 @@ impl TaskSystem {
             IdlePullReservation::AlreadyPending => return Ok(true),
             IdlePullReservation::Busy => return Ok(false),
         };
-        if cpu.current() != cpu.idle() || cpu.has_remote_work() || cpu.queued_summary() != 0 {
+        if !cpu.idle_pull_eligible() || cpu.has_remote_work() {
             target_remote.cancel_idle_pull(reservation);
             cpu.as_mut().reset_idle_pull_scan();
             return Ok(false);

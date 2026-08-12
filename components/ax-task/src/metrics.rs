@@ -8,7 +8,7 @@ use crate::{
 };
 
 const PREEMPT_GUARD_SOURCE_COUNT: usize = 5;
-const IRQ_GUARD_SOURCE_COUNT: usize = 25;
+const IRQ_GUARD_SOURCE_COUNT: usize = 24;
 const SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT: usize = 8;
 
 /// Aggregate scheduler counters captured without allocating or taking locks.
@@ -47,7 +47,6 @@ pub struct QperfSchedulerMetricsSnapshot {
     pub irq_ticket_cpu_run_queue_owner_observation_entries: u64,
     pub irq_ticket_cpu_run_queue_owner_current_thread_observation_entries: u64,
     pub irq_ticket_cpu_run_queue_owner_current_core_observation_entries: u64,
-    pub irq_ticket_cpu_run_queue_owner_idle_observation_entries: u64,
     pub irq_ticket_cpu_run_queue_owner_runnable_observation_entries: u64,
     pub irq_ticket_cpu_run_queue_timer_observation_entries: u64,
     pub irq_ticket_cpu_run_queue_timer_deadline_derivation_observation_entries: u64,
@@ -253,14 +252,11 @@ impl QperfSchedulerMetrics {
             irq_entries(IrqGuardSource::CpuRunQueueOwnerCurrentThreadObservationTicket);
         let irq_ticket_cpu_run_queue_owner_current_core_observation_entries =
             irq_entries(IrqGuardSource::CpuRunQueueOwnerCurrentCoreObservationTicket);
-        let irq_ticket_cpu_run_queue_owner_idle_observation_entries =
-            irq_entries(IrqGuardSource::CpuRunQueueOwnerIdleObservationTicket);
         let irq_ticket_cpu_run_queue_owner_runnable_observation_entries =
             irq_entries(IrqGuardSource::CpuRunQueueOwnerRunnableObservationTicket);
         let irq_ticket_cpu_run_queue_owner_observation_entries =
             irq_ticket_cpu_run_queue_owner_current_thread_observation_entries
                 + irq_ticket_cpu_run_queue_owner_current_core_observation_entries
-                + irq_ticket_cpu_run_queue_owner_idle_observation_entries
                 + irq_ticket_cpu_run_queue_owner_runnable_observation_entries;
         let irq_ticket_cpu_run_queue_timer_deadline_derivation_observation_entries =
             irq_entries(IrqGuardSource::CpuRunQueueTimerDeadlineDerivationObservationTicket);
@@ -317,7 +313,6 @@ impl QperfSchedulerMetrics {
             + irq_none(IrqGuardSource::CpuRunQueueTransactionTicket)
             + irq_none(IrqGuardSource::CpuRunQueueOwnerCurrentThreadObservationTicket)
             + irq_none(IrqGuardSource::CpuRunQueueOwnerCurrentCoreObservationTicket)
-            + irq_none(IrqGuardSource::CpuRunQueueOwnerIdleObservationTicket)
             + irq_none(IrqGuardSource::CpuRunQueueOwnerRunnableObservationTicket)
             + irq_none(IrqGuardSource::CpuRunQueueTimerDeadlineDerivationObservationTicket)
             + irq_none(IrqGuardSource::CpuRunQueueRtAccountingTicket)
@@ -390,7 +385,6 @@ impl QperfSchedulerMetrics {
             irq_ticket_cpu_run_queue_owner_observation_entries,
             irq_ticket_cpu_run_queue_owner_current_thread_observation_entries,
             irq_ticket_cpu_run_queue_owner_current_core_observation_entries,
-            irq_ticket_cpu_run_queue_owner_idle_observation_entries,
             irq_ticket_cpu_run_queue_owner_runnable_observation_entries,
             irq_ticket_cpu_run_queue_timer_observation_entries,
             irq_ticket_cpu_run_queue_timer_deadline_derivation_observation_entries,
@@ -751,8 +745,6 @@ mod tests {
             IrqGuardSource::CpuRunQueueOwnerCurrentCoreObservationTicket,
             false,
         );
-        metrics
-            .record_irq_guard_entry(IrqGuardSource::CpuRunQueueOwnerIdleObservationTicket, false);
         metrics.record_irq_guard_entry(
             IrqGuardSource::CpuRunQueueOwnerRunnableObservationTicket,
             false,
@@ -800,17 +792,16 @@ mod tests {
                 preempt_guard_activity_entries: 1,
                 preempt_guard_activity_none: 1,
                 preempt_guard_irq_return_entries: 1,
-                runtime_irq_guard_entries: 25,
+                runtime_irq_guard_entries: 24,
                 runtime_irq_guard_none: 2,
-                irq_guard_ticket_entries: 22,
+                irq_guard_ticket_entries: 21,
                 irq_ticket_thread_sched_entries: 1,
                 irq_ticket_deadline_server_entries: 1,
-                irq_ticket_cpu_run_queue_entries: 10,
+                irq_ticket_cpu_run_queue_entries: 9,
                 irq_ticket_cpu_run_queue_transaction_entries: 1,
-                irq_ticket_cpu_run_queue_owner_observation_entries: 4,
+                irq_ticket_cpu_run_queue_owner_observation_entries: 3,
                 irq_ticket_cpu_run_queue_owner_current_thread_observation_entries: 1,
                 irq_ticket_cpu_run_queue_owner_current_core_observation_entries: 1,
-                irq_ticket_cpu_run_queue_owner_idle_observation_entries: 1,
                 irq_ticket_cpu_run_queue_owner_runnable_observation_entries: 1,
                 irq_ticket_cpu_run_queue_timer_observation_entries: 1,
                 irq_ticket_cpu_run_queue_timer_deadline_derivation_observation_entries: 1,
