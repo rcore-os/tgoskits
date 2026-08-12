@@ -929,3 +929,34 @@ QEMU 收敛来自三个可独立验证的边界：data-block dirty LRU 一次回
 final unlink 解除 global page-cache owner，不再由全局 `sync(2)` 反复写回已不可达
 文件。该 QEMU 数据只用于功能门禁和趋势，不替代最终受控 host
 dev/final A/B；下一阶段必须继续优化 sync p95 并在固定 governor 后重采。
+
+### 7.31 Linux FUA commit publication 检查点
+
+Linux v7.1 `fs/jbd2/commit.c:115-168,805-915` 在非 async commit 路径以
+`REQ_PREFLUSH | REQ_FUA` 的 commit record 作为 transaction publication：
+preflush 排序 descriptor/payload，FUA 使 commit record 本身 durable；等待该同步
+write 完成后不会再提交第二个 post-commit flush。旧 core 在显式 preflush 和 FUA
+commit 后仍无条件 flush。确定性红测先把该路径的预期 flush 数从 2 改为 1，旧实现
+稳定失败；删除冗余 flush 后同一测试转绿，fault matrix 也移除了 Linux 中不存在的
+`commit-barrier` 故障边界。FUA 不可用时 `CachedDevice` 仍严格执行
+write-then-flush fallback，不伪造 durability。
+
+同一修改还避免 single-transaction checkpoint 在已经没有更早 image 时填充
+`later_blocks` 集合；多 transaction 覆盖与 revoke 仍使用原有反向过滤。固定 CPU 2、
+`powersave` governor、3 次预热、20 次测量的完整样本在
+`book/design/data/rsext4-perf/2026-08-12-jbd2-fua-commit.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=c822b89df arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6385677 write_p95_ns=6892860 read_median_ns=6001960 read_p95_ns=6938485 sync_median_ns=33227 sync_p95_ns=35032
+```
+
+| workload | dev median | current median | 变化 | dev p95 | current p95 | 变化 | 当前结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| sequential write | 6.827 ms | 6.386 ms | -6.5% | 7.335 ms | 6.893 ms | -6.0% | 绿 |
+| sequential read | 7.219 ms | 6.002 ms | -16.9% | 8.481 ms | 6.938 ms | -18.2% | 绿 |
+| sync/unmount latency | 25.823 us | 33.227 us | +28.7% | 38.644 us | 35.032 us | -9.3% | p95 绿；median 红 |
+
+相对 7.30，sync median/p95 分别改善 8.2%/37.0%，p95 已回到硬门槛内；但
+`host_perf` 的历史 `sync_ns` 实际计量 `unmount()`，包含 clean-superblock mutation，
+不能等同普通 `sync(2)`。在保持冻结 marker 可比性的同时，后续 harness 需要新增独立
+sync 与 unmount workload；在 median 吞吐/IOPS 口径也达标前，总性能门禁继续保持红色。
