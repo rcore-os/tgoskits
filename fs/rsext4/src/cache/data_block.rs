@@ -114,12 +114,39 @@ impl DataBlockCache {
             return Ok(());
         }
 
-        let Some(&victim_num) = self.lru_order.first() else {
+        if self.lru_order.is_empty() {
             return Ok(());
-        };
-        self.write_back_if_dirty(block_dev, victim_num)?;
-        self.cache.remove(&victim_num);
-        self.lru_order.remove(0);
+        }
+
+        // Reclaim one quarter of the cache at a time. Small, one-entry caches
+        // retain the old behavior, while the normal 128-entry cache can merge
+        // physically contiguous dirty blocks into a bounded device request.
+        let victim_count = self.max_entries.div_ceil(4).max(1);
+        let victim_count = core::cmp::min(victim_count, self.lru_order.len());
+        let victims = self.lru_order[..victim_count].to_vec();
+        let mut dirty_blocks = victims
+            .iter()
+            .filter_map(|block_num| {
+                self.cache.get(block_num).and_then(|cached| {
+                    cached.dirty.then(|| {
+                        (
+                            cached.block_num,
+                            cached.generation,
+                            cached.data.as_ref().clone(),
+                        )
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        dirty_blocks.sort_by_key(|(block_num, ..)| *block_num);
+
+        // Keep every selected entry dirty and resident unless all writeback
+        // requests succeed. Retrying a partially persisted batch is safe.
+        Self::write_dirty_runs(block_dev, &dirty_blocks, self.block_size)?;
+        for block_num in &victims {
+            self.cache.remove(block_num);
+        }
+        self.lru_order.drain(..victim_count);
         Ok(())
     }
 
@@ -515,11 +542,10 @@ impl DataBlockCache {
         block_size: usize,
         is_metadata: bool,
     ) -> Ext4Result<()> {
-        let mut buf = alloc::vec![0u8; block_size];
-        block_dev.read_blocks(&mut buf, block_num, 1)?;
-        let len = core::cmp::min(data.len(), block_size);
-        buf[..len].copy_from_slice(&data[..len]);
-        block_dev.write_blocks(&buf, block_num, 1, is_metadata)?;
+        let data = data
+            .get(..block_size)
+            .ok_or_else(|| Ext4Error::buffer_too_small(data.len(), block_size))?;
+        block_dev.write_blocks(data, block_num, 1, is_metadata)?;
         Ok(())
     }
 
@@ -573,6 +599,8 @@ mod tests {
     struct TestBlockDevice {
         data: Vec<u8>,
         fail_writes: bool,
+        read_calls: Vec<(u64, u32)>,
+        write_calls: Vec<(u64, u32)>,
     }
 
     impl TestBlockDevice {
@@ -580,6 +608,8 @@ mod tests {
             Self {
                 data: alloc::vec![0; blocks * BLOCK_SIZE],
                 fail_writes: false,
+                read_calls: Vec::new(),
+                write_calls: Vec::new(),
             }
         }
 
@@ -587,6 +617,8 @@ mod tests {
             Self {
                 data: alloc::vec![0; blocks * BLOCK_SIZE],
                 fail_writes: true,
+                read_calls: Vec::new(),
+                write_calls: Vec::new(),
             }
         }
     }
@@ -596,8 +628,9 @@ mod tests {
             &mut self,
             buffer: &mut [u8],
             block_id: crate::io::SectorId,
-            _count: u32,
+            count: u32,
         ) -> Ext4Result<()> {
+            self.read_calls.push((block_id.raw(), count));
             let start = block_id.as_usize()? * BLOCK_SIZE;
             let end = start + buffer.len();
             buffer.copy_from_slice(&self.data[start..end]);
@@ -608,11 +641,12 @@ mod tests {
             &mut self,
             buffer: &[u8],
             block_id: crate::io::SectorId,
-            _count: u32,
+            count: u32,
         ) -> Ext4Result<()> {
             if self.fail_writes {
                 return Err(Ext4Error::io());
             }
+            self.write_calls.push((block_id.raw(), count));
             let start = block_id.as_usize()? * BLOCK_SIZE;
             let end = start + buffer.len();
             self.data[start..end].copy_from_slice(buffer);
@@ -735,6 +769,47 @@ mod tests {
 
         assert_eq!(cache.stats().total_entries, 2);
         assert_eq!(cache.stats().max_entries, 2);
+    }
+
+    #[cfg(feature = "USE_MULTILEVEL_CACHE")]
+    #[test]
+    fn dirty_lru_eviction_batches_contiguous_blocks() {
+        let mut cache = DataBlockCache::new(8, BLOCK_SIZE);
+        let device = TestBlockDevice::new(1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+
+        for block in 10..18 {
+            cache
+                .modify_new(&mut jbd2_dev, AbsoluteBN::new(block), |data| {
+                    data.fill(block as u8);
+                })
+                .expect("fill dirty cache");
+        }
+        cache
+            .modify_new(&mut jbd2_dev, AbsoluteBN::new(18), |data| data.fill(18))
+            .expect("batch dirty eviction");
+
+        assert_eq!(cache.stats().total_entries, 7);
+        let device = jbd2_dev.into_inner();
+        assert_eq!(device.write_calls, [(10, 2)]);
+    }
+
+    #[test]
+    fn full_cached_block_writeback_does_not_reread_home_block() {
+        let mut cache = DataBlockCache::new(8, BLOCK_SIZE);
+        let device = TestBlockDevice::new(1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+
+        cache
+            .modify_new(&mut jbd2_dev, AbsoluteBN::new(10), |data| data.fill(0xa5))
+            .expect("create full cached block");
+        cache
+            .flush(&mut jbd2_dev, AbsoluteBN::new(10))
+            .expect("flush full cached block");
+
+        let device = jbd2_dev.into_inner();
+        assert!(device.read_calls.is_empty());
+        assert_eq!(device.write_calls, [(10, 1)]);
     }
 
     #[cfg(feature = "USE_MULTILEVEL_CACHE")]
