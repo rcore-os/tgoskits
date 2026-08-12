@@ -57,3 +57,28 @@ fn host_pi_mutex_validates_contention_without_bare_metal_cpu_state() {
     drop(owner);
     waiter.join().expect("host PI contender must acquire");
 }
+
+#[test]
+fn host_pi_mutex_handoff_wakes_a_registered_contender() {
+    let mutex = Arc::new(ExternalMutex::new(()));
+    let owner = mutex.lock();
+    let registered = ax_task::sync::api::host_registered_pi_waiters();
+    let waiter_mutex = Arc::clone(&mutex);
+    let waiter = thread::spawn(move || {
+        let _guard = waiter_mutex.lock();
+    });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while ax_task::sync::api::host_registered_pi_waiters() == registered {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "host PI contender did not register in the unique waiter tree"
+        );
+        thread::yield_now();
+    }
+
+    drop(owner);
+    waiter
+        .join()
+        .expect("registered host PI contender must acquire");
+}

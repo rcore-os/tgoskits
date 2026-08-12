@@ -4,6 +4,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "host-test")]
 static HOST_BLOCKING_CONTEXT_VALIDATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "host-test")]
+static HOST_REGISTERED_PI_WAITERS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "lockdep")]
 pub(in crate::sync) mod lockdep;
@@ -216,6 +218,8 @@ impl<'lock> PiMutexAlgorithm<'lock> {
             PiMutexLockResult::Acquired => return,
             PiMutexLockResult::Waiting(token) => token,
         };
+        #[cfg(feature = "host-test")]
+        HOST_REGISTERED_PI_WAITERS.fetch_add(1, Ordering::Relaxed);
         debug_assert_eq!(token.thread_id(), current);
         if self.try_claim_waiter(&token) {
             return;
@@ -428,6 +432,11 @@ impl<'lock> PiMutexAlgorithm<'lock> {
 #[cfg(feature = "host-test")]
 pub(crate) fn host_blocking_context_validations() -> u64 {
     HOST_BLOCKING_CONTEXT_VALIDATIONS.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "host-test")]
+pub(crate) fn host_registered_pi_waiters() -> u64 {
+    HOST_REGISTERED_PI_WAITERS.load(Ordering::Relaxed)
 }
 
 impl RawMutex {
