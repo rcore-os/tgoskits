@@ -1,8 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use core::{
-    mem,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use axfs_ng_vfs::VfsResult;
 
@@ -36,7 +33,9 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
     let Some(guard) = GLOBAL_CACHED_FILES.try_read() else {
         return 0;
     };
-    for file in guard.iter() {
+    let files = guard.clone();
+    drop(guard);
+    for file in &files {
         let freed = file.try_evict_clean_pages(target - reclaimed);
         reclaimed += freed;
         file_count += 1;
@@ -56,7 +55,23 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
 
 pub(super) fn register_cached_file(file: &Arc<CachedFileShared>) {
     prune_cached_files();
-    GLOBAL_CACHED_FILES.write().push(file.clone());
+    let mut registry = GLOBAL_CACHED_FILES.write();
+    if !registry
+        .iter()
+        .any(|registered| Arc::ptr_eq(registered, file))
+    {
+        registry.push(file.clone());
+    }
+}
+
+#[cfg(feature = "ext4")]
+pub(super) fn release_unlinked_cached_file(file: &Arc<CachedFileShared>) {
+    // An unlinked inode is no longer a filesystem-global writeback owner. Open
+    // file and mmap references retain their own page cache and can still use
+    // explicit fsync/fdatasync. `file` keeps destruction outside the spin lock.
+    GLOBAL_CACHED_FILES
+        .write()
+        .retain(|registered| !Arc::ptr_eq(registered, file));
 }
 
 pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
@@ -76,15 +91,23 @@ pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
 }
 
 fn prune_cached_files() {
-    // Cached-file destruction can reach a sleepable filesystem lock. Move the
-    // registry contents out under the spin lock, prune them after releasing
-    // it, then merge survivors with registrations that arrived meanwhile.
-    let mut files = {
+    // Snapshot strong references so cache inspection and final destruction
+    // happen without holding the registry spin lock. Recheck the strong count
+    // under the lock before removing a clean, otherwise unowned entry.
+    let files = GLOBAL_CACHED_FILES.read().clone();
+    for cached in &files {
+        if cached.has_dirty_pages() && !cached.is_unlinked() {
+            continue;
+        }
         let mut registry = GLOBAL_CACHED_FILES.write();
-        mem::take(&mut *registry)
-    };
-    files.retain(|cached| Arc::strong_count(cached) > 1 || cached.has_dirty_pages());
-    GLOBAL_CACHED_FILES.write().append(&mut files);
+        if Arc::strong_count(cached) == 2
+            && let Some(index) = registry
+                .iter()
+                .position(|registered| Arc::ptr_eq(registered, cached))
+        {
+            registry.swap_remove(index);
+        }
+    }
 }
 
 impl CachedFileShared {
@@ -129,5 +152,26 @@ impl CachedFileShared {
             }
         }
         evicted
+    }
+}
+
+#[cfg(all(test, feature = "ext4"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_registry_does_not_keep_unlinked_cached_file_alive() {
+        let cached = Arc::new(CachedFileShared::new_unbounded(0));
+        let lifetime = Arc::downgrade(&cached);
+        register_cached_file(&cached);
+        cached.mark_unlinked();
+        release_unlinked_cached_file(&cached);
+        drop(cached);
+
+        assert!(
+            lifetime.upgrade().is_none(),
+            "the reclaim registry must not own the inode page cache"
+        );
+        prune_cached_files();
     }
 }

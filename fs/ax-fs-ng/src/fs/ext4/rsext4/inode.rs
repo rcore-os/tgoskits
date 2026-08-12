@@ -154,17 +154,10 @@ impl Inode {
 impl Drop for Inode {
     fn drop(&mut self) {
         let claim = self.fs.lock().release_ref(self.ino);
-        if let Some(claim) = claim {
-            match self.fs.reap(claim) {
-                Ok(()) => {
-                    if let Err(error) = self.fs.sync_to_disk() {
-                        log::error!("failed to persist reaped ext4 inode: {error:?}");
-                    }
-                }
-                Err(error) => {
-                    log::error!("failed to reap zero-link ext4 inode: {error:?}");
-                }
-            }
+        if let Some(claim) = claim
+            && let Err(error) = self.fs.reap(claim)
+        {
+            log::error!("failed to reap zero-link ext4 inode: {error:?}");
         }
     }
 }
