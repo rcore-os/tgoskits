@@ -1012,7 +1012,7 @@ fn finalize_restarted_extent_update<B: BlockIo>(
     Ok(())
 }
 
-fn begin_restarted_extent_truncate<B: BlockIo>(
+fn begin_restarted_truncate<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
@@ -1040,23 +1040,22 @@ fn begin_restarted_extent_truncate<B: BlockIo>(
     Ok(())
 }
 
-fn finish_restarted_extent_truncate<B: BlockIo>(
+fn finish_orphaned_truncate<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
-    inode: &mut Ext4Inode,
 ) -> Ext4Result<()> {
     // Removing a non-head orphan can dirty the predecessor inode-table block,
     // the target inode-table block, and the superblock.
-    let updated = fs.with_metadata_transaction(device, 3, |fs, device| {
-        let _ = fs.remove_orphan(device, inode_num)?;
-        let updated = fs.get_inode_by_num(device, inode_num)?;
+    fs.with_metadata_transaction(device, 3, |fs, device| {
+        let predecessor = fs.remove_orphan(device, inode_num)?;
         fs.inodetable_cache.flush(device, inode_num)?;
+        if let Some(predecessor) = predecessor {
+            fs.inodetable_cache.flush(device, predecessor)?;
+        }
         fs.sync_superblock(device)?;
-        Ok(updated)
-    })?;
-    *inode = updated;
-    Ok(())
+        Ok(())
+    })
 }
 
 fn commit_extent_mapping_removal<B: BlockIo>(
@@ -1107,19 +1106,218 @@ struct LegacyMappingTransaction {
     footprint: crate::indirect::LegacyTransactionFootprint,
 }
 
+struct LegacyMappingChunk {
+    transaction: LegacyMappingTransaction,
+    next_end: u64,
+}
+
+fn build_legacy_mapping_transaction(
+    fs: &Ext4FileSystem,
+    plan: crate::indirect::LegacyTruncatePlan,
+) -> Ext4Result<LegacyMappingTransaction> {
+    let footprint = plan.transaction_footprint(fs)?;
+    Ok(LegacyMappingTransaction { plan, footprint })
+}
+
 fn prepare_legacy_mapping_transaction<B: BlockIo>(
     device: &Jbd2Dev<B>,
     fs: &Ext4FileSystem,
     plan: crate::indirect::LegacyTruncatePlan,
 ) -> Ext4Result<LegacyMappingTransaction> {
-    let footprint = plan.transaction_footprint(fs)?;
+    let transaction = build_legacy_mapping_transaction(fs, plan)?;
     if device
         .transaction_credit_limit()?
-        .is_some_and(|limit| footprint.credits > limit)
+        .is_some_and(|limit| transaction.footprint.credits > limit)
     {
         return Err(Ext4Error::no_space().with_operation("indirect:transaction_credits"));
     }
-    Ok(LegacyMappingTransaction { plan, footprint })
+    Ok(transaction)
+}
+
+fn legacy_mapping_restart_limit<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &Ext4Inode,
+    full_start: u64,
+    full_end: u64,
+    transaction: &LegacyMappingTransaction,
+) -> Ext4Result<Option<usize>> {
+    let Some(limit) = device.transaction_credit_limit()? else {
+        return Ok(None);
+    };
+    if transaction.footprint.credits <= limit {
+        return Ok(None);
+    }
+    let _ = prepare_legacy_mapping_removal_chunk(
+        device, fs, inode_num, inode, full_start, full_end, limit,
+    )?;
+    Ok(Some(limit))
+}
+
+fn prepare_legacy_mapping_removal_chunk<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &Ext4Inode,
+    full_start: u64,
+    cursor_end: u64,
+    credit_limit: usize,
+) -> Ext4Result<Option<LegacyMappingChunk>> {
+    let mappings = crate::indirect::resolve_all_legacy_inode_blocks(fs, device, inode_num, inode)?;
+    let Some((&last_logical, &last_physical)) = mappings.iter().rev().find(|(logical, _)| {
+        full_start <= u64::from(**logical) && u64::from(**logical) < cursor_end
+    }) else {
+        return Ok(None);
+    };
+    let (last_group, _) = fs.block_allocator.global_to_group(last_physical)?;
+    let mut first_logical = last_logical;
+    for (&logical, &physical) in mappings.range(..last_logical).rev() {
+        if logical.checked_add(1) != Some(first_logical) || u64::from(logical) < full_start {
+            break;
+        }
+        let (group, _) = fs.block_allocator.global_to_group(physical)?;
+        if group != last_group {
+            break;
+        }
+        first_logical = logical;
+    }
+
+    // Prefer consuming the whole scanned gap so empty indirect branches leave
+    // with the neighboring data run. If that footprint is too large, remove
+    // one data mapping without advancing the cursor across the unprocessed gap.
+    let mut chunk_end = cursor_end;
+    let mut plan = crate::indirect::plan_legacy_inode_range_removal(
+        fs,
+        device,
+        inode_num,
+        inode,
+        u64::from(first_logical),
+        chunk_end,
+    )?;
+    let mut transaction = build_legacy_mapping_transaction(fs, plan)?;
+    let next_end = if transaction.footprint.credits > credit_limit {
+        first_logical = last_logical;
+        chunk_end = u64::from(last_logical)
+            .checked_add(1)
+            .ok_or_else(Ext4Error::file_too_large)?;
+        plan = crate::indirect::plan_legacy_inode_range_removal(
+            fs,
+            device,
+            inode_num,
+            inode,
+            u64::from(first_logical),
+            chunk_end,
+        )?;
+        transaction = build_legacy_mapping_transaction(fs, plan)?;
+        cursor_end
+    } else {
+        u64::from(first_logical)
+    };
+    if transaction.footprint.credits > credit_limit {
+        return Err(Ext4Error::no_space().with_operation("indirect:restart_credits"));
+    }
+    Ok(Some(LegacyMappingChunk {
+        transaction,
+        next_end,
+    }))
+}
+
+fn prepare_legacy_metadata_cleanup_chunk<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &Ext4Inode,
+    full_start: u64,
+    cursor_end: u64,
+    credit_limit: usize,
+) -> Ext4Result<Option<LegacyMappingChunk>> {
+    let mut range_start = full_start;
+    let mut range_end = cursor_end;
+    while range_start < range_end {
+        let plan = crate::indirect::plan_legacy_inode_range_removal(
+            fs,
+            device,
+            inode_num,
+            inode,
+            range_start,
+            range_end,
+        )?;
+        if !plan.has_removals() {
+            return Ok(None);
+        }
+        let transaction = build_legacy_mapping_transaction(fs, plan)?;
+        if transaction.footprint.credits <= credit_limit {
+            return Ok(Some(LegacyMappingChunk {
+                transaction,
+                next_end: range_start,
+            }));
+        }
+        if range_end - range_start == 1 {
+            return Err(Ext4Error::no_space().with_operation("indirect:restart_credits"));
+        }
+
+        let midpoint = range_start + (range_end - range_start) / 2;
+        let upper = crate::indirect::plan_legacy_inode_range_removal(
+            fs, device, inode_num, inode, midpoint, range_end,
+        )?;
+        if upper.has_removals() {
+            range_start = midpoint;
+        } else {
+            range_end = midpoint;
+        }
+    }
+    Ok(None)
+}
+
+fn remove_legacy_mapping_with_restarts<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    full_start: u64,
+    full_end: u64,
+    credit_limit: usize,
+) -> Ext4Result<()> {
+    let mut cursor_end = full_end;
+    loop {
+        let chunk = match prepare_legacy_mapping_removal_chunk(
+            device,
+            fs,
+            inode_num,
+            inode,
+            full_start,
+            cursor_end,
+            credit_limit,
+        )? {
+            Some(chunk) => chunk,
+            None => {
+                let Some(chunk) = prepare_legacy_metadata_cleanup_chunk(
+                    device,
+                    fs,
+                    inode_num,
+                    inode,
+                    full_start,
+                    cursor_end,
+                    credit_limit,
+                )?
+                else {
+                    return Ok(());
+                };
+                chunk
+            }
+        };
+        commit_legacy_mapping_removal(
+            device,
+            fs,
+            inode_num,
+            inode,
+            Ext4InodeMetadataUpdate::default(),
+            None,
+            chunk.transaction,
+        )?;
+        cursor_end = chunk.next_end;
+    }
 }
 
 fn commit_legacy_mapping_removal<B: BlockIo>(
@@ -1356,7 +1554,8 @@ pub(crate) fn recover_linked_truncate_inode<B: BlockIo>(
         inode_num,
         truncate_size,
         TruncatePurpose::OrphanRecovery,
-    )
+    )?;
+    finish_orphaned_truncate(device, fs, inode_num)
 }
 
 pub(crate) fn truncate_inode_for_reap<B: BlockIo>(
@@ -1459,13 +1658,7 @@ fn truncate_inode_mapping<B: BlockIo>(
             zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
             if let Some(credit_limit) = restart_limit {
                 if purpose == TruncatePurpose::UserResize {
-                    begin_restarted_extent_truncate(
-                        device,
-                        fs,
-                        inode_num,
-                        &mut inode,
-                        truncate_size,
-                    )?;
+                    begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
                 }
                 remove_extent_mapping_with_restarts(
                     device,
@@ -1477,7 +1670,7 @@ fn truncate_inode_mapping<B: BlockIo>(
                     credit_limit,
                 )?;
                 return if purpose == TruncatePurpose::UserResize {
-                    finish_restarted_extent_truncate(device, fs, inode_num, &mut inode)
+                    finish_orphaned_truncate(device, fs, inode_num)
                 } else {
                     inode.i_size_lo = truncate_size as u32;
                     inode.i_size_high = (truncate_size >> 32) as u32;
@@ -1514,20 +1707,57 @@ fn truncate_inode_mapping<B: BlockIo>(
 
     let truncate_plan =
         crate::indirect::plan_legacy_inode_truncate(fs, device, inode_num, &inode, new_blocks)?;
-    let transaction = prepare_legacy_mapping_transaction(device, fs, truncate_plan)?;
+    let transaction = build_legacy_mapping_transaction(fs, truncate_plan)?;
+    let restart_limit = legacy_mapping_restart_limit(
+        device,
+        fs,
+        inode_num,
+        &inode,
+        new_blocks,
+        u64::from(u32::MAX) + 1,
+        &transaction,
+    )?;
     // Linux zeros the retained partial EOF block before detaching later
     // mappings. A corrupt hidden branch therefore still fails during the plan
     // preflight before any data or metadata is changed.
     zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
-    commit_legacy_mapping_removal(
-        device,
-        fs,
-        inode_num,
-        &mut inode,
-        Ext4InodeMetadataUpdate::truncate_access(),
-        Some(truncate_size),
-        transaction,
-    )
+    if let Some(credit_limit) = restart_limit {
+        if purpose == TruncatePurpose::UserResize {
+            begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
+        }
+        remove_legacy_mapping_with_restarts(
+            device,
+            fs,
+            inode_num,
+            &mut inode,
+            new_blocks,
+            u64::from(u32::MAX) + 1,
+            credit_limit,
+        )?;
+        if purpose == TruncatePurpose::UserResize {
+            finish_orphaned_truncate(device, fs, inode_num)
+        } else {
+            inode.i_size_lo = truncate_size as u32;
+            inode.i_size_high = (truncate_size >> 32) as u32;
+            finalize_restarted_extent_update(
+                device,
+                fs,
+                inode_num,
+                &mut inode,
+                Ext4InodeMetadataUpdate::truncate_access(),
+            )
+        }
+    } else {
+        commit_legacy_mapping_removal(
+            device,
+            fs,
+            inode_num,
+            &mut inode,
+            Ext4InodeMetadataUpdate::truncate_access(),
+            Some(truncate_size),
+            transaction,
+        )
+    }
 }
 
 fn read_symlink_target<B: BlockIo>(

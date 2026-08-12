@@ -18,9 +18,9 @@ use rsext4::{
     jbd2::jbdstruct::{
         JBD2_BLOCKTYPE_COMMIT, JBD2_BLOCKTYPE_SUPERBLOCK_V1, JBD2_MAGIC, JournalSuperBlock,
     },
-    mkfile, mkfs, mount, punch_hole_inode,
+    mkfile, mkfs, mount, punch_hole_inode, read_inode_data_into, reap_unlinked_inode,
     superblock::Ext4Superblock,
-    truncate_inode,
+    truncate_inode, unlink,
 };
 
 struct RestartDevice {
@@ -168,6 +168,17 @@ struct LargeExtentFixture {
     free_before: u64,
 }
 
+struct LargeLegacyFixture {
+    journal: Jbd2Dev<RestartDevice>,
+    filesystem: Ext4FileSystem,
+    power_cut: Rc<PowerCutProbe>,
+    inode_number: InodeNumber,
+    removed_blocks: Vec<AbsoluteBN>,
+    gap_blocks: Vec<AbsoluteBN>,
+    checkpoint_bitmap: u64,
+    free_before: u64,
+}
+
 #[derive(Clone, Copy)]
 enum ExtentRemovalOperation {
     Punch,
@@ -182,6 +193,13 @@ struct RemovedExtentExpectation<'a> {
     external_blocks: &'a [AbsoluteBN],
     free_before: u64,
     expected_size: u64,
+}
+
+struct RemovedLegacyExpectation<'a> {
+    inode_number: InodeNumber,
+    removed_blocks: &'a [AbsoluteBN],
+    gap_blocks: &'a [AbsoluteBN],
+    free_before: u64,
 }
 
 #[test]
@@ -279,6 +297,195 @@ fn undersized_journal_rejects_restart_before_publishing_truncate_intent() {
     assert_eq!(inode.size(), original_size);
     assert_eq!(fixture.filesystem.superblock.s_last_orphan, 0);
     assert_eq!(fixture.power_cut.commit_writes.get(), 0);
+}
+
+#[test]
+fn large_legacy_truncate_restarts_across_allocation_groups() {
+    let mut fixture = build_large_legacy_fixture("/legacy-restart");
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 7);
+    fixture.power_cut.reset_observation();
+    let sequence_before = fixture.journal.journal_sequence();
+
+    truncate_inode(
+        &mut fixture.journal,
+        &mut fixture.filesystem,
+        fixture.inode_number,
+        0,
+    )
+    .expect("legacy truncate must restart its journal transaction");
+    assert!(
+        fixture.power_cut.commit_writes.get() >= 1,
+        "the second allocation group must cross a commit boundary, observed {}, sequence {:?} -> \
+         {:?}",
+        fixture.power_cut.commit_writes.get(),
+        sequence_before,
+        fixture.journal.journal_sequence()
+    );
+    assert_ne!(fixture.journal.journal_sequence(), sequence_before);
+    let current_inode = fixture
+        .filesystem
+        .get_inode_by_num(&mut fixture.journal, fixture.inode_number)
+        .expect("current inode read failed");
+    assert_eq!(current_inode.i_block, [0; 15]);
+    assert_eq!(current_inode.i_blocks_lo, 0);
+    fixture
+        .filesystem
+        .umount(&mut fixture.journal)
+        .expect("legacy restart unmount failed");
+    assert!(
+        fixture.power_cut.commit_writes.get() >= 2,
+        "unmount must commit the final restarted transaction"
+    );
+
+    let device = fixture.journal.into_inner();
+    let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut remounted = mount(&mut remount_device).expect("legacy restart remount failed");
+    assert_removed_legacy_state(
+        &mut remounted,
+        &mut remount_device,
+        RemovedLegacyExpectation {
+            inode_number: fixture.inode_number,
+            removed_blocks: &fixture.removed_blocks,
+            gap_blocks: &fixture.gap_blocks,
+            free_before: fixture.free_before,
+        },
+    );
+}
+
+#[test]
+fn large_legacy_truncate_recovery_resumes_after_committed_bitmap_power_cut() {
+    let mut fixture = build_large_legacy_fixture("/legacy-restart-crash");
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 7);
+    fixture
+        .power_cut
+        .arm_checkpoint_power_cut(fixture.checkpoint_bitmap, 1);
+
+    let power_cut = catch_unwind(AssertUnwindSafe(|| {
+        truncate_inode(
+            &mut fixture.journal,
+            &mut fixture.filesystem,
+            fixture.inode_number,
+            0,
+        )
+    }));
+    assert!(
+        power_cut.is_err(),
+        "fixture must cut power while checkpointing the committed indirect-group removal"
+    );
+    let commits_before_cut = fixture
+        .power_cut
+        .commits_before_cut
+        .get()
+        .expect("power cut must record the durable commit count");
+    assert_eq!(
+        fixture.power_cut.target_writes.get(),
+        0,
+        "the watched bitmap home block must not reach storage before the cut"
+    );
+    assert!(
+        commits_before_cut > fixture.power_cut.commits_at_last_target_write.get(),
+        "the interrupted bitmap checkpoint must follow a newly durable commit block"
+    );
+
+    let device = fixture.journal.into_inner();
+    device.power_cut.disable();
+    let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut remounted =
+        mount(&mut remount_device).expect("mount must replay and resume legacy truncate");
+    assert_removed_legacy_state(
+        &mut remounted,
+        &mut remount_device,
+        RemovedLegacyExpectation {
+            inode_number: fixture.inode_number,
+            removed_blocks: &fixture.removed_blocks,
+            gap_blocks: &fixture.gap_blocks,
+            free_before: fixture.free_before,
+        },
+    );
+}
+
+#[test]
+fn zero_link_legacy_reap_restarts_before_final_inode_transaction() {
+    let mut fixture = build_large_legacy_fixture("/legacy-reap-restart");
+    let outcome = unlink(
+        &mut fixture.filesystem,
+        &mut fixture.journal,
+        "/legacy-reap-restart",
+    )
+    .expect("final unlink must publish the orphan");
+    assert_eq!(outcome.inode, fixture.inode_number);
+    assert!(outcome.requires_reap());
+    mkfile(
+        &mut fixture.journal,
+        &mut fixture.filesystem,
+        "/legacy-reap-head",
+        None,
+        None,
+    )
+    .expect("second orphan creation failed");
+    let head_inode = dir::get_inode_with_num(
+        &mut fixture.filesystem,
+        &mut fixture.journal,
+        "/legacy-reap-head",
+    )
+    .expect("second orphan lookup failed")
+    .expect("second orphan missing")
+    .0;
+    let head_outcome = unlink(
+        &mut fixture.filesystem,
+        &mut fixture.journal,
+        "/legacy-reap-head",
+    )
+    .expect("second final unlink must publish a new orphan head");
+    assert_eq!(head_outcome.inode, head_inode);
+    assert!(head_outcome.requires_reap());
+    fixture
+        .filesystem
+        .sync_filesystem(&mut fixture.journal)
+        .expect("orphan fixture sync failed");
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 8);
+    fixture.power_cut.reset_observation();
+
+    reap_unlinked_inode(
+        &mut fixture.filesystem,
+        &mut fixture.journal,
+        fixture.inode_number,
+    )
+    .expect("zero-link legacy reap must restart before its final inode transaction");
+    assert!(
+        fixture.power_cut.commit_writes.get() >= 1,
+        "mapping removal and final inode free must cross a commit boundary"
+    );
+    assert_eq!(
+        fixture.filesystem.superblock.s_last_orphan,
+        head_inode.raw(),
+        "reaping a non-head orphan must preserve and rewrite its predecessor"
+    );
+    let head = fixture
+        .filesystem
+        .get_inode_by_num(&mut fixture.journal, head_inode)
+        .expect("remaining orphan head read failed");
+    assert_eq!(head.i_dtime, 0);
+    reap_unlinked_inode(&mut fixture.filesystem, &mut fixture.journal, head_inode)
+        .expect("empty orphan head must fit the exact five-credit final transaction");
+    fixture
+        .filesystem
+        .umount(&mut fixture.journal)
+        .expect("legacy reap unmount failed");
+
+    let device = fixture.journal.into_inner();
+    let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut remounted = mount(&mut remount_device).expect("legacy reap remount failed");
+    assert_reaped_legacy_state(
+        &mut remounted,
+        &mut remount_device,
+        RemovedLegacyExpectation {
+            inode_number: fixture.inode_number,
+            removed_blocks: &fixture.removed_blocks,
+            gap_blocks: &fixture.gap_blocks,
+            free_before: fixture.free_before,
+        },
+    );
 }
 
 fn assert_large_extent_removal_restarts(path: &str, operation: ExtentRemovalOperation) {
@@ -435,13 +642,237 @@ fn build_large_extent_fixture(path: &str) -> LargeExtentFixture {
     }
 }
 
+fn build_large_legacy_fixture(path: &str) -> LargeLegacyFixture {
+    let device = RestartDevice::new(34_000);
+    let power_cut = Rc::clone(&device.power_cut);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(&mut journal, &mut filesystem, path, None, None).expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, path)
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+
+    let direct_data = filesystem
+        .alloc_block(&mut journal)
+        .expect("group-zero data allocation failed");
+    let group_zero_free = filesystem.group_descs[0].free_blocks_count();
+    let gap_blocks = filesystem
+        .alloc_blocks(&mut journal, group_zero_free)
+        .expect("group-zero gap allocation failed");
+    let single_root = filesystem
+        .alloc_block(&mut journal)
+        .expect("single-indirect root allocation failed");
+    let single_data = filesystem
+        .alloc_block(&mut journal)
+        .expect("single-indirect data allocation failed");
+    let double_root = filesystem
+        .alloc_block(&mut journal)
+        .expect("double-indirect root allocation failed");
+    let double_leaf = filesystem
+        .alloc_block(&mut journal)
+        .expect("double-indirect leaf allocation failed");
+    let empty_double_leaf = filesystem
+        .alloc_block(&mut journal)
+        .expect("empty double-indirect leaf allocation failed");
+    let double_data = filesystem
+        .alloc_block(&mut journal)
+        .expect("double-indirect data allocation failed");
+    let triple_root = filesystem
+        .alloc_block(&mut journal)
+        .expect("triple-indirect root allocation failed");
+    let triple_middle = filesystem
+        .alloc_block(&mut journal)
+        .expect("triple-indirect middle allocation failed");
+    let triple_leaf = filesystem
+        .alloc_block(&mut journal)
+        .expect("triple-indirect leaf allocation failed");
+    let triple_data = filesystem
+        .alloc_block(&mut journal)
+        .expect("triple-indirect data allocation failed");
+    let removed_blocks = vec![
+        direct_data,
+        single_root,
+        single_data,
+        double_root,
+        double_leaf,
+        empty_double_leaf,
+        double_data,
+        triple_root,
+        triple_middle,
+        triple_leaf,
+        triple_data,
+    ];
+    let (direct_group, _) = filesystem
+        .block_allocator
+        .global_to_group(direct_data)
+        .expect("direct group lookup failed");
+    let (indirect_group, _) = filesystem
+        .block_allocator
+        .global_to_group(single_data)
+        .expect("indirect group lookup failed");
+    assert_ne!(direct_group, indirect_group);
+    for block in &removed_blocks[1..] {
+        let (group, _) = filesystem
+            .block_allocator
+            .global_to_group(*block)
+            .expect("indirect block group lookup failed");
+        assert_eq!(group, indirect_group);
+    }
+    let checkpoint_bitmap = filesystem.group_descs
+        [indirect_group.as_usize().expect("indirect group index")]
+    .block_bitmap();
+
+    write_pointer_block(&mut journal, single_root, single_data);
+    write_pointer_block(&mut journal, double_root, double_leaf);
+    write_pointer_entry(&mut journal, double_root, 1, empty_double_leaf);
+    write_pointer_block(&mut journal, double_leaf, double_data);
+    write_pointer_block(&mut journal, triple_root, triple_middle);
+    write_pointer_block(&mut journal, triple_middle, triple_leaf);
+    write_pointer_block(&mut journal, triple_leaf, triple_data);
+    filesystem
+        .datablock_cache
+        .modify_new(&mut journal, direct_data, |block| block[0] = 0x31)
+        .expect("direct marker write failed");
+    filesystem
+        .datablock_cache
+        .modify_new(&mut journal, single_data, |block| block[0] = 0x32)
+        .expect("single-indirect marker write failed");
+    filesystem
+        .datablock_cache
+        .modify_new(&mut journal, double_data, |block| block[0] = 0x33)
+        .expect("double-indirect marker write failed");
+    filesystem
+        .datablock_cache
+        .modify_new(&mut journal, triple_data, |block| block[0] = 0x34)
+        .expect("triple-indirect marker write failed");
+    let triple_logical = 12u64 + 1024 + 1024 * 1024;
+    let inode_size = (triple_logical + 1) * BLOCK_SIZE as u64;
+    filesystem
+        .modify_inode(&mut journal, inode_number, |inode| {
+            inode.i_flags &= !Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_block[0] = direct_data.to_u32().expect("direct block number");
+            inode.i_block[12] = single_root.to_u32().expect("single root number");
+            inode.i_block[13] = double_root.to_u32().expect("double root number");
+            inode.i_block[14] = triple_root.to_u32().expect("triple root number");
+            inode.i_size_lo = inode_size as u32;
+            inode.i_size_high = (inode_size >> 32) as u32;
+            inode.i_blocks_lo = removed_blocks.len() as u32 * (BLOCK_SIZE / 512) as u32;
+        })
+        .expect("legacy inode publication failed");
+    assert_large_legacy_fixture_mappings(&mut filesystem, &mut journal, inode_number);
+    filesystem
+        .sync_filesystem(&mut journal)
+        .expect("fixture sync failed");
+    let free_before = filesystem.superblock.free_blocks_count();
+    LargeLegacyFixture {
+        journal,
+        filesystem,
+        power_cut,
+        inode_number,
+        removed_blocks,
+        gap_blocks,
+        checkpoint_bitmap,
+        free_before,
+    }
+}
+
+fn assert_large_legacy_fixture_mappings(
+    filesystem: &mut Ext4FileSystem,
+    journal: &mut Jbd2Dev<RestartDevice>,
+    inode_number: InodeNumber,
+) {
+    let marker_cases = [
+        (0, 0x31, "direct"),
+        (12, 0x32, "single-indirect"),
+        (12 + 1024, 0x33, "double-indirect"),
+        (12 + 1024 + 1024 * 1024, 0x34, "triple-indirect"),
+    ];
+    let mut marker = [0u8; 1];
+    for (logical, expected, level) in marker_cases {
+        let bytes_read = read_inode_data_into(
+            journal,
+            filesystem,
+            inode_number,
+            logical * BLOCK_SIZE as u64,
+            &mut marker,
+        )
+        .expect("legacy marker read failed");
+        assert_eq!(bytes_read, 1, "{level} marker must be addressable");
+        assert_eq!(marker, [expected], "{level} mapping resolved incorrectly");
+    }
+
+    assert_eq!(
+        read_inode_data_into(
+            journal,
+            filesystem,
+            inode_number,
+            13 * BLOCK_SIZE as u64,
+            &mut marker,
+        )
+        .expect("logical-hole read failed"),
+        1
+    );
+    assert_eq!(marker, [0], "the sparse logical hole must remain unmapped");
+}
+
+fn write_pointer_block(
+    journal: &mut Jbd2Dev<RestartDevice>,
+    pointer_block: AbsoluteBN,
+    child: AbsoluteBN,
+) {
+    journal
+        .read_block(pointer_block)
+        .expect("pointer block read failed");
+    journal.buffer_mut().fill(0);
+    journal.buffer_mut()[..4].copy_from_slice(
+        &child
+            .to_u32()
+            .expect("legacy pointer block number")
+            .to_le_bytes(),
+    );
+    journal
+        .write_block(pointer_block, true)
+        .expect("pointer block write failed");
+}
+
+fn write_pointer_entry(
+    journal: &mut Jbd2Dev<RestartDevice>,
+    pointer_block: AbsoluteBN,
+    index: usize,
+    child: AbsoluteBN,
+) {
+    journal
+        .read_block(pointer_block)
+        .expect("pointer block read failed");
+    let offset = index * core::mem::size_of::<u32>();
+    journal.buffer_mut()[offset..offset + 4].copy_from_slice(
+        &child
+            .to_u32()
+            .expect("legacy pointer block number")
+            .to_le_bytes(),
+    );
+    journal
+        .write_block(pointer_block, true)
+        .expect("pointer block write failed");
+}
+
 fn install_small_journal(fixture: &mut LargeExtentFixture) {
     install_journal_with_maxlen(fixture, 10);
 }
 
 fn install_journal_with_maxlen(fixture: &mut LargeExtentFixture, maxlen: u32) {
-    let journal_start = fixture
-        .filesystem
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, maxlen);
+}
+
+fn install_journal_with_maxlen_raw(
+    journal: &mut Jbd2Dev<RestartDevice>,
+    filesystem: &Ext4FileSystem,
+    maxlen: u32,
+) {
+    let journal_start = filesystem
         .journal_sb_block_start
         .expect("internal journal block missing");
     let mut small_journal = JournalSuperBlock::default();
@@ -452,8 +883,7 @@ fn install_journal_with_maxlen(fixture: &mut LargeExtentFixture, maxlen: u32) {
     small_journal.s_sequence = 1;
     small_journal.s_start = 0;
     small_journal.s_errno = 0;
-    fixture
-        .journal
+    journal
         .set_journal_superblock(small_journal, journal_start)
         .expect("small journal installation failed");
 }
@@ -512,6 +942,57 @@ fn assert_removed_extent_state(
         root,
         ExtentNode::Leaf { header, entries }
             if header.eh_depth == 0 && header.eh_entries == 0 && entries.is_empty()
+    ));
+}
+
+fn assert_removed_legacy_state(
+    filesystem: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<RestartDevice>,
+    expectation: RemovedLegacyExpectation<'_>,
+) {
+    let inode = filesystem
+        .get_inode_by_num(device, expectation.inode_number)
+        .expect("remounted inode read failed");
+    assert_eq!(inode.size(), 0);
+    assert_eq!(inode.i_block, [0; 15]);
+    assert_eq!(inode.i_blocks_lo, 0);
+    assert_eq!(filesystem.superblock.s_last_orphan, 0);
+    assert_eq!(
+        filesystem.superblock.free_blocks_count(),
+        expectation.free_before + expectation.removed_blocks.len() as u64
+    );
+    for &block in expectation.removed_blocks {
+        assert!(!bitmap_block_is_allocated(filesystem, device, block));
+    }
+    assert!(bitmap_block_is_allocated(
+        filesystem,
+        device,
+        *expectation.gap_blocks.last().expect("group-zero gap block")
+    ));
+}
+
+fn assert_reaped_legacy_state(
+    filesystem: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<RestartDevice>,
+    expectation: RemovedLegacyExpectation<'_>,
+) {
+    assert_eq!(filesystem.superblock.s_last_orphan, 0);
+    assert!(
+        !filesystem
+            .inode_num_already_allocated(device, expectation.inode_number)
+            .expect("reaped inode allocation lookup failed")
+    );
+    assert_eq!(
+        filesystem.superblock.free_blocks_count(),
+        expectation.free_before + expectation.removed_blocks.len() as u64
+    );
+    for &block in expectation.removed_blocks {
+        assert!(!bitmap_block_is_allocated(filesystem, device, block));
+    }
+    assert!(bitmap_block_is_allocated(
+        filesystem,
+        device,
+        *expectation.gap_blocks.last().expect("group-zero gap block")
     ));
 }
 

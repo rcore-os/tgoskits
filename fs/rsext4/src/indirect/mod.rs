@@ -83,9 +83,8 @@ pub(crate) fn resolve_legacy_inode_blocks<B: BlockIo>(
     inode_number: InodeNumber,
     inode: &Ext4Inode,
 ) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
-    let mut mappings = BTreeMap::new();
     if inode.size() == 0 || is_fast_symlink(filesystem, inode) {
-        return Ok(mappings);
+        return Ok(BTreeMap::new());
     }
 
     let block_size = filesystem.block_size();
@@ -94,53 +93,26 @@ pub(crate) fn resolve_legacy_inode_blocks<B: BlockIo>(
     if logical_blocks > reader.maximum_logical_blocks()? {
         return Err(Ext4Error::file_too_large().with_operation("indirect:file_size"));
     }
+    reader.collect_inode_mappings(inode, logical_blocks)
+}
 
-    let direct_limit = logical_blocks.min(DIRECT_BLOCKS as u64) as usize;
-    for logical in 0..direct_limit {
-        let pointer = inode.i_block[logical];
-        if pointer != 0 {
-            let physical = AbsoluteBN::from(pointer);
-            reader.validate_data_block(physical)?;
-            mappings.insert(logical as u32, physical);
-        }
+/// Materializes every data mapping owned by a legacy inode, including blocks
+/// beyond its published file size.
+pub(crate) fn resolve_all_legacy_inode_blocks<B: BlockIo>(
+    filesystem: &Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    inode_number: InodeNumber,
+    inode: &Ext4Inode,
+) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
+    if is_fast_symlink(filesystem, inode) {
+        return Ok(BTreeMap::new());
     }
 
-    let pointers = reader.pointers_per_block;
-    let double_capacity = pointers
-        .checked_mul(pointers)
-        .ok_or_else(Ext4Error::overflow)?;
-    let roots = [
-        (SINGLE_INDIRECT_SLOT, 1usize, DIRECT_BLOCKS as u64, 1u64),
-        (
-            DOUBLE_INDIRECT_SLOT,
-            2,
-            DIRECT_BLOCKS as u64 + pointers,
-            pointers,
-        ),
-        (
-            TRIPLE_INDIRECT_SLOT,
-            3,
-            DIRECT_BLOCKS as u64 + pointers + double_capacity,
-            double_capacity,
-        ),
-    ];
-    for (slot, depth, logical_base, stride) in roots {
-        if logical_base >= logical_blocks {
-            break;
-        }
-        let pointer = inode.i_block[slot];
-        if pointer != 0 {
-            reader.collect_subtree(
-                AbsoluteBN::from(pointer),
-                depth,
-                logical_base,
-                logical_blocks,
-                stride,
-                &mut mappings,
-            )?;
-        }
-    }
-    Ok(mappings)
+    let mut reader = LegacyBlockReader::new(filesystem, device, inode_number)?;
+    let logical_limit = reader
+        .maximum_logical_blocks()?
+        .min(u64::from(u32::MAX) + 1);
+    reader.collect_inode_mappings(inode, logical_limit)
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -526,6 +498,60 @@ impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
             .and_then(|blocks| blocks.checked_add(double))
             .and_then(|blocks| blocks.checked_add(triple))
             .ok_or_else(Ext4Error::overflow)
+    }
+
+    fn collect_inode_mappings(
+        &mut self,
+        inode: &Ext4Inode,
+        logical_limit: u64,
+    ) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
+        let mut mappings = BTreeMap::new();
+        let direct_limit = logical_limit.min(DIRECT_BLOCKS as u64) as usize;
+        for logical in 0..direct_limit {
+            let pointer = inode.i_block[logical];
+            if pointer != 0 {
+                let physical = AbsoluteBN::from(pointer);
+                self.validate_data_block(physical)?;
+                mappings.insert(logical as u32, physical);
+            }
+        }
+
+        let double_capacity = self
+            .pointers_per_block
+            .checked_mul(self.pointers_per_block)
+            .ok_or_else(Ext4Error::overflow)?;
+        let roots = [
+            (SINGLE_INDIRECT_SLOT, 1usize, DIRECT_BLOCKS as u64, 1u64),
+            (
+                DOUBLE_INDIRECT_SLOT,
+                2,
+                DIRECT_BLOCKS as u64 + self.pointers_per_block,
+                self.pointers_per_block,
+            ),
+            (
+                TRIPLE_INDIRECT_SLOT,
+                3,
+                DIRECT_BLOCKS as u64 + self.pointers_per_block + double_capacity,
+                double_capacity,
+            ),
+        ];
+        for (slot, depth, logical_base, stride) in roots {
+            if logical_base >= logical_limit {
+                break;
+            }
+            let pointer = inode.i_block[slot];
+            if pointer != 0 {
+                self.collect_subtree(
+                    AbsoluteBN::from(pointer),
+                    depth,
+                    logical_base,
+                    logical_limit,
+                    stride,
+                    &mut mappings,
+                )?;
+            }
+        }
+        Ok(mappings)
     }
 
     fn mapping_state(
