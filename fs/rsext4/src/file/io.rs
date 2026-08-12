@@ -1,5 +1,9 @@
 use super::*;
-use crate::{blockdev::TransactionCredits, bmalloc::BGIndex, endian::DiskFormat};
+use crate::{
+    blockdev::{ReservedJournalHandle, TransactionCredits},
+    bmalloc::BGIndex,
+    endian::DiskFormat,
+};
 
 const MAX_RUN_IO_BYTES: usize = 1024 * 1024;
 
@@ -2534,6 +2538,44 @@ struct ExtentMetadataSnapshot {
     bytes: Vec<u8>,
 }
 
+fn free_unwritten_finish_reservation<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    reservation: &mut Option<ReservedJournalHandle>,
+) -> Ext4Result<()> {
+    match reservation.take() {
+        Some(reserved) => device.free_reserved_transaction(reserved),
+        None => Ok(()),
+    }
+}
+
+fn finish_prepared_unwritten<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    prepared: &[PreparedUnwrittenRun],
+    old_size: u64,
+    write_end: u64,
+) -> Ext4Result<()> {
+    for run in prepared {
+        ExtentTree::with_filesystem(inode, fs, inode_num).finish_unwritten_write(
+            device,
+            run.logical_start,
+            run.len,
+        )?;
+    }
+    if write_end > old_size {
+        inode.i_size_lo = write_end as u32;
+        inode.i_size_high = (write_end >> 32) as u32;
+    }
+    fs.finalize_inode_update(
+        device,
+        inode_num,
+        inode,
+        Ext4InodeMetadataUpdate::write_access(),
+    )
+}
+
 fn snapshot_prepared_extent_leaves<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &Ext4FileSystem,
@@ -2652,7 +2694,7 @@ fn write_inode_data_through_unwritten<B: BlockIo>(
         PreallocationOptions::KEEP_SIZE,
     )?;
     let mut inode = fs.get_inode_by_num(device, inode_num)?;
-    let mut prepared = Vec::new();
+    let mut planned = Vec::new();
     let end_exclusive = end_lbn
         .checked_add(1)
         .ok_or_else(Ext4Error::file_too_large)?;
@@ -2673,24 +2715,7 @@ fn write_inode_data_through_unwritten<B: BlockIo>(
             let len = run_end - logical;
             let physical_start =
                 AbsoluteBN::new(extent.start_block()).checked_add(logical - extent.ee_block)?;
-            let tree_depth = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
-                .load_root_from_inode()?
-                .header()
-                .eh_depth;
-            let prepare_credits = usize::from(tree_depth)
-                .checked_mul(2)
-                .and_then(|credits| credits.checked_add(8))
-                .ok_or_else(Ext4Error::overflow)?;
-            device.with_transaction_handle(prepare_credits, |device| {
-                {
-                    let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
-                    tree.prepare_unwritten_write(fs, device, logical, len)?;
-                }
-                // Publish the still-unwritten split in the same journal
-                // operation as its external extent-node updates.
-                fs.modify_inode(device, inode_num, |on_disk| *on_disk = inode)
-            })?;
-            prepared.push(PreparedUnwrittenRun {
+            planned.push(PreparedUnwrittenRun {
                 logical_start: logical,
                 physical_start,
                 len,
@@ -2699,88 +2724,141 @@ fn write_inode_data_through_unwritten<B: BlockIo>(
         logical = run_end;
     }
 
-    let leaf_snapshots =
-        snapshot_prepared_extent_leaves(device, fs, inode_num, &mut inode, &prepared)?;
-
-    let mut lbn = start_lbn;
-    while lbn <= end_lbn {
-        let physical = if let Some(run) = prepared
-            .iter()
-            .find(|run| run.logical_start <= lbn && lbn < run.logical_start.saturating_add(run.len))
-        {
-            let run_offset = lbn - run.logical_start;
-            let run_blocks = run
-                .len
-                .checked_sub(run_offset)
-                .ok_or_else(Ext4Error::overflow)?
-                .min(end_lbn - lbn + 1);
-            let physical = run.physical_start.checked_add(run_offset)?;
-            let run_start = u64::from(lbn)
-                .checked_mul(block_bytes)
-                .ok_or_else(Ext4Error::file_too_large)?;
-            let run_end = run_start
-                .checked_add(u64::from(run_blocks) * block_bytes)
-                .ok_or_else(Ext4Error::file_too_large)?;
-            if write.offset <= run_start && write.end >= run_end {
-                write_full_block_run(
-                    device,
-                    fs,
-                    physical,
-                    u64::from(lbn),
-                    write.offset,
-                    write.data,
-                    run_blocks,
-                )?;
-            } else {
-                for offset in 0..run_blocks {
-                    write_inode_block_data(
-                        device,
-                        fs,
-                        physical.checked_add(offset)?,
-                        u64::from(lbn + offset),
-                        write,
-                        true,
-                    )?;
-                }
-            }
-            lbn += run_blocks;
-            continue;
-        } else {
-            match ExtentTree::with_filesystem(&mut inode, fs, inode_num).map_block(device, lbn)? {
-                ExtentBlockMapping::Initialized(physical) => physical,
-                ExtentBlockMapping::Hole | ExtentBlockMapping::Unwritten(_) => {
-                    return Err(Ext4Error::corrupted().with_operation("write:prepared_mapping"));
-                }
-            }
-        };
-        write_inode_block_data(device, fs, physical, u64::from(lbn), write, false)?;
-        lbn += 1;
-    }
-
-    let prepared_inode = inode;
-    let finish_credits = leaf_snapshots
+    let reserved_finish_credits = planned
         .len()
         .checked_add(1)
         .ok_or_else(Ext4Error::overflow)?;
-    let finish = device.with_transaction_handle(finish_credits, |device| {
-        for run in &prepared {
-            ExtentTree::with_filesystem(&mut inode, fs, inode_num).finish_unwritten_write(
-                device,
-                run.logical_start,
-                run.len,
+    let transaction_credit_limit = device.transaction_credit_limit()?;
+    let mut finish_reservation = None;
+    let mut prepared = Vec::with_capacity(planned.len());
+    for (index, run) in planned.iter().enumerate() {
+        let tree_depth = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
+            .load_root_from_inode()?
+            .header()
+            .eh_depth;
+        let prepare_credits = usize::from(tree_depth)
+            .checked_mul(2)
+            .and_then(|credits| credits.checked_add(8))
+            .ok_or_else(Ext4Error::overflow)?;
+        let is_last = index + 1 == planned.len();
+        let reserve_finish = is_last
+            && transaction_credit_limit.is_some_and(|limit| {
+                reserved_finish_credits <= limit / 2
+                    && prepare_credits
+                        .checked_add(reserved_finish_credits)
+                        .is_some_and(|total| total <= limit)
+            });
+        let prepare = |device: &mut Jbd2Dev<B>| {
+            {
+                let mut tree = ExtentTree::with_filesystem(&mut inode, fs, inode_num);
+                tree.prepare_unwritten_write(fs, device, run.logical_start, run.len)?;
+            }
+            // Publish the still-unwritten split in the same journal operation
+            // as its external extent-node updates.
+            fs.modify_inode(device, inode_num, |on_disk| *on_disk = inode)
+        };
+        if reserve_finish {
+            let ((), reserved) = device.with_transaction_reservation(
+                TransactionCredits::metadata(prepare_credits),
+                TransactionCredits::metadata(reserved_finish_credits),
+                prepare,
             )?;
+            finish_reservation = Some(reserved);
+        } else {
+            device.with_transaction_handle(prepare_credits, prepare)?;
         }
-        if write.end > old_size {
-            inode.i_size_lo = write.end as u32;
-            inode.i_size_high = (write.end >> 32) as u32;
+        prepared.push(*run);
+    }
+
+    let leaf_snapshots =
+        match snapshot_prepared_extent_leaves(device, fs, inode_num, &mut inode, &prepared) {
+            Ok(snapshots) => snapshots,
+            Err(error) => {
+                let cleanup = free_unwritten_finish_reservation(device, &mut finish_reservation);
+                return Err(error_after_cleanup(error, cleanup));
+            }
+        };
+
+    let data_write = (|| -> Ext4Result<()> {
+        let mut lbn = start_lbn;
+        while lbn <= end_lbn {
+            let physical = if let Some(run) = prepared.iter().find(|run| {
+                run.logical_start <= lbn && lbn < run.logical_start.saturating_add(run.len)
+            }) {
+                let run_offset = lbn - run.logical_start;
+                let run_blocks = run
+                    .len
+                    .checked_sub(run_offset)
+                    .ok_or_else(Ext4Error::overflow)?
+                    .min(end_lbn - lbn + 1);
+                let physical = run.physical_start.checked_add(run_offset)?;
+                let run_start = u64::from(lbn)
+                    .checked_mul(block_bytes)
+                    .ok_or_else(Ext4Error::file_too_large)?;
+                let run_end = run_start
+                    .checked_add(u64::from(run_blocks) * block_bytes)
+                    .ok_or_else(Ext4Error::file_too_large)?;
+                if write.offset <= run_start && write.end >= run_end {
+                    write_full_block_run(
+                        device,
+                        fs,
+                        physical,
+                        u64::from(lbn),
+                        write.offset,
+                        write.data,
+                        run_blocks,
+                    )?;
+                } else {
+                    for offset in 0..run_blocks {
+                        write_inode_block_data(
+                            device,
+                            fs,
+                            physical.checked_add(offset)?,
+                            u64::from(lbn + offset),
+                            write,
+                            true,
+                        )?;
+                    }
+                }
+                lbn += run_blocks;
+                continue;
+            } else {
+                match ExtentTree::with_filesystem(&mut inode, fs, inode_num)
+                    .map_block(device, lbn)?
+                {
+                    ExtentBlockMapping::Initialized(physical) => physical,
+                    ExtentBlockMapping::Hole | ExtentBlockMapping::Unwritten(_) => {
+                        return Err(Ext4Error::corrupted().with_operation("write:prepared_mapping"));
+                    }
+                }
+            };
+            write_inode_block_data(device, fs, physical, u64::from(lbn), write, false)?;
+            lbn += 1;
         }
-        fs.finalize_inode_update(
-            device,
-            inode_num,
-            &mut inode,
-            Ext4InodeMetadataUpdate::write_access(),
-        )
-    });
+        Ok(())
+    })();
+    if let Err(error) = data_write {
+        let cleanup = free_unwritten_finish_reservation(device, &mut finish_reservation);
+        return Err(error_after_cleanup(error, cleanup));
+    }
+
+    let prepared_inode = inode;
+    let Some(finish_credits) = leaf_snapshots.len().checked_add(1) else {
+        let cleanup = free_unwritten_finish_reservation(device, &mut finish_reservation);
+        return Err(error_after_cleanup(Ext4Error::overflow(), cleanup));
+    };
+    let finish = match finish_reservation.take() {
+        Some(reserved) => device.with_reserved_transaction(reserved, |device| {
+            finish_prepared_unwritten(
+                device, fs, inode_num, &mut inode, &prepared, old_size, write.end,
+            )
+        }),
+        None => device.with_transaction_handle(finish_credits, |device| {
+            finish_prepared_unwritten(
+                device, fs, inode_num, &mut inode, &prepared, old_size, write.end,
+            )
+        }),
+    };
     match finish {
         Ok(()) => Ok(()),
         Err(error) => {

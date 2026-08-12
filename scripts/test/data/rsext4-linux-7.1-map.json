@@ -1820,6 +1820,110 @@
       "segments": [
         {
           "start": 1,
+          "end": 183,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::transaction",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 184,
+          "end": 207,
+          "symbol": "sub_reserved_credits; jbd2_max_user_trans_buffers",
+          "classification": "core",
+          "state_machine": "reserved credit release -> journal-wide waiter wakeup; transaction geometry -> user credit limit",
+          "invariant": "reserved buffer credits are bounded against user payload capacity after descriptor and commit overhead",
+          "rust_owner": "rsext4::blockdev::journal::{reserve_journal_handle,remove_journal_reservation,journal_transaction_capacity}",
+          "reason": "the exclusive portable owner returns Busy instead of sleeping when another detached token must make progress",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 208,
+          "end": 311,
+          "symbol": "add_transaction_credits",
+          "classification": "core",
+          "state_machine": "running credits plus detached reservations -> commit/retry or first-dirty log-space gate",
+          "invariant": "ordinary handles cannot consume reserved capacity and no metadata becomes dirty before one maximum transaction fits in the log",
+          "rust_owner": "rsext4::blockdev::journal::{with_journal_handle,reserve_maximum_transaction_log_space}",
+          "reason": "the synchronous core commits or checkpoints explicitly while preserving Linux transaction and durability bounds",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 312,
+          "end": 544,
+          "symbol": "start_this_handle; new_handle; jbd2__journal_start; jbd2_journal_start",
+          "classification": "core",
+          "state_machine": "typed handle request -> running attachment plus optional detached reserved token",
+          "invariant": "one operation cannot exceed user capacity, aggregate reservations stay at or below one half, and nested starts reuse the active owner",
+          "rust_owner": "rsext4::blockdev::journal::{with_journal_handle,with_transaction_reservation,with_nested_journal_handle}",
+          "reason": "scoped Rust ownership replaces task-local journal_info while journal-owned token IDs preserve transfer semantics",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 545,
+          "end": 641,
+          "symbol": "__jbd2_journal_unreserve_handle; jbd2_journal_free_reserved; jbd2_journal_start_reserved",
+          "classification": "core",
+          "state_machine": "detached reserved token -> explicit free or no-wait running attachment",
+          "invariant": "a token is consumed exactly once and start-reserved cannot commit, checkpoint, or wait for log space",
+          "rust_owner": "rsext4::blockdev::journal::{free_reserved_transaction,with_reserved_transaction}",
+          "reason": "the core keeps credit truth in its private ledger and exposes only a non-copy typed token to filesystem owners",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 642,
+          "end": 815,
+          "symbol": "jbd2_journal_extend; stop_this_handle; jbd2__journal_restart; jbd2_journal_restart",
+          "classification": "core",
+          "state_machine": "active handle extend -> stop accounting -> optional new transaction attachment",
+          "invariant": "revoke descriptor deltas and unused credits are released at transaction boundaries; failed extend never mutates the original reservation",
+          "rust_owner": "rsext4::blockdev::journal::extend_transaction_credits; rsext4::file::io restart planners",
+          "reason": "best-effort extend and owner-level chunk restart are implemented; generic in-closure restart remains explicitly pending",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 816,
+          "end": 1882,
+          "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::transaction",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 1883,
+          "end": 2025,
+          "symbol": "jbd2_journal_stop",
+          "classification": "core",
+          "state_machine": "nested reference release -> final handle stop -> optional sync commit",
+          "invariant": "nested references do not release credits, final stop releases an unused attached reservation, and no transaction state is dereferenced after detachment",
+          "rust_owner": "rsext4::blockdev::journal::{with_nested_journal_handle,run_active_journal_handle,with_transaction_reservation}",
+          "reason": "closure lifetimes supply balanced scoped stop while explicit tokens model only reservations transferred beyond the parent scope",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 2026,
           "end": 2831,
           "symbol": "<whole-file>",
           "classification": "core",

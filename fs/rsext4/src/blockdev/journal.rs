@@ -84,6 +84,28 @@ impl From<usize> for TransactionCredits {
     }
 }
 
+fn checked_block_bytes(block_size: usize, count: u32) -> Ext4Result<usize> {
+    usize::try_from(count)
+        .map_err(|_| Ext4Error::overflow())?
+        .checked_mul(block_size)
+        .ok_or_else(Ext4Error::overflow)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReservedJournalHandleId(u64);
+
+struct JournalReservation {
+    id: ReservedJournalHandleId,
+    credits: TransactionCredits,
+    buffer_credits: usize,
+}
+
+#[derive(Debug)]
+#[must_use = "a reserved journal handle must be started or explicitly freed"]
+pub(crate) struct ReservedJournalHandle {
+    id: ReservedJournalHandleId,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TransactionHandleExtension {
     Extended,
@@ -108,6 +130,8 @@ pub struct Jbd2Dev<B: BlockIo> {
     journal_blocks: Vec<AbsoluteBN>,
     active_handle: Option<ActiveJournalHandle>,
     active_direct_handle: Option<ActiveDirectHandle>,
+    reserved_handles: Vec<JournalReservation>,
+    next_reserved_handle_id: u64,
     abort_state: Option<JournalAbortState>,
     clock: ClockCallback<B>,
 }
@@ -186,6 +210,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
     ) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:write_after_abort")?;
         let revoke_records_per_block = self.journal_revoke_records_per_block()?;
+        let reserved_buffer_credits = self.reserved_buffer_credits()?;
 
         if let Some(handle) = self.active_handle.as_mut() {
             if !handle.touched_metadata_blocks.contains(&update.0) {
@@ -232,6 +257,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 return Ok(());
             }
             Self::running_transaction_credits(system, revoke_records_per_block)?
+                .checked_add(reserved_buffer_credits)
+                .ok_or_else(Ext4Error::overflow)?
                 .checked_add(1)
                 .ok_or_else(Ext4Error::overflow)?
                 > transaction_capacity
@@ -401,6 +428,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
             journal_blocks: Vec::new(),
             active_handle: None,
             active_direct_handle: None,
+            reserved_handles: Vec::new(),
+            next_reserved_handle_id: 1,
             abort_state: None,
             clock,
         }
@@ -482,6 +511,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         });
         if self.active_handle.is_some()
             || self.active_direct_handle.is_some()
+            || !self.reserved_handles.is_empty()
             || pending_transaction
         {
             Err(Ext4Error::busy().with_operation("jbd2:reinstall_with_pending_owner"))
@@ -636,6 +666,72 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .revoke_records_per_block(self.inner.block_size() as usize)
     }
 
+    fn reserved_buffer_credits(&self) -> Ext4Result<usize> {
+        self.reserved_handles
+            .iter()
+            .try_fold(0usize, |total, handle| {
+                total
+                    .checked_add(handle.buffer_credits)
+                    .ok_or_else(Ext4Error::overflow)
+            })
+    }
+
+    fn reserve_journal_handle(
+        &mut self,
+        credits: TransactionCredits,
+    ) -> Ext4Result<ReservedJournalHandle> {
+        self.ensure_not_aborted("jbd2:reserve_after_abort")?;
+        if !self.journal_use {
+            return Err(Ext4Error::unsupported().with_operation("jbd2:reserved_handle"));
+        }
+        if credits.is_empty() {
+            return Err(Ext4Error::invalid_input().with_operation("jbd2:reserved_credits"));
+        }
+        let buffer_credits =
+            credits.total_buffer_credits(self.journal_revoke_records_per_block()?)?;
+        let transaction_capacity = self.journal_transaction_capacity()?;
+        if buffer_credits > transaction_capacity / 2 {
+            return Err(Ext4Error::no_space().with_operation("jbd2:reserved_credits"));
+        }
+        let all_reserved = self
+            .reserved_buffer_credits()?
+            .checked_add(buffer_credits)
+            .ok_or_else(Ext4Error::overflow)?;
+        if all_reserved > transaction_capacity / 2 {
+            // Linux waits for another task to release a reservation. The
+            // portable core is entered exclusively, so waiting here could
+            // never make progress; let the adapter retry after another owner
+            // explicitly starts or frees its token.
+            return Err(Ext4Error::busy().with_operation("jbd2:reserved_credits"));
+        }
+
+        let id = ReservedJournalHandleId(self.next_reserved_handle_id);
+        self.next_reserved_handle_id = self
+            .next_reserved_handle_id
+            .checked_add(1)
+            .ok_or_else(Ext4Error::overflow)?;
+        self.reserved_handles.push(JournalReservation {
+            id,
+            credits,
+            buffer_credits,
+        });
+        Ok(ReservedJournalHandle { id })
+    }
+
+    fn remove_journal_reservation(
+        &mut self,
+        reserved: ReservedJournalHandle,
+    ) -> Ext4Result<JournalReservation> {
+        let position = self
+            .reserved_handles
+            .iter()
+            .position(|entry| entry.id == reserved.id)
+            .ok_or_else(|| {
+                Ext4Error::invalid_input().with_operation("jbd2:reserved_handle_owner")
+            })?;
+        Ok(self.reserved_handles.remove(position))
+    }
+
     fn journal_maximum_transaction_records(&self) -> Ext4Result<usize> {
         self.ensure_not_aborted("jbd2:capacity_after_abort")?;
         let system = self.system.as_ref().ok_or_else(|| {
@@ -740,6 +836,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
             if self.active_handle.is_some() {
                 return Err(Ext4Error::busy().with_operation("jbd2:disable_with_active_handle"));
             }
+            if !self.reserved_handles.is_empty() {
+                return Err(Ext4Error::busy().with_operation("jbd2:disable_with_reserved_handle"));
+            }
             if self.system.as_ref().is_some_and(|system| {
                 !system.running_transaction.updates.is_empty()
                     || !system.running_transaction.revoked_blocks.is_empty()
@@ -837,6 +936,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
     /// Commits and checkpoints all buffered journal transactions during unmount.
     pub fn umount_commit(&mut self) -> Ext4Result<()> {
+        if !self.reserved_handles.is_empty() {
+            return Err(Ext4Error::busy().with_operation("jbd2:unmount_with_reserved_handle"));
+        }
         self.commit()?;
         self.checkpoint_all_pending_transactions()?;
         Ok(())
@@ -897,85 +999,12 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
     }
 
-    fn with_journal_handle<T, C>(
+    fn run_active_journal_handle<T>(
         &mut self,
-        credits: C,
+        credits: TransactionCredits,
+        transaction_credits_at_start: usize,
         operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
-    ) -> Ext4Result<T>
-    where
-        C: Into<TransactionCredits>,
-    {
-        let credits = credits.into();
-        self.ensure_not_aborted("jbd2:handle_after_abort")?;
-        if !self.journal_use {
-            if credits.is_empty() {
-                return Err(Ext4Error::invalid_input().with_operation("jbd2:handle_credits"));
-            }
-            if self.active_direct_handle.is_some() {
-                return Err(Ext4Error::busy().with_operation("jbd2:nested_direct_handle"));
-            }
-            self.active_direct_handle = Some(ActiveDirectHandle {
-                credits: credits.metadata_blocks,
-                before_images: Vec::with_capacity(credits.metadata_blocks),
-            });
-            return match operation(self) {
-                Ok(value) => {
-                    self.active_direct_handle = None;
-                    Ok(value)
-                }
-                Err(operation_error) => {
-                    let handle = self.active_direct_handle.take().ok_or_else(|| {
-                        Ext4Error::corrupted().with_operation("jbd2:missing_direct_handle")
-                    })?;
-                    if self.restore_direct_handle(handle).is_err() {
-                        self.abort_journal(operation_error);
-                    }
-                    Err(operation_error)
-                }
-            };
-        }
-        if self.active_handle.is_some() {
-            // Linux returns the task's current handle and increments h_ref;
-            // nested callers do not reserve a second set of credits. The
-            // closure lifetime supplies the matching scoped reference here.
-            return self.with_nested_journal_handle(operation);
-        }
-        if credits.is_empty() {
-            return Err(Ext4Error::invalid_input().with_operation("jbd2:handle_credits"));
-        }
-        let revoke_records_per_block = self.journal_revoke_records_per_block()?;
-        let requested_buffer_credits = credits.total_buffer_credits(revoke_records_per_block)?;
-        let transaction_capacity = self.journal_transaction_capacity()?;
-        if requested_buffer_credits > transaction_capacity {
-            return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
-        }
-        let (needs_commit, running_transaction_was_empty) = {
-            let Some(system) = self.system.as_ref() else {
-                return Err(
-                    Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
-                );
-            };
-            let running_credits =
-                Self::running_transaction_credits(system, revoke_records_per_block)?;
-            let reserved = running_credits
-                .checked_add(requested_buffer_credits)
-                .ok_or_else(Ext4Error::overflow)?;
-            (reserved > transaction_capacity, running_credits == 0)
-        };
-        if needs_commit {
-            self.commit_pending_transaction()?;
-        }
-        if needs_commit || running_transaction_was_empty {
-            self.reserve_maximum_transaction_log_space()?;
-        }
-
-        let transaction_credits_at_start = Self::running_transaction_credits(
-            self.system.as_ref().ok_or_else(|| {
-                Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
-            })?,
-            revoke_records_per_block,
-        )?;
-
+    ) -> Ext4Result<T> {
         let queue_snapshot = {
             let system = self.system.as_ref().ok_or_else(|| {
                 Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
@@ -1037,6 +1066,100 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
     }
 
+    fn with_journal_handle<T, C>(
+        &mut self,
+        credits: C,
+        operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
+    ) -> Ext4Result<T>
+    where
+        C: Into<TransactionCredits>,
+    {
+        let credits = credits.into();
+        self.ensure_not_aborted("jbd2:handle_after_abort")?;
+        if !self.journal_use {
+            if credits.is_empty() {
+                return Err(Ext4Error::invalid_input().with_operation("jbd2:handle_credits"));
+            }
+            if self.active_direct_handle.is_some() {
+                return Err(Ext4Error::busy().with_operation("jbd2:nested_direct_handle"));
+            }
+            self.active_direct_handle = Some(ActiveDirectHandle {
+                credits: credits.metadata_blocks,
+                before_images: Vec::with_capacity(credits.metadata_blocks),
+            });
+            return match operation(self) {
+                Ok(value) => {
+                    self.active_direct_handle = None;
+                    Ok(value)
+                }
+                Err(operation_error) => {
+                    let handle = self.active_direct_handle.take().ok_or_else(|| {
+                        Ext4Error::corrupted().with_operation("jbd2:missing_direct_handle")
+                    })?;
+                    if self.restore_direct_handle(handle).is_err() {
+                        self.abort_journal(operation_error);
+                    }
+                    Err(operation_error)
+                }
+            };
+        }
+        if self.active_handle.is_some() {
+            // Linux returns the task's current handle and increments h_ref;
+            // nested callers do not reserve a second set of credits. The
+            // closure lifetime supplies the matching scoped reference here.
+            return self.with_nested_journal_handle(operation);
+        }
+        if credits.is_empty() {
+            return Err(Ext4Error::invalid_input().with_operation("jbd2:handle_credits"));
+        }
+        let revoke_records_per_block = self.journal_revoke_records_per_block()?;
+        let requested_buffer_credits = credits.total_buffer_credits(revoke_records_per_block)?;
+        let transaction_capacity = self.journal_transaction_capacity()?;
+        if requested_buffer_credits > transaction_capacity {
+            return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
+        }
+        let reserved_buffer_credits = self.reserved_buffer_credits()?;
+        if reserved_buffer_credits
+            .checked_add(requested_buffer_credits)
+            .ok_or_else(Ext4Error::overflow)?
+            > transaction_capacity
+        {
+            return Err(Ext4Error::busy().with_operation("jbd2:reserved_credits"));
+        }
+        let (needs_commit, running_transaction_was_empty) = {
+            let Some(system) = self.system.as_ref() else {
+                return Err(
+                    Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
+                );
+            };
+            let running_credits =
+                Self::running_transaction_credits(system, revoke_records_per_block)?;
+            let reserved = running_credits
+                .checked_add(reserved_buffer_credits)
+                .ok_or_else(Ext4Error::overflow)?
+                .checked_add(requested_buffer_credits)
+                .ok_or_else(Ext4Error::overflow)?;
+            (reserved > transaction_capacity, running_credits == 0)
+        };
+        if needs_commit {
+            self.commit_pending_transaction()?;
+        }
+        if needs_commit || running_transaction_was_empty {
+            self.reserve_maximum_transaction_log_space()?;
+        }
+
+        let transaction_credits_at_start = Self::running_transaction_credits(
+            self.system.as_ref().ok_or_else(|| {
+                Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
+            })?,
+            revoke_records_per_block,
+        )?
+        .checked_add(reserved_buffer_credits)
+        .ok_or_else(Ext4Error::overflow)?;
+
+        self.run_active_journal_handle(credits, transaction_credits_at_start, operation)
+    }
+
     /// Runs one filesystem-owned metadata transition without allowing an
     /// automatic commit to split its journal updates.
     pub(crate) fn with_transaction_handle<T>(
@@ -1053,6 +1176,86 @@ impl<B: BlockIo> Jbd2Dev<B> {
         operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
     ) -> Ext4Result<T> {
         self.with_journal_handle(credits, operation)
+    }
+
+    pub(crate) fn with_transaction_reservation<T>(
+        &mut self,
+        credits: TransactionCredits,
+        reserved_credits: TransactionCredits,
+        operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
+    ) -> Ext4Result<(T, ReservedJournalHandle)> {
+        if self.active_handle.is_some() || self.active_direct_handle.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:nested_reserved_handle"));
+        }
+        if !self.journal_use {
+            return Err(Ext4Error::unsupported().with_operation("jbd2:reserved_handle"));
+        }
+        let requested_buffer_credits = self.transaction_credit_cost(credits)?;
+        let reserved_buffer_credits = self.transaction_credit_cost(reserved_credits)?;
+        if requested_buffer_credits
+            .checked_add(reserved_buffer_credits)
+            .ok_or_else(Ext4Error::overflow)?
+            > self.journal_transaction_capacity()?
+        {
+            return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
+        }
+
+        let reserved = self.reserve_journal_handle(reserved_credits)?;
+        match self.with_journal_handle(credits, operation) {
+            Ok(value) => Ok((value, reserved)),
+            Err(operation_error) => {
+                self.remove_journal_reservation(reserved)?;
+                Err(operation_error)
+            }
+        }
+    }
+
+    pub(crate) fn with_reserved_transaction<T>(
+        &mut self,
+        reserved: ReservedJournalHandle,
+        operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
+    ) -> Ext4Result<T> {
+        // Linux consumes and frees a reserved handle when start-reserved
+        // fails. Remove the token before any journal-state check so abort,
+        // mode, or nested-owner errors cannot leave unreachable credits in
+        // the ledger.
+        let reservation = self.remove_journal_reservation(reserved)?;
+        self.ensure_not_aborted("jbd2:start_reserved_after_abort")?;
+        if !self.journal_use {
+            return Err(Ext4Error::unsupported().with_operation("jbd2:reserved_handle"));
+        }
+        if self.active_handle.is_some() || self.active_direct_handle.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:start_reserved_with_active_handle"));
+        }
+
+        // Consuming the token removes its detached reservation. The same
+        // credits are immediately attached to the current running
+        // transaction, so this path cannot commit, checkpoint, or otherwise
+        // wait for log space.
+        let revoke_records_per_block = self.journal_revoke_records_per_block()?;
+        let transaction_credits_at_start = Self::running_transaction_credits(
+            self.system.as_ref().ok_or_else(|| {
+                Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
+            })?,
+            revoke_records_per_block,
+        )?
+        .checked_add(self.reserved_buffer_credits()?)
+        .ok_or_else(Ext4Error::overflow)?;
+        let projected = transaction_credits_at_start
+            .checked_add(reservation.buffer_credits)
+            .ok_or_else(Ext4Error::overflow)?;
+        if projected > self.journal_transaction_capacity()? {
+            return Err(Ext4Error::corrupted().with_operation("jbd2:reserved_credit_invariant"));
+        }
+        self.run_active_journal_handle(reservation.credits, transaction_credits_at_start, operation)
+    }
+
+    pub(crate) fn free_reserved_transaction(
+        &mut self,
+        reserved: ReservedJournalHandle,
+    ) -> Ext4Result<()> {
+        self.remove_journal_reservation(reserved)?;
+        Ok(())
     }
 
     /// Best-effort extension of the current metadata reservation.
@@ -1309,7 +1512,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
 
         let block_size = self.inner.block_size() as usize;
-        let required = block_size * count as usize;
+        let required = checked_block_bytes(block_size, count)?;
         if buf.len() < required {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
@@ -1357,10 +1560,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
 
         let block_size = self.inner.block_size() as usize;
-        let required = usize::try_from(count)
-            .map_err(|_| Ext4Error::overflow())?
-            .checked_mul(block_size)
-            .ok_or_else(Ext4Error::overflow)?;
+        let required = checked_block_bytes(block_size, count)?;
         if buf.len() < required {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
@@ -2157,6 +2357,217 @@ mod tests {
             Jbd2Dev::<MemBlockDev>::transaction_capacity(&small, BLOCK_SIZE, 16).unwrap(),
             3
         );
+    }
+
+    #[test]
+    fn reserved_handle_is_limited_to_half_the_user_transaction_capacity() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
+        assert_eq!(dev.journal_transaction_capacity().unwrap(), 19);
+        let mut operation_started = false;
+
+        let error = dev
+            .with_transaction_reservation(
+                TransactionCredits::metadata(1),
+                TransactionCredits::metadata(10),
+                |_| {
+                    operation_started = true;
+                    Ok(())
+                },
+            )
+            .expect_err("Linux limits journal-wide reservations to half the user capacity");
+
+        assert!(!operation_started, "the rejected operation must not start");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::NoSpace);
+        assert_eq!(
+            error.context(),
+            Some(crate::ErrorContext::Operation {
+                op: "jbd2:reserved_credits"
+            })
+        );
+    }
+
+    #[test]
+    fn bulk_block_byte_count_reports_overflow_without_panicking() {
+        let result = std::panic::catch_unwind(|| checked_block_bytes(usize::MAX, 2));
+        let bytes = result.expect("checked byte-count arithmetic must not panic");
+        assert_eq!(bytes.unwrap_err().kind(), crate::Ext4ErrorKind::Overflow);
+    }
+
+    #[test]
+    fn reserved_handle_attaches_without_switching_the_running_transaction() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let first = AbsoluteBN::new(10);
+        let second = AbsoluteBN::new(11);
+
+        let ((), reserved) = dev
+            .with_transaction_reservation(
+                TransactionCredits::metadata(1),
+                TransactionCredits::metadata(1),
+                |dev| dev.write_blocks(&vec![0x31; BLOCK_SIZE], first, 1, true),
+            )
+            .expect("parent handle and reservation fit the transaction");
+        let sequence = dev.journal_sequence().expect("journal sequence");
+
+        dev.with_reserved_transaction(reserved, |dev| {
+            assert_eq!(
+                dev.journal_sequence(),
+                Some(sequence),
+                "starting a reserved handle must not commit or switch transactions"
+            );
+            dev.write_blocks(&vec![0x42; BLOCK_SIZE], second, 1, true)
+        })
+        .expect("attach reserved handle");
+        assert_eq!(dev.journal_sequence(), Some(sequence));
+
+        dev.commit().expect("commit shared transaction");
+        assert_eq!(
+            dev.system.as_ref().unwrap().checkpoint_transactions[0]
+                .updates
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn detached_reservation_is_counted_before_an_ordinary_handle_starts() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+
+        let ((), reserved) = dev
+            .with_transaction_reservation(
+                TransactionCredits::metadata(1),
+                TransactionCredits::metadata(1),
+                |dev| dev.write_blocks(&vec![0x51; BLOCK_SIZE], AbsoluteBN::new(10), 1, true),
+            )
+            .expect("create detached reservation");
+        let sequence = dev.journal_sequence().expect("journal sequence");
+
+        dev.with_transaction_handle(2, |dev| {
+            assert_ne!(
+                dev.journal_sequence(),
+                Some(sequence),
+                "the earlier transaction must commit before credits can overlap the reservation"
+            );
+            Ok(())
+        })
+        .expect("ordinary handle starts after capacity is reclaimed");
+        dev.free_reserved_transaction(reserved)
+            .expect("release unused reservation");
+    }
+
+    #[test]
+    fn failed_parent_handle_releases_its_reserved_credits() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
+
+        let error = dev
+            .with_transaction_reservation(
+                TransactionCredits::metadata(1),
+                TransactionCredits::metadata(9),
+                |_| Err::<(), _>(Ext4Error::io().with_operation("test:reserved_parent_abort")),
+            )
+            .expect_err("parent failure must not publish its reserved handle");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+        assert!(dev.reserved_handles.is_empty());
+
+        let ((), reserved) = dev
+            .with_transaction_reservation(
+                TransactionCredits::metadata(1),
+                TransactionCredits::metadata(9),
+                |_| Ok(()),
+            )
+            .expect("the full half-transaction reservation must be available again");
+        dev.free_reserved_transaction(reserved)
+            .expect("release replacement reservation");
+        assert!(dev.reserved_handles.is_empty());
+    }
+
+    #[test]
+    fn journal_wide_reserved_credits_do_not_exceed_half_the_capacity() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
+
+        let ((), first) = dev
+            .with_transaction_reservation(
+                TransactionCredits::metadata(1),
+                TransactionCredits::metadata(5),
+                |_| Ok(()),
+            )
+            .expect("first reservation fits");
+        let mut operation_started = false;
+        let error = dev
+            .with_transaction_reservation(
+                TransactionCredits::metadata(1),
+                TransactionCredits::metadata(5),
+                |_| {
+                    operation_started = true;
+                    Ok(())
+                },
+            )
+            .expect_err("the aggregate reservation exceeds half the capacity");
+        assert!(!operation_started);
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
+        dev.free_reserved_transaction(first)
+            .expect("release first reservation");
+    }
+
+    #[test]
+    fn failed_start_reserved_consumes_the_detached_token() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
+        let ((), reserved) = dev
+            .with_transaction_reservation(
+                TransactionCredits::metadata(1),
+                TransactionCredits::metadata(1),
+                |_| Ok(()),
+            )
+            .expect("create detached reservation");
+        dev.abort_journal(Ext4Error::io().with_operation("test:abort_before_start_reserved"));
+
+        let error = dev
+            .with_reserved_transaction(reserved, |_| Ok(()))
+            .expect_err("start-reserved must report the sticky abort");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::JournalAborted);
+        assert!(
+            dev.reserved_handles.is_empty(),
+            "a failed start-reserved consumes and frees the token"
+        );
+    }
+
+    #[test]
+    fn detached_reserved_handle_must_be_resolved_before_unmount() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
+        let ((), reserved) = dev
+            .with_transaction_reservation(
+                TransactionCredits::metadata(1),
+                TransactionCredits::metadata(1),
+                |_| Ok(()),
+            )
+            .expect("create detached reservation");
+
+        let error = dev
+            .umount_commit()
+            .expect_err("unmount cannot discard a live reservation");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
+        assert_eq!(
+            error.context(),
+            Some(crate::ErrorContext::Operation {
+                op: "jbd2:unmount_with_reserved_handle"
+            })
+        );
+        dev.free_reserved_transaction(reserved)
+            .expect("release reservation");
+        dev.umount_commit().expect("unmount after explicit release");
     }
 
     #[test]
