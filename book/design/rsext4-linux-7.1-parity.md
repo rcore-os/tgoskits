@@ -1814,3 +1814,30 @@ chunk 明确走 restart，pointer/extent edit、inode image、bitmap/GDT、super
 extend、stop、restart 和 barrier precondition 的 Rust owner/差异理由/测试 ID。三个 journal unit
 回归覆盖 sequence switch、reserved owner 和 active-handle rejection；既有 `extent_restart` 八个
 bounded restart/power-cut case 覆盖真实 extent/legacy owner、replay、orphan 与最终 accounting。
+
+性能 A/B 以本检查点前的 `c3a619d97` 为 baseline、`6513a1f98` 为 implementation，固定 CPU 2、
+`powersave` governor、release、memory backend、4 KiB block、20 MiB payload。首轮 3 次预热、50 次
+测量中，sequential clean-unmount p95 从 20,175 ns 增至 23,256 ns（+15.27%），虽然 median 为
+-1.61%，仍按门槛判红。随后两端对称扩为 10 次预热、200 次测量，sequential 六项全部过门槛；但
+sync-cycle unmount p95 仍从 6,125 ns 增至 7,270 ns（+18.69%）。最终采用 10 个交错批次，每批每端
+3 次预热、20 次测量，奇偶批次反转执行顺序；合并的 200+200 个 sync-cycle 样本消除按 revision
+顺序累积的主机尾延迟漂移。没有删除首轮、扩样轮或交错轮的异常结果，也没有只重跑 implementation。
+
+最终判定使用 200+200 个 expanded sequential 样本与 200+200 个 interleaved sync-cycle 样本，800
+条原始记录保存在
+`book/design/data/rsext4-perf/2026-08-13-jbd2-transaction-restart.csv`：
+
+| workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sequential write | 6,337,896 ns | 6,307,339 ns | -0.482% | 6,941,844 ns | 7,075,199 ns | +1.921% |
+| sequential read | 6,036,110 ns | 5,948,381 ns | -1.453% | 7,201,588 ns | 7,532,967 ns | +4.601% |
+| sequential unmount | 17,781 ns | 17,521 ns | -1.462% | 19,115 ns | 19,546 ns | +2.255% |
+| dirty sync | 8,052 ns | 7,951 ns | -1.254% | 10,047 ns | 9,962 ns | -0.846% |
+| clean sync | 219 ns | 215 ns | -1.826% | 287 ns | 295 ns | +2.787% |
+| sync-cycle unmount | 5,200 ns | 5,328 ns | +2.462% | 6,371 ns | 6,516 ns | +2.276% |
+
+六项 median/p95 全部满足相对本 PR 前一检查点的 5%/10% 门槛。冻结 workload 不执行大范围
+truncate/punch/reap，因此该结果只证明共享 write/read/sync 热路径没有回退，不能伪装成 restart
+冷路径自身的因果性能数据。完整 `cargo test -p rsext4 --all-features` 在最终代码形状上为 277 个
+unit 加全部 integration/Linux image/e2fsck 绿；`--no-default-features`、三组目标 clippy、格式、
+portable-core boundary 与 Linux source-map audit 同步通过。
