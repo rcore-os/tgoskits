@@ -90,55 +90,79 @@ impl Ext4FileSystem {
         let gdt_base = self.superblock.primary_gdt_byte_offset()?;
         let block_size_u64 = self.block_size() as u64;
 
-        let mut current_block: Option<AbsoluteBN> = None;
-        let mut buffered_groups = Vec::new();
+        let mut search_from = 0;
+        while let Some(first_dirty) = self.dirty_group_descs[search_from..]
+            .iter()
+            .position(|dirty| *dirty)
+            .map(|relative| search_from + relative)
+        {
+            let first_byte = gdt_base
+                .checked_add(
+                    (first_dirty as u64)
+                        .checked_mul(desc_size as u64)
+                        .ok_or_else(Ext4Error::overflow)?,
+                )
+                .ok_or_else(Ext4Error::overflow)?;
+            let block_num = AbsoluteBN::new(first_byte / block_size_u64);
+            let block_end = block_num
+                .raw()
+                .checked_add(1)
+                .and_then(|block| block.checked_mul(block_size_u64))
+                .ok_or_else(Ext4Error::overflow)?;
 
-        for idx in 0..self.group_descs.len() {
-            if !self.dirty_group_descs[idx] {
-                continue;
-            }
-            // Stream descriptors back in block order so a GDT block is read and
-            // written at most once per contiguous chunk.
-            let group_id = idx as u32;
-            let byte_offset = gdt_base + idx as u64 * desc_size as u64;
-            let block_num = AbsoluteBN::new(byte_offset / block_size_u64);
-            let in_block = (byte_offset % block_size_u64) as usize;
-            let end = in_block + desc_size;
-
-            if current_block != Some(block_num) {
-                if let Some(prev_block) = current_block {
-                    block_dev.write_block(prev_block, true)?;
-                    for buffered_group in buffered_groups.drain(..) {
-                        self.dirty_group_descs[buffered_group] = false;
-                    }
+            let mut end_group = first_dirty + 1;
+            while end_group < self.group_descs.len() {
+                let byte_offset = gdt_base
+                    .checked_add(
+                        (end_group as u64)
+                            .checked_mul(desc_size as u64)
+                            .ok_or_else(Ext4Error::overflow)?,
+                    )
+                    .ok_or_else(Ext4Error::overflow)?;
+                if byte_offset >= block_end {
+                    break;
                 }
-
-                block_dev.read_block(block_num)?;
-                current_block = Some(block_num);
+                end_group += 1;
             }
 
-            let buffer = block_dev.buffer_mut();
-            if end > buffer.len() {
-                return Err(Ext4Error::corrupted());
-            }
+            block_dev.update_block(block_num, true, |buffer| {
+                for idx in first_dirty..end_group {
+                    if !self.dirty_group_descs[idx] {
+                        continue;
+                    }
+                    let byte_offset = gdt_base
+                        .checked_add(
+                            (idx as u64)
+                                .checked_mul(desc_size as u64)
+                                .ok_or_else(Ext4Error::overflow)?,
+                        )
+                        .ok_or_else(Ext4Error::overflow)?;
+                    let in_block = usize::try_from(byte_offset % block_size_u64)
+                        .map_err(|_| Ext4Error::overflow())?;
+                    let end = in_block
+                        .checked_add(desc_size)
+                        .ok_or_else(Ext4Error::overflow)?;
+                    let destination = buffer
+                        .get_mut(in_block..end)
+                        .ok_or_else(Ext4Error::corrupted)?;
 
-            let mut desc = self.group_descs[idx];
-            desc.encode_with_checksum(
-                &self.superblock,
-                group_id,
-                &mut buffer[in_block..end],
-                None,
-                None,
-            )?;
-            self.group_descs[idx] = desc;
-            buffered_groups.push(idx);
-        }
+                    let mut desc = self.group_descs[idx];
+                    desc.encode_with_checksum(
+                        &self.superblock,
+                        idx as u32,
+                        destination,
+                        None,
+                        None,
+                    )?;
+                    self.group_descs[idx] = desc;
+                }
+                Ok(())
+            })?;
 
-        if let Some(last_block) = current_block {
-            block_dev.write_block(last_block, true)?;
-            for buffered_group in buffered_groups {
-                self.dirty_group_descs[buffered_group] = false;
+            for dirty in &mut self.dirty_group_descs[first_dirty..end_group] {
+                *dirty = false;
             }
+            search_from = end_group;
         }
 
         Ok(())

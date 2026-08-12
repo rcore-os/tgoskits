@@ -1647,15 +1647,27 @@
         },
         {
           "start": 506,
-          "end": 537,
-          "symbol": "jbd2_journal_commit_transaction reserved-buffer release and checkpoint cleanup",
-          "classification": "core",
-          "state_machine": "switching transaction -> release unused reserved buffer access -> pre-commit checkpoint cleanup",
-          "invariant": "unused buffer reservations cannot cross into the committing image and checkpoint cleanup cannot discard replay ownership",
-          "rust_owner": "rsext4::jbd2::transaction pending buffer-reservation decomposition; rsext4::jbd2::Jbd2CheckpointTransaction",
-          "reason": "the phase boundary is implemented; Linux buffer_head reserved-list ownership has no direct Rust equivalent and remains explicitly pending classification by cache owner",
+          "end": 527,
+          "symbol": "jbd2_journal_commit_transaction unused BJ_Reserved release",
+          "classification": "not-applicable",
+          "state_machine": "unused mutable buffer access -> refile without home publication",
+          "invariant": "an unfinished mutable metadata image cannot escape its operation or be written to the home block during commit cache invalidation; Linux reserved/undo buffer lifetime ends at the same ownership boundary",
+          "rust_owner": "rsext4::blockdev::journal::Jbd2Dev::{update_block,commit_pending_transaction}; rsext4::blockdev::cached_device::BlockDev::discard_cache",
+          "reason": "Rust copies a completed metadata image into the transaction and does not expose the buffer_head, BJ_Reserved write-access reservation, t_reserved_list refile, or b_committed_data undo-image objects; closure return plus transaction-copy ownership replaces their lock-serialized lifetime, failed edits discard, commit rejects any test-injected unfinished edit, and cache refresh never performs home writeback",
           "test_ids": [
-            "jbd2-handle-credits",
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 528,
+          "end": 537,
+          "symbol": "jbd2_journal_commit_transaction clean checkpoint buffer-head list",
+          "classification": "not-applicable",
+          "state_machine": "asynchronously written checkpoint buffer -> reclaim buffer-head memory before commit",
+          "invariant": "reclaiming cache memory cannot advance the durable journal tail or discard replay ownership",
+          "rust_owner": "rsext4::jbd2::Jbd2CheckpointTransaction; rsext4::blockdev::cached_device::BlockDev::discard_cache",
+          "reason": "the portable core has no asynchronous buffer_head checkpoint list: immutable checkpoint transaction images remain owned until synchronous home flush plus FUA tail publication drains them, while derived clean cache entries may be discarded without persistence side effects",
+          "test_ids": [
             "jbd2-writer-revoke-checkpoint"
           ]
         },

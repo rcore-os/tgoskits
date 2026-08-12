@@ -487,44 +487,40 @@ impl<'a> ExtentTree<'a> {
             return Err(Ext4Error::corrupted().with_operation("extent:node_capacity"));
         }
         self.validate_node(node, None, None, dev.total_blocks(), false)?;
-        // Load the target block before overwriting the node payload.
-        dev.read_block(block_id)?;
-        let buf = dev.buffer_mut();
-        buf.fill(0);
+        dev.update_block(block_id, true, |buf| {
+            buf.fill(0);
 
-        match node {
-            ExtentNode::Leaf { header, entries } => {
-                let et_size = Ext4Extent::disk_size();
-                let mut disk_header = *header;
-                disk_header.eh_max = block_eh_max;
-                disk_header.to_disk_bytes(&mut buf[0..hdr_size]);
-                for (i, e) in entries.iter().enumerate() {
-                    let off = hdr_size + i * et_size;
-                    if off + et_size > buf.len() {
-                        break;
+            match node {
+                ExtentNode::Leaf { header, entries } => {
+                    let et_size = Ext4Extent::disk_size();
+                    let mut disk_header = *header;
+                    disk_header.eh_max = block_eh_max;
+                    disk_header.to_disk_bytes(&mut buf[0..hdr_size]);
+                    for (i, e) in entries.iter().enumerate() {
+                        let off = hdr_size + i * et_size;
+                        if off + et_size > buf.len() {
+                            break;
+                        }
+                        e.to_disk_bytes(&mut buf[off..off + et_size]);
                     }
-                    e.to_disk_bytes(&mut buf[off..off + et_size]);
+                }
+                ExtentNode::Index { header, entries } => {
+                    let idx_size = Ext4ExtentIdx::disk_size();
+                    let mut disk_header = *header;
+                    disk_header.eh_max = block_eh_max;
+
+                    disk_header.to_disk_bytes(&mut buf[0..hdr_size]);
+                    for (i, idx) in entries.iter().enumerate() {
+                        let off = hdr_size + i * idx_size;
+                        if off + idx_size > buf.len() {
+                            break;
+                        }
+                        idx.to_disk_bytes(&mut buf[off..off + idx_size]);
+                    }
                 }
             }
-            ExtentNode::Index { header, entries } => {
-                let idx_size = Ext4ExtentIdx::disk_size();
-                let mut disk_header = *header;
-                disk_header.eh_max = block_eh_max;
-
-                disk_header.to_disk_bytes(&mut buf[0..hdr_size]);
-                for (i, idx) in entries.iter().enumerate() {
-                    let off = hdr_size + i * idx_size;
-                    if off + idx_size > buf.len() {
-                        break;
-                    }
-                    idx.to_disk_bytes(&mut buf[off..off + idx_size]);
-                }
-            }
-        }
-        let disk_header = Ext4ExtentHeader::from_disk_bytes(&buf[..hdr_size]);
-        self.update_extent_block_checksum(buf, &disk_header)?;
-        // Mark the metadata block dirty and write it back.
-        dev.write_block(block_id, true)?;
-        Ok(())
+            let disk_header = Ext4ExtentHeader::from_disk_bytes(&buf[..hdr_size]);
+            self.update_extent_block_checksum(buf, &disk_header)
+        })
     }
 }

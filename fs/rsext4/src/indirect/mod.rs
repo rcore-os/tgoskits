@@ -340,19 +340,20 @@ pub(crate) fn allocate_legacy_inode_block<B: BlockIo>(
 
         for (&metadata, &offset) in metadata_blocks.iter().zip(&missing.metadata_offsets).rev() {
             let metadata_pointer = metadata.to_u32()?;
-            device.read_block(metadata)?;
-            device.buffer_mut().fill(0);
             let start = offset
                 .checked_mul(size_of::<u32>())
                 .ok_or_else(Ext4Error::overflow)?;
             let end = start
                 .checked_add(size_of::<u32>())
                 .ok_or_else(Ext4Error::overflow)?;
-            let target = device.buffer_mut().get_mut(start..end).ok_or_else(|| {
-                Ext4Error::corrupted().with_operation("indirect:branch_pointer_offset")
+            device.update_block(metadata, true, |buffer| {
+                buffer.fill(0);
+                let target = buffer.get_mut(start..end).ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("indirect:branch_pointer_offset")
+                })?;
+                write_u32_le(child_pointer, target);
+                Ok(())
             })?;
-            write_u32_le(child_pointer, target);
-            device.write_block(metadata, true)?;
             child_pointer = metadata_pointer;
         }
         Ok(child_pointer)
@@ -611,13 +612,13 @@ impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
         let end = start
             .checked_add(size_of::<u32>())
             .ok_or_else(Ext4Error::overflow)?;
-        let target = self
-            .device
-            .buffer_mut()
-            .get_mut(start..end)
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("indirect:pointer_offset"))?;
-        write_u32_le(replacement, target);
-        self.device.write_block(metadata, true)?;
+        self.device.update_block(metadata, true, |buffer| {
+            let target = buffer
+                .get_mut(start..end)
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("indirect:pointer_offset"))?;
+            write_u32_le(replacement, target);
+            Ok(())
+        })?;
         self.metadata_path.pop();
         Ok(())
     }
@@ -649,13 +650,13 @@ impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
         let end = start
             .checked_add(size_of::<u32>())
             .ok_or_else(Ext4Error::overflow)?;
-        let target = self
-            .device
-            .buffer_mut()
-            .get_mut(start..end)
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("indirect:pointer_offset"))?;
-        write_u32_le(previous, target);
-        self.device.write_block(metadata, true)?;
+        self.device.update_block(metadata, true, |buffer| {
+            let target = buffer
+                .get_mut(start..end)
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("indirect:pointer_offset"))?;
+            write_u32_le(previous, target);
+            Ok(())
+        })?;
         self.metadata_path.pop();
         Ok(())
     }

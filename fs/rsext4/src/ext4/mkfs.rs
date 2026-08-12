@@ -518,10 +518,10 @@ fn write_superblock_redundant_backup<B: BlockIo>(
             );
             if need_redundant_backup(gid) {
                 let super_blocks = group_layout.group_start_block;
-                block_dev.read_block(AbsoluteBN::new(super_blocks))?;
-                let buffer = block_dev.buffer_mut();
-                sb.to_disk_bytes(&mut buffer[0..SUPERBLOCK_SIZE]);
-                block_dev.write_block(AbsoluteBN::new(super_blocks), true)?;
+                block_dev.update_block(AbsoluteBN::new(super_blocks), true, |buffer| {
+                    sb.to_disk_bytes(&mut buffer[0..SUPERBLOCK_SIZE]);
+                    Ok(())
+                })?;
             }
         }
     }
@@ -544,11 +544,10 @@ pub(crate) fn write_superblock<B: BlockIo>(
         return Err(Ext4Error::bad_superblock().with_operation("superblock:crosses_block"));
     }
 
-    block_dev.read_block(block)?;
-    sb.to_disk_bytes(&mut block_dev.buffer_mut()[in_block..end]);
-    block_dev.write_block(block, true)?;
-
-    Ok(())
+    block_dev.update_block(block, true, |buffer| {
+        sb.to_disk_bytes(&mut buffer[in_block..end]);
+        Ok(())
+    })
 }
 
 /// Reads the primary superblock from disk.
@@ -604,18 +603,19 @@ fn write_gdt_redundant_backup<B: BlockIo>(
                 // Stream descriptor copies block by block into the reserved GDT
                 // area of this backup group.
                 for gdt_block_id in gdt_start..group_layout.group_block_bitmap_start_block {
-                    block_dev.read_block(AbsoluteBN::new(gdt_block_id))?;
-                    let buffer = block_dev.buffer_mut();
-                    let mut current_offset = 0_usize;
-                    for _ in 0..fs_layout.descs_per_block {
-                        if let Some(desc) = desc_iter.next() {
-                            desc.to_disk_bytes(
-                                &mut buffer[current_offset..current_offset + desc_size as usize],
-                            );
-                            current_offset += desc_size as usize;
+                    block_dev.update_block(AbsoluteBN::new(gdt_block_id), true, |buffer| {
+                        let mut current_offset = 0_usize;
+                        for _ in 0..fs_layout.descs_per_block {
+                            if let Some(desc) = desc_iter.next() {
+                                desc.to_disk_bytes(
+                                    &mut buffer
+                                        [current_offset..current_offset + desc_size as usize],
+                                );
+                                current_offset += desc_size as usize;
+                            }
                         }
-                    }
-                    block_dev.write_block(AbsoluteBN::new(gdt_block_id), true)?;
+                        Ok(())
+                    })?;
                 }
             }
         }
@@ -650,21 +650,18 @@ fn write_group_desc<B: BlockIo>(
     let block_bitmap_blk = desc.block_bitmap() as u32;
     block_dev.read_block(block_bitmap_blk.into())?;
     let block_bitmap_bytes = block_dev.buffer().to_vec();
-    block_dev.read_block(AbsoluteBN::new(block_num))?;
-    let buffer = block_dev.buffer_mut();
-    if end > buffer.len() {
-        return Err(Ext4Error::corrupted());
-    }
-    desc.encode_with_checksum(
-        &superblock,
-        group_id,
-        &mut buffer[in_block..end],
-        Some(&block_bitmap_bytes),
-        Some(&inode_bitmap_bytes),
-    )?;
-    block_dev.write_block(AbsoluteBN::new(block_num), true)?;
-
-    Ok(())
+    block_dev.update_block(AbsoluteBN::new(block_num), true, |buffer| {
+        if end > buffer.len() {
+            return Err(Ext4Error::corrupted());
+        }
+        desc.encode_with_checksum(
+            &superblock,
+            group_id,
+            &mut buffer[in_block..end],
+            Some(&block_bitmap_bytes),
+            Some(&inode_bitmap_bytes),
+        )
+    })
 }
 
 /// Initializes group 0 bitmaps, inode table, and descriptor state.
@@ -677,24 +674,20 @@ fn initialize_group_0<B: BlockIo>(
     let inode_bitmap_blk = layout.group0_inode_bitmap;
     let inode_table_blk = layout.group0_inode_table;
 
-    {
-        let buffer = block_dev.buffer_mut();
-        buffer.fill(0);
-        // Mark all group-0 metadata blocks and out-of-filesystem padding bits
-        // allocated in the block bitmap.
-        mark_bitmap_range_allocated(buffer, 0, layout.group0_metadata_blocks);
-        mark_block_bitmap_padding(buffer, layout, 0);
-    }
-    block_dev.write_block(block_bitmap_blk.into(), true)?;
+    let mut block_bitmap = vec![0; block_dev.block_size() as usize];
+    // Mark all group-0 metadata blocks and out-of-filesystem padding bits
+    // allocated in the block bitmap.
+    mark_bitmap_range_allocated(&mut block_bitmap, 0, layout.group0_metadata_blocks);
+    mark_block_bitmap_padding(&mut block_bitmap, layout, 0);
+    block_dev.write_blocks(&block_bitmap, block_bitmap_blk.into(), 1, true)?;
 
+    let mut inode_bitmap = vec![0; block_dev.block_size() as usize];
     {
-        let buffer = block_dev.buffer_mut();
-        buffer.fill(0);
         // Mark reserved inodes allocated.
         for i in 0..RESERVED_INODES {
             let byte_idx = (i / 8) as usize;
             let bit_idx = i % 8;
-            buffer[byte_idx] |= 1 << bit_idx;
+            inode_bitmap[byte_idx] |= 1 << bit_idx;
         }
 
         // Mark bitmap padding bits allocated so they are never handed out.
@@ -702,18 +695,15 @@ fn initialize_group_0<B: BlockIo>(
         for i in layout.inodes_per_group..bits_per_group {
             let byte_idx: usize = (i / 8) as usize;
             let bit_idx = i % 8;
-            buffer[byte_idx] |= 1 << bit_idx;
+            inode_bitmap[byte_idx] |= 1 << bit_idx;
         }
     }
-    block_dev.write_block(inode_bitmap_blk.into(), true)?;
+    block_dev.write_blocks(&inode_bitmap, inode_bitmap_blk.into(), 1, true)?;
 
     // Zero the inode table before the filesystem is mounted for the first time.
-    {
-        let buffer = block_dev.buffer_mut();
-        buffer.fill(0);
-    }
+    let zero_block = vec![0; block_dev.block_size() as usize];
     for i in 0..layout.inode_table_blocks {
-        block_dev.write_block((inode_table_blk + i).into(), true)?;
+        block_dev.write_blocks(&zero_block, (inode_table_blk + i).into(), 1, true)?;
     }
 
     // Persist the now-initialized descriptor for group 0.
@@ -759,27 +749,22 @@ fn initialize_other_groups_bitmaps<B: BlockIo>(
         let inode_bitmap_blk = gl.group_inode_bitmap_start_block as u32;
 
         // Start with a zeroed block bitmap, then mark metadata blocks used.
-        {
-            let buffer = block_dev.buffer_mut();
-            buffer.fill(0);
-            mark_bitmap_range_allocated(buffer, 0, gl.metadata_blocks_in_group);
-            mark_block_bitmap_padding(buffer, layout, group_id);
-        }
-        block_dev.write_block(block_bitmap_blk.into(), true)?;
+        let mut block_bitmap = vec![0; block_dev.block_size() as usize];
+        mark_bitmap_range_allocated(&mut block_bitmap, 0, gl.metadata_blocks_in_group);
+        mark_block_bitmap_padding(&mut block_bitmap, layout, group_id);
+        block_dev.write_blocks(&block_bitmap, block_bitmap_blk.into(), 1, true)?;
 
+        let mut inode_bitmap = vec![0; block_dev.block_size() as usize];
         {
             // Start with all inodes free, then mask the trailing padding bits.
-            let buffer = block_dev.buffer_mut();
-            buffer.fill(0);
-
             let bits_per_group = layout.block_size * 8;
             for i in layout.inodes_per_group..bits_per_group {
                 let byte_idx: usize = (i / 8) as usize;
                 let bit_idx = i % 8;
-                buffer[byte_idx] |= 1 << bit_idx;
+                inode_bitmap[byte_idx] |= 1 << bit_idx;
             }
         }
-        block_dev.write_block(inode_bitmap_blk.into(), true)?;
+        block_dev.write_blocks(&inode_bitmap, inode_bitmap_blk.into(), 1, true)?;
     }
 
     Ok(())

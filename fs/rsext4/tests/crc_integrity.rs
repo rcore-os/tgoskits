@@ -1392,7 +1392,8 @@ fn journal_start_write_failure_rolls_back_and_aborts_without_retry() {
     let unchanged_home_block = AbsoluteBN::new(42);
     dev.read_block(unchanged_home_block)
         .expect("read home block");
-    dev.write_block(unchanged_home_block, true)
+    let unchanged_home_image = dev.buffer().to_vec();
+    dev.write_blocks(&unchanged_home_image, unchanged_home_block, 1, true)
         .expect("queue metadata update");
 
     device.failing_write_block.set(Some(journal_block));

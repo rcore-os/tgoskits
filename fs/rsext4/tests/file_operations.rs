@@ -110,7 +110,22 @@ impl rsext4::Clock for MockBlockDevice {
 
 #[cfg(test)]
 mod file_functional_tests {
+    use rsext4::bmalloc::AbsoluteBN;
+
     use super::*;
+
+    fn write_block_fixture(
+        device: &mut Jbd2Dev<MockBlockDevice>,
+        block: AbsoluteBN,
+        is_metadata: bool,
+        operation: impl FnOnce(&mut [u8]),
+    ) {
+        let mut image = vec![0; BLOCK_SIZE];
+        operation(&mut image);
+        device
+            .write_blocks(&image, block, 1, is_metadata)
+            .expect("fixture block write");
+    }
 
     /// Covers the create-read-write loop and documents that a shorter overwrite
     /// updates the prefix without implicitly truncating the file.
@@ -1355,11 +1370,10 @@ mod file_functional_tests {
         let free_blocks_before = fs.superblock.free_blocks_count();
         let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
         let indirect_data = fs.alloc_block(&mut jbd2_dev).unwrap();
-        jbd2_dev.read_block(indirect_root).unwrap();
-        jbd2_dev.buffer_mut().fill(0);
-        jbd2_dev.buffer_mut()[..core::mem::size_of::<u32>()]
-            .copy_from_slice(&indirect_data.to_u32().unwrap().to_le_bytes());
-        jbd2_dev.write_block(indirect_root, true).unwrap();
+        write_block_fixture(&mut jbd2_dev, indirect_root, true, |image| {
+            image[..core::mem::size_of::<u32>()]
+                .copy_from_slice(&indirect_data.to_u32().unwrap().to_le_bytes());
+        });
         fs.datablock_cache
             .modify_new(&mut jbd2_dev, indirect_data, |block| block[0] = 0x5a)
             .unwrap();
@@ -1430,11 +1444,10 @@ mod file_functional_tests {
         let free_blocks_before = fs.superblock.free_blocks_count();
         let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
         let indirect_data = fs.alloc_block(&mut jbd2_dev).unwrap();
-        jbd2_dev.read_block(indirect_root).unwrap();
-        jbd2_dev.buffer_mut().fill(0);
-        jbd2_dev.buffer_mut()[..core::mem::size_of::<u32>()]
-            .copy_from_slice(&indirect_data.to_u32().unwrap().to_le_bytes());
-        jbd2_dev.write_block(indirect_root, true).unwrap();
+        write_block_fixture(&mut jbd2_dev, indirect_root, true, |image| {
+            image[..core::mem::size_of::<u32>()]
+                .copy_from_slice(&indirect_data.to_u32().unwrap().to_le_bytes());
+        });
         fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
             inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
             inode.i_block = [0; 15];
@@ -1475,11 +1488,9 @@ mod file_functional_tests {
             .unwrap()
             .0;
         let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
-        jbd2_dev.read_block(indirect_root).unwrap();
-        jbd2_dev.buffer_mut().fill(0);
-        jbd2_dev.buffer_mut()[..core::mem::size_of::<u32>()]
-            .copy_from_slice(&u32::MAX.to_le_bytes());
-        jbd2_dev.write_block(indirect_root, true).unwrap();
+        write_block_fixture(&mut jbd2_dev, indirect_root, true, |image| {
+            image[..core::mem::size_of::<u32>()].copy_from_slice(&u32::MAX.to_le_bytes());
+        });
         fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
             inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
             inode.i_block = [0; 15];
@@ -1617,11 +1628,10 @@ mod file_functional_tests {
             .0;
         let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
         let hidden_data = fs.alloc_block(&mut jbd2_dev).unwrap();
-        jbd2_dev.read_block(indirect_root).unwrap();
-        jbd2_dev.buffer_mut().fill(0);
-        jbd2_dev.buffer_mut()[..core::mem::size_of::<u32>()]
-            .copy_from_slice(&hidden_data.to_u32().unwrap().to_le_bytes());
-        jbd2_dev.write_block(indirect_root, true).unwrap();
+        write_block_fixture(&mut jbd2_dev, indirect_root, true, |image| {
+            image[..core::mem::size_of::<u32>()]
+                .copy_from_slice(&hidden_data.to_u32().unwrap().to_le_bytes());
+        });
         fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
             inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
             inode.i_block = [0; 15];
@@ -1903,9 +1913,7 @@ mod file_functional_tests {
         let first = fs.alloc_block(&mut jbd2_dev).unwrap();
         let third = fs.alloc_block(&mut jbd2_dev).unwrap();
         for (block, value) in [(first, 0x31), (third, 0x33)] {
-            jbd2_dev.read_block(block).unwrap();
-            jbd2_dev.buffer_mut().fill(value);
-            jbd2_dev.write_block(block, false).unwrap();
+            write_block_fixture(&mut jbd2_dev, block, false, |image| image.fill(value));
         }
         fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
             inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
@@ -1944,10 +1952,9 @@ mod file_functional_tests {
             .0;
         let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
         let data_block = fs.alloc_block(&mut jbd2_dev).unwrap();
-        jbd2_dev.read_block(indirect_root).unwrap();
-        jbd2_dev.buffer_mut().fill(0);
-        jbd2_dev.buffer_mut()[..4].copy_from_slice(&data_block.to_u32().unwrap().to_le_bytes());
-        jbd2_dev.write_block(indirect_root, true).unwrap();
+        write_block_fixture(&mut jbd2_dev, indirect_root, true, |image| {
+            image[..4].copy_from_slice(&data_block.to_u32().unwrap().to_le_bytes());
+        });
         fs.datablock_cache
             .modify_new(&mut jbd2_dev, data_block, |data| data.fill(0x41))
             .unwrap();
@@ -2075,9 +2082,7 @@ mod file_functional_tests {
         let indirect_root = fs.alloc_block(&mut jbd2_dev).unwrap();
         jbd2_dev.umount_commit().unwrap();
         jbd2_dev.set_journal_use(false).unwrap();
-        jbd2_dev.read_block(indirect_root).unwrap();
-        jbd2_dev.buffer_mut().fill(0);
-        jbd2_dev.write_block(indirect_root, true).unwrap();
+        write_block_fixture(&mut jbd2_dev, indirect_root, true, |_| {});
         fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
             inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
             inode.i_block = [0; 15];

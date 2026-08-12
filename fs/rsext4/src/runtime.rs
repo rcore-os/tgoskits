@@ -116,7 +116,6 @@ pub enum JournalReplayPhase {
     Revoke,
     Replay,
     Persist,
-    Cache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

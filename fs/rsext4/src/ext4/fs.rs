@@ -237,22 +237,20 @@ impl Ext4FileSystem {
         let in_block = (byte_offset % block_size) as usize;
         let end = in_block + desc_size;
 
-        block_dev.read_block(block_num)?;
-        let buffer = block_dev.buffer_mut();
-        if end > buffer.len() {
-            return Err(Ext4Error::corrupted());
-        }
-
         let mut desc = self.group_descs[idx];
-        desc.encode_with_checksum(
-            &self.superblock,
-            group_id.raw(),
-            &mut buffer[in_block..end],
-            None,
-            None,
-        )?;
+        block_dev.update_block(block_num, true, |buffer| {
+            if end > buffer.len() {
+                return Err(Ext4Error::corrupted());
+            }
+            desc.encode_with_checksum(
+                &self.superblock,
+                group_id.raw(),
+                &mut buffer[in_block..end],
+                None,
+                None,
+            )
+        })?;
         self.group_descs[idx] = desc;
-        block_dev.write_block(block_num, true)?;
         *self
             .dirty_group_descs
             .get_mut(idx)

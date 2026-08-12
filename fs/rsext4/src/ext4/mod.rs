@@ -1,6 +1,6 @@
 //! Core filesystem state, mount, allocation, and mkfs helpers.
 
-use ::alloc::{collections::VecDeque, vec::Vec};
+use ::alloc::{collections::VecDeque, vec, vec::Vec};
 
 use crate::{
     bitmap::InodeBitmap,

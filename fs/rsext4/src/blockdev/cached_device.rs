@@ -212,6 +212,11 @@ impl<B: BlockIo> BlockDev<B> {
         self.clock = 0;
     }
 
+    /// Returns whether a caller still owns an unpublished mutable cache image.
+    pub(crate) fn has_dirty_entries(&self) -> bool {
+        self.entries.iter().any(|entry| entry.dirty)
+    }
+
     /// Reads `count` blocks directly into `buffer` (bypasses the cache).
     pub fn read_blocks(
         &mut self,
@@ -316,39 +321,9 @@ impl<B: BlockIo> BlockDev<B> {
     }
 
     /// Returns the active buffer as mutable and marks the entry dirty.
-    pub fn buffer_mut(&mut self) -> &mut [u8] {
+    pub(super) fn buffer_mut(&mut self) -> &mut [u8] {
         self.entries[self.active].dirty = true;
         &mut self.entries[self.active].buffer.as_mut_slice()[..self.filesystem_block_size]
-    }
-
-    /// Flushes dirty cached blocks, then invalidates all entries.
-    ///
-    /// Dirty entries are flushed first so metadata modifications made
-    /// via [`buffer_mut`] are never silently discarded.
-    pub fn invalidate_cache(&mut self) -> Ext4Result<()> {
-        for entry in self.entries.iter_mut() {
-            if entry.dirty && !entry.is_empty() {
-                let bid = entry.block_id.unwrap();
-                let logical_sector_size = self.geometry.logical_block_size as usize;
-                let sectors_per_block = self.filesystem_block_size / logical_sector_size;
-                let sector = SectorId::new(
-                    bid.raw()
-                        .checked_mul(sectors_per_block as u64)
-                        .ok_or_else(Ext4Error::overflow)?,
-                );
-                self.dev.write(
-                    &entry.buffer.as_slice()[..self.filesystem_block_size],
-                    sector,
-                    u32::try_from(sectors_per_block).map_err(|_| Ext4Error::overflow())?,
-                )?;
-                entry.dirty = false;
-            }
-            entry.block_id = None;
-            entry.referenced = false;
-        }
-        self.active = 0;
-        self.clock = 0;
-        Ok(())
     }
 
     /// Replaces cached block contents without writing to the device.

@@ -547,6 +547,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if self.active_handle.is_some() || self.active_direct_handle.is_some() {
             return Err(Ext4Error::busy().with_operation("jbd2:commit_with_active_handle"));
         }
+        if self.inner.has_dirty_entries() {
+            return Err(Ext4Error::busy().with_operation("jbd2:commit_with_unfinished_block_edit"));
+        }
         let Some(system) = self.system.as_mut() else {
             return Err(Ext4Error::journal_aborted().with_operation("jbd2:commit_without_state"));
         };
@@ -558,9 +561,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 return Err(error);
             }
         };
-        if committed && let Err(error) = self.inner.invalidate_cache() {
-            self.abort_journal(error);
-            return Err(error);
+        if committed {
+            // A journal update owns an immutable block copy before commit.
+            // The guard above proves that no caller-owned mutable image can be
+            // published while refreshing cache coherence.
+            self.inner.discard_cache();
         }
         Ok(committed)
     }
@@ -569,6 +574,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.ensure_not_aborted("jbd2:checkpoint_after_abort")?;
         if !self.journal_use {
             return Ok(false);
+        }
+        if self.inner.has_dirty_entries() {
+            return Err(
+                Ext4Error::busy().with_operation("jbd2:checkpoint_with_unfinished_block_edit")
+            );
         }
         let Some(system) = self.system.as_mut() else {
             return Err(
@@ -587,9 +597,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 return Err(error);
             }
         };
-        if checkpointed && let Err(error) = self.inner.invalidate_cache() {
-            self.abort_journal(error);
-            return Err(error);
+        if checkpointed {
+            self.inner.discard_cache();
         }
         Ok(checkpointed)
     }
@@ -819,14 +828,10 @@ impl<B: BlockIo> Jbd2Dev<B> {
             }
             return status;
         }
-        if let Err(error) = self.inner.invalidate_cache() {
-            let failure = ReplayFailure::without_restart(JournalReplayPhase::Cache, error);
-            self.abort_journal(failure.cause());
-            if let Some(state) = self.abort_state.as_mut() {
-                state.replay_failure = Some(failure);
-            }
-            return ReplayStatus::Incomplete(failure);
-        }
+        // Replay owns the authoritative home images. A fresh mount has no
+        // caller-owned mutable cache edit, so invalidation must never perform
+        // writeback that could overwrite replayed data.
+        self.inner.discard_cache();
         status
     }
 
@@ -1397,7 +1402,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
     }
 
     /// Writes the current internal block buffer.
-    pub fn write_block(&mut self, block_id: AbsoluteBN, is_metadata: bool) -> Ext4Result<()> {
+    pub(crate) fn write_block(
+        &mut self,
+        block_id: AbsoluteBN,
+        is_metadata: bool,
+    ) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:write_after_abort")?;
         if !self.journal_use || !is_metadata {
             if is_metadata {
@@ -1524,9 +1533,36 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.inner.buffer()
     }
 
-    /// Returns the cached block buffer mutably.
-    pub fn buffer_mut(&mut self) -> &mut [u8] {
+    /// Returns the cached block buffer mutably for low-level state tests.
+    #[cfg(test)]
+    pub(crate) fn buffer_mut(&mut self) -> &mut [u8] {
         self.inner.buffer_mut()
+    }
+
+    /// Updates one block and transfers the finished image to its durability owner.
+    ///
+    /// The mutable cache image cannot escape this closure. An operation or
+    /// write failure discards it; only a successful closure can publish the
+    /// image either through JBD2 metadata ownership or the direct device path.
+    pub(crate) fn update_block<T>(
+        &mut self,
+        block_id: AbsoluteBN,
+        is_metadata: bool,
+        operation: impl FnOnce(&mut [u8]) -> Ext4Result<T>,
+    ) -> Ext4Result<T> {
+        self.read_block(block_id)?;
+        let value = match operation(self.inner.buffer_mut()) {
+            Ok(value) => value,
+            Err(error) => {
+                self.inner.discard_active();
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.write_block(block_id, is_metadata) {
+            self.inner.discard_active();
+            return Err(error);
+        }
+        Ok(value)
     }
 
     /// Reads multiple blocks directly.
@@ -4870,7 +4906,7 @@ mod tests {
     }
 
     #[test]
-    fn umount_commit_returns_cache_invalidation_failure_without_panicking() {
+    fn umount_commit_rejects_an_unfinished_edit_without_aborting_the_journal() {
         let cached_block = AbsoluteBN::new(20);
         let mut inner = MemBlockDev::new(256);
         inner.fail_next_write_at_block(cached_block);
@@ -4884,8 +4920,97 @@ mod tests {
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dev.umount_commit()));
 
-        assert!(result.is_ok(), "cache invalidation failure must not panic");
-        assert_eq!(result.unwrap(), Err(Ext4Error::io()));
+        assert!(result.is_ok(), "an unfinished edit must not panic");
+        assert_eq!(
+            result.unwrap().unwrap_err().kind(),
+            crate::Ext4ErrorKind::Busy
+        );
+
+        dev.inner.discard_active();
+        dev.umount_commit()
+            .expect("discarding the unpublished edit keeps the journal usable");
+    }
+
+    #[test]
+    fn commit_rejects_an_unfinished_block_edit_before_publishing_it_to_home() {
+        let unfinished_block = AbsoluteBN::new(20);
+        let journaled_block = AbsoluteBN::new(10);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install journal state");
+        let sequence = dev.journal_sequence();
+
+        dev.read_block(unfinished_block).expect("prime cache");
+        dev.buffer_mut()[0] = 1;
+        dev.write_blocks(&vec![0x5a; BLOCK_SIZE], journaled_block, 1, true)
+            .expect("queue an unrelated journal update");
+
+        let error = dev
+            .commit()
+            .expect_err("an unfinished edit must not bypass the journal");
+
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
+        assert_eq!(dev.journal_sequence(), sequence);
+        let offset = unfinished_block.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            dev.inner._device().data[offset],
+            0,
+            "the unfinished cache image must not reach the home block"
+        );
+    }
+
+    #[test]
+    fn failed_block_edit_discards_the_unpublished_image() {
+        let edited_block = AbsoluteBN::new(20);
+        let journaled_block = AbsoluteBN::new(10);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install journal state");
+
+        let error = dev
+            .update_block(edited_block, true, |image| {
+                image[0] = 1;
+                Err::<(), _>(Ext4Error::io())
+            })
+            .expect_err("the edit closure must propagate its error");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+
+        dev.write_blocks(&vec![0x5a; BLOCK_SIZE], journaled_block, 1, true)
+            .expect("queue an unrelated journal update");
+        dev.umount_commit()
+            .expect("the discarded edit must not block a later commit");
+
+        let offset = edited_block.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            dev.inner._device().data[offset],
+            0,
+            "a failed edit must not reach the journal or home block"
+        );
+    }
+
+    #[test]
+    fn failed_block_edit_publish_discards_the_unpublished_image() {
+        let edited_block = AbsoluteBN::new(20);
+        let mut inner = MemBlockDev::new(256);
+        inner.fail_next_write_at_block(edited_block);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, false);
+
+        let error = dev
+            .update_block(edited_block, true, |image| {
+                image[0] = 1;
+                Ok(())
+            })
+            .expect_err("the direct publish failure must propagate");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+
+        dev.flush()
+            .expect("the failed edit must not leave a dirty cache image");
+        let offset = edited_block.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            dev.inner._device().data[offset],
+            0,
+            "a failed direct publish must not be retried by cache writeback"
+        );
     }
 
     #[test]

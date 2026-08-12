@@ -1007,13 +1007,13 @@ fn rsext4_journal_device_overlay_rules_hold() {
     ax_assert_eq!(dev.block_size(), BLOCK_SIZE as u32);
     ax_assert_eq!(dev.now().unwrap(), Ext4Timestamp::new(1_900_000_000, 0));
 
-    dev.read_block(AbsoluteBN::new(1)).unwrap();
-    dev.buffer_mut()[0] = 0x11;
-    dev.write_block(AbsoluteBN::new(1), false).unwrap();
+    let mut direct = vec![0_u8; BLOCK_SIZE];
+    direct[0] = 0x11;
+    dev.write_blocks(&direct, AbsoluteBN::new(1), 1, false)
+        .unwrap();
     dev.read_block(AbsoluteBN::new(1)).unwrap();
     ax_assert_eq!(dev.buffer()[0], 0x11);
     dev.read_block(AbsoluteBN::new(3)).unwrap();
-    let mut direct = vec![0_u8; BLOCK_SIZE];
     direct[0] = 0x66;
     dev.write_blocks(&direct, AbsoluteBN::new(3), 1, false)
         .unwrap();
@@ -1030,9 +1030,10 @@ fn rsext4_journal_device_overlay_rules_hold() {
     ax_assert!(dev.is_use_journal());
     ax_assert_eq!(dev.journal_sequence(), Some(7));
 
-    dev.read_block(AbsoluteBN::new(2)).unwrap();
-    dev.buffer_mut()[0] = 0x22;
-    dev.write_block(AbsoluteBN::new(2), true).unwrap();
+    let mut metadata = vec![0_u8; BLOCK_SIZE];
+    metadata[0] = 0x22;
+    dev.write_blocks(&metadata, AbsoluteBN::new(2), 1, true)
+        .unwrap();
     dev.read_block(AbsoluteBN::new(2)).unwrap();
     ax_assert_eq!(dev.buffer()[0], 0x22);
 
@@ -1072,9 +1073,12 @@ fn rsext4_journal_device_overlay_rules_hold() {
     ax_assert_eq!(inner.geometry().block_count, 32);
 
     let mut readonly_dev = Jbd2Dev::initial_jbd2dev(0, JournalMemoryDevice::new_readonly(8), false);
-    readonly_dev.read_block(AbsoluteBN::new(1)).unwrap();
-    readonly_dev.buffer_mut()[0] = 0xaa;
-    ax_assert!(readonly_dev.write_block(AbsoluteBN::new(1), false).is_err());
+    direct[0] = 0xaa;
+    ax_assert!(
+        readonly_dev
+            .write_blocks(&direct, AbsoluteBN::new(1), 1, false)
+            .is_err()
+    );
     ax_assert!(
         readonly_dev
             .write_blocks(&replacement, AbsoluteBN::new(1), 1, false)

@@ -914,18 +914,15 @@ fn write_pointer_block(
     pointer_block: AbsoluteBN,
     child: AbsoluteBN,
 ) {
-    journal
-        .read_block(pointer_block)
-        .expect("pointer block read failed");
-    journal.buffer_mut().fill(0);
-    journal.buffer_mut()[..4].copy_from_slice(
+    let mut image = vec![0; BLOCK_SIZE];
+    image[..4].copy_from_slice(
         &child
             .to_u32()
             .expect("legacy pointer block number")
             .to_le_bytes(),
     );
     journal
-        .write_block(pointer_block, true)
+        .write_blocks(&image, pointer_block, 1, true)
         .expect("pointer block write failed");
 }
 
@@ -938,15 +935,16 @@ fn write_pointer_entry(
     journal
         .read_block(pointer_block)
         .expect("pointer block read failed");
+    let mut image = journal.buffer().to_vec();
     let offset = index * core::mem::size_of::<u32>();
-    journal.buffer_mut()[offset..offset + 4].copy_from_slice(
+    image[offset..offset + 4].copy_from_slice(
         &child
             .to_u32()
             .expect("legacy pointer block number")
             .to_le_bytes(),
     );
     journal
-        .write_block(pointer_block, true)
+        .write_blocks(&image, pointer_block, 1, true)
         .expect("pointer block write failed");
 }
 

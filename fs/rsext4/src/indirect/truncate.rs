@@ -432,16 +432,17 @@ fn write_checked_pointer_block<B: BlockIo>(
     if current != expected {
         return Err(Ext4Error::corrupted().with_operation(changed_operation));
     }
-    for (bytes, &pointer) in device
-        .buffer_mut()
-        .as_chunks_mut::<{ size_of::<u32>() }>()
-        .0
-        .iter_mut()
-        .zip(replacement)
-    {
-        write_u32_le(pointer, bytes);
-    }
-    device.write_block(block, true)
+    device.update_block(block, true, |buffer| {
+        for (bytes, &pointer) in buffer
+            .as_chunks_mut::<{ size_of::<u32>() }>()
+            .0
+            .iter_mut()
+            .zip(replacement)
+        {
+            write_u32_le(pointer, bytes);
+        }
+        Ok(())
+    })
 }
 
 fn restore_pointer_edits<B: BlockIo>(
