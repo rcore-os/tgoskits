@@ -161,6 +161,58 @@ pub fn verify_ext4_dx_checksum(
     Some(computed == stored)
 }
 
+/// Updates the checksum stored in an HTree `dx_tail`.
+pub(crate) fn update_ext4_dx_checksum(
+    sb: &Ext4Superblock,
+    ino: u32,
+    generation: u32,
+    block_bytes: &mut [u8],
+) -> bool {
+    if !ext4_superblock_has_metadata_csum(sb) {
+        return true;
+    }
+    let Some(count_offset) = dx_countlimit_offset(block_bytes) else {
+        return false;
+    };
+    if count_offset + 4 > block_bytes.len() {
+        return false;
+    }
+    let limit = usize::from(read_u16_le(&block_bytes[count_offset..count_offset + 2]));
+    let count = usize::from(read_u16_le(
+        &block_bytes[count_offset + 2..count_offset + 4],
+    ));
+    let entry_size = core::mem::size_of::<Ext4DxEntry>();
+    let Some(tail_offset) = count_offset.checked_add(limit.saturating_mul(entry_size)) else {
+        return false;
+    };
+    let Some(data_len) = count_offset.checked_add(count.saturating_mul(entry_size)) else {
+        return false;
+    };
+    if count == 0
+        || count > limit
+        || data_len > tail_offset
+        || tail_offset + core::mem::size_of::<u64>() > block_bytes.len()
+    {
+        return false;
+    }
+
+    block_bytes[tail_offset + 4..tail_offset + 8].fill(0);
+    let seed = ext4_crc32c_seed_from_superblock(sb);
+    let ino_le = ino.to_le_bytes();
+    let generation_le = generation.to_le_bytes();
+    let checksum = ext4_metadata_csum32(
+        seed,
+        &[
+            &ino_le,
+            &generation_le,
+            &block_bytes[..data_len],
+            &block_bytes[tail_offset..tail_offset + 8],
+        ],
+    );
+    block_bytes[tail_offset + 4..tail_offset + 8].copy_from_slice(&checksum.to_le_bytes());
+    true
+}
+
 fn dx_countlimit_offset(block_bytes: &[u8]) -> Option<usize> {
     if block_bytes.len() < 6 {
         return None;

@@ -132,29 +132,15 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut jbd2_dev).expect("mkfs failed");
         let mut fs = mount(&mut jbd2_dev).expect("mount failed");
-        fs.superblock.s_feature_ro_compat |=
-            rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_DIR_NLINK;
-        fs.superblock.s_feature_compat |=
-            rsext4::superblock::Ext4Superblock::EXT4_FEATURE_COMPAT_DIR_INDEX;
         let root = fs.root_inode;
-        fs.modify_inode(&mut jbd2_dev, root, |inode| {
-            inode.i_flags |= Ext4Inode::EXT4_INDEX_FL;
-            inode.i_links_count = 65_000;
-        })
-        .expect("prepare indexed root at the Linux link limit");
-
-        mkdir(&mut jbd2_dev, &mut fs, "/dir-nlink-sentinel").expect("mkdir failed");
-        let root_inode = fs
+        let mut root_inode = fs
             .get_inode_by_num(&mut jbd2_dev, root)
-            .expect("reload root inode");
-        assert_eq!(root_inode.i_links_count, 1);
-
-        mkdir(&mut jbd2_dev, &mut fs, "/dir-nlink-stays-sentinel")
-            .expect("mkdir after the HTree index is downgraded");
-        let root_inode = fs
-            .get_inode_by_num(&mut jbd2_dev, root)
-            .expect("reload root inode after second mkdir");
-        assert_eq!(root_inode.i_links_count, 1);
+            .expect("load root inode");
+        root_inode.i_flags |= Ext4Inode::EXT4_INDEX_FL;
+        root_inode.i_links_count = 65_000;
+        assert_eq!(root_inode.incremented_links_count(true).unwrap(), 1);
+        root_inode.i_links_count = 1;
+        assert_eq!(root_inode.incremented_links_count(true).unwrap(), 1);
     }
 
     #[test]

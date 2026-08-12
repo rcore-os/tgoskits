@@ -10,6 +10,7 @@ mod superblock;
 pub use core::ext4_metadata_csum32;
 
 pub use bitmap::{ext4_block_bitmap_csum32, ext4_inode_bitmap_csum32};
+pub(crate) use dirblock::update_ext4_dx_checksum;
 pub use dirblock::{
     ext4_dirblock_csum32, ext4_metadata_block_csum32, ext4_update_dirblock_tail_checksum,
     update_ext4_dirblock_csum32, verify_ext4_dirblock_checksum, verify_ext4_dx_checksum,

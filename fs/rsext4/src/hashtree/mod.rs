@@ -6,6 +6,7 @@ mod hash;
 mod inode;
 mod lookup;
 mod manager;
+mod mutation;
 mod parse;
 mod types;
 
@@ -14,6 +15,7 @@ pub(crate) use facade::lookup_directory_entry;
 pub(crate) use hash::calculate_hash;
 pub use inode::Ext4InodeHashTreeExt;
 pub use manager::HashTreeManager;
+pub(crate) use mutation::insert_indexed_directory_entry;
 pub use types::{HashTreeNode, HashTreeSearchResult};
 
 #[cfg(test)]

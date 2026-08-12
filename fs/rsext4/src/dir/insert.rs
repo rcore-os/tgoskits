@@ -11,6 +11,7 @@ use crate::{
     error::*,
     ext4::*,
     extents_tree::*,
+    hashtree::insert_indexed_directory_entry,
     loopfile::*,
     metadata::Ext4InodeMetadataUpdate,
     superblock::Ext4Superblock,
@@ -50,6 +51,18 @@ pub(crate) fn insert_dir_entry_raw<B: BlockIo>(
     child_name: FileName<'_>,
     file_type: u8,
 ) -> Ext4Result<()> {
+    if parent_inode.i_flags & Ext4Inode::EXT4_INDEX_FL != 0 {
+        return insert_indexed_directory_entry(
+            fs,
+            device,
+            parent_ino_num,
+            parent_inode,
+            child_ino,
+            child_name,
+            file_type,
+        );
+    }
+
     let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
     let name_bytes = child_name.as_bytes();
     let name_len = name_bytes.len();

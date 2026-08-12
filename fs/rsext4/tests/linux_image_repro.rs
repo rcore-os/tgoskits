@@ -4,6 +4,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
+    rc::Rc,
 };
 
 use rsext4::{
@@ -97,6 +98,63 @@ impl rsext4::Clock for FileBlockDevice {
         let sec = self.now.get();
         self.now.set(sec + 1);
         Ok(Ext4Timestamp::new(sec, 0))
+    }
+}
+
+struct PatternFailureDevice {
+    inner: FileBlockDevice,
+    pattern: Vec<u8>,
+    armed: Rc<Cell<bool>>,
+}
+
+impl PatternFailureDevice {
+    fn open(path: PathBuf, pattern: &[u8]) -> (Self, Rc<Cell<bool>>) {
+        let armed = Rc::new(Cell::new(false));
+        (
+            Self {
+                inner: FileBlockDevice::open_with_sector_size(path, 512),
+                pattern: pattern.to_vec(),
+                armed: Rc::clone(&armed),
+            },
+            armed,
+        )
+    }
+}
+
+impl BlockIo for PatternFailureDevice {
+    fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+        self.inner.read(buffer, sector, count)
+    }
+
+    fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+        self.inner.write(buffer, sector, count)?;
+        if self.armed.get()
+            && buffer
+                .windows(self.pattern.len())
+                .any(|window| window == self.pattern)
+        {
+            self.armed.set(false);
+            return Err(Ext4Error::io());
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Ext4Result<()> {
+        self.inner.flush()
+    }
+
+    fn geometry(&self) -> DeviceGeometry {
+        self.inner.geometry()
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        self.inner.capabilities()
+    }
+}
+
+impl Clock for PatternFailureDevice {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
+        self.inner.now()
     }
 }
 
@@ -320,6 +378,473 @@ fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
     umount(filesystem, &mut device).expect("unmount Linux HTree fixture");
     e2fsck_readonly_clean(&image, "rsext4-read Linux HTree fixture");
     fs::remove_dir_all(temp_dir).expect("remove HTree temp dir");
+}
+
+#[test]
+fn owned_insert_preserves_linux_htree_index() {
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-linux-owned-htree-insert", "64M");
+    let source = temp_dir.join("payload.bin");
+    fs::write(&source, b"linux htree insert payload").expect("write HTree payload");
+    let mut script = String::from("mkdir /indexed\n");
+    for index in 0..800 {
+        script.push_str(&format!(
+            "write {} /indexed/entry-{index:04}.bin\n",
+            source.display()
+        ));
+    }
+    run_debugfs_script(
+        &image,
+        &script,
+        "populate indexed directory for owned insert",
+    );
+
+    let output = Command::new("e2fsck")
+        .args(["-fyD"])
+        .arg(&image)
+        .output()
+        .expect("run e2fsck directory optimizer");
+    assert!(
+        e2fsck_status_ok(&output, true),
+        "e2fsck failed to create HTree index\n{}",
+        command_text(&output)
+    );
+    assert!(
+        debugfs_query(&image, "htree_dump /indexed").contains("Root node dump"),
+        "e2fsprogs did not create an HTree root"
+    );
+    e2fsck_readonly_clean(&image, "Linux HTree owned-insert fixture");
+
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_800_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem =
+            Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
+        let root = filesystem.root_inode();
+        let indexed = filesystem
+            .lookup_child(root, FileName::new(b"indexed").expect("valid indexed name"))
+            .expect("lookup indexed directory")
+            .expect("indexed directory exists");
+        assert!(indexed.flags.contains(InodeFlags::DIRECTORY_INDEX));
+
+        filesystem
+            .create_regular_file(
+                MutationContext::new(1000, 1001, 0, 0o022),
+                indexed.number,
+                FileName::new(b"rsext4-owned-insert.bin").expect("valid insert name"),
+                FilePermissions::new(0o644).expect("valid permissions"),
+            )
+            .expect("insert into Linux HTree directory");
+        assert!(
+            filesystem
+                .inode(indexed.number)
+                .expect("inspect indexed directory after insert")
+                .flags
+                .contains(InodeFlags::DIRECTORY_INDEX),
+            "inserting through the portable core must preserve the Linux HTree"
+        );
+        assert!(
+            filesystem
+                .lookup_child(
+                    indexed.number,
+                    FileName::new(b"rsext4-owned-insert.bin").expect("valid inserted name"),
+                )
+                .expect("lookup inserted HTree child")
+                .is_some()
+        );
+        filesystem.unmount().expect("unmount HTree insert image");
+    }
+
+    let dump = debugfs_query(&image, "htree_dump /indexed");
+    assert!(
+        dump.contains("Root node dump") && dump.contains("rsext4-owned-insert.bin"),
+        "Linux did not preserve and decode the updated HTree\n{dump}"
+    );
+    e2fsck_readonly_clean(&image, "rsext4-updated Linux HTree fixture");
+    fs::remove_dir_all(temp_dir).expect("remove HTree insert temp dir");
+}
+
+#[test]
+fn owned_insert_splits_linux_htree_leaf() {
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-linux-owned-htree-split", "64M");
+    let source = temp_dir.join("payload.bin");
+    fs::write(&source, b"linux htree split payload").expect("write HTree payload");
+    let mut script = String::from("mkdir /indexed\n");
+    for index in 0..800 {
+        script.push_str(&format!(
+            "write {} /indexed/entry-{index:04}.bin\n",
+            source.display()
+        ));
+    }
+    run_debugfs_script(&image, &script, "populate indexed directory for leaf split");
+    let output = Command::new("e2fsck")
+        .args(["-fyD"])
+        .arg(&image)
+        .output()
+        .expect("run e2fsck directory optimizer");
+    assert!(
+        e2fsck_status_ok(&output, true),
+        "e2fsck failed to create HTree index\n{}",
+        command_text(&output)
+    );
+
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_800_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem =
+            Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
+        let indexed = filesystem
+            .lookup_child(
+                filesystem.root_inode(),
+                FileName::new(b"indexed").expect("valid indexed name"),
+            )
+            .expect("lookup indexed directory")
+            .expect("indexed directory exists");
+        let context = MutationContext::new(1000, 1001, 0, 0o022);
+        let permissions = FilePermissions::new(0o644).expect("valid permissions");
+        for index in 0..1_000 {
+            let name = format!("rsext4-split-{index:04}.bin");
+            filesystem
+                .create_regular_file(
+                    context,
+                    indexed.number,
+                    FileName::new(name.as_bytes()).expect("valid split entry name"),
+                    permissions,
+                )
+                .unwrap_or_else(|error| panic!("insert HTree split entry {index}: {error}"));
+        }
+        assert!(
+            filesystem
+                .inode(indexed.number)
+                .expect("inspect split directory")
+                .flags
+                .contains(InodeFlags::DIRECTORY_INDEX)
+        );
+        for index in [0, 499, 999] {
+            let name = format!("rsext4-split-{index:04}.bin");
+            assert!(
+                filesystem
+                    .lookup_child(
+                        indexed.number,
+                        FileName::new(name.as_bytes()).expect("valid lookup name"),
+                    )
+                    .expect("lookup split entry")
+                    .is_some(),
+                "missing split entry {index}"
+            );
+        }
+        filesystem.unmount().expect("unmount split image");
+    }
+
+    let dump = debugfs_query(&image, "htree_dump /indexed");
+    assert!(
+        dump.contains("Root node dump") && dump.contains("rsext4-split-0999.bin"),
+        "Linux did not decode the split HTree\n{dump}"
+    );
+    e2fsck_readonly_clean(&image, "rsext4-split Linux HTree fixture");
+    fs::remove_dir_all(temp_dir).expect("remove HTree split temp dir");
+}
+
+#[test]
+fn owned_insert_grows_a_full_linux_htree_root() {
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-linux-owned-htree-root-growth", "128M");
+    let source = temp_dir.join("payload.bin");
+    fs::write(&source, b"linux htree root growth payload").expect("write HTree payload");
+    let mut script = String::from("mkdir /indexed\n");
+    for index in 0..800 {
+        script.push_str(&format!(
+            "write {} /indexed/entry-{index:04}.bin\n",
+            source.display()
+        ));
+    }
+    run_debugfs_script(
+        &image,
+        &script,
+        "populate indexed directory for root growth",
+    );
+    let output = Command::new("e2fsck")
+        .args(["-fyD"])
+        .arg(&image)
+        .output()
+        .expect("run e2fsck directory optimizer");
+    assert!(
+        e2fsck_status_ok(&output, true),
+        "e2fsck failed to create HTree index\n{}",
+        command_text(&output)
+    );
+
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_800_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem =
+            Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
+        let indexed = filesystem
+            .lookup_child(
+                filesystem.root_inode(),
+                FileName::new(b"indexed").expect("valid indexed name"),
+            )
+            .expect("lookup indexed directory")
+            .expect("indexed directory exists");
+        let context = MutationContext::new(1000, 1001, 0, 0o022);
+        let permissions = FilePermissions::new(0o644).expect("valid permissions");
+        for index in 0..9_000 {
+            let name = format!("rsext4-root-growth-{index:05}-{}", "x".repeat(220));
+            filesystem
+                .create_regular_file(
+                    context,
+                    indexed.number,
+                    FileName::new(name.as_bytes()).expect("valid root-growth name"),
+                    permissions,
+                )
+                .unwrap_or_else(|error| panic!("insert HTree root-growth entry {index}: {error}"));
+        }
+        let last_name = format!("rsext4-root-growth-08999-{}", "x".repeat(220));
+        assert!(
+            filesystem
+                .lookup_child(
+                    indexed.number,
+                    FileName::new(last_name.as_bytes()).expect("valid last root-growth name"),
+                )
+                .expect("lookup after HTree root growth")
+                .is_some()
+        );
+        filesystem.unmount().expect("unmount root-growth image");
+    }
+
+    let dump = debugfs_query(&image, "htree_dump /indexed");
+    assert!(
+        dump.contains("Indirect levels: 1"),
+        "Linux did not decode the grown HTree root\n{dump}"
+    );
+    e2fsck_readonly_clean(&image, "rsext4-grown Linux HTree fixture");
+    fs::remove_dir_all(temp_dir).expect("remove HTree root-growth temp dir");
+}
+
+#[test]
+fn failed_owned_htree_leaf_split_rolls_back_after_data_write() {
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-linux-owned-htree-rollback", "64M");
+    let source = temp_dir.join("payload.bin");
+    fs::write(&source, b"linux htree rollback payload").expect("write HTree payload");
+    let mut script = String::from("mkdir /indexed\n");
+    for index in 0..800 {
+        script.push_str(&format!(
+            "write {} /indexed/entry-{index:04}.bin\n",
+            source.display()
+        ));
+    }
+    run_debugfs_script(
+        &image,
+        &script,
+        "populate indexed directory for split rollback",
+    );
+    let output = Command::new("e2fsck")
+        .args(["-fyD"])
+        .arg(&image)
+        .output()
+        .expect("run e2fsck directory optimizer");
+    assert!(
+        e2fsck_status_ok(&output, true),
+        "e2fsck failed to create HTree index\n{}",
+        command_text(&output)
+    );
+
+    let calibration = temp_dir.join("calibration.img");
+    fs::copy(&image, &calibration).expect("copy HTree split calibration image");
+    let split_index = {
+        let device = FileBlockDevice::open_with_sector_size(calibration.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_800_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem =
+            Ext4::mount(device, services, MountOptions::read_write()).expect("mount calibration");
+        let indexed = filesystem
+            .lookup_child(
+                filesystem.root_inode(),
+                FileName::new(b"indexed").expect("valid indexed name"),
+            )
+            .expect("lookup calibration directory")
+            .expect("calibration directory exists");
+        let original_size = indexed.size;
+        let context = MutationContext::new(1000, 1001, 0, 0o022);
+        let permissions = FilePermissions::new(0o644).expect("valid permissions");
+        let mut split_index = None;
+        for index in 0..1_000 {
+            let name = format!("rsext4-split-{index:04}.bin");
+            filesystem
+                .create_regular_file(
+                    context,
+                    indexed.number,
+                    FileName::new(name.as_bytes()).expect("valid calibration name"),
+                    permissions,
+                )
+                .unwrap_or_else(|error| panic!("insert calibration entry {index}: {error}"));
+            if filesystem
+                .inode(indexed.number)
+                .expect("inspect calibration directory")
+                .size
+                > original_size
+            {
+                split_index = Some(index);
+                break;
+            }
+        }
+        filesystem.unmount().expect("unmount calibration image");
+        split_index.expect("calibration did not trigger an HTree leaf split")
+    };
+    fs::remove_file(calibration).expect("remove HTree split calibration image");
+
+    let failed_name = format!("rsext4-split-{split_index:04}.bin");
+    let (device, armed) = PatternFailureDevice::open(image.clone(), failed_name.as_bytes());
+    let before_size;
+    let before_blocks;
+    let before_flags;
+    let before_stats;
+    {
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = mount(&mut journal).expect("mount Linux image");
+        for index in 0..split_index {
+            let name = format!("rsext4-split-{index:04}.bin");
+            mkfile(
+                &mut journal,
+                &mut filesystem,
+                &format!("/indexed/{name}"),
+                None,
+                None,
+            )
+            .unwrap_or_else(|error| panic!("insert pre-split entry {index}: {error}"));
+        }
+        filesystem
+            .sync_filesystem(&mut journal)
+            .expect("sync pre-split fixture");
+        journal.flush().expect("checkpoint pre-split fixture");
+        journal
+            .set_journal_use(false)
+            .expect("disable journal for deterministic post-write fault");
+
+        let (_, directory) =
+            rsext4::dir::get_inode_with_num(&mut filesystem, &mut journal, "/indexed")
+                .expect("lookup directory before failed split")
+                .expect("indexed directory exists");
+        before_size = directory.size();
+        before_blocks = directory.blocks_count(
+            filesystem.superblock.block_size() as u32,
+            filesystem.superblock.has_feature_ro_compat(
+                rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE,
+            ),
+        );
+        before_flags = directory.i_flags;
+        before_stats = filesystem.statfs();
+
+        armed.set(true);
+        let error = mkfile(
+            &mut journal,
+            &mut filesystem,
+            &format!("/indexed/{failed_name}"),
+            None,
+            None,
+        )
+        .expect_err("post-write failure must abort the HTree split transaction");
+        assert_eq!(error.kind(), rsext4::Ext4ErrorKind::Io);
+        assert!(
+            !armed.get(),
+            "fault pattern was not observed on the write path"
+        );
+        filesystem
+            .umount(&mut journal)
+            .expect("unmount after failed direct split");
+    }
+
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_900_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem =
+            Ext4::mount(device, services, MountOptions::read_write()).expect("remount after fault");
+        let indexed = filesystem
+            .lookup_child(
+                filesystem.root_inode(),
+                FileName::new(b"indexed").expect("valid indexed name"),
+            )
+            .expect("lookup indexed directory after fault")
+            .expect("indexed directory survives fault");
+        let after_directory = filesystem
+            .inode(indexed.number)
+            .expect("inspect directory after failed split");
+        assert_eq!(after_directory.size, before_size);
+        assert_eq!(after_directory.blocks, before_blocks);
+        assert_eq!(
+            after_directory.flags,
+            InodeFlags::from_bits_retain(before_flags)
+        );
+        let after_stats = filesystem.statfs();
+        assert_eq!(after_stats.free_blocks, before_stats.free_blocks);
+        assert_eq!(after_stats.free_inodes, before_stats.free_inodes);
+        assert!(
+            filesystem
+                .lookup_child(
+                    indexed.number,
+                    FileName::new(failed_name.as_bytes()).expect("valid failed split name"),
+                )
+                .expect("lookup failed split name after remount")
+                .is_none()
+        );
+        assert!(
+            filesystem
+                .lookup_child(
+                    indexed.number,
+                    FileName::new(format!("rsext4-split-{:04}.bin", split_index - 1).as_bytes(),)
+                        .expect("valid retained name"),
+                )
+                .expect("lookup retained entry after remount")
+                .is_some()
+        );
+        filesystem.unmount().expect("unmount rollback image");
+    }
+
+    e2fsck_readonly_clean(&image, "failed rsext4 HTree split rollback");
+    fs::remove_dir_all(temp_dir).expect("remove HTree rollback temp dir");
 }
 
 fn linux_image_geometry_round_trip(filesystem_block_size: u32) {

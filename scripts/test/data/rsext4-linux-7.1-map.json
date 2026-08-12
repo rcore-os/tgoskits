@@ -957,8 +957,120 @@
       "segments": [
         {
           "start": 1,
+          "end": 1279,
+          "symbol": "namei lookup and namespace prefix",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::dir",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "mkdir-mutation-rollback",
+            "rename-mutation-rollback",
+            "typed-rename-flags",
+            "special-inode-rdev",
+            "typed-rmdir-open-lifecycle",
+            "symlink-target-transaction",
+            "fiemap-full-stack"
+          ]
+        },
+        {
+          "start": 1280,
+          "end": 1359,
+          "symbol": "dx_make_map, dx_sort_map, dx_insert_block",
+          "classification": "core",
+          "state_machine": "checked leaf map ordering and index insertion",
+          "invariant": "active dirents are stably sorted by Linux hash and promoted separators preserve monotonic index order",
+          "rust_owner": "rsext4::hashtree::mutation",
+          "reason": "portable HTree split planning and wire mutation belong to the filesystem core",
+          "test_ids": [
+            "htree-mutation"
+          ]
+        },
+        {
+          "start": 1360,
+          "end": 1842,
+          "symbol": "namei lookup and mutation helpers",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::dir",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        },
+        {
+          "start": 1843,
+          "end": 2032,
+          "symbol": "dx_move_dirents, dx_pack_dirents, do_split",
+          "classification": "core",
+          "state_machine": "leaf rebalance, collision continuation, allocation and publication",
+          "invariant": "a full leaf is split by minimal record length, same-hash boundaries set the continuation bit, and leaf/index images publish in one metadata transaction",
+          "rust_owner": "rsext4::hashtree::mutation",
+          "reason": "portable HTree leaf layout, checksum and persistence semantics belong to the filesystem core",
+          "test_ids": [
+            "htree-mutation",
+            "htree-split-rollback"
+          ]
+        },
+        {
+          "start": 2033,
+          "end": 2208,
+          "symbol": "directory entry insertion prefix",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::dir",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        },
+        {
+          "start": 2209,
+          "end": 2343,
+          "symbol": "make_indexed_dir",
+          "classification": "core",
+          "state_machine": "linear-directory to HTree conversion",
+          "invariant": "root dot entries, root info, first leaf and inode mapping become mutually consistent in one transaction",
+          "rust_owner": "rsext4::hashtree::mutation",
+          "reason": "portable HTree creation semantics belong to the filesystem core",
+          "test_ids": [
+            "htree-make-indexed-red"
+          ]
+        },
+        {
+          "start": 2344,
+          "end": 2472,
+          "symbol": "directory mutation helpers",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::dir",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        },
+        {
+          "start": 2473,
+          "end": 2650,
+          "symbol": "ext4_dx_add_entry",
+          "classification": "core",
+          "state_machine": "leaf insertion, root promotion, internal split and re-probe",
+          "invariant": "full index nodes split upward without invalidating the selected leaf path and never exceed the negotiated HTree depth",
+          "rust_owner": "rsext4::hashtree::mutation",
+          "reason": "portable HTree growth and journal ownership belong to the filesystem core",
+          "test_ids": [
+            "htree-mutation",
+            "htree-root-growth"
+          ]
+        },
+        {
+          "start": 2651,
           "end": 4249,
-          "symbol": "<whole-file>",
+          "symbol": "namei namespace mutation suffix",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",

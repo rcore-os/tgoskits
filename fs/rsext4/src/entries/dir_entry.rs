@@ -66,6 +66,21 @@ pub(crate) fn decode_directory_record_length(encoded: u16, block_size: usize) ->
     }
 }
 
+/// Encodes Linux's compact directory record length for the containing block size.
+pub(crate) fn encode_directory_record_length(record_len: usize, block_size: usize) -> Option<u16> {
+    if record_len > block_size || block_size > (1 << 18) || !record_len.is_multiple_of(4) {
+        return None;
+    }
+    if record_len < 1 << 16 {
+        return u16::try_from(record_len).ok();
+    }
+    if record_len == block_size {
+        return Some(if block_size == 1 << 16 { u16::MAX } else { 0 });
+    }
+
+    u16::try_from((record_len & 65_532) | ((record_len >> 16) & 3)).ok()
+}
+
 impl Ext4DirEntry2 {
     pub const EXT4_FT_UNKNOWN: u8 = 0;
     pub const EXT4_FT_REG_FILE: u8 = 1;

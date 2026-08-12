@@ -16,22 +16,23 @@ use crate::{
 };
 
 #[derive(Clone, Copy)]
-struct HashSearch<'a> {
-    dir_ino: InodeNumber,
-    dir_inode: &'a Ext4Inode,
-    target_hash: u32,
-    target_name: &'a [u8],
-    indirect_levels: u8,
+pub(super) struct HashSearch<'a> {
+    pub(super) dir_ino: InodeNumber,
+    pub(super) dir_inode: &'a Ext4Inode,
+    pub(super) target_hash: u32,
+    pub(super) target_name: &'a [u8],
+    pub(super) hash_version: u8,
+    pub(super) indirect_levels: u8,
 }
 
-struct HashTreeFrame {
-    source_block: u32,
-    entries: Vec<Ext4DxEntry>,
-    selected: usize,
+pub(super) struct HashTreeFrame {
+    pub(super) source_block: u32,
+    pub(super) entries: Vec<Ext4DxEntry>,
+    pub(super) selected: usize,
 }
 
-struct HashTreePath {
-    frames: Vec<HashTreeFrame>,
+pub(super) struct HashTreePath {
+    pub(super) frames: Vec<HashTreeFrame>,
 }
 
 pub(super) fn lookup<B: BlockIo>(
@@ -46,53 +47,8 @@ pub(super) fn lookup<B: BlockIo>(
         return manager.fallback_to_linear_search(fs, block_dev, dir_ino, dir_inode, target_name);
     }
 
-    let root_block = manager.get_root_block(fs, block_dev, dir_ino, dir_inode)?;
-    let root_data = manager.read_block_data(fs, block_dev, root_block)?;
-    if crate::checksum::verify_ext4_dx_checksum(
-        &fs.superblock,
-        dir_ino.raw(),
-        dir_inode.i_generation,
-        &root_data,
-    ) == Some(false)
-    {
-        return Err(HashTreeError::Filesystem(
-            crate::Ext4Error::checksum().with_operation("htree:root"),
-        ));
-    }
-    let has_metadata_checksum = crate::crc32c::ext4_superblock_has_metadata_csum(&fs.superblock);
-    let max_indirect_levels = if fs
-        .superblock
-        .has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_LARGEDIR)
-    {
-        2
-    } else {
-        1
-    };
-    let root_info =
-        manager.parse_root_node(&root_data, has_metadata_checksum, max_indirect_levels)?;
-    let (root_hash_version, indirect_levels) = match &root_info {
-        HashTreeNode::Root {
-            hash_version,
-            indirect_levels,
-            ..
-        } => (*hash_version, *indirect_levels),
-        _ => return Err(HashTreeError::InvalidHashTree),
-    };
-    let hash_version = if root_hash_version <= Ext4DxRootInfo::DX_HASH_TEA
-        && fs.superblock.s_flags & Ext4Superblock::EXT4_FLAGS_UNSIGNED_HASH != 0
-    {
-        root_hash_version + 3
-    } else {
-        root_hash_version
-    };
-    let target_hash = super::calculate_hash(target_name, hash_version, &manager.hash_seed)?.major;
-    let search = HashSearch {
-        dir_ino,
-        dir_inode,
-        target_hash,
-        target_name,
-        indirect_levels,
-    };
+    let (search, root_info) =
+        manager.prepare_search(fs, block_dev, dir_ino, dir_inode, target_name)?;
 
     match manager.search_collision_chain(fs, block_dev, search, &root_info) {
         Ok(result) => Ok(result),
@@ -103,6 +59,65 @@ pub(super) fn lookup<B: BlockIo>(
 }
 
 impl HashTreeManager {
+    pub(super) fn prepare_search<'a, B: BlockIo>(
+        &self,
+        fs: &mut Ext4FileSystem,
+        block_dev: &mut Jbd2Dev<B>,
+        dir_ino: InodeNumber,
+        dir_inode: &'a Ext4Inode,
+        target_name: &'a [u8],
+    ) -> Result<(HashSearch<'a>, HashTreeNode), HashTreeError> {
+        let root_block = self.get_root_block(fs, block_dev, dir_ino, dir_inode)?;
+        let root_data = self.read_block_data(fs, block_dev, root_block)?;
+        if crate::checksum::verify_ext4_dx_checksum(
+            &fs.superblock,
+            dir_ino.raw(),
+            dir_inode.i_generation,
+            &root_data,
+        ) == Some(false)
+        {
+            return Err(HashTreeError::Filesystem(
+                crate::Ext4Error::checksum().with_operation("htree:root"),
+            ));
+        }
+        let has_metadata_checksum =
+            crate::crc32c::ext4_superblock_has_metadata_csum(&fs.superblock);
+        let max_indirect_levels = if fs
+            .superblock
+            .has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_LARGEDIR)
+        {
+            2
+        } else {
+            1
+        };
+        let root_info =
+            self.parse_root_node(&root_data, has_metadata_checksum, max_indirect_levels)?;
+        let (root_hash_version, indirect_levels) = match &root_info {
+            HashTreeNode::Root {
+                hash_version,
+                indirect_levels,
+                ..
+            } => (*hash_version, *indirect_levels),
+            _ => return Err(HashTreeError::InvalidHashTree),
+        };
+        let hash_version = if root_hash_version <= Ext4DxRootInfo::DX_HASH_TEA
+            && fs.superblock.s_flags & Ext4Superblock::EXT4_FLAGS_UNSIGNED_HASH != 0
+        {
+            root_hash_version + 3
+        } else {
+            root_hash_version
+        };
+        let target_hash = super::calculate_hash(target_name, hash_version, &self.hash_seed)?.major;
+        let search = HashSearch {
+            dir_ino,
+            dir_inode,
+            target_hash,
+            target_name,
+            hash_version,
+            indirect_levels,
+        };
+        Ok((search, root_info))
+    }
     pub(super) fn get_root_block<B: BlockIo>(
         &self,
         fs: &Ext4FileSystem,
@@ -150,7 +165,7 @@ impl HashTreeManager {
         }
     }
 
-    fn probe_path<B: BlockIo>(
+    pub(super) fn probe_path<B: BlockIo>(
         &self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
@@ -373,7 +388,7 @@ impl HashTreeManager {
 }
 
 impl HashTreePath {
-    fn current_entry(&self) -> Result<&Ext4DxEntry, HashTreeError> {
+    pub(super) fn current_entry(&self) -> Result<&Ext4DxEntry, HashTreeError> {
         let frame = self.frames.last().ok_or(HashTreeError::InvalidHashTree)?;
         frame
             .entries

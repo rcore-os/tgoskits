@@ -123,7 +123,7 @@ fn directory_growth_preserves_parent_link_count() {
 }
 
 #[test]
-fn insertion_clears_stale_directory_index_flag() {
+fn insertion_rejects_a_stale_directory_index() {
     let (mut dev, mut fs) = setup();
     mkdir(&mut dev, &mut fs, "/indexed").expect("mkdir /indexed");
     mkfile(&mut dev, &mut fs, "/target", Some(b"x"), None).expect("mkfile /target");
@@ -141,7 +141,7 @@ fn insertion_clears_stale_directory_index_flag() {
     })
     .expect("mark directory index stale");
 
-    insert_dir_entry(
+    let error = insert_dir_entry(
         &mut fs,
         &mut dev,
         parent_ino,
@@ -150,17 +150,19 @@ fn insertion_clears_stale_directory_index_flag() {
         "entry",
         Ext4DirEntry2::EXT4_FT_REG_FILE,
     )
-    .expect("insert entry into indexed directory");
+    .expect_err("a forged index flag must not turn a linear block into an HTree root");
+    assert_eq!(error.kind(), rsext4::Ext4ErrorKind::Corrupted);
 
     let (_, updated_parent) = get_inode_with_num(&mut fs, &mut dev, "/indexed")
         .expect("lookup updated directory")
         .expect("updated directory exists");
-    assert_eq!(updated_parent.i_flags & Ext4Inode::EXT4_INDEX_FL, 0);
+    assert_ne!(updated_parent.i_flags & Ext4Inode::EXT4_INDEX_FL, 0);
 
-    let (entry_ino, _) = get_inode_with_num(&mut fs, &mut dev, "/indexed/entry")
-        .expect("lookup inserted entry")
-        .expect("inserted entry exists");
-    assert_eq!(entry_ino, target_ino);
+    assert!(
+        get_inode_with_num(&mut fs, &mut dev, "/indexed/entry")
+            .expect("lookup rejected entry")
+            .is_none()
+    );
 }
 
 #[test]
