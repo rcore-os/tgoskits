@@ -19,11 +19,7 @@ use axfs_ng_vfs::{
 };
 use linux_raw_sys::{
     general::*,
-    ioctl::{
-        FIEMAP_EXTENT_DATA_INLINE, FIEMAP_EXTENT_LAST, FIEMAP_EXTENT_MERGED,
-        FIEMAP_EXTENT_NOT_ALIGNED, FIEMAP_EXTENT_UNWRITTEN, FIEMAP_FLAG_CACHE, FIEMAP_FLAG_SYNC,
-        FIEMAP_FLAG_XATTR, FIEMAP_FLAGS_COMPAT, FIOASYNC, FIONBIO, FS_IOC_FIEMAP,
-    },
+    ioctl::{FIOASYNC, FIONBIO, FS_IOC_FIEMAP},
 };
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
@@ -39,6 +35,19 @@ use crate::{
 /// use these on freshly-opened fds; Linux implements them generically for any fd.
 pub const FIOCLEX: u32 = 0x5451;
 pub const FIONCLEX: u32 = 0x5450;
+
+// These values are architecture-independent Linux FIEMAP UAPI flags. Keep
+// them at the syscall boundary because linux-raw-sys does not generate the
+// fiemap.h constants for every architecture (including LoongArch64).
+const FIEMAP_FLAG_SYNC: u32 = 0x0000_0001;
+const FIEMAP_FLAG_XATTR: u32 = 0x0000_0002;
+const FIEMAP_FLAG_CACHE: u32 = 0x0000_0004;
+const FIEMAP_FLAGS_COMPAT: u32 = FIEMAP_FLAG_SYNC | FIEMAP_FLAG_XATTR;
+const FIEMAP_EXTENT_LAST: u32 = 0x0000_0001;
+const FIEMAP_EXTENT_NOT_ALIGNED: u32 = 0x0000_0100;
+const FIEMAP_EXTENT_DATA_INLINE: u32 = 0x0000_0200;
+const FIEMAP_EXTENT_UNWRITTEN: u32 = 0x0000_0800;
+const FIEMAP_EXTENT_MERGED: u32 = 0x0000_1000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, bytemuck::AnyBitPattern)]
@@ -78,6 +87,15 @@ pub(crate) fn ctl_ioctl_constants_hold_for_test() -> bool {
     use linux_raw_sys::ioctl::{FIOASYNC, FIONBIO};
     assert!(FIONBIO == 0x5421);
     assert!(FIOASYNC == 0x5452);
+    assert!(FIEMAP_FLAG_SYNC == 0x0000_0001);
+    assert!(FIEMAP_FLAG_XATTR == 0x0000_0002);
+    assert!(FIEMAP_FLAG_CACHE == 0x0000_0004);
+    assert!(FIEMAP_FLAGS_COMPAT == 0x0000_0003);
+    assert!(FIEMAP_EXTENT_LAST == 0x0000_0001);
+    assert!(FIEMAP_EXTENT_NOT_ALIGNED == 0x0000_0100);
+    assert!(FIEMAP_EXTENT_DATA_INLINE == 0x0000_0200);
+    assert!(FIEMAP_EXTENT_UNWRITTEN == 0x0000_0800);
+    assert!(FIEMAP_EXTENT_MERGED == 0x0000_1000);
 
     true
 }
