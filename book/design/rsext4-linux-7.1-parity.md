@@ -135,6 +135,7 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 | `jbd2-writer-revoke-checkpoint` | commit 同步覆盖 home block，detach 只删除当前 pending image；较早 committed metadata 可在 block 复用后覆盖新 owner | running、committed 与 checkpoint owner 分离；writer 生成 Linux revoke；descriptor/payload preflush 后 FUA commit，home write durable 后 FUA tail | JBD2 lifecycle/revoke | 进行中（writer revoke、bounded lifecycle 与 tail reclamation 子路径已绿）：commit 不再同步 checkpoint，committed image 在 owner 内可见；csum-v3/64-bit revoke 与三阶段 replay 保护 block reuse。checkpoint 反向扫描选定前缀，同一 home block 只写最新可见 image；一次 home flush 后以一次 FUA 发布新 tail。tail FUA 失败时恢复内存 superblock 且不 drain queue，部分 checkpoint 和 ring wrap 后剩余 transaction 可由 replay 恢复。当前仍是同步单 owner，独立 committing transaction、并发 handle、external journal 与完整 persistence-boundary fault matrix 仍为红项。Linux v7.1 依据为 `fs/jbd2/commit.c:114-175,538-605`、`fs/jbd2/checkpoint.c:126-353,559-729`、`fs/jbd2/revoke.c:300-721`、`fs/jbd2/journal.c:1056-1091` |
 | `jbd2-abort-sticky` | descriptor/payload flush 失败只返回一次 I/O error，随后仍可从已推进的 ring cursor 重试、继续 metadata write 或关闭 journal 绕过错误 | 首次提交/恢复错误保留原始 cause；同一 mount 的后续 mutation、handle、flush、unmount 全部稳定拒绝，并持久化 journal errno | JBD2 rewrite | 进行中：所有 auto-commit、handle precommit 与 unmount commit 已收口到单一 transaction owner；任一 commit/cache-coherence failure 锁存首个 cause，本次返回原始 typed error，后续 write/handle/flush/unmount/reinstall 返回 `JournalAborted`。journal mode 切换改为 fallible state transition：abort 时拒绝，pending queue 或 active handle 时返回 busy，不能再关闭 journal 后绕过未提交 metadata。replay 现在以 typed `JournalReplayPhase` 区分 initialize/scan/revoke/replay/persist/cache，保留 I/O、checksum 与 corruption 原始 domain cause、事务 restart 位置和 progress 持久化次错；mount 返回首错并通过 `Observer` 发送完整 typed failure，不再统一伪装为 corruption，越界 `s_start` 也不再清日志报成功。descriptor read 确定性红测已在旧实现证明 `Corrupted != Io`，payload read、home write、checksum+flush 首错优先、final flush 与 replay superblock write fault 均有定点测试。首次 abort 同时以私有 JBD2 wire code 持久化 `s_errno`，重新计算 checksum，并通过原生 FUA 或明确的 write-then-flush fallback 等待 durability；两种能力都缺失时返回 unsupported，record 失败单独保存且不覆盖首次 cause。当前 single-payload transaction 的 open-superblock、descriptor、payload、commit、checkpoint、close-superblock 六次 write 与四个 flush barrier 已逐项注入并验证 sticky first-error。recovery 已拆为不写 home block 的完整 committed-range scan、按 transaction ID 建表的 revoke pass、以及 sequence-aware replay pass；`T1 payload + T2 revoke` 的确定性红测证明旧 transaction-local set 会错误覆盖 home block，同一测试现保留旧值，反向 `T1 revoke + T2 payload` 与 `u32` TID wrap 比较也已覆盖。精细 on-disk error mapping、scan/pass-end 与 fast-commit 一致性、`ACK_ERR`/shutdown、ext4 `continue`/`remount-ro` policy，以及 multi-payload checkpoint/revoke 的完整 fault matrix 仍为红项 |
 | `jbd2-csum-v3-write-replay` | writer emits legacy tags while accepted CSUM_V3/64BIT journals require tag3/high block numbers | Linux-compatible descriptor tags and checksum followed by self/Linux replay | JBD2 rewrite | 绿：writer 生成 tag3/64-bit block number、escaped payload CRC32C、descriptor/commit checksum；replay 在任何 home write 前校验 commit 与全部非 revoke payload，并校验 descriptor/revoke tail；Linux `debugfs` 多块事务与逐边界损坏测试通过；mkfs 将 ext4 `metadata_csum`/`64bit` 映射为对应 JBD2 feature |
+| `jbd2-legacy-checksum-write-replay` | validator 拒绝 `FEATURE_COMPAT_CHECKSUM`/`CSUM_V2`，非 CSUM_V3 writer 把 tag/commit checksum 写成零，replay 也不校验旧格式 transaction | checksum mode 必须互斥协商；compat checksum 使用 descriptor+payload 的 raw CRC32-BE；CSUM_V2 使用 10/14-byte tag、低 16-bit payload CRC32C 及 descriptor/revoke/commit block checksum | JBD2 codec/commit/recovery | 绿：私有 typed mode 统一 `None`/`CompatChecksum`/`CsumV2`/`CsumV3`，拒绝混合 feature 与 checksum type 错配；writer/replay 覆盖 compat aggregate、CSUM_V2 32/64-bit tag padding、descriptor/revoke tail、commit 与 payload corruption。e2fsprogs `journal_open -c -v 2` 生成的多块 compat transaction 已由 Linux/debugfs 与 rsext4 分别 replay，rsext4 结果通过 `e2fsck -fn`；现代 e2fsprogs 不直接生成 legacy CSUM_V2，因此该模式由 Linux 7.1 源码布局和独立合成 corruption vectors 覆盖。external journal、async commit 与 fast commit 仍为红项 |
 | `jbd2-superblock-checked-codec` | journal superblock 对短于 1024-byte 的块直接 slice/`unwrap` panic，且错误拒绝 Linux V1 | mount 只使用 checked 1024-byte prefix codec；V1/V2 按版本分别校验，V1 不读取或改写 V2 extension fields | JBD2 codec/mount | 绿：deterministic 编译红测先证明 checked decode/encode 缺失，同一 0/1023-byte matrix 现返回 typed corruption；V1 validator 红测证明旧实现以 `jbd2:superblock_header` 拒绝，现有 validator、真实 mount 与 metadata commit 均忽略 V2 feature/UUID/checksum 尾部，sequence/start 写回保持尾部原值。错误公开名 `JournalSuperBllockS` 已破坏性改为 `JournalSuperBlock`。Linux v7.1 依据为 `include/linux/jbd2.h:226-277,1328-1389`、`fs/jbd2/journal.c:1309-1394,1458-1507` |
 | `extent-checked-codec` | raw extent nodes are sorted after parsing and malformed roots/children can be treated as holes | checked structural validation preserves on-disk order and propagates corruption | mapping rewrite | 绿：root/child codec 检查 magic、Linux on-disk depth 上限 5、capacity、非空 index、logical/physical overflow 与 leaf/index ordering；确定性红测证明旧 parser 会接受结构合法但 depth=6 的 index，同一测试现固定 depth=5 接受、6/32/33 拒绝，parse、递归校验与 split/promotion 共用同一上限。`EXT4_EXTENTS_FL` 是唯一格式判据，坏 magic 不再降级为 legacy/hole；读取、查找、插入、删除、HTree 和 block resolver 均传播 typed error，不再排序或吞错；hard-link parent corruption 完成确定性红绿验证。Linux v7.1 依据为 `ext4_extents.h:86-87`、`extents.c:491-494,900-906` |
 | `extent-empty-index` | crafted empty or malformed internal child can panic | corruption error, no mutation | mapping rewrite | 绿：root 与 external child 在 mutation 前统一 checked decode；空 index、坏 child 与超过 inline root 容量均返回 corruption，确定性测试验证 inode 不被截断或修改 |
@@ -1267,3 +1268,51 @@ unmount、remount 后全部 data/pointer block 已释放，特意保留的 gap �
 与 free count 一致。`extent_restart` 现有 8 个 bounded restart/power-cut case 全部通过。
 这只清除了 legacy punch 的超 ring 子项；完整 persistence-boundary fault matrix、reserved/
 concurrent handle、独立 committing owner 与大 shift restart 仍保持红色。
+
+### 7.41 JBD2 legacy checksum mode 检查点
+
+Linux v7.1 `include/linux/jbd2.h:150-204` 明确规定 checksum v1、v2、v3 互斥。
+`FEATURE_COMPAT_CHECKSUM` 不是 journal superblock v1：它在 v2 superblock 上使用从
+`0xffff_ffff` 开始、不做 final XOR 的 big-endian CRC32，依次覆盖每个完整 descriptor block
+及其 journal payload，并把结果写入 commit header 的 type `1`、size `4`、checksum[0]。
+`CSUM_V2` 与 `CSUM_V3` 都使用 UUID-seeded CRC32C；区别在于 v2 tag 只保存低 16 bit，
+32/64-bit block number 的 wire size 分别是 10/14 bytes，v3 则使用固定 16-byte tag 保存
+完整 32 bit。二者都在 descriptor/revoke 尾部保存 whole-block CRC32C，并对 checksum 字段
+清零后的完整 commit block 计算 CRC32C。对应证据为 `fs/jbd2/commit.c:90-144,329-369,
+391-409,620-760`、`fs/jbd2/recovery.c:175-220,400-488,810-850` 与
+`fs/jbd2/journal.c:2312-2350,2688-2699`。
+
+旧实现只接受 CSUM_V3：COMPAT/CSUM_V2 superblock 会返回 `Unsupported`，legacy tag
+checksum 和 commit tuple 始终为零，payload corruption 因而可通过 replay。确定性红测先分别
+固定这些失败。当前私有 `Jbd2ChecksumMode` 在 mount、capacity、writer 和 replay 共用一次
+语义，拒绝混合 mode/checksum-type；CSUM_V2 生成低 16-bit tag checksum、零 padding、
+descriptor/revoke tail 与 commit checksum，replay 在任何 home write 前验证 descriptor、
+revoke、commit 和全部 payload。COMPAT writer/replay 则按 Linux 顺序聚合 raw CRC32-BE，
+同时保留 Linux 对全零“unused checksum tuple”的兼容。新 journal 也显式声明已经实现的
+`INCOMPAT_REVOKE`，不再生成 feature 位与实际 revoke record 能力不一致的日志。
+
+除了 synthetic 32/64-bit CSUM_V2 wire vectors 与逐边界 corruption 测试，本阶段新增真实
+e2fsprogs differential：`debugfs journal_open -c -v 2` 生成多 metadata block 的
+`FEATURE_COMPAT_CHECKSUM` transaction，Linux/debugfs baseline 与 rsext4 replay 后目录树一致，
+`needs_recovery` 被清除且 `e2fsck -fn` clean。现代 e2fsprogs 1.46.5 不直接生成 legacy
+CSUM_V2（`-v 2` 实际生成 compat CRC32），因此 CSUM_V2 继续以 Linux 7.1 源码布局和独立
+reference CRC32C fixture 验证，不伪称拥有工具生成的 fixture。
+
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量，两组原始样本保存在
+`book/design/data/rsext4-perf/2026-08-12-jbd2-legacy-checksum-sync-cycle.csv`。首组与完整重复组
+均保留，首组的 28.016 us 最大样本没有剔除：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=837ff2407 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=7975 dirty_sync_p95_ns=11099 clean_sync_median_ns=205 clean_sync_p95_ns=291 unmount_median_ns=5174 unmount_p95_ns=6690
+RSEXT4_BENCH_SUMMARY commit=837ff2407-repeat arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=8426 dirty_sync_p95_ns=11066 clean_sync_median_ns=236 clean_sync_p95_ns=289 unmount_median_ns=5394 unmount_p95_ns=6975
+```
+
+| sample | dirty median | 相对 7.39 | dirty p95 | 相对 7.39 | clean median | unmount median |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first | 7.975 us | -1.7% | 11.099 us | +26.4% | 0.205 us | 5.174 us |
+| repeat | 8.426 us | +3.8% | 11.066 us | +26.0% | 0.236 us | 5.394 us |
+
+median 未显示 checksum-mode dispatch 的稳定回退，但两组 p95 都高于 7.39；该结果原样保留
+为性能红项，不能以“新增兼容功能”豁免。相对 dev 的 dirty-sync median/p95 仍超过 5%/10%
+硬门槛，后续继续优化 descriptor/revoke scratch allocation 与 commit CPU 路径，但不得改变
+preflush、FUA commit、checksum 覆盖范围或 checkpoint/tail durability boundary。

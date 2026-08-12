@@ -1468,7 +1468,8 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "jbd2-handle-credits",
-            "jbd2-abort-sticky"
+            "jbd2-abort-sticky",
+            "jbd2-legacy-checksum-write-replay"
           ]
         },
         {
@@ -1481,7 +1482,8 @@
           "rust_owner": "rsext4::jbd2::jbd2::commit_transaction_with_mapping",
           "reason": "the portable writer uses an explicit flush before a METADATA|FUA commit write and propagates unsupported durability capabilities",
           "test_ids": [
-            "jbd2-writer-revoke-checkpoint"
+            "jbd2-writer-revoke-checkpoint",
+            "jbd2-legacy-checksum-write-replay"
           ]
         },
         {
@@ -1495,7 +1497,8 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "jbd2-handle-credits",
-            "jbd2-abort-sticky"
+            "jbd2-abort-sticky",
+            "jbd2-legacy-checksum-write-replay"
           ]
         },
         {
@@ -1508,7 +1511,8 @@
           "rust_owner": "rsext4::jbd2::jbd2::commit_transaction_with_mapping",
           "reason": "the synchronous portable owner preserves Linux record ordering while exposing committed work separately for checkpoint",
           "test_ids": [
-            "jbd2-writer-revoke-checkpoint"
+            "jbd2-writer-revoke-checkpoint",
+            "jbd2-legacy-checksum-write-replay"
           ]
         },
         {
@@ -1522,7 +1526,8 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "jbd2-handle-credits",
-            "jbd2-abort-sticky"
+            "jbd2-abort-sticky",
+            "jbd2-legacy-checksum-write-replay"
           ]
         }
       ]
@@ -1544,7 +1549,8 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "jbd2-abort-sticky",
-            "jbd2-csum-v3-write-replay"
+            "jbd2-csum-v3-write-replay",
+            "jbd2-legacy-checksum-write-replay"
           ]
         },
         {
@@ -1571,7 +1577,8 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "jbd2-abort-sticky",
-            "jbd2-csum-v3-write-replay"
+            "jbd2-csum-v3-write-replay",
+            "jbd2-legacy-checksum-write-replay"
           ]
         }
       ]
@@ -1593,7 +1600,8 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "jbd2-csum-v3-write-replay",
-            "jbd2-abort-sticky"
+            "jbd2-abort-sticky",
+            "jbd2-legacy-checksum-write-replay"
           ]
         }
       ]
@@ -1640,7 +1648,8 @@
           "rust_owner": "rsext4::jbd2::jbd2::write_revoke_records",
           "reason": "the portable writer serializes Linux-compatible revoke blocks without Linux hash tables or buffer heads",
           "test_ids": [
-            "jbd2-writer-revoke-checkpoint"
+            "jbd2-writer-revoke-checkpoint",
+            "jbd2-legacy-checksum-write-replay"
           ]
         },
         {
