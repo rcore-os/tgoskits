@@ -852,6 +852,7 @@
           "rust_owner": "rsext4::lifecycle::orphan",
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
+            "classic-orphan-recovery",
             "legacy-indirect-13-blocks"
           ]
         }

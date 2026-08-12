@@ -393,6 +393,18 @@ impl<B: BlockIo> Jbd2Dev<B> {
         )
     }
 
+    /// Returns the largest metadata handle supported by the active journal.
+    ///
+    /// Direct-write mode has no journal ring boundary, so callers should keep
+    /// their existing whole-operation transaction instead of splitting it.
+    pub(crate) fn transaction_credit_limit(&self) -> Ext4Result<Option<usize>> {
+        if self.journal_use {
+            self.journal_transaction_capacity().map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Replays the journal if JBD2 state is available.
     ///
     /// Returning `Incomplete` here is intentionally conservative: callers that

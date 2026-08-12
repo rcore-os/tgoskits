@@ -55,18 +55,18 @@ offset、长度和已经校验过的 mutation context。
 | Linux 范围 | 关键入口/不变量 | Rust owner | 状态 | 验证 |
 | --- | --- | --- | --- | --- |
 | `fs/ext4/super.c`, `ext4.h` | feature negotiation、mount/remount、错误策略、geometry | `rsext4::ext4` / `superblock` | core | `feature_gate`, Linux image matrix |
-| `fs/ext4/inode.c`, `indirect.c`, `inline.c` | inode lifecycle、map blocks、writeback modes、truncate | inode/mapping services | core | map/truncate/crash differential |
-| `fs/ext4/extents.c`, `extents_status.c` | checked tree、unwritten extent、split/merge、status cache | extent service | core | codec/property/differential tests |
+| `fs/ext4/inode.c`, `indirect.c`, `inline.c` | inode lifecycle、map blocks、writeback modes、truncate | inode/mapping services | core | map/truncate、orphan intent 与 restart/crash differential |
+| `fs/ext4/extents.c`, `extents_status.c` | checked tree、unwritten extent、split/merge、status cache | extent service | core | codec/property、range-mutation restart tests |
 | `fs/ext4/mballoc.c`, `balloc.c`, `ialloc.c` | multiblock allocation、preallocation、rollback、quota charge | allocator service | core | ENOSPC/fault injection |
 | `fs/ext4/namei.c`, `dir.c`, `hash.c` | linear/HTree、link count、atomic rename、casefold | directory service | core | Linux syscall trace + e2fsck |
-| `fs/ext4/orphan.c`, `mmp.c` | persistent orphan cleanup、multi-mount exclusion | lifecycle service | core | power-cut recovery |
+| `fs/ext4/orphan.c`, `mmp.c` | persistent orphan cleanup、multi-mount exclusion | lifecycle service | core | truncate orphan intent + power-cut recovery |
 | `fs/ext4/xattr.c`, `acl.c`, `quota.c` | EA inode/block、ACL encoding、quota persistence | metadata services | core | xattr/ACL/quota differential |
 | `fs/ext4/crypto.c`, `verity.c` | on-disk policy、Merkle metadata、file data transformation | core + crypto/key traits | capability | Linux image and negative-key tests |
 | `fs/ext4/resize.c`, `ioctl.c`, `fsmap.c`, `move_extent.c` | resize and administrative operations | core typed operations | core | ioctl/fsmap/resize differential |
 | `fs/ext4/file.c`, VFS operation tables | permission/open/fd/page-cache/direct-I/O dispatch | ax-fs-ng / Starry | glue | common syscall tests |
 | ext4 DAX paths | persistent-memory direct mapping | none | not-applicable | mount option returns unsupported |
-| `fs/jbd2/transaction.c`, `commit.c` | handles/credits、ordered data、commit record ordering | journal transaction owner | core | phase fault injection |
-| `fs/jbd2/recovery.c`, `revoke.c`, `checkpoint.c` | scan/revoke/replay、tail/checkpoint reclamation | journal recovery owner | core | Linux-created journal replay |
+| `fs/jbd2/transaction.c`, `commit.c` | handles/credits、ordered data、commit record ordering | journal transaction owner | core | multi-transaction restart + phase fault injection |
+| `fs/jbd2/recovery.c`, `revoke.c`, `checkpoint.c` | scan/revoke/replay、tail/checkpoint reclamation | journal recovery owner | core | Linux-created journal 与 restart power-cut replay |
 
 `scripts/test/data/rsext4-linux-7.1-map.json` 将该表扩展为固定 commit 的源码区间
 清单。每个区间必须记录符号、状态机、不变量、Rust owner、差异理由和测试 ID。
@@ -156,6 +156,22 @@ helper 只能存在于未提交的本地步骤，不得进入最终 diff。
 | `io-failure-no-panic` | mount/commit paths contain `expect` | all errors propagated | codec/JBD2 rewrite | 进行中：mount/JBD2 与 extent root/child traversal 已移除 panic/静默失败；inode allocation bitmap 查询由吞掉 I/O/corruption 并返回 `false` 改为 `Ext4Result<bool>`，共享故障开关确定性红测已证明旧实现将 read failure 报作 free，同一测试现保留原始 `Io`。缓存中的四处 `unwrap` 已逐控制流复核，均由 non-empty cache-line 不变量支配，不属于可达错误；其余生产路径仍待继续审计 |
 | `legacy-indirect-13-blocks` | non-extent path is unsupported | Linux-compatible mapping | mapping rewrite | 进行中：checked read 与 allocate-before-publish write 已覆盖 direct/single/double/triple、hole、整块 pointer validity、system zone、cycle、data+metadata `i_blocks` 与运行时失败反向 rollback；跨 direct/single 的 Linux image 已通过 umount、e2fsck、remount/read、再次 e2fsck。full ownership preflight 不受 `i_size` 裁剪，完整收集 data 与 child-first metadata，拒绝跨树重复物理块和隐藏损坏。recursive shrink 先做完整 ownership preflight，再仅沿 cutoff 路径与右侧子树自底向上、从右向左规划 pointer edit 和 data/metadata free；inode image 先移除映射并重算 `i_blocks`，随后才把块归还 allocator。确定性红测已覆盖 EOF 外 hidden single tree、single/double/triple partial leaf、double/triple 子树边界和 full-root 回收；inode finalize 定点 I/O 失败会恢复 pointer block、inode image 与 free-count。4 KiB Linux image 现以稀疏 marker 分别建立 single/double/triple 根（triple EOF 约 4 GiB），裁剪完整根后验证 `i_blocks`、重挂载内容并两次通过 `e2fsck -fn`。final unlink 只改变 dentry/nlink/orphan，显式 reap 复用强制 mapping cleanup；data、pointer metadata、orphan 和 inode bitmap 的成功路径均有 unit 与 Linux image recovery/e2fsck 回归。truncate grow 对 extent/legacy 都只发布 sparse `i_size`，旧 partial EOF 在 grow 前清零，1/2/4 KiB Linux image 既有回归保持通过。punch 与任意 bitmap/free 故障的 crash-atomic journal transaction 仍为红项 |
 | `legacy-indirect-truncate-atomicity` | pointer/inode/bitmap/free 的任一后置 I/O 失败可能留下部分裁剪、泄漏或 accounting 不一致 | 一个 filesystem-owned journal handle 同时拥有 pointer、inode、bitmap、group/super counters 与完整 undo；replay 后只出现旧树或新树 | mapping/JBD2 rewrite | 红：当前 plan/apply 分离能在完整 preflight 后恢复 pointer-write 与 inode-finalize 失败，且先发布不可达映射再归还块，避免成功路径悬空引用。Linux image 红测进一步证明已脱链并释放的 pointer block 若仍留在 running commit queue，会在物理块被 data 重用后由 checkpoint 覆盖新内容；当前单 running queue、同步 checkpoint 模型已在 free 前删除该 pending home image，并无写回地失效设备 cache，同一 single/double/triple 重用测试转绿。但 `free_block` 已修改 bitmap/cache/counters 后的任意失败仍没有 filesystem-level undo，pipelined running/committing transaction 所需的 on-disk revoke record 也未实现，故障注入矩阵与断电 replay 尚未通过 |
+
+2026-08-12 的 extent range-removal restart 检查点将表中“超过 ring capacity 的
+extent handle restart”子项推进为绿色：完整计划超过 JBD2 capacity 时，punch 与
+truncate 按 allocation-group 边界建立 bounded transaction；每段成功后才推进
+运行时逻辑 cursor，下一段重新读取已提交 extent tree，不复用已经失效的 path。
+用户 truncate 在首段前先持久化新 `i_size` 与 classic orphan intent，全部段完成后
+才摘链。这个 cursor 不是新增磁盘字段；崩溃恢复只依赖新 `i_size`、orphan 链和
+已提交的 extent tree。`extent_restart` 的小 ring 测试证明一次操作产生多个 commit；
+第二个 leaf 在 commit record 已写入而 checkpoint 尚未完成时断电，重挂载通过 replay
+与 orphan recovery 收敛，并逐块验证 data/extent metadata 已释放、刻意保留的 gap
+仍分配、`i_blocks`、size 和 free count 一致。另一个 capacity 小于单 chunk credit
+的确定性红测曾证明旧 restart 先把 size/orphan 留在当前 mount 再返回 `NoSpace`；
+现在最小 chunk credit 会在任何 partial-block 清零或 truncate intent 发布前预检，
+同一测例确认 inode、orphan head 均未变化且没有写出 commit record。上述总项仍保持红色，因为大 shift、
+legacy indirect 超容量 restart、其他 extent split/merge 与真实 pipelined revoke
+尚未完成；不能把本检查点扩大解释为完整 JBD2 或 mapping crash parity。
 
 Draft 期间这些测试可以保持失败，但测试本身不得 `ignore`、弱化断言或伪造成功。
 PR 转 Ready 前本表必须为空。
