@@ -248,7 +248,9 @@ mod tests {
         system.bring_cpu_online(cpu.as_mut()).unwrap();
         let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
         let permit = acquire_blocking_permit().unwrap();
-        let ParkPrepare::Prepared(mut ticket) = prepare_current_park(&permit).unwrap() else {
+        let (current, ParkPrepare::Prepared(mut ticket)) =
+            prepare_current_park(&permit).unwrap()
+        else {
             panic!("fresh park must publish PARKING");
         };
         let _ = permit;
@@ -275,7 +277,7 @@ mod tests {
         );
         assert!(!owner_snapshot(&system, cpu.as_ref()).need_resched());
 
-        commit_current_park(&mut ticket).unwrap();
+        commit_current_park(&current, &mut ticket).unwrap();
         assert_eq!(
             system.thread_state(running.id()).unwrap(),
             crate::ThreadState::Running
@@ -498,7 +500,9 @@ mod tests {
         let unrelated =
             publish_unrelated_expired_deadline(system.as_ref().get_ref(), cpu.as_mut(), 10);
         let permit = acquire_blocking_permit().unwrap();
-        let ParkPrepare::Prepared(mut ticket) = prepare_current_park(&permit).unwrap() else {
+        let (current, ParkPrepare::Prepared(mut ticket)) =
+            prepare_current_park(&permit).unwrap()
+        else {
             panic!("fresh park must publish PARKING");
         };
         let _ = permit;
@@ -506,7 +510,7 @@ mod tests {
         test_runtime::reset_monotonic_reads();
         test_runtime::reset_scheduler_reads();
 
-        commit_current_park(&mut ticket).unwrap();
+        commit_current_park(&current, &mut ticket).unwrap();
 
         assert_eq!(
             test_runtime::monotonic_reads(),
@@ -537,7 +541,9 @@ mod tests {
         system.bring_cpu_online(cpu.as_mut()).unwrap();
         let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
         let permit = acquire_blocking_permit().unwrap();
-        let ParkPrepare::Prepared(mut ticket) = prepare_current_park(&permit).unwrap() else {
+        let (current, ParkPrepare::Prepared(mut ticket)) =
+            prepare_current_park(&permit).unwrap()
+        else {
             panic!("fresh park must publish PARKING");
         };
         let _ = permit;
@@ -574,7 +580,7 @@ mod tests {
             !cancel_current_park_deadline(&running, &mut ticket).unwrap(),
             "the claimed timer must be physically consumed exactly once"
         );
-        cancel_current_park(&mut ticket).unwrap();
+        cancel_current_park(&current, &mut ticket).unwrap();
     }
 
     #[test]
@@ -811,7 +817,9 @@ mod tests {
         system.bring_cpu_online(cpu.as_mut()).unwrap();
         let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
         let permit = acquire_blocking_permit().unwrap();
-        let ParkPrepare::Prepared(mut ticket) = prepare_current_park(&permit).unwrap() else {
+        let (current, ParkPrepare::Prepared(mut ticket)) =
+            prepare_current_park(&permit).unwrap()
+        else {
             panic!("fresh park must publish PARKING");
         };
         let _ = permit;
@@ -844,7 +852,7 @@ mod tests {
         assert!(cancel_current_park_deadline(&running, &mut ticket).unwrap());
         assert!(!ticket.has_deadline());
         assert_eq!(next_test_deadline(cpu.as_ref()), None);
-        cancel_current_park(&mut ticket).unwrap();
+        cancel_current_park(&current, &mut ticket).unwrap();
     }
 
     #[test]
@@ -932,17 +940,20 @@ mod tests {
         let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
 
         let first_permit = acquire_blocking_permit().unwrap();
-        let ParkPrepare::Prepared(mut first) = prepare_current_park(&first_permit).unwrap() else {
+        let (first_current, ParkPrepare::Prepared(mut first)) =
+            prepare_current_park(&first_permit).unwrap()
+        else {
             panic!("fresh park must publish PARKING");
         };
         let _ = first_permit;
         arm_current_park_deadline(&running, &mut first, deadline(10)).unwrap();
         assert_eq!(on_clock_event(instant(10), 1).unwrap().expired(), 1);
         assert!(!cancel_current_park_deadline(&running, &mut first).unwrap());
-        cancel_current_park(&mut first).unwrap();
+        cancel_current_park(&first_current, &mut first).unwrap();
 
         let second_permit = acquire_blocking_permit().unwrap();
-        let ParkPrepare::Prepared(mut second) = prepare_current_park(&second_permit).unwrap()
+        let (second_current, ParkPrepare::Prepared(mut second)) =
+            prepare_current_park(&second_permit).unwrap()
         else {
             panic!("the next park generation must be independently prepared");
         };
@@ -957,7 +968,7 @@ mod tests {
         );
 
         assert!(cancel_current_park_deadline(&running, &mut second).unwrap());
-        cancel_current_park(&mut second).unwrap();
+        cancel_current_park(&second_current, &mut second).unwrap();
     }
 
     #[test]
@@ -970,7 +981,9 @@ mod tests {
         system.bring_cpu_online(cpu.as_mut()).unwrap();
         let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
         let permit = acquire_blocking_permit().unwrap();
-        let ParkPrepare::Prepared(mut ticket) = prepare_current_park(&permit).unwrap() else {
+        let (current, ParkPrepare::Prepared(mut ticket)) =
+            prepare_current_park(&permit).unwrap()
+        else {
             panic!("fresh park must publish PARKING");
         };
         let _ = permit;
@@ -985,7 +998,7 @@ mod tests {
         assert_eq!(running.core.sleep_timer_cpu(), None);
         assert_eq!(next_test_deadline(cpu.as_ref()), None);
 
-        cancel_current_park(&mut ticket).unwrap();
+        cancel_current_park(&current, &mut ticket).unwrap();
     }
 
     #[test]
@@ -998,7 +1011,9 @@ mod tests {
         system.bring_cpu_online(cpu.as_mut()).unwrap();
         let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
         let permit = acquire_blocking_permit().unwrap();
-        let ParkPrepare::Prepared(mut ticket) = prepare_current_park(&permit).unwrap() else {
+        let (current, ParkPrepare::Prepared(mut ticket)) =
+            prepare_current_park(&permit).unwrap()
+        else {
             panic!("fresh park must publish PARKING");
         };
         let _ = permit;
@@ -1019,7 +1034,7 @@ mod tests {
 
         cpu.as_mut().set_scheduler_deadline_generation_for_test(1);
         assert!(cancel_current_park_deadline(&running, &mut ticket).unwrap());
-        cancel_current_park(&mut ticket).unwrap();
+        cancel_current_park(&current, &mut ticket).unwrap();
     }
 
     #[test]
@@ -1062,7 +1077,9 @@ mod tests {
 
         let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
         let permit = acquire_blocking_permit().unwrap();
-        let ParkPrepare::Prepared(mut ticket) = prepare_current_park(&permit).unwrap() else {
+        let (current, ParkPrepare::Prepared(mut ticket)) =
+            prepare_current_park(&permit).unwrap()
+        else {
             panic!("fresh park must publish PARKING");
         };
         let _ = permit;
@@ -1101,7 +1118,7 @@ mod tests {
             0,
             "task-work must not run while current owns a park token"
         );
-        cancel_current_park(&mut ticket).unwrap();
+        cancel_current_park(&current, &mut ticket).unwrap();
     }
 
     #[test]
@@ -1818,13 +1835,14 @@ mod tests {
         };
         test_runtime::reset_cpu_handle_reads();
 
-        let PiParkAttempt::Prepared(mut ticket) = prepare_pi_park_attempt(&system, &token).unwrap()
+        let PiParkAttempt::Prepared(current, mut ticket) =
+            prepare_pi_park_attempt(&system, &token).unwrap()
         else {
             panic!("an unselected PI waiter must prepare one park transaction")
         };
 
         let owner_claims = test_runtime::cpu_owner_claims();
-        cancel_current_park(&mut ticket).unwrap();
+        cancel_current_park(&current, &mut ticket).unwrap();
         system.pi_wait_cancel(token).unwrap();
         assert_eq!(
             owner_claims, 1,
@@ -1857,7 +1875,7 @@ mod tests {
     fn idle_wait_clears_polling_before_the_runtime_sleep_commit() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-        system
+        let current = system
             .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
         let idle = system
@@ -1867,10 +1885,14 @@ mod tests {
             )
             .unwrap();
         system.bring_cpu_online(cpu.as_mut()).unwrap();
-        let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
+        let ParkPrepare::Prepared(mut ticket) =
+            system.prepare_park(cpu.as_mut(), &current).unwrap()
+        else {
             panic!("the bootstrap thread must enter the park transaction")
         };
-        let ParkCommit::Blocked(decision) = system.commit_park(cpu.as_mut(), &mut ticket).unwrap()
+        let ParkCommit::Blocked(decision) = system
+            .commit_park(cpu.as_mut(), &current, &mut ticket)
+            .unwrap()
         else {
             panic!("the isolated fixture cannot race with a notification")
         };

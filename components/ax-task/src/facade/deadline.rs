@@ -81,9 +81,9 @@ impl PreparedCurrentPark {
             .expect("prepared park ticket remains owned");
         let generation = ticket.generation();
         let deadline_armed = ticket.has_deadline();
-        if let Err(error) = commit_current_park(&mut ticket) {
+        if let Err(error) = commit_current_park(&self.thread, &mut ticket) {
             let deadline_result = cancel_current_park_deadline(&self.thread, &mut ticket);
-            if cancel_current_park(&mut ticket).is_err() {
+            if cancel_current_park(&self.thread, &mut ticket).is_err() {
                 task_runtime::fatal_invariant(0x5041_0002, self.thread.id().as_u64() as usize);
             }
             let _cancelled = deadline_result?;
@@ -103,7 +103,7 @@ impl PreparedCurrentPark {
             .take()
             .expect("prepared park ticket remains owned");
         let deadline_result = cancel_current_park_deadline(&self.thread, &mut ticket);
-        let park_result = cancel_current_park(&mut ticket);
+        let park_result = cancel_current_park(&self.thread, &mut ticket);
         let _cancelled = deadline_result?;
         park_result
     }
@@ -143,7 +143,7 @@ pub(crate) fn begin_current_park_with_permit(
     let thread = current_thread_handle()?;
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    match system.prepare_park(cpu.as_mut())? {
+    match system.prepare_park(cpu.as_mut(), &thread)? {
         ParkPrepare::Notified => Ok(CurrentParkStart::Notified),
         ParkPrepare::Prepared(ticket) => Ok(CurrentParkStart::Prepared(PreparedCurrentPark {
             thread,
@@ -224,14 +224,21 @@ pub fn publish_scheduler_tick(stamp: SchedulerTickStamp) -> Result<(), TaskError
 }
 
 #[cfg(test)]
-pub(crate) fn prepare_current_park(_permit: &BlockingPermit) -> Result<ParkPrepare, TaskError> {
+pub(crate) fn prepare_current_park(
+    _permit: &BlockingPermit,
+) -> Result<(ThreadHandle, ParkPrepare), TaskError> {
+    let current = current_thread_handle()?;
     let mut irq = RuntimeIrqGuard::enter();
     let system = runtime_task_system()?;
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    system.prepare_park(cpu.as_mut())
+    let prepare = system.prepare_park(cpu.as_mut(), &current)?;
+    Ok((current, prepare))
 }
 
-pub(crate) fn commit_current_park(ticket: &mut crate::ParkTicket) -> Result<(), TaskError> {
+pub(crate) fn commit_current_park(
+    current: &ThreadHandle,
+    ticket: &mut crate::ParkTicket,
+) -> Result<(), TaskError> {
     validate_blocking_context()?;
     let mut scheduler_frame = RuntimeSchedulerFrameGuard::enter(
         RuntimeScheduleOrigin::Block,
@@ -241,7 +248,7 @@ pub(crate) fn commit_current_park(ticket: &mut crate::ParkTicket) -> Result<(), 
     let commit = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
-        unsafe { system.commit_park_in_scheduler_frame(cpu.as_mut(), ticket)? }
+        unsafe { system.commit_park_in_scheduler_frame(cpu.as_mut(), current, ticket)? }
     };
     match commit {
         ParkCommit::Notified => Ok(()),
@@ -252,10 +259,13 @@ pub(crate) fn commit_current_park(ticket: &mut crate::ParkTicket) -> Result<(), 
     }
 }
 
-pub(crate) fn cancel_current_park(ticket: &mut crate::ParkTicket) -> Result<(), TaskError> {
+pub(crate) fn cancel_current_park(
+    current: &ThreadHandle,
+    ticket: &mut crate::ParkTicket,
+) -> Result<(), TaskError> {
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    runtime_task_system()?.cancel_park(cpu.as_mut(), ticket)
+    runtime_task_system()?.cancel_park(cpu.as_mut(), current, ticket)
 }
 
 pub(crate) fn arm_current_park_deadline(

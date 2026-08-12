@@ -176,10 +176,12 @@ impl TaskSystemClockTestExt for TaskSystem {
         now_ns: u64,
     ) -> Result<ax_task::ScheduleDecision, TaskError> {
         set_scheduler_ns_for_cpu(cpu.owner().as_u32(), now_ns);
-        let ParkPrepare::Prepared(mut ticket) = self.prepare_park(cpu.as_mut())? else {
+        let current =
+            current_thread_handle(self, cpu.as_ref())?.ok_or(TaskError::NoRunnableThread)?;
+        let ParkPrepare::Prepared(mut ticket) = self.prepare_park(cpu.as_mut(), &current)? else {
             panic!("isolated block fixture unexpectedly consumed a preceding notification")
         };
-        match self.commit_park(cpu, &mut ticket)? {
+        match self.commit_park(cpu, &current, &mut ticket)? {
             ParkCommit::Blocked(decision) => Ok(decision),
             ParkCommit::Notified => {
                 panic!("isolated block fixture unexpectedly raced with a notification")

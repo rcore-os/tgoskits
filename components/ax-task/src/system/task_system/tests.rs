@@ -192,18 +192,21 @@ fn block_transition_samples_the_owner_rq_clock_once() {
 fn park_prepare_uses_explicit_task_current_identity() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-    system
+    let current = system
         .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
     let remote = Arc::clone(cpu.remote());
     let before = remote.owner_current_core_rq_observations();
 
-    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
+    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut(), &current).unwrap()
+    else {
         panic!("a fresh current thread must prepare its first park")
     };
     let observations = remote.owner_current_core_rq_observations() - before;
-    system.cancel_park(cpu.as_mut(), &mut ticket).unwrap();
+    system
+        .cancel_park(cpu.as_mut(), &current, &mut ticket)
+        .unwrap();
 
     assert_eq!(
         observations, 0,
@@ -215,7 +218,7 @@ fn park_prepare_uses_explicit_task_current_identity() {
 fn park_commit_uses_prepared_task_current_identity() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-    system
+    let current = system
         .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
     system
@@ -226,12 +229,15 @@ fn park_commit_uses_prepared_task_current_identity() {
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
     let remote = Arc::clone(cpu.remote());
-    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
+    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut(), &current).unwrap()
+    else {
         panic!("a fresh current thread must prepare its first park")
     };
     let core_before = remote.owner_current_core_rq_observations();
 
-    let ParkCommit::Blocked(_decision) = system.commit_park(cpu.as_mut(), &mut ticket).unwrap()
+    let ParkCommit::Blocked(_decision) = system
+        .commit_park(cpu.as_mut(), &current, &mut ticket)
+        .unwrap()
     else {
         panic!("an isolated park must block")
     };
@@ -360,10 +366,14 @@ impl TaskSystemClockTestExt for TaskSystem {
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
         crate::test_runtime::set_scheduler_ns_for_cpu(cpu.owner().as_u32(), now_ns);
-        let ParkPrepare::Prepared(mut ticket) = self.prepare_park(cpu.as_mut())? else {
+        let current = cpu
+            .current_core()
+            .map(ThreadHandle::from_core)
+            .ok_or(TaskError::NoRunnableThread)?;
+        let ParkPrepare::Prepared(mut ticket) = self.prepare_park(cpu.as_mut(), &current)? else {
             panic!("isolated block fixture unexpectedly consumed a preceding notification")
         };
-        match self.commit_park(cpu, &mut ticket)? {
+        match self.commit_park(cpu, &current, &mut ticket)? {
             ParkCommit::Blocked(decision) => Ok(decision),
             ParkCommit::Notified => {
                 panic!("isolated block fixture unexpectedly raced with a notification")
@@ -387,7 +397,11 @@ impl TaskSystemClockTestExt for TaskSystem {
         now_ns: u64,
     ) -> Result<ParkCommit, TaskError> {
         crate::test_runtime::set_scheduler_ns_for_cpu(cpu.owner().as_u32(), now_ns);
-        self.commit_park(cpu, token)
+        let current = cpu
+            .current_core()
+            .map(ThreadHandle::from_core)
+            .ok_or(TaskError::NoRunnableThread)?;
+        self.commit_park(cpu, &current, token)
     }
 
     fn drain_owner_control_at(
@@ -2149,7 +2163,7 @@ fn same_cpu_task_wake_before_park_preserves_the_notification_until_prepare() {
 
     let token = task_runtime::irq_guard_enter();
     assert_eq!(
-        system.prepare_park(cpu.as_mut()).unwrap(),
+        system.prepare_park(cpu.as_mut(), &running).unwrap(),
         ParkPrepare::Notified,
         "a direct wake of the running owner must still win the next park race"
     );
@@ -6477,7 +6491,7 @@ fn wake_before_park_is_consumed_without_blocking() {
     assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
 
     assert_eq!(
-        system.prepare_park(cpu.as_mut()).unwrap(),
+        system.prepare_park(cpu.as_mut(), &running).unwrap(),
         ParkPrepare::Notified
     );
     assert_eq!(
@@ -6495,7 +6509,8 @@ fn wake_during_parking_cancels_schedule_out() {
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
-    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
+    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut(), &running).unwrap()
+    else {
         panic!("fresh park must publish PARKING");
     };
 
@@ -6545,7 +6560,8 @@ fn wake_that_observes_running_before_parking_rechecks_under_the_thread_lock() {
         core::hint::spin_loop();
     }
 
-    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
+    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut(), &running).unwrap()
+    else {
         panic!("fresh park must publish PARKING");
     };
     dispatch::complete_wake_before_thread_lock_race();
@@ -6578,7 +6594,8 @@ fn wake_between_park_check_and_block_transition_cancels_schedule_out() {
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
-    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
+    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut(), &running).unwrap()
+    else {
         panic!("fresh park must publish PARKING");
     };
 
@@ -6628,7 +6645,8 @@ fn wake_after_final_park_check_serializes_with_blocked_publication() {
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
     let runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
-    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
+    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut(), &running).unwrap()
+    else {
         panic!("fresh park must publish PARKING");
     };
     drop(runtime_handles);

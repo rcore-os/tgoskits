@@ -511,10 +511,14 @@ mod tests {
             sleeper.id()
         );
         system.complete_context_switch(cpu1.as_mut()).unwrap();
-        let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu1.as_mut()).unwrap() else {
+        let ParkPrepare::Prepared(mut ticket) =
+            system.prepare_park(cpu1.as_mut(), &sleeper).unwrap()
+        else {
             panic!("the isolated sleeper must enter the park transaction")
         };
-        let ParkCommit::Blocked(decision) = system.commit_park(cpu1.as_mut(), &mut ticket).unwrap()
+        let ParkCommit::Blocked(decision) = system
+            .commit_park(cpu1.as_mut(), &sleeper, &mut ticket)
+            .unwrap()
         else {
             panic!("the isolated sleeper cannot race with a notification")
         };

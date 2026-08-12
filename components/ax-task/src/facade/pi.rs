@@ -3,7 +3,7 @@ use super::*;
 pub(super) enum PiParkAttempt {
     Complete,
     Retry,
-    Prepared(crate::ParkTicket),
+    Prepared(ThreadHandle, crate::ParkTicket),
 }
 
 /// Enters the scheduler-owned PI mutex slow path.
@@ -26,15 +26,15 @@ pub fn pi_park_current_once(token: &PiWaitToken) -> Result<(), TaskError> {
         return Ok(());
     }
     let system = runtime_task_system()?;
-    let mut ticket = match prepare_pi_park_attempt(system, token)? {
+    let (current, mut ticket) = match prepare_pi_park_attempt(system, token)? {
         PiParkAttempt::Complete | PiParkAttempt::Retry => return Ok(()),
-        PiParkAttempt::Prepared(ticket) => ticket,
+        PiParkAttempt::Prepared(current, ticket) => (current, ticket),
     };
     if token.can_claim() || token.is_granted() {
-        cancel_current_park(&mut ticket)?;
+        cancel_current_park(&current, &mut ticket)?;
         return Ok(());
     }
-    commit_current_park(&mut ticket)
+    commit_current_park(&current, &mut ticket)
 }
 
 pub(super) fn prepare_pi_park_attempt(
@@ -42,18 +42,19 @@ pub(super) fn prepare_pi_park_attempt(
     token: &PiWaitToken,
 ) -> Result<PiParkAttempt, TaskError> {
     let _permit = acquire_blocking_permit()?;
-    let mut irq = RuntimeIrqGuard::enter();
-    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    if cpu.current() != Some(token.thread_id().into()) {
+    let current = current_thread_handle()?;
+    if current.id() != token.thread_id().into() {
         return Err(TaskError::InvalidPiState);
     }
+    let mut irq = RuntimeIrqGuard::enter();
+    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     system.drain_owner_control(cpu.as_mut())?;
     if token.can_claim() || token.is_granted() {
         return Ok(PiParkAttempt::Complete);
     }
-    match system.prepare_park(cpu.as_mut())? {
+    match system.prepare_park(cpu.as_mut(), &current)? {
         ParkPrepare::Notified => Ok(PiParkAttempt::Retry),
-        ParkPrepare::Prepared(ticket) => Ok(PiParkAttempt::Prepared(ticket)),
+        ParkPrepare::Prepared(ticket) => Ok(PiParkAttempt::Prepared(current, ticket)),
     }
 }
 

@@ -138,18 +138,27 @@ impl CurrentExitPermit {
 
 impl TaskSystem {
     /// Publishes `PARKING` after consuming a wake-before-park notification.
-    pub fn prepare_park(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<ParkPrepare, TaskError> {
+    pub fn prepare_park(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
+    ) -> Result<ParkPrepare, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let core = cpu.current_core().ok_or(TaskError::NoRunnableThread)?;
+        let core = Arc::clone(current.runtime_core_arc());
+        let mut sched = core.sched().lock();
+        if sched.lifecycle.state() != ThreadState::Running
+            || sched.placement.execution_cpu() != Some(cpu.owner())
+            || sched.placement.on_cpu() != Some(cpu.owner())
+        {
+            return Err(TaskError::StaleThreadId);
+        }
         if core.take_park_notification() {
             return Ok(ParkPrepare::Notified);
         }
         let generation = core.next_park_generation()?;
-        core.sched()
-            .lock()
-            .transition(&core, ThreadState::Parking)?;
+        sched.transition(&core, ThreadState::Parking)?;
         Ok(ParkPrepare::Prepared(ParkTicket::new(
             core.id(),
             generation,
@@ -160,9 +169,10 @@ impl TaskSystem {
     pub fn commit_park(
         &self,
         cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
         token: &mut ParkTicket,
     ) -> Result<ParkCommit, TaskError> {
-        self.commit_park_owner(cpu, token, OwnerRqEntry::IrqSave)
+        self.commit_park_owner(cpu, current, token, OwnerRqEntry::IrqSave)
     }
 
     /// Commits park while the runtime owns the IRQ-off scheduler baton.
@@ -173,25 +183,24 @@ impl TaskSystem {
     pub(crate) unsafe fn commit_park_in_scheduler_frame(
         &self,
         cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
         token: &mut ParkTicket,
     ) -> Result<ParkCommit, TaskError> {
-        self.commit_park_owner(cpu, token, OwnerRqEntry::SchedulerFrame)
+        self.commit_park_owner(cpu, current, token, OwnerRqEntry::SchedulerFrame)
     }
 
     fn commit_park_owner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
         token: &mut ParkTicket,
         rq_entry: OwnerRqEntry,
     ) -> Result<ParkCommit, TaskError> {
-        if token.is_resolved() {
+        if token.is_resolved() || current.id() != token.thread() {
             return Err(TaskError::StaleThreadId);
         }
         self.ensure_owner_cpu_context(&cpu)?;
         let remote = Arc::clone(cpu.remote());
-        if remote.current_thread() != Some(token.thread()) {
-            return Err(TaskError::StaleThreadId);
-        }
         if let Some(registration) = token.deadline()
             && let Some(event) = cpu.as_mut().take_buffered_expiration(registration)
         {
@@ -200,10 +209,7 @@ impl TaskSystem {
         let initial_request = remote.claim_scheduler_request();
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let previous_core_hint = cpu
-            .current_core()
-            .filter(|core| core.id() == token.thread())
-            .ok_or(TaskError::StaleThreadId)?;
+        let previous_core_hint = Arc::clone(current.runtime_core_arc());
         #[cfg(test)]
         park_commit_wake_race_hook(self, previous_core_hint.id());
         let mut previous_sched = previous_core_hint.sched().lock();
@@ -378,23 +384,26 @@ impl TaskSystem {
     pub fn cancel_park(
         &self,
         cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
         token: &mut ParkTicket,
     ) -> Result<(), TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
-        if token.is_resolved() {
+        if token.is_resolved() || current.id() != token.thread() {
             return Err(TaskError::StaleThreadId);
         }
         self.ensure_owner_cpu_online(&cpu)?;
-        if cpu.current() != Some(token.thread()) {
-            return Err(TaskError::StaleThreadId);
-        }
-        let core = cpu.current_core().ok_or(TaskError::NoRunnableThread)?;
+        let core = Arc::clone(current.runtime_core_arc());
         if core.park_generation() != token.generation() {
             return Err(TaskError::StaleThreadId);
         }
-        core.sched()
-            .lock()
-            .transition(&core, ThreadState::Running)?;
+        let mut sched = core.sched().lock();
+        if sched.lifecycle.state() != ThreadState::Parking
+            || sched.placement.execution_cpu() != Some(cpu.owner())
+            || sched.placement.on_cpu() != Some(cpu.owner())
+        {
+            return Err(TaskError::StaleThreadId);
+        }
+        sched.transition(&core, ThreadState::Running)?;
         cpu.finish_park_preemption(true);
         token.mark_resolved();
         Ok(())
