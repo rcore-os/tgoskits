@@ -784,3 +784,30 @@ RSEXT4_BENCH_SUMMARY commit=1db33f3a858eecb00c82c99efa1551e66845e9dc arch=x86_64
 保留，不选择性剔除或用复测覆盖。最终性能收敛必须在能够固定 governor 的同机环境
 对 dev 与最终实现重做完整 A/B，并单独增加大范围 punch/truncate workload 报告
 相对 Linux 7.1 的开销。
+
+### 7.27 legacy indirect bounded transaction 检查点
+
+采集时间：2026-08-12；被测实现 commit 为
+`ed5577756e4ab07b0b92fdf3bfa1b487fb418b27`，固定 CPU 2，memory backend、
+4 KiB filesystem block、`metadata_csum+64bit+journal` 与 20 MiB sequential
+workload 均保持冻结配置。本检查点把单 ring 容量内的 legacy indirect punch/truncate
+迁入 filesystem-owned bounded transaction，并将 zero-link reap 拆成 orphan 保护的
+mapping transaction 与最终 inode transaction。冻结 workload 不创建 legacy indirect
+mapping，也不执行 punch/truncate/reap，因此本数据只监测共享路径，不能作为新路径
+本身的因果性能结论。
+
+正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-12-legacy-truncate-transaction.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=ed5577756e4ab07b0b92fdf3bfa1b487fb418b27 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6289045 write_p95_ns=6387234 read_median_ns=5951789 read_p95_ns=6262131 sync_median_ns=32500 sync_p95_ns=33948
+```
+
+相对 dev 基线，write median/p95 分别改善约 7.9%/12.9%，read median/p95
+分别改善约 17.6%/26.2%，sync p95 改善约 12.2%，共享 workload 通过冻结硬门槛；
+sync median 回退约 25.9%，但 sync latency 继续按 p95 门槛判定。相对 7.26 的
+双峰样本，write median/p95 分别改善约 13.4%/30.6%，read median/p95 分别改善
+约 28.3%/38.0%，sync median/p95 分别改善约 8.5%/26.1%。两次采集的 governor
+均为 `powersave`，因此这里不把波动改善归因于本次非热路径改动；20 个样本全部保留，
+包括 49.147 us 的 sync 尾样本。最终性能收敛仍必须在可固定 governor 的同机环境
+重做 dev/final 全 workload A/B，并新增 legacy indirect truncate/reap 专项 workload。
