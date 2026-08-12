@@ -988,3 +988,35 @@ RSEXT4_BENCH_SUMMARY commit=9eb326e2d arch=x86_64 backend=memory feature=metadat
 descriptor 必须发布，因此 median 仅比 7.31 改善约 2.2%。它仍消除了空闲系统上重复
 `sync(2)` 的 O(group-count) 写放大。完整 all-features、no-default-features、30 个
 Linux image/e2fsck differential、三配置 clippy 和 architecture boundary audit 均通过。
+
+### 7.33 Superblock dirty owner 检查点
+
+旧 `sync_filesystem()` 即使 superblock 没有任何变化，也会重新汇总 group counters、
+更新 checksum 并发布 primary superblock。与 7.32 的 per-group descriptor dirty bitmap
+配套，本阶段在 filesystem state 中加入 superblock dirty owner：mount/replay state、
+allocation group counter、classic orphan head、lost+found hint 和首次启用 `EXT_ATTR`
+显式置位；metadata transaction snapshot 同时保存并回滚 dirty 状态；只有成功发布
+superblock 后才清位。clean `Ext4::sync()` 的 counting `BlockIo` 红测在旧实现上稳定观察
+到一次 sector 0 write，新实现要求 superblock/GDT write 均为 0，同时保留至少一次 device
+flush，避免以删除 durability boundary 换取假性能。
+
+固定 CPU 2、`powersave` governor、3 次预热、20 次测量。首轮 write p95 受后半段主机
+抖动影响为 7.728 ms，超过 dev 门槛 0.36 个百分点；没有删样本，而是在完全相同配置
+下复测。两组原始样本均保存在
+`book/design/data/rsext4-perf/2026-08-12-dirty-superblock.csv`，复测 marker 为：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=a95663e96-repeat arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6333066 write_p95_ns=6659600 read_median_ns=5907374 read_p95_ns=6311756 sync_median_ns=30622 sync_p95_ns=35290
+```
+
+| workload | dev median | current median | 变化 | dev p95 | current p95 | 变化 | 当前结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| sequential write | 6.827 ms | 6.333 ms | -7.2% | 7.335 ms | 6.660 ms | -9.2% | 绿 |
+| sequential read | 7.219 ms | 5.907 ms | -18.2% | 8.481 ms | 6.312 ms | -25.6% | 绿 |
+| sync/unmount latency | 25.823 us | 30.622 us | +18.6% | 38.644 us | 35.290 us | -8.7% | p95 绿；median 红 |
+
+冻结的 sequential `sync_ns` 仍然计量 clean-unmount，而 unmount 必须改变并发布
+`EXT4_VALID_FS`/`RECOVER`，因此本阶段消除的 clean-sync write amplification 不会被该
+字段直接体现。该语义差异继续作为后续独立 sync/unmount workload 的前置理由；完整
+all-features、no-default-features、Linux image/e2fsck differential、三配置 clippy、
+format、dependency boundary 与 Linux map audit 已通过。
