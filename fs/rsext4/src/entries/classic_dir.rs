@@ -14,9 +14,7 @@ pub fn find_entry_with_offset<'a>(
     block_data: &'a [u8],
     target_name: &[u8],
 ) -> Option<(Ext4DirEntryInfo<'a>, usize)> {
-    DirEntryIterator::new(block_data)
-        .map(|(entry, offset)| (entry, offset as usize))
-        .find(|(entry, _)| entry.name == target_name)
+    DirEntryIterator::new(block_data).find(|(entry, _)| entry.name == target_name)
 }
 
 /// Returns all valid entries from a linear directory block.

@@ -10,12 +10,14 @@ use crate::{
     entries::{Ext4DirEntry2, Ext4DxRootInfo},
     error::Ext4Error,
     ext4::{Ext4FileSystem, SystemZoneMap},
+    superblock::Ext4Superblock,
 };
 
 struct MockBlockDevice {
     data: Vec<u8>,
     is_open: bool,
     now: Cell<i64>,
+    fail_read_offset: Option<usize>,
 }
 
 impl MockBlockDevice {
@@ -25,6 +27,7 @@ impl MockBlockDevice {
             data,
             is_open: false,
             now: Cell::new(1_700_000_000),
+            fail_read_offset: None,
         }
     }
 }
@@ -65,6 +68,9 @@ impl BlockIo for MockBlockDevice {
 
         let start = block_id.as_usize()? * 512;
         let end = start + (count as usize) * 512;
+        if self.fail_read_offset == Some(start) {
+            return Err(Ext4Error::io());
+        }
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
                 block_id.to_u32()?,
@@ -201,6 +207,25 @@ fn linux_htree_root_block(has_metadata_checksum: bool) -> Vec<u8> {
 
 fn limit_u16(limit: usize) -> u16 {
     u16::try_from(limit).unwrap()
+}
+
+fn directory_leaf(inode: u32, name: &[u8]) -> Vec<u8> {
+    let mut block = vec![0_u8; 4096];
+    block[..4].copy_from_slice(&inode.to_le_bytes());
+    block[4..6].copy_from_slice(&4096_u16.to_le_bytes());
+    block[6] = u8::try_from(name.len()).unwrap();
+    block[7] = Ext4DirEntry2::EXT4_FT_REG_FILE;
+    block[8..8 + name.len()].copy_from_slice(name);
+    block
+}
+
+fn htree_internal_node(leaf_block: u32) -> Vec<u8> {
+    let mut block = vec![0_u8; 4096];
+    block[4..6].copy_from_slice(&4096_u16.to_le_bytes());
+    block[8..10].copy_from_slice(&511_u16.to_le_bytes());
+    block[10..12].copy_from_slice(&1_u16.to_le_bytes());
+    block[12..16].copy_from_slice(&leaf_block.to_le_bytes());
+    block
 }
 
 #[test]
@@ -352,6 +377,174 @@ fn linux_htree_root_layout_is_parsed() {
         }
         _ => panic!("expected root node"),
     }
+}
+
+#[test]
+fn htree_lookup_follows_linux_collision_continuation() {
+    let mut fs = create_test_fs();
+    fs.superblock.s_flags = Ext4Superblock::EXT4_FLAGS_SIGNED_HASH;
+    fs.superblock.s_blocks_count_lo = 256;
+    let target_name = b"collision-target";
+    let target_hash = calculate_hash(
+        target_name,
+        Ext4DxRootInfo::DX_HASH_HALF_MD4,
+        &fs.superblock.s_hash_seed,
+    )
+    .unwrap()
+    .major;
+
+    let mut root = linux_htree_root_block(false);
+    root[34..36].copy_from_slice(&2_u16.to_le_bytes());
+    root[40..44].copy_from_slice(&(target_hash | 1).to_le_bytes());
+    root[44..48].copy_from_slice(&2_u32.to_le_bytes());
+    let first_leaf = directory_leaf(41, b"not-the-target");
+    let second_leaf = directory_leaf(42, target_name);
+
+    let mut device = MockBlockDevice::new(1024 * 1024);
+    device.is_open = true;
+    for (physical_block, data) in [(10_usize, root), (11, first_leaf), (12, second_leaf)] {
+        let offset = physical_block * 4096;
+        device.data[offset..offset + 4096].copy_from_slice(&data);
+    }
+    let mut block_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut inode = create_test_dir_inode();
+    inode.i_size_lo = 3 * 4096;
+    inode.i_blocks_lo = 24;
+    inode.i_block[0] = 10;
+    inode.i_block[1] = 11;
+    inode.i_block[2] = 12;
+
+    let root_inode = fs.root_inode;
+    let result = HashTreeManager::new(fs.superblock.s_hash_seed)
+        .lookup(&mut fs, &mut block_dev, root_inode, &inode, target_name)
+        .unwrap();
+    assert_eq!(result.entry.inode, 42);
+}
+
+#[test]
+fn htree_collision_continuation_crosses_parent_index_boundary() {
+    let mut fs = create_test_fs();
+    fs.superblock.s_flags = Ext4Superblock::EXT4_FLAGS_SIGNED_HASH;
+    fs.superblock.s_blocks_count_lo = 256;
+    let target_name = b"parent-boundary-target";
+    let target_hash = calculate_hash(
+        target_name,
+        Ext4DxRootInfo::DX_HASH_HALF_MD4,
+        &fs.superblock.s_hash_seed,
+    )
+    .unwrap()
+    .major;
+
+    let mut root = linux_htree_root_block(false);
+    root[30] = 1;
+    root[34..36].copy_from_slice(&2_u16.to_le_bytes());
+    root[36..40].copy_from_slice(&1_u32.to_le_bytes());
+    root[40..44].copy_from_slice(&(target_hash | 1).to_le_bytes());
+    root[44..48].copy_from_slice(&2_u32.to_le_bytes());
+    let blocks = [
+        root,
+        htree_internal_node(3),
+        htree_internal_node(4),
+        directory_leaf(51, b"not-the-target"),
+        directory_leaf(52, target_name),
+    ];
+
+    let mut device = MockBlockDevice::new(1024 * 1024);
+    device.is_open = true;
+    for (index, data) in blocks.into_iter().enumerate() {
+        let offset = (10 + index) * 4096;
+        device.data[offset..offset + 4096].copy_from_slice(&data);
+    }
+    let mut block_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut inode = create_test_dir_inode();
+    inode.i_size_lo = 5 * 4096;
+    inode.i_blocks_lo = 40;
+    inode.i_block[..5].copy_from_slice(&[10, 11, 12, 13, 14]);
+
+    let root_inode = fs.root_inode;
+    let result = HashTreeManager::new(fs.superblock.s_hash_seed)
+        .lookup(&mut fs, &mut block_dev, root_inode, &inode, target_name)
+        .unwrap();
+    assert_eq!(result.entry.inode, 52);
+}
+
+#[test]
+fn htree_collision_continuation_propagates_index_io_error() {
+    let mut fs = create_test_fs();
+    fs.superblock.s_flags = Ext4Superblock::EXT4_FLAGS_SIGNED_HASH;
+    fs.superblock.s_blocks_count_lo = 256;
+    let target_name = b"io-failure-target";
+    let target_hash = calculate_hash(
+        target_name,
+        Ext4DxRootInfo::DX_HASH_HALF_MD4,
+        &fs.superblock.s_hash_seed,
+    )
+    .unwrap()
+    .major;
+
+    let mut root = linux_htree_root_block(false);
+    root[30] = 1;
+    root[34..36].copy_from_slice(&2_u16.to_le_bytes());
+    root[36..40].copy_from_slice(&1_u32.to_le_bytes());
+    root[40..44].copy_from_slice(&(target_hash | 1).to_le_bytes());
+    root[44..48].copy_from_slice(&2_u32.to_le_bytes());
+    let blocks = [
+        root,
+        htree_internal_node(3),
+        htree_internal_node(4),
+        directory_leaf(61, b"not-the-target"),
+        directory_leaf(62, target_name),
+    ];
+
+    let mut device = MockBlockDevice::new(1024 * 1024);
+    device.is_open = true;
+    for (index, data) in blocks.into_iter().enumerate() {
+        let offset = (10 + index) * 4096;
+        device.data[offset..offset + 4096].copy_from_slice(&data);
+    }
+    device.fail_read_offset = Some(12 * 4096);
+    let mut block_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut inode = create_test_dir_inode();
+    inode.i_size_lo = 5 * 4096;
+    inode.i_blocks_lo = 40;
+    inode.i_block[..5].copy_from_slice(&[10, 11, 12, 13, 14]);
+
+    let root_inode = fs.root_inode;
+    let result = HashTreeManager::new(fs.superblock.s_hash_seed).lookup(
+        &mut fs,
+        &mut block_dev,
+        root_inode,
+        &inode,
+        target_name,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(HashTreeError::Filesystem(error))
+                if error.kind() == crate::error::Ext4ErrorKind::Io
+        ),
+        "unexpected continuation result: {result:?}"
+    );
+}
+
+#[test]
+fn htree_leaf_result_reports_directory_entry_offset() {
+    let mut block = vec![0_u8; 4096];
+    block[..4].copy_from_slice(&41_u32.to_le_bytes());
+    block[4..6].copy_from_slice(&12_u16.to_le_bytes());
+    block[6] = 1;
+    block[7] = Ext4DirEntry2::EXT4_FT_REG_FILE;
+    block[8] = b"x"[0];
+    block[12..16].copy_from_slice(&42_u32.to_le_bytes());
+    block[16..18].copy_from_slice(&(4096_u16 - 12).to_le_bytes());
+    block[18] = 6;
+    block[19] = Ext4DirEntry2::EXT4_FT_REG_FILE;
+    block[20..26].copy_from_slice(b"target");
+
+    let result = HashTreeManager::new([0; 4])
+        .search_in_leaf_data(&block, b"target", crate::bmalloc::AbsoluteBN::new(7))
+        .unwrap();
+    assert_eq!(result.offset, 12);
 }
 
 #[test]

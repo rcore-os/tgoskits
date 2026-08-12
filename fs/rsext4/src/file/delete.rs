@@ -522,6 +522,7 @@ pub(crate) fn find_named_entry_in_parent<B: BlockIo>(
                 });
             }
             Err(HashTreeError::Filesystem(error)) => return Err(error),
+            Err(HashTreeError::EntryNotFound) => return Err(Ext4Error::not_found()),
             Err(_) => {}
         }
     }

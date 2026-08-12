@@ -24,6 +24,16 @@ struct HashSearch<'a> {
     indirect_levels: u8,
 }
 
+struct HashTreeFrame {
+    source_block: u32,
+    entries: Vec<Ext4DxEntry>,
+    selected: usize,
+}
+
+struct HashTreePath {
+    frames: Vec<HashTreeFrame>,
+}
+
 pub(super) fn lookup<B: BlockIo>(
     manager: &HashTreeManager,
     fs: &mut Ext4FileSystem,
@@ -84,9 +94,10 @@ pub(super) fn lookup<B: BlockIo>(
         indirect_levels,
     };
 
-    match manager.search_in_hash_tree(fs, block_dev, search, &root_info, 0, &mut vec![0]) {
+    match manager.search_collision_chain(fs, block_dev, search, &root_info) {
         Ok(result) => Ok(result),
         Err(error @ HashTreeError::Filesystem(_)) => Err(error),
+        Err(error @ HashTreeError::EntryNotFound) => Err(error),
         Err(_) => manager.fallback_to_linear_search(fs, block_dev, dir_ino, dir_inode, target_name),
     }
 }
@@ -118,93 +129,169 @@ impl HashTreeManager {
             .map_err(HashTreeError::from)
     }
 
-    fn search_in_hash_tree<B: BlockIo>(
+    fn search_collision_chain<B: BlockIo>(
         &self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
         search: HashSearch<'_>,
-        node: &HashTreeNode,
-        level: u32,
-        visited_blocks: &mut Vec<u32>,
+        root: &HashTreeNode,
     ) -> Result<HashTreeSearchResult, HashTreeError> {
-        match node {
-            HashTreeNode::Root { entries, .. } | HashTreeNode::Internal { entries, .. } => {
-                self.search_in_entries(fs, block_dev, search, entries, level, visited_blocks)
+        let mut path = self.probe_path(fs, block_dev, search, root)?;
+        loop {
+            match self.search_current_leaf(fs, block_dev, search, &path) {
+                Ok(result) => return Ok(result),
+                Err(HashTreeError::EntryNotFound) => {
+                    if !self.advance_collision_path(fs, block_dev, search, &mut path)? {
+                        return Err(HashTreeError::EntryNotFound);
+                    }
+                }
+                Err(error) => return Err(error),
             }
         }
     }
 
-    fn search_in_entries<B: BlockIo>(
+    fn probe_path<B: BlockIo>(
         &self,
         fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
         search: HashSearch<'_>,
-        entries: &[Ext4DxEntry],
-        level: u32,
-        visited_blocks: &mut Vec<u32>,
-    ) -> Result<HashTreeSearchResult, HashTreeError> {
-        let mut selected_entry = None;
-        for entry in entries {
-            if entry.hash <= search.target_hash {
-                selected_entry = Some(entry);
-            } else {
-                break;
-            }
+        root: &HashTreeNode,
+    ) -> Result<HashTreePath, HashTreeError> {
+        let HashTreeNode::Root { entries, .. } = root else {
+            return Err(HashTreeError::InvalidHashTree);
+        };
+        let selected = select_entry(entries, search.target_hash)?;
+        let mut path = HashTreePath {
+            frames: vec![HashTreeFrame {
+                source_block: 0,
+                entries: entries.clone(),
+                selected,
+            }],
+        };
+
+        for _ in 0..search.indirect_levels {
+            let logical_block = path.current_entry()?.block;
+            let entries =
+                self.read_internal_entries(fs, block_dev, search, &path, logical_block)?;
+            let selected = select_entry(&entries, search.target_hash)?;
+            path.frames.push(HashTreeFrame {
+                source_block: logical_block,
+                entries,
+                selected,
+            });
         }
 
-        let entry = selected_entry.ok_or(HashTreeError::EntryNotFound)?;
-        let total_blocks = dir_inode_block_count(search.dir_inode, fs.block_size())?;
-        if u64::from(entry.block) >= total_blocks || visited_blocks.contains(&entry.block) {
+        Ok(path)
+    }
+
+    fn search_current_leaf<B: BlockIo>(
+        &self,
+        fs: &mut Ext4FileSystem,
+        block_dev: &mut Jbd2Dev<B>,
+        search: HashSearch<'_>,
+        path: &HashTreePath,
+    ) -> Result<HashTreeSearchResult, HashTreeError> {
+        let logical_block = path.current_entry()?.block;
+        if path
+            .frames
+            .iter()
+            .any(|frame| frame.source_block == logical_block)
+        {
             return Err(HashTreeError::BlockOutOfRange);
         }
-        visited_blocks.push(entry.block);
-        let block_num = resolve_inode_block(
-            fs,
-            block_dev,
-            search.dir_ino,
-            &mut search.dir_inode.clone(),
-            entry.block,
-        )
-        .map_err(HashTreeError::from)?
-        .ok_or(HashTreeError::BlockOutOfRange)?;
+        let block_num = resolve_logical_block(fs, block_dev, search, logical_block)?;
         let block_data = self.read_block_data(fs, block_dev, block_num)?;
-
-        if level >= u32::from(search.indirect_levels) {
-            if !crate::checksum::verify_ext4_dirblock_checksum(
-                &fs.superblock,
-                search.dir_ino.raw(),
-                search.dir_inode.i_generation,
-                &block_data,
-            ) {
-                return Err(HashTreeError::Filesystem(
-                    crate::Ext4Error::checksum().with_operation("htree:leaf"),
-                ));
-            }
-            self.search_in_leaf_data(&block_data, search.target_name, block_num)
-        } else {
-            if crate::checksum::verify_ext4_dx_checksum(
-                &fs.superblock,
-                search.dir_ino.raw(),
-                search.dir_inode.i_generation,
-                &block_data,
-            ) == Some(false)
-            {
-                return Err(HashTreeError::Filesystem(
-                    crate::Ext4Error::checksum().with_operation("htree:index"),
-                ));
-            }
-            let has_metadata_checksum =
-                crate::crc32c::ext4_superblock_has_metadata_csum(&fs.superblock);
-            let internal_node = self.parse_internal_node(&block_data, has_metadata_checksum)?;
-            self.search_in_hash_tree(
-                fs,
-                block_dev,
-                search,
-                &internal_node,
-                level + 1,
-                visited_blocks,
-            )
+        if !crate::checksum::verify_ext4_dirblock_checksum(
+            &fs.superblock,
+            search.dir_ino.raw(),
+            search.dir_inode.i_generation,
+            &block_data,
+        ) {
+            return Err(HashTreeError::Filesystem(
+                crate::Ext4Error::checksum().with_operation("htree:leaf"),
+            ));
         }
+        self.search_in_leaf_data(&block_data, search.target_name, block_num)
+    }
+
+    fn read_internal_entries<B: BlockIo>(
+        &self,
+        fs: &mut Ext4FileSystem,
+        block_dev: &mut Jbd2Dev<B>,
+        search: HashSearch<'_>,
+        path: &HashTreePath,
+        logical_block: u32,
+    ) -> Result<Vec<Ext4DxEntry>, HashTreeError> {
+        if path
+            .frames
+            .iter()
+            .any(|frame| frame.source_block == logical_block)
+        {
+            return Err(HashTreeError::BlockOutOfRange);
+        }
+        let block_num = resolve_logical_block(fs, block_dev, search, logical_block)?;
+        let block_data = self.read_block_data(fs, block_dev, block_num)?;
+        if crate::checksum::verify_ext4_dx_checksum(
+            &fs.superblock,
+            search.dir_ino.raw(),
+            search.dir_inode.i_generation,
+            &block_data,
+        ) == Some(false)
+        {
+            return Err(HashTreeError::Filesystem(
+                crate::Ext4Error::checksum().with_operation("htree:index"),
+            ));
+        }
+        let has_metadata_checksum =
+            crate::crc32c::ext4_superblock_has_metadata_csum(&fs.superblock);
+        let HashTreeNode::Internal { entries } =
+            self.parse_internal_node(&block_data, has_metadata_checksum)?
+        else {
+            return Err(HashTreeError::InvalidHashTree);
+        };
+        Ok(entries)
+    }
+
+    fn advance_collision_path<B: BlockIo>(
+        &self,
+        fs: &mut Ext4FileSystem,
+        block_dev: &mut Jbd2Dev<B>,
+        search: HashSearch<'_>,
+        path: &mut HashTreePath,
+    ) -> Result<bool, HashTreeError> {
+        let mut level = path
+            .frames
+            .len()
+            .checked_sub(1)
+            .ok_or(HashTreeError::InvalidHashTree)?;
+        loop {
+            let frame = &mut path.frames[level];
+            if frame.selected + 1 < frame.entries.len() {
+                frame.selected += 1;
+                break;
+            }
+            if level == 0 {
+                return Ok(false);
+            }
+            level -= 1;
+        }
+
+        let continuation_hash = path.frames[level].entries[path.frames[level].selected].hash;
+        if continuation_hash & !1 != search.target_hash {
+            return Ok(false);
+        }
+
+        path.frames.truncate(level + 1);
+        while path.frames.len() < usize::from(search.indirect_levels) + 1 {
+            let logical_block = path.current_entry()?.block;
+            let entries = self.read_internal_entries(fs, block_dev, search, path, logical_block)?;
+            path.frames.push(HashTreeFrame {
+                source_block: logical_block,
+                entries,
+                selected: 0,
+            });
+        }
+        Ok(true)
     }
 
     pub(super) fn search_in_leaf_data(
@@ -222,7 +309,7 @@ impl HashTreeManager {
                         core::mem::transmute::<Ext4DirEntryInfo<'_>, Ext4DirEntryInfo<'_>>(entry)
                     },
                     block_num,
-                    offset: offset as usize,
+                    offset,
                 });
             }
         }
@@ -283,6 +370,44 @@ impl HashTreeManager {
 
         Err(HashTreeError::CorruptedHashTree)
     }
+}
+
+impl HashTreePath {
+    fn current_entry(&self) -> Result<&Ext4DxEntry, HashTreeError> {
+        let frame = self.frames.last().ok_or(HashTreeError::InvalidHashTree)?;
+        frame
+            .entries
+            .get(frame.selected)
+            .ok_or(HashTreeError::CorruptedHashTree)
+    }
+}
+
+fn select_entry(entries: &[Ext4DxEntry], target_hash: u32) -> Result<usize, HashTreeError> {
+    entries
+        .iter()
+        .rposition(|entry| entry.hash <= target_hash)
+        .ok_or(HashTreeError::EntryNotFound)
+}
+
+fn resolve_logical_block<B: BlockIo>(
+    fs: &Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    search: HashSearch<'_>,
+    logical_block: u32,
+) -> Result<AbsoluteBN, HashTreeError> {
+    let total_blocks = dir_inode_block_count(search.dir_inode, fs.block_size())?;
+    if u64::from(logical_block) >= total_blocks {
+        return Err(HashTreeError::BlockOutOfRange);
+    }
+    resolve_inode_block(
+        fs,
+        block_dev,
+        search.dir_ino,
+        &mut search.dir_inode.clone(),
+        logical_block,
+    )
+    .map_err(HashTreeError::from)?
+    .ok_or(HashTreeError::BlockOutOfRange)
 }
 
 fn dir_inode_block_count(inode: &Ext4Inode, block_size: usize) -> Result<u64, HashTreeError> {

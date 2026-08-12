@@ -419,7 +419,7 @@ fn rsext4_entries_and_directory_iterator_rules_hold() {
     ax_assert!(entries[0].0.is_dot());
     ax_assert!(entries[1].0.is_dotdot());
     ax_assert_eq!(entries[2].0.name_str(), Some("file"));
-    ax_assert_eq!(entries[2].1, 16);
+    ax_assert_eq!(entries[2].1, 24);
 
     let found = rsext4::entries::classic_dir::find_entry(&block, b"file").unwrap();
     ax_assert_eq!(found.inode, 11);

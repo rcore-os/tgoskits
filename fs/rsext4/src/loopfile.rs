@@ -116,6 +116,7 @@ pub fn get_file_inode<B: BlockIo>(
                     Some(InodeNumber::new(result.entry.inode).map_err(|_| Ext4Error::corrupted())?);
             }
             Err(HashTreeError::Filesystem(error)) => return Err(error),
+            Err(HashTreeError::EntryNotFound) => {}
             Err(_) => {
                 let blocks =
                     resolve_inode_blocks(fs, block_dev, current_ino_num, &mut current_inode)?;
