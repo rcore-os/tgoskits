@@ -9,6 +9,9 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
+#[cfg(test)]
+extern crate std;
+
 mod boot_console;
 pub mod cache;
 pub(crate) mod common;
