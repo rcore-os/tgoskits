@@ -2180,6 +2180,203 @@ mod file_functional_tests {
         assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
     }
 
+    #[test]
+    fn failed_legacy_truncate_bitmap_write_restores_mapping_and_accounting() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/legacy-truncate-bitmap",
+            None,
+            None,
+        )
+        .expect("file creation failed");
+        let inode_number =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-truncate-bitmap")
+                .expect("fixture lookup failed")
+                .expect("fixture missing")
+                .0;
+        fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_blocks_lo = 0;
+        })
+        .expect("legacy mapping setup failed");
+        for logical in [12u64, 13] {
+            write_file(
+                &mut jbd2_dev,
+                &mut fs,
+                "/legacy-truncate-bitmap",
+                logical * BLOCK_SIZE as u64,
+                &[logical as u8],
+            )
+            .expect("legacy block write failed");
+        }
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        jbd2_dev
+            .set_journal_use(false)
+            .expect("disable journal for direct fault injection");
+
+        let original_inode = fs
+            .get_inode_by_num(&mut jbd2_dev, inode_number)
+            .expect("fixture inode read failed");
+        let indirect_root = bmalloc::AbsoluteBN::from(original_inode.i_block[12]);
+        jbd2_dev
+            .read_block(indirect_root)
+            .expect("indirect root read failed");
+        let original_pointers = jbd2_dev.buffer()[..2 * core::mem::size_of::<u32>()].to_vec();
+        let released_data = bmalloc::AbsoluteBN::from(u32::from_le_bytes(
+            original_pointers[4..8]
+                .try_into()
+                .expect("second pointer slice"),
+        ));
+        let (released_group, released_in_group) = fs
+            .block_allocator
+            .global_to_group(released_data)
+            .expect("released block group lookup failed");
+        let block_bitmap = fs.group_descs[released_group.as_usize().unwrap()].block_bitmap();
+        let free_blocks_before = fs.superblock.free_blocks_count();
+
+        fail_after_write_sector.set(Some(block_bitmap));
+        let error = truncate_inode(&mut jbd2_dev, &mut fs, inode_number, 13 * BLOCK_SIZE as u64)
+            .expect_err("block-bitmap write failure must abort legacy truncate");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        let inode = fs
+            .get_inode_by_num(&mut jbd2_dev, inode_number)
+            .expect("inode read after failed truncate");
+        assert_eq!(inode.size(), original_inode.size());
+        assert_eq!(inode.i_block, original_inode.i_block);
+        assert_eq!(inode.i_blocks_lo, original_inode.i_blocks_lo);
+        assert_eq!(inode.l_i_blocks_high, original_inode.l_i_blocks_high);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        let bitmap = fs
+            .bitmap_cache
+            .get_or_load(
+                &mut jbd2_dev,
+                cache::bitmap::CacheKey::new_block(released_group),
+                bmalloc::AbsoluteBN::new(block_bitmap),
+            )
+            .expect("bitmap read after failed truncate");
+        let byte = bitmap.data[released_in_group.as_usize().unwrap() / 8];
+        assert_ne!(byte & (1 << (released_in_group.raw() % 8)), 0);
+        jbd2_dev
+            .read_block(indirect_root)
+            .expect("indirect root reread failed");
+        assert_eq!(
+            &jbd2_dev.buffer()[..original_pointers.len()],
+            &original_pointers,
+            "failed allocator publication must restore the old pointer tree"
+        );
+
+        drop(fs);
+        let device = jbd2_dev.into_inner();
+        let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut remounted = mount(&mut remount_dev).expect("remount after failed truncate");
+        let remounted_inode = remounted
+            .get_inode_by_num(&mut remount_dev, inode_number)
+            .expect("remounted inode read failed");
+        assert_eq!(remounted_inode.size(), original_inode.size());
+        assert_eq!(remounted_inode.i_block, original_inode.i_block);
+        assert_eq!(remounted_inode.i_blocks_lo, original_inode.i_blocks_lo);
+        assert_eq!(remounted.superblock.free_blocks_count(), free_blocks_before);
+        let remounted_bitmap = remounted
+            .bitmap_cache
+            .get_or_load(
+                &mut remount_dev,
+                cache::bitmap::CacheKey::new_block(released_group),
+                bmalloc::AbsoluteBN::new(block_bitmap),
+            )
+            .expect("remounted bitmap read failed");
+        let remounted_byte = remounted_bitmap.data[released_in_group.as_usize().unwrap() / 8];
+        assert_ne!(remounted_byte & (1 << (released_in_group.raw() % 8)), 0);
+        remount_dev
+            .read_block(indirect_root)
+            .expect("remounted indirect root read failed");
+        assert_eq!(
+            &remount_dev.buffer()[..original_pointers.len()],
+            &original_pointers
+        );
+    }
+
+    #[test]
+    fn undersized_journal_rejects_legacy_truncate_before_mutation() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/legacy-truncate-capacity",
+            None,
+            None,
+        )
+        .expect("file creation failed");
+        let inode_number =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-truncate-capacity")
+                .expect("fixture lookup failed")
+                .expect("fixture missing")
+                .0;
+        fs.modify_inode(&mut jbd2_dev, inode_number, |inode| {
+            inode.i_flags &= !disknode::Ext4Inode::EXT4_EXTENTS_FL;
+            inode.i_block = [0; 15];
+            inode.i_blocks_lo = 0;
+        })
+        .expect("legacy mapping setup failed");
+        for logical in [12u64, 13] {
+            write_file(
+                &mut jbd2_dev,
+                &mut fs,
+                "/legacy-truncate-capacity",
+                logical * BLOCK_SIZE as u64,
+                &[logical as u8],
+            )
+            .expect("legacy block write failed");
+        }
+        fs.sync_filesystem(&mut jbd2_dev)
+            .expect("fixture sync failed");
+        let original_inode = fs
+            .get_inode_by_num(&mut jbd2_dev, inode_number)
+            .expect("fixture inode read failed");
+        let free_blocks_before = fs.superblock.free_blocks_count();
+        let journal_sequence_before = jbd2_dev.journal_sequence();
+
+        let journal_start = fs
+            .journal_sb_block_start
+            .expect("internal journal block missing");
+        let mut small_journal = jbd2::jbdstruct::JournalSuperBlock::default();
+        small_journal.s_header.h_blocktype = jbd2::jbdstruct::JBD2_BLOCKTYPE_SUPERBLOCK_V1;
+        small_journal.s_blocksize = BLOCK_SIZE as u32;
+        small_journal.s_maxlen = 6;
+        small_journal.s_first = 1;
+        small_journal.s_sequence = journal_sequence_before.unwrap_or(1);
+        small_journal.s_start = 0;
+        jbd2_dev
+            .set_journal_superblock(small_journal, journal_start)
+            .expect("small journal installation failed");
+
+        let error = truncate_inode(&mut jbd2_dev, &mut fs, inode_number, 13 * BLOCK_SIZE as u64)
+            .expect_err("legacy truncate must preflight its complete metadata footprint");
+        assert_eq!(error.kind(), Ext4ErrorKind::NoSpace);
+        let inode = fs
+            .get_inode_by_num(&mut jbd2_dev, inode_number)
+            .expect("inode read after capacity failure");
+        assert_eq!(inode.size(), original_inode.size());
+        assert_eq!(inode.i_block, original_inode.i_block);
+        assert_eq!(inode.i_blocks_lo, original_inode.i_blocks_lo);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        assert_eq!(fs.superblock.s_last_orphan, 0);
+        assert_eq!(jbd2_dev.journal_sequence(), journal_sequence_before);
+    }
+
     #[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
     #[test]
     fn failed_legacy_inode_finalize_restores_cached_inode_before_freeing_blocks() {

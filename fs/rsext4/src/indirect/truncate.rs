@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     BlockIo, Ext4FileSystem, Jbd2Dev,
-    bmalloc::{AbsoluteBN, InodeNumber},
+    bmalloc::{AbsoluteBN, BGIndex, InodeNumber},
     disknode::Ext4Inode,
     endian::{read_u32_le, write_u32_le},
     error::{Ext4Error, Ext4Result},
@@ -33,6 +33,11 @@ pub(crate) struct LegacyTruncatePlan {
     data_blocks_to_free: Vec<AbsoluteBN>,
     metadata_blocks_to_free: Vec<AbsoluteBN>,
     remaining_allocated_blocks: u64,
+}
+
+pub(crate) struct LegacyTransactionFootprint {
+    pub(crate) allocation_groups: Vec<BGIndex>,
+    pub(crate) credits: usize,
 }
 
 impl LegacyTruncatePlan {
@@ -60,13 +65,6 @@ impl LegacyTruncatePlan {
         Ok(())
     }
 
-    pub(crate) fn restore_pointer_edits<B: BlockIo>(
-        &self,
-        device: &mut Jbd2Dev<B>,
-    ) -> Ext4Result<()> {
-        restore_pointer_edits(device, &self.pointer_edits)
-    }
-
     pub(crate) fn apply_inode_mapping(
         &self,
         inode: &mut Ext4Inode,
@@ -83,20 +81,61 @@ impl LegacyTruncatePlan {
     }
 
     pub(crate) fn free_removed_blocks<B: BlockIo>(
-        self,
+        &self,
         filesystem: &mut Ext4FileSystem,
         device: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
-        for block in self.data_blocks_to_free {
+        for &block in &self.data_blocks_to_free {
             filesystem.datablock_cache.invalidate(block);
             filesystem.free_block(device, block)?;
         }
-        for block in self.metadata_blocks_to_free {
+        for &block in &self.metadata_blocks_to_free {
             device.forget_detached_metadata(block);
             filesystem.datablock_cache.invalidate(block);
             filesystem.free_block(device, block)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn allocation_groups(
+        &self,
+        filesystem: &Ext4FileSystem,
+    ) -> Ext4Result<Vec<BGIndex>> {
+        let mut groups = Vec::new();
+        for &block in self
+            .data_blocks_to_free
+            .iter()
+            .chain(&self.metadata_blocks_to_free)
+        {
+            let (group, _) = filesystem.block_allocator.global_to_group(block)?;
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+        groups.sort_unstable();
+        Ok(groups)
+    }
+
+    pub(crate) fn transaction_footprint(
+        &self,
+        filesystem: &Ext4FileSystem,
+    ) -> Ext4Result<LegacyTransactionFootprint> {
+        let allocation_groups = self.allocation_groups(filesystem)?;
+        let credits = self
+            .pointer_edits
+            .len()
+            .checked_add(
+                allocation_groups
+                    .len()
+                    .checked_mul(2)
+                    .ok_or_else(Ext4Error::overflow)?,
+            )
+            .and_then(|credits| credits.checked_add(2))
+            .ok_or_else(Ext4Error::overflow)?;
+        Ok(LegacyTransactionFootprint {
+            allocation_groups,
+            credits,
+        })
     }
 }
 

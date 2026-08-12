@@ -587,7 +587,8 @@
           "rust_owner": "rsext4::indirect",
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
-            "legacy-indirect-13-blocks"
+            "legacy-indirect-13-blocks",
+            "legacy-indirect-truncate-atomicity"
           ]
         }
       ]
@@ -651,6 +652,7 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "legacy-indirect-13-blocks",
+            "legacy-indirect-truncate-atomicity",
             "extent-mutation-rollback",
             "extent-unwritten-preallocation",
             "fallocate-preallocation-full-stack",
@@ -853,7 +855,8 @@
           "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
           "test_ids": [
             "classic-orphan-recovery",
-            "legacy-indirect-13-blocks"
+            "legacy-indirect-13-blocks",
+            "legacy-indirect-truncate-atomicity"
           ]
         }
       ]
