@@ -351,6 +351,7 @@ pub(crate) fn current_cpu_remote(cpu_pin: &CpuPin) -> Option<&'static CpuRemote>
     task_system()?.cpu_remote(CpuId::new(cpu))
 }
 
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 pub(super) fn cpu_remote(cpu: RuntimeCpuId) -> Option<&'static CpuRemote> {
     task_system()?.cpu_remote(CpuId::new(cpu.as_u32()))
 }
@@ -383,6 +384,7 @@ pub(super) fn current_cpu_owner_handles(cpu_pin: &CpuPin) -> CurrentCpuOwnerHand
 ///
 /// The caller must prevent migration, context switches, and local IRQ re-entry
 /// for the complete observation.
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 pub(super) unsafe fn scheduler_current_cpu_remote_handle() -> CpuRemoteHandle {
     let raw = unsafe {
         CPU_REMOTE_HANDLE.with_scheduler_cpu(|slot| {

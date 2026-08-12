@@ -193,13 +193,18 @@ pub(crate) fn finish_initial_context_switch() {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PreemptExitOrigin {
     Task,
+    #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
     IrqReturn,
 }
 
 #[cfg(any(feature = "multitask", test))]
 impl PreemptExitOrigin {
     const fn is_irq_return(self) -> bool {
-        matches!(self, Self::IrqReturn)
+        match self {
+            Self::Task => false,
+            #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
+            Self::IrqReturn => true,
+        }
     }
 }
 
@@ -250,6 +255,7 @@ fn exit_lock_preempt(origin: PreemptExitOrigin) {
         if must_schedule {
             let entry = match origin {
                 PreemptExitOrigin::Task => RuntimeSchedulerEntry::PreemptExit,
+                #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
                 PreemptExitOrigin::IrqReturn => RuntimeSchedulerEntry::IrqReturn,
             };
             // SAFETY: this path retains exactly one lock-preemption depth and
@@ -272,7 +278,11 @@ fn exit_lock_preempt(origin: PreemptExitOrigin) {
     }
 }
 
-#[cfg(all(feature = "multitask", not(test)))]
+#[cfg(all(
+    feature = "multitask",
+    not(test),
+    not(all(feature = "host-test", not(target_os = "none")))
+))]
 pub(crate) fn enter_preempt() {
     ax_hal::percpu::scheduler_enter_preempt_guard()
         .expect("architecture preemption state is invalid");
@@ -284,7 +294,11 @@ pub(crate) fn enter_preempt() {
 /// local IRQs disabled. Reusing that ownership matches Linux rq locking: one
 /// outer rq/IRQ transaction covers its internal task-state locks, so those
 /// locks must not repeatedly mutate the suspended task's preemption word.
-#[cfg(all(feature = "multitask", not(test)))]
+#[cfg(all(
+    feature = "multitask",
+    not(test),
+    not(all(feature = "host-test", not(target_os = "none")))
+))]
 pub(crate) fn enter_lock_preempt() -> bool {
     if !ax_hal::asm::irqs_enabled() && read_state().owns_cpu_context() {
         return false;
@@ -293,12 +307,20 @@ pub(crate) fn enter_lock_preempt() -> bool {
     true
 }
 
-#[cfg(all(feature = "multitask", test))]
+#[cfg(all(
+    feature = "multitask",
+    test,
+    not(all(feature = "host-test", not(target_os = "none")))
+))]
 pub(crate) const fn enter_lock_preempt() -> bool {
     false
 }
 
-#[cfg(all(feature = "multitask", not(test)))]
+#[cfg(all(
+    feature = "multitask",
+    not(test),
+    not(all(feature = "host-test", not(target_os = "none")))
+))]
 pub(crate) fn exit_preempt() {
     let exit = ax_hal::percpu::scheduler_prepare_preempt_guard_exit()
         .expect("architecture preemption state is invalid");
@@ -311,17 +333,29 @@ pub(crate) fn exit_preempt() {
     }
 }
 
-#[cfg(all(feature = "multitask", test))]
+#[cfg(all(
+    feature = "multitask",
+    test,
+    not(all(feature = "host-test", not(target_os = "none")))
+))]
 pub(crate) fn exit_preempt() {
     panic!("unit-test runtime cannot exit an unowned preemption guard")
 }
 
-#[cfg(all(feature = "multitask", not(test)))]
+#[cfg(all(
+    feature = "multitask",
+    not(test),
+    not(all(feature = "host-test", not(target_os = "none")))
+))]
 pub(crate) fn exit_preempt_from_irq_return() {
     finish_kernel_preempt_guard(PreemptExitOrigin::IrqReturn);
 }
 
-#[cfg(all(feature = "multitask", test))]
+#[cfg(all(
+    feature = "multitask",
+    test,
+    not(all(feature = "host-test", not(target_os = "none")))
+))]
 pub(crate) fn exit_preempt_from_irq_return() {
     panic!("unit-test runtime cannot exit an unowned IRQ-return guard")
 }

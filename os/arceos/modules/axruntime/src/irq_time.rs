@@ -4,13 +4,17 @@
 //! target CPU's cumulative total without taking an IRQ-side lock; any sample
 //! that races IRQ exit is capped and consumed by later rq clock updates.
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+#[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
+use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 #[ax_percpu::def_percpu]
 static HARDIRQ_TIME: HardIrqTime = HardIrqTime::new();
 
 struct HardIrqTime {
+    #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
     depth: AtomicU32,
+    #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
     start_clock_ns: AtomicU64,
     total_ns: AtomicU64,
 }
@@ -18,12 +22,15 @@ struct HardIrqTime {
 impl HardIrqTime {
     const fn new() -> Self {
         Self {
+            #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
             depth: AtomicU32::new(0),
+            #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
             start_clock_ns: AtomicU64::new(0),
             total_ns: AtomicU64::new(0),
         }
     }
 
+    #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
     fn enter(&self, now_ns: u64) {
         let depth = self.depth.fetch_add(1, Ordering::Relaxed);
         if depth == 0 {
@@ -31,14 +38,17 @@ impl HardIrqTime {
         }
     }
 
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     fn begins_outer_interval(&self) -> bool {
         self.depth.load(Ordering::Relaxed) == 0
     }
 
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     fn ends_outer_interval(&self) -> bool {
         self.depth.load(Ordering::Relaxed) == 1
     }
 
+    #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
     fn exit(&self, now_ns: u64) {
         let depth = self.depth.fetch_sub(1, Ordering::Relaxed);
         assert_ne!(depth, 0, "hard-IRQ exit without a matching entry");
@@ -60,6 +70,7 @@ impl HardIrqTime {
     }
 }
 
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 fn current_cpu_id() -> usize {
     // SAFETY: common IRQ entry has disabled preemption and local interrupts,
     // so the CPU-local area cannot change during this observation.
@@ -67,6 +78,7 @@ fn current_cpu_id() -> usize {
         .unwrap_or_else(|error| panic!("hard-IRQ CPU-local state is invalid: {error}"))
 }
 
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 fn with_current_state<R>(operation: impl FnOnce(&HardIrqTime) -> R) -> R {
     // SAFETY: the caller is in the common IRQ lifecycle with migration and
     // local re-entry excluded. The object itself uses atomics for remote reads.
@@ -74,6 +86,7 @@ fn with_current_state<R>(operation: impl FnOnce(&HardIrqTime) -> R) -> R {
         .unwrap_or_else(|error| panic!("hard-IRQ CPU-local state is invalid: {error}"))
 }
 
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 fn scheduler_clock_now(cpu_id: usize) -> u64 {
     // SAFETY: common IRQ entry keeps the calling CPU pinned and the scheduler
     // clock for this CPU must already be online before interrupts are enabled.
@@ -81,6 +94,7 @@ fn scheduler_clock_now(cpu_id: usize) -> u64 {
         .unwrap_or_else(|error| panic!("hard-IRQ scheduler clock is unavailable: {error}"))
 }
 
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 fn scheduler_clock_outer_hardirq_entry() -> u64 {
     // SAFETY: common hard-IRQ entry has disabled local interrupts and calls
     // this boundary before publishing the outer accounting interval.
@@ -88,6 +102,7 @@ fn scheduler_clock_outer_hardirq_entry() -> u64 {
         .unwrap_or_else(|error| panic!("hard-IRQ scheduler clock is unavailable: {error}"))
 }
 
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 pub(crate) fn enter() {
     assert!(
         !ax_hal::asm::irqs_enabled(),
@@ -102,6 +117,7 @@ pub(crate) fn enter() {
     with_current_state(|state| state.enter(now_ns));
 }
 
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 pub(crate) fn exit() {
     assert!(
         !ax_hal::asm::irqs_enabled(),

@@ -36,6 +36,9 @@
 #[macro_use]
 extern crate ax_log;
 
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+extern crate std;
+
 extern crate ax_driver as _;
 
 #[cfg(all(target_os = "none", not(feature = "std-compat"), not(test)))]
@@ -53,6 +56,8 @@ mod mp;
 mod boot_memory;
 mod bootstrap;
 mod guard;
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+mod host;
 #[cfg(feature = "multitask")]
 mod irq_time;
 #[cfg(feature = "paging")]
@@ -75,6 +80,7 @@ mod registers;
 #[cfg(feature = "serial")]
 pub mod serial;
 pub mod sync;
+mod sync_context;
 
 /// Task-backed synchronization primitives used by ArceOS runtime consumers.
 pub use sync::{Mutex, MutexGuard, PiMutex, PiMutexGuard, SpinLock, SpinRwLock};

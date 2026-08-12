@@ -67,19 +67,21 @@ pub(crate) use bootstrap::{
     PublishedCpuOnline, initialize_primary, publish_current_cpu_online,
     start_current_ktimer_service, start_deferred_task_work_service,
 };
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+use bootstrap::{cpu_remote, scheduler_current_cpu_remote_handle};
 use bootstrap::{
-    cpu_remote, current_cpu_owner_handles, idle_context_entry, primary_bootstrap_thread,
-    scheduler_current_cpu_remote_handle, task_system, with_current_cpu_local_mut_owner,
-    with_current_cpu_pin,
+    current_cpu_owner_handles, idle_context_entry, primary_bootstrap_thread, task_system,
+    with_current_cpu_local_mut_owner, with_current_cpu_pin,
 };
 #[cfg(feature = "smp")]
 pub(crate) use bootstrap::{initialize_secondary, run_idle};
 pub use context::diagnose_current_stack_guard_page_fault;
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+use context::scheduler_current_thread_publication;
 use context::{
     bind_bootstrap_runtime_context, bind_runtime_context_thread, create_bootstrap_context,
     create_runtime_context, create_user_runtime_context, destroy_runtime_context,
-    finish_runtime_context_switch_tail, scheduler_current_thread_publication,
-    switch_runtime_context,
+    finish_runtime_context_switch_tail, switch_runtime_context,
 };
 pub use executor::{BlockOnError, block_on, block_on_timeout};
 #[cfg(feature = "tls")]
