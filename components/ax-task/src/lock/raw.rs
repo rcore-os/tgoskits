@@ -11,11 +11,11 @@ use core::{
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReleaseOperation {
-    Store,
+    StoreIssuedTicket,
 }
 
 #[cfg(test)]
-const RELEASE_OPERATION: ReleaseOperation = ReleaseOperation::Store;
+const RELEASE_OPERATION: ReleaseOperation = ReleaseOperation::StoreIssuedTicket;
 
 /// A FIFO raw ticket lock used only inside `ax-task`.
 #[derive(Debug)]
@@ -43,6 +43,7 @@ impl<T> RawTicketLock<T> {
         }
         RawTicketGuard {
             lock: self,
+            ticket,
             _not_send: PhantomData,
         }
     }
@@ -58,18 +59,18 @@ impl<T> RawTicketLock<T> {
                 Ordering::Relaxed,
             )
             .ok()
-            .map(|_| RawTicketGuard {
+            .map(|ticket| RawTicketGuard {
                 lock: self,
+                ticket,
                 _not_send: PhantomData,
             })
     }
 
-    fn unlock(&self) {
-        // The holder is the only context allowed to advance `owner`. Waiters
-        // only acquire-load it, so publishing the successor needs a release
-        // store rather than a second atomic read-modify-write.
-        let owner = self.owner.load(Ordering::Relaxed);
-        self.owner.store(owner.wrapping_add(1), Ordering::Release);
+    fn unlock(&self, ticket: usize) {
+        // The guard retains the uniquely issued ticket. Waiters only
+        // acquire-load `owner`, so publish the successor directly instead of
+        // rereading the synchronization word or using another atomic RMW.
+        self.owner.store(ticket.wrapping_add(1), Ordering::Release);
     }
 }
 
@@ -84,6 +85,7 @@ unsafe impl<T: Send> Sync for RawTicketLock<T> {}
 /// Exclusive access returned by [`RawTicketLock::lock`].
 pub(crate) struct RawTicketGuard<'a, T> {
     lock: &'a RawTicketLock<T>,
+    ticket: usize,
     // Lock ownership is execution-context local even though the lock is Sync.
     _not_send: PhantomData<*mut ()>,
 }
@@ -106,7 +108,7 @@ impl<T> DerefMut for RawTicketGuard<'_, T> {
 
 impl<T> Drop for RawTicketGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.unlock();
+        self.lock.unlock(self.ticket);
     }
 }
 
@@ -128,15 +130,16 @@ mod tests {
     }
 
     #[test]
-    fn uncontended_unlock_uses_release_store() {
+    fn uncontended_unlock_uses_issued_ticket_release_store() {
         let lock = RawTicketLock::new(());
 
         drop(lock.lock());
 
         assert_eq!(
             RELEASE_OPERATION,
-            ReleaseOperation::Store,
-            "the sole ticket owner must publish its successor without a second atomic RMW"
+            ReleaseOperation::StoreIssuedTicket,
+            "the sole ticket owner must publish its issued successor without rereading the owner \
+             word or using a second atomic RMW"
         );
     }
 
