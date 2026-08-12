@@ -447,6 +447,10 @@ fn zero_link_legacy_reap_restarts_before_final_inode_transaction() {
         .filesystem
         .sync_filesystem(&mut fixture.journal)
         .expect("orphan fixture sync failed");
+    fixture
+        .journal
+        .flush()
+        .expect("orphan fixture checkpoint failed");
     install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 11);
     fixture.power_cut.reset_observation();
 
@@ -615,6 +619,7 @@ fn build_large_extent_fixture(path: &str) -> LargeExtentFixture {
     filesystem
         .sync_filesystem(&mut journal)
         .expect("fixture sync failed");
+    journal.flush().expect("fixture checkpoint failed");
 
     let external_blocks = ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number)
         .external_node_blocks(&mut journal)
@@ -770,6 +775,7 @@ fn build_large_legacy_fixture(path: &str) -> LargeLegacyFixture {
     filesystem
         .sync_filesystem(&mut journal)
         .expect("fixture sync failed");
+    journal.flush().expect("fixture checkpoint failed");
     let free_before = filesystem.superblock.free_blocks_count();
     LargeLegacyFixture {
         journal,

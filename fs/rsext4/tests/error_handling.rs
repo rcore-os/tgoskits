@@ -416,6 +416,12 @@ mod error_handling_tests {
         drop(file);
         drop(fs);
 
+        // A power cut destroys the in-memory running/checkpoint owners. Build
+        // a fresh JBD2 owner around the retained device bytes instead of
+        // silently replacing live journal state on the same mount object.
+        let device = jbd2_dev.into_inner();
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
         // Remount and record what the filesystem reports for the file afterwards.
         let mut fs = mount(&mut jbd2_dev).expect("mount failed");
 

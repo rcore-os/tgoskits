@@ -675,6 +675,7 @@ fn assert_failed_multi_segment_extent_removal_is_atomic(
     filesystem
         .sync_filesystem(&mut journal)
         .expect("fixture sync failed");
+    journal.flush().expect("fixture checkpoint failed");
     journal
         .set_journal_use(false)
         .expect("disable journal for direct failure injection");
@@ -789,6 +790,7 @@ fn failed_preallocation_split_restores_unpublished_metadata_allocation() {
     filesystem
         .sync_filesystem(&mut journal)
         .expect("fixture sync failed");
+    journal.flush().expect("fixture checkpoint failed");
     journal
         .set_journal_use(false)
         .expect("disable journal for direct failure injection");
@@ -908,6 +910,7 @@ fn assert_failed_insert_range_restores_old_tree(
     filesystem
         .sync_filesystem(&mut journal)
         .expect("fixture sync failed");
+    journal.flush().expect("fixture checkpoint failed");
     journal
         .set_journal_use(false)
         .expect("disable journal for direct failure injection");

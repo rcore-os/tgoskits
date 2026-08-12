@@ -473,13 +473,16 @@ fn sync_cycle_keeps_dirty_clean_and_unmount_io_boundaries_distinct() {
 
     assert!(dirty_sync.writes > 0);
     assert_eq!(
-        dirty_sync.flushes, 4,
-        "checkpoint flush plus the FUA journal-tail publication must make a trailing flush \
-         redundant"
+        dirty_sync.primary_superblock_writes, 0,
+        "ordinary sync must leave committed metadata in the checkpoint owner"
     );
+    assert_eq!(dirty_sync.primary_gdt_writes, 0);
+    assert_eq!(dirty_sync.flushes, 2);
     assert_eq!(clean_sync.writes, 0);
     assert_eq!(clean_sync.flushes, 1);
     assert!(unmount.writes > 0);
+    assert_eq!(unmount.primary_superblock_writes, 1);
+    assert_eq!(unmount.primary_gdt_writes, 1);
     assert_eq!(unmount.flushes, 4);
 }
 

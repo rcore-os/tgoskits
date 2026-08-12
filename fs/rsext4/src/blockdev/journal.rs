@@ -421,6 +421,24 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
     }
 
+    fn ensure_journal_state_reinstallable(&self) -> Ext4Result<()> {
+        let pending_transaction = self.system.as_ref().is_some_and(|system| {
+            !system.running_transaction.updates.is_empty()
+                || !system.running_transaction.revoked_blocks.is_empty()
+                || system.committing_transaction.is_some()
+                || !system.checkpoint_transactions.is_empty()
+                || system.used_log_records != 0
+        });
+        if self.active_handle.is_some()
+            || self.active_direct_handle.is_some()
+            || pending_transaction
+        {
+            Err(Ext4Error::busy().with_operation("jbd2:reinstall_with_pending_owner"))
+        } else {
+            Ok(())
+        }
+    }
+
     fn abort_journal(&mut self, cause: Ext4Error) {
         if self.journal_abort_cause().is_some() {
             return;
@@ -690,6 +708,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         journal_start_block: AbsoluteBN,
     ) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:reinstall_after_abort")?;
+        self.ensure_journal_state_reinstallable()?;
         let available = self
             .total_blocks()
             .checked_sub(journal_start_block.raw())
@@ -707,6 +726,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         journal_blocks: Vec<AbsoluteBN>,
     ) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:reinstall_after_abort")?;
+        self.ensure_journal_state_reinstallable()?;
         let Some(&journal_start_block) = journal_blocks.first() else {
             self.journal_blocks.clear();
             self.system = None;
@@ -734,6 +754,33 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
         self.commit_pending_transaction()?;
         Ok(())
+    }
+
+    /// Commits the running transaction for a filesystem sync operation.
+    ///
+    /// A successful journal commit is already durable because its commit
+    /// record is published with FUA after the descriptor/data preflush. Home
+    /// metadata remains owned by the checkpoint queue, matching Linux
+    /// `ext4_sync_fs()` rather than the stronger `jbd2_journal_flush()` path.
+    pub(crate) fn commit_for_filesystem_sync(&mut self) -> Ext4Result<()> {
+        self.ensure_not_aborted("jbd2:sync_after_abort")?;
+        if self.active_direct_handle.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:sync_with_direct_handle"));
+        }
+        if !self.journal_use {
+            return self.inner.flush();
+        }
+        if self.active_handle.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:sync_with_active_handle"));
+        }
+
+        if self.commit_pending_transaction()? {
+            Ok(())
+        } else {
+            // Data writeback can exist without a new metadata transaction, so
+            // a clean sync still needs a device durability boundary.
+            self.inner.flush()
+        }
     }
 
     /// Commits and checkpoints all buffered journal transactions during unmount.
@@ -2229,6 +2276,71 @@ mod tests {
         let inner = dev.into_inner();
         let start = target.as_usize().expect("target offset") * BLOCK_SIZE;
         assert_eq!(&inner.data[start..start + BLOCK_SIZE], payload);
+    }
+
+    #[test]
+    fn filesystem_sync_commits_without_checkpointing_home_metadata() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
+            .expect("install checksummed journal");
+        let target = AbsoluteBN::new(10);
+        let target_offset = target.as_usize().expect("target offset") * BLOCK_SIZE;
+        let payload = vec![0x73; BLOCK_SIZE];
+        dev.write_blocks(&payload, target, 1, true)
+            .expect("queue metadata update");
+
+        dev.commit_for_filesystem_sync()
+            .expect("commit filesystem sync transaction");
+
+        assert!(
+            dev.inner._device().data[target_offset..target_offset + BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0),
+            "ordinary sync must not force committed metadata to its home block"
+        );
+        assert_eq!(
+            dev.system
+                .as_ref()
+                .expect("journal state")
+                .checkpoint_transactions
+                .len(),
+            1
+        );
+        assert_eq!(dev.inner._device().flush_calls, 1);
+        assert_eq!(dev.inner._device().fua_writes, 1);
+
+        dev.commit_for_filesystem_sync()
+            .expect("clean filesystem sync");
+        assert_eq!(
+            dev.inner._device().flush_calls,
+            2,
+            "a sync without a transaction must still flush data writeback"
+        );
+    }
+
+    #[test]
+    fn journal_state_cannot_be_reinstalled_with_pending_checkpoint_owner() {
+        let superblock = csum_v3_superblock();
+        let journal_start = AbsoluteBN::new(128);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(superblock, journal_start)
+            .expect("install checksummed journal");
+        dev.write_block(AbsoluteBN::new(10), true)
+            .expect("queue metadata update");
+        dev.commit().expect("commit metadata update");
+
+        let error = dev
+            .set_journal_superblock(superblock, journal_start)
+            .expect_err("reinstall must not discard a pending checkpoint owner");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
+        assert_eq!(
+            dev.system
+                .as_ref()
+                .expect("journal state")
+                .checkpoint_transactions
+                .len(),
+            1
+        );
     }
 
     #[test]

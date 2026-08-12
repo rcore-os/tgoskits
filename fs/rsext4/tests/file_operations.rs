@@ -179,6 +179,7 @@ mod file_functional_tests {
 
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         jbd2_dev
             .set_journal_use(false)
             .expect("disable journal for direct fault injection");
@@ -235,6 +236,7 @@ mod file_functional_tests {
 
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         jbd2_dev
             .set_journal_use(false)
             .expect("disable journal for direct fault injection");
@@ -542,6 +544,7 @@ mod file_functional_tests {
 
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         jbd2_dev
             .set_journal_use(false)
             .expect("disable journal for direct fault injection");
@@ -631,6 +634,7 @@ mod file_functional_tests {
 
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         jbd2_dev
             .set_journal_use(false)
             .expect("disable journal for direct fault injection");
@@ -712,6 +716,7 @@ mod file_functional_tests {
 
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         jbd2_dev
             .set_journal_use(false)
             .expect("disable journal for direct fault injection");
@@ -786,6 +791,7 @@ mod file_functional_tests {
 
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         jbd2_dev
             .set_journal_use(false)
             .expect("disable journal for direct fault injection");
@@ -1016,6 +1022,7 @@ mod file_functional_tests {
 
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         jbd2_dev
             .set_journal_use(false)
             .expect("disable journal for direct fault injection");
@@ -1087,6 +1094,7 @@ mod file_functional_tests {
 
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         let free_blocks_before = fs.superblock.free_blocks_count();
         let block_bitmap = fs.group_descs[0].block_bitmap();
         jbd2_dev
@@ -1201,6 +1209,7 @@ mod file_functional_tests {
 
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         jbd2_dev
             .set_journal_use(false)
             .expect("disable journal for direct fault injection");
@@ -1254,6 +1263,7 @@ mod file_functional_tests {
 
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         let block_bitmap = fs.group_descs[0].block_bitmap();
         jbd2_dev
             .set_journal_use(false)
@@ -2219,6 +2229,7 @@ mod file_functional_tests {
         }
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         jbd2_dev
             .set_journal_use(false)
             .expect("disable journal for direct fault injection");
@@ -2343,6 +2354,7 @@ mod file_functional_tests {
         }
         fs.sync_filesystem(&mut jbd2_dev)
             .expect("fixture sync failed");
+        jbd2_dev.flush().expect("fixture checkpoint failed");
         let original_inode = fs
             .get_inode_by_num(&mut jbd2_dev, inode_number)
             .expect("fixture inode read failed");
