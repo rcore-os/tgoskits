@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hashes with typed major/minor results and checked HTree root/index parsing.
 - Add Linux-compatible one-block linear-to-HTree conversion, leaf insertion and
   splitting, collision separator encoding, root promotion, internal-node
-  splitting, checksums, and transactional rollback across directory, index,
-  inode, and allocation metadata.
+  splitting, leaf-only indexed deletion, checksums, and transactional rollback
+  across directory, index, inode, and allocation metadata.
 - Add typed extent preallocation with Linux-compatible unwritten extent encoding,
   `KEEP_SIZE`, partial-write conversion, remount, and e2fsck coverage.
 - Add typed `ZERO_RANGE` and `PUNCH_HOLE` operations for extent-backed files,

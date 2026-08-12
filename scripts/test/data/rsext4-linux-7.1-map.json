@@ -1070,6 +1070,21 @@
         },
         {
           "start": 2651,
+          "end": 2746,
+          "symbol": "ext4_generic_delete_entry, ext4_delete_entry",
+          "classification": "core",
+          "state_machine": "leaf-only directory entry deletion and checksum publication",
+          "invariant": "deletion merges the removed record into its predecessor when present, keeps a first record's length, updates the leaf checksum, and never shrinks the HTree index",
+          "rust_owner": "rsext4::file::delete",
+          "reason": "portable directory record layout and metadata transaction semantics belong to the filesystem core",
+          "test_ids": [
+            "htree-indexed-delete",
+            "htree-indexed-rename",
+            "directory-delete-record-layout"
+          ]
+        },
+        {
+          "start": 2747,
           "end": 4249,
           "symbol": "namei namespace mutation suffix",
           "classification": "core",

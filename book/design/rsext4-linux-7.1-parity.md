@@ -136,7 +136,7 @@ rsext4 caller 直接使用 `Ext4::create_symlink`，不再调用已删除的
 | `feature-gate-strict` | unknown incompat、ENCRYPT、RW QUOTA 均被接受 | incompat 拒绝；未实现 RO_COMPAT 只允许 RO | codec/feature negotiation | 绿：四项确定性单测完成红绿验证 |
 | `device-sector-map` | filesystem block number 被直接作为 device sector，512-byte 设备只读一个 sector | typed `SectorId` + private filesystem-block mapper | portable I/O core | 绿：512-byte sector 聚合与 byte-offset superblock 红绿回归通过 |
 | `filesystem-block-dynamic` | core 算法仍大量引用 4 KiB 常量 | 1/2/4 KiB geometry、cache、JBD2 与 codec 全部按 mount 派生 | codec/geometry | 绿：Linux 与 rsext4 各自创建的 1/2/4 KiB 镜像均在 512-byte sector 上完成跨块写入、rename、remount 与 `e2fsck -fn`；cache、extent 与 JBD2 buffer 均按 mount geometry 分配 |
-| `htree-hash-checked-lookup` | legacy/half-MD4/TEA 是占位算法，未知版本静默返回 0；root parser 用 Rust `size_of` 和目录 inode 号推导磁盘偏移，合法 Linux root 也无法读取；count/limit、depth、entry order、logical block range、cycle 与 checksum 未形成统一 checked path | hash version/depth 只来自 root block；signed/unsigned hash 与 Linux 7.1 一致并返回 major/minor typed result；root/internal block 按固定 wire offset、动态 block size 和 dx tail 校验；坏 index 只能走 Linux 的 `ERR_BAD_DX_DIR` linear fallback，I/O/checksum 错误必须保留 typed cause | directory mapping/codec | 进行中：`debugfs dx_hash` 的 default seed、UUID seed、UTF-8 signed/unsigned 六版本向量固定了旧算法红测；同一测试现全部通过。SIPHASH wire version 可被 checked parser 识别，但 fscrypt/casefold prepared-name 与 key hash 尚未实现，相关 incompat feature 在可写 mount negotiation 即被拒绝，不能把格式识别误报为算法支持。合法 4 KiB root 红测证明旧 parser 返回 corruption；当前 root/internal parser 校验 dot/dotdot、reserved/info/version/flags/depth、metadata-csum tail limit、count、排序、Linux 28-bit block 与重复 path，并解码 64 KiB index fake-dirent 的 compact `rec_len`。lookup 采用 root version 和 superblock signedness policy，index/leaf checksum failure 不再降级；mount negotiation 拒绝 default hash 6 或更大值，RW indexed mount 在 policy flags 均为空时持久化 reference architecture 的 signed policy，避免 core 语义依赖 OS/compiler plain-char signedness。collision continuation 按 low-bit 边界推进 frame，覆盖同一 index leaf、跨 parent index、真实 I/O 传播与准确 dirent byte offset；完整 probe 未找到不再触发全目录 linear scan。写侧已完成单块 linear→HTree conversion、existing-leaf insert、按 Linux 记录长度平衡的 leaf split、collision continuation separator、root promotion 和单层 internal split；Linux `e2fsck -D` fixture 经 9000 项长名称增长后报告 `Indirect levels: 1`，重挂载与 `e2fsck -fn` clean。post-write fault 分别证明 conversion 与 split 的 inode/data/bitmap/index 更新整体回滚。casefold/fscrypt name preparation、HTree readdir cookie、delete rebalance 与 `LARGEDIR` 二级 internal split 仍为红项。Linux v7.1 依据为 `fs/ext4/hash.c:1-322`、`fs/ext4/namei.c:537-540,771-1030,1280-1359,1843-2032,2209-2343,2473-2650`、`fs/ext4/super.c:5230-5271`、`fs/ext4/ext4.h:2483-2525,2635-2650` |
+| `htree-hash-checked-lookup` | legacy/half-MD4/TEA 是占位算法，未知版本静默返回 0；root parser 用 Rust `size_of` 和目录 inode 号推导磁盘偏移，合法 Linux root 也无法读取；count/limit、depth、entry order、logical block range、cycle 与 checksum 未形成统一 checked path | hash version/depth 只来自 root block；signed/unsigned hash 与 Linux 7.1 一致并返回 major/minor typed result；root/internal block 按固定 wire offset、动态 block size 和 dx tail 校验；坏 index 只能走 Linux 的 `ERR_BAD_DX_DIR` linear fallback，I/O/checksum 错误必须保留 typed cause | directory mapping/codec | 进行中：`debugfs dx_hash` 的 default seed、UUID seed、UTF-8 signed/unsigned 六版本向量固定了旧算法红测；同一测试现全部通过。SIPHASH wire version 可被 checked parser 识别，但 fscrypt/casefold prepared-name 与 key hash 尚未实现，相关 incompat feature 在可写 mount negotiation 即被拒绝，不能把格式识别误报为算法支持。合法 4 KiB root 红测证明旧 parser 返回 corruption；当前 root/internal parser 校验 dot/dotdot、reserved/info/version/flags/depth、metadata-csum tail limit、count、排序、Linux 28-bit block 与重复 path，并解码 64 KiB index fake-dirent 的 compact `rec_len`。lookup 采用 root version 和 superblock signedness policy，index/leaf checksum failure 不再降级；mount negotiation 拒绝 default hash 6 或更大值，RW indexed mount 在 policy flags 均为空时持久化 reference architecture 的 signed policy，避免 core 语义依赖 OS/compiler plain-char signedness。collision continuation 按 low-bit 边界推进 frame，覆盖同一 index leaf、跨 parent index、真实 I/O 传播与准确 dirent byte offset；完整 probe 未找到不再触发全目录 linear scan。写侧已完成单块 linear→HTree conversion、existing-leaf insert、按 Linux 记录长度平衡的 leaf split、collision continuation separator、root promotion 和单层 internal split；Linux `e2fsck -D` fixture 经 9000 项长名称增长后报告 `Indirect levels: 1`，重挂载与 `e2fsck -fn` clean。post-write fault 分别证明 conversion 与 split 的 inode/data/bitmap/index 更新整体回滚。indexed delete/rename 只压缩 leaf dirent 并保持 index 高度与分配，符合 Linux 不做 deletion rebalance 的状态机。casefold/fscrypt name preparation、HTree readdir cookie 与 `LARGEDIR` 二级 internal split 仍为红项。Linux v7.1 依据为 `fs/ext4/hash.c:1-322`、`fs/ext4/namei.c:537-540,771-1030,1280-1359,1843-2032,2209-2343,2473-2746`、`fs/ext4/super.c:5230-5271`、`fs/ext4/ext4.h:2483-2525,2635-2650` |
 | `linux-default-rocompat-rw` | Linux mkfs 默认设置 `HUGE_FILE`、`DIR_NLINK` | 完整读写语义后纳入 writable mask | inode/namespace lifecycle | 绿：`HUGE_FILE` 统一按 Linux 的 32-bit sector、48-bit sector、filesystem-block 三级 codec 读写，所有 block accounting mutation 使用 checked 状态转换；`DIR_NLINK` 覆盖 65000 到 sentinel 1、连续 mutation 保持 sentinel、无 feature 时分配前返回 `EMLINK`；Linux 默认 feature 的 1/2/4 KiB round-trip、extent/JBD2 replay 与 `e2fsck -fn` 全部通过 |
 | `linux-map-complete` | 仅有 subsystem mapping，缺少逐区间清单 | every source line classified | design/traceability | 进行中：冻结 inventory 已覆盖 Linux v7.1 的 61 个 tracked 文件、77,895 行，并由普通 CI 与本地源码双模式检查 gap、overlap、blob、行数和文件集合；8 个 build/KUnit 文件已审阅，其余 53 个 `coarse` 条目使 `--require-reviewed` 确定性失败，必须按符号/预处理区间完成语义审阅后才能转绿 |
 | `journal-no-direct-fallback` | uninitialized JBD2 performs home write | typed journal-aborted error | JBD2 rewrite | 绿：确定性红绿回归已覆盖 write/umount |
@@ -227,8 +227,9 @@ Linux image create/write/rename/e2fsck 回归已移除唯一的 `#[ignore]` 与�
 当前 core 已完成 Linux HTree hash、checked lookup、linear→indexed conversion、existing-leaf
 insert、leaf split、root promotion 与单层 internal split。indexed mutation 不再清除 `EXT4_INDEX_FL`；伪造 flag 而
 没有合法 root 的目录按 corruption 拒绝，不再把损坏状态静默降级。`DIR_NLINK` sentinel 1
-继续按 Linux `is_dx()` 与 `ext4_inc_count()` 保持。delete rebalance、`LARGEDIR` 二级 internal
-split 与 casefold/fscrypt name preparation 仍在红测台账中。
+继续按 Linux `is_dx()` 与 `ext4_inc_count()` 保持。Linux 删除 indexed dirent 不重平衡或回收
+leaf；core 已对齐该 leaf-only mutation。`LARGEDIR` 二级 internal split 与 casefold/fscrypt name
+preparation 仍在红测台账中。
 
 ## 7. 性能门槛
 
@@ -1420,8 +1421,9 @@ OS capability，已有显式 unsigned flag 的镜像仍严格走 unsigned 版本
 稳定返回 `CorruptedHashTree`，当前 frame path 按 `(next_hash & !1) == target_hash` 推进，并在
 当前 node 耗尽时回溯 parent、重读下一 index chain。跨 parent 的定点 I/O failure 保留 typed
 I/O cause；`DirEntryIterator` 的第二项也由错误的 `rec_len` 修正为真实 byte offset，避免命中后
-rename/unlink 修改错误位置。写侧 insert/split/index growth 的后续检查点见 7.45；casefold/fscrypt
-name preparation、HTree readdir cookie、delete 或完整 `LARGEDIR` mutation 继续登记为红项。
+rename/unlink 修改错误位置。写侧 insert/split/index growth 的后续检查点见 7.45，indexed delete
+见 7.46；casefold/fscrypt name preparation、HTree readdir cookie 或完整 `LARGEDIR` mutation
+继续登记为红项。
 
 ### 7.45 HTree insert、leaf split 与 index growth 检查点
 
@@ -1460,5 +1462,20 @@ transaction 中把 block 0 重写为 dx root、追加并平衡两个 leaf、设�
 block allocation、extent mapping、root/leaf publication 与 inode update 只能在该外层 transaction
 中调用，不能把 helper 暴露为可脱离事务使用的公共 API。
 
-本检查点尚不包含 indexed delete/rebalance、两级 internal node 的通用递归 split、fscrypt
-SipHash/casefold prepared name 或 HTree readdir cookie，继续登记为红项。
+本检查点尚不包含两级 internal node 的通用递归 split、fscrypt SipHash/casefold prepared name
+或 HTree readdir cookie，继续登记为红项。
+
+### 7.46 HTree leaf-only delete 检查点
+
+Linux v7.1 `fs/ext4/namei.c:2657-2746` 的 `ext4_generic_delete_entry()` 与
+`ext4_delete_entry()` 不删除 dx entry、不释放空 leaf，也不重平衡或降低 HTree 高度。有前驱的
+目标把其 `rec_len` 合并进前驱并清零整个旧 record；块首目标保留原 `rec_len`，但清零 inode、
+name length、file type 与 payload。随后只重算 leaf dirblock checksum 并在原 namespace
+transaction 中发布。因此旧台账中的“delete rebalance”不是 Linux parity 目标，已更名为
+leaf-only delete。
+
+旧 core 仅清除目标 inode，留下独立 free record，合法但不等同 Linux 的物理布局。确定性单测先
+固定前驱 `rec_len` 未合并的失败，再由同一测试验证合并、完整 wipe 和 64 KiB compact
+`rec_len` 的块首删除。真实 Linux image 进一步在 HTree leaf 中执行 unlink 与 rename replacement，
+重挂载后核验全部剩余名称、replacement inode、`INDEX_FL` 和 directory size；删除所有真实名称
+后仍保留原 index/leaf allocation，Linux `htree_dump` 可解析且 `e2fsck -fn` clean。

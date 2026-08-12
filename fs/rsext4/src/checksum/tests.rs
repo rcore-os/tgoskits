@@ -167,6 +167,21 @@ fn metadata_csum_dirblock_without_tail_is_rejected() {
 }
 
 #[test]
+fn empty_htree_leaf_is_not_misclassified_as_an_internal_node() {
+    let sb = metadata_csum_superblock();
+    let ino = 11;
+    let generation = 0x5566_7788;
+    let mut block = [0u8; BLOCK_SIZE];
+    let entries_end = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+    block[4..6].copy_from_slice(&(entries_end as u16).to_le_bytes());
+    Ext4DirEntryTail::new().to_disk_bytes(&mut block[entries_end..]);
+    update_ext4_dirblock_csum32(&sb, ino, generation, &mut block);
+
+    assert_eq!(verify_ext4_dx_checksum(&sb, ino, generation, &block), None);
+    assert!(verify_ext4_dirblock_checksum(&sb, ino, generation, &block));
+}
+
+#[test]
 fn dx_checksum_uses_counted_entries_and_tail() {
     // Test idea: HTree index blocks store a dx_tail checksum after the full entry limit,
     // while the checksum covers only the counted dx entries plus the tail's reserved word.

@@ -1,5 +1,8 @@
 use super::*;
-use crate::hashtree::Ext4InodeHashTreeExt;
+use crate::{
+    entries::{decode_directory_record_length, encode_directory_record_length},
+    hashtree::Ext4InodeHashTreeExt,
+};
 
 // Linux uses EXT4_DATA_TRANS_BLOCKS for both unlink and rmdir. Extent
 // filesystems without writable quota support reserve 20 + 6 - 2 blocks.
@@ -370,12 +373,17 @@ fn find_dentry_in_dir_block(data: &[u8], name_bytes: &[u8]) -> Option<(u32, u8, 
             data[offset + 2],
             data[offset + 3],
         ]);
-        let rec_len = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
-        if rec_len < 8 {
+        let rec_len = decode_directory_record_length(
+            u16::from_le_bytes([data[offset + 4], data[offset + 5]]),
+            block_bytes,
+        );
+        if rec_len < 8 || !rec_len.is_multiple_of(4) {
             break;
         }
         let name_len = data[offset + 6] as usize;
-        let entry_end = offset + rec_len as usize;
+        let Some(entry_end) = offset.checked_add(rec_len) else {
+            break;
+        };
         if entry_end > block_bytes {
             break;
         }
@@ -400,39 +408,82 @@ fn remove_dentry_in_dir_block(
     data: &mut [u8],
     entry: ParentDirEntry,
     name_bytes: &[u8],
-) -> bool {
+) -> Ext4Result<bool> {
     let block_bytes = data.len();
-    let offset = entry.offset;
-    let Some(header) = data.get(offset..offset + 8) else {
-        return false;
+    let entries_end = if crate::crc32c::ext4_superblock_has_metadata_csum(superblock) {
+        block_bytes
+            .checked_sub(usize::from(Ext4DirEntryTail::TAIL_LEN))
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("directory:delete_block_size"))?
+    } else {
+        block_bytes
     };
-    let inode = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-    let rec_len = usize::from(u16::from_le_bytes([header[4], header[5]]));
-    let name_len = usize::from(header[6]);
-    let Some(entry_end) = offset.checked_add(rec_len) else {
-        return false;
-    };
-    let Some(name_end) = offset.checked_add(8 + name_len) else {
-        return false;
-    };
-    if rec_len < 8
-        || entry_end > block_bytes
-        || name_end > entry_end
-        || inode != entry.ino.raw()
-        || &data[offset + 8..name_end] != name_bytes
-    {
-        return false;
+    let mut offset = 0usize;
+    let mut previous = None;
+
+    while offset < entries_end {
+        let header = data
+            .get(offset..offset + 8)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("directory:delete_header"))?;
+        let inode = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        let record_len =
+            decode_directory_record_length(u16::from_le_bytes([header[4], header[5]]), block_bytes);
+        let name_len = usize::from(header[6]);
+        let record_end = offset.checked_add(record_len).ok_or_else(|| {
+            Ext4Error::corrupted().with_operation("directory:delete_record_overflow")
+        })?;
+        let name_end = offset
+            .checked_add(8)
+            .and_then(|start| start.checked_add(name_len))
+            .ok_or_else(Ext4Error::overflow)?;
+        if record_len < 8
+            || !record_len.is_multiple_of(4)
+            || record_end > entries_end
+            || name_end > record_end
+        {
+            return Err(Ext4Error::corrupted().with_operation("directory:delete_record"));
+        }
+
+        if offset == entry.offset {
+            if inode != entry.ino.raw() || &data[offset + 8..name_end] != name_bytes {
+                return Ok(false);
+            }
+            if let Some(previous_offset) = previous {
+                let previous_raw_len =
+                    u16::from_le_bytes([data[previous_offset + 4], data[previous_offset + 5]]);
+                let previous_len = decode_directory_record_length(previous_raw_len, block_bytes);
+                let merged_len = previous_len
+                    .checked_add(record_len)
+                    .ok_or_else(Ext4Error::overflow)?;
+                let encoded =
+                    encode_directory_record_length(merged_len, block_bytes).ok_or_else(|| {
+                        Ext4Error::corrupted().with_operation("directory:delete_merged_rec_len")
+                    })?;
+                data[previous_offset + 4..previous_offset + 6]
+                    .copy_from_slice(&encoded.to_le_bytes());
+                data[offset..record_end].fill(0);
+            } else {
+                data[offset..offset + 4].fill(0);
+                data[offset + 6..record_end].fill(0);
+            }
+            update_ext4_dirblock_csum32(
+                superblock,
+                parent_ino_num.raw(),
+                parent_inode.i_generation,
+                data,
+            );
+            return Ok(true);
+        }
+        if offset > entry.offset {
+            return Ok(false);
+        }
+        previous = Some(offset);
+        offset = record_end;
     }
 
-    // Keep rec_len unchanged so readdir byte offsets remain stable.
-    data[offset..offset + 4].copy_from_slice(&0u32.to_le_bytes());
-    update_ext4_dirblock_csum32(
-        superblock,
-        parent_ino_num.raw(),
-        parent_inode.i_generation,
-        data,
-    );
-    true
+    if offset != entries_end {
+        return Err(Ext4Error::corrupted().with_operation("directory:delete_coverage"));
+    }
+    Ok(false)
 }
 
 fn try_remove_dentry_in_block<B: BlockIo>(
@@ -444,10 +495,10 @@ fn try_remove_dentry_in_block<B: BlockIo>(
     name_bytes: &[u8],
 ) -> Ext4Result<bool> {
     let superblock = &fs.superblock;
-    let mut removed = false;
+    let mut remove_result = Ok(false);
     fs.datablock_cache
         .modify_metadata(block_dev, entry.phys, |data| {
-            removed = remove_dentry_in_dir_block(
+            remove_result = remove_dentry_in_dir_block(
                 superblock,
                 parent_ino_num,
                 parent_inode,
@@ -456,6 +507,7 @@ fn try_remove_dentry_in_block<B: BlockIo>(
                 name_bytes,
             );
         })?;
+    let removed = remove_result?;
     if removed {
         fs.datablock_cache.flush_metadata(block_dev, entry.phys)?;
     }
@@ -531,6 +583,32 @@ pub(crate) fn find_named_entry_in_parent<B: BlockIo>(
     for phys in parent_dir_data_blocks(fs, block_dev, parent_ino, &mut parent_inode)? {
         let cached = fs.datablock_cache.get_or_load(block_dev, phys)?;
         let data = &cached.data;
+        let checksum_ok = if parent_inode.is_htree_indexed() {
+            crate::checksum::verify_ext4_dx_checksum(
+                &fs.superblock,
+                parent_ino.raw(),
+                parent_inode.i_generation,
+                data,
+            )
+            .unwrap_or_else(|| {
+                crate::checksum::verify_ext4_dirblock_checksum(
+                    &fs.superblock,
+                    parent_ino.raw(),
+                    parent_inode.i_generation,
+                    data,
+                )
+            })
+        } else {
+            crate::checksum::verify_ext4_dirblock_checksum(
+                &fs.superblock,
+                parent_ino.raw(),
+                parent_inode.i_generation,
+                data,
+            )
+        };
+        if !checksum_ok {
+            return Err(Ext4Error::checksum().with_operation("directory:lookup_block"));
+        }
         if let Some((inode, file_type, offset)) = find_dentry_in_dir_block(data, name_bytes) {
             let ino = InodeNumber::new(inode).map_err(|_| Ext4Error::corrupted())?;
             return Ok(ParentDirEntry {
@@ -580,7 +658,10 @@ pub(crate) fn replace_named_entry_at<B: BlockIo>(
                 return;
             };
             let inode = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-            let record_len = usize::from(u16::from_le_bytes([header[4], header[5]]));
+            let record_len = decode_directory_record_length(
+                u16::from_le_bytes([header[4], header[5]]),
+                data.len(),
+            );
             let name_len = usize::from(header[6]);
             let Some(record_end) = offset.checked_add(record_len) else {
                 return;
@@ -834,7 +915,8 @@ fn checked_directory_record(
         .get(offset..offset + HEADER_LEN)
         .ok_or_else(|| Ext4Error::corrupted().with_operation("directory:record_header"))?;
     let inode = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-    let record_len = usize::from(u16::from_le_bytes([header[4], header[5]]));
+    let record_len =
+        decode_directory_record_length(u16::from_le_bytes([header[4], header[5]]), data.len());
     let name_len = usize::from(header[6]);
     let minimum_len = HEADER_LEN
         .checked_add(name_len)
@@ -954,4 +1036,127 @@ pub fn delete_file<B: BlockIo>(
         reap_unlinked_inode(fs, block_dev, outcome.inode)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entries::{Ext4DirEntry2, decode_directory_record_length};
+
+    fn write_directory_record(
+        block: &mut [u8],
+        offset: usize,
+        inode: u32,
+        record_len: u16,
+        file_type: u8,
+        name: &[u8],
+    ) {
+        block[offset..offset + 4].copy_from_slice(&inode.to_le_bytes());
+        block[offset + 4..offset + 6].copy_from_slice(&record_len.to_le_bytes());
+        block[offset + 6] = name.len() as u8;
+        block[offset + 7] = file_type;
+        block[offset + 8..offset + 8 + name.len()].copy_from_slice(name);
+    }
+
+    #[test]
+    fn delete_merges_the_previous_record_and_wipes_the_removed_record() {
+        let mut block = alloc::vec![0xa5; 4096];
+        write_directory_record(
+            &mut block,
+            0,
+            11,
+            16,
+            Ext4DirEntry2::EXT4_FT_REG_FILE,
+            b"before",
+        );
+        write_directory_record(
+            &mut block,
+            16,
+            12,
+            16,
+            Ext4DirEntry2::EXT4_FT_REG_FILE,
+            b"target",
+        );
+        write_directory_record(
+            &mut block,
+            32,
+            13,
+            4064,
+            Ext4DirEntry2::EXT4_FT_REG_FILE,
+            b"after",
+        );
+        let superblock = Ext4Superblock {
+            s_feature_ro_compat: 0,
+            ..Default::default()
+        };
+        let parent_ino = InodeNumber::new(2).expect("valid parent inode");
+        let parent_inode = Ext4Inode {
+            i_generation: 7,
+            ..Default::default()
+        };
+        let entry = ParentDirEntry {
+            ino: InodeNumber::new(12).expect("valid target inode"),
+            phys: AbsoluteBN::new(1),
+            offset: 16,
+            file_type: Ext4DirEntry2::EXT4_FT_REG_FILE,
+        };
+
+        assert!(
+            remove_dentry_in_dir_block(
+                &superblock,
+                parent_ino,
+                &parent_inode,
+                &mut block,
+                entry,
+                b"target",
+            )
+            .expect("delete target record")
+        );
+        assert_eq!(
+            decode_directory_record_length(u16::from_le_bytes([block[4], block[5]]), block.len()),
+            32
+        );
+        assert_eq!(&block[16..32], &[0; 16]);
+        assert_eq!(u32::from_le_bytes(block[32..36].try_into().unwrap()), 13);
+    }
+
+    #[test]
+    fn delete_first_record_preserves_compact_record_length() {
+        let mut block = alloc::vec![0xa5; 65_536];
+        write_directory_record(
+            &mut block,
+            0,
+            12,
+            0,
+            Ext4DirEntry2::EXT4_FT_REG_FILE,
+            b"target",
+        );
+        let superblock = Ext4Superblock {
+            s_feature_ro_compat: 0,
+            ..Default::default()
+        };
+        let parent_ino = InodeNumber::new(2).expect("valid parent inode");
+        let parent_inode = Ext4Inode::default();
+        let entry = ParentDirEntry {
+            ino: InodeNumber::new(12).expect("valid target inode"),
+            phys: AbsoluteBN::new(1),
+            offset: 0,
+            file_type: Ext4DirEntry2::EXT4_FT_REG_FILE,
+        };
+
+        assert!(
+            remove_dentry_in_dir_block(
+                &superblock,
+                parent_ino,
+                &parent_inode,
+                &mut block,
+                entry,
+                b"target",
+            )
+            .expect("delete first target record")
+        );
+        assert_eq!(u32::from_le_bytes(block[..4].try_into().unwrap()), 0);
+        assert_eq!(u16::from_le_bytes(block[4..6].try_into().unwrap()), 0);
+        assert!(block[6..].iter().all(|byte| *byte == 0));
+    }
 }

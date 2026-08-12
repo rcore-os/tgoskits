@@ -733,6 +733,210 @@ fn failed_linear_to_htree_conversion_restores_linear_directory() {
 }
 
 #[test]
+fn indexed_delete_and_rename_keep_linux_htree_layout() {
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-linux-indexed-delete", "64M");
+    let names = (0..40)
+        .map(|index| format!("indexed-delete-{index:03}-{}", "x".repeat(216)))
+        .collect::<Vec<_>>();
+    let deleted_index = 17usize;
+    let replaced_index = 18usize;
+    let rename_source = b"indexed-rename-source";
+    let directory_number;
+    let indexed_size;
+    let renamed_inode;
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_810_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem =
+            Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
+        let context = MutationContext::new(1000, 1001, 0, 0o022);
+        let directory = filesystem
+            .create_directory(
+                context,
+                filesystem.root_inode(),
+                FileName::new(b"indexed-delete").expect("valid directory name"),
+                FilePermissions::new(0o755).expect("valid directory permissions"),
+            )
+            .expect("create indexed-delete directory");
+        directory_number = directory.number;
+        let permissions = FilePermissions::new(0o644).expect("valid file permissions");
+        for (index, name) in names.iter().enumerate() {
+            filesystem
+                .create_regular_file(
+                    context,
+                    directory_number,
+                    FileName::new(name.as_bytes()).expect("valid long name"),
+                    permissions,
+                )
+                .unwrap_or_else(|error| panic!("create indexed child {index}: {error}"));
+        }
+        let source = filesystem
+            .create_regular_file(
+                context,
+                directory_number,
+                FileName::new(rename_source).expect("valid rename source"),
+                permissions,
+            )
+            .expect("create indexed rename source");
+        renamed_inode = source.number;
+        let indexed = filesystem
+            .inode(directory_number)
+            .expect("inspect indexed-delete directory");
+        assert!(indexed.flags.contains(InodeFlags::DIRECTORY_INDEX));
+        indexed_size = indexed.size;
+
+        let rename = filesystem
+            .rename(
+                context,
+                directory_number,
+                FileName::new(rename_source).expect("valid rename source"),
+                directory_number,
+                FileName::new(names[replaced_index].as_bytes()).expect("valid replacement name"),
+                RenameOptions::REPLACE,
+            )
+            .expect("replace indexed target");
+        let replaced = rename.replaced.expect("indexed rename must replace target");
+        assert!(replaced.requires_reap());
+        filesystem
+            .reap_unlinked_inode(replaced.inode)
+            .expect("reap replaced indexed target");
+
+        let deleted = filesystem
+            .unlink(
+                context,
+                directory_number,
+                FileName::new(names[deleted_index].as_bytes()).expect("valid deleted name"),
+            )
+            .expect("unlink indexed child");
+        assert!(deleted.requires_reap());
+        filesystem
+            .reap_unlinked_inode(deleted.inode)
+            .expect("reap deleted indexed child");
+
+        assert!(
+            filesystem
+                .lookup_child(
+                    directory_number,
+                    FileName::new(names[deleted_index].as_bytes()).expect("valid deleted name"),
+                )
+                .expect("lookup deleted indexed child")
+                .is_none()
+        );
+        assert!(
+            filesystem
+                .lookup_child(
+                    directory_number,
+                    FileName::new(rename_source).expect("valid rename source"),
+                )
+                .expect("lookup old indexed rename source")
+                .is_none()
+        );
+        assert_eq!(
+            filesystem
+                .lookup_child(
+                    directory_number,
+                    FileName::new(names[replaced_index].as_bytes())
+                        .expect("valid replacement name"),
+                )
+                .expect("lookup indexed rename target")
+                .expect("indexed rename target exists")
+                .number,
+            renamed_inode
+        );
+        let after = filesystem
+            .inode(directory_number)
+            .expect("inspect indexed directory after mutation");
+        assert_eq!(after.size, indexed_size);
+        assert!(after.flags.contains(InodeFlags::DIRECTORY_INDEX));
+        filesystem.unmount().expect("unmount indexed-delete image");
+    }
+
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_820_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem =
+            Ext4::mount(device, services, MountOptions::read_write()).expect("remount Linux image");
+        let context = MutationContext::new(1000, 1001, 0, 0o022);
+        let directory = filesystem
+            .lookup_child(
+                filesystem.root_inode(),
+                FileName::new(b"indexed-delete").expect("valid directory name"),
+            )
+            .expect("lookup indexed-delete directory")
+            .expect("indexed-delete directory exists");
+        assert_eq!(directory.number, directory_number);
+        assert_eq!(directory.size, indexed_size);
+        assert!(directory.flags.contains(InodeFlags::DIRECTORY_INDEX));
+        for (index, name) in names.iter().enumerate() {
+            let child = filesystem
+                .lookup_child(
+                    directory_number,
+                    FileName::new(name.as_bytes()).expect("valid long name"),
+                )
+                .unwrap_or_else(|error| panic!("lookup remounted indexed child {index}: {error}"));
+            if index == deleted_index {
+                assert!(child.is_none(), "deleted indexed child reappeared");
+            } else {
+                let child = child.unwrap_or_else(|| panic!("indexed child {index} disappeared"));
+                if index == replaced_index {
+                    assert_eq!(child.number, renamed_inode);
+                }
+            }
+        }
+
+        for (index, name) in names.iter().enumerate() {
+            if index == deleted_index {
+                continue;
+            }
+            let outcome = filesystem
+                .unlink(
+                    context,
+                    directory_number,
+                    FileName::new(name.as_bytes()).expect("valid long name"),
+                )
+                .unwrap_or_else(|error| panic!("unlink indexed child {index}: {error}"));
+            assert!(outcome.requires_reap());
+            filesystem
+                .reap_unlinked_inode(outcome.inode)
+                .unwrap_or_else(|error| panic!("reap indexed child {index}: {error}"));
+        }
+        let empty = filesystem
+            .inode(directory_number)
+            .expect("inspect empty indexed directory");
+        assert_eq!(empty.size, indexed_size);
+        assert!(empty.flags.contains(InodeFlags::DIRECTORY_INDEX));
+        filesystem
+            .unmount()
+            .expect("unmount empty indexed directory");
+    }
+
+    let dump = debugfs_query(&image, "htree_dump /indexed-delete");
+    assert!(
+        dump.contains("Root node dump"),
+        "Linux did not preserve the empty HTree\n{dump}"
+    );
+    assert!(!dump.contains(&names[deleted_index]));
+    e2fsck_readonly_clean(&image, "indexed unlink and rename");
+    fs::remove_dir_all(temp_dir).expect("remove indexed-delete temp dir");
+}
+
+#[test]
 fn owned_insert_splits_linux_htree_leaf() {
     for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
         require_tool(tool);
