@@ -159,10 +159,6 @@ impl Ext4Filesystem {
     }
 
     pub(crate) fn sync_to_disk(&self) -> VfsResult<()> {
-        if self.readonly {
-            return Ok(());
-        }
-
         let mut state = self.inner.lock();
         state.ext4.sync().map_err(into_vfs_err)
     }
@@ -178,10 +174,6 @@ impl Ext4Filesystem {
     }
 
     fn shutdown_filesystem(&self) -> VfsResult<()> {
-        if self.readonly {
-            return Ok(());
-        }
-
         let mut state = self.inner.lock();
         if state.has_pending_reaps() {
             return Err(into_vfs_err(rsext4::Ext4Error::busy()));
@@ -192,7 +184,131 @@ impl Ext4Filesystem {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{sync::Arc, vec::Vec};
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex as StdMutex;
+
+    use ax_errno::{AxError, AxResult};
+    use rsext4::{
+        EXT4_SUPER_MAGIC, MkfsOptions, SUPERBLOCK_OFFSET, SUPERBLOCK_SIZE, endian::DiskFormat,
+        superblock::Ext4Superblock,
+    };
+
     use super::*;
+
+    const TEST_DEVICE_BYTES: usize = 64 * 1024 * 1024;
+    const TEST_SECTOR_BYTES: usize = 512;
+
+    struct SharedMemoryDevice {
+        storage: Arc<StdMutex<Vec<u8>>>,
+        read_only: bool,
+        flushes: Arc<AtomicUsize>,
+    }
+
+    impl FsBlockDevice for SharedMemoryDevice {
+        fn name(&self) -> &str {
+            "ext4-readonly-lifecycle-test"
+        }
+
+        fn num_blocks(&self) -> u64 {
+            (self.storage.lock().unwrap().len() / TEST_SECTOR_BYTES) as u64
+        }
+
+        fn block_size(&self) -> usize {
+            TEST_SECTOR_BYTES
+        }
+
+        fn is_read_only(&self) -> bool {
+            self.read_only
+        }
+
+        fn supports_flush(&self) -> bool {
+            true
+        }
+
+        fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
+            let start = usize::try_from(block_id)
+                .map_err(|_| AxError::InvalidInput)?
+                .checked_mul(TEST_SECTOR_BYTES)
+                .ok_or(AxError::InvalidInput)?;
+            let end = start.checked_add(buf.len()).ok_or(AxError::InvalidInput)?;
+            let storage = self.storage.lock().unwrap();
+            let source = storage.get(start..end).ok_or(AxError::InvalidInput)?;
+            buf.copy_from_slice(source);
+            Ok(())
+        }
+
+        fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
+            if self.read_only {
+                return Err(AxError::ReadOnlyFilesystem);
+            }
+            let start = usize::try_from(block_id)
+                .map_err(|_| AxError::InvalidInput)?
+                .checked_mul(TEST_SECTOR_BYTES)
+                .ok_or(AxError::InvalidInput)?;
+            let end = start.checked_add(buf.len()).ok_or(AxError::InvalidInput)?;
+            let mut storage = self.storage.lock().unwrap();
+            let target = storage.get_mut(start..end).ok_or(AxError::InvalidInput)?;
+            target.copy_from_slice(buf);
+            Ok(())
+        }
+
+        fn flush(&mut self) -> AxResult {
+            self.flushes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    fn readonly_test_filesystem() -> (Ext4Filesystem, Arc<AtomicUsize>) {
+        let storage = Arc::new(StdMutex::new(alloc::vec![0; TEST_DEVICE_BYTES]));
+        let flushes = Arc::new(AtomicUsize::new(0));
+        let blocks = (TEST_DEVICE_BYTES / TEST_SECTOR_BYTES) as u64;
+        let format_device = SharedMemoryDevice {
+            storage: Arc::clone(&storage),
+            read_only: false,
+            flushes: Arc::clone(&flushes),
+        };
+        let disk = Ext4Disk::new(
+            Box::new(format_device),
+            BlockRegion::from_num_blocks(blocks),
+        );
+        rsext4::format(disk, Ext4Clock, MkfsOptions::default()).expect("format test image");
+
+        {
+            let mut storage = storage.lock().unwrap();
+            let superblock_offset = usize::try_from(SUPERBLOCK_OFFSET).unwrap();
+            let superblock_bytes =
+                &mut storage[superblock_offset..superblock_offset + SUPERBLOCK_SIZE];
+            let mut superblock = Ext4Superblock::from_disk_bytes(superblock_bytes);
+            assert_eq!(superblock.s_magic, EXT4_SUPER_MAGIC);
+            superblock.s_state |= Ext4Superblock::EXT4_ERROR_FS;
+            superblock.update_checksum();
+            superblock.to_disk_bytes(superblock_bytes);
+        }
+
+        let mount_device = SharedMemoryDevice {
+            storage,
+            read_only: true,
+            flushes: Arc::clone(&flushes),
+        };
+        let disk = Ext4Disk::new(Box::new(mount_device), BlockRegion::from_num_blocks(blocks));
+        let services = MountServices::new(Ext4Clock, (), (), (), Ext4Observer);
+        let ext4 = rsext4::Ext4::mount_with_readonly_fallback(disk, services)
+            .expect("mount error-state image read-only");
+        assert!(ext4.options().readonly);
+
+        (
+            Ext4Filesystem {
+                inner: Mutex::new(Ext4State {
+                    ext4,
+                    lifetimes: InodeLifetimeTracker::default(),
+                }),
+                root_dir: LazyInit::new(),
+                readonly: true,
+            },
+            flushes,
+        )
+    }
 
     #[test]
     fn zero_link_reap_claim_is_unique_and_retryable() {
@@ -214,6 +330,39 @@ mod tests {
             .expect("failed reap must remain retryable");
         tracker.finish_reap(retry, true);
         assert!(!tracker.has_pending_reaps());
+    }
+
+    #[test]
+    fn readonly_sync_preserves_the_core_device_flush_boundary() {
+        let (filesystem, flushes) = readonly_test_filesystem();
+        let before = flushes.load(Ordering::Relaxed);
+
+        filesystem.sync_to_disk().expect("sync read-only mount");
+
+        assert_eq!(flushes.load(Ordering::Relaxed), before + 1);
+    }
+
+    #[test]
+    fn readonly_shutdown_finishes_the_core_mount_lifecycle() {
+        let (filesystem, _) = readonly_test_filesystem();
+
+        filesystem
+            .shutdown_filesystem()
+            .expect("shutdown read-only mount");
+
+        let mut state = filesystem.lock();
+        let options = state.ext4.options();
+        let error = state
+            .ext4
+            .remount(options)
+            .expect_err("an unmounted core cannot be remounted in place");
+        assert_eq!(error.kind(), rsext4::Ext4ErrorKind::Busy);
+        assert_eq!(
+            error.context(),
+            Some(rsext4::ErrorContext::Operation {
+                op: "remount:unmounted"
+            })
+        );
     }
 }
 
