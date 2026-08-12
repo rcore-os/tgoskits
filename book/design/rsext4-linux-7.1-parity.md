@@ -719,3 +719,27 @@ RSEXT4_BENCH_SUMMARY commit=1ffabfbb5-repeat arch=x86_64 backend=memory feature=
 单独证明或否定 5%/10% 门槛。两组与全部高延迟样本均原样保留，不作废、不选择性
 覆盖；当前 sequential 门禁保持红色，待可固定 governor 的同机环境以冻结 harness
 重新完成 dev/最终实现 A/B。
+
+### 7.25 preallocation filesystem transaction 检查点
+
+采集时间：2026-08-12；被测实现 commit 为 `d4bbc59cd`，固定 CPU 2，环境、
+owned API harness 和 sequential workload 与 7.22 相同。本检查点将每个
+preallocation hole chunk 的 extent tree、inode、allocation bitmap、GDT 与
+superblock 放入同一个 filesystem-owned transaction，并按 Linux
+`ext4_chunk_trans_blocks()` 从当前 group/GDT geometry 推导 credits。顺序写入新
+文件会复用该 preallocation 路径，因此本 workload 可以直接捕捉新增 transaction
+边界对共享写路径的影响。
+
+正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-12-preallocation-transaction.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=d4bbc59cd arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6357845 write_p95_ns=6471216 read_median_ns=5941441 read_p95_ns=6380433 sync_median_ns=32170 sync_p95_ns=34831
+```
+
+相对 dev 基线，write median/p95 分别改善约 6.9%/11.8%，read median/p95
+分别改善约 17.7%/24.8%，sync p95 改善约 9.9%，均通过冻结硬门槛。sync
+median 回退约 24.6%，但 sync workload 的 latency 门槛按 p95 判定；20 个样本
+全部保留，没有丢弃离群值或用选择性复测覆盖。该 memory backend 结果只保护
+现有 core sequential 热路径，完整 fallocate workload 与最终同机 dev/Linux 7.1
+A/B 仍须在整体性能收敛阶段完成。
