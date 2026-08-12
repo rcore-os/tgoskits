@@ -249,6 +249,9 @@ impl ArchOps for Aarch64Arch {
             if !vm.running() {
                 return true;
             }
+            if runtime.take_device_poll_request() {
+                return true;
+            }
             match vcpu.get_arch_vcpu().has_pending_interrupt() {
                 Ok(true) => true,
                 Ok(false) => match vcpu.get_arch_vcpu().arm_timer_wait() {

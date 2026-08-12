@@ -125,6 +125,10 @@ impl IrqIf for IrqIfImpl {
         #[cfg(target_arch = "aarch64")]
         {
             let parent = somehal::irq::aarch64_gic_irq_id_checked(hwirq)?;
+            let systick = somehal::irq::systick_irq();
+            if parent == systick || hwirq.0 == 26 {
+                return Ok(systick);
+            }
             Ok(somehal::irq::resolve_irq_route(parent))
         }
         #[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
