@@ -2,6 +2,8 @@
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 use crate::crc32c::arm64::*;
+#[cfg(target_arch = "x86_64")]
+use crate::crc32c::x86_64::{crc32c_hardware, is_hardware_crc32_supported};
 use crate::superblock::Ext4Superblock;
 
 const POLY: u32 = 0x82F63B78;
@@ -90,6 +92,16 @@ pub fn crc32c_finalize(crc: u32) -> u32 {
 pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
     // Use hardware acceleration on aarch64 when the CPU advertises CRC support.
     #[cfg(target_arch = "aarch64")]
+    {
+        if is_hardware_crc32_supported() {
+            return unsafe { crc32c_hardware(crc, data) };
+        }
+    }
+
+    // x86 CRC32C uses only GPR operands. Runtime detection keeps the generic
+    // binary valid on CPUs without SSE4.2 and leaves the OS lock model out of
+    // this portable algorithm boundary.
+    #[cfg(target_arch = "x86_64")]
     {
         if is_hardware_crc32_supported() {
             return unsafe { crc32c_hardware(crc, data) };
@@ -187,6 +199,31 @@ mod tests {
                     crc32c_update_bitwise(seed, &data[..len]),
                     "length={len} seed={seed:#x}"
                 );
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_64_hardware_crc_matches_software_for_unaligned_slices() {
+        if !crate::crc32c::x86_64::is_hardware_crc32_supported() {
+            return;
+        }
+
+        let mut storage = [0u8; 265];
+        for (index, byte) in storage.iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_mul(29).wrapping_add(13);
+        }
+        for seed in [0, crc32c_init(), 0x1234_5678] {
+            for offset in 0..8 {
+                for len in 0..=257 {
+                    let data = &storage[offset..offset + len];
+                    assert_eq!(
+                        unsafe { crate::crc32c::x86_64::crc32c_hardware(seed, data) },
+                        crc32c_update(seed, data),
+                        "offset={offset} length={len} seed={seed:#x}"
+                    );
+                }
             }
         }
     }
