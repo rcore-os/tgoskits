@@ -254,7 +254,7 @@ fn run_std_tests<R: CargoRunner>(
 
 fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeatureProfile]> {
     match package {
-        "arm_vgic" | "axdevice" | "axfs-ng-vfs" | "rsext4" | "scope-local" | "ax-sync" | "axvm"
+        "arm_vgic" | "axdevice" | "axfs-ng-vfs" | "scope-local" | "ax-sync" | "axvm"
         | "ax-display" | "ax-input" | "ax-ipi" | "ax-log" | "ax-runtime" | "ax-api" | "rdrive" => {
             Some(HOST_TEST_FEATURE_PROFILES)
         }
@@ -698,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn ax_sync_host_packages_use_host_test_feature_profile() {
+    fn portable_core_avoids_ax_sync_host_test_profile() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = [
             "arm_vgic",
@@ -726,7 +726,7 @@ mod tests {
                 vec!["test", "-p", "arm_vgic", "--features", "host-test"],
                 vec!["test", "-p", "axdevice", "--features", "host-test"],
                 vec!["test", "-p", "axfs-ng-vfs", "--features", "host-test"],
-                vec!["test", "-p", "rsext4", "--features", "host-test"],
+                vec!["test", "-p", "rsext4"],
                 vec!["test", "-p", "scope-local", "--features", "host-test"],
                 vec!["test", "-p", "ax-sync", "--features", "host-test"],
             ]
