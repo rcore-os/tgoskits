@@ -250,6 +250,83 @@ fn park_commit_uses_prepared_task_current_identity() {
 }
 
 #[test]
+fn exit_prepare_uses_explicit_task_current_identity() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let remote = Arc::clone(cpu.remote());
+    let before = (
+        remote.owner_current_thread_rq_observations(),
+        remote.owner_current_core_rq_observations(),
+        remote.owner_idle_rq_observations(),
+    );
+
+    let _permit = system
+        .prepare_current_exit_inner(cpu.as_mut(), false)
+        .unwrap();
+
+    assert_eq!(
+        (
+            remote.owner_current_thread_rq_observations() - before.0,
+            remote.owner_current_core_rq_observations() - before.1,
+            remote.owner_idle_rq_observations() - before.2,
+        ),
+        (0, 0, 0),
+        "exit preparation must use one explicit task-current handle and the immutable idle \
+         identity",
+    );
+}
+
+#[test]
+fn exit_commit_uses_prepared_task_current_identity() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let permit = system
+        .prepare_current_exit_inner(cpu.as_mut(), false)
+        .unwrap();
+    let remote = Arc::clone(cpu.remote());
+    let before = (
+        remote.owner_current_thread_rq_observations(),
+        remote.owner_current_core_rq_observations(),
+    );
+
+    let _decision = system
+        .commit_current_exit_after_owner_drain(cpu.as_mut(), permit)
+        .unwrap();
+
+    let current_thread_observations = remote.owner_current_thread_rq_observations() - before.0;
+    assert!(
+        current_thread_observations <= 2,
+        "exit commit may retain only the two post-selection idle-pull rechecks, got \
+         {current_thread_observations}",
+    );
+    assert_eq!(
+        remote.owner_current_core_rq_observations() - before.1,
+        0,
+        "exit commit must use the task-current core captured by its prepared permit",
+    );
+}
+
+#[test]
 fn ordinary_switch_tail_does_not_reopen_the_owner_runqueue() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();

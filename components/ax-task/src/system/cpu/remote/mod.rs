@@ -67,6 +67,10 @@ pub struct CpuRemote {
     #[cfg(test)]
     owner_current_core_rq_observations: AtomicU64,
     #[cfg(test)]
+    owner_current_thread_rq_observations: AtomicU64,
+    #[cfg(test)]
+    owner_idle_rq_observations: AtomicU64,
+    #[cfg(test)]
     scheduler_deadline_derivations: AtomicU64,
 }
 
@@ -92,6 +96,10 @@ impl CpuRemote {
             #[cfg(test)]
             owner_current_core_rq_observations: AtomicU64::new(0),
             #[cfg(test)]
+            owner_current_thread_rq_observations: AtomicU64::new(0),
+            #[cfg(test)]
+            owner_idle_rq_observations: AtomicU64::new(0),
+            #[cfg(test)]
             scheduler_deadline_derivations: AtomicU64::new(0),
         })
     }
@@ -115,6 +123,14 @@ impl CpuRemote {
                 self.owner_current_core_rq_observations
                     .fetch_add(1, Ordering::Relaxed);
             }
+            RunQueueGuardSource::OwnerCurrentThreadObservation => {
+                self.owner_current_thread_rq_observations
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            RunQueueGuardSource::OwnerIdleObservation => {
+                self.owner_idle_rq_observations
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             _ => {}
         }
         self.run_queue.lock(source.irq_guard_source())
@@ -129,6 +145,17 @@ impl CpuRemote {
     pub(crate) fn owner_current_core_rq_observations(&self) -> u64 {
         self.owner_current_core_rq_observations
             .load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owner_current_thread_rq_observations(&self) -> u64 {
+        self.owner_current_thread_rq_observations
+            .load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owner_idle_rq_observations(&self) -> u64 {
+        self.owner_idle_rq_observations.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
