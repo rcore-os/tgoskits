@@ -723,10 +723,11 @@ impl DirNodeOps for MemoryNode {
         let target = target.to_owned();
         let target_len = target.len() as u64;
         let dir = self.inode.as_dir()?;
-        let mut entries = dir.entries.lock();
-
-        if entries.contains_key(name) {
-            return Err(VfsError::AlreadyExists);
+        {
+            let entries = dir.entries.lock();
+            if entries.contains_key(name) {
+                return Err(VfsError::AlreadyExists);
+            }
         }
         self.fs.resize_usage(0, target_len)?;
         let inode = Inode::new(
@@ -742,11 +743,12 @@ impl DirNodeOps for MemoryNode {
             self.fs
                 .used_bytes
                 .fetch_sub(target_len, AtomicOrdering::AcqRel);
-            drop(entries);
             drop(self.fs.inodes.lock().remove(inode.ino as usize - 1));
             return Err(VfsError::InvalidData);
         };
         file.length.store(target_len, AtomicOrdering::Release);
+        // The symlink payload uses a sleepable mutex. Initialize it before taking the
+        // IRQ-safe directory lock so no blocking lock is acquired in atomic context.
         *file.symlink.lock() = Some(target);
 
         let entry = DirEntry::new_file(
@@ -757,6 +759,16 @@ impl DirNodeOps for MemoryNode {
                 name.to_owned(),
             ),
         );
+        let mut entries = dir.entries.lock();
+        if entries.contains_key(name) {
+            drop(entries);
+            drop(entry);
+            self.fs
+                .used_bytes
+                .fetch_sub(target_len, AtomicOrdering::AcqRel);
+            release_inode(&self.fs, &inode, 0);
+            return Err(VfsError::AlreadyExists);
+        }
         let cookie = dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
         entries.insert(
             name.into(),
@@ -874,14 +886,33 @@ pub(crate) fn failed_symlink_capacity_reservation_does_not_publish_name_for_test
         return false;
     };
 
-    matches!(
-        directory.create_symlink(
+    let capacity_failure_is_atomic =
+        matches!(
+            directory.create_symlink(
+                "link",
+                "four",
+                NodePermission::from_bits_truncate(0o777),
+                1000,
+                1001,
+            ),
+            Err(VfsError::StorageFull)
+        ) && matches!(directory.lookup("link"), Err(VfsError::NotFound));
+
+    let filesystem = MemoryFs::new_with_size_limit(64);
+    let root = filesystem.root_dir();
+    let Ok(directory) = root.as_dir() else {
+        return false;
+    };
+    let successful_create_is_readable = directory
+        .create_symlink(
             "link",
-            "four",
+            "target",
             NodePermission::from_bits_truncate(0o777),
             1000,
             1001,
-        ),
-        Err(VfsError::StorageFull)
-    ) && matches!(directory.lookup("link"), Err(VfsError::NotFound))
+        )
+        .and_then(|entry| entry.read_link())
+        .is_ok_and(|target| target == "target");
+
+    capacity_failure_is_atomic && successful_create_is_readable
 }
