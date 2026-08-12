@@ -28,6 +28,7 @@ starry-vm
 ax-timer-list
 ax-alloc
 page-table-generic
+buddy-slab-allocator
 ax-display
 ax-driver
 rdrive
