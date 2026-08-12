@@ -301,7 +301,7 @@ impl ArchTrait for Arch {
         _secondary_entry as *const ()
     }
 
-    fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
+    fn kick_secondary_cpu(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
         match sbi::hart_start(hartid, entry, arg) {
             Ok(()) => Ok(()),
             Err(sbi::HartStartError::AlreadyAvailable | sbi::HartStartError::AlreadyStarted) => {
