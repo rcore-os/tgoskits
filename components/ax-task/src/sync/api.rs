@@ -10,6 +10,11 @@ pub use super::mutex::{
     InterruptibleMutexExt, LockdepMutexExt, Mutex, MutexGuard, PiMutex, PiMutexGuard,
     PiMutexLockInterrupted, RawMutex, RawPiMutex,
 };
+#[cfg(feature = "host-test")]
+#[doc(hidden)]
+pub fn host_pi_blocking_context_validations() -> u64 {
+    super::mutex::host_blocking_context_validations()
+}
 #[cfg(not(feature = "lockdep"))]
 pub type LockSubclass = u32;
 #[cfg(not(feature = "lockdep"))]

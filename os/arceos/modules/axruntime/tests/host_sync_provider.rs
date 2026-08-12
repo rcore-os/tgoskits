@@ -1,3 +1,5 @@
+use std::{sync::Arc, thread, time::Duration};
+
 use ax_runtime::{Mutex, SpinLock, SpinRwLock};
 use ax_sync::{
     Mutex as ExternalMutex, SpinLock as ExternalSpinLock, SpinRwLock as ExternalSpinRwLock,
@@ -31,4 +33,27 @@ fn host_ax_sync_wrappers_use_the_unique_runtime_provider() {
     let mutex = ExternalMutex::new(5usize);
     *mutex.lock() += 1;
     assert_eq!(*mutex.lock(), 6);
+}
+
+#[test]
+fn host_pi_mutex_validates_contention_without_bare_metal_cpu_state() {
+    let mutex = Arc::new(ExternalMutex::new(()));
+    let owner = mutex.lock();
+    let validation = ax_task::sync::api::host_pi_blocking_context_validations();
+    let waiter_mutex = Arc::clone(&mutex);
+    let waiter = thread::spawn(move || {
+        let _guard = waiter_mutex.lock();
+    });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while ax_task::sync::api::host_pi_blocking_context_validations() == validation {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "host PI contender did not reach blocking-context validation"
+        );
+        thread::yield_now();
+    }
+
+    drop(owner);
+    waiter.join().expect("host PI contender must acquire");
 }

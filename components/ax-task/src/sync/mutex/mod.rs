@@ -2,6 +2,9 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "host-test")]
+static HOST_BLOCKING_CONTEXT_VALIDATIONS: AtomicU64 = AtomicU64::new(0);
+
 #[cfg(feature = "lockdep")]
 pub(in crate::sync) mod lockdep;
 #[path = "core.rs"]
@@ -160,6 +163,8 @@ impl<'lock> PiMutexAlgorithm<'lock> {
                         // The uncontended path neither publishes a waiter nor
                         // schedules and must remain usable during
                         // single-threaded boot.
+                        #[cfg(feature = "host-test")]
+                        HOST_BLOCKING_CONTEXT_VALIDATIONS.fetch_add(1, Ordering::Relaxed);
                         task_result(
                             crate::validate_blocking_context(),
                             "validate PI mutex blocking context",
@@ -418,6 +423,11 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     pub(in crate::sync) fn core_is_locked(core: PiMutexCoreView<'_>) -> bool {
         core.is_locked()
     }
+}
+
+#[cfg(feature = "host-test")]
+pub(crate) fn host_blocking_context_validations() -> u64 {
+    HOST_BLOCKING_CONTEXT_VALIDATIONS.load(Ordering::Relaxed)
 }
 
 impl RawMutex {
