@@ -1,0 +1,26 @@
+[base]
+id = 2
+name = "zephyr-virtio-net-peer"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [2]
+phys_cpu_sets = [2]
+
+[kernel]
+entry_point = 0x4000_117c
+image_location = "memory"
+kernel_path = "${workspace}/../tgosimages/IMAGES/qemu-aarch64/zephyr/zephyr-net-qemu"
+kernel_load_addr = 0x4000_0000
+dtb_load_addr = 0x47e0_0000
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x57]

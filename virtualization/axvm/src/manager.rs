@@ -184,6 +184,11 @@ impl AxvmRuntime {
         crate::runtime::notify_vm(vm_id)
     }
 
+    /// Ask the VM's primary vCPU to poll DMA devices from its own run loop.
+    pub fn request_vm_device_poll(vm_id: VMId) -> AxVmResult {
+        crate::runtime::request_vm_device_poll(vm_id)
+    }
+
     /// Remove a VM selected from the runtime registry.
     pub fn remove_vm(vm_id: VMId) -> Option<AxVMRef> {
         crate::runtime::remove_vm(vm_id)

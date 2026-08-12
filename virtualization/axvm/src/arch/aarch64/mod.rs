@@ -248,6 +248,9 @@ impl ArchOps for Aarch64Arch {
                 return;
             }
         }
+        if runtime.take_device_poll_request() {
+            return;
+        }
         if let Err(error) = vcpu.get_arch_vcpu().arm_timer_wait() {
             warn!(
                 "VM[{}] VCpu[{}] cannot rearm architectural timer before WFI wait: {error:?}",
@@ -267,6 +270,7 @@ impl ArchOps for Aarch64Arch {
                 );
                 return;
             }
+        }
         }
 
         crate::vm::wait_for_vcpu_event_if_idle(

@@ -135,6 +135,14 @@ fn notify_runtime_for_device_poll(runtime: &crate::vm::VmRuntimeHandle, vcpu_num
     }
 }
 
+pub fn request_vm_device_poll(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
+    vm.with_runtime(|runtime| {
+        runtime.request_device_poll();
+        Ok(())
+    })
+}
+
 pub fn stop_vm(vm_id: usize) -> AxVmResult {
     let vm = vm_by_id(vm_id)?;
     if matches!(vm.status(), VmStatus::Running) {

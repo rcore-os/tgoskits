@@ -176,6 +176,7 @@ pub(crate) struct VmRuntimeHandle {
     running_halting_vcpu_count: AtomicUsize,
     lifecycle_error: StdMutex<Option<AxVmError>>,
     deferred_reset_requested: AtomicBool,
+    device_poll_requested: AtomicBool,
 }
 
 pub(crate) struct VcpuEventWaitSnapshot {
@@ -254,6 +255,7 @@ impl VmRuntimeHandle {
             running_halting_vcpu_count: AtomicUsize::new(0),
             lifecycle_error: StdMutex::new(None),
             deferred_reset_requested: AtomicBool::new(false),
+            device_poll_requested: AtomicBool::new(false),
         }
     }
 
@@ -419,6 +421,11 @@ impl VmRuntimeHandle {
 
     pub(crate) fn device_poll_requested(&self) -> bool {
         self.device_poll_requested.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn request_device_poll(&self) {
+        self.device_poll_requested.store(true, Ordering::Release);
+        self.notify_all();
     }
 
     pub(crate) fn take_device_poll_request(&self) -> bool {
