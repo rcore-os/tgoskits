@@ -97,7 +97,7 @@ fn do_poll(
 ) -> StarryResult<isize> {
     debug!("do_poll fds={poll_fds:?} timeout={timeout:?}");
 
-    let mut res = 0isize;
+    let mut invalid_count = 0isize;
     let mut fds = Vec::with_capacity(poll_fds.len());
     let mut revent_indices = Vec::with_capacity(poll_fds.len());
     for (index, fd) in poll_fds.iter_mut().enumerate() {
@@ -118,14 +118,15 @@ fn do_poll(
             Err(_) => {
                 // If the fd is invalid, set revents to POLLNVAL
                 fd.revents = POLLNVAL as _;
-                res += 1;
+                invalid_count += 1;
             }
         }
     }
-    if res > 0 {
-        return Ok(res);
-    }
     let fds = FdPollSet(fds);
+    if invalid_count > 0 {
+        let ready_count = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
+        return Ok(invalid_count + ready_count as isize);
+    }
 
     with_blocked_signals(sigmask, || {
         let wait = poll_fn(|cx| {
