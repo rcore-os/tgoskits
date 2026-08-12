@@ -127,9 +127,10 @@ pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 pub(crate) use runtime_task::{
     CpuId as ArceOsCpuId, CpuSet as ArceOsCpuSet, MonotonicDeadline as ArceOsMonotonicDeadline,
-    SchedulePolicy as ArceOsSchedulePolicy, SwitchReason as ArceOsSwitchReason,
-    TaskError as ArceOsTaskError, ThreadExtension as ArceOsThreadExtension,
-    ThreadExtensionOps as ArceOsThreadExtensionOps, ThreadId as ArceOsThreadId,
+    RtPriority as ArceOsRtPriority, SchedulePolicy as ArceOsSchedulePolicy,
+    SwitchReason as ArceOsSwitchReason, TaskError as ArceOsTaskError,
+    ThreadExtension as ArceOsThreadExtension, ThreadExtensionOps as ArceOsThreadExtensionOps,
+    ThreadId as ArceOsThreadId,
 };
 
 /// Hard-IRQ-safe event consumed by one fixed ArceOS service thread.
@@ -227,6 +228,19 @@ where
             entry, name, stack_size, extension, affinity,
         )
     }
+}
+
+pub(crate) fn spawn_thread_with_policy_and_affinity<F>(
+    entry: F,
+    name: std::string::String,
+    stack_size: usize,
+    policy: ArceOsSchedulePolicy,
+    affinity: ArceOsCpuSet,
+) -> Result<ArceOsThreadHandle, ArceOsTaskError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    runtime_task::spawn_raw_with_policy_and_affinity(entry, name, stack_size, policy, affinity)
 }
 
 pub(crate) fn join_thread(thread: ArceOsThreadHandle) -> Result<i32, ArceOsTaskError> {

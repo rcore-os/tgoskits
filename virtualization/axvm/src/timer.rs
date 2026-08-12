@@ -29,6 +29,13 @@ const TIMER_WORKER_STACK_SIZE: usize = 0x20_000;
 #[cfg(test)]
 const TEST_TIMER_CPU_COUNT: usize = 128;
 
+fn timer_worker_policy() -> crate::host::task::SchedulePolicy {
+    crate::host::task::SchedulePolicy::fifo(
+        crate::host::task::RtPriority::new(1)
+            .expect("Linux low FIFO priority must remain representable"),
+    )
+}
+
 /// Owner-aware handle for one AxVM timer entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct VmTimerHandle {
@@ -354,18 +361,16 @@ pub(crate) fn init_percpu() -> crate::AxVmResult {
     let cpu = Arc::new(TimerCpu::new());
     let worker_cpu = Arc::clone(&cpu);
     let affinity = crate::host::task::cpu_set_one(cpu_id);
-    let worker = unsafe {
-        // SAFETY: the per-CPU worker carries no OS extension. Its single-CPU
-        // affinity is installed before scheduler publication, and its owned
-        // timer CPU reference is moved exactly once into a permanent entry.
-        crate::host::task::spawn_thread_with_extension_and_affinity(
-            move || timer_worker(worker_cpu),
-            std::format!("axvm-timer-{cpu_id}"),
-            TIMER_WORKER_STACK_SIZE,
-            None,
-            Some(affinity),
-        )
-    }
+    // PREEMPT_RT runs `ktimers/%u` at FIFO priority 1 so timer callbacks are
+    // serviced before ordinary fair tasks. AxVM's per-CPU worker owns the same
+    // timer-thread responsibility and must not be starved by a busy vCPU.
+    let worker = crate::host::task::spawn_thread_with_policy_and_affinity(
+        move || timer_worker(worker_cpu),
+        std::format!("axvm-timer-{cpu_id}"),
+        TIMER_WORKER_STACK_SIZE,
+        timer_worker_policy(),
+        affinity,
+    )
     .map_err(|error| crate::AxVmError::host("start per-CPU AxVM timer worker", error))?;
     debug!(
         "AxVM timer worker {} started on CPU {cpu_id}",
@@ -551,5 +556,17 @@ mod tests {
 
         TOKEN.store(0, Ordering::Release);
         assert!(exhausted.is_err(), "an exhausted timer identity was reused");
+    }
+
+    #[test]
+    fn timer_worker_runs_above_fair_vcpu_threads() {
+        assert!(
+            matches!(
+                timer_worker_policy(),
+                crate::host::task::SchedulePolicy::Fifo { priority }
+                    if priority.get() == 1
+            ),
+            "PREEMPT_RT timer workers must use Linux's low FIFO priority"
+        );
     }
 }

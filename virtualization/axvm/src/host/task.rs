@@ -10,7 +10,7 @@ pub(crate) type ThreadExtensionBorrow<'thread> =
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
 pub(crate) use arceos::{
-    ArceOsCpuSet as CpuSet, ArceOsSchedulePolicy as SchedulePolicy,
+    ArceOsCpuSet as CpuSet, ArceOsRtPriority as RtPriority, ArceOsSchedulePolicy as SchedulePolicy,
     ArceOsSwitchReason as SwitchReason, ArceOsTaskError as TaskError,
     ArceOsThreadExtension as ThreadExtension, ArceOsThreadExtensionOps as ThreadExtensionOps,
     ArceOsThreadId as ThreadId,
@@ -37,6 +37,19 @@ where
             entry, name, stack_size, extension, affinity,
         )
     }
+}
+
+pub(crate) fn spawn_thread_with_policy_and_affinity<F>(
+    entry: F,
+    name: std::string::String,
+    stack_size: usize,
+    policy: SchedulePolicy,
+    affinity: CpuSet,
+) -> Result<ThreadHandle, TaskError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    arceos::spawn_thread_with_policy_and_affinity(entry, name, stack_size, policy, affinity)
 }
 
 pub(crate) fn join_thread(thread: ThreadHandle) -> Result<i32, TaskError> {
