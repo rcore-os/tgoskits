@@ -37,9 +37,6 @@ members = [
     "components/kernutil",
     "components/linked_list_r4l",
     "components/scope-local",
-    "components/starry-process",
-    "components/starry-signal",
-    "components/starry-vm",
     "components/timer_list",
     "platforms/ax-plat",
     "platforms/ax-plat-macros",
@@ -87,7 +84,10 @@ members = [
 
     "os/StarryOS/axnsproxy",
     "os/StarryOS/kernel",
+    "os/StarryOS/process",
+    "os/StarryOS/signal",
     "os/StarryOS/starryos",
+    "os/StarryOS/vm",
     "os/arceos/api/*",
     "os/arceos/modules/axdisplay",
     "os/arceos/modules/axhal",
@@ -261,9 +261,9 @@ starfive-jh7110-dwmmc = { version = "0.1.5", path = "drivers/blk/starfive-jh7110
 smoltcp = { version = "0.13.1", default-features = false }
 axnsproxy = { version = "0.3.4", path = "os/StarryOS/axnsproxy" }
 starry-kernel = { version = "0.7.7", path = "os/StarryOS/kernel" }
-starry-process = { version = "0.4.16", path = "components/starry-process" }
-starry-signal = { version = "0.8.13", path = "components/starry-signal" }
-starry-vm = { version = "0.5.13", path = "components/starry-vm" }
+starry-process = { version = "0.4.16", path = "os/StarryOS/process" }
+starry-signal = { version = "0.8.13", path = "os/StarryOS/signal" }
+starry-vm = { version = "0.5.13", path = "os/StarryOS/vm" }
 starryos = { version = "0.5.28", path = "os/StarryOS/starryos" }
 test-simple = { version = "0.3.4", path = "components/crate_interface/test_crates/test-simple" }
 test-weak = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak" }

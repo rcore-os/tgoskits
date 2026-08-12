@@ -628,8 +628,6 @@ fn is_os_layer_manifest(workspace_root: &Path, path: &Path) -> bool {
         || relative.starts_with("os/StarryOS/")
         || relative.starts_with("os/axvisor/")
         || relative.starts_with("virtualization/axvm/")
-        || relative.starts_with("components/starry-process/")
-        || relative.starts_with("components/starry-signal/")
 }
 
 fn is_allowed_ax_sync_os_edge(workspace_root: &Path, path: &Path) -> bool {
@@ -995,6 +993,31 @@ ax-sync-test-support = "0.1"
             r#"
 [package]
 name = "ax-task"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+ax-sync = "0.1"
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("OS-layer crate must not depend directly")
+        }));
+    }
+
+    #[test]
+    fn rejects_starry_domain_crate_ax_sync_dependency() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "os/StarryOS/process/Cargo.toml",
+            r#"
+[package]
+name = "starry-process"
 version = "0.1.0"
 edition = "2024"
 [dependencies]

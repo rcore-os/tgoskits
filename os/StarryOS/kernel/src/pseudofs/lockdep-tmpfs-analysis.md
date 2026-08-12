@@ -251,9 +251,9 @@ The run now stops later on a different lockdep report:
 ```text
 lockdep: lock order inversion detected
 requested:
-  kind=spin lock ... acquire_at=components/starry-process/src/process.rs:214:51
+  kind=spin lock ... acquire_at=os/StarryOS/process/src/process.rs:214:51
 conflicting held lock:
-  ... acquired_at=components/starry-process/src/process.rs:211:42
+  ... acquired_at=os/StarryOS/process/src/process.rs:211:42
 ```
 
 That new report is in `Process::exit()`:

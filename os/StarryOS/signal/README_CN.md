@@ -1,11 +1,11 @@
-<h1 align="center">starry-process</h1>
+<h1 align="center">starry-signal</h1>
 
-<p align="center">Process management for Starry OS</p>
+<p align="center">Signal management library for Starry OS</p>
 
 <div align="center">
 
-[![Crates.io](https://img.shields.io/crates/v/starry-process.svg)](https://crates.io/crates/starry-process)
-[![Docs.rs](https://docs.rs/starry-process/badge.svg)](https://docs.rs/starry-process)
+[![Crates.io](https://img.shields.io/crates/v/starry-signal.svg)](https://crates.io/crates/starry-signal)
+[![Docs.rs](https://docs.rs/starry-signal/badge.svg)](https://docs.rs/starry-signal)
 [![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
@@ -15,7 +15,7 @@
 
 # 介绍
 
-`starry-process` 提供了 Process management for Starry OS。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
+`starry-signal` 提供 StarryOS 信号管理能力，是 TGOSKits 中可独立发布的 StarryOS crate。
 
 ## 快速开始
 
@@ -25,14 +25,14 @@
 
 ```toml
 [dependencies]
-starry-process = "0.4.0"
+starry-signal = "0.5.0"
 ```
 
 ### 检查与测试
 
 ```bash
 # 进入 crate 目录
-cd components/starry-process
+cd os/StarryOS/signal
 
 # 代码格式化
 cargo fmt --all
@@ -52,10 +52,10 @@ cargo doc --no-deps
 ### 示例
 
 ```rust
-use starry_process as _;
+use starry_signal as _;
 
 fn main() {
-    // 在这里将 `starry-process` 集成到你的项目中。
+    // 在这里将 `starry-signal` 集成到你的项目中。
 }
 ```
 
@@ -67,7 +67,7 @@ fn main() {
 cargo doc --no-deps --open
 ```
 
-在线文档：[docs.rs/starry-process](https://docs.rs/starry-process)
+在线文档：[docs.rs/starry-signal](https://docs.rs/starry-signal)
 
 # 贡献
 

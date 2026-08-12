@@ -19,12 +19,12 @@ StarryOS 并非从零构建一个全新的内核，而是在 ArceOS 的模块化
 | --- | --- | --- |
 | Linux 兼容语义 | 提供更接近 Linux 的用户态程序运行环境 | `kernel/src/syscall/*`、`kernel/src/task/*`、`kernel/src/file/*` |
 | 复用 ArceOS 基础能力 | 不重复实现 HAL、调度、部分文件与网络基础设施 | `os/arceos/modules/*` |
-| 组件化宏内核 | 在一个内核映像中组织多种子系统，但继续按组件边界拆分职责 | `components/starry-*`、`kernel/*` |
+| 组件化宏内核 | 在一个内核映像中组织多种子系统，但继续按 crate 边界拆分职责 | `os/StarryOS/{process,signal,vm}`、`kernel/*` |
 | 用户态验证闭环 | 通过 rootfs 和 init shell 验证系统行为 | `os/StarryOS/starryos`、rootfs 镜像、`test-suit/starryos` |
 
 ## 架构概览
 
-StarryOS 的核心特征在于多个层次共同组成最终可运行的系统，而非仅有一个 `kernel/` 目录。从底向上依次是平台层、ArceOS 模块层、Starry 专用组件层、内核核心层、启动包层和 rootfs 用户态。每一层各有独立的目录和职责边界。
+StarryOS 的核心特征在于多个层次共同组成最终可运行的系统，而非仅有一个 `kernel/` 目录。从底向上依次是平台层、ArceOS 模块层、StarryOS 领域 crate 层、内核核心层、启动包层和 rootfs 用户态。每一层各有独立的目录和职责边界。
 
 ```mermaid
 flowchart LR
@@ -48,19 +48,19 @@ flowchart LR
 理解此图需注意：
 
 - `rootfsUsers` 是 StarryOS 验证 Linux 兼容行为的核心载体。
-- `kernelCore` 并非从零实现全部底层能力，而是将 ArceOS 模块和 Starry 专用组件拼接成宏内核语义。
+- `kernelCore` 并非从零实现全部底层能力，而是将 ArceOS 模块和 StarryOS 领域 crate 拼接成宏内核语义。
 - 修改 `arceosModules` 时，不仅 ArceOS 受影响，StarryOS 也会被波及。
 
 ## 分层职责
 
-与 ArceOS 的"单内核单层次"不同，StarryOS 的分层从用户态的 rootfs 一直延伸到平台层。中间的内核核心层和 Starry 专用组件层共同实现了宏内核语义，而 ArceOS 模块层则提供了硬件抽象和基础 OS 能力。
+与 ArceOS 的"单内核单层次"不同，StarryOS 的分层从用户态的 rootfs 一直延伸到平台层。中间的内核核心层和 StarryOS 领域 crate 层共同实现了宏内核语义，而 ArceOS 模块层则提供了硬件抽象和基础 OS 能力。
 
 | 层次 | 目录 | 职责 |
 | --- | --- | --- |
 | 用户态层 | rootfs 中的 shell、busybox、测试程序 | 触发 syscall、文件系统、进程管理等行为 |
 | 启动包层 | `os/StarryOS/starryos` | 构造命令行与环境变量，进入内核入口 |
 | 内核核心层 | `os/StarryOS/kernel` | `entry`、`syscall`、`task`、`mm`、`file`、`pseudofs`、`time`、`trap` |
-| Starry 专用组件层 | `components/starry-*` | 进程、信号、虚拟内存等抽象 |
+| StarryOS 领域 crate 层 | `os/StarryOS/{process,signal,vm}` | 可独立发布的进程、信号、虚拟内存抽象 |
 | ArceOS 基础模块层 | `os/arceos/modules/*` | HAL、任务调度、同步、基础 I/O、文件与网络能力 |
 | 平台层 | `platforms/*`、`axplat-*` | 架构与板级支持 |
 
@@ -81,13 +81,13 @@ StarryOS 内核按职责划分为 10 个子系统，覆盖从启动入口到 sys
 | trap | `kernel/src/trap.rs` | 异常/陷入处理，从用户态进入内核态的入口分发 | `syscall`、`task` |
 | config | `kernel/src/config` | 内核构建配置与常量 | 全局 |
 
-## Starry 专用组件
+## StarryOS 领域 crate
 
-StarryOS 的 Linux 兼容语义中，有一部分抽象足够通用，被提取为 `components/` 下的独立组件。这些组件介于 ArceOS 基础模块和 StarryOS 内核实现之间，避免将所有逻辑集中到 `kernel/` 目录，便于后续替换、扩展或复用。
+StarryOS 的 Linux 兼容语义中，有一部分抽象足够稳定，被拆为 `os/StarryOS/` 下的独立 crate。这些 crate 与 `kernel/` 同属 StarryOS，但仍保留各自的 Cargo 包名、版本和独立发布能力，便于后续替换、扩展或复用。
 
-- **starry-process** — 进程抽象（`Process` 结构体），管理 PID 分配、进程组、会话、退出事件等。
-- **starry-signal** — 信号处理框架，提供 `ProcessSignalManager` 和 `ThreadSignalManager`。
-- **starry-vm** — 虚拟地址空间抽象（`AddrSpace`），通过 `ax-hal` 使用 `page-table-generic`，并由 `ax-cpu` 提供当前架构的 stage-1 页表格式。
+- **starry-process**（`os/StarryOS/process`）— 进程抽象（`Process` 结构体），管理 PID 分配、进程组、会话、退出事件等。
+- **starry-signal**（`os/StarryOS/signal`）— 信号处理框架，提供 `ProcessSignalManager` 和 `ThreadSignalManager`。
+- **starry-vm**（`os/StarryOS/vm`）— 虚拟地址空间抽象（`AddrSpace`），通过 `ax-hal` 使用 `page-table-generic`，并由 `ax-cpu` 提供当前架构的 stage-1 页表格式。
 
 ## 进程与线程模型
 
