@@ -1167,3 +1167,34 @@ RSEXT4_BENCH_SUMMARY commit=b1bafeabd arch=x86_64 backend=memory feature=metadat
 checkpoint 成本移回 unmount 后，unmount 相对 dev 仍在 5%/10% 门槛内。dirty sync p95 仅
 改善 0.5%，且相对 dev 仍是硬红；剩余优化目标已收窄到 commit/checksum/metadata cache CPU
 路径，不能再归因于普通 sync 误做 checkpoint。
+
+### 7.38 JBD2 transaction payload 借用检查点
+
+Linux v7.1 `fs/jbd2/commit.c:631-915` 让 descriptor tag checksum 和 journal write 直接
+消费 transaction-owned metadata buffer；只有 payload 首四字节等于 JBD2 magic 时才建立
+escaped image。旧 Rust writer 在任何 journal I/O 前都把每个 `Box<[u8]>` 无条件复制到
+`Vec<u8>`，当前 sync-cycle 的六个 metadata update 因而额外分配并复制 24 KiB。
+
+本阶段将普通 payload 改为借用 `committing_transaction` 的唯一 buffer，只为 magic payload
+分配 zeroed escaped image。descriptor 仍先于其 payload 写出，CSUM_V3 tag 仍覆盖实际写入
+journal 的 escaped bytes，成功后原 update 才移动到 checkpoint owner；任何 I/O error 都不会
+临时取走 committing owner。确定性单测同时断言普通 payload 指针相同，以及 escaped journal
+image、tag checksum 与未转义 checkpoint home image。
+
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量。全部样本保存在
+`book/design/data/rsext4-perf/2026-08-12-jbd2-payload-borrow.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=14220cfeb arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=18821 dirty_sync_p95_ns=21773 clean_sync_median_ns=218 clean_sync_p95_ns=286 unmount_median_ns=10279 unmount_p95_ns=15770
+```
+
+| workload | dev median | current median | 变化 | dev p95 | current p95 | 变化 | 当前结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| dirty sync | 6.751 us | 18.821 us | +178.8% | 7.061 us | 21.773 us | +208.3% | 红 |
+| clean sync | 2.962 us | 0.218 us | -92.6% | 3.087 us | 0.286 us | -90.7% | 绿 |
+| clean-state unmount | 10.336 us | 10.279 us | -0.6% | 11.147 us | 15.770 us | +41.5% | p95 红 |
+
+相对 7.37，dirty sync median/p95 分别改善约 2.5%/2.6%，但正确 commit 与 dev 的旧
+flush-only sync 仍不是等价 durability，硬红项保持不变。unmount 的 30.494 us 最大样本没有
+剔除，因而 p95 原样判红；该波动也不能抵消 dirty sync 的稳定改善。下一步继续优化所有
+metadata checksum 共用的 CRC32C 热路径，而不改变 transaction I/O 或 publication 边界。
