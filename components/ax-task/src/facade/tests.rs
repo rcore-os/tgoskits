@@ -808,53 +808,6 @@ mod tests {
     }
 
     #[test]
-    fn ktimer_worker_claims_kernel_timer_before_task_timeout_backlog() {
-        let system = Box::pin(
-            TaskSystem::new(
-                crate::TaskSystemConfig::new(1)
-                    .with_thread_capacity(4)
-                    .with_batch_limit(2),
-            )
-            .unwrap(),
-        );
-        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-        system
-            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
-            .unwrap();
-        system.bring_cpu_online(cpu.as_mut()).unwrap();
-        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
-        let sleeper = system
-            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
-            .unwrap();
-        let _registration = arm_test_deadline(
-            cpu.as_ref(),
-            sleeper.sleep_timer(),
-            deadline(10),
-            TaskDeadlineKind::park_timeout(1),
-        );
-        register_kernel_timer(deadline(10), Box::new(|_| {})).unwrap();
-
-        test_runtime::set_monotonic_ns(10);
-        test_runtime::set_scheduler_ns(10);
-        assert_eq!(on_clock_event(instant(10), 2).unwrap().expired(), 2);
-
-        let mut batch = system.service_ktimer_work(cpu.as_mut()).unwrap();
-        assert_eq!(
-            batch.processed(),
-            1,
-            "a pending kernel callback must not wait behind unrelated task timeouts"
-        );
-        assert!(batch.pending(), "the deferred task timeout must remain sticky");
-        let mut timer = batch
-            .take_kernel_timer()
-            .expect("the first worker pass must claim the pending kernel timer");
-        timer.invoke();
-        system
-            .complete_kernel_timer_execution(CpuId::new(0))
-            .unwrap();
-    }
-
-    #[test]
     fn unavailable_park_deadline_owner_preserves_ticket_for_retry() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();

@@ -4,7 +4,10 @@ mod heap;
 mod kernel;
 mod node;
 
-pub use kernel::{KernelTimerCallback, KernelTimerCancelOutcome, KernelTimerHandle};
+pub use kernel::{
+    KernelTimerAction, KernelTimerCallback, KernelTimerCancelOutcome, KernelTimerHandle,
+    RestartableKernelTimerCallback,
+};
 pub(crate) use kernel::{
     KernelTimerEntry, KernelTimerExecution, KernelTimerExpireBatch, KernelTimerQueue,
 };

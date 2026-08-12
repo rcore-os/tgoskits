@@ -18,6 +18,19 @@ static NEXT_KERNEL_TIMER_ID: AtomicU64 = AtomicU64::new(1);
 /// Callback executed by the owner CPU's `ktimers/%u` service thread.
 pub type KernelTimerCallback = Box<dyn FnOnce(MonotonicInstant) + Send + 'static>;
 
+/// Callback for a stable timer registration that may restart itself.
+pub type RestartableKernelTimerCallback =
+    Box<dyn FnMut(MonotonicInstant) -> KernelTimerAction + Send + 'static>;
+
+/// Result returned by a restartable kernel-timer callback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KernelTimerAction {
+    /// Finish this registration after the current callback.
+    Complete,
+    /// Reinsert the same registration at a new absolute deadline.
+    Rearm(MonotonicDeadline),
+}
+
 /// Stable identity of one host kernel-timer registration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KernelTimerHandle {
@@ -53,7 +66,12 @@ pub(crate) struct KernelTimerEntry {
     identity: NonZeroU64,
     deadline: MonotonicDeadline,
     expired_at: Option<MonotonicInstant>,
-    callback: Option<KernelTimerCallback>,
+    callback: KernelTimerCallbackState,
+}
+
+enum KernelTimerCallbackState {
+    OneShot(Option<KernelTimerCallback>),
+    Restartable(RestartableKernelTimerCallback),
 }
 
 impl KernelTimerEntry {
@@ -61,17 +79,23 @@ impl KernelTimerEntry {
         deadline: MonotonicDeadline,
         callback: KernelTimerCallback,
     ) -> Result<Self, TaskDeadlineError> {
-        let identity = NEXT_KERNEL_TIMER_ID
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                current.checked_add(1)
-            })
-            .map_err(|_| TaskDeadlineError::GenerationExhausted)?;
-        let identity = NonZeroU64::new(identity).ok_or(TaskDeadlineError::GenerationExhausted)?;
         Ok(Self {
-            identity,
+            identity: next_kernel_timer_identity()?,
             deadline,
             expired_at: None,
-            callback: Some(callback),
+            callback: KernelTimerCallbackState::OneShot(Some(callback)),
+        })
+    }
+
+    pub(crate) fn new_restartable(
+        deadline: MonotonicDeadline,
+        callback: RestartableKernelTimerCallback,
+    ) -> Result<Self, TaskDeadlineError> {
+        Ok(Self {
+            identity: next_kernel_timer_identity()?,
+            deadline,
+            expired_at: None,
+            callback: KernelTimerCallbackState::Restartable(callback),
         })
     }
 
@@ -86,6 +110,20 @@ impl KernelTimerEntry {
     fn expire(&mut self, now: MonotonicInstant) {
         assert!(self.expired_at.replace(now).is_none());
     }
+
+    fn rearm(&mut self, deadline: MonotonicDeadline) {
+        self.deadline = deadline;
+        self.expired_at = None;
+    }
+}
+
+fn next_kernel_timer_identity() -> Result<NonZeroU64, TaskDeadlineError> {
+    let identity = NEXT_KERNEL_TIMER_ID
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| TaskDeadlineError::GenerationExhausted)?;
+    NonZeroU64::new(identity).ok_or(TaskDeadlineError::GenerationExhausted)
 }
 
 impl fmt::Debug for KernelTimerEntry {
@@ -99,24 +137,38 @@ impl fmt::Debug for KernelTimerEntry {
     }
 }
 
-/// One callback claimed by the ktimer worker and no longer cancellable.
+/// One callback claimed by the ktimer worker.
+///
+/// Cancellation while the callback runs leaves a tombstone that prevents a
+/// restartable callback from returning the entry to the active queue.
 pub(crate) struct KernelTimerExecution {
     entry: KernelTimerEntry,
 }
 
 impl KernelTimerExecution {
-    pub(crate) fn invoke(&mut self) {
+    pub(crate) fn invoke(&mut self) -> KernelTimerAction {
         let expired_at = self
             .entry
             .expired_at
             .expect("claimed kernel timer must have an expiry sample");
-        let callback = self
-            .entry
-            .callback
-            .take()
-            .expect("kernel timer callback may execute only once");
-        callback(expired_at);
+        match &mut self.entry.callback {
+            KernelTimerCallbackState::OneShot(callback) => {
+                callback
+                    .take()
+                    .expect("kernel timer callback may execute only once")(
+                    expired_at
+                );
+                KernelTimerAction::Complete
+            }
+            KernelTimerCallbackState::Restartable(callback) => callback(expired_at),
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ExecutingKernelTimer {
+    identity: NonZeroU64,
+    cancel_requested: bool,
 }
 
 /// Result of one bounded hard-IRQ promotion pass.
@@ -151,7 +203,7 @@ impl KernelTimerExpireBatch {
 pub(crate) struct KernelTimerQueue {
     active: Vec<KernelTimerEntry>,
     expired: Vec<KernelTimerEntry>,
-    executing: usize,
+    executing: Vec<ExecutingKernelTimer>,
     capacity: usize,
 }
 
@@ -160,7 +212,7 @@ impl KernelTimerQueue {
         Self {
             active: Vec::with_capacity(capacity),
             expired: Vec::with_capacity(capacity),
-            executing: 0,
+            executing: Vec::with_capacity(capacity),
             capacity,
         }
     }
@@ -170,14 +222,11 @@ impl KernelTimerQueue {
         owner: CpuId,
         entry: KernelTimerEntry,
     ) -> Result<KernelTimerHandle, KernelTimerEntry> {
-        if self.active.len() + self.expired.len() + self.executing >= self.capacity {
+        if self.active.len() + self.expired.len() + self.executing.len() >= self.capacity {
             return Err(entry);
         }
         let handle = KernelTimerHandle::new(owner, entry.identity());
-        let position = self.active.partition_point(|candidate| {
-            (candidate.deadline(), candidate.identity()) > (entry.deadline(), entry.identity())
-        });
-        self.active.insert(position, entry);
+        self.insert_at(entry);
         Ok(handle)
     }
 
@@ -189,10 +238,22 @@ impl KernelTimerQueue {
         {
             return Some(self.active.remove(index));
         }
-        self.expired
+        let removed = self
+            .expired
             .iter()
             .position(|entry| entry.identity() == handle.identity())
-            .map(|index| self.expired.remove(index))
+            .map(|index| self.expired.remove(index));
+        if removed.is_some() {
+            return removed;
+        }
+        if let Some(executing) = self
+            .executing
+            .iter_mut()
+            .find(|entry| entry.identity == handle.identity())
+        {
+            executing.cancel_requested = true;
+        }
+        None
     }
 
     pub(crate) fn expire_due(
@@ -225,17 +286,40 @@ impl KernelTimerQueue {
         if self.expired.is_empty() {
             return None;
         }
-        self.executing += 1;
-        Some(KernelTimerExecution {
-            entry: self.expired.remove(0),
-        })
+        let entry = self.expired.remove(0);
+        self.executing.push(ExecutingKernelTimer {
+            identity: entry.identity(),
+            cancel_requested: false,
+        });
+        Some(KernelTimerExecution { entry })
     }
 
-    pub(crate) fn complete_execution(&mut self) {
-        self.executing = self
+    pub(crate) fn complete_execution(
+        &mut self,
+        mut execution: KernelTimerExecution,
+        action: KernelTimerAction,
+    ) -> Option<KernelTimerEntry> {
+        let position = self
             .executing
-            .checked_sub(1)
-            .expect("kernel timer execution accounting underflowed");
+            .iter()
+            .position(|entry| entry.identity == execution.entry.identity())
+            .expect("completed kernel timer must remain in executing state");
+        let executing = self.executing.swap_remove(position);
+        if !executing.cancel_requested
+            && let KernelTimerAction::Rearm(deadline) = action
+        {
+            execution.entry.rearm(deadline);
+            self.insert_at(execution.entry);
+            return None;
+        }
+        Some(execution.entry)
+    }
+
+    fn insert_at(&mut self, entry: KernelTimerEntry) {
+        let position = self.active.partition_point(|candidate| {
+            (candidate.deadline(), candidate.identity()) > (entry.deadline(), entry.identity())
+        });
+        self.active.insert(position, entry);
     }
 
     pub(crate) fn next_deadline(&self) -> Option<MonotonicDeadline> {
@@ -253,7 +337,7 @@ impl KernelTimerQueue {
     }
 
     pub(crate) fn has_active_work(&self) -> bool {
-        !self.active.is_empty() || !self.expired.is_empty() || self.executing != 0
+        !self.active.is_empty() || !self.expired.is_empty() || !self.executing.is_empty()
     }
 }
 
@@ -266,5 +350,71 @@ impl fmt::Debug for KernelTimerQueue {
             .field("executing", &self.executing)
             .field("capacity", &self.capacity)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, sync::Arc};
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    fn deadline(nanos: u64) -> MonotonicDeadline {
+        MonotonicDeadline::from_nanos(nanos).unwrap()
+    }
+
+    fn instant(nanos: u64) -> MonotonicInstant {
+        MonotonicInstant::from_nanos(nanos).unwrap()
+    }
+
+    #[test]
+    fn restartable_timer_reuses_identity_until_cancelled() {
+        let invocations = Arc::new(AtomicUsize::new(0));
+        let callback_invocations = Arc::clone(&invocations);
+        let entry = KernelTimerEntry::new_restartable(
+            deadline(10),
+            Box::new(move |_| {
+                let invocation = callback_invocations.fetch_add(1, Ordering::Relaxed) + 1;
+                KernelTimerAction::Rearm(deadline(10 + invocation as u64 * 10))
+            }),
+        )
+        .unwrap();
+        let mut queue = KernelTimerQueue::new(1);
+        let handle = queue.insert(CpuId::new(0), entry).unwrap();
+
+        assert_eq!(queue.expire_due(instant(10), 1).expired(), 1);
+        let mut execution = queue.claim_expired().unwrap();
+        let action = execution.invoke();
+        assert!(queue.complete_execution(execution, action).is_none());
+        assert_eq!(queue.next_deadline(), Some(deadline(20)));
+
+        assert_eq!(queue.expire_due(instant(20), 1).expired(), 1);
+        let mut execution = queue.claim_expired().unwrap();
+        let action = execution.invoke();
+        assert!(queue.complete_execution(execution, action).is_none());
+        assert_eq!(queue.next_deadline(), Some(deadline(30)));
+        assert_eq!(invocations.load(Ordering::Relaxed), 2);
+
+        assert!(queue.cancel(handle).is_some());
+        assert!(!queue.has_active_work());
+    }
+
+    #[test]
+    fn cancellation_during_callback_prevents_restart() {
+        let entry = KernelTimerEntry::new_restartable(
+            deadline(10),
+            Box::new(|_| KernelTimerAction::Rearm(deadline(20))),
+        )
+        .unwrap();
+        let mut queue = KernelTimerQueue::new(1);
+        let handle = queue.insert(CpuId::new(0), entry).unwrap();
+        assert_eq!(queue.expire_due(instant(10), 1).expired(), 1);
+        let mut execution = queue.claim_expired().unwrap();
+
+        assert!(queue.cancel(handle).is_none());
+        let action = execution.invoke();
+        assert!(queue.complete_execution(execution, action).is_some());
+        assert!(!queue.has_active_work());
     }
 }

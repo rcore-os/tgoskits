@@ -94,9 +94,23 @@ fn service_current_ktimer_pass(owner: CpuId) -> Result<bool, TaskError> {
         }
         (batch.pending(), batch.take_kernel_timer())
     };
-    if let Some(timer) = kernel_timer.as_mut() {
-        timer.invoke();
-        system.complete_kernel_timer_execution(owner)?;
+    if let Some(mut timer) = kernel_timer.take() {
+        let action = timer.invoke();
+        let mut completion = {
+            let mut irq = RuntimeIrqGuard::enter();
+            let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+            if cpu.owner() != owner {
+                return Err(TaskError::CpuOwnerMismatch {
+                    expected: owner.as_u32(),
+                    actual: cpu.owner().as_u32(),
+                });
+            }
+            system.complete_kernel_timer_execution(cpu.as_mut(), timer, action)?
+        };
+        if let Some(update) = completion.update() {
+            task_runtime::publish_scheduler_deadline(update);
+        }
+        drop(completion.take_completed());
     }
     Ok(pending)
 }

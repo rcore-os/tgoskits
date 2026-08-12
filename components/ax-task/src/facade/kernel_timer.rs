@@ -30,6 +30,26 @@ pub fn register_kernel_timer(
 ) -> Result<KernelTimerHandle, TaskError> {
     validate_task_context()?;
     let entry = KernelTimerEntry::new(deadline, callback).map_err(kernel_timer_error)?;
+    register_kernel_timer_entry(entry)
+}
+
+/// Registers a stable callback that may rearm the same timer identity.
+///
+/// The callback runs in the owner CPU's `ktimers/%u` task and returns either
+/// [`KernelTimerAction::Complete`] or an absolute deadline for the same entry.
+/// Cancellation remains non-blocking; if it races with an executing callback,
+/// the callback may finish but cannot rearm the cancelled registration.
+pub fn register_restartable_kernel_timer(
+    deadline: MonotonicDeadline,
+    callback: RestartableKernelTimerCallback,
+) -> Result<KernelTimerHandle, TaskError> {
+    validate_task_context()?;
+    let entry =
+        KernelTimerEntry::new_restartable(deadline, callback).map_err(kernel_timer_error)?;
+    register_kernel_timer_entry(entry)
+}
+
+fn register_kernel_timer_entry(entry: KernelTimerEntry) -> Result<KernelTimerHandle, TaskError> {
     let result = {
         let mut irq = RuntimeIrqGuard::enter();
         let mut cpu = runtime_current_cpu_mut(&mut irq)?;

@@ -3,7 +3,8 @@ use std::{
     os::arceos::{
         api::time::ax_monotonic_time,
         task::{
-            KernelTimerCancelOutcome, MonotonicDeadline, cancel_kernel_timer, register_kernel_timer,
+            KernelTimerAction, KernelTimerCancelOutcome, MonotonicDeadline, cancel_kernel_timer,
+            register_kernel_timer, register_restartable_kernel_timer,
         },
     },
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -13,10 +14,12 @@ use std::{
 
 static CALLBACK_ORDER: AtomicUsize = AtomicUsize::new(0);
 static CANCELLED_CALLBACK_RAN: AtomicBool = AtomicBool::new(false);
+static RESTARTABLE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 
 pub fn run() -> crate::TestResult {
     CALLBACK_ORDER.store(0, Ordering::Release);
     CANCELLED_CALLBACK_RAN.store(false, Ordering::Release);
+    RESTARTABLE_CALLBACKS.store(0, Ordering::Release);
 
     let now = ax_monotonic_time();
     let shared_deadline = MonotonicDeadline::from_duration(now + Duration::from_millis(40));
@@ -47,9 +50,24 @@ pub fn run() -> crate::TestResult {
         cancel_kernel_timer(cancelled).map_err(|_| "failed to cancel kernel timer")?,
         KernelTimerCancelOutcome::Cancelled
     );
+    let restartable_deadline = MonotonicDeadline::from_duration(now + Duration::from_millis(20));
+    let restartable = register_restartable_kernel_timer(
+        restartable_deadline,
+        Box::new(move |_| {
+            let invocation = RESTARTABLE_CALLBACKS.fetch_add(1, Ordering::AcqRel) + 1;
+            if invocation < 3 {
+                KernelTimerAction::Rearm(restartable_deadline)
+            } else {
+                KernelTimerAction::Complete
+            }
+        }),
+    )
+    .map_err(|_| "failed to register restartable kernel timer")?;
 
     let started = std::time::Instant::now();
-    while CALLBACK_ORDER.load(Ordering::Acquire) != 2 {
+    while CALLBACK_ORDER.load(Ordering::Acquire) != 2
+        || RESTARTABLE_CALLBACKS.load(Ordering::Acquire) != 3
+    {
         if started.elapsed() >= Duration::from_secs(1) {
             return Err("kernel timer callbacks did not complete");
         }
@@ -57,5 +75,10 @@ pub fn run() -> crate::TestResult {
     }
     thread::sleep(Duration::from_millis(40));
     assert!(!CANCELLED_CALLBACK_RAN.load(Ordering::Acquire));
+    assert_eq!(
+        cancel_kernel_timer(restartable)
+            .map_err(|_| "failed to inspect completed restartable kernel timer")?,
+        KernelTimerCancelOutcome::NotCancelled
+    );
     Ok(())
 }

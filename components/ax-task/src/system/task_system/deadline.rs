@@ -2,8 +2,10 @@
 
 use super::*;
 use crate::{
-    SchedulerClockEvent, runtime::SchedulerDeadlineUpdate, scheduler_clock_event,
-    scheduler_time_reached,
+    SchedulerClockEvent,
+    runtime::SchedulerDeadlineUpdate,
+    scheduler_clock_event, scheduler_time_reached,
+    timer::{KernelTimerAction, KernelTimerEntry},
 };
 
 enum OwnerDeadlineTimerPlan {
@@ -32,6 +34,21 @@ pub(crate) struct KtimerServiceBatch {
     pending: bool,
     update: Option<SchedulerDeadlineUpdate>,
     kernel_timer: Option<KernelTimerExecution>,
+}
+
+pub(crate) struct KernelTimerCompletionBatch {
+    completed: Option<KernelTimerEntry>,
+    update: Option<SchedulerDeadlineUpdate>,
+}
+
+impl KernelTimerCompletionBatch {
+    pub(crate) const fn update(&self) -> Option<SchedulerDeadlineUpdate> {
+        self.update
+    }
+
+    pub(crate) fn take_completed(&mut self) -> Option<KernelTimerEntry> {
+        self.completed.take()
+    }
 }
 
 impl KtimerServiceBatch {
@@ -626,10 +643,19 @@ impl TaskSystem {
         if pending {
             cpu.remote().publish_ktimer_work();
         }
-        let update = cpu.as_mut().next_scheduler_deadline_update_if_changed(
-            monotonic_now,
-            SchedulerDeadlineDerivationSource::KtimerService,
-        )?;
+        // A claimed callback may return a new deadline for the same stable
+        // entry. Keep the expired hardware edge authoritative until the
+        // callback completes, then publish one combined complete/rearm update.
+        // This matches hrtimer restart semantics and avoids a cancel/arm pair
+        // for every periodic callback.
+        let update = if kernel_timer.is_some() {
+            None
+        } else {
+            cpu.as_mut().next_scheduler_deadline_update_if_changed(
+                monotonic_now,
+                SchedulerDeadlineDerivationSource::KtimerService,
+            )?
+        };
         Ok(KtimerServiceBatch {
             #[cfg(test)]
             processed: processed + usize::from(kernel_timer.is_some()),
@@ -639,18 +665,25 @@ impl TaskSystem {
         })
     }
 
-    pub(crate) fn complete_kernel_timer_execution(&self, owner: CpuId) -> Result<(), TaskError> {
+    pub(crate) fn complete_kernel_timer_execution(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        execution: KernelTimerExecution,
+        action: KernelTimerAction,
+    ) -> Result<KernelTimerCompletionBatch, TaskError> {
         if task_runtime::in_hard_irq() {
             return Err(TaskError::UnsafeContext);
         }
-        let remote = self
-            .cpu_remote(owner)
-            .ok_or(TaskError::InvalidConfiguration)?;
-        remote
+        let completed = cpu
+            .remote()
             .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
             .kernel_timers
-            .complete_execution();
-        Ok(())
+            .complete_execution(execution, action);
+        let update = cpu.as_mut().next_scheduler_deadline_update_if_changed(
+            task_runtime::monotonic_now(),
+            SchedulerDeadlineDerivationSource::KtimerService,
+        )?;
+        Ok(KernelTimerCompletionBatch { completed, update })
     }
 
     fn service_buffered_expired_deadline(
