@@ -383,16 +383,14 @@ pub fn unmap_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
 /// masked or before it is enabled. The interrupt path only reads the stable
 /// mapping and never performs rdrive lookup, allocation, or free.
 pub fn resolve_irq_route(parent: IrqId) -> IrqId {
-    IRQ_ROUTES
-        .lock()
+    irq_routes()
         .iter()
         .find(|route| route.parent == parent)
         .map_or(parent, |route| route.leaf)
 }
 
 pub fn parent_irq_for_leaf(leaf: IrqId) -> Option<IrqId> {
-    IRQ_ROUTES
-        .lock()
+    irq_routes()
         .iter()
         .find(|route| route.leaf == leaf)
         .map(|route| route.parent)
