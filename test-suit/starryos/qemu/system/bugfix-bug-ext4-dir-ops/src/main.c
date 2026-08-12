@@ -12,6 +12,7 @@
 #include "test_framework.h"
 #include <dirent.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -731,6 +732,53 @@ static void test_rm_rf_pattern(void)
         force_remove(dir);
 }
 
+/*
+ * Linux ext4 treats an indexed directory position as a filename hash, not as
+ * an inode byte offset.  SEEK_END must therefore use the architecture's HTree
+ * EOF cookie.  Using st_size as the endpoint resumes near hash zero and makes
+ * getdents64 return the directory again instead of EOF.
+ */
+static void test_htree_seek_end(void)
+{
+    char dir[256], path[512];
+
+    snprintf(dir, sizeof(dir), "%s/htree_seek_end", BASE);
+    CHECK(mkdir(dir, 0755) == 0, "mkdir HTree seek-end directory");
+
+    int ok = 1;
+    for (int i = 0; i < 240; i++) {
+        snprintf(path, sizeof(path),
+                 "%s/entry-%03d-abcdefghijklmnopqrstuvwxyz0123456789", dir, i);
+        if (write_file(path, "x") != 0)
+            ok = 0;
+    }
+    CHECK(ok, "create enough entries to index directory");
+
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+    CHECK(dfd >= 0, "open indexed directory for seek-end");
+    if (dfd >= 0) {
+        off_t end = lseek(dfd, 0, SEEK_END);
+        CHECK(end == (off_t)INT64_MAX,
+              "HTree SEEK_END returns Linux 64-bit EOF cookie");
+
+        char buf[64];
+        CHECK_RET(syscall(SYS_getdents64, dfd, buf, sizeof(buf)), 0,
+                  "getdents64 after HTree SEEK_END returns EOF");
+        CHECK_RET(lseek(dfd, 0, SEEK_SET), 0,
+                  "HTree SEEK_SET returns to start");
+        CHECK(syscall(SYS_getdents64, dfd, buf, sizeof(buf)) > 0,
+              "getdents64 after HTree rewind returns entries");
+        close(dfd);
+    }
+
+    for (int i = 0; i < 240; i++) {
+        snprintf(path, sizeof(path),
+                 "%s/entry-%03d-abcdefghijklmnopqrstuvwxyz0123456789", dir, i);
+        unlink(path);
+    }
+    CHECK_RET(rmdir(dir), 0, "remove HTree seek-end directory");
+}
+
 /* ========== main ========== */
 
 int main(void)
@@ -774,6 +822,7 @@ int main(void)
     /* readdir offset correctness after deletion (rm -rf bug) */
     test_readdir_offset_after_delete();
     test_rm_rf_pattern();
+    test_htree_seek_end();
 
     manual_rmdir_recursive(BASE);
 

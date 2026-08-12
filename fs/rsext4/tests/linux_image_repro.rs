@@ -435,6 +435,13 @@ fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
         )
         .expect("lookup indexed directory")
         .expect("indexed directory exists");
+    assert_eq!(
+        filesystem
+            .directory_end_cursor(indexed.number)
+            .expect("query indexed directory end cursor"),
+        DirectoryCursor::End,
+        "Linux HTree directories must expose a hash-space EOF"
+    );
     device_reads.set(0);
     let first_entry = filesystem
         .read_directory(indexed.number, DirectoryCursor::Start, 1)

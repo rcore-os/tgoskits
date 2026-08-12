@@ -216,7 +216,8 @@
             "mkdir-mutation-rollback",
             "rename-mutation-rollback",
             "typed-rename-flags",
-            "htree-readdir-cookie"
+            "htree-readdir-cookie",
+            "htree-directory-seek-end"
           ]
         }
       ]

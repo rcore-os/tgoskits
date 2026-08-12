@@ -145,6 +145,14 @@ pub trait DirNodeOps: NodeOps {
     /// result.
     fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize>;
 
+    /// Returns the visible cursor used as the origin of `SEEK_END`.
+    ///
+    /// The default is the directory byte size. Filesystems whose directory
+    /// positions are not byte offsets must expose their own terminal cookie.
+    fn directory_end_cursor(&self) -> VfsResult<DirectoryCursor> {
+        self.len().map(DirectoryCursor::new)
+    }
+
     /// Lookups a directory entry by name.
     fn lookup(&self, name: &str) -> VfsResult<DirEntry>;
 

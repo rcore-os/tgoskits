@@ -58,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including mandatory directory-entry tails on metadata-checksummed leaf blocks.
 - Preserve all 28 logical block bits in HTree index entries and decode Linux's
   compact directory record lengths when checking large index blocks.
+- Use the HTree hash-space EOF for indexed-directory `SEEK_END` while retaining
+  byte-size endpoints for linear directories through a typed VFS capability.
 - Follow Linux HTree collision continuations across leaf and parent-index
   boundaries, preserve continuation I/O errors, and report the true byte offset
   of matched directory entries.

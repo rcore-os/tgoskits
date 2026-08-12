@@ -455,6 +455,16 @@ impl DirNodeOps for Inode {
         }
     }
 
+    fn directory_end_cursor(&self) -> VfsResult<VfsDirectoryCursor> {
+        let cursor = self
+            .fs
+            .lock()
+            .ext4
+            .directory_end_cursor(self.ino)
+            .map_err(into_vfs_err)?;
+        Ok(core_to_vfs_directory_cursor(cursor))
+    }
+
     fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
         if name == "." {
             return self

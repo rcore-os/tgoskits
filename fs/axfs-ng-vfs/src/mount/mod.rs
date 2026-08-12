@@ -1040,6 +1040,10 @@ impl Location {
         self.entry.as_dir()?.read_dir(cursor, sink)
     }
 
+    pub fn directory_end_cursor(&self) -> VfsResult<DirectoryCursor> {
+        self.entry.as_dir()?.inner().directory_end_cursor()
+    }
+
     pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
         self.mount_with_source(fs, "none")
     }

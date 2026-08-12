@@ -168,7 +168,8 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
             SeekFrom::Start(pos) => pos,
             SeekFrom::End(delta) => d
                 .inner()
-                .len()?
+                .directory_end_cursor()?
+                .offset()
                 .checked_add_signed(delta)
                 .ok_or(AxError::InvalidInput)?,
             SeekFrom::Current(delta) => cursor
@@ -176,6 +177,9 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
                 .checked_add_signed(delta)
                 .ok_or(AxError::InvalidInput)?,
         };
+        if new_pos > i64::MAX as u64 {
+            return Err(AxError::InvalidInput);
+        }
         *cursor = DirectoryCursor::new(new_pos);
         return Ok(new_pos as _);
     }

@@ -761,6 +761,27 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         Ok(output)
     }
 
+    /// Returns the terminal cursor for directory seek semantics.
+    ///
+    /// Linear directories use their byte size. HTree directories use an
+    /// opaque terminal state so an OS adapter can encode the architecture's
+    /// ext4 EOF cookie without leaking ABI policy into the portable core.
+    pub fn directory_end_cursor(&mut self, directory: InodeNumber) -> Ext4Result<DirectoryCursor> {
+        let inode = self
+            .filesystem
+            .get_inode_by_num(&mut self.device, directory)?;
+        if !inode.is_dir() {
+            return Err(Ext4Error::not_dir());
+        }
+        if inode.is_htree_indexed() {
+            Ok(DirectoryCursor::End)
+        } else {
+            Ok(DirectoryCursor::Linear {
+                offset: self.filesystem.inode_size(&inode),
+            })
+        }
+    }
+
     /// Creates an empty regular file below an already resolved directory.
     pub fn create_regular_file(
         &mut self,

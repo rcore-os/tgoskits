@@ -1521,6 +1521,14 @@ ArceOS materialized directory 同样改为 peek/commit，buffer 容量不足不�
 `d_ino`/`d_off` 不再伪造为 1/0。ax-fs-ng adapter 每次最多向 core 请求 128 项，并在释放
 filesystem sleepable mutex 后才调用 sink。
 
+Linux `ext4_dir_llseek()` 对 HTree 把 hash-space EOF 同时作为 `SEEK_END` origin 与最大合法
+offset，非 HTree 才使用 inode byte size。旧 Starry 一律以 `Location::len()` 处理目录
+`SEEK_END`：确定性 QEMU 红测中，indexed directory 返回 `st_size`，随后 `getdents64` 又返回
+24 bytes 而非 EOF。core 现通过 `directory_end_cursor()` 区分 `End` 与 linear byte-size，ext4
+adapter 将 `End` 编码为 64-bit Linux EOF `2^63-1`，VFS 只转发 typed capability，Starry 负责
+checked `SEEK_SET/CUR/END` 算术并在 seek 后清除 backend-private continuation。同一 system case
+现为 159/159，通过 EOF、rewind 和再次读取。
+
 固定 x86_64、CPU 2、release、memory backend、4 KiB block、`metadata_csum+64bit+journal`、
 800 个普通项、3 次预热和 10 次测量；计时区间只包含完整 HTree readdir。原始样本见
 `book/design/data/rsext4-perf/2026-08-13-htree-readdir-incremental.csv`。这里的基线
@@ -1534,5 +1542,9 @@ filesystem sleepable mutex 后才调用 sink。
 | 128 | median | 701,628 ns | 183,039 ns | -73.91% |
 | 128 | p95 | 804,165 ns | 239,969 ns | -70.16% |
 
-32-bit getdents cookie、目录 mutation 的 inode-version invalidation、每个 open description 持久化的
-HTree path/range cache、casefold/fscrypt prepared-name hash 仍在后续台账中。
+当前 Starry 的 x86_64/riscv64/aarch64/loongarch64 都是原生 64-bit ABI，syscall table 仅注册
+`getdents64`，没有 32-bit task/compat `getdents`，因此“32-bit getdents cookie”在当前交付边界
+明确为 N/A；若未来引入 compat task ABI，必须新增独立 `linux_dirent32` checked narrowing，并对
+inode/cookie 溢出返回 `EOVERFLOW`，不能截断 64-bit cursor。目录 mutation 的 inode-version
+invalidation、每个 open description 持久化的 HTree path/range cache、casefold/fscrypt
+prepared-name hash 仍在后续台账中。
