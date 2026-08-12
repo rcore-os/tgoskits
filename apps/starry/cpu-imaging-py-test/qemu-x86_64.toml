@@ -1,0 +1,20 @@
+# cpu-imaging-py-test x86_64 - Python imaging test carpet (Pillow + imageio + scikit-image) asserting CLOSED-FORM / numpy goldens on
+# KNOWN inputs (PIL L24 601-2 luma, bilinear at derived coords, analytic drawn masks, impulse-response
+# kernels, byte-exact PNG/BMP/PPM/TIFF/GIF round-trips + JPEG PSNR, skimage BT.709 luma, a Sobel ramp's
+# constant gradient, Otsu on a bimodal field, morphology on a known pattern, regionprops on known blobs,
+# cross-library decode agreement). CPython + Pillow/numpy/scipy (apk) + imageio/scikit-image (pip wheels)
+# are staged into the overlay by prebuild. -smp 1: single vCPU. 1536M: the imaging + scipy stack needs RAM.
+args = [
+    "-machine", "q35",
+    "-nographic", "-cpu", "Haswell", "-m", "1536M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 60000
