@@ -199,7 +199,7 @@ impl_task_runtime! {
             }
         }
 
-        fn finish_context_switch_tail() {
+        fn finish_context_switch_tail() -> bool {
             finish_runtime_context_switch_tail()
         }
 

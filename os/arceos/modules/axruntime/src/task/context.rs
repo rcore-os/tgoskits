@@ -247,7 +247,7 @@ pub(super) fn bind_bootstrap_runtime_context(
     Ok(())
 }
 
-pub(super) fn finish_runtime_context_switch_tail() {
+pub(super) fn finish_runtime_context_switch_tail() -> bool {
     // SAFETY: TaskSystem invokes this with the scheduler baton and local IRQs
     // disabled immediately after entering the incoming context.
     unsafe {
@@ -257,7 +257,8 @@ pub(super) fn finish_runtime_context_switch_tail() {
             // SAFETY: the incoming context exclusively owns its staged one-shot tail.
             current.finish_switch_tail();
         })
-    }
+    };
+    super::address_space::take_context_switch_reclaim_ready()
 }
 
 pub(super) fn create_runtime_context(request: KernelContextRequest) -> RuntimeHandleResult {

@@ -700,10 +700,10 @@ impl TaskSystem {
         }
 
         if !runtime_tail_finished {
-            task_runtime::finish_context_switch_tail();
+            let reclaim_ready = task_runtime::finish_context_switch_tail();
             if cpu
                 .as_mut()
-                .finish_switch_runtime_tail(previous_core.id(), migration_target)
+                .finish_switch_runtime_tail(previous_core.id(), migration_target, reclaim_ready)
                 .is_err()
             {
                 task_runtime::fatal_invariant(0x5357_0001, previous_core.id().as_u64() as usize);
@@ -797,6 +797,9 @@ impl TaskSystem {
         }
         if let Some(migration) = completed.migration {
             migration.commit();
+        }
+        if completed.reclaim_ready {
+            self.publish_resource_release_ready();
         }
         if previous_exited {
             self.task_work.publish();

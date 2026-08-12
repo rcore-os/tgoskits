@@ -124,7 +124,7 @@ impl_task_runtime! {
         fn publish_local_scheduler_work() -> bool {
             false
         }
-        fn finish_context_switch_tail() {}
+        fn finish_context_switch_tail() -> bool { false }
         fn finish_initial_context_switch() {}
         fn scheduler_frame_guard_enter(
             _origin: RuntimeScheduleOrigin,

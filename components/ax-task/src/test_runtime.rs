@@ -326,8 +326,9 @@ impl TaskRuntime for UnitTestRuntime {
             || IRQ_EXIT_SCHEDULE_REMAINING.with(|remaining| remaining.get() != 0)
     }
 
-    fn finish_context_switch_tail() {
+    fn finish_context_switch_tail() -> bool {
         CONTEXT_SWITCH_TAIL_COUNT.with(|count| count.set(count.get() + 1));
+        false
     }
 
     fn finish_initial_context_switch() {

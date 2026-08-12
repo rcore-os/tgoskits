@@ -309,11 +309,22 @@ pub enum AddressSpaceActivationKind {
     User       = 1,
 }
 
+/// Point at which an address-space activation releases the previous CPU lease.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum AddressSpaceActivationPhase {
+    /// The running task replaces its own address space without scheduling out.
+    CurrentTask   = 0,
+    /// The scheduler activates the incoming task before the raw context switch.
+    ContextSwitch = 1,
+}
+
 /// Explicit address-space transaction passed to the runtime switch boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct AddressSpaceActivation {
     kind: AddressSpaceActivationKind,
+    phase: AddressSpaceActivationPhase,
     address_space: AddressSpaceHandle,
 }
 
@@ -321,6 +332,7 @@ impl AddressSpaceActivation {
     /// Enters the architecture's current lazy kernel address-space state.
     pub const KERNEL_LAZY: Self = Self {
         kind: AddressSpaceActivationKind::KernelLazy,
+        phase: AddressSpaceActivationPhase::CurrentTask,
         address_space: AddressSpaceHandle::NONE,
     };
 
@@ -332,22 +344,30 @@ impl AddressSpaceActivation {
         );
         Self {
             kind: AddressSpaceActivationKind::User,
+            phase: AddressSpaceActivationPhase::CurrentTask,
             address_space,
         }
     }
 
     /// Derives the scheduler activation from a thread's nullable `mm` handle.
     pub const fn for_thread(address_space: AddressSpaceHandle) -> Self {
-        if address_space.is_none() {
+        let mut activation = if address_space.is_none() {
             Self::KERNEL_LAZY
         } else {
             Self::user(address_space)
-        }
+        };
+        activation.phase = AddressSpaceActivationPhase::ContextSwitch;
+        activation
     }
 
     /// Returns the requested activation kind.
     pub const fn kind(self) -> AddressSpaceActivationKind {
         self.kind
+    }
+
+    /// Returns the boundary that owns release of the previous CPU lease.
+    pub const fn phase(self) -> AddressSpaceActivationPhase {
+        self.phase
     }
 
     /// Returns the user handle, if this activates a user address space.

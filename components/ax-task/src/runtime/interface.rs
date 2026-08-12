@@ -195,10 +195,13 @@ pub trait TaskRuntime {
     /// The incoming context calls this exactly once while local IRQs remain
     /// disabled and before the scheduler clears the outgoing thread's
     /// `on_cpu` publication. The implementation must not allocate, block,
-    /// invoke callbacks, consume the scheduler baton, or re-enter ax-task. A
-    /// Any failure is an unrecoverable runtime invariant: the raw switch has
-    /// already committed, so there is no compatibility retry path.
-    fn finish_context_switch_tail();
+    /// invoke callbacks, consume the scheduler baton, or re-enter ax-task. It
+    /// returns `true` only when address-space activation claimed a deferred
+    /// resource-release edge; ax-task publishes that edge after clearing the
+    /// outgoing thread's `on_cpu` claim. Any failure is an unrecoverable
+    /// runtime invariant: the raw switch has already committed, so there is no
+    /// compatibility retry path.
+    fn finish_context_switch_tail() -> bool;
 
     /// Consumes the CPU-local scheduler switch baton on a fresh context.
     ///

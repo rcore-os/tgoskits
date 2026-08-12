@@ -507,7 +507,7 @@ impl_trait! {
             IN_HARD_IRQ.with(Cell::get) || HARDIRQ_DEPTH.with(|depth| depth.get() != 0)
         }
 
-        fn finish_context_switch_tail() {
+        fn finish_context_switch_tail() -> bool {
             let cpu = CURRENT_CPU.with(Cell::get);
             VIRTUAL_RUNTIME.with(|runtime| {
                 let mut runtime = runtime.borrow_mut();
@@ -536,6 +536,7 @@ impl_trait! {
                     0,
                 );
             });
+            false
         }
 
         fn finish_initial_context_switch() {

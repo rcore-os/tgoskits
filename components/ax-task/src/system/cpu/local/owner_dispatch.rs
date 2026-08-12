@@ -125,6 +125,7 @@ impl CpuLocal {
         mut self: Pin<&mut Self>,
         previous: ThreadId,
         migration_target: Option<CpuId>,
+        reclaim_ready: bool,
     ) -> Result<(), TaskError> {
         let handoff = self
             .as_mut()
@@ -138,7 +139,8 @@ impl CpuLocal {
         {
             return Err(TaskError::InvalidConfiguration);
         }
-        self.dispatch_state_mut().switch_handoff = Some(handoff.finish_runtime_tail()?);
+        self.dispatch_state_mut().switch_handoff =
+            Some(handoff.finish_runtime_tail(reclaim_ready)?);
         Ok(())
     }
 

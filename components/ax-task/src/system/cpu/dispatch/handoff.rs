@@ -14,13 +14,14 @@ pub(crate) struct SwitchHandoff {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SwitchHandoffPhase {
     Prepared,
-    RuntimeTailFinished,
+    RuntimeTailFinished { reclaim_ready: bool },
 }
 
 pub(crate) struct CompletedSwitchHandoff {
     pub(crate) previous: Arc<ThreadCore>,
     pub(crate) incoming: Arc<ThreadCore>,
     pub(crate) migration: Option<PreparedMigrationDelivery>,
+    pub(crate) reclaim_ready: bool,
 }
 
 impl SwitchHandoff {
@@ -52,25 +53,26 @@ impl SwitchHandoff {
     }
 
     pub(crate) const fn runtime_tail_is_finished(&self) -> bool {
-        matches!(self.phase, SwitchHandoffPhase::RuntimeTailFinished)
+        matches!(self.phase, SwitchHandoffPhase::RuntimeTailFinished { .. })
     }
 
-    pub(crate) fn finish_runtime_tail(mut self) -> Result<Self, TaskError> {
+    pub(crate) fn finish_runtime_tail(mut self, reclaim_ready: bool) -> Result<Self, TaskError> {
         if self.phase != SwitchHandoffPhase::Prepared {
             return Err(TaskError::InvalidConfiguration);
         }
-        self.phase = SwitchHandoffPhase::RuntimeTailFinished;
+        self.phase = SwitchHandoffPhase::RuntimeTailFinished { reclaim_ready };
         Ok(self)
     }
 
     pub(crate) fn into_runtime_finished(self) -> Result<CompletedSwitchHandoff, TaskError> {
-        if self.phase != SwitchHandoffPhase::RuntimeTailFinished {
+        let SwitchHandoffPhase::RuntimeTailFinished { reclaim_ready } = self.phase else {
             return Err(TaskError::InvalidConfiguration);
-        }
+        };
         Ok(CompletedSwitchHandoff {
             previous: self.previous,
             incoming: self.incoming,
             migration: self.migration,
+            reclaim_ready,
         })
     }
 }

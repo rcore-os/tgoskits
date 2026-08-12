@@ -1,6 +1,8 @@
 //! Runtime-owned address-space tokens and per-CPU active-mm state.
 
 use alloc::{boxed::Box, sync::Arc};
+#[cfg(feature = "uspace")]
+use core::sync::atomic::AtomicBool;
 use core::{
     mem::align_of,
     ptr,
@@ -8,6 +10,8 @@ use core::{
 };
 
 use ax_memory_addr::PhysAddr;
+#[cfg(any(feature = "uspace", test))]
+use ax_task::runtime::AddressSpaceActivationPhase;
 use ax_task::{
     TaskError,
     runtime::{
@@ -244,6 +248,15 @@ impl Drop for TaskAddressSpace {
 #[ax_percpu::def_percpu]
 static ACTIVE_ADDRESS_SPACE: usize = 0;
 
+/// Last-active-mm notification claimed before the raw context switch.
+///
+/// The incoming switch tail consumes this bit and returns it to ax-task. The
+/// scheduler publishes task work only after releasing the outgoing task's
+/// `on_cpu` claim, matching Linux `finish_task_switch()` ordering.
+#[ax_percpu::def_percpu]
+#[cfg(feature = "uspace")]
+static CONTEXT_SWITCH_RECLAIM_READY: AtomicBool = AtomicBool::new(false);
+
 fn runtime_address_space(
     address_space: AddressSpaceHandle,
 ) -> Result<&'static RuntimeAddressSpace, RuntimeStatus> {
@@ -316,7 +329,7 @@ fn commit_user_address_space_activation(
     next: &RuntimeAddressSpace,
     install_root: impl FnOnce(usize),
     publish_active: impl FnOnce(usize),
-) {
+) -> bool {
     let same_address_space = next_raw == previous_raw
         || previous.is_some_and(|previous| Arc::ptr_eq(&previous.cpu_state, &next.cpu_state));
     if same_address_space {
@@ -331,7 +344,7 @@ fn commit_user_address_space_activation(
         // backend suppresses the write when the hardware root is already
         // correct, so user-to-user switches in the same mm remain a no-op.
         install_root(next.root);
-        return;
+        return false;
     }
     next.active_cpus.fetch_add(1, Ordering::AcqRel);
     next.cpu_state.activate(cpu_id);
@@ -339,7 +352,9 @@ fn commit_user_address_space_activation(
     publish_active(next_raw);
     if let Some(previous) = previous {
         previous.cpu_state.deactivate(cpu_id);
-        release_active_cpu(previous);
+        release_active_cpu(previous)
+    } else {
+        false
     }
 }
 
@@ -375,7 +390,7 @@ pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation)
                             .unwrap_or_else(|_| panic!("active address-space handle became stale")),
                     )
                 };
-                commit_user_address_space_activation(
+                let reclaim_ready = commit_user_address_space_activation(
                     cpu_id,
                     previous_raw,
                     previous,
@@ -384,6 +399,20 @@ pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation)
                     install_hardware_root,
                     |active| ACTIVE_ADDRESS_SPACE.write_current(pin, active),
                 );
+                if reclaim_ready {
+                    route_reclaim_notification(
+                        activation.phase(),
+                        || {
+                            CONTEXT_SWITCH_RECLAIM_READY.with_current(pin, |pending| {
+                                assert!(
+                                    !pending.swap(true, Ordering::AcqRel),
+                                    "context switch retained an unconsumed active-mm reclaim edge"
+                                );
+                            });
+                        },
+                        ax_task::notify_address_space_reclaim,
+                    );
+                }
                 RuntimeStatus::Success
             })
         }
@@ -400,11 +429,11 @@ pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation)
 
 pub(super) fn release_current_active_address_space() {
     #[cfg(feature = "uspace")]
-    unsafe {
+    let reclaim_ready = unsafe {
         with_current_cpu_pin(|pin| {
             let previous_raw = ACTIVE_ADDRESS_SPACE.read_current(pin);
             if previous_raw == 0 {
-                return;
+                return false;
             }
             install_hardware_root(offline_kernel_root());
             ACTIVE_ADDRESS_SPACE.write_current(pin, 0);
@@ -414,8 +443,12 @@ pub(super) fn release_current_active_address_space() {
             previous
                 .cpu_state
                 .deactivate(pin.area().cpu_index().as_usize());
-            release_active_cpu(previous);
+            release_active_cpu(previous)
         })
+    };
+    #[cfg(feature = "uspace")]
+    if reclaim_ready {
+        ax_task::notify_address_space_reclaim();
     }
 }
 
@@ -468,11 +501,39 @@ pub(super) fn update_runtime_address_space_membarrier_state(
 }
 
 #[cfg(any(feature = "uspace", test))]
-fn release_active_cpu(address_space: &RuntimeAddressSpace) {
+fn release_active_cpu(address_space: &RuntimeAddressSpace) -> bool {
     let active = address_space.active_cpus.fetch_sub(1, Ordering::AcqRel);
     assert!(active >= 1, "active address-space CPU count underflow");
-    if active == 1 && address_space.reclaim_waiting.swap(0, Ordering::AcqRel) != 0 {
-        ax_task::notify_address_space_reclaim();
+    active == 1 && address_space.reclaim_waiting.swap(0, Ordering::AcqRel) != 0
+}
+
+#[cfg(any(feature = "uspace", test))]
+fn route_reclaim_notification(
+    phase: AddressSpaceActivationPhase,
+    defer: impl FnOnce(),
+    publish: impl FnOnce(),
+) {
+    match phase {
+        AddressSpaceActivationPhase::CurrentTask => publish(),
+        AddressSpaceActivationPhase::ContextSwitch => defer(),
+    }
+}
+
+pub(super) fn take_context_switch_reclaim_ready() -> bool {
+    #[cfg(feature = "uspace")]
+    {
+        // SAFETY: the incoming runtime switch tail retains the scheduler baton
+        // and therefore cannot migrate while consuming the CPU-local edge.
+        unsafe {
+            with_current_cpu_pin(|pin| {
+                CONTEXT_SWITCH_RECLAIM_READY
+                    .with_current(pin, |pending| pending.swap(false, Ordering::AcqRel))
+            })
+        }
+    }
+    #[cfg(not(feature = "uspace"))]
+    {
+        false
     }
 }
 
@@ -557,6 +618,25 @@ mod tests {
     }
 
     #[test]
+    fn switch_activation_defers_reclaim_notification_until_switch_tail() {
+        let deferred = AtomicUsize::new(0);
+        let published = AtomicUsize::new(0);
+
+        route_reclaim_notification(
+            AddressSpaceActivationPhase::ContextSwitch,
+            || {
+                deferred.fetch_add(1, Ordering::Relaxed);
+            },
+            || {
+                published.fetch_add(1, Ordering::Relaxed);
+            },
+        );
+
+        assert_eq!(deferred.load(Ordering::Relaxed), 1);
+        assert_eq!(published.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
     fn active_cpu_lease_blocks_owner_destruction_until_release() {
         let drops = Arc::new(AtomicUsize::new(0));
         let mut token = TaskAddressSpace::new(
@@ -579,7 +659,7 @@ mod tests {
         );
         assert_eq!(drops.load(Ordering::Acquire), 0);
 
-        release_active_cpu(runtime);
+        assert!(release_active_cpu(runtime));
         assert_eq!(
             destroy_runtime_address_space(handle),
             AddressSpaceDestroyOutcome::Released
@@ -631,7 +711,7 @@ mod tests {
             AddressSpaceDestroyOutcome::Active
         );
 
-        release_active_cpu(runtime);
+        assert!(!release_active_cpu(runtime));
         assert_eq!(
             destroy_runtime_address_space(handle),
             AddressSpaceDestroyOutcome::Released
@@ -727,7 +807,7 @@ mod tests {
         let hardware_installs = AtomicUsize::new(0);
         let active_publications = AtomicUsize::new(0);
 
-        commit_user_address_space_activation(
+        let reclaim_ready = commit_user_address_space_activation(
             0,
             previous.handle().into_raw(),
             Some(previous_runtime),
@@ -753,6 +833,7 @@ mod tests {
         assert_eq!(next_leases, 0);
         assert_eq!(hardware_installs.load(Ordering::Relaxed), 0);
         assert_eq!(active_publications.load(Ordering::Relaxed), 0);
+        assert!(!reclaim_ready);
     }
 
     #[cfg(feature = "uspace")]
@@ -781,7 +862,7 @@ mod tests {
         let hardware_installs = AtomicUsize::new(0);
         let active_publications = AtomicUsize::new(0);
 
-        commit_user_address_space_activation(
+        let reclaim_ready = commit_user_address_space_activation(
             0,
             previous.handle().into_raw(),
             Some(previous_runtime),
@@ -808,5 +889,6 @@ mod tests {
         assert_eq!(previous_leases, 1);
         assert_eq!(next_leases, 0);
         assert_eq!(active_publications.load(Ordering::Relaxed), 0);
+        assert!(!reclaim_ready);
     }
 }
