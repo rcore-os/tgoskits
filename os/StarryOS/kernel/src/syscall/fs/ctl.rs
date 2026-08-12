@@ -487,12 +487,19 @@ pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     let mut buffer = DirBuffer::new(len);
 
     let dir = Directory::from_fd(fd)?;
-    let mut dir_cursor = dir.cursor.lock();
-    let mut next_cursor = *dir_cursor;
+    let mut position = dir.position.lock();
+    let mut next_cursor = position.cursor;
+    if position.read_state.is_none() {
+        position.read_state = Some(dir.inner().open_directory_read_state()?);
+    }
 
     let mut has_remaining = false;
 
-    dir.inner().read_dir(
+    dir.inner().read_dir_with_state(
+        position
+            .read_state
+            .as_deref_mut()
+            .ok_or(AxError::BadState)?,
         next_cursor,
         &mut |name: &[u8], ino, node_type, cursor: DirectoryCursor| {
             has_remaining = true;
@@ -509,7 +516,7 @@ pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     }
 
     vm_write_slice(buf, &buffer.buf)?;
-    *dir_cursor = next_cursor;
+    position.cursor = next_cursor;
 
     Ok(buffer.offset as _)
 }

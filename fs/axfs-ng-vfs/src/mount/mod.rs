@@ -1,5 +1,6 @@
 use alloc::{
     borrow::{Cow, ToOwned},
+    boxed::Box,
     string::String,
     sync::{Arc, Weak},
     vec,
@@ -17,10 +18,10 @@ use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, Filesystem,
-    FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags,
-    NodeOps, NodePermission, NodeType, OpenOptions, Reference, ReferenceKey, RenameOptions,
-    TypeMap, VfsError, VfsResult, WeakDirEntry, XattrSetMode,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, DirectoryReadState,
+    Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard,
+    NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions, Reference, ReferenceKey,
+    RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -1038,6 +1039,23 @@ impl Location {
         sink: &mut dyn DirEntrySink,
     ) -> VfsResult<usize> {
         self.entry.as_dir()?.read_dir(cursor, sink)
+    }
+
+    /// Creates filesystem-private state for this open directory description.
+    pub fn open_directory_read_state(&self) -> VfsResult<Box<dyn DirectoryReadState>> {
+        self.entry.as_dir()?.open_directory_read_state()
+    }
+
+    /// Reads directory entries with state owned by the open description.
+    pub fn read_dir_with_state(
+        &self,
+        state: &mut dyn DirectoryReadState,
+        cursor: DirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        self.entry
+            .as_dir()?
+            .read_dir_with_state(state, cursor, sink)
     }
 
     pub fn directory_end_cursor(&self) -> VfsResult<DirectoryCursor> {

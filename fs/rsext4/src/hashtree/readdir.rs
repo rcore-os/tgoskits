@@ -16,6 +16,7 @@ use crate::{
 const DIRENT_HEADER_LEN: usize = 8;
 
 /// One active record extracted from an indexed directory leaf.
+#[derive(Debug)]
 pub(crate) struct IndexedDirectoryRecord {
     pub(crate) inode: u32,
     pub(crate) file_type: u8,
@@ -23,30 +24,28 @@ pub(crate) struct IndexedDirectoryRecord {
     pub(crate) major: u32,
     pub(crate) minor: u32,
     pub(crate) collision: u32,
-    pub(crate) next: Option<(u32, u32, u32)>,
 }
 
-struct UnorderedDirectoryRecord {
-    inode: u32,
-    file_type: u8,
-    name: Vec<u8>,
-    major: u32,
-    minor: u32,
+/// One Linux-style HTree hash range cached by an open directory reader.
+#[derive(Debug)]
+pub(crate) struct IndexedDirectoryRange {
+    pub(crate) start: (u32, u32, u32),
+    pub(crate) records: Vec<IndexedDirectoryRecord>,
+    pub(crate) next_start: Option<(u32, u32, u32)>,
 }
 
-/// Reads a bounded HTree batch from the leaf selected by `start`.
+/// Reads one HTree hash range from the leaf selected by `start`.
 ///
 /// Like Linux `ext4_htree_fill_tree()`, this collects and sorts only the
 /// current index range plus all low-bit collision-continuation leaves. It does
-/// not scan or sort the complete directory for a small caller buffer.
-pub(crate) fn read_indexed_directory<B: BlockIo>(
+/// not scan or sort the complete directory.
+pub(crate) fn read_indexed_directory_range<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     directory: InodeNumber,
     inode: &Ext4Inode,
     start: (u32, u32, u32),
-    max_entries: usize,
-) -> Ext4Result<Vec<IndexedDirectoryRecord>> {
+) -> Ext4Result<IndexedDirectoryRange> {
     let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
     let (mut search, root) = manager
         .prepare_search(fs, block_dev, directory, inode, b"")
@@ -69,84 +68,45 @@ pub(crate) fn read_indexed_directory<B: BlockIo>(
         parse_root_record(&root_data, 0, 0)?,
         parse_root_record(&root_data, 12, 2)?,
     ];
-    let lookahead = max_entries.checked_add(1).unwrap_or(max_entries);
-    let mut output = Vec::with_capacity(lookahead.min(128));
     let mut seen_leaves = BTreeSet::new();
-    let mut first_range = true;
-    let mut reached_eof = false;
+    let mut range = Vec::new();
+    range.extend(specials);
+    read_current_leaf_records(
+        fs,
+        block_dev,
+        &manager,
+        search,
+        &path,
+        &mut seen_leaves,
+        &mut range,
+    )?;
 
-    while output.len() < lookahead {
-        let mut range = Vec::new();
-        if first_range {
-            range.extend(specials.iter().map(clone_unordered_record));
-            first_range = false;
-        }
-        read_current_leaf_records(
-            fs,
-            block_dev,
-            &manager,
-            search,
-            &path,
-            &mut seen_leaves,
-            &mut range,
-        )?;
-
-        loop {
-            match manager
-                .advance_path(fs, block_dev, search, &mut path)
-                .map_err(hash_tree_error)?
-            {
-                Some(boundary_hash) if boundary_hash & 1 != 0 => {
-                    read_current_leaf_records(
-                        fs,
-                        block_dev,
-                        &manager,
-                        search,
-                        &path,
-                        &mut seen_leaves,
-                        &mut range,
-                    )?;
-                }
-                Some(_) => break,
-                None => {
-                    reached_eof = true;
-                    break;
-                }
+    let next_start = loop {
+        match manager
+            .advance_path(fs, block_dev, search, &mut path)
+            .map_err(hash_tree_error)?
+        {
+            Some(boundary_hash) if boundary_hash & 1 != 0 => {
+                read_current_leaf_records(
+                    fs,
+                    block_dev,
+                    &manager,
+                    search,
+                    &path,
+                    &mut seen_leaves,
+                    &mut range,
+                )?;
             }
+            Some(boundary_hash) => break Some((boundary_hash, 0, 0)),
+            None => break None,
         }
+    };
 
-        append_sorted_range(range, start, lookahead, &mut output)?;
-        if reached_eof {
-            break;
-        }
-    }
-
-    let returned = output.len().min(max_entries);
-    let mut output = output.into_iter().peekable();
-    let mut batch = Vec::with_capacity(returned);
-    for _ in 0..returned {
-        let mut record = output
-            .next()
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("htree:readdir_batch"))?;
-        record.next = output
-            .peek()
-            .map(|next| (next.major, next.minor, next.collision));
-        if record.next.is_none() && !reached_eof {
-            return Err(Ext4Error::overflow().with_operation("htree:readdir_lookahead"));
-        }
-        batch.push(record);
-    }
-    Ok(batch)
-}
-
-fn clone_unordered_record(record: &UnorderedDirectoryRecord) -> UnorderedDirectoryRecord {
-    UnorderedDirectoryRecord {
-        inode: record.inode,
-        file_type: record.file_type,
-        name: record.name.clone(),
-        major: record.major,
-        minor: record.minor,
-    }
+    Ok(IndexedDirectoryRange {
+        start,
+        records: prepare_range(range, start)?,
+        next_start,
+    })
 }
 
 fn read_current_leaf_records<B: BlockIo>(
@@ -156,7 +116,7 @@ fn read_current_leaf_records<B: BlockIo>(
     search: HashSearch<'_>,
     path: &super::lookup::HashTreePath,
     seen_leaves: &mut BTreeSet<u32>,
-    output: &mut Vec<UnorderedDirectoryRecord>,
+    output: &mut Vec<IndexedDirectoryRecord>,
 ) -> Ext4Result<()> {
     let logical_block = path.current_entry().map_err(hash_tree_error)?.block;
     if !seen_leaves.insert(logical_block) {
@@ -168,16 +128,16 @@ fn read_current_leaf_records<B: BlockIo>(
     parse_leaf_records(&data, search, manager, output)
 }
 
-fn append_sorted_range(
-    mut range: Vec<UnorderedDirectoryRecord>,
+fn prepare_range(
+    mut range: Vec<IndexedDirectoryRecord>,
     start: (u32, u32, u32),
-    limit: usize,
-    output: &mut Vec<IndexedDirectoryRecord>,
-) -> Ext4Result<()> {
+) -> Ext4Result<Vec<IndexedDirectoryRecord>> {
     range.sort_by_key(|record| (record.major, record.minor));
     let mut previous_hash = None;
     let mut collision = 0_u32;
-    for record in range {
+    let range_len = range.len();
+    let mut first_visible = range_len;
+    for (index, record) in range.iter_mut().enumerate() {
         let hash = (record.major, record.minor);
         if previous_hash == Some(hash) {
             collision = collision.checked_add(1).ok_or_else(Ext4Error::overflow)?;
@@ -185,40 +145,27 @@ fn append_sorted_range(
             previous_hash = Some(hash);
             collision = 0;
         }
-        if (record.major, record.minor, collision) < start {
-            continue;
-        }
-        output.push(IndexedDirectoryRecord {
-            inode: record.inode,
-            file_type: record.file_type,
-            name: record.name,
-            major: record.major,
-            minor: record.minor,
-            collision,
-            next: None,
-        });
-        if output.len() == limit {
-            break;
+        record.collision = collision;
+        if first_visible == range_len && (record.major, record.minor, collision) >= start {
+            first_visible = index;
         }
     }
-    Ok(())
+    range.drain(..first_visible);
+    Ok(range)
 }
 
-fn parse_root_record(
-    data: &[u8],
-    offset: usize,
-    major: u32,
-) -> Ext4Result<UnorderedDirectoryRecord> {
+fn parse_root_record(data: &[u8], offset: usize, major: u32) -> Ext4Result<IndexedDirectoryRecord> {
     let (inode, file_type, name, _) = parse_record(data, offset)?;
     if inode == 0 {
         return Err(Ext4Error::corrupted().with_operation("htree:readdir_dot"));
     }
-    Ok(UnorderedDirectoryRecord {
+    Ok(IndexedDirectoryRecord {
         inode,
         file_type,
         name,
         major,
         minor: 0,
+        collision: 0,
     })
 }
 
@@ -226,7 +173,7 @@ fn parse_leaf_records(
     data: &[u8],
     search: HashSearch<'_>,
     manager: &HashTreeManager,
-    output: &mut Vec<UnorderedDirectoryRecord>,
+    output: &mut Vec<IndexedDirectoryRecord>,
 ) -> Ext4Result<()> {
     let mut offset = 0;
     while offset < data.len() {
@@ -236,12 +183,13 @@ fn parse_leaf_records(
                 .map_err(|_| Ext4Error::corrupted().with_operation("htree:readdir_name"))?;
             let hash = calculate_hash(&name, search.hash_version, &manager.hash_seed)
                 .map_err(hash_tree_error)?;
-            output.push(UnorderedDirectoryRecord {
+            output.push(IndexedDirectoryRecord {
                 inode,
                 file_type,
                 name,
                 major: hash.major,
                 minor: hash.minor,
+                collision: 0,
             });
         }
         offset = next_offset;

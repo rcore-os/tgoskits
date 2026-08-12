@@ -1521,6 +1521,16 @@ ArceOS materialized directory 同样改为 peek/commit，buffer 容量不足不�
 `d_ino`/`d_off` 不再伪造为 1/0。ax-fs-ng adapter 每次最多向 core 请求 128 项，并在释放
 filesystem sleepable mutex 后才调用 sink。
 
+Linux `dir_private_info` 不跨 hash range 保留 dx probe path；它为一个 open description 缓存当前
+`ext4_htree_fill_tree()` 产生的排序范围，并在 inode version 变化或 `llseek` 后丢弃。portable core
+现以 opaque `DirectoryReader` 保存相同层次的派生范围缓存：显式 `DirectoryCursor` 始终是唯一
+语义位置，缓存可在 I/O/copy-to-user 失败后保留或任意丢弃，重试仍从调用方 cursor 精确定位。
+`axfs-ng-vfs` 只声明 opaque per-open state capability；ax-fs-ng 在 sleepable filesystem mutex 内
+填充范围、释放锁后调用 sink；Starry 的 `DirectoryPosition` 由 sleepable mutex 串行化完整
+`getdents64`/`lseek` 状态转换，并通过共享 `Arc<Directory>` 保持 dup/fork 的 open-file-description
+语义。确定性红测先在已缓存首个 range 后 unlink 并 reap 后续项：去掉 i_version cache clear 会
+稳定重新返回已删除名称，恢复失效逻辑后同一 reader 从原 cookie 续读且镜像经 `e2fsck -fn` clean。
+
 Linux `fs/ext4/namei.c:2148-2156,2675-2698,3641-3665` 在目录项插入、删除和替换后递增目录
 inode version；`fs/ext4/inode.c:4822-4832,5453-5461` 始终持久化低 32 位，仅在
 `i_version_hi` 落入 `i_extra_isize` 声明的范围时读写高 32 位。确定性红测先证明旧 core 在
@@ -1556,6 +1566,6 @@ checked `SEEK_SET/CUR/END` 算术并在 seek 后清除 backend-private continuat
 当前 Starry 的 x86_64/riscv64/aarch64/loongarch64 都是原生 64-bit ABI，syscall table 仅注册
 `getdents64`，没有 32-bit task/compat `getdents`，因此“32-bit getdents cookie”在当前交付边界
 明确为 N/A；若未来引入 compat task ABI，必须新增独立 `linux_dirent32` checked narrowing，并对
-inode/cookie 溢出返回 `EOVERFLOW`，不能截断 64-bit cursor。每个 open description 持久化的
-HTree path/range cache、casefold/fscrypt prepared-name hash 仍在后续台账中；前者已有上述
-on-disk change attribute 与 per-open cursor invalidation 作为正确性前置条件。
+inode/cookie 溢出返回 `EOVERFLOW`，不能截断 64-bit cursor。每个 open description 的 HTree
+hash-range cache 已按上述 Linux owner 完成；Linux 本身不会跨 range 保留 dx path，因此不把长期
+path cache 误列为 parity 目标。casefold/fscrypt prepared-name hash 仍在后续台账中。

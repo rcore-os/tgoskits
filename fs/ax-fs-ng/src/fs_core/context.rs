@@ -2,6 +2,7 @@
 use alloc::vec;
 use alloc::{
     borrow::{Cow, ToOwned},
+    boxed::Box,
     collections::vec_deque::VecDeque,
     string::String,
     sync::{Arc, Weak},
@@ -17,8 +18,8 @@ use ax_lazyinit::OnceLock;
 #[cfg(feature = "vfs")]
 use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
-    DirectoryCursor, Location, Metadata, NodePermission, NodeType, RenameOptions, VfsError,
-    VfsResult,
+    DirectoryCursor, DirectoryReadState, Location, Metadata, NodePermission, NodeType,
+    RenameOptions, VfsError, VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
 
@@ -458,8 +459,10 @@ impl FsContext {
     /// Returns an iterator over the entries in a directory.
     pub fn read_dir(&self, path: impl AsRef<Path>) -> VfsResult<ReadDir> {
         let dir = self.resolve(path)?;
+        let state = dir.open_directory_read_state()?;
         Ok(ReadDir {
             dir,
+            state,
             buf: VecDeque::new(),
             cursor: DirectoryCursor::START,
             ended: false,
@@ -653,6 +656,7 @@ impl FsContext {
 /// Iterator returned by [`FsContext::read_dir`].
 pub struct ReadDir {
     dir: Location,
+    state: Box<dyn DirectoryReadState>,
     buf: VecDeque<ReadDirEntry>,
     cursor: DirectoryCursor,
     ended: bool,
@@ -675,7 +679,8 @@ impl Iterator for ReadDir {
         if self.buf.is_empty() {
             self.buf.clear();
             let mut invalid_name = false;
-            let result = self.dir.read_dir(
+            let result = self.dir.read_dir_with_state(
+                &mut *self.state,
                 self.cursor,
                 &mut |name: &[u8], ino: u64, node_type: NodeType, cursor: DirectoryCursor| {
                     let Ok(name) = core::str::from_utf8(name) else {

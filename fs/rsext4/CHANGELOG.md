@@ -36,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   continuation, and a machine-readable HTree readdir benchmark workload.
 - Add a persistent directory change attribute to the stable inode DTO and bind
   private VFS directory continuation state to the observed value.
+- Add Linux-style per-open HTree hash-range caching behind an opaque directory
+  reader, with mutation invalidation and VFS/Starry open-description ownership.
 
 ### Removed
 

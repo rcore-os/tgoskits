@@ -1,6 +1,6 @@
 //! Owned, OS-independent mounted filesystem boundary.
 
-use alloc::vec::Vec;
+use alloc::{collections::VecDeque, vec::Vec};
 
 use bitflags::bitflags;
 
@@ -22,7 +22,10 @@ use crate::{
         rename_inode_at, set_inode_xattr, truncate_inode, unlink_empty_directory_at,
         unlink_inode_at, write_inode_data,
     },
-    hashtree::{Ext4InodeHashTreeExt, read_indexed_directory},
+    hashtree::{
+        Ext4InodeHashTreeExt, IndexedDirectoryRange, IndexedDirectoryRecord,
+        read_indexed_directory_range,
+    },
     io::BlockIo,
     loopfile::resolve_inode_blocks,
     metadata::{Ext4InodeMetadataUpdate, Ext4MetadataReason, Ext4ModeUpdate},
@@ -125,6 +128,99 @@ pub enum DirectoryCursor {
     },
     /// Enumeration has reached end of directory.
     End,
+}
+
+/// Per-open directory state owned by an embedding VFS open description.
+///
+/// The representation stays private so HTree paths and cached directory
+/// records never become part of the portable core API. The caller-provided
+/// [`DirectoryCursor`] remains the authoritative position: this state is a
+/// discardable acceleration cache and does not need transactional rollback
+/// when an I/O or copy-to-user operation fails.
+#[derive(Debug)]
+pub struct DirectoryReader {
+    directory: InodeNumber,
+    indexed: Option<IndexedDirectoryReader>,
+}
+
+#[derive(Debug)]
+struct IndexedDirectoryReader {
+    change_attribute: u64,
+    ranges: VecDeque<IndexedDirectoryRange>,
+}
+
+impl DirectoryReader {
+    fn new(directory: InodeNumber) -> Self {
+        Self {
+            directory,
+            indexed: None,
+        }
+    }
+
+    pub const fn directory(&self) -> InodeNumber {
+        self.directory
+    }
+
+    /// Discards parsed HTree ranges after an external seek or policy change.
+    pub fn reset(&mut self) {
+        self.indexed = None;
+    }
+}
+
+fn indexed_cursor_key(cursor: DirectoryCursor) -> Ext4Result<(u32, u32, u32)> {
+    match cursor {
+        DirectoryCursor::Start => Ok((0, 0, 0)),
+        DirectoryCursor::HTree {
+            major,
+            minor,
+            collision,
+        } if major & 1 == 0 => Ok((major, minor, collision)),
+        DirectoryCursor::HTree { .. } => {
+            Err(Ext4Error::invalid_input().with_operation("directory:indexed_hash_cursor"))
+        }
+        DirectoryCursor::Linear { .. } => {
+            Err(Ext4Error::invalid_input().with_operation("directory:indexed_cursor"))
+        }
+        DirectoryCursor::End => {
+            Err(Ext4Error::invalid_input().with_operation("directory:indexed_end_cursor"))
+        }
+    }
+}
+
+const fn indexed_record_key(record: &IndexedDirectoryRecord) -> (u32, u32, u32) {
+    (record.major, record.minor, record.collision)
+}
+
+const fn indexed_key_cursor((major, minor, collision): (u32, u32, u32)) -> DirectoryCursor {
+    DirectoryCursor::HTree {
+        major,
+        minor,
+        collision,
+    }
+}
+
+fn indexed_range_position(range: &IndexedDirectoryRange, cursor: (u32, u32, u32)) -> Option<usize> {
+    if range.start == cursor {
+        return Some(0);
+    }
+    range
+        .records
+        .iter()
+        .position(|record| indexed_record_key(record) == cursor)
+}
+
+fn indexed_record_count(ranges: &VecDeque<IndexedDirectoryRange>, first_record: usize) -> usize {
+    ranges
+        .iter()
+        .enumerate()
+        .map(|(index, range)| {
+            if index == 0 {
+                range.records.len().saturating_sub(first_record)
+            } else {
+                range.records.len()
+            }
+        })
+        .sum()
 }
 
 /// Pure caller metadata associated with one filesystem mutation.
@@ -587,6 +683,34 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         cursor: DirectoryCursor,
         max_entries: usize,
     ) -> Ext4Result<Vec<DirectoryEntry>> {
+        let mut reader = DirectoryReader::new(directory);
+        self.read_directory_with_reader(&mut reader, cursor, max_entries)
+    }
+
+    /// Opens private directory-enumeration state for one VFS open description.
+    pub fn open_directory_reader(&mut self, directory: InodeNumber) -> Ext4Result<DirectoryReader> {
+        let inode = self
+            .filesystem
+            .get_inode_by_num(&mut self.device, directory)?;
+        if !inode.is_dir() {
+            return Err(Ext4Error::not_dir());
+        }
+        Ok(DirectoryReader::new(directory))
+    }
+
+    /// Reads directory records while retaining discardable per-open HTree
+    /// range state.
+    ///
+    /// `cursor` is the only authoritative enumeration position. Callers may
+    /// retry the same cursor after an error even if this method populated or
+    /// discarded cached ranges before returning the error.
+    pub fn read_directory_with_reader(
+        &mut self,
+        reader: &mut DirectoryReader,
+        cursor: DirectoryCursor,
+        max_entries: usize,
+    ) -> Ext4Result<Vec<DirectoryEntry>> {
+        let directory = reader.directory;
         let mut inode = self
             .filesystem
             .get_inode_by_num(&mut self.device, directory)?;
@@ -597,57 +721,9 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
             return Ok(Vec::new());
         }
         if inode.is_htree_indexed() {
-            let start = match cursor {
-                DirectoryCursor::Start => (0, 0, 0),
-                DirectoryCursor::HTree {
-                    major,
-                    minor,
-                    collision,
-                } if major & 1 == 0 => (major, minor, collision),
-                DirectoryCursor::HTree { .. } => {
-                    return Err(
-                        Ext4Error::invalid_input().with_operation("directory:indexed_hash_cursor")
-                    );
-                }
-                DirectoryCursor::Linear { .. } => {
-                    return Err(
-                        Ext4Error::invalid_input().with_operation("directory:indexed_cursor")
-                    );
-                }
-                DirectoryCursor::End => return Ok(Vec::new()),
-            };
-            let records = read_indexed_directory(
-                &mut self.filesystem,
-                &mut self.device,
-                directory,
-                &inode,
-                start,
-                max_entries,
-            )?;
-            return records
-                .into_iter()
-                .map(|record| {
-                    let next_cursor =
-                        record
-                            .next
-                            .map_or(DirectoryCursor::End, |(major, minor, collision)| {
-                                DirectoryCursor::HTree {
-                                    major,
-                                    minor,
-                                    collision,
-                                }
-                            });
-                    Ok(DirectoryEntry {
-                        inode: InodeNumber::new(record.inode).map_err(|_| {
-                            Ext4Error::corrupted().with_operation("directory:indexed_inode")
-                        })?,
-                        file_type: DirectoryEntryType::from_disk(record.file_type)?,
-                        name: record.name,
-                        next_cursor,
-                    })
-                })
-                .collect();
+            return self.read_indexed_directory_with_reader(reader, &inode, cursor, max_entries);
         }
+        reader.indexed = None;
 
         let offset = match cursor {
             DirectoryCursor::Start => 0,
@@ -761,6 +837,128 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
             }
         }
         Ok(output)
+    }
+
+    fn read_indexed_directory_with_reader(
+        &mut self,
+        reader: &mut DirectoryReader,
+        inode: &Ext4Inode,
+        cursor: DirectoryCursor,
+        max_entries: usize,
+    ) -> Ext4Result<Vec<DirectoryEntry>> {
+        let start = indexed_cursor_key(cursor)?;
+        let change_attribute = inode.version(self.filesystem.inode_disk_size());
+        match &mut reader.indexed {
+            Some(indexed) if indexed.change_attribute == change_attribute => {}
+            Some(indexed) => {
+                indexed.change_attribute = change_attribute;
+                indexed.ranges.clear();
+            }
+            None => {
+                reader.indexed = Some(IndexedDirectoryReader {
+                    change_attribute,
+                    ranges: VecDeque::new(),
+                });
+            }
+        }
+
+        let range_index = reader.indexed.as_ref().and_then(|indexed| {
+            indexed
+                .ranges
+                .iter()
+                .position(|range| indexed_range_position(range, start).is_some())
+        });
+        let range_index = match range_index {
+            Some(index) => index,
+            None => {
+                let range = self.load_indexed_directory_range(reader.directory, inode, start)?;
+                let indexed = reader.indexed.as_mut().ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("directory:reader_state")
+                })?;
+                indexed.ranges.clear();
+                indexed.ranges.push_back(range);
+                0
+            }
+        };
+        let indexed = reader
+            .indexed
+            .as_mut()
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("directory:reader_state"))?;
+        for _ in 0..range_index {
+            let _ = indexed.ranges.pop_front();
+        }
+
+        let record_index = indexed
+            .ranges
+            .front()
+            .and_then(|range| indexed_range_position(range, start))
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("directory:reader_cursor"))?;
+        let lookahead = max_entries.checked_add(1).unwrap_or(max_entries);
+        while indexed_record_count(&indexed.ranges, record_index) < lookahead {
+            let Some(next_start) = indexed.ranges.back().and_then(|range| range.next_start) else {
+                break;
+            };
+            let previous_start = indexed
+                .ranges
+                .back()
+                .map(|range| range.start)
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("directory:reader_range"))?;
+            if next_start <= previous_start
+                || indexed.ranges.iter().any(|range| range.start == next_start)
+            {
+                return Err(Ext4Error::corrupted().with_operation("directory:reader_cycle"));
+            }
+            let range = self.load_indexed_directory_range(reader.directory, inode, next_start)?;
+            indexed.ranges.push_back(range);
+        }
+
+        let mut records = Vec::with_capacity(lookahead.min(128));
+        for (range_index, range) in indexed.ranges.iter().enumerate() {
+            let first = if range_index == 0 { record_index } else { 0 };
+            for record in range.records.iter().skip(first) {
+                records.push(record);
+                if records.len() == lookahead {
+                    break;
+                }
+            }
+            if records.len() == lookahead {
+                break;
+            }
+        }
+
+        let returned = records.len().min(max_entries);
+        let mut output = Vec::with_capacity(returned);
+        for index in 0..returned {
+            let record = records[index];
+            let next_cursor = records
+                .get(index + 1)
+                .map(|record| indexed_key_cursor(indexed_record_key(record)))
+                .unwrap_or(DirectoryCursor::End);
+            output.push(DirectoryEntry {
+                inode: InodeNumber::new(record.inode).map_err(|_| {
+                    Ext4Error::corrupted().with_operation("directory:indexed_inode")
+                })?,
+                file_type: DirectoryEntryType::from_disk(record.file_type)?,
+                name: record.name.clone(),
+                next_cursor,
+            });
+        }
+        Ok(output)
+    }
+
+    fn load_indexed_directory_range(
+        &mut self,
+        directory: InodeNumber,
+        inode: &Ext4Inode,
+        start: (u32, u32, u32),
+    ) -> Ext4Result<IndexedDirectoryRange> {
+        read_indexed_directory_range(
+            &mut self.filesystem,
+            &mut self.device,
+            directory,
+            inode,
+            start,
+        )
     }
 
     /// Returns the terminal cursor for directory seek semantics.

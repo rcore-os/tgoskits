@@ -1,9 +1,9 @@
-use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned, boxed::Box, sync::Arc, vec::Vec};
 use core::any::Any;
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor as VfsDirectoryCursor,
-    FileExtent as VfsFileExtent, FileExtentMap as VfsFileExtentMap,
+    DirectoryReadState, FileExtent as VfsFileExtent, FileExtentMap as VfsFileExtentMap,
     FileExtentState as VfsFileExtentState, FileExtentTarget as VfsFileExtentTarget, FileNode,
     FileNodeOps, FileRangeOperation as VfsRangeOperation, FilesystemOps, FsIoEvents, FsPollable,
     Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
@@ -26,6 +26,10 @@ pub struct Inode {
     fs: Arc<Ext4Filesystem>,
     ino: InodeNumber,
     this: Option<WeakDirEntry>,
+}
+
+struct Ext4DirectoryReadState {
+    reader: rsext4::DirectoryReader,
 }
 
 impl Inode {
@@ -129,6 +133,48 @@ impl Inode {
                 })
                 .collect(),
         })
+    }
+
+    fn read_dir_with_core_reader(
+        &self,
+        reader: &mut rsext4::DirectoryReader,
+        cursor: VfsDirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        let mut next_cursor = cursor;
+        let mut count = 0usize;
+        loop {
+            let (entries, change_attribute) = {
+                let mut state = self.fs.lock();
+                let inode = state.ext4.inode(self.ino).map_err(into_vfs_err)?;
+                next_cursor = normalize_directory_cursor(next_cursor, inode.change_attribute);
+                let core_cursor = vfs_to_core_directory_cursor(
+                    next_cursor,
+                    inode.flags.contains(InodeFlags::DIRECTORY_INDEX),
+                )?;
+                let entries = state
+                    .ext4
+                    .read_directory_with_reader(reader, core_cursor, DIRECTORY_READ_BATCH_ENTRIES)
+                    .map_err(into_vfs_err)?;
+                (entries, inode.change_attribute)
+            };
+            if entries.is_empty() {
+                return Ok(count);
+            }
+            for entry in entries {
+                next_cursor =
+                    core_to_vfs_directory_cursor(entry.next_cursor, Some(change_attribute));
+                if !sink.accept(
+                    &entry.name,
+                    entry.inode.as_u64(),
+                    directory_entry_type_to_vfs(entry.file_type),
+                    next_cursor,
+                ) {
+                    return Ok(count);
+                }
+                count += 1;
+            }
+        }
     }
 
     fn user_xattr_name(name: &[u8]) -> VfsResult<&[u8]> {
@@ -418,40 +464,39 @@ impl DirNodeOps for Inode {
         cursor: VfsDirectoryCursor,
         sink: &mut dyn DirEntrySink,
     ) -> VfsResult<usize> {
-        let mut next_cursor = cursor;
-        let mut count = 0usize;
-        loop {
-            let (entries, change_attribute) = {
-                let mut state = self.fs.lock();
-                let inode = state.ext4.inode(self.ino).map_err(into_vfs_err)?;
-                next_cursor = normalize_directory_cursor(next_cursor, inode.change_attribute);
-                let core_cursor = vfs_to_core_directory_cursor(
-                    next_cursor,
-                    inode.flags.contains(InodeFlags::DIRECTORY_INDEX),
-                )?;
-                let entries = state
-                    .ext4
-                    .read_directory(self.ino, core_cursor, DIRECTORY_READ_BATCH_ENTRIES)
-                    .map_err(into_vfs_err)?;
-                (entries, inode.change_attribute)
-            };
-            if entries.is_empty() {
-                return Ok(count);
-            }
-            for entry in entries {
-                next_cursor =
-                    core_to_vfs_directory_cursor(entry.next_cursor, Some(change_attribute));
-                if !sink.accept(
-                    &entry.name,
-                    entry.inode.as_u64(),
-                    directory_entry_type_to_vfs(entry.file_type),
-                    next_cursor,
-                ) {
-                    return Ok(count);
-                }
-                count += 1;
-            }
+        let mut reader = self
+            .fs
+            .lock()
+            .ext4
+            .open_directory_reader(self.ino)
+            .map_err(into_vfs_err)?;
+        self.read_dir_with_core_reader(&mut reader, cursor, sink)
+    }
+
+    fn open_directory_read_state(&self) -> VfsResult<Box<dyn DirectoryReadState>> {
+        let reader = self
+            .fs
+            .lock()
+            .ext4
+            .open_directory_reader(self.ino)
+            .map_err(into_vfs_err)?;
+        Ok(Box::new(Ext4DirectoryReadState { reader }))
+    }
+
+    fn read_dir_with_state(
+        &self,
+        state: &mut dyn DirectoryReadState,
+        cursor: VfsDirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        let state = state
+            .as_any_mut()
+            .downcast_mut::<Ext4DirectoryReadState>()
+            .ok_or(VfsError::InvalidInput)?;
+        if state.reader.directory() != self.ino {
+            return Err(VfsError::InvalidInput);
         }
+        self.read_dir_with_core_reader(&mut state.reader, cursor, sink)
     }
 
     fn directory_end_cursor(&self) -> VfsResult<VfsDirectoryCursor> {

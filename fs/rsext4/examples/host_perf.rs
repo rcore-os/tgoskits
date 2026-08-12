@@ -367,9 +367,12 @@ fn run_htree_readdir_once(entry_count: usize, batch_entries: usize) -> HTreeRead
     let mut cursor = DirectoryCursor::Start;
     let mut entries = 0;
     let mut calls = 0;
+    let mut reader = filesystem
+        .open_directory_reader(directory.number)
+        .expect("benchmark directory reader must open");
     loop {
         let batch = filesystem
-            .read_directory(directory.number, cursor, batch_entries)
+            .read_directory_with_reader(&mut reader, cursor, batch_entries)
             .expect("benchmark HTree readdir must succeed");
         calls += 1;
         if batch.is_empty() {

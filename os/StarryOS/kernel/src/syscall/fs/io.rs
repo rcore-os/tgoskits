@@ -163,7 +163,7 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
     }
 
     if let Ok(d) = any_file.downcast_arc::<Directory>() {
-        let mut cursor = d.cursor.lock();
+        let mut position = d.position.lock();
         let new_pos = match pos {
             SeekFrom::Start(pos) => pos,
             SeekFrom::End(delta) => d
@@ -172,7 +172,8 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
                 .offset()
                 .checked_add_signed(delta)
                 .ok_or(AxError::InvalidInput)?,
-            SeekFrom::Current(delta) => cursor
+            SeekFrom::Current(delta) => position
+                .cursor
                 .offset()
                 .checked_add_signed(delta)
                 .ok_or(AxError::InvalidInput)?,
@@ -180,7 +181,8 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
         if new_pos > i64::MAX as u64 {
             return Err(AxError::InvalidInput);
         }
-        *cursor = DirectoryCursor::new(new_pos);
+        position.cursor = DirectoryCursor::new(new_pos);
+        position.read_state = None;
         return Ok(new_pos as _);
     }
 

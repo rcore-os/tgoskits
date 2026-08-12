@@ -483,11 +483,14 @@ fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
         .iter()
         .map(|entry| entry.name.clone())
         .collect::<Vec<_>>();
+    let mut reader = filesystem
+        .open_directory_reader(indexed.number)
+        .expect("open indexed directory reader");
     let mut cursor = DirectoryCursor::Start;
     let mut batched_names = Vec::new();
     loop {
         let batch = filesystem
-            .read_directory(indexed.number, cursor, 1)
+            .read_directory_with_reader(&mut reader, cursor, 1)
             .expect("resume indexed directory");
         let Some(entry) = batch.into_iter().next() else {
             break;
@@ -498,6 +501,50 @@ fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
     assert_eq!(
         batched_names, expected_names,
         "HTree cursor repeated or skipped records"
+    );
+
+    let mut mutation_reader = filesystem
+        .open_directory_reader(indexed.number)
+        .expect("open mutation-aware indexed directory reader");
+    let first_batch = filesystem
+        .read_directory_with_reader(&mut mutation_reader, DirectoryCursor::Start, 1)
+        .expect("prime indexed directory range cache");
+    let first_entry = first_batch
+        .into_iter()
+        .next()
+        .expect("indexed directory contains dot entry");
+    let removed_name = expected_names[2].clone();
+    let removed = filesystem
+        .unlink(
+            MutationContext::new(1000, 1001, 0, 0o022),
+            indexed.number,
+            FileName::new(&removed_name).expect("valid cached entry name"),
+        )
+        .expect("unlink entry cached by open reader");
+    assert!(removed.requires_reap());
+    filesystem
+        .reap_unlinked_inode(removed.inode)
+        .expect("reap cached unlinked entry");
+
+    let mut names_after_mutation = vec![first_entry.name];
+    let mut cursor = first_entry.next_cursor;
+    loop {
+        let batch = filesystem
+            .read_directory_with_reader(&mut mutation_reader, cursor, 1)
+            .expect("resume indexed directory after mutation");
+        let Some(entry) = batch.into_iter().next() else {
+            break;
+        };
+        names_after_mutation.push(entry.name);
+        cursor = entry.next_cursor;
+    }
+    let expected_after_mutation = expected_names
+        .into_iter()
+        .filter(|name| name != &removed_name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names_after_mutation, expected_after_mutation,
+        "an open HTree reader must discard cached records after i_version changes"
     );
     filesystem.unmount().expect("unmount owned HTree fixture");
 
@@ -1228,9 +1275,12 @@ fn owned_insert_grows_a_full_linux_htree_root() {
         let mut cursor = DirectoryCursor::Start;
         let mut entry_count = 0_usize;
         let mut found_last = false;
+        let mut reader = filesystem
+            .open_directory_reader(indexed.number)
+            .expect("open multilevel HTree reader");
         loop {
             let batch = filesystem
-                .read_directory(indexed.number, cursor, 127)
+                .read_directory_with_reader(&mut reader, cursor, 127)
                 .expect("enumerate grown multilevel HTree");
             if batch.is_empty() {
                 break;

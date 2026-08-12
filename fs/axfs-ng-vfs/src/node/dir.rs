@@ -1,5 +1,6 @@
-use alloc::{borrow::ToOwned, string::String, sync::Arc};
+use alloc::{borrow::ToOwned, boxed::Box, string::String, sync::Arc};
 use core::{
+    any::Any,
     mem,
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicU64, Ordering},
@@ -99,6 +100,21 @@ impl DirectoryCursor {
     }
 }
 
+/// Opaque filesystem-private cache owned by one open directory description.
+///
+/// The explicit [`DirectoryCursor`] remains the authoritative position, so a
+/// filesystem may populate or discard this state before an operation commits
+/// its visible cursor.
+pub trait DirectoryReadState: Send {
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+impl<T: Any + Send> DirectoryReadState for T {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
 type DirChildren = HashMap<String, DirEntry>;
 
 /// Typed filesystem rename behavior independent from Linux numeric flags.
@@ -165,6 +181,21 @@ pub trait DirNodeOps: NodeOps {
     /// Implementations should ensure that `.` and `..` are present in the
     /// result.
     fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize>;
+
+    /// Creates private state for one open directory description.
+    fn open_directory_read_state(&self) -> VfsResult<Box<dyn DirectoryReadState>> {
+        Ok(Box::new(()))
+    }
+
+    /// Reads directory entries while retaining state owned by one open handle.
+    fn read_dir_with_state(
+        &self,
+        _state: &mut dyn DirectoryReadState,
+        cursor: DirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        self.read_dir(cursor, sink)
+    }
 
     /// Returns the visible cursor used as the origin of `SEEK_END`.
     ///
@@ -404,6 +435,21 @@ impl DirNode {
         sink: &mut dyn DirEntrySink,
     ) -> VfsResult<usize> {
         self.ops.read_dir(cursor, sink)
+    }
+
+    /// Creates filesystem-private state for one open directory description.
+    pub fn open_directory_read_state(&self) -> VfsResult<Box<dyn DirectoryReadState>> {
+        self.ops.open_directory_read_state()
+    }
+
+    /// Reads entries while retaining state owned by one open description.
+    pub fn read_dir_with_state(
+        &self,
+        state: &mut dyn DirectoryReadState,
+        cursor: DirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        self.ops.read_dir_with_state(state, cursor, sink)
     }
 
     /// Creates a link to a node.
