@@ -200,7 +200,7 @@ StarryOS 建立在 ArceOS 基础设施之上，通过组件化方式实现 Linux
 
 ```mermaid
 flowchart TD
-    subgraph starry_components["Starry 专用组件"]
+    subgraph starry_components["StarryOS 领域 crate"]
         proc["starry-process<br/>进程抽象"]
         sig["starry-signal<br/>信号框架"]
         vm["starry-vm<br/>地址空间"]
@@ -219,7 +219,7 @@ flowchart TD
     kernel --> rootfs["rootfs 用户态"]
 ```
 
-图中的 Starry 专用组件负责提供进程、信号和地址空间等领域抽象，Kernel 层则组合这些抽象并实现 Linux syscall 语义。下表按用户可见能力归纳对应的维护重点。
+图中的 StarryOS 领域 crate 负责提供进程、信号和地址空间等领域抽象，Kernel 层则组合这些抽象并实现 Linux syscall 语义。它们位于 `os/StarryOS/{process,signal,vm}`，并保留独立发布能力。下表按用户可见能力归纳对应的维护重点。
 
 | 能力域 | 实现要点 |
 |--------|---------|
