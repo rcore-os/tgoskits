@@ -123,6 +123,8 @@ impl HostCpu for ArceOsHost {
 pub(crate) type ArceOsThreadHandle = runtime_task::ThreadHandle;
 pub(crate) type ArceOsWaitQueue = runtime_task::WaitQueue;
 #[cfg(target_arch = "aarch64")]
+pub(crate) type ArceOsKernelTimerHandle = runtime_task::KernelTimerHandle;
+#[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 pub(crate) use runtime_task::{
@@ -209,6 +211,25 @@ impl ArceOsIrqNotification {
 pub(crate) fn current_thread() -> ArceOsThreadHandle {
     runtime_task::current_thread_handle()
         .unwrap_or_else(|error| panic!("AxVM requires a current scheduler thread: {error}"))
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn register_kernel_timer(
+    deadline: ArceOsMonotonicDeadline,
+    callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+) -> Result<ArceOsKernelTimerHandle, ArceOsTaskError> {
+    runtime_task::register_kernel_timer(
+        deadline,
+        Box::new(move |now| callback(Duration::from_nanos(now.as_nanos()))),
+    )
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn cancel_kernel_timer(
+    handle: ArceOsKernelTimerHandle,
+) -> Result<bool, ArceOsTaskError> {
+    runtime_task::cancel_kernel_timer(handle)
+        .map(|outcome| matches!(outcome, runtime_task::KernelTimerCancelOutcome::Cancelled))
 }
 
 pub(crate) unsafe fn spawn_thread_with_extension_and_affinity<F>(

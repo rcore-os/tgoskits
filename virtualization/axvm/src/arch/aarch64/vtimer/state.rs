@@ -6,6 +6,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use aarch64_cpu_ext::registers::{CNTPCT_EL0, Readable};
@@ -15,8 +16,10 @@ use ax_std::os::arceos::sync::IrqSafeMutex;
 
 use crate::{
     arch::aarch64::gic::AxvmVgicBackend,
-    host::{HostCpu, HostTime, default_host},
-    timer::VmTimerHandle,
+    host::{
+        HostCpu, HostTime, default_host,
+        task::{KernelTimerHandle, MonotonicDeadline, cancel_kernel_timer, register_kernel_timer},
+    },
 };
 
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
@@ -43,7 +46,7 @@ pub(in crate::arch::aarch64) struct Aarch64TimerBinding {
     frequency: u64,
     registered: AtomicBool,
     wait_generation: AtomicU64,
-    scheduled: IrqSafeMutex<Option<VmTimerHandle>>,
+    scheduled: IrqSafeMutex<Option<KernelTimerHandle>>,
     host_activation: IrqSafeMutex<Option<HostTimerActivation>>,
 }
 
@@ -146,8 +149,8 @@ impl Aarch64TimerBinding {
             .wrapping_add(1);
         let deadline_ns = host_deadline_ns(deadline_counter, now_counter, self.frequency);
         let binding = Arc::downgrade(self);
-        let handle = crate::timer::register_timer_handle(
-            deadline_ns,
+        let handle = register_kernel_timer(
+            MonotonicDeadline::from_duration(Duration::from_nanos(deadline_ns)),
             Box::new(move |_| {
                 let Some(binding) = binding.upgrade() else {
                     return;
@@ -175,7 +178,11 @@ impl Aarch64TimerBinding {
                     );
                 }
             }),
-        );
+        )
+        .map_err(|error| arm_vgic::VgicError::Backend {
+            operation: "register blocked-vCPU architectural timer",
+            detail: std::format!("kernel timer registration failed: {error}"),
+        })?;
 
         let (stale, previous) = {
             let mut scheduled = self.scheduled.lock();
@@ -186,9 +193,9 @@ impl Aarch64TimerBinding {
             }
         };
         if stale {
-            crate::timer::cancel_timer_handle(handle);
+            cancel_wait_timer(handle);
         } else if let Some(previous) = previous {
-            crate::timer::cancel_timer_handle(previous);
+            cancel_wait_timer(previous);
         }
         Ok(())
     }
@@ -198,7 +205,7 @@ impl Aarch64TimerBinding {
         self.wait_generation.fetch_add(1, Ordering::AcqRel);
         let scheduled = self.scheduled.lock().take();
         if let Some(handle) = scheduled {
-            crate::timer::cancel_timer_handle(handle);
+            cancel_wait_timer(handle);
         }
     }
 
@@ -256,6 +263,12 @@ impl Aarch64TimerBinding {
                 activation.owner_cpu
             ),
         })
+    }
+}
+
+fn cancel_wait_timer(handle: KernelTimerHandle) {
+    if let Err(error) = cancel_kernel_timer(handle) {
+        warn!("failed to cancel blocked-vCPU architectural timer: {error}");
     }
 }
 
