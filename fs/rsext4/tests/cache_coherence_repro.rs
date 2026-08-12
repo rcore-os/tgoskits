@@ -118,7 +118,8 @@ fn directory_growth_preserves_parent_link_count() {
     let (_, after) = get_inode_with_num(&mut fs, &mut dev, "/parent")
         .expect("lookup expanded parent")
         .expect("expanded parent exists");
-    assert_eq!(after.size(), (2 * BLOCK_SIZE) as u64);
+    assert_eq!(after.size(), (3 * BLOCK_SIZE) as u64);
+    assert_ne!(after.i_flags & Ext4Inode::EXT4_INDEX_FL, 0);
     assert_eq!(after.i_links_count, before.i_links_count + 1);
 }
 

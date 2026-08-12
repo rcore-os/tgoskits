@@ -1006,7 +1006,7 @@
           "symbol": "dx_move_dirents, dx_pack_dirents, do_split",
           "classification": "core",
           "state_machine": "leaf rebalance, collision continuation, allocation and publication",
-          "invariant": "a full leaf is split by minimal record length, same-hash boundaries set the continuation bit, and leaf/index images publish in one metadata transaction",
+          "invariant": "a full leaf selects its split using source record lengths before packing both sides to minimal lengths, same-hash boundaries set the continuation bit, and leaf/index images publish in one metadata transaction",
           "rust_owner": "rsext4::hashtree::mutation",
           "reason": "portable HTree leaf layout, checksum and persistence semantics belong to the filesystem core",
           "test_ids": [
@@ -1037,7 +1037,8 @@
           "rust_owner": "rsext4::hashtree::mutation",
           "reason": "portable HTree creation semantics belong to the filesystem core",
           "test_ids": [
-            "htree-make-indexed-red"
+            "htree-make-indexed",
+            "htree-make-indexed-rollback"
           ]
         },
         {

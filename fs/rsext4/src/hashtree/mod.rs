@@ -15,7 +15,7 @@ pub(crate) use facade::lookup_directory_entry;
 pub(crate) use hash::calculate_hash;
 pub use inode::Ext4InodeHashTreeExt;
 pub use manager::HashTreeManager;
-pub(crate) use mutation::insert_indexed_directory_entry;
+pub(crate) use mutation::{insert_indexed_directory_entry, make_indexed_directory};
 pub use types::{HashTreeNode, HashTreeSearchResult};
 
 #[cfg(test)]

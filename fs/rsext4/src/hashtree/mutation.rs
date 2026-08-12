@@ -14,8 +14,8 @@ use crate::{
     disknode::Ext4Inode,
     endian::{DiskFormat, read_u16_le, read_u32_le, write_u16_le, write_u32_le},
     entries::{
-        Ext4DirEntry2, Ext4DirEntryTail, Ext4DxEntry, decode_directory_record_length,
-        encode_directory_record_length,
+        Ext4DirEntry2, Ext4DirEntryTail, Ext4DxEntry, Ext4DxRootInfo,
+        decode_directory_record_length, encode_directory_record_length,
     },
     error::{Ext4Error, Ext4Result},
     ext4::Ext4FileSystem,
@@ -38,6 +38,7 @@ struct LeafEntry {
     inode: InodeNumber,
     file_type: u8,
     name: Vec<u8>,
+    source_record_len: usize,
 }
 
 struct LeafSplitRequest<'a> {
@@ -147,6 +148,199 @@ pub(crate) fn insert_indexed_directory_entry<B: BlockIo>(
             old_leaf_data: updated,
         },
     )
+}
+
+/// Converts a full one-block linear directory into a Linux HTree and inserts
+/// the entry that triggered conversion.
+pub(crate) fn make_indexed_directory<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    parent_ino: InodeNumber,
+    parent_inode: &mut Ext4Inode,
+    child_ino: InodeNumber,
+    child_name: FileName<'_>,
+    file_type: u8,
+) -> Ext4Result<()> {
+    let block_size = fs.block_size();
+    if parent_inode.size() != block_size as u64 || !parent_inode.is_dir() {
+        return Err(Ext4Error::corrupted().with_operation("htree:make_indexed_geometry"));
+    }
+    let base_hash_version = fs.superblock.s_def_hash_version;
+    if base_hash_version > Ext4DxRootInfo::DX_HASH_TEA {
+        return Err(Ext4Error::unsupported().with_operation("htree:make_indexed_hash_version"));
+    }
+    let effective_hash_version =
+        if fs.superblock.s_flags & Ext4Superblock::EXT4_FLAGS_UNSIGNED_HASH != 0 {
+            base_hash_version + 3
+        } else {
+            base_hash_version
+        };
+    let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
+    let root_physical = resolve_inode_block(fs, device, parent_ino, &mut parent_inode.clone(), 0)?
+        .ok_or_else(|| Ext4Error::corrupted().with_operation("htree:make_indexed_root_mapping"))?;
+    let original = fs
+        .datablock_cache
+        .get_or_load(device, root_physical)?
+        .data
+        .as_ref()
+        .clone();
+    if !verify_ext4_dirblock_checksum(
+        &fs.superblock,
+        parent_ino.raw(),
+        parent_inode.i_generation,
+        &original,
+    ) {
+        return Err(Ext4Error::checksum().with_operation("htree:make_indexed_source"));
+    }
+
+    let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
+    let mut entries =
+        parse_leaf_entries(&original, has_checksum, effective_hash_version, &manager)?;
+    let dot = entries
+        .first()
+        .filter(|entry| entry.inode == parent_ino && entry.name == b".")
+        .cloned()
+        .ok_or_else(|| Ext4Error::corrupted().with_operation("htree:make_indexed_dot"))?;
+    let dotdot = entries
+        .get(1)
+        .filter(|entry| entry.name == b"..")
+        .cloned()
+        .ok_or_else(|| Ext4Error::corrupted().with_operation("htree:make_indexed_dotdot"))?;
+    entries.drain(..2);
+    if entries.len() < 2 {
+        return Err(Ext4Error::corrupted().with_operation("htree:make_indexed_entries"));
+    }
+    entries.sort_by_key(|entry| entry.hash);
+    let split = linux_leaf_split_point(&entries, block_size)?;
+    let hash2 = entries[split].hash;
+    let continued = entries[split - 1].hash == hash2;
+    let separator_hash = hash2
+        .checked_add(u32::from(continued))
+        .ok_or_else(Ext4Error::overflow)?;
+    let (left_entries, right_entries) = entries.split_at(split);
+    let mut left = pack_leaf(left_entries, block_size, has_checksum)?;
+    let mut right = pack_leaf(right_entries, block_size, has_checksum)?;
+    let child_hash = super::calculate_hash(
+        child_name.as_bytes(),
+        effective_hash_version,
+        &manager.hash_seed,
+    )
+    .map_err(hash_tree_error)?
+    .major;
+    let target = if child_hash >= hash2 {
+        &mut right
+    } else {
+        &mut left
+    };
+    if !insert_into_leaf(target, has_checksum, child_ino, child_name, file_type)? {
+        return Err(Ext4Error::corrupted().with_operation("htree:make_indexed_balance"));
+    }
+
+    let mut updated_parent = *parent_inode;
+    let (left_logical, left_physical) =
+        append_directory_block(fs, device, parent_ino, &mut updated_parent)?;
+    let (right_logical, right_physical) =
+        append_directory_block(fs, device, parent_ino, &mut updated_parent)?;
+    if left_logical != 1 || right_logical != 2 {
+        return Err(Ext4Error::corrupted().with_operation("htree:make_indexed_mapping_order"));
+    }
+    let mut root = make_root_block(
+        block_size,
+        has_checksum,
+        base_hash_version,
+        &dot,
+        &dotdot,
+        &[
+            Ext4DxEntry {
+                hash: 0,
+                block: left_logical,
+            },
+            Ext4DxEntry {
+                hash: separator_hash,
+                block: right_logical,
+            },
+        ],
+    )?;
+    updated_parent.i_flags |= Ext4Inode::EXT4_INDEX_FL;
+    update_ext4_dirblock_csum32(
+        &fs.superblock,
+        parent_ino.raw(),
+        updated_parent.i_generation,
+        &mut left,
+    );
+    update_ext4_dirblock_csum32(
+        &fs.superblock,
+        parent_ino.raw(),
+        updated_parent.i_generation,
+        &mut right,
+    );
+    if !update_ext4_dx_checksum(
+        &fs.superblock,
+        parent_ino.raw(),
+        updated_parent.i_generation,
+        &mut root,
+    ) {
+        return Err(Ext4Error::corrupted().with_operation("htree:make_indexed_checksum"));
+    }
+
+    fs.datablock_cache
+        .modify_new_metadata(device, left_physical, |data| {
+            data.copy_from_slice(&left);
+        })?;
+    fs.datablock_cache
+        .modify_new_metadata(device, right_physical, |data| {
+            data.copy_from_slice(&right);
+        })?;
+    fs.datablock_cache
+        .modify_metadata(device, root_physical, |data| {
+            data.copy_from_slice(&root);
+        })?;
+    fs.datablock_cache.flush_metadata(device, left_physical)?;
+    fs.datablock_cache.flush_metadata(device, right_physical)?;
+    fs.datablock_cache.flush_metadata(device, root_physical)?;
+    fs.finalize_inode_update(
+        device,
+        parent_ino,
+        &mut updated_parent,
+        Ext4InodeMetadataUpdate::parent_dir_change(),
+    )?;
+    *parent_inode = updated_parent;
+    Ok(())
+}
+
+fn make_root_block(
+    block_size: usize,
+    has_checksum: bool,
+    hash_version: u8,
+    dot: &LeafEntry,
+    dotdot: &LeafEntry,
+    entries: &[Ext4DxEntry],
+) -> Ext4Result<Vec<u8>> {
+    let mut root = vec![0; block_size];
+    write_entry(
+        &mut root,
+        0,
+        12,
+        block_size,
+        dot.inode,
+        FileName::new(b".").map_err(|_| Ext4Error::corrupted())?,
+        dot.file_type,
+    )?;
+    write_entry(
+        &mut root,
+        12,
+        block_size - 12,
+        block_size,
+        dotdot.inode,
+        FileName::new(b"..").map_err(|_| Ext4Error::corrupted())?,
+        dotdot.file_type,
+    )?;
+    root[28] = hash_version;
+    root[29] = Ext4DxRootInfo::INFO_LENGTH;
+    root[DX_ROOT_INDIRECT_LEVELS_OFFSET] = 0;
+    root[31] = 0;
+    encode_dx_entries(&mut root, DX_ROOT_COUNTLIMIT_OFFSET, has_checksum, entries)?;
+    Ok(root)
 }
 
 fn split_leaf_and_insert<B: BlockIo>(
@@ -670,6 +864,7 @@ fn parse_leaf_entries(
                 inode,
                 file_type: header[7],
                 name,
+                source_record_len: record_len,
             });
         }
         offset = record_end;
@@ -688,7 +883,7 @@ fn linux_leaf_split_point(entries: &[LeafEntry], block_size: usize) -> Ext4Resul
     let mut moved_size = 0usize;
     let mut move_count = 0usize;
     for entry in entries.iter().rev() {
-        let entry_len = entry.record_len();
+        let entry_len = entry.source_record_len;
         if moved_size
             .checked_add(entry_len / 2)
             .ok_or_else(Ext4Error::overflow)?
@@ -701,10 +896,11 @@ fn linux_leaf_split_point(entries: &[LeafEntry], block_size: usize) -> Ext4Resul
             .ok_or_else(Ext4Error::overflow)?;
         move_count += 1;
     }
-    let mut split = entries.len().saturating_sub(move_count);
-    if split == entries.len() {
-        split = entries.len() / 2;
-    }
+    let split = if move_count == entries.len() {
+        entries.len() / 2
+    } else {
+        entries.len() - move_count
+    };
     if split == 0 || split >= entries.len() {
         return Err(Ext4Error::corrupted().with_operation("htree:split_point"));
     }
@@ -890,5 +1086,32 @@ fn hash_tree_error(error: HashTreeError) -> Ext4Error {
         | HashTreeError::CorruptedHashTree
         | HashTreeError::BlockOutOfRange
         | HashTreeError::BufferTooSmall => Ext4Error::corrupted().with_operation("htree:probe"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn split_entry(hash: u32, source_record_len: usize) -> LeafEntry {
+        LeafEntry {
+            hash,
+            inode: InodeNumber::new(hash + 1).expect("non-zero test inode"),
+            file_type: Ext4DirEntry2::EXT4_FT_REG_FILE,
+            name: vec![b'x'],
+            source_record_len,
+        }
+    }
+
+    #[test]
+    fn leaf_split_uses_source_record_lengths_before_packing() {
+        let entries = [
+            split_entry(2, 12),
+            split_entry(4, 12),
+            split_entry(6, 12),
+            split_entry(8, 3000),
+        ];
+
+        assert_eq!(linux_leaf_split_point(&entries, 4096).unwrap(), 3);
     }
 }

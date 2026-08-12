@@ -474,6 +474,265 @@ fn owned_insert_preserves_linux_htree_index() {
 }
 
 #[test]
+fn owned_full_linear_directory_converts_to_linux_htree() {
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-linux-owned-make-indexed", "64M");
+    let names = (0..40)
+        .map(|index| format!("auto-index-{index:03}-{}", "x".repeat(220)))
+        .collect::<Vec<_>>();
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_800_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem =
+            Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
+        let context = MutationContext::new(1000, 1001, 0, 0o022);
+        let directory = filesystem
+            .create_directory(
+                context,
+                filesystem.root_inode(),
+                FileName::new(b"auto-indexed").expect("valid directory name"),
+                FilePermissions::new(0o755).expect("valid directory permissions"),
+            )
+            .expect("create linear directory");
+        assert!(!directory.flags.contains(InodeFlags::DIRECTORY_INDEX));
+
+        let permissions = FilePermissions::new(0o644).expect("valid file permissions");
+        for (index, name) in names.iter().enumerate() {
+            filesystem
+                .create_regular_file(
+                    context,
+                    directory.number,
+                    FileName::new(name.as_bytes()).expect("valid long directory name"),
+                    permissions,
+                )
+                .unwrap_or_else(|error| panic!("fill linear directory at entry {index}: {error}"));
+        }
+        let indexed = filesystem
+            .inode(directory.number)
+            .expect("inspect converted directory");
+        assert!(
+            indexed.flags.contains(InodeFlags::DIRECTORY_INDEX),
+            "the first full linear block must be converted to an HTree"
+        );
+        assert!(indexed.size >= 3 * 4096);
+        for name in &names {
+            assert!(
+                filesystem
+                    .lookup_child(
+                        directory.number,
+                        FileName::new(name.as_bytes()).expect("valid long name"),
+                    )
+                    .unwrap_or_else(|error| panic!("lookup {name} after conversion: {error}"))
+                    .is_some(),
+                "converted HTree lost {name}"
+            );
+        }
+        filesystem.unmount().expect("unmount converted directory");
+    }
+
+    let dump = debugfs_query(&image, "htree_dump /auto-indexed");
+    assert!(
+        dump.contains("Root node dump"),
+        "Linux did not decode the converted HTree\n{dump}"
+    );
+    for name in &names {
+        assert!(dump.contains(name), "Linux HTree dump lost {name}\n{dump}");
+    }
+    e2fsck_readonly_clean(&image, "rsext4-created HTree root");
+    fs::remove_dir_all(temp_dir).expect("remove make-indexed temp dir");
+}
+
+#[test]
+fn failed_linear_to_htree_conversion_restores_linear_directory() {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-linux-make-indexed-rollback", "64M");
+    let calibration = temp_dir.join("calibration.img");
+    fs::copy(&image, &calibration).expect("copy make-indexed calibration image");
+    let conversion_index = {
+        let device = FileBlockDevice::open_with_sector_size(calibration.clone(), 512);
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = mount(&mut journal).expect("mount conversion calibration");
+        mkdir(&mut journal, &mut filesystem, "/auto-indexed")
+            .expect("create calibration directory");
+        let mut conversion_index = None;
+        for index in 0..40 {
+            let name = format!("auto-index-{index:03}-{}", "x".repeat(220));
+            mkfile(
+                &mut journal,
+                &mut filesystem,
+                &format!("/auto-indexed/{name}"),
+                None,
+                None,
+            )
+            .unwrap_or_else(|error| panic!("fill calibration directory at {index}: {error}"));
+            let (_, directory) =
+                rsext4::dir::get_inode_with_num(&mut filesystem, &mut journal, "/auto-indexed")
+                    .expect("lookup calibration directory")
+                    .expect("calibration directory exists");
+            if directory.i_flags & rsext4::disknode::Ext4Inode::EXT4_INDEX_FL != 0 {
+                conversion_index = Some(index);
+                break;
+            }
+        }
+        umount(filesystem, &mut journal).expect("unmount conversion calibration");
+        conversion_index.expect("calibration did not convert the linear directory")
+    };
+    fs::remove_file(calibration).expect("remove conversion calibration image");
+
+    let failed_name = format!("auto-index-{conversion_index:03}-{}", "x".repeat(220));
+    let existing_names = (0..conversion_index)
+        .map(|index| format!("auto-index-{index:03}-{}", "x".repeat(220)))
+        .collect::<Vec<_>>();
+    let (device, armed) = PatternFailureDevice::open(image.clone(), failed_name.as_bytes());
+    let before_stats;
+    let before_directory_ino;
+    let before_directory;
+    let before_root_physical;
+    let before_root_data;
+    {
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = mount(&mut journal).expect("mount conversion fault image");
+        mkdir(&mut journal, &mut filesystem, "/auto-indexed")
+            .expect("create conversion fault directory");
+        for (index, name) in existing_names.iter().enumerate() {
+            mkfile(
+                &mut journal,
+                &mut filesystem,
+                &format!("/auto-indexed/{name}"),
+                None,
+                None,
+            )
+            .unwrap_or_else(|error| panic!("fill fault directory at {index}: {error}"));
+        }
+        filesystem
+            .sync_filesystem(&mut journal)
+            .expect("sync pre-conversion fixture");
+        journal.flush().expect("checkpoint pre-conversion fixture");
+        journal
+            .set_journal_use(false)
+            .expect("disable journal for conversion post-write fault");
+        before_stats = filesystem.statfs();
+        (before_directory_ino, before_directory) =
+            rsext4::dir::get_inode_with_num(&mut filesystem, &mut journal, "/auto-indexed")
+                .expect("lookup pre-conversion directory")
+                .expect("pre-conversion directory exists");
+        assert_eq!(before_directory.size(), 4096);
+        assert_eq!(
+            before_directory.i_flags & rsext4::disknode::Ext4Inode::EXT4_INDEX_FL,
+            0
+        );
+        let mut mapping_inode = before_directory;
+        before_root_physical = rsext4::loopfile::resolve_inode_block(
+            &filesystem,
+            &mut journal,
+            before_directory_ino,
+            &mut mapping_inode,
+            0,
+        )
+        .expect("resolve pre-conversion root block")
+        .expect("pre-conversion root block is mapped");
+        before_root_data = filesystem
+            .datablock_cache
+            .get_or_load(&mut journal, before_root_physical)
+            .expect("read pre-conversion root block")
+            .data
+            .as_ref()
+            .clone();
+
+        armed.set(true);
+        let error = mkfile(
+            &mut journal,
+            &mut filesystem,
+            &format!("/auto-indexed/{failed_name}"),
+            None,
+            None,
+        )
+        .expect_err("post-write failure must abort HTree conversion");
+        assert_eq!(error.kind(), rsext4::Ext4ErrorKind::Io);
+        assert!(!armed.get(), "conversion fault pattern was not written");
+        filesystem
+            .umount(&mut journal)
+            .expect("unmount after failed HTree conversion");
+    }
+
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, false);
+        let mut filesystem = mount(&mut journal).expect("remount after failed HTree conversion");
+        let (directory_ino, directory) =
+            rsext4::dir::get_inode_with_num(&mut filesystem, &mut journal, "/auto-indexed")
+                .expect("lookup directory after failed conversion")
+                .expect("linear directory survives failed conversion");
+        assert_eq!(directory.size(), before_directory.size());
+        assert_eq!(directory.i_blocks_lo, before_directory.i_blocks_lo);
+        assert_eq!(directory.l_i_blocks_high, before_directory.l_i_blocks_high);
+        assert_eq!(directory.i_flags, before_directory.i_flags);
+        let mut mapping_inode = directory;
+        let restored_root_physical = rsext4::loopfile::resolve_inode_block(
+            &filesystem,
+            &mut journal,
+            directory_ino,
+            &mut mapping_inode,
+            0,
+        )
+        .expect("resolve restored linear root block")
+        .expect("restored linear root block is mapped");
+        assert_eq!(restored_root_physical, before_root_physical);
+        let restored_root_data = filesystem
+            .datablock_cache
+            .get_or_load(&mut journal, restored_root_physical)
+            .expect("read restored linear root block")
+            .data
+            .as_ref()
+            .clone();
+        assert_eq!(
+            restored_root_data, before_root_data,
+            "failed conversion must restore the complete linear directory block"
+        );
+        let after_stats = filesystem.statfs();
+        assert_eq!(after_stats.free_blocks, before_stats.free_blocks);
+        assert_eq!(after_stats.free_inodes, before_stats.free_inodes);
+        assert!(
+            rsext4::dir::get_inode_with_num(
+                &mut filesystem,
+                &mut journal,
+                &format!("/auto-indexed/{failed_name}"),
+            )
+            .expect("lookup rejected conversion child")
+            .is_none()
+        );
+        for name in &existing_names {
+            assert!(
+                rsext4::dir::get_inode_with_num(
+                    &mut filesystem,
+                    &mut journal,
+                    &format!("/auto-indexed/{name}"),
+                )
+                .unwrap_or_else(|error| panic!("lookup retained linear child {name}: {error}"))
+                .is_some(),
+                "failed conversion lost retained child {name}"
+            );
+        }
+        umount(filesystem, &mut journal).expect("unmount conversion rollback image");
+    }
+
+    e2fsck_readonly_clean(&image, "failed linear-to-HTree conversion rollback");
+    fs::remove_dir_all(temp_dir).expect("remove conversion rollback temp dir");
+}
+
+#[test]
 fn owned_insert_splits_linux_htree_leaf() {
     for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
         require_tool(tool);

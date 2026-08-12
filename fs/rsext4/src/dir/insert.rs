@@ -11,7 +11,7 @@ use crate::{
     error::*,
     ext4::*,
     extents_tree::*,
-    hashtree::insert_indexed_directory_entry,
+    hashtree::{insert_indexed_directory_entry, make_indexed_directory},
     loopfile::*,
     metadata::Ext4InodeMetadataUpdate,
     superblock::Ext4Superblock,
@@ -190,16 +190,24 @@ pub(crate) fn insert_dir_entry_raw<B: BlockIo>(
     if let Some(modified_block) = modified_phys {
         // Publish the modified directory block before subsequent lookup.
         fs.datablock_cache.flush_metadata(device, modified_block)?;
-        // The hash tree is stale after insertion; force subsequent lookups
-        // through the authoritative linear directory scan.
-        if parent_inode.i_flags & Ext4Inode::EXT4_INDEX_FL != 0 {
-            parent_inode.i_flags &= !Ext4Inode::EXT4_INDEX_FL;
-            fs.modify_inode(device, parent_ino_num, |ino| {
-                ino.i_flags &= !Ext4Inode::EXT4_INDEX_FL;
-            })?;
-        }
         fs.touch_parent_dir_for_entry_change(device, parent_ino_num)?;
         return Ok(());
+    }
+
+    if total_blocks == 1
+        && fs
+            .superblock
+            .has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_DIR_INDEX)
+    {
+        return make_indexed_directory(
+            fs,
+            device,
+            parent_ino_num,
+            parent_inode,
+            child_ino,
+            child_name,
+            file_type,
+        );
     }
 
     let block_bytes = fs.block_size();
@@ -274,13 +282,6 @@ pub(crate) fn insert_dir_entry_raw<B: BlockIo>(
     // Immediately write the new directory block to disk so it is visible
     // to subsequent lookups.
     fs.datablock_cache.flush_metadata(device, new_block)?;
-
-    // Clear the hash-tree index flag: the hash tree is stale after
-    // adding a directory entry, and forcing linear scan guarantees
-    // correct lookups.
-    if parent_inode.i_flags & Ext4Inode::EXT4_INDEX_FL != 0 {
-        parent_inode.i_flags &= !Ext4Inode::EXT4_INDEX_FL;
-    }
 
     fs.finalize_inode_update(
         device,
