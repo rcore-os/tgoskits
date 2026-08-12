@@ -185,6 +185,7 @@ pub(crate) struct VmRuntimeHandle {
     cpu_off_exit_reservations: StdMutex<BTreeSet<usize>>,
     pending_interrupts: Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
     irq_dispatcher: crate::runtime::VcpuIrqDispatcher,
+    device_poll_requested: AtomicBool,
     running_halting_vcpu_count: AtomicUsize,
     lifecycle_error: StdMutex<Option<AxVmError>>,
     deferred_reset_requested: AtomicBool,
@@ -227,6 +228,7 @@ impl VmRuntimeHandle {
             cpu_off_exit_reservations: StdMutex::new(BTreeSet::new()),
             pending_interrupts: Mutex::new(BTreeMap::new()),
             irq_dispatcher: crate::runtime::VcpuIrqDispatcher::new(),
+            device_poll_requested: AtomicBool::new(false),
             running_halting_vcpu_count: AtomicUsize::new(0),
             lifecycle_error: StdMutex::new(None),
             deferred_reset_requested: AtomicBool::new(false),
@@ -384,6 +386,21 @@ impl VmRuntimeHandle {
     pub(crate) fn notify_all(&self) {
         self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_all(false);
+    }
+
+    /// Publishes pending device work before waking the primary vCPU.
+    pub(crate) fn notify_device_poll(&self) {
+        self.device_poll_requested.store(true, Ordering::Release);
+        self.notify_one();
+    }
+
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(crate) fn device_poll_requested(&self) -> bool {
+        self.device_poll_requested.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn take_device_poll_request(&self) -> bool {
+        self.device_poll_requested.swap(false, Ordering::AcqRel)
     }
 
     pub(crate) fn mark_vcpu_running(&self) {
@@ -1947,6 +1964,19 @@ mod tests {
         runtime.notify_one();
 
         assert_ne!(runtime.notification_generation(), observed);
+    }
+
+    #[test]
+    fn device_poll_notification_survives_wake_generation_snapshot() {
+        let runtime = VmRuntimeHandle::new();
+        let observed = runtime.notification_generation();
+
+        runtime.notify_device_poll();
+
+        assert!(runtime.device_poll_requested());
+        assert_ne!(runtime.notification_generation(), observed);
+        assert!(runtime.take_device_poll_request());
+        assert!(!runtime.take_device_poll_request());
     }
 
     #[test]

@@ -110,13 +110,11 @@ pub fn start_vm(vm_id: usize) -> AxVmResult {
 
 /// Wake the primary vCPU of a VM.
 pub fn notify_vm(vm_id: usize) -> AxVmResult {
-    vm_by_id(vm_id)?;
-    notify_vm_with_wake(|| vcpus::notify_primary_vcpu(vm_id));
-    Ok(())
-}
-
-fn notify_vm_with_wake(wake_vcpu: impl FnOnce()) {
-    wake_vcpu();
+    let vm = vm_by_id(vm_id)?;
+    vm.with_runtime(|runtime| {
+        runtime.notify_device_poll();
+        Ok(())
+    })
 }
 
 pub fn stop_vm(vm_id: usize) -> AxVmResult {
@@ -163,8 +161,6 @@ const fn missing_vm_error(vm_id: usize) -> AxVmError {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, vec::Vec};
-
     use super::*;
 
     #[test]
@@ -187,15 +183,5 @@ mod tests {
     fn missing_vm_is_reported_with_its_id() {
         let vm_id = usize::MAX;
         assert_eq!(missing_vm_error(vm_id), AxVmError::VmNotFound { vm_id });
-    }
-
-    #[test]
-    fn console_notification_does_not_poll_devices_from_the_host_input_task() {
-        let steps = RefCell::new(Vec::new());
-        notify_vm_with_wake(|| {
-            assert!(steps.borrow().is_empty());
-            steps.borrow_mut().push("wake");
-        });
-        assert_eq!(steps.into_inner(), ["wake"]);
     }
 }

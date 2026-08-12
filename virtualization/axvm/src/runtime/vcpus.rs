@@ -479,6 +479,10 @@ fn vcpu_run() {
 
     loop {
         if vcpu_id == 0 {
+            // Host services only publish a request and wake this task. Polling
+            // here avoids running virtual-device and VGIC callbacks in host
+            // console context, where an idle guest may otherwise stall input.
+            let _ = runtime.take_device_poll_request();
             poll_vm_devices(&vm);
         }
 
