@@ -1,0 +1,12 @@
+target/
+*.o
+programs/carpets/cpp/opencv_mat
+programs/carpets/cpp/opencv_color
+programs/carpets/cpp/opencv_filter
+programs/carpets/cpp/opencv_geometry
+programs/carpets/cpp/opencv_morph
+programs/carpets/cpp/opencv_draw
+programs/carpets/cpp/opencv_feature
+programs/carpets/cpp/opencv_io
+__pycache__/
+*.pyc

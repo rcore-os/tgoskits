@@ -1,0 +1,18 @@
+# cpu-opencv-test aarch64 - OpenCV test carpet (C++ + Python bindings) asserting CLOSED-FORM / numpy goldens
+# on KNOWN inputs (BT.601 luma, Porter-Duff, Gaussian kernel, Sobel gradient, bilinear, analytic drawn
+# shapes, known step-edge column, byte-exact codec round-trips, lossless FFV1 video). OpenCV + CPython +
+# cv2/numpy are staged into the overlay by prebuild. -cpu max exposes the full AArch64 feature set. -smp 1:
+# single vCPU. 1536M: OpenCV + CPython + numpy.
+args = [
+    "-nographic", "-cpu", "max", "-m", "1536M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 40000

@@ -1,0 +1,4 @@
+[submodule "apps/starry/cpu-opencv-test/assets"]
+	url = https://github.com/Lfan-ke/hw4os-s5d1t2
+	path = apps/starry/cpu-opencv-test/assets
+	branch = media
