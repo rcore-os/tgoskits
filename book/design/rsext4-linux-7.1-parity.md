@@ -1126,3 +1126,44 @@ RSEXT4_BENCH_SUMMARY commit=46784bf62 arch=x86_64 backend=memory feature=metadat
 1.9%/20.3%；但是 dirty sync 相对 dev 的正确性成本仍远超 5%/10% 门槛，继续保留为硬红项。
 后续优化必须减少实际 metadata/journal I/O 或状态转换成本，不能删除 descriptor/payload
 preflush、FUA commit、checkpoint home flush 或 FUA tail publication 中任一必要边界。
+
+### 7.37 Linux sync commit/checkpoint 分界检查点
+
+Linux v7.1 `fs/ext4/super.c:6430-6473` 的 `ext4_sync_fs(wait=1)` 只启动并等待最新
+transaction commit；它不调用 `jbd2_journal_flush()`，不强制 checkpoint，也不把 journal
+标记为空。完整 checkpoint、home metadata writeback、tail cleanup 和 FUA empty publication
+属于 `fs/jbd2/journal.c:2419-2473` 的 full journal flush/unmount 路径。旧 Rust
+`Ext4::sync()` 通过 `Jbd2Dev::flush()` 同时 commit 和 checkpoint，因而普通 sync 比 Linux
+更强并把 home-write 成本错误归入 dirty-sync 阶段。
+
+本阶段新增内部 `commit_for_filesystem_sync()`：有 running transaction 时执行
+descriptor/payload preflush 和 FUA commit，保留 committed owner 等待后续 checkpoint；没有
+transaction 时仍执行一次 device flush，覆盖可能独立存在的 data writeback。unmount 继续在
+clean-state transaction commit 后显式 checkpoint 全部 owner 并 FUA 发布 tail。counting-I/O
+红测在旧实现稳定观测 primary superblock/GDT 各一次 home write 和四次 flush；同一测例现
+要求普通 dirty sync 不写 home superblock/GDT、只执行 preflush 与 FUA fallback 两个 flush，
+而 clean sync 保留一个 flush、unmount 才执行 home checkpoint 和四个完整持久化边界。
+
+改变 sync 语义后，restart/direct-fault 测试夹具不再依赖普通 sync 的隐藏 checkpoint
+副作用：需要替换 journal geometry 或关闭 journal 的夹具先显式 full checkpoint；模拟掉电
+则销毁旧 JBD2 owner，以新 owner 包装保留的 device bytes。另一个确定性红测证明旧
+`set_journal_superblock()` 会静默丢弃 committed checkpoint owner；现在 running、committing、
+checkpoint、active handle 或 log accounting 非空时统一返回 typed `Busy`。
+
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量的完整样本保存在
+`book/design/data/rsext4-perf/2026-08-12-linux-sync-commit.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=b1bafeabd arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=19313 dirty_sync_p95_ns=22365 clean_sync_median_ns=218 clean_sync_p95_ns=240 unmount_median_ns=9746 unmount_p95_ns=11293
+```
+
+| workload | dev median | current median | 变化 | dev p95 | current p95 | 变化 | 当前结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| dirty sync | 6.751 us | 19.313 us | +186.1% | 7.061 us | 22.365 us | +216.7% | 红 |
+| clean sync | 2.962 us | 0.218 us | -92.6% | 3.087 us | 0.240 us | -92.2% | 绿 |
+| clean-state unmount | 10.336 us | 9.746 us | -5.7% | 11.147 us | 11.293 us | +1.3% | 绿 |
+
+相对 7.36，dirty sync median 改善 10.5%，clean sync median/p95 改善 11.7%/14.3%；
+checkpoint 成本移回 unmount 后，unmount 相对 dev 仍在 5%/10% 门槛内。dirty sync p95 仅
+改善 0.5%，且相对 dev 仍是硬红；剩余优化目标已收窄到 commit/checksum/metadata cache CPU
+路径，不能再归因于普通 sync 误做 checkpoint。
