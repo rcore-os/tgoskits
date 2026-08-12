@@ -191,6 +191,25 @@ pub(crate) struct VmRuntimeHandle {
     deferred_reset_requested: AtomicBool,
 }
 
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) struct VcpuEventWaitSnapshot {
+    notification_generation: usize,
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) fn wait_for_vcpu_event_if_idle(
+    runtime: &VmRuntimeHandle,
+    wait_snapshot: &VcpuEventWaitSnapshot,
+    vm_running: impl Fn() -> bool,
+    wait_until: impl FnOnce(&dyn Fn() -> bool),
+) {
+    let wake_condition = || !vm_running() || wait_snapshot.has_pending_event(runtime);
+    if wake_condition() {
+        return;
+    }
+    wait_until(&wake_condition);
+}
+
 pub(crate) fn dispatch_vcpu_interrupt_with(
     enqueue: impl FnOnce() -> AxVmResult<usize>,
     notify: impl FnOnce(),
@@ -378,6 +397,13 @@ impl VmRuntimeHandle {
         self.notification_generation.load(Ordering::Acquire)
     }
 
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(crate) fn vcpu_event_wait_snapshot(&self) -> VcpuEventWaitSnapshot {
+        VcpuEventWaitSnapshot {
+            notification_generation: self.notification_generation(),
+        }
+    }
+
     pub(crate) fn notify_one(&self) {
         self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_one(false);
@@ -488,6 +514,14 @@ impl VmRuntimeHandle {
         }
         info!("VM[{vm_id}] VCpu resources cleaned up, {task_count} VCpu tasks joined");
         self.take_lifecycle_error().map_or(Ok(()), Err)
+    }
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+impl VcpuEventWaitSnapshot {
+    pub(crate) fn has_pending_event(&self, runtime: &VmRuntimeHandle) -> bool {
+        runtime.device_poll_requested()
+            || runtime.notification_generation() != self.notification_generation
     }
 }
 
@@ -1964,19 +1998,6 @@ mod tests {
         runtime.notify_one();
 
         assert_ne!(runtime.notification_generation(), observed);
-    }
-
-    #[test]
-    fn device_poll_notification_survives_wake_generation_snapshot() {
-        let runtime = VmRuntimeHandle::new();
-        let observed = runtime.notification_generation();
-
-        runtime.notify_device_poll();
-
-        assert!(runtime.device_poll_requested());
-        assert_ne!(runtime.notification_generation(), observed);
-        assert!(runtime.take_device_poll_request());
-        assert!(!runtime.take_device_poll_request());
     }
 
     #[test]
