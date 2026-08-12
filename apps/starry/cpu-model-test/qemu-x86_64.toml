@@ -1,0 +1,21 @@
+# cpu-model-test x86_64 - the "pyte for 3D models" carpet: parse OBJ/STL/PLY, slice (mesh-plane
+# intersection), rasterize (barycentric + z-buffer) and load point clouds, asserting CLOSED-FORM geometry
+# (unit-cube slice = square perimeter 4 / area 1; sphere cloud centroid at origin, all points at radius r)
+# or host-calibrated goldens (bunny count/bbox/centroid/spatial-hash sig; suzanne render signature; per-layer
+# slice goldens). The parsers/slicer/rasterizer are self-written and bundled into each static cell (cgltf
+# vendored for glb), so there is no runtime 3D-library dependency. No GPU or display. -smp 1: single vCPU.
+# 2048M: the benchy (16186-tri) slice + 256x256 suzanne render + bunny (35947-vert) point-cloud buffers.
+args = [
+    "-machine", "q35",
+    "-nographic", "-cpu", "Haswell", "-m", "2048M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 12000

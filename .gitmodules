@@ -1,0 +1,4 @@
+[submodule "apps/starry/cpu-model-test/assets"]
+	path = apps/starry/cpu-model-test/assets
+	url = https://github.com/Lfan-ke/hw4os-s5d1t2
+	branch = media
