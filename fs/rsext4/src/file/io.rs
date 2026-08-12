@@ -1102,6 +1102,60 @@ fn commit_extent_mapping_removal<B: BlockIo>(
     Ok(())
 }
 
+struct LegacyMappingTransaction {
+    plan: crate::indirect::LegacyTruncatePlan,
+    footprint: crate::indirect::LegacyTransactionFootprint,
+}
+
+fn prepare_legacy_mapping_transaction<B: BlockIo>(
+    device: &Jbd2Dev<B>,
+    fs: &Ext4FileSystem,
+    plan: crate::indirect::LegacyTruncatePlan,
+) -> Ext4Result<LegacyMappingTransaction> {
+    let footprint = plan.transaction_footprint(fs)?;
+    if device
+        .transaction_credit_limit()?
+        .is_some_and(|limit| footprint.credits > limit)
+    {
+        return Err(Ext4Error::no_space().with_operation("indirect:transaction_credits"));
+    }
+    Ok(LegacyMappingTransaction { plan, footprint })
+}
+
+fn commit_legacy_mapping_removal<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    metadata_update: Ext4InodeMetadataUpdate,
+    new_size: Option<u64>,
+    transaction: LegacyMappingTransaction,
+) -> Ext4Result<()> {
+    let LegacyMappingTransaction { plan, footprint } = transaction;
+    let original_inode = *inode;
+    let updated = fs.with_metadata_transaction(device, footprint.credits, |fs, device| {
+        let mut updated = original_inode;
+        let block_size = fs.block_size() as u32;
+        let huge_file_feature = fs
+            .superblock
+            .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+        plan.apply_inode_mapping(&mut updated, block_size, huge_file_feature)?;
+        if let Some(size) = new_size {
+            updated.i_size_lo = size as u32;
+            updated.i_size_high = (size >> 32) as u32;
+        }
+        plan.apply_pointer_edits(device)?;
+        fs.finalize_inode_update(device, inode_num, &mut updated, metadata_update)?;
+        fs.inodetable_cache.flush(device, inode_num)?;
+        plan.free_removed_blocks(fs, device)?;
+        fs.flush_block_allocation_groups(device, &footprint.allocation_groups)?;
+        fs.sync_superblock(device)?;
+        Ok(updated)
+    })?;
+    *inode = updated;
+    Ok(())
+}
+
 fn punch_legacy_blocks<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -1113,36 +1167,20 @@ fn punch_legacy_blocks<B: BlockIo>(
     let block_bytes = fs.block_size() as u64;
     let full_start = offset.div_ceil(block_bytes);
     let full_end = end / block_bytes;
-    let original_inode = inode;
     let removal = crate::indirect::plan_legacy_inode_range_removal(
         fs, device, inode_num, &inode, full_start, full_end,
     )?;
+    let transaction = prepare_legacy_mapping_transaction(device, fs, removal)?;
     zero_partial_mapped_blocks(device, fs, inode_num, &mut inode, offset, end)?;
-    let block_size = fs.block_size() as u32;
-    let huge_file_feature = fs
-        .superblock
-        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
-    removal.apply_inode_mapping(&mut inode, block_size, huge_file_feature)?;
-    removal.apply_pointer_edits(device)?;
-    if let Err(operation_error) = fs.finalize_inode_update(
+    commit_legacy_mapping_removal(
         device,
+        fs,
         inode_num,
         &mut inode,
         Ext4InodeMetadataUpdate::write_access(),
-    ) {
-        let mut rollback_error = removal.restore_pointer_edits(device).err();
-        if let Err(error) = fs.modify_inode(device, inode_num, |on_disk| {
-            *on_disk = original_inode;
-        }) && rollback_error.is_none()
-        {
-            rollback_error = Some(error);
-        }
-        return Err(match rollback_error {
-            Some(error) => error.with_operation("rollback:indirect_punch"),
-            None => operation_error,
-        });
-    }
-    removal.free_removed_blocks(fs, device)
+        None,
+        transaction,
+    )
 }
 
 fn convert_initialized_range_to_unwritten<B: BlockIo>(
@@ -1367,9 +1405,6 @@ fn truncate_inode_mapping<B: BlockIo>(
     }
 
     let block_bytes = fs.block_size() as u64;
-    let huge_file_feature = fs
-        .superblock
-        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
     let new_blocks = if truncate_size == 0 {
         0u64
     } else {
@@ -1477,38 +1512,22 @@ fn truncate_inode_mapping<B: BlockIo>(
         );
     }
 
-    let original_inode = inode;
     let truncate_plan =
         crate::indirect::plan_legacy_inode_truncate(fs, device, inode_num, &inode, new_blocks)?;
+    let transaction = prepare_legacy_mapping_transaction(device, fs, truncate_plan)?;
     // Linux zeros the retained partial EOF block before detaching later
     // mappings. A corrupt hidden branch therefore still fails during the plan
     // preflight before any data or metadata is changed.
     zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
-    truncate_plan.apply_inode_mapping(&mut inode, block_bytes as u32, huge_file_feature)?;
-    inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
-    inode.i_size_high = (truncate_size >> 32) as u32;
-    truncate_plan.apply_pointer_edits(device)?;
-
-    if let Err(operation_error) = fs.finalize_inode_update(
+    commit_legacy_mapping_removal(
         device,
+        fs,
         inode_num,
         &mut inode,
         Ext4InodeMetadataUpdate::truncate_access(),
-    ) {
-        let mut rollback_error = truncate_plan.restore_pointer_edits(device).err();
-        if let Err(error) = fs.modify_inode(device, inode_num, |on_disk| {
-            *on_disk = original_inode;
-        }) && rollback_error.is_none()
-        {
-            rollback_error = Some(error);
-        }
-        return Err(match rollback_error {
-            Some(error) => error.with_operation("rollback:indirect_truncate"),
-            None => operation_error,
-        });
-    }
-
-    truncate_plan.free_removed_blocks(fs, device)
+        Some(truncate_size),
+        transaction,
+    )
 }
 
 fn read_symlink_target<B: BlockIo>(

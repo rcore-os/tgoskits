@@ -183,11 +183,14 @@ pub fn reap_unlinked_inode<B: BlockIo>(
         return Err(Ext4Error::not_found().with_operation("orphan:reap_not_listed"));
     }
     preflight_inode_free(fs, block_dev, inode_num, &inode)?;
+    // Legacy indirect trees may require their own bounded transaction. The
+    // zero-link inode remains durably orphaned across this boundary, so a
+    // crash after mapping removal simply resumes the final reap on mount.
+    truncate_legacy_indirect_mapping_before_free(fs, block_dev, inode_num, &mut inode)?;
     let credits = reap_transaction_credits(fs, &inode)?;
     let counters_before = fs.group_counter_snapshot();
 
     fs.with_metadata_transaction(block_dev, credits, |fs, block_dev| {
-        truncate_legacy_indirect_mapping_before_free(fs, block_dev, inode_num, &mut inode)?;
         let used_blocks = inode_owned_blocks(fs, block_dev, inode_num, &mut inode)?;
         for block in used_blocks {
             fs.free_block(block_dev, block)?;
