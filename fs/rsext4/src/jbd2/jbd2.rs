@@ -559,12 +559,18 @@ impl JBD2DEVSYSTEM {
             .checked_sub(core::mem::size_of::<Jbd2JournalRevokeHeadS>())
             .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_size"))?
             / entry_size;
-        if !revoked_blocks.is_empty() && capacity == 0 {
+        if revoked_blocks.is_empty() {
+            return Ok(());
+        }
+        if capacity == 0 {
             return Err(Ext4Error::no_space().with_operation("jbd2:revoke_capacity"));
         }
 
-        for revoked in revoked_blocks.chunks(capacity.max(1)) {
-            let mut revoke_buffer = vec![0_u8; block_size];
+        let mut revoke_buffer = vec![0_u8; block_size];
+        for (record_index, revoked) in revoked_blocks.chunks(capacity).enumerate() {
+            if record_index != 0 {
+                revoke_buffer.fill(0);
+            }
             let record_bytes = revoked
                 .len()
                 .checked_mul(entry_size)
@@ -724,12 +730,19 @@ impl JBD2DEVSYSTEM {
 
         let mut compat_checksum = u32::MAX;
         let mut payload_offset = 0usize;
+        let mut desc_buffer = if update_count == 0 {
+            Vec::new()
+        } else {
+            vec![0; block_size]
+        };
         while payload_offset < update_count {
             let payload_end = payload_offset
                 .checked_add(descriptor_capacity)
                 .ok_or_else(Ext4Error::overflow)?
                 .min(update_count);
-            let mut desc_buffer = vec![0; block_size];
+            if payload_offset != 0 {
+                desc_buffer.fill(0);
+            }
             JournalHeaderS {
                 h_blocktype: JBD2_BLOCKTYPE_DESCRIPTOR,
                 h_sequence: tid,
@@ -858,7 +871,12 @@ impl JBD2DEVSYSTEM {
         // Write the commit block BEFORE checkpointing so that a crash during
         // checkpoint still leaves a valid committed transaction in the journal
         // for replay on the next mount.
-        let mut commit_buffer = vec![0_u8; block_size];
+        let mut commit_buffer = if desc_buffer.is_empty() {
+            vec![0_u8; block_size]
+        } else {
+            desc_buffer
+        };
+        commit_buffer.fill(0);
 
         let mut commit_block = CommitHeader {
             h_header: JournalHeaderS {
