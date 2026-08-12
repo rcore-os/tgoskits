@@ -458,6 +458,8 @@ struct FileBackend {
     writes: Arc<Mutex<VecDeque<FileWrite>>>,
     pending_writes: Arc<AtomicUsize>,
     writeback_failed: Arc<AtomicBool>,
+    stop_worker: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
     capacity_sectors: u64,
 }
 
@@ -480,7 +482,9 @@ impl FileBackend {
         let worker_pending = pending_writes.clone();
         let writeback_failed = Arc::new(AtomicBool::new(false));
         let worker_failed = writeback_failed.clone();
-        std::thread::Builder::new()
+        let stop_worker = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop_worker.clone();
+        let worker = std::thread::Builder::new()
             .name("virtio-blk-file".into())
             .spawn(move || {
                 loop {
@@ -502,6 +506,8 @@ impl FileBackend {
                             worker_failed.store(true, Ordering::Release);
                         }
                         worker_pending.fetch_sub(1, Ordering::AcqRel);
+                    } else if worker_stop.load(Ordering::Acquire) {
+                        break;
                     } else {
                         std::thread::sleep(core::time::Duration::from_millis(1));
                     }
@@ -518,6 +524,8 @@ impl FileBackend {
             writes,
             pending_writes,
             writeback_failed,
+            stop_worker,
+            worker: Some(worker),
             capacity_sectors,
         })
     }
@@ -538,6 +546,20 @@ impl FileBackend {
             return Err(VirtioError::InvalidAddress);
         }
         Ok(start..end)
+    }
+}
+
+#[cfg(feature = "fs")]
+impl Drop for FileBackend {
+    fn drop(&mut self) {
+        // The worker drains every queued write before observing this flag, so
+        // teardown never silently discards writes already accepted from the guest.
+        self.stop_worker.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+        {
+            error!("virtio-blk file worker failed during teardown");
+        }
     }
 }
 
