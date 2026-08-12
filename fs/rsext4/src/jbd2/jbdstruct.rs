@@ -311,6 +311,34 @@ impl JournalSuperBlock {
         Ok(capacity)
     }
 
+    /// Returns the number of revoke records carried by one revoke block.
+    pub(crate) fn revoke_records_per_block(&self, block_size: usize) -> Ext4Result<usize> {
+        let feature_incompat = if self.is_v1() {
+            0
+        } else {
+            self.s_feature_incompat
+        };
+        let entry_size = if feature_incompat & JBD2_FEATURE_INCOMPAT_64BIT != 0 {
+            core::mem::size_of::<u64>()
+        } else {
+            core::mem::size_of::<u32>()
+        };
+        let checksum_tail = if self.checksum_mode()?.has_block_checksums() {
+            core::mem::size_of::<u32>()
+        } else {
+            0
+        };
+        let record_bytes = block_size
+            .checked_sub(core::mem::size_of::<Jbd2JournalRevokeHeadS>())
+            .and_then(|bytes| bytes.checked_sub(checksum_tail))
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_capacity"))?;
+        let capacity = record_bytes / entry_size;
+        if capacity == 0 {
+            return Err(Ext4Error::no_space().with_operation("jbd2:revoke_capacity"));
+        }
+        Ok(capacity)
+    }
+
     /// Decodes the fixed JBD2 superblock prefix from a journal block.
     pub fn decode_checked(bytes: &[u8]) -> Ext4Result<Self> {
         if bytes.len() < Self::DISK_SIZE {
@@ -727,6 +755,16 @@ mod tests {
 
         superblock.s_feature_incompat |= JBD2_FEATURE_INCOMPAT_64BIT;
         assert_eq!(superblock.descriptor_tag_capacity(4096).unwrap(), 289);
+    }
+
+    #[test]
+    fn revoke_capacity_accounts_for_block_numbers_and_checksum_tail() {
+        let mut superblock = JournalSuperBlock::default();
+        assert_eq!(superblock.revoke_records_per_block(4096).unwrap(), 1020);
+
+        superblock.s_feature_incompat = JBD2_FEATURE_INCOMPAT_64BIT | JBD2_FEATURE_INCOMPAT_CSUM_V3;
+        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
+        assert_eq!(superblock.revoke_records_per_block(4096).unwrap(), 509);
     }
 
     #[test]

@@ -9,6 +9,7 @@ use super::{
 };
 use crate::{
     BlockIo, Ext4FileSystem, Jbd2Dev,
+    blockdev::TransactionCredits,
     bmalloc::{AbsoluteBN, BGIndex, InodeNumber},
     disknode::Ext4Inode,
     endian::{read_u32_le, write_u32_le},
@@ -37,7 +38,7 @@ pub(crate) struct LegacyTruncatePlan {
 
 pub(crate) struct LegacyTransactionFootprint {
     pub(crate) allocation_groups: Vec<BGIndex>,
-    pub(crate) credits: usize,
+    pub(crate) credits: TransactionCredits,
 }
 
 impl LegacyTruncatePlan {
@@ -127,16 +128,9 @@ impl LegacyTruncatePlan {
         filesystem: &Ext4FileSystem,
     ) -> Ext4Result<LegacyTransactionFootprint> {
         let allocation_groups = self.allocation_groups(filesystem)?;
-        let detached_metadata_credits = self
-            .metadata_blocks_to_free
-            .iter()
-            .filter(|block| !self.pointer_edits.iter().any(|edit| edit.block == **block))
-            .count();
-        let credits = self
+        let metadata_credits = self
             .pointer_edits
             .len()
-            .checked_add(detached_metadata_credits)
-            .ok_or_else(Ext4Error::overflow)?
             .checked_add(
                 allocation_groups
                     .len()
@@ -147,7 +141,10 @@ impl LegacyTruncatePlan {
             .ok_or_else(Ext4Error::overflow)?;
         Ok(LegacyTransactionFootprint {
             allocation_groups,
-            credits,
+            credits: TransactionCredits::metadata_with_revokes(
+                metadata_credits,
+                self.metadata_blocks_to_free.len(),
+            ),
         })
     }
 }

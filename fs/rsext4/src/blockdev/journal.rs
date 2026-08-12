@@ -29,9 +29,11 @@ pub enum Jbd2RunState {
 }
 
 struct ActiveJournalHandle {
-    credits: usize,
+    metadata_credits: usize,
+    revoke_credits_requested: usize,
+    revoke_credits_remaining: usize,
     transaction_credits_at_start: usize,
-    touched_blocks: Vec<AbsoluteBN>,
+    touched_metadata_blocks: Vec<AbsoluteBN>,
     queue_snapshot: Vec<Jbd2Update>,
     revoke_snapshot: Vec<AbsoluteBN>,
 }
@@ -39,6 +41,47 @@ struct ActiveJournalHandle {
 struct ActiveDirectHandle {
     credits: usize,
     before_images: Vec<Jbd2Update>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TransactionCredits {
+    metadata_blocks: usize,
+    revoke_records: usize,
+}
+
+impl TransactionCredits {
+    pub(crate) const fn metadata(metadata_blocks: usize) -> Self {
+        Self {
+            metadata_blocks,
+            revoke_records: 0,
+        }
+    }
+
+    pub(crate) const fn metadata_with_revokes(
+        metadata_blocks: usize,
+        revoke_records: usize,
+    ) -> Self {
+        Self {
+            metadata_blocks,
+            revoke_records,
+        }
+    }
+
+    fn total_buffer_credits(self, revoke_records_per_block: usize) -> Ext4Result<usize> {
+        self.metadata_blocks
+            .checked_add(self.revoke_records.div_ceil(revoke_records_per_block))
+            .ok_or_else(Ext4Error::overflow)
+    }
+
+    const fn is_empty(self) -> bool {
+        self.metadata_blocks == 0 && self.revoke_records == 0
+    }
+}
+
+impl From<usize> for TransactionCredits {
+    fn from(metadata_blocks: usize) -> Self {
+        Self::metadata(metadata_blocks)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,13 +185,14 @@ impl<B: BlockIo> Jbd2Dev<B> {
         transaction_capacity: usize,
     ) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:write_after_abort")?;
+        let revoke_records_per_block = self.journal_revoke_records_per_block()?;
 
         if let Some(handle) = self.active_handle.as_mut() {
-            if !handle.touched_blocks.contains(&update.0) {
-                if handle.touched_blocks.len() >= handle.credits {
+            if !handle.touched_metadata_blocks.contains(&update.0) {
+                if handle.touched_metadata_blocks.len() >= handle.metadata_credits {
                     return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
                 }
-                handle.touched_blocks.push(update.0);
+                handle.touched_metadata_blocks.push(update.0);
             }
             let system = self.system.as_mut().ok_or_else(|| {
                 Ext4Error::journal_aborted().with_operation("jbd2:write_without_state")
@@ -187,7 +231,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 *existing = update;
                 return Ok(());
             }
-            Self::running_transaction_credits(system)?
+            Self::running_transaction_credits(system, revoke_records_per_block)?
                 .checked_add(1)
                 .ok_or_else(Ext4Error::overflow)?
                 > transaction_capacity
@@ -201,7 +245,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .system
             .as_ref()
             .ok_or_else(|| Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"))
-            .and_then(Self::running_transaction_credits)?
+            .and_then(|system| {
+                Self::running_transaction_credits(system, revoke_records_per_block)
+            })?
             == 0;
         if running_transaction_is_empty {
             self.reserve_maximum_transaction_log_space()?;
@@ -262,7 +308,10 @@ impl<B: BlockIo> Jbd2Dev<B> {
         None
     }
 
-    fn running_transaction_credits(system: &JBD2DEVSYSTEM) -> Ext4Result<usize> {
+    fn running_transaction_credits(
+        system: &JBD2DEVSYSTEM,
+        revoke_records_per_block: usize,
+    ) -> Ext4Result<usize> {
         let distinct_revokes = system
             .running_transaction
             .revoked_blocks
@@ -279,7 +328,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .running_transaction
             .updates
             .len()
-            .checked_add(distinct_revokes)
+            .checked_add(distinct_revokes.div_ceil(revoke_records_per_block))
             .ok_or_else(Ext4Error::overflow)
     }
 
@@ -577,6 +626,16 @@ impl<B: BlockIo> Jbd2Dev<B> {
         )
     }
 
+    fn journal_revoke_records_per_block(&self) -> Ext4Result<usize> {
+        self.ensure_not_aborted("jbd2:capacity_after_abort")?;
+        let system = self.system.as_ref().ok_or_else(|| {
+            Ext4Error::journal_aborted().with_operation("jbd2:capacity_without_state")
+        })?;
+        system
+            .jbd2_super_block
+            .revoke_records_per_block(self.inner.block_size() as usize)
+    }
+
     fn journal_maximum_transaction_records(&self) -> Ext4Result<usize> {
         self.ensure_not_aborted("jbd2:capacity_after_abort")?;
         let system = self.system.as_ref().ok_or_else(|| {
@@ -613,6 +672,14 @@ impl<B: BlockIo> Jbd2Dev<B> {
             self.journal_transaction_capacity().map(Some)
         } else {
             Ok(None)
+        }
+    }
+
+    pub(crate) fn transaction_credit_cost(&self, credits: TransactionCredits) -> Ext4Result<usize> {
+        if self.journal_use {
+            credits.total_buffer_credits(self.journal_revoke_records_per_block()?)
+        } else {
+            Ok(credits.metadata_blocks)
         }
     }
 
@@ -801,12 +868,12 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .running_transaction
             .revoked_blocks
             .clone();
-        let touched_snapshot = self
+        let active_handle = self
             .active_handle
             .as_ref()
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:missing_active_handle"))?
-            .touched_blocks
-            .clone();
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:missing_active_handle"))?;
+        let touched_metadata_snapshot = active_handle.touched_metadata_blocks.clone();
+        let revoke_credits_remaining_snapshot = active_handle.revoke_credits_remaining;
 
         match operation(self) {
             Ok(value) => Ok(value),
@@ -816,12 +883,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 })?;
                 system.running_transaction.updates = queue_snapshot;
                 system.running_transaction.revoked_blocks = revoke_snapshot;
-                self.active_handle
-                    .as_mut()
-                    .ok_or_else(|| {
-                        Ext4Error::corrupted().with_operation("jbd2:missing_active_handle")
-                    })?
-                    .touched_blocks = touched_snapshot;
+                let handle = self.active_handle.as_mut().ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("jbd2:missing_active_handle")
+                })?;
+                handle.touched_metadata_blocks = touched_metadata_snapshot;
+                handle.revoke_credits_remaining = revoke_credits_remaining_snapshot;
                 // A nested filesystem owner restores its cache snapshot after
                 // this return. Drop device-cache aliases dirtied by the failed
                 // scope so they cannot bypass the restored journal queue.
@@ -831,22 +897,26 @@ impl<B: BlockIo> Jbd2Dev<B> {
         }
     }
 
-    fn with_journal_handle<T>(
+    fn with_journal_handle<T, C>(
         &mut self,
-        credits: usize,
+        credits: C,
         operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
-    ) -> Ext4Result<T> {
+    ) -> Ext4Result<T>
+    where
+        C: Into<TransactionCredits>,
+    {
+        let credits = credits.into();
         self.ensure_not_aborted("jbd2:handle_after_abort")?;
         if !self.journal_use {
-            if credits == 0 {
+            if credits.is_empty() {
                 return Err(Ext4Error::invalid_input().with_operation("jbd2:handle_credits"));
             }
             if self.active_direct_handle.is_some() {
                 return Err(Ext4Error::busy().with_operation("jbd2:nested_direct_handle"));
             }
             self.active_direct_handle = Some(ActiveDirectHandle {
-                credits,
-                before_images: Vec::with_capacity(credits),
+                credits: credits.metadata_blocks,
+                before_images: Vec::with_capacity(credits.metadata_blocks),
             });
             return match operation(self) {
                 Ok(value) => {
@@ -870,22 +940,25 @@ impl<B: BlockIo> Jbd2Dev<B> {
             // closure lifetime supplies the matching scoped reference here.
             return self.with_nested_journal_handle(operation);
         }
-        if credits == 0 {
+        if credits.is_empty() {
             return Err(Ext4Error::invalid_input().with_operation("jbd2:handle_credits"));
         }
+        let revoke_records_per_block = self.journal_revoke_records_per_block()?;
+        let requested_buffer_credits = credits.total_buffer_credits(revoke_records_per_block)?;
         let transaction_capacity = self.journal_transaction_capacity()?;
-        if credits > transaction_capacity {
+        if requested_buffer_credits > transaction_capacity {
             return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
         }
         let (needs_commit, running_transaction_was_empty) = {
-            let Some(system) = self.system.as_mut() else {
+            let Some(system) = self.system.as_ref() else {
                 return Err(
                     Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
                 );
             };
-            let running_credits = Self::running_transaction_credits(system)?;
+            let running_credits =
+                Self::running_transaction_credits(system, revoke_records_per_block)?;
             let reserved = running_credits
-                .checked_add(credits)
+                .checked_add(requested_buffer_credits)
                 .ok_or_else(Ext4Error::overflow)?;
             (reserved > transaction_capacity, running_credits == 0)
         };
@@ -896,11 +969,12 @@ impl<B: BlockIo> Jbd2Dev<B> {
             self.reserve_maximum_transaction_log_space()?;
         }
 
-        let transaction_credits_at_start = self
-            .system
-            .as_ref()
-            .ok_or_else(|| Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state"))
-            .and_then(Self::running_transaction_credits)?;
+        let transaction_credits_at_start = Self::running_transaction_credits(
+            self.system.as_ref().ok_or_else(|| {
+                Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
+            })?,
+            revoke_records_per_block,
+        )?;
 
         let queue_snapshot = {
             let system = self.system.as_ref().ok_or_else(|| {
@@ -918,13 +992,15 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .revoked_blocks
             .clone();
         self.active_handle = Some(ActiveJournalHandle {
-            credits: 0,
+            metadata_credits: 0,
+            revoke_credits_requested: 0,
+            revoke_credits_remaining: 0,
             transaction_credits_at_start,
-            touched_blocks: Vec::with_capacity(credits),
+            touched_metadata_blocks: Vec::with_capacity(credits.metadata_blocks),
             queue_snapshot,
             revoke_snapshot,
         });
-        match self.extend_transaction_handle(credits) {
+        match self.extend_transaction_credits(credits) {
             Ok(TransactionHandleExtension::Extended) => {}
             Ok(TransactionHandleExtension::RestartRequired) => {
                 self.active_handle = None;
@@ -971,6 +1047,14 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.with_journal_handle(credits, operation)
     }
 
+    pub(crate) fn with_transaction_credits<T>(
+        &mut self,
+        credits: TransactionCredits,
+        operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
+    ) -> Ext4Result<T> {
+        self.with_journal_handle(credits, operation)
+    }
+
     /// Best-effort extension of the current metadata reservation.
     ///
     /// Linux JBD2 does not wait for log space from this operation. When the
@@ -978,9 +1062,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// filesystem owner must close its current atomic step and restart in a
     /// new transaction. This core reports that state explicitly so callers do
     /// not confuse a required restart with device space exhaustion.
-    pub(crate) fn extend_transaction_handle(
+    pub(crate) fn extend_transaction_credits(
         &mut self,
-        additional_credits: usize,
+        additional_credits: TransactionCredits,
     ) -> Ext4Result<TransactionHandleExtension> {
         self.ensure_not_aborted("jbd2:extend_after_abort")?;
         if !self.journal_use {
@@ -989,22 +1073,35 @@ impl<B: BlockIo> Jbd2Dev<B> {
             })?;
             handle.credits = handle
                 .credits
-                .checked_add(additional_credits)
+                .checked_add(additional_credits.metadata_blocks)
                 .ok_or_else(Ext4Error::overflow)?;
             return Ok(TransactionHandleExtension::Extended);
         }
 
-        let (current_credits, transaction_credits_at_start) = self
-            .active_handle
-            .as_ref()
-            .map(|handle| (handle.credits, handle.transaction_credits_at_start))
-            .ok_or_else(|| {
-                Ext4Error::invalid_input().with_operation("jbd2:extend_without_handle")
-            })?;
-        let Some(extended_credits) = current_credits.checked_add(additional_credits) else {
+        let handle = self.active_handle.as_ref().ok_or_else(|| {
+            Ext4Error::invalid_input().with_operation("jbd2:extend_without_handle")
+        })?;
+        let Some(extended_metadata_credits) = handle
+            .metadata_credits
+            .checked_add(additional_credits.metadata_blocks)
+        else {
             return Ok(TransactionHandleExtension::RestartRequired);
         };
-        let Some(reserved_credits) = transaction_credits_at_start.checked_add(extended_credits)
+        let Some(extended_revoke_credits) = handle
+            .revoke_credits_requested
+            .checked_add(additional_credits.revoke_records)
+        else {
+            return Ok(TransactionHandleExtension::RestartRequired);
+        };
+        let revoke_records_per_block = self.journal_revoke_records_per_block()?;
+        let Some(handle_buffer_credits) = extended_metadata_credits
+            .checked_add(extended_revoke_credits.div_ceil(revoke_records_per_block))
+        else {
+            return Ok(TransactionHandleExtension::RestartRequired);
+        };
+        let Some(reserved_credits) = handle
+            .transaction_credits_at_start
+            .checked_add(handle_buffer_credits)
         else {
             return Ok(TransactionHandleExtension::RestartRequired);
         };
@@ -1019,7 +1116,12 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .active_handle
             .as_mut()
             .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:missing_active_handle"))?;
-        handle.credits = extended_credits;
+        handle.metadata_credits = extended_metadata_credits;
+        handle.revoke_credits_requested = extended_revoke_credits;
+        handle.revoke_credits_remaining = handle
+            .revoke_credits_remaining
+            .checked_add(additional_credits.revoke_records)
+            .ok_or_else(Ext4Error::overflow)?;
         Ok(TransactionHandleExtension::Extended)
     }
 
@@ -1124,13 +1226,22 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if self.journal_use && self.active_handle.is_none() {
             self.reserve_maximum_transaction_log_space()?;
         }
-        if let Some(handle) = self.active_handle.as_mut()
-            && !handle.touched_blocks.contains(&block_id)
-        {
-            if handle.touched_blocks.len() >= handle.credits {
-                return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
+        let needs_revoke_credit = self.journal_use
+            && self.active_handle.is_some()
+            && self.system.as_ref().is_some_and(|system| {
+                !system
+                    .running_transaction
+                    .revoked_blocks
+                    .contains(&block_id)
+            });
+        if needs_revoke_credit {
+            let handle = self.active_handle.as_mut().ok_or_else(|| {
+                Ext4Error::corrupted().with_operation("jbd2:missing_active_handle")
+            })?;
+            if handle.revoke_credits_remaining == 0 {
+                return Err(Ext4Error::no_space().with_operation("jbd2:revoke_credits"));
             }
-            handle.touched_blocks.push(block_id);
+            handle.revoke_credits_remaining -= 1;
         }
         if let Some(system) = self.system.as_mut() {
             system
@@ -2046,6 +2157,101 @@ mod tests {
             Jbd2Dev::<MemBlockDev>::transaction_capacity(&small, BLOCK_SIZE, 16).unwrap(),
             3
         );
+    }
+
+    #[test]
+    fn revoke_records_consume_descriptor_credits_instead_of_metadata_credits() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(4096), true);
+        let superblock = csum_v3_superblock();
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(2048))
+            .expect("install csum-v3 journal");
+        let revoke_records_per_block = (BLOCK_SIZE
+            - core::mem::size_of::<Jbd2JournalRevokeHeadS>()
+            - core::mem::size_of::<u32>())
+            / core::mem::size_of::<u64>();
+        let metadata_target = AbsoluteBN::new(1536);
+
+        dev.with_transaction_credits(
+            TransactionCredits::metadata_with_revokes(1, revoke_records_per_block),
+            |dev| {
+                for index in 0..revoke_records_per_block {
+                    dev.forget_detached_metadata(AbsoluteBN::new(100 + index as u64))?;
+                }
+                dev.write_blocks(&vec![0x5a; BLOCK_SIZE], metadata_target, 1, true)
+            },
+        )
+        .expect("one full revoke descriptor and one metadata update must fit two credits");
+
+        dev.commit().expect("commit revoke-credit transaction");
+        let system = dev.system.as_ref().expect("journal state");
+        assert_eq!(system.used_log_records, 4);
+        assert_eq!(system.checkpoint_transactions.len(), 1);
+    }
+
+    #[test]
+    fn revoke_beyond_handle_request_fails_and_restores_the_transaction() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
+
+        let error = dev
+            .with_transaction_credits(TransactionCredits::metadata_with_revokes(0, 1), |dev| {
+                dev.forget_detached_metadata(AbsoluteBN::new(10))?;
+                dev.forget_detached_metadata(AbsoluteBN::new(11))
+            })
+            .expect_err("a handle must not consume an unrequested revoke record");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::NoSpace);
+        assert_eq!(
+            error.context(),
+            Some(crate::ErrorContext::Operation {
+                op: "jbd2:revoke_credits"
+            })
+        );
+        assert!(
+            dev.system
+                .as_ref()
+                .unwrap()
+                .running_transaction
+                .revoked_blocks
+                .is_empty(),
+            "the failed handle must restore its revoke-table snapshot"
+        );
+    }
+
+    #[test]
+    fn revoke_extension_charges_only_a_new_descriptor_boundary() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let revoke_records_per_block = dev
+            .journal_revoke_records_per_block()
+            .expect("revoke capacity");
+        assert_eq!(dev.journal_transaction_capacity().unwrap(), 3);
+
+        dev.with_transaction_credits(
+            TransactionCredits::metadata_with_revokes(2, revoke_records_per_block - 1),
+            |dev| {
+                assert_eq!(
+                    dev.extend_transaction_credits(TransactionCredits::metadata_with_revokes(
+                        0, 1
+                    ),)?,
+                    TransactionHandleExtension::Extended,
+                    "filling the existing revoke descriptor costs no new buffer credit"
+                );
+                assert_eq!(
+                    dev.extend_transaction_credits(TransactionCredits::metadata_with_revokes(
+                        0, 1
+                    ),)?,
+                    TransactionHandleExtension::RestartRequired,
+                    "crossing the descriptor boundary exceeds the fixed transaction capacity"
+                );
+                let handle = dev.active_handle.as_ref().expect("active handle");
+                assert_eq!(handle.revoke_credits_requested, revoke_records_per_block);
+                assert_eq!(handle.revoke_credits_remaining, revoke_records_per_block);
+                Ok(())
+            },
+        )
+        .expect("the original revoke reservation remains valid");
     }
 
     #[test]
@@ -3145,7 +3351,7 @@ mod tests {
         dev.write_blocks(&old_metadata, target, 1, true)
             .expect("queue old metadata image");
         dev.commit().expect("commit old metadata transaction");
-        dev.with_transaction_handle(1, |dev| {
+        dev.with_transaction_credits(TransactionCredits::metadata_with_revokes(0, 1), |dev| {
             dev.forget_detached_metadata(target)?;
             dev.write_blocks(&new_owner, target, 1, false)
         })
@@ -3213,7 +3419,7 @@ mod tests {
         dev.write_blocks(&old_metadata, target, 1, true)
             .expect("queue old metadata image");
         dev.commit().expect("commit old metadata transaction");
-        dev.with_transaction_handle(1, |dev| {
+        dev.with_transaction_credits(TransactionCredits::metadata_with_revokes(0, 1), |dev| {
             dev.forget_detached_metadata(target)?;
             dev.write_blocks(&new_owner, target, 1, false)
         })
@@ -3252,7 +3458,7 @@ mod tests {
         dev.write_blocks(&old_metadata, target, 1, true)
             .expect("queue old metadata image");
         dev.commit().expect("commit old metadata transaction");
-        dev.with_transaction_handle(1, |dev| {
+        dev.with_transaction_credits(TransactionCredits::metadata_with_revokes(1, 1), |dev| {
             dev.forget_detached_metadata(target)?;
             dev.write_blocks(&new_metadata, target, 1, true)
         })
@@ -3737,7 +3943,7 @@ mod tests {
                 "space must be reclaimed before the operation can dirty metadata"
             );
             assert_eq!(
-                dev.extend_transaction_handle(capacity - 1)?,
+                dev.extend_transaction_credits(TransactionCredits::metadata(capacity - 1))?,
                 TransactionHandleExtension::Extended,
                 "extend uses the already guaranteed log reservation"
             );
@@ -3838,7 +4044,7 @@ mod tests {
         dev.with_journal_handle(1, |dev| {
             dev.write_blocks(&vec![0x31; BLOCK_SIZE], first, 1, true)?;
             assert_eq!(
-                dev.extend_transaction_handle(1)?,
+                dev.extend_transaction_credits(TransactionCredits::metadata(1))?,
                 TransactionHandleExtension::Extended
             );
             dev.write_blocks(&vec![0x42; BLOCK_SIZE], second, 1, true)
@@ -3870,7 +4076,7 @@ mod tests {
         dev.with_journal_handle(1, |dev| {
             dev.write_blocks(&vec![0x53; BLOCK_SIZE], first, 1, true)?;
             assert_eq!(
-                dev.extend_transaction_handle(usize::MAX)?,
+                dev.extend_transaction_credits(TransactionCredits::metadata(usize::MAX))?,
                 TransactionHandleExtension::RestartRequired
             );
             let error = dev
@@ -3906,11 +4112,11 @@ mod tests {
         dev.with_journal_handle(1, |dev| {
             dev.write_blocks(&vec![0x28; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)?;
             assert_eq!(
-                dev.extend_transaction_handle(1)?,
+                dev.extend_transaction_credits(TransactionCredits::metadata(1))?,
                 TransactionHandleExtension::Extended
             );
             assert_eq!(
-                dev.extend_transaction_handle(1)?,
+                dev.extend_transaction_credits(TransactionCredits::metadata(1))?,
                 TransactionHandleExtension::RestartRequired,
                 "the pre-handle update must remain part of the reservation"
             );
@@ -3929,7 +4135,7 @@ mod tests {
             .with_transaction_handle(1, |dev| {
                 dev.write_blocks(&vec![0x39; BLOCK_SIZE], first, 1, true)?;
                 assert_eq!(
-                    dev.extend_transaction_handle(1)?,
+                    dev.extend_transaction_credits(TransactionCredits::metadata(1))?,
                     TransactionHandleExtension::Extended
                 );
                 dev.write_blocks(&vec![0x4a; BLOCK_SIZE], second, 1, true)?;
@@ -4017,6 +4223,46 @@ mod tests {
         assert_eq!(
             &inner.data[failed_start..failed_start + BLOCK_SIZE],
             &vec![0; BLOCK_SIZE]
+        );
+    }
+
+    #[test]
+    fn failed_nested_handle_restores_revoke_credits_and_table() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+
+        dev.with_transaction_credits(TransactionCredits::metadata_with_revokes(0, 2), |dev| {
+            let error = dev
+                .with_journal_handle(usize::MAX, |dev| {
+                    dev.forget_detached_metadata(AbsoluteBN::new(10))?;
+                    Err::<(), _>(Ext4Error::io().with_operation("test:nested_revoke_abort"))
+                })
+                .expect_err("nested revoke failure must roll back its scope");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+            assert!(
+                dev.system
+                    .as_ref()
+                    .unwrap()
+                    .running_transaction
+                    .revoked_blocks
+                    .is_empty()
+            );
+            assert_eq!(
+                dev.active_handle.as_ref().unwrap().revoke_credits_remaining,
+                2
+            );
+            dev.forget_detached_metadata(AbsoluteBN::new(10))?;
+            dev.forget_detached_metadata(AbsoluteBN::new(11))
+        })
+        .expect("the outer handle must retain both revoke records");
+
+        dev.commit().expect("commit restored outer revoke scope");
+        assert_eq!(
+            dev.system.as_ref().unwrap().checkpoint_transactions[0]
+                .revoked_blocks
+                .len(),
+            2
         );
     }
 

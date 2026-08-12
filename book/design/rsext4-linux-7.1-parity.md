@@ -148,7 +148,7 @@ cookie 并清空 continuation。VFS directory sink 接收 raw `&[u8]` 名称，�
 | `linux-default-rocompat-rw` | Linux mkfs 默认设置 `HUGE_FILE`、`DIR_NLINK` | 完整读写语义后纳入 writable mask | inode/namespace lifecycle | 绿：`HUGE_FILE` 统一按 Linux 的 32-bit sector、48-bit sector、filesystem-block 三级 codec 读写，所有 block accounting mutation 使用 checked 状态转换；`DIR_NLINK` 覆盖 65000 到 sentinel 1、连续 mutation 保持 sentinel、无 feature 时分配前返回 `EMLINK`；Linux 默认 feature 的 1/2/4 KiB round-trip、extent/JBD2 replay 与 `e2fsck -fn` 全部通过 |
 | `linux-map-complete` | 仅有 subsystem mapping，缺少逐区间清单 | every source line classified | design/traceability | 进行中：冻结 inventory 已覆盖 Linux v7.1 的 61 个 tracked 文件、77,895 行，并由普通 CI 与本地源码双模式检查 gap、overlap、blob、行数和文件集合；8 个 build/KUnit 文件已审阅，其余 53 个 `coarse` 条目使 `--require-reviewed` 确定性失败，必须按符号/预处理区间完成语义审阅后才能转绿 |
 | `journal-no-direct-fallback` | uninitialized JBD2 performs home write | typed journal-aborted error | JBD2 rewrite | 绿：确定性红绿回归已覆盖 write/umount |
-| `jbd2-handle-credits` | metadata queue 满时会在 bulk mutation 中间自动提交，失败后 pending image 无法恢复 | operation handle 预留 credits，禁止 operation 内切 transaction，并在 operation error 时恢复 running queue | JBD2 rewrite | 进行中：私有 handle 按 distinct metadata block 计 credit，handle 内禁止 auto-commit，credit overrun/error 恢复 queue snapshot；journal-disabled handle 也保存并逆序恢复 physical preimage。单 transaction 上限现按 Linux 的 `j_total_len / 3` 再扣 descriptor/commit bookkeeping，首次 dirty 前必须先回收出完整 `j_max_transaction_buffers` 空间；best-effort extend 只检查 running transaction 上限，不等待 log space，失败保持原 reservation 并显式返回 restart-required。descriptor continuation、running/committed/checkpoint owner、durable tail 与环绕写入已有确定性覆盖。nested same-owner start 已按 Linux `h_ref` 语义复用 outer handle 与既有 credit budget；nested error 只恢复该 scope 的 queue/revoke/touched snapshot，outer owner 继续有效。已迁移 xattr、namespace、rename、preallocation、shift、range removal 和 owner-level restartable truncate/reap/punch。大 shift、其他 extent split/merge、reserved handle、精确 revoke-record credits、通用 `journal_restart` 与跨执行流并发 handle 仍是红项。Linux v7.1 依据为 `fs/jbd2/transaction.c:190-303,470-543,622-690,1883-1893`、`fs/jbd2/journal.c:1412-1452`、`fs/jbd2/commit.c:538-605,631-738`、`fs/jbd2/checkpoint.c:126-353,559-729`、`fs/jbd2/revoke.c:300-721`、`fs/jbd2/recovery.c:198-761` |
+| `jbd2-handle-credits` | metadata queue 满时会在 bulk mutation 中间自动提交，失败后 pending image 无法恢复 | operation handle 预留 credits，禁止 operation 内切 transaction，并在 operation error 时恢复 running queue | JBD2 rewrite | 进行中：私有 handle 按 distinct metadata block 计 credit，handle 内禁止 auto-commit，credit overrun/error 恢复 queue snapshot；journal-disabled handle 也保存并逆序恢复 physical preimage。单 transaction 上限现按 Linux 的 `j_total_len / 3` 再扣 descriptor/commit bookkeeping，首次 dirty 前必须先回收出完整 `j_max_transaction_buffers` 空间；best-effort extend 只检查 running transaction 上限，不等待 log space，失败保持原 reservation 并显式返回 restart-required。descriptor continuation、running/committed/checkpoint owner、durable tail 与环绕写入已有确定性覆盖。nested same-owner start 已按 Linux `h_ref` 语义复用 outer handle 与既有 credit budget；nested error 只恢复该 scope 的 queue/revoke/touched snapshot，outer owner 继续有效。revoke record 已拆为 requested/remaining 独立预算，handle start/extend 仅按 revoke-block ceil 与跨 descriptor 边界的差额占用 buffer credits；未申请或超额 revoke 会在发布前返回 typed `NoSpace`，nested rollback 同时恢复 revoke table 与 remaining credits。已迁移 xattr、namespace、rename、preallocation、shift、range removal 和 owner-level restartable truncate/reap/punch。大 shift、其他 extent split/merge、reserved handle、通用 `journal_restart` 与跨执行流并发 handle 仍是红项。Linux v7.1 依据为 `fs/jbd2/transaction.c:190-303,470-543,622-729,1883-1893`、`fs/jbd2/journal.c:1397-1452`、`fs/jbd2/commit.c:538-605,631-738`、`fs/jbd2/checkpoint.c:126-353,559-729`、`fs/jbd2/revoke.c:300-721`、`fs/jbd2/recovery.c:198-761` |
 | `jbd2-writer-revoke-checkpoint` | commit 同步覆盖 home block，detach 只删除当前 pending image；较早 committed metadata 可在 block 复用后覆盖新 owner | running、committed 与 checkpoint owner 分离；writer 生成 Linux revoke；descriptor/payload preflush 后 FUA commit，home write durable 后 FUA tail | JBD2 lifecycle/revoke | 进行中（writer revoke、bounded lifecycle 与 tail reclamation 子路径已绿）：commit 不再同步 checkpoint，committed image 在 owner 内可见；csum-v3/64-bit revoke 与三阶段 replay 保护 block reuse。checkpoint 反向扫描选定前缀，同一 home block 只写最新可见 image；一次 home flush 后以一次 FUA 发布新 tail。tail FUA 失败时恢复内存 superblock 且不 drain queue，部分 checkpoint 和 ring wrap 后剩余 transaction 可由 replay 恢复。当前仍是同步单 owner，独立 committing transaction、并发 handle、external journal 与完整 persistence-boundary fault matrix 仍为红项。Linux v7.1 依据为 `fs/jbd2/commit.c:114-175,538-605`、`fs/jbd2/checkpoint.c:126-353,559-729`、`fs/jbd2/revoke.c:300-721`、`fs/jbd2/journal.c:1056-1091` |
 | `jbd2-abort-sticky` | descriptor/payload flush 失败只返回一次 I/O error，随后仍可从已推进的 ring cursor 重试、继续 metadata write 或关闭 journal 绕过错误 | 首次提交/恢复错误保留原始 cause；同一 mount 的后续 mutation、handle、flush、unmount 全部稳定拒绝，并持久化 journal errno | JBD2 rewrite | 进行中：所有 auto-commit、handle precommit 与 unmount commit 已收口到单一 transaction owner；任一 commit/cache-coherence failure 锁存首个 cause，本次返回原始 typed error，后续 write/handle/flush/unmount/reinstall 返回 `JournalAborted`。journal mode 切换改为 fallible state transition：abort 时拒绝，pending queue 或 active handle 时返回 busy，不能再关闭 journal 后绕过未提交 metadata。replay 现在以 typed `JournalReplayPhase` 区分 initialize/scan/revoke/replay/persist/cache，保留 I/O、checksum 与 corruption 原始 domain cause、事务 restart 位置和 progress 持久化次错；mount 返回首错并通过 `Observer` 发送完整 typed failure，不再统一伪装为 corruption，越界 `s_start` 也不再清日志报成功。descriptor read 确定性红测已在旧实现证明 `Corrupted != Io`，payload read、home write、checksum+flush 首错优先、final flush 与 replay superblock write fault 均有定点测试。首次 abort 同时以私有 JBD2 wire code 持久化 `s_errno`，重新计算 checksum，并通过原生 FUA 或明确的 write-then-flush fallback 等待 durability；两种能力都缺失时返回 unsupported，record 失败单独保存且不覆盖首次 cause。当前 single-payload transaction 的 open-superblock、descriptor、payload、commit、checkpoint、close-superblock 六次 write 与四个 flush barrier 已逐项注入并验证 sticky first-error。recovery 已拆为不写 home block 的完整 committed-range scan、按 transaction ID 建表的 revoke pass、以及 sequence-aware replay pass；`T1 payload + T2 revoke` 的确定性红测证明旧 transaction-local set 会错误覆盖 home block，同一测试现保留旧值，反向 `T1 revoke + T2 payload` 与 `u32` TID wrap 比较也已覆盖。精细 on-disk error mapping、scan/pass-end 与 fast-commit 一致性、`ACK_ERR`/shutdown、ext4 `continue`/`remount-ro` policy，以及 multi-payload checkpoint/revoke 的完整 fault matrix 仍为红项 |
 | `jbd2-csum-v3-write-replay` | writer emits legacy tags while accepted CSUM_V3/64BIT journals require tag3/high block numbers | Linux-compatible descriptor tags and checksum followed by self/Linux replay | JBD2 rewrite | 绿：writer 生成 tag3/64-bit block number、escaped payload CRC32C、descriptor/commit checksum；replay 在任何 home write 前校验 commit 与全部非 revoke payload，并校验 descriptor/revoke tail；Linux `debugfs` 多块事务与逐边界损坏测试通过；mkfs 将 ext4 `metadata_csum`/`64bit` 映射为对应 JBD2 feature |
@@ -1641,5 +1641,39 @@ typed `NoSpace` 且不发布 revoke。
 
 本检查点不宣称完整 `jbd2_journal_restart()`：现有 truncate/reap/punch 由 filesystem owner 在每个
 已提交 chunk 后重新规划，通用 closure 不能在 prefix commit 后继续沿用外层全量 rollback snapshot。
-reserved handle 的一半上限、revoke requested/remaining 与按 revoke-block ceil 差额计 credit、
-locked transaction/concurrent attachment 也继续登记为红项。
+reserved handle 的一半上限、locked transaction/concurrent attachment 也继续登记为红项。
+
+### 7.49 JBD2 revoke requested/remaining 与 descriptor credit 检查点
+
+Linux v7.1 `fs/jbd2/transaction.c:470-500,642-729` 与 `fs/jbd2/revoke.c:376-401` 将
+metadata buffer credits、revoke descriptor buffer credits 和 revoke record credits 分开：start 把
+`ceil(revoke_records / j_revoke_records_per_block)` 加入 total buffer credits，同时保存 requested 与
+remaining revoke records；每个实际 revoke 只消耗 remaining record。extend 只为跨过新的 revoke
+descriptor 边界增加 buffer credit，stop 再按本 handle 实际使用的 revoke 数修正 transaction
+outstanding credits。Linux `fs/jbd2/journal.c:1397-1410` 还规定每块记录数必须同时考虑 32/64-bit
+block number 与 CSUM_V2/V3 tail。
+
+旧实现把每个 distinct revoke block 当一个普通 metadata credit。加入 typed request 后，同一确定性
+测试申请 1 个 metadata block 和恰好一整个 4 KiB、64-bit、CSUM_V3 revoke block 的 509 条记录；
+沿用旧计数的实现稳定在 operation closure 前返回
+`NoSpace(op=jbd2:handle_credits)`。当前 `TransactionCredits` 保持 metadata/revoke 两个独立维度，
+该场景只预留 1 个 metadata credit 与 1 个 revoke descriptor credit，commit 的实际 ring footprint
+固定为 revoke record、metadata descriptor、payload、commit 共 4 records。
+
+`ActiveJournalHandle` 现在保存 `revoke_credits_requested` 与 `revoke_credits_remaining`。未申请 revoke
+或消耗超过 requested 时，在修改 running revoke table 前返回 `NoSpace(op=jbd2:revoke_credits)`；
+outer operation error 恢复完整 queue/revoke snapshot，nested error 还恢复 scope 进入时的 remaining
+credits。extend 边界测试以 2 个 metadata credits 加 508 条 revoke 起步：扩到 509 条仍复用同一
+descriptor 并返回 `Extended`，第 510 条需要第二个 descriptor、超过 3-credit fixture 上限后返回
+`RestartRequired`，原 reservation 保持不变。
+
+真实 owner 已同步迁移：xattr external-block replacement 按可能释放的旧 block 申请 revoke record；
+extent shift/removal 与 legacy indirect truncate/reap/punch 分别携带 metadata upper bound 和 detached
+metadata record count，restart planner 用动态 32/64-bit checksum-aware descriptor cost 比较 journal
+user capacity。原 restart fixture 不再依赖“每条 revoke 一个 block”的错误预算：legacy 单 chunk 的
+6-credit ring 使用 24 blocks，extent 单 chunk 的 8-credit ring 使用 30 blocks；四个 power-cut/replay
+case 与 restart 后 allocation/mapping/e2fsck 断言保持不变。
+
+本检查点仍不实现 reserved child handle、跨执行流 concurrent attachment 或通用
+`jbd2_journal_restart()`；这些状态会改变 transaction outstanding ownership，不能用 revoke credit
+字段顺带伪造。

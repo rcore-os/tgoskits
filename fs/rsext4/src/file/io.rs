@@ -1,5 +1,5 @@
 use super::*;
-use crate::{bmalloc::BGIndex, endian::DiskFormat};
+use crate::{blockdev::TransactionCredits, bmalloc::BGIndex, endian::DiskFormat};
 
 const MAX_RUN_IO_BYTES: usize = 1024 * 1024;
 
@@ -288,7 +288,7 @@ fn rebuild_shifted_extent_mapping_transaction<B: BlockIo>(
 fn shifted_extent_transaction_credits(
     fs: &Ext4FileSystem,
     plan: &ShiftedExtentPlan,
-) -> Ext4Result<usize> {
+) -> Ext4Result<TransactionCredits> {
     let replacement_nodes = replacement_extent_metadata_blocks(fs, plan.mappings.len())?;
     let released_groups =
         extent_allocation_groups(fs, &plan.released_data, &plan.old_external_blocks, &[])?.len();
@@ -306,11 +306,14 @@ fn shifted_extent_transaction_credits(
     // Each potentially affected allocation group contributes at most one
     // bitmap and one primary GDT block; the inode-table block and primary
     // superblock are fixed credits.
-    replacement_nodes
-        .checked_add(plan.old_external_blocks.len())
-        .and_then(|credits| credits.checked_add(changed_group_credits))
+    let metadata_credits = replacement_nodes
+        .checked_add(changed_group_credits)
         .and_then(|credits| credits.checked_add(2))
-        .ok_or_else(Ext4Error::overflow)
+        .ok_or_else(Ext4Error::overflow)?;
+    Ok(TransactionCredits::metadata_with_revokes(
+        metadata_credits,
+        plan.old_external_blocks.len(),
+    ))
 }
 
 fn replacement_extent_metadata_blocks(
@@ -753,7 +756,7 @@ struct ExtentRemovalSegment {
 
 struct ExtentRemovalPlan {
     segments: Vec<ExtentRemovalSegment>,
-    credits: usize,
+    credits: TransactionCredits,
 }
 
 /// Validates and records every initialized or unwritten mapping in a range.
@@ -812,11 +815,11 @@ fn prepare_extent_mapping_removal<B: BlockIo>(
     }
 
     let credits = if segments.is_empty() {
-        1
+        TransactionCredits::metadata(1)
     } else {
         let allocation_groups =
             extent_allocation_groups(fs, &physical_ranges, &external_blocks, &[])?;
-        external_blocks
+        let metadata_credits = external_blocks
             .len()
             .checked_add(
                 allocation_groups
@@ -825,7 +828,8 @@ fn prepare_extent_mapping_removal<B: BlockIo>(
                     .ok_or_else(Ext4Error::overflow)?,
             )
             .and_then(|credits| credits.checked_add(2))
-            .ok_or_else(Ext4Error::overflow)?
+            .ok_or_else(Ext4Error::overflow)?;
+        TransactionCredits::metadata_with_revokes(metadata_credits, external_blocks.len())
     };
     Ok(ExtentRemovalPlan { segments, credits })
 }
@@ -847,7 +851,7 @@ fn extent_removal_restart_limit<B: BlockIo>(
     let Some(credit_limit) = device.transaction_credit_limit()? else {
         return Ok(None);
     };
-    if plan.credits <= credit_limit {
+    if device.transaction_credit_cost(plan.credits)? <= credit_limit {
         return Ok(None);
     }
 
@@ -915,7 +919,7 @@ fn prepare_extent_mapping_removal_chunk<B: BlockIo>(
         let segment_len =
             u32::try_from(segment_end - segment_start).map_err(|_| Ext4Error::overflow())?;
         let credits = extent_removal_chunk_credits(fs, depth, physical_start, segment_len)?;
-        if credits > credit_limit {
+        if device.transaction_credit_cost(credits)? > credit_limit {
             return Err(Ext4Error::no_space().with_operation("extent:restart_credits"));
         }
         return Ok(Some(ExtentRemovalChunk {
@@ -939,7 +943,7 @@ fn extent_removal_chunk_credits(
     depth: usize,
     physical_start: AbsoluteBN,
     len: u32,
-) -> Ext4Result<usize> {
+) -> Ext4Result<TransactionCredits> {
     let data_groups = extent_allocation_groups(fs, &[(physical_start, len)], &[], &[])?.len();
     // One removal step can dirty one extent node per tree level and detach at
     // most one node per level. Every released data or metadata block can dirty
@@ -950,14 +954,18 @@ fn extent_removal_chunk_credits(
     let allocation_groups = data_groups
         .checked_add(depth)
         .ok_or_else(Ext4Error::overflow)?;
-    depth
+    let metadata_credits = depth
         .checked_add(
             allocation_groups
                 .checked_mul(2)
                 .ok_or_else(Ext4Error::overflow)?,
         )
         .and_then(|credits| credits.checked_add(2))
-        .ok_or_else(Ext4Error::overflow)
+        .ok_or_else(Ext4Error::overflow)?;
+    Ok(TransactionCredits::metadata_with_revokes(
+        metadata_credits,
+        depth,
+    ))
 }
 
 fn remove_extent_mapping_with_restarts<B: BlockIo>(
@@ -1134,7 +1142,7 @@ fn legacy_mapping_restart_limit<B: BlockIo>(
     let Some(limit) = device.transaction_credit_limit()? else {
         return Ok(None);
     };
-    if transaction.footprint.credits <= limit {
+    if device.transaction_credit_cost(transaction.footprint.credits)? <= limit {
         return Ok(None);
     }
     let chunk = prepare_legacy_mapping_removal_chunk(
@@ -1190,7 +1198,8 @@ fn prepare_legacy_mapping_removal_chunk<B: BlockIo>(
         chunk_end,
     )?;
     let mut transaction = build_legacy_mapping_transaction(fs, plan)?;
-    let next_end = if transaction.footprint.credits > credit_limit {
+    let next_end = if device.transaction_credit_cost(transaction.footprint.credits)? > credit_limit
+    {
         first_logical = last_logical;
         chunk_end = u64::from(last_logical)
             .checked_add(1)
@@ -1208,7 +1217,7 @@ fn prepare_legacy_mapping_removal_chunk<B: BlockIo>(
     } else {
         u64::from(first_logical)
     };
-    if transaction.footprint.credits > credit_limit {
+    if device.transaction_credit_cost(transaction.footprint.credits)? > credit_limit {
         return Err(Ext4Error::no_space().with_operation("indirect:restart_credits"));
     }
     Ok(Some(LegacyMappingChunk {
@@ -1241,7 +1250,7 @@ fn prepare_legacy_metadata_cleanup_chunk<B: BlockIo>(
             return Ok(None);
         }
         let transaction = build_legacy_mapping_transaction(fs, plan)?;
-        if transaction.footprint.credits <= credit_limit {
+        if device.transaction_credit_cost(transaction.footprint.credits)? <= credit_limit {
             return Ok(Some(LegacyMappingChunk {
                 transaction,
                 next_end: range_start,

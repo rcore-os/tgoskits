@@ -1,4 +1,5 @@
 use super::*;
+use crate::blockdev::TransactionCredits;
 
 /// Mounted ext4 filesystem state.
 ///
@@ -70,7 +71,7 @@ impl Ext4FileSystem {
     pub(crate) fn with_metadata_transaction<B: BlockIo, T>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
-        credits: usize,
+        credits: impl Into<TransactionCredits>,
         operation: impl FnOnce(&mut Self, &mut Jbd2Dev<B>) -> Ext4Result<T>,
     ) -> Ext4Result<T> {
         let snapshot = MetadataTransactionSnapshot {
@@ -82,8 +83,8 @@ impl Ext4FileSystem {
             inodetable_cache: self.inodetable_cache.clone(),
             datablock_cache: self.datablock_cache.clone(),
         };
-        let result =
-            block_dev.with_transaction_handle(credits, |block_dev| operation(self, block_dev));
+        let result = block_dev
+            .with_transaction_credits(credits.into(), |block_dev| operation(self, block_dev));
         if result.is_err() {
             self.superblock = snapshot.superblock;
             self.superblock_dirty = snapshot.superblock_dirty;

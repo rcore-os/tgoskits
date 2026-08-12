@@ -680,21 +680,7 @@ impl JBD2DEVSYSTEM {
             block_size
         };
         let descriptor_capacity = self.jbd2_super_block.descriptor_tag_capacity(block_size)?;
-        let revoke_entry_size = if has_64bit { 8 } else { 4 };
-        let revoke_end = if has_block_checksums {
-            block_size
-                .checked_sub(core::mem::size_of::<u32>())
-                .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_size"))?
-        } else {
-            block_size
-        };
-        let revoke_capacity = revoke_end
-            .checked_sub(core::mem::size_of::<Jbd2JournalRevokeHeadS>())
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_size"))?
-            / revoke_entry_size;
-        if !revoked_blocks.is_empty() && revoke_capacity == 0 {
-            return Err(Ext4Error::no_space().with_operation("jbd2:revoke_capacity"));
-        }
+        let revoke_capacity = self.jbd2_super_block.revoke_records_per_block(block_size)?;
         let descriptor_records = if update_count == 0 {
             0
         } else {

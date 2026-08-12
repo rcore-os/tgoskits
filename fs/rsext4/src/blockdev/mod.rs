@@ -5,6 +5,7 @@ mod cached_device;
 mod journal;
 
 pub use buffer::BlockBuffer;
+pub(crate) use journal::TransactionCredits;
 pub use journal::{Jbd2Dev, Jbd2RunState};
 
 pub use crate::io::BlockIo;

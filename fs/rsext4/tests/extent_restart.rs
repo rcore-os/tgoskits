@@ -278,11 +278,10 @@ fn undersized_journal_rejects_restart_before_publishing_truncate_intent() {
 #[test]
 fn large_legacy_truncate_restarts_across_allocation_groups() {
     let mut fixture = build_large_legacy_fixture("/legacy-restart");
-    // The current bounded handle reserves every distinct revoked block as a
-    // conservative credit until reserved-credit accounting is split by record
-    // type. Keep the ring small enough to force restart while allowing one
-    // complete child-first removal chunk.
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 27);
+    // One child-first removal chunk needs six buffer credits after revoke
+    // records are charged by descriptor block. Keep the ring below the full
+    // two-group footprint so this fixture still crosses a commit boundary.
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 24);
     fixture.power_cut.reset_observation();
     let sequence_before = fixture.journal.journal_sequence();
 
@@ -336,7 +335,7 @@ fn large_legacy_truncate_restarts_across_allocation_groups() {
 #[test]
 fn large_legacy_punch_restarts_across_allocation_groups() {
     let mut fixture = build_large_legacy_fixture("/legacy-punch-restart");
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 27);
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 24);
     fixture.power_cut.reset_observation();
     let size_before = fixture
         .filesystem
@@ -383,7 +382,7 @@ fn large_legacy_punch_restarts_across_allocation_groups() {
 #[test]
 fn large_legacy_punch_remains_consistent_after_committed_transaction_power_cut() {
     let mut fixture = build_large_legacy_fixture("/legacy-punch-crash");
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 27);
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 24);
     let size_before = fixture
         .filesystem
         .get_inode_by_num(&mut fixture.journal, fixture.inode_number)
@@ -458,7 +457,7 @@ fn large_legacy_punch_remains_consistent_after_committed_transaction_power_cut()
 #[test]
 fn large_legacy_truncate_recovery_resumes_after_committed_transaction_power_cut() {
     let mut fixture = build_large_legacy_fixture("/legacy-restart-crash");
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 27);
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 24);
     fixture.power_cut.arm_committed_transaction_power_cut(1);
 
     let power_cut = catch_unwind(AssertUnwindSafe(|| {
@@ -952,7 +951,7 @@ fn write_pointer_entry(
 }
 
 fn install_small_journal(fixture: &mut LargeExtentFixture) {
-    install_journal_with_maxlen(fixture, 27);
+    install_journal_with_maxlen(fixture, 30);
 }
 
 fn install_journal_with_maxlen(fixture: &mut LargeExtentFixture, maxlen: u32) {

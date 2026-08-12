@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 
 use crate::{
     BlockIo, Ext4FileSystem, Jbd2Dev,
+    blockdev::TransactionCredits,
     bmalloc::{AbsoluteBN, BGIndex, InodeNumber},
     cache::bitmap::CacheKey,
     checksum::ext4_metadata_csum32,
@@ -285,7 +286,13 @@ fn persist_xattrs<B: BlockIo>(
 
     let feature_was_missing =
         filesystem.superblock.s_feature_compat & Ext4Superblock::EXT4_FEATURE_COMPAT_EXT_ATTR == 0;
-    filesystem.with_metadata_transaction(device, transaction_credits, |filesystem, device| {
+    let revoke_records = usize::from(
+        external
+            .as_ref()
+            .is_some_and(|external| external.refcount == 1),
+    );
+    let credits = TransactionCredits::metadata_with_revokes(transaction_credits, revoke_records);
+    filesystem.with_metadata_transaction(device, credits, |filesystem, device| {
         let mut allocated_block = None;
         let mut touched_bitmap_groups = Vec::<BGIndex>::new();
         let mut superblock_dirty = feature_was_missing;
