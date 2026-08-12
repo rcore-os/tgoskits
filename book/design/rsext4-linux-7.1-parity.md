@@ -1198,3 +1198,46 @@ RSEXT4_BENCH_SUMMARY commit=14220cfeb arch=x86_64 backend=memory feature=metadat
 flush-only sync 仍不是等价 durability，硬红项保持不变。unmount 的 30.494 us 最大样本没有
 剔除，因而 p95 原样判红；该波动也不能抵消 dirty sync 的稳定改善。下一步继续优化所有
 metadata checksum 共用的 CRC32C 热路径，而不改变 transaction I/O 或 publication 边界。
+
+### 7.39 x86_64 GPR CRC32C 检查点
+
+通用 slicing-by-8 CRC32C 在 7.38 的 dirty sync 中仍需扫描六个 4 KiB payload、descriptor
+和 commit block。x86_64 的 SSE4.2 CRC32 指令可以直接更新同一个 raw accumulator；但 core
+不能要求 OS 保存 SIMD/FPU 状态，也不能把该能力伪装成 `BlockIo`。本阶段在私有算法模块中
+用 CPUID leaf 1 ECX bit 20 运行时检测能力，并用 inline assembly 的 64-bit/8-bit GPR operand
+执行 `crc32`。泛型 binary 在不支持的 CPU 上继续使用 slicing-by-8，不新增依赖、OS runtime
+trait、全局 logger 或 lock，也不改变 ext4/JBD2 seed、finalize 和端序语义。
+
+确定性测试先因 x86 模块不存在而编译红；实现后按三个 seed、offset 0..7 和长度 0..257
+逐项比较 hardware 与 software accumulator，canonical、incremental、metadata 和 59 个 JBD2
+测试也全部通过。release binary 的反汇编确认生成 GPR `crc32 r64,r64`/`crc32 r32,r8`；helper
+没有使用 XMM/YMM operand。测试机为 Intel Core i7-10700，CPU 广告 `sse4_2`。
+
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量；两组全部样本分别保存在
+`book/design/data/rsext4-perf/2026-08-12-x86-crc32c-sync-cycle.csv` 和
+`book/design/data/rsext4-perf/2026-08-12-x86-crc32c-sequential.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=795c113e3 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=8115 dirty_sync_p95_ns=8784 clean_sync_median_ns=236 clean_sync_p95_ns=291 unmount_median_ns=5196 unmount_p95_ns=5485
+RSEXT4_BENCH_SUMMARY commit=795c113e3 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6315245 write_p95_ns=6558738 read_median_ns=5920310 read_p95_ns=6177423 sync_median_ns=18570 sync_p95_ns=19945
+```
+
+| sync-cycle workload | dev median | current median | 变化 | dev p95 | current p95 | 变化 | 当前结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| dirty sync | 6.751 us | 8.115 us | +20.2% | 7.061 us | 8.784 us | +24.4% | 红 |
+| clean sync | 2.962 us | 0.236 us | -92.0% | 3.087 us | 0.291 us | -90.6% | 绿 |
+| clean-state unmount | 10.336 us | 5.196 us | -49.7% | 11.147 us | 5.485 us | -50.8% | 绿 |
+
+相对 7.38，dirty sync median/p95 分别改善约 56.9%/59.7%，unmount median/p95 分别改善
+约 49.5%/65.2%。但 dev 的 flush-only sync 虽不具备当前 durable JBD2 commit 语义，当前数据
+仍按冻结门槛保守判红，不用语义差异擅自豁免 5%/10% 上限。
+
+| sequential workload | dev median | current median | 变化 | dev p95 | current p95 | 变化 | 当前结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| write elapsed | 6.827 ms | 6.315 ms | -7.5% | 7.335 ms | 6.559 ms | -10.6% | 绿 |
+| read elapsed | 7.219 ms | 5.920 ms | -18.0% | 8.481 ms | 6.177 ms | -27.2% | 绿 |
+| unmount latency | 25.823 us | 18.570 us | -28.1% | 38.644 us | 19.945 us | -48.4% | 绿 |
+
+因此共享 sequential 热路径重新明确通过，dirty-sync 差距也从约三倍收敛到约 1.2 倍。
+剩余红项继续定位 commit state、descriptor 构造和小 metadata checksum；不能删除 preflush、
+FUA commit 或其他 Linux durability boundary。
