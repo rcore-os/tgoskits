@@ -1,0 +1,21 @@
+# cpu-subtitle-test x86_64 - the "pyte for subtitles" carpet: parse SubRip/.srt, WebVTT/.vtt and Advanced
+# SubStation Alpha/.ass, convert cross-format (SRT<->VTT), asserting DETERMINISTIC timing (00:00:01,000 ->
+# 1000 ms; 01:02:03,456 -> 3723456 ms; ASS centiseconds -> ms; ms preserved exactly across conversion) or
+# STRUCTURAL goldens computed host-side from the real files (cue/dialogue count, first/last timestamp,
+# monotonic ordering, valid UTF-8 - never the dialogue text). The parsers/converter are self-written and
+# bundled into each static cell, so there is no runtime subtitle-library dependency. No GPU or display.
+# -smp 1: single vCPU. 512M: the subtitle buffers are tiny (text parsing only).
+args = [
+    "-machine", "q35",
+    "-nographic", "-cpu", "Haswell", "-m", "512M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 12000
