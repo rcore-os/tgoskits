@@ -29,6 +29,7 @@ mod test_utils;
 #[cfg(test)]
 mod world_switch_tests;
 
+mod pending_event;
 mod port_io;
 mod runtime;
 mod types;
