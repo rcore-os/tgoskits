@@ -253,7 +253,7 @@ fn park_commit_uses_prepared_task_current_identity() {
 fn exit_prepare_uses_explicit_task_current_identity() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-    system
+    let current = system
         .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
     system
@@ -271,7 +271,7 @@ fn exit_prepare_uses_explicit_task_current_identity() {
     );
 
     let _permit = system
-        .prepare_current_exit_inner(cpu.as_mut(), false)
+        .prepare_current_exit_inner(cpu.as_mut(), &current, false)
         .unwrap();
 
     assert_eq!(
@@ -290,7 +290,7 @@ fn exit_prepare_uses_explicit_task_current_identity() {
 fn exit_commit_uses_prepared_task_current_identity() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-    system
+    let current = system
         .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
     system
@@ -301,7 +301,7 @@ fn exit_commit_uses_prepared_task_current_identity() {
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
     let permit = system
-        .prepare_current_exit_inner(cpu.as_mut(), false)
+        .prepare_current_exit_inner(cpu.as_mut(), &current, false)
         .unwrap();
     let remote = Arc::clone(cpu.remote());
     let before = (
@@ -464,7 +464,11 @@ impl TaskSystemClockTestExt for TaskSystem {
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
         crate::test_runtime::set_scheduler_ns_for_cpu(cpu.owner().as_u32(), now_ns);
-        self.exit_current(cpu)
+        let current = cpu
+            .current_core()
+            .map(ThreadHandle::from_core)
+            .ok_or(TaskError::NoRunnableThread)?;
+        self.exit_current(cpu, current)
     }
 
     fn commit_park_at_for_test(
@@ -3946,7 +3950,7 @@ fn prepared_exit_rejects_new_remote_affinity_delivery() {
     crate::test_runtime::set_scheduler_ns(0);
     let _clock = system.sample_owner_rq_clock(cpu0.as_ref().get_ref());
     let permit = system
-        .prepare_current_exit_inner(cpu0.as_mut(), false)
+        .prepare_current_exit_inner(cpu0.as_mut(), &exiting, false)
         .unwrap();
     let mut target_only = CpuSet::empty(2);
     assert!(target_only.insert(CpuId::new(1)));
@@ -4009,7 +4013,7 @@ fn prepared_exit_rejects_a_synchronous_deadline_policy_transaction() {
     crate::test_runtime::set_scheduler_ns(0);
     let _clock = system.sample_owner_rq_clock(cpu0.as_ref().get_ref());
     let permit = system
-        .prepare_current_exit_inner(cpu0.as_mut(), false)
+        .prepare_current_exit_inner(cpu0.as_mut(), &exiting, false)
         .unwrap();
     let deadline =
         SchedulePolicy::deadline(DeadlinePolicy::new(1, 2, 10, DeadlineFlags::NONE).unwrap());

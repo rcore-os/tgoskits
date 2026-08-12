@@ -1071,7 +1071,9 @@ mod tests {
             exited.id()
         );
         system.complete_context_switch(cpu.as_mut()).unwrap();
-        let exit_decision = system.exit_current(cpu.as_mut()).unwrap();
+        let exit_decision = system
+            .exit_current(cpu.as_mut(), exited.clone())
+            .unwrap();
         assert_ne!(exit_decision.next(), exited.id());
         assert_eq!(PARKING_EXIT_CALLBACKS.load(Ordering::Acquire), 0);
 
@@ -1173,7 +1175,10 @@ mod tests {
         );
         system.complete_context_switch(cpu.as_mut()).unwrap();
         assert_eq!(
-            system.exit_current(cpu.as_mut()).unwrap().next(),
+            system
+                .exit_current(cpu.as_mut(), exiting.clone())
+                .unwrap()
+                .next(),
             bootstrap.id()
         );
         system.complete_context_switch(cpu.as_mut()).unwrap();

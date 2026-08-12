@@ -195,7 +195,9 @@ impl TaskSystemClockTestExt for TaskSystem {
         now_ns: u64,
     ) -> Result<ax_task::ScheduleDecision, TaskError> {
         set_scheduler_ns_for_cpu(cpu.owner().as_u32(), now_ns);
-        self.exit_current(cpu)
+        let current =
+            current_thread_handle(self, cpu.as_ref())?.ok_or(TaskError::NoRunnableThread)?;
+        self.exit_current(cpu, current)
     }
 
     fn rt_run_queue_may_run_at(

@@ -109,10 +109,11 @@ pub struct ExitPermit {
 /// thread's observable lifecycle.
 pub fn prepare_current_exit() -> Result<ExitPermit, TaskError> {
     validate_schedule_context(RuntimeScheduleOrigin::Exit)?;
+    let current = current_thread_handle()?;
     let mut irq = RuntimeIrqGuard::enter();
     let system = runtime_task_system()?;
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    let system = system.prepare_current_exit(cpu.as_mut())?;
+    let system = system.prepare_current_exit(cpu.as_mut(), &current)?;
     Ok(ExitPermit {
         system,
         _not_send: PhantomData,
@@ -133,9 +134,6 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
     let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)
             .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0013, thread.as_u64() as _));
-        if cpu.current() != Some(thread) {
-            task_runtime::fatal_invariant(0x4558_0014, thread.as_u64() as _);
-        }
         // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
         unsafe { system.commit_prepared_current_exit(cpu.as_mut(), permit.system) }
             .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0015, thread.as_u64() as _))

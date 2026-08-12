@@ -122,13 +122,17 @@ fn park_after_final_wake_check_hook(system: &TaskSystem, thread: ThreadId) {
 }
 
 pub(crate) struct CurrentExitPermit {
-    thread: ThreadId,
     scheduler_exit: OwnedThreadSchedulerExit,
+    current_core: Arc<ThreadCore>,
 }
 
 impl CurrentExitPermit {
-    pub(crate) const fn thread(&self) -> ThreadId {
-        self.thread
+    pub(crate) fn thread(&self) -> ThreadId {
+        self.current_core.id()
+    }
+
+    fn current_core(&self) -> &Arc<ThreadCore> {
+        &self.current_core
     }
 
     fn seal(&mut self) {
@@ -414,23 +418,25 @@ impl TaskSystem {
     pub(crate) fn prepare_current_exit(
         &self,
         cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
     ) -> Result<CurrentExitPermit, TaskError> {
-        self.prepare_current_exit_inner(cpu, true)
+        self.prepare_current_exit_inner(cpu, current, true)
     }
 
     pub(super) fn prepare_current_exit_inner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
+        current: &ThreadHandle,
         require_runtime_context: bool,
     ) -> Result<CurrentExitPermit, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
         self.drain_owner_work(cpu.as_mut())?;
-        let current = cpu.current().ok_or(TaskError::NoRunnableThread)?;
-        if cpu.idle() == Some(current) {
+        let current_id = current.id();
+        if cpu.remote().idle_thread() == Some(current_id) {
             return Err(TaskError::InvalidConfiguration);
         }
-        let current_core = cpu.current_core().ok_or(TaskError::NoRunnableThread)?;
+        let current_core = Arc::clone(current.runtime_core_arc());
         // Close before taking registry or thread-state locks. An activity that
         // won before this edge may need either lock to finish, just as Linux
         // takes p->pi_lock before rq/task-state validation rather than waiting
@@ -440,7 +446,7 @@ impl TaskSystem {
             .ok_or(TaskError::ThreadBusy)?;
         let state = self.state.lock();
         state.ensure_cpu_online(&cpu)?;
-        let record = state.thread_record(current)?;
+        let record = state.thread_record(current_id)?;
         if !Arc::ptr_eq(&record.core, &current_core) {
             return Err(TaskError::StaleThreadId);
         }
@@ -465,8 +471,8 @@ impl TaskSystem {
         }
         record.callbacks.validate_prepare_exit()?;
         Ok(CurrentExitPermit {
-            thread: current,
             scheduler_exit,
+            current_core,
         })
     }
 
@@ -474,11 +480,19 @@ impl TaskSystem {
     ///
     /// Runtime integrations that publish OS completion between those phases
     /// use the crate-private prepared form instead.
-    pub fn exit_current(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<ScheduleDecision, TaskError> {
+    pub fn exit_current(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        current: ThreadHandle,
+    ) -> Result<ScheduleDecision, TaskError> {
         // Pure scheduler users may model a transition without installing an
         // architecture context. The runtime facade uses the stricter prepared
         // form before publishing OS-visible completion.
-        let permit = self.prepare_current_exit_inner(cpu.as_mut(), false)?;
+        let permit = self.prepare_current_exit_inner(cpu.as_mut(), &current, false)?;
+        // The architecture current entry no longer needs a lookup lease once
+        // the permit pins its core. Release it before publishing Exited so its
+        // eventual lease drop cannot manufacture pre-switch-tail reap work.
+        drop(current);
         self.commit_current_exit_after_owner_drain(cpu, permit)
     }
 
@@ -520,21 +534,19 @@ impl TaskSystem {
         rq_entry: OwnerRqEntry,
     ) -> Result<ScheduleDecision, TaskError> {
         let exiting = permit.thread();
-        let exited_core = {
+        let exited_core = Arc::clone(permit.current_core());
+        {
             let state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
-            let previous = cpu.current().ok_or(TaskError::NoRunnableThread)?;
-            if previous != exiting {
+            let record = state.thread_record(exiting)?;
+            if !Arc::ptr_eq(&record.core, &exited_core) {
                 return Err(TaskError::StaleThreadId);
             }
-            let previous_core = cpu.current_core();
-            let record = state.thread_record(previous)?;
             if record.has_live_pi_edges() {
                 return Err(TaskError::InvalidPiState);
             }
             record.callbacks.validate_prepare_exit()?;
-            previous_core.ok_or(TaskError::NoRunnableThread)?
-        };
+        }
 
         let remote = Arc::clone(cpu.remote());
         let initial_request = remote.claim_scheduler_request();
