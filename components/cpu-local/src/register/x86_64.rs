@@ -5,6 +5,10 @@ const IA32_GS_BASE: u32 = 0xc000_0101;
 #[cfg(feature = "tls")]
 const IA32_FS_BASE: u32 = 0xc000_0100;
 
+pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentModel {
+    current_source_aliases_kernel_tls: false,
+};
+
 pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
     Ok(())
 }

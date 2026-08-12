@@ -87,7 +87,7 @@ pub fn create_root_directory_entry<B: BlockDevice>(
         fs.root_inode,
         &[data_block],
         block_dev,
-    );
+    )?;
     fs.finalize_inode_update(
         block_dev,
         fs.root_inode,
@@ -196,7 +196,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
         lost_ino,
         &[data_block],
         block_dev,
-    );
+    )?;
     debug!(
         "When create lost+found inode iblock,:{:?} ,data_block:{:?}",
         lost_inode.i_block, data_block

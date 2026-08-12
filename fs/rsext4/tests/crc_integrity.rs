@@ -14,7 +14,7 @@ use std::{
 
 use rsext4::{
     blockgroup_description::Ext4GroupDesc,
-    bmalloc::AbsoluteBN,
+    bmalloc::{AbsoluteBN, InodeNumber},
     checksum::{
         ext4_block_bitmap_csum32, ext4_group_desc_csum16, ext4_inode_bitmap_csum32,
         ext4_superblock_csum32,
@@ -23,7 +23,8 @@ use rsext4::{
     error::{Errno, Ext4Error, Ext4Result},
     jbd2::jbdstruct::{
         JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_BLOCKTYPE_REVOKE, JBD2_FLAG_LAST_TAG, JBD2_FLAG_SAME_UUID,
-        JBD2_MAGIC, JBD2_UUID_SIZE, JournalBlockTagS, JournalHeaderS, JournalSuperBllockS,
+        JBD2_MAGIC, JBD2_UUID_SIZE, JOURNAL_FILE_INODE, JournalBlockTagS, JournalHeaderS,
+        JournalSuperBllockS,
     },
     loopfile::resolve_inode_block,
     superblock::Ext4Superblock,
@@ -38,6 +39,10 @@ struct SharedCrcDevice {
     block_size: u32,
     now: Rc<Cell<i64>>,
     blocked_read_block: Rc<Cell<Option<u64>>>,
+    fail_writes: Rc<Cell<bool>>,
+    failing_write_block: Rc<Cell<Option<u64>>>,
+    journal_superblock_write_attempts: Rc<Cell<u8>>,
+    failing_write_attempts: Rc<RefCell<BTreeSet<u8>>>,
 }
 
 impl SharedCrcDevice {
@@ -47,6 +52,10 @@ impl SharedCrcDevice {
             block_size: BLOCK_SIZE as u32,
             now: Rc::new(Cell::new(1_700_000_000)),
             blocked_read_block: Rc::new(Cell::new(None)),
+            fail_writes: Rc::new(Cell::new(false)),
+            failing_write_block: Rc::new(Cell::new(None)),
+            journal_superblock_write_attempts: Rc::new(Cell::new(0)),
+            failing_write_attempts: Rc::new(RefCell::new(BTreeSet::new())),
         }
     }
 
@@ -85,6 +94,16 @@ impl BlockDevice for SharedCrcDevice {
     }
 
     fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+        if self.failing_write_block.get() == Some(block_id.raw()) {
+            let attempt = self.journal_superblock_write_attempts.get() + 1;
+            self.journal_superblock_write_attempts.set(attempt);
+            if self.failing_write_attempts.borrow_mut().remove(&attempt) {
+                return Err(Ext4Error::io());
+            }
+        }
+        if self.fail_writes.get() {
+            return Err(Ext4Error::io());
+        }
         let start = block_id.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.borrow().len() {
@@ -887,4 +906,167 @@ fn corrupted_block_bitmap_payload_is_reported_as_euclean_on_mount() {
         Err(err) => err,
     };
     assert_eq!(err.code, Errno::EUCLEAN);
+}
+
+#[test]
+fn mount_returns_journal_superblock_read_failure_without_panicking() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut first_mount_dev = new_jbd2_dev(device.clone());
+    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let journal_block = fs
+        .journal_sb_block_start
+        .expect("journal superblock should be mapped")
+        .raw();
+    umount(fs, &mut first_mount_dev).expect("umount failed");
+
+    device.blocked_read_block.set(Some(journal_block));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut remount_dev = new_jbd2_dev(device.clone());
+        mount(&mut remount_dev)
+    }));
+
+    assert!(
+        result.is_ok(),
+        "journal superblock I/O failure must not panic"
+    );
+    let Err(error) = result.unwrap() else {
+        panic!("mount must fail");
+    };
+    assert_eq!(error.code, Errno::EIO);
+}
+
+#[test]
+fn mount_returns_bitmap_read_failures_without_panicking() {
+    let (device, _) = build_filesystem_with_written_file();
+    let superblock = read_superblock(&device);
+    let group_desc = read_group_desc0(&device, &superblock);
+
+    for bitmap_block in [group_desc.inode_bitmap(), group_desc.block_bitmap()] {
+        device.blocked_read_block.set(Some(bitmap_block));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut remount_dev = new_jbd2_dev(device.clone());
+            mount(&mut remount_dev)
+        }));
+
+        assert!(result.is_ok(), "bitmap I/O failure must not panic");
+        let Err(error) = result.unwrap() else {
+            panic!("mount must fail");
+        };
+        assert_eq!(error.code, Errno::EIO);
+    }
+}
+
+#[test]
+fn mount_rejects_an_empty_journal_mapping_without_panicking() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut first_mount_dev = new_jbd2_dev(device.clone());
+    let mut fs = mount(&mut first_mount_dev).expect("mount failed");
+    let journal_inode = InodeNumber::new(JOURNAL_FILE_INODE as u32).expect("valid journal inode");
+    fs.modify_inode(&mut first_mount_dev, journal_inode, |inode| {
+        inode.i_size_lo = 0;
+        inode.i_size_high = 0;
+    })
+    .expect("corrupt journal inode mapping");
+    sync_with_axfs_ng_order(&mut first_mount_dev, &mut fs).expect("persist corrupted mapping");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut remount_dev = new_jbd2_dev(device.clone());
+        mount(&mut remount_dev)
+    }));
+
+    assert!(result.is_ok(), "invalid journal mapping must not panic");
+    let Err(error) = result.unwrap() else {
+        panic!("mount must reject an empty journal mapping");
+    };
+    assert_eq!(error.code, Errno::EUCLEAN);
+}
+
+#[test]
+fn mount_returns_journal_bootstrap_write_failure_without_panicking() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut first_mount_dev = new_jbd2_dev(device.clone());
+    let mut fs = mount(&mut first_mount_dev).expect("mount failed");
+    let journal_inode = InodeNumber::new(JOURNAL_FILE_INODE as u32).expect("valid journal inode");
+    fs.modify_inode(&mut first_mount_dev, journal_inode, |inode| {
+        inode.i_mode = 0
+    })
+    .expect("remove journal inode");
+    sync_with_axfs_ng_order(&mut first_mount_dev, &mut fs).expect("persist missing journal inode");
+
+    let mut superblock = read_superblock(&device);
+    superblock.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+    superblock.update_checksum();
+    write_superblock(&device, &superblock);
+
+    device.fail_writes.set(true);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut remount_dev = new_jbd2_dev(device.clone());
+        mount(&mut remount_dev)
+    }));
+
+    assert!(
+        result.is_ok(),
+        "journal bootstrap I/O failure must not panic"
+    );
+    let Err(error) = result.unwrap() else {
+        panic!("mount must fail when journal bootstrap writes fail");
+    };
+    assert_eq!(error.code, Errno::EIO);
+}
+
+#[test]
+fn journal_commit_retry_persists_replay_start_after_initial_superblock_write_failure() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut format_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut format_dev).expect("mkfs failed");
+
+    let mut dev = new_jbd2_dev(device.clone());
+    let fs = mount(&mut dev).expect("mount failed");
+    let journal_block = fs
+        .journal_sb_block_start
+        .expect("journal superblock should be mapped")
+        .raw();
+
+    let unchanged_home_block = AbsoluteBN::new(42);
+    dev.read_block(unchanged_home_block)
+        .expect("read home block");
+    dev.write_block(unchanged_home_block, true)
+        .expect("queue metadata update");
+
+    device.failing_write_block.set(Some(journal_block));
+    // Fail the initial replay-start write, then fail the final cleanup write
+    // after the retry has written a committed transaction. The second failure
+    // models a crash before journal cleanup can hide the transaction.
+    *device.failing_write_attempts.borrow_mut() = [1, 3].into_iter().collect();
+
+    let first_error = dev
+        .umount_commit()
+        .expect_err("initial journal superblock write must fail");
+    assert_eq!(first_error.code, Errno::EIO);
+
+    let retry_error = dev
+        .umount_commit()
+        .expect_err("final journal cleanup write must fail");
+    assert_eq!(retry_error.code, Errno::EIO);
+
+    let on_disk_journal =
+        JournalSuperBllockS::from_disk_bytes(&device.read_block_bytes(journal_block));
+    assert_ne!(
+        on_disk_journal.s_start, 0,
+        "the retried committed transaction must remain discoverable after a crash"
+    );
+
+    let mut remount_dev = new_jbd2_dev(device.clone());
+    let recovered =
+        mount(&mut remount_dev).expect("mount must replay the discoverable transaction");
+    umount(recovered, &mut remount_dev).expect("clean unmount after replay");
 }
