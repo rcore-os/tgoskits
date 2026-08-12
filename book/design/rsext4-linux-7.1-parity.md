@@ -1674,6 +1674,27 @@ user capacity。原 restart fixture 不再依赖“每条 revoke 一个 block”
 6-credit ring 使用 24 blocks，extent 单 chunk 的 8-credit ring 使用 30 blocks；四个 power-cut/replay
 case 与 restart 后 allocation/mapping/e2fsck 断言保持不变。
 
+性能 A/B 以本检查点前的 `d37d299c1` 为 baseline、`a3b761580` 为 implementation，固定 CPU 2、
+release、memory backend、4 KiB block、20 MiB payload。常规 sequential 与 sync-cycle 各执行 3 次
+预热、50 次测量，200 个原始样本保存在
+`book/design/data/rsext4-perf/2026-08-13-jbd2-revoke-credit.csv`。clean-sync 单次仅约 200 ns，
+多轮 50-sample A/B 的差值方向会随 timer/scheduler noise 翻转；因此没有挑选其中一轮，而是对两个
+revision 对称扩为 10 次预热、500 次测量，1,000 个原始 sync-cycle 样本保存在
+`book/design/data/rsext4-perf/2026-08-13-jbd2-revoke-credit-sync-stability.csv`，最终 sync 判定使用
+这组完整扩样结果。
+
+| workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sequential write | 6,264,560 ns | 6,256,878 ns | -0.123% | 6,871,347 ns | 6,862,395 ns | -0.130% |
+| sequential read | 5,989,700 ns | 5,953,986 ns | -0.596% | 7,547,108 ns | 6,891,809 ns | -8.683% |
+| sequential unmount | 17,650 ns | 17,587 ns | -0.357% | 19,312 ns | 19,065 ns | -1.279% |
+| dirty sync（500 次） | 7,953 ns | 7,767 ns | -2.339% | 10,000 ns | 9,572 ns | -4.280% |
+| clean sync（500 次） | 206 ns | 191 ns | -7.282% | 266 ns | 237 ns | -10.902% |
+| sync-cycle unmount（500 次） | 5,308 ns | 5,095 ns | -4.013% | 6,671 ns | 6,220 ns | -6.761% |
+
+六项 median/p95 全部满足相对本 PR 前一检查点的 5%/10% 门槛；该局部 A/B 不覆盖也不豁免
+7.35/7.42 相对冻结 dev 的全局 dirty-sync 红项。
+
 本检查点仍不实现 reserved child handle、跨执行流 concurrent attachment 或通用
 `jbd2_journal_restart()`；这些状态会改变 transaction outstanding ownership，不能用 revoke credit
 字段顺带伪造。
