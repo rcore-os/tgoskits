@@ -1885,13 +1885,52 @@
         },
         {
           "start": 642,
-          "end": 815,
-          "symbol": "jbd2_journal_extend; stop_this_handle; jbd2__journal_restart; jbd2_journal_restart",
+          "end": 697,
+          "symbol": "jbd2_journal_extend",
           "classification": "core",
-          "state_machine": "active handle extend -> stop accounting -> optional new transaction attachment",
-          "invariant": "revoke descriptor deltas and unused credits are released at transaction boundaries; failed extend never mutates the original reservation",
-          "rust_owner": "rsext4::blockdev::journal::extend_transaction_credits; rsext4::file::io restart planners",
-          "reason": "best-effort extend and owner-level chunk restart are implemented; generic in-closure restart remains explicitly pending",
+          "state_machine": "active running handle -> best-effort enlarged credit budget or restart-required",
+          "invariant": "revoke descriptor deltas count against the transaction maximum and failed extend leaves the original reservation unchanged",
+          "rust_owner": "rsext4::blockdev::journal::extend_transaction_credits",
+          "reason": "typed credit deltas replace mutable task-local handle fields while preserving Linux transaction-full semantics",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 698,
+          "end": 742,
+          "symbol": "stop_this_handle",
+          "classification": "core",
+          "state_machine": "completed scoped handle -> released update, revoke, buffer, and reserved credit accounting",
+          "invariant": "only the final nested owner releases credits, and operation failure restores the exact queue, revoke, and touched-block snapshot",
+          "rust_owner": "rsext4::blockdev::journal::{run_active_journal_handle,with_nested_journal_handle,free_reserved_transaction}",
+          "reason": "Rust closure lifetime supplies balanced handle stop while the private reservation ledger supplies explicit detached ownership",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 743,
+          "end": 806,
+          "symbol": "jbd2__journal_restart",
+          "classification": "core",
+          "state_machine": "stopped old handle -> old transaction commit -> fresh scoped handle attachment",
+          "invariant": "the old transaction is committed before the replacement handle attaches, and detached reserved ownership survives the switch",
+          "rust_owner": "rsext4::blockdev::journal::restart_transaction; rsext4::ext4::fs::restart_metadata_transaction; rsext4::file::io restart planners",
+          "reason": "filesystem owners split restartable work at closure boundaries instead of leaking a mutable handle or scheduler primitive through the portable core",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 807,
+          "end": 815,
+          "symbol": "jbd2_journal_restart; jbd2_journal_wait_updates precondition",
+          "classification": "core",
+          "state_machine": "typed restart wrapper -> fresh transaction; update-drain barrier precondition",
+          "invariant": "restart uses metadata-only credits and the later locked transaction barrier must not admit ordinary updates while switching",
+          "rust_owner": "rsext4::blockdev::journal::restart_transaction; rsext4::jbd2::transaction pending locked/switch phase",
+          "reason": "scope-boundary restart is implemented; explicit locked/switch admission remains classified as core rather than falsely marked not applicable",
           "test_ids": [
             "jbd2-handle-credits"
           ]

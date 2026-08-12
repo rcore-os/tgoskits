@@ -52,6 +52,30 @@ struct MetadataTransactionSnapshot {
     datablock_cache: DataBlockCache,
 }
 
+impl MetadataTransactionSnapshot {
+    fn capture(filesystem: &Ext4FileSystem) -> Self {
+        Self {
+            superblock: filesystem.superblock,
+            superblock_dirty: filesystem.superblock_dirty,
+            group_descs: filesystem.group_descs.clone(),
+            dirty_group_descs: filesystem.dirty_group_descs.clone(),
+            bitmap_cache: filesystem.bitmap_cache.clone(),
+            inodetable_cache: filesystem.inodetable_cache.clone(),
+            datablock_cache: filesystem.datablock_cache.clone(),
+        }
+    }
+
+    fn restore(self, filesystem: &mut Ext4FileSystem) {
+        filesystem.superblock = self.superblock;
+        filesystem.superblock_dirty = self.superblock_dirty;
+        filesystem.group_descs = self.group_descs;
+        filesystem.dirty_group_descs = self.dirty_group_descs;
+        filesystem.bitmap_cache = self.bitmap_cache;
+        filesystem.inodetable_cache = self.inodetable_cache;
+        filesystem.datablock_cache = self.datablock_cache;
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct GroupCounters {
     free_blocks: u32,
@@ -74,25 +98,33 @@ impl Ext4FileSystem {
         credits: impl Into<TransactionCredits>,
         operation: impl FnOnce(&mut Self, &mut Jbd2Dev<B>) -> Ext4Result<T>,
     ) -> Ext4Result<T> {
-        let snapshot = MetadataTransactionSnapshot {
-            superblock: self.superblock,
-            superblock_dirty: self.superblock_dirty,
-            group_descs: self.group_descs.clone(),
-            dirty_group_descs: self.dirty_group_descs.clone(),
-            bitmap_cache: self.bitmap_cache.clone(),
-            inodetable_cache: self.inodetable_cache.clone(),
-            datablock_cache: self.datablock_cache.clone(),
-        };
+        let snapshot = MetadataTransactionSnapshot::capture(self);
         let result = block_dev
             .with_transaction_credits(credits.into(), |block_dev| operation(self, block_dev));
         if result.is_err() {
-            self.superblock = snapshot.superblock;
-            self.superblock_dirty = snapshot.superblock_dirty;
-            self.group_descs = snapshot.group_descs;
-            self.dirty_group_descs = snapshot.dirty_group_descs;
-            self.bitmap_cache = snapshot.bitmap_cache;
-            self.inodetable_cache = snapshot.inodetable_cache;
-            self.datablock_cache = snapshot.datablock_cache;
+            snapshot.restore(self);
+        }
+        result
+    }
+
+    /// Ends the previous handle's transaction before running the next
+    /// restartable metadata step under a fresh handle.
+    ///
+    /// The snapshot covers only the new step. Earlier steps may already be
+    /// durable and must describe crash-restartable progress on disk; restoring
+    /// the state from before the whole multi-transaction operation would make
+    /// memory disagree with replayable metadata.
+    pub(crate) fn restart_metadata_transaction<B: BlockIo, T>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        credits: impl Into<TransactionCredits>,
+        operation: impl FnOnce(&mut Self, &mut Jbd2Dev<B>) -> Ext4Result<T>,
+    ) -> Ext4Result<T> {
+        let snapshot = MetadataTransactionSnapshot::capture(self);
+        let result =
+            block_dev.restart_transaction(credits.into(), |block_dev| operation(self, block_dev));
+        if result.is_err() {
+            snapshot.restore(self);
         }
         result
     }

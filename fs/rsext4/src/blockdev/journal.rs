@@ -1178,6 +1178,31 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.with_journal_handle(credits, operation)
     }
 
+    /// Commits the transaction owned by a completed scoped handle before
+    /// attaching the next filesystem step to a fresh transaction.
+    ///
+    /// The caller must have ended the old handle scope. A detached reserved
+    /// handle remains owned by this journal and can be attached to the new
+    /// running transaction after the restart.
+    pub(crate) fn restart_transaction<T>(
+        &mut self,
+        credits: TransactionCredits,
+        operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
+    ) -> Ext4Result<T> {
+        self.ensure_not_aborted("jbd2:restart_after_abort")?;
+        if self.active_handle.is_some() || self.active_direct_handle.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:restart_with_active_handle"));
+        }
+        if self.journal_use {
+            // The old scoped handle has already stopped before this method is
+            // entered. Request its transaction commit before attaching the
+            // replacement handle, matching jbd2__journal_restart() without
+            // leaking a handle or scheduler primitive across Rust closures.
+            self.commit_pending_transaction()?;
+        }
+        self.with_journal_handle(credits, operation)
+    }
+
     pub(crate) fn with_transaction_reservation<T>(
         &mut self,
         credits: TransactionCredits,
@@ -4474,6 +4499,111 @@ mod tests {
             &inner.data[second_start..second_start + BLOCK_SIZE],
             &vec![0x42; BLOCK_SIZE]
         );
+    }
+
+    #[test]
+    fn transaction_restart_switches_before_attaching_the_next_handle() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let first = AbsoluteBN::new(10);
+        let second = AbsoluteBN::new(11);
+
+        dev.with_transaction_handle(1, |dev| {
+            dev.write_blocks(&vec![0x35; BLOCK_SIZE], first, 1, true)
+        })
+        .expect("publish the old transaction step");
+        let old_sequence = dev.journal_sequence().expect("old transaction sequence");
+
+        dev.restart_transaction(TransactionCredits::metadata(1), |dev| {
+            assert_ne!(
+                dev.journal_sequence(),
+                Some(old_sequence),
+                "restart must switch the old transaction before the new handle attaches"
+            );
+            dev.write_blocks(&vec![0x46; BLOCK_SIZE], second, 1, true)
+        })
+        .expect("restart into the next transaction");
+
+        let system = dev.system.as_ref().expect("journal state");
+        assert_eq!(system.checkpoint_transactions.len(), 1);
+        assert_eq!(system.checkpoint_transactions[0].updates.len(), 1);
+        assert_eq!(system.running_transaction.updates.len(), 1);
+        dev.umount_commit().expect("commit both transaction steps");
+        let inner = dev.into_inner();
+        let first_start = first.as_usize().unwrap() * BLOCK_SIZE;
+        let second_start = second.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[first_start..first_start + BLOCK_SIZE],
+            &vec![0x35; BLOCK_SIZE]
+        );
+        assert_eq!(
+            &inner.data[second_start..second_start + BLOCK_SIZE],
+            &vec![0x46; BLOCK_SIZE]
+        );
+    }
+
+    #[test]
+    fn transaction_restart_preserves_a_detached_reserved_handle() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let first = AbsoluteBN::new(10);
+        let second = AbsoluteBN::new(11);
+        let third = AbsoluteBN::new(12);
+        let ((), reserved) = dev
+            .with_transaction_reservation(
+                TransactionCredits::metadata(1),
+                TransactionCredits::metadata(1),
+                |dev| dev.write_blocks(&vec![0x51; BLOCK_SIZE], first, 1, true),
+            )
+            .expect("publish parent and detach child reservation");
+        let old_sequence = dev.journal_sequence().expect("old transaction sequence");
+
+        dev.restart_transaction(TransactionCredits::metadata(1), |dev| {
+            assert_ne!(dev.journal_sequence(), Some(old_sequence));
+            dev.write_blocks(&vec![0x62; BLOCK_SIZE], second, 1, true)
+        })
+        .expect("restart while retaining detached child credits");
+        let new_sequence = dev.journal_sequence().expect("new transaction sequence");
+        dev.with_reserved_transaction(reserved, |dev| {
+            assert_eq!(dev.journal_sequence(), Some(new_sequence));
+            dev.write_blocks(&vec![0x73; BLOCK_SIZE], third, 1, true)
+        })
+        .expect("attach child to the restarted transaction");
+
+        dev.umount_commit().expect("commit restarted transaction");
+        let inner = dev.into_inner();
+        for (block, byte) in [(first, 0x51), (second, 0x62), (third, 0x73)] {
+            let start = block.as_usize().unwrap() * BLOCK_SIZE;
+            assert_eq!(
+                &inner.data[start..start + BLOCK_SIZE],
+                &vec![byte; BLOCK_SIZE]
+            );
+        }
+    }
+
+    #[test]
+    fn transaction_restart_rejects_an_active_handle_without_committing_it() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let sequence = dev.journal_sequence().expect("journal sequence");
+
+        dev.with_transaction_handle(1, |dev| {
+            let mut operation_started = false;
+            let error = dev
+                .restart_transaction(TransactionCredits::metadata(1), |_| {
+                    operation_started = true;
+                    Ok(())
+                })
+                .expect_err("restart must begin only after the old handle stops");
+            assert!(!operation_started);
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
+            assert_eq!(dev.journal_sequence(), Some(sequence));
+            Ok(())
+        })
+        .expect("outer handle remains valid");
     }
 
     #[test]

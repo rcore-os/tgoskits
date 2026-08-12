@@ -633,7 +633,10 @@ pub fn punch_hole_inode<B: BlockIo>(
                     &mut inode,
                     Ext4InodeMetadataUpdate::write_access(),
                     None,
-                    plan,
+                    MetadataTransactionStep {
+                        start: MetadataTransactionStart::Join,
+                        payload: plan,
+                    },
                 )
             }
         }
@@ -761,6 +764,17 @@ struct ExtentRemovalSegment {
 struct ExtentRemovalPlan {
     segments: Vec<ExtentRemovalSegment>,
     credits: TransactionCredits,
+}
+
+#[derive(Clone, Copy)]
+enum MetadataTransactionStart {
+    Join,
+    Restart,
+}
+
+struct MetadataTransactionStep<T> {
+    start: MetadataTransactionStart,
+    payload: T,
 }
 
 /// Validates and records every initialized or unwritten mapping in a range.
@@ -982,6 +996,7 @@ fn remove_extent_mapping_with_restarts<B: BlockIo>(
     credit_limit: usize,
 ) -> Ext4Result<()> {
     let mut cursor = full_start;
+    let mut transaction_start = MetadataTransactionStart::Join;
     while cursor < full_end {
         let Some(chunk) = prepare_extent_mapping_removal_chunk(
             device,
@@ -1002,8 +1017,12 @@ fn remove_extent_mapping_with_restarts<B: BlockIo>(
             inode,
             Ext4InodeMetadataUpdate::default(),
             None,
-            chunk.plan,
+            MetadataTransactionStep {
+                start: transaction_start,
+                payload: chunk.plan,
+            },
         )?;
+        transaction_start = MetadataTransactionStart::Restart;
         cursor = chunk.next_logical;
     }
     Ok(())
@@ -1080,12 +1099,16 @@ fn commit_extent_mapping_removal<B: BlockIo>(
     inode: &mut Ext4Inode,
     metadata_update: Ext4InodeMetadataUpdate,
     new_size: Option<u64>,
-    plan: ExtentRemovalPlan,
+    transaction: MetadataTransactionStep<ExtentRemovalPlan>,
 ) -> Ext4Result<()> {
+    let MetadataTransactionStep {
+        start: transaction_start,
+        payload: plan,
+    } = transaction;
     let ExtentRemovalPlan { segments, credits } = plan;
     let original_inode = *inode;
     let counters_before = fs.group_counter_snapshot();
-    let updated = fs.with_metadata_transaction(device, credits, |fs, device| {
+    let operation = |fs: &mut Ext4FileSystem, device: &mut Jbd2Dev<B>| {
         let mut updated = original_inode;
         for segment in &segments {
             ExtentTree::with_filesystem(&mut updated, fs, inode_num).remove_extent(
@@ -1111,7 +1134,13 @@ fn commit_extent_mapping_removal<B: BlockIo>(
             }
         }
         Ok(updated)
-    })?;
+    };
+    let updated = match transaction_start {
+        MetadataTransactionStart::Join => fs.with_metadata_transaction(device, credits, operation),
+        MetadataTransactionStart::Restart => {
+            fs.restart_metadata_transaction(device, credits, operation)
+        }
+    }?;
     *inode = updated;
     Ok(())
 }
@@ -1287,6 +1316,7 @@ fn remove_legacy_mapping_with_restarts<B: BlockIo>(
     credit_limit: usize,
 ) -> Ext4Result<()> {
     let mut cursor_end = full_end;
+    let mut transaction_start = MetadataTransactionStart::Join;
     loop {
         let chunk = match prepare_legacy_mapping_removal_chunk(
             device,
@@ -1321,8 +1351,12 @@ fn remove_legacy_mapping_with_restarts<B: BlockIo>(
             inode,
             Ext4InodeMetadataUpdate::default(),
             None,
-            chunk.transaction,
+            MetadataTransactionStep {
+                start: transaction_start,
+                payload: chunk.transaction,
+            },
         )?;
+        transaction_start = MetadataTransactionStart::Restart;
         cursor_end = chunk.next_end;
     }
 }
@@ -1334,11 +1368,15 @@ fn commit_legacy_mapping_removal<B: BlockIo>(
     inode: &mut Ext4Inode,
     metadata_update: Ext4InodeMetadataUpdate,
     new_size: Option<u64>,
-    transaction: LegacyMappingTransaction,
+    transaction: MetadataTransactionStep<LegacyMappingTransaction>,
 ) -> Ext4Result<()> {
+    let MetadataTransactionStep {
+        start: transaction_start,
+        payload: transaction,
+    } = transaction;
     let LegacyMappingTransaction { plan, footprint } = transaction;
     let original_inode = *inode;
-    let updated = fs.with_metadata_transaction(device, footprint.credits, |fs, device| {
+    let operation = |fs: &mut Ext4FileSystem, device: &mut Jbd2Dev<B>| {
         let mut updated = original_inode;
         let block_size = fs.block_size() as u32;
         let huge_file_feature = fs
@@ -1356,7 +1394,15 @@ fn commit_legacy_mapping_removal<B: BlockIo>(
         fs.flush_block_allocation_groups(device, &footprint.allocation_groups)?;
         fs.sync_superblock(device)?;
         Ok(updated)
-    })?;
+    };
+    let updated = match transaction_start {
+        MetadataTransactionStart::Join => {
+            fs.with_metadata_transaction(device, footprint.credits, operation)
+        }
+        MetadataTransactionStart::Restart => {
+            fs.restart_metadata_transaction(device, footprint.credits, operation)
+        }
+    }?;
     *inode = updated;
     Ok(())
 }
@@ -1411,7 +1457,10 @@ fn punch_legacy_blocks<B: BlockIo>(
             &mut inode,
             Ext4InodeMetadataUpdate::write_access(),
             None,
-            transaction,
+            MetadataTransactionStep {
+                start: MetadataTransactionStart::Join,
+                payload: transaction,
+            },
         )
     }
 }
@@ -1725,7 +1774,10 @@ fn truncate_inode_mapping<B: BlockIo>(
                     &mut inode,
                     Ext4InodeMetadataUpdate::truncate_access(),
                     Some(truncate_size),
-                    removal,
+                    MetadataTransactionStep {
+                        start: MetadataTransactionStart::Join,
+                        payload: removal,
+                    },
                 );
             }
         }
@@ -1790,7 +1842,10 @@ fn truncate_inode_mapping<B: BlockIo>(
             &mut inode,
             Ext4InodeMetadataUpdate::truncate_access(),
             Some(truncate_size),
-            transaction,
+            MetadataTransactionStep {
+                start: MetadataTransactionStart::Join,
+                payload: transaction,
+            },
         )
     }
 }
