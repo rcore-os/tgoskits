@@ -1054,17 +1054,24 @@ fn read_image_blocks(image: &Path, blocks: &[u64], output: &Path) {
     payload.sync_all().expect("sync journal payload");
 }
 
-fn inject_csum_v3_journal(image: &Path, target_blocks: &[u64], payload: &Path) {
+fn inject_checksum_journal(
+    image: &Path,
+    target_blocks: &[u64],
+    payload: &Path,
+    checksum_version: u8,
+) {
+    assert!(matches!(checksum_version, 2 | 3));
     let blocks = target_blocks
         .iter()
         .map(u64::to_string)
         .collect::<Vec<_>>()
         .join(",");
     let script = format!(
-        "journal_open -c -v 3\njournal_write -b {blocks} {}\njournal_close\nquit\n",
+        "journal_open -c -v {checksum_version}\njournal_write -b {blocks} \
+         {}\njournal_close\nquit\n",
         payload.display()
     );
-    run_debugfs_script(image, &script, "inject csum-v3 journal");
+    run_debugfs_script(image, &script, "inject checksummed journal");
 }
 
 fn dumpe2fs_header(image: &Path, context: &str) -> String {
@@ -1114,14 +1121,13 @@ fn repair_baseline_image(path: &PathBuf) {
     );
 }
 
-#[test]
-fn replay_csum_v3_multi_block_journal_from_debugfs() {
+fn replay_checksum_journal_from_debugfs(checksum_version: u8) {
     for tool in ["mkfs.ext4", "debugfs", "e2fsck"] {
         require_tool(tool);
     }
 
     let temp_dir = std::env::temp_dir().join(format!(
-        "rsext4-csum-v3-journal-repro-{}",
+        "rsext4-checksum-v{checksum_version}-journal-repro-{}",
         std::process::id()
     ));
     if temp_dir.exists() {
@@ -1144,7 +1150,11 @@ fn replay_csum_v3_multi_block_journal_from_debugfs() {
     run_command(
         {
             let mut command = Command::new("mkfs.ext4");
-            command.args(["-F", "-q", "-b", "4096"]).arg(&image);
+            command.args(["-F", "-q", "-b", "4096"]);
+            if checksum_version == 2 {
+                command.args(["-O", "^metadata_csum,^64bit"]);
+            }
+            command.arg(&image);
             command
         },
         "mkfs.ext4 test image",
@@ -1163,12 +1173,19 @@ fn replay_csum_v3_multi_block_journal_from_debugfs() {
         "fixture should change multiple metadata blocks, got {changed_blocks:?}"
     );
     read_image_blocks(&mutated, &changed_blocks, &payload);
-    inject_csum_v3_journal(&image, &changed_blocks, &payload);
+    inject_checksum_journal(&image, &changed_blocks, &payload, checksum_version);
     let dirty_header = dumpe2fs_header(&image, "pending journal fixture");
     assert!(
         dirty_header.contains("needs_recovery"),
         "debugfs journal fixture should require recovery\n{dirty_header}"
     );
+    if checksum_version == 2 {
+        assert!(
+            dirty_header.contains("Journal features:         journal_checksum")
+                && dirty_header.contains("Journal checksum type:    crc32"),
+            "e2fsprogs v2 fixture should use FEATURE_COMPAT_CHECKSUM\n{dirty_header}"
+        );
+    }
 
     fs::copy(&image, &baseline).expect("copy baseline image");
     run_debugfs_script(
@@ -1183,7 +1200,7 @@ fn replay_csum_v3_multi_block_journal_from_debugfs() {
     {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let fs = mount(&mut dev).expect("mount image with pending csum-v3 journal");
+        let fs = mount(&mut dev).expect("mount image with pending checksummed journal");
         umount(fs, &mut dev).expect("umount image after replay");
     }
 
@@ -1194,8 +1211,18 @@ fn replay_csum_v3_multi_block_journal_from_debugfs() {
         !recovered_header.contains("needs_recovery"),
         "rsext4 should clear needs_recovery after successful replay\n{recovered_header}"
     );
-    e2fsck_readonly_clean(&image, "rsext4 csum-v3 journal replay");
+    e2fsck_readonly_clean(&image, "rsext4 checksummed journal replay");
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn replay_compat_checksum_multi_block_journal_from_debugfs() {
+    replay_checksum_journal_from_debugfs(2);
+}
+
+#[test]
+fn replay_csum_v3_multi_block_journal_from_debugfs() {
+    replay_checksum_journal_from_debugfs(3);
 }
 
 #[test]

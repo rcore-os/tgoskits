@@ -12,8 +12,10 @@ use crate::{
     jbd2::{
         jbd2::{ReplayFailure, ReplayStatus},
         jbdstruct::{
-            JBD2_BLOCKTYPE_SUPERBLOCK_V1, JBD2_BLOCKTYPE_SUPERBLOCK_V2, JBD2_CRC32C_CHKSUM,
-            JBD2_FEATURE_INCOMPAT_64BIT, JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_MAGIC, JBD2DEVSYSTEM,
+            JBD2_BLOCKTYPE_SUPERBLOCK_V1, JBD2_BLOCKTYPE_SUPERBLOCK_V2,
+            JBD2_FEATURE_COMPAT_CHECKSUM, JBD2_FEATURE_INCOMPAT_64BIT,
+            JBD2_FEATURE_INCOMPAT_CSUM_V2, JBD2_FEATURE_INCOMPAT_CSUM_V3,
+            JBD2_FEATURE_INCOMPAT_REVOKE, JBD2_MAGIC, JBD2DEVSYSTEM, Jbd2ChecksumMode,
             Jbd2RunningTransaction, Jbd2Update, JournalSuperBlock,
         },
     },
@@ -100,25 +102,25 @@ impl<B: BlockIo> Jbd2Dev<B> {
             )?;
             return Ok(());
         }
-        let supported_incompat = JBD2_FEATURE_INCOMPAT_64BIT | JBD2_FEATURE_INCOMPAT_CSUM_V3;
+        let supported_incompat = JBD2_FEATURE_INCOMPAT_REVOKE
+            | JBD2_FEATURE_INCOMPAT_64BIT
+            | JBD2_FEATURE_INCOMPAT_CSUM_V2
+            | JBD2_FEATURE_INCOMPAT_CSUM_V3;
         if super_block.s_feature_incompat & !supported_incompat != 0 {
             return Err(Ext4Error::unsupported().with_operation("jbd2:features"));
         }
-        if super_block.s_feature_compat != 0 || super_block.s_feature_ro_compat != 0 {
+        if super_block.s_feature_compat & !JBD2_FEATURE_COMPAT_CHECKSUM != 0
+            || super_block.s_feature_ro_compat != 0
+        {
             return Err(Ext4Error::unsupported().with_operation("jbd2:features"));
         }
-        let has_csum_v3 = super_block.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0;
-        if has_csum_v3 != (super_block.s_checksum_type == JBD2_CRC32C_CHKSUM) {
-            return Err(Ext4Error::unsupported().with_operation("jbd2:checksum_features"));
-        }
-        match super_block.s_checksum_type {
-            0 => {}
-            JBD2_CRC32C_CHKSUM => {
+        match super_block.checksum_mode()? {
+            Jbd2ChecksumMode::CsumV2 | Jbd2ChecksumMode::CsumV3 => {
                 if super_block.s_checksum != jbd2_superblock_csum32(super_block) {
                     return Err(Ext4Error::checksum().with_operation("jbd2:superblock_checksum"));
                 }
             }
-            _ => return Err(Ext4Error::unsupported().with_operation("jbd2:checksum_type")),
+            Jbd2ChecksumMode::None | Jbd2ChecksumMode::CompatChecksum => {}
         }
         if super_block.s_errno != 0 {
             return Err(Ext4Error::journal_aborted().with_operation("jbd2:recorded_error"));
@@ -1214,9 +1216,9 @@ mod tests {
         config::BLOCK_SIZE,
         endian::DiskFormat,
         jbd2::jbdstruct::{
-            CommitHeader, JBD2_BLOCKTYPE_REVOKE, JBD2_DESCRIPTOR_HEADER_SIZE, JBD2_TAG3_SIZE,
-            JBD2_UUID_SIZE, JOURNAL_ESCAPE, Jbd2CommitPhase, Jbd2JournalRevokeHeadS,
-            JournalBlockTag3S, JournalHeaderS,
+            CommitHeader, JBD2_BLOCKTYPE_REVOKE, JBD2_CRC32C_CHKSUM, JBD2_DESCRIPTOR_HEADER_SIZE,
+            JBD2_TAG3_SIZE, JBD2_UUID_SIZE, JOURNAL_ESCAPE, Jbd2CommitPhase,
+            Jbd2JournalRevokeHeadS, JournalBlockTag3S, JournalBlockTagS, JournalHeaderS,
         },
     };
 
@@ -1339,6 +1341,20 @@ mod tests {
         crc
     }
 
+    fn reference_crc32_be(mut crc: u32, bytes: &[u8]) -> u32 {
+        for &byte in bytes {
+            crc ^= u32::from(byte) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 {
+                    (crc << 1) ^ 0x04c1_1db7
+                } else {
+                    crc << 1
+                };
+            }
+        }
+        crc
+    }
+
     fn reference_jbd2_seed(uuid: &[u8; JBD2_UUID_SIZE]) -> u32 {
         reference_crc32c(u32::MAX, uuid)
     }
@@ -1370,6 +1386,25 @@ mod tests {
         superblock.s_uuid = [0x5a; JBD2_UUID_SIZE];
         crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
         superblock
+    }
+
+    fn csum_v2_superblock() -> JournalSuperBlock {
+        let mut superblock = JournalSuperBlock::default();
+        superblock.s_maxlen = 64;
+        superblock.s_feature_incompat = JBD2_FEATURE_INCOMPAT_CSUM_V2;
+        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
+        superblock.s_uuid = [0x3c; JBD2_UUID_SIZE];
+        crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
+        superblock
+    }
+
+    fn compat_checksum_superblock() -> JournalSuperBlock {
+        JournalSuperBlock {
+            s_maxlen: 64,
+            s_feature_compat: JBD2_FEATURE_COMPAT_CHECKSUM,
+            s_uuid: [0x27; JBD2_UUID_SIZE],
+            ..JournalSuperBlock::default()
+        }
     }
 
     fn small_journal_superblock() -> JournalSuperBlock {
@@ -1408,6 +1443,65 @@ mod tests {
         (inner, replay_superblock, target)
     }
 
+    fn committed_csum_v2_fixture_with_features(
+        extra_incompat: u32,
+    ) -> (MemBlockDev, JournalSuperBlock, AbsoluteBN) {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        let mut superblock = csum_v2_superblock();
+        superblock.s_feature_incompat |= extra_incompat;
+        crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
+            .expect("install csum-v2 journal");
+
+        let target = AbsoluteBN::new(10);
+        let payload = vec![0x6d; BLOCK_SIZE];
+        dev.write_blocks(&payload, target, 1, true)
+            .expect("queue csum-v2 metadata");
+        dev.umount_commit().expect("commit csum-v2 metadata");
+
+        let mut inner = dev.into_inner();
+        inner.write_calls = 0;
+        inner.flush_calls = 0;
+        inner.fua_writes = 0;
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        inner.data[target_start..target_start + BLOCK_SIZE].fill(0);
+
+        let mut replay_superblock = superblock;
+        replay_superblock.s_start = replay_superblock.s_first;
+        replay_superblock.s_sequence = 1;
+        crate::checksum::jbd2_update_superblock_checksum(&mut replay_superblock);
+        replay_superblock.to_disk_bytes(&mut inner.data[128 * BLOCK_SIZE..][..1024]);
+
+        (inner, replay_superblock, target)
+    }
+
+    fn committed_csum_v2_fixture() -> (MemBlockDev, JournalSuperBlock, AbsoluteBN) {
+        committed_csum_v2_fixture_with_features(0)
+    }
+
+    fn committed_compat_checksum_fixture() -> (MemBlockDev, JournalSuperBlock, AbsoluteBN) {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        let superblock = compat_checksum_superblock();
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
+            .expect("install compat-checksum journal");
+
+        let target = AbsoluteBN::new(10);
+        let payload = vec![0x93; BLOCK_SIZE];
+        dev.write_blocks(&payload, target, 1, true)
+            .expect("queue compat-checksum metadata");
+        dev.umount_commit()
+            .expect("commit compat-checksum metadata");
+
+        let mut inner = dev.into_inner();
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        inner.data[target_start..target_start + BLOCK_SIZE].fill(0);
+        let mut replay_superblock = superblock;
+        replay_superblock.s_start = replay_superblock.s_first;
+        replay_superblock.s_sequence = 1;
+        replay_superblock.to_disk_bytes(&mut inner.data[128 * BLOCK_SIZE..][..1024]);
+        (inner, replay_superblock, target)
+    }
+
     fn replay_csum_v3_fixture(
         inner: MemBlockDev,
         superblock: JournalSuperBlock,
@@ -1430,6 +1524,60 @@ mod tests {
             &inner.data[target_start..target_start + BLOCK_SIZE],
             vec![0; BLOCK_SIZE]
         );
+        (status, inner)
+    }
+
+    fn replay_csum_v2_fixture(
+        inner: MemBlockDev,
+        superblock: JournalSuperBlock,
+        target: AbsoluteBN,
+    ) -> (ReplayStatus, MemBlockDev) {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        let journal_blocks = (128..192).map(AbsoluteBN::new).collect();
+        dev.set_journal_superblock_with_mapping(superblock, journal_blocks)
+            .expect("install csum-v2 journal");
+        let status = dev.journal_replay_checked();
+        if status.failure().is_some() {
+            let error = dev
+                .set_journal_use(false)
+                .expect_err("incomplete replay must latch the journal abort");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::JournalAborted);
+        }
+        let inner = dev.into_inner();
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        if status.failure().is_some() {
+            assert_eq!(
+                &inner.data[target_start..target_start + BLOCK_SIZE],
+                vec![0; BLOCK_SIZE]
+            );
+        }
+        (status, inner)
+    }
+
+    fn replay_compat_checksum_fixture(
+        inner: MemBlockDev,
+        superblock: JournalSuperBlock,
+        target: AbsoluteBN,
+    ) -> (ReplayStatus, MemBlockDev) {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        let journal_blocks = (128..192).map(AbsoluteBN::new).collect();
+        dev.set_journal_superblock_with_mapping(superblock, journal_blocks)
+            .expect("install compat-checksum journal");
+        let status = dev.journal_replay_checked();
+        if status.failure().is_some() {
+            let error = dev
+                .set_journal_use(false)
+                .expect_err("incomplete replay must latch the journal abort");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::JournalAborted);
+        }
+        let inner = dev.into_inner();
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        if status.failure().is_some() {
+            assert_eq!(
+                &inner.data[target_start..target_start + BLOCK_SIZE],
+                vec![0; BLOCK_SIZE]
+            );
+        }
         (status, inner)
     }
 
@@ -1734,7 +1882,7 @@ mod tests {
     }
 
     #[test]
-    fn journal_superblock_requires_csum_v3_and_crc32c_together() {
+    fn journal_superblock_requires_block_checksum_feature_and_crc32c_together() {
         let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
         let mut missing_type = JournalSuperBlock::default();
         missing_type.s_feature_incompat |= JBD2_FEATURE_INCOMPAT_CSUM_V3;
@@ -1750,6 +1898,20 @@ mod tests {
             .validate_journal_superblock(&missing_feature, missing_feature.s_maxlen as usize)
             .expect_err("CRC32C journal superblock checksums require csum-v3 support");
         assert_eq!(error.kind(), crate::Ext4ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn journal_superblock_accepts_linux_csum_v2_mode() {
+        let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
+        let mut superblock = JournalSuperBlock::default();
+        superblock.s_maxlen = 16;
+        superblock.s_feature_incompat = JBD2_FEATURE_INCOMPAT_CSUM_V2;
+        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
+        superblock.s_uuid = [0x3c; JBD2_UUID_SIZE];
+        crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
+
+        dev.validate_journal_superblock(&superblock, 16)
+            .expect("Linux CSUM_V2 journal must be accepted");
     }
 
     #[test]
@@ -1955,6 +2117,201 @@ mod tests {
         assert_eq!(
             commit.h_chksum[0],
             reference_jbd2_block_checksum(&superblock.s_uuid, commit_bytes, 16)
+        );
+    }
+
+    #[test]
+    fn csum_v2_commit_emits_linux_tag_padding_and_block_checksums() {
+        let (inner, superblock, target) = committed_csum_v2_fixture();
+        let descriptor = &inner.data[129 * BLOCK_SIZE..130 * BLOCK_SIZE];
+        let tag = JournalBlockTagS::from_disk_bytes(
+            &descriptor[JBD2_DESCRIPTOR_HEADER_SIZE..JBD2_DESCRIPTOR_HEADER_SIZE + 8],
+        );
+        assert_eq!(tag.t_blocknr, target.raw() as u32);
+        assert_eq!(
+            tag.t_checksum,
+            reference_jbd2_tag_checksum(
+                &superblock.s_uuid,
+                1,
+                &inner.data[130 * BLOCK_SIZE..131 * BLOCK_SIZE],
+            ) as u16
+        );
+        assert_eq!(
+            &descriptor[JBD2_DESCRIPTOR_HEADER_SIZE + 8..JBD2_DESCRIPTOR_HEADER_SIZE + 10],
+            &[0, 0],
+            "Linux reserves two zero bytes in a 32-bit CSUM_V2 tag"
+        );
+        assert_eq!(
+            &descriptor[JBD2_DESCRIPTOR_HEADER_SIZE + 10..JBD2_DESCRIPTOR_HEADER_SIZE + 26],
+            &superblock.s_uuid
+        );
+        let descriptor_checksum =
+            u32::from_be_bytes(descriptor[BLOCK_SIZE - 4..].try_into().unwrap());
+        assert_eq!(
+            descriptor_checksum,
+            reference_jbd2_block_checksum(&superblock.s_uuid, descriptor, BLOCK_SIZE - 4)
+        );
+
+        let commit_bytes = &inner.data[131 * BLOCK_SIZE..132 * BLOCK_SIZE];
+        let commit = CommitHeader::from_disk_bytes(commit_bytes);
+        assert_eq!(commit.h_chksum_type, 0);
+        assert_eq!(commit.h_chksum_size, 0);
+        assert_eq!(
+            commit.h_chksum[0],
+            reference_jbd2_block_checksum(&superblock.s_uuid, commit_bytes, 16)
+        );
+    }
+
+    #[test]
+    fn csum_v2_64bit_tag_places_high_block_before_reserved_padding() {
+        let (inner, superblock, target) =
+            committed_csum_v2_fixture_with_features(JBD2_FEATURE_INCOMPAT_64BIT);
+        let descriptor = &inner.data[129 * BLOCK_SIZE..130 * BLOCK_SIZE];
+        let tag_offset = JBD2_DESCRIPTOR_HEADER_SIZE;
+        let tag = JournalBlockTagS::from_disk_bytes(&descriptor[tag_offset..tag_offset + 8]);
+        assert_eq!(tag.t_blocknr, target.raw() as u32);
+        assert_eq!(
+            u32::from_be_bytes(
+                descriptor[tag_offset + 8..tag_offset + 12]
+                    .try_into()
+                    .expect("high block number")
+            ),
+            0
+        );
+        assert_eq!(&descriptor[tag_offset + 12..tag_offset + 14], &[0, 0]);
+        assert_eq!(
+            &descriptor[tag_offset + 14..tag_offset + 14 + JBD2_UUID_SIZE],
+            &superblock.s_uuid
+        );
+    }
+
+    #[test]
+    fn csum_v2_replay_accepts_valid_transaction_and_rejects_payload_corruption() {
+        let (inner, superblock, target) = committed_csum_v2_fixture();
+        let (status, replayed) = replay_csum_v2_fixture(inner, superblock, target);
+        assert_eq!(status, ReplayStatus::Complete);
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &replayed.data[target_start..target_start + BLOCK_SIZE],
+            vec![0x6d; BLOCK_SIZE]
+        );
+
+        let (mut corrupt, superblock, target) = committed_csum_v2_fixture();
+        corrupt.data[130 * BLOCK_SIZE + 64] ^= 1;
+        let (status, _) = replay_csum_v2_fixture(corrupt, superblock, target);
+        let failure = status
+            .failure()
+            .expect("corrupt v2 payload must stop replay");
+        assert_eq!(failure.phase(), JournalReplayPhase::Replay);
+        assert_eq!(
+            failure.cause().kind(),
+            crate::Ext4ErrorKind::ChecksumMismatch
+        );
+    }
+
+    fn assert_csum_v2_corruption_is_rejected(corrupt: impl FnOnce(&mut Vec<u8>)) {
+        let (mut inner, superblock, target) = committed_csum_v2_fixture();
+        corrupt(&mut inner.data);
+        let (status, _) = replay_csum_v2_fixture(inner, superblock, target);
+        let failure = status.failure().expect("v2 corruption must stop replay");
+        assert_eq!(
+            failure.cause().kind(),
+            crate::Ext4ErrorKind::ChecksumMismatch
+        );
+    }
+
+    #[test]
+    fn csum_v2_replay_rejects_descriptor_and_commit_corruption_before_home_write() {
+        assert_csum_v2_corruption_is_rejected(|data| {
+            data[130 * BLOCK_SIZE - 1] ^= 1;
+        });
+        assert_csum_v2_corruption_is_rejected(|data| {
+            data[131 * BLOCK_SIZE + 16] ^= 1;
+        });
+    }
+
+    #[test]
+    fn csum_v2_replay_rejects_corrupt_revoke_tail_before_home_write() {
+        let (mut inner, superblock, target) = committed_csum_v2_fixture();
+        inner
+            .data
+            .copy_within(131 * BLOCK_SIZE..132 * BLOCK_SIZE, 132 * BLOCK_SIZE);
+
+        let mut revoke = vec![0u8; BLOCK_SIZE];
+        Jbd2JournalRevokeHeadS {
+            r_header: JournalHeaderS {
+                h_magic: JBD2_MAGIC,
+                h_blocktype: JBD2_BLOCKTYPE_REVOKE,
+                h_sequence: 1,
+            },
+            r_count: 16,
+        }
+        .to_disk_bytes(&mut revoke);
+        let checksum = crate::checksum::jbd2_descriptor_block_csum32(&superblock.s_uuid, &revoke)
+            .expect("revoke checksum");
+        revoke[BLOCK_SIZE - 4..].copy_from_slice(&checksum.to_be_bytes());
+        revoke[BLOCK_SIZE - 1] ^= 1;
+        inner.data[131 * BLOCK_SIZE..132 * BLOCK_SIZE].copy_from_slice(&revoke);
+
+        let (status, _) = replay_csum_v2_fixture(inner, superblock, target);
+        let failure = status
+            .failure()
+            .expect("corrupt v2 revoke must stop replay");
+        assert_eq!(failure.phase(), JournalReplayPhase::Revoke);
+        assert_eq!(
+            failure.cause().kind(),
+            crate::Ext4ErrorKind::ChecksumMismatch
+        );
+    }
+
+    #[test]
+    fn compat_checksum_commit_covers_descriptor_and_payload_with_crc32_be() {
+        let (inner, ..) = committed_compat_checksum_fixture();
+        let descriptor = &inner.data[129 * BLOCK_SIZE..130 * BLOCK_SIZE];
+        let payload = &inner.data[130 * BLOCK_SIZE..131 * BLOCK_SIZE];
+        let commit = CommitHeader::from_disk_bytes(&inner.data[131 * BLOCK_SIZE..132 * BLOCK_SIZE]);
+        let expected = reference_crc32_be(reference_crc32_be(u32::MAX, descriptor), payload);
+        assert_eq!(commit.h_chksum_type, 1);
+        assert_eq!(commit.h_chksum_size, 4);
+        assert_eq!(commit.h_chksum[0], expected);
+    }
+
+    fn assert_compat_checksum_corruption_is_rejected(corrupt: impl FnOnce(&mut Vec<u8>)) {
+        let (mut inner, superblock, target) = committed_compat_checksum_fixture();
+        corrupt(&mut inner.data);
+        let (status, _) = replay_compat_checksum_fixture(inner, superblock, target);
+        let failure = status
+            .failure()
+            .expect("compat checksum mismatch must stop replay");
+        assert_eq!(failure.phase(), JournalReplayPhase::Replay);
+        assert_eq!(
+            failure.cause().kind(),
+            crate::Ext4ErrorKind::ChecksumMismatch
+        );
+    }
+
+    #[test]
+    fn compat_checksum_replay_rejects_descriptor_payload_and_commit_corruption() {
+        assert_compat_checksum_corruption_is_rejected(|data| {
+            data[130 * BLOCK_SIZE - 1] ^= 1;
+        });
+        assert_compat_checksum_corruption_is_rejected(|data| {
+            data[130 * BLOCK_SIZE + 64] ^= 1;
+        });
+        assert_compat_checksum_corruption_is_rejected(|data| {
+            data[131 * BLOCK_SIZE + 16] ^= 1;
+        });
+    }
+
+    #[test]
+    fn compat_checksum_replay_applies_a_valid_transaction() {
+        let (inner, superblock, target) = committed_compat_checksum_fixture();
+        let (status, replayed) = replay_compat_checksum_fixture(inner, superblock, target);
+        assert_eq!(status, ReplayStatus::Complete);
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &replayed.data[target_start..target_start + BLOCK_SIZE],
+            vec![0x93; BLOCK_SIZE]
         );
     }
 

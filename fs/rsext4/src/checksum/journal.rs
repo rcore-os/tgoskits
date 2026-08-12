@@ -9,6 +9,22 @@ use crate::{
 const JBD2_BLOCK_TAIL_SIZE: usize = 4;
 const JBD2_COMMIT_CHECKSUM_OFFSET: usize = 16;
 
+/// Appends bytes to the raw big-endian CRC32 accumulator used by JBD2's
+/// `FEATURE_COMPAT_CHECKSUM` transaction checksum.
+pub(crate) fn jbd2_compat_checksum_append(mut checksum: u32, bytes: &[u8]) -> u32 {
+    for &byte in bytes {
+        checksum ^= u32::from(byte) << 24;
+        for _ in 0..8 {
+            checksum = if checksum & 0x8000_0000 != 0 {
+                (checksum << 1) ^ 0x04c1_1db7
+            } else {
+                checksum << 1
+            };
+        }
+    }
+    checksum
+}
+
 /// Computes the checksum stored in the JBD2 journal superblock.
 pub fn jbd2_superblock_csum32(jsb: &JournalSuperBlock) -> u32 {
     let mut bytes = [0u8; 1024];

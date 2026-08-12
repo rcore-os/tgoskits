@@ -10,8 +10,8 @@ use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
     checksum::{
-        jbd2_commit_block_csum32, jbd2_descriptor_block_csum32, jbd2_tag_csum32,
-        jbd2_update_superblock_checksum,
+        jbd2_commit_block_csum32, jbd2_compat_checksum_append, jbd2_descriptor_block_csum32,
+        jbd2_tag_csum32, jbd2_update_superblock_checksum,
     },
     crc32c::crc32c::ext4_superblock_has_metadata_csum,
     disknode::*,
@@ -34,7 +34,13 @@ const JBD2_DISK_ERROR_IO: u32 = 0xffff_fffb;
 struct ReplayTag {
     block: AbsoluteBN,
     flags: u32,
-    checksum: Option<u32>,
+    checksum: Option<ReplayChecksum>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ReplayChecksum {
+    CsumV2(u16),
+    CsumV3(u32),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -206,6 +212,10 @@ impl JBD2DEVSYSTEM {
         !self.jbd2_super_block.is_v1() && self.jbd2_super_block.s_feature_incompat & feature != 0
     }
 
+    fn checksum_mode(&self) -> Ext4Result<Jbd2ChecksumMode> {
+        self.jbd2_super_block.checksum_mode()
+    }
+
     fn journal_phys_block(
         &self,
         journal_blocks: &[AbsoluteBN],
@@ -251,10 +261,11 @@ impl JBD2DEVSYSTEM {
     }
 
     fn parse_replay_tags(&self, desc_buf: &[u8]) -> Ext4Result<Vec<ReplayTag>> {
-        let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
+        let checksum_mode = self.checksum_mode()?;
+        let has_block_checksums = checksum_mode.has_block_checksums();
         let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
         let block_size = desc_buf.len();
-        let descriptor_end = if has_csum_v3 {
+        let descriptor_end = if has_block_checksums {
             let checksum_offset = block_size.checked_sub(4).ok_or_else(|| {
                 Ext4Error::corrupted().with_operation("jbd2:replay_descriptor_size")
             })?;
@@ -277,7 +288,7 @@ impl JBD2DEVSYSTEM {
         let mut off = JBD2_DESCRIPTOR_HEADER_SIZE;
 
         while off < descriptor_end {
-            let parsed = if has_csum_v3 {
+            let parsed = if checksum_mode == Jbd2ChecksumMode::CsumV3 {
                 let tag_end = off
                     .checked_add(JBD2_TAG3_SIZE)
                     .ok_or_else(Ext4Error::overflow)?;
@@ -285,13 +296,23 @@ impl JBD2DEVSYSTEM {
                     return Err(Ext4Error::corrupted().with_operation("jbd2:replay_tag3_truncated"));
                 }
                 let tag = JournalBlockTag3S::from_disk_bytes(&desc_buf[off..tag_end]);
+                if !has_64bit && tag.t_blocknr_high != 0 {
+                    return Err(
+                        Ext4Error::corrupted().with_operation("jbd2:replay_tag3_block_high")
+                    );
+                }
                 let block = (u64::from(tag.t_blocknr_high) << 32) | u64::from(tag.t_blocknr);
                 let all_zero = tag.t_blocknr == 0
                     && tag.t_flags == 0
                     && tag.t_blocknr_high == 0
                     && tag.t_checksum == 0;
                 off = tag_end;
-                (block, tag.t_flags, Some(tag.t_checksum), all_zero)
+                (
+                    block,
+                    tag.t_flags,
+                    Some(ReplayChecksum::CsumV3(tag.t_checksum)),
+                    all_zero,
+                )
             } else {
                 let tag_end = off
                     .checked_add(JBD2_TAG_SIZE)
@@ -319,12 +340,25 @@ impl JBD2DEVSYSTEM {
                     off = high_end;
                 }
 
+                if checksum_mode == Jbd2ChecksumMode::CsumV2 {
+                    let padding_end = off
+                        .checked_add(core::mem::size_of::<u16>())
+                        .ok_or_else(Ext4Error::overflow)?;
+                    if padding_end > descriptor_end {
+                        return Err(Ext4Error::corrupted()
+                            .with_operation("jbd2:replay_tag_csum_v2_truncated"));
+                    }
+                    off = padding_end;
+                }
+
                 let block = (u64::from(block_high) << 32) | u64::from(tag.t_blocknr);
                 let all_zero = tag.t_blocknr == 0
                     && tag.t_checksum == 0
                     && tag.t_flags == 0
                     && block_high == 0;
-                (block, u32::from(tag.t_flags), None, all_zero)
+                let checksum = (checksum_mode == Jbd2ChecksumMode::CsumV2)
+                    .then_some(ReplayChecksum::CsumV2(tag.t_checksum));
+                (block, u32::from(tag.t_flags), checksum, all_zero)
             };
 
             let (block, flags, checksum, all_zero) = parsed;
@@ -361,7 +395,7 @@ impl JBD2DEVSYSTEM {
         if revoke_buf.len() < 16 {
             return Err(Ext4Error::corrupted().with_operation("jbd2:replay_revoke_header"));
         }
-        let record_end = if self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3) {
+        let record_end = if self.checksum_mode()?.has_block_checksums() {
             let checksum_offset = revoke_buf.len().checked_sub(4).ok_or_else(|| {
                 Ext4Error::corrupted().with_operation("jbd2:replay_revoke_checksum_size")
             })?;
@@ -511,10 +545,10 @@ impl JBD2DEVSYSTEM {
         block_size: usize,
         revoked_blocks: &[AbsoluteBN],
     ) -> Ext4Result<()> {
-        let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
+        let has_block_checksums = self.checksum_mode()?.has_block_checksums();
         let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
         let entry_size = if has_64bit { 8 } else { 4 };
-        let record_end = if has_csum_v3 {
+        let record_end = if has_block_checksums {
             block_size
                 .checked_sub(core::mem::size_of::<u32>())
                 .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_size"))?
@@ -558,7 +592,7 @@ impl JBD2DEVSYSTEM {
                 }
                 offset += entry_size;
             }
-            if has_csum_v3 {
+            if has_block_checksums {
                 let checksum =
                     jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, &revoke_buffer)
                         .ok_or_else(|| {
@@ -629,9 +663,10 @@ impl JBD2DEVSYSTEM {
         };
 
         let block_size = block_dev.block_size();
-        let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
+        let checksum_mode = self.checksum_mode()?;
+        let has_block_checksums = checksum_mode.has_block_checksums();
         let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
-        let descriptor_end = if has_csum_v3 {
+        let descriptor_end = if has_block_checksums {
             block_size
                 .checked_sub(4)
                 .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:descriptor_size"))?
@@ -640,7 +675,7 @@ impl JBD2DEVSYSTEM {
         };
         let descriptor_capacity = self.jbd2_super_block.descriptor_tag_capacity(block_size)?;
         let revoke_entry_size = if has_64bit { 8 } else { 4 };
-        let revoke_end = if has_csum_v3 {
+        let revoke_end = if has_block_checksums {
             block_size
                 .checked_sub(core::mem::size_of::<u32>())
                 .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_size"))?
@@ -687,6 +722,7 @@ impl JBD2DEVSYSTEM {
         self.write_revoke_records(block_dev, journal_blocks, tid, block_size, &revoked_blocks)?;
         self.transition_committing_transaction(Jbd2CommitPhase::Flush, Jbd2CommitPhase::Commit)?;
 
+        let mut compat_checksum = u32::MAX;
         let mut payload_offset = 0usize;
         while payload_offset < update_count {
             let payload_end = payload_offset
@@ -725,7 +761,7 @@ impl JBD2DEVSYSTEM {
                     flags |= u32::from(JBD2_FLAG_SAME_UUID);
                 }
 
-                if has_csum_v3 {
+                if checksum_mode == Jbd2ChecksumMode::CsumV3 {
                     JournalBlockTag3S {
                         t_blocknr: target_raw as u32,
                         t_flags: flags,
@@ -743,7 +779,12 @@ impl JBD2DEVSYSTEM {
                 } else {
                     JournalBlockTagS {
                         t_blocknr: target_raw as u32,
-                        t_checksum: 0,
+                        t_checksum: if checksum_mode == Jbd2ChecksumMode::CsumV2 {
+                            jbd2_tag_csum32(&self.jbd2_super_block.s_uuid, tid, payload.bytes())
+                                as u16
+                        } else {
+                            0
+                        },
                         t_flags: flags as u16,
                     }
                     .to_disk_bytes(
@@ -754,6 +795,11 @@ impl JBD2DEVSYSTEM {
                         desc_buffer[current_offset..current_offset + JBD2_TAG_BLOCKNR_HIGH_SIZE]
                             .copy_from_slice(&block_high.to_be_bytes());
                         current_offset += JBD2_TAG_BLOCKNR_HIGH_SIZE;
+                    }
+                    if checksum_mode == Jbd2ChecksumMode::CsumV2 {
+                        current_offset = current_offset
+                            .checked_add(core::mem::size_of::<u16>())
+                            .ok_or_else(Ext4Error::overflow)?;
                     }
                 }
 
@@ -767,7 +813,7 @@ impl JBD2DEVSYSTEM {
             if current_offset > descriptor_end {
                 return Err(Ext4Error::no_space().with_operation("jbd2:descriptor_full"));
             }
-            if has_csum_v3 {
+            if has_block_checksums {
                 let checksum =
                     jbd2_descriptor_block_csum32(&self.jbd2_super_block.s_uuid, &desc_buffer)
                         .ok_or_else(|| {
@@ -780,6 +826,9 @@ impl JBD2DEVSYSTEM {
             // described by that descriptor, then writes one final commit.
             let descriptor_block =
                 self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
+            if checksum_mode == Jbd2ChecksumMode::CompatChecksum {
+                compat_checksum = jbd2_compat_checksum_append(compat_checksum, &desc_buffer);
+            }
             block_dev.write(&desc_buffer, descriptor_block, 1)?;
             for update_index in payload_offset..payload_end {
                 let payload_block =
@@ -788,6 +837,9 @@ impl JBD2DEVSYSTEM {
                     Ext4Error::corrupted().with_operation("jbd2:missing_committing_transaction")
                 })?;
                 let payload = journal_payload(&transaction.updates[update_index], block_size)?;
+                if checksum_mode == Jbd2ChecksumMode::CompatChecksum {
+                    compat_checksum = jbd2_compat_checksum_append(compat_checksum, payload.bytes());
+                }
                 block_dev.write(payload.bytes(), payload_block, 1)?;
             }
             payload_offset = payload_end;
@@ -823,11 +875,23 @@ impl JBD2DEVSYSTEM {
         };
 
         commit_block.to_disk_bytes(&mut commit_buffer);
-        if has_csum_v3 {
-            let checksum = jbd2_commit_block_csum32(&self.jbd2_super_block.s_uuid, &commit_buffer)
-                .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:commit_checksum"))?;
-            commit_block.h_chksum[0] = checksum;
-            commit_block.to_disk_bytes(&mut commit_buffer);
+        match checksum_mode {
+            Jbd2ChecksumMode::CompatChecksum => {
+                commit_block.h_chksum_type = JBD2_CRC32_CHKSUM;
+                commit_block.h_chksum_size = JBD2_CRC32_CHKSUM_SIZE;
+                commit_block.h_chksum[0] = compat_checksum;
+                commit_block.to_disk_bytes(&mut commit_buffer);
+            }
+            Jbd2ChecksumMode::CsumV2 | Jbd2ChecksumMode::CsumV3 => {
+                let checksum =
+                    jbd2_commit_block_csum32(&self.jbd2_super_block.s_uuid, &commit_buffer)
+                        .ok_or_else(|| {
+                            Ext4Error::corrupted().with_operation("jbd2:commit_checksum")
+                        })?;
+                commit_block.h_chksum[0] = checksum;
+                commit_block.to_disk_bytes(&mut commit_buffer);
+            }
+            Jbd2ChecksumMode::None => {}
         }
         let commit_block_id = self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
 
@@ -961,6 +1025,17 @@ impl JBD2DEVSYSTEM {
                 start_rel,
             ));
         }
+        let checksum_mode = match self.checksum_mode() {
+            Ok(mode) => mode,
+            Err(error) => {
+                return ReplayScan::Incomplete(ReplayFailure::at(
+                    JournalReplayPhase::Initialize,
+                    error,
+                    start_rel,
+                ));
+            }
+        };
+        let mut compat_checksum = u32::MAX;
 
         for _ in 0..max_records {
             let record_phys = match ring.phys(record_rel) {
@@ -1000,15 +1075,33 @@ impl JBD2DEVSYSTEM {
                             ));
                         }
                     };
+                    if checksum_mode == Jbd2ChecksumMode::CompatChecksum {
+                        compat_checksum = jbd2_compat_checksum_append(compat_checksum, &record_buf);
+                    }
 
                     for tag in tags {
                         ring.advance(&mut record_rel);
-                        if let Err(error) = ring.phys(record_rel) {
-                            return ReplayScan::Incomplete(ReplayFailure::at(
-                                JournalReplayPhase::Scan,
-                                error,
-                                start_rel,
-                            ));
+                        let payload_phys = match ring.phys(record_rel) {
+                            Ok(block) => block,
+                            Err(error) => {
+                                return ReplayScan::Incomplete(ReplayFailure::at(
+                                    JournalReplayPhase::Scan,
+                                    error,
+                                    start_rel,
+                                ));
+                            }
+                        };
+                        if checksum_mode == Jbd2ChecksumMode::CompatChecksum {
+                            let mut payload = vec![0u8; block_size];
+                            if let Err(error) = block_dev.read(&mut payload, payload_phys, 1) {
+                                return ReplayScan::Incomplete(ReplayFailure::at(
+                                    JournalReplayPhase::Replay,
+                                    error,
+                                    start_rel,
+                                ));
+                            }
+                            compat_checksum =
+                                jbd2_compat_checksum_append(compat_checksum, &payload);
                         }
                         payloads.push(ReplayPayload {
                             tag,
@@ -1017,17 +1110,39 @@ impl JBD2DEVSYSTEM {
                     }
                 }
                 JBD2_BLOCKTYPE_COMMIT => {
-                    if self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3) {
-                        let commit = CommitHeader::from_disk_bytes(&record_buf);
-                        let computed =
-                            jbd2_commit_block_csum32(&self.jbd2_super_block.s_uuid, &record_buf);
-                        if computed != Some(commit.h_chksum[0]) {
-                            return ReplayScan::Incomplete(ReplayFailure::at(
-                                JournalReplayPhase::Replay,
-                                Ext4Error::checksum().with_operation("jbd2:replay_commit_checksum"),
-                                start_rel,
-                            ));
+                    let commit = CommitHeader::from_disk_bytes(&record_buf);
+                    match checksum_mode {
+                        Jbd2ChecksumMode::CompatChecksum => {
+                            let checked = commit.h_chksum_type == JBD2_CRC32_CHKSUM
+                                && commit.h_chksum_size == JBD2_CRC32_CHKSUM_SIZE
+                                && commit.h_chksum[0] == compat_checksum;
+                            let unused = commit.h_chksum_type == 0
+                                && commit.h_chksum_size == 0
+                                && commit.h_chksum[0] == 0;
+                            if !checked && !unused {
+                                return ReplayScan::Incomplete(ReplayFailure::at(
+                                    JournalReplayPhase::Replay,
+                                    Ext4Error::checksum()
+                                        .with_operation("jbd2:replay_compat_checksum"),
+                                    start_rel,
+                                ));
+                            }
                         }
+                        Jbd2ChecksumMode::CsumV2 | Jbd2ChecksumMode::CsumV3 => {
+                            let computed = jbd2_commit_block_csum32(
+                                &self.jbd2_super_block.s_uuid,
+                                &record_buf,
+                            );
+                            if computed != Some(commit.h_chksum[0]) {
+                                return ReplayScan::Incomplete(ReplayFailure::at(
+                                    JournalReplayPhase::Replay,
+                                    Ext4Error::checksum()
+                                        .with_operation("jbd2:replay_commit_checksum"),
+                                    start_rel,
+                                ));
+                            }
+                        }
+                        Jbd2ChecksumMode::None => {}
                     }
 
                     let mut next_rel = record_rel;
@@ -1123,15 +1238,20 @@ impl JBD2DEVSYSTEM {
             block_dev.read(&mut data, meta_phys, 1).map_err(|error| {
                 ReplayFailure::at(JournalReplayPhase::Replay, error, transaction.start_rel)
             })?;
-            if let Some(stored) = payload.tag.checksum
-                && jbd2_tag_csum32(&self.jbd2_super_block.s_uuid, transaction.sequence, &data)
-                    != stored
-            {
-                return Err(ReplayFailure::at(
-                    JournalReplayPhase::Replay,
-                    Ext4Error::checksum().with_operation("jbd2:replay_payload_checksum"),
-                    transaction.start_rel,
-                ));
+            if let Some(stored) = payload.tag.checksum {
+                let computed =
+                    jbd2_tag_csum32(&self.jbd2_super_block.s_uuid, transaction.sequence, &data);
+                let matches = match stored {
+                    ReplayChecksum::CsumV2(stored) => computed as u16 == stored,
+                    ReplayChecksum::CsumV3(stored) => computed == stored,
+                };
+                if !matches {
+                    return Err(ReplayFailure::at(
+                        JournalReplayPhase::Replay,
+                        Ext4Error::checksum().with_operation("jbd2:replay_payload_checksum"),
+                        transaction.start_rel,
+                    ));
+                }
             }
             committed.push((payload, data));
         }
@@ -1339,6 +1459,7 @@ pub fn create_journal_entry<B: BlockIo>(
     )?;
 
     let mut jbd2_sb = JournalSuperBlock::default();
+    jbd2_sb.s_feature_incompat |= JBD2_FEATURE_INCOMPAT_REVOKE;
 
     if fs
         .superblock

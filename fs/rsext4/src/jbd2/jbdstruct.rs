@@ -28,9 +28,59 @@ pub const JBD2_TAG_SIZE: usize = 8;
 pub const JBD2_TAG_BLOCKNR_HIGH_SIZE: usize = 4;
 pub const JBD2_TAG3_SIZE: usize = 16;
 pub const JBD2_UUID_SIZE: usize = 16;
+pub const JBD2_CRC32_CHKSUM: u8 = 1;
+pub const JBD2_CRC32_CHKSUM_SIZE: u8 = 4;
 pub const JBD2_CRC32C_CHKSUM: u8 = 4; // JBD2 checksum type for CRC32C
+pub const JBD2_FEATURE_COMPAT_CHECKSUM: u32 = 0x0000_0001;
+pub const JBD2_FEATURE_INCOMPAT_REVOKE: u32 = 0x0000_0001;
 pub const JBD2_FEATURE_INCOMPAT_64BIT: u32 = 0x0000_0002;
+pub const JBD2_FEATURE_INCOMPAT_CSUM_V2: u32 = 0x0000_0008;
 pub const JBD2_FEATURE_INCOMPAT_CSUM_V3: u32 = 0x0000_0010;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Jbd2ChecksumMode {
+    None,
+    CompatChecksum,
+    CsumV2,
+    CsumV3,
+}
+
+impl Jbd2ChecksumMode {
+    pub(crate) const fn has_block_checksums(self) -> bool {
+        matches!(self, Self::CsumV2 | Self::CsumV3)
+    }
+
+    const fn descriptor_tail_bytes(self) -> usize {
+        if self.has_block_checksums() {
+            core::mem::size_of::<u32>()
+        } else {
+            0
+        }
+    }
+
+    pub(crate) const fn tag_bytes(self, has_64bit: bool) -> usize {
+        match self {
+            Self::CsumV3 => JBD2_TAG3_SIZE,
+            Self::CsumV2 => {
+                JBD2_TAG_SIZE
+                    + core::mem::size_of::<u16>()
+                    + if has_64bit {
+                        JBD2_TAG_BLOCKNR_HIGH_SIZE
+                    } else {
+                        0
+                    }
+            }
+            Self::None | Self::CompatChecksum => {
+                JBD2_TAG_SIZE
+                    + if has_64bit {
+                        JBD2_TAG_BLOCKNR_HIGH_SIZE
+                    } else {
+                        0
+                    }
+            }
+        }
+    }
+}
 #[repr(C)]
 /// One journaled metadata update: `(target physical block, serialized block)`.
 pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8]>);
@@ -196,6 +246,38 @@ impl JournalSuperBlock {
         self.s_header.h_blocktype == JBD2_BLOCKTYPE_SUPERBLOCK_V1
     }
 
+    pub(crate) fn checksum_mode(&self) -> Ext4Result<Jbd2ChecksumMode> {
+        if self.is_v1() {
+            return Ok(Jbd2ChecksumMode::None);
+        }
+
+        let compat_checksum = self.s_feature_compat & JBD2_FEATURE_COMPAT_CHECKSUM != 0;
+        let csum_v2 = self.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V2 != 0;
+        let csum_v3 = self.s_feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0;
+        if usize::from(compat_checksum) + usize::from(csum_v2) + usize::from(csum_v3) > 1 {
+            return Err(Ext4Error::unsupported().with_operation("jbd2:checksum_features"));
+        }
+
+        let mode = if compat_checksum {
+            Jbd2ChecksumMode::CompatChecksum
+        } else if csum_v2 {
+            Jbd2ChecksumMode::CsumV2
+        } else if csum_v3 {
+            Jbd2ChecksumMode::CsumV3
+        } else {
+            Jbd2ChecksumMode::None
+        };
+        let expected_type = if mode.has_block_checksums() {
+            JBD2_CRC32C_CHKSUM
+        } else {
+            0
+        };
+        if self.s_checksum_type != expected_type {
+            return Err(Ext4Error::unsupported().with_operation("jbd2:checksum_features"));
+        }
+        Ok(mode)
+    }
+
     /// Returns Linux's continuation capacity for one descriptor block.
     ///
     /// In addition to the UUID following the first tag, JBD2 closes the
@@ -208,9 +290,9 @@ impl JournalSuperBlock {
         } else {
             self.s_feature_incompat
         };
-        let has_csum_v3 = feature_incompat & JBD2_FEATURE_INCOMPAT_CSUM_V3 != 0;
         let has_64bit = feature_incompat & JBD2_FEATURE_INCOMPAT_64BIT != 0;
-        let descriptor_tail = usize::from(has_csum_v3) * core::mem::size_of::<u32>();
+        let checksum_mode = self.checksum_mode()?;
+        let descriptor_tail = checksum_mode.descriptor_tail_bytes();
         let descriptor_end = block_size
             .checked_sub(descriptor_tail)
             .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:descriptor_capacity"))?;
@@ -218,11 +300,7 @@ impl JournalSuperBlock {
             .checked_add(JBD2_UUID_SIZE)
             .and_then(|bytes| bytes.checked_add(JBD2_UUID_SIZE))
             .ok_or_else(Ext4Error::overflow)?;
-        let tag_bytes = if has_csum_v3 {
-            JBD2_TAG3_SIZE
-        } else {
-            JBD2_TAG_SIZE + usize::from(has_64bit) * JBD2_TAG_BLOCKNR_HIGH_SIZE
-        };
+        let tag_bytes = checksum_mode.tag_bytes(has_64bit);
         let capacity = descriptor_end
             .checked_sub(fixed_descriptor_bytes)
             .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:descriptor_capacity"))?
@@ -638,6 +716,54 @@ mod tests {
             .encode_checked(&mut short)
             .expect_err("short journal superblock output must be rejected");
         assert_eq!(error.kind(), crate::Ext4ErrorKind::Corrupted);
+    }
+
+    #[test]
+    fn descriptor_capacity_accounts_for_linux_csum_v2_tag_padding_and_tail() {
+        let mut superblock = JournalSuperBlock::default();
+        superblock.s_feature_incompat = JBD2_FEATURE_INCOMPAT_CSUM_V2;
+        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
+        assert_eq!(superblock.descriptor_tag_capacity(4096).unwrap(), 404);
+
+        superblock.s_feature_incompat |= JBD2_FEATURE_INCOMPAT_64BIT;
+        assert_eq!(superblock.descriptor_tag_capacity(4096).unwrap(), 289);
+    }
+
+    #[test]
+    fn checksum_mode_rejects_mixed_features_and_mismatched_types() {
+        for feature_incompat in [
+            JBD2_FEATURE_INCOMPAT_CSUM_V2 | JBD2_FEATURE_INCOMPAT_CSUM_V3,
+            JBD2_FEATURE_INCOMPAT_CSUM_V2,
+        ] {
+            let mut superblock = JournalSuperBlock {
+                s_feature_incompat: feature_incompat,
+                ..JournalSuperBlock::default()
+            };
+            if feature_incompat == JBD2_FEATURE_INCOMPAT_CSUM_V2 {
+                superblock.s_feature_compat = JBD2_FEATURE_COMPAT_CHECKSUM;
+                superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
+            }
+            let error = superblock
+                .checksum_mode()
+                .expect_err("JBD2 checksum modes are mutually exclusive");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::Unsupported);
+        }
+
+        let mut superblock = JournalSuperBlock {
+            s_feature_incompat: JBD2_FEATURE_INCOMPAT_CSUM_V2,
+            ..JournalSuperBlock::default()
+        };
+        let error = superblock
+            .checksum_mode()
+            .expect_err("CSUM_V2 requires the CRC32C superblock checksum type");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Unsupported);
+
+        superblock.s_feature_incompat = 0;
+        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
+        let error = superblock
+            .checksum_mode()
+            .expect_err("CRC32C checksum type requires CSUM_V2 or CSUM_V3");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Unsupported);
     }
 
     #[test]
