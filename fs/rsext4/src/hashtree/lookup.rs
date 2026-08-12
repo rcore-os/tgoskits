@@ -340,7 +340,8 @@ impl HashTreeManager {
         dir_inode: &Ext4Inode,
         target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
-        let total_size = dir_inode.size() as usize;
+        let total_size = usize::try_from(fs.inode_size(dir_inode))
+            .map_err(|_| HashTreeError::BlockOutOfRange)?;
         let block_bytes = fs.block_size();
         let total_blocks = if total_size == 0 {
             0
@@ -410,7 +411,7 @@ fn resolve_logical_block<B: BlockIo>(
     search: HashSearch<'_>,
     logical_block: u32,
 ) -> Result<AbsoluteBN, HashTreeError> {
-    let total_blocks = dir_inode_block_count(search.dir_inode, fs.block_size())?;
+    let total_blocks = dir_inode_block_count(fs, search.dir_inode)?;
     if u64::from(logical_block) >= total_blocks {
         return Err(HashTreeError::BlockOutOfRange);
     }
@@ -425,7 +426,7 @@ fn resolve_logical_block<B: BlockIo>(
     .ok_or(HashTreeError::BlockOutOfRange)
 }
 
-fn dir_inode_block_count(inode: &Ext4Inode, block_size: usize) -> Result<u64, HashTreeError> {
-    let block_size = u64::try_from(block_size).map_err(|_| HashTreeError::BlockOutOfRange)?;
-    Ok(inode.size().div_ceil(block_size))
+fn dir_inode_block_count(fs: &Ext4FileSystem, inode: &Ext4Inode) -> Result<u64, HashTreeError> {
+    let block_size = u64::try_from(fs.block_size()).map_err(|_| HashTreeError::BlockOutOfRange)?;
+    Ok(fs.inode_size(inode).div_ceil(block_size))
 }

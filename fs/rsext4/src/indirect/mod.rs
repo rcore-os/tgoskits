@@ -83,12 +83,13 @@ pub(crate) fn resolve_legacy_inode_blocks<B: BlockIo>(
     inode_number: InodeNumber,
     inode: &Ext4Inode,
 ) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
-    if inode.size() == 0 || is_fast_symlink(filesystem, inode) {
+    let inode_size = filesystem.inode_size(inode);
+    if inode_size == 0 || is_fast_symlink(filesystem, inode) {
         return Ok(BTreeMap::new());
     }
 
     let block_size = filesystem.block_size();
-    let logical_blocks = inode.size().div_ceil(block_size as u64);
+    let logical_blocks = inode_size.div_ceil(block_size as u64);
     let mut reader = LegacyBlockReader::new(filesystem, device, inode_number)?;
     if logical_blocks > reader.maximum_logical_blocks()? {
         return Err(Ext4Error::file_too_large().with_operation("indirect:file_size"));
@@ -903,7 +904,7 @@ fn is_fast_symlink(filesystem: &Ext4FileSystem, inode: &Ext4Inode) -> bool {
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
     inode.is_symlink()
-        && inode.size() <= 60
+        && filesystem.inode_size(inode) <= 60
         && inode.blocks_count(filesystem.block_size() as u32, huge_file) == 0
 }
 
@@ -1013,9 +1014,8 @@ mod tests {
     }
 
     fn set_inode_size(inode: &mut Ext4Inode, blocks: u64) {
-        let size = blocks * BLOCK_SIZE as u64;
-        inode.i_size_lo = size as u32;
-        inode.i_size_high = (size >> 32) as u32;
+        inode.i_mode = Ext4Inode::S_IFREG;
+        inode.set_size(blocks * BLOCK_SIZE as u64);
     }
 
     fn write_pointer(

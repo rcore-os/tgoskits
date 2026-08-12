@@ -74,7 +74,8 @@ pub(crate) fn insert_dir_entry_raw<B: BlockIo>(
         name_bytes,
     );
 
-    let total_size = parent_inode.size() as usize;
+    let total_size =
+        usize::try_from(fs.inode_size(parent_inode)).map_err(|_| Ext4Error::file_too_large())?;
     let block_bytes = fs.block_size();
     let total_blocks = if total_size == 0 {
         0
@@ -236,8 +237,7 @@ pub(crate) fn insert_dir_entry_raw<B: BlockIo>(
 
     // No existing record could host the child, so append a fresh directory block.
     let new_block = fs.alloc_block(device)?;
-    parent_inode.i_size_lo = new_size as u32;
-    parent_inode.i_size_high = ((new_size as u64) >> 32) as u32;
+    parent_inode.set_size(new_size as u64);
     parent_inode.set_blocks_count(newv, block_bytes as u32, huge_file_feature)?;
 
     if fs.superblock.has_extents() && parent_inode.uses_extents() {

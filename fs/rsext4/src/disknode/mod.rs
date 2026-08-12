@@ -203,6 +203,30 @@ mod tests {
     }
 
     #[test]
+    fn inode_size_high_follows_largedir_and_regular_file_rules() {
+        let mut inode = Ext4Inode {
+            i_mode: Ext4Inode::S_IFDIR,
+            i_size_lo: 0x1000,
+            i_size_high: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(inode.size_in_filesystem(false), 0x1000);
+        assert_eq!(inode.size_in_filesystem(true), 0x1_0000_1000);
+
+        inode.i_mode = Ext4Inode::S_IFLNK;
+        assert_eq!(inode.size_in_filesystem(false), 0x1000);
+
+        inode.i_mode = Ext4Inode::S_IFREG;
+        assert_eq!(inode.size_in_filesystem(false), 0x1_0000_1000);
+
+        inode.set_size(0x2_0000_2000);
+        assert_eq!(inode.i_size_lo, 0x2000);
+        assert_eq!(inode.i_size_high, 2);
+        assert_eq!(inode.size(), 0x2_0000_2000);
+    }
+
+    #[test]
     fn directory_link_count_transitions_match_linux_sentinel_rules() {
         let mut inode = Ext4Inode {
             i_mode: Ext4Inode::S_IFDIR,

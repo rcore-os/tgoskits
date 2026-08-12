@@ -89,7 +89,7 @@ pub fn inspect_inode_extents<B: BlockIo>(
     let end = start
         .saturating_add(length)
         .min(maximum_file_bytes)
-        .min(inode.size());
+        .min(filesystem.inode_size(&inode));
     if start >= end {
         return Ok(FileExtentMap {
             extents: Vec::new(),

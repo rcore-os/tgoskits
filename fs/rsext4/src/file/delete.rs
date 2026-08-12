@@ -525,7 +525,8 @@ fn parent_dir_data_blocks<B: BlockIo>(
             .into_values()
             .collect()
     } else {
-        let total_size = parent_inode.size() as usize;
+        let total_size = usize::try_from(fs.inode_size(parent_inode))
+            .map_err(|_| Ext4Error::file_too_large())?;
         let block_bytes = fs.block_size();
         let total_blocks = if total_size == 0 {
             0
@@ -956,12 +957,13 @@ pub fn is_dir_empty<B: BlockIo>(
     if !inode.is_dir() {
         return Err(Ext4Error::not_dir());
     }
-    if inode.size() < DOT_RECORD_LEN + DOTDOT_RECORD_LEN {
+    let directory_size = fs.inode_size(inode);
+    if directory_size < DOT_RECORD_LEN + DOTDOT_RECORD_LEN {
         return Err(Ext4Error::corrupted().with_operation("directory:empty_size"));
     }
 
     let block_size = fs.block_size();
-    let total_blocks = inode.size().div_ceil(block_size as u64);
+    let total_blocks = directory_size.div_ceil(block_size as u64);
     let dir_blocks = resolve_inode_blocks(fs, block_dev, inode_num, inode)?;
     if !dir_blocks.contains_key(&0) {
         return Err(Ext4Error::corrupted().with_operation("directory:first_block_hole"));

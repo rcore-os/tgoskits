@@ -163,6 +163,14 @@ impl Ext4FileSystem {
         self.superblock.block_size() as usize
     }
 
+    /// Decodes `i_size` using this filesystem's `LARGEDIR` policy.
+    pub(crate) fn inode_size(&self, inode: &Ext4Inode) -> u64 {
+        inode.size_in_filesystem(
+            self.superblock
+                .has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_LARGEDIR),
+        )
+    }
+
     pub(crate) fn sync_group_descriptor_if_needed<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,

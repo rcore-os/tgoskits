@@ -114,6 +114,21 @@ impl Ext4Inode {
         (self.i_size_high as u64) << 32 | self.i_size_lo as u64
     }
 
+    /// Returns the inode size under the filesystem's `LARGEDIR` policy.
+    pub(crate) fn size_in_filesystem(&self, largedir: bool) -> u64 {
+        if largedir || self.is_file() {
+            self.size()
+        } else {
+            u64::from(self.i_size_lo)
+        }
+    }
+
+    /// Stores both halves of the on-disk inode size.
+    pub fn set_size(&mut self, size: u64) {
+        self.i_size_lo = size as u32;
+        self.i_size_high = (size >> 32) as u32;
+    }
+
     /// Maximum link count persisted by ext4 before directory sentinel handling.
     pub const EXT4_LINK_MAX: u16 = 65_000;
 

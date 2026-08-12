@@ -55,6 +55,12 @@ struct LeafSplitRequest<'a> {
     old_leaf_data: Vec<u8>,
 }
 
+struct IndexSplitPlan {
+    left: Vec<Ext4DxEntry>,
+    right: Vec<Ext4DxEntry>,
+    parent: Vec<Ext4DxEntry>,
+}
+
 impl LeafEntry {
     fn record_len(&self) -> usize {
         usize::from(Ext4DirEntry2::entry_len(self.name.len() as u8))
@@ -162,7 +168,7 @@ pub(crate) fn make_indexed_directory<B: BlockIo>(
     file_type: u8,
 ) -> Ext4Result<()> {
     let block_size = fs.block_size();
-    if parent_inode.size() != block_size as u64 || !parent_inode.is_dir() {
+    if fs.inode_size(parent_inode) != block_size as u64 || !parent_inode.is_dir() {
         return Err(Ext4Error::corrupted().with_operation("htree:make_indexed_geometry"));
     }
     let base_hash_version = fs.superblock.s_def_hash_version;
@@ -507,8 +513,8 @@ fn grow_full_index_for_leaf_split<B: BlockIo>(
     path: &super::lookup::HashTreePath,
     has_checksum: bool,
 ) -> Ext4Result<()> {
-    match path.frames.len() {
-        1 => promote_full_root(
+    match index_growth_split_level(path, fs.block_size(), has_checksum)? {
+        None => promote_full_root(
             fs,
             device,
             parent_ino,
@@ -516,17 +522,39 @@ fn grow_full_index_for_leaf_split<B: BlockIo>(
             &path.frames[0],
             has_checksum,
         ),
-        2 => split_internal_below_root(
+        Some(level) => split_index_below_parent(
             fs,
             device,
             parent_ino,
             parent_inode,
-            &path.frames[0],
-            &path.frames[1],
+            &path.frames[level - 1],
+            &path.frames[level],
             has_checksum,
         ),
-        _ => Err(Ext4Error::no_space().with_operation("htree:index_depth_growth")),
     }
+}
+
+fn index_growth_split_level(
+    path: &super::lookup::HashTreePath,
+    block_size: usize,
+    has_checksum: bool,
+) -> Ext4Result<Option<usize>> {
+    if path.frames.is_empty() {
+        return Err(Ext4Error::corrupted().with_operation("htree:index_growth_path"));
+    }
+    for child_level in (1..path.frames.len()).rev() {
+        let parent = &path.frames[child_level - 1];
+        let countlimit_offset = if parent.source_block == 0 {
+            DX_ROOT_COUNTLIMIT_OFFSET
+        } else {
+            DX_NODE_COUNTLIMIT_OFFSET
+        };
+        let limit = dx_limit(block_size, countlimit_offset, has_checksum)?;
+        if parent.entries.len() < limit {
+            return Ok(Some(child_level));
+        }
+    }
+    Ok(None)
 }
 
 fn promote_full_root<B: BlockIo>(
@@ -608,48 +636,59 @@ fn promote_full_root<B: BlockIo>(
     Ok(())
 }
 
-fn split_internal_below_root<B: BlockIo>(
+fn split_index_below_parent<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     parent_ino: InodeNumber,
     parent_inode: &mut Ext4Inode,
-    root_frame: &super::lookup::HashTreeFrame,
-    internal_frame: &super::lookup::HashTreeFrame,
+    parent_frame: &super::lookup::HashTreeFrame,
+    index_frame: &super::lookup::HashTreeFrame,
     has_checksum: bool,
 ) -> Ext4Result<()> {
-    let root_limit = dx_limit(fs.block_size(), DX_ROOT_COUNTLIMIT_OFFSET, has_checksum)?;
-    if root_frame.source_block != 0 || root_frame.entries.len() >= root_limit {
-        return Err(Ext4Error::no_space().with_operation("htree:root_split_required"));
+    let parent_countlimit_offset = if parent_frame.source_block == 0 {
+        DX_ROOT_COUNTLIMIT_OFFSET
+    } else {
+        DX_NODE_COUNTLIMIT_OFFSET
+    };
+    let parent_limit = dx_limit(fs.block_size(), parent_countlimit_offset, has_checksum)?;
+    if parent_frame.entries.len() >= parent_limit {
+        return Err(Ext4Error::no_space().with_operation("htree:parent_split_required"));
     }
-    if internal_frame.entries.len() < 2 {
+    if parent_frame
+        .entries
+        .get(parent_frame.selected)
+        .is_none_or(|entry| entry.block != index_frame.source_block)
+        || index_frame.source_block == 0
+        || index_frame.entries.len() < 2
+    {
         return Err(Ext4Error::corrupted().with_operation("htree:index_split_count"));
     }
-
-    let split = internal_frame.entries.len() / 2;
-    let separator_hash = internal_frame.entries[split].hash;
-    let left_entries = internal_frame.entries[..split].to_vec();
-    let mut right_entries = internal_frame.entries[split..].to_vec();
-    right_entries[0].hash = 0;
 
     let current_physical = resolve_inode_block(
         fs,
         device,
         parent_ino,
         &mut parent_inode.clone(),
-        internal_frame.source_block,
+        index_frame.source_block,
     )?
     .ok_or_else(|| Ext4Error::corrupted().with_operation("htree:index_mapping"))?;
-    let root_physical = resolve_inode_block(fs, device, parent_ino, &mut parent_inode.clone(), 0)?
-        .ok_or_else(|| Ext4Error::corrupted().with_operation("htree:root_mapping"))?;
+    let parent_physical = resolve_inode_block(
+        fs,
+        device,
+        parent_ino,
+        &mut parent_inode.clone(),
+        parent_frame.source_block,
+    )?
+    .ok_or_else(|| Ext4Error::corrupted().with_operation("htree:parent_mapping"))?;
     let mut current_data = fs
         .datablock_cache
         .get_or_load(device, current_physical)?
         .data
         .as_ref()
         .clone();
-    let mut root_data = fs
+    let mut parent_data = fs
         .datablock_cache
-        .get_or_load(device, root_physical)?
+        .get_or_load(device, parent_physical)?
         .data
         .as_ref()
         .clone();
@@ -660,37 +699,27 @@ fn split_internal_below_root<B: BlockIo>(
     if new_logical > DX_BLOCK_MASK {
         return Err(Ext4Error::overflow().with_operation("htree:index_logical_block"));
     }
+    let plan = plan_index_split(parent_frame, index_frame, new_logical)?;
     let mut new_data = new_internal_node(fs.block_size())?;
     encode_dx_entries(
         &mut current_data,
         DX_NODE_COUNTLIMIT_OFFSET,
         has_checksum,
-        &left_entries,
+        &plan.left,
     )?;
     encode_dx_entries(
         &mut new_data,
         DX_NODE_COUNTLIMIT_OFFSET,
         has_checksum,
-        &right_entries,
+        &plan.right,
     )?;
-    let mut root_entries = root_frame.entries.clone();
-    root_entries.insert(
-        root_frame
-            .selected
-            .checked_add(1)
-            .ok_or_else(Ext4Error::overflow)?,
-        Ext4DxEntry {
-            hash: separator_hash,
-            block: new_logical,
-        },
-    );
     encode_dx_entries(
-        &mut root_data,
-        DX_ROOT_COUNTLIMIT_OFFSET,
+        &mut parent_data,
+        parent_countlimit_offset,
         has_checksum,
-        &root_entries,
+        &plan.parent,
     )?;
-    for block in [&mut current_data, &mut new_data, &mut root_data] {
+    for block in [&mut current_data, &mut new_data, &mut parent_data] {
         if !update_ext4_dx_checksum(
             &fs.superblock,
             parent_ino.raw(),
@@ -710,15 +739,48 @@ fn split_internal_below_root<B: BlockIo>(
             data.copy_from_slice(&new_data);
         })?;
     fs.datablock_cache
-        .modify_metadata(device, root_physical, |data| {
-            data.copy_from_slice(&root_data);
+        .modify_metadata(device, parent_physical, |data| {
+            data.copy_from_slice(&parent_data);
         })?;
     fs.datablock_cache
         .flush_metadata(device, current_physical)?;
     fs.datablock_cache.flush_metadata(device, new_index_block)?;
-    fs.datablock_cache.flush_metadata(device, root_physical)?;
+    fs.datablock_cache.flush_metadata(device, parent_physical)?;
     *parent_inode = updated_parent;
     Ok(())
+}
+
+fn plan_index_split(
+    parent_frame: &super::lookup::HashTreeFrame,
+    index_frame: &super::lookup::HashTreeFrame,
+    new_logical: u32,
+) -> Ext4Result<IndexSplitPlan> {
+    if index_frame.entries.len() < 2 {
+        return Err(Ext4Error::corrupted().with_operation("htree:index_split_count"));
+    }
+    let split = index_frame.entries.len() / 2;
+    let separator_hash = index_frame.entries[split].hash;
+    let left = index_frame.entries[..split].to_vec();
+    let mut right = index_frame.entries[split..].to_vec();
+    // dx_set_count()/dx_set_limit() overwrite the first entry's hash slot on
+    // disk; the parent separator retains the original boundary hash.
+    right[0].hash = 0;
+    let mut parent = parent_frame.entries.clone();
+    parent.insert(
+        parent_frame
+            .selected
+            .checked_add(1)
+            .ok_or_else(Ext4Error::overflow)?,
+        Ext4DxEntry {
+            hash: separator_hash,
+            block: new_logical,
+        },
+    );
+    Ok(IndexSplitPlan {
+        left,
+        right,
+        parent,
+    })
 }
 
 fn new_internal_node(block_size: usize) -> Ext4Result<Vec<u8>> {
@@ -1014,7 +1076,8 @@ fn append_directory_block<B: BlockIo>(
     parent_inode: &mut Ext4Inode,
 ) -> Ext4Result<(u32, AbsoluteBN)> {
     let block_size = fs.block_size();
-    let total_size = usize::try_from(parent_inode.size()).map_err(|_| Ext4Error::overflow())?;
+    let total_size =
+        usize::try_from(fs.inode_size(parent_inode)).map_err(|_| Ext4Error::file_too_large())?;
     let old_blocks = if total_size == 0 {
         0
     } else {
@@ -1045,8 +1108,7 @@ fn append_directory_block<B: BlockIo>(
     } else {
         parent_inode.i_block[old_blocks] = new_block.to_u32()?;
     }
-    parent_inode.i_size_lo = new_size as u32;
-    parent_inode.i_size_high = ((new_size as u64) >> 32) as u32;
+    parent_inode.set_size(new_size as u64);
     parent_inode.set_blocks_count(updated_blocks, block_size as u32, huge_file_feature)?;
     Ok((new_logical, new_block))
 }
@@ -1113,5 +1175,103 @@ mod tests {
         ];
 
         assert_eq!(linux_leaf_split_point(&entries, 4096).unwrap(), 3);
+    }
+
+    fn index_frame(source_block: u32, entry_count: usize) -> super::super::lookup::HashTreeFrame {
+        super::super::lookup::HashTreeFrame {
+            source_block,
+            entries: (0..entry_count)
+                .map(|index| Ext4DxEntry {
+                    hash: index as u32 * 2,
+                    block: index as u32 + 1,
+                })
+                .collect(),
+            selected: 0,
+        }
+    }
+
+    #[test]
+    fn three_level_growth_splits_below_the_nearest_parent_with_room() {
+        let path = super::super::lookup::HashTreePath {
+            frames: vec![
+                index_frame(0, 1),
+                index_frame(1, 2),
+                index_frame(2, dx_limit(4096, DX_NODE_COUNTLIMIT_OFFSET, true).unwrap()),
+            ],
+        };
+
+        assert_eq!(
+            index_growth_split_level(&path, 4096, true).unwrap(),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn growth_walks_up_to_the_first_parent_with_room() {
+        let internal_limit = dx_limit(4096, DX_NODE_COUNTLIMIT_OFFSET, true).unwrap();
+        let path = super::super::lookup::HashTreePath {
+            frames: vec![
+                index_frame(0, 2),
+                index_frame(1, internal_limit),
+                index_frame(2, internal_limit),
+            ],
+        };
+
+        assert_eq!(
+            index_growth_split_level(&path, 4096, true).unwrap(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn growth_promotes_the_root_when_every_parent_is_full() {
+        let root_limit = dx_limit(4096, DX_ROOT_COUNTLIMIT_OFFSET, true).unwrap();
+        let internal_limit = dx_limit(4096, DX_NODE_COUNTLIMIT_OFFSET, true).unwrap();
+        let path = super::super::lookup::HashTreePath {
+            frames: vec![index_frame(0, root_limit), index_frame(1, internal_limit)],
+        };
+
+        assert_eq!(index_growth_split_level(&path, 4096, true).unwrap(), None);
+    }
+
+    #[test]
+    fn internal_split_keeps_boundary_hash_only_in_the_parent() {
+        let parent = super::super::lookup::HashTreeFrame {
+            source_block: 4,
+            entries: vec![
+                Ext4DxEntry { hash: 0, block: 9 },
+                Ext4DxEntry {
+                    hash: 0x8000_0000,
+                    block: 10,
+                },
+            ],
+            selected: 1,
+        };
+        let index = super::super::lookup::HashTreeFrame {
+            source_block: 10,
+            entries: vec![
+                Ext4DxEntry { hash: 0, block: 20 },
+                Ext4DxEntry {
+                    hash: 0x8100_0000,
+                    block: 21,
+                },
+                Ext4DxEntry {
+                    hash: 0x8200_0000,
+                    block: 22,
+                },
+                Ext4DxEntry {
+                    hash: 0x8300_0000,
+                    block: 23,
+                },
+            ],
+            selected: 3,
+        };
+
+        let plan = plan_index_split(&parent, &index, 30).unwrap();
+        assert_eq!(plan.left.len(), 2);
+        assert_eq!(plan.right[0].hash, 0);
+        assert_eq!(plan.right[0].block, 22);
+        assert_eq!(plan.parent[2].hash, 0x8200_0000);
+        assert_eq!(plan.parent[2].block, 30);
     }
 }

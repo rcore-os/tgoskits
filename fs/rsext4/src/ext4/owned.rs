@@ -570,7 +570,7 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         if !inode.is_dir() {
             return Err(Ext4Error::not_dir());
         }
-        if max_entries == 0 || offset >= inode.size() {
+        if max_entries == 0 || offset >= self.filesystem.inode_size(&inode) {
             return Ok(Vec::new());
         }
 
@@ -869,7 +869,7 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
             uid: inode.uid(),
             gid: inode.gid(),
             links: inode.i_links_count,
-            size: inode.size(),
+            size: self.filesystem.inode_size(&inode),
             blocks: inode.blocks_count(block_size, huge_file),
             atime: inode.i_atime,
             ctime: inode.i_ctime,
