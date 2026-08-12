@@ -209,6 +209,22 @@ static void expect_write_errno(const char *path, const char *data,
     CHECK(written == -1 && saved_errno == expected_errno, msg);
 }
 
+static void expect_write_ok(const char *path, const char *data, const char *msg)
+{
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        CHECK(0, msg);
+        return;
+    }
+
+    errno = 0;
+    ssize_t written = write(fd, data, strlen(data));
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    CHECK(written == (ssize_t)strlen(data), msg);
+}
+
 static void expect_link_errno(const char *old_path, const char *new_path,
                               int expected_errno, const char *msg)
 {
@@ -312,7 +328,8 @@ int main(void)
     nread = read_text_file(CGROUP2_PATH "/cgroup.controllers", buf, sizeof(buf));
     CHECK(nread >= 0, "read root cgroup.controllers");
     if (nread >= 0) {
-        CHECK(nread == 0, "root cgroup.controllers is empty before controllers exist");
+        CHECK(strstr(buf, "pids") != NULL,
+              "root cgroup.controllers advertises the pids controller");
     }
 
     nread = read_text_file(CGROUP2_PATH "/cgroup.subtree_control", buf, sizeof(buf));
@@ -321,17 +338,29 @@ int main(void)
         CHECK(nread == 0, "root cgroup.subtree_control is initially empty");
     }
 
-    expect_write_errno(CGROUP2_PATH "/cgroup.subtree_control", "+pids",
-                       EINVAL, "writing +pids to subtree_control fails with EINVAL");
+    expect_write_ok(CGROUP2_PATH "/cgroup.subtree_control", "+pids",
+                    "writing +pids to subtree_control succeeds");
+    nread = read_text_file(CGROUP2_PATH "/cgroup.subtree_control", buf, sizeof(buf));
+    CHECK(nread >= 0 && strstr(buf, "pids") != NULL,
+          "root cgroup.subtree_control reports enabled pids");
+    expect_write_errno(CGROUP2_PATH "/cgroup.subtree_control", "+not-a-controller",
+                       EINVAL, "unknown controller is rejected with EINVAL");
 
     expect_mkdir_ok(CGROUP2_PATH "/a", "mkdir child cgroup a succeeds");
     expect_path_exists(CGROUP2_PATH "/a", "child cgroup a exists");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.procs",
                       "child cgroup.procs is empty before migration exists");
-    expect_empty_file(CGROUP2_PATH "/a/cgroup.controllers",
-                      "child cgroup.controllers is empty before controllers exist");
+    nread = read_text_file(CGROUP2_PATH "/a/cgroup.controllers", buf, sizeof(buf));
+    CHECK(nread >= 0 && strstr(buf, "pids") != NULL,
+          "child cgroup.controllers inherits available pids");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.subtree_control",
                       "child cgroup.subtree_control is initially empty");
+    expect_path_exists(CGROUP2_PATH "/a/pids.max",
+                       "child pids.max is exposed after parent enables pids");
+    expect_path_exists(CGROUP2_PATH "/a/pids.current",
+                       "child pids.current is exposed after parent enables pids");
+    expect_path_exists(CGROUP2_PATH "/a/pids.events",
+                       "child pids.events is exposed after parent enables pids");
     expect_mkdir_errno(CGROUP2_PATH "/a", EEXIST,
                        "duplicate mkdir child cgroup fails with EEXIST");
 

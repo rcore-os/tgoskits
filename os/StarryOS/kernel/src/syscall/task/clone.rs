@@ -461,6 +461,14 @@ impl CloneArgs {
             *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
         }
 
+        let child_kind = if flags.contains(CloneFlags::THREAD) {
+            ax_cgroup::CgroupChildKind::Thread
+        } else {
+            ax_cgroup::CgroupChildKind::Process
+        };
+        let mut cgroup_guard =
+            crate::cgroup::begin_task(inherited_cgroup.clone(), &identity, child_kind)?;
+        // Reserve pids before publishing the new TID in its thread group.
         new_proc_data.proc.add_thread(root_tid);
 
         let parent_cred = Some(curr_thread.cred());
@@ -509,15 +517,6 @@ impl CloneArgs {
             new_proc_data.set_vfork_done(poll);
         }
 
-        let mut cgroup_guard = if flags.contains(CloneFlags::THREAD) {
-            None
-        } else {
-            Some(
-                crate::cgroup::begin_fork(new_proc_data.cgroup.read().clone(), &identity)
-                    .map_err(StarryError::from)?,
-            )
-        };
-
         if let Some((pidfd_ptr, fd)) = pidfd_copyout {
             pidfd_ptr.vm_write(fd)?;
         }
@@ -563,9 +562,7 @@ impl CloneArgs {
             new_proc_data.set_ptrace_stop(root_tid, starry_signal::Signo::SIGSTOP, &new_uctx);
         }
 
-        if let Some(guard) = &mut cgroup_guard {
-            guard.commit();
-        }
+        cgroup_guard.commit();
         spawn_task_with(new_task, add_task_to_table);
         clone_transaction.commit();
 

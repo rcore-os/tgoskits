@@ -305,6 +305,7 @@ fn cgroup_errno(error: CgroupError) -> Errno {
         CgroupError::NotFound => Errno::ENOENT,
         CgroupError::AlreadyExists => Errno::EEXIST,
         CgroupError::ResourceBusy => Errno::EBUSY,
+        CgroupError::LimitExceeded => Errno::EAGAIN,
         CgroupError::NoSuchProcess => Errno::ESRCH,
         CgroupError::DirectoryNotEmpty => Errno::ENOTEMPTY,
     }
@@ -545,6 +546,7 @@ fn memory_errno_mappings_hold() -> bool {
         (CgroupError::NotFound.into(), Errno::ENOENT),
         (CgroupError::AlreadyExists.into(), Errno::EEXIST),
         (CgroupError::ResourceBusy.into(), Errno::EBUSY),
+        (CgroupError::LimitExceeded.into(), Errno::EAGAIN),
         (CgroupError::InvalidInput.into(), Errno::EINVAL),
         (CgroupError::NoSuchProcess.into(), Errno::ESRCH),
         (CgroupError::DirectoryNotEmpty.into(), Errno::ENOTEMPTY),
