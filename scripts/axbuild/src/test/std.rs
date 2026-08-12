@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn ax_task_uses_task_initialization_and_might_sleep_feature_profiles() {
+    fn ax_task_profiles_follow_the_current_crate_feature_surface() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec!["ax-task".to_string()];
         let mut runner = FakeCargoRunner::succeeding().with_ax_task_discovery();
@@ -643,54 +643,14 @@ mod tests {
                     "-p",
                     "ax-task",
                     "--features",
-                    "host-test,multitask",
-                    "task_initialization_precedes_scheduling",
-                    "--",
-                    "--list",
+                    "host-test",
                 ],
                 vec![
                     "test",
                     "-p",
                     "ax-task",
                     "--features",
-                    "host-test,multitask",
-                    "task_initialization_precedes_scheduling",
-                ],
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask",
-                    "might_sleep",
-                    "--",
-                    "--list",
-                ],
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask",
-                    "might_sleep",
-                ],
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask,preempt,lockdep",
-                    "might_sleep",
-                    "--",
-                    "--list",
-                ],
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask,preempt,lockdep",
-                    "might_sleep",
+                    "host-test,lockdep",
                 ],
             ]
         );
