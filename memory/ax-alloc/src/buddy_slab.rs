@@ -288,6 +288,16 @@ impl GlobalAllocator {
             .dealloc(kind, num_pages * PAGE_SIZE);
     }
 
+    /// Explodes a contiguous page allocation at `pos` into independently
+    /// freeable order-0 (`PAGE_SIZE`) pages (the physical-frame side of a
+    /// transparent-huge-page → per-page split). The block's pages stay allocated
+    /// and their total byte count is unchanged, so the usage counters are
+    /// untouched here; each order-0 page is later released via
+    /// [`dealloc_pages`](Self::dealloc_pages) with a count of 1.
+    pub fn split_pages(&self, pos: usize) {
+        self.inner.lock_irqsave().split_pages(pos);
+    }
+
     /// Returns the number of allocated bytes in the allocator backend.
     pub fn used_bytes(&self) -> usize {
         self.inner.lock_irqsave().allocated_bytes()
