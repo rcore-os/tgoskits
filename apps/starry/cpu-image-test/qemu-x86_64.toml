@@ -1,0 +1,19 @@
+# cpu-image-test x86_64 - the "pyte for images" carpet: decode/rasterize with stb_image + nanosvg and
+# assert BYTE-EXACT (per-pixel SHA-256 / closed-form pixel regions) or PSNR-bounded (lossy) against
+# goldens calibrated host-side. The single-header libs are bundled into each static cell, so there is no
+# runtime image-library dependency; the SHA-256, PSNR and golden constants are self-written. No GPU or
+# display. -smp 1: single vCPU. 2048M: the 1920x1080 real raster decode + the 512x512 SVG raster buffer.
+args = [
+    "-machine", "q35",
+    "-nographic", "-cpu", "Haswell", "-m", "2048M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 12000
