@@ -15,7 +15,8 @@ pub enum ExtentBlockMapping {
 }
 
 impl<'a> ExtentTree<'a> {
-    pub const MAX_DEPTH: u16 = 32;
+    /// Maximum on-disk extent-tree depth accepted by Linux ext4.
+    pub const MAX_DEPTH: u16 = 5;
 
     pub fn parse_node(bytes: &[u8]) -> Ext4Result<ExtentNode> {
         Self::parse_node_from_bytes(bytes)
@@ -42,10 +43,6 @@ impl<'a> ExtentTree<'a> {
         }
         if header.eh_depth > 0 && entries == 0 {
             return Err(Ext4Error::corrupted().with_operation("extent:empty_index"));
-        }
-        if header.eh_depth != 0 && entries == 0 {
-            error!("Extent internal node has no child indexes");
-            return None;
         }
 
         let mut offset = hdr_size;
@@ -529,6 +526,35 @@ mod tests {
         bytes
     }
 
+    fn raw_index(depth: u16) -> [u8; 60] {
+        let mut bytes = [0u8; 60];
+        Ext4ExtentHeader {
+            eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+            eh_entries: 1,
+            eh_max: 4,
+            eh_depth: depth,
+            eh_generation: 0,
+        }
+        .to_disk_bytes(&mut bytes[..Ext4ExtentHeader::disk_size()]);
+        Ext4ExtentIdx {
+            ei_block: 0,
+            ei_leaf_lo: 100,
+            ei_leaf_hi: 0,
+            ei_unused: 0,
+        }
+        .to_disk_bytes(
+            &mut bytes[Ext4ExtentHeader::disk_size()
+                ..Ext4ExtentHeader::disk_size() + Ext4ExtentIdx::disk_size()],
+        );
+        bytes
+    }
+
+    fn write_raw_inline_node(inode: &mut Ext4Inode, bytes: &[u8; 60]) {
+        for (word, raw) in inode.i_block.iter_mut().zip(bytes.chunks_exact(4)) {
+            *word = u32::from_le_bytes(raw.try_into().unwrap());
+        }
+    }
+
     #[test]
     fn checked_codec_rejects_unordered_and_overlapping_extents() {
         let unordered = raw_leaf(&[Ext4Extent::new(8, 200, 2), Ext4Extent::new(3, 100, 2)], 0);
@@ -575,8 +601,10 @@ mod tests {
         let logical_overflow = raw_leaf(&[Ext4Extent::new(u32::MAX, 100, 2)], 0);
         assert!(ExtentTree::parse_node(&logical_overflow).is_err());
 
-        let excessive_depth = raw_leaf(&[], 33);
-        assert!(ExtentTree::parse_node(&excessive_depth).is_err());
+        assert!(ExtentTree::parse_node(&raw_index(5)).is_ok());
+        for excessive_depth in [6, 32, 33] {
+            assert!(ExtentTree::parse_node(&raw_index(excessive_depth)).is_err());
+        }
     }
 
     #[test]
