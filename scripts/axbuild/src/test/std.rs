@@ -42,6 +42,13 @@ const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeaturePro
     expected_tests: &[],
 }];
 
+const AX_RUNTIME_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "host-test+multitask",
+    features: &["host-test", "multitask"],
+    name_filter: None,
+    expected_tests: &[],
+}];
+
 const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
     features: &["host-test"],
@@ -243,11 +250,12 @@ fn run_std_tests<R: CargoRunner>(
 fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeatureProfile]> {
     match package {
         "arm_vgic" | "axdevice" | "axfs-ng-vfs" | "rsext4" | "scope-local" | "ax-sync" | "axvm"
-        | "ax-display" | "ax-input" | "ax-ipi" | "ax-log" | "ax-runtime" | "ax-api" => {
+        | "ax-display" | "ax-input" | "ax-ipi" | "ax-log" | "ax-api" => {
             Some(HOST_TEST_FEATURE_PROFILES)
         }
         "ax-task" => Some(AX_TASK_FEATURE_PROFILES),
         "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
+        "ax-runtime" => Some(AX_RUNTIME_FEATURE_PROFILES),
         _ => None,
     }
 }
@@ -678,7 +686,6 @@ mod tests {
             "ax-input",
             "ax-ipi",
             "ax-log",
-            "ax-runtime",
             "ax-api",
         ]
         .map(str::to_string)
