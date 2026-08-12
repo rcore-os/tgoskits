@@ -3061,6 +3061,35 @@ current-thread、idle、timer-rq 和 owner transaction 只在约 0.4%--3.8% 的�
 前查询 rq core；下一阶段继续逐个建立红绿并传递已有 task-current handle，transaction 内复核不得
 删除。
 
+park prepare/commit 随后也改为显式接收同一个强 `ThreadHandle`。runtime
+`PreparedCurrentPark` 和 PI park attempt 从 architecture `CurrentThreadPublication` 捕获并持有该
+handle，prepare、commit、cancel 全程传递；低层 `TaskSystem` 直接使用新的破坏性接口，不保留无
+handle 重载、rq 查询兼容分支或第二套 current 状态。handle 只在 `ThreadSchedState` 锁下用于
+task-owned 状态：prepare/cancel 验证 `Running/Parking` 与 `execution_cpu/on_cpu`，commit 用同一
+Arc 取得 previous task lock。真正的 current thread/core、generation、Arc identity、block 与 next
+selection 仍由后续 owner-rq transaction 权威复核，锁序继续为 thread-sched -> rq。
+
+两个 per-`CpuRemote`、仅 `cfg(test)` 的确定性回归分别约束 park prepare 和 commit 不得在 rq
+transaction 前调用 `CpuLocal::current_core()`；旧实现均稳定得到额外 current-core rq acquisition
+`1`，修复后同一测试均为 `0`。完整 `cargo test -p ax-task` 通过（442 unit、全部 integration、
+21 loom、12 doctest），ax-task 5 项 clippy 全部通过。
+
+相同 x86_64 Q35/TCG、4 vCPU、1009 Hz、60 秒 ext4 marker 窗口确认被删除的查询没有转移到
+transaction、idle 或 deadline 路径：
+
+| qperf window | owner observation / switch | current core / switch | current thread / switch | idle / switch | transaction / switch | timer rq / switch | deadline derivation / switch | 总 rq / switch | workload 进度 | host user |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|
+| scheduler task current | 4.722 | 1.664 | 1.407 | 1.652 | 1.172 | 0.857 | 1.777 | 6.830 | `file-0474` | 88.142 s |
+| park explicit task current | 2.238 | 0.002 | 0.587 | 1.649 | 1.170 | 0.861 | 1.778 | 4.350 | `file-0474` | 88.055 s |
+
+两轮分别观察 121,623/123,071 次 switch。current-core 每 switch 下降 99.909%，current-thread 下降
+58.259%，owner observation 下降 52.615%，总 rq 下降 36.310%；transaction 下降 0.161%，idle
+下降 0.171%，timer-rq 上升 0.512%，deadline derivation 上升 0.066%，后四项保持同一结构水平，
+没有接收被删除的 identity 查询。两轮 workload 都由 60 秒 timeout 以状态 143 结束且只推进到
+`file-0474`，host user 也基本不变，所以该阶段只确认 task-current/rq-current 分层消除了大量无效
+rq acquisition，仍不宣称吞吐改善或相对 dev 的性能问题已经解决。下一步继续审计 exit、affinity
+和剩余 current-thread/idle observation，并以相同红绿和 qperf 边界验证。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
