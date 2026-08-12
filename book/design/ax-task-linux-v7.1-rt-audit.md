@@ -753,6 +753,19 @@ Linux 在 `dequeue_task_dl()`、`inactive_task_timer()` 与 switch-tail 的
 
 ## PI、等待与锁边界
 
+### 唯一 sync 分层约束
+
+所有生产锁算法、状态机、PI waiter tree、lockdep 与 guard context transaction 只允许由
+`ax-task::sync` 实现，以本分支实现为唯一事实源。`ax-sync` 只保留 OS 无关 wrapper、稳定布局和
+外部 capability ABI，不得依赖 `ax-task`、`ax-hal`、`ax-runtime` 等 OS 组件，也不得按
+`host-test`、`target_os` 或 feature 提供第二套锁算法。接口若妨碍该分层，可以破坏性调整，不保留
+旧 trait、旧 provider 或转发兼容层。
+
+`ax-runtime::sync` 是 OS capability 的唯一 provider，并重导出 `ax-task::sync` 的锁 API；
+StarryOS、`ax-std`、Axvisor 与其他 OS consumer 只能经过 runtime facade 使用这些锁，不能直接依赖
+`ax-sync`。因此 `ax-sync` 的职责是让 OS 无关组件通过外部函数接入唯一实现，而不是成为另一套可独立
+选择的 lock engine。PR #1962 只提供这种分层理念，具体锁语义与实现继续以本分支为准。
+
 ### PI mutex
 
 ax-sync 与 ax-task 的 PI registration、release 和 claim 遵循 Linux rtmutex 的事务边界：
@@ -3120,6 +3133,38 @@ transaction、idle、timer-rq、deadline derivation 等与 exit 无关的项也�
 的 current-core leaf 从 187 增到 287。因此该窗口只能说明修复没有引入可见回退，不能把单轮整体
 改善归因于低频 exit 路径，更不能宣称相对 dev 的性能问题已经解决。下一阶段处理高频 idle-pull
 组合观察，要求 current/idle 来自同一 rq snapshot，而不是增加 idle-state mirror。
+
+idle-pull 的 admission 随后按 Linux `idle_task(cpu)` 与 `idle_rq(rq)` 的分层完成收敛。dedicated
+idle identity 是一次安装后通过 Release/Acquire 发布的固定值；“当前 owner 是否真正 idle”则必须
+在同一 rq guard 内同时满足 `rq->curr == rq->idle` 与 `nr_running == 0`。不能只检查
+`nr_running == 0`：CPU online 后、第一次 dispatch 前存在 `rq->curr=None`、idle identity 已发布、
+`nr_running=0` 的合法过渡态，它不是可接受 pull 的 idle dispatch。
+
+`request_idle_pull()` 在 reservation 前后各调用一次 `idle_pull_eligible()`，每次只取得一个 coherent
+rq observation；publisher、reservation、claim/commit 和 target-work publication 的线性化协议保持
+不变。`owner_balance_work_pending()` 与 `service_owner_balance()` 已持有 selection 产出的 `next`，
+只需把它与固定 idle identity 比较，不再为 identity 分类重开 rq。旧 `CpuLocal::idle()`、
+`OwnerIdleObservation`、对应 IRQ guard、qperf leaf、Starry debugfs key 和测试计数全部删除，不保留
+恒零兼容字段或第二份 idle state。
+
+确定性回归先在旧实现中观察到直接 pull 的 current/idle/runnable 为 `1/1/0`、完整 idle balance 为
+`1/3/0` 并失败；修复后的 fixture 明确完成真实 idle dispatch，reservation 前后两次 recheck 最终为
+current/runnable `0/2`。完整 qperf-feature 测试通过（451 unit、全部 integration、21 loom、12
+doctest），ax-task 与 Starry 31 项 clippy 全部通过。
+
+相同 x86_64/4-vCPU/1009 Hz、60 秒 ext4 marker 窗口的结构计数如下：
+
+| qperf window | owner observation / switch | current thread / switch | current core / switch | idle / switch | runnable / switch | transaction / switch | timer rq / switch | deadline derivation / switch | 总 rq / switch | workload 进度 | host user |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|
+| exit explicit task current | 2.157615 | 0.558021 | 0.002287 | 1.597307 | 0 | 1.147433 | 0.843565 | 1.759575 | 4.223057 | `file-0538` | 87.197 s |
+| coherent idle-pull rq | 0.566780 | 0.254772 | 0.001595 | 已删除 | 0.310413 | 1.157052 | 0.815148 | 1.731754 | 2.618166 | `file-0538` | 86.960 s |
+
+新窗口的 owner leaf 以 `0.254772 + 0.001595 + 0.310413 = 0.566780/switch` 精确闭合；owner
+observation 下降 73.731%，总 rq 下降 38.003%。transaction 上升 0.838%，timer-rq 下降 3.369%，
+deadline derivation 下降 1.581%，没有证据表明被删除的 current/idle acquisition 被机械转移到
+runnable leaf。两轮分别有 125,515/127,875 次 switch，均以状态 143 完成完整 timeout 窗口并推进到
+`file-0538`；host user 只下降 0.272%。因此这里只确认 rq acquisition 的结构性根因已消除，不把
+单轮 host 时间波动解释为吞吐改善，相对 dev 的性能问题仍未关闭。
 
 ## 模块化结果
 
