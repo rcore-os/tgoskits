@@ -82,14 +82,20 @@ impl Ext4FileSystem {
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
+        if self.dirty_group_descs.len() != self.group_descs.len() {
+            return Err(Ext4Error::corrupted().with_operation("sync:group_dirty_count"));
+        }
         let desc_size = self.superblock.get_desc_size() as usize;
         let gdt_base = self.superblock.primary_gdt_byte_offset()?;
         let block_size_u64 = self.block_size() as u64;
 
         let mut current_block: Option<AbsoluteBN> = None;
-        let mut buffer_snapshot_block: Option<AbsoluteBN> = None;
+        let mut buffered_groups = Vec::new();
 
-        for (idx, desc) in self.group_descs.iter_mut().enumerate() {
+        for idx in 0..self.group_descs.len() {
+            if !self.dirty_group_descs[idx] {
+                continue;
+            }
             // Stream descriptors back in block order so a GDT block is read and
             // written at most once per contiguous chunk.
             let group_id = idx as u32;
@@ -99,15 +105,15 @@ impl Ext4FileSystem {
             let end = in_block + desc_size;
 
             if current_block != Some(block_num) {
-                if let Some(prev_block) = current_block
-                    && Some(prev_block) == buffer_snapshot_block
-                {
+                if let Some(prev_block) = current_block {
                     block_dev.write_block(prev_block, true)?;
+                    for buffered_group in buffered_groups.drain(..) {
+                        self.dirty_group_descs[buffered_group] = false;
+                    }
                 }
 
                 block_dev.read_block(block_num)?;
                 current_block = Some(block_num);
-                buffer_snapshot_block = Some(block_num);
             }
 
             let buffer = block_dev.buffer_mut();
@@ -115,6 +121,7 @@ impl Ext4FileSystem {
                 return Err(Ext4Error::corrupted());
             }
 
+            let mut desc = self.group_descs[idx];
             desc.encode_with_checksum(
                 &self.superblock,
                 group_id,
@@ -122,12 +129,15 @@ impl Ext4FileSystem {
                 None,
                 None,
             )?;
+            self.group_descs[idx] = desc;
+            buffered_groups.push(idx);
         }
 
-        if let Some(last_block) = current_block
-            && Some(last_block) == buffer_snapshot_block
-        {
+        if let Some(last_block) = current_block {
             block_dev.write_block(last_block, true)?;
+            for buffered_group in buffered_groups {
+                self.dirty_group_descs[buffered_group] = false;
+            }
         }
 
         Ok(())

@@ -9,6 +9,8 @@ pub struct Ext4FileSystem {
     pub superblock: Ext4Superblock,
     /// All loaded block-group descriptors.
     pub group_descs: Vec<Ext4GroupDesc>,
+    /// Groups whose in-memory descriptors have not yet been published.
+    pub(crate) dirty_group_descs: Vec<bool>,
     /// Data-block allocator state.
     pub block_allocator: BlockAllocator,
     /// Inode allocator state.
@@ -40,6 +42,7 @@ pub struct Ext4FileSystem {
 struct MetadataTransactionSnapshot {
     superblock: Ext4Superblock,
     group_descs: Vec<Ext4GroupDesc>,
+    dirty_group_descs: Vec<bool>,
     bitmap_cache: BitmapCache,
     inodetable_cache: InodeCache,
     datablock_cache: DataBlockCache,
@@ -70,6 +73,7 @@ impl Ext4FileSystem {
         let snapshot = MetadataTransactionSnapshot {
             superblock: self.superblock,
             group_descs: self.group_descs.clone(),
+            dirty_group_descs: self.dirty_group_descs.clone(),
             bitmap_cache: self.bitmap_cache.clone(),
             inodetable_cache: self.inodetable_cache.clone(),
             datablock_cache: self.datablock_cache.clone(),
@@ -79,6 +83,7 @@ impl Ext4FileSystem {
         if result.is_err() {
             self.superblock = snapshot.superblock;
             self.group_descs = snapshot.group_descs;
+            self.dirty_group_descs = snapshot.dirty_group_descs;
             self.bitmap_cache = snapshot.bitmap_cache;
             self.inodetable_cache = snapshot.inodetable_cache;
             self.datablock_cache = snapshot.datablock_cache;
@@ -202,6 +207,10 @@ impl Ext4FileSystem {
         )?;
         self.group_descs[idx] = desc;
         block_dev.write_block(block_num, true)?;
+        *self
+            .dirty_group_descs
+            .get_mut(idx)
+            .ok_or_else(Ext4Error::corrupted)? = false;
         Ok(())
     }
 
@@ -252,10 +261,9 @@ impl Ext4FileSystem {
 
     /// Returns a mutable block-group descriptor by index.
     pub fn get_group_desc_mut(&mut self, group_idx: BGIndex) -> Option<&mut Ext4GroupDesc> {
-        group_idx
-            .as_usize()
-            .ok()
-            .and_then(|idx| self.group_descs.get_mut(idx))
+        let idx = group_idx.as_usize().ok()?;
+        *self.dirty_group_descs.get_mut(idx)? = true;
+        self.group_descs.get_mut(idx)
     }
 
     /// Modifies one inode via the inode-table cache.

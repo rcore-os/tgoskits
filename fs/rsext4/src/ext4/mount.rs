@@ -365,6 +365,7 @@ impl Ext4FileSystem {
 
         let mut fs = Self {
             superblock,
+            dirty_group_descs: ::alloc::vec![false; group_descs.len()],
             group_descs,
             block_allocator,
             inode_allocator,

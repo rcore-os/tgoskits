@@ -122,6 +122,7 @@ fn create_test_fs() -> Ext4FileSystem {
     Ext4FileSystem {
         superblock,
         group_descs: Vec::new(),
+        dirty_group_descs: Vec::new(),
         block_allocator: BlockAllocator::new(&superblock),
         inode_allocator: InodeAllocator::new(&superblock),
         bitmap_cache: BitmapCache::new(100),

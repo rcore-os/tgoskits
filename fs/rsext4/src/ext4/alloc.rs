@@ -568,6 +568,7 @@ mod tests {
                 bg_flags: Ext4GroupDesc::EXT4_BG_INODE_UNINIT,
                 ..Default::default()
             }],
+            dirty_group_descs: vec![false],
             block_allocator: BlockAllocator::new(&sb),
             inode_allocator: InodeAllocator::new(&sb),
             bitmap_cache: BitmapCache::create_default(),
@@ -611,6 +612,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            dirty_group_descs: vec![false; 2],
             block_allocator: BlockAllocator::new(&sb),
             inode_allocator: InodeAllocator::new(&sb),
             bitmap_cache: BitmapCache::create_default(),
