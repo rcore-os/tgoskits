@@ -197,6 +197,7 @@ fn rt_set_priority_changes_order() {
 #[test]
 fn rt_mixed_priority_simulation() {
     use alloc::{format, string::String, vec::Vec};
+
     use crate::{BaseScheduler, RTScheduler, RTTask};
 
     let mut scheduler = RTScheduler::<usize>::new();
@@ -211,7 +212,11 @@ fn rt_mixed_priority_simulation() {
         loop {
             let resched = scheduler.task_tick(task);
             if resched {
-                trace.push(format!("  [tick] {} (prio={}) -> resched", label, task.priority()));
+                trace.push(format!(
+                    "  [tick] {} (prio={}) -> resched",
+                    label,
+                    task.priority()
+                ));
                 break;
             }
         }
@@ -228,21 +233,25 @@ fn rt_mixed_priority_simulation() {
     // Pick A first (earlier task_id).
     let running = scheduler.pick_next_task().unwrap();
     assert_eq!(*running.inner(), 0, "Phase 1: A should run first");
-    trace.push(format!("  run: A (prio=0)"));
+    trace.push(String::from("  run: A (prio=0)"));
     run_ticks(&mut scheduler, &running, &mut trace, "A");
     scheduler.put_prev_task(running, false); // time slice expired
 
     // Pick B next (round-robin).
     let running = scheduler.pick_next_task().unwrap();
-    assert_eq!(*running.inner(), 1, "Phase 1: B should run next (round-robin)");
-    trace.push(format!("  run: B (prio=0)"));
+    assert_eq!(
+        *running.inner(),
+        1,
+        "Phase 1: B should run next (round-robin)"
+    );
+    trace.push(String::from("  run: B (prio=0)"));
     run_ticks(&mut scheduler, &running, &mut trace, "B");
     scheduler.put_prev_task(running, false); // time slice expired
 
     // Pick A again.
     let running = scheduler.pick_next_task().unwrap();
     assert_eq!(*running.inner(), 0, "Phase 1: A round-robins again");
-    trace.push(format!("  run: A (prio=0)"));
+    trace.push(String::from("  run: A (prio=0)"));
 
     // ── Phase 2: High-priority C arrives, preempts A ─────────────────
     trace.push(String::from("Phase 2: C(prio=10) arrives — preemption!"));
@@ -256,15 +265,21 @@ fn rt_mixed_priority_simulation() {
         resched,
         "Phase 2: tick should detect higher-priority C and trigger preemption"
     );
-    trace.push(format!("  [tick] A detects C(prio=10) ready -> preempt!"));
+    trace.push(String::from(
+        "  [tick] A detects C(prio=10) ready -> preempt!",
+    ));
 
     // Put A back (preempted, keeps remaining slice).
     scheduler.put_prev_task(running, true);
 
     // C should be picked next (highest priority).
     let running = scheduler.pick_next_task().unwrap();
-    assert_eq!(*running.inner(), 2, "Phase 2: C should be picked (highest prio)");
-    trace.push(format!("  run: C (prio=10)"));
+    assert_eq!(
+        *running.inner(),
+        2,
+        "Phase 2: C should be picked (highest prio)"
+    );
+    trace.push(String::from("  run: C (prio=10)"));
 
     // ── Phase 3: C runs, D (prio 5) arrives, C's slice expires ───────
     trace.push(String::from("Phase 3: C runs, D(prio=5) arrives"));
@@ -272,7 +287,7 @@ fn rt_mixed_priority_simulation() {
     let task_d = alloc::sync::Arc::new(RTTask::<usize>::new_with_priority(3, 5));
     // D arrives while C is running. C is higher priority, so no preemption yet.
     scheduler.add_task(task_d.clone());
-    trace.push(format!("  D(prio=5) added to ready queue"));
+    trace.push(String::from("  D(prio=5) added to ready queue"));
 
     // C keeps running (prio 10 > 5, no preemption from tick).
     let resched = scheduler.task_tick(&running);
@@ -280,7 +295,7 @@ fn rt_mixed_priority_simulation() {
         !resched,
         "Phase 3: C(prio=10) should NOT be preempted by D(prio=5)"
     );
-    trace.push(format!("  [tick] C continues (prio 10 > 5)"));
+    trace.push(String::from("  [tick] C continues (prio 10 > 5)"));
 
     // C exhausts its time slice.
     loop {
@@ -288,16 +303,22 @@ fn rt_mixed_priority_simulation() {
             break;
         }
     }
-    trace.push(format!("  [tick] C time slice expired -> resched"));
+    trace.push(String::from("  [tick] C time slice expired -> resched"));
     scheduler.put_prev_task(running, false); // C's slice expired
 
     // C is still highest priority, so it gets picked again (correct RT behavior).
     let c_again = scheduler.pick_next_task().unwrap();
-    assert_eq!(*c_again.inner(), 2, "Phase 3: C should run again (still highest prio)");
-    trace.push(format!("  run: C (prio=10) — still highest, runs again"));
+    assert_eq!(
+        *c_again.inner(),
+        2,
+        "Phase 3: C should run again (still highest prio)"
+    );
+    trace.push(String::from(
+        "  run: C (prio=10) — still highest, runs again",
+    ));
 
     // C finishes its real-time work and blocks (removed from ready queue).
-    trace.push(format!("  C blocks — removed from ready queue"));
+    trace.push(String::from("  C blocks — removed from ready queue"));
 
     // ── Phase 4: D (prio 5) runs before A/B (prio 0) ─────────────────
     trace.push(String::from("Phase 4: D(prio=5) runs before A/B(prio=0)"));
@@ -308,13 +329,15 @@ fn rt_mixed_priority_simulation() {
         3,
         "Phase 4: D(prio=5) should be picked before A/B(prio=0)"
     );
-    trace.push(format!("  run: D (prio=5)"));
+    trace.push(String::from("  run: D (prio=5)"));
     run_ticks(&mut scheduler, &running, &mut trace, "D");
     // D finishes and blocks (not put back = removed from scheduler).
-    trace.push(format!("  D blocks — removed from ready queue"));
+    trace.push(String::from("  D blocks — removed from ready queue"));
 
     // ── Phase 5: A/B resume, then A's priority is elevated ───────────
-    trace.push(String::from("Phase 5: A/B resume, then A priority elevated to 8"));
+    trace.push(String::from(
+        "Phase 5: A/B resume, then A priority elevated to 8",
+    ));
 
     // After D, the highest remaining is A and B (both prio 0).
     let running = scheduler.pick_next_task().unwrap();
@@ -333,7 +356,7 @@ fn rt_mixed_priority_simulation() {
     if *a_in_queue.inner() == 0 {
         assert!(scheduler.set_priority(&a_in_queue, 8));
         scheduler.put_prev_task(a_in_queue, false);
-        trace.push(format!("  A priority elevated 0 -> 8"));
+        trace.push(String::from("  A priority elevated 0 -> 8"));
 
         // A (prio 8) should now be picked before B (prio 0).
         let next = scheduler.pick_next_task().unwrap();
@@ -342,7 +365,7 @@ fn rt_mixed_priority_simulation() {
             0,
             "Phase 5: A(prio=8) should preempt B(prio=0)"
         );
-        trace.push(format!("  run: A (prio=8) — elevated!"));
+        trace.push(String::from("  run: A (prio=8) — elevated!"));
     } else {
         // B was picked, put it back and pick again — A should come next.
         scheduler.put_prev_task(a_in_queue, false);
@@ -352,7 +375,7 @@ fn rt_mixed_priority_simulation() {
             0,
             "Phase 5: A(prio=8) should be picked before B(prio=0)"
         );
-        trace.push(format!("  run: A (prio=8) — elevated!"));
+        trace.push(String::from("  run: A (prio=8) — elevated!"));
     }
 
     // Print the trace for visual verification.
