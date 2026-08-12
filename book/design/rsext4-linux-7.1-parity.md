@@ -1058,3 +1058,38 @@ RSEXT4_BENCH_SUMMARY commit=1983fc88e arch=x86_64 backend=memory feature=metadat
 
 该状态重构没有引入 sequential write/read 或 sync p95 回退；历史 `sync_ns` 仍是
 clean-unmount，median 红项继续保留到独立 sync/unmount workload 和后续整体优化完成。
+
+### 7.35 独立 sync/unmount workload 检查点
+
+冻结的 sequential `sync_ns` 实际只计量 `unmount()`，无法区分 dirty metadata
+publication、无新增 mutation 的 clean sync 和最终 clean-state unmount。本阶段保留旧
+sequential/xattr marker 不变，新增 `RSEXT4_BENCH_WORKLOAD=sync-cycle`：每个样本在同一
+mount 上创建文件并写入 20 MiB，依次计量第一次 dirty `sync()`、第二次 clean
+`sync()` 和 `unmount()`。该 workload 在加入前以 unsupported workload 稳定失败；加入
+后 sequential、xattr 与 sync-cycle 三条分支均通过 smoke 和 example clippy。
+
+基线 `6e27704c4` 没有 owned `Ext4<D, S>`、`BlockIo` 或现成 host harness，因此不能直接
+运行当前源码。为避免伪称二进制同 harness，基线使用操作序列等价的旧 API adapter：
+同样的 128 MiB memory device、4 KiB block、journal、20 MiB payload、3 次预热、20 次
+测量，调用旧 `mkfs -> mount -> mkfile -> write_inode_data -> sync -> sync -> umount`。
+adapter 原文保存在
+`book/design/data/rsext4-perf/2026-08-12-dev-sync-cycle-harness.rs`；两端全部样本保存在
+`book/design/data/rsext4-perf/2026-08-12-sync-cycle-ab.csv`。设备 trait 和 owned API
+不同是明确可比性边界，但操作顺序、数据量和统计口径一致。
+
+```text
+RSEXT4_BENCH_SUMMARY commit=6e27704c4 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=6751 dirty_sync_p95_ns=7061 clean_sync_median_ns=2962 clean_sync_p95_ns=3087 unmount_median_ns=10336 unmount_p95_ns=11147
+RSEXT4_BENCH_SUMMARY commit=00e64e1fe arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=22339 dirty_sync_p95_ns=25484 clean_sync_median_ns=247 clean_sync_p95_ns=275 unmount_median_ns=9527 unmount_p95_ns=12010
+```
+
+| workload | dev median | current median | 变化 | dev p95 | current p95 | 变化 | 当前结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| dirty sync | 6.751 us | 22.339 us | +230.9% | 7.061 us | 25.484 us | +260.9% | 红 |
+| clean sync | 2.962 us | 0.247 us | -91.7% | 3.087 us | 0.275 us | -91.1% | 绿 |
+| clean-state unmount | 10.336 us | 9.527 us | -7.8% | 11.147 us | 12.010 us | +7.7% | 绿 |
+
+dirty sync 的回退不是统计噪声，也不会用 clean sync 改善抵消：当前正确的 JBD2
+descriptor/payload preflush、FUA commit、checkpoint 和 tail publication 都落在第一次
+sync 中，而 dev 的旧 transaction owner 与 durability 语义并不完整。该 workload 因此
+成为新的硬红项；后续必须优化正确实现或获得明确批准，不能通过删除持久化边界、合并
+三个阶段或放宽阈值转绿。
