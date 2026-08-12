@@ -1093,3 +1093,36 @@ descriptor/payload preflush、FUA commit、checkpoint 和 tail publication 都�
 sync 中，而 dev 的旧 transaction owner 与 durability 语义并不完整。该 workload 因此
 成为新的硬红项；后续必须优化正确实现或获得明确批准，不能通过删除持久化边界、合并
 三个阶段或放宽阈值转绿。
+
+### 7.36 JBD2 checkpoint 最终持久化边界检查点
+
+Linux v7.1 `fs/jbd2/checkpoint.c:326-353` 在回收 journal tail 前先 flush
+filesystem device，再由 `__jbd2_update_log_tail()` 以 `REQ_FUA` 发布新 tail；
+`fs/jbd2/journal.c:2419-2473` 的 `jbd2_journal_flush()` 完成该序列后不会再执行一次
+无条件 device flush。旧 Rust core 已经在 checkpoint 中完成 home-block flush 和 FUA tail
+publication，却仍在 `Jbd2Dev::flush()` 末尾重复调用 `inner.flush()`。
+
+确定性 counting `BlockIo` 测例把 fallback-FUA 设备上的 dirty sync 和 clean-state
+unmount 从宽松的 `flushes > 0` 收紧为精确四次。旧实现稳定观测到五次并失败；新实现仅在
+本轮确实 checkpoint 了 transaction 时以 FUA tail 作为最终 durability boundary，无 journal
+work 的 clean sync 仍调用一次真实 device flush。相同测例同时固定 dirty/clean/unmount 的
+write 与 flush 阶段相互独立，防止用合并 workload 隐藏回退。56 个 JBD2 定向测试、完整
+`cargo test -p rsext4 --all-features` 和三配置 targeted clippy 均通过。
+
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量的完整样本保存在
+`book/design/data/rsext4-perf/2026-08-12-jbd2-checkpoint-flush.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=46784bf62 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=21578 dirty_sync_p95_ns=22474 clean_sync_median_ns=247 clean_sync_p95_ns=280 unmount_median_ns=9342 unmount_p95_ns=9568
+```
+
+| workload | dev median | current median | 变化 | dev p95 | current p95 | 变化 | 当前结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| dirty sync | 6.751 us | 21.578 us | +219.6% | 7.061 us | 22.474 us | +218.3% | 红 |
+| clean sync | 2.962 us | 0.247 us | -91.7% | 3.087 us | 0.280 us | -90.9% | 绿 |
+| clean-state unmount | 10.336 us | 9.342 us | -9.6% | 11.147 us | 9.568 us | -14.2% | 绿 |
+
+相对 7.35，dirty sync median/p95 分别改善 3.4%/11.8%，unmount median/p95 分别改善
+1.9%/20.3%；但是 dirty sync 相对 dev 的正确性成本仍远超 5%/10% 门槛，继续保留为硬红项。
+后续优化必须减少实际 metadata/journal I/O 或状态转换成本，不能删除 descriptor/payload
+preflush、FUA commit、checkpoint home flush 或 FUA tail publication 中任一必要边界。
