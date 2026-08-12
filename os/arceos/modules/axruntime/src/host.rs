@@ -2,11 +2,11 @@
 
 use core::cell::{Cell, RefCell};
 #[cfg(feature = "multitask")]
-use std::sync::OnceLock;
+use std::{boxed::Box, sync::OnceLock};
 
 #[cfg(feature = "multitask")]
 use ax_task::{
-    SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadHandle, ThreadSpec,
+    CpuId, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadHandle, ThreadSpec,
     runtime::{
         CpuRemoteHandle, CurrentThreadPublication, IrqGuardToken, LocalIrqState, PreemptGuardToken,
         RuntimeCpuId, TaskSystemHandle,
@@ -34,7 +34,19 @@ std::thread_local! {
 #[cfg(feature = "multitask")]
 fn task_system() -> &'static TaskSystem {
     TASK_SYSTEM.get_or_init(|| {
-        TaskSystem::new(TaskSystemConfig::new(1)).expect("host sync task system must initialize")
+        let system = TaskSystem::new(TaskSystemConfig::new(1))
+            .expect("host sync task system must initialize");
+        let mut cpu = system
+            .create_cpu_local(CpuId::new(0))
+            .expect("host sync CPU must initialize");
+        system
+            .bring_cpu_online(cpu.as_mut())
+            .expect("host sync CPU must come online");
+        // SAFETY: the leaked allocation is never moved or reclaimed. The host
+        // scheduler model retains it as CPU zero's owner state until process
+        // shutdown, matching the TaskSystem lifetime stored in TASK_SYSTEM.
+        let _cpu = Box::leak(unsafe { core::pin::Pin::into_inner_unchecked(cpu) });
+        system
     })
 }
 
@@ -126,6 +138,29 @@ pub(crate) fn validate_schedule_context() -> ax_task::runtime::RuntimeStatus {
     } else {
         RuntimeStatus::UnsafeContext
     }
+}
+
+#[cfg(feature = "multitask")]
+pub(crate) fn validate_owner_cpu_context() -> ax_task::runtime::RuntimeStatus {
+    use ax_task::runtime::RuntimeStatus;
+
+    let irq_enabled = IRQ_ENABLED.with(Cell::get);
+    let owns_irq_guard = ACTIVE_IRQ_TOKENS.with(|tokens| !tokens.borrow().is_empty());
+    if !irq_enabled && owns_irq_guard && !in_hardirq() {
+        RuntimeStatus::Success
+    } else {
+        RuntimeStatus::UnsafeContext
+    }
+}
+
+#[cfg(feature = "multitask")]
+pub(crate) fn clock_nanos() -> u64 {
+    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+    let nanos = EPOCH
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_nanos();
+    u64::try_from(nanos).unwrap_or(u64::MAX)
 }
 
 #[cfg(feature = "multitask")]

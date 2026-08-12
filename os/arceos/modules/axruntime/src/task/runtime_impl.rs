@@ -110,14 +110,26 @@ impl_task_runtime! {
         }
 
         fn prepare_cpu_online(cpu: RuntimeCpuId) -> RuntimeStatus {
-            // SAFETY: this hook runs on the IRQ-excluded owner CPU before
-            // scheduler publication.
-            if cpu != unsafe { Self::current_cpu_id() } {
-                return RuntimeStatus::InvalidArgument;
+            #[cfg(all(feature = "host-test", not(target_os = "none")))]
+            {
+                return if cpu == crate::host::current_cpu_id() {
+                    RuntimeStatus::Success
+                } else {
+                    RuntimeStatus::InvalidArgument
+                };
             }
-            #[cfg(feature = "irq")]
-            crate::clock_event_runtime::init_timer();
-            RuntimeStatus::Success
+
+            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+            {
+                // SAFETY: this hook runs on the IRQ-excluded owner CPU before
+                // scheduler publication.
+                if cpu != unsafe { Self::current_cpu_id() } {
+                    return RuntimeStatus::InvalidArgument;
+                }
+                #[cfg(feature = "irq")]
+                crate::clock_event_runtime::init_timer();
+                RuntimeStatus::Success
+            }
         }
 
         fn prepare_cpu_offline(cpu: RuntimeCpuId) -> RuntimeStatus {
@@ -354,28 +366,48 @@ impl_task_runtime! {
         }
 
         fn validate_owner_cpu_context() -> RuntimeStatus {
+            #[cfg(all(feature = "host-test", not(target_os = "none")))]
+            return crate::host::validate_owner_cpu_context();
+
+            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             crate::guard::validate_owner_cpu_context()
         }
 
         fn monotonic_now() -> ax_task::runtime::MonotonicInstant {
-            ax_task::runtime::MonotonicInstant::from_nanos(
-                ax_hal::time::monotonic_time_nanos(),
-            )
-            .expect("platform monotonic clock exceeded the signed ktime domain")
+            #[cfg(all(feature = "host-test", not(target_os = "none")))]
+            let now_ns = crate::host::clock_nanos();
+            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+            let now_ns = ax_hal::time::monotonic_time_nanos();
+
+            ax_task::runtime::MonotonicInstant::from_nanos(now_ns)
+                .expect("platform monotonic clock exceeded the signed ktime domain")
         }
 
         fn rq_clock_sample(cpu: RuntimeCpuId) -> ax_task::runtime::RqClockSample {
             let cpu_id = cpu.as_u32() as usize;
+            #[cfg(all(feature = "host-test", not(target_os = "none")))]
+            {
+                assert_eq!(cpu_id, 0, "host scheduler has only CPU zero");
+                return ax_task::runtime::RqClockSample::new(
+                    ax_task::SchedulerTimestamp::from_nanos(crate::host::clock_nanos()),
+                    0,
+                );
+            }
+
+            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             // SAFETY: ax-task holds the target runqueue IRQ-save lock, which
             // pins the calling CPU for this complete remote-clock coupling.
             let clock_ns = unsafe { ax_hal::time::scheduler_clock_source(cpu_id) }
                 .unwrap_or_else(|error| {
                     panic!("scheduler clock source for CPU {cpu_id} is unavailable: {error}")
                 });
-            ax_task::runtime::RqClockSample::new(
-                ax_task::SchedulerTimestamp::from_nanos(clock_ns),
-                crate::irq_time::total_for_cpu(cpu_id),
-            )
+            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+            {
+                ax_task::runtime::RqClockSample::new(
+                    ax_task::SchedulerTimestamp::from_nanos(clock_ns),
+                    crate::irq_time::total_for_cpu(cpu_id),
+                )
+            }
         }
 
         fn publish_scheduler_deadline(update: ax_task::runtime::SchedulerDeadlineUpdate) {

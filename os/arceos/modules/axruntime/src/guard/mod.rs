@@ -78,7 +78,10 @@ pub(crate) fn validate_schedule_context(
 }
 
 /// Validates an owner-only CpuLocal access against the fixed CPU guard state.
-#[cfg(feature = "multitask")]
+#[cfg(all(
+    feature = "multitask",
+    not(all(feature = "host-test", not(target_os = "none")))
+))]
 pub(crate) fn validate_owner_cpu_context() -> ax_task::runtime::RuntimeStatus {
     use ax_task::runtime::RuntimeStatus;
 

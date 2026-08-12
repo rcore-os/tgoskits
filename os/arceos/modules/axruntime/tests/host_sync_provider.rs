@@ -4,6 +4,7 @@ use ax_runtime::{Mutex, SpinLock, SpinRwLock};
 use ax_sync::{
     Mutex as ExternalMutex, SpinLock as ExternalSpinLock, SpinRwLock as ExternalSpinRwLock,
 };
+use ax_task::sync::api::{InterruptibleMutexExt, PiMutexLockInterrupted};
 
 #[test]
 fn host_runtime_executes_every_lock_family_through_ax_task() {
@@ -78,7 +79,33 @@ fn host_pi_mutex_handoff_wakes_a_registered_contender() {
     }
 
     drop(owner);
-    waiter
-        .join()
-        .expect("registered host PI contender must acquire");
+    if let Err(error) = waiter.join() {
+        // A failed execution handoff leaves the deliberately red test's raw
+        // mutex state registered. Preserve the original failure without
+        // triggering a second panic from its destructor.
+        core::mem::forget(mutex);
+        std::panic::resume_unwind(error);
+    }
+}
+
+#[test]
+fn host_pi_waiter_registration_and_cancel_use_the_online_task_system() {
+    let mutex = Arc::new(Mutex::new(()));
+    let owner = mutex.lock();
+    let registered = ax_task::sync::api::host_registered_pi_waiters();
+    let waiter_mutex = Arc::clone(&mutex);
+    let waiter = thread::spawn(move || {
+        assert!(matches!(
+            waiter_mutex.lock_interruptible(|| true),
+            Err(PiMutexLockInterrupted)
+        ));
+    });
+
+    waiter.join().expect("host PI cancellation must complete");
+    assert_eq!(
+        ax_task::sync::api::host_registered_pi_waiters(),
+        registered + 1,
+        "interruptible waiter must register before cancellation"
+    );
+    drop(owner);
 }

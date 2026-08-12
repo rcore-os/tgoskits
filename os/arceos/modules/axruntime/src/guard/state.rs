@@ -140,7 +140,10 @@ impl RuntimeGuardState {
         !self.irq.is_clear() && (self.irq.outer_irqs_enabled || preempt_depth != 0)
     }
 
-    #[cfg(any(feature = "multitask", test))]
+    #[cfg(all(
+        any(feature = "multitask", test),
+        any(test, not(all(feature = "host-test", not(target_os = "none"))))
+    ))]
     pub(super) const fn owns_cpu_context(self) -> bool {
         !self.irq.is_clear() || self.preempt.has_one_scheduler_frame()
     }

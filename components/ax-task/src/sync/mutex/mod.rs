@@ -246,6 +246,8 @@ impl<'lock> PiMutexAlgorithm<'lock> {
             PiMutexLockResult::Acquired => return Ok(()),
             PiMutexLockResult::Waiting(token) => token,
         };
+        #[cfg(feature = "host-test")]
+        HOST_REGISTERED_PI_WAITERS.fetch_add(1, Ordering::Relaxed);
         debug_assert_eq!(token.thread_id(), current);
 
         loop {

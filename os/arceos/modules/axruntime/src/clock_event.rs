@@ -90,6 +90,10 @@ impl LocalClockEvent {
         }
     }
 
+    #[cfg(any(
+        test,
+        not(all(feature = "multitask", feature = "host-test", not(target_os = "none")))
+    ))]
     pub(crate) fn online(&mut self, periodic: ClockDeadline) -> ClockEventAction {
         assert_eq!(
             self.phase,

@@ -5,32 +5,29 @@
 //! that races IRQ exit is capped and consumed by later rq clock updates.
 
 #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
-use core::sync::atomic::AtomicU32;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+#[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
 #[ax_percpu::def_percpu]
 static HARDIRQ_TIME: HardIrqTime = HardIrqTime::new();
 
+#[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
 struct HardIrqTime {
-    #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
     depth: AtomicU32,
-    #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
     start_clock_ns: AtomicU64,
     total_ns: AtomicU64,
 }
 
+#[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
 impl HardIrqTime {
     const fn new() -> Self {
         Self {
-            #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
             depth: AtomicU32::new(0),
-            #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
             start_clock_ns: AtomicU64::new(0),
             total_ns: AtomicU64::new(0),
         }
     }
 
-    #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
     fn enter(&self, now_ns: u64) {
         let depth = self.depth.fetch_add(1, Ordering::Relaxed);
         if depth == 0 {
@@ -48,7 +45,6 @@ impl HardIrqTime {
         self.depth.load(Ordering::Relaxed) == 1
     }
 
-    #[cfg(any(test, not(all(feature = "host-test", not(target_os = "none")))))]
     fn exit(&self, now_ns: u64) {
         let depth = self.depth.fetch_sub(1, Ordering::Relaxed);
         assert_ne!(depth, 0, "hard-IRQ exit without a matching entry");
@@ -132,6 +128,7 @@ pub(crate) fn exit() {
     with_current_state(|state| state.exit(now_ns));
 }
 
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 pub(crate) fn total_for_cpu(cpu_id: usize) -> u64 {
     let cpu_index = ax_percpu::CpuIndex::try_from(cpu_id)
         .unwrap_or_else(|_| panic!("hard-IRQ CPU {cpu_id} is outside the installed layout"));
