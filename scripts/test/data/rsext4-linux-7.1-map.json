@@ -1619,7 +1619,7 @@
         },
         {
           "start": 176,
-          "end": 537,
+          "end": 465,
           "symbol": "commit helpers and jbd2_journal_commit_transaction prefix",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
@@ -1630,6 +1630,33 @@
             "jbd2-handle-credits",
             "jbd2-abort-sticky",
             "jbd2-legacy-checksum-write-replay"
+          ]
+        },
+        {
+          "start": 466,
+          "end": 505,
+          "symbol": "jbd2_journal_commit_transaction running-to-locked-to-switch transition",
+          "classification": "core",
+          "state_machine": "running transaction -> locked update drain -> switch admission closure",
+          "invariant": "commit cannot detach the running owner until active updates have ended, and the replacement running owner opens only after the old transaction reaches switch",
+          "rust_owner": "rsext4::jbd2::jbd2::{transition_running_transaction,start_committing_transaction}; rsext4::blockdev::journal::commit_pending_transaction",
+          "reason": "exclusive mutable core ownership replaces the waitqueue but retains explicit phase validation and active-handle rejection",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 506,
+          "end": 537,
+          "symbol": "jbd2_journal_commit_transaction reserved-buffer release and checkpoint cleanup",
+          "classification": "core",
+          "state_machine": "switching transaction -> release unused reserved buffer access -> pre-commit checkpoint cleanup",
+          "invariant": "unused buffer reservations cannot cross into the committing image and checkpoint cleanup cannot discard replay ownership",
+          "rust_owner": "rsext4::jbd2::transaction pending buffer-reservation decomposition; rsext4::jbd2::Jbd2CheckpointTransaction",
+          "reason": "the phase boundary is implemented; Linux buffer_head reserved-list ownership has no direct Rust equivalent and remains explicitly pending classification by cache owner",
+          "test_ids": [
+            "jbd2-handle-credits",
+            "jbd2-writer-revoke-checkpoint"
           ]
         },
         {
@@ -1937,6 +1964,45 @@
         },
         {
           "start": 816,
+          "end": 849,
+          "symbol": "jbd2_journal_wait_updates",
+          "classification": "core",
+          "state_machine": "locked transaction with active updates -> quiescent locked transaction",
+          "invariant": "commit cannot enter switch while a scoped metadata update remains active",
+          "rust_owner": "rsext4::blockdev::journal::commit_pending_transaction; Rust exclusive scoped handle ownership",
+          "reason": "the adapter sleepable mutex and core &mut owner prevent concurrent entry, while the core still rejects commit with an active scoped handle",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 850,
+          "end": 888,
+          "symbol": "jbd2_journal_lock_updates",
+          "classification": "core",
+          "state_machine": "ordinary handle admission -> special-operation transaction barrier",
+          "invariant": "normal updates and detached reservations are drained before a special journal-locked operation begins",
+          "rust_owner": "rsext4::jbd2::transaction pending explicit special-operation barrier",
+          "reason": "OS mutex and waitqueue mechanics stay in the adapter, but portable admission and reservation-drain semantics remain required and are not yet complete",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 889,
+          "end": 907,
+          "symbol": "jbd2_journal_unlock_updates",
+          "classification": "core",
+          "state_machine": "special-operation transaction barrier -> ordinary handle admission",
+          "invariant": "barrier release is balanced and cannot reopen admission before the special owner exits",
+          "rust_owner": "rsext4::jbd2::transaction pending explicit special-operation barrier",
+          "reason": "balanced portable state ownership remains core even though wakeups and mutex release belong to OS glue",
+          "test_ids": [
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 908,
           "end": 1882,
           "symbol": "<whole-file>",
           "classification": "core",

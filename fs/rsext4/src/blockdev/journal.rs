@@ -403,6 +403,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             sequence: super_block.s_sequence,
             jbd2_super_block: super_block,
             running_transaction: Jbd2RunningTransaction {
+                phase: Default::default(),
                 updates: Vec::new(),
                 revoked_blocks: Vec::new(),
             },
@@ -543,6 +544,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
     fn commit_pending_transaction(&mut self) -> Ext4Result<bool> {
         self.ensure_not_aborted("jbd2:commit_after_abort")?;
+        if self.active_handle.is_some() || self.active_direct_handle.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:commit_with_active_handle"));
+        }
         let Some(system) = self.system.as_mut() else {
             return Err(Ext4Error::journal_aborted().with_operation("jbd2:commit_without_state"));
         };
@@ -4816,6 +4820,10 @@ mod tests {
         let sequence = dev.journal_sequence();
 
         dev.with_journal_handle(1, |dev| {
+            assert_eq!(
+                dev.system.as_ref().unwrap().running_transaction.phase,
+                crate::jbd2::jbdstruct::Jbd2RunningTransactionPhase::Running
+            );
             let error = dev
                 .umount_commit()
                 .expect_err("unmount cannot commit an active operation");
@@ -4826,6 +4834,11 @@ mod tests {
                 .expect_err("flush cannot commit an active operation");
             assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
             assert_eq!(dev.journal_sequence(), sequence);
+            assert_eq!(
+                dev.system.as_ref().unwrap().running_transaction.phase,
+                crate::jbd2::jbdstruct::Jbd2RunningTransactionPhase::Running,
+                "a rejected commit must not lock the active transaction"
+            );
             dev.write_blocks(&vec![0x5a; BLOCK_SIZE], target, 1, true)
         })
         .expect("handle remains active after rejected unmount");

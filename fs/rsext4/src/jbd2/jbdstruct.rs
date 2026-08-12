@@ -85,9 +85,19 @@ impl Jbd2ChecksumMode {
 /// One journaled metadata update: `(target physical block, serialized block)`.
 pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8]>);
 
+/// Admission phase of the transaction that owns new journal handles.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Jbd2RunningTransactionPhase {
+    #[default]
+    Running,
+    Locked,
+    Switch,
+}
+
 /// Metadata owned by the transaction that accepts new journal handles.
 #[derive(Default)]
 pub(crate) struct Jbd2RunningTransaction {
+    pub(crate) phase: Jbd2RunningTransactionPhase,
     pub(crate) updates: Vec<Jbd2Update>,
     pub(crate) revoked_blocks: Vec<AbsoluteBN>,
 }

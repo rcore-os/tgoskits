@@ -612,9 +612,24 @@ impl JBD2DEVSYSTEM {
         Ok(())
     }
 
+    fn transition_running_transaction(
+        &mut self,
+        from: Jbd2RunningTransactionPhase,
+        to: Jbd2RunningTransactionPhase,
+    ) -> Ext4Result<()> {
+        if self.running_transaction.phase != from {
+            return Err(Ext4Error::corrupted().with_operation("jbd2:running_transaction_phase"));
+        }
+        self.running_transaction.phase = to;
+        Ok(())
+    }
+
     fn start_committing_transaction(&mut self) -> Ext4Result<bool> {
         if self.committing_transaction.is_some() {
             return Err(Ext4Error::busy().with_operation("jbd2:commit_already_running"));
+        }
+        if self.running_transaction.phase != Jbd2RunningTransactionPhase::Running {
+            return Err(Ext4Error::corrupted().with_operation("jbd2:commit_running_phase"));
         }
         if self.running_transaction.updates.is_empty()
             && self.running_transaction.revoked_blocks.is_empty()
@@ -622,6 +637,18 @@ impl JBD2DEVSYSTEM {
             return Ok(false);
         }
 
+        // The Jbd2Dev owner rejects commit while a scoped handle is active.
+        // Exclusive `&mut` access therefore drains the Linux T_LOCKED phase
+        // without an OS waitqueue, then closes admission at T_SWITCH before
+        // transferring the transaction to the committing owner.
+        self.transition_running_transaction(
+            Jbd2RunningTransactionPhase::Running,
+            Jbd2RunningTransactionPhase::Locked,
+        )?;
+        self.transition_running_transaction(
+            Jbd2RunningTransactionPhase::Locked,
+            Jbd2RunningTransactionPhase::Switch,
+        )?;
         let running = core::mem::take(&mut self.running_transaction);
         self.committing_transaction = Some(Jbd2CommittingTransaction {
             sequence: self.sequence,
@@ -1647,6 +1674,65 @@ mod tests {
             .expect("install replay journal");
         let status = journal.journal_replay_checked();
         (status, journal.into_inner())
+    }
+
+    fn transaction_system(phase: Jbd2RunningTransactionPhase) -> JBD2DEVSYSTEM {
+        JBD2DEVSYSTEM {
+            jbd2_super_block: replay_superblock(),
+            start_block: AbsoluteBN::new(JOURNAL_START),
+            max_len: JOURNAL_LEN,
+            head: 1,
+            sequence: 1,
+            running_transaction: Jbd2RunningTransaction {
+                phase,
+                updates: vec![Jbd2Update(
+                    AbsoluteBN::new(HOME_BLOCK),
+                    vec![0x5a; BLOCK_SIZE].into_boxed_slice(),
+                )],
+                revoked_blocks: Vec::new(),
+            },
+            committing_transaction: None,
+            checkpoint_transactions: Vec::new(),
+            used_log_records: 0,
+        }
+    }
+
+    #[test]
+    fn commit_start_rejects_a_transaction_that_is_already_locked_or_switching() {
+        for phase in [
+            Jbd2RunningTransactionPhase::Locked,
+            Jbd2RunningTransactionPhase::Switch,
+        ] {
+            let mut system = transaction_system(phase);
+
+            let error = system
+                .start_committing_transaction()
+                .expect_err("only a running transaction may begin commit");
+
+            assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
+            assert_eq!(system.running_transaction.phase, phase);
+            assert_eq!(system.running_transaction.updates.len(), 1);
+            assert!(system.committing_transaction.is_none());
+        }
+    }
+
+    #[test]
+    fn commit_start_switches_the_old_owner_and_opens_a_fresh_running_transaction() {
+        let mut system = transaction_system(Jbd2RunningTransactionPhase::Running);
+
+        assert!(system.start_committing_transaction().expect("start commit"));
+
+        assert_eq!(
+            system.running_transaction.phase,
+            Jbd2RunningTransactionPhase::Running
+        );
+        assert!(system.running_transaction.updates.is_empty());
+        let committing = system
+            .committing_transaction
+            .as_ref()
+            .expect("old transaction must have a committing owner");
+        assert_eq!(committing.sequence, 1);
+        assert_eq!(committing.updates.len(), 1);
     }
 
     #[test]
