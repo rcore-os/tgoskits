@@ -4,7 +4,9 @@
 
 本文定义 ax-task 迁移后的 timer、hard IRQ、CPU-local 和物理 clockevent 所有权边界。它正式替代“`components/ax-task` 必须与 PR #1596 字节一致”的旧要求。
 
-设计只覆盖任务调度语义，不引入通用 callback timer 服务。
+设计同时覆盖任务调度期限和内核 task-context callback timer。两者共享同一个 per-CPU
+deadline owner、物理 clockevent 和 `ktimers/<cpu>` worker，但使用相互独立的 typed clock
+base；任意 callback 不进入任务期限 heap，也不在 hard IRQ 中执行。
 
 ## 问题
 
@@ -37,6 +39,13 @@
 - `net/core/dev.c::__napi_schedule()`、`napi_schedule_prep()`、`napi_poll()` 和
   `net_rx_action()` 用一个 owner bit 加 sticky missed publication 保证协议 poll 只有一个
   consumer；hard IRQ 只发布 work，budget drain 发生在后续执行上下文。
+- KVM 不创建自己的 per-CPU timer worker。AArch64
+  `arch/arm64/kvm/arch_timer.c::soft_timer_start()`、RISC-V
+  `arch/riscv/kvm/vcpu_timer.c` 和 x86 LAPIC timer 都把每 vCPU 的逻辑期限注册到宿主
+  hrtimer；vCPU block 仍由通用 KVM wait/scheduler owner 执行。显式
+  `HRTIMER_MODE_ABS_HARD` callback 可以在 PREEMPT_RT hard IRQ 中直接发布 IRQ/wake，
+  但 TGOSKits 的 VM callback 会取得 task-context lock 和通知 wait queue，因此改由现有
+  `ktimers/<cpu>` 执行，而不是复制 KVM 的 hard-callback 上下文。
 
 TGOSKits 采用相同的所有权与排序，不复制 Linux callback 形态：ax-task 发布调度期限，ax-runtime 独占物理 clockevent。
 
@@ -84,6 +93,42 @@ task deadline 的唯一 owner：本地 timer IRQ/soft worker 负责消费，远�
 - 需要在 IRQ 中析构的所有权。
 
 每个 embedded timer node 最多有一个 active heap entry。rearm 物理替换旧项，cancel 物理移除旧项，不以 tombstone 消耗容量。
+
+### 内核 callback clock base
+
+通用内核 callback 使用独立的 `KernelTimerQueue`，与 typed `TaskDeadlineQueue` 一起存放在
+同一个 `CpuDeadlineState` 中。它不是 ax-task 调度状态，也不得复用
+`TaskDeadlineKind`；共享的是 per-CPU owner、IRQ-safe deadline lock、物理最早期限选择和
+`ktimers/<cpu>` single-consumer 协议。
+
+registration 在调用任务上下文分配完整 entry 和 callback ownership，随后绑定当前 owner
+CPU。entry 状态只允许：
+
+```text
+Queued -> Expired -> Executing -> Completed
+   |          |
+   +----------+-----------> Cancelled
+```
+
+- `Queued` entry 按 `(deadline, sequence)` 排序；相同期限保持 FIFO；
+- hard IRQ 只把 due entry 从 active queue 移入 expired FIFO，并发布 sticky ktimer work；
+  移动期间不分配、不 free、不执行 callback；
+- worker 在 deadline lock 内 claim 一个 `Expired -> Executing` entry，释放 IRQ guard 和所有
+  scheduler/deadline lock 后才调用 callback，完成后进入 `Completed` 并释放 entry；
+- cancel 与 expiry/claim 在 owner deadline lock 下决定唯一 winner。成功取消 active 或
+  expired entry 后，ownership 移出 lock 再析构；已经 `Executing` 或 terminal 时返回明确的
+  non-cancelled 结果，不等待 callback；
+- handle 保存 owner CPU 和不可复用的 identity/generation。跨 CPU cancel 可以锁定原 owner
+  base，但只在当前 owner CPU 取消时重新发布物理 deadline；remote cancel 允许保留一个
+  conservative stale hardware edge，由 firing transaction 重新计算，不跨 CPU 修改物理
+  comparator；
+- CPU offline 必须同时确认 active queue、expired FIFO、in-flight callback 和 ktimer sticky
+  publication 全部 quiescent。
+
+callback API 只暴露绝对 monotonic deadline、typed handle、cancel outcome 和
+`FnOnce(MonotonicInstant) + Send + 'static`。不得暴露 `LocalClockEvent`、硬件 comparator、
+deadline-base lock 或 owner CPU 裸指针。注册失败必须返回可匹配的 capacity/generation/context
+错误，不能静默退回 AxVM 私有 worker。
 
 ### ParkTicket
 
@@ -292,17 +337,26 @@ IRQ endpoint 只保存固定值状态和稳定 registration；任务态对象通
 
 ## 通用 timer 消费者
 
-VM 和 POSIX callback timer 不进入 ax-task。
+内核 task-context callback timer 进入独立的 kernel callback clock base；POSIX/wall timer
+仍保留各自的进程语义和 queue metadata，只把需要宿主 monotonic 唤醒的最早期限接到该
+能力边界。
 
 ### AxVM
 
-AxVM 使用 CPU-affine task worker。worker 用 task deadline 睡到 timer wheel 的下一期限；插入更早 VM timer 时，通过 bounded IRQ-safe endpoint 唤醒。VM callback 只在线程上下文执行。
+AxVM 不再拥有 `TimerQueue`、token owner map、`IrqNotification` 或 `axvm-timer-*` worker。
+设备 timer、x86 LAPIC/PIT、LoongArch guest timer 和 AArch64 blocked-vCPU timer 都注册到
+宿主 kernel callback clock base；callback 仍只在线程上下文执行。
 
-timer wheel、token owner map、notification map 和永久 worker registry 都属于任务态 timer
-service，使用可睡眠 mutex。读取当前 CPU 只选择稳定的 wheel bucket；后续线程迁移不改变
-handle 中记录的 owner CPU，cancel 直接访问该 bucket 并通知对应 worker。硬 IRQ 不访问这些
-容器，只能发布到独立的 `IrqNotification` endpoint。每个 per-CPU worker 的强 `ThreadHandle`
-由永久 registry 持有，CPU service identity 不依赖 detached handle 或析构兜底。
+AxVM 保留虚拟化语义自身的状态：每 vCPU CVAL/CTL、AArch64
+`Aarch64TimerBinding::wait_generation`、host CNTV PPI activation owner，以及架构 backend
+要求的 cancel token。kernel timer handle 决定宿主 entry 的 at-most-once ownership；架构
+generation 决定一个已经开始执行的旧 wake hint 是否仍对当前 vCPU wait 有效。两者不能合并
+成一个 bool，也不能让 callback 直接断言 guest PPI。
+
+vCPU 迁移不修改已注册 entry 的 owner 字段。旧 wait 先 invalidate generation 并 cancel 原
+handle，新 owner 按最新 guest deadline 重新注册；AArch64 CPU-local host timer activation 仍在
+原 pCPU 完成 deactivate。VM teardown 必须取消所有保存的 handle，fire-only device timer 的
+callback 只持有可失败升级的 VM identity，不能让 timer entry 延长整个 VM 生命周期。
 
 ### Starry
 
