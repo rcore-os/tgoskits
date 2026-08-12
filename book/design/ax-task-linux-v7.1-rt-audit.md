@@ -3090,6 +3090,37 @@ transaction、idle 或 deadline 路径：
 rq acquisition，仍不宣称吞吐改善或相对 dev 的性能问题已经解决。下一步继续审计 exit、affinity
 和剩余 current-thread/idle observation，并以相同红绿和 qperf 边界验证。
 
+current exit 也按相同 execution-identity/rq-identity 边界完成收敛。runtime facade 在 CPU owner/IRQ
+transaction 前从 `CurrentThreadPublication` 捕获 handle；prepare 只用它访问 task-owned scheduler
+state，并把同一 core Arc 固定在 move-only `CurrentExitPermit`。dedicated idle 只比较一次安装、
+Release/Acquire 发布的 immutable idle identity；commit 删除 transaction 前的 `cpu.current()` 和
+`cpu.current_core()`，仍在 owner-rq transaction 内以 current/core Arc 做权威复核。scheduler
+activity close/seal、PI/callback 校验、switch-tail 和 reap 顺序均未改变，也没有旧接口重载。
+
+这里不能把完整 `ThreadHandle` 保留到 `Exited` 发布之后：它携带 external lookup lease，随后 drop
+会在物理 switch tail 前制造 reap task-work。完整测试确实确定性捕获了这个初版错误。最终 permit
+只保存普通 core Arc，facade lookup handle 在任务仍为 `Running` 时释放；纯 scheduler
+`exit_current` 同样消费并提前释放 lookup handle，再提交 exit。这保持了 Linux
+`do_task_dead()` 到 `finish_task_switch()` 之间 outgoing stack 仍 `on_cpu`、不能提前回收的边界。
+
+确定性回归中，旧 prepare 的 current-thread/current-core/idle rq observation 为 `1/1/1`，修复后
+为 `0/0/0`；旧 commit 还有一个 transaction 前 current/core 查询，修复后只剩后续 idle-pull 的
+current recheck。完整 ax-task 测试通过（444 unit、全部 integration、21 loom、12 doctest），5 项
+clippy 全部通过。
+
+相同 ext4 marker 窗口的单轮对照如下：
+
+| qperf window | current thread / switch | current core / switch | idle / switch | transaction / switch | timer rq / switch | deadline derivation / switch | 总 rq / switch | workload 进度 | host user |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---:|
+| park explicit task current | 0.587 | 0.0015 | 1.649 | 1.170 | 0.861 | 1.778 | 4.350 | `file-0474` | 88.055 s |
+| exit explicit task current | 0.558 | 0.0023 | 1.597 | 1.147 | 0.844 | 1.760 | 4.223 | `file-0538` | 87.197 s |
+
+本轮 current-thread 每 switch 下降 4.977%、总 rq 下降 2.918%，并多推进一个 64-file 批次；但
+transaction、idle、timer-rq、deadline derivation 等与 exit 无关的项也同时下降约 1%--3%，而极小
+的 current-core leaf 从 187 增到 287。因此该窗口只能说明修复没有引入可见回退，不能把单轮整体
+改善归因于低频 exit 路径，更不能宣称相对 dev 的性能问题已经解决。下一阶段处理高频 idle-pull
+组合观察，要求 current/idle 来自同一 rq snapshot，而不是增加 idle-state mirror。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
