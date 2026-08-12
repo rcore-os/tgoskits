@@ -2,18 +2,14 @@
 
 use alloc::{collections::BTreeSet, vec::Vec};
 
-use super::{
-    HashTreeError, HashTreeManager, HashTreeNode, calculate_hash,
-    lookup::{HashSearch, resolve_logical_block},
-};
+use super::{HashTreeError, HashTreeManager, HashTreeNode, calculate_hash, lookup::HashSearch};
 use crate::{
     Ext4Error, Ext4Result,
     blockdev::{BlockIo, Jbd2Dev},
     bmalloc::InodeNumber,
-    checksum::{verify_ext4_dirblock_checksum, verify_ext4_dx_checksum},
     dir::FileName,
     disknode::Ext4Inode,
-    entries::{Ext4DxEntry, decode_directory_record_length},
+    entries::decode_directory_record_length,
     ext4::Ext4FileSystem,
 };
 
@@ -27,6 +23,7 @@ pub(crate) struct IndexedDirectoryRecord {
     pub(crate) major: u32,
     pub(crate) minor: u32,
     pub(crate) collision: u32,
+    pub(crate) next: Option<(u32, u32, u32)>,
 }
 
 struct UnorderedDirectoryRecord {
@@ -37,27 +34,30 @@ struct UnorderedDirectoryRecord {
     minor: u32,
 }
 
-/// Enumerates only HTree leaves and orders their records by the complete ext4
-/// directory hash. Index blocks are validated but never interpreted as
-/// ordinary directory records.
+/// Reads a bounded HTree batch from the leaf selected by `start`.
+///
+/// Like Linux `ext4_htree_fill_tree()`, this collects and sorts only the
+/// current index range plus all low-bit collision-continuation leaves. It does
+/// not scan or sort the complete directory for a small caller buffer.
 pub(crate) fn read_indexed_directory<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     directory: InodeNumber,
     inode: &Ext4Inode,
+    start: (u32, u32, u32),
+    max_entries: usize,
 ) -> Ext4Result<Vec<IndexedDirectoryRecord>> {
     let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
-    let (search, root) = manager
+    let (mut search, root) = manager
         .prepare_search(fs, block_dev, directory, inode, b"")
         .map_err(hash_tree_error)?;
-    let HashTreeNode::Root {
-        indirect_levels,
-        entries,
-        ..
-    } = root
-    else {
+    if !matches!(root, HashTreeNode::Root { .. }) {
         return Err(Ext4Error::corrupted().with_operation("htree:readdir_root"));
-    };
+    }
+    search.target_hash = start.0;
+    let mut path = manager
+        .probe_path(fs, block_dev, search, &root)
+        .map_err(hash_tree_error)?;
 
     let root_block = manager
         .get_root_block(fs, block_dev, directory, inode)
@@ -65,80 +65,143 @@ pub(crate) fn read_indexed_directory<B: BlockIo>(
     let root_data = manager
         .read_block_data(fs, block_dev, root_block)
         .map_err(hash_tree_error)?;
-    let mut records = Vec::new();
-    records.push(parse_root_record(&root_data, 0, 0)?);
-    records.push(parse_root_record(&root_data, 12, 2)?);
+    let specials = [
+        parse_root_record(&root_data, 0, 0)?,
+        parse_root_record(&root_data, 12, 2)?,
+    ];
+    let lookahead = max_entries.checked_add(1).unwrap_or(max_entries);
+    let mut output = Vec::with_capacity(lookahead.min(128));
+    let mut seen_leaves = BTreeSet::new();
+    let mut first_range = true;
+    let mut reached_eof = false;
 
-    let mut seen_logical_blocks = BTreeSet::new();
-    seen_logical_blocks.insert(0);
-    let mut pending = Vec::new();
-    push_children(&mut pending, &entries, indirect_levels);
-    while let Some((logical_block, remaining_levels)) = pending.pop() {
-        if !seen_logical_blocks.insert(logical_block) {
-            return Err(Ext4Error::corrupted().with_operation("htree:readdir_cycle"));
+    while output.len() < lookahead {
+        let mut range = Vec::new();
+        if first_range {
+            range.extend(specials.iter().map(clone_unordered_record));
+            first_range = false;
         }
-        let physical_block =
-            resolve_logical_block(fs, block_dev, search, logical_block).map_err(hash_tree_error)?;
-        let data = manager
-            .read_block_data(fs, block_dev, physical_block)
-            .map_err(hash_tree_error)?;
+        read_current_leaf_records(
+            fs,
+            block_dev,
+            &manager,
+            search,
+            &path,
+            &mut seen_leaves,
+            &mut range,
+        )?;
 
-        if remaining_levels == 0 {
-            if !verify_ext4_dirblock_checksum(
-                &fs.superblock,
-                directory.raw(),
-                inode.i_generation,
-                &data,
-            ) {
-                return Err(Ext4Error::checksum().with_operation("htree:readdir_leaf"));
+        loop {
+            match manager
+                .advance_path(fs, block_dev, search, &mut path)
+                .map_err(hash_tree_error)?
+            {
+                Some(boundary_hash) if boundary_hash & 1 != 0 => {
+                    read_current_leaf_records(
+                        fs,
+                        block_dev,
+                        &manager,
+                        search,
+                        &path,
+                        &mut seen_leaves,
+                        &mut range,
+                    )?;
+                }
+                Some(_) => break,
+                None => {
+                    reached_eof = true;
+                    break;
+                }
             }
-            parse_leaf_records(&data, search, &manager, &mut records)?;
-            continue;
         }
 
-        if verify_ext4_dx_checksum(&fs.superblock, directory.raw(), inode.i_generation, &data)
-            == Some(false)
-        {
-            return Err(Ext4Error::checksum().with_operation("htree:readdir_index"));
+        append_sorted_range(range, start, lookahead, &mut output)?;
+        if reached_eof {
+            break;
         }
-        let has_metadata_checksum =
-            crate::crc32c::ext4_superblock_has_metadata_csum(&fs.superblock);
-        let HashTreeNode::Internal { entries } = manager
-            .parse_internal_node(&data, has_metadata_checksum)
-            .map_err(hash_tree_error)?
-        else {
-            return Err(Ext4Error::corrupted().with_operation("htree:readdir_index"));
-        };
-        push_children(&mut pending, &entries, remaining_levels - 1);
     }
 
-    records.sort_by_key(|record| (record.major, record.minor));
-    let mut previous_hash = None;
-    let mut collision = 0_u32;
-    records
-        .into_iter()
-        .map(|record| {
-            let hash = (record.major, record.minor);
-            if previous_hash == Some(hash) {
-                collision = collision.checked_add(1).ok_or_else(Ext4Error::overflow)?;
-            } else {
-                previous_hash = Some(hash);
-                collision = 0;
-            }
-            Ok(IndexedDirectoryRecord {
-                inode: record.inode,
-                file_type: record.file_type,
-                name: record.name,
-                major: record.major,
-                minor: record.minor,
-                collision,
-            })
-        })
-        .collect()
+    let returned = output.len().min(max_entries);
+    let mut output = output.into_iter().peekable();
+    let mut batch = Vec::with_capacity(returned);
+    for _ in 0..returned {
+        let mut record = output
+            .next()
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("htree:readdir_batch"))?;
+        record.next = output
+            .peek()
+            .map(|next| (next.major, next.minor, next.collision));
+        if record.next.is_none() && !reached_eof {
+            return Err(Ext4Error::overflow().with_operation("htree:readdir_lookahead"));
+        }
+        batch.push(record);
+    }
+    Ok(batch)
 }
 
-fn push_children(pending: &mut Vec<(u32, u8)>, entries: &[Ext4DxEntry], levels: u8) {
-    pending.extend(entries.iter().rev().map(|entry| (entry.block, levels)));
+fn clone_unordered_record(record: &UnorderedDirectoryRecord) -> UnorderedDirectoryRecord {
+    UnorderedDirectoryRecord {
+        inode: record.inode,
+        file_type: record.file_type,
+        name: record.name.clone(),
+        major: record.major,
+        minor: record.minor,
+    }
+}
+
+fn read_current_leaf_records<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    manager: &HashTreeManager,
+    search: HashSearch<'_>,
+    path: &super::lookup::HashTreePath,
+    seen_leaves: &mut BTreeSet<u32>,
+    output: &mut Vec<UnorderedDirectoryRecord>,
+) -> Ext4Result<()> {
+    let logical_block = path.current_entry().map_err(hash_tree_error)?.block;
+    if !seen_leaves.insert(logical_block) {
+        return Err(Ext4Error::corrupted().with_operation("htree:readdir_cycle"));
+    }
+    let (_, data) = manager
+        .read_current_leaf_data(fs, block_dev, search, path)
+        .map_err(hash_tree_error)?;
+    parse_leaf_records(&data, search, manager, output)
+}
+
+fn append_sorted_range(
+    mut range: Vec<UnorderedDirectoryRecord>,
+    start: (u32, u32, u32),
+    limit: usize,
+    output: &mut Vec<IndexedDirectoryRecord>,
+) -> Ext4Result<()> {
+    range.sort_by_key(|record| (record.major, record.minor));
+    let mut previous_hash = None;
+    let mut collision = 0_u32;
+    for record in range {
+        let hash = (record.major, record.minor);
+        if previous_hash == Some(hash) {
+            collision = collision.checked_add(1).ok_or_else(Ext4Error::overflow)?;
+        } else {
+            previous_hash = Some(hash);
+            collision = 0;
+        }
+        if (record.major, record.minor, collision) < start {
+            continue;
+        }
+        output.push(IndexedDirectoryRecord {
+            inode: record.inode,
+            file_type: record.file_type,
+            name: record.name,
+            major: record.major,
+            minor: record.minor,
+            collision,
+            next: None,
+        });
+        if output.len() == limit {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn parse_root_record(

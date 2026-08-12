@@ -101,6 +101,47 @@ impl rsext4::Clock for FileBlockDevice {
     }
 }
 
+struct CountingFileBlockDevice {
+    inner: FileBlockDevice,
+    reads: Rc<Cell<usize>>,
+}
+
+impl CountingFileBlockDevice {
+    fn open_with_sector_size(path: PathBuf, sector_size: u32) -> (Self, Rc<Cell<usize>>) {
+        let reads = Rc::new(Cell::new(0));
+        (
+            Self {
+                inner: FileBlockDevice::open_with_sector_size(path, sector_size),
+                reads: Rc::clone(&reads),
+            },
+            reads,
+        )
+    }
+}
+
+impl BlockIo for CountingFileBlockDevice {
+    fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+        self.reads.set(self.reads.get() + 1);
+        self.inner.read(buffer, sector, count)
+    }
+
+    fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+        self.inner.write(buffer, sector, count)
+    }
+
+    fn flush(&mut self) -> Ext4Result<()> {
+        self.inner.flush()
+    }
+
+    fn geometry(&self) -> DeviceGeometry {
+        self.inner.geometry()
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        self.inner.capabilities()
+    }
+}
+
 struct PatternFailureDevice {
     inner: FileBlockDevice,
     pattern: Vec<u8>,
@@ -377,7 +418,7 @@ fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
     );
     umount(filesystem, &mut device).expect("unmount Linux HTree fixture");
 
-    let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+    let (device, device_reads) = CountingFileBlockDevice::open_with_sector_size(image.clone(), 512);
     let services = MountServices::new(
         TestClock(Cell::new(1_800_000_000)),
         (),
@@ -394,6 +435,16 @@ fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
         )
         .expect("lookup indexed directory")
         .expect("indexed directory exists");
+    device_reads.set(0);
+    let first_entry = filesystem
+        .read_directory(indexed.number, DirectoryCursor::Start, 1)
+        .expect("read first indexed directory entry");
+    assert_eq!(first_entry.len(), 1);
+    assert!(
+        device_reads.get() <= 4,
+        "a one-entry HTree batch must not read the complete directory: {} device reads",
+        device_reads.get()
+    );
     let entries = filesystem
         .read_directory(indexed.number, DirectoryCursor::Start, 1_000)
         .expect("read indexed directory");
@@ -1166,6 +1217,27 @@ fn owned_insert_grows_a_full_linux_htree_root() {
                 )
                 .expect("lookup after HTree root growth")
                 .is_some()
+        );
+        let mut cursor = DirectoryCursor::Start;
+        let mut entry_count = 0_usize;
+        let mut found_last = false;
+        loop {
+            let batch = filesystem
+                .read_directory(indexed.number, cursor, 127)
+                .expect("enumerate grown multilevel HTree");
+            if batch.is_empty() {
+                break;
+            }
+            for entry in batch {
+                found_last |= entry.name == last_name.as_bytes();
+                entry_count += 1;
+                cursor = entry.next_cursor;
+            }
+        }
+        assert_eq!(entry_count, 9_802, "multilevel HTree readdir lost entries");
+        assert!(
+            found_last,
+            "multilevel HTree readdir missed the last insert"
         );
         filesystem.unmount().expect("unmount root-growth image");
     }

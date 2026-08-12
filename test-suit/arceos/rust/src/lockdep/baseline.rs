@@ -11,9 +11,9 @@ use std::{
 
 use ax_std::os::arceos::sync::SpinLock;
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FilesystemOps, Metadata, MetadataUpdate,
-    NodeFlags, NodeOps, NodePermission, NodeType, Reference, RenameOptions, StatFs, VfsError,
-    VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps,
+    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference,
+    RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 
 const WAIT_UNTIL_RETRY_LIMIT: usize = 10_000_000;
@@ -331,7 +331,7 @@ impl NodeOps for TestDir {
 }
 
 impl DirNodeOps for TestDir {
-    fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, _cursor: DirectoryCursor, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         Ok(0)
     }
 

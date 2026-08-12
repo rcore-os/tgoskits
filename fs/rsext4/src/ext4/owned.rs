@@ -595,17 +595,18 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
             return Ok(Vec::new());
         }
         if inode.is_htree_indexed() {
-            let records =
-                read_indexed_directory(&mut self.filesystem, &mut self.device, directory, &inode)?;
             let start = match cursor {
-                DirectoryCursor::Start => 0,
+                DirectoryCursor::Start => (0, 0, 0),
                 DirectoryCursor::HTree {
                     major,
                     minor,
                     collision,
-                } => records.partition_point(|record| {
-                    (record.major, record.minor, record.collision) < (major, minor, collision)
-                }),
+                } if major & 1 == 0 => (major, minor, collision),
+                DirectoryCursor::HTree { .. } => {
+                    return Err(
+                        Ext4Error::invalid_input().with_operation("directory:indexed_hash_cursor")
+                    );
+                }
                 DirectoryCursor::Linear { .. } => {
                     return Err(
                         Ext4Error::invalid_input().with_operation("directory:indexed_cursor")
@@ -613,26 +614,33 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
                 }
                 DirectoryCursor::End => return Ok(Vec::new()),
             };
-            let end = start.saturating_add(max_entries).min(records.len());
-            return records[start..end]
-                .iter()
-                .enumerate()
-                .map(|(relative_index, record)| {
-                    let next_index = start + relative_index + 1;
+            let records = read_indexed_directory(
+                &mut self.filesystem,
+                &mut self.device,
+                directory,
+                &inode,
+                start,
+                max_entries,
+            )?;
+            return records
+                .into_iter()
+                .map(|record| {
                     let next_cursor =
-                        records
-                            .get(next_index)
-                            .map_or(DirectoryCursor::End, |next| DirectoryCursor::HTree {
-                                major: next.major,
-                                minor: next.minor,
-                                collision: next.collision,
+                        record
+                            .next
+                            .map_or(DirectoryCursor::End, |(major, minor, collision)| {
+                                DirectoryCursor::HTree {
+                                    major,
+                                    minor,
+                                    collision,
+                                }
                             });
                     Ok(DirectoryEntry {
                         inode: InodeNumber::new(record.inode).map_err(|_| {
                             Ext4Error::corrupted().with_operation("directory:indexed_inode")
                         })?,
                         file_type: DirectoryEntryType::from_disk(record.file_type)?,
-                        name: record.name.clone(),
+                        name: record.name,
                         next_cursor,
                     })
                 })

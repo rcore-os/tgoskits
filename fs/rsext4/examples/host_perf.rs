@@ -8,15 +8,17 @@ use std::{
 };
 
 use rsext4::{
-    BLOCK_SIZE, BlockIo, Ext4, Ext4Error, Ext4Result, Ext4Timestamp, FileName, FilePermissions,
-    MkfsOptions, MountOptions, MountServices, MutationContext, NoopObserver, XattrNamespace,
-    XattrSetMode, format,
+    BLOCK_SIZE, BlockIo, DirectoryCursor, Ext4, Ext4Error, Ext4Result, Ext4Timestamp, FileName,
+    FilePermissions, InodeFlags, MkfsOptions, MountOptions, MountServices, MutationContext,
+    NoopObserver, XattrNamespace, XattrSetMode, format,
 };
 
 const DEFAULT_BYTES: usize = 20 * 1024 * 1024;
 const DEFAULT_WARMUPS: usize = 3;
 const DEFAULT_RUNS: usize = 10;
 const DEFAULT_XATTR_BYTES: usize = 512;
+const DEFAULT_HTREE_ENTRIES: usize = 800;
+const DEFAULT_HTREE_BATCH_ENTRIES: usize = 128;
 const IMAGE_BYTES: usize = 128 * 1024 * 1024;
 
 struct MemoryDevice {
@@ -109,6 +111,13 @@ struct SyncCycleSample {
     dirty_sync: Duration,
     clean_sync: Duration,
     unmount: Duration,
+}
+
+#[derive(Clone, Copy)]
+struct HTreeReadDirSample {
+    readdir: Duration,
+    entries: usize,
+    calls: usize,
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -307,6 +316,86 @@ fn run_sync_cycle_once(payload: &[u8]) -> SyncCycleSample {
     }
 }
 
+fn run_htree_readdir_once(entry_count: usize, batch_entries: usize) -> HTreeReadDirSample {
+    let device = MemoryDevice::new();
+    let device = format(
+        device,
+        BenchClock(Cell::new(1_700_000_000)),
+        MkfsOptions::default(),
+    )
+    .expect("benchmark mkfs must succeed");
+    let services = MountServices::new(
+        BenchClock(Cell::new(1_700_000_000)),
+        (),
+        (),
+        (),
+        NoopObserver,
+    );
+    let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
+        .expect("benchmark mount must succeed");
+    let context = MutationContext::new(0, 0, 0, 0);
+    let directory = filesystem
+        .create_directory(
+            context,
+            filesystem.root_inode(),
+            FileName::new(b"rsext4-host-htree").expect("benchmark name must be valid"),
+            FilePermissions::new(0o755).expect("benchmark permissions must be valid"),
+        )
+        .expect("benchmark directory creation must succeed");
+    let permissions = FilePermissions::new(0o644).expect("benchmark permissions must be valid");
+    for index in 0..entry_count {
+        let name = format!("entry-{index:08}.bin");
+        filesystem
+            .create_regular_file(
+                context,
+                directory.number,
+                FileName::new(name.as_bytes()).expect("benchmark entry name must be valid"),
+                permissions,
+            )
+            .expect("benchmark entry creation must succeed");
+    }
+    assert!(
+        filesystem
+            .inode(directory.number)
+            .expect("benchmark directory inspection must succeed")
+            .flags
+            .contains(InodeFlags::DIRECTORY_INDEX),
+        "benchmark fixture must use an HTree"
+    );
+
+    let start = Instant::now();
+    let mut cursor = DirectoryCursor::Start;
+    let mut entries = 0;
+    let mut calls = 0;
+    loop {
+        let batch = filesystem
+            .read_directory(directory.number, cursor, batch_entries)
+            .expect("benchmark HTree readdir must succeed");
+        calls += 1;
+        if batch.is_empty() {
+            break;
+        }
+        for entry in batch {
+            black_box(&entry.name);
+            entries += 1;
+            cursor = entry.next_cursor;
+        }
+        if cursor == DirectoryCursor::End {
+            break;
+        }
+    }
+    let readdir = start.elapsed();
+    assert_eq!(entries, entry_count + 2);
+    filesystem
+        .unmount()
+        .expect("benchmark unmount must succeed");
+    HTreeReadDirSample {
+        readdir,
+        entries,
+        calls,
+    }
+}
+
 fn percentile(samples: &[u128], numerator: usize, denominator: usize) -> u128 {
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
@@ -437,6 +526,58 @@ fn run_sync_cycle_benchmark(
     );
 }
 
+fn run_htree_readdir_benchmark(
+    commit: &str,
+    arch: &str,
+    backend: &str,
+    feature: &str,
+    warmups: usize,
+    runs: usize,
+    entries: usize,
+    batch_entries: usize,
+) {
+    println!(
+        "RSEXT4_BENCH_CONFIG commit={commit} arch={arch} backend={backend} feature={feature} \
+         workload=htree-readdir entries={entries} batch_entries={batch_entries} warmups={warmups} \
+         runs={runs} block_size={BLOCK_SIZE} journal=true"
+    );
+
+    for _ in 0..warmups {
+        black_box(run_htree_readdir_once(entries, batch_entries));
+    }
+
+    let mut samples = Vec::with_capacity(runs);
+    for run in 0..runs {
+        let sample = run_htree_readdir_once(entries, batch_entries);
+        println!(
+            "RSEXT4_BENCH_RESULT commit={commit} arch={arch} backend={backend} feature={feature} \
+             workload=htree-readdir run={run} readdir_ns={} entries={} calls={}",
+            sample.readdir.as_nanos(),
+            sample.entries,
+            sample.calls
+        );
+        samples.push(sample);
+    }
+
+    let readdir = samples
+        .iter()
+        .map(|sample| sample.readdir.as_nanos())
+        .collect::<Vec<_>>();
+    let calls = samples
+        .iter()
+        .map(|sample| sample.calls as u128)
+        .collect::<Vec<_>>();
+    println!(
+        "RSEXT4_BENCH_SUMMARY commit={commit} arch={arch} backend={backend} feature={feature} \
+         workload=htree-readdir readdir_median_ns={} readdir_p95_ns={} calls_median={} \
+         calls_p95={}",
+        percentile(&readdir, 1, 2),
+        percentile(&readdir, 95, 100),
+        percentile(&calls, 1, 2),
+        percentile(&calls, 95, 100),
+    );
+}
+
 fn main() {
     let bytes = env_usize("RSEXT4_BENCH_BYTES", DEFAULT_BYTES);
     let warmups = env_usize("RSEXT4_BENCH_WARMUPS", DEFAULT_WARMUPS);
@@ -463,6 +604,22 @@ fn main() {
             warmups,
             runs,
             value_bytes,
+        );
+        return;
+    }
+    if workload == "htree-readdir" {
+        let entries = env_usize("RSEXT4_BENCH_HTREE_ENTRIES", DEFAULT_HTREE_ENTRIES);
+        let batch_entries = env_usize("RSEXT4_BENCH_BATCH_ENTRIES", DEFAULT_HTREE_BATCH_ENTRIES);
+        assert!(entries > 0 && batch_entries > 0);
+        run_htree_readdir_benchmark(
+            &commit,
+            &arch,
+            &backend,
+            &feature,
+            warmups,
+            runs,
+            entries,
+            batch_entries,
         );
         return;
     }

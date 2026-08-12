@@ -206,6 +206,17 @@ impl HashTreeManager {
         search: HashSearch<'_>,
         path: &HashTreePath,
     ) -> Result<HashTreeSearchResult, HashTreeError> {
+        let (block_num, block_data) = self.read_current_leaf_data(fs, block_dev, search, path)?;
+        self.search_in_leaf_data(&block_data, search.target_name, block_num)
+    }
+
+    pub(super) fn read_current_leaf_data<B: BlockIo>(
+        &self,
+        fs: &mut Ext4FileSystem,
+        block_dev: &mut Jbd2Dev<B>,
+        search: HashSearch<'_>,
+        path: &HashTreePath,
+    ) -> Result<(AbsoluteBN, Vec<u8>), HashTreeError> {
         let logical_block = path.current_entry()?.block;
         if path
             .frames
@@ -226,7 +237,7 @@ impl HashTreeManager {
                 crate::Ext4Error::checksum().with_operation("htree:leaf"),
             ));
         }
-        self.search_in_leaf_data(&block_data, search.target_name, block_num)
+        Ok((block_num, block_data))
     }
 
     fn read_internal_entries<B: BlockIo>(
@@ -274,6 +285,24 @@ impl HashTreeManager {
         search: HashSearch<'_>,
         path: &mut HashTreePath,
     ) -> Result<bool, HashTreeError> {
+        let Some(continuation_hash) = self.advance_path(fs, block_dev, search, path)? else {
+            return Ok(false);
+        };
+        Ok(continuation_hash & !1 == search.target_hash)
+    }
+
+    /// Advances an HTree path to the next leaf and returns its index boundary.
+    ///
+    /// This is the path-only part of Linux `ext4_htree_next_block()`. Lookup
+    /// filters the returned boundary to a collision continuation, while
+    /// readdir accepts every next leaf.
+    pub(super) fn advance_path<B: BlockIo>(
+        &self,
+        fs: &mut Ext4FileSystem,
+        block_dev: &mut Jbd2Dev<B>,
+        search: HashSearch<'_>,
+        path: &mut HashTreePath,
+    ) -> Result<Option<u32>, HashTreeError> {
         let mut level = path
             .frames
             .len()
@@ -286,16 +315,12 @@ impl HashTreeManager {
                 break;
             }
             if level == 0 {
-                return Ok(false);
+                return Ok(None);
             }
             level -= 1;
         }
 
         let continuation_hash = path.frames[level].entries[path.frames[level].selected].hash;
-        if continuation_hash & !1 != search.target_hash {
-            return Ok(false);
-        }
-
         path.frames.truncate(level + 1);
         while path.frames.len() < usize::from(search.indirect_levels) + 1 {
             let logical_block = path.current_entry()?.block;
@@ -306,7 +331,7 @@ impl HashTreeManager {
                 selected: 0,
             });
         }
-        Ok(true)
+        Ok(Some(continuation_hash))
     }
 
     pub(super) fn search_in_leaf_data(

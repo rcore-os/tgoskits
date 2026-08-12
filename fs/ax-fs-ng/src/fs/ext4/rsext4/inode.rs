@@ -434,7 +434,7 @@ impl DirNodeOps for Inode {
                 let mut state = self.fs.lock();
                 state
                     .ext4
-                    .read_directory(self.ino, next_cursor, usize::MAX)
+                    .read_directory(self.ino, next_cursor, DIRECTORY_READ_BATCH_ENTRIES)
                     .map_err(into_vfs_err)?
             };
             if entries.is_empty() {
@@ -680,6 +680,8 @@ impl DirNodeOps for Inode {
         self.fs.sync_to_disk()
     }
 }
+
+const DIRECTORY_READ_BATCH_ENTRIES: usize = 128;
 
 // Linux reserves this value for HTree EOF. ext4's directory hash finalization
 // rewrites the only colliding major hash, 0xffff_fffe, to 0xffff_fffc.
