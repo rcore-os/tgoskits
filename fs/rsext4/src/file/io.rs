@@ -611,7 +611,7 @@ pub fn punch_hole_inode<B: BlockIo>(
                     full_end,
                     credit_limit,
                 )?;
-                finalize_restarted_extent_update(
+                finalize_restarted_inode_update(
                     device,
                     fs,
                     inode_num,
@@ -997,7 +997,7 @@ fn remove_extent_mapping_with_restarts<B: BlockIo>(
     Ok(())
 }
 
-fn finalize_restarted_extent_update<B: BlockIo>(
+fn finalize_restarted_inode_update<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
@@ -1122,21 +1122,6 @@ fn build_legacy_mapping_transaction(
     Ok(LegacyMappingTransaction { plan, footprint })
 }
 
-fn prepare_legacy_mapping_transaction<B: BlockIo>(
-    device: &Jbd2Dev<B>,
-    fs: &Ext4FileSystem,
-    plan: crate::indirect::LegacyTruncatePlan,
-) -> Ext4Result<LegacyMappingTransaction> {
-    let transaction = build_legacy_mapping_transaction(fs, plan)?;
-    if device
-        .transaction_credit_limit()?
-        .is_some_and(|limit| transaction.footprint.credits > limit)
-    {
-        return Err(Ext4Error::no_space().with_operation("indirect:transaction_credits"));
-    }
-    Ok(transaction)
-}
-
 fn legacy_mapping_restart_limit<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -1152,9 +1137,15 @@ fn legacy_mapping_restart_limit<B: BlockIo>(
     if transaction.footprint.credits <= limit {
         return Ok(None);
     }
-    let _ = prepare_legacy_mapping_removal_chunk(
+    let chunk = prepare_legacy_mapping_removal_chunk(
         device, fs, inode_num, inode, full_start, full_end, limit,
     )?;
+    if chunk.is_none() {
+        let _ = prepare_legacy_metadata_cleanup_chunk(
+            device, fs, inode_num, inode, full_start, full_end, limit,
+        )?
+        .ok_or_else(|| Ext4Error::corrupted().with_operation("indirect:restart_empty_plan"))?;
+    }
     Ok(Some(limit))
 }
 
@@ -1371,17 +1362,45 @@ fn punch_legacy_blocks<B: BlockIo>(
     let removal = crate::indirect::plan_legacy_inode_range_removal(
         fs, device, inode_num, &inode, full_start, full_end,
     )?;
-    let transaction = prepare_legacy_mapping_transaction(device, fs, removal)?;
-    zero_partial_mapped_blocks(device, fs, inode_num, &mut inode, offset, end)?;
-    commit_legacy_mapping_removal(
+    let transaction = build_legacy_mapping_transaction(fs, removal)?;
+    let restart_limit = legacy_mapping_restart_limit(
         device,
         fs,
         inode_num,
-        &mut inode,
-        Ext4InodeMetadataUpdate::write_access(),
-        None,
-        transaction,
-    )
+        &inode,
+        full_start,
+        full_end,
+        &transaction,
+    )?;
+    zero_partial_mapped_blocks(device, fs, inode_num, &mut inode, offset, end)?;
+    if let Some(credit_limit) = restart_limit {
+        remove_legacy_mapping_with_restarts(
+            device,
+            fs,
+            inode_num,
+            &mut inode,
+            full_start,
+            full_end,
+            credit_limit,
+        )?;
+        finalize_restarted_inode_update(
+            device,
+            fs,
+            inode_num,
+            &mut inode,
+            Ext4InodeMetadataUpdate::write_access(),
+        )
+    } else {
+        commit_legacy_mapping_removal(
+            device,
+            fs,
+            inode_num,
+            &mut inode,
+            Ext4InodeMetadataUpdate::write_access(),
+            None,
+            transaction,
+        )
+    }
 }
 
 fn convert_initialized_range_to_unwritten<B: BlockIo>(
@@ -1677,7 +1696,7 @@ fn truncate_inode_mapping<B: BlockIo>(
                 } else {
                     inode.i_size_lo = truncate_size as u32;
                     inode.i_size_high = (truncate_size >> 32) as u32;
-                    finalize_restarted_extent_update(
+                    finalize_restarted_inode_update(
                         device,
                         fs,
                         inode_num,
@@ -1742,7 +1761,7 @@ fn truncate_inode_mapping<B: BlockIo>(
         } else {
             inode.i_size_lo = truncate_size as u32;
             inode.i_size_high = (truncate_size >> 32) as u32;
-            finalize_restarted_extent_update(
+            finalize_restarted_inode_update(
                 device,
                 fs,
                 inode_num,

@@ -200,6 +200,7 @@ struct RemovedLegacyExpectation<'a> {
     removed_blocks: &'a [AbsoluteBN],
     gap_blocks: &'a [AbsoluteBN],
     free_before: u64,
+    expected_size: u64,
 }
 
 #[test]
@@ -352,6 +353,131 @@ fn large_legacy_truncate_restarts_across_allocation_groups() {
             removed_blocks: &fixture.removed_blocks,
             gap_blocks: &fixture.gap_blocks,
             free_before: fixture.free_before,
+            expected_size: 0,
+        },
+    );
+}
+
+#[test]
+fn large_legacy_punch_restarts_across_allocation_groups() {
+    let mut fixture = build_large_legacy_fixture("/legacy-punch-restart");
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 10);
+    fixture.power_cut.reset_observation();
+    let size_before = fixture
+        .filesystem
+        .get_inode_by_num(&mut fixture.journal, fixture.inode_number)
+        .expect("legacy inode read failed")
+        .size();
+    let sequence_before = fixture.journal.journal_sequence();
+
+    punch_hole_inode(
+        &mut fixture.journal,
+        &mut fixture.filesystem,
+        fixture.inode_number,
+        0,
+        size_before,
+    )
+    .expect("legacy punch must restart its journal transaction");
+    assert!(
+        fixture.power_cut.commit_writes.get() >= 1,
+        "the second allocation group must cross a commit boundary"
+    );
+    assert_ne!(fixture.journal.journal_sequence(), sequence_before);
+    assert_eq!(fixture.filesystem.superblock.s_last_orphan, 0);
+
+    fixture
+        .filesystem
+        .umount(&mut fixture.journal)
+        .expect("legacy punch restart unmount failed");
+    let device = fixture.journal.into_inner();
+    let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut remounted = mount(&mut remount_device).expect("legacy punch remount failed");
+    assert_removed_legacy_state(
+        &mut remounted,
+        &mut remount_device,
+        RemovedLegacyExpectation {
+            inode_number: fixture.inode_number,
+            removed_blocks: &fixture.removed_blocks,
+            gap_blocks: &fixture.gap_blocks,
+            free_before: fixture.free_before,
+            expected_size: size_before,
+        },
+    );
+}
+
+#[test]
+fn large_legacy_punch_remains_consistent_after_committed_bitmap_power_cut() {
+    let mut fixture = build_large_legacy_fixture("/legacy-punch-crash");
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 10);
+    let size_before = fixture
+        .filesystem
+        .get_inode_by_num(&mut fixture.journal, fixture.inode_number)
+        .expect("legacy inode read failed")
+        .size();
+    fixture
+        .power_cut
+        .arm_checkpoint_power_cut(fixture.checkpoint_bitmap, 1);
+
+    let power_cut = catch_unwind(AssertUnwindSafe(|| {
+        punch_hole_inode(
+            &mut fixture.journal,
+            &mut fixture.filesystem,
+            fixture.inode_number,
+            0,
+            size_before,
+        )
+    }));
+    assert!(
+        power_cut.is_err(),
+        "fixture must cut power while checkpointing a committed punch chunk"
+    );
+    let commits_before_cut = fixture
+        .power_cut
+        .commits_before_cut
+        .get()
+        .expect("power cut must record the durable commit count");
+    assert!(
+        commits_before_cut > fixture.power_cut.commits_at_last_target_write.get(),
+        "the interrupted bitmap checkpoint must follow a newly durable commit block"
+    );
+
+    let device = fixture.journal.into_inner();
+    device.power_cut.disable();
+    let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut remounted = mount(&mut remount_device).expect("mount must replay committed punch work");
+    let partial = remounted
+        .get_inode_by_num(&mut remount_device, fixture.inode_number)
+        .expect("partially punched inode must remain readable");
+    assert_eq!(partial.size(), size_before);
+    assert_eq!(remounted.superblock.s_last_orphan, 0);
+
+    // Linux does not persist a punch-range intent. A caller may retry the
+    // operation after recovery; every committed intermediate tree must be a
+    // valid starting point for that retry.
+    punch_hole_inode(
+        &mut remount_device,
+        &mut remounted,
+        fixture.inode_number,
+        0,
+        size_before,
+    )
+    .expect("retry must finish the remaining punch range");
+    remounted
+        .umount(&mut remount_device)
+        .expect("retried legacy punch unmount failed");
+
+    let device = remount_device.into_inner();
+    let mut verify_device = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut verified = mount(&mut verify_device).expect("legacy punch verification mount failed");
+    assert_removed_legacy_state(
+        &mut verified,
+        &mut verify_device,
+        RemovedLegacyExpectation {
+            inode_number: fixture.inode_number,
+            removed_blocks: &fixture.removed_blocks,
+            gap_blocks: &fixture.gap_blocks,
+            free_before: fixture.free_before,
+            expected_size: size_before,
         },
     );
 }
@@ -404,6 +530,7 @@ fn large_legacy_truncate_recovery_resumes_after_committed_bitmap_power_cut() {
             removed_blocks: &fixture.removed_blocks,
             gap_blocks: &fixture.gap_blocks,
             free_before: fixture.free_before,
+            expected_size: 0,
         },
     );
 }
@@ -492,6 +619,7 @@ fn zero_link_legacy_reap_restarts_before_final_inode_transaction() {
             removed_blocks: &fixture.removed_blocks,
             gap_blocks: &fixture.gap_blocks,
             free_before: fixture.free_before,
+            expected_size: 0,
         },
     );
 }
@@ -963,7 +1091,7 @@ fn assert_removed_legacy_state(
     let inode = filesystem
         .get_inode_by_num(device, expectation.inode_number)
         .expect("remounted inode read failed");
-    assert_eq!(inode.size(), 0);
+    assert_eq!(inode.size(), expectation.expected_size);
     assert_eq!(inode.i_block, [0; 15]);
     assert_eq!(inode.i_blocks_lo, 0);
     assert_eq!(filesystem.superblock.s_last_orphan, 0);
