@@ -959,4 +959,32 @@ RSEXT4_BENCH_SUMMARY commit=c822b89df arch=x86_64 backend=memory feature=metadat
 相对 7.30，sync median/p95 分别改善 8.2%/37.0%，p95 已回到硬门槛内；但
 `host_perf` 的历史 `sync_ns` 实际计量 `unmount()`，包含 clean-superblock mutation，
 不能等同普通 `sync(2)`。在保持冻结 marker 可比性的同时，后续 harness 需要新增独立
-sync 与 unmount workload；在 median 吞吐/IOPS 口径也达标前，总性能门禁继续保持红色。
+sync 与 unmount workload；在其余冻结 workload 完成 A/B 前，总性能门禁继续保持红色。
+
+### 7.32 Group descriptor dirty owner 检查点
+
+旧 `sync_group_descriptors()` 每次同步都会读取、重新编码并写回全部 primary GDT，
+即使 mount 后没有任何 descriptor mutation。确定性红测使用 counting `BlockIo`：清零
+mkfs/mount I/O 后立即 `Ext4::sync()`，旧实现稳定写 primary GDT 一次；新实现由
+filesystem state 持有 per-group dirty bitmap，所有 `get_group_desc_mut()` 置位，成功
+publish 对应 descriptor block 后才清位，metadata transaction abort 则与 descriptor
+一起恢复 dirty bitmap。相同测试现要求 GDT write 为 0，同时 device flush 必须大于 0，
+因此没有以跳过 durability boundary 换取假性能。
+
+当前 20 次 sequential 样本保存在
+`book/design/data/rsext4-perf/2026-08-12-dirty-group-descriptors.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=9eb326e2d arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6311198 write_p95_ns=6853818 read_median_ns=5999018 read_p95_ns=7331847 sync_median_ns=32512 sync_p95_ns=33487
+```
+
+| workload | 相对 dev median | 相对 dev p95 | sequential 门禁 |
+| --- | ---: | ---: | --- |
+| sequential write elapsed | -7.6% | -6.6% | 绿 |
+| sequential read elapsed | -16.9% | -13.5% | 绿 |
+| sync/unmount latency | +25.9% | -13.3% | p95 绿 |
+
+该优化主要约束 clean sync，当前 create+20 MiB write 的 unmount 本就有 allocation
+descriptor 必须发布，因此 median 仅比 7.31 改善约 2.2%。它仍消除了空闲系统上重复
+`sync(2)` 的 O(group-count) 写放大。完整 all-features、no-default-features、30 个
+Linux image/e2fsck differential、三配置 clippy 和 architecture boundary audit 均通过。
