@@ -759,3 +759,28 @@ median 回退约 24.6%，但 sync workload 的 latency 门槛按 p95 判定；20
 全部保留，没有丢弃离群值或用选择性复测覆盖。该 memory backend 结果只保护
 现有 core sequential 热路径，完整 fallocate workload 与最终同机 dev/Linux 7.1
 A/B 仍须在整体性能收敛阶段完成。
+
+### 7.26 extent range-removal restart 检查点
+
+采集时间：2026-08-12；被测实现 commit 为
+`1db33f3a858eecb00c82c99efa1551e66845e9dc`，固定 CPU 2，memory backend、
+4 KiB filesystem block、`metadata_csum+64bit+journal` 与 20 MiB sequential
+workload 均保持冻结配置。本检查点只让超过 journal ring capacity 的 extent
+punch/truncate 进入 restart 路径，冻结 workload 不执行范围删除，因此结果只能保护
+共享 write/read/sync 热路径，不能作为 restart 路径本身的因果性能数据。
+
+正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-12-extent-removal-restart.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=1db33f3a858eecb00c82c99efa1551e66845e9dc arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=7258847 write_p95_ns=9203180 read_median_ns=8303538 read_p95_ns=10098886 sync_median_ns=35503 sync_p95_ns=45936
+```
+
+相对 dev 基线，write/read median 分别回退约 6.3%/15.0%，write/read/sync p95
+分别回退约 25.5%/19.1%/18.9%，超过冻结硬门槛；sync median 回退约 37.5%。
+采集时 CPU governor 为 `powersave`，20 个样本出现与 7.24 相似的明显双峰，且本次
+新增分支不在 workload 热路径，因此当前证据既不能把回退归因于 extent restart，
+也不能将本检查点判绿。全部样本（包括 11.943 ms read 和 73.523 us sync）原样
+保留，不选择性剔除或用复测覆盖。最终性能收敛必须在能够固定 governor 的同机环境
+对 dev 与最终实现重做完整 A/B，并单独增加大范围 punch/truncate workload 报告
+相对 Linux 7.1 的开销。
