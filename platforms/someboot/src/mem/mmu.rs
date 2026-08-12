@@ -1,3 +1,4 @@
+use kernutil::StaticCell;
 use page_table_generic::PageTable;
 pub use page_table_generic::{PagingError, PagingResult};
 
@@ -33,6 +34,7 @@ pub struct PteConfig {
     pub mem_attr: MemAttributes,
 }
 
+static BOOT_TABLE: StaticCell<ArchPageTable<Ram>> = StaticCell::uninit();
 pub static mut BOOT_TABLE_ADDR: usize = 0;
 
 pub(crate) fn new_boot_table() -> ArchPageTable<Ram> {
@@ -49,12 +51,11 @@ pub(crate) fn set_boot_table(table: ArchPageTable<Ram>) {
     let root_addr: usize = table.root_paddr().into();
     unsafe {
         BOOT_TABLE_ADDR = root_addr;
+        // SAFETY: only the boot CPU constructs the boot page table, before the
+        // MMU and secondary CPUs are enabled. StaticCell's publication path
+        // does not require exclusive atomic instructions in this phase.
+        BOOT_TABLE.init_before_smp(table);
     }
-    // The active boot page table must remain alive for the system lifetime.
-    // Early AArch64 cannot use exclusive atomics reliably before the MMU is
-    // enabled, so retain ownership explicitly instead of publishing it through
-    // an atomic lazy-initialization primitive.
-    core::mem::forget(table);
 }
 
 pub(crate) fn boot_table_addr() -> usize {

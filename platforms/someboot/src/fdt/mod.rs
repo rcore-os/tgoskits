@@ -1,15 +1,15 @@
 mod earlycon;
 mod memory;
 
-use ax_lazyinit::OnceLock;
 pub use earlycon::setup_earlycon;
+use kernutil::StaticCell;
 #[allow(unused)]
 pub use memory::{init_memory_map, memories};
 
 use crate::mem::phys_to_virt;
 
 pub(crate) static mut FDT_ADDR: usize = 0;
-static FDT: OnceLock<fdt_edit::Fdt> = OnceLock::new();
+static FDT: StaticCell<fdt_edit::Fdt> = StaticCell::uninit();
 
 const MAX_FDT_SIZE: usize = 16 * 1024 * 1024;
 
@@ -63,7 +63,9 @@ pub(crate) fn init_with_alloc() -> Option<()> {
     // early RAM copy, both of which stay valid for the boot lifetime.
     let slice = unsafe { validated_fdt_slice(fdt_addr)? };
     let fdt = fdt_edit::Fdt::from_bytes(slice).ok()?;
-    FDT.call_once(|| fdt);
+    // SAFETY: post-allocator FDT construction runs once on the boot CPU, and
+    // secondary CPUs are not released until the runtime finishes device setup.
+    unsafe { FDT.init_before_smp(fdt) };
     Some(())
 }
 #[allow(dead_code)]

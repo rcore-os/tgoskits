@@ -1,4 +1,4 @@
-use ax_lazyinit::OnceLock;
+use kernutil::StaticCell;
 use rdif_intc::{AcpiGsiController, AcpiIrqPolarity, AcpiIrqTrigger, Interface};
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver,
@@ -21,7 +21,7 @@ const PCH_PIC_EDGE: usize = 0x60;
 const PCH_PIC_POL: usize = 0x3e0;
 const PCH_INT_HTVEC: usize = 0x200;
 
-static CPU_IF: OnceLock<PchPicCpuInterface> = OnceLock::new();
+static CPU_IF: StaticCell<PchPicCpuInterface> = StaticCell::uninit();
 
 module_driver!(
     name: "Loongson PCH-PIC",
@@ -140,15 +140,17 @@ fn register_pch_pic(
     let vector_count = vector_count.unwrap_or(detected_vector_count);
     let controller_address = mmio.phys_addr().as_usize() as u64;
     if !CPU_IF.is_initialized() {
-        CPU_IF.call_once(|| {
-            PchPicCpuInterface::new(
+        // SAFETY: PCH-PIC discovery is a boot-CPU pre-kernel probe and all
+        // controller discovery completes before secondary CPU release.
+        unsafe {
+            CPU_IF.init_before_smp(PchPicCpuInterface::new(
                 domain,
                 AcpiGsiController::PchPic,
                 controller_address,
                 base_vector,
                 vector_count,
-            )
-        });
+            ));
+        }
     } else {
         warn!("Loongson PCH-PIC CPU interface is already initialized");
     }

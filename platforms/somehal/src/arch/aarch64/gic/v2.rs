@@ -2,14 +2,14 @@ use alloc::format;
 
 use aarch64_cpu::asm::barrier;
 use arm_gic_driver::{checked_intid, v2::*};
-use ax_lazyinit::OnceLock;
 use irq_framework::IrqId;
+use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
 use crate::common::ioremap;
 
-static CPU_IF: OnceLock<CpuInterface> = OnceLock::new();
-static TRAP: OnceLock<TrapOp> = OnceLock::new();
+static CPU_IF: StaticCell<CpuInterface> = StaticCell::uninit();
+static TRAP: StaticCell<TrapOp> = StaticCell::uninit();
 static CPU_TARGETS: CpuTargetMap = CpuTargetMap::new();
 
 module_driver!(
@@ -71,8 +71,12 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     gic.init();
     let cpu = gic.cpu_interface();
     let trap = cpu.trap_operations();
-    CPU_IF.call_once(|| cpu);
-    TRAP.call_once(|| trap);
+    // SAFETY: pre-kernel interrupt-controller probing runs once on the boot
+    // CPU, before the runtime releases secondary CPUs.
+    unsafe {
+        CPU_IF.init_before_smp(cpu);
+        TRAP.init_before_smp(trap);
+    }
     super::set_backend(super::GicBackend::V2);
 
     let cpu_idx = crate::cpu::current_cpu_idx()

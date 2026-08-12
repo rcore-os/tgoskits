@@ -6,14 +6,14 @@ use core::{
 
 use aarch64_cpu::{asm::barrier, registers::ID_AA64PFR0_EL1};
 use arm_gic_driver::{checked_intid, v3::*};
-use ax_lazyinit::OnceLock;
 use irq_framework::IrqId;
+use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
 use crate::common::ioremap;
 
-static CPU_IF_INIT: OnceLock<CpuInterfaceInit> = OnceLock::new();
-static CPU_IF: OnceLock<BTreeMap<usize, CpuInterfaceSlot>> = OnceLock::new();
+static CPU_IF_INIT: StaticCell<CpuInterfaceInit> = StaticCell::uninit();
+static CPU_IF: StaticCell<BTreeMap<usize, CpuInterfaceSlot>> = StaticCell::uninit();
 static PRIMARY_GICR_PHYS_BASE: AtomicU64 = AtomicU64::new(0);
 
 struct CpuInterfaceSlot {
@@ -86,7 +86,9 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     gic.init();
     super::set_backend(super::GicBackend::V3);
 
-    CPU_IF_INIT.call_once(|| gic.cpu_interface_init());
+    // SAFETY: pre-kernel GIC probing is owned by the boot CPU and completes
+    // before any secondary CPU is released.
+    unsafe { CPU_IF_INIT.init_before_smp(gic.cpu_interface_init()) };
     init_cpu_interface_map();
     let cpu_idx =
         crate::cpu::current_cpu_idx().unwrap_or_else(someboot::smp::early_current_cpu_idx);
@@ -259,7 +261,9 @@ fn init_cpu_interface_map() {
     for cpu_idx in 0..someboot::smp::cpu_count() {
         cpu_if.insert(cpu_idx, CpuInterfaceSlot::empty());
     }
-    CPU_IF.call_once(|| cpu_if);
+    // SAFETY: the boot CPU builds the immutable logical-CPU map during the
+    // same pre-SMP GIC probe. Per-CPU slots synchronize their own later state.
+    unsafe { CPU_IF.init_before_smp(cpu_if) };
 }
 
 fn init_cpu_interface(cpu_idx: usize) -> Result<(), &'static str> {

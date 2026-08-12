@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use ax_lazyinit::OnceLock;
+use kernutil::StaticCell;
 use rdif_intc::Interface;
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::ProbeFdt,
@@ -30,7 +30,7 @@ const ROUTE_INT_COUNT: usize = 4;
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 static CASCADE_IRQ_MASK: AtomicUsize = AtomicUsize::new(0);
-static CPU_IF: OnceLock<LioIntcCpuInterface> = OnceLock::new();
+static CPU_IF: StaticCell<LioIntcCpuInterface> = StaticCell::uninit();
 
 module_driver!(
     name: "Loongson LS2K1000 LIOINTC",
@@ -147,7 +147,11 @@ fn register_liointc(
     .map_err(|err| OnProbeError::other(format!("failed to register LIOINTC domain: {err:?}")))?;
     let cascade_mask = intc.cascade_irq_mask();
     let cascade_irqs = intc.parent_irqs;
-    CPU_IF.call_once(|| LioIntcCpuInterface::new(domain, isr, cascade_irqs));
+    // SAFETY: pre-kernel controller probing runs on the boot CPU before
+    // secondary release. The published interface uses atomics for later state.
+    unsafe {
+        CPU_IF.init_before_smp(LioIntcCpuInterface::new(domain, isr, cascade_irqs));
+    }
     dev.register(rdif_intc::Intc::new(domain, intc));
     CASCADE_IRQ_MASK.fetch_or(cascade_mask, Ordering::AcqRel);
     // Publish the dedicated CPU interface before hard IRQ claim/complete can

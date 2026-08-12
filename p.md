@@ -16,6 +16,8 @@ TGOSKits 不应在公共底层实现一套接近 Linux 的统一内存管理器�
 
 这里的“多个消费者”按独立系统/子系统语义判断，而不是按 Cargo 依赖计数判断。`buddy-slab-allocator` 作为 `ax-alloc` 的私有算法边界、`dma-api`/`mmio-api` 作为多驱动 capability 边界，虽然形态不同，也都满足明确的复用职责。
 
+`kernutil` 不属于 `memory/`，也不再承载内存描述、区间算法、地址类型或架构状态；它只保留一个跨 `someboot`/`somehal` 的启动阶段原语 `StaticCell`。该原语表达“BSP 在 AP 启动前初始化一次，之后所有 CPU 仅不可变访问”，不是通用 lazy initialization 或运行期全局可变容器。
+
 目标架构如下：
 
 ```text
@@ -56,6 +58,7 @@ StarryOS 可以在公共机制之上继续扩展，但它的复杂度不能成�
 ### 2.2 成功标准
 
 - 启动内存只有 `someboot` 一个可变所有者；进入 runtime 前冻结，之后只读；
+- 跨平台启动常量由 BSP 在 secondary CPU release 前通过 `StaticCell` 发布；发布后没有可变入口；
 - `memory/` 中不存在 StarryOS、VFS、任务调度或具体架构寄存器依赖；
 - `ax-alloc` 的一次调用只执行请求的分配或释放，不隐式进入回收策略；
 - 平台交接的可用 RAM、保留内存和 MMIO 语义唯一、排序、无重叠，并由 `usable_ram_size()` 明确汇总可分配 RAM；
@@ -72,6 +75,7 @@ StarryOS 可以在公共机制之上继续扩展，但它的复杂度不能成�
 - 统一 Stage-1/Stage-2/boot 页表格式或统一 TLB shootdown 策略；
 - 为未来假设创建 allocator backend、builder、provider trait 或公共 owner 层；
 - 因目录名或 `no_std` 属性搬迁只有一个消费者的代码；
+- 用通用 once/lock 取代能够由 pre-SMP 阶段顺序证明的静态不可变发布；
 - 在本轮架构收敛中重做 DMA descriptor 表示、IOMMU 或驱动队列协议。
 
 保持现状也不是可接受方案：当前仍有平台内存语义不一致、早期地址运算溢出、allocator 反向回调 Starry 策略、可达的 `unimplemented!()`，以及 `ax-memory-set` 吞错或 panic 的确定问题。
@@ -80,13 +84,22 @@ StarryOS 可以在公共机制之上继续扩展，但它的复杂度不能成�
 
 ### 3.1 启动内存
 
-当前 PR 已将启动内存描述和区间规范化从 `kernutil`、`ranges-ext` 收敛到 `someboot::mem`：
+当前 PR 已将启动内存描述和区间规范化从 `kernutil`、`ranges-ext` 收敛到 `someboot::mem`，同时把 `kernutil` 收窄为启动期静态发布原语：
 
 - `BootMemoryMap` 使用固定容量 `heapless::Vec<_, 512>`；
 - BSP 在内核、早期 RAM、MMIO 和 CPU-local 预留完成后调用 `freeze()`；
 - `Release` 发布与 `Acquire` 读取保证 runtime 只观察完整的只读内存图；
 - `somehal` 只重导出冻结后的视图；
 - 区间插入已经检查冲突、容量和 descriptor 末端溢出。
+
+`StaticCell` 与启动内存图是两个不同边界：
+
+- `StaticCell<T>` 只允许 BSP 在其他 CPU/线程尚未运行时调用 `unsafe init_before_smp()`；先写入完整 `T`，再用 `Release` 发布，运行期通过 `Acquire` 获得 `&T`；
+- `StaticCell<T>: Sync` 仅在 `T: Send + Sync` 时成立：`Send` 允许 BSP 将值发布给其他 CPU，`Sync` 允许后续共享 `&T`；不能把 `Cell` 等非线程安全内部可变状态包装成共享全局；
+- 不再提供 `update(&self)`、安全的并发 `init()` 或 `&mut T`，内部可变状态必须由 `T` 自身的 atomic/lock/per-CPU 机制保护；
+- pre-MMU boot page table 可以使用该非 CAS 初始化路径，避免 AArch64 在 MMU 前依赖 exclusive atomic 指令；
+- `BootMemoryMap` 需要经历多次插入、排序和预留，因此继续由 `someboot` 私有状态机管理并显式 `freeze()`，不使用 `StaticCell` 模拟可变所有权；
+- 若初始化可能与其他 CPU 竞争，或者值需要运行期替换，应使用 `OnceLock`、锁、RCU/epoch 或 owner-specific 状态，而不是扩大 `StaticCell`。
 
 这个方向符合启动阶段需求，不需要再公开 `BootArena` 或 `BootMemoryHandoff`。现有交接链已经是 handoff：
 
@@ -208,6 +221,7 @@ DMA 修正必须作为明确的 breaking-change 设计处理：先列出真实 t
 | 层/组件 | 保留职责 | 明确不负责 |
 | --- | --- | --- |
 | `someboot::mem` | 固件内存图、规范化、早期 bump、boot 页表帧、启动资源预留、冻结发布 | runtime 页分配、reclaim、进程/客户机策略 |
+| `kernutil::StaticCell` | BSP 在 secondary release 前一次初始化、运行期跨 CPU 不可变访问 | boot map 多步修改、并发 lazy init、运行期更新、内部同步 |
 | `somehal` | 转发冻结的 boot facts；拥有运行期平台硬件状态 | 再维护一份可变内存图 |
 | `axplat-dyn` / `ax-plat::MemIf` | 将 boot facts 适配为 runtime 可用 RAM、reserved、MMIO 和地址转换/cache capability | allocator 算法和 OS 统计策略 |
 | `axhal` / `axruntime` | 构造 runtime region view，初始化 allocator，完成系统接线 | 隐式修正含糊的平台语义 |
@@ -240,6 +254,15 @@ DMA 修正必须作为明确的 breaking-change 设计处理：先列出真实 t
 6. 三组 range 各自有序、无重叠；可用 RAM 与 reserved/MMIO 互斥；`usable_ram_size()` 返回第一组之和；
 7. `axhal` 不再对已经规范化的可用 RAM 重复做 reserved subtraction；adapter 容量至少覆盖 boot map 上限和平台固定项；私有的 handoff preparation 在 allocator 初始化前完成验证，失败由启动入口报告具体类别，不在 lazy query 中裸 `unwrap()`；
 8. handoff 不分配堆、不引入锁，继续使用固定容量存储。
+
+启动期非内存全局状态遵守另一条更窄的发布契约：
+
+1. 只有启动顺序能够证明由 BSP 独占、且在 secondary CPU release 前完成构造的值才使用 `StaticCell`；
+2. `init_before_smp()` 保持 `unsafe`，每个调用点说明唯一初始化者和 AP 尚未发布的依据；
+3. 完整写入之后执行 `Release` 发布，读取使用 `Acquire`，值只以 `&T` 暴露；
+4. `T` 必须为 `Send + Sync`；如果 `T` 内含运行期状态，其 atomic/lock/per-CPU 同步由 `T` 自己负责；
+5. 运行期驱动热插拔、模块注册、可重初始化和并发首次访问不满足该契约，必须选择并发原语；
+6. 该原语只解决阶段所有权和不可变发布，不转移具体状态的领域 owner，也不属于 `memory/` 公共内存机制。
 
 这里选择在同一次 breaking PR 中替换含糊的旧名称和全部 workspace 调用方，不增加新旧并存的兼容双入口，也不新增统一 `MemoryRegionManager` 或动态 `Vec`。当前消费者实际需要的是可分配 RAM；Starry `MemTotal`、`sysinfo.totalram` 和 `_SC_PHYS_PAGES` 也应使用经过平台保留后的 usable RAM。若未来确实需要报告固件安装容量，应新增独立且有数据来源的 platform fact，不能用 reserved 列表反推。
 
@@ -290,11 +313,12 @@ dealloc(allocation facts)
 ### 7.1 PR 1：启动内存所有权收敛（当前 PR）
 
 - 分支：`mem1`，对应 PR #1978；
-- 问题：`kernutil::StaticCell` 的发布/别名风险、启动内存分散所有权、`ranges-ext` 单一领域消费者；
-- 修改：将启动内存类型和规范化迁入 `someboot`，删除 `kernutil`/`ranges-ext`，按 owner 改用 `OnceLock` 或私有状态，加入 boot map freeze；
-- 收益：启动阶段可变、runtime 只读成为可检查的不变量；减少两个无充分公共职责的 crate；
+- 问题：`kernutil` 混合静态发布、内存描述、区间和 ID 等无共同生命周期的工具；旧 `StaticCell` 先发布 initialized 再写值，以 `T: Send` 实现 `Sync`，并允许从 `&self` 运行期取得 `&mut T`；启动内存又依赖独立的单一领域 `ranges-ext`，所有权和冻结边界不可检查；
+- 修改：将启动内存类型和规范化迁入 `someboot`，删除 `ranges-ext`；保留并收窄 `kernutil::StaticCell` 为 `unsafe init_before_smp + immutable get`，按 `T: Send + Sync` 约束并采用 write -> Release / Acquire 顺序；启动内存使用私有 `BootMemoryMap` 并在 runtime handoff 前 freeze；
+- 收益：同时明确两个互不混淆的不变量——启动内存由 `someboot` 多步构造后冻结，启动静态值由 BSP 一次发布后不可变共享；保留 pre-MMU、无 CAS 的低成本路径，并消除旧 `StaticCell` 的发布和别名风险；
 - 边界：不改变 runtime allocator、VM policy、DMA 或页表契约；
-- 验证：现有 someboot 单元测试、跨架构 check、目标 crate clippy 和 Starry system QEMU 回归。
+- 兼容：删除 `ranges-ext`，移除 `kernutil` 的 memory/address/id API，并以 `init_before_smp/get/is_initialized` 替换旧 `init/update/is_init`，属于 breaking change；迁移方将 boot memory 类型改用 `someboot::mem`，仅在可证明 pre-SMP 的调用点使用新 `StaticCell`；
+- 验证：compile-fail 证明非 `Sync` 值不能进入共享 `StaticCell`；线程测试证明发布后可跨线程不可变读取；现有 someboot 单元测试、跨架构 check、目标 crate clippy 和 Starry system QEMU 回归。
 
 ### 7.2 PR 2：启动交接契约与算术加固
 
@@ -344,6 +368,7 @@ dealloc(allocation facts)
 - `cargo tree` 证明 `buddy-slab-allocator` 的生产入口由 `ax-alloc` 统一；
 - `rg` 证明 `ax-alloc` 不再包含 reclaim callback，也不依赖 VFS/Starry/AxVM；
 - `someboot` freeze 后没有可达的 memory-map 修改 API；
+- `StaticCell` 不存在 `&self -> &mut T` 或安全并发初始化入口，且每个 `init_before_smp` 调用点都有 AP 尚未 release 的依据；
 - `memory/` 不出现具体 PTE bits、MAIR/TLB 指令、Linux syscall policy 或 guest layout；
 - Starry reclaim、COW 和 Linux accounting 只存在于 Starry 边界；
 - 所有公开 unsupported 路径返回错误，不存在可达 `unimplemented!()`。
@@ -363,6 +388,7 @@ dealloc(allocation facts)
 本方案不声明未经测量的性能提升。设计上的预期是：
 
 - boot map 仍是最多数百项的一次性固定容量处理，允许简单的排序/区间操作；
+- `StaticCell` 初始化只增加一次普通写和一次 `Release` store，读取为一次 `Acquire` load；不引入锁、spin 或 CAS，符合 pre-SMP 热路径边界；
 - allocator 成功热路径不增加锁、trait object、owner allocation 或策略判断；
 - 删除隐式 reclaim 不影响成功路径，只缩短并明确失败路径；
 - typed mapping error 在内联后不应增加堆分配；

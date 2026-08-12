@@ -34,6 +34,7 @@ members = [
     "components/crate_interface",
     "components/irq-framework",
     "components/kasm-aarch64",
+    "components/kernutil",
     "components/linked_list_r4l",
     "components/scope-local",
     "components/timer_list",
@@ -147,6 +148,7 @@ irq-framework = { version = "0.3.2", path = "components/irq-framework" }
 ax-input = { version = "0.6.8", path = "os/arceos/modules/axinput" }
 ax-io = { version = "0.6.4", path = "components/axio" }
 ax-ipi = { version = "0.5.30", path = "os/arceos/modules/axipi" }
+kernutil = { version = "0.2.4", path = "components/kernutil" }
 ax-lazyinit = { version = "0.4.10", path = "components/ax-lazyinit" }
 ax-libc = { version = "0.5.31", path = "os/arceos/ulib/axlibc" }
 libc = { version = "0.2", default-features = false }

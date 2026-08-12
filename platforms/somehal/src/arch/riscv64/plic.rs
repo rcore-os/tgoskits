@@ -1,8 +1,8 @@
 use alloc::{format, vec, vec::Vec};
 use core::{num::NonZeroU32, ptr::NonNull};
 
-use ax_lazyinit::OnceLock;
 use ax_riscv_plic::{PLICRegs, Plic, PlicIrqHandler};
+use kernutil::StaticCell;
 use rdif_intc::Interface;
 use rdrive::{
     Device, DriverGeneric, Phandle, module_driver,
@@ -24,7 +24,7 @@ const SUPERVISOR_EXTERNAL_INTERRUPT: u32 = 9;
 const DEFAULT_PRIORITY: u32 = 1;
 const DEFAULT_PLIC_SIZE: usize = 0x400_0000;
 
-static IRQ_HANDLER: OnceLock<RiscvPlicIrqHandler> = OnceLock::new();
+static IRQ_HANDLER: StaticCell<RiscvPlicIrqHandler> = StaticCell::uninit();
 
 module_driver!(
     name: "RISC-V PLIC",
@@ -240,7 +240,9 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         inner: plic.irq_handler(),
         context_by_cpu: contexts.clone(),
     };
-    IRQ_HANDLER.call_once(|| irq_handler);
+    // SAFETY: PLIC probing is completed by the boot CPU before secondary CPUs
+    // are released; the handler's runtime shared state is synchronized.
+    unsafe { IRQ_HANDLER.init_before_smp(irq_handler) };
     if let Some(handler) = get_irq_handler() {
         handler.reset_all_contexts();
     }

@@ -1,10 +1,10 @@
 use core::fmt::Display;
 
 use aarch64_cpu::asm::wfi;
-use ax_lazyinit::OnceLock;
+use kernutil::StaticCell;
 use smccc::{Hvc, Smc, psci};
 
-static METHOD: OnceLock<Method> = OnceLock::new();
+static METHOD: StaticCell<Method> = StaticCell::uninit();
 
 pub(crate) fn init() {
     let fdt = crate::fdt::fdt().unwrap();
@@ -19,7 +19,9 @@ pub(crate) fn init() {
         .unwrap()
         .into();
 
-    METHOD.call_once(|| method);
+    // SAFETY: `Arch::post_allocator` runs once on the boot CPU, before the
+    // runtime releases any secondary CPU through this PSCI method.
+    unsafe { METHOD.init_before_smp(method) };
     info!("Power management method : {method}");
 }
 
