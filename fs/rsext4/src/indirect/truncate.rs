@@ -41,6 +41,12 @@ pub(crate) struct LegacyTransactionFootprint {
 }
 
 impl LegacyTruncatePlan {
+    pub(crate) fn has_removals(&self) -> bool {
+        !self.pointer_edits.is_empty()
+            || !self.data_blocks_to_free.is_empty()
+            || !self.metadata_blocks_to_free.is_empty()
+    }
+
     pub(crate) fn apply_pointer_edits<B: BlockIo>(
         &self,
         device: &mut Jbd2Dev<B>,

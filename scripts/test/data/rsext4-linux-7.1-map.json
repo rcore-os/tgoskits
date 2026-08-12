@@ -579,8 +579,116 @@
       "segments": [
         {
           "start": 1,
-          "end": 1474,
+          "end": 688,
           "symbol": "<whole-file>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::indirect",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "legacy-indirect-13-blocks",
+            "legacy-indirect-truncate-atomicity"
+          ]
+        },
+        {
+          "start": 689,
+          "end": 746,
+          "symbol": "ext4_ind_trunc_restart_fn; ext4_ind_truncate_ensure_credits",
+          "classification": "core",
+          "state_machine": "extend the active truncate handle or persist a consistent inode/pointer checkpoint before restarting it",
+          "invariant": "every committed truncate checkpoint leaves a tree that can be rediscovered from the inode and safely resumed",
+          "rust_owner": "rsext4::file::io legacy mapping restart",
+          "reason": "journal-capacity restart and its crash-resumable cursor are portable ext4 persistence semantics",
+          "test_ids": [
+            "legacy-indirect-truncate-atomicity"
+          ]
+        },
+        {
+          "start": 747,
+          "end": 856,
+          "symbol": "<coarse interval>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::indirect",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "legacy-indirect-13-blocks"
+          ]
+        },
+        {
+          "start": 857,
+          "end": 985,
+          "symbol": "ext4_clear_blocks; ext4_free_data",
+          "classification": "core",
+          "state_machine": "coalesce data runs, reserve credits, clear their parent pointers, free allocation metadata, and journal the pointer owner",
+          "invariant": "a data run is never returned to the allocator without the pointer removal and bitmap/accounting update sharing one restartable transaction",
+          "rust_owner": "rsext4::indirect::truncate",
+          "reason": "legacy data-pointer removal and allocation rollback are portable filesystem semantics",
+          "test_ids": [
+            "legacy-indirect-truncate-atomicity"
+          ]
+        },
+        {
+          "start": 986,
+          "end": 999,
+          "symbol": "ext4_free_branches documentation",
+          "classification": "core",
+          "state_machine": "documents recursive branch ownership",
+          "invariant": "child branches and their accounting are released before the parent branch is retired",
+          "rust_owner": "rsext4::indirect::truncate",
+          "reason": "the documented recursive ownership rule defines the portable truncate algorithm",
+          "test_ids": [
+            "legacy-indirect-truncate-atomicity"
+          ]
+        },
+        {
+          "start": 1000,
+          "end": 1110,
+          "symbol": "ext4_free_branches",
+          "classification": "core",
+          "state_machine": "walk indirect branches right-to-left and bottom-up, then retire metadata with bitmap and revoke protection",
+          "invariant": "each committed child/parent transition remains reachable or fully freed; reused metadata cannot be overwritten by stale replay",
+          "rust_owner": "rsext4::indirect::truncate and rsext4::jbd2 revoke owner",
+          "reason": "recursive metadata removal is core; Linux revoke records remain a tracked difference until pipelined transactions exist",
+          "test_ids": [
+            "legacy-indirect-truncate-atomicity",
+            "jbd2-handle-credits"
+          ]
+        },
+        {
+          "start": 1111,
+          "end": 1111,
+          "symbol": "separator",
+          "classification": "core",
+          "state_machine": "none",
+          "invariant": "the frozen source line remains classified",
+          "rust_owner": "rsext4::indirect",
+          "reason": "source inventory continuity",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        },
+        {
+          "start": 1112,
+          "end": 1215,
+          "symbol": "ext4_ind_truncate",
+          "classification": "core",
+          "state_machine": "derive the cutoff from durable i_size, publish it under orphan protection, prune the shared branch, then remove whole right-hand subtrees",
+          "invariant": "the persisted inode size plus the currently committed pointer tree are sufficient to resume after replay without an on-disk cursor",
+          "rust_owner": "rsext4::file::io and rsext4::indirect::truncate",
+          "reason": "legacy truncate recovery is an OS-independent ext4 disk invariant",
+          "test_ids": [
+            "legacy-indirect-13-blocks",
+            "legacy-indirect-truncate-atomicity",
+            "classic-orphan-recovery"
+          ]
+        },
+        {
+          "start": 1216,
+          "end": 1474,
+          "symbol": "<coarse interval>",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",
@@ -643,7 +751,7 @@
       "segments": [
         {
           "start": 1,
-          "end": 6826,
+          "end": 4566,
           "symbol": "<whole-file>",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
@@ -658,6 +766,36 @@
             "fallocate-preallocation-full-stack",
             "fallocate-range-zero-punch",
             "special-inode-rdev",
+            "fiemap-full-stack"
+          ]
+        },
+        {
+          "start": 4567,
+          "end": 4693,
+          "symbol": "ext4_truncate",
+          "classification": "core",
+          "state_machine": "publish the target size and orphan intent, perform restartable extent or indirect removal, then remove the orphan only for a still-linked inode",
+          "invariant": "after every journal commit the filesystem plus journal contains a consistent tree that replay and orphan cleanup can resume",
+          "rust_owner": "rsext4::file::io and rsext4::ext4::orphan",
+          "reason": "truncate ordering, durable intent, and crash recovery are portable ext4 persistence semantics",
+          "test_ids": [
+            "legacy-indirect-truncate-atomicity",
+            "classic-orphan-recovery",
+            "extent-mutation-rollback"
+          ]
+        },
+        {
+          "start": 4694,
+          "end": 6826,
+          "symbol": "<coarse interval>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::file",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "legacy-indirect-13-blocks",
+            "extent-unwritten-preallocation",
             "fiemap-full-stack"
           ]
         }
@@ -846,7 +984,7 @@
       "segments": [
         {
           "start": 1,
-          "end": 659,
+          "end": 89,
           "symbol": "<whole-file>",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
@@ -857,6 +995,60 @@
             "classic-orphan-recovery",
             "legacy-indirect-13-blocks",
             "legacy-indirect-truncate-atomicity"
+          ]
+        },
+        {
+          "start": 90,
+          "end": 187,
+          "symbol": "ext4_orphan_add",
+          "classification": "core",
+          "state_machine": "publish a linked truncate or zero-link deletion intent in orphan-file storage or the classic superblock-headed chain",
+          "invariant": "the inode and orphan head update are journaled together before a multi-transaction truncate or final deletion may proceed",
+          "rust_owner": "rsext4::ext4::orphan",
+          "reason": "durable orphan intent belongs to the portable ext4 core; orphan-file storage remains unimplemented",
+          "test_ids": [
+            "classic-orphan-recovery",
+            "legacy-indirect-truncate-atomicity"
+          ]
+        },
+        {
+          "start": 188,
+          "end": 320,
+          "symbol": "<coarse interval>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::lifecycle::orphan",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "classic-orphan-recovery"
+          ]
+        },
+        {
+          "start": 321,
+          "end": 376,
+          "symbol": "ext4_process_orphan; ext4_orphan_cleanup contract",
+          "classification": "core",
+          "state_machine": "after journal replay, re-truncate linked inodes and drive zero-link inodes through final eviction while preserving a restartable orphan chain",
+          "invariant": "recovery may crash again at any committed boundary without losing the remaining orphan work",
+          "rust_owner": "rsext4::ext4::orphan and rsext4::file::delete",
+          "reason": "orphan recovery ordering and retry semantics belong to the portable ext4 core",
+          "test_ids": [
+            "classic-orphan-recovery",
+            "legacy-indirect-truncate-atomicity"
+          ]
+        },
+        {
+          "start": 377,
+          "end": 659,
+          "symbol": "<coarse interval>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::lifecycle::orphan",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "classic-orphan-recovery"
           ]
         }
       ]

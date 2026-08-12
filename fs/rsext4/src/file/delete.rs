@@ -10,6 +10,10 @@ const UNLINK_TRANSACTION_CREDITS: usize = 24;
 // counted by truncate. Quota is not implemented yet, so the base is 24 + 3.
 const REAP_BASE_TRANSACTION_CREDITS: usize = 27;
 const REAP_MAX_TRANSACTION_DATA: u64 = 64;
+// Once a restarted truncate has removed every mapping, final reap can touch
+// at most the target and predecessor inode-table blocks, the inode bitmap,
+// one group-descriptor block, and the superblock.
+const EMPTY_REAP_TRANSACTION_CREDITS: usize = 5;
 
 /// A directory entry located by a single parent-directory scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,8 +115,11 @@ fn reap_transaction_credits(fs: &Ext4FileSystem, inode: &Ext4Inode) -> Ext4Resul
     let huge_file = fs
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
-    let data_credits = inode
-        .blocks_count(block_size, huge_file)
+    let owned_blocks = inode.blocks_count(block_size, huge_file);
+    if owned_blocks == 0 {
+        return Ok(EMPTY_REAP_TRANSACTION_CREDITS);
+    }
+    let data_credits = owned_blocks
         .div_ceil(sectors_per_block)
         .clamp(2, REAP_MAX_TRANSACTION_DATA);
     REAP_BASE_TRANSACTION_CREDITS
