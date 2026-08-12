@@ -5,7 +5,6 @@ use super::arceos;
 pub(crate) type ThreadHandle = arceos::ArceOsThreadHandle;
 pub(crate) type IrqNotification = arceos::ArceOsIrqNotification;
 pub(crate) type MonotonicDeadline = arceos::ArceOsMonotonicDeadline;
-#[cfg(target_arch = "aarch64")]
 pub(crate) type KernelTimerHandle = arceos::ArceOsKernelTimerHandle;
 pub(crate) type ThreadExtensionBorrow<'thread> =
     ax_std::os::arceos::task::ThreadOsExtensionBorrow<'thread>;
@@ -22,7 +21,6 @@ pub(crate) fn current_thread() -> ThreadHandle {
     arceos::current_thread()
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) fn register_kernel_timer(
     deadline: MonotonicDeadline,
     callback: std::boxed::Box<dyn FnOnce(std::time::Duration) + Send + 'static>,

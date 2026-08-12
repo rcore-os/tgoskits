@@ -122,7 +122,6 @@ impl HostCpu for ArceOsHost {
 
 pub(crate) type ArceOsThreadHandle = runtime_task::ThreadHandle;
 pub(crate) type ArceOsWaitQueue = runtime_task::WaitQueue;
-#[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsKernelTimerHandle = runtime_task::KernelTimerHandle;
 #[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
@@ -213,7 +212,6 @@ pub(crate) fn current_thread() -> ArceOsThreadHandle {
         .unwrap_or_else(|error| panic!("AxVM requires a current scheduler thread: {error}"))
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) fn register_kernel_timer(
     deadline: ArceOsMonotonicDeadline,
     callback: Box<dyn FnOnce(Duration) + Send + 'static>,
@@ -486,6 +484,7 @@ impl HostPlatform for ArceOsHost {
     }
 
     fn enable_virtualization_on_current_cpu(&self) -> AxVmResult {
+        #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
         crate::timer::init_percpu()?;
         crate::percpu::init_current_cpu()?;
         crate::percpu::enable_current_cpu()?;

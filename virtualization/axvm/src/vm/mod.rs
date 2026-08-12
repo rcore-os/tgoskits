@@ -24,6 +24,7 @@ use std::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::Duration,
     vec::Vec,
 };
 
@@ -789,10 +790,14 @@ impl TimerAccessPort for AxVmDeviceAccessPorts {
         trace!(
             "VM[{vm_id}] device {device_id:?} scheduled access-scoped timer at {deadline_ns:#x} ns"
         );
-        crate::timer::register_timer(
-            deadline_ns,
+        crate::host::task::register_kernel_timer(
+            crate::host::task::MonotonicDeadline::from_duration(Duration::from_nanos(deadline_ns)),
             Box::new(move |_| crate::runtime::vcpus::notify_all_vcpus(vm_id)),
-        );
+        )
+        .map_err(|error| axdevice::DeviceManagerError::InvalidState {
+            operation: "schedule timer from device access",
+            detail: format!("kernel timer registration failed: {error}"),
+        })?;
         Ok(())
     }
 }

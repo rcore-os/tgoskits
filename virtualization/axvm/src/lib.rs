@@ -38,6 +38,7 @@ mod percpu;
 mod runtime;
 mod sync;
 mod task;
+#[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
 mod timer;
 mod vcpu;
 mod vm;
