@@ -6,7 +6,6 @@ use core::{
 };
 
 use byte_unit::{Byte, UnitType};
-use kernutil::memory::{MemoryDescriptor, MemoryType};
 #[cfg(target_arch = "x86_64")]
 use some_serial::ns16550::Port;
 use some_serial::{
@@ -17,7 +16,7 @@ use some_serial::{
 
 use crate::{
     cmdline::EarlyconConfig,
-    mem::{_fixmap_io, page_size},
+    mem::{_fixmap_io, MemoryDescriptor, MemoryType, page_size},
 };
 
 pub(crate) static mut DEBUG_BASE: usize = 0;

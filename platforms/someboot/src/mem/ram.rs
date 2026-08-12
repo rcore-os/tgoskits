@@ -1,10 +1,9 @@
 use core::{alloc::Layout, ops::Range};
 
-use kernutil::memory::{MemoryDescriptor, MemoryType};
 use num_align::NumAlign;
 use page_table_generic::FrameAllocator;
 
-use crate::mem::{add_memory_descriptor, page_size};
+use crate::mem::{MemoryDescriptor, MemoryType, add_memory_descriptor, page_size};
 
 /// RAM 分配器的起始地址
 static mut RAM_START: usize = 0;

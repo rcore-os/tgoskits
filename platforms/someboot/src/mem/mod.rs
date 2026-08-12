@@ -1,17 +1,20 @@
 use core::ops::Range;
 
 use byte_unit::{Byte, UnitType};
-use kernutil::StaticCell;
-pub use kernutil::memory::{MemoryDescriptor, MemoryType, PageTableInfo};
 use num_align::NumAlign;
-use ranges_ext::*;
 
+use self::map::BootMemoryMap;
+pub(crate) use self::map::MemoryMapError;
+
+mod map;
 pub mod mmu;
 pub(crate) mod ram;
 pub(crate) mod region;
+mod types;
 
 pub use mmu::{MemAttributes, PteConfig};
 pub use page_table_generic::*;
+pub use types::{MemoryDescriptor, MemoryType, PageTableInfo};
 
 use crate::{ArchTrait, DCacheOp, arch::Arch, smp::cpu_area_region};
 
@@ -21,16 +24,12 @@ pub const GB: usize = 1024 * MB;
 pub const KIMAGE_MAP_ALIGN: usize = 2 * MB;
 
 static mut VM_LOAD_OFFSET: isize = 0;
-static MEMORY_MAP: StaticCell<MemoryMap> = StaticCell::new(MemoryMap::new());
+static MEMORY_MAP: BootMemoryMap = BootMemoryMap::new();
 
 /// Load address of the kernel start
 static mut KIMAGE_START: Option<PhysAddr> = None;
 /// Load address of the kernel end
 static mut KIMAGE_END: PhysAddr = PhysAddr::from_usize(0);
-
-const MEMORY_MAP_CAPACITY: usize = 512;
-
-pub type MemoryMap = heapless::Vec<MemoryDescriptor, MEMORY_MAP_CAPACITY>;
 
 pub(crate) fn setup_entry(
     kernel_start: PhysAddr,
@@ -81,7 +80,11 @@ pub(crate) fn __kimage_va_to_pa(vaddr: *const u8) -> usize {
 }
 
 pub fn memory_map() -> &'static [MemoryDescriptor] {
-    MEMORY_MAP.as_slice()
+    MEMORY_MAP.published_slice()
+}
+
+pub(crate) fn with_boot_memory_map<R>(f: impl FnOnce(&[MemoryDescriptor]) -> R) -> R {
+    MEMORY_MAP.with_slice(f)
 }
 
 pub fn dcache_range(op: DCacheOp, addr: *const u8, size: usize) {
@@ -190,18 +193,23 @@ pub(crate) fn early_init() {
     });
     reserve_arch_early_ranges();
 
-    unsafe { MEMORY_MAP.update(|m| m.sort_by_key(|a| a.physical_start)) };
+    MEMORY_MAP.sort_by_physical_start();
 
     print_memory_map();
 
     let mut free_range = None;
 
-    for desc in memory_map().iter() {
-        if desc.memory_type == MemoryType::Free && desc.size_in_bytes > 8 * MB {
-            free_range = Some(desc.physical_start..(desc.physical_start + desc.size_in_bytes));
-            break;
+    with_boot_memory_map(|descriptors| {
+        for desc in descriptors {
+            if desc.memory_type == MemoryType::Free && desc.size_in_bytes > 8 * MB {
+                let end = desc
+                    .checked_end()
+                    .expect("validated boot memory descriptor cannot overflow");
+                free_range = Some(desc.physical_start..end);
+                break;
+            }
         }
-    }
+    });
 
     ram::init(free_range.expect("No free memory"));
 
@@ -218,7 +226,7 @@ fn reserve_arch_early_ranges() {
             MemoryDescriptor::new_aligned(tramp, page_size(), MemoryType::Reserved, page_size());
         match add_memory_descriptor(desc) {
             Ok(()) => {}
-            Err(RangeError::Conflict { existing, .. })
+            Err(MemoryMapError::Conflict { existing, .. })
                 if existing.memory_type != MemoryType::Free =>
             {
                 // Already reserved by firmware map; keep it as-is.
@@ -264,24 +272,27 @@ pub(crate) fn memory_map_setup() {
 
 pub fn print_memory_map() {
     println!("Memory Map:");
-    unsafe { MEMORY_MAP.update(|m| m.sort_by_key(|m| m.physical_start)) };
 
-    for desc in memory_map().iter() {
-        let fmt = Byte::from(desc.size_in_bytes).get_appropriate_unit(UnitType::Binary);
-        println!(
-            "  {} {:>#016x} - {:>#016x} ({:#.2})",
-            desc.memory_type,
-            desc.physical_start,
-            desc.physical_start + desc.size_in_bytes,
-            fmt
-        );
-    }
+    with_boot_memory_map(|descriptors| {
+        for desc in descriptors {
+            let fmt = Byte::from(desc.size_in_bytes).get_appropriate_unit(UnitType::Binary);
+            let end = desc
+                .checked_end()
+                .expect("validated boot memory descriptor cannot overflow");
+            println!(
+                "  {} {:>#016x} - {:>#016x} ({:#.2})",
+                desc.memory_type, desc.physical_start, end, fmt
+            );
+        }
+    });
 }
 
-pub(crate) fn add_memory_descriptor(
-    desc: MemoryDescriptor,
-) -> Result<(), RangeError<MemoryDescriptor>> {
-    unsafe { MEMORY_MAP.update(|mem| mem.merge_add(desc)) }
+pub(crate) fn add_memory_descriptor(desc: MemoryDescriptor) -> Result<(), MemoryMapError> {
+    MEMORY_MAP.insert(desc)
+}
+
+pub(crate) fn freeze_memory_map() {
+    MEMORY_MAP.freeze();
 }
 
 pub fn kernel_space() -> Range<usize> {
@@ -316,7 +327,7 @@ pub(crate) fn mem_constants_and_types_hold_for_test() -> bool {
     assert_eq!(KIMAGE_MAP_ALIGN, 2 * MB);
 
     // Test MemoryMap capacity
-    assert_eq!(MEMORY_MAP_CAPACITY, 512);
+    assert_eq!(map::MEMORY_MAP_CAPACITY, 512);
 
     true
 }

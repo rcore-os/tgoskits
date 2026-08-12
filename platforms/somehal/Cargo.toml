@@ -23,6 +23,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
 anyhow = {workspace = true}
+ax-lazyinit.workspace = true
 ax-sync = { workspace = true }
 cpu-local.workspace = true
 irq-framework = { workspace = true }
@@ -35,7 +36,6 @@ somehal-macros = {workspace = true}
 tock-registers.workspace = true
 thiserror = {workspace = true}
 log = {workspace = true}
-kernutil = {workspace = true}
 mmio-api = {workspace = true}
 
 

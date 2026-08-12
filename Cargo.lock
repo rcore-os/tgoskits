@@ -4622,16 +4622,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kernutil"
-version = "0.2.4"
-dependencies = [
- "axtest",
- "heapless",
- "num-align",
- "ranges-ext",
-]
-
-[[package]]
 name = "keyboard-types"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6244,14 +6234,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ranges-ext"
-version = "0.6.4"
-dependencies = [
- "heapless",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "ratatui"
 version = "0.30.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7719,6 +7701,7 @@ dependencies = [
  "ansi_rgb",
  "anyhow",
  "arrayvec",
+ "ax-lazyinit",
  "bit_field",
  "bitflags 2.13.1",
  "byte-unit",
@@ -7728,7 +7711,6 @@ dependencies = [
  "fdt-raw",
  "heapless",
  "kasm-aarch64",
- "kernutil",
  "libc",
  "log",
  "loongArch64",
@@ -7737,7 +7719,6 @@ dependencies = [
  "page-table-generic",
  "prettyplease 0.3.0",
  "quote",
- "ranges-ext",
  "rgb",
  "sbi-rt",
  "smccc",
@@ -7759,11 +7740,11 @@ dependencies = [
  "anyhow",
  "arm-gic-driver",
  "ax-cpu",
+ "ax-lazyinit",
  "ax-riscv-plic",
  "ax-sync",
  "cpu-local",
  "irq-framework",
- "kernutil",
  "log",
  "loongArch64",
  "mmio-api",
@@ -7892,7 +7873,6 @@ dependencies = [
  "k230-kpu",
  "kbpf-basic",
  "kernel-elf-parser",
- "kernutil",
  "kmod-loader",
  "kmod-tools",
  "kprobe",
@@ -7906,7 +7886,6 @@ dependencies = [
  "ouroboros",
  "page-table-generic",
  "rand 0.10.2",
- "ranges-ext",
  "rbpf",
  "rdif-base",
  "rdif-block",

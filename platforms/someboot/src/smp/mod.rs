@@ -4,13 +4,11 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use kernutil::memory::MemoryType;
-
 use crate::{
     ArchTrait, DCacheOp,
     arch::Arch,
     kernel_page_table_paddr,
-    mem::{cpu_area_phys_to_virt, dcache_range, page_size, phys_to_virt},
+    mem::{MemoryType, cpu_area_phys_to_virt, dcache_range, page_size, phys_to_virt},
 };
 
 mod cpu_iter;

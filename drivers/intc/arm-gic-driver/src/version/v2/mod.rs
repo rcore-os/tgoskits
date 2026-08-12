@@ -591,6 +591,11 @@ pub struct CpuInterface {
 }
 
 unsafe impl Send for CpuInterface {}
+// SAFETY: the pointers refer to the shutdown-lifetime GIC distributor and
+// CPU-interface mappings. GICC registers and GICD private-interrupt registers
+// are banked per CPU, while shared distributor operations use the GIC's MMIO
+// register semantics and do not require mutable Rust access.
+unsafe impl Sync for CpuInterface {}
 
 impl CpuInterface {
     fn gicc(&self) -> &CpuInterfaceReg {
@@ -607,7 +612,7 @@ impl CpuInterface {
     }
 
     /// Initialize the CPU interface for the current CPU
-    pub fn init_current_cpu(&mut self) {
+    pub fn init_current_cpu(&self) {
         let gicc = self.gicc();
 
         // 1. Disable CPU interface first
@@ -1278,6 +1283,13 @@ mod tests {
     extern crate std;
 
     use super::*;
+
+    fn assert_sync<T: Sync>() {}
+
+    #[test]
+    fn cpu_interface_can_be_published_as_shared_state() {
+        assert_sync::<CpuInterface>();
+    }
 
     #[test]
     fn target_list_preserves_banked_cpu_target_mask() {

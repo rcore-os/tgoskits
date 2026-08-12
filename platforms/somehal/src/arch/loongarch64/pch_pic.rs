@@ -1,4 +1,4 @@
-use kernutil::StaticCell;
+use ax_lazyinit::OnceLock;
 use rdif_intc::{AcpiGsiController, AcpiIrqPolarity, AcpiIrqTrigger, Interface};
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver,
@@ -21,7 +21,7 @@ const PCH_PIC_EDGE: usize = 0x60;
 const PCH_PIC_POL: usize = 0x3e0;
 const PCH_INT_HTVEC: usize = 0x200;
 
-static CPU_IF: StaticCell<PchPicCpuInterface> = StaticCell::uninit();
+static CPU_IF: OnceLock<PchPicCpuInterface> = OnceLock::new();
 
 module_driver!(
     name: "Loongson PCH-PIC",
@@ -48,7 +48,7 @@ pub fn irq_for_external_vector(vector: usize) -> Option<rdif_intc::IrqId> {
 }
 
 fn cpu_interface() -> Option<&'static PchPicCpuInterface> {
-    CPU_IF.is_init().then(|| &*CPU_IF)
+    CPU_IF.get()
 }
 
 pub fn resolve_acpi_route(
@@ -139,14 +139,16 @@ fn register_pch_pic(
     .map_err(|err| OnProbeError::other(format!("failed to register PCH-PIC domain: {err:?}")))?;
     let vector_count = vector_count.unwrap_or(detected_vector_count);
     let controller_address = mmio.phys_addr().as_usize() as u64;
-    if !CPU_IF.is_init() {
-        CPU_IF.init(PchPicCpuInterface::new(
-            domain,
-            AcpiGsiController::PchPic,
-            controller_address,
-            base_vector,
-            vector_count,
-        ));
+    if !CPU_IF.is_initialized() {
+        CPU_IF.call_once(|| {
+            PchPicCpuInterface::new(
+                domain,
+                AcpiGsiController::PchPic,
+                controller_address,
+                base_vector,
+                vector_count,
+            )
+        });
     } else {
         warn!("Loongson PCH-PIC CPU interface is already initialized");
     }

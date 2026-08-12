@@ -20,7 +20,6 @@ use axpoll as _;
 use buddy_slab_allocator as _;
 use dma_api as _;
 use irq_framework as _;
-use kernutil as _;
 use mmio_api as _;
 use page_table_generic as _;
 use rdif_base as _;

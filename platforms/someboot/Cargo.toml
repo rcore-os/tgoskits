@@ -27,6 +27,7 @@ aml = "0.16"
 ansi_rgb = "0.2"
 anyhow = { workspace = true, default-features = false }
 arrayvec = { version = "0.7", default-features = false }
+ax-lazyinit.workspace = true
 bit_field = "0.10"
 bitflags = "2.9"
 byte-unit = { workspace = true }
@@ -35,12 +36,10 @@ fdt-edit.workspace = true
 fdt-raw.workspace = true
 thiserror.workspace = true
 heapless = "0.9"
-kernutil = { workspace = true }
 log = "0.4"
 num-align = "0.1"
 numeric-enum-macro = "0.2"
 page-table-generic = { workspace = true }
-ranges-ext = { workspace = true }
 rgb = "0.8"
 some-serial.workspace = true
 somehal-macros = { workspace = true }

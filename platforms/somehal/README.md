@@ -295,7 +295,7 @@ somehal = { version = "0.5", features = ["hv", "uspace"] }
 - **`rdrive`**: 统一驱动框架
 - **`rdif-intc`**: 中断控制器驱动接口
 - **`page-table-generic`**: 通用页表管理
-- **`kernutil`**: 内核工具库（StaticCell 等）
+- **`ax-lazyinit`**: 一次初始化且只读发布的平台状态
 
 ### AArch64 特定依赖
 
@@ -387,7 +387,7 @@ impl Platform for PlatformImpl {
    - `begin_irq()`: claim/ack 并返回 `ActiveIrq`
    - `irq_set_enable()`: IRQ 使能控制
 3. 在 `ActiveIrq::drop()` 中完成 EOI/complete
-4. 使用 `StaticCell` 管理全局状态
+4. 一次发布的只读状态使用 `ax-lazyinit::OnceLock`；逐 CPU 或运行期可变状态使用所属子系统明确的同步与所有权模型
 
 ### 宏使用最佳实践
 

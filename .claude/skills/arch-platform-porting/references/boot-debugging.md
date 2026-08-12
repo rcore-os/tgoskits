@@ -173,6 +173,10 @@ Use this order when auditing an early boot port:
 1. Entry preserves firmware arguments and records them before BSS or relocation can destroy them.
 2. Early serial output works before `ExitBootServices`.
 3. Firmware memory map is captured, classified, and converted into the kernel memory model.
+   The BSP remains its sole mutable owner until kernel, early allocator, MMIO,
+   and CPU-local reservations are complete; freeze the normalized map before
+   runtime entry, then let `somehal`/`axplat-dyn` consume only its immutable
+   published view.
 4. Kernel image physical range, load offset, and high-half range are known before address translation helpers are used.
 5. Page tables or arch direct-map windows cover the currently executing code, boot stack, page tables, kernel high map, MMIO, and boot data.
 6. Trap vectors are installed using the address form required by the architecture at that moment.

@@ -1,15 +1,15 @@
 mod earlycon;
 mod memory;
 
+use ax_lazyinit::OnceLock;
 pub use earlycon::setup_earlycon;
-use kernutil::StaticCell;
 #[allow(unused)]
 pub use memory::{init_memory_map, memories};
 
 use crate::mem::phys_to_virt;
 
 pub(crate) static mut FDT_ADDR: usize = 0;
-static FDT: StaticCell<fdt_edit::Fdt> = StaticCell::uninit();
+static FDT: OnceLock<fdt_edit::Fdt> = OnceLock::new();
 
 const MAX_FDT_SIZE: usize = 16 * 1024 * 1024;
 
@@ -63,21 +63,19 @@ pub(crate) fn init_with_alloc() -> Option<()> {
     // early RAM copy, both of which stay valid for the boot lifetime.
     let slice = unsafe { validated_fdt_slice(fdt_addr)? };
     let fdt = fdt_edit::Fdt::from_bytes(slice).ok()?;
-    FDT.init(fdt);
+    FDT.call_once(|| fdt);
     Some(())
 }
 #[allow(dead_code)]
 pub(crate) fn fdt() -> Option<&'static fdt_edit::Fdt> {
     fdt_addr()?;
-    Some(&FDT)
+    FDT.get()
 }
 
-pub fn set_cmdline() -> Option<()> {
+pub(crate) fn bootargs() -> Option<&'static str> {
     let fdt = fdt_base()?;
     let chosen = fdt.chosen()?;
-    let cmdline = chosen.bootargs()?;
-    crate::cmdline::set_cmdline(cmdline);
-    Some(())
+    chosen.bootargs()
 }
 
 pub(crate) fn save_fdt() {

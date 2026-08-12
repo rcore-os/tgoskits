@@ -1,31 +1,7 @@
-use kernutil::StaticCell;
-
-static CMDLINE: StaticCell<[u8; 0x1000]> = StaticCell::new([0; 0x1000]);
-
 const BUILDIN_CMDLINE: Option<&str> = option_env!("KERNEL_BUILTIN_CMDLINE");
 
-pub fn set_cmdline(cmdline: &str) {
-    let bytes = cmdline.as_bytes();
-    let len = bytes.len().min(CMDLINE.len() - 1);
-
-    unsafe {
-        CMDLINE.update(|cmd| {
-            cmd[..len].copy_from_slice(&bytes[..len]);
-            cmd[len] = 0;
-        });
-    }
-}
-
 pub fn cmdline() -> Option<&'static str> {
-    if CMDLINE[0] == 0 {
-        return BUILDIN_CMDLINE;
-    }
-
-    let len = CMDLINE
-        .iter()
-        .position(|&c| c == 0)
-        .unwrap_or(CMDLINE.len());
-    Some(unsafe { core::str::from_utf8_unchecked(&CMDLINE[..len]) })
+    crate::fdt::bootargs().or(BUILDIN_CMDLINE)
 }
 
 pub fn var(key: &str) -> Option<&'static str> {

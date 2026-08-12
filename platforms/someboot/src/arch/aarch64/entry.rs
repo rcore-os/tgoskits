@@ -91,7 +91,7 @@ pub(crate) fn eret_with_timer_mode_arg(timer_mode: ArchTimerMode) -> ! {
 pub(crate) fn mmu_entry() -> ! {
     println!("Disable user page table");
     #[cfg(uspace)]
-    elx::set_user_table(kernutil::memory::PageTableInfo::zero());
+    elx::set_user_table(crate::mem::PageTableInfo::zero());
     elx::flush_tlb(None);
     super::trap::setup();
 

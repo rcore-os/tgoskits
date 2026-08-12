@@ -8,8 +8,6 @@ use crate::{
 };
 
 pub fn setup_earlycon() -> Option<()> {
-    let _ = super::set_cmdline();
-
     if <<crate::arch::Arch as crate::ArchTrait>::Console as crate::console::ArchConsoleOps>::init()
     {
         Some(())

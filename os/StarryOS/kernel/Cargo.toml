@@ -246,7 +246,6 @@ ax-net = { workspace = true, features = ["axtest"] }
 axpoll = { workspace = true, features = ["axtest"] }
 dma-api = { workspace = true, features = ["axtest"] }
 irq-framework = { workspace = true, features = ["axtest"] }
-kernutil = { workspace = true, features = ["axtest"] }
 mmio-api = { workspace = true, features = ["axtest"] }
 rdif-base = { workspace = true, features = ["axtest"] }
 rdif-block = { workspace = true, features = ["axtest"] }
@@ -262,7 +261,6 @@ rdif-power = { workspace = true, features = ["axtest"] }
 rdif-reset = { workspace = true, features = ["axtest"] }
 rdif-serial = { workspace = true, features = ["axtest"] }
 rdif-vsock = { workspace = true, features = ["axtest"] }
-ranges-ext.workspace = true
 rdrive = { workspace = true, features = ["axtest"] }
 rsext4 = { workspace = true, features = ["axtest"] }
 scope-local = { workspace = true, features = ["axtest"] }

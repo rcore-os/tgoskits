@@ -6,14 +6,14 @@ use core::{
 
 use aarch64_cpu::{asm::barrier, registers::ID_AA64PFR0_EL1};
 use arm_gic_driver::{checked_intid, v3::*};
+use ax_lazyinit::OnceLock;
 use irq_framework::IrqId;
-use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
 use crate::common::ioremap;
 
-static CPU_IF_INIT: StaticCell<CpuInterfaceInit> = StaticCell::uninit();
-static CPU_IF: StaticCell<BTreeMap<usize, CpuInterfaceSlot>> = StaticCell::uninit();
+static CPU_IF_INIT: OnceLock<CpuInterfaceInit> = OnceLock::new();
+static CPU_IF: OnceLock<BTreeMap<usize, CpuInterfaceSlot>> = OnceLock::new();
 static PRIMARY_GICR_PHYS_BASE: AtomicU64 = AtomicU64::new(0);
 
 struct CpuInterfaceSlot {
@@ -86,7 +86,7 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     gic.init();
     super::set_backend(super::GicBackend::V3);
 
-    CPU_IF_INIT.init(gic.cpu_interface_init());
+    CPU_IF_INIT.call_once(|| gic.cpu_interface_init());
     init_cpu_interface_map();
     let cpu_idx =
         crate::cpu::current_cpu_idx().unwrap_or_else(someboot::smp::early_current_cpu_idx);
@@ -242,7 +242,7 @@ pub(super) fn primary_gicr_phys_base() -> Option<u64> {
 }
 
 pub fn init_cpu(cpu_idx: usize) {
-    if !CPU_IF_INIT.is_init() {
+    if !CPU_IF_INIT.is_initialized() {
         warn!("failed to initialize GICv3 CPU interface for CPU {cpu_idx}: missing GICv3 state");
         return;
     }
@@ -259,11 +259,14 @@ fn init_cpu_interface_map() {
     for cpu_idx in 0..someboot::smp::cpu_count() {
         cpu_if.insert(cpu_idx, CpuInterfaceSlot::empty());
     }
-    CPU_IF.init(cpu_if);
+    CPU_IF.call_once(|| cpu_if);
 }
 
 fn init_cpu_interface(cpu_idx: usize) -> Result<(), &'static str> {
-    let mut cpu = CPU_IF_INIT.cpu_interface();
+    let mut cpu = CPU_IF_INIT
+        .get()
+        .expect("GICv3 CPU interface initializer is not registered")
+        .cpu_interface();
     cpu.init_current_cpu()?;
     #[cfg(feature = "hv")]
     {
@@ -290,6 +293,8 @@ fn current_cpu_interface() -> &'static CpuInterface {
 
 fn cpu_interface_slot(cpu_idx: usize) -> &'static CpuInterfaceSlot {
     CPU_IF
+        .get()
+        .expect("GICv3 CPU interface map is not initialized")
         .get(&cpu_idx)
         .unwrap_or_else(|| panic!("GICv3 CPU interface slot for CPU {cpu_idx} is not registered"))
 }

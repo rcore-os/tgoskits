@@ -1,10 +1,10 @@
 use core::fmt::Display;
 
 use aarch64_cpu::asm::wfi;
-use kernutil::StaticCell;
+use ax_lazyinit::OnceLock;
 use smccc::{Hvc, Smc, psci};
 
-static METHOD: StaticCell<Method> = StaticCell::uninit();
+static METHOD: OnceLock<Method> = OnceLock::new();
 
 pub(crate) fn init() {
     let fdt = crate::fdt::fdt().unwrap();
@@ -19,7 +19,7 @@ pub(crate) fn init() {
         .unwrap()
         .into();
 
-    METHOD.init(method);
+    METHOD.call_once(|| method);
     info!("Power management method : {method}");
 }
 
@@ -50,13 +50,13 @@ impl Display for Method {
 
 // Shutdown the system
 pub fn shutdown() -> ! {
-    if !METHOD.is_init() {
+    let Some(method) = METHOD.get() else {
         loop {
             wfi();
         }
-    }
+    };
 
-    if let Err(e) = match *METHOD {
+    if let Err(e) = match method {
         Method::Smc => psci::system_off::<Smc>(),
         Method::Hvc => psci::system_off::<Hvc>(),
     } {
@@ -69,13 +69,13 @@ pub fn shutdown() -> ! {
 
 // Reset the system through PSCI.
 pub fn reset() -> ! {
-    if !METHOD.is_init() {
+    let Some(method) = METHOD.get() else {
         loop {
             wfi();
         }
-    }
+    };
 
-    if let Err(e) = match *METHOD {
+    if let Err(e) = match method {
         Method::Smc => psci::system_reset::<Smc>(),
         Method::Hvc => psci::system_reset::<Hvc>(),
     } {
@@ -91,7 +91,9 @@ pub(crate) fn cpu_on(
     entry: u64,
     stack_top: u64,
 ) -> Result<(), smccc::psci::error::Error> {
-    let method = *METHOD;
+    let method = *METHOD
+        .get()
+        .expect("power management method is not initialized");
     debug!("[{method}]Power on CPU {cpu_id:#x} at entry {entry:#x}, stack top {stack_top:#x}",);
     match method {
         Method::Smc => psci::cpu_on::<Smc>(cpu_id, entry, stack_top)?,

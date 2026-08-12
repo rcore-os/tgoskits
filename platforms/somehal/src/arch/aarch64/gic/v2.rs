@@ -2,14 +2,14 @@ use alloc::format;
 
 use aarch64_cpu::asm::barrier;
 use arm_gic_driver::{checked_intid, v2::*};
+use ax_lazyinit::OnceLock;
 use irq_framework::IrqId;
-use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
 use crate::common::ioremap;
 
-static CPU_IF: StaticCell<CpuInterface> = StaticCell::uninit();
-static TRAP: StaticCell<TrapOp> = StaticCell::uninit();
+static CPU_IF: OnceLock<CpuInterface> = OnceLock::new();
+static TRAP: OnceLock<TrapOp> = OnceLock::new();
 static CPU_TARGETS: CpuTargetMap = CpuTargetMap::new();
 
 module_driver!(
@@ -71,8 +71,8 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     gic.init();
     let cpu = gic.cpu_interface();
     let trap = cpu.trap_operations();
-    CPU_IF.init(cpu);
-    TRAP.init(trap);
+    CPU_IF.call_once(|| cpu);
+    TRAP.call_once(|| trap);
     super::set_backend(super::GicBackend::V2);
 
     let cpu_idx = crate::cpu::current_cpu_idx()
@@ -102,15 +102,15 @@ impl ActiveIrq {
 
 impl Drop for ActiveIrq {
     fn drop(&mut self) {
-        TRAP.eoi(self.ack);
-        if TRAP.eoi_mode_ns() {
-            TRAP.dir(self.ack);
+        trap().eoi(self.ack);
+        if trap().eoi_mode_ns() {
+            trap().dir(self.ack);
         }
     }
 }
 
 pub fn begin_irq() -> Option<ActiveIrq> {
-    let ack = TRAP.ack();
+    let ack = trap().ack();
     if ack.is_special() {
         return None;
     }
@@ -128,14 +128,11 @@ pub fn begin_irq() -> Option<ActiveIrq> {
 }
 
 pub fn init_cpu(cpu_idx: usize) {
-    let target = unsafe {
-        CPU_IF.update(|cpu| {
-            cpu.init_current_cpu();
-            #[cfg(feature = "hv")]
-            cpu.set_eoi_mode_ns(true);
-            cpu.current_cpu_target()
-        })
-    };
+    let cpu = cpu_interface();
+    cpu.init_current_cpu();
+    #[cfg(feature = "hv")]
+    cpu.set_eoi_mode_ns(true);
+    let target = cpu.current_cpu_target();
     let hardware_cpu_id = super::hardware_cpu_id(cpu_idx).unwrap_or_else(|error| {
         panic!("failed to resolve hardware ID for logical CPU {cpu_idx}: {error:?}")
     });
@@ -158,7 +155,7 @@ pub fn init_cpu(cpu_idx: usize) {
 pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
     if irq.hwirq.0 < 32 {
         let intid = checked_private_intid(irq.hwirq.0)?;
-        CPU_IF.set_irq_enable(intid, enable);
+        cpu_interface().set_irq_enable(intid, enable);
         return Ok(());
     }
 
@@ -175,7 +172,7 @@ pub fn irq_set_trigger(irq: IrqId, trigger: Trigger) -> Result<(), crate::irq::I
         None,
         |raw| {
             let intid = checked_private_intid(raw)?;
-            CPU_IF.set_cfg(intid, trigger);
+            cpu_interface().set_cfg(intid, trigger);
             Ok(())
         },
         |raw| {
@@ -232,10 +229,20 @@ pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) -> Result<(), crate::
     // memory stores before ringing it so the target cannot observe the SGI
     // before the associated payload.
     barrier::dmb(barrier::ISHST);
-    CPU_IF.send_sgi(sgi, target);
+    cpu_interface().send_sgi(sgi, target);
     Ok(())
 }
 
 pub(super) fn cpu_target(cpu_idx: usize) -> Option<TargetList> {
     CPU_TARGETS.for_logical_cpu(cpu_idx)
+}
+
+fn cpu_interface() -> &'static CpuInterface {
+    CPU_IF
+        .get()
+        .expect("GICv2 CPU interface is not initialized")
+}
+
+fn trap() -> &'static TrapOp {
+    TRAP.get().expect("GICv2 trap interface is not initialized")
 }

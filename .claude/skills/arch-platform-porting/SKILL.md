@@ -63,6 +63,7 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   Cargo `vmx` or `svm` feature. Both cases must use the same backend-neutral guest baseline so
   their result isolates the runtime CPUID-selected virtualization path.
 - **someboot arch layer**: implement or audit entry, relocation, BSS clearing, stack setup, memory map parsing, paging, trap vectors, timer, IRQ, power, SMP, and address translation.
+- **Boot memory publication**: keep firmware descriptors, normalization, early reservations, and boot page-table ownership in `someboot`. The BSP may mutate the boot map only until kernel, early allocator, MMIO, and CPU-local reservations are complete; freeze it before runtime entry and expose only the immutable view through `somehal` to `axplat-dyn`. Runtime memory components must not mutate the boot map or recreate a shared boot-memory utility crate.
 - **CPU-local startup**: the final ELF carries exactly one `.percpu.template` plus
   `.percpu.init` and `.percpu.align`; it never carries a linked runtime area or compatibility
   alias. Discover the runtime CPU count, dynamically allocate every final area from that template
@@ -118,6 +119,7 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - Preserve the firmware entry ABI. UEFI entry carries `image_handle` and `system_table`; direct boot paths use different arguments.
 - Establish an early console before risky transitions, then ensure a post-UEFI/post-MMU console path exists without Boot Services.
 - Capture the memory map and kernel image physical range before address translation helpers depend on them.
+- Freeze the normalized boot memory map after all early reservations and before runtime entry; secondary CPUs and runtime adapters may only observe the published immutable view.
 - Treat relocated symbols carefully. After relocation or high-half switch, use runtime-safe symbol address helpers instead of raw compile-time addresses.
 - For x86_64 direct PIE boot, apply supported `R_X86_64_RELATIVE` relocations in a naked,
   RIP-relative entry before executing Rust. The UEFI header may share the head section, but the

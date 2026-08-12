@@ -159,60 +159,65 @@ pub fn enable_mmu() -> ! {
 fn setup_page_table() -> anyhow::Result<()> {
     let mut table = crate::mem::mmu::new_boot_table();
 
-    for region in crate::mem::memory_map() {
-        let size = region.size_in_bytes.align_up(page_size());
-        if size == 0 {
-            continue;
+    crate::mem::with_boot_memory_map(|regions| -> anyhow::Result<()> {
+        for region in regions {
+            let size = region.size_in_bytes.align_up(page_size());
+            if size == 0 {
+                continue;
+            }
+            let name = match region.memory_type {
+                crate::mem::MemoryType::Free => "Free",
+                crate::mem::MemoryType::Ram => "Ram",
+                crate::mem::MemoryType::Reserved => "Reserved",
+                crate::mem::MemoryType::Mmio => "Mmio",
+                crate::mem::MemoryType::KImage => "KImage",
+                crate::mem::MemoryType::PerCpuData => "PerCpu",
+            };
+
+            let pte = PteConfig {
+                read: true,
+                writable: true,
+                executable: region.memory_type != crate::mem::MemoryType::Mmio,
+                global: true,
+                mem_attr: match region.memory_type {
+                    crate::mem::MemoryType::Mmio => MemAttributes::Device,
+                    _ => MemAttributes::Normal,
+                },
+                ..Default::default()
+            };
+
+            print_mapping(name, region.physical_start, region.physical_start, size);
+
+            table.map(&MapConfig {
+                vaddr: region.physical_start.into(),
+                paddr: region.physical_start.into(),
+                size,
+                pte,
+                allow_huge: true,
+                flush: false,
+            })?;
+
+            let direct_vaddr = region.physical_start.wrapping_add(PHYS_VIRT_OFFSET);
+            print_mapping(name, direct_vaddr, region.physical_start, size);
+            table.map(&MapConfig {
+                vaddr: direct_vaddr.into(),
+                paddr: region.physical_start.into(),
+                size,
+                pte,
+                allow_huge: true,
+                flush: false,
+            })?;
         }
-        let name = match region.memory_type {
-            crate::mem::MemoryType::Free => "Free",
-            crate::mem::MemoryType::Ram => "Ram",
-            crate::mem::MemoryType::Reserved => "Reserved",
-            crate::mem::MemoryType::Mmio => "Mmio",
-            crate::mem::MemoryType::KImage => "KImage",
-            crate::mem::MemoryType::PerCpuData => "PerCpu",
-        };
-
-        let pte = PteConfig {
-            read: true,
-            writable: true,
-            executable: region.memory_type != crate::mem::MemoryType::Mmio,
-            global: true,
-            mem_attr: match region.memory_type {
-                crate::mem::MemoryType::Mmio => MemAttributes::Device,
-                _ => MemAttributes::Normal,
-            },
-            ..Default::default()
-        };
-
-        print_mapping(name, region.physical_start, region.physical_start, size);
-
-        table.map(&MapConfig {
-            vaddr: region.physical_start.into(),
-            paddr: region.physical_start.into(),
-            size,
-            pte,
-            allow_huge: true,
-            flush: false,
-        })?;
-
-        let direct_vaddr = region.physical_start.wrapping_add(PHYS_VIRT_OFFSET);
-        print_mapping(name, direct_vaddr, region.physical_start, size);
-        table.map(&MapConfig {
-            vaddr: direct_vaddr.into(),
-            paddr: region.physical_start.into(),
-            size,
-            pte,
-            allow_huge: true,
-            flush: false,
-        })?;
-    }
+        Ok(())
+    })?;
 
     let lapic_base = (unsafe { rdmsr(x86::msr::IA32_APIC_BASE) } as usize) & !(page_size() - 1);
-    let lapic_mapped = crate::mem::memory_map().iter().any(|region| {
-        let start = region.physical_start;
-        let end = start.saturating_add(region.size_in_bytes);
-        (start..end).contains(&lapic_base)
+    let lapic_mapped = crate::mem::with_boot_memory_map(|regions| {
+        regions.iter().any(|region| {
+            let start = region.physical_start;
+            let end = start.saturating_add(region.size_in_bytes);
+            (start..end).contains(&lapic_base)
+        })
     });
     if !lapic_mapped {
         let lapic_vaddr = lapic_base.wrapping_add(PHYS_VIRT_OFFSET);
@@ -252,10 +257,12 @@ fn setup_page_table() -> anyhow::Result<()> {
     }
 
     let ap_trampoline = super::power::AP_TRAMPOLINE_PADDR;
-    let ap_trampoline_mapped = crate::mem::memory_map().iter().any(|region| {
-        let start = region.physical_start;
-        let end = start.saturating_add(region.size_in_bytes);
-        (start..end).contains(&ap_trampoline)
+    let ap_trampoline_mapped = crate::mem::with_boot_memory_map(|regions| {
+        regions.iter().any(|region| {
+            let start = region.physical_start;
+            let end = start.saturating_add(region.size_in_bytes);
+            (start..end).contains(&ap_trampoline)
+        })
     });
     if !ap_trampoline_mapped {
         print_mapping("APTrampoline", ap_trampoline, ap_trampoline, page_size());

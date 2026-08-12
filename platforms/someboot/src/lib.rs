@@ -212,6 +212,7 @@ fn prime_entry() -> ! {
 
     // mem::init_after_mmu();
     mem::memory_map_setup();
+    mem::freeze_memory_map();
     mem::print_memory_map();
 
     smp::initialize_percpu_layout();

@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use kernutil::StaticCell;
+use ax_lazyinit::OnceLock;
 use rdif_intc::Interface;
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::ProbeFdt,
@@ -30,7 +30,7 @@ const ROUTE_INT_COUNT: usize = 4;
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 static CASCADE_IRQ_MASK: AtomicUsize = AtomicUsize::new(0);
-static CPU_IF: StaticCell<LioIntcCpuInterface> = StaticCell::uninit();
+static CPU_IF: OnceLock<LioIntcCpuInterface> = OnceLock::new();
 
 module_driver!(
     name: "Loongson LS2K1000 LIOINTC",
@@ -55,13 +55,13 @@ pub fn is_cascade_irq(irq: usize) -> bool {
 pub fn claim_irq(raw: usize) -> Option<crate::irq::IrqId> {
     REGISTERED
         .load(Ordering::Acquire)
-        .then(|| CPU_IF.claim_irq(raw))
+        .then(|| cpu_interface().claim_irq(raw))
         .flatten()
 }
 
 pub fn complete_irq(irq: crate::irq::IrqId) {
     if REGISTERED.load(Ordering::Acquire) {
-        CPU_IF.complete_irq(irq);
+        cpu_interface().complete_irq(irq);
     }
 }
 
@@ -147,7 +147,7 @@ fn register_liointc(
     .map_err(|err| OnProbeError::other(format!("failed to register LIOINTC domain: {err:?}")))?;
     let cascade_mask = intc.cascade_irq_mask();
     let cascade_irqs = intc.parent_irqs;
-    CPU_IF.init(LioIntcCpuInterface::new(domain, isr, cascade_irqs));
+    CPU_IF.call_once(|| LioIntcCpuInterface::new(domain, isr, cascade_irqs));
     dev.register(rdif_intc::Intc::new(domain, intc));
     CASCADE_IRQ_MASK.fetch_or(cascade_mask, Ordering::AcqRel);
     // Publish the dedicated CPU interface before hard IRQ claim/complete can
@@ -349,11 +349,17 @@ impl Interface for LioIntc {
         let mask = 1u32 << input;
         if enabled {
             self.write_reg_u32(REG_ENABLE, mask);
-            CPU_IF.publish_enabled(input);
+            cpu_interface().publish_enabled(input);
         } else {
-            CPU_IF.hide_disabled(input);
+            cpu_interface().hide_disabled(input);
             self.write_reg_u32(REG_DISABLE, mask);
         }
         Ok(())
     }
+}
+
+fn cpu_interface() -> &'static LioIntcCpuInterface {
+    CPU_IF
+        .get()
+        .expect("LIOINTC CPU interface is not initialized")
 }
