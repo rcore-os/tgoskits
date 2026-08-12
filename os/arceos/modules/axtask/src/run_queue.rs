@@ -642,6 +642,21 @@ impl<G: BaseGuard> AxRunQueueRef<G> {
         kick_remote_cpu(cpu_id);
     }
 
+    /// Set the priority of a task in this run queue's scheduler.
+    ///
+    /// This is intended for setting the initial priority of a newly spawned
+    /// task *before* [`add_task`] enqueues it, so the task enters the ready
+    /// queue with the correct priority key instead of being inserted at the
+    /// default priority and then re-inserted.
+    ///
+    /// For schedulers that do not support priorities (FIFO/RR), this is a
+    /// no-op and returns `false`.
+    ///
+    /// [`add_task`]: AxRunQueueRef::add_task
+    pub(crate) fn set_task_priority(&mut self, task: &AxTaskRef, prio: isize) -> bool {
+        self.inner.scheduler.lock().set_priority(task, prio)
+    }
+
     /// Unblock one task by inserting it into the run queue.
     ///
     /// This function does nothing if the task is not in [`TaskState::Blocked`],
