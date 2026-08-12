@@ -104,6 +104,13 @@ struct XattrSample {
     remove_sync: Duration,
 }
 
+#[derive(Clone, Copy)]
+struct SyncCycleSample {
+    dirty_sync: Duration,
+    clean_sync: Duration,
+    unmount: Duration,
+}
+
 fn env_usize(name: &str, default: usize) -> usize {
     env::var(name)
         .ok()
@@ -245,6 +252,61 @@ fn run_xattr_once(value: &[u8]) -> XattrSample {
     }
 }
 
+fn run_sync_cycle_once(payload: &[u8]) -> SyncCycleSample {
+    let device = MemoryDevice::new();
+    let device = format(
+        device,
+        BenchClock(Cell::new(1_700_000_000)),
+        MkfsOptions::default(),
+    )
+    .expect("benchmark mkfs must succeed");
+    let services = MountServices::new(
+        BenchClock(Cell::new(1_700_000_000)),
+        (),
+        (),
+        (),
+        NoopObserver,
+    );
+    let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
+        .expect("benchmark mount must succeed");
+    let context = MutationContext::new(0, 0, 0, 0);
+    let file = filesystem
+        .create_regular_file(
+            context,
+            filesystem.root_inode(),
+            FileName::new(b"rsext4-host-sync.bin").expect("benchmark name must be valid"),
+            FilePermissions::new(0o644).expect("benchmark permissions must be valid"),
+        )
+        .expect("benchmark file creation must succeed");
+    filesystem
+        .write_inode(context, file.number, 0, payload)
+        .expect("benchmark write must succeed");
+
+    let start = Instant::now();
+    filesystem
+        .sync()
+        .expect("benchmark dirty sync must succeed");
+    let dirty_sync = start.elapsed();
+
+    let start = Instant::now();
+    filesystem
+        .sync()
+        .expect("benchmark clean sync must succeed");
+    let clean_sync = start.elapsed();
+
+    let start = Instant::now();
+    filesystem
+        .unmount()
+        .expect("benchmark unmount must succeed");
+    let unmount = start.elapsed();
+
+    SyncCycleSample {
+        dirty_sync,
+        clean_sync,
+        unmount,
+    }
+}
+
 fn percentile(samples: &[u128], numerator: usize, denominator: usize) -> u128 {
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
@@ -317,6 +379,64 @@ fn run_xattr_benchmark(
     );
 }
 
+fn run_sync_cycle_benchmark(
+    commit: &str,
+    arch: &str,
+    backend: &str,
+    feature: &str,
+    warmups: usize,
+    runs: usize,
+    payload: &[u8],
+) {
+    println!(
+        "RSEXT4_BENCH_CONFIG commit={commit} arch={arch} backend={backend} feature={feature} \
+         workload=sync-cycle bytes={} warmups={warmups} runs={runs} block_size={BLOCK_SIZE} \
+         journal=true",
+        payload.len()
+    );
+
+    for _ in 0..warmups {
+        black_box(run_sync_cycle_once(payload));
+    }
+
+    let mut samples = Vec::with_capacity(runs);
+    for run in 0..runs {
+        let sample = run_sync_cycle_once(payload);
+        println!(
+            "RSEXT4_BENCH_RESULT commit={commit} arch={arch} backend={backend} feature={feature} \
+             workload=sync-cycle run={run} dirty_sync_ns={} clean_sync_ns={} unmount_ns={}",
+            sample.dirty_sync.as_nanos(),
+            sample.clean_sync.as_nanos(),
+            sample.unmount.as_nanos()
+        );
+        samples.push(sample);
+    }
+
+    let dirty_sync = samples
+        .iter()
+        .map(|sample| sample.dirty_sync.as_nanos())
+        .collect::<Vec<_>>();
+    let clean_sync = samples
+        .iter()
+        .map(|sample| sample.clean_sync.as_nanos())
+        .collect::<Vec<_>>();
+    let unmount = samples
+        .iter()
+        .map(|sample| sample.unmount.as_nanos())
+        .collect::<Vec<_>>();
+    println!(
+        "RSEXT4_BENCH_SUMMARY commit={commit} arch={arch} backend={backend} feature={feature} \
+         workload=sync-cycle dirty_sync_median_ns={} dirty_sync_p95_ns={} clean_sync_median_ns={} \
+         clean_sync_p95_ns={} unmount_median_ns={} unmount_p95_ns={}",
+        percentile(&dirty_sync, 1, 2),
+        percentile(&dirty_sync, 95, 100),
+        percentile(&clean_sync, 1, 2),
+        percentile(&clean_sync, 95, 100),
+        percentile(&unmount, 1, 2),
+        percentile(&unmount, 95, 100),
+    );
+}
+
 fn main() {
     let bytes = env_usize("RSEXT4_BENCH_BYTES", DEFAULT_BYTES);
     let warmups = env_usize("RSEXT4_BENCH_WARMUPS", DEFAULT_WARMUPS);
@@ -346,12 +466,16 @@ fn main() {
         );
         return;
     }
-    assert_eq!(workload, "sequential", "unsupported benchmark workload");
-
     let mut payload = vec![0u8; bytes];
     for (index, byte) in payload.iter_mut().enumerate() {
         *byte = (index as u8).wrapping_mul(31).wrapping_add(7);
     }
+
+    if workload == "sync-cycle" {
+        run_sync_cycle_benchmark(&commit, &arch, &backend, &feature, warmups, runs, &payload);
+        return;
+    }
+    assert_eq!(workload, "sequential", "unsupported benchmark workload");
 
     println!(
         "RSEXT4_BENCH_CONFIG commit={commit} arch={arch} backend={backend} feature={feature} \
