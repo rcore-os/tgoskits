@@ -1316,3 +1316,39 @@ median 未显示 checksum-mode dispatch 的稳定回退，但两组 p95 都高�
 为性能红项，不能以“新增兼容功能”豁免。相对 dev 的 dirty-sync median/p95 仍超过 5%/10%
 硬门槛，后续继续优化 descriptor/revoke scratch allocation 与 commit CPU 路径，但不得改变
 preflush、FUA commit、checksum 覆盖范围或 checkpoint/tail durability boundary。
+
+### 7.42 JBD2 scratch block 复用检查点
+
+Linux v7.1 `fs/jbd2/commit.c:579-805` 复用 journal descriptor/payload submission 所需的
+buffer owner；持久化语义来自 descriptor/tag/checksum、提交顺序与 completion/error 检查，
+不是每条 record 新建 heap object。Rust writer 此前对每个 revoke record、每个 descriptor
+record 和最终 commit block 分别创建一个 filesystem-block-sized `Vec`。默认 sync-cycle 虽然
+只有一个 descriptor，也仍在 descriptor 写完后重新分配 commit buffer；大 transaction 和
+大量 revoke 则按 record 数重复分配。
+
+本阶段让同一 transaction 的 revoke records 共用一个 scratch block，每条 record 开始前清零；
+descriptor records 同样共用一个 scratch block，descriptor 全部同步写出后再把该 buffer 的
+所有权直接移动为 commit buffer 并清零。`BlockIo` 仍只看到原来的同步 slice write，
+descriptor/payload preflush、FUA commit、checkpoint 和 tail publication 的次数与顺序完全不变。
+清零不能省略：CSUM_V2/V3 descriptor/revoke tail checksum 覆盖完整 block，padding 必须稳定为
+零。multi-descriptor、writer revoke、CSUM_V2 corrupt-revoke 定向测试通过，随后 all-features、
+no-default 完整测试和 rsext4 3/3 clippy 均通过。
+
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量，两组原始样本保存在
+`book/design/data/rsext4-perf/2026-08-12-jbd2-scratch-reuse-sync-cycle.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=2ffe3de0b arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=7911 dirty_sync_p95_ns=8792 clean_sync_median_ns=194 clean_sync_p95_ns=263 unmount_median_ns=5182 unmount_p95_ns=6058
+RSEXT4_BENCH_SUMMARY commit=2ffe3de0b-repeat arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=8325 dirty_sync_p95_ns=9163 clean_sync_median_ns=226 clean_sync_p95_ns=305 unmount_median_ns=5558 unmount_p95_ns=5768
+```
+
+| sample | dirty median | 相对 7.41 同组 | dirty p95 | 相对 7.41 同组 | 相对 7.39 median/p95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| first | 7.911 us | -0.8% | 8.792 us | -20.8% | -2.5% / +0.1% |
+| repeat | 8.325 us | -1.2% | 9.163 us | -17.2% | +2.6% / +4.3% |
+
+因此本轮 legacy checksum 检查点出现的 p95 扩张已经收回，且对 7.39 的正确 CSUM_V3 热路径
+保持在 5% 内；但相对冻结 dev 的 dirty-sync median/p95 仍分别至少回退 17.2%/24.5%，继续
+登记为硬红项。下一步优化 transaction owner/revoke clone 与 descriptor/payload 两次 escape
+准备前，必须先证明不会在 I/O error 时丢失 committing owner，也不能缓存会跨 transaction
+失效的借用。
