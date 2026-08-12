@@ -758,7 +758,6 @@ impl JBD2DEVSYSTEM {
             1,
             WriteFlags::METADATA | WriteFlags::FUA,
         )?;
-        block_dev.flush()?;
         self.sequence = self.sequence.wrapping_add(1);
 
         self.checkpoint_transactions
@@ -792,17 +791,24 @@ impl JBD2DEVSYSTEM {
             later_blocks.extend(transaction.updates.iter().map(|update| update.0));
             later_blocks.extend(transaction.revoked_blocks.iter().copied());
         }
-        for transaction in self.checkpoint_transactions[..completed_transactions]
+        for (reverse_index, transaction) in self.checkpoint_transactions[..completed_transactions]
             .iter()
             .rev()
+            .enumerate()
         {
             for update in &transaction.updates {
                 if !later_blocks.contains(&update.0) {
                     block_dev.write(&update.1[..], update.0, 1)?;
                 }
             }
-            later_blocks.extend(transaction.updates.iter().map(|update| update.0));
-            later_blocks.extend(transaction.revoked_blocks.iter().copied());
+            // The set only filters transactions that are still to be scanned.
+            // Do not populate it after the oldest selected transaction: the
+            // common single-transaction checkpoint has no earlier image that
+            // could be hidden by these blocks.
+            if reverse_index + 1 < completed_transactions {
+                later_blocks.extend(transaction.updates.iter().map(|update| update.0));
+                later_blocks.extend(transaction.revoked_blocks.iter().copied());
+            }
         }
         block_dev.flush()?;
 

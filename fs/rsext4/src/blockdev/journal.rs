@@ -2234,8 +2234,8 @@ mod tests {
         );
         assert_eq!(
             dev.inner._device().flush_calls,
-            2,
-            "descriptor/payload and commit publication keep separate barriers"
+            1,
+            "the pre-commit flush orders descriptor and payload writes before the FUA commit"
         );
     }
 
@@ -2660,7 +2660,7 @@ mod tests {
         assert_eq!(state.persistence_error, None, "{stage}");
         let expected_fua_writes = match stage {
             "open-superblock" | "descriptor" | "payload" | "descriptor-payload-barrier" => 1,
-            "commit" | "checkpoint" | "commit-barrier" | "checkpoint-barrier" => 2,
+            "commit" | "checkpoint" | "checkpoint-barrier" => 2,
             "close-superblock" => 3,
             _ => panic!("unknown commit fault stage: {stage}"),
         };
@@ -2699,11 +2699,7 @@ mod tests {
             );
         }
 
-        let flush_stages = [
-            "descriptor-payload-barrier",
-            "commit-barrier",
-            "checkpoint-barrier",
-        ];
+        let flush_stages = ["descriptor-payload-barrier", "checkpoint-barrier"];
         for (index, stage) in flush_stages.iter().enumerate() {
             assert_commit_stage_fault_aborts_journal(
                 MemBlockDev::with_failing_flush_call(256, index + 1),
