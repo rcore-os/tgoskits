@@ -17,17 +17,64 @@ use crate::{
 pub trait DirEntrySink {
     /// Accept a directory entry, returns `false` if the sink is full.
     ///
-    /// `offset` is the offset of the next entry to be read.
+    /// `cursor` identifies the next entry to be read. Its continuation is
+    /// backend-private and must be preserved by an open directory handle.
     ///
     /// It's not recommended to operate on the node inside the `accept`
     /// function, since some filesystem may impose a lock while iterating the
     /// directory, and operating on the node may cause deadlock.
-    fn accept(&mut self, name: &str, ino: u64, node_type: NodeType, offset: u64) -> bool;
+    fn accept(
+        &mut self,
+        name: &[u8],
+        ino: u64,
+        node_type: NodeType,
+        cursor: DirectoryCursor,
+    ) -> bool;
 }
 
-impl<F: FnMut(&str, u64, NodeType, u64) -> bool> DirEntrySink for F {
-    fn accept(&mut self, name: &str, ino: u64, node_type: NodeType, offset: u64) -> bool {
-        self(name, ino, node_type, offset)
+impl<F: FnMut(&[u8], u64, NodeType, DirectoryCursor) -> bool> DirEntrySink for F {
+    fn accept(
+        &mut self,
+        name: &[u8],
+        ino: u64,
+        node_type: NodeType,
+        cursor: DirectoryCursor,
+    ) -> bool {
+        self(name, ino, node_type, cursor)
+    }
+}
+
+/// Directory position shared between a filesystem and one open-directory
+/// description.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DirectoryCursor {
+    offset: u64,
+    continuation: u64,
+}
+
+impl DirectoryCursor {
+    pub const START: Self = Self::new(0);
+
+    pub const fn new(offset: u64) -> Self {
+        Self {
+            offset,
+            continuation: 0,
+        }
+    }
+
+    pub const fn with_continuation(offset: u64, continuation: u64) -> Self {
+        Self {
+            offset,
+            continuation,
+        }
+    }
+
+    pub const fn offset(self) -> u64 {
+        self.offset
+    }
+
+    pub const fn continuation(self) -> u64 {
+        self.continuation
     }
 }
 
@@ -96,7 +143,7 @@ pub trait DirNodeOps: NodeOps {
     ///
     /// Implementations should ensure that `.` and `..` are present in the
     /// result.
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize>;
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize>;
 
     /// Lookups a directory entry by name.
     fn lookup(&self, name: &str) -> VfsResult<DirEntry>;
@@ -118,8 +165,8 @@ pub trait DirNodeOps: NodeOps {
     /// Returns whether this directory has child entries relevant to rmdir.
     fn has_children(&self) -> VfsResult<bool> {
         let mut has_children = false;
-        self.read_dir(0, &mut |name: &str, _, _, _| {
-            if name != DOT && name != DOTDOT {
+        self.read_dir(DirectoryCursor::START, &mut |name: &[u8], _, _, _| {
+            if name != DOT.as_bytes() && name != DOTDOT.as_bytes() {
                 has_children = true;
                 false
             } else {
@@ -322,8 +369,12 @@ impl DirNode {
         }
     }
 
-    pub fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
-        self.ops.read_dir(offset, sink)
+    pub fn read_dir(
+        &self,
+        cursor: DirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        self.ops.read_dir(cursor, sink)
     }
 
     /// Creates a link to a node.

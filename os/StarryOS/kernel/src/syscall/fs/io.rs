@@ -8,7 +8,9 @@ use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::{FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
-use axfs_ng_vfs::{FileRangeOperation, NodePermission, NodeType, PreallocationMode};
+use axfs_ng_vfs::{
+    DirectoryCursor, FileRangeOperation, NodePermission, NodeType, PreallocationMode,
+};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
     __kernel_off_t, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, FALLOC_FL_KEEP_SIZE,
@@ -161,7 +163,7 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
     }
 
     if let Ok(d) = any_file.downcast_arc::<Directory>() {
-        let mut off = d.offset.lock();
+        let mut cursor = d.cursor.lock();
         let new_pos = match pos {
             SeekFrom::Start(pos) => pos,
             SeekFrom::End(delta) => d
@@ -169,11 +171,12 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
                 .len()?
                 .checked_add_signed(delta)
                 .ok_or(AxError::InvalidInput)?,
-            SeekFrom::Current(delta) => {
-                off.checked_add_signed(delta).ok_or(AxError::InvalidInput)?
-            }
+            SeekFrom::Current(delta) => cursor
+                .offset()
+                .checked_add_signed(delta)
+                .ok_or(AxError::InvalidInput)?,
         };
-        *off = new_pos;
+        *cursor = DirectoryCursor::new(new_pos);
         return Ok(new_pos as _);
     }
 

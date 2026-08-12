@@ -17,7 +17,8 @@ use ax_lazyinit::OnceLock;
 #[cfg(feature = "vfs")]
 use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
-    Location, Metadata, NodePermission, NodeType, RenameOptions, VfsError, VfsResult,
+    DirectoryCursor, Location, Metadata, NodePermission, NodeType, RenameOptions, VfsError,
+    VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
 
@@ -460,7 +461,7 @@ impl FsContext {
         Ok(ReadDir {
             dir,
             buf: VecDeque::new(),
-            offset: 0,
+            cursor: DirectoryCursor::START,
             ended: false,
         })
     }
@@ -653,7 +654,7 @@ impl FsContext {
 pub struct ReadDir {
     dir: Location,
     buf: VecDeque<ReadDirEntry>,
-    offset: u64,
+    cursor: DirectoryCursor,
     ended: bool,
 }
 
@@ -673,22 +674,30 @@ impl Iterator for ReadDir {
 
         if self.buf.is_empty() {
             self.buf.clear();
+            let mut invalid_name = false;
             let result = self.dir.read_dir(
-                self.offset,
-                &mut |name: &str, ino: u64, node_type: NodeType, offset: u64| {
+                self.cursor,
+                &mut |name: &[u8], ino: u64, node_type: NodeType, cursor: DirectoryCursor| {
+                    let Ok(name) = core::str::from_utf8(name) else {
+                        invalid_name = true;
+                        return false;
+                    };
                     self.buf.push_back(ReadDirEntry {
                         name: name.to_owned(),
                         ino,
                         node_type,
-                        offset,
+                        offset: cursor.offset(),
                     });
-                    self.offset = offset;
+                    self.cursor = cursor;
                     self.buf.len() < Self::BUF_SIZE
                 },
             );
 
             // We handle errors only if we didn't get any entries
             if self.buf.is_empty() {
+                if invalid_name {
+                    return Some(Err(VfsError::InvalidData));
+                }
                 if let Err(err) = result {
                     return Some(Err(err));
                 }

@@ -2,9 +2,9 @@ use alloc::{string::String, sync::Arc};
 use core::{any::Any, mem, ops::Deref, time::Duration};
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FilesystemOps, Metadata, MetadataUpdate,
-    NodeFlags, NodeOps, NodePermission, NodeType, Reference, RenameOptions, VfsError, VfsResult,
-    WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps,
+    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference,
+    RenameOptions, VfsError, VfsResult, WeakDirEntry,
 };
 
 use super::{
@@ -108,14 +108,14 @@ impl NodeOps for FatDirNode {
 }
 
 impl DirNodeOps for FatDirNode {
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut fs = self.fs.lock();
         let dir = self.inner.borrow(&fs);
         let this_entry = self.this.upgrade().unwrap();
         let dir_node = this_entry.as_dir()?;
 
         let mut count = 0;
-        for entry in dir.iter().skip(offset as usize) {
+        for entry in dir.iter().skip(cursor.offset() as usize) {
             let entry = entry.map_err(into_vfs_err)?;
             let name = entry.file_name().to_ascii_lowercase();
             let node_type = if entry.is_file() {
@@ -131,7 +131,12 @@ impl DirNodeOps for FatDirNode {
                 dir_node.insert_cache(name.clone(), entry);
                 inode
             };
-            if !sink.accept(&name, inode, node_type, offset + count + 1) {
+            if !sink.accept(
+                name.as_bytes(),
+                inode,
+                node_type,
+                DirectoryCursor::new(cursor.offset() + count + 1),
+            ) {
                 break;
             }
             count += 1;

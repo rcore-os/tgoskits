@@ -22,7 +22,7 @@ use crate::{
         rename_inode_at, set_inode_xattr, truncate_inode, unlink_empty_directory_at,
         unlink_inode_at, write_inode_data,
     },
-    hashtree::Ext4InodeHashTreeExt,
+    hashtree::{Ext4InodeHashTreeExt, read_indexed_directory},
     io::BlockIo,
     loopfile::resolve_inode_blocks,
     metadata::{Ext4InodeMetadataUpdate, Ext4MetadataReason, Ext4ModeUpdate},
@@ -102,8 +102,29 @@ pub struct DirectoryEntry {
     pub inode: InodeNumber,
     pub file_type: DirectoryEntryType,
     pub name: Vec<u8>,
-    /// Byte offset of the next record, suitable as the next readdir cookie.
-    pub next_offset: u64,
+    /// Cursor of the next record.
+    pub next_cursor: DirectoryCursor,
+}
+
+/// Opaque core cursor used to resume directory enumeration.
+///
+/// Linear directories use byte offsets. Indexed directories use the complete
+/// ext4 hash plus a collision ordinal that is deliberately not compressed into
+/// a Linux ABI cookie by the OS-independent core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectoryCursor {
+    /// Begin enumeration from the first visible record.
+    Start,
+    /// Resume a linear directory at an on-disk byte offset.
+    Linear { offset: u64 },
+    /// Resume an indexed directory at a hash and exact-collision ordinal.
+    HTree {
+        major: u32,
+        minor: u32,
+        collision: u32,
+    },
+    /// Enumeration has reached end of directory.
+    End,
 }
 
 /// Pure caller metadata associated with one filesystem mutation.
@@ -553,7 +574,7 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         self.inspect_inode(entry.ino, inode).map(Some)
     }
 
-    /// Reads directory records from an ext4 byte offset.
+    /// Reads directory records from a core-owned cursor.
     ///
     /// Deleted records and checksum tails advance the cookie but are not
     /// returned. Malformed records and checksum mismatches are corruption,
@@ -561,7 +582,7 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
     pub fn read_directory(
         &mut self,
         directory: InodeNumber,
-        offset: u64,
+        cursor: DirectoryCursor,
         max_entries: usize,
     ) -> Ext4Result<Vec<DirectoryEntry>> {
         let mut inode = self
@@ -570,7 +591,63 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         if !inode.is_dir() {
             return Err(Ext4Error::not_dir());
         }
-        if max_entries == 0 || offset >= self.filesystem.inode_size(&inode) {
+        if max_entries == 0 || cursor == DirectoryCursor::End {
+            return Ok(Vec::new());
+        }
+        if inode.is_htree_indexed() {
+            let records =
+                read_indexed_directory(&mut self.filesystem, &mut self.device, directory, &inode)?;
+            let start = match cursor {
+                DirectoryCursor::Start => 0,
+                DirectoryCursor::HTree {
+                    major,
+                    minor,
+                    collision,
+                } => records.partition_point(|record| {
+                    (record.major, record.minor, record.collision) < (major, minor, collision)
+                }),
+                DirectoryCursor::Linear { .. } => {
+                    return Err(
+                        Ext4Error::invalid_input().with_operation("directory:indexed_cursor")
+                    );
+                }
+                DirectoryCursor::End => return Ok(Vec::new()),
+            };
+            let end = start.saturating_add(max_entries).min(records.len());
+            return records[start..end]
+                .iter()
+                .enumerate()
+                .map(|(relative_index, record)| {
+                    let next_index = start + relative_index + 1;
+                    let next_cursor =
+                        records
+                            .get(next_index)
+                            .map_or(DirectoryCursor::End, |next| DirectoryCursor::HTree {
+                                major: next.major,
+                                minor: next.minor,
+                                collision: next.collision,
+                            });
+                    Ok(DirectoryEntry {
+                        inode: InodeNumber::new(record.inode).map_err(|_| {
+                            Ext4Error::corrupted().with_operation("directory:indexed_inode")
+                        })?,
+                        file_type: DirectoryEntryType::from_disk(record.file_type)?,
+                        name: record.name.clone(),
+                        next_cursor,
+                    })
+                })
+                .collect();
+        }
+
+        let offset = match cursor {
+            DirectoryCursor::Start => 0,
+            DirectoryCursor::Linear { offset } => offset,
+            DirectoryCursor::HTree { .. } => {
+                return Err(Ext4Error::invalid_input().with_operation("directory:linear_cursor"));
+            }
+            DirectoryCursor::End => return Ok(Vec::new()),
+        };
+        if offset >= self.filesystem.inode_size(&inode) {
             return Ok(Vec::new());
         }
 
@@ -662,7 +739,9 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
                         inode: inode_number,
                         file_type: DirectoryEntryType::from_disk(file_type)?,
                         name,
-                        next_offset,
+                        next_cursor: DirectoryCursor::Linear {
+                            offset: next_offset,
+                        },
                     });
                     if output.len() == max_entries {
                         return Ok(output);

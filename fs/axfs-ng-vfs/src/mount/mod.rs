@@ -17,10 +17,10 @@ use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, FsIoEvents,
-    FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission,
-    NodeType, OpenOptions, Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult,
-    WeakDirEntry, XattrSetMode,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, Filesystem,
+    FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags,
+    NodeOps, NodePermission, NodeType, OpenOptions, Reference, ReferenceKey, RenameOptions,
+    TypeMap, VfsError, VfsResult, WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -107,15 +107,20 @@ impl NodeOps for SyntheticMountDir {
 }
 
 impl DirNodeOps for SyntheticMountDir {
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let entries = [
             (DOT, self.inode, NodeType::Directory),
             (DOTDOT, self.parent.inode(), NodeType::Directory),
         ];
-        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let start = usize::try_from(cursor.offset()).unwrap_or(usize::MAX);
         let mut count = 0;
         for (index, (name, ino, node_type)) in entries.iter().enumerate().skip(start) {
-            if !sink.accept(name, *ino, *node_type, (index + 1) as u64) {
+            if !sink.accept(
+                name.as_bytes(),
+                *ino,
+                *node_type,
+                DirectoryCursor::new((index + 1) as u64),
+            ) {
                 break;
             }
             count += 1;
@@ -1027,8 +1032,12 @@ impl Location {
             .map(|entry| self.wrap(entry).resolve_mountpoint())
     }
 
-    pub fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
-        self.entry.as_dir()?.read_dir(offset, sink)
+    pub fn read_dir(
+        &self,
+        cursor: DirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        self.entry.as_dir()?.read_dir(cursor, sink)
     }
 
     pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
@@ -1246,7 +1255,11 @@ mod tests {
     }
 
     impl DirNodeOps for MockNode {
-        fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
             Ok(0)
         }
         fn lookup(&self, _name: &str) -> VfsResult<DirEntry> {
@@ -1316,7 +1329,11 @@ mod tests {
     }
 
     impl DirNodeOps for SymlinkDir {
-        fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
             Ok(0)
         }
 

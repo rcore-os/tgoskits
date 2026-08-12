@@ -15,7 +15,8 @@ use ax_fs_ng::vfs::{FsContext, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use ax_task::current;
 use axfs_ng_vfs::{
-    DeviceId, FileExtentTarget, MetadataUpdate, NodePermission, NodeType, RenameOptions, path::Path,
+    DeviceId, DirectoryCursor, FileExtentTarget, MetadataUpdate, NodePermission, NodeType,
+    RenameOptions, path::Path,
 };
 use linux_raw_sys::{
     general::*,
@@ -486,26 +487,29 @@ pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     let mut buffer = DirBuffer::new(len);
 
     let dir = Directory::from_fd(fd)?;
-    let mut dir_offset = dir.offset.lock();
+    let mut dir_cursor = dir.cursor.lock();
+    let mut next_cursor = *dir_cursor;
 
     let mut has_remaining = false;
 
-    dir.inner()
-        .read_dir(*dir_offset, &mut |name: &str, ino, node_type, offset| {
+    dir.inner().read_dir(
+        next_cursor,
+        &mut |name: &[u8], ino, node_type, cursor: DirectoryCursor| {
             has_remaining = true;
-            if !buffer.write_entry(ino, offset as _, node_type, name.as_bytes()) {
+            if !buffer.write_entry(ino, cursor.offset() as _, node_type, name) {
                 return false;
             }
-            *dir_offset = offset;
+            next_cursor = cursor;
             true
-        })?;
-    drop(dir_offset);
+        },
+    )?;
 
     if has_remaining && buffer.offset == 0 {
         return Err(AxError::InvalidInput);
     }
 
     vm_write_slice(buf, &buffer.buf)?;
+    *dir_cursor = next_cursor;
 
     Ok(buffer.offset as _)
 }

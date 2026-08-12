@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metadata copy-on-write performance samples for final Linux/dev comparison.
 - Add typed user-visible inode flags and project identifiers to the owned core
   metadata DTOs without exposing the on-disk inode representation.
+- Add typed linear/HTree directory cursors, hash-ordered leaf enumeration,
+  Linux 64-bit directory-cookie encoding, and private collision continuation.
 
 ### Removed
 
@@ -101,6 +103,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accounting descriptor overhead in journal-ring credit reservations.
 - Publish replace and exchange rename operations atomically across both names,
   parent links, directory parent records, target links, and orphan state.
+- Keep ext4 directory names as raw bytes through VFS and commit Starry/ArceOS
+  open-directory positions only after the corresponding output record succeeds.
 
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
 

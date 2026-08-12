@@ -15,7 +15,7 @@ use core::{
 };
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FileNodeOps,
     FileRangeOperation, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata,
     MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode, Reference,
     RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
@@ -624,7 +624,8 @@ impl Pollable for MemoryNode {
 }
 
 impl DirNodeOps for MemoryNode {
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        let offset = cursor.offset();
         let dir = self.inode.as_dir()?;
         let entries = loop {
             let entries = dir.entries.lock();
@@ -660,7 +661,12 @@ impl DirNodeOps for MemoryNode {
 
         let mut count = 0;
         for (cookie, name, ino, node_type) in entries {
-            if !sink.accept(name.as_ref(), ino, node_type, cookie + 1) {
+            if !sink.accept(
+                name.as_bytes(),
+                ino,
+                node_type,
+                DirectoryCursor::new(cookie + 1),
+            ) {
                 return Ok(count);
             }
             count += 1;

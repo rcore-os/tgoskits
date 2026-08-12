@@ -2,18 +2,18 @@ use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
 use core::any::Any;
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileExtent as VfsFileExtent,
-    FileExtentMap as VfsFileExtentMap, FileExtentState as VfsFileExtentState,
-    FileExtentTarget as VfsFileExtentTarget, FileNode, FileNodeOps,
-    FileRangeOperation as VfsRangeOperation, FilesystemOps, FsIoEvents, FsPollable, Metadata,
-    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor as VfsDirectoryCursor,
+    FileExtent as VfsFileExtent, FileExtentMap as VfsFileExtentMap,
+    FileExtentState as VfsFileExtentState, FileExtentTarget as VfsFileExtentTarget, FileNode,
+    FileNodeOps, FileRangeOperation as VfsRangeOperation, FilesystemOps, FsIoEvents, FsPollable,
+    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
     PreallocationMode as VfsPreallocationMode, Reference, RenameOptions as VfsRenameOptions,
     VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode as VfsXattrSetMode,
 };
 use rsext4::{
-    DeviceNumber, Ext4Timestamp, FileName, FilePermissions, InodeMetadataUpdate, InodeNumber,
-    MutationContext, PreallocationOptions, RangeOperation, SpecialInodeKind, XattrNamespace,
-    XattrSetMode, ZeroRangeOptions,
+    DeviceNumber, DirectoryCursor, Ext4Timestamp, FileName, FilePermissions, InodeFlags,
+    InodeMetadataUpdate, InodeNumber, MutationContext, PreallocationOptions, RangeOperation,
+    SpecialInodeKind, XattrNamespace, XattrSetMode, ZeroRangeOptions,
 };
 
 use super::{
@@ -413,30 +413,40 @@ impl DirNodeOps for Inode {
         self.inspect_extents(offset, len, target, extent_limit)
     }
 
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
-        const BATCH_SIZE: usize = 64;
-
-        let mut next_offset = offset;
+    fn read_dir(
+        &self,
+        cursor: VfsDirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        let mut next_cursor = {
+            let mut state = self.fs.lock();
+            let indexed = state
+                .ext4
+                .inode(self.ino)
+                .map_err(into_vfs_err)?
+                .flags
+                .contains(InodeFlags::DIRECTORY_INDEX);
+            vfs_to_core_directory_cursor(cursor, indexed)?
+        };
         let mut count = 0usize;
         loop {
             let entries = {
                 let mut state = self.fs.lock();
                 state
                     .ext4
-                    .read_directory(self.ino, next_offset, BATCH_SIZE)
+                    .read_directory(self.ino, next_cursor, usize::MAX)
                     .map_err(into_vfs_err)?
             };
             if entries.is_empty() {
                 return Ok(count);
             }
             for entry in entries {
-                let name = core::str::from_utf8(&entry.name).map_err(|_| VfsError::InvalidData)?;
-                next_offset = entry.next_offset;
+                next_cursor = entry.next_cursor;
                 if !sink.accept(
-                    name,
+                    &entry.name,
                     entry.inode.as_u64(),
                     directory_entry_type_to_vfs(entry.file_type),
-                    next_offset,
+                    core_to_vfs_directory_cursor(next_cursor),
                 ) {
                     return Ok(count);
                 }
@@ -668,5 +678,110 @@ impl DirNodeOps for Inode {
             forget_cached_file_key(&*self.fs, ino.as_u64());
         }
         self.fs.sync_to_disk()
+    }
+}
+
+// Linux reserves this value for HTree EOF. ext4's directory hash finalization
+// rewrites the only colliding major hash, 0xffff_fffe, to 0xffff_fffc.
+const HTREE_EOF_COOKIE: u64 = i64::MAX as u64;
+
+fn vfs_to_core_directory_cursor(
+    cursor: VfsDirectoryCursor,
+    indexed: bool,
+) -> VfsResult<DirectoryCursor> {
+    if cursor.offset() == HTREE_EOF_COOKIE {
+        return Ok(DirectoryCursor::End);
+    }
+    if cursor == VfsDirectoryCursor::START {
+        return Ok(DirectoryCursor::Start);
+    }
+    if !indexed {
+        return Ok(DirectoryCursor::Linear {
+            offset: cursor.offset(),
+        });
+    }
+    let collision = u32::try_from(cursor.continuation()).map_err(|_| VfsError::InvalidInput)?;
+    Ok(DirectoryCursor::HTree {
+        major: ((cursor.offset() >> 32) as u32) << 1,
+        minor: cursor.offset() as u32,
+        collision,
+    })
+}
+
+fn core_to_vfs_directory_cursor(cursor: DirectoryCursor) -> VfsDirectoryCursor {
+    match cursor {
+        DirectoryCursor::Start => VfsDirectoryCursor::START,
+        DirectoryCursor::Linear { offset } => VfsDirectoryCursor::new(offset),
+        DirectoryCursor::HTree {
+            major,
+            minor,
+            collision,
+        } => VfsDirectoryCursor::with_continuation(
+            (u64::from(major >> 1) << 32) | u64::from(minor),
+            u64::from(collision),
+        ),
+        DirectoryCursor::End => VfsDirectoryCursor::new(HTREE_EOF_COOKIE),
+    }
+}
+
+#[cfg(test)]
+mod directory_cursor_tests {
+    use super::*;
+
+    #[test]
+    fn linux_64_bit_htree_cookie_round_trips_private_collision_state() {
+        let core = DirectoryCursor::HTree {
+            major: 0x89ab_cdec,
+            minor: 0x1357_2468,
+            collision: 7,
+        };
+        let vfs = core_to_vfs_directory_cursor(core);
+
+        assert_eq!(vfs.offset(), 0x44d5_e6f6_1357_2468);
+        assert_eq!(vfs.continuation(), 7);
+        assert_eq!(vfs_to_core_directory_cursor(vfs, true), Ok(core));
+    }
+
+    #[test]
+    fn external_seek_cookie_resets_private_collision_state() {
+        let cookie = core_to_vfs_directory_cursor(DirectoryCursor::HTree {
+            major: 0x1234_5678,
+            minor: 0x9abc_def0,
+            collision: 11,
+        });
+        let external_seek = VfsDirectoryCursor::new(cookie.offset());
+
+        assert_eq!(
+            vfs_to_core_directory_cursor(external_seek, true),
+            Ok(DirectoryCursor::HTree {
+                major: 0x1234_5678,
+                minor: 0x9abc_def0,
+                collision: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn htree_eof_cookie_maps_to_core_end() {
+        let cursor = VfsDirectoryCursor::new(HTREE_EOF_COOKIE);
+        assert_eq!(
+            vfs_to_core_directory_cursor(cursor, true),
+            Ok(DirectoryCursor::End)
+        );
+        assert_eq!(core_to_vfs_directory_cursor(DirectoryCursor::End), cursor);
+    }
+
+    #[test]
+    fn largest_linux_directory_hash_does_not_collide_with_eof() {
+        let core = DirectoryCursor::HTree {
+            major: 0xffff_fffc,
+            minor: u32::MAX,
+            collision: 0,
+        };
+        let vfs = core_to_vfs_directory_cursor(core);
+
+        assert_eq!(vfs.offset(), 0x7fff_fffe_ffff_ffff);
+        assert_ne!(vfs.offset(), HTREE_EOF_COOKIE);
+        assert_eq!(vfs_to_core_directory_cursor(vfs, true), Ok(core));
     }
 }

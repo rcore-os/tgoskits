@@ -541,7 +541,11 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
     }
 
     impl DirNodeOps for DirTestDir {
-        fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        fn read_dir(
+            &self,
+            cursor: DirectoryCursor,
+            sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
             let mut emitted = 0;
             let entries = self.children.lock();
             let mut all_entries = Vec::new();
@@ -551,10 +555,15 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
                 all_entries.push((name.clone(), entry.inode(), entry.node_type()));
             }
             for (index, (name, inode, node_type)) in all_entries.into_iter().enumerate() {
-                if index < offset as usize {
+                if index < cursor.offset() as usize {
                     continue;
                 }
-                if !sink.accept(&name, inode, node_type, index as u64 + 1) {
+                if !sink.accept(
+                    name.as_bytes(),
+                    inode,
+                    node_type,
+                    DirectoryCursor::new(index as u64 + 1),
+                ) {
                     break;
                 }
                 emitted += 1;
@@ -897,7 +906,11 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
     }
 
     impl DirNodeOps for MountTestDir {
-        fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        fn read_dir(
+            &self,
+            cursor: DirectoryCursor,
+            sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
             let children = self.children.lock();
             let mut entries = Vec::new();
             entries.push((".".to_string(), self.inode, NodeType::Directory));
@@ -908,10 +921,15 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
 
             let mut emitted = 0;
             for (index, (name, inode, node_type)) in entries.into_iter().enumerate() {
-                if index < offset as usize {
+                if index < cursor.offset() as usize {
                     continue;
                 }
-                if !sink.accept(&name, inode, node_type, index as u64 + 1) {
+                if !sink.accept(
+                    name.as_bytes(),
+                    inode,
+                    node_type,
+                    DirectoryCursor::new(index as u64 + 1),
+                ) {
                     break;
                 }
                 emitted += 1;
@@ -1355,7 +1373,7 @@ impl axfs_ng_vfs::NodeOps for MoreTestDir {
 impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
     fn read_dir(
         &self,
-        offset: u64,
+        cursor: axfs_ng_vfs::DirectoryCursor,
         sink: &mut dyn axfs_ng_vfs::DirEntrySink,
     ) -> axfs_ng_vfs::VfsResult<usize> {
         let children = self.children.lock();
@@ -1368,10 +1386,15 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
 
         let mut emitted = 0;
         for (index, (name, inode, node_type)) in entries.into_iter().enumerate() {
-            if index < offset as usize {
+            if index < cursor.offset() as usize {
                 continue;
             }
-            if !sink.accept(&name, inode, node_type, index as u64 + 1) {
+            if !sink.accept(
+                name.as_bytes(),
+                inode,
+                node_type,
+                axfs_ng_vfs::DirectoryCursor::new(index as u64 + 1),
+            ) {
                 break;
             }
             emitted += 1;

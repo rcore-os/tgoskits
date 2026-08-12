@@ -405,7 +405,7 @@ fn select_entry(entries: &[Ext4DxEntry], target_hash: u32) -> Result<usize, Hash
         .ok_or(HashTreeError::EntryNotFound)
 }
 
-fn resolve_logical_block<B: BlockIo>(
+pub(super) fn resolve_logical_block<B: BlockIo>(
     fs: &Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     search: HashSearch<'_>,

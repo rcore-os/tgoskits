@@ -10,7 +10,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext};
 use ax_io::{Seek, SeekFrom};
 use ax_task::future::{block_on, poll_io};
-use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
+use axfs_ng_vfs::{DirectoryCursor, FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
@@ -299,7 +299,7 @@ impl Pollable for File {
 /// Directory wrapper for `ax_fs_ng::fops::Directory`.
 pub struct Directory {
     inner: Location,
-    pub offset: Mutex<u64>,
+    pub cursor: Mutex<DirectoryCursor>,
     /// Original open flags (used by fd_is_path / sys_fchmodat to detect
     /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
     /// must reject fchmod just like O_PATH on a regular file).
@@ -313,7 +313,7 @@ impl Directory {
     pub fn new(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
-            offset: Mutex::new(0),
+            cursor: Mutex::new(DirectoryCursor::START),
             open_flags,
             detached_mount_handle: false,
         }
@@ -322,7 +322,7 @@ impl Directory {
     pub(crate) fn new_detached_mount(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
-            offset: Mutex::new(0),
+            cursor: Mutex::new(DirectoryCursor::START),
             open_flags,
             detached_mount_handle: true,
         }

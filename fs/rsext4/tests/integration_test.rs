@@ -522,7 +522,7 @@ fn owned_mount_injects_clock_separately_from_block_io() {
     assert_eq!(lost_found.file_type(), DirectoryEntryType::Directory);
 
     let entries = filesystem
-        .read_directory(root.number, 0, 16)
+        .read_directory(root.number, DirectoryCursor::Start, 16)
         .expect("root readdir failed");
     assert!(entries.iter().any(|entry| entry.name == b"."));
     assert!(entries.iter().any(|entry| entry.name == b".."));
@@ -530,7 +530,13 @@ fn owned_mount_injects_clock_separately_from_block_io() {
     assert!(
         entries
             .windows(2)
-            .all(|pair| pair[0].next_offset < pair[1].next_offset)
+            .all(|pair| match (pair[0].next_cursor, pair[1].next_cursor) {
+                (
+                    DirectoryCursor::Linear { offset: first },
+                    DirectoryCursor::Linear { offset: second },
+                ) => first < second,
+                _ => false,
+            })
     );
 
     let raw_non_utf8 = FileName::new(&[0xff]).expect("ext4 names are raw bytes");

@@ -20,7 +20,7 @@ use core::{any::Any, task::Context};
 
 use ax_fs_ng::vfs::OpenOptions;
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FileNodeOps,
     FileRangeOperation, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Location, Metadata,
     MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference, RenameOptions, StatFs,
     VfsError, VfsResult, WeakDirEntry,
@@ -240,20 +240,26 @@ fn lookup_lower(dirs: &[Location], name: &str) -> VfsResult<Option<Location>> {
 /// Whiteouts remove earlier lower names from the merged view, while opaque
 /// markers are hidden from users.
 fn read_names(dir: &Location, names: &mut BTreeMap<String, DirentInfo>) -> VfsResult<()> {
-    dir.read_dir(0, &mut |name: &str, ino, node_type, _| {
-        if name == "." || name == ".." || name == OPAQUE_MARKER_NAME {
-            return true;
-        }
-        let Ok(loc) = dir.lookup_no_follow(name) else {
-            return true;
-        };
-        if is_whiteout(&loc).unwrap_or(false) {
-            names.remove(name);
-        } else {
-            names.insert(name.to_string(), DirentInfo { ino, node_type });
-        }
-        true
-    })?;
+    dir.read_dir(
+        DirectoryCursor::START,
+        &mut |name: &[u8], ino, node_type, _| {
+            let Ok(name) = core::str::from_utf8(name) else {
+                return true;
+            };
+            if name == "." || name == ".." || name == OPAQUE_MARKER_NAME {
+                return true;
+            }
+            let Ok(loc) = dir.lookup_no_follow(name) else {
+                return true;
+            };
+            if is_whiteout(&loc).unwrap_or(false) {
+                names.remove(name);
+            } else {
+                names.insert(name.to_string(), DirentInfo { ino, node_type });
+            }
+            true
+        },
+    )?;
     Ok(())
 }
 
@@ -605,7 +611,7 @@ impl DirNodeOps for OverlayDir {
     /// Lower layers are merged first from bottom to top, then upper entries
     /// override them. Whiteouts delete lower names, and opaque upper dirs skip
     /// lower merging entirely.
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut entries = BTreeMap::new();
         let is_opaque = match self.existing_upper_dir() {
             Some(upper_dir) => is_opaque(&upper_dir)?,
@@ -621,8 +627,17 @@ impl DirNodeOps for OverlayDir {
         }
 
         let mut emitted = 0;
-        for (idx, (name, info)) in entries.into_iter().enumerate().skip(offset as usize) {
-            if !sink.accept(&name, info.ino, info.node_type, idx as u64 + 1) {
+        for (idx, (name, info)) in entries
+            .into_iter()
+            .enumerate()
+            .skip(cursor.offset() as usize)
+        {
+            if !sink.accept(
+                name.as_bytes(),
+                info.ino,
+                info.node_type,
+                DirectoryCursor::new(idx as u64 + 1),
+            ) {
                 break;
             }
             emitted += 1;

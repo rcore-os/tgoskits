@@ -4,9 +4,9 @@ use core::any::Any;
 use ax_cgroup::CgroupNode;
 use ax_errno::LinuxError;
 use axfs_ng_vfs::{
-    DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, Filesystem, FilesystemOps, Metadata,
-    MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, RenameOptions, VfsError,
-    VfsResult, WeakDirEntry,
+    DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, Filesystem,
+    FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference,
+    RenameOptions, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
@@ -173,7 +173,7 @@ impl NodeOps for CgroupDir {
 }
 
 impl DirNodeOps for CgroupDir {
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut names = Vec::new();
         names.push(DOT.to_string());
         names.push(DOTDOT.to_string());
@@ -185,7 +185,7 @@ impl DirNodeOps for CgroupDir {
         let this_entry = self.this_entry()?;
         let this_dir = this_entry.as_dir()?;
         let mut count = 0;
-        for (i, name) in names.iter().enumerate().skip(offset as usize) {
+        for (i, name) in names.iter().enumerate().skip(cursor.offset() as usize) {
             let metadata = match name.as_str() {
                 DOT => this_entry.metadata(),
                 DOTDOT => this_entry
@@ -193,7 +193,12 @@ impl DirNodeOps for CgroupDir {
                     .map_or_else(|| this_entry.metadata(), |parent| parent.metadata()),
                 other => this_dir.lookup(other)?.metadata(),
             }?;
-            if !sink.accept(name, metadata.inode, metadata.node_type, i as u64 + 1) {
+            if !sink.accept(
+                name.as_bytes(),
+                metadata.inode,
+                metadata.node_type,
+                DirectoryCursor::new(i as u64 + 1),
+            ) {
                 break;
             }
             count += 1;

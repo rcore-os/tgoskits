@@ -376,6 +376,73 @@ fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
         payload
     );
     umount(filesystem, &mut device).expect("unmount Linux HTree fixture");
+
+    let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+    let services = MountServices::new(
+        TestClock(Cell::new(1_800_000_000)),
+        (),
+        (),
+        (),
+        NoopObserver,
+    );
+    let mut filesystem =
+        Ext4::mount(device, services, MountOptions::read_write()).expect("mount HTree fixture");
+    let indexed = filesystem
+        .lookup_child(
+            filesystem.root_inode(),
+            FileName::new(b"indexed").expect("valid indexed name"),
+        )
+        .expect("lookup indexed directory")
+        .expect("indexed directory exists");
+    let entries = filesystem
+        .read_directory(indexed.number, DirectoryCursor::Start, 1_000)
+        .expect("read indexed directory");
+    assert!(
+        entries.iter().all(|entry| matches!(
+            entry.next_cursor,
+            DirectoryCursor::HTree { .. } | DirectoryCursor::End
+        )),
+        "indexed readdir must never expose a linear byte cursor: {entries:?}"
+    );
+    assert_eq!(entries.len(), 802, "HTree readdir lost or invented records");
+    assert!(
+        entries.windows(2).all(|pair| {
+            let key = |cursor| match cursor {
+                DirectoryCursor::HTree {
+                    major,
+                    minor,
+                    collision,
+                } => (major, minor, collision),
+                DirectoryCursor::End => (u32::MAX, u32::MAX, u32::MAX),
+                DirectoryCursor::Start | DirectoryCursor::Linear { .. } => unreachable!(),
+            };
+            key(pair[0].next_cursor) < key(pair[1].next_cursor)
+        }),
+        "HTree cursors must advance monotonically"
+    );
+
+    let expected_names = entries
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect::<Vec<_>>();
+    let mut cursor = DirectoryCursor::Start;
+    let mut batched_names = Vec::new();
+    loop {
+        let batch = filesystem
+            .read_directory(indexed.number, cursor, 1)
+            .expect("resume indexed directory");
+        let Some(entry) = batch.into_iter().next() else {
+            break;
+        };
+        batched_names.push(entry.name);
+        cursor = entry.next_cursor;
+    }
+    assert_eq!(
+        batched_names, expected_names,
+        "HTree cursor repeated or skipped records"
+    );
+    filesystem.unmount().expect("unmount owned HTree fixture");
+
     e2fsck_readonly_clean(&image, "rsext4-read Linux HTree fixture");
     fs::remove_dir_all(temp_dir).expect("remove HTree temp dir");
 }

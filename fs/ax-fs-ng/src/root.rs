@@ -810,9 +810,9 @@ mod tests {
 
     use ax_errno::{AxError, AxResult};
     use axfs_ng_vfs::{
-        DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-        FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-        Reference, RenameOptions, StatFs, VfsResult, WeakDirEntry,
+        DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode,
+        FileNodeOps, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate,
+        NodeFlags, NodeOps, Reference, RenameOptions, StatFs, VfsResult, WeakDirEntry,
     };
     use rdif_block::{
         BatchSubmitResult, BlkError, BlockController, CompletionSink, ControllerEvent,
@@ -967,7 +967,11 @@ mod tests {
     }
 
     impl DirNodeOps for ReadonlyDir {
-        fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
             Ok(0)
         }
 
