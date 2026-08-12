@@ -92,9 +92,44 @@ impl rsext4::Clock for TestBlockDevice {
 
 #[derive(Default)]
 struct SyncIoCounters {
+    reads: AtomicUsize,
+    writes: AtomicUsize,
+    written_sectors: AtomicUsize,
     primary_superblock_writes: AtomicUsize,
     primary_gdt_writes: AtomicUsize,
     flushes: AtomicUsize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SyncIoSnapshot {
+    reads: usize,
+    writes: usize,
+    written_sectors: usize,
+    primary_superblock_writes: usize,
+    primary_gdt_writes: usize,
+    flushes: usize,
+}
+
+impl SyncIoCounters {
+    fn reset(&self) {
+        self.reads.store(0, Ordering::SeqCst);
+        self.writes.store(0, Ordering::SeqCst);
+        self.written_sectors.store(0, Ordering::SeqCst);
+        self.primary_superblock_writes.store(0, Ordering::SeqCst);
+        self.primary_gdt_writes.store(0, Ordering::SeqCst);
+        self.flushes.store(0, Ordering::SeqCst);
+    }
+
+    fn snapshot(&self) -> SyncIoSnapshot {
+        SyncIoSnapshot {
+            reads: self.reads.load(Ordering::SeqCst),
+            writes: self.writes.load(Ordering::SeqCst),
+            written_sectors: self.written_sectors.load(Ordering::SeqCst),
+            primary_superblock_writes: self.primary_superblock_writes.load(Ordering::SeqCst),
+            primary_gdt_writes: self.primary_gdt_writes.load(Ordering::SeqCst),
+            flushes: self.flushes.load(Ordering::SeqCst),
+        }
+    }
 }
 
 struct CountingIoDevice {
@@ -113,10 +148,15 @@ impl CountingIoDevice {
 
 impl BlockIo for CountingIoDevice {
     fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+        self.counters.reads.fetch_add(1, Ordering::SeqCst);
         self.inner.read(buffer, sector, count)
     }
 
     fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+        self.counters.writes.fetch_add(1, Ordering::SeqCst);
+        self.counters
+            .written_sectors
+            .fetch_add(count as usize, Ordering::SeqCst);
         // The test device and default mkfs both use 4 KiB blocks, so the
         // primary superblock shares sector 0 and the GDT starts at sector 1.
         if sector.raw() == 0 {
@@ -368,11 +408,7 @@ fn clean_sync_does_not_rewrite_clean_metadata() {
     let mut filesystem =
         Ext4::mount(device, services, MountOptions::read_write()).expect("owned mount failed");
 
-    counters
-        .primary_superblock_writes
-        .store(0, Ordering::SeqCst);
-    counters.primary_gdt_writes.store(0, Ordering::SeqCst);
-    counters.flushes.store(0, Ordering::SeqCst);
+    counters.reset();
     filesystem.sync().expect("clean sync failed");
 
     assert_eq!(
@@ -389,6 +425,62 @@ fn clean_sync_does_not_rewrite_clean_metadata() {
         counters.flushes.load(Ordering::SeqCst) > 0,
         "a clean sync must still preserve the device durability boundary"
     );
+}
+
+#[test]
+fn sync_cycle_keeps_dirty_clean_and_unmount_io_boundaries_distinct() {
+    let counters = Arc::new(SyncIoCounters::default());
+    let device = CountingIoDevice::new(100 * 1024 * 1024, counters.clone());
+    let device = format(
+        device,
+        SeparateClock(Cell::new(1_700_000_000)),
+        MkfsOptions::default(),
+    )
+    .expect("mkfs failed");
+    let services = MountServices::new(
+        SeparateClock(Cell::new(1_800_000_000)),
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        UnavailableCapabilities,
+        RecordingObserver::default(),
+    );
+    let mut filesystem =
+        Ext4::mount(device, services, MountOptions::read_write()).expect("owned mount failed");
+    let context = MutationContext::new(0, 0, 0, 0);
+    let file = filesystem
+        .create_regular_file(
+            context,
+            filesystem.root_inode(),
+            FileName::new(b"sync-cycle").expect("valid name"),
+            FilePermissions::new(0o644).expect("valid permissions"),
+        )
+        .expect("create file");
+    filesystem
+        .write_inode(context, file.number, 0, &[0x5a; BLOCK_SIZE])
+        .expect("write file");
+
+    counters.reset();
+    filesystem.sync().expect("dirty sync");
+    let dirty_sync = counters.snapshot();
+
+    counters.reset();
+    filesystem.sync().expect("clean sync");
+    let clean_sync = counters.snapshot();
+
+    counters.reset();
+    filesystem.unmount().expect("clean unmount");
+    let unmount = counters.snapshot();
+
+    assert!(dirty_sync.writes > 0);
+    assert_eq!(
+        dirty_sync.flushes, 4,
+        "checkpoint flush plus the FUA journal-tail publication must make a trailing flush \
+         redundant"
+    );
+    assert_eq!(clean_sync.writes, 0);
+    assert_eq!(clean_sync.flushes, 1);
+    assert!(unmount.writes > 0);
+    assert_eq!(unmount.flushes, 4);
 }
 
 #[test]

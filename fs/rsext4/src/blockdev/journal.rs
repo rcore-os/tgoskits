@@ -1120,14 +1120,25 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if self.active_direct_handle.is_some() {
             return Err(Ext4Error::busy().with_operation("jbd2:flush_with_direct_handle"));
         }
-        if self.journal_use {
+        let checkpointed = if self.journal_use {
             if self.active_handle.is_some() {
                 return Err(Ext4Error::busy().with_operation("jbd2:flush_with_active_handle"));
             }
             self.commit_pending_transaction()?;
-            self.checkpoint_all_pending_transactions()?;
+            self.checkpoint_all_pending_transactions()?
+        } else {
+            false
+        };
+
+        if checkpointed {
+            // Checkpointing flushes the home blocks before publishing the new
+            // journal tail with FUA. As in Linux jbd2_journal_flush(), that
+            // publication is the final durability boundary; another device
+            // flush here would be redundant.
+            Ok(())
+        } else {
+            self.inner.flush()
         }
-        self.inner.flush()
     }
 
     /// Returns the total number of device blocks.
