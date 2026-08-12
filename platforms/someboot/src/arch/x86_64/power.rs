@@ -25,8 +25,9 @@ const IA32_APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
 // INIT IPI (level-triggered): assert then deassert.
 const ICR_INIT_ASSERT: u32 = 0x0000_c500;
 const ICR_INIT_DEASSERT: u32 = 0x0000_8500;
-// STARTUP IPI (edge-triggered + assert level)
-const ICR_STARTUP_BASE: u32 = 0x0000_4600;
+// STARTUP IPI, matching Linux APIC_DM_STARTUP. Edge-triggered delivery does
+// not carry the level-assert bit used by INIT.
+const ICR_STARTUP_BASE: u32 = 0x0000_0600;
 
 static START_LOCK: AtomicBool = AtomicBool::new(false);
 static AP_BOOTED_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
@@ -407,5 +408,13 @@ mod tests {
 
         assert_eq!(icr >> 32, 0x1234_5678);
         assert_eq!(icr as u32, ICR_STARTUP_BASE | AP_TRAMPOLINE_VECTOR as u32);
+    }
+
+    #[test]
+    fn startup_ipi_matches_linux_edge_triggered_delivery_mode() {
+        const ICR_LEVEL_ASSERT: u32 = 1 << 14;
+
+        assert_eq!(ICR_STARTUP_BASE, 0x600);
+        assert_eq!(ICR_STARTUP_BASE & ICR_LEVEL_ASSERT, 0);
     }
 }
