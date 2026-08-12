@@ -14,7 +14,7 @@ use crate::{
         jbdstruct::{
             JBD2_BLOCKTYPE_SUPERBLOCK_V1, JBD2_BLOCKTYPE_SUPERBLOCK_V2, JBD2_CRC32C_CHKSUM,
             JBD2_FEATURE_INCOMPAT_64BIT, JBD2_FEATURE_INCOMPAT_CSUM_V3, JBD2_MAGIC, JBD2DEVSYSTEM,
-            Jbd2Update, JournalSuperBlock,
+            Jbd2RunningTransaction, Jbd2Update, JournalSuperBlock,
         },
     },
     runtime::{Clock, JournalReplayPhase},
@@ -144,15 +144,19 @@ impl<B: BlockIo> Jbd2Dev<B> {
             let system = self.system.as_mut().ok_or_else(|| {
                 Ext4Error::journal_aborted().with_operation("jbd2:write_without_state")
             })?;
-            system.revoke_queue.retain(|block| *block != update.0);
+            system
+                .running_transaction
+                .revoked_blocks
+                .retain(|block| *block != update.0);
             if let Some(existing) = system
-                .commit_queue
+                .running_transaction
+                .updates
                 .iter_mut()
                 .find(|queued| queued.0 == update.0)
             {
                 *existing = update;
             } else {
-                system.commit_queue.push(update);
+                system.running_transaction.updates.push(update);
             }
             return Ok(());
         }
@@ -161,9 +165,13 @@ impl<B: BlockIo> Jbd2Dev<B> {
             let system = self.system.as_mut().ok_or_else(|| {
                 Ext4Error::journal_aborted().with_operation("jbd2:write_without_state")
             })?;
-            system.revoke_queue.retain(|block| *block != update.0);
+            system
+                .running_transaction
+                .revoked_blocks
+                .retain(|block| *block != update.0);
             if let Some(existing) = system
-                .commit_queue
+                .running_transaction
+                .updates
                 .iter_mut()
                 .find(|queued| queued.0 == update.0)
             {
@@ -184,23 +192,42 @@ impl<B: BlockIo> Jbd2Dev<B> {
         let system = self.system.as_mut().ok_or_else(|| {
             Ext4Error::journal_aborted().with_operation("jbd2:write_without_state")
         })?;
-        system.revoke_queue.retain(|block| *block != update.0);
-        system.commit_queue.push(update);
+        system
+            .running_transaction
+            .revoked_blocks
+            .retain(|block| *block != update.0);
+        system.running_transaction.updates.push(update);
         Ok(())
     }
 
-    fn clone_commit_queue(queue: &[Jbd2Update]) -> Vec<Jbd2Update> {
+    fn clone_updates(queue: &[Jbd2Update]) -> Vec<Jbd2Update> {
         queue
             .iter()
             .map(|update| Jbd2Update(update.0, update.1.to_vec().into_boxed_slice()))
             .collect()
     }
 
-    fn visible_checkpoint_update(
+    fn visible_committed_update(
         system: &JBD2DEVSYSTEM,
         block_id: AbsoluteBN,
     ) -> Option<&Jbd2Update> {
-        let mut revoked = system.revoke_queue.contains(&block_id);
+        let mut revoked = system
+            .running_transaction
+            .revoked_blocks
+            .contains(&block_id);
+        if let Some(transaction) = &system.committing_transaction {
+            if transaction.revoked_blocks.contains(&block_id) {
+                revoked = true;
+            }
+            if !revoked
+                && let Some(update) = transaction
+                    .updates
+                    .iter()
+                    .find(|queued| queued.0 == block_id)
+            {
+                return Some(update);
+            }
+        }
         for transaction in system.checkpoint_transactions.iter().rev() {
             if transaction.revoked_blocks.contains(&block_id) {
                 revoked = true;
@@ -219,12 +246,20 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
     fn running_transaction_credits(system: &JBD2DEVSYSTEM) -> Ext4Result<usize> {
         let distinct_revokes = system
-            .revoke_queue
+            .running_transaction
+            .revoked_blocks
             .iter()
-            .filter(|block| !system.commit_queue.iter().any(|update| update.0 == **block))
+            .filter(|block| {
+                !system
+                    .running_transaction
+                    .updates
+                    .iter()
+                    .any(|update| update.0 == **block)
+            })
             .count();
         system
-            .commit_queue
+            .running_transaction
+            .updates
             .len()
             .checked_add(distinct_revokes)
             .ok_or_else(Ext4Error::overflow)
@@ -289,8 +324,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
             head: super_block.s_first,
             sequence: super_block.s_sequence,
             jbd2_super_block: super_block,
-            commit_queue: Vec::new(),
-            revoke_queue: Vec::new(),
+            running_transaction: Jbd2RunningTransaction {
+                updates: Vec::new(),
+                revoked_blocks: Vec::new(),
+            },
+            committing_transaction: None,
             checkpoint_transactions: Vec::new(),
             used_log_records: 0,
         }
@@ -633,8 +671,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 return Err(Ext4Error::busy().with_operation("jbd2:disable_with_active_handle"));
             }
             if self.system.as_ref().is_some_and(|system| {
-                !system.commit_queue.is_empty()
-                    || !system.revoke_queue.is_empty()
+                !system.running_transaction.updates.is_empty()
+                    || !system.running_transaction.revoked_blocks.is_empty()
+                    || system.committing_transaction.is_some()
                     || !system.checkpoint_transactions.is_empty()
             }) {
                 return Err(Ext4Error::busy().with_operation("jbd2:disable_with_pending_commit"));
@@ -776,7 +815,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             let system = self.system.as_ref().ok_or_else(|| {
                 Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
             })?;
-            Self::clone_commit_queue(&system.commit_queue)
+            Self::clone_updates(&system.running_transaction.updates)
         };
         let revoke_snapshot = self
             .system
@@ -784,7 +823,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .ok_or_else(|| {
                 Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
             })?
-            .revoke_queue
+            .running_transaction
+            .revoked_blocks
             .clone();
         self.active_handle = Some(ActiveJournalHandle {
             credits,
@@ -807,8 +847,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
                         Ext4Error::journal_aborted().with_operation("jbd2:abort_without_state")
                     );
                 };
-                system.commit_queue = handle.queue_snapshot;
-                system.revoke_queue = handle.revoke_snapshot;
+                system.running_transaction.updates = handle.queue_snapshot;
+                system.running_transaction.revoked_blocks = handle.revoke_snapshot;
                 // The active cache may contain buffers dirtied after journal
                 // write access was acquired. They must be discarded, never
                 // flushed to home locations from an aborted handle.
@@ -898,7 +938,10 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// revoke-aware transaction instead of queue removal.
     pub(crate) fn forget_unpublished_metadata(&mut self, block_id: AbsoluteBN) {
         if let Some(system) = self.system.as_mut() {
-            system.commit_queue.retain(|update| update.0 != block_id);
+            system
+                .running_transaction
+                .updates
+                .retain(|update| update.0 != block_id);
         }
         self.inner.invalidate_block(block_id);
     }
@@ -914,8 +957,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
         let needs_boundary = self.journal_use
             && self.active_handle.is_none()
             && self.system.as_ref().is_some_and(|system| {
-                !system.commit_queue.is_empty()
-                    || !system.revoke_queue.is_empty()
+                !system.running_transaction.updates.is_empty()
+                    || !system.running_transaction.revoked_blocks.is_empty()
+                    || system.committing_transaction.is_some()
                     || !system.checkpoint_transactions.is_empty()
             });
         if needs_boundary {
@@ -931,9 +975,17 @@ impl<B: BlockIo> Jbd2Dev<B> {
             handle.touched_blocks.push(block_id);
         }
         if let Some(system) = self.system.as_mut() {
-            system.commit_queue.retain(|update| update.0 != block_id);
-            if self.journal_use && !system.revoke_queue.contains(&block_id) {
-                system.revoke_queue.push(block_id);
+            system
+                .running_transaction
+                .updates
+                .retain(|update| update.0 != block_id);
+            if self.journal_use
+                && !system
+                    .running_transaction
+                    .revoked_blocks
+                    .contains(&block_id)
+            {
+                system.running_transaction.revoked_blocks.push(block_id);
             }
         }
         self.inner.invalidate_block(block_id);
@@ -945,7 +997,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if self.journal_use
             && let Some(system) = self.system.as_ref()
             && let Some(update) = system
-                .commit_queue
+                .running_transaction
+                .updates
                 .iter()
                 .find(|queued| queued.0 == block_id)
         {
@@ -956,7 +1009,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             && let Some(update) = self
                 .system
                 .as_ref()
-                .and_then(|system| Self::visible_checkpoint_update(system, block_id))
+                .and_then(|system| Self::visible_committed_update(system, block_id))
         {
             self.inner.cache_clean_block(block_id, &update.1[..])?;
             return Ok(());
@@ -1000,10 +1053,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
         for i in 0..count {
             let bid = block_id.checked_add(i)?;
             let update = system
-                .commit_queue
+                .running_transaction
+                .updates
                 .iter()
                 .find(|queued| queued.0 == bid)
-                .or_else(|| Self::visible_checkpoint_update(system, bid));
+                .or_else(|| Self::visible_committed_update(system, bid));
             if let Some(update) = update {
                 if update.1.len() != block_size {
                     return Err(Ext4Error::corrupted().with_operation("jbd2:update_block_size"));
@@ -1103,7 +1157,8 @@ mod tests {
         endian::DiskFormat,
         jbd2::jbdstruct::{
             CommitHeader, JBD2_BLOCKTYPE_REVOKE, JBD2_DESCRIPTOR_HEADER_SIZE, JBD2_TAG3_SIZE,
-            JBD2_UUID_SIZE, Jbd2JournalRevokeHeadS, JournalBlockTag3S, JournalHeaderS,
+            JBD2_UUID_SIZE, Jbd2CommitPhase, Jbd2JournalRevokeHeadS, JournalBlockTag3S,
+            JournalHeaderS,
         },
     };
 
@@ -2180,13 +2235,12 @@ mod tests {
         dev.commit().expect("commit running transaction");
 
         assert_eq!(dev.journal_sequence(), Some(sequence.wrapping_add(1)));
+        let system = dev.system.as_ref().expect("journal state");
+        assert!(system.running_transaction.updates.is_empty());
+        assert!(system.committing_transaction.is_none());
+        assert_eq!(system.checkpoint_transactions.len(), 1);
         assert_ne!(
-            dev.system
-                .as_ref()
-                .expect("journal state")
-                .jbd2_super_block
-                .s_start,
-            0,
+            system.jbd2_super_block.s_start, 0,
             "the oldest committed transaction must remain discoverable"
         );
         assert!(
@@ -2720,6 +2774,17 @@ mod tests {
             .umount_commit()
             .expect_err("first failed commit must propagate the device error");
         assert_eq!(first_error.kind(), crate::Ext4ErrorKind::Io);
+        let system = dev.system.as_ref().expect("journal state");
+        assert!(
+            system.running_transaction.updates.is_empty(),
+            "a transaction that entered commit I/O must no longer be owned by the running queue"
+        );
+        let committing = system
+            .committing_transaction
+            .as_ref()
+            .expect("failed transaction remains owned by the committing state");
+        assert_eq!(committing.updates.len(), 1);
+        assert_eq!(committing.phase, Jbd2CommitPhase::DataFlush);
 
         let write_error = dev
             .write_block(AbsoluteBN::new(11), true)

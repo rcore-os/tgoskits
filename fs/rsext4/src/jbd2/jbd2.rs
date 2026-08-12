@@ -475,6 +475,7 @@ impl JBD2DEVSYSTEM {
         journal_blocks: &[AbsoluteBN],
         tid: u32,
         block_size: usize,
+        revoked_blocks: &[AbsoluteBN],
     ) -> Ext4Result<()> {
         let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
         let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
@@ -490,12 +491,11 @@ impl JBD2DEVSYSTEM {
             .checked_sub(core::mem::size_of::<Jbd2JournalRevokeHeadS>())
             .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_size"))?
             / entry_size;
-        if !self.revoke_queue.is_empty() && capacity == 0 {
+        if !revoked_blocks.is_empty() && capacity == 0 {
             return Err(Ext4Error::no_space().with_operation("jbd2:revoke_capacity"));
         }
 
-        let revoke_entries = self.revoke_queue.clone();
-        for revoked in revoke_entries.chunks(capacity.max(1)) {
+        for revoked in revoked_blocks.chunks(capacity.max(1)) {
             let mut revoke_buffer = vec![0_u8; block_size];
             let record_bytes = revoked
                 .len()
@@ -538,18 +538,61 @@ impl JBD2DEVSYSTEM {
         Ok(())
     }
 
+    fn start_committing_transaction(&mut self) -> Ext4Result<bool> {
+        if self.committing_transaction.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:commit_already_running"));
+        }
+        if self.running_transaction.updates.is_empty()
+            && self.running_transaction.revoked_blocks.is_empty()
+        {
+            return Ok(false);
+        }
+
+        let running = core::mem::take(&mut self.running_transaction);
+        self.committing_transaction = Some(Jbd2CommittingTransaction {
+            sequence: self.sequence,
+            log_start: self.head,
+            phase: Jbd2CommitPhase::Flush,
+            updates: running.updates,
+            revoked_blocks: running.revoked_blocks,
+        });
+        Ok(true)
+    }
+
+    fn transition_committing_transaction(
+        &mut self,
+        from: Jbd2CommitPhase,
+        to: Jbd2CommitPhase,
+    ) -> Ext4Result<()> {
+        let transaction = self.committing_transaction.as_mut().ok_or_else(|| {
+            Ext4Error::corrupted().with_operation("jbd2:missing_committing_transaction")
+        })?;
+        if transaction.phase != from {
+            return Err(Ext4Error::corrupted().with_operation("jbd2:commit_phase"));
+        }
+        transaction.phase = to;
+        Ok(())
+    }
+
     /// Commits the currently queued metadata updates using the journal inode mapping.
     pub(crate) fn commit_transaction_with_mapping<D: FilesystemBlockIo>(
         &mut self,
         block_dev: &mut D,
         journal_blocks: &[AbsoluteBN],
     ) -> Ext4Result<bool> {
-        let tid = self.sequence;
-        let transaction_log_start = self.head;
-
-        if self.commit_queue.is_empty() && self.revoke_queue.is_empty() {
+        if !self.start_committing_transaction()? {
             return Ok(false);
         }
+        let (tid, update_count, revoked_blocks) = {
+            let transaction = self.committing_transaction.as_ref().ok_or_else(|| {
+                Ext4Error::corrupted().with_operation("jbd2:missing_committing_transaction")
+            })?;
+            (
+                transaction.sequence,
+                transaction.updates.len(),
+                transaction.revoked_blocks.clone(),
+            )
+        };
 
         let block_size = block_dev.block_size();
         let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
@@ -574,22 +617,20 @@ impl JBD2DEVSYSTEM {
             .checked_sub(core::mem::size_of::<Jbd2JournalRevokeHeadS>())
             .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:revoke_size"))?
             / revoke_entry_size;
-        if !self.revoke_queue.is_empty() && revoke_capacity == 0 {
+        if !revoked_blocks.is_empty() && revoke_capacity == 0 {
             return Err(Ext4Error::no_space().with_operation("jbd2:revoke_capacity"));
         }
-        let descriptor_records = if self.commit_queue.is_empty() {
+        let descriptor_records = if update_count == 0 {
             0
         } else {
-            self.commit_queue.len().div_ceil(descriptor_capacity)
+            update_count.div_ceil(descriptor_capacity)
         };
-        let revoke_records = if self.revoke_queue.is_empty() {
+        let revoke_records = if revoked_blocks.is_empty() {
             0
         } else {
-            self.revoke_queue.len().div_ceil(revoke_capacity)
+            revoked_blocks.len().div_ceil(revoke_capacity)
         };
-        let required_log_records = self
-            .commit_queue
-            .len()
+        let required_log_records = update_count
             .checked_add(descriptor_records)
             .and_then(|records| records.checked_add(revoke_records))
             .and_then(|records| records.checked_add(1))
@@ -609,10 +650,14 @@ impl JBD2DEVSYSTEM {
 
         // Linux switches the committing transaction's revoke table first and
         // emits those records before descriptor/payload logging.
-        self.write_revoke_records(block_dev, journal_blocks, tid, block_size)?;
+        self.write_revoke_records(block_dev, journal_blocks, tid, block_size, &revoked_blocks)?;
+        self.transition_committing_transaction(Jbd2CommitPhase::Flush, Jbd2CommitPhase::Commit)?;
 
         let mut journal_payloads: Vec<(AbsoluteBN, Vec<u8>, bool)> = Vec::new();
-        for update in &self.commit_queue {
+        let transaction = self.committing_transaction.as_ref().ok_or_else(|| {
+            Ext4Error::corrupted().with_operation("jbd2:missing_committing_transaction")
+        })?;
+        for update in &transaction.updates {
             if update.1.len() != block_size || update.1.len() < 4 {
                 return Err(Ext4Error::corrupted().with_operation("jbd2:update_block_size"));
             }
@@ -722,7 +767,15 @@ impl JBD2DEVSYSTEM {
             payload_offset = payload_end;
         }
 
+        self.transition_committing_transaction(
+            Jbd2CommitPhase::Commit,
+            Jbd2CommitPhase::DataFlush,
+        )?;
         block_dev.flush()?;
+        self.transition_committing_transaction(
+            Jbd2CommitPhase::DataFlush,
+            Jbd2CommitPhase::JournalFlush,
+        )?;
 
         // Write the commit block BEFORE checkpointing so that a crash during
         // checkpoint still leaves a valid committed transaction in the journal
@@ -758,15 +811,23 @@ impl JBD2DEVSYSTEM {
             1,
             WriteFlags::METADATA | WriteFlags::FUA,
         )?;
-        self.sequence = self.sequence.wrapping_add(1);
+        let transaction = self.committing_transaction.take().ok_or_else(|| {
+            Ext4Error::corrupted().with_operation("jbd2:missing_committing_transaction")
+        })?;
+        if transaction.phase != Jbd2CommitPhase::JournalFlush
+            || transaction.sequence != self.sequence
+        {
+            return Err(Ext4Error::corrupted().with_operation("jbd2:commit_completion_state"));
+        }
+        self.sequence = transaction.sequence.wrapping_add(1);
 
         self.checkpoint_transactions
             .push(Jbd2CheckpointTransaction {
-                sequence: tid,
-                log_start: transaction_log_start,
+                sequence: transaction.sequence,
+                log_start: transaction.log_start,
                 log_records: required_log_records,
-                updates: core::mem::take(&mut self.commit_queue),
-                revoked_blocks: core::mem::take(&mut self.revoke_queue),
+                updates: transaction.updates,
+                revoked_blocks: transaction.revoked_blocks,
             });
 
         Ok(true)

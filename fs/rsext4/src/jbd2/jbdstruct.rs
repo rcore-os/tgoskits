@@ -35,6 +35,31 @@ pub const JBD2_FEATURE_INCOMPAT_CSUM_V3: u32 = 0x0000_0010;
 /// One journaled metadata update: `(target physical block, serialized block)`.
 pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8]>);
 
+/// Metadata owned by the transaction that accepts new journal handles.
+#[derive(Default)]
+pub(crate) struct Jbd2RunningTransaction {
+    pub(crate) updates: Vec<Jbd2Update>,
+    pub(crate) revoked_blocks: Vec<AbsoluteBN>,
+}
+
+/// Commit phases that mirror Linux JBD2's single commit-thread transitions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Jbd2CommitPhase {
+    Flush,
+    Commit,
+    DataFlush,
+    JournalFlush,
+}
+
+/// One closed transaction while its journal commit record is being published.
+pub(crate) struct Jbd2CommittingTransaction {
+    pub(crate) sequence: u32,
+    pub(crate) log_start: u32,
+    pub(crate) phase: Jbd2CommitPhase,
+    pub(crate) updates: Vec<Jbd2Update>,
+    pub(crate) revoked_blocks: Vec<AbsoluteBN>,
+}
+
 /// One transaction whose commit record is durable but whose home writes may
 /// still be pending.
 pub(crate) struct Jbd2CheckpointTransaction {
@@ -52,8 +77,8 @@ pub struct JBD2DEVSYSTEM {
     pub max_len: u32,            // Total number of blocks in the journal area.
     pub head: u32,               // Next writable relative log block.
     pub sequence: u32,           // Next expected transaction sequence ID.
-    pub commit_queue: Vec<Jbd2Update>, // Pending updates in the current transaction.
-    pub(crate) revoke_queue: Vec<AbsoluteBN>,
+    pub(crate) running_transaction: Jbd2RunningTransaction,
+    pub(crate) committing_transaction: Option<Jbd2CommittingTransaction>,
     pub(crate) checkpoint_transactions: Vec<Jbd2CheckpointTransaction>,
     pub(crate) used_log_records: usize,
 }
