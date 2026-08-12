@@ -1621,6 +1621,24 @@ typed `NoSpace` 且不发布 revoke。
 重挂载仍必须通过 replay 与 orphan/current-tree recovery 收敛。这不是放宽断言，而是把故障点固定
 在 Linux 明确的 durable commit boundary，避免依赖旧的非 Linux ring geometry。
 
+性能 A/B 固定 CPU 2、`powersave` governor、release、memory backend、4 KiB block、20 MiB、
+3 次预热和 20 次测量；baseline 为本检查点前的 `09460a38d913`，implementation 为
+`222da1964`。原始 80 个样本保存在
+`book/design/data/rsext4-perf/2026-08-13-jbd2-linux-transaction-limit.csv`。普通 workload 不会
+接近新的 `/3` 上限，因此本轮只要求保持在门槛内，不把“没有触发 checkpoint”误称为性能优化。
+
+| workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sequential write | 6,332,353 ns | 6,333,900 ns | +0.024% | 6,452,026 ns | 6,457,446 ns | +0.084% |
+| sequential read | 5,937,828 ns | 5,920,991 ns | -0.284% | 6,123,831 ns | 6,309,344 ns | +3.029% |
+| sequential unmount | 17,977 ns | 17,038 ns | -5.223% | 18,945 ns | 18,008 ns | -4.946% |
+| dirty sync | 7,850 ns | 7,972 ns | +1.554% | 9,670 ns | 8,498 ns | -12.120% |
+| clean sync | 214 ns | 207 ns | -3.271% | 306 ns | 224 ns | -26.797% |
+| sync-cycle unmount | 5,018 ns | 5,173 ns | +3.089% | 5,436 ns | 5,533 ns | +1.784% |
+
+六项 median/p95 全部满足相对本 PR 前一检查点的 5%/10% 门槛；相对冻结 dev 的全局 dirty-sync
+硬红项仍按 7.35/7.42 保留，本次局部 A/B 不覆盖也不豁免该最终门禁。
+
 本检查点不宣称完整 `jbd2_journal_restart()`：现有 truncate/reap/punch 由 filesystem owner 在每个
 已提交 chunk 后重新规划，通用 closure 不能在 prefix commit 后继续沿用外层全量 rollback snapshot。
 reserved handle 的一半上限、revoke requested/remaining 与按 revoke-block ceil 差额计 credit、
