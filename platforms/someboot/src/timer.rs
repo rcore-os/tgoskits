@@ -147,6 +147,32 @@ pub(crate) mod aarch64_deadline {
     }
 }
 
+#[cfg(any(target_arch = "riscv64", test))]
+pub(crate) mod riscv64_interval {
+    /// Converts an SBI relative interval into an absolute timer deadline.
+    pub(crate) fn absolute_deadline(current_ticks: u64, interval_ticks: u64) -> u64 {
+        let interval_ticks = if interval_ticks == 0 {
+            1
+        } else {
+            interval_ticks
+        };
+        current_ticks.saturating_add(interval_ticks)
+    }
+}
+
+#[cfg(any(target_arch = "loongarch64", test))]
+pub(crate) mod loongarch64_interval {
+    const ALIGNMENT: usize = 4;
+    const MIN_TICKS: usize = 4;
+
+    /// Converts a relative interval to the bounded 4-tick value encoded by TCFG.
+    pub(crate) fn aligned_ticks(interval_ticks: usize) -> usize {
+        let max_aligned = usize::MAX - usize::MAX % ALIGNMENT;
+        let clamped = interval_ticks.max(MIN_TICKS).min(max_aligned);
+        (clamped + (ALIGNMENT - 1)) & !(ALIGNMENT - 1)
+    }
+}
+
 /// Acknowledge and clear the timer interrupt.
 /// This must be called in the timer interrupt handler.
 pub fn ack() {
@@ -265,6 +291,26 @@ mod tests {
             current + interval
         );
         assert_eq!(aarch64_deadline::from_interval(u64::MAX - 3, 8), 4);
+    }
+
+    #[test]
+    fn riscv64_deadline_saturates_at_counter_limit() {
+        assert_eq!(
+            riscv64_interval::absolute_deadline(u64::MAX - 3, 8),
+            u64::MAX
+        );
+        assert_eq!(riscv64_interval::absolute_deadline(10, 0), 11);
+        assert_eq!(riscv64_interval::absolute_deadline(u64::MAX, 0), u64::MAX);
+    }
+
+    #[test]
+    fn loongarch64_interval_clamps_before_rounding() {
+        assert_eq!(loongarch64_interval::aligned_ticks(1), 4);
+        assert_eq!(loongarch64_interval::aligned_ticks(5), 8);
+        assert_eq!(
+            loongarch64_interval::aligned_ticks(usize::MAX),
+            usize::MAX & !3
+        );
     }
 
     #[test]
