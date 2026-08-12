@@ -2367,7 +2367,10 @@ mod file_functional_tests {
         let mut small_journal = jbd2::jbdstruct::JournalSuperBlock::default();
         small_journal.s_header.h_blocktype = jbd2::jbdstruct::JBD2_BLOCKTYPE_SUPERBLOCK_V1;
         small_journal.s_blocksize = BLOCK_SIZE as u32;
-        small_journal.s_maxlen = 6;
+        // Linux limits one transaction to one third of the journal. Fifteen
+        // blocks preserve this fixture's original three user-credit limit
+        // after descriptor and commit bookkeeping.
+        small_journal.s_maxlen = 15;
         small_journal.s_first = 1;
         small_journal.s_sequence = journal_sequence_before.unwrap_or(1);
         small_journal.s_start = 0;

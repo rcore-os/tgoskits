@@ -31,30 +31,26 @@ struct RestartDevice {
 
 #[derive(Default)]
 struct PowerCutProbe {
-    trigger: Cell<Option<(u64, u32)>>,
+    commit_trigger: Cell<Option<u32>>,
     commit_writes: Cell<u32>,
-    target_writes: Cell<u32>,
-    commits_at_last_target_write: Cell<u32>,
     commits_before_cut: Cell<Option<u32>>,
 }
 
 impl PowerCutProbe {
     fn reset_observation(&self) {
-        self.trigger.set(None);
+        self.commit_trigger.set(None);
         self.commit_writes.set(0);
-        self.target_writes.set(0);
-        self.commits_at_last_target_write.set(0);
         self.commits_before_cut.set(None);
     }
 
-    fn arm_checkpoint_power_cut(&self, target: u64, occurrence: u32) {
+    fn arm_committed_transaction_power_cut(&self, occurrence: u32) {
         assert!(occurrence > 0, "power-cut occurrence must be positive");
         self.reset_observation();
-        self.trigger.set(Some((target, occurrence)));
+        self.commit_trigger.set(Some(occurrence));
     }
 
     fn disable(&self) {
-        self.trigger.set(None);
+        self.commit_trigger.set(None);
     }
 }
 
@@ -85,24 +81,11 @@ impl BlockIo for RestartDevice {
     }
 
     fn write(&mut self, buffer: &[u8], sector: SectorId, _count: u32) -> Ext4Result<()> {
-        if is_jbd2_commit(buffer) {
+        let is_commit = is_jbd2_commit(buffer);
+        if is_commit {
             self.power_cut
                 .commit_writes
                 .set(self.power_cut.commit_writes.get() + 1);
-        }
-        let watched_target = self
-            .power_cut
-            .trigger
-            .get()
-            .filter(|(target, _)| *target == sector.raw());
-        if let Some((target, occurrence)) = watched_target {
-            if occurrence == 1 {
-                self.power_cut
-                    .commits_before_cut
-                    .set(Some(self.power_cut.commit_writes.get()));
-                panic!("simulated power loss before filesystem block {target} write");
-            }
-            self.power_cut.trigger.set(Some((target, occurrence - 1)));
         }
         let start = sector.as_usize()? * BLOCK_SIZE;
         let end = start
@@ -113,13 +96,14 @@ impl BlockIo for RestartDevice {
             Ext4Error::block_out_of_range(sector.to_u32().unwrap_or(u32::MAX), total_blocks)
         })?;
         destination.copy_from_slice(buffer);
-        if watched_target.is_some() {
-            self.power_cut
-                .target_writes
-                .set(self.power_cut.target_writes.get() + 1);
-            self.power_cut
-                .commits_at_last_target_write
-                .set(self.power_cut.commit_writes.get());
+        if is_commit && let Some(occurrence) = self.power_cut.commit_trigger.get() {
+            if occurrence == 1 {
+                self.power_cut
+                    .commits_before_cut
+                    .set(Some(self.power_cut.commit_writes.get()));
+                panic!("simulated power loss after durable JBD2 commit");
+            }
+            self.power_cut.commit_trigger.set(Some(occurrence - 1));
         }
         Ok(())
     }
@@ -164,7 +148,6 @@ struct LargeExtentFixture {
     data_blocks: Vec<AbsoluteBN>,
     gap_blocks: Vec<AbsoluteBN>,
     external_blocks: Vec<AbsoluteBN>,
-    checkpoint_leaf: u64,
     free_before: u64,
 }
 
@@ -175,7 +158,6 @@ struct LargeLegacyFixture {
     inode_number: InodeNumber,
     removed_blocks: Vec<AbsoluteBN>,
     gap_blocks: Vec<AbsoluteBN>,
-    checkpoint_bitmap: u64,
     free_before: u64,
 }
 
@@ -213,9 +195,7 @@ fn large_extent_range_removal_restarts_across_small_journal_transactions() {
 fn large_extent_truncate_recovery_resumes_after_transaction_boundary_power_cut() {
     let mut fixture = build_large_extent_fixture("/restart-crash");
     install_small_journal(&mut fixture);
-    fixture
-        .power_cut
-        .arm_checkpoint_power_cut(fixture.checkpoint_leaf, 2);
+    fixture.power_cut.arm_committed_transaction_power_cut(1);
 
     let power_cut = catch_unwind(AssertUnwindSafe(|| {
         truncate_inode(
@@ -229,19 +209,14 @@ fn large_extent_truncate_recovery_resumes_after_transaction_boundary_power_cut()
         power_cut.is_err(),
         "fixture must cut power after one committed removal chunk"
     );
-    assert_eq!(
-        fixture.power_cut.target_writes.get(),
-        1,
-        "one earlier checkpoint write must reach the target leaf"
-    );
     let commits_before_cut = fixture
         .power_cut
         .commits_before_cut
         .get()
         .expect("power cut must record the durable commit count");
-    assert!(
-        commits_before_cut > fixture.power_cut.commits_at_last_target_write.get(),
-        "the interrupted checkpoint must follow a newly written commit block"
+    assert_eq!(
+        commits_before_cut, 1,
+        "the first removal chunk must be durable"
     );
 
     let LargeExtentFixture {
@@ -278,7 +253,7 @@ fn large_extent_truncate_recovery_resumes_after_transaction_boundary_power_cut()
 #[test]
 fn undersized_journal_rejects_restart_before_publishing_truncate_intent() {
     let mut fixture = build_large_extent_fixture("/restart-too-small");
-    install_journal_with_maxlen(&mut fixture, 6);
+    install_journal_with_maxlen(&mut fixture, 15);
     fixture.power_cut.reset_observation();
     let original_size = fixture.inode.size();
 
@@ -307,7 +282,7 @@ fn large_legacy_truncate_restarts_across_allocation_groups() {
     // conservative credit until reserved-credit accounting is split by record
     // type. Keep the ring small enough to force restart while allowing one
     // complete child-first removal chunk.
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 10);
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 27);
     fixture.power_cut.reset_observation();
     let sequence_before = fixture.journal.journal_sequence();
 
@@ -361,7 +336,7 @@ fn large_legacy_truncate_restarts_across_allocation_groups() {
 #[test]
 fn large_legacy_punch_restarts_across_allocation_groups() {
     let mut fixture = build_large_legacy_fixture("/legacy-punch-restart");
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 10);
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 27);
     fixture.power_cut.reset_observation();
     let size_before = fixture
         .filesystem
@@ -406,17 +381,15 @@ fn large_legacy_punch_restarts_across_allocation_groups() {
 }
 
 #[test]
-fn large_legacy_punch_remains_consistent_after_committed_bitmap_power_cut() {
+fn large_legacy_punch_remains_consistent_after_committed_transaction_power_cut() {
     let mut fixture = build_large_legacy_fixture("/legacy-punch-crash");
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 10);
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 27);
     let size_before = fixture
         .filesystem
         .get_inode_by_num(&mut fixture.journal, fixture.inode_number)
         .expect("legacy inode read failed")
         .size();
-    fixture
-        .power_cut
-        .arm_checkpoint_power_cut(fixture.checkpoint_bitmap, 1);
+    fixture.power_cut.arm_committed_transaction_power_cut(1);
 
     let power_cut = catch_unwind(AssertUnwindSafe(|| {
         punch_hole_inode(
@@ -436,9 +409,9 @@ fn large_legacy_punch_remains_consistent_after_committed_bitmap_power_cut() {
         .commits_before_cut
         .get()
         .expect("power cut must record the durable commit count");
-    assert!(
-        commits_before_cut > fixture.power_cut.commits_at_last_target_write.get(),
-        "the interrupted bitmap checkpoint must follow a newly durable commit block"
+    assert_eq!(
+        commits_before_cut, 1,
+        "the first punch chunk must be durable"
     );
 
     let device = fixture.journal.into_inner();
@@ -483,12 +456,10 @@ fn large_legacy_punch_remains_consistent_after_committed_bitmap_power_cut() {
 }
 
 #[test]
-fn large_legacy_truncate_recovery_resumes_after_committed_bitmap_power_cut() {
+fn large_legacy_truncate_recovery_resumes_after_committed_transaction_power_cut() {
     let mut fixture = build_large_legacy_fixture("/legacy-restart-crash");
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 10);
-    fixture
-        .power_cut
-        .arm_checkpoint_power_cut(fixture.checkpoint_bitmap, 1);
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 27);
+    fixture.power_cut.arm_committed_transaction_power_cut(1);
 
     let power_cut = catch_unwind(AssertUnwindSafe(|| {
         truncate_inode(
@@ -508,13 +479,8 @@ fn large_legacy_truncate_recovery_resumes_after_committed_bitmap_power_cut() {
         .get()
         .expect("power cut must record the durable commit count");
     assert_eq!(
-        fixture.power_cut.target_writes.get(),
-        0,
-        "the watched bitmap home block must not reach storage before the cut"
-    );
-    assert!(
-        commits_before_cut > fixture.power_cut.commits_at_last_target_write.get(),
-        "the interrupted bitmap checkpoint must follow a newly durable commit block"
+        commits_before_cut, 1,
+        "the first truncate chunk must be durable before power loss"
     );
 
     let device = fixture.journal.into_inner();
@@ -578,7 +544,7 @@ fn zero_link_legacy_reap_restarts_before_final_inode_transaction() {
         .journal
         .flush()
         .expect("orphan fixture checkpoint failed");
-    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 11);
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 30);
     fixture.power_cut.reset_observation();
 
     reap_unlinked_inode(
@@ -756,13 +722,7 @@ fn build_large_extent_fixture(path: &str) -> LargeExtentFixture {
     let root = ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number)
         .load_root_from_inode()
         .expect("external root parse failed");
-    let checkpoint_leaf = match root {
-        ExtentNode::Index { entries, .. } => entries
-            .get(1)
-            .map(|index| (u64::from(index.ei_leaf_hi) << 32) | u64::from(index.ei_leaf_lo))
-            .expect("external root must reference a reusable crash leaf"),
-        ExtentNode::Leaf { .. } => panic!("fixture must create external leaves"),
-    };
+    assert!(matches!(root, ExtentNode::Index { .. }));
     let free_before = filesystem.superblock.free_blocks_count();
     LargeExtentFixture {
         journal,
@@ -774,7 +734,6 @@ fn build_large_extent_fixture(path: &str) -> LargeExtentFixture {
         data_blocks,
         gap_blocks,
         external_blocks,
-        checkpoint_leaf,
         free_before,
     }
 }
@@ -857,10 +816,6 @@ fn build_large_legacy_fixture(path: &str) -> LargeLegacyFixture {
             .expect("indirect block group lookup failed");
         assert_eq!(group, indirect_group);
     }
-    let checkpoint_bitmap = filesystem.group_descs
-        [indirect_group.as_usize().expect("indirect group index")]
-    .block_bitmap();
-
     write_pointer_block(&mut journal, single_root, single_data);
     write_pointer_block(&mut journal, double_root, double_leaf);
     write_pointer_entry(&mut journal, double_root, 1, empty_double_leaf);
@@ -912,7 +867,6 @@ fn build_large_legacy_fixture(path: &str) -> LargeLegacyFixture {
         inode_number,
         removed_blocks,
         gap_blocks,
-        checkpoint_bitmap,
         free_before,
     }
 }
@@ -998,7 +952,7 @@ fn write_pointer_entry(
 }
 
 fn install_small_journal(fixture: &mut LargeExtentFixture) {
-    install_journal_with_maxlen(fixture, 10);
+    install_journal_with_maxlen(fixture, 27);
 }
 
 fn install_journal_with_maxlen(fixture: &mut LargeExtentFixture, maxlen: u32) {

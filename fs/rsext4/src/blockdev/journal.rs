@@ -30,6 +30,7 @@ pub enum Jbd2RunState {
 
 struct ActiveJournalHandle {
     credits: usize,
+    transaction_credits_at_start: usize,
     touched_blocks: Vec<AbsoluteBN>,
     queue_snapshot: Vec<Jbd2Update>,
     revoke_snapshot: Vec<AbsoluteBN>,
@@ -38,6 +39,12 @@ struct ActiveJournalHandle {
 struct ActiveDirectHandle {
     credits: usize,
     before_images: Vec<Jbd2Update>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TransactionHandleExtension {
+    Extended,
+    RestartRequired,
 }
 
 struct JournalAbortState {
@@ -188,7 +195,16 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
         if needs_commit {
             self.commit_pending_transaction()?;
-            self.checkpoint_until_capacity(1)?;
+        }
+
+        let running_transaction_is_empty = self
+            .system
+            .as_ref()
+            .ok_or_else(|| Ext4Error::journal_aborted().with_operation("jbd2:write_without_state"))
+            .and_then(Self::running_transaction_credits)?
+            == 0;
+        if running_transaction_is_empty {
+            self.reserve_maximum_transaction_log_space()?;
         }
 
         let system = self.system.as_mut().ok_or_else(|| {
@@ -274,46 +290,30 @@ impl<B: BlockIo> Jbd2Dev<B> {
     ) -> Ext4Result<usize> {
         let declared_blocks =
             usize::try_from(superblock.s_maxlen).map_err(|_| Ext4Error::overflow())?;
-        let first = usize::try_from(superblock.s_first).map_err(|_| Ext4Error::overflow())?;
-        let ring_records = declared_blocks
-            .min(mapped_blocks)
-            .checked_sub(first)
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:ring_capacity"))?;
-        Self::transaction_capacity_in_records(superblock, block_size, ring_records)
+        let journal_blocks = declared_blocks.min(mapped_blocks);
+        let maximum_transaction_records = journal_blocks / 3;
+        let descriptor_capacity = superblock.descriptor_tag_capacity(block_size)?;
+        let transaction_overhead = maximum_transaction_records
+            .div_ceil(descriptor_capacity)
+            .checked_add(1)
+            .ok_or_else(Ext4Error::overflow)?;
+        maximum_transaction_records
+            .checked_sub(transaction_overhead)
+            .filter(|capacity| *capacity != 0)
+            .ok_or_else(|| Ext4Error::no_space().with_operation("jbd2:transaction_capacity"))
     }
 
-    fn transaction_capacity_in_records(
+    fn maximum_transaction_records(
         superblock: &JournalSuperBlock,
-        block_size: usize,
-        ring_records: usize,
+        mapped_blocks: usize,
     ) -> Ext4Result<usize> {
-        let descriptor_capacity = superblock.descriptor_tag_capacity(block_size)?;
-
-        // A transaction occupies one log record per payload, one descriptor
-        // for each descriptor-sized payload chunk, and one final commit block.
-        // Credits continue to count distinct metadata payloads, not descriptor
-        // overhead, so find the largest payload count whose complete record set
-        // fits in the ring.
-        let mut lower = 0usize;
-        let mut upper = ring_records;
-        while lower < upper {
-            let midpoint = lower + (upper - lower).div_ceil(2);
-            let descriptors = midpoint.div_ceil(descriptor_capacity);
-            let required = midpoint
-                .checked_add(descriptors)
-                .and_then(|records| records.checked_add(1))
-                .ok_or_else(Ext4Error::overflow)?;
-            if required <= ring_records {
-                lower = midpoint;
-            } else {
-                upper = midpoint - 1;
-            }
-        }
-        let capacity = lower;
-        if capacity == 0 {
+        let declared_blocks =
+            usize::try_from(superblock.s_maxlen).map_err(|_| Ext4Error::overflow())?;
+        let maximum = declared_blocks.min(mapped_blocks) / 3;
+        if maximum == 0 {
             return Err(Ext4Error::no_space().with_operation("jbd2:transaction_capacity"));
         }
-        Ok(capacity)
+        Ok(maximum)
     }
 
     fn make_system(
@@ -520,26 +520,13 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.checkpoint_transactions(usize::MAX)
     }
 
-    fn checkpoint_until_capacity(&mut self, credits: usize) -> Ext4Result<()> {
+    fn checkpoint_until_log_records(&mut self, required_records: usize) -> Ext4Result<()> {
         let mut available_records = self.journal_available_log_records()?;
-        let block_size = self.inner.block_size() as usize;
         let system = self.system.as_ref().ok_or_else(|| {
             Ext4Error::journal_aborted().with_operation("jbd2:checkpoint_without_state")
         })?;
         let mut checkpoint_count = 0usize;
-        loop {
-            let available_credits = if available_records < 3 {
-                0
-            } else {
-                Self::transaction_capacity_in_records(
-                    &system.jbd2_super_block,
-                    block_size,
-                    available_records,
-                )?
-            };
-            if available_credits >= credits {
-                break;
-            }
+        while available_records < required_records {
             let transaction = system
                 .checkpoint_transactions
                 .get(checkpoint_count)
@@ -557,20 +544,32 @@ impl<B: BlockIo> Jbd2Dev<B> {
         Ok(())
     }
 
+    fn reserve_maximum_transaction_log_space(&mut self) -> Ext4Result<()> {
+        let required_records = self.journal_maximum_transaction_records()?;
+        self.checkpoint_until_log_records(required_records)
+    }
+
+    fn journal_mapped_blocks(&self) -> Ext4Result<usize> {
+        let system = self.system.as_ref().ok_or_else(|| {
+            Ext4Error::journal_aborted().with_operation("jbd2:capacity_without_state")
+        })?;
+        if self.journal_blocks.is_empty() {
+            let available = self
+                .total_blocks()
+                .checked_sub(system.start_block.raw())
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:mapping_capacity"))?;
+            usize::try_from(available).map_err(|_| Ext4Error::overflow())
+        } else {
+            Ok(self.journal_blocks.len())
+        }
+    }
+
     fn journal_transaction_capacity(&self) -> Ext4Result<usize> {
         self.ensure_not_aborted("jbd2:capacity_after_abort")?;
         let system = self.system.as_ref().ok_or_else(|| {
             Ext4Error::journal_aborted().with_operation("jbd2:capacity_without_state")
         })?;
-        let mapped_blocks = if self.journal_blocks.is_empty() {
-            let available = self
-                .total_blocks()
-                .checked_sub(system.start_block.raw())
-                .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:mapping_capacity"))?;
-            usize::try_from(available).map_err(|_| Ext4Error::overflow())?
-        } else {
-            self.journal_blocks.len()
-        };
+        let mapped_blocks = self.journal_mapped_blocks()?;
         Self::transaction_capacity(
             &system.jbd2_super_block,
             self.inner.block_size() as usize,
@@ -578,35 +577,19 @@ impl<B: BlockIo> Jbd2Dev<B> {
         )
     }
 
-    fn journal_available_transaction_capacity(&self) -> Ext4Result<usize> {
+    fn journal_maximum_transaction_records(&self) -> Ext4Result<usize> {
         self.ensure_not_aborted("jbd2:capacity_after_abort")?;
         let system = self.system.as_ref().ok_or_else(|| {
             Ext4Error::journal_aborted().with_operation("jbd2:capacity_without_state")
         })?;
-        let available_records = self.journal_available_log_records()?;
-        if available_records < 3 {
-            return Ok(0);
-        }
-        Self::transaction_capacity_in_records(
-            &system.jbd2_super_block,
-            self.inner.block_size() as usize,
-            available_records,
-        )
+        Self::maximum_transaction_records(&system.jbd2_super_block, self.journal_mapped_blocks()?)
     }
 
     fn journal_available_log_records(&self) -> Ext4Result<usize> {
         let system = self.system.as_ref().ok_or_else(|| {
             Ext4Error::journal_aborted().with_operation("jbd2:capacity_without_state")
         })?;
-        let mapped_blocks = if self.journal_blocks.is_empty() {
-            let available = self
-                .total_blocks()
-                .checked_sub(system.start_block.raw())
-                .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:mapping_capacity"))?;
-            usize::try_from(available).map_err(|_| Ext4Error::overflow())?
-        } else {
-            self.journal_blocks.len()
-        };
+        let mapped_blocks = self.journal_mapped_blocks()?;
         let declared_blocks =
             usize::try_from(system.jbd2_super_block.s_maxlen).map_err(|_| Ext4Error::overflow())?;
         let first =
@@ -894,23 +877,30 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if credits > transaction_capacity {
             return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
         }
-        let available_capacity = self.journal_available_transaction_capacity()?;
-
-        let needs_commit = {
+        let (needs_commit, running_transaction_was_empty) = {
             let Some(system) = self.system.as_mut() else {
                 return Err(
                     Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state")
                 );
             };
-            let reserved = Self::running_transaction_credits(system)?
+            let running_credits = Self::running_transaction_credits(system)?;
+            let reserved = running_credits
                 .checked_add(credits)
                 .ok_or_else(Ext4Error::overflow)?;
-            reserved > available_capacity
+            (reserved > transaction_capacity, running_credits == 0)
         };
         if needs_commit {
             self.commit_pending_transaction()?;
-            self.checkpoint_until_capacity(credits)?;
         }
+        if needs_commit || running_transaction_was_empty {
+            self.reserve_maximum_transaction_log_space()?;
+        }
+
+        let transaction_credits_at_start = self
+            .system
+            .as_ref()
+            .ok_or_else(|| Ext4Error::journal_aborted().with_operation("jbd2:handle_without_state"))
+            .and_then(Self::running_transaction_credits)?;
 
         let queue_snapshot = {
             let system = self.system.as_ref().ok_or_else(|| {
@@ -928,11 +918,23 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .revoked_blocks
             .clone();
         self.active_handle = Some(ActiveJournalHandle {
-            credits,
+            credits: 0,
+            transaction_credits_at_start,
             touched_blocks: Vec::with_capacity(credits),
             queue_snapshot,
             revoke_snapshot,
         });
+        match self.extend_transaction_handle(credits) {
+            Ok(TransactionHandleExtension::Extended) => {}
+            Ok(TransactionHandleExtension::RestartRequired) => {
+                self.active_handle = None;
+                return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
+            }
+            Err(error) => {
+                self.active_handle = None;
+                return Err(error);
+            }
+        }
 
         match operation(self) {
             Ok(value) => {
@@ -967,6 +969,58 @@ impl<B: BlockIo> Jbd2Dev<B> {
         operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
     ) -> Ext4Result<T> {
         self.with_journal_handle(credits, operation)
+    }
+
+    /// Best-effort extension of the current metadata reservation.
+    ///
+    /// Linux JBD2 does not wait for log space from this operation. When the
+    /// running transaction cannot accommodate the larger reservation, the
+    /// filesystem owner must close its current atomic step and restart in a
+    /// new transaction. This core reports that state explicitly so callers do
+    /// not confuse a required restart with device space exhaustion.
+    pub(crate) fn extend_transaction_handle(
+        &mut self,
+        additional_credits: usize,
+    ) -> Ext4Result<TransactionHandleExtension> {
+        self.ensure_not_aborted("jbd2:extend_after_abort")?;
+        if !self.journal_use {
+            let handle = self.active_direct_handle.as_mut().ok_or_else(|| {
+                Ext4Error::invalid_input().with_operation("jbd2:extend_without_handle")
+            })?;
+            handle.credits = handle
+                .credits
+                .checked_add(additional_credits)
+                .ok_or_else(Ext4Error::overflow)?;
+            return Ok(TransactionHandleExtension::Extended);
+        }
+
+        let (current_credits, transaction_credits_at_start) = self
+            .active_handle
+            .as_ref()
+            .map(|handle| (handle.credits, handle.transaction_credits_at_start))
+            .ok_or_else(|| {
+                Ext4Error::invalid_input().with_operation("jbd2:extend_without_handle")
+            })?;
+        let Some(extended_credits) = current_credits.checked_add(additional_credits) else {
+            return Ok(TransactionHandleExtension::RestartRequired);
+        };
+        let Some(reserved_credits) = transaction_credits_at_start.checked_add(extended_credits)
+        else {
+            return Ok(TransactionHandleExtension::RestartRequired);
+        };
+        // Extending an attached handle is bounded by the transaction size,
+        // not by currently free ring records. Linux JBD2 deliberately does
+        // not wait for log space here; start/restart owns that concern.
+        if reserved_credits > self.journal_transaction_capacity()? {
+            return Ok(TransactionHandleExtension::RestartRequired);
+        }
+
+        let handle = self
+            .active_handle
+            .as_mut()
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:missing_active_handle"))?;
+        handle.credits = extended_credits;
+        Ok(TransactionHandleExtension::Extended)
     }
 
     fn capture_direct_preimage(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
@@ -1020,7 +1074,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
         let new_buf = self.inner.buffer().to_vec().into_boxed_slice();
         let updates = Jbd2Update(block_id, new_buf);
-        let transaction_capacity = self.journal_available_transaction_capacity()?;
+        let transaction_capacity = self.journal_transaction_capacity()?;
         if let Err(error) = self.enqueue_journal_update(updates, transaction_capacity) {
             self.inner.discard_active();
             return Err(error);
@@ -1066,6 +1120,9 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if needs_boundary {
             self.commit_pending_transaction()?;
             self.checkpoint_all_pending_transactions()?;
+        }
+        if self.journal_use && self.active_handle.is_none() {
+            self.reserve_maximum_transaction_log_space()?;
         }
         if let Some(handle) = self.active_handle.as_mut()
             && !handle.touched_blocks.contains(&block_id)
@@ -1197,7 +1254,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
         let credits = usize::try_from(count).map_err(|_| Ext4Error::overflow())?;
-        let transaction_capacity = self.journal_available_transaction_capacity()?;
+        let transaction_capacity = self.journal_transaction_capacity()?;
         if self.active_handle.is_none() && credits > 1 && credits <= transaction_capacity {
             return self.with_journal_handle(credits, |device| {
                 device.write_blocks(buf, block_id, count, is_metadata)
@@ -1967,34 +2024,35 @@ mod tests {
     }
 
     #[test]
-    fn transaction_capacity_follows_descriptor_and_ring_geometry() {
+    fn transaction_capacity_reserves_linux_third_of_log_and_bookkeeping() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
         let superblock = csum_v3_superblock();
         dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
             .expect("install csum-v3 journal");
 
-        assert_eq!(dev.journal_transaction_capacity().unwrap(), 61);
+        assert_eq!(dev.journal_maximum_transaction_records().unwrap(), 21);
+        assert_eq!(dev.journal_transaction_capacity().unwrap(), 19);
         let large_ring = JournalSuperBlock {
             s_maxlen: 4096,
             ..superblock
         };
         assert_eq!(
             Jbd2Dev::<MemBlockDev>::transaction_capacity(&large_ring, 1024, 4096).unwrap(),
-            4027
+            1341
         );
 
         let small = small_journal_superblock();
         assert_eq!(
             Jbd2Dev::<MemBlockDev>::transaction_capacity(&small, BLOCK_SIZE, 16).unwrap(),
-            13
+            3
         );
     }
 
     #[test]
     fn one_transaction_can_span_multiple_descriptor_blocks() {
-        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(1024), true);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(2048), true);
         let mut superblock = JournalSuperBlock {
-            s_maxlen: 512,
+            s_maxlen: 1024,
             ..csum_v3_superblock()
         };
         crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
@@ -2052,7 +2110,7 @@ mod tests {
         replay
             .set_journal_superblock_with_mapping(
                 replay_superblock,
-                (512..1024).map(AbsoluteBN::new).collect(),
+                (512..1536).map(AbsoluteBN::new).collect(),
             )
             .expect("install committed multi-descriptor journal");
         assert_eq!(replay.journal_replay_checked(), ReplayStatus::Complete);
@@ -2070,11 +2128,11 @@ mod tests {
 
     #[test]
     fn second_descriptor_write_failure_never_checkpoints_the_first_chunk() {
-        let mut inner = MemBlockDev::new(1024);
+        let mut inner = MemBlockDev::new(2048);
         inner.fail_next_write_at_block(AbsoluteBN::new(767));
         let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
         let mut superblock = JournalSuperBlock {
-            s_maxlen: 512,
+            s_maxlen: 1024,
             ..csum_v3_superblock()
         };
         crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
@@ -3235,9 +3293,16 @@ mod tests {
         dev.forget_detached_metadata(AbsoluteBN::new(10))
             .expect("queue standalone revoke");
 
-        dev.with_transaction_handle(13, |dev| {
-            for offset in 0..13 {
-                let target = AbsoluteBN::new(20 + offset);
+        let capacity = dev
+            .journal_transaction_capacity()
+            .expect("small journal capacity");
+        dev.with_transaction_handle(capacity, |dev| {
+            for offset in 0..capacity {
+                let target = AbsoluteBN::new(
+                    20u64
+                        .checked_add(u64::try_from(offset).map_err(|_| Ext4Error::overflow())?)
+                        .ok_or_else(Ext4Error::overflow)?,
+                );
                 dev.write_blocks(&vec![offset as u8; BLOCK_SIZE], target, 1, true)?;
             }
             Ok(())
@@ -3251,13 +3316,39 @@ mod tests {
         );
         dev.commit().expect("commit full metadata handle");
         dev.flush().expect("checkpoint both transactions");
-        for offset in 0..13 {
+        for offset in 0..capacity {
             let target_offset = (20 + offset) as usize * BLOCK_SIZE;
             assert_eq!(
                 &dev.inner._device().data[target_offset..target_offset + BLOCK_SIZE],
                 vec![offset as u8; BLOCK_SIZE]
             );
         }
+    }
+
+    #[test]
+    fn standalone_revoke_reserves_log_space_before_mutating_the_running_transaction() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        let constrained_ring = JournalSuperBlock {
+            s_maxlen: 16,
+            s_first: 13,
+            ..JournalSuperBlock::default()
+        };
+        dev.set_journal_superblock(constrained_ring, AbsoluteBN::new(128))
+            .expect("install journal whose ring is smaller than one maximum transaction");
+
+        let error = dev
+            .forget_detached_metadata(AbsoluteBN::new(10))
+            .expect_err("revoke must not start without maximum-transaction log space");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::NoSpace);
+        assert!(
+            dev.system
+                .as_ref()
+                .unwrap()
+                .running_transaction
+                .revoked_blocks
+                .is_empty(),
+            "failed start-time reservation must not publish a revoke"
+        );
     }
 
     fn assert_commit_stage_fault_aborts_journal(device: MemBlockDev, stage: &str) {
@@ -3608,6 +3699,87 @@ mod tests {
     }
 
     #[test]
+    fn new_handle_checkpoints_before_dirtying_when_log_lacks_maximum_transaction_space() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let capacity = dev.journal_transaction_capacity().unwrap();
+        let maximum_records = dev.journal_maximum_transaction_records().unwrap();
+        assert_eq!((capacity, maximum_records), (3, 5));
+
+        for transaction in 0..3u64 {
+            let first_target = AbsoluteBN::new(10 + transaction * capacity as u64);
+            dev.with_journal_handle(capacity, |dev| {
+                for offset in 0..capacity {
+                    dev.write_blocks(
+                        &vec![transaction as u8 + 1; BLOCK_SIZE],
+                        first_target.checked_add(u32::try_from(offset).unwrap())?,
+                        1,
+                        true,
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("fill one maximum-sized transaction");
+            dev.commit().expect("commit maximum-sized transaction");
+        }
+        assert_eq!(dev.journal_available_log_records().unwrap(), 0);
+        assert_eq!(
+            dev.system.as_ref().unwrap().checkpoint_transactions.len(),
+            3
+        );
+
+        dev.with_journal_handle(1, |dev| {
+            assert_eq!(dev.journal_available_log_records()?, maximum_records);
+            assert_eq!(
+                dev.system.as_ref().unwrap().checkpoint_transactions.len(),
+                2,
+                "space must be reclaimed before the operation can dirty metadata"
+            );
+            assert_eq!(
+                dev.extend_transaction_handle(capacity - 1)?,
+                TransactionHandleExtension::Extended,
+                "extend uses the already guaranteed log reservation"
+            );
+            Ok(())
+        })
+        .expect("a new handle must reserve one maximum transaction of log space");
+    }
+
+    #[test]
+    fn unscoped_metadata_write_reserves_log_space_before_starting_a_transaction() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let capacity = dev.journal_transaction_capacity().unwrap();
+        for transaction in 0..3u64 {
+            let first_target = AbsoluteBN::new(10 + transaction * capacity as u64);
+            dev.with_journal_handle(capacity, |dev| {
+                for offset in 0..capacity {
+                    dev.write_blocks(
+                        &vec![transaction as u8 + 1; BLOCK_SIZE],
+                        first_target.checked_add(u32::try_from(offset).unwrap())?,
+                        1,
+                        true,
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("fill one maximum-sized transaction");
+            dev.commit().expect("commit maximum-sized transaction");
+        }
+        assert_eq!(dev.journal_available_log_records().unwrap(), 0);
+
+        dev.write_blocks(&vec![0x7e; BLOCK_SIZE], AbsoluteBN::new(64), 1, true)
+            .expect("unscoped write must reclaim space before starting a transaction");
+        assert_eq!(dev.journal_available_log_records().unwrap(), 5);
+        assert_eq!(
+            dev.system.as_ref().unwrap().checkpoint_transactions.len(),
+            2
+        );
+    }
+
+    #[test]
     fn invalid_bulk_buffer_does_not_precommit_older_updates() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
         dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
@@ -3653,6 +3825,127 @@ mod tests {
             &inner.data[start..start + BLOCK_SIZE],
             &vec![0x22; BLOCK_SIZE]
         );
+    }
+
+    #[test]
+    fn journal_handle_extends_before_touching_an_additional_block() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let first = AbsoluteBN::new(10);
+        let second = AbsoluteBN::new(11);
+
+        dev.with_journal_handle(1, |dev| {
+            dev.write_blocks(&vec![0x31; BLOCK_SIZE], first, 1, true)?;
+            assert_eq!(
+                dev.extend_transaction_handle(1)?,
+                TransactionHandleExtension::Extended
+            );
+            dev.write_blocks(&vec![0x42; BLOCK_SIZE], second, 1, true)
+        })
+        .expect("extended handle must reserve the second metadata block");
+
+        dev.umount_commit().expect("commit extended handle update");
+        let inner = dev.into_inner();
+        let first_start = first.as_usize().unwrap() * BLOCK_SIZE;
+        let second_start = second.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[first_start..first_start + BLOCK_SIZE],
+            &vec![0x31; BLOCK_SIZE]
+        );
+        assert_eq!(
+            &inner.data[second_start..second_start + BLOCK_SIZE],
+            &vec![0x42; BLOCK_SIZE]
+        );
+    }
+
+    #[test]
+    fn failed_journal_handle_extension_preserves_the_original_reservation() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let first = AbsoluteBN::new(10);
+        let second = AbsoluteBN::new(11);
+
+        dev.with_journal_handle(1, |dev| {
+            dev.write_blocks(&vec![0x53; BLOCK_SIZE], first, 1, true)?;
+            assert_eq!(
+                dev.extend_transaction_handle(usize::MAX)?,
+                TransactionHandleExtension::RestartRequired
+            );
+            let error = dev
+                .write_blocks(&vec![0x64; BLOCK_SIZE], second, 1, true)
+                .expect_err("failed extension must not change the original one-credit handle");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::NoSpace);
+            Ok(())
+        })
+        .expect("the original handle remains valid after best-effort extension fails");
+
+        dev.umount_commit().expect("commit original handle update");
+        let inner = dev.into_inner();
+        let first_start = first.as_usize().unwrap() * BLOCK_SIZE;
+        let second_start = second.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[first_start..first_start + BLOCK_SIZE],
+            &vec![0x53; BLOCK_SIZE]
+        );
+        assert_eq!(
+            &inner.data[second_start..second_start + BLOCK_SIZE],
+            &vec![0; BLOCK_SIZE]
+        );
+    }
+
+    #[test]
+    fn journal_handle_extension_accounts_for_the_existing_running_transaction() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        dev.write_blocks(&vec![0x17; BLOCK_SIZE], AbsoluteBN::new(9), 1, true)
+            .expect("queue metadata before starting the handle");
+
+        dev.with_journal_handle(1, |dev| {
+            dev.write_blocks(&vec![0x28; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)?;
+            assert_eq!(
+                dev.extend_transaction_handle(1)?,
+                TransactionHandleExtension::Extended
+            );
+            assert_eq!(
+                dev.extend_transaction_handle(1)?,
+                TransactionHandleExtension::RestartRequired,
+                "the pre-handle update must remain part of the reservation"
+            );
+            Ok(())
+        })
+        .expect("the full transaction capacity must remain usable");
+    }
+
+    #[test]
+    fn direct_metadata_handle_extension_expands_the_rollback_owner() {
+        let first = AbsoluteBN::new(10);
+        let second = AbsoluteBN::new(11);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), false);
+
+        let error = dev
+            .with_transaction_handle(1, |dev| {
+                dev.write_blocks(&vec![0x39; BLOCK_SIZE], first, 1, true)?;
+                assert_eq!(
+                    dev.extend_transaction_handle(1)?,
+                    TransactionHandleExtension::Extended
+                );
+                dev.write_blocks(&vec![0x4a; BLOCK_SIZE], second, 1, true)?;
+                Err::<(), _>(Ext4Error::io().with_operation("test:direct_extended_abort"))
+            })
+            .expect_err("operation failure must restore every extended direct-write block");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+
+        let mut first_after = vec![0xff; BLOCK_SIZE];
+        let mut second_after = vec![0xff; BLOCK_SIZE];
+        dev.read_blocks(&mut first_after, first, 1)
+            .expect("read restored first direct block");
+        dev.read_blocks(&mut second_after, second, 1)
+            .expect("read restored second direct block");
+        assert_eq!(first_after, vec![0; BLOCK_SIZE]);
+        assert_eq!(second_after, vec![0; BLOCK_SIZE]);
     }
 
     #[test]
