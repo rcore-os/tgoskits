@@ -43,6 +43,40 @@ struct ReplayPayload {
     journal_rel: u32,
 }
 
+enum JournalPayload<'a> {
+    Borrowed(&'a [u8]),
+    Escaped(Vec<u8>),
+}
+
+impl JournalPayload<'_> {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Escaped(bytes) => bytes,
+        }
+    }
+
+    fn is_escaped(&self) -> bool {
+        matches!(self, Self::Escaped(_))
+    }
+}
+
+fn journal_payload<'a>(
+    update: &'a Jbd2Update,
+    block_size: usize,
+) -> Ext4Result<JournalPayload<'a>> {
+    if update.1.len() != block_size || update.1.len() < 4 {
+        return Err(Ext4Error::corrupted().with_operation("jbd2:update_block_size"));
+    }
+    if !update.1.starts_with(&JBD2_MAGIC.to_be_bytes()) {
+        return Ok(JournalPayload::Borrowed(&update.1));
+    }
+
+    let mut escaped = update.1.to_vec();
+    escaped[..4].fill(0);
+    Ok(JournalPayload::Escaped(escaped))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReplayFailure {
     phase: JournalReplayPhase,
@@ -653,29 +687,12 @@ impl JBD2DEVSYSTEM {
         self.write_revoke_records(block_dev, journal_blocks, tid, block_size, &revoked_blocks)?;
         self.transition_committing_transaction(Jbd2CommitPhase::Flush, Jbd2CommitPhase::Commit)?;
 
-        let mut journal_payloads: Vec<(AbsoluteBN, Vec<u8>, bool)> = Vec::new();
-        let transaction = self.committing_transaction.as_ref().ok_or_else(|| {
-            Ext4Error::corrupted().with_operation("jbd2:missing_committing_transaction")
-        })?;
-        for update in &transaction.updates {
-            if update.1.len() != block_size || update.1.len() < 4 {
-                return Err(Ext4Error::corrupted().with_operation("jbd2:update_block_size"));
-            }
-            let mut journal_data = update.1.to_vec();
-            let escaped = journal_data.starts_with(&JBD2_MAGIC.to_be_bytes());
-            if escaped {
-                journal_data[0..4].fill(0);
-            }
-            journal_payloads.push((update.0, journal_data, escaped));
-        }
-
         let mut payload_offset = 0usize;
-        while payload_offset < journal_payloads.len() {
+        while payload_offset < update_count {
             let payload_end = payload_offset
                 .checked_add(descriptor_capacity)
                 .ok_or_else(Ext4Error::overflow)?
-                .min(journal_payloads.len());
-            let payload_chunk = &journal_payloads[payload_offset..payload_end];
+                .min(update_count);
             let mut desc_buffer = vec![0; block_size];
             JournalHeaderS {
                 h_blocktype: JBD2_BLOCKTYPE_DESCRIPTOR,
@@ -685,21 +702,26 @@ impl JBD2DEVSYSTEM {
             .to_disk_bytes(&mut desc_buffer[0..JournalHeaderS::disk_size()]);
 
             let mut current_offset = JBD2_DESCRIPTOR_HEADER_SIZE;
-            for (index, (target, journal_data, escaped)) in payload_chunk.iter().enumerate() {
-                let target_raw = target.raw();
+            for update_index in payload_offset..payload_end {
+                let transaction = self.committing_transaction.as_ref().ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("jbd2:missing_committing_transaction")
+                })?;
+                let update = &transaction.updates[update_index];
+                let payload = journal_payload(update, block_size)?;
+                let target_raw = update.0.raw();
                 let block_high = (target_raw >> 32) as u32;
                 if !has_64bit && block_high != 0 {
                     return Err(Ext4Error::unsupported().with_operation("jbd2:64bit_block_number"));
                 }
-                let mut flags = if *escaped {
+                let mut flags = if payload.is_escaped() {
                     u32::from(JOURNAL_ESCAPE)
                 } else {
                     0
                 };
-                if index + 1 == payload_chunk.len() {
+                if update_index + 1 == payload_end {
                     flags |= u32::from(JBD2_FLAG_LAST_TAG);
                 }
-                if index != 0 {
+                if update_index != payload_offset {
                     flags |= u32::from(JBD2_FLAG_SAME_UUID);
                 }
 
@@ -711,7 +733,7 @@ impl JBD2DEVSYSTEM {
                         t_checksum: jbd2_tag_csum32(
                             &self.jbd2_super_block.s_uuid,
                             tid,
-                            journal_data,
+                            payload.bytes(),
                         ),
                     }
                     .to_disk_bytes(
@@ -735,7 +757,7 @@ impl JBD2DEVSYSTEM {
                     }
                 }
 
-                if index == 0 {
+                if update_index == payload_offset {
                     desc_buffer[current_offset..current_offset + JBD2_UUID_SIZE]
                         .copy_from_slice(&self.jbd2_super_block.s_uuid);
                     current_offset += JBD2_UUID_SIZE;
@@ -759,10 +781,14 @@ impl JBD2DEVSYSTEM {
             let descriptor_block =
                 self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
             block_dev.write(&desc_buffer, descriptor_block, 1)?;
-            for payload in payload_chunk {
+            for update_index in payload_offset..payload_end {
                 let payload_block =
                     self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
-                block_dev.write(&payload.1, payload_block, 1)?;
+                let transaction = self.committing_transaction.as_ref().ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("jbd2:missing_committing_transaction")
+                })?;
+                let payload = journal_payload(&transaction.updates[update_index], block_size)?;
+                block_dev.write(payload.bytes(), payload_block, 1)?;
             }
             payload_offset = payload_end;
         }
@@ -1533,5 +1559,27 @@ mod tests {
         assert!(JBD2DEVSYSTEM::transaction_id_after(0, u32::MAX));
         assert!(!JBD2DEVSYSTEM::transaction_id_after(u32::MAX, 0));
         assert!(!JBD2DEVSYSTEM::transaction_id_after(7, 7));
+    }
+
+    #[test]
+    fn regular_journal_payload_borrows_transaction_buffer_and_magic_is_escaped() {
+        let regular = Jbd2Update(
+            AbsoluteBN::new(HOME_BLOCK),
+            vec![0x5a; BLOCK_SIZE].into_boxed_slice(),
+        );
+        let regular_pointer = regular.1.as_ptr();
+        let regular_payload = journal_payload(&regular, BLOCK_SIZE).expect("regular payload");
+        assert!(!regular_payload.is_escaped());
+        assert_eq!(regular_payload.bytes().as_ptr(), regular_pointer);
+
+        let mut magic = vec![0x6b; BLOCK_SIZE];
+        magic[..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+        let escaped = Jbd2Update(AbsoluteBN::new(HOME_BLOCK), magic.into_boxed_slice());
+        let escaped_pointer = escaped.1.as_ptr();
+        let escaped_payload = journal_payload(&escaped, BLOCK_SIZE).expect("escaped payload");
+        assert!(escaped_payload.is_escaped());
+        assert_ne!(escaped_payload.bytes().as_ptr(), escaped_pointer);
+        assert_eq!(&escaped_payload.bytes()[..4], &[0; 4]);
+        assert_eq!(&escaped_payload.bytes()[4..], &escaped.1[4..]);
     }
 }

@@ -1215,8 +1215,8 @@ mod tests {
         endian::DiskFormat,
         jbd2::jbdstruct::{
             CommitHeader, JBD2_BLOCKTYPE_REVOKE, JBD2_DESCRIPTOR_HEADER_SIZE, JBD2_TAG3_SIZE,
-            JBD2_UUID_SIZE, Jbd2CommitPhase, Jbd2JournalRevokeHeadS, JournalBlockTag3S,
-            JournalHeaderS,
+            JBD2_UUID_SIZE, JOURNAL_ESCAPE, Jbd2CommitPhase, Jbd2JournalRevokeHeadS,
+            JournalBlockTag3S, JournalHeaderS,
         },
     };
 
@@ -1955,6 +1955,44 @@ mod tests {
         assert_eq!(
             commit.h_chksum[0],
             reference_jbd2_block_checksum(&superblock.s_uuid, commit_bytes, 16)
+        );
+    }
+
+    #[test]
+    fn csum_v3_commit_escapes_magic_without_changing_checkpoint_image() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        let superblock = csum_v3_superblock();
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
+        let target = AbsoluteBN::new(10);
+        let mut payload = vec![0x6b; BLOCK_SIZE];
+        payload[..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+        dev.write_blocks(&payload, target, 1, true)
+            .expect("queue payload beginning with journal magic");
+
+        dev.commit().expect("commit escaped payload");
+
+        let descriptor = &dev.inner._device().data[129 * BLOCK_SIZE..130 * BLOCK_SIZE];
+        let tag = JournalBlockTag3S::from_disk_bytes(
+            &descriptor[JBD2_DESCRIPTOR_HEADER_SIZE..JBD2_DESCRIPTOR_HEADER_SIZE + JBD2_TAG3_SIZE],
+        );
+        assert_ne!(tag.t_flags & u32::from(JOURNAL_ESCAPE), 0);
+        let journal_payload = &dev.inner._device().data[130 * BLOCK_SIZE..131 * BLOCK_SIZE];
+        assert_eq!(&journal_payload[..4], &[0; 4]);
+        assert_eq!(&journal_payload[4..], &payload[4..]);
+        assert_eq!(
+            tag.t_checksum,
+            reference_jbd2_tag_checksum(&superblock.s_uuid, 1, journal_payload)
+        );
+        assert_eq!(
+            &dev.system
+                .as_ref()
+                .expect("journal state")
+                .checkpoint_transactions[0]
+                .updates[0]
+                .1[..],
+            payload,
+            "checkpoint must retain the unescaped home image"
         );
     }
 
