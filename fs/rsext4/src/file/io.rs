@@ -2,6 +2,9 @@ use super::*;
 
 const MAX_RUN_IO_BYTES: usize = 1024 * 1024;
 
+const LINUX_MAX_EXTENT_DEPTH: usize = 5;
+const EXT4_META_TRANSACTION_CREDITS_WITHOUT_QUOTA: usize = 6;
+
 /// Options for Linux-style extent preallocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PreallocationOptions {
@@ -1277,121 +1280,176 @@ pub fn preallocate_inode<B: BlockIo>(
     if !inode.uses_extents() {
         return Err(Ext4Error::unsupported().with_operation("fallocate:legacy_indirect"));
     }
-    let original_inode = inode;
     let huge_file_feature = fs
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
-    let mut inserted_ranges = Vec::new();
+    let transaction_credits = preallocation_transaction_credits(fs)?;
+    let old_size = inode.size();
+    let mut logical = start_lbn;
+    let mut allocation_error = None;
 
-    let operation = (|| {
-        let mut logical = start_lbn;
-        while logical < end_lbn {
-            let logical_u32 = u32::try_from(logical).map_err(|_| Ext4Error::file_too_large())?;
-            let next_extent = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
-                .find_extent_at_or_after(device, logical_u32)?;
-            if let Some(extent) = next_extent {
-                let extent_end = u64::from(extent.ee_block)
-                    .checked_add(u64::from(extent.len()))
-                    .ok_or_else(|| {
-                        Ext4Error::corrupted().with_operation("extent:logical_overflow")
-                    })?;
-                if u64::from(extent.ee_block) <= logical && logical < extent_end {
-                    logical = core::cmp::min(extent_end, end_lbn);
-                    continue;
-                }
-            }
-            let max_run_end =
-                core::cmp::min(end_lbn, logical + u64::from(Ext4Extent::EXT_UNINIT_MAX_LEN));
-            let hole_end = next_extent
-                .map(|extent| u64::from(extent.ee_block))
-                .unwrap_or(end_lbn)
-                .min(max_run_end);
-            let requested = u32::try_from(hole_end - logical).map_err(|_| Ext4Error::overflow())?;
-            let mut accounting_check = inode;
-            add_inode_data_blocks(
-                &mut accounting_check,
-                u64::from(requested),
-                block_size as u32,
-                huge_file_feature,
-            )?;
-            let blocks = alloc_contiguous_run_best_effort(device, fs, requested)?;
-            let first = *blocks.first().ok_or_else(Ext4Error::no_space)?;
-            for pair in blocks.windows(2) {
-                if pair[1].raw() != pair[0].raw() + 1 {
-                    for block in blocks {
-                        fs.free_block(device, block)?;
-                    }
-                    return Err(
-                        Ext4Error::corrupted().with_operation("fallocate:noncontiguous_allocator")
-                    );
-                }
-            }
-            let allocated = u32::try_from(blocks.len()).map_err(|_| Ext4Error::overflow())?;
-            add_inode_data_blocks(
-                &mut inode,
-                u64::from(allocated),
-                block_size as u32,
-                huge_file_feature,
-            )?;
-            let extent = Ext4Extent::new_unwritten(logical_u32, first.raw(), allocated)
-                .ok_or_else(|| Ext4Error::corrupted().with_operation("fallocate:extent_length"))?;
-            if let Err(error) = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
-                .insert_extent(fs, extent, device)
-            {
-                let mut cleanup = Ok(());
-                for block in blocks {
-                    if let Err(free_error) = fs.free_block(device, block)
-                        && cleanup.is_ok()
-                    {
-                        cleanup = Err(free_error);
-                    }
-                }
-                if cleanup.is_ok() {
-                    subtract_inode_data_blocks(
-                        &mut inode,
-                        u64::from(allocated),
-                        block_size as u32,
-                        huge_file_feature,
-                    )?;
-                }
-                return Err(error_after_cleanup(error, cleanup));
-            }
-            inserted_ranges.push((logical_u32, allocated));
-            logical += u64::from(allocated);
-        }
-
-        if !options.keep_size && end > inode.size() {
-            inode.i_size_lo = end as u32;
-            inode.i_size_high = (end >> 32) as u32;
-        }
-        fs.finalize_inode_update(
-            device,
-            inode_num,
-            &mut inode,
-            Ext4InodeMetadataUpdate::write_access(),
-        )
-    })();
-
-    if let Err(error) = operation {
-        let mut cleanup = Ok(());
-        for &(logical, blocks) in inserted_ranges.iter().rev() {
-            let range = Ext4Extent::new(logical, 0, blocks as u16);
-            if let Err(rollback_error) = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
-                .remove_extent(fs, range, device)
-                && cleanup.is_ok()
-            {
-                cleanup = Err(rollback_error);
+    while logical < end_lbn {
+        let logical_u32 = u32::try_from(logical).map_err(|_| Ext4Error::file_too_large())?;
+        let next_extent = ExtentTree::with_filesystem(&mut inode, fs, inode_num)
+            .find_extent_at_or_after(device, logical_u32)?;
+        if let Some(extent) = next_extent {
+            let extent_end = u64::from(extent.ee_block)
+                .checked_add(u64::from(extent.len()))
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:logical_overflow"))?;
+            if u64::from(extent.ee_block) <= logical && logical < extent_end {
+                logical = core::cmp::min(extent_end, end_lbn);
+                continue;
             }
         }
-        if cleanup.is_ok()
-            && let Err(restore_error) =
-                fs.modify_inode(device, inode_num, |on_disk| *on_disk = original_inode)
-        {
-            cleanup = Err(restore_error);
+        let max_run_end =
+            core::cmp::min(end_lbn, logical + u64::from(Ext4Extent::EXT_UNINIT_MAX_LEN));
+        let hole_end = next_extent
+            .map(|extent| u64::from(extent.ee_block))
+            .unwrap_or(end_lbn)
+            .min(max_run_end);
+        let requested = u32::try_from(hole_end - logical).map_err(|_| Ext4Error::overflow())?;
+        let counters_before = fs.group_counter_snapshot();
+        let current_inode = inode;
+        let chunk = fs.with_metadata_transaction(device, transaction_credits, |fs, device| {
+            allocate_unwritten_extent_chunk(
+                device,
+                fs,
+                PreallocationChunk {
+                    inode_num,
+                    inode: current_inode,
+                    logical: logical_u32,
+                    requested,
+                    huge_file_feature,
+                    counters_before: &counters_before,
+                },
+            )
+        });
+        match chunk {
+            Ok((updated_inode, allocated)) => {
+                inode = updated_inode;
+                logical += u64::from(allocated);
+            }
+            Err(error) => {
+                allocation_error = Some(error);
+                break;
+            }
         }
-        return Err(error_after_cleanup(error, cleanup));
     }
-    Ok(())
+
+    if !options.keep_size {
+        let allocated_end = core::cmp::min(logical.saturating_mul(block_size), end);
+        if allocated_end > old_size {
+            let current_inode = inode;
+            let size_result = fs.with_metadata_transaction(device, 1, |fs, device| {
+                let mut updated_inode = current_inode;
+                updated_inode.i_size_lo = allocated_end as u32;
+                updated_inode.i_size_high = (allocated_end >> 32) as u32;
+                fs.finalize_inode_update(
+                    device,
+                    inode_num,
+                    &mut updated_inode,
+                    Ext4InodeMetadataUpdate::write_access(),
+                )?;
+                fs.inodetable_cache.flush(device, inode_num)
+            });
+            if allocation_error.is_none() {
+                size_result?;
+            }
+        }
+    }
+
+    allocation_error.map_or(Ok(()), Err)
+}
+
+struct PreallocationChunk<'a> {
+    inode_num: InodeNumber,
+    inode: Ext4Inode,
+    logical: u32,
+    requested: u32,
+    huge_file_feature: bool,
+    counters_before: &'a [GroupCounters],
+}
+
+fn preallocation_transaction_credits(fs: &Ext4FileSystem) -> Ext4Result<usize> {
+    // Linux ext4_chunk_trans_blocks() reserves for the worst single-extent
+    // insertion: two changed blocks per possible tree level plus the new
+    // extent, allocation bitmap groups, their descriptor blocks, and the
+    // fixed inode/superblock/xattr metadata allowance. Quota is unsupported
+    // by this core and therefore contributes no additional credits yet.
+    let index_blocks = LINUX_MAX_EXTENT_DEPTH
+        .checked_mul(2)
+        .and_then(|blocks| blocks.checked_add(1))
+        .ok_or_else(Ext4Error::overflow)?;
+    let allocation_groups = index_blocks
+        .checked_add(1)
+        .ok_or_else(Ext4Error::overflow)?
+        .min(usize::try_from(fs.group_count).map_err(|_| Ext4Error::overflow())?);
+    let descriptors_per_block =
+        usize::try_from(fs.superblock.descs_per_block()).map_err(|_| Ext4Error::overflow())?;
+    if descriptors_per_block == 0 {
+        return Err(Ext4Error::bad_superblock().with_operation("fallocate:descs_per_block"));
+    }
+    let descriptor_blocks = usize::try_from(fs.group_count)
+        .map_err(|_| Ext4Error::overflow())?
+        .div_ceil(descriptors_per_block)
+        .min(allocation_groups);
+
+    index_blocks
+        .checked_add(allocation_groups)
+        .and_then(|credits| credits.checked_add(descriptor_blocks))
+        .and_then(|credits| credits.checked_add(EXT4_META_TRANSACTION_CREDITS_WITHOUT_QUOTA))
+        .ok_or_else(Ext4Error::overflow)
+}
+
+fn allocate_unwritten_extent_chunk<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    chunk: PreallocationChunk<'_>,
+) -> Ext4Result<(Ext4Inode, u32)> {
+    let PreallocationChunk {
+        inode_num,
+        mut inode,
+        logical,
+        requested,
+        huge_file_feature,
+        counters_before,
+    } = chunk;
+    let block_size = fs.block_size() as u32;
+    let mut accounting_check = inode;
+    add_inode_data_blocks(
+        &mut accounting_check,
+        u64::from(requested),
+        block_size,
+        huge_file_feature,
+    )?;
+    let blocks = alloc_contiguous_run_best_effort(device, fs, requested)?;
+    let first = *blocks.first().ok_or_else(Ext4Error::no_space)?;
+    if blocks
+        .windows(2)
+        .any(|pair| pair[1].raw() != pair[0].raw() + 1)
+    {
+        return Err(Ext4Error::corrupted().with_operation("fallocate:noncontiguous_allocator"));
+    }
+    let allocated = u32::try_from(blocks.len()).map_err(|_| Ext4Error::overflow())?;
+    add_inode_data_blocks(
+        &mut inode,
+        u64::from(allocated),
+        block_size,
+        huge_file_feature,
+    )?;
+    let extent = Ext4Extent::new_unwritten(logical, first.raw(), allocated)
+        .ok_or_else(|| Ext4Error::corrupted().with_operation("fallocate:extent_length"))?;
+    ExtentTree::with_filesystem(&mut inode, fs, inode_num).insert_extent(fs, extent, device)?;
+    fs.finalize_inode_update(
+        device,
+        inode_num,
+        &mut inode,
+        Ext4InodeMetadataUpdate::write_access(),
+    )?;
+    fs.inodetable_cache.flush(device, inode_num)?;
+    fs.flush_changed_group_metadata(device, counters_before)?;
+    fs.sync_superblock(device)?;
+    Ok((inode, allocated))
 }
 
 fn add_inode_data_blocks(

@@ -17,6 +17,7 @@ struct MemoryDevice {
     bytes: Vec<u8>,
     now: Cell<i64>,
     fail_write: Rc<Cell<Option<(u64, u32)>>>,
+    fail_after_write: Rc<Cell<Option<u32>>>,
 }
 
 struct StaticClock(Cell<i64>);
@@ -35,12 +36,19 @@ impl MemoryDevice {
             bytes: vec![0; blocks * BLOCK_SIZE],
             now: Cell::new(1_700_000_000),
             fail_write: Rc::new(Cell::new(None)),
+            fail_after_write: Rc::new(Cell::new(None)),
         }
     }
 
     fn with_write_failure(blocks: usize) -> (Self, Rc<Cell<Option<(u64, u32)>>>) {
         let device = Self::new(blocks);
         let failure = Rc::clone(&device.fail_write);
+        (device, failure)
+    }
+
+    fn with_post_write_failure(blocks: usize) -> (Self, Rc<Cell<Option<u32>>>) {
+        let device = Self::new(blocks);
+        let failure = Rc::clone(&device.fail_after_write);
         (device, failure)
     }
 }
@@ -80,6 +88,13 @@ impl BlockIo for MemoryDevice {
             .get_mut(start..end)
             .ok_or_else(|| Ext4Error::block_out_of_range(sector_u32, total_sectors))?;
         destination.copy_from_slice(buffer);
+        if let Some(remaining) = self.fail_after_write.get() {
+            if remaining <= 1 {
+                self.fail_after_write.set(None);
+                return Err(Ext4Error::io());
+            }
+            self.fail_after_write.set(Some(remaining - 1));
+        }
         Ok(())
     }
 
@@ -588,6 +603,108 @@ fn failed_external_leaf_remove_preserves_mapping_and_allocation() {
         usize::MAX,
     )
     .expect("extent read after failure failed");
+    assert_eq!(extents_after, extents_before);
+}
+
+#[test]
+fn failed_preallocation_split_restores_unpublished_metadata_allocation() {
+    let (device, fail_after_write) = MemoryDevice::with_post_write_failure(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(
+        &mut journal,
+        &mut filesystem,
+        "/preallocate-failure",
+        None,
+        None,
+    )
+    .expect("file creation failed");
+    let inode_number =
+        dir::get_inode_with_num(&mut filesystem, &mut journal, "/preallocate-failure")
+            .expect("lookup failed")
+            .expect("created inode missing")
+            .0;
+    let mut blocks = Vec::new();
+    for _ in 0..4 {
+        blocks.push(
+            filesystem
+                .alloc_block(&mut journal)
+                .expect("fixture allocation failed"),
+        );
+    }
+    let mut inode = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("inode read failed");
+    ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number)
+        .store_root_to_inode(&ExtentNode::Leaf {
+            header: Ext4ExtentHeader {
+                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+                eh_entries: 4,
+                eh_max: 4,
+                eh_depth: 0,
+                eh_generation: 0,
+            },
+            entries: blocks
+                .iter()
+                .enumerate()
+                .map(|(index, block)| Ext4Extent::new(index as u32 * 2, block.raw(), 1))
+                .collect(),
+        })
+        .expect("inline root construction failed");
+    inode.i_size_lo = (7 * BLOCK_SIZE) as u32;
+    inode.i_blocks_lo = (4 * BLOCK_SIZE / 512) as u32;
+    filesystem
+        .modify_inode(&mut journal, inode_number, |on_disk| *on_disk = inode)
+        .expect("inode publication failed");
+    filesystem
+        .sync_filesystem(&mut journal)
+        .expect("fixture sync failed");
+    journal
+        .set_journal_use(false)
+        .expect("disable journal for direct failure injection");
+
+    let free_before = filesystem.superblock.free_blocks_count();
+    let extents_before = rsext4::inspect_inode_extents(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        0,
+        u64::MAX,
+        rsext4::FileExtentTarget::Data,
+        usize::MAX,
+    )
+    .expect("extent snapshot failed");
+
+    fail_after_write.set(Some(1));
+    let error = preallocate_inode(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        8 * BLOCK_SIZE as u64,
+        BLOCK_SIZE as u64,
+        PreallocationOptions::KEEP_SIZE,
+    )
+    .expect_err("extent split write failure must abort preallocation");
+    assert_eq!(error.kind(), rsext4::Ext4ErrorKind::Io);
+
+    filesystem
+        .umount(&mut journal)
+        .expect("unmount after failed preallocation");
+    let device = journal.into_inner();
+    let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut remounted = mount(&mut remount_device).expect("remount after failed preallocation");
+    assert_eq!(remounted.superblock.free_blocks_count(), free_before);
+    let extents_after = rsext4::inspect_inode_extents(
+        &mut remount_device,
+        &mut remounted,
+        inode_number,
+        0,
+        u64::MAX,
+        rsext4::FileExtentTarget::Data,
+        usize::MAX,
+    )
+    .expect("remounted extent inspection failed");
     assert_eq!(extents_after, extents_before);
 }
 
