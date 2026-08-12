@@ -859,3 +859,29 @@ RSEXT4_BENCH_SUMMARY commit=07e8243e9f5d253c2718853743a62e0fc032d1db arch=x86_64
 不受控，但不能把门槛改判为绿。20 个样本全部保留，没有选择性复测或剔除。
 最终性能收敛必须在受控系统负载下同时重跑 dev 与最终实现，并增加 legacy indirect
 truncate/reap 专项 workload；只有同一组 A/B 数据满足门槛后才能清除该红项。
+
+### 7.29 JBD2 writer revoke 与 checkpoint 检查点
+
+采集时间：2026-08-12；被测实现 commit 为
+`6ae468a65b88ae0be3821813baf2dc5e42dc1550`，固定 CPU 2，memory backend、
+4 KiB filesystem block、`metadata_csum+64bit+journal` 与 20 MiB sequential
+workload 均保持冻结配置。本检查点将 running transaction 与 committed checkpoint
+image 分离，写出 Linux-compatible revoke record，并在 home write 持久化后才以 FUA
+推进 journal tail。冻结 workload 的写、读与 sync 会经过共享 journal 路径，但不构造
+allocator reuse/revoke 场景，因此不能替代专项 replay 与 fault-injection 测试。
+
+正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-12-jbd2-revoke-checkpoint.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=6ae468a65b88ae0be3821813baf2dc5e42dc1550 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6309883 write_p95_ns=7230443 read_median_ns=5940001 read_p95_ns=7577594 sync_median_ns=31856 sync_p95_ns=34724
+```
+
+相对 dev 基线，write median/p95 分别改善约 7.6%/1.4%，read median/p95 分别
+改善约 17.7%/10.7%，sync p95 改善约 10.1%；现有 sequential workload 的 median
+吞吐与 p95 latency 均通过冻结硬门槛。sync median 回退约 23.4%，按 latency p95
+门槛不单独判红，但完整结果继续保留。相对 7.28 的受干扰红样本，write median/p95
+分别改善约 22.9%/15.3%，read median/p95 分别改善约 44.0%/37.6%，sync median/p95
+分别改善约 28.1%/29.9%。本轮 governor 仍为 `powersave`，采样前 load average 为
+3.45，不能据此把改善归因于 revoke/checkpoint 实现；最终仍需受控同机 dev/final
+全 workload A/B 与 revoke/checkpoint 专项 workload。
