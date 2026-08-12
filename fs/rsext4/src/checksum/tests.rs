@@ -158,6 +158,15 @@ fn dirblock_checksum_is_stored_and_detects_corruption() {
 }
 
 #[test]
+fn metadata_csum_dirblock_without_tail_is_rejected() {
+    // Linux requires a valid ext4_dir_entry_tail on metadata-checksummed leaf blocks.
+    let sb = metadata_csum_superblock();
+    let block = [0u8; BLOCK_SIZE];
+
+    assert!(!verify_ext4_dirblock_checksum(&sb, 11, 0x5566_7788, &block));
+}
+
+#[test]
 fn dx_checksum_uses_counted_entries_and_tail() {
     // Test idea: HTree index blocks store a dx_tail checksum after the full entry limit,
     // while the checksum covers only the counted dx entries plus the tail's reserved word.

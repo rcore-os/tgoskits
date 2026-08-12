@@ -21,8 +21,14 @@ const SUPPORTED_RO_COMPAT_FEATURES: u32 = Ext4Superblock::EXT4_FEATURE_RO_COMPAT
     | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE
     | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM
     | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT;
+const MAX_DEFAULT_DIRECTORY_HASH_VERSION: u8 = 5;
 
 impl Ext4Superblock {
+    /// Directory hashes use signed filename bytes when no per-directory override exists.
+    pub const EXT4_FLAGS_SIGNED_HASH: u32 = 0x0001;
+    /// Directory hashes use unsigned filename bytes when no per-directory override exists.
+    pub const EXT4_FLAGS_UNSIGNED_HASH: u32 = 0x0002;
+
     pub const EXT4_FEATURE_COMPAT_DIR_PREALLOC: u32 = 0x0001;
     pub const EXT4_FEATURE_COMPAT_IMAGIC_INODES: u32 = 0x0002;
     pub const EXT4_FEATURE_COMPAT_HAS_JOURNAL: u32 = 0x0004;
@@ -110,6 +116,12 @@ impl Ext4Superblock {
 
     /// Checks whether this core can safely mount the advertised feature set.
     pub(crate) fn check_features(&self, read_only: bool) -> Ext4Result<()> {
+        if self.s_def_hash_version > MAX_DEFAULT_DIRECTORY_HASH_VERSION {
+            return Err(
+                Ext4Error::bad_superblock().with_operation("superblock:default_directory_hash")
+            );
+        }
+
         let unsupported_incompat = self.unsupported_incompat_features();
         if unsupported_incompat != 0 {
             return Err(Ext4Error::unsupported_feature(
@@ -153,6 +165,25 @@ mod tests {
                 bits: UNKNOWN_HIGH_BIT,
             })
         );
+    }
+
+    #[test]
+    fn invalid_default_directory_hash_is_rejected_at_mount_negotiation() {
+        for invalid_version in [6, 7, u8::MAX] {
+            let sb = Ext4Superblock {
+                s_def_hash_version: invalid_version,
+                ..Default::default()
+            };
+
+            let err = sb.check_features(true).unwrap_err();
+            assert_eq!(err.kind(), Ext4ErrorKind::BadSuperblock);
+            assert_eq!(
+                err.context(),
+                Some(ErrorContext::Operation {
+                    op: "superblock:default_directory_hash",
+                })
+            );
+        }
     }
 
     #[test]

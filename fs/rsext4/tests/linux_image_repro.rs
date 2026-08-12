@@ -273,6 +273,55 @@ fn create_ext4_geometry_image(
     (temp_dir, image)
 }
 
+#[test]
+fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-linux-htree-lookup", "64M");
+    let source = temp_dir.join("payload.bin");
+    let payload = b"linux htree lookup payload";
+    fs::write(&source, payload).expect("write HTree payload");
+    let mut script = String::from("mkdir /indexed\n");
+    for index in 0..800 {
+        script.push_str(&format!(
+            "write {} /indexed/entry-{index:04}.bin\n",
+            source.display()
+        ));
+    }
+    run_debugfs_script(&image, &script, "populate indexed directory");
+
+    let output = Command::new("e2fsck")
+        .args(["-fyD"])
+        .arg(&image)
+        .output()
+        .expect("run e2fsck directory optimizer");
+    assert!(
+        e2fsck_status_ok(&output, true),
+        "e2fsck failed to create HTree index\n{}",
+        command_text(&output)
+    );
+    let dump = debugfs_query(&image, "htree_dump /indexed");
+    assert!(
+        dump.contains("Root node dump"),
+        "e2fsprogs did not create an HTree root\n{dump}"
+    );
+    e2fsck_readonly_clean(&image, "Linux HTree fixture");
+
+    let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+    let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
+    let mut filesystem = mount(&mut device).expect("mount Linux HTree fixture");
+    assert_eq!(
+        read_file(&mut device, &mut filesystem, "/indexed/entry-0799.bin")
+            .expect("lookup HTree leaf through rsext4"),
+        payload
+    );
+    umount(filesystem, &mut device).expect("unmount Linux HTree fixture");
+    e2fsck_readonly_clean(&image, "rsext4-read Linux HTree fixture");
+    fs::remove_dir_all(temp_dir).expect("remove HTree temp dir");
+}
+
 fn linux_image_geometry_round_trip(filesystem_block_size: u32) {
     for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
         require_tool(tool);

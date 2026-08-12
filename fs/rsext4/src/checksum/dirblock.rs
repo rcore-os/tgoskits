@@ -29,9 +29,14 @@ pub fn verify_ext4_dirblock_checksum(
         return false;
     }
 
-    let tail_ft = block_bytes[block_size - 5];
-    if tail_ft != 0xDE {
-        return true;
+    let tail_offset = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
+    let tail = &block_bytes[tail_offset..];
+    if tail[..4] != [0; 4]
+        || read_u16_le(&tail[4..6]) != Ext4DirEntryTail::TAIL_LEN
+        || tail[6] != 0
+        || tail[7] != Ext4DirEntryTail::RESERVED_FT
+    {
+        return false;
     }
 
     let stored = u32::from_le_bytes([
@@ -40,8 +45,7 @@ pub fn verify_ext4_dirblock_checksum(
         block_bytes[block_size - 2],
         block_bytes[block_size - 1],
     ]);
-    let data_len = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
-    let computed = ext4_dirblock_csum32(sb, ino, generation, &block_bytes[..data_len]);
+    let computed = ext4_dirblock_csum32(sb, ino, generation, &block_bytes[..tail_offset]);
     computed == stored
 }
 

@@ -6,20 +6,12 @@ use crate::blockdev::BlockIo;
 pub struct HashTreeManager {
     /// Hash seed copied from the superblock.
     pub(super) hash_seed: [u32; 4],
-    /// Hash version used by the directory.
-    pub(super) hash_version: u8,
-    /// Number of indirect levels below the root.
-    pub(super) indirect_levels: u8,
 }
 
 impl HashTreeManager {
     /// Creates a hash tree manager with the provided hash parameters.
-    pub fn new(hash_seed: [u32; 4], hash_version: u8, indirect_levels: u8) -> Self {
-        Self {
-            hash_seed,
-            hash_version,
-            indirect_levels,
-        }
+    pub fn new(hash_seed: [u32; 4]) -> Self {
+        Self { hash_seed }
     }
 
     /// Searches a directory for `target_name` using the hash tree when present.

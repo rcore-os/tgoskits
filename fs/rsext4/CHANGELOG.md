@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add Linux-compatible signed and unsigned legacy, half-MD4, and TEA directory
+  hashes with typed major/minor results and checked HTree root/index parsing.
 - Add typed extent preallocation with Linux-compatible unwritten extent encoding,
   `KEEP_SIZE`, partial-write conversion, remount, and e2fsck coverage.
 - Add typed `ZERO_RANGE` and `PUNCH_HOLE` operations for extent-backed files,
@@ -28,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Remove the fabricated inode-only HTree root metadata query; hash version and
+  depth now come exclusively from the checked on-disk root block.
+- Remove the public HTree parser/manager module; wire structures and lookup
+  state are private core implementation details.
 - Remove the non-Linux `set_symlink_target` mutation; symbolic-link targets are
   now supplied only as part of atomic inode creation or inode replacement.
 - Remove misspelled compatibility entry points and replace the misspelled
@@ -40,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Validate HTree root and internal-node geometry, count/limit headers, entry
+  ordering, logical block ranges, cycles, and index/data checksums before lookup,
+  including mandatory directory-entry tails on metadata-checksummed leaf blocks.
+- Reject invalid default directory-hash versions during feature negotiation and
+  persist an unambiguous signed-byte policy on writable indexed filesystems.
 - Reuse the current Linux-style JBD2 owner for nested metadata helpers without
   reserving a second credit budget, while rolling back only a failed nested
   scope and keeping the outer handle usable.

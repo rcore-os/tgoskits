@@ -8,15 +8,6 @@ use crate::{
     ext4::Ext4FileSystem,
 };
 
-/// Creates a hash tree manager configured from the mounted filesystem.
-pub fn create_hash_tree_manager(fs: &Ext4FileSystem) -> HashTreeManager {
-    HashTreeManager::new(
-        fs.superblock.s_hash_seed,
-        fs.superblock.s_def_hash_version,
-        0,
-    )
-}
-
 /// Looks up a directory entry through the hash tree path.
 pub fn lookup_directory_entry<B: BlockIo>(
     fs: &mut Ext4FileSystem,
@@ -25,6 +16,6 @@ pub fn lookup_directory_entry<B: BlockIo>(
     dir_inode: &Ext4Inode,
     target_name: &[u8],
 ) -> Result<HashTreeSearchResult, HashTreeError> {
-    let manager = create_hash_tree_manager(fs);
+    let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
     manager.lookup(fs, block_dev, dir_ino, dir_inode, target_name)
 }

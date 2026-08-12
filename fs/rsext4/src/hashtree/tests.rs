@@ -1,12 +1,13 @@
 use alloc::{vec, vec::Vec};
 use core::cell::Cell;
 
-use super::*;
+use super::{hash::DirectoryHash, *};
 use crate::{
     blockdev::{BlockIo, Jbd2Dev},
-    bmalloc::{AbsoluteBN, BlockAllocator, InodeAllocator, InodeNumber},
+    bmalloc::{BlockAllocator, InodeAllocator, InodeNumber},
     config::GOOD_OLD_INODE_SIZE,
     disknode::{Ext4Inode, Ext4Timestamp},
+    entries::{Ext4DirEntry2, Ext4DxRootInfo},
     error::Ext4Error,
     ext4::{Ext4FileSystem, SystemZoneMap},
 };
@@ -110,7 +111,7 @@ fn create_test_fs() -> Ext4FileSystem {
 
     let superblock = Ext4Superblock {
         s_hash_seed: [0x12345678, 0x87654321, 0xABCDEF00, 0x00FEDCBA],
-        s_def_hash_version: 0x8,
+        s_def_hash_version: Ext4DxRootInfo::DX_HASH_HALF_MD4,
         ..Default::default()
     };
 
@@ -177,17 +178,40 @@ fn create_test_dir_inode() -> Ext4Inode {
     inode
 }
 
+fn linux_htree_root_block(has_metadata_checksum: bool) -> Vec<u8> {
+    let mut root = vec![0_u8; 4096];
+    root[0..4].copy_from_slice(&2_u32.to_le_bytes());
+    root[4..6].copy_from_slice(&12_u16.to_le_bytes());
+    root[6] = 1;
+    root[7] = Ext4DirEntry2::EXT4_FT_DIR;
+    root[8] = b'.';
+    root[12..16].copy_from_slice(&2_u32.to_le_bytes());
+    root[16..18].copy_from_slice(&(4096_u16 - 12).to_le_bytes());
+    root[18] = 2;
+    root[19] = Ext4DirEntry2::EXT4_FT_DIR;
+    root[20..22].copy_from_slice(b"..");
+    root[28] = Ext4DxRootInfo::DX_HASH_HALF_MD4;
+    root[29] = Ext4DxRootInfo::INFO_LENGTH;
+    let limit = if has_metadata_checksum { 507 } else { 508 };
+    root[32..34].copy_from_slice(&limit_u16(limit).to_le_bytes());
+    root[34..36].copy_from_slice(&1_u16.to_le_bytes());
+    root[36..40].copy_from_slice(&1_u32.to_le_bytes());
+    root
+}
+
+fn limit_u16(limit: usize) -> u16 {
+    u16::try_from(limit).unwrap()
+}
+
 #[test]
 fn test_hash_tree_manager_creation() {
     let fs = create_test_fs();
-    let manager = create_hash_tree_manager(&fs);
+    let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
 
     assert_eq!(
         manager.hash_seed,
         [0x12345678, 0x87654321, 0xABCDEF00, 0x00FEDCBA]
     );
-    assert_eq!(manager.hash_version, 0x8);
-    assert_eq!(manager.indirect_levels, 0);
 }
 
 #[test]
@@ -202,11 +226,64 @@ fn test_htree_hash_calculation() {
     let seed = [0x12345678, 0x87654321, 0xABCDEF00, 0x00FEDCBA];
 
     for (name, version) in test_cases {
-        let hash = crate::entries::htree_dir::calculate_hash(name.as_bytes(), version, &seed);
+        let hash = calculate_hash(name.as_bytes(), version, &seed)
+            .unwrap()
+            .major;
         if !name.is_empty() {
             assert_ne!(hash, 0, "Hash for '{}' should not be zero", name);
         }
     }
+}
+
+#[test]
+fn linux_directory_hash_matches_debugfs_vectors() {
+    let seed = [0; 4];
+    let vectors = [
+        (0, 0x75af_d992, 0),
+        (1, 0xd196_a868, 0xc420_eb28),
+        (2, 0xb143_5ec4, 0x3f7e_aa0e),
+    ];
+    for (version, major, minor) in vectors {
+        assert_eq!(
+            calculate_hash(b"abc", version, &seed).unwrap(),
+            DirectoryHash { major, minor }
+        );
+    }
+
+    let utf8_vectors = [
+        (0, 0x1108_3c86, 0),
+        (1, 0x89d4_704e, 0x75d5_2d82),
+        (2, 0x591e_9bd6, 0xf780_721f),
+        (3, 0x878c_a486, 0),
+        (4, 0xfda9_f3f8, 0x6978_8442),
+        (5, 0x6daf_7c00, 0xdc9b_6b19),
+    ];
+    for (version, major, minor) in utf8_vectors {
+        assert_eq!(
+            calculate_hash("é".as_bytes(), version, &seed).unwrap(),
+            DirectoryHash { major, minor }
+        );
+    }
+
+    let uuid_seed = [0x7856_3412, 0x7856_3412, 0x2143_6587, 0xbadc_fe00];
+    assert_eq!(
+        calculate_hash(b"abc", 1, &uuid_seed).unwrap(),
+        DirectoryHash {
+            major: 0xf73a_0418,
+            minor: 0x009b_4223,
+        }
+    );
+    assert_eq!(
+        calculate_hash(b"abc", 2, &uuid_seed).unwrap(),
+        DirectoryHash {
+            major: 0xd1bc_32b2,
+            minor: 0xefdf_8282,
+        }
+    );
+    assert_eq!(
+        calculate_hash(b"abc", Ext4DxRootInfo::DX_HASH_SIPHASH, &seed),
+        Err(HashTreeError::UnsupportedHashVersion)
+    );
 }
 
 #[test]
@@ -224,20 +301,105 @@ fn test_inode_htree_check() {
 #[test]
 fn test_dx_entry_parsing() {
     let fs = create_test_fs();
-    let manager = create_hash_tree_manager(&fs);
+    let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
 
     let mut test_data = vec![0; 16];
-    test_data[0..4].copy_from_slice(&0x12345678u32.to_le_bytes());
+    test_data[0..2].copy_from_slice(&2_u16.to_le_bytes());
+    test_data[2..4].copy_from_slice(&2_u16.to_le_bytes());
     test_data[4..8].copy_from_slice(&1u32.to_le_bytes());
     test_data[8..12].copy_from_slice(&0x87654321u32.to_le_bytes());
     test_data[12..16].copy_from_slice(&2u32.to_le_bytes());
 
-    let entries = manager.parse_dx_entries(&test_data).unwrap();
+    let entries = manager.parse_dx_entries(&test_data, 0, 2).unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].hash, 0x12345678);
+    assert_eq!(entries[0].hash, 0);
     assert_eq!(entries[0].block, 1);
     assert_eq!(entries[1].hash, 0x87654321);
     assert_eq!(entries[1].block, 2);
+}
+
+#[test]
+fn linux_htree_root_layout_is_parsed() {
+    let fs = create_test_fs();
+    let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
+    let root = linux_htree_root_block(false);
+
+    let node = manager.parse_root_node(&root, false, 1).unwrap();
+    match node {
+        HashTreeNode::Root {
+            hash_version,
+            indirect_levels,
+            entries,
+        } => {
+            assert_eq!(hash_version, Ext4DxRootInfo::DX_HASH_HALF_MD4);
+            assert_eq!(indirect_levels, 0);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].hash, 0);
+            assert_eq!(entries[0].block, 1);
+        }
+        _ => panic!("expected root node"),
+    }
+}
+
+#[test]
+fn htree_parser_rejects_invalid_count_order_and_root_geometry() {
+    let fs = create_test_fs();
+    let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
+
+    let mut invalid_root = linux_htree_root_block(false);
+    invalid_root[34..36].copy_from_slice(&0_u16.to_le_bytes());
+    assert!(matches!(
+        manager.parse_root_node(&invalid_root, false, 1),
+        Err(HashTreeError::CorruptedHashTree)
+    ));
+
+    let mut invalid_root = linux_htree_root_block(false);
+    invalid_root[32..34].copy_from_slice(&507_u16.to_le_bytes());
+    assert!(matches!(
+        manager.parse_root_node(&invalid_root, false, 1),
+        Err(HashTreeError::CorruptedHashTree)
+    ));
+
+    let mut invalid_root = linux_htree_root_block(false);
+    invalid_root[16..18].copy_from_slice(&12_u16.to_le_bytes());
+    assert!(matches!(
+        manager.parse_root_node(&invalid_root, false, 1),
+        Err(HashTreeError::CorruptedHashTree)
+    ));
+
+    let mut unordered = [0_u8; 24];
+    unordered[0..2].copy_from_slice(&3_u16.to_le_bytes());
+    unordered[2..4].copy_from_slice(&3_u16.to_le_bytes());
+    unordered[4..8].copy_from_slice(&1_u32.to_le_bytes());
+    unordered[8..12].copy_from_slice(&20_u32.to_le_bytes());
+    unordered[12..16].copy_from_slice(&2_u32.to_le_bytes());
+    unordered[16..20].copy_from_slice(&10_u32.to_le_bytes());
+    unordered[20..24].copy_from_slice(&3_u32.to_le_bytes());
+    assert!(matches!(
+        manager.parse_dx_entries(&unordered, 0, 3),
+        Err(HashTreeError::CorruptedHashTree)
+    ));
+}
+
+#[test]
+fn htree_parser_accounts_for_dx_tail_and_internal_layout() {
+    let fs = create_test_fs();
+    let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
+    let root = linux_htree_root_block(true);
+    assert!(manager.parse_root_node(&root, true, 1).is_ok());
+
+    let mut internal = vec![0_u8; 4096];
+    internal[4..6].copy_from_slice(&4096_u16.to_le_bytes());
+    internal[8..10].copy_from_slice(&510_u16.to_le_bytes());
+    internal[10..12].copy_from_slice(&1_u16.to_le_bytes());
+    internal[12..16].copy_from_slice(&2_u32.to_le_bytes());
+    assert!(manager.parse_internal_node(&internal, true).is_ok());
+
+    internal[8..10].copy_from_slice(&511_u16.to_le_bytes());
+    assert!(matches!(
+        manager.parse_internal_node(&internal, true),
+        Err(HashTreeError::CorruptedHashTree)
+    ));
 }
 
 #[test]
@@ -258,24 +420,12 @@ fn test_hash_tree_node_types() {
         }
         _ => panic!("Expected root node"),
     }
-
-    let leaf_node = HashTreeNode::Leaf {
-        block_num: AbsoluteBN::new(42),
-        entries: Vec::new(),
-    };
-    match leaf_node {
-        HashTreeNode::Leaf { block_num, entries } => {
-            assert_eq!(block_num, AbsoluteBN::new(42));
-            assert!(entries.is_empty());
-        }
-        _ => panic!("Expected leaf node"),
-    }
 }
 
 #[test]
 fn test_fallback_to_linear_search() {
     let mut fs = create_test_fs();
-    let manager = create_hash_tree_manager(&fs);
+    let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
     let mut dir_inode = create_test_dir_inode();
 
     let mock_device = MockBlockDevice::new(1024 * 1024);
@@ -297,7 +447,7 @@ fn test_fallback_to_linear_search() {
 #[test]
 fn linear_fallback_preserves_extent_codec_error() {
     let mut fs = create_test_fs();
-    let manager = create_hash_tree_manager(&fs);
+    let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
     let mut dir_inode = create_test_dir_inode();
     dir_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
     dir_inode.i_block[0] = 0;

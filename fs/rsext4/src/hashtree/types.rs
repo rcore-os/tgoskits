@@ -28,13 +28,5 @@ pub enum HashTreeNode {
         entries: Vec<Ext4DxEntry>,
     },
     /// Internal index node.
-    Internal {
-        entries: Vec<Ext4DxEntry>,
-        level: u32,
-    },
-    /// Leaf node carrying directory entries.
-    Leaf {
-        block_num: AbsoluteBN,
-        entries: Vec<Ext4DirEntryInfo<'static>>,
-    },
+    Internal { entries: Vec<Ext4DxEntry> },
 }

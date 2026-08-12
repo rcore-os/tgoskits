@@ -65,6 +65,20 @@ impl Ext4FileSystem {
         superblock.s_mnt_count = superblock.s_mnt_count.saturating_add(1);
     }
 
+    fn initialize_directory_hash_policy(superblock: &mut Ext4Superblock, read_only: bool) {
+        let hash_policy =
+            Ext4Superblock::EXT4_FLAGS_SIGNED_HASH | Ext4Superblock::EXT4_FLAGS_UNSIGNED_HASH;
+        if !read_only
+            && superblock.has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_DIR_INDEX)
+            && superblock.s_flags & hash_policy == 0
+        {
+            // Rust byte semantics are architecture-independent. Persist the signed policy used
+            // by Linux on the reference architecture instead of leaving future lookup dependent
+            // on the mounting compiler's plain-char signedness.
+            superblock.s_flags |= Ext4Superblock::EXT4_FLAGS_SIGNED_HASH;
+        }
+    }
+
     fn inode_cache_size(superblock: &Ext4Superblock) -> usize {
         match superblock.s_inode_size {
             0 => GOOD_OLD_INODE_SIZE as usize,
@@ -104,6 +118,8 @@ impl Ext4FileSystem {
         self.superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
         self.superblock.verify_superblock()?;
         self.superblock.validate_geometry()?;
+        self.superblock.check_features(read_only)?;
+        Self::initialize_directory_hash_policy(&mut self.superblock, read_only);
         if !read_only {
             Self::dirty_for_mount(&mut self.superblock);
         }
@@ -339,6 +355,7 @@ impl Ext4FileSystem {
             return Err(Ext4Error::bad_superblock().with_operation("superblock:device_capacity"));
         }
         Self::check_mount_features(&superblock, options.readonly, observer)?;
+        Self::initialize_directory_hash_policy(&mut superblock, options.readonly);
 
         // Continue mounting even for an error-state filesystem so higher layers
         // can inspect or attempt repair.
@@ -720,5 +737,23 @@ mod tests {
             validate_recovered_journal_mapping(journal_inode, &original, journal_inode, &original,)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn writable_mount_persists_an_unambiguous_directory_hash_policy() {
+        let mut superblock = Ext4Superblock {
+            s_feature_compat: Ext4Superblock::EXT4_FEATURE_COMPAT_DIR_INDEX,
+            s_flags: 0,
+            ..Default::default()
+        };
+
+        Ext4FileSystem::initialize_directory_hash_policy(&mut superblock, true);
+        assert_eq!(superblock.s_flags, 0);
+        Ext4FileSystem::initialize_directory_hash_policy(&mut superblock, false);
+        assert_eq!(superblock.s_flags, Ext4Superblock::EXT4_FLAGS_SIGNED_HASH);
+
+        superblock.s_flags = Ext4Superblock::EXT4_FLAGS_UNSIGNED_HASH;
+        Ext4FileSystem::initialize_directory_hash_policy(&mut superblock, false);
+        assert_eq!(superblock.s_flags, Ext4Superblock::EXT4_FLAGS_UNSIGNED_HASH);
     }
 }

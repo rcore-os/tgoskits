@@ -355,6 +355,7 @@ fn rsext4_entries_and_directory_iterator_rules_hold() {
             DirEntryIterator, Ext4DirEntry2, Ext4DirEntryInfo, Ext4DirEntryTail, Ext4ExtentStatus,
             htree_dir,
         },
+        hashtree::calculate_hash,
     };
 
     let entry = Ext4DirEntry2::new(
@@ -433,20 +434,26 @@ fn rsext4_entries_and_directory_iterator_rules_hold() {
     write_dirent(&mut bad, 1, 7, Ext4DirEntry2::EXT4_FT_REG_FILE, b"x");
     ax_assert!(Ext4DirEntryInfo::parse_from_bytes(&bad).is_none());
 
-    let seed = [1, 2, 3, 4];
+    let seed = [0; 4];
     ax_assert_eq!(
-        htree_dir::calculate_hash(b"abc", htree_dir::Ext4DxRootInfo::DX_HASH_LEGACY, &seed),
-        ((b'a' as u32) * 33 + b'b' as u32) * 33 + b'c' as u32
+        calculate_hash(b"abc", htree_dir::Ext4DxRootInfo::DX_HASH_LEGACY, &seed)
+            .unwrap()
+            .major,
+        0x75af_d992
     );
-    ax_assert_ne!(
-        htree_dir::calculate_hash(b"abc", htree_dir::Ext4DxRootInfo::DX_HASH_HALF_MD4, &seed),
-        0
+    ax_assert_eq!(
+        calculate_hash(b"abc", htree_dir::Ext4DxRootInfo::DX_HASH_HALF_MD4, &seed)
+            .unwrap()
+            .major,
+        0xd196_a868
     );
-    ax_assert_ne!(
-        htree_dir::calculate_hash(b"abc", htree_dir::Ext4DxRootInfo::DX_HASH_TEA, &seed),
-        0
+    ax_assert_eq!(
+        calculate_hash(b"abc", htree_dir::Ext4DxRootInfo::DX_HASH_TEA, &seed)
+            .unwrap()
+            .major,
+        0xb143_5ec4
     );
-    ax_assert_eq!(htree_dir::calculate_hash(b"abc", 99, &seed), 0);
+    ax_assert!(calculate_hash(b"abc", 99, &seed).is_err());
 
     let status = Ext4ExtentStatus {
         es_lblk: 1,
@@ -1184,11 +1191,8 @@ fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
 
     let mut inode = Ext4Inode::default();
     ax_assert!(!inode.is_htree_indexed());
-    ax_assert_eq!(inode.get_htree_root_info(), None);
     inode.i_flags |= Ext4Inode::EXT4_INDEX_FL;
     ax_assert!(inode.is_htree_indexed());
-    let (_, indirect_levels) = inode.get_htree_root_info().unwrap();
-    ax_assert_eq!(indirect_levels, 0);
 
     let errors = [
         (HashTreeError::InvalidHashTree, "Invalid hash tree format"),
@@ -1205,7 +1209,7 @@ fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
         ax_assert_eq!(error.to_string(), text);
     }
 
-    let manager = HashTreeManager::new([1, 2, 3, 4], Ext4DxRootInfo::DX_HASH_LEGACY, 0);
+    let manager = HashTreeManager::new([1, 2, 3, 4]);
     let _ = manager;
     let root_node = HashTreeNode::Root {
         hash_version: 1,
@@ -1214,15 +1218,6 @@ fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
     };
     let internal_node = HashTreeNode::Internal {
         entries: vec![Ext4DxEntry { hash: 9, block: 3 }],
-        level: 1,
-    };
-    let leaf_node = HashTreeNode::Leaf {
-        block_num: AbsoluteBN::new(4),
-        entries: vec![Ext4DirEntryInfo {
-            inode: 5,
-            file_type: Ext4DirEntry2::EXT4_FT_REG_FILE,
-            name: b"leaf",
-        }],
     };
     match root_node {
         HashTreeNode::Root {
@@ -1237,18 +1232,10 @@ fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
         _ => panic!("expected root hash tree node"),
     }
     match internal_node {
-        HashTreeNode::Internal { entries, level } => {
+        HashTreeNode::Internal { entries } => {
             ax_assert_eq!(entries[0].hash, 9);
-            ax_assert_eq!(level, 1);
         }
         _ => panic!("expected internal hash tree node"),
-    }
-    match leaf_node {
-        HashTreeNode::Leaf { block_num, entries } => {
-            ax_assert_eq!(block_num.raw(), 4);
-            ax_assert_eq!(entries[0].name, b"leaf");
-        }
-        _ => panic!("expected leaf hash tree node"),
     }
 
     let result = HashTreeSearchResult {
