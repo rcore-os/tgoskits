@@ -31,8 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metadata copy-on-write performance samples for final Linux/dev comparison.
 - Add typed user-visible inode flags and project identifiers to the owned core
   metadata DTOs without exposing the on-disk inode representation.
-- Add typed linear/HTree directory cursors, hash-ordered leaf enumeration,
-  Linux 64-bit directory-cookie encoding, and private collision continuation.
+- Add typed linear/HTree directory cursors, bounded hash-range leaf
+  enumeration, Linux 64-bit directory-cookie encoding, private collision
+  continuation, and a machine-readable HTree readdir benchmark workload.
 
 ### Removed
 

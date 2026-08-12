@@ -1506,13 +1506,33 @@ ABI cookie，由每个打开目录的 `extra_fname` 私有状态保存精确续�
 e2fsck -D` 的 802-entry fixture 先稳定返回 `Linear` cursor，成为确定性红测。当前 core 使用
 `DirectoryCursor::{Start, Linear, HTree, End}`，验证 root/internal/leaf checksum 与 block 引用，只
 收集 leaf active record；dot/dotdot 固定 hash 0/2，其余名称按 root effective hash version 计算
-`(major, minor)`，稳定排序后为完整 hash 碰撞分配 ordinal。一次读取 802 项与逐项续读的名称序列
-完全一致，任何 cursor kind 混用都返回 typed invalid input。
+`(major, minor)`，稳定排序后为完整 hash 碰撞分配 ordinal。readdir 以 cursor 的 major hash 重新
+probe HTree，只收集当前 index range 及 low-bit collision-continuation leaves，并用一项 lookahead
+构造下一候选项 cursor；不再为小批读取扫描并排序整棵目录树。一次读取 802 项与逐项续读的名称
+序列完全一致，9,802 项二级 HTree 以 127 项分批读取不丢项，任何 cursor kind 混用都返回 typed
+invalid input。旧实现的一项读取稳定触发 8 次设备读取；同一 Linux image 回归现要求不超过 4 次，
+固定了“禁止完整扫描”的确定性红绿证据。
 
 `axfs-ng-vfs::DirectoryCursor` 把 ABI-visible `offset` 与 backend-private `continuation` 分开，sink
 名称改为 raw bytes。ext4 adapter 实现 Linux 64-bit cookie/EOF codec，把 collision ordinal 仅放入
 continuation；Starry 的 open-directory description 保存完整 cursor，只有输出 buffer 写入用户地址
 成功后才提交，从而避免 `EFAULT` 跳项，目录 `lseek` 以新 visible offset 重建并清零 continuation。
 ArceOS materialized directory 同样改为 peek/commit，buffer 容量不足不再提前消费未输出项，
-`d_ino`/`d_off` 不再伪造为 1/0。32-bit getdents cookie、inode-version mutation invalidation、
-casefold/fscrypt prepared-name hash 与大目录 readdir cache 性能优化仍在后续台账中。
+`d_ino`/`d_off` 不再伪造为 1/0。ax-fs-ng adapter 每次最多向 core 请求 128 项，并在释放
+filesystem sleepable mutex 后才调用 sink。
+
+固定 x86_64、CPU 2、release、memory backend、4 KiB block、`metadata_csum+64bit+journal`、
+800 个普通项、3 次预热和 10 次测量；计时区间只包含完整 HTree readdir。原始样本见
+`book/design/data/rsext4-perf/2026-08-13-htree-readdir-incremental.csv`。这里的基线
+`6db697494` 是同一 PR 内的全树扫描检查点，只证明本次增量遍历的因果收益，不替代最终相对
+`6e27704c4` dev 的全量性能门槛。
+
+| batch | 指标 | `6db697494` | `d5cacf015` | 变化 |
+| --- | --- | ---: | ---: | ---: |
+| 1 | median | 68,644,211 ns | 8,370,758 ns | -87.81% |
+| 1 | p95 | 74,392,227 ns | 9,328,437 ns | -87.46% |
+| 128 | median | 701,628 ns | 183,039 ns | -73.91% |
+| 128 | p95 | 804,165 ns | 239,969 ns | -70.16% |
+
+32-bit getdents cookie、目录 mutation 的 inode-version invalidation、每个 open description 持久化的
+HTree path/range cache、casefold/fscrypt prepared-name hash 仍在后续台账中。
