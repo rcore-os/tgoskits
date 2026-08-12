@@ -1563,6 +1563,19 @@ checked `SEEK_SET/CUR/END` 算术并在 seek 后清除 backend-private continuat
 | 128 | median | 701,628 ns | 183,039 ns | -73.91% |
 | 128 | p95 | 804,165 ns | 239,969 ns | -70.16% |
 
+同一环境随后把 `7bb3b194d` 的“每次调用重新 probe 当前 range”与实现提交 `336b58863` 的
+per-open hash-range cache 精确 A/B；原始 40 个样本见
+`book/design/data/rsext4-perf/2026-08-13-htree-open-range-cache.csv`。batch=1 的 syscall 风格
+小缓冲路径不再每条记录重新读取、解析和排序当前 leaf range，batch=128 同样减少相邻调用的
+重复 probe；cache 是可丢弃派生状态，不改变 `calls` 或 cursor 语义。
+
+| batch | 指标 | `7bb3b194d` | `336b58863` | 变化 |
+| --- | --- | ---: | ---: | ---: |
+| 1 | median | 8,426,396 ns | 230,818 ns | -97.26% |
+| 1 | p95 | 10,088,703 ns | 233,711 ns | -97.68% |
+| 128 | median | 181,615 ns | 129,908 ns | -28.47% |
+| 128 | p95 | 189,715 ns | 132,837 ns | -29.98% |
+
 当前 Starry 的 x86_64/riscv64/aarch64/loongarch64 都是原生 64-bit ABI，syscall table 仅注册
 `getdents64`，没有 32-bit task/compat `getdents`，因此“32-bit getdents cookie”在当前交付边界
 明确为 N/A；若未来引入 compat task ABI，必须新增独立 `linux_dirent32` checked narrowing，并对
