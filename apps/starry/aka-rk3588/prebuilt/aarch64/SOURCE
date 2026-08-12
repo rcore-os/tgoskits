@@ -1,9 +1,0 @@
-repository=https://github.com/bullhh/aka-rk3588
-commit=5528e074a05b01219276cfd5c50f5d88c2880123
-source_sha256=b674fd649f7b7e4714874311b47ad941377ae43993f8b681c1af55a5582da5e7
-build_os=Orange Pi 1.2.2 Jammy
-build_compiler=g++ 11.4.0
-build_type=Release
-log_level=WARN
-binary_sha256=13d4550ba02201ba1649fe2229016a9e4a77caddd9fdfe947661e9f602cab69a
-max_glibc_version=2.34
