@@ -325,6 +325,8 @@ fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVm
 struct AxvmLoongArchHostOps;
 
 impl LoongArchHostOps for AxvmLoongArchHostOps {
+    type TimerHandle = crate::host::task::KernelTimerHandle;
+
     fn virt_to_phys(vaddr: LoongArchHostVirtAddr) -> LoongArchHostPhysAddr {
         LoongArchHostPhysAddr::from_usize(
             default_host()
@@ -344,12 +346,18 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
     fn register_timer(
         deadline: Duration,
         callback: Box<dyn FnOnce(Duration) + Send + 'static>,
-    ) -> usize {
-        crate::timer::register_timer(deadline.as_nanos() as u64, callback)
+    ) -> LoongArchVcpuResult<Self::TimerHandle> {
+        crate::host::task::register_kernel_timer(
+            crate::host::task::MonotonicDeadline::from_duration(deadline),
+            callback,
+        )
+        .map_err(|_| LoongArchVcpuError::TimerUnavailable)
     }
 
-    fn cancel_timer(token: usize) {
-        crate::timer::cancel_timer(token);
+    fn cancel_timer(handle: Self::TimerHandle) -> LoongArchVcpuResult {
+        crate::host::task::cancel_kernel_timer(handle)
+            .map(|_| ())
+            .map_err(|_| LoongArchVcpuError::TimerUnavailable)
     }
 
     fn inject_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) {
@@ -483,6 +491,7 @@ fn loongarch_error_to_backend(err: LoongArchVcpuError) -> BackendError {
         LoongArchVcpuError::InvalidInput => BackendError::InvalidInput,
         LoongArchVcpuError::Unsupported => BackendError::Unsupported,
         LoongArchVcpuError::BadState => BackendError::InvalidState,
+        LoongArchVcpuError::TimerUnavailable => BackendError::InvalidState,
     }
 }
 

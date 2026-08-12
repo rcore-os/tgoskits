@@ -222,7 +222,7 @@ pub(crate) fn register_kernel_timer(
     )
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
 pub(crate) fn cancel_kernel_timer(
     handle: ArceOsKernelTimerHandle,
 ) -> Result<bool, ArceOsTaskError> {
@@ -484,7 +484,7 @@ impl HostPlatform for ArceOsHost {
     }
 
     fn enable_virtualization_on_current_cpu(&self) -> AxVmResult {
-        #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+        #[cfg(target_arch = "x86_64")]
         crate::timer::init_percpu()?;
         crate::percpu::init_current_cpu()?;
         crate::percpu::enable_current_cpu()?;

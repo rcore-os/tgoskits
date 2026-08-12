@@ -28,7 +28,7 @@ pub(crate) fn register_kernel_timer(
     arceos::register_kernel_timer(deadline, callback)
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
 pub(crate) fn cancel_kernel_timer(handle: KernelTimerHandle) -> Result<bool, TaskError> {
     arceos::cancel_kernel_timer(handle)
 }
