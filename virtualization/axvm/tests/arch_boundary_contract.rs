@@ -89,3 +89,19 @@ fn aarch64_vgic_lifecycle_observes_deferred_kick_results() {
         &["self.kick.start();", "self.kick.stop();"],
     );
 }
+
+#[test]
+fn x86_pit_irq0_has_one_host_timer_owner() {
+    for (path, forbidden) in [
+        (
+            "src/arch/x86_64/irq.rs",
+            &["inject_due_pit_irq0", "consume_irq0_if_due"][..],
+        ),
+        ("src/arch/x86_64/exit.rs", &["PreemptionTimer"][..]),
+        ("../axdevice/src/x86.rs", &["consume_irq0_if_due"][..]),
+        ("../x86_vlapic/src/pit.rs", &["consume_irq0_if_due"][..]),
+    ] {
+        let source = read_source(path);
+        assert_omits(&source, path, forbidden);
+    }
+}

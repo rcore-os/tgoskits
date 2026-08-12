@@ -27,6 +27,7 @@ mod lock;
 mod pit;
 mod regs;
 mod timer;
+mod timer_registration;
 mod types;
 mod utils;
 mod vioapic;
@@ -57,8 +58,8 @@ pub use self::{
     pit::EmulatedPit,
     types::{
         X86AccessWidth, X86GuestPhysAddr, X86GuestPhysAddrRange, X86HostPhysAddr, X86HostVirtAddr,
-        X86InterruptVector, X86MsrAddr, X86MsrAddrRange, X86Port, X86PortRange, X86TimerCallback,
-        X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
+        X86InterruptVector, X86MsrAddr, X86MsrAddrRange, X86Port, X86PortRange, X86TimerAction,
+        X86TimerCallback, X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
     },
     vioapic::{EmulatedIoApic, IoApicEoi, IoApicInterrupt},
     vpic::EmulatedPic,

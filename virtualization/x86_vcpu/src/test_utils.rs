@@ -185,6 +185,8 @@ pub mod mock {
     }
 
     impl X86VlapicHostOps for MockMmHal {
+        type TimerHandle = usize;
+
         fn alloc_frame() -> Option<x86_vlapic::X86HostPhysAddr> {
             Self::alloc_frame_usize().map(x86_vlapic::X86HostPhysAddr::from_usize)
         }
@@ -205,11 +207,16 @@ pub mod mock {
             0
         }
 
-        fn register_timer(_deadline_nanos: u64, _callback: X86TimerCallback) -> Option<usize> {
-            None
+        fn register_timer(
+            _deadline_nanos: u64,
+            _callback: X86TimerCallback,
+        ) -> x86_vlapic::X86VlapicResult<Self::TimerHandle> {
+            Err(x86_vlapic::X86VlapicError::TimerUnavailable)
         }
 
-        fn cancel_timer(_token: usize) {}
+        fn cancel_timer(_handle: Self::TimerHandle) -> x86_vlapic::X86VlapicResult {
+            Ok(())
+        }
 
         fn current_vm_id() -> X86VmId {
             0

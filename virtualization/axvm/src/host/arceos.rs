@@ -123,15 +123,15 @@ impl HostCpu for ArceOsHost {
 pub(crate) type ArceOsThreadHandle = runtime_task::ThreadHandle;
 pub(crate) type ArceOsWaitQueue = runtime_task::WaitQueue;
 pub(crate) type ArceOsKernelTimerHandle = runtime_task::KernelTimerHandle;
+pub(crate) type ArceOsKernelTimerAction = runtime_task::KernelTimerAction;
 #[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 pub(crate) use runtime_task::{
     CpuId as ArceOsCpuId, CpuSet as ArceOsCpuSet, MonotonicDeadline as ArceOsMonotonicDeadline,
-    RtPriority as ArceOsRtPriority, SchedulePolicy as ArceOsSchedulePolicy,
-    SwitchReason as ArceOsSwitchReason, TaskError as ArceOsTaskError,
-    ThreadExtension as ArceOsThreadExtension, ThreadExtensionOps as ArceOsThreadExtensionOps,
-    ThreadId as ArceOsThreadId,
+    SchedulePolicy as ArceOsSchedulePolicy, SwitchReason as ArceOsSwitchReason,
+    TaskError as ArceOsTaskError, ThreadExtension as ArceOsThreadExtension,
+    ThreadExtensionOps as ArceOsThreadExtensionOps, ThreadId as ArceOsThreadId,
 };
 
 /// Hard-IRQ-safe event consumed by one fixed ArceOS service thread.
@@ -222,7 +222,21 @@ pub(crate) fn register_kernel_timer(
     )
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+pub(crate) fn register_restartable_kernel_timer(
+    deadline: ArceOsMonotonicDeadline,
+    mut callback: Box<dyn FnMut(Duration) -> ArceOsKernelTimerAction + Send + 'static>,
+) -> Result<ArceOsKernelTimerHandle, ArceOsTaskError> {
+    runtime_task::register_restartable_kernel_timer(
+        deadline,
+        Box::new(move |now| callback(Duration::from_nanos(now.as_nanos()))),
+    )
+}
+
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+))]
 pub(crate) fn cancel_kernel_timer(
     handle: ArceOsKernelTimerHandle,
 ) -> Result<bool, ArceOsTaskError> {
@@ -247,19 +261,6 @@ where
             entry, name, stack_size, extension, affinity,
         )
     }
-}
-
-pub(crate) fn spawn_thread_with_policy_and_affinity<F>(
-    entry: F,
-    name: std::string::String,
-    stack_size: usize,
-    policy: ArceOsSchedulePolicy,
-    affinity: ArceOsCpuSet,
-) -> Result<ArceOsThreadHandle, ArceOsTaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    runtime_task::spawn_raw_with_policy_and_affinity(entry, name, stack_size, policy, affinity)
 }
 
 pub(crate) fn join_thread(thread: ArceOsThreadHandle) -> Result<i32, ArceOsTaskError> {
@@ -484,8 +485,6 @@ impl HostPlatform for ArceOsHost {
     }
 
     fn enable_virtualization_on_current_cpu(&self) -> AxVmResult {
-        #[cfg(target_arch = "x86_64")]
-        crate::timer::init_percpu()?;
         crate::percpu::init_current_cpu()?;
         crate::percpu::enable_current_cpu()?;
         crate::percpu::mark_cpu_enabled(self.this_cpu_id());

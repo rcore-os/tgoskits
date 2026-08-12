@@ -8,7 +8,7 @@ use super::*;
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DeferredRunWork {
     ExternalInterrupt { vector: usize },
-    PreemptionTimer,
+    TimesliceExpired,
     InterruptEnd { vector: Option<u8> },
 }
 
@@ -103,9 +103,7 @@ pub(crate) fn finish(
         DeferredRunWork::ExternalInterrupt { vector } => {
             X86_64Arch::after_external_interrupt(vm, vcpu, vector);
         }
-        DeferredRunWork::PreemptionTimer => {
-            super::irq::inject_due_pit_irq0(vm, vcpu);
-        }
+        DeferredRunWork::TimesliceExpired => {}
         DeferredRunWork::InterruptEnd { vector } => {
             if let Some(vector) = vector {
                 super::irq::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);

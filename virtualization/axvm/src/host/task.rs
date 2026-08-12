@@ -6,12 +6,13 @@ pub(crate) type ThreadHandle = arceos::ArceOsThreadHandle;
 pub(crate) type IrqNotification = arceos::ArceOsIrqNotification;
 pub(crate) type MonotonicDeadline = arceos::ArceOsMonotonicDeadline;
 pub(crate) type KernelTimerHandle = arceos::ArceOsKernelTimerHandle;
+pub(crate) type KernelTimerAction = arceos::ArceOsKernelTimerAction;
 pub(crate) type ThreadExtensionBorrow<'thread> =
     ax_std::os::arceos::task::ThreadOsExtensionBorrow<'thread>;
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
 pub(crate) use arceos::{
-    ArceOsCpuSet as CpuSet, ArceOsRtPriority as RtPriority, ArceOsSchedulePolicy as SchedulePolicy,
+    ArceOsCpuSet as CpuSet, ArceOsSchedulePolicy as SchedulePolicy,
     ArceOsSwitchReason as SwitchReason, ArceOsTaskError as TaskError,
     ArceOsThreadExtension as ThreadExtension, ArceOsThreadExtensionOps as ThreadExtensionOps,
     ArceOsThreadId as ThreadId,
@@ -28,7 +29,18 @@ pub(crate) fn register_kernel_timer(
     arceos::register_kernel_timer(deadline, callback)
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+pub(crate) fn register_restartable_kernel_timer(
+    deadline: MonotonicDeadline,
+    callback: std::boxed::Box<dyn FnMut(std::time::Duration) -> KernelTimerAction + Send + 'static>,
+) -> Result<KernelTimerHandle, TaskError> {
+    arceos::register_restartable_kernel_timer(deadline, callback)
+}
+
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+))]
 pub(crate) fn cancel_kernel_timer(handle: KernelTimerHandle) -> Result<bool, TaskError> {
     arceos::cancel_kernel_timer(handle)
 }
@@ -52,19 +64,6 @@ where
     }
 }
 
-pub(crate) fn spawn_thread_with_policy_and_affinity<F>(
-    entry: F,
-    name: std::string::String,
-    stack_size: usize,
-    policy: SchedulePolicy,
-    affinity: CpuSet,
-) -> Result<ThreadHandle, TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    arceos::spawn_thread_with_policy_and_affinity(entry, name, stack_size, policy, affinity)
-}
-
 pub(crate) fn join_thread(thread: ThreadHandle) -> Result<i32, TaskError> {
     arceos::join_thread(thread)
 }
@@ -81,10 +80,6 @@ pub(crate) fn yield_now() {
 
 pub(crate) fn cpu_set_from_raw_bits(bits: usize) -> CpuSet {
     arceos::cpu_set_from_raw_bits(bits)
-}
-
-pub(crate) fn cpu_set_one(cpu_id: usize) -> CpuSet {
-    arceos::cpu_set_one(cpu_id)
 }
 
 pub(crate) fn thread_cpu_id(thread: &ThreadHandle) -> Option<usize> {
