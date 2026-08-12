@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reuse the current Linux-style JBD2 owner for nested metadata helpers without
+  reserving a second credit budget, while rolling back only a failed nested
+  scope and keeping the outer handle usable.
 - Restore filesystem metadata caches and allocation counters when an xattr
   journal handle aborts, and queue its inode, bitmap, group descriptor, and
   superblock images under one bounded transaction.

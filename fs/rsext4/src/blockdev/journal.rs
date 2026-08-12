@@ -799,6 +799,55 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// restores queued metadata images if the operation returns an error. This
     /// is not yet a complete Linux JBD2 handle: the filesystem transaction
     /// owner must also restore its caches and allocation state.
+    fn with_nested_journal_handle<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Ext4Result<T>,
+    ) -> Ext4Result<T> {
+        let queue_snapshot = {
+            let system = self.system.as_ref().ok_or_else(|| {
+                Ext4Error::journal_aborted().with_operation("jbd2:nested_handle_without_state")
+            })?;
+            Self::clone_updates(&system.running_transaction.updates)
+        };
+        let revoke_snapshot = self
+            .system
+            .as_ref()
+            .ok_or_else(|| {
+                Ext4Error::journal_aborted().with_operation("jbd2:nested_handle_without_state")
+            })?
+            .running_transaction
+            .revoked_blocks
+            .clone();
+        let touched_snapshot = self
+            .active_handle
+            .as_ref()
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:missing_active_handle"))?
+            .touched_blocks
+            .clone();
+
+        match operation(self) {
+            Ok(value) => Ok(value),
+            Err(operation_error) => {
+                let system = self.system.as_mut().ok_or_else(|| {
+                    Ext4Error::journal_aborted().with_operation("jbd2:nested_abort_without_state")
+                })?;
+                system.running_transaction.updates = queue_snapshot;
+                system.running_transaction.revoked_blocks = revoke_snapshot;
+                self.active_handle
+                    .as_mut()
+                    .ok_or_else(|| {
+                        Ext4Error::corrupted().with_operation("jbd2:missing_active_handle")
+                    })?
+                    .touched_blocks = touched_snapshot;
+                // A nested filesystem owner restores its cache snapshot after
+                // this return. Drop device-cache aliases dirtied by the failed
+                // scope so they cannot bypass the restored journal queue.
+                self.inner.discard_cache();
+                Err(operation_error)
+            }
+        }
+    }
+
     fn with_journal_handle<T>(
         &mut self,
         credits: usize,
@@ -832,15 +881,18 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 }
             };
         }
+        if self.active_handle.is_some() {
+            // Linux returns the task's current handle and increments h_ref;
+            // nested callers do not reserve a second set of credits. The
+            // closure lifetime supplies the matching scoped reference here.
+            return self.with_nested_journal_handle(operation);
+        }
         if credits == 0 {
             return Err(Ext4Error::invalid_input().with_operation("jbd2:handle_credits"));
         }
         let transaction_capacity = self.journal_transaction_capacity()?;
         if credits > transaction_capacity {
             return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
-        }
-        if self.active_handle.is_some() {
-            return Err(Ext4Error::busy().with_operation("jbd2:nested_handle"));
         }
         let available_capacity = self.journal_available_transaction_capacity()?;
 
@@ -3604,27 +3656,74 @@ mod tests {
     }
 
     #[test]
-    fn nested_journal_handle_is_busy_without_poisoning_outer_handle() {
+    fn nested_journal_handle_reuses_outer_credits_and_transaction() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
         dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
             .expect("install small journal");
-        let target = AbsoluteBN::new(10);
+        let outer_target = AbsoluteBN::new(10);
+        let nested_target = AbsoluteBN::new(11);
+        let sequence = dev.journal_sequence();
 
-        dev.with_journal_handle(1, |dev| {
-            let error = dev
-                .with_journal_handle(1, |_| Ok(()))
-                .expect_err("nested journal handles are not supported");
-            assert_eq!(error.kind(), crate::Ext4ErrorKind::Busy);
-            dev.write_blocks(&vec![0x5a; BLOCK_SIZE], target, 1, true)
+        dev.with_journal_handle(2, |dev| {
+            dev.write_blocks(&vec![0x5a; BLOCK_SIZE], outer_target, 1, true)?;
+            dev.with_journal_handle(usize::MAX, |dev| {
+                assert_eq!(dev.journal_sequence(), sequence);
+                dev.write_blocks(&vec![0xa5; BLOCK_SIZE], nested_target, 1, true)
+            })
         })
-        .expect("outer handle remains usable after nested rejection");
+        .expect("nested start reuses the current owner and its credits");
 
+        assert_eq!(dev.journal_sequence(), sequence);
         dev.umount_commit().expect("commit outer handle update");
         let inner = dev.into_inner();
-        let start = target.as_usize().unwrap() * BLOCK_SIZE;
+        let start = outer_target.as_usize().unwrap() * BLOCK_SIZE;
         assert_eq!(
             &inner.data[start..start + BLOCK_SIZE],
             &vec![0x5a; BLOCK_SIZE]
+        );
+        let start = nested_target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[start..start + BLOCK_SIZE],
+            &vec![0xa5; BLOCK_SIZE]
+        );
+    }
+
+    #[test]
+    fn failed_nested_journal_handle_restores_only_its_scope() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
+            .expect("install small journal");
+        let outer_target = AbsoluteBN::new(10);
+        let failed_target = AbsoluteBN::new(11);
+
+        dev.with_journal_handle(2, |dev| {
+            dev.write_blocks(&vec![0x11; BLOCK_SIZE], outer_target, 1, true)?;
+            let error = dev
+                .with_journal_handle(1, |dev| {
+                    dev.write_blocks(&vec![0xa5; BLOCK_SIZE], failed_target, 1, true)?;
+                    Err::<(), _>(Ext4Error::io().with_operation("test:nested_operation_failure"))
+                })
+                .expect_err("nested operation must propagate its failure");
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+
+            let mut observed = vec![0xff; BLOCK_SIZE];
+            dev.read_blocks(&mut observed, failed_target, 1)?;
+            assert_eq!(observed, vec![0; BLOCK_SIZE]);
+            dev.write_blocks(&vec![0x22; BLOCK_SIZE], outer_target, 1, true)
+        })
+        .expect("outer handle remains usable after nested rollback");
+
+        dev.umount_commit().expect("commit outer handle update");
+        let inner = dev.into_inner();
+        let outer_start = outer_target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[outer_start..outer_start + BLOCK_SIZE],
+            &vec![0x22; BLOCK_SIZE]
+        );
+        let failed_start = failed_target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[failed_start..failed_start + BLOCK_SIZE],
+            &vec![0; BLOCK_SIZE]
         );
     }
 
