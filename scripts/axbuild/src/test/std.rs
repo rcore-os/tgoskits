@@ -711,6 +711,27 @@ mod tests {
     }
 
     #[test]
+    fn ax_runtime_host_profile_includes_its_task_runtime() {
+        let root = PathBuf::from("/tmp/workspace");
+        let packages = vec!["ax-runtime".to_string()];
+        let mut runner = FakeCargoRunner::succeeding();
+
+        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
+
+        assert!(failed.is_empty());
+        assert_eq!(
+            runner.invocations[0].1.args(),
+            vec![
+                "test",
+                "-p",
+                "ax-runtime",
+                "--features",
+                "host-test,multitask",
+            ]
+        );
+    }
+
+    #[test]
     fn profile_discovery_rejects_zero_tests() {
         let err = validate_discovered_tests(&AX_TASK_FEATURE_PROFILES[0], "0 tests, 0 benchmarks")
             .unwrap_err();
