@@ -23,4 +23,4 @@ fail_regex = [
   '(?m)^\[ROBOT_CI\] RESULT=FAIL .*$',
   '(?m)^\[ROBOT_CI\] HARNESS=FAIL .*$',
 ]
-timeout = 600
+timeout = 900

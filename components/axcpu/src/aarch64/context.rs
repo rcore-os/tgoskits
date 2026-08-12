@@ -334,6 +334,8 @@ unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_t
         ldp     x25, x26, [x1, {r25_offset}]
         ldp     x27, x28, [x1, {r27_offset}]
         ldp     x29, x30, [x1, {r29_offset}]
+        ldr     x9, [x1, {current_header_offset}]
+        msr     sp_el0, x9
 
         ret",
         sp_offset = const offset_of!(TaskContext, sp),
@@ -343,6 +345,8 @@ unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_t
         r25_offset = const offset_of!(TaskContext, r25),
         r27_offset = const offset_of!(TaskContext, r27),
         r29_offset = const offset_of!(TaskContext, r29),
+        current_header_offset = const offset_of!(TaskContext, task_local)
+            + offset_of!(TaskLocalState, current_header),
         kernel_tls_offset = const offset_of!(TaskContext, task_local)
             + offset_of!(TaskLocalState, kernel_tls),
     )
