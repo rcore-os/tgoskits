@@ -604,16 +604,6 @@ impl FileNodeOps for MemoryNode {
             }
         }
     }
-
-    fn set_symlink(&self, target: &str) -> VfsResult<()> {
-        let file = self.inode.as_file()?;
-        let old_len = file.length.load(AtomicOrdering::Acquire);
-        let new_len = target.len() as u64;
-        self.fs.resize_usage(old_len, new_len)?;
-        file.length.store(new_len, AtomicOrdering::Release);
-        *file.symlink.lock() = Some(target.to_owned());
-        Ok(())
-    }
 }
 impl FsPollable for MemoryNode {
     fn poll(&self) -> FsIoEvents {
@@ -696,6 +686,9 @@ impl DirNodeOps for MemoryNode {
         uid: u32,
         gid: u32,
     ) -> VfsResult<DirEntry> {
+        if node_type == NodeType::Symlink {
+            return Err(VfsError::InvalidInput);
+        }
         let dir = self.inode.as_dir()?;
         let mut entries = dir.entries.lock();
 
@@ -717,6 +710,59 @@ impl DirNodeOps for MemoryNode {
             InodeRef::new(self.fs.clone(), inode.ino, node_type, cookie),
         );
         self.new_entry(name, node_type, inode)
+    }
+
+    fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<DirEntry> {
+        let target = target.to_owned();
+        let target_len = target.len() as u64;
+        let dir = self.inode.as_dir()?;
+        let mut entries = dir.entries.lock();
+
+        if entries.contains_key(name) {
+            return Err(VfsError::AlreadyExists);
+        }
+        self.fs.resize_usage(0, target_len)?;
+        let inode = Inode::new(
+            &self.fs,
+            Some(self.inode.ino),
+            NodeType::Symlink,
+            permission,
+            uid,
+            gid,
+            TMPFS_NESTED_DIR_ENTRIES_SUBCLASS,
+        );
+        let NodeContent::File(file) = &inode.content else {
+            self.fs
+                .used_bytes
+                .fetch_sub(target_len, AtomicOrdering::AcqRel);
+            drop(entries);
+            drop(self.fs.inodes.lock().remove(inode.ino as usize - 1));
+            return Err(VfsError::InvalidData);
+        };
+        file.length.store(target_len, AtomicOrdering::Release);
+        *file.symlink.lock() = Some(target);
+
+        let entry = DirEntry::new_file(
+            FileNode::new(MemoryNode::new(self.fs.clone(), inode.clone(), None)),
+            NodeType::Symlink,
+            Reference::new(
+                self.this.as_ref().and_then(WeakDirEntry::upgrade),
+                name.to_owned(),
+            ),
+        );
+        let cookie = dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
+        entries.insert(
+            name.into(),
+            InodeRef::new(self.fs.clone(), inode.ino, NodeType::Symlink, cookie),
+        );
+        Ok(entry)
     }
 
     fn link(&self, name: &str, target: &DirEntry) -> VfsResult<DirEntry> {
@@ -818,4 +864,24 @@ impl Drop for MemoryNode {
     fn drop(&mut self) {
         release_inode(&self.fs, &self.inode, 0);
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool {
+    let filesystem = MemoryFs::new_with_size_limit(3);
+    let root = filesystem.root_dir();
+    let Ok(directory) = root.as_dir() else {
+        return false;
+    };
+
+    matches!(
+        directory.create_symlink(
+            "link",
+            "four",
+            NodePermission::from_bits_truncate(0o777),
+            1000,
+            1001,
+        ),
+        Err(VfsError::StorageFull)
+    ) && matches!(directory.lookup("link"), Err(VfsError::NotFound))
 }

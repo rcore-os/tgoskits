@@ -139,6 +139,18 @@ pub trait DirNodeOps: NodeOps {
         gid: u32,
     ) -> VfsResult<DirEntry>;
 
+    /// Atomically creates a symbolic link with its final target.
+    ///
+    /// Implementations must not publish an empty link before storing `target`.
+    fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<DirEntry>;
+
     /// Creates a link to a node.
     fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry>;
 
@@ -366,6 +378,9 @@ impl DirNode {
         uid: u32,
         gid: u32,
     ) -> VfsResult<DirEntry> {
+        if node_type == NodeType::Symlink {
+            return Err(VfsError::InvalidInput);
+        }
         let entry = self.ops.create(name, node_type, permission, uid, gid)?;
         if self.ops.is_cacheable() {
             let previous = {
@@ -389,6 +404,30 @@ impl DirNode {
     ) -> VfsResult<DirEntry> {
         verify_entry_name(name)?;
         self.create_entry(name, node_type, permission, uid, gid)
+    }
+
+    /// Atomically creates a symbolic link with its final target.
+    pub fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<DirEntry> {
+        verify_entry_name(name)?;
+        let entry = self
+            .ops
+            .create_symlink(name, target, permission, uid, gid)?;
+        if self.ops.is_cacheable() {
+            let previous = {
+                let mut cache = self.cache.lock();
+                cache.insert(name.to_owned(), entry.clone())
+            };
+            drop(previous);
+            self.bump_cache_generation();
+        }
+        Ok(entry)
     }
 
     fn transfer_cached_state(source: DirEntry, destination: &DirEntry) {

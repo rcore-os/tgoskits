@@ -1288,7 +1288,7 @@ fn owned_rmdir_rejects_nonempty_directory_without_mutation() {
 }
 
 #[test]
-fn owned_symlink_uses_linux_fast_boundary_and_replaces_target() {
+fn owned_symlink_create_uses_linux_fast_boundary() {
     let mut filesystem = owned_test_filesystem();
     let root = filesystem.root_inode();
     let context = MutationContext::new(1000, 1001, 0, 0);
@@ -1323,37 +1323,6 @@ fn owned_symlink_uses_linux_fast_boundary_and_replaces_target() {
         .read_inode(long.number, 0, &mut output)
         .expect("read long symlink");
     assert_eq!(&output[..read], &target_60);
-
-    let replacement = [b'c'; 70];
-    filesystem
-        .set_symlink_target(context, fast.number, &replacement)
-        .expect("replace fast symlink with long target");
-    assert_ne!(
-        filesystem
-            .inode(fast.number)
-            .expect("inspect replaced symlink")
-            .blocks,
-        0
-    );
-    let read = filesystem
-        .read_inode(fast.number, 0, &mut output)
-        .expect("read replaced long symlink");
-    assert_eq!(&output[..read], &replacement);
-
-    filesystem
-        .set_symlink_target(context, fast.number, b"short")
-        .expect("replace long symlink with fast target");
-    assert_eq!(
-        filesystem
-            .inode(fast.number)
-            .expect("inspect fast replacement")
-            .blocks,
-        0
-    );
-    let read = filesystem
-        .read_inode(fast.number, 0, &mut output)
-        .expect("read fast replacement");
-    assert_eq!(&output[..read], b"short");
 }
 
 #[test]

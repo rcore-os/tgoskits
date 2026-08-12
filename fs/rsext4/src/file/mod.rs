@@ -32,8 +32,7 @@ mod xattr_extent;
 
 pub use blocks::build_file_block_mapping_with_inode_num;
 pub(crate) use create::{
-    CreateInodePayload, create_inode_at, discard_unpublished_inode,
-    discard_unpublished_inode_blocks, error_after_cleanup,
+    CreateInodePayload, create_inode_at, discard_unpublished_inode, error_after_cleanup,
 };
 pub use create::{create_symbol_link, create_symbol_link_with_owner, mkfile, mkfile_with_owner};
 pub(crate) use delete::{

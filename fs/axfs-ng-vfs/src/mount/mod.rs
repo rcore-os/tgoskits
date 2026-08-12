@@ -142,6 +142,17 @@ impl DirNodeOps for SyntheticMountDir {
         Err(VfsError::ReadOnlyFilesystem)
     }
 
+    fn create_symlink(
+        &self,
+        _name: &str,
+        _target: &str,
+        _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+
     fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
         Err(VfsError::ReadOnlyFilesystem)
     }
@@ -876,6 +887,23 @@ impl Location {
             .map(|entry| self.wrap(entry))
     }
 
+    pub fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<Self> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry
+            .as_dir()?
+            .create_symlink(name, target, permission, uid, gid)
+            .map(|entry| self.wrap(entry))
+    }
+
     /// Creates an in-memory directory entry that exists only as a mount target.
     ///
     /// This is intended for early boot auto-mount recovery: if the root
@@ -1135,18 +1163,25 @@ impl FsPollable for Location {
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::ToString;
+    use alloc::string::{String, ToString};
     use core::{
         any::Any,
         sync::atomic::{AtomicUsize, Ordering},
     };
 
     use super::*;
-    use crate::StatFs;
+    use crate::{FileNode, FileNodeOps, StatFs};
 
     struct MockFs;
     struct ContextCheckingFs;
     struct MockNode;
+    struct SymlinkDir {
+        generic_create_calls: Arc<AtomicUsize>,
+        symlink_create_calls: Arc<AtomicUsize>,
+    }
+    struct SymlinkFile {
+        target: String,
+    }
     struct LifetimeGuard(Arc<AtomicUsize>);
 
     impl Drop for LifetimeGuard {
@@ -1227,6 +1262,16 @@ mod tests {
         ) -> VfsResult<DirEntry> {
             Err(VfsError::ReadOnlyFilesystem)
         }
+        fn create_symlink(
+            &self,
+            _name: &str,
+            _target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
         fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
             Err(VfsError::ReadOnlyFilesystem)
         }
@@ -1241,6 +1286,171 @@ mod tests {
             _options: RenameOptions,
         ) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    impl NodeOps for SymlinkDir {
+        fn inode(&self) -> u64 {
+            1
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(mock_metadata(1, NodeType::Directory, 0))
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &MOCK_FS
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl DirNodeOps for SymlinkDir {
+        fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+            Ok(0)
+        }
+
+        fn lookup(&self, _name: &str) -> VfsResult<DirEntry> {
+            Err(VfsError::NotFound)
+        }
+
+        fn create(
+            &self,
+            _name: &str,
+            _node_type: NodeType,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            self.generic_create_calls.fetch_add(1, Ordering::Relaxed);
+            Err(VfsError::InvalidInput)
+        }
+
+        fn create_symlink(
+            &self,
+            name: &str,
+            target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            self.symlink_create_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(DirEntry::new_file(
+                FileNode::new(Arc::new(SymlinkFile {
+                    target: target.to_string(),
+                })),
+                NodeType::Symlink,
+                Reference::new(None, name.to_string()),
+            ))
+        }
+
+        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+            Err(VfsError::OperationNotSupported)
+        }
+
+        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
+            Err(VfsError::OperationNotSupported)
+        }
+
+        fn rename(
+            &self,
+            _src: &str,
+            _dst_dir: &DirNode,
+            _dst: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
+            Err(VfsError::OperationNotSupported)
+        }
+    }
+
+    impl NodeOps for SymlinkFile {
+        fn inode(&self) -> u64 {
+            2
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(mock_metadata(
+                2,
+                NodeType::Symlink,
+                self.target.len() as u64,
+            ))
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &MOCK_FS
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl FsPollable for SymlinkFile {
+        fn poll(&self) -> FsIoEvents {
+            FsIoEvents::IN
+        }
+
+        fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+    }
+
+    impl FileNodeOps for SymlinkFile {
+        fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+            let offset = usize::try_from(offset).map_err(|_| VfsError::InvalidInput)?;
+            let Some(remaining) = self.target.as_bytes().get(offset..) else {
+                return Ok(0);
+            };
+            let length = remaining.len().min(buf.len());
+            buf[..length].copy_from_slice(&remaining[..length]);
+            Ok(length)
+        }
+
+        fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn set_len(&self, _len: u64) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    fn mock_metadata(inode: u64, node_type: NodeType, size: u64) -> Metadata {
+        Metadata {
+            device: 0,
+            inode,
+            nlink: 1,
+            mode: NodePermission::default(),
+            node_type,
+            uid: 0,
+            gid: 0,
+            size,
+            block_size: 4096,
+            blocks: 0,
+            rdev: DeviceId::default(),
+            atime: Duration::ZERO,
+            mtime: Duration::ZERO,
+            ctime: Duration::ZERO,
         }
     }
 
@@ -1270,6 +1480,45 @@ mod tests {
         let mounted = Filesystem::new(Arc::new(ContextCheckingFs));
 
         target.mount(&mounted).expect("mount succeeds");
+    }
+
+    #[test]
+    fn symlink_creation_uses_atomic_typed_operation() {
+        let generic_create_calls = Arc::new(AtomicUsize::new(0));
+        let symlink_create_calls = Arc::new(AtomicUsize::new(0));
+        let ops: Arc<dyn DirNodeOps> = Arc::new(SymlinkDir {
+            generic_create_calls: generic_create_calls.clone(),
+            symlink_create_calls: symlink_create_calls.clone(),
+        });
+        let root = DirEntry::new_dir(|_| DirNode::new(ops), Reference::root());
+        let directory = root.as_dir().expect("root directory");
+
+        assert!(matches!(
+            directory.create(
+                "invalid",
+                NodeType::Symlink,
+                NodePermission::default(),
+                0,
+                0,
+            ),
+            Err(VfsError::InvalidInput)
+        ));
+        assert_eq!(generic_create_calls.load(Ordering::Relaxed), 0);
+
+        let link = directory
+            .create_symlink(
+                "link",
+                "/complete-target",
+                NodePermission::default(),
+                1000,
+                1001,
+            )
+            .expect("atomic symlink create");
+        assert_eq!(
+            link.read_link().expect("read final target"),
+            "/complete-target"
+        );
+        assert_eq!(symlink_create_calls.load(Ordering::Relaxed), 1);
     }
 
     /// The global root is unattached (its mount `location` is `None`), so the

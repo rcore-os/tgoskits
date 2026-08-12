@@ -278,6 +278,11 @@ mod tests {
             false
         }
 
+        #[cfg(feature = "ext4")]
+        fn supports_flush(&self) -> bool {
+            true
+        }
+
         fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> FsBlockResult<()> {
             assert_eq!(block_id, 0);
             buf.copy_from_slice(&self.storage.lock().unwrap());

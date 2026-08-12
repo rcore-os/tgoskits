@@ -178,10 +178,6 @@ impl FileNodeOps for Device {
         }
     }
 
-    fn set_symlink(&self, _target: &str) -> VfsResult<()> {
-        Err(VfsError::BadFileDescriptor)
-    }
-
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         self.ops.ioctl(cmd, arg)
     }

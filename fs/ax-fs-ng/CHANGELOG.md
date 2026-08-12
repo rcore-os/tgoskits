@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Create ext4 symbolic links through one typed inode operation instead of
+  publishing an empty link and mutating its target afterward.
 - Enable the host `ax-sync` provider for `ax-fs-ng` tests after the sleepable
   lock migration.
 - Move grouped block-controller ownership out of its IRQ-save mutex before

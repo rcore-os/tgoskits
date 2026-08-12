@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Create tmpfs and overlay symbolic links with their final target before the
+  directory entry becomes visible, including copy-up and capacity failures.
 - Make ext4 `fallocate(2)` reserve unwritten blocks for normal and
   `FALLOC_FL_KEEP_SIZE` requests instead of creating sparse files.
 - Implement ext4 `FALLOC_FL_ZERO_RANGE` and `FALLOC_FL_PUNCH_HOLE` with typed

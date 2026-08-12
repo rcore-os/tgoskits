@@ -231,6 +231,17 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         Err(VfsError::OperationNotPermitted)
     }
 
+    fn create_symlink(
+        &self,
+        _name: &str,
+        _target: &str,
+        _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::OperationNotPermitted)
+    }
+
     fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
         Err(VfsError::OperationNotPermitted)
     }

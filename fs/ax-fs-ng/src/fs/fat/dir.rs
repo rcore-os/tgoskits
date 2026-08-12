@@ -183,6 +183,17 @@ impl DirNodeOps for FatDirNode {
         }
     }
 
+    fn create_symlink(
+        &self,
+        _name: &str,
+        _target: &str,
+        _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::OperationNotSupported)
+    }
+
     fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
         //  EPERM  The filesystem containing oldpath and newpath does not
         //         support the creation of hard links.

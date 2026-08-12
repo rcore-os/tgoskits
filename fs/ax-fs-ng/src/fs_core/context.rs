@@ -554,12 +554,7 @@ impl FsContext {
         gid: u32,
     ) -> VfsResult<Location> {
         let (dir, name) = self.resolve_nonexistent(link_path.as_ref())?;
-        if dir.lookup_no_follow(name).is_ok() {
-            return Err(VfsError::AlreadyExists);
-        }
-        let symlink = dir.create(name, NodeType::Symlink, NodePermission::default(), uid, gid)?;
-        symlink.entry().as_file()?.set_symlink(target.as_ref())?;
-        Ok(symlink)
+        dir.create_symlink(name, target.as_ref(), NodePermission::default(), uid, gid)
     }
 
     /// Returns the canonical, absolute form of a path.

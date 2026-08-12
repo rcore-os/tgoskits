@@ -2,6 +2,11 @@ use axtest::prelude::*;
 use starry_kernel::axtest_exports;
 
 #[axtest]
+fn failed_symlink_capacity_reservation_does_not_publish_name() {
+    ax_assert!(axtest_exports::failed_symlink_capacity_reservation_does_not_publish_name());
+}
+
+#[axtest]
 fn pipe_peer_close_with_multiple_readers_is_visible() {
     ax_assert!(axtest_exports::pipe_peer_close_with_multiple_readers_is_visible());
 }

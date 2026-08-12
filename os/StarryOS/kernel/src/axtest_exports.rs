@@ -34,6 +34,10 @@ pub fn random_write_mixes_entropy() -> bool {
     super::pseudofs::dev::random_write_mixes_entropy_for_test()
 }
 
+pub fn failed_symlink_capacity_reservation_does_not_publish_name() -> bool {
+    super::pseudofs::failed_symlink_capacity_reservation_does_not_publish_name_for_test()
+}
+
 pub fn pipe_peer_close_with_multiple_readers_is_visible() -> bool {
     super::file::peer_close_with_multiple_readers_is_visible_for_test()
 }

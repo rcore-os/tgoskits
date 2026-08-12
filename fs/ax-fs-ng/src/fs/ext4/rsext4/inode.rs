@@ -392,16 +392,6 @@ impl FileNodeOps for Inode {
     ) -> VfsResult<VfsFileExtentMap> {
         self.inspect_extents(offset, len, target, extent_limit)
     }
-
-    fn set_symlink(&self, target: &str) -> VfsResult<()> {
-        let mut state = self.fs.lock();
-        state
-            .ext4
-            .set_symlink_target(Self::authorized_mutation(), self.ino, target.as_bytes())
-            .map_err(into_vfs_err)?;
-        drop(state);
-        self.fs.sync_to_disk()
-    }
 }
 
 impl FsPollable for Inode {
@@ -498,7 +488,7 @@ impl DirNodeOps for Inode {
                         .ext4
                         .create_directory(context, self.ino, raw_name, permissions)
                 }
-                NodeType::Symlink => state.ext4.create_symlink(context, self.ino, raw_name, &[]),
+                NodeType::Symlink => return Err(VfsError::InvalidInput),
                 NodeType::CharacterDevice => state.ext4.create_special_inode(
                     context,
                     self.ino,
@@ -530,6 +520,35 @@ impl DirNodeOps for Inode {
                 NodeType::Unknown => return Err(VfsError::InvalidData),
             }
             .map_err(into_vfs_err)?;
+            state.inc_ref(info.number);
+            info
+        };
+
+        let entry = self.create_entry(info, name);
+        self.fs.sync_to_disk()?;
+        Ok(entry)
+    }
+
+    fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        _permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<DirEntry> {
+        let raw_name = FileName::new(name.as_bytes()).map_err(into_vfs_err)?;
+        let info = {
+            let mut state = self.fs.lock();
+            let info = state
+                .ext4
+                .create_symlink(
+                    Self::mutation_context(uid, gid),
+                    self.ino,
+                    raw_name,
+                    target.as_bytes(),
+                )
+                .map_err(into_vfs_err)?;
             state.inc_ref(info.number);
             info
         };

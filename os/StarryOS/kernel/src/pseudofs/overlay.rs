@@ -306,10 +306,16 @@ fn copy_metadata(src: &Location, dst: &Location) -> VfsResult<()> {
 /// Copy a lower entry into an upper directory.
 fn copy_entry(src: &Location, dst_dir: &Location, name: &str) -> VfsResult<Location> {
     let meta = src.metadata()?;
-    let dst = dst_dir.create(name, meta.node_type, meta.mode, meta.uid, meta.gid)?;
+    let dst = match meta.node_type {
+        NodeType::Symlink => {
+            let target = src.read_link()?;
+            dst_dir.create_symlink(name, &target, meta.mode, meta.uid, meta.gid)?
+        }
+        _ => dst_dir.create(name, meta.node_type, meta.mode, meta.uid, meta.gid)?,
+    };
     match meta.node_type {
         NodeType::RegularFile => copy_file_contents(src, &dst)?,
-        NodeType::Symlink => dst.entry().as_file()?.set_symlink(&src.read_link()?)?,
+        NodeType::Symlink => {}
         NodeType::Directory => {}
         _ => {}
     }
@@ -657,11 +663,30 @@ impl DirNodeOps for OverlayDir {
         uid: u32,
         gid: u32,
     ) -> VfsResult<DirEntry> {
+        if node_type == NodeType::Symlink {
+            return Err(VfsError::InvalidInput);
+        }
         self.ensure_no_visible_entry(name)?;
         self.remove_existing_whiteout(name)?;
         let upper = self
             .materialize_upper_dir()?
             .create(name, node_type, permission, uid, gid)?;
+        self.build_entry(name, Some(upper), None)
+    }
+
+    fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<DirEntry> {
+        self.ensure_no_visible_entry(name)?;
+        self.remove_existing_whiteout(name)?;
+        let upper = self
+            .materialize_upper_dir()?
+            .create_symlink(name, target, permission, uid, gid)?;
         self.build_entry(name, Some(upper), None)
     }
 
@@ -883,10 +908,6 @@ impl FileNodeOps for OverlayFile {
             .entry()
             .as_file()?
             .map_extents(offset, len, target, extent_limit)
-    }
-
-    fn set_symlink(&self, target: &str) -> VfsResult<()> {
-        self.ensure_upper()?.entry().as_file()?.set_symlink(target)
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {

@@ -199,10 +199,6 @@ impl FileNodeOps for CacheTestFile {
             _ => Err(VfsError::OperationNotSupported),
         }
     }
-
-    fn set_symlink(&self, _target: &str) -> VfsResult<()> {
-        Err(VfsError::InvalidInput)
-    }
 }
 
 fn reopen_cached_file(backing: Arc<CacheTestFile>) -> CachedFile {

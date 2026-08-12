@@ -622,10 +622,6 @@ mod tests {
         fn set_len(&self, _len: u64) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
-
-        fn set_symlink(&self, _target: &str) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
     }
 
     fn test_entry(node: Arc<MetadataTrackingTestFile>) -> DirEntry {

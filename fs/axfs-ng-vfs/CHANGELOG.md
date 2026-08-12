@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add a required typed directory operation that creates a symbolic link with
+  its final target atomically.
 - Add a typed file preallocation capability with explicit extend-size and
   keep-size modes.
 - Extend the file range capability with typed zero-range and hole-punch
@@ -19,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regular-file and directory nodes; unsupported xattr mappings stay explicit.
 - Add an optional inode-owned extended-attribute capability with typed
   create/replace policy and read-only mount enforcement.
+
+### Removed
+
+- Remove the file-level symbolic-link target setter and reject symbolic links
+  from the generic directory create API.
 
 ## [0.5.8](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.7...axfs-ng-vfs-v0.5.8) - 2026-08-09
 
