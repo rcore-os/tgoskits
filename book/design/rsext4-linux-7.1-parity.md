@@ -1020,3 +1020,41 @@ RSEXT4_BENCH_SUMMARY commit=a95663e96-repeat arch=x86_64 backend=memory feature=
 字段直接体现。该语义差异继续作为后续独立 sync/unmount workload 的前置理由；完整
 all-features、no-default-features、Linux image/e2fsck differential、三配置 clippy、
 format、dependency boundary 与 Linux map audit 已通过。
+
+### 7.34 JBD2 committing transaction owner 检查点
+
+Linux v7.1 `fs/jbd2/commit.c:434-590,1115-1162` 在任何 journal I/O 前先锁定
+`j_running_transaction`，随后在 `T_FLUSH` 阶段把它发布为
+`j_committing_transaction` 并清空 running owner；提交完成后再从 committing owner
+移入 checkpoint list。旧 Rust core 直到 FUA commit 成功后才从同一个
+`commit_queue` 取走 update/revoke，因而 I/O 已开始的失败 transaction 仍被错误表示为
+running transaction。
+
+本阶段把 JBD2 内存状态拆为 `running_transaction`、单一
+`committing_transaction` 和 oldest-first `checkpoint_transactions`。同步 core 的提交阶段
+显式经过 `Flush -> Commit -> DataFlush -> JournalFlush`：开始 commit 时立即移动
+update/revoke 所有权；FUA commit 成功后才清空 committing owner 并进入 checkpoint；任一
+I/O 失败则保留 committing transaction 和精确阶段，同时由 sticky abort 禁止后续 handle、
+write、flush、mode change 或 reinstall。读路径仍按 running、committing、checkpoint 的
+新旧次序合并 update/revoke 可见性。
+
+确定性红测在 descriptor/payload preflush 注入错误：旧实现的 running queue 仍含一个
+update，稳定失败；新实现要求 running 为空、committing 持有一个 update 且阶段为
+`DataFlush`。成功路径同时断言 committing 已清空且 checkpoint 恰持有一个 transaction。
+56 个 JBD2 fault/replay/checkpoint 测试以及完整 Linux image differential 均通过。
+
+固定 CPU 2、`powersave` governor、3 次预热、20 次测量的原始样本保存在
+`book/design/data/rsext4-perf/2026-08-12-jbd2-committing-owner.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=1983fc88e arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6350459 write_p95_ns=6735837 read_median_ns=6112545 read_p95_ns=7269978 sync_median_ns=32787 sync_p95_ns=34825
+```
+
+| workload | dev median | current median | 变化 | dev p95 | current p95 | 变化 | 当前结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| sequential write | 6.827 ms | 6.350 ms | -7.0% | 7.335 ms | 6.736 ms | -8.2% | 绿 |
+| sequential read | 7.219 ms | 6.113 ms | -15.3% | 8.481 ms | 7.270 ms | -14.3% | 绿 |
+| sync/unmount latency | 25.823 us | 32.787 us | +27.0% | 38.644 us | 34.825 us | -9.9% | p95 绿；median 红 |
+
+该状态重构没有引入 sequential write/read 或 sync p95 回退；历史 `sync_ns` 仍是
+clean-unmount，median 红项继续保留到独立 sync/unmount workload 和后续整体优化完成。
