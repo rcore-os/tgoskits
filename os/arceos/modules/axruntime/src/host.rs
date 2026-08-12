@@ -115,6 +115,20 @@ pub(crate) fn in_hardirq() -> bool {
 }
 
 #[cfg(feature = "multitask")]
+pub(crate) fn validate_schedule_context() -> ax_task::runtime::RuntimeStatus {
+    use ax_task::runtime::RuntimeStatus;
+
+    let irq_enabled = IRQ_ENABLED.with(Cell::get);
+    let irq_guard_clear = ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().is_empty());
+    let preempt_guard_clear = ACTIVE_PREEMPT_TOKENS.with(|tokens| tokens.borrow().is_empty());
+    if irq_enabled && irq_guard_clear && preempt_guard_clear && !in_hardirq() {
+        RuntimeStatus::Success
+    } else {
+        RuntimeStatus::UnsafeContext
+    }
+}
+
+#[cfg(feature = "multitask")]
 pub(crate) fn task_system_handle() -> TaskSystemHandle {
     let raw = (task_system() as *const TaskSystem).expose_provenance();
     // SAFETY: `TASK_SYSTEM` owns this allocation until process shutdown.

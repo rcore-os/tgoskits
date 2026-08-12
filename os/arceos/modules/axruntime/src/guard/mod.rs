@@ -46,7 +46,10 @@ pub(crate) fn release_bootstrap_preemption() {
 }
 
 /// Validates a public scheduler entry before it can publish task state.
-#[cfg(feature = "multitask")]
+#[cfg(all(
+    feature = "multitask",
+    not(all(feature = "host-test", not(target_os = "none")))
+))]
 pub(crate) fn validate_schedule_context(
     _origin: ax_task::runtime::RuntimeScheduleOrigin,
 ) -> ax_task::runtime::RuntimeStatus {

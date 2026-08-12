@@ -343,6 +343,13 @@ impl_task_runtime! {
         fn validate_schedule_context(
             origin: ax_task::runtime::RuntimeScheduleOrigin,
         ) -> RuntimeStatus {
+            #[cfg(all(feature = "host-test", not(target_os = "none")))]
+            {
+                let _ = origin;
+                crate::host::validate_schedule_context()
+            }
+
+            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             crate::guard::validate_schedule_context(origin)
         }
 
