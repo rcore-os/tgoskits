@@ -327,6 +327,81 @@ fn exit_commit_uses_prepared_task_current_identity() {
 }
 
 #[test]
+fn idle_pull_admission_uses_coherent_owner_rq_observations() {
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    system
+        .register_idle_thread(
+            cpu0.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system
+        .register_idle_thread(
+            cpu1.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu0.as_mut()).unwrap();
+    system.bring_cpu_online(cpu1.as_mut()).unwrap();
+    let remote = Arc::clone(cpu1.remote());
+    let before = (
+        remote.owner_current_thread_rq_observations(),
+        remote.owner_idle_rq_observations(),
+        remote.owner_runnable_rq_observations(),
+    );
+
+    assert!(!system.request_idle_pull(cpu1.as_mut()).unwrap());
+
+    assert_eq!(
+        (
+            remote.owner_current_thread_rq_observations() - before.0,
+            remote.owner_idle_rq_observations() - before.1,
+            remote.owner_runnable_rq_observations() - before.2,
+        ),
+        (0, 0, 1),
+        "each idle-pull admission check must use one coherent runnable snapshot instead of \
+         separately observing rq->curr and rq->idle",
+    );
+}
+
+#[test]
+fn selected_idle_balance_uses_fixed_idle_identity() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let idle = system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let remote = Arc::clone(cpu.remote());
+    let before = (
+        remote.owner_current_thread_rq_observations(),
+        remote.owner_idle_rq_observations(),
+        remote.owner_runnable_rq_observations(),
+    );
+
+    assert!(system.owner_balance_work_pending(cpu.as_ref().get_ref(), idle.id()));
+    system
+        .service_owner_balance(cpu.as_mut(), idle.id())
+        .unwrap();
+
+    assert_eq!(
+        (
+            remote.owner_current_thread_rq_observations() - before.0,
+            remote.owner_idle_rq_observations() - before.1,
+            remote.owner_runnable_rq_observations() - before.2,
+        ),
+        (0, 0, 1),
+        "an already-selected idle thread must be classified by its fixed identity, while the \
+         nested idle-pull admission uses coherent runnable snapshots",
+    );
+}
+
+#[test]
 fn ordinary_switch_tail_does_not_reopen_the_owner_runqueue() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
