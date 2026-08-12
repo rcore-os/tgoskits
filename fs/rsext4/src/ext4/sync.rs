@@ -20,7 +20,7 @@ impl Ext4FileSystem {
         self.inodetable_cache.flush_all(block_dev)?;
         self.bitmap_cache.flush_all(block_dev)?;
         self.sync_group_descriptors(block_dev)?;
-        self.sync_superblock(block_dev)?;
+        self.sync_superblock_if_dirty(block_dev)?;
         block_dev.flush()?;
         Ok(())
     }
@@ -51,6 +51,7 @@ impl Ext4FileSystem {
         // superblock with s_state = EXT4_VALID_FS through the journal.
         self.superblock.s_state = Self::clean_state(&self.superblock);
         self.superblock.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+        self.mark_superblock_dirty();
 
         self.sync_filesystem_with_observer(block_dev, observer)?;
 
@@ -157,7 +158,19 @@ impl Ext4FileSystem {
         self.superblock.s_free_inodes_count = real_free_inodes as u32;
 
         self.superblock.update_checksum();
-        write_superblock(block_dev, &self.superblock)
+        write_superblock(block_dev, &self.superblock)?;
+        self.superblock_dirty = false;
+        Ok(())
+    }
+
+    fn sync_superblock_if_dirty<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<()> {
+        if self.superblock_dirty {
+            self.sync_superblock(block_dev)?;
+        }
+        Ok(())
     }
 
     /// Marks the filesystem clean and writes the superblock.
@@ -166,6 +179,7 @@ impl Ext4FileSystem {
     /// EXT4_VALID_FS` and skips fsck on the next boot.
     pub fn mark_clean<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         self.superblock.s_state = Self::clean_state(&self.superblock);
+        self.mark_superblock_dirty();
         self.sync_superblock(block_dev)
     }
 }

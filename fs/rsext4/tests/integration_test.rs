@@ -92,6 +92,7 @@ impl rsext4::Clock for TestBlockDevice {
 
 #[derive(Default)]
 struct SyncIoCounters {
+    primary_superblock_writes: AtomicUsize,
     primary_gdt_writes: AtomicUsize,
     flushes: AtomicUsize,
 }
@@ -117,7 +118,12 @@ impl BlockIo for CountingIoDevice {
 
     fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
         // The test device and default mkfs both use 4 KiB blocks, so the
-        // primary group descriptor table starts at device sector 1.
+        // primary superblock shares sector 0 and the GDT starts at sector 1.
+        if sector.raw() == 0 {
+            self.counters
+                .primary_superblock_writes
+                .fetch_add(1, Ordering::SeqCst);
+        }
         if sector.raw() == 1 {
             self.counters
                 .primary_gdt_writes
@@ -343,7 +349,7 @@ fn owned_test_filesystem_with_flush_failure() -> (TestOwnedFilesystem, Arc<Atomi
 }
 
 #[test]
-fn clean_sync_does_not_rewrite_the_group_descriptor_table() {
+fn clean_sync_does_not_rewrite_clean_metadata() {
     let counters = Arc::new(SyncIoCounters::default());
     let device = CountingIoDevice::new(100 * 1024 * 1024, counters.clone());
     let device = format(
@@ -362,10 +368,18 @@ fn clean_sync_does_not_rewrite_the_group_descriptor_table() {
     let mut filesystem =
         Ext4::mount(device, services, MountOptions::read_write()).expect("owned mount failed");
 
+    counters
+        .primary_superblock_writes
+        .store(0, Ordering::SeqCst);
     counters.primary_gdt_writes.store(0, Ordering::SeqCst);
     counters.flushes.store(0, Ordering::SeqCst);
     filesystem.sync().expect("clean sync failed");
 
+    assert_eq!(
+        counters.primary_superblock_writes.load(Ordering::SeqCst),
+        0,
+        "a clean sync must not serialize an unchanged superblock"
+    );
     assert_eq!(
         counters.primary_gdt_writes.load(Ordering::SeqCst),
         0,

@@ -560,6 +560,7 @@ mod tests {
         };
         Ext4FileSystem {
             superblock: sb,
+            superblock_dirty: false,
             group_descs: vec![Ext4GroupDesc {
                 bg_inode_bitmap_lo: 1,
                 bg_inode_table_lo: 2,
@@ -596,6 +597,7 @@ mod tests {
         };
         Ext4FileSystem {
             superblock: sb,
+            superblock_dirty: false,
             group_descs: vec![
                 Ext4GroupDesc {
                     bg_inode_bitmap_lo: 1,

@@ -383,6 +383,9 @@ fn persist_xattrs<B: BlockIo>(
             }
         }
         filesystem.superblock.s_feature_compat |= Ext4Superblock::EXT4_FEATURE_COMPAT_EXT_ATTR;
+        if feature_was_missing {
+            filesystem.mark_superblock_dirty();
+        }
 
         // Materialize every metadata image while the same bounded handle is
         // active. A later filesystem-wide sync must not split one xattr state

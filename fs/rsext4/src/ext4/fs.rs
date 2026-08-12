@@ -7,6 +7,8 @@ use super::*;
 pub struct Ext4FileSystem {
     /// In-memory copy of the primary superblock.
     pub superblock: Ext4Superblock,
+    /// Whether the in-memory primary superblock still needs publication.
+    pub(crate) superblock_dirty: bool,
     /// All loaded block-group descriptors.
     pub group_descs: Vec<Ext4GroupDesc>,
     /// Groups whose in-memory descriptors have not yet been published.
@@ -41,6 +43,7 @@ pub struct Ext4FileSystem {
 /// Operations that change payload bytes still need an ordered-data owner.
 struct MetadataTransactionSnapshot {
     superblock: Ext4Superblock,
+    superblock_dirty: bool,
     group_descs: Vec<Ext4GroupDesc>,
     dirty_group_descs: Vec<bool>,
     bitmap_cache: BitmapCache,
@@ -72,6 +75,7 @@ impl Ext4FileSystem {
     ) -> Ext4Result<T> {
         let snapshot = MetadataTransactionSnapshot {
             superblock: self.superblock,
+            superblock_dirty: self.superblock_dirty,
             group_descs: self.group_descs.clone(),
             dirty_group_descs: self.dirty_group_descs.clone(),
             bitmap_cache: self.bitmap_cache.clone(),
@@ -82,6 +86,7 @@ impl Ext4FileSystem {
             block_dev.with_transaction_handle(credits, |block_dev| operation(self, block_dev));
         if result.is_err() {
             self.superblock = snapshot.superblock;
+            self.superblock_dirty = snapshot.superblock_dirty;
             self.group_descs = snapshot.group_descs;
             self.dirty_group_descs = snapshot.dirty_group_descs;
             self.bitmap_cache = snapshot.bitmap_cache;
@@ -263,7 +268,12 @@ impl Ext4FileSystem {
     pub fn get_group_desc_mut(&mut self, group_idx: BGIndex) -> Option<&mut Ext4GroupDesc> {
         let idx = group_idx.as_usize().ok()?;
         *self.dirty_group_descs.get_mut(idx)? = true;
+        self.superblock_dirty = true;
         self.group_descs.get_mut(idx)
+    }
+
+    pub(crate) fn mark_superblock_dirty(&mut self) {
+        self.superblock_dirty = true;
     }
 
     /// Modifies one inode via the inode-table cache.

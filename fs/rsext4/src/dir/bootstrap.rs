@@ -228,6 +228,7 @@ pub fn create_lost_found_directory<B: BlockIo>(
     fs.set_inode_links_count(block_dev, fs.root_inode, root_new_links)?;
 
     fs.superblock.s_lpf_ino = lost_ino.raw();
+    fs.mark_superblock_dirty();
 
     Ok(())
 }

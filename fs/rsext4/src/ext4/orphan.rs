@@ -92,6 +92,7 @@ impl Ext4FileSystem {
             inode.i_dtime = head.map_or(0, InodeNumber::raw);
         })?;
         self.superblock.s_last_orphan = inode_num.raw();
+        self.mark_superblock_dirty();
         Ok(())
     }
 
@@ -118,6 +119,7 @@ impl Ext4FileSystem {
                     })?;
                 } else {
                     self.superblock.s_last_orphan = next.map_or(0, InodeNumber::raw);
+                    self.mark_superblock_dirty();
                 }
                 self.modify_inode(block_dev, target, |inode| inode.i_dtime = 0)?;
                 return Ok(previous);

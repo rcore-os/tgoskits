@@ -80,6 +80,7 @@ impl Ext4FileSystem {
         self.group_count = self.superblock.checked_block_groups_count()?;
         self.group_descs =
             Self::load_group_descriptors(block_dev, &self.superblock, self.group_count)?;
+        self.dirty_group_descs = ::alloc::vec![false; self.group_descs.len()];
         self.system_zones = if block_validity {
             SystemZoneMap::from_layout(&self.superblock, &self.group_descs)?
         } else {
@@ -106,6 +107,7 @@ impl Ext4FileSystem {
         if !read_only {
             Self::dirty_for_mount(&mut self.superblock);
         }
+        self.superblock_dirty = !read_only;
         self.reset_runtime_from_superblock(block_dev, block_validity)
     }
 
@@ -135,10 +137,12 @@ impl Ext4FileSystem {
 
     fn clear_recovery_state(&mut self) {
         self.superblock.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+        self.mark_superblock_dirty();
     }
 
     fn set_recovery_state(&mut self) {
         self.superblock.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+        self.mark_superblock_dirty();
     }
 
     fn valid_lost_found_hint<B: BlockIo>(
@@ -229,11 +233,14 @@ impl Ext4FileSystem {
         }
 
         let previous_superblock = self.superblock;
+        let previous_superblock_dirty = self.superblock_dirty;
         self.superblock.s_state = (self.superblock.s_state & Ext4Superblock::EXT4_ERROR_FS)
             | Ext4Superblock::EXT4_VALID_FS;
+        self.mark_superblock_dirty();
         self.clear_recovery_state();
         if let Err(error) = self.sync_filesystem(block_dev) {
             self.superblock = previous_superblock;
+            self.superblock_dirty = previous_superblock_dirty;
             return Err(error);
         }
         Ok(())
@@ -262,12 +269,15 @@ impl Ext4FileSystem {
         }
 
         let previous_superblock = self.superblock;
+        let previous_superblock_dirty = self.superblock_dirty;
         Self::dirty_for_mount(&mut self.superblock);
+        self.mark_superblock_dirty();
         if self.superblock.has_journal() {
             self.set_recovery_state();
         }
         if let Err(error) = self.sync_filesystem(block_dev) {
             self.superblock = previous_superblock;
+            self.superblock_dirty = previous_superblock_dirty;
             return Err(error);
         }
         Ok(())
@@ -365,6 +375,7 @@ impl Ext4FileSystem {
 
         let mut fs = Self {
             superblock,
+            superblock_dirty: !options.readonly,
             dirty_group_descs: ::alloc::vec![false; group_descs.len()],
             group_descs,
             block_allocator,
@@ -536,6 +547,7 @@ impl Ext4FileSystem {
                 match get_file_inode(&mut fs, block_dev, "/lost+found") {
                     Ok(Some((ino, inode))) if inode.is_dir() => {
                         fs.superblock.s_lpf_ino = ino.raw();
+                        fs.mark_superblock_dirty();
                         if !options.readonly {
                             fs.sync_superblock(block_dev)?;
                         }

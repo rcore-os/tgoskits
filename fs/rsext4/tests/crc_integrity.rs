@@ -560,6 +560,12 @@ fn unclean_remount_finishes_linked_extent_truncate_from_classic_orphan() {
         })
         .expect("commit shortened inode size");
     first_fs.superblock.s_last_orphan = inode_num.raw();
+    // This test deliberately constructs an interrupted on-disk transition by
+    // editing the inspection-visible superblock copy. Publish that explicit
+    // edit before the ordinary dirty-cache sync.
+    first_fs
+        .sync_superblock(&mut first_dev)
+        .expect("persist classic orphan head");
     first_fs
         .sync_filesystem(&mut first_dev)
         .expect("dirty sync failed");
