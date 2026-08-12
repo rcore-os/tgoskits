@@ -203,6 +203,13 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
         let last = tx.get_last_avail_idx();
         let pending = avail_idx.wrapping_sub(last).min(tx.size);
         for _ in 0..pending {
+            if tx.is_faulted() {
+                warn!(
+                    "virtio-net TX queue is faulted; stop draining until the guest resets the \
+                     device"
+                );
+                break;
+            }
             let head = match tx.pop_available_head_with_memory(memory) {
                 Ok(Some(h)) => h,
                 Ok(None) => break,
@@ -304,6 +311,14 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
 
         // Peek before consuming so capacity/chain problems leave the ring intact.
         let last = rx.get_last_avail_idx();
+        if rx.is_faulted() {
+            // A faulted RX queue must not be served; the guest re-programs
+            // the queue after resetting the device.
+            warn!(
+                "virtio-net RX queue is faulted; dropping frames until the guest resets the device"
+            );
+            return Err(NetError::Queue(axvirtio_common::VirtioError::QueueFaulted));
+        }
         let avail_idx = rx
             .read_avail_idx_with_memory(memory)
             .map_err(NetError::from)?;

@@ -295,7 +295,14 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             vc::VIRTIO_MMIO_QUEUE_READY => {
                 let sel = *self.queue_sel.lock_irqsave();
                 if let Some(q) = self.queues.lock_irqsave().get_mut(sel as usize) {
-                    q.set_ready(val != 0);
+                    let layout_ok = if q.is_configured() {
+                        let accessor = q.accessor().clone();
+                        let mut memory = crate::AddressSpaceMemory::new(&*accessor);
+                        q.validate_layout_with_memory(&mut memory).is_ok()
+                    } else {
+                        false
+                    };
+                    q.set_ready(val != 0 && layout_ok);
                 }
             }
             vc::VIRTIO_MMIO_QUEUE_NOTIFY => return Ok(MmioWriteAction::QueueNotified(val as u16)),

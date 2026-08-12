@@ -12,16 +12,36 @@ use axvm_types::{AccessWidth, GuestPhysAddr};
 const BASE: usize = 0x0a00_0000;
 const LEN: usize = 0x200;
 
+/// Mock guest memory: a flat backing buffer where guest physical address `gpa`
+/// maps to `buf[gpa..]` for `gpa < 0x10000`. The accessor returns real host
+/// pointers, so the memory-based ring layout check and the trait defaults work
+/// against the same buffer.
 #[derive(Clone)]
-struct Mem;
+struct Mem {
+    buf: std::sync::Arc<Vec<u8>>,
+}
 impl GuestMemoryAccessor for Mem {
-    fn translate_and_get_limit(&self, _guest_addr: GuestPhysAddr) -> Option<(PhysAddr, usize)> {
-        None
+    fn translate_and_get_limit(&self, guest_addr: GuestPhysAddr) -> Option<(PhysAddr, usize)> {
+        let off = guest_addr.as_usize();
+        if off < self.buf.len() {
+            Some((
+                PhysAddr::from(self.buf.as_ptr() as usize + off),
+                self.buf.len() - off,
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+fn mem() -> Mem {
+    Mem {
+        buf: std::sync::Arc::new(vec![0u8; 0x1_0000]),
     }
 }
 
 fn state(device_features: u64) -> VirtioMmioState<Mem> {
-    let accessor = Arc::new(Mem);
+    let accessor = Arc::new(mem());
     let queue = VirtioQueue::new(0, vc::DEFAULT_QUEUE_SIZE, accessor);
     VirtioMmioState::new(
         GuestPhysAddr::from(BASE),
@@ -31,6 +51,30 @@ fn state(device_features: u64) -> VirtioMmioState<Mem> {
         device_features,
         vec![queue],
     )
+}
+
+fn bounded_state(device_features: u64) -> VirtioMmioState<Mem> {
+    // Same mock: backing covers `[0, 0x10000)`, so a used ring at 0xfff8
+    // crosses the end of the guest address space.
+    state(device_features)
+}
+
+fn bounded_rd(s: &VirtioMmioState<Mem>, reg: usize) -> u32 {
+    match s
+        .mmio_read(GuestPhysAddr::from(BASE + reg), AccessWidth::Dword)
+        .unwrap()
+    {
+        MmioReadOutcome::Standard(v) => v,
+        MmioReadOutcome::DeviceConfig { .. } => panic!("expected standard register"),
+    }
+}
+fn bounded_wr(s: &VirtioMmioState<Mem>, reg: usize, val: u32) -> MmioWriteAction {
+    s.mmio_write(
+        GuestPhysAddr::from(BASE + reg),
+        AccessWidth::Dword,
+        val as usize,
+    )
+    .unwrap()
 }
 
 fn rd(s: &VirtioMmioState<Mem>, reg: usize) -> u32 {
@@ -120,6 +164,52 @@ fn status_zero_resets() {
         0,
         "reset must clear driver features"
     );
+}
+
+#[test]
+fn queue_ready_rejected_when_ring_outside_guest_address_space() {
+    let s = bounded_state(0);
+    bounded_wr(&s, vc::VIRTIO_MMIO_QUEUE_SEL, 0);
+    bounded_wr(&s, vc::VIRTIO_MMIO_QUEUE_NUM, 4);
+    bounded_wr(&s, vc::VIRTIO_MMIO_QUEUE_DESC_LOW, 0x1000);
+    bounded_wr(&s, vc::VIRTIO_MMIO_QUEUE_AVAIL_LOW, 0x2000);
+    bounded_wr(&s, vc::VIRTIO_MMIO_QUEUE_USED_LOW, 0xfff8); // tail beyond 0x10000
+    bounded_wr(&s, vc::VIRTIO_MMIO_QUEUE_READY, 1);
+    assert_eq!(
+        bounded_rd(&s, vc::VIRTIO_MMIO_QUEUE_READY),
+        0,
+        "a ring crossing the guest address-space boundary must not become ready"
+    );
+
+    // Re-programming a fully in-space layout lets the queue become ready.
+    bounded_wr(&s, vc::VIRTIO_MMIO_QUEUE_USED_LOW, 0xf000);
+    bounded_wr(&s, vc::VIRTIO_MMIO_QUEUE_READY, 1);
+    assert_eq!(bounded_rd(&s, vc::VIRTIO_MMIO_QUEUE_READY), 1);
+}
+
+#[test]
+fn queue_ready_rejected_on_malformed_ring_layout() {
+    let s = state(0);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_SEL, 0);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_NUM, 4);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_DESC_LOW, 0x1000);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_AVAIL_LOW, 0x2000);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_USED_LOW, 0x3003); // not 4-byte aligned
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_READY, 1);
+    assert_eq!(
+        rd(&s, vc::VIRTIO_MMIO_QUEUE_READY),
+        0,
+        "ready must not become effective on a malformed layout"
+    );
+
+    // Re-programming a valid layout lets the same queue become ready.
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_USED_LOW, 0x3000);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_READY, 1);
+    assert_eq!(rd(&s, vc::VIRTIO_MMIO_QUEUE_READY), 1);
+
+    // Writing ready=0 clears it again.
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_READY, 0);
+    assert_eq!(rd(&s, vc::VIRTIO_MMIO_QUEUE_READY), 0);
 }
 
 #[test]

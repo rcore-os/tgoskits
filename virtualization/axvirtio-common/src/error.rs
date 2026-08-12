@@ -7,7 +7,7 @@
 pub enum VirtioError {
     /// Invalid queue configuration
     InvalidQueue,
-    /// Queue not ready for operation
+    /// Queue not ready for operation (not configured yet)
     QueueNotReady,
     /// Invalid descriptor
     InvalidDescriptor,
@@ -37,6 +37,19 @@ pub enum VirtioError {
     InvalidRegister,
     /// Invalid address or address translation failed
     InvalidAddress,
+    /// One or more virtqueue rings are misaligned (desc 16B, avail 2B, used 4B)
+    RingMisaligned,
+    /// The virtqueue ring regions overlap each other
+    RingOverlap,
+    /// The virtqueue ring layout is invalid (zero address, region overflow, or
+    /// a ring region lies outside the guest address space)
+    InvalidRingLayout,
+    /// The queue is faulted after a runtime ring/descriptor failure and must be
+    /// reset before further use. Unlike [`QueueNotReady`](Self::QueueNotReady),
+    /// which is a normal pre-configuration state, a faulted queue has served
+    /// requests and hit a runtime failure; it rejects all queue operations and
+    /// writes no guest memory until `reset`.
+    QueueFaulted,
     /// Resource not found
     NotFound,
     /// The operation is valid but cannot complete until asynchronous backend

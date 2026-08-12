@@ -368,7 +368,7 @@ impl DescriptorTable {
             current = desc.next;
             // A chain referencing more than `size` descriptors is a cycle or
             // corruption. Bounding the walk also guarantees termination.
-            if descriptors.len() >= self.size as usize {
+            if descriptors.len() > self.size as usize {
                 return Err(VirtioError::InvalidDescriptor);
             }
         }
