@@ -163,6 +163,15 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
    fallible state afterward.
 6. Before the OS per-CPU register is initialized on a secondary CPU, use cached controller fast paths for interrupt and timer setup through `somehal::irq::init_secondary_boot_irqs(cpu_id)`; do not take `rdrive`, IRQ-domain, or generic route locks from that window.
 7. Debug secondary failure with physical-address markers first; serial logging may not work until the secondary has its own mapping and trap state.
+8. Keep architecture wake transport separate from generic CPU bring-up synchronization. The
+   architecture hook only delivers PSCI/SBI/mailbox or INIT/SIPI; a shutdown-lifetime per-CPU
+   state owned by someboot publishes `DEAD -> KICKED -> ALIVE -> SHOULD_ONLINE`. The secondary
+   reports `ALIVE` after reaching the common someboot entry, then waits for the control CPU
+   release before entering the OS. Keep this mutable state outside the copyable trampoline
+   metadata and separate from the later scheduler-online publication. Do not replace it with a
+   global last-CPU ID, an architecture-only completion, timeout retry, or scheduler-online flag.
+   On x86, encode SIPI as Linux `APIC_DM_STARTUP` (`0x600`); INIT level bits do not belong to SIPI.
+   Keep this contract synchronized with `book/design/someboot-secondary-cpu-startup.md`.
 
 ## Validation Ladder
 

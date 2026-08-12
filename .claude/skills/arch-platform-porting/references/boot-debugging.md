@@ -182,6 +182,11 @@ Use this order when auditing an early boot port:
 10. Runtime CPU areas and secondary boot stacks are dynamically allocated; every typed area is
     initialized once, frozen, and bound through the architecture CPU-local register contract.
 11. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
+12. The architecture hook ends after delivering its wake transport. The common someboot owner
+    publishes one per-CPU `KICKED` state before that hook, waits for the secondary to report
+    `ALIVE` at the common entry, and then releases exactly that CPU as `SHOULD_ONLINE`. Keep this
+    handshake outside immutable trampoline metadata and separate from the later OS scheduler,
+    IRQ, and timer online publication. See `book/design/someboot-secondary-cpu-startup.md`.
 
 ## RISC-V FDT SMP Notes
 
@@ -343,7 +348,7 @@ Important details:
 | Immediate reset after MMU enable | wrong page table root, missing identity/current mapping, bad barrier/TLB flush, invalid jump target |
 | High-half fetch fault | kernel high map, relocation offset, symbol address basis, direct-map window |
 | TLB refill recursion | TLB refill vector address, stack mapping, refill handler mapping, CSR ordering |
-| Secondary CPU silent | `cpu_on` argument, cache flush, stack, per-CPU base, trap setup, logical CPU ID mapping |
+| Secondary CPU silent | per-CPU `KICKED/ALIVE/SHOULD_ONLINE` state, architecture wake delivery, `cpu_on` argument, cache flush, stack, per-CPU base, trap setup, logical CPU ID mapping; on x86 verify SIPI is `APIC_DM_STARTUP` (`0x600`) rather than INIT level encoding |
 | ArceOS works but Starry fails | rootfs staging, std/musl ABI, console/input feature, tty assumptions, CPR sizing |
 | Starry shell works but grouped tests fail | generated runner path, copied assets, success regex, `shell_init_cmd` versus `test_commands` |
 | AArch64 Axvisor stops at first dynamic MMIO read | missing `ax-cpu/arm-el2`, inactive EL1 page-table root, stale `TTBR0_EL2` boot table |
