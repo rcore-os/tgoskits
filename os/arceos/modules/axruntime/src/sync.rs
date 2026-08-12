@@ -10,31 +10,58 @@ use core::{
 pub use ax_task::sync::api::*;
 
 fn context_preempt_enter() -> usize {
-    crate::sync_context::preempt_enter()
+    #[cfg(feature = "multitask")]
+    {
+        usize::from(crate::guard::enter_lock_preempt())
+    }
+    #[cfg(not(feature = "multitask"))]
+    {
+        0
+    }
 }
 
 unsafe fn context_preempt_exit(state: usize) {
-    unsafe { crate::sync_context::preempt_exit(state) };
+    if state == 0 {
+        return;
+    }
+    #[cfg(feature = "multitask")]
+    crate::guard::exit_preempt();
+    #[cfg(not(feature = "multitask"))]
+    unreachable!("a uniprocessor runtime cannot own a preemption token");
 }
 
 unsafe fn context_preempt_exit_irq_return(state: usize) {
-    unsafe { crate::sync_context::preempt_exit_irq_return(state) };
+    if state == 0 {
+        return;
+    }
+    #[cfg(feature = "multitask")]
+    crate::guard::exit_preempt_from_irq_return();
+    #[cfg(not(feature = "multitask"))]
+    unreachable!("a uniprocessor runtime cannot own an IRQ-return preemption token");
 }
 
 fn context_irq_save_and_disable() -> usize {
-    crate::sync_context::irq_save_and_disable()
+    let was_enabled = ax_hal::asm::irqs_enabled();
+    ax_hal::asm::disable_irqs();
+    usize::from(was_enabled)
 }
 
 unsafe fn context_irq_restore(state: usize) {
-    unsafe { crate::sync_context::irq_restore(state) };
+    if state != 0 {
+        ax_hal::asm::enable_irqs();
+    } else {
+        ax_hal::asm::disable_irqs();
+    }
 }
 
 fn context_hardirq_enter() {
-    crate::sync_context::hardirq_enter();
+    #[cfg(feature = "multitask")]
+    crate::irq_time::enter();
 }
 
 fn context_hardirq_exit() {
-    crate::sync_context::hardirq_exit();
+    #[cfg(feature = "multitask")]
+    crate::irq_time::exit();
 }
 
 fn context_operations() -> ax_task::sync::bridge::ContextOperations {

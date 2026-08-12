@@ -40,10 +40,6 @@ struct ArceOsTaskRuntime;
 impl_task_runtime! {
     impl TaskRuntime for ArceOsTaskRuntime {
         unsafe fn task_system_handle() -> TaskSystemHandle {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            return crate::host::task_system_handle();
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             task_system().map_or(TaskSystemHandle::NONE, |system| {
                 // SAFETY: TASK_SYSTEM owns this pinned allocation through
                 // shutdown and exposes it only through shared scheduler APIs.
@@ -63,10 +59,6 @@ impl_task_runtime! {
         }
 
         unsafe fn current_cpu_remote_handle() -> CpuRemoteHandle {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            return crate::host::current_cpu_remote_handle();
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             // SAFETY: the ax-task caller keeps the scheduler-owned current
             // thread fixed. Bootstrap cached this CPU's Arc-backed endpoint
             // before online publication and retains its TaskSystem owner.
@@ -74,18 +66,10 @@ impl_task_runtime! {
         }
 
         fn current_thread_publication() -> CurrentThreadPublication {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            return crate::host::current_thread_publication();
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             scheduler_current_thread_publication()
         }
 
         unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            return crate::host::cpu_remote_handle(cpu);
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             cpu_remote(cpu).map_or(CpuRemoteHandle::NONE, |cpu| {
                 // SAFETY: TaskSystem owns this Arc-backed CpuRemote endpoint
                 // through shutdown and the lookup preserves its CPU identity.
@@ -96,40 +80,20 @@ impl_task_runtime! {
         }
 
         unsafe fn current_cpu_id() -> RuntimeCpuId {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            {
-                crate::host::current_cpu_id()
-            }
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-            {
-                let cpu = u32::try_from(unsafe { ax_hal::percpu::scheduler_current_cpu_id() })
-                    .expect("logical CPU ID must fit the TaskRuntime ABI");
-                RuntimeCpuId::new(cpu)
-            }
+            let cpu = u32::try_from(unsafe { ax_hal::percpu::scheduler_current_cpu_id() })
+                .expect("logical CPU ID must fit the TaskRuntime ABI");
+            RuntimeCpuId::new(cpu)
         }
 
         fn prepare_cpu_online(cpu: RuntimeCpuId) -> RuntimeStatus {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            {
-                return if cpu == crate::host::current_cpu_id() {
-                    RuntimeStatus::Success
-                } else {
-                    RuntimeStatus::InvalidArgument
-                };
+            // SAFETY: this hook runs on the IRQ-excluded owner CPU before
+            // scheduler publication.
+            if cpu != unsafe { Self::current_cpu_id() } {
+                return RuntimeStatus::InvalidArgument;
             }
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-            {
-                // SAFETY: this hook runs on the IRQ-excluded owner CPU before
-                // scheduler publication.
-                if cpu != unsafe { Self::current_cpu_id() } {
-                    return RuntimeStatus::InvalidArgument;
-                }
-                #[cfg(feature = "irq")]
-                crate::clock_event_runtime::init_timer();
-                RuntimeStatus::Success
-            }
+            #[cfg(feature = "irq")]
+            crate::clock_event_runtime::init_timer();
+            RuntimeStatus::Success
         }
 
         fn prepare_cpu_offline(cpu: RuntimeCpuId) -> RuntimeStatus {
@@ -145,26 +109,14 @@ impl_task_runtime! {
         }
 
         fn local_irq_save_and_disable() -> LocalIrqState {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            {
-                crate::host::local_irq_save_and_disable()
-            }
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-            {
-                let was_enabled = ax_hal::asm::irqs_enabled();
-                ax_hal::asm::disable_irqs();
-                // SAFETY: the provider restores only the boolean state encoded by
-                // this implementation's matching restore operation.
-                unsafe { LocalIrqState::from_raw(usize::from(was_enabled)) }
-            }
+            let was_enabled = ax_hal::asm::irqs_enabled();
+            ax_hal::asm::disable_irqs();
+            // SAFETY: the provider restores only the boolean state encoded by
+            // this implementation's matching restore operation.
+            unsafe { LocalIrqState::from_raw(usize::from(was_enabled)) }
         }
 
         unsafe fn local_irq_restore(state: LocalIrqState) {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            return unsafe { crate::host::local_irq_restore(state) };
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             if state.into_raw() != 0 {
                 ax_hal::asm::enable_irqs();
             } else {
@@ -173,22 +125,12 @@ impl_task_runtime! {
         }
 
         fn irq_guard_enter() -> IrqGuardToken {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            {
-                crate::host::irq_guard_enter()
-            }
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                test
-            ))]
+            #[cfg(test)]
             {
                 // SAFETY: test mode models one balanced runtime IRQ token.
                 unsafe { IrqGuardToken::from_raw(1) }
             }
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                not(test)
-            ))]
+            #[cfg(not(test))]
             {
                 crate::guard::enter_irq();
                 // SAFETY: enter_irq established the matching live guard state.
@@ -197,34 +139,17 @@ impl_task_runtime! {
         }
 
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            return unsafe { crate::host::irq_guard_exit(_token) };
-
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                not(test)
-            ))]
+            #[cfg(not(test))]
             crate::guard::exit_irq("task runtime");
         }
 
         fn preempt_guard_enter() -> PreemptGuardToken {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            {
-                crate::host::preempt_guard_enter()
-            }
-
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                test
-            ))]
+            #[cfg(test)]
             {
                 // SAFETY: test mode models one balanced runtime preemption token.
                 unsafe { PreemptGuardToken::from_raw(1) }
             }
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                not(test)
-            ))]
+            #[cfg(not(test))]
             {
                 if crate::guard::enter_lock_preempt() {
                     // SAFETY: enter_lock_preempt established one matching live depth.
@@ -236,56 +161,30 @@ impl_task_runtime! {
         }
 
         unsafe fn preempt_guard_exit(token: PreemptGuardToken) {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            return unsafe { crate::host::preempt_guard_exit(token) };
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             assert!(
                 !token.is_none(),
                 "inherited owner scope passed to ordinary preemption exit"
             );
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                not(test)
-            ))]
+            #[cfg(not(test))]
             crate::guard::exit_preempt();
         }
 
         unsafe fn preempt_guard_exit_irq_return(token: PreemptGuardToken) {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            return unsafe { crate::host::preempt_guard_exit(token) };
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             assert!(
                 !token.is_none(),
                 "inherited owner scope passed to IRQ-return preemption exit"
             );
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                not(test)
-            ))]
+            #[cfg(not(test))]
             crate::guard::exit_preempt_from_irq_return();
         }
 
         fn hardirq_enter() {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            crate::host::hardirq_enter();
-
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                not(test)
-            ))]
+            #[cfg(not(test))]
             crate::irq_time::enter();
         }
 
         fn hardirq_exit() {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            crate::host::hardirq_exit();
-
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                not(test)
-            ))]
+            #[cfg(not(test))]
             crate::irq_time::exit();
         }
 
@@ -322,31 +221,15 @@ impl_task_runtime! {
         }
 
         fn in_hard_irq() -> bool {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            {
-                crate::host::in_hardirq()
-            }
-
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                test
-            ))]
+            #[cfg(test)]
             {
                 false
             }
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                not(test),
-                feature = "irq"
-            ))]
+            #[cfg(all(not(test), feature = "irq"))]
             {
                 ax_hal::irq::in_irq_context()
             }
-            #[cfg(all(
-                not(all(feature = "host-test", not(target_os = "none"))),
-                not(test),
-                not(feature = "irq")
-            ))]
+            #[cfg(all(not(test), not(feature = "irq")))]
             {
                 false
             }
@@ -355,59 +238,32 @@ impl_task_runtime! {
         fn validate_schedule_context(
             origin: ax_task::runtime::RuntimeScheduleOrigin,
         ) -> RuntimeStatus {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            {
-                let _ = origin;
-                crate::host::validate_schedule_context()
-            }
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             crate::guard::validate_schedule_context(origin)
         }
 
         fn validate_owner_cpu_context() -> RuntimeStatus {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            return crate::host::validate_owner_cpu_context();
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             crate::guard::validate_owner_cpu_context()
         }
 
         fn monotonic_now() -> ax_task::runtime::MonotonicInstant {
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            let now_ns = crate::host::clock_nanos();
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-            let now_ns = ax_hal::time::monotonic_time_nanos();
-
-            ax_task::runtime::MonotonicInstant::from_nanos(now_ns)
-                .expect("platform monotonic clock exceeded the signed ktime domain")
+            ax_task::runtime::MonotonicInstant::from_nanos(
+                ax_hal::time::monotonic_time_nanos(),
+            )
+            .expect("platform monotonic clock exceeded the signed ktime domain")
         }
 
         fn rq_clock_sample(cpu: RuntimeCpuId) -> ax_task::runtime::RqClockSample {
             let cpu_id = cpu.as_u32() as usize;
-            #[cfg(all(feature = "host-test", not(target_os = "none")))]
-            {
-                assert_eq!(cpu_id, 0, "host scheduler has only CPU zero");
-                return ax_task::runtime::RqClockSample::new(
-                    ax_task::SchedulerTimestamp::from_nanos(crate::host::clock_nanos()),
-                    0,
-                );
-            }
-
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
             // SAFETY: ax-task holds the target runqueue IRQ-save lock, which
             // pins the calling CPU for this complete remote-clock coupling.
             let clock_ns = unsafe { ax_hal::time::scheduler_clock_source(cpu_id) }
                 .unwrap_or_else(|error| {
                     panic!("scheduler clock source for CPU {cpu_id} is unavailable: {error}")
                 });
-            #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
-            {
-                ax_task::runtime::RqClockSample::new(
-                    ax_task::SchedulerTimestamp::from_nanos(clock_ns),
-                    crate::irq_time::total_for_cpu(cpu_id),
-                )
-            }
+            ax_task::runtime::RqClockSample::new(
+                ax_task::SchedulerTimestamp::from_nanos(clock_ns),
+                crate::irq_time::total_for_cpu(cpu_id),
+            )
         }
 
         fn publish_scheduler_deadline(update: ax_task::runtime::SchedulerDeadlineUpdate) {

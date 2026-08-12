@@ -360,7 +360,6 @@ pub(super) fn bind_runtime_context_thread(binding: ContextThreadBinding) -> Runt
 }
 
 /// Reads the immutable scheduler publication owned by the current task context.
-#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 pub(super) fn scheduler_current_thread_publication() -> CurrentThreadPublication {
     ax_hal::percpu::with_scheduler_current_thread(|header| {
         let Some(publication) = header.runtime_thread_cookie() else {

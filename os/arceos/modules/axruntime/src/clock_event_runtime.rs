@@ -223,13 +223,7 @@ pub(crate) fn publish_local_scheduler_deadline(update: ax_task::runtime::Schedul
     });
 }
 
-#[cfg(all(
-    feature = "irq",
-    any(
-        not(feature = "multitask"),
-        not(all(feature = "host-test", not(target_os = "none")))
-    )
-))]
+#[cfg(feature = "irq")]
 pub(crate) fn init_timer() {
     run_clock_event_transaction(
         crate::sync::IrqSaveGuard::new,
