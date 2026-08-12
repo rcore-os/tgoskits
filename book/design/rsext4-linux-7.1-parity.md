@@ -831,3 +831,27 @@ sync median 回退约 25.9%，但 sync latency 继续按 p95 门槛判定。相�
 均为 `powersave`，因此这里不把波动改善归因于本次非热路径改动；20 个样本全部保留，
 包括 49.147 us 的 sync 尾样本。最终性能收敛仍必须在可固定 governor 的同机环境
 重做 dev/final 全 workload A/B，并新增 legacy indirect truncate/reap 专项 workload。
+
+### 7.28 legacy indirect truncate restart 检查点
+
+采集时间：2026-08-12；被测实现 commit 为
+`07e8243e9f5d253c2718853743a62e0fc032d1db`，固定 CPU 2，memory backend、
+4 KiB filesystem block、`metadata_csum+64bit+journal` 与 20 MiB sequential
+workload 均保持冻结配置。本检查点实现超 ring legacy indirect truncate/reap restart，
+但冻结 workload 不创建 legacy mapping，也不执行 truncate/reap；因此只能观测共享
+write/read/sync 热路径，不能作为 restart 路径的因果性能结论。
+
+正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
+`book/design/data/rsext4-perf/2026-08-12-legacy-truncate-restart.csv`：
+
+```text
+RSEXT4_BENCH_SUMMARY commit=07e8243e9f5d253c2718853743a62e0fc032d1db arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=8183734 write_p95_ns=8533919 read_median_ns=10598332 read_p95_ns=12150067 sync_median_ns=44336 sync_p95_ns=49554
+```
+
+相对 dev 基线，write median/p95 分别回退约 19.9%/16.3%，read median/p95
+分别回退约 46.8%/43.3%，sync median/p95 分别回退约 71.7%/28.2%，全部超过
+冻结硬门槛，本检查点判红。采样时 CPU governor 为 `powersave`，系统 load average
+为 8.13，另一个无关 release `rustc` 进程占用约 8 个逻辑核；这说明本轮同机条件
+不受控，但不能把门槛改判为绿。20 个样本全部保留，没有选择性复测或剔除。
+最终性能收敛必须在受控系统负载下同时重跑 dev 与最终实现，并增加 legacy indirect
+truncate/reap 专项 workload；只有同一组 A/B 数据满足门槛后才能清除该红项。
