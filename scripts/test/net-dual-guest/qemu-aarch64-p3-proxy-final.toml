@@ -1,0 +1,26 @@
+# P3 final Linux + Zephyr topology. The proxy injects a bounded data-plane
+# fault between the two real QEMU socket netdevs.
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-global", "virtio-mmio.force-legacy=false",
+  "-dtb", "${workspace}/tmp/net-dual-guest/qemu-p2-host-carved.dtb",
+  "-smp", "1",
+  "-m", "8g",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append", "root=/dev/nvme0n1 rw init=/init",
+  "-snapshot",
+  "-qmp", "unix:${workspace}/tmp/net-dual-guest/qmp-p3-final.sock,server,nowait",
+  "-netdev", "socket,id=net-linux,connect=127.0.0.1:12731",
+  "-device", "virtio-net-device,netdev=net-linux,mac=52:54:00:12:34:01",
+  "-object", "filter-dump,id=fd-linux,netdev=net-linux,file=${workspace}/tmp/net-dual-guest/linux-p3-final.pcap",
+  "-netdev", "socket,id=net-rtos,connect=127.0.0.1:12732",
+  "-device", "virtio-net-device,netdev=net-rtos,mac=52:54:00:12:34:02",
+  "-object", "filter-dump,id=fd-rtos,netdev=net-rtos,file=${workspace}/tmp/net-dual-guest/rtos-p3-final.pcap",
+]
+fail_regex = ["TASK2_ERROR=", "(?i)panic"]
+success_regex = ["TASK2_STATUS_RECEIVED"]
+to_bin = true
+uefi = false

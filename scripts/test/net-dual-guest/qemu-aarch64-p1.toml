@@ -1,0 +1,26 @@
+# P1: one virtio-net-pci endpoint and one pcap.
+# This file is only the outer-QEMU network input; the AxVisor VM config must
+# explicitly select the same endpoint before this is a passthrough proof.
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3,dumpdtb=${workspace}/tmp/net-dual-guest/qemu-p1-host.dtb",
+  # P1 exercises one Guest/vCPU. Keeping the host at one CPU removes unrelated
+  # SMP bring-up and task-1 interrupt-routing variables from this acceptance run.
+  "-smp", "1",
+  "-m", "8g",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append", "root=/dev/nvme0n1 rw init=/bin/sh",
+  "-qmp", "unix:${workspace}/tmp/net-dual-guest/qmp-p1.sock,server,nowait",
+  # The host responder binds UDP/4242 directly.  hostfwd would feed the
+  # controller's datagram back into the same Guest and invalidate the
+  # independent-peer proof.
+  "-netdev", "user,id=net-p1,net=10.0.42.0/24",
+  "-device", "virtio-net-pci,netdev=net-p1,addr=0x4,mac=52:54:00:12:34:02",
+  "-object", "filter-dump,id=fd-p1,netdev=net-p1,file=${workspace}/tmp/net-dual-guest/p1.pcap",
+]
+fail_regex = ["TASK2_ERROR=", "(?i)panic"]
+success_regex = ["TASK2_STATUS_RECEIVED"]
+to_bin = true
+uefi = false

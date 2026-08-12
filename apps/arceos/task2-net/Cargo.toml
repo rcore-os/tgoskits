@@ -1,0 +1,24 @@
+[package]
+name = "arceos-task2-net"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Task-2 reliable UDP endpoint for ArceOS and host protocol tests"
+
+[features]
+default = ["arceos"]
+arceos = [
+    "dep:ax-errno",
+    "dep:ax-net",
+    "dep:ax-std",
+    "ax-std/arceos",
+    "ax-std/multitask",
+    "ax-std/net",
+]
+
+[dependencies]
+ax-errno = { workspace = true, optional = true }
+ax-net = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true, features = ["default"] }
+task2-net-protocol.workspace = true

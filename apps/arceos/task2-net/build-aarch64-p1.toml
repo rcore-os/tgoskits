@@ -1,0 +1,9 @@
+features = ["net", "ax-driver/virtio-net"]
+log = "Info"
+max_cpu_num = 1
+
+[env]
+TASK2_ROLE = "controller"
+TASK2_LOCAL_IP = "10.0.42.15"
+TASK2_PEER_IP = "10.0.42.2"
+TASK2_SEND_P1_PROBE = "enabled"

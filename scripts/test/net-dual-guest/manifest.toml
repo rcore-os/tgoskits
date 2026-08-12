@@ -1,0 +1,55 @@
+# Task-2 network evidence manifest. Values are intentionally explicit so a
+# pcap result cannot be detached from the QEMU topology that produced it.
+
+[protocol]
+version = 1
+udp_port = 4242
+session_id = 1414677042 # 0x54525432
+
+[evidence]
+host_dtb = "tmp/net-dual-guest/qemu-p2-host-carved.dtb"
+host_dtb_sha256 = "b37bbb685ce20c29100f0f8fad1153b2802d33d442ba18ab9eec015941f5da19"
+
+[linux]
+vm_id = 1
+mac = "52:54:00:12:34:01"
+ip = "10.0.42.15"
+transport = "virtio-mmio"
+fdt_path = "/virtio_mmio@a003e00"
+device_set = "virtio_mmio@a003e00"
+host_hwirq = 47
+guest_irq = 79
+pci_slot = "n/a"
+configured_gpa_start = "0x80000000"
+configured_memory_size = "0x20000000"
+effective_gpa_start = "0x80000000"
+effective_hpa_start = "0x80000000"
+effective_memory_size = "0x20000000"
+mmio_gpa = "0x0a003e00"
+mmio_hpa = "0x0a003e00"
+mmio_size = "0x200"
+dma_address_space = "gpa=hpa"
+dma_evidence = "identity-map"
+pcap = "tmp/net-dual-guest/linux.pcap"
+
+[rtos]
+vm_id = 2
+mac = "52:54:00:12:34:02"
+ip = "10.0.42.2"
+transport = "virtio-mmio"
+fdt_path = "/virtio_mmio@a003c00"
+device_set = "virtio_mmio@a003c00"
+host_hwirq = 46
+guest_irq = 78
+pci_slot = "n/a"
+configured_gpa_start = "0xa0000000"
+configured_memory_size = "0x20000000"
+effective_gpa_start = "0xa0000000"
+effective_hpa_start = "0xa0000000"
+effective_memory_size = "0x20000000"
+mmio_gpa = "0x0a003c00"
+mmio_hpa = "0x0a003c00"
+mmio_size = "0x200"
+dma_address_space = "gpa=hpa"
+dma_evidence = "identity-map"
+pcap = "tmp/net-dual-guest/rtos.pcap"

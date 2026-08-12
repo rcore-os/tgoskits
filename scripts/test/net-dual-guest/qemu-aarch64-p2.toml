@@ -1,0 +1,35 @@
+# P2: two independent virtio-MMIO endpoints joined by a point-to-point socket.
+# Run prepare-p2-host-dtb.sh first; the carved DTB is a hard prerequisite for
+# MAP_RESERVED and is intentionally supplied with -dtb below.
+# pair. With QEMU's default virtio-mmio bus allocation, the two explicitly
+# attached devices occupy `/virtio_mmio@a003e00` (SPI 47) and
+# `/virtio_mmio@a003c00` (SPI 46); the two VM configs select those child paths
+# independently. This mapping was confirmed with QMP `info qtree`.
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-global", "virtio-mmio.force-legacy=false",
+  "-dtb", "${workspace}/tmp/net-dual-guest/qemu-p2-host-carved.dtb",
+  "-smp", "1",
+  "-m", "8g",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append", "root=/dev/nvme0n1 rw init=/init",
+  "-snapshot",
+  "-qmp", "unix:${workspace}/tmp/net-dual-guest/qmp.sock,server,nowait",
+  # QEMU allocates the first virtio-mmio endpoint at a003e00 and the second
+  # at a003c00. Keep that order aligned with manifest.toml and the two VM
+  # configs: Linux/controller owns a003e00 and listens for the socket peer;
+  # RTOS/managed owns a003c00 and connects to it.
+  "-netdev", "socket,id=net-linux,listen=127.0.0.1:12721",
+  "-device", "virtio-net-device,netdev=net-linux,mac=52:54:00:12:34:01",
+  "-object", "filter-dump,id=fd-linux,netdev=net-linux,file=${workspace}/tmp/net-dual-guest/linux.pcap",
+  "-netdev", "socket,id=net-rtos,connect=127.0.0.1:12721",
+  "-device", "virtio-net-device,netdev=net-rtos,mac=52:54:00:12:34:02",
+  "-object", "filter-dump,id=fd-rtos,netdev=net-rtos,file=${workspace}/tmp/net-dual-guest/rtos.pcap",
+]
+fail_regex = ["TASK2_ERROR=", "(?i)panic"]
+success_regex = ["TASK2_STATUS_RECEIVED"]
+to_bin = true
+uefi = false
