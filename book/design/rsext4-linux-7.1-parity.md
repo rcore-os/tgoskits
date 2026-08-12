@@ -1741,3 +1741,26 @@ partial write、preallocation、truncate/punch/zero/insert/collapse 的确定性
 segment，绑定 Rust owner、差异理由和 `jbd2-handle-credits` 测试 ID；其余区间仍明确保持 coarse。
 `T_LOCKED/T_SWITCH` barrier、真正跨执行流 attachment 与通用 in-closure `journal_restart` 尚未完成，
 不能因为 adapter 当前串行就标 N/A。
+
+独立复核同时发现 bulk read 仍用 `block_size * count` 计算 byte footprint，极端输入在 debug build
+panic。确定性红测固定 `usize::MAX * 2`，当前 read/write 共用 `checked_block_bytes()` 并返回 typed
+`Overflow`，不让 host 字长或编译模式改变错误传播。
+
+性能 A/B 以本检查点前的 `4d1f03698` 为 baseline、`e05159fa1` 为 implementation，固定 CPU 2、
+`powersave` governor、release、memory backend、4 KiB block、20 MiB payload；sequential 与 sync-cycle
+各执行 3 次预热、50 次测量，200 个原始样本保存在
+`book/design/data/rsext4-perf/2026-08-13-jbd2-reserved-handle.csv`。本轮所有 median/p95 都直接采用
+完整样本，没有删除或选择性复测：
+
+| workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sequential write | 6,293,462 ns | 6,310,666 ns | +0.273% | 7,703,955 ns | 6,964,578 ns | -9.597% |
+| sequential read | 5,957,194 ns | 5,943,815 ns | -0.225% | 8,106,962 ns | 7,360,879 ns | -9.203% |
+| sequential unmount | 17,569 ns | 17,936 ns | +2.089% | 26,805 ns | 19,557 ns | -27.040% |
+| dirty sync | 8,247 ns | 7,961 ns | -3.468% | 12,509 ns | 9,887 ns | -20.961% |
+| clean sync | 233 ns | 232 ns | -0.429% | 341 ns | 283 ns | -17.009% |
+| sync-cycle unmount | 5,366 ns | 5,123 ns | -4.529% | 7,992 ns | 5,738 ns | -28.203% |
+
+六项 median/p95 均满足相对本 PR 前一检查点的 5%/10% 门槛。该局部 A/B 证明 reservation ledger
+与第一个 unwritten owner 没有引入现有 host workload 回退；它不覆盖也不豁免 7.35/7.42 相对冻结
+dev 的全局 dirty-sync 红项。
