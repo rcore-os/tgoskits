@@ -1,11 +1,11 @@
-<h1 align="center">starry-signal</h1>
+<h1 align="center">starry-process</h1>
 
-<p align="center">Signal management library for Starry OS</p>
+<p align="center">Process management for Starry OS</p>
 
 <div align="center">
 
-[![Crates.io](https://img.shields.io/crates/v/starry-signal.svg)](https://crates.io/crates/starry-signal)
-[![Docs.rs](https://docs.rs/starry-signal/badge.svg)](https://docs.rs/starry-signal)
+[![Crates.io](https://img.shields.io/crates/v/starry-process.svg)](https://crates.io/crates/starry-process)
+[![Docs.rs](https://docs.rs/starry-process/badge.svg)](https://docs.rs/starry-process)
 [![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
@@ -15,7 +15,7 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`starry-signal` provides Signal management library for Starry OS. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+`starry-process` provides process management for StarryOS. It is maintained as an independently publishable StarryOS crate within TGOSKits.
 
 ## Quick Start
 
@@ -25,14 +25,14 @@ Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-starry-signal = "0.5.0"
+starry-process = "0.4.0"
 ```
 
 ### Run Check and Test
 
 ```bash
 # Enter the crate directory
-cd components/starry-signal
+cd os/StarryOS/process
 
 # Format code
 cargo fmt --all
@@ -52,10 +52,10 @@ cargo doc --no-deps
 ### Example
 
 ```rust
-use starry_signal as _;
+use starry_process as _;
 
 fn main() {
-    // Integrate `starry-signal` into your project here.
+    // Integrate `starry-process` into your project here.
 }
 ```
 
@@ -67,7 +67,7 @@ Generate and view API documentation:
 cargo doc --no-deps --open
 ```
 
-Online documentation: [docs.rs/starry-signal](https://docs.rs/starry-signal)
+Online documentation: [docs.rs/starry-process](https://docs.rs/starry-process)
 
 # Contributing
 

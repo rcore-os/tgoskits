@@ -185,9 +185,29 @@ pub(crate) struct VmRuntimeHandle {
     cpu_off_exit_reservations: StdMutex<BTreeSet<usize>>,
     pending_interrupts: Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
     irq_dispatcher: crate::runtime::VcpuIrqDispatcher,
+    device_poll_requested: AtomicBool,
     running_halting_vcpu_count: AtomicUsize,
     lifecycle_error: StdMutex<Option<AxVmError>>,
     deferred_reset_requested: AtomicBool,
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) struct VcpuEventWaitSnapshot {
+    notification_generation: usize,
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) fn wait_for_vcpu_event_if_idle(
+    runtime: &VmRuntimeHandle,
+    wait_snapshot: &VcpuEventWaitSnapshot,
+    vm_running: impl Fn() -> bool,
+    wait_until: impl FnOnce(&dyn Fn() -> bool),
+) {
+    let wake_condition = || !vm_running() || wait_snapshot.has_pending_event(runtime);
+    if wake_condition() {
+        return;
+    }
+    wait_until(&wake_condition);
 }
 
 pub(crate) fn dispatch_vcpu_interrupt_with(
@@ -227,6 +247,7 @@ impl VmRuntimeHandle {
             cpu_off_exit_reservations: StdMutex::new(BTreeSet::new()),
             pending_interrupts: Mutex::new(BTreeMap::new()),
             irq_dispatcher: crate::runtime::VcpuIrqDispatcher::new(),
+            device_poll_requested: AtomicBool::new(false),
             running_halting_vcpu_count: AtomicUsize::new(0),
             lifecycle_error: StdMutex::new(None),
             deferred_reset_requested: AtomicBool::new(false),
@@ -376,6 +397,13 @@ impl VmRuntimeHandle {
         self.notification_generation.load(Ordering::Acquire)
     }
 
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(crate) fn vcpu_event_wait_snapshot(&self) -> VcpuEventWaitSnapshot {
+        VcpuEventWaitSnapshot {
+            notification_generation: self.notification_generation(),
+        }
+    }
+
     pub(crate) fn notify_one(&self) {
         self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_one(false);
@@ -384,6 +412,21 @@ impl VmRuntimeHandle {
     pub(crate) fn notify_all(&self) {
         self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_all(false);
+    }
+
+    /// Publishes pending device work before waking the primary vCPU.
+    pub(crate) fn notify_device_poll(&self) {
+        self.device_poll_requested.store(true, Ordering::Release);
+        self.notify_one();
+    }
+
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(crate) fn device_poll_requested(&self) -> bool {
+        self.device_poll_requested.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn take_device_poll_request(&self) -> bool {
+        self.device_poll_requested.swap(false, Ordering::AcqRel)
     }
 
     pub(crate) fn mark_vcpu_running(&self) {
@@ -471,6 +514,14 @@ impl VmRuntimeHandle {
         }
         info!("VM[{vm_id}] VCpu resources cleaned up, {task_count} VCpu tasks joined");
         self.take_lifecycle_error().map_or(Ok(()), Err)
+    }
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+impl VcpuEventWaitSnapshot {
+    pub(crate) fn has_pending_event(&self, runtime: &VmRuntimeHandle) -> bool {
+        runtime.device_poll_requested()
+            || runtime.notification_generation() != self.notification_generation
     }
 }
 

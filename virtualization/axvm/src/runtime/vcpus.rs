@@ -479,7 +479,10 @@ fn vcpu_run() {
 
     loop {
         if vcpu_id == 0 {
-            poll_vm_devices(&vm);
+            // Host services only publish a request and wake this task. Polling
+            // here avoids running virtual-device and VGIC callbacks in host
+            // console context, where an idle guest may otherwise stall input.
+            let _ = poll_primary_vcpu_devices_with(&runtime, || poll_vm_devices(&vm));
         }
 
         match CurrentArch::run_vcpu(&vm, &vcpu) {
@@ -594,6 +597,12 @@ fn vcpu_run() {
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
 }
 
+fn poll_primary_vcpu_devices_with(runtime: &VmRuntimeHandle, poll_devices: impl FnOnce()) -> bool {
+    let consumed_request = runtime.take_device_poll_request();
+    poll_devices();
+    consumed_request
+}
+
 pub(super) fn poll_vm_devices(vm: &VMRef) {
     poll_vm_input_devices(vm);
     poll_vm_dma_devices(vm);
@@ -633,6 +642,86 @@ mod tests {
         assert!(!vcpu_start_is_ready(true, false));
         assert!(vcpu_start_is_ready(true, true));
         assert!(!vcpu_start_is_ready(false, true));
+    }
+
+    #[test]
+    fn request_published_before_wfi_snapshot_prevents_sleep_and_is_consumed_once() {
+        let runtime = Arc::new(VmRuntimeHandle::new());
+        let request_published = Arc::new(std::sync::Barrier::new(2));
+        let notifier_runtime = runtime.clone();
+        let notifier_published = request_published.clone();
+        let notifier = std::thread::spawn(move || {
+            notifier_runtime.notify_device_poll();
+            notifier_published.wait();
+        });
+
+        request_published.wait();
+        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        let wait_count = std::cell::Cell::new(0);
+        crate::vm::wait_for_vcpu_event_if_idle(
+            &runtime,
+            &wait_snapshot,
+            || true,
+            |_| wait_count.set(wait_count.get() + 1),
+        );
+
+        assert_eq!(wait_count.get(), 0);
+        let poll_count = std::cell::Cell::new(0);
+        let consumed = poll_primary_vcpu_devices_with(&runtime, || {
+            poll_count.set(poll_count.get() + 1);
+        });
+
+        assert!(consumed);
+        assert_eq!(poll_count.get(), 1);
+        assert!(!poll_primary_vcpu_devices_with(&runtime, || {
+            poll_count.set(poll_count.get() + 1);
+        }));
+        assert_eq!(poll_count.get(), 2);
+        notifier.join().unwrap();
+    }
+
+    #[test]
+    fn request_published_at_wait_boundary_prevents_sleep_and_is_consumed_once() {
+        let runtime = Arc::new(VmRuntimeHandle::new());
+        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        let wait_boundary_reached = Arc::new(std::sync::Barrier::new(2));
+        let request_published = Arc::new(std::sync::Barrier::new(2));
+        let notifier_runtime = runtime.clone();
+        let notifier_wait_boundary = wait_boundary_reached.clone();
+        let notifier_published = request_published.clone();
+        let notifier = std::thread::spawn(move || {
+            notifier_wait_boundary.wait();
+            notifier_runtime.notify_device_poll();
+            notifier_published.wait();
+        });
+
+        let sleep_count = std::cell::Cell::new(0);
+        crate::vm::wait_for_vcpu_event_if_idle(
+            &runtime,
+            &wait_snapshot,
+            || true,
+            |wake_condition| {
+                wait_boundary_reached.wait();
+                request_published.wait();
+                if !wake_condition() {
+                    sleep_count.set(sleep_count.get() + 1);
+                }
+            },
+        );
+
+        assert_eq!(sleep_count.get(), 0);
+        let poll_count = std::cell::Cell::new(0);
+        let consumed = poll_primary_vcpu_devices_with(&runtime, || {
+            poll_count.set(poll_count.get() + 1);
+        });
+
+        assert!(consumed);
+        assert_eq!(poll_count.get(), 1);
+        assert!(!poll_primary_vcpu_devices_with(&runtime, || {
+            poll_count.set(poll_count.get() + 1);
+        }));
+        assert_eq!(poll_count.get(), 2);
+        notifier.join().unwrap();
     }
 
     #[test]
