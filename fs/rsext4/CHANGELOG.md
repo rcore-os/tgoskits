@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add typed linear/HTree directory cursors, bounded hash-range leaf
   enumeration, Linux 64-bit directory-cookie encoding, private collision
   continuation, and a machine-readable HTree readdir benchmark workload.
+- Add a persistent directory change attribute to the stable inode DTO and bind
+  private VFS directory continuation state to the observed value.
 
 ### Removed
 
@@ -60,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compact directory record lengths when checking large index blocks.
 - Use the HTree hash-space EOF for indexed-directory `SEEK_END` while retaining
   byte-size endpoints for linear directories through a typed VFS capability.
+- Increment the ext4 on-disk inode version for directory entry mutations and
+  discard stale HTree collision continuation after concurrent changes.
 - Follow Linux HTree collision continuations across leaf and parent-index
   boundaries, preserve continuation I/O errors, and report the true byte offset
   of matched directory entries.

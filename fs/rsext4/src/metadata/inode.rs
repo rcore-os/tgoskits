@@ -123,6 +123,10 @@ impl Ext4FileSystem {
             inode.i_projid = projid;
         }
 
+        if update.increment_version {
+            inode.increment_version(inode_size);
+        }
+
         // Resolve `Now` only once even when multiple timestamps in the same update need it.
         let mut now_cache: Option<Ext4Timestamp> = None;
 

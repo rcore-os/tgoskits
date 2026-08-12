@@ -418,35 +418,34 @@ impl DirNodeOps for Inode {
         cursor: VfsDirectoryCursor,
         sink: &mut dyn DirEntrySink,
     ) -> VfsResult<usize> {
-        let mut next_cursor = {
-            let mut state = self.fs.lock();
-            let indexed = state
-                .ext4
-                .inode(self.ino)
-                .map_err(into_vfs_err)?
-                .flags
-                .contains(InodeFlags::DIRECTORY_INDEX);
-            vfs_to_core_directory_cursor(cursor, indexed)?
-        };
+        let mut next_cursor = cursor;
         let mut count = 0usize;
         loop {
-            let entries = {
+            let (entries, change_attribute) = {
                 let mut state = self.fs.lock();
-                state
+                let inode = state.ext4.inode(self.ino).map_err(into_vfs_err)?;
+                next_cursor = normalize_directory_cursor(next_cursor, inode.change_attribute);
+                let core_cursor = vfs_to_core_directory_cursor(
+                    next_cursor,
+                    inode.flags.contains(InodeFlags::DIRECTORY_INDEX),
+                )?;
+                let entries = state
                     .ext4
-                    .read_directory(self.ino, next_cursor, DIRECTORY_READ_BATCH_ENTRIES)
-                    .map_err(into_vfs_err)?
+                    .read_directory(self.ino, core_cursor, DIRECTORY_READ_BATCH_ENTRIES)
+                    .map_err(into_vfs_err)?;
+                (entries, inode.change_attribute)
             };
             if entries.is_empty() {
                 return Ok(count);
             }
             for entry in entries {
-                next_cursor = entry.next_cursor;
+                next_cursor =
+                    core_to_vfs_directory_cursor(entry.next_cursor, Some(change_attribute));
                 if !sink.accept(
                     &entry.name,
                     entry.inode.as_u64(),
                     directory_entry_type_to_vfs(entry.file_type),
-                    core_to_vfs_directory_cursor(next_cursor),
+                    next_cursor,
                 ) {
                     return Ok(count);
                 }
@@ -462,7 +461,7 @@ impl DirNodeOps for Inode {
             .ext4
             .directory_end_cursor(self.ino)
             .map_err(into_vfs_err)?;
-        Ok(core_to_vfs_directory_cursor(cursor))
+        Ok(core_to_vfs_directory_cursor(cursor, None))
     }
 
     fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
@@ -704,7 +703,7 @@ fn vfs_to_core_directory_cursor(
     if cursor.offset() == HTREE_EOF_COOKIE {
         return Ok(DirectoryCursor::End);
     }
-    if cursor == VfsDirectoryCursor::START {
+    if cursor.offset() == 0 && cursor.continuation() == 0 {
         return Ok(DirectoryCursor::Start);
     }
     if !indexed {
@@ -720,20 +719,46 @@ fn vfs_to_core_directory_cursor(
     })
 }
 
-fn core_to_vfs_directory_cursor(cursor: DirectoryCursor) -> VfsDirectoryCursor {
-    match cursor {
-        DirectoryCursor::Start => VfsDirectoryCursor::START,
-        DirectoryCursor::Linear { offset } => VfsDirectoryCursor::new(offset),
+fn core_to_vfs_directory_cursor(
+    cursor: DirectoryCursor,
+    change_attribute: Option<u64>,
+) -> VfsDirectoryCursor {
+    let (offset, continuation) = match cursor {
+        DirectoryCursor::Start => (0, 0),
+        DirectoryCursor::Linear { offset } => (offset, 0),
         DirectoryCursor::HTree {
             major,
             minor,
             collision,
-        } => VfsDirectoryCursor::with_continuation(
+        } => (
             (u64::from(major >> 1) << 32) | u64::from(minor),
             u64::from(collision),
         ),
-        DirectoryCursor::End => VfsDirectoryCursor::new(HTREE_EOF_COOKIE),
+        DirectoryCursor::End => (HTREE_EOF_COOKIE, 0),
+    };
+    match change_attribute {
+        Some(change_attribute) => VfsDirectoryCursor::with_observed_change_attribute(
+            offset,
+            continuation,
+            change_attribute,
+        ),
+        None => VfsDirectoryCursor::with_continuation(offset, continuation),
     }
+}
+
+fn normalize_directory_cursor(
+    cursor: VfsDirectoryCursor,
+    change_attribute: u64,
+) -> VfsDirectoryCursor {
+    let continuation = match cursor.observed_change_attribute() {
+        Some(observed) if observed != change_attribute => 0,
+        _ => cursor.continuation(),
+    };
+    VfsDirectoryCursor::with_observed_change_attribute(
+        cursor.offset(),
+        continuation,
+        change_attribute,
+    )
 }
 
 #[cfg(test)]
@@ -747,20 +772,24 @@ mod directory_cursor_tests {
             minor: 0x1357_2468,
             collision: 7,
         };
-        let vfs = core_to_vfs_directory_cursor(core);
+        let vfs = core_to_vfs_directory_cursor(core, Some(41));
 
         assert_eq!(vfs.offset(), 0x44d5_e6f6_1357_2468);
         assert_eq!(vfs.continuation(), 7);
+        assert_eq!(vfs.observed_change_attribute(), Some(41));
         assert_eq!(vfs_to_core_directory_cursor(vfs, true), Ok(core));
     }
 
     #[test]
     fn external_seek_cookie_resets_private_collision_state() {
-        let cookie = core_to_vfs_directory_cursor(DirectoryCursor::HTree {
-            major: 0x1234_5678,
-            minor: 0x9abc_def0,
-            collision: 11,
-        });
+        let cookie = core_to_vfs_directory_cursor(
+            DirectoryCursor::HTree {
+                major: 0x1234_5678,
+                minor: 0x9abc_def0,
+                collision: 11,
+            },
+            Some(7),
+        );
         let external_seek = VfsDirectoryCursor::new(cookie.offset());
 
         assert_eq!(
@@ -780,7 +809,10 @@ mod directory_cursor_tests {
             vfs_to_core_directory_cursor(cursor, true),
             Ok(DirectoryCursor::End)
         );
-        assert_eq!(core_to_vfs_directory_cursor(DirectoryCursor::End), cursor);
+        assert_eq!(
+            core_to_vfs_directory_cursor(DirectoryCursor::End, None),
+            cursor
+        );
     }
 
     #[test]
@@ -790,10 +822,30 @@ mod directory_cursor_tests {
             minor: u32::MAX,
             collision: 0,
         };
-        let vfs = core_to_vfs_directory_cursor(core);
+        let vfs = core_to_vfs_directory_cursor(core, None);
 
         assert_eq!(vfs.offset(), 0x7fff_fffe_ffff_ffff);
         assert_ne!(vfs.offset(), HTREE_EOF_COOKIE);
         assert_eq!(vfs_to_core_directory_cursor(vfs, true), Ok(core));
+    }
+
+    #[test]
+    fn directory_mutation_discards_private_collision_continuation() {
+        let stale =
+            VfsDirectoryCursor::with_observed_change_attribute(0x1234_5678_9abc_def0, 11, 41);
+
+        let current = normalize_directory_cursor(stale, 42);
+
+        assert_eq!(current.offset(), stale.offset());
+        assert_eq!(current.continuation(), 0);
+        assert_eq!(current.observed_change_attribute(), Some(42));
+    }
+
+    #[test]
+    fn unchanged_directory_keeps_private_collision_continuation() {
+        let cursor =
+            VfsDirectoryCursor::with_observed_change_attribute(0x1234_5678_9abc_def0, 11, 42);
+
+        assert_eq!(normalize_directory_cursor(cursor, 42), cursor);
     }
 }

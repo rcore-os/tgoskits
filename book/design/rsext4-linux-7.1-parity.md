@@ -1521,6 +1521,17 @@ ArceOS materialized directory 同样改为 peek/commit，buffer 容量不足不�
 `d_ino`/`d_off` 不再伪造为 1/0。ax-fs-ng adapter 每次最多向 core 请求 128 项，并在释放
 filesystem sleepable mutex 后才调用 sink。
 
+Linux `fs/ext4/namei.c:2148-2156,2675-2698,3641-3665` 在目录项插入、删除和替换后递增目录
+inode version；`fs/ext4/inode.c:4822-4832,5453-5461` 始终持久化低 32 位，仅在
+`i_version_hi` 落入 `i_extra_isize` 声明的范围时读写高 32 位。确定性红测先证明旧 core 在
+create 后父目录版本保持不变；当前所有 linear/HTree create、link、unlink、rmdir、rename mutation
+统一经 parent metadata update 递增 on-disk version，`InodeInfo::change_attribute` 以稳定 DTO 暴露
+完整可持久化值。`axfs-ng-vfs::DirectoryCursor` 另存生成 continuation 时观察到的 change attribute；
+ext4 adapter 在每个 bounded batch 前重新读取当前值，发生 mutation 时保留 ABI-visible cookie、
+清零 collision continuation 并从当前 hash range 重建。外部 `llseek` 生成的 cursor 没有观察版本，
+首次续读会绑定当前值。同父 rename 的 add/replace 与 delete 可像 Linux 一样分别递增，不人为按
+syscall 去重。失败 mkdir 回归同时验证未发布 parent mutation 不改变低/高版本字段。
+
 Linux `ext4_dir_llseek()` 对 HTree 把 hash-space EOF 同时作为 `SEEK_END` origin 与最大合法
 offset，非 HTree 才使用 inode byte size。旧 Starry 一律以 `Location::len()` 处理目录
 `SEEK_END`：确定性 QEMU 红测中，indexed directory 返回 `st_size`，随后 `getdents64` 又返回
@@ -1545,6 +1556,6 @@ checked `SEEK_SET/CUR/END` 算术并在 seek 后清除 backend-private continuat
 当前 Starry 的 x86_64/riscv64/aarch64/loongarch64 都是原生 64-bit ABI，syscall table 仅注册
 `getdents64`，没有 32-bit task/compat `getdents`，因此“32-bit getdents cookie”在当前交付边界
 明确为 N/A；若未来引入 compat task ABI，必须新增独立 `linux_dirent32` checked narrowing，并对
-inode/cookie 溢出返回 `EOVERFLOW`，不能截断 64-bit cursor。目录 mutation 的 inode-version
-invalidation、每个 open description 持久化的 HTree path/range cache、casefold/fscrypt
-prepared-name hash 仍在后续台账中。
+inode/cookie 溢出返回 `EOVERFLOW`，不能截断 64-bit cursor。每个 open description 持久化的
+HTree path/range cache、casefold/fscrypt prepared-name hash 仍在后续台账中；前者已有上述
+on-disk change attribute 与 per-open cursor invalidation 作为正确性前置条件。

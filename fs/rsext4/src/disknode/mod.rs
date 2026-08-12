@@ -30,6 +30,28 @@ mod tests {
     }
 
     #[test]
+    fn inode_version_uses_high_bits_only_when_the_extra_field_fits() {
+        let mut inode = Ext4Inode {
+            l_i_version: u32::MAX,
+            i_version_hi: 7,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            inode.version(Ext4Inode::LARGE_INODE_SIZE),
+            u64::from(u32::MAX)
+        );
+        inode.increment_version(Ext4Inode::LARGE_INODE_SIZE);
+        assert_eq!(inode.version(Ext4Inode::LARGE_INODE_SIZE), 0);
+
+        inode.i_extra_isize = Ext4Inode::required_extra_isize(Ext4Inode::FIELD_END_I_VERSION_HI);
+        inode.l_i_version = u32::MAX;
+        inode.i_version_hi = 7;
+        inode.increment_version(Ext4Inode::LARGE_INODE_SIZE);
+        assert_eq!(inode.version(Ext4Inode::LARGE_INODE_SIZE), 8_u64 << 32);
+    }
+
+    #[test]
     fn device_number_codec_matches_ext4_legacy_and_modern_layouts() {
         let mut inode = Ext4Inode {
             i_mode: Ext4Inode::S_IFCHR | 0o600,

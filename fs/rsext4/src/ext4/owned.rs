@@ -216,6 +216,8 @@ pub struct InodeInfo {
     pub ctime: u32,
     pub mtime: u32,
     pub btime: u32,
+    /// Persistent ext4 change attribute used to invalidate directory state.
+    pub change_attribute: u64,
     pub project_id: u32,
     pub flags: InodeFlags,
     pub device_number: Option<DeviceNumber>,
@@ -983,6 +985,7 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
             ctime: inode.i_ctime,
             mtime: inode.i_mtime,
             btime: inode.i_crtime,
+            change_attribute: inode.version(self.filesystem.inode_disk_size()),
             project_id: inode.i_projid,
             flags: InodeFlags::from_bits_retain(inode.i_flags & Ext4Inode::EXT4_FL_USER_VISIBLE),
             device_number: inode.device_number()?,

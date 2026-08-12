@@ -398,6 +398,23 @@ impl Ext4Inode {
         field_end <= inode_size && field_end <= Self::GOOD_OLD_INODE_SIZE + self.i_extra_isize
     }
 
+    pub(crate) fn version(&self, inode_size: u16) -> u64 {
+        let high = if self.field_fits(inode_size, Self::FIELD_END_I_VERSION_HI) {
+            self.i_version_hi
+        } else {
+            0
+        };
+        (u64::from(high) << 32) | u64::from(self.l_i_version)
+    }
+
+    pub(crate) fn increment_version(&mut self, inode_size: u16) {
+        let version = self.version(inode_size).wrapping_add(1);
+        self.l_i_version = version as u32;
+        if self.field_fits(inode_size, Self::FIELD_END_I_VERSION_HI) {
+            self.i_version_hi = (version >> 32) as u32;
+        }
+    }
+
     fn encode_extra_time(ts: Ext4Timestamp) -> u32 {
         let ts = Ext4Timestamp::new(ts.sec, ts.nsec);
         let lower = ts.sec as i32 as i64;

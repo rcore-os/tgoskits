@@ -105,6 +105,10 @@ fn lookup_inode(
     find_file(fs, dev, path).expect("inode not found")
 }
 
+fn inode_version(inode: &Ext4Inode) -> u64 {
+    (u64::from(inode.i_version_hi) << 32) | u64::from(inode.l_i_version)
+}
+
 #[test]
 fn test_create_delete_and_reallocate_inode_updates_dtime() {
     let (mut dev, mut fs) = setup_fs();
@@ -315,6 +319,7 @@ fn test_parent_directory_timestamps_follow_entry_changes() {
         parent_after_create.ctime_ts(INODE_SIZE).sec
             > parent_before_create.ctime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&parent_after_create) > inode_version(&parent_before_create));
 
     let parent_before_link = parent_after_create;
     link(&mut fs, &mut dev, "/parent/file.link", "/parent/file").expect("link failed");
@@ -322,6 +327,7 @@ fn test_parent_directory_timestamps_follow_entry_changes() {
     assert!(
         parent_after_link.mtime_ts(INODE_SIZE).sec > parent_before_link.mtime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&parent_after_link) > inode_version(&parent_before_link));
 
     let parent_before_unlink = parent_after_link;
     let _ = unlink(&mut fs, &mut dev, "/parent/file.link").expect("unlink failed");
@@ -330,6 +336,7 @@ fn test_parent_directory_timestamps_follow_entry_changes() {
         parent_after_unlink.mtime_ts(INODE_SIZE).sec
             > parent_before_unlink.mtime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&parent_after_unlink) > inode_version(&parent_before_unlink));
 
     let parent_before_rename = parent_after_unlink;
     let _ = rename(&mut dev, &mut fs, "/parent/file", "/parent/file2").expect("rename failed");
@@ -338,6 +345,7 @@ fn test_parent_directory_timestamps_follow_entry_changes() {
         parent_after_rename.mtime_ts(INODE_SIZE).sec
             > parent_before_rename.mtime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&parent_after_rename) > inode_version(&parent_before_rename));
 
     let old_parent_before_move = parent_after_rename;
     let new_parent_before_move = lookup_inode(&mut dev, &mut fs, "/other");
@@ -348,8 +356,10 @@ fn test_parent_directory_timestamps_follow_entry_changes() {
         old_parent_after_move.mtime_ts(INODE_SIZE).sec
             > old_parent_before_move.mtime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&old_parent_after_move) > inode_version(&old_parent_before_move));
     assert!(
         new_parent_after_move.mtime_ts(INODE_SIZE).sec
             > new_parent_before_move.mtime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&new_parent_after_move) > inode_version(&new_parent_before_move));
 }

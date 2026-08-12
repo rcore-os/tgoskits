@@ -223,6 +223,8 @@ mod directory_functional_tests {
         assert_eq!(root_after.i_blocks_lo, root_before.i_blocks_lo);
         assert_eq!(root_after.l_i_blocks_high, root_before.l_i_blocks_high);
         assert_eq!(root_after.i_flags, root_before.i_flags);
+        assert_eq!(root_after.l_i_version, root_before.l_i_version);
+        assert_eq!(root_after.i_version_hi, root_before.i_version_hi);
         assert_eq!(used_dirs_after, used_dirs_before);
         assert_eq!(fs.superblock.s_free_inodes_count, free_inodes_before);
         assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);

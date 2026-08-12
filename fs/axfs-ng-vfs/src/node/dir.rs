@@ -50,6 +50,7 @@ impl<F: FnMut(&[u8], u64, NodeType, DirectoryCursor) -> bool> DirEntrySink for F
 pub struct DirectoryCursor {
     offset: u64,
     continuation: u64,
+    observed_change_attribute: Option<u64>,
 }
 
 impl DirectoryCursor {
@@ -59,6 +60,7 @@ impl DirectoryCursor {
         Self {
             offset,
             continuation: 0,
+            observed_change_attribute: None,
         }
     }
 
@@ -66,6 +68,21 @@ impl DirectoryCursor {
         Self {
             offset,
             continuation,
+            observed_change_attribute: None,
+        }
+    }
+
+    /// Associates filesystem-private continuation state with the directory
+    /// change attribute against which it was produced.
+    pub const fn with_observed_change_attribute(
+        offset: u64,
+        continuation: u64,
+        change_attribute: u64,
+    ) -> Self {
+        Self {
+            offset,
+            continuation,
+            observed_change_attribute: Some(change_attribute),
         }
     }
 
@@ -75,6 +92,10 @@ impl DirectoryCursor {
 
     pub const fn continuation(self) -> u64 {
         self.continuation
+    }
+
+    pub const fn observed_change_attribute(self) -> Option<u64> {
+        self.observed_change_attribute
     }
 }
 

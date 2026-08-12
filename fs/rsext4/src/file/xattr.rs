@@ -345,15 +345,7 @@ fn persist_xattrs<B: BlockIo>(
                 inode.set_blocks_count(sectors, block_size, huge_file)?;
                 inode.set_file_acl(target_block.map_or(0, AbsoluteBN::raw))?;
                 inode.i_ctime = ctime;
-                let version = (u64::from(inode.i_version_hi) << 32) | u64::from(inode.l_i_version);
-                let version = version.wrapping_add(1);
-                inode.l_i_version = version as u32;
-                if inode.field_fits(
-                    u16::try_from(raw_inode.len()).unwrap_or(u16::MAX),
-                    Ext4Inode::FIELD_END_I_VERSION_HI,
-                ) {
-                    inode.i_version_hi = (version >> 32) as u32;
-                }
+                inode.increment_version(u16::try_from(raw_inode.len()).unwrap_or(u16::MAX));
                 Ok(())
             });
         if let Err(error) = inode_update {

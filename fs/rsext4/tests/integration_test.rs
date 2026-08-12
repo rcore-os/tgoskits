@@ -366,6 +366,39 @@ fn owned_test_filesystem() -> TestOwnedFilesystem {
     Ext4::mount(device, services, MountOptions::read_write()).expect("owned mount failed")
 }
 
+#[test]
+fn owned_directory_change_attribute_tracks_persistent_name_mutations() {
+    let mut filesystem = owned_test_filesystem();
+    let root = filesystem.root_inode();
+    let context = MutationContext::new(1000, 1001, 0, 0o022);
+    let before = filesystem.inode(root).expect("inspect root before create");
+
+    let file = filesystem
+        .create_regular_file(
+            context,
+            root,
+            FileName::new(b"versioned-name").expect("valid raw name"),
+            FilePermissions::new(0o644).expect("valid permissions"),
+        )
+        .expect("create file");
+    let after_create = filesystem.inode(root).expect("inspect root after create");
+    assert!(after_create.change_attribute > before.change_attribute);
+
+    let _ = filesystem
+        .unlink(
+            context,
+            root,
+            FileName::new(b"versioned-name").expect("valid raw name"),
+        )
+        .expect("unlink file");
+    let after_unlink = filesystem.inode(root).expect("inspect root after unlink");
+    assert!(after_unlink.change_attribute > after_create.change_attribute);
+
+    filesystem
+        .reap_unlinked_inode(file.number)
+        .expect("reap unlinked inode");
+}
+
 fn owned_test_filesystem_with_flush_failure() -> (TestOwnedFilesystem, Arc<AtomicBool>) {
     let fail_flush = Arc::new(AtomicBool::new(false));
     let device = IoOnlyDevice::from(TestBlockDevice::new(100 * 1024 * 1024))
