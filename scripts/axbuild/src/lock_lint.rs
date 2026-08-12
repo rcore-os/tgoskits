@@ -222,6 +222,14 @@ fn check_dependency_tables(manifest_path: &Path, value: &Value, findings: &mut V
                         "consume synchronization primitives through ax-runtime::sync",
                     ));
                 }
+                if is_starry_domain_manifest(manifest_path) && package_name == "ax-sync" {
+                    findings.push(Finding::new(
+                        manifest_path,
+                        &location,
+                        "OS-layer crate must not depend directly on ax-sync",
+                        "consume synchronization primitives through ax-runtime::sync",
+                    ));
+                }
             }
         }
 
@@ -540,6 +548,17 @@ fn is_axvisor_manifest(path: &Path) -> bool {
     let normalized = path.to_string_lossy().replace('\\', "/");
     normalized.ends_with("/virtualization/axvm/Cargo.toml")
         || normalized.ends_with("/os/axvisor/Cargo.toml")
+}
+
+fn is_starry_domain_manifest(path: &Path) -> bool {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    [
+        "/os/StarryOS/process/Cargo.toml",
+        "/os/StarryOS/signal/Cargo.toml",
+        "/os/StarryOS/vm/Cargo.toml",
+    ]
+    .iter()
+    .any(|suffix| normalized.ends_with(suffix))
 }
 
 fn is_axvisor_source(relative: &str) -> bool {
@@ -1033,6 +1052,30 @@ impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {}
             finding
                 .message
                 .contains("must not be split by target or host-test cfg")
+        }));
+    }
+    #[test]
+    fn rejects_starry_domain_crate_ax_sync_dependency() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "os/StarryOS/process/Cargo.toml",
+            r#"
+[package]
+name = "starry-process"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+ax-sync = "0.1"
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("OS-layer crate must not depend directly")
         }));
     }
 }
