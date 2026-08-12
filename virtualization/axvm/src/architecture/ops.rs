@@ -9,17 +9,6 @@ use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 use super::{BoundVcpuExit, VcpuRunAction};
 use crate::{AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
 
-/// Publishes an architecture timer's interrupt state before making its vCPU runnable.
-#[cfg(any(target_arch = "aarch64", test))]
-pub(crate) fn publish_timer_before_wake<E>(
-    publish: impl FnOnce() -> Result<(), E>,
-    wake: impl FnOnce(),
-) -> Result<(), E> {
-    publish()?;
-    wake();
-    Ok(())
-}
-
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
     type PerCpu: VmArchPerCpuOps;
@@ -493,19 +482,5 @@ mod tests {
             ]
         );
         assert!(dispatcher.drain(0).is_empty());
-    }
-
-    #[test]
-    fn timer_deadline_is_published_before_vcpu_wake() {
-        let events = core::cell::RefCell::new(Vec::new());
-        publish_timer_before_wake(
-            || {
-                events.borrow_mut().push("publish");
-                Ok::<_, ()>(())
-            },
-            || events.borrow_mut().push("wake"),
-        )
-        .unwrap();
-        assert_eq!(*events.borrow(), ["publish", "wake"]);
     }
 }

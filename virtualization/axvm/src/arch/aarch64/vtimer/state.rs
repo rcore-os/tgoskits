@@ -165,7 +165,7 @@ impl Aarch64TimerBinding {
                     return;
                 }
                 binding.scheduled.lock().take();
-                if let Err(error) = crate::architecture::ops::publish_timer_before_wake(
+                if let Err(error) = crate::timer::publish_before_wake(
                     || {
                         binding
                             .publish_levels(snapshot, physical_counter())
