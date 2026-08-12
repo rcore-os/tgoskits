@@ -19,6 +19,7 @@ task-wait-queue = ["ax-std", "ax-std/multitask", "ax-std/irq"]
 task-wait-queue-remote-wake = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
 task-ipi = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
 task-irq = ["ax-std", "ax-std/multitask", "ax-std/irq"]
+task-kernel-timer = ["ax-std", "ax-std/multitask", "ax-std/irq"]
 task-tls = ["ax-std", "ax-std/tls", "ax-std/alloc", "ax-std/multitask"]
 task-parallel = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask", "ax-std/irq"]
 task-priority = ["ax-std", "ax-std/alloc", "ax-std/multitask"]
@@ -50,6 +51,7 @@ all = [
     "task-wait-queue-remote-wake",
     "task-ipi",
     "task-irq",
+    "task-kernel-timer",
     "task-tls",
     "task-parallel",
     "task-priority",

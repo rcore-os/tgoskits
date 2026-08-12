@@ -63,6 +63,12 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "scheduler_deadline_derivation_kernel_timer_entries {}",
+        task.scheduler_deadline_derivation_kernel_timer_entries
+    )
+    .unwrap();
+    writeln!(
+        output,
         "scheduler_deadline_derivation_ktimer_service_entries {}",
         task.scheduler_deadline_derivation_ktimer_service_entries
     )
@@ -566,6 +572,7 @@ mod tests {
                 "scheduler_deadline_derivation_clock_event_entries",
                 "scheduler_deadline_derivation_park_arm_entries",
                 "scheduler_deadline_derivation_park_cancel_entries",
+                "scheduler_deadline_derivation_kernel_timer_entries",
                 "scheduler_deadline_derivation_ktimer_service_entries",
                 "scheduler_deadline_derivation_enqueue_entries",
                 "scheduler_deadline_derivation_placement_entries",

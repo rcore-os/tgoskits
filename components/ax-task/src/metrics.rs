@@ -9,7 +9,7 @@ use crate::{
 
 const PREEMPT_GUARD_SOURCE_COUNT: usize = 5;
 const IRQ_GUARD_SOURCE_COUNT: usize = 24;
-const SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT: usize = 8;
+const SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT: usize = 9;
 
 /// Aggregate scheduler counters captured without allocating or taking locks.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -19,6 +19,7 @@ pub struct QperfSchedulerMetricsSnapshot {
     pub scheduler_deadline_derivation_clock_event_entries: u64,
     pub scheduler_deadline_derivation_park_arm_entries: u64,
     pub scheduler_deadline_derivation_park_cancel_entries: u64,
+    pub scheduler_deadline_derivation_kernel_timer_entries: u64,
     pub scheduler_deadline_derivation_ktimer_service_entries: u64,
     pub scheduler_deadline_derivation_enqueue_entries: u64,
     pub scheduler_deadline_derivation_placement_entries: u64,
@@ -215,6 +216,8 @@ impl QperfSchedulerMetrics {
             deadline_derivations(SchedulerDeadlineDerivationSource::ParkArm);
         let scheduler_deadline_derivation_park_cancel_entries =
             deadline_derivations(SchedulerDeadlineDerivationSource::ParkCancel);
+        let scheduler_deadline_derivation_kernel_timer_entries =
+            deadline_derivations(SchedulerDeadlineDerivationSource::KernelTimer);
         let scheduler_deadline_derivation_ktimer_service_entries =
             deadline_derivations(SchedulerDeadlineDerivationSource::KtimerService);
         let scheduler_deadline_derivation_enqueue_entries =
@@ -229,6 +232,7 @@ impl QperfSchedulerMetrics {
             scheduler_deadline_derivation_clock_event_entries
                 + scheduler_deadline_derivation_park_arm_entries
                 + scheduler_deadline_derivation_park_cancel_entries
+                + scheduler_deadline_derivation_kernel_timer_entries
                 + scheduler_deadline_derivation_ktimer_service_entries
                 + scheduler_deadline_derivation_enqueue_entries
                 + scheduler_deadline_derivation_placement_entries
@@ -343,6 +347,7 @@ impl QperfSchedulerMetrics {
             scheduler_deadline_derivation_clock_event_entries,
             scheduler_deadline_derivation_park_arm_entries,
             scheduler_deadline_derivation_park_cancel_entries,
+            scheduler_deadline_derivation_kernel_timer_entries,
             scheduler_deadline_derivation_ktimer_service_entries,
             scheduler_deadline_derivation_enqueue_entries,
             scheduler_deadline_derivation_placement_entries,
@@ -698,6 +703,8 @@ mod tests {
         metrics.record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::ParkArm);
         metrics.record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::ParkCancel);
         metrics
+            .record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::KernelTimer);
+        metrics
             .record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::KtimerService);
         metrics.record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::Enqueue);
         metrics.record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::Placement);
@@ -711,10 +718,11 @@ mod tests {
         assert_eq!(
             metrics.snapshot(),
             QperfSchedulerMetricsSnapshot {
-                scheduler_deadline_derivation_entries: 8,
+                scheduler_deadline_derivation_entries: 9,
                 scheduler_deadline_derivation_clock_event_entries: 1,
                 scheduler_deadline_derivation_park_arm_entries: 1,
                 scheduler_deadline_derivation_park_cancel_entries: 1,
+                scheduler_deadline_derivation_kernel_timer_entries: 1,
                 scheduler_deadline_derivation_ktimer_service_entries: 1,
                 scheduler_deadline_derivation_enqueue_entries: 1,
                 scheduler_deadline_derivation_placement_entries: 1,

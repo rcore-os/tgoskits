@@ -26,25 +26,30 @@ struct OwnerDeadlineReconcile<'a> {
     due: OwnerDeadlineDue,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct KtimerServiceBatch {
+    #[cfg(test)]
     processed: usize,
     pending: bool,
     update: Option<SchedulerDeadlineUpdate>,
+    kernel_timer: Option<KernelTimerExecution>,
 }
 
 impl KtimerServiceBatch {
     #[cfg(test)]
-    pub(crate) const fn processed(self) -> usize {
+    pub(crate) const fn processed(&self) -> usize {
         self.processed
     }
 
-    pub(crate) const fn pending(self) -> bool {
+    pub(crate) const fn pending(&self) -> bool {
         self.pending
     }
 
-    pub(crate) const fn update(self) -> Option<SchedulerDeadlineUpdate> {
+    pub(crate) const fn update(&self) -> Option<SchedulerDeadlineUpdate> {
         self.update
+    }
+
+    pub(crate) fn take_kernel_timer(&mut self) -> Option<KernelTimerExecution> {
+        self.kernel_timer.take()
     }
 }
 
@@ -574,8 +579,13 @@ impl TaskSystem {
         }
         let monotonic_now = task_runtime::monotonic_now();
         let budget = cpu.batch_limit();
+        if !cpu.has_expired_kernel_timer() && cpu.has_due_kernel_timer(monotonic_now) {
+            cpu.as_mut().promote_due_kernel_timers(monotonic_now, 1);
+        }
+        let kernel_timer_reserved = cpu.has_expired_kernel_timer();
+        let task_budget = budget.saturating_sub(usize::from(kernel_timer_reserved));
         let mut processed = 0;
-        while processed < budget {
+        while processed < task_budget {
             if !cpu.has_expired_task_deadlines() && cpu.has_due_task_deadline(monotonic_now) {
                 let remaining = budget - processed;
                 cpu.as_mut()
@@ -600,7 +610,18 @@ impl TaskSystem {
             }
             processed += 1;
         }
-        let pending = cpu.has_expired_task_deadlines() || cpu.has_due_task_deadline(monotonic_now);
+        let kernel_timer = if processed < budget {
+            cpu.remote()
+                .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
+                .kernel_timers
+                .claim_expired()
+        } else {
+            None
+        };
+        let pending = cpu.has_expired_task_deadlines()
+            || cpu.has_due_task_deadline(monotonic_now)
+            || cpu.has_expired_kernel_timer()
+            || cpu.has_due_kernel_timer(monotonic_now);
         cpu.as_mut().finish_task_deadline_softirq(pending);
         if pending {
             cpu.remote().publish_ktimer_work();
@@ -610,10 +631,26 @@ impl TaskSystem {
             SchedulerDeadlineDerivationSource::KtimerService,
         )?;
         Ok(KtimerServiceBatch {
-            processed,
+            #[cfg(test)]
+            processed: processed + usize::from(kernel_timer.is_some()),
             pending,
             update,
+            kernel_timer,
         })
+    }
+
+    pub(crate) fn complete_kernel_timer_execution(&self, owner: CpuId) -> Result<(), TaskError> {
+        if task_runtime::in_hard_irq() {
+            return Err(TaskError::UnsafeContext);
+        }
+        let remote = self
+            .cpu_remote(owner)
+            .ok_or(TaskError::InvalidConfiguration)?;
+        remote
+            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
+            .kernel_timers
+            .complete_execution();
+        Ok(())
     }
 
     fn service_buffered_expired_deadline(

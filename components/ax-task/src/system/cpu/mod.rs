@@ -51,7 +51,7 @@ use crate::{
     },
     thread::ThreadCore,
     timer::{
-        ExpiredTaskDeadline, TaskDeadlineExpireBatch, TaskDeadlineExpireRequest, TaskDeadlineQueue,
-        TaskDeadlineRegistration,
+        ExpiredTaskDeadline, KernelTimerExpireBatch, KernelTimerQueue, TaskDeadlineExpireBatch,
+        TaskDeadlineExpireRequest, TaskDeadlineQueue, TaskDeadlineRegistration,
     },
 };

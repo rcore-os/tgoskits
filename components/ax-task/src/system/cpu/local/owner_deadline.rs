@@ -2,6 +2,22 @@
 
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SoftTimerExpireBatch {
+    expired: usize,
+    pending: bool,
+}
+
+impl SoftTimerExpireBatch {
+    pub(crate) const fn expired(self) -> usize {
+        self.expired
+    }
+
+    pub(crate) const fn pending(self) -> bool {
+        self.pending
+    }
+}
+
 fn earliest<T: Ord>(current: Option<T>, candidate: T) -> Option<T> {
     match current {
         Some(current) => Some(current.min(candidate)),
@@ -79,7 +95,13 @@ impl CpuLocal {
                 // ownership transfer instead of silently stopping progress.
                 None
             } else {
-                deadlines.queue.next_deadline()
+                [
+                    deadlines.queue.next_deadline(),
+                    deadlines.kernel_timers.next_deadline(),
+                ]
+                .into_iter()
+                .flatten()
+                .min()
             }
         } else {
             None
@@ -229,6 +251,18 @@ impl CpuLocal {
         self.remote
             .read_active_deadline_base(DeadlineBaseGuardSource::Observation)
             .is_some_and(|deadlines| deadlines.queue.has_immediately_actionable_soft_entry(now))
+    }
+
+    pub(crate) fn has_due_kernel_timer(&self, now: MonotonicInstant) -> bool {
+        self.remote
+            .read_active_deadline_base(DeadlineBaseGuardSource::Observation)
+            .is_some_and(|deadlines| deadlines.kernel_timers.has_due(now))
+    }
+
+    pub(crate) fn has_expired_kernel_timer(&self) -> bool {
+        self.remote
+            .read_active_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
+            .is_some_and(|deadlines| deadlines.kernel_timers.has_expired())
     }
 
     pub(crate) fn has_due_scheduler_deadline(&self, now: MonotonicInstant) -> bool {
@@ -393,11 +427,36 @@ impl CpuLocal {
         self: Pin<&mut Self>,
         now: MonotonicInstant,
         budget: usize,
-    ) -> TaskDeadlineExpireBatch {
+    ) -> SoftTimerExpireBatch {
         let mut this = self;
-        let batch = this.as_mut().promote_due_task_deadlines(now, budget);
+        let task_batch = this.as_mut().promote_due_task_deadlines(now, budget);
+        let kernel_batch = this
+            .as_mut()
+            .promote_due_kernel_timers(now, budget.saturating_sub(task_batch.processed()));
+        let batch = SoftTimerExpireBatch {
+            expired: task_batch.expired().saturating_add(kernel_batch.expired()),
+            pending: task_batch.pending() || kernel_batch.pending(),
+        };
         if batch.pending() || batch.expired() != 0 {
             this.remote.publish_ktimer_work();
+        }
+        batch
+    }
+
+    pub(crate) fn promote_due_kernel_timers(
+        self: Pin<&mut Self>,
+        now: MonotonicInstant,
+        budget: usize,
+    ) -> KernelTimerExpireBatch {
+        let Some(mut deadlines) = self
+            .remote
+            .lock_active_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
+        else {
+            return KernelTimerExpireBatch::empty();
+        };
+        let batch = deadlines.kernel_timers.expire_due(now, budget);
+        if batch.expired() != 0 || batch.pending() {
+            deadlines.softirq_activated = true;
         }
         batch
     }

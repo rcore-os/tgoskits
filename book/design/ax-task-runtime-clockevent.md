@@ -101,7 +101,7 @@ task deadline 的唯一 owner：本地 timer IRQ/soft worker 负责消费，远�
 `TaskDeadlineKind`；共享的是 per-CPU owner、IRQ-safe deadline lock、物理最早期限选择和
 `ktimers/<cpu>` single-consumer 协议。
 
-registration 在调用任务上下文分配完整 entry 和 callback ownership，随后绑定当前 owner
+registration 在调用任务上下文构造完整 entry 并完成 callback allocation，随后绑定当前 owner
 CPU。entry 状态只允许：
 
 ```text

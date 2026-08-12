@@ -50,6 +50,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "task-affinity",
     "task-ipi",
     "task-irq",
+    "task-kernel-timer",
     "task-parallel",
     "task-pi-mutex",
     "task-priority",

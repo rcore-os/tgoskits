@@ -4,6 +4,8 @@ pub mod affinity;
 pub mod ipi;
 #[cfg(feature = "task-irq")]
 pub mod irq;
+#[cfg(feature = "task-kernel-timer")]
+pub mod kernel_timer;
 #[cfg(feature = "task-parallel")]
 pub mod parallel;
 #[cfg(any(feature = "task-priority", feature = "sched-cfs", feature = "sched-rr"))]

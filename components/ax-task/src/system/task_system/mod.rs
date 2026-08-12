@@ -84,8 +84,8 @@ use crate::{
     },
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
     timer::{
-        ExpiredTaskDeadline, TaskDeadlineArmPlan, TaskDeadlineError, TaskDeadlineKind,
-        TaskDeadlineNode, TaskDeadlineQueue, TaskDeadlineRegistration,
+        ExpiredTaskDeadline, KernelTimerExecution, TaskDeadlineArmPlan, TaskDeadlineError,
+        TaskDeadlineKind, TaskDeadlineNode, TaskDeadlineQueue, TaskDeadlineRegistration,
     },
 };
 

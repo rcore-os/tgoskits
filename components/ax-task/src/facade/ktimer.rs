@@ -79,17 +79,24 @@ fn ktimer_service_loop(owner: CpuId) -> Result<(), TaskError> {
 
 fn service_current_ktimer_pass(owner: CpuId) -> Result<bool, TaskError> {
     let system = runtime_task_system()?;
-    let mut irq = RuntimeIrqGuard::enter();
-    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    if cpu.owner() != owner {
-        return Err(TaskError::CpuOwnerMismatch {
-            expected: owner.as_u32(),
-            actual: cpu.owner().as_u32(),
-        });
+    let (pending, mut kernel_timer) = {
+        let mut irq = RuntimeIrqGuard::enter();
+        let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+        if cpu.owner() != owner {
+            return Err(TaskError::CpuOwnerMismatch {
+                expected: owner.as_u32(),
+                actual: cpu.owner().as_u32(),
+            });
+        }
+        let mut batch = system.service_ktimer_work(cpu.as_mut())?;
+        if let Some(update) = batch.update() {
+            task_runtime::publish_scheduler_deadline(update);
+        }
+        (batch.pending(), batch.take_kernel_timer())
+    };
+    if let Some(timer) = kernel_timer.as_mut() {
+        timer.invoke();
+        system.complete_kernel_timer_execution(owner)?;
     }
-    let batch = system.service_ktimer_work(cpu.as_mut())?;
-    if let Some(update) = batch.update() {
-        task_runtime::publish_scheduler_deadline(update);
-    }
-    Ok(batch.pending())
+    Ok(pending)
 }

@@ -1,8 +1,13 @@
 //! Fixed-capacity owner-CPU task-deadline storage.
 
 mod heap;
+mod kernel;
 mod node;
 
+pub use kernel::{KernelTimerCallback, KernelTimerCancelOutcome, KernelTimerHandle};
+pub(crate) use kernel::{
+    KernelTimerEntry, KernelTimerExecution, KernelTimerExpireBatch, KernelTimerQueue,
+};
 pub use node::{
     ExpiredTaskDeadline, TaskDeadlineKind, TaskDeadlineNode, TaskDeadlineRegistration,
     TaskDeadlineToken,

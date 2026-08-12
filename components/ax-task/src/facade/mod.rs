@@ -18,11 +18,15 @@ use crate::{
         RuntimeSchedulerEntry, RuntimeSchedulerReturn, RuntimeStatus, SchedSwitchRecord,
         task_runtime,
     },
-    timer::TaskDeadlineKind,
+    timer::{
+        KernelTimerCallback, KernelTimerCancelOutcome, KernelTimerEntry, KernelTimerHandle,
+        TaskDeadlineError, TaskDeadlineKind,
+    },
 };
 
 mod deadline;
 mod irq_worker;
+mod kernel_timer;
 mod ktimer;
 #[cfg(feature = "lockdep")]
 mod lockdep;
@@ -42,6 +46,7 @@ pub(crate) use deadline::{
     begin_current_park_with_permit, cancel_current_park, commit_current_park,
 };
 pub use irq_worker::IrqWorkerWaiter;
+pub use kernel_timer::{cancel_kernel_timer, register_kernel_timer};
 pub use ktimer::start_current_ktimer_service;
 #[cfg(feature = "lockdep")]
 pub(crate) use lockdep::{

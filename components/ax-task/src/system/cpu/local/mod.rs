@@ -19,6 +19,7 @@ pub(crate) enum SchedulerDeadlineDerivationSource {
     ClockEvent,
     ParkArm,
     ParkCancel,
+    KernelTimer,
     KtimerService,
     Enqueue,
     Placement,

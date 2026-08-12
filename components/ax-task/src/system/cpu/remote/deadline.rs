@@ -146,6 +146,7 @@ pub(crate) struct SchedulerDeadlinePublicationState {
 #[derive(Debug)]
 pub(crate) struct CpuDeadlineState {
     pub(crate) queue: TaskDeadlineQueue,
+    pub(crate) kernel_timers: KernelTimerQueue,
     pub(crate) expired_buffer: Vec<ExpiredTaskDeadline>,
     pub(crate) expired_count: usize,
     /// Mirrors Linux `hrtimer_cpu_base::softirq_activated`.
@@ -164,6 +165,7 @@ impl CpuDeadlineState {
     pub(crate) fn new(config: TaskSystemConfig) -> Self {
         Self {
             queue: TaskDeadlineQueue::new(config.thread_capacity()),
+            kernel_timers: KernelTimerQueue::new(config.thread_capacity()),
             expired_buffer: vec![ExpiredTaskDeadline::EMPTY; config.batch_limit()],
             expired_count: 0,
             softirq_activated: false,
@@ -174,8 +176,11 @@ impl CpuDeadlineState {
         }
     }
 
-    fn has_active_work(&self) -> bool {
-        !self.queue.is_empty() || self.expired_count != 0 || self.softirq_activated
+    pub(crate) fn has_active_work(&self) -> bool {
+        !self.queue.is_empty()
+            || self.kernel_timers.has_active_work()
+            || self.expired_count != 0
+            || self.softirq_activated
     }
 
     pub(crate) fn peek_buffered_expiration(&self) -> Option<ExpiredTaskDeadline> {
@@ -215,5 +220,12 @@ impl CpuDeadlineState {
         self.expired_count -= 1;
         self.expired_buffer[self.expired_count] = ExpiredTaskDeadline::EMPTY;
         Some(event)
+    }
+}
+
+impl CpuRemote {
+    pub(in crate::system::cpu) fn deadline_is_quiescent_for_offline(&self) -> bool {
+        self.read_active_deadline_base(DeadlineBaseGuardSource::Lifecycle)
+            .is_none_or(|deadlines| !deadlines.has_active_work())
     }
 }
