@@ -4,9 +4,7 @@
 use std::vec::Vec;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use axdevice::{
-    DeviceFirmwareProperty, DeviceFirmwareSpec, ResolvedDeviceGraph, ResolvedDeviceResources,
-};
+use axdevice::{DeviceFirmwareSpec, ResolvedDeviceGraph, ResolvedDeviceResources};
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use crate::{AxVmError, AxVmResult};
@@ -16,7 +14,7 @@ use crate::{AxVmError, AxVmResult};
 pub struct GuestIvcChannel {
     pub base_gpa: usize,
     pub length: usize,
-    pub notify_irq: Option<u32>,
+    pub notify_irq: u32,
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -55,7 +53,17 @@ fn ivc_channel_from_resources(
             "IVC firmware model for {device_id} must declare exactly one register slot"
         )));
     };
-    let (base_gpa, length) = resources.mmio(registers)?;
+    let (base_gpa, length) = resources.guest_range(registers)?;
+    let [notify] = firmware.interrupt_slots() else {
+        return Err(AxVmError::invalid_config(std::format!(
+            "IVC firmware model for {device_id} must declare exactly one interrupt slot"
+        )));
+    };
+    let notify_irq = u32::try_from(resources.wired_irq(notify)?.input().value()).map_err(|_| {
+        AxVmError::invalid_config(std::format!(
+            "resolved IVC notify IRQ for {device_id} exceeds the FDT cell width"
+        ))
+    })?;
     Ok(GuestIvcChannel {
         base_gpa: usize::try_from(base_gpa).map_err(|_| {
             AxVmError::invalid_config(std::format!(
@@ -67,20 +75,6 @@ fn ivc_channel_from_resources(
                 "resolved IVC length for {device_id} exceeds the target address width"
             ))
         })?,
-        notify_irq: u32_property(firmware, "axvisor,notify-irq"),
+        notify_irq,
     })
-}
-
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-fn u32_property(firmware: &DeviceFirmwareSpec, name: &str) -> Option<u32> {
-    firmware
-        .properties()
-        .iter()
-        .find_map(|property| match property {
-            DeviceFirmwareProperty::U32 {
-                name: property_name,
-                value,
-            } if property_name == name => Some(*value),
-            _ => None,
-        })
 }

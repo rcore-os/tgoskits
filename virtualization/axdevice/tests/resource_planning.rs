@@ -15,6 +15,16 @@ fn mmio_request(id: &str, request: ResourceRequest<u64>) -> DevicePlanRequest {
     .unwrap()
 }
 
+fn guest_range_request(id: &str, request: ResourceRequest<u64>) -> DevicePlanRequest {
+    DevicePlanRequest::new(
+        id,
+        DeviceRequirements::new()
+            .with_guest_range(slot("shared"), 0x1000, 0x1000, request)
+            .unwrap(),
+    )
+    .unwrap()
+}
+
 #[test]
 fn planning_is_fixed_first_deterministic_and_reports_exhaustion() {
     let pools = || {
@@ -58,6 +68,59 @@ fn planning_is_fixed_first_deterministic_and_reports_exhaustion() {
             namespace: ResourceNamespace::Mmio,
             ..
         }
+    ));
+}
+
+#[test]
+fn guest_ranges_use_their_own_guest_physical_namespace() {
+    let mut pools = ResourcePools::new();
+    pools
+        .add_auto_guest_range(0x8000_0000..0x8000_3000)
+        .unwrap();
+    pools
+        .allow_fixed_guest_range(0x8000_0000..0x8000_3000)
+        .unwrap();
+    pools
+        .reserve_guest_range("boot-image", 0x8000_0000..0x8000_1000)
+        .unwrap();
+
+    let plan = VmResourcePlanner::new(pools)
+        .plan([
+            guest_range_request("fixed", ResourceRequest::Fixed(0x8000_1000)),
+            guest_range_request("auto", ResourceRequest::Auto),
+        ])
+        .unwrap();
+
+    assert_eq!(
+        plan.resources("fixed")
+            .unwrap()
+            .guest_range(&slot("shared")),
+        Ok((0x8000_1000, 0x1000))
+    );
+    assert_eq!(
+        plan.resources("auto").unwrap().guest_range(&slot("shared")),
+        Ok((0x8000_2000, 0x1000))
+    );
+}
+
+#[test]
+fn fixed_mmio_still_conflicts_with_reserved_guest_memory() {
+    let mut pools = ResourcePools::new();
+    pools.allow_fixed_mmio(0x8000_0000..0x8000_1000).unwrap();
+    pools
+        .reserve_mmio("guest-memory", 0x8000_0000..0x8000_1000)
+        .unwrap();
+
+    assert!(matches!(
+        VmResourcePlanner::new(pools)
+            .plan([mmio_request("bad-mmio", ResourceRequest::Fixed(0x8000_0000))])
+            .unwrap_err(),
+        ResourcePlanningError::Conflict {
+            namespace: ResourceNamespace::Mmio,
+            existing_owner,
+            requester,
+            ..
+        } if existing_owner == "guest-memory" && requester == "bad-mmio"
     ));
 }
 

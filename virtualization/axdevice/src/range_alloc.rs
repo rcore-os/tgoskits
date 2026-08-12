@@ -5,6 +5,7 @@ use core::ops::Range;
 
 use ax_memory_addr::is_aligned_4k;
 use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
+use axdevice_base::IrqLine;
 use axvm_types::GuestPhysAddr;
 
 use crate::*;
@@ -28,11 +29,42 @@ impl ServiceKey for GuestRangeAllocatorKey {
     const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
-/// Type key for the optional VM-local IRQ used by IVC peer notification.
+/// VM-local endpoint used by IVC peer notification.
+pub trait IvcNotifyEndpoint: Send + Sync {
+    /// Delivers one notification event to the peer VM.
+    fn notify(&self) -> DeviceManagerResult;
+
+    /// Returns the planned controller-local input for diagnostics.
+    fn input(&self) -> usize;
+}
+
+/// IVC notify endpoint backed by one graph-owned wired IRQ line.
+pub struct WiredIvcNotifyEndpoint {
+    line: IrqLine,
+}
+
+impl WiredIvcNotifyEndpoint {
+    /// Wraps a planned wired IRQ line as an IVC notify endpoint.
+    pub const fn new(line: IrqLine) -> Self {
+        Self { line }
+    }
+}
+
+impl IvcNotifyEndpoint for WiredIvcNotifyEndpoint {
+    fn notify(&self) -> DeviceManagerResult {
+        self.line.pulse().map_err(DeviceManagerError::from)
+    }
+
+    fn input(&self) -> usize {
+        self.line.input().value()
+    }
+}
+
+/// Type key for the optional VM-local IRQ endpoint used by IVC peer notification.
 pub struct IvcNotifyIrqKey;
 
 impl ServiceKey for IvcNotifyIrqKey {
-    type Service = usize;
+    type Service = dyn IvcNotifyEndpoint;
 
     const NAME: &'static str = "ivc-notify-irq";
     const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;

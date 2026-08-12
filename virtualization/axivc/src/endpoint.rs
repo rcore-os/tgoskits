@@ -69,7 +69,9 @@ impl<'a> IvcProducer<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`IvcRingError::Full`] when the ring has no free slot.
+    /// Returns [`IvcRingError::Full`] when the ring has no free slot, or
+    /// [`IvcRingError::PayloadTooLarge`] when `payload` cannot fit in one
+    /// fixed ring slot.
     pub fn send(
         &mut self,
         kind: IvcMessageKind,
@@ -105,8 +107,10 @@ impl<'a> IvcConsumer<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`IvcRingError::UnknownMessageKind`] when the stored message
-    /// kind is not known by this protocol version.
+    /// Returns [`IvcRingError::BufferTooSmall`] without consuming the pending
+    /// slot when `payload` is too short. Returns
+    /// [`IvcRingError::UnknownMessageKind`] when the stored message kind is not
+    /// known by this protocol version.
     pub fn try_recv(&mut self, payload: &mut [u8]) -> Result<Option<IvcMessage>, IvcRingError> {
         self.ring.try_recv(payload)
     }

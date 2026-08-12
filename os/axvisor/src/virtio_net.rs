@@ -31,6 +31,7 @@ static INTERNAL_SWITCH: Mutex<Option<Arc<VirtualSwitch>>> = Mutex::new(None);
 pub const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
     model: "virtio-net",
     create: create_device_node,
+    default_fixed_resources: None,
 };
 
 fn create_device_node(

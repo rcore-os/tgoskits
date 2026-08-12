@@ -52,6 +52,14 @@ impl<'a> AllocationState<'a> {
             } => self
                 .addresses
                 .allocate_pio(requester, slot, *size, *alignment, *request),
+            DeviceRequirement::GuestRange {
+                slot,
+                size,
+                alignment,
+                request,
+            } => self
+                .addresses
+                .allocate_guest_range(requester, slot, *size, *alignment, *request),
             DeviceRequirement::WiredIrq {
                 slot,
                 controller,

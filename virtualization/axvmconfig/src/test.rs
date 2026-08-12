@@ -149,7 +149,6 @@ fn guest_type_owns_address_space_policy() {
         }],
         disabled: Vec::new(),
         virtual_devices: Vec::new(),
-        legacy_virtual_devices: Vec::new(),
     };
     let unresolved = devices.unresolved_host_devices();
     assert_eq!(unresolved.len(), 1);
@@ -183,37 +182,37 @@ fn rejects_removed_configuration_fields() {
 }
 
 #[test]
-fn parses_legacy_vm_type_and_emulated_devices() {
+fn parses_virtual_ivc_channel_device() {
     let config = GuestConfig::from_toml(
         r#"
-[base]
-vm_type = 1
+[devices]
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"
+"#,
+    )
+    .unwrap();
 
+    let [request] = config.devices.virtual_devices.as_slice() else {
+        panic!("expected one virtual device request");
+    };
+    assert_eq!(request.id, "ivc0");
+    assert_eq!(request.model, "ivc-channel");
+    assert!(request.options.is_empty());
+}
+
+#[test]
+fn rejects_legacy_emulated_devices_entry() {
+    let error = GuestConfig::from_toml(
+        r#"
 [devices]
 emu_devices = [
   ["ivc-channel", 0xbff0_0000, 0x1_0000, 0, 0xA, [60]],
 ]
 "#,
     )
-    .unwrap();
-
-    assert_eq!(config.base.guest_type, GuestType::Passthrough);
-    assert!(config.devices.virtual_devices.is_empty());
-
-    let [request] = config.devices.legacy_virtual_devices.as_slice() else {
-        panic!("expected one legacy virtual device request");
-    };
-    assert_eq!(request.id, "ivc-channel@bff00000");
-    assert_eq!(request.model, "ivc-channel");
-    assert_eq!(
-        request.options["legacy_base_gpa"].as_integer(),
-        Some(0xbff0_0000)
-    );
-    assert_eq!(
-        request.options["legacy_length"].as_integer(),
-        Some(0x1_0000)
-    );
-    assert_eq!(request.options["notify_irq"].as_integer(), Some(60));
+    .unwrap_err();
+    assert!(matches!(error, AxVmConfigError::TomlParse { .. }));
 }
 
 #[test]
@@ -250,8 +249,11 @@ passthrough = [{ path = "soc/net@1000" }]
 passthrough = [{ path = "/" }]
 "#,
     )
-    .unwrap();
-    assert_eq!(root.devices.passthrough[0].path, "/");
+    .unwrap_err();
+    assert_eq!(
+        root,
+        AxVmConfigError::InvalidPhysicalDevicePath { path: "/".into() }
+    );
 
     let conflict = GuestConfig::from_toml(
         r#"

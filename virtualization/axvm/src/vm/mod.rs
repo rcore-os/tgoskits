@@ -675,6 +675,7 @@ impl AxVMResources {
     }
 
     fn reset_transient_resources(&mut self) -> AxVmResult {
+        self.teardown_ivc_bindings()?;
         if let Some(devices) = self.devices.take() {
             devices
                 .reset_lifecycle_devices()
@@ -701,6 +702,153 @@ impl AxVMResources {
         self.interrupt_controller = None;
         self.address_layout = None;
         Ok(())
+    }
+
+    fn teardown_ivc_bindings(&mut self) -> AxVmResult {
+        let vm_id = self.config.id();
+        let bindings = crate::runtime::ivc::teardown_vm(vm_id);
+        release_ivc_guest_bindings(vm_id, bindings, self)
+    }
+}
+
+trait IvcGuestBindingRelease {
+    fn unmap_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult;
+
+    fn release_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult;
+}
+
+impl IvcGuestBindingRelease for AxVMResources {
+    fn unmap_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult {
+        self.address_space
+            .unmap(binding.gpa, binding.size)
+            .map_err(|error| AxVmError::from_addrspace("unmap IVC binding", error))
+    }
+
+    fn release_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult {
+        if let Some(devices) = &self.devices {
+            devices
+                .release_ivc_channel(binding.gpa, binding.size)
+                .map_err(|error| {
+                    AxVmError::device("release IVC binding during lifecycle cleanup", error)
+                })?;
+        }
+        Ok(())
+    }
+}
+
+fn release_ivc_guest_bindings(
+    vm_id: usize,
+    bindings: Vec<crate::runtime::ivc::IvcGuestBinding>,
+    release: &mut impl IvcGuestBindingRelease,
+) -> AxVmResult {
+    for binding in bindings {
+        if let Err(err) = release.unmap_ivc_guest_binding(binding) {
+            warn!(
+                "VM[{}] failed to unmap IVC binding at GPA={:#x}: {err:?}",
+                vm_id,
+                binding.gpa.as_usize()
+            );
+        }
+        if let Err(err) = release.release_ivc_guest_binding(binding) {
+            warn!(
+                "VM[{}] failed to release IVC binding at GPA={:#x}: {err:?}",
+                vm_id,
+                binding.gpa.as_usize()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod ivc_lifecycle_tests {
+    use std::vec::Vec;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingIvcBindingRelease {
+        events: Vec<String>,
+        fail_release: bool,
+    }
+
+    impl IvcGuestBindingRelease for RecordingIvcBindingRelease {
+        fn unmap_ivc_guest_binding(
+            &mut self,
+            binding: crate::runtime::ivc::IvcGuestBinding,
+        ) -> AxVmResult {
+            self.events
+                .push(format!("unmap:{:#x}", binding.gpa.as_usize()));
+            Ok(())
+        }
+
+        fn release_ivc_guest_binding(
+            &mut self,
+            binding: crate::runtime::ivc::IvcGuestBinding,
+        ) -> AxVmResult {
+            self.events
+                .push(format!("release:{:#x}", binding.gpa.as_usize()));
+            if self.fail_release {
+                Err(AxVmError::device("release test IVC binding", "injected"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn ivc_lifecycle_cleanup_unmaps_before_releasing_guest_range() {
+        let bindings = vec![
+            crate::runtime::ivc::IvcGuestBinding {
+                gpa: GuestPhysAddr::from_usize(0x7000_0000),
+                size: 0x1000,
+            },
+            crate::runtime::ivc::IvcGuestBinding {
+                gpa: GuestPhysAddr::from_usize(0x7000_1000),
+                size: 0x1000,
+            },
+        ];
+        let mut release = RecordingIvcBindingRelease::default();
+
+        release_ivc_guest_bindings(1, bindings, &mut release).unwrap();
+
+        assert_eq!(
+            release.events,
+            [
+                "unmap:0x70000000",
+                "release:0x70000000",
+                "unmap:0x70001000",
+                "release:0x70001000"
+            ]
+        );
+    }
+
+    #[test]
+    fn ivc_lifecycle_cleanup_is_best_effort_after_global_teardown() {
+        let bindings = vec![crate::runtime::ivc::IvcGuestBinding {
+            gpa: GuestPhysAddr::from_usize(0x7100_0000),
+            size: 0x1000,
+        }];
+        let mut release = RecordingIvcBindingRelease {
+            fail_release: true,
+            ..Default::default()
+        };
+
+        release_ivc_guest_bindings(2, bindings, &mut release).unwrap();
+
+        assert_eq!(release.events, ["unmap:0x71000000", "release:0x71000000"]);
     }
 }
 
@@ -1779,6 +1927,8 @@ impl AxVM {
 
     fn cleanup_resource_set(vm_id: usize, resources: &mut AxVMResources) -> AxVmResult {
         info!("Cleaning up VM[{vm_id}] resources...");
+
+        resources.teardown_ivc_bindings()?;
 
         if let Some(devices) = resources.devices.take() {
             devices.reset_lifecycle_devices().map_err(|error| {

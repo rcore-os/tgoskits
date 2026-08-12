@@ -30,6 +30,7 @@ static BUILT: Mutex<Vec<(u64, usize, String)>> = Mutex::new(Vec::new());
 const BLOCK_LIKE_REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
     model: "virtio-blk-like",
     create: create_block_like,
+    default_fixed_resources: None,
 };
 
 fn create_block_like(
@@ -240,6 +241,113 @@ capacity = "20GiB"
             (0x1000_1000, 33, "40GiB".into()),
         ]
     );
+}
+
+#[test]
+fn ivc_channel_uses_catalog_and_planned_guest_range() {
+    let config = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"
+"#,
+    )
+    .unwrap();
+
+    let catalog = ConfiguredDeviceCatalog::new();
+    let controller_id = DeviceNodeId::new("controller").unwrap();
+    let context = DeviceInstantiationContext::new()
+        .with_default_wired_controller(controller_id.clone(), InterruptControllerId::new(0));
+    let mut graph = DeviceGraphBuilder::new();
+    graph
+        .add(DeviceNodeSpec::virtual_device(
+            controller_id,
+            Arc::new(ControllerModel),
+        ))
+        .unwrap();
+    for request in config.devices.virtual_device_requests() {
+        let node = catalog.instantiate_node(request, &context).unwrap();
+        graph.add(node).unwrap();
+    }
+
+    let mut pools = ResourcePools::new();
+    pools
+        .add_auto_guest_range(0xbff0_0000..0xc000_0000)
+        .unwrap();
+    pools
+        .add_auto_controller_inputs(
+            InterruptControllerId::new(0),
+            ControllerInputId::new(32)..ControllerInputId::new(33),
+        )
+        .unwrap();
+    let graph = graph.declare().unwrap().resolve(pools).unwrap();
+
+    let ivc_id = DeviceNodeId::new("ivc0").unwrap();
+    let registers = ResourceSlot::new("registers").unwrap();
+    let notify = ResourceSlot::new("notify").unwrap();
+    let resources = graph.resources_for(&ivc_id).unwrap();
+    assert_eq!(
+        resources.guest_range(&registers).unwrap(),
+        (0xbfff_0000, 0x1_0000)
+    );
+    assert_eq!(resources.wired_irq(&notify).unwrap().input().value(), 32);
+
+    let ivc_node = graph
+        .nodes()
+        .find(|node| node.id() == &ivc_id)
+        .expect("IVC node is present in the resolved graph");
+    let firmware = ivc_node.firmware();
+    assert_eq!(
+        firmware.node_name().map(String::as_str),
+        Some("ivc-channel")
+    );
+    assert_eq!(firmware.compatible(), ["axvisor,ivc-channel"]);
+    assert_eq!(
+        firmware.properties(),
+        [DeviceFirmwareProperty::U32 {
+            name: "axvisor,ivc-version".into(),
+            value: 1
+        }]
+    );
+    assert_eq!(firmware.register_slots(), [registers]);
+    assert_eq!(firmware.interrupt_slots(), [notify]);
+
+    let mut runtime = axdevice::DeviceRuntimeBuilder::new(Default::default());
+    for node in graph.nodes() {
+        runtime
+            .build_graph_node(node, graph.resource_plan())
+            .unwrap();
+    }
+    let runtime = runtime.finish(graph.resource_plan()).unwrap();
+    assert_eq!(runtime.notify_ivc_peer().unwrap(), Some(32));
+    assert_eq!(
+        runtime.alloc_ivc_channel(0x1000).unwrap(),
+        axvm_types::GuestPhysAddr::from_usize(0xbfff_0000)
+    );
+}
+
+#[test]
+fn ivc_channel_rejects_raw_notify_irq_option() {
+    let config = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"
+notify_irq = 160
+"#,
+    )
+    .unwrap();
+    let request = config.devices.virtual_device_requests().first().unwrap();
+    let controller_id = DeviceNodeId::new("controller").unwrap();
+    let context = DeviceInstantiationContext::new()
+        .with_default_wired_controller(controller_id, InterruptControllerId::new(0));
+
+    assert!(matches!(
+        ConfiguredDeviceCatalog::new().instantiate_node(request, &context),
+        Err(ConfiguredDeviceError::InvalidOptions { .. })
+    ));
 }
 
 #[test]

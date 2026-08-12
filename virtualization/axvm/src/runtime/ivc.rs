@@ -46,6 +46,13 @@ pub struct IvcNotifyRoute {
     pub key: usize,
 }
 
+/// One guest-visible IVC mapping owned by a VM runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct IvcGuestBinding {
+    pub gpa: GuestPhysAddr,
+    pub size: usize,
+}
+
 pub fn insert_channel(publisher_vm_id: usize, channel: HostIVCChannel) -> AxVmResult<()> {
     let mut channels = IVC_CHANNELS.lock_unpoisoned();
     let channel_key = (publisher_vm_id, channel.key);
@@ -56,6 +63,19 @@ pub fn insert_channel(publisher_vm_id: usize, channel: HostIVCChannel) -> AxVmRe
         }
         Entry::Occupied(_) => Err(ax_err_type!(AlreadyExists, "IVC channel already exists")),
     }
+}
+
+/// Removes every global IVC binding owned by one VM.
+///
+/// The returned bindings are the caller VM's guest GPA windows that must be
+/// unmapped and released from its graph-owned guest range allocator. A
+/// subscriber teardown detaches only that subscriber. A publisher teardown
+/// removes the publisher's GPA binding and either drops the whole channel when
+/// no subscriber remains, or keeps the backing frame alive until the last
+/// subscriber tears down.
+pub(crate) fn teardown_vm(vm_id: usize) -> Vec<IvcGuestBinding> {
+    let mut channels = IVC_CHANNELS.lock_unpoisoned();
+    teardown_vm_from_channels(&mut channels, vm_id)
 }
 
 pub fn ensure_channel_absent(publisher_vm_id: usize, key: usize) -> AxVmResult<()> {
@@ -492,6 +512,42 @@ impl<H: PagingHandler> IVCChannel<H> {
     }
 }
 
+fn teardown_vm_from_channels<H: PagingHandler>(
+    channels: &mut BTreeMap<(usize, usize), IVCChannel<H>>,
+    vm_id: usize,
+) -> Vec<IvcGuestBinding> {
+    let mut bindings = Vec::new();
+    let mut remove_keys = Vec::new();
+
+    for (channel_key, channel) in channels.iter_mut() {
+        if channel.publisher_vm_id == vm_id
+            && let Some(base_gpa) = channel.base_gpa.take()
+        {
+            bindings.push(IvcGuestBinding {
+                gpa: base_gpa,
+                size: channel.size(),
+            });
+        }
+
+        if let Some(subscriber_gpa) = channel.remove_subscriber(vm_id) {
+            bindings.push(IvcGuestBinding {
+                gpa: subscriber_gpa,
+                size: channel.size(),
+            });
+        }
+
+        if channel.is_unpublished() && !channel.has_subscribers() {
+            remove_keys.push(*channel_key);
+        }
+    }
+
+    for key in remove_keys {
+        channels.remove(&key);
+    }
+
+    bindings
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -668,5 +724,98 @@ mod tests {
 
         assert!(!channel.has_subscriber(2));
         assert!(channel.has_subscriber(3));
+    }
+
+    #[test]
+    fn publisher_teardown_removes_publisher_binding_and_keeps_live_subscriber() {
+        let mut channels = BTreeMap::new();
+        let key = (1, 0x200);
+        let mut channel = IVCChannel::<MockPagingHandler>::alloc(
+            1,
+            key.1,
+            PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_0000),
+        )
+        .unwrap();
+        let base_hpa = channel.base_hpa();
+        channel
+            .add_subscriber(2, GuestPhysAddr::from_usize(0x7100_0000))
+            .unwrap();
+        channels.insert(key, channel);
+
+        let bindings = teardown_vm_from_channels(&mut channels, 1);
+
+        assert_eq!(
+            bindings,
+            [IvcGuestBinding {
+                gpa: GuestPhysAddr::from_usize(0x7000_0000),
+                size: PAGE_SIZE_4K
+            }]
+        );
+        let channel = channels.get(&key).expect("subscriber keeps backing alive");
+        assert!(channel.is_unpublished());
+        assert!(channel.has_subscriber(2));
+        assert!(
+            DEALLOC_FRAMES_CALLS
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(base, _)| *base != base_hpa.as_usize())
+        );
+
+        let subscriber_bindings = teardown_vm_from_channels(&mut channels, 2);
+
+        assert_eq!(
+            subscriber_bindings,
+            [IvcGuestBinding {
+                gpa: GuestPhysAddr::from_usize(0x7100_0000),
+                size: PAGE_SIZE_4K
+            }]
+        );
+        assert!(channels.is_empty());
+        assert!(
+            DEALLOC_FRAMES_CALLS
+                .lock()
+                .unwrap()
+                .contains(&(base_hpa.as_usize(), 1))
+        );
+    }
+
+    #[test]
+    fn subscriber_teardown_detaches_without_removing_published_channel() {
+        let mut channels = BTreeMap::new();
+        let key = (1, 0x201);
+        let mut channel = IVCChannel::<MockPagingHandler>::alloc(
+            1,
+            key.1,
+            PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7200_0000),
+        )
+        .unwrap();
+        channel
+            .add_subscriber(2, GuestPhysAddr::from_usize(0x7300_0000))
+            .unwrap();
+        channels.insert(key, channel);
+
+        let bindings = teardown_vm_from_channels(&mut channels, 2);
+
+        assert_eq!(
+            bindings,
+            [IvcGuestBinding {
+                gpa: GuestPhysAddr::from_usize(0x7300_0000),
+                size: PAGE_SIZE_4K
+            }]
+        );
+        let channel = channels
+            .get_mut(&key)
+            .expect("publisher remains after subscriber teardown");
+        assert!(!channel.is_unpublished());
+        assert!(!channel.has_subscribers());
+        channel
+            .add_subscriber(3, GuestPhysAddr::from_usize(0x7400_0000))
+            .unwrap();
+        assert!(channel.has_subscriber(3));
+
+        assert!(teardown_vm_from_channels(&mut channels, 2).is_empty());
     }
 }

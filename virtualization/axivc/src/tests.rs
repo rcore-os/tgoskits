@@ -90,6 +90,58 @@ fn send_fails_when_ring_is_full() {
 }
 
 #[test]
+fn send_rejects_payload_larger_than_one_slot() {
+    let mut region = new_region(PUBLISHER_VM_ID, CHANNEL_KEY);
+    region.initialize();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut producer, _reply_consumer) = unsafe { region.publisher_endpoints() }.into_parts();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (_reply_producer, mut consumer) = unsafe { region.subscriber_endpoints() }.into_parts();
+    let payload = [0x5a; IVC_SLOT_PAYLOAD_SIZE + 1];
+
+    assert_eq!(
+        producer.send(IvcMessageKind::Request, 1, &payload),
+        Err(IvcRingError::PayloadTooLarge {
+            len: IVC_SLOT_PAYLOAD_SIZE + 1,
+            capacity: IVC_SLOT_PAYLOAD_SIZE
+        })
+    );
+
+    let mut received = [0; IVC_SLOT_PAYLOAD_SIZE];
+    assert_eq!(consumer.try_recv(&mut received), Ok(None));
+}
+
+#[test]
+fn recv_rejects_short_buffer_without_consuming_slot() {
+    let mut region = new_region(PUBLISHER_VM_ID, CHANNEL_KEY);
+    region.initialize();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut producer, _reply_consumer) = unsafe { region.publisher_endpoints() }.into_parts();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (_reply_producer, mut consumer) = unsafe { region.subscriber_endpoints() }.into_parts();
+
+    producer
+        .send(IvcMessageKind::Request, 7, b"payload")
+        .unwrap();
+
+    let mut short = [0u8; 3];
+    assert_eq!(
+        consumer.try_recv(&mut short),
+        Err(IvcRingError::BufferTooSmall {
+            required: 7,
+            available: 3
+        })
+    );
+
+    let mut full = [0u8; IVC_SLOT_PAYLOAD_SIZE];
+    let message = consumer.try_recv(&mut full).unwrap().unwrap();
+    assert_eq!(message.sequence(), 7);
+    assert_eq!(message.len(), 7);
+    assert_eq!(&full[..message.len()], b"payload");
+    assert_eq!(consumer.try_recv(&mut full), Ok(None));
+}
+
+#[test]
 fn protocol_region_fits_one_ivc_page() {
     assert!(core::mem::size_of::<IvcRegion>() <= CHANNEL_SIZE);
 }

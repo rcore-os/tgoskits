@@ -1,6 +1,5 @@
 use core::{
     cell::UnsafeCell,
-    cmp,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
@@ -24,6 +23,10 @@ pub enum IvcRingDirection {
 pub enum IvcRingError {
     /// The ring has no free slot.
     Full,
+    /// The payload does not fit in one fixed ring slot.
+    PayloadTooLarge { len: usize, capacity: usize },
+    /// The caller's receive buffer cannot hold the pending message.
+    BufferTooSmall { required: usize, available: usize },
     /// The stored message kind is not known by this protocol version.
     UnknownMessageKind(u16),
 }
@@ -60,6 +63,13 @@ impl IvcRing {
         sequence: u64,
         payload: &[u8],
     ) -> Result<(), IvcRingError> {
+        if payload.len() > IVC_SLOT_PAYLOAD_SIZE {
+            return Err(IvcRingError::PayloadTooLarge {
+                len: payload.len(),
+                capacity: IVC_SLOT_PAYLOAD_SIZE,
+            });
+        }
+
         let tail = self.tail.load(Ordering::Relaxed);
         let head = self.head.load(Ordering::Acquire);
         if tail.wrapping_sub(head) as usize >= IVC_RING_CAPACITY {
@@ -111,7 +121,7 @@ impl IvcMessageSlot {
     }
 
     fn write(&self, kind: IvcMessageKind, sequence: u64, payload: &[u8]) {
-        let len = cmp::min(payload.len(), IVC_SLOT_PAYLOAD_SIZE);
+        let len = payload.len();
         unsafe {
             // The slot is exclusively owned by the producer until tail is
             // released, so writing through this interior cell cannot race with
@@ -133,10 +143,19 @@ impl IvcMessageSlot {
             return Err(IvcRingError::UnknownMessageKind(raw_kind));
         };
         let sequence = self.sequence.load(Ordering::Relaxed);
-        let len = cmp::min(
-            self.len.load(Ordering::Relaxed) as usize,
-            cmp::min(IVC_SLOT_PAYLOAD_SIZE, payload.len()),
-        );
+        let len = self.len.load(Ordering::Relaxed) as usize;
+        if len > IVC_SLOT_PAYLOAD_SIZE {
+            return Err(IvcRingError::PayloadTooLarge {
+                len,
+                capacity: IVC_SLOT_PAYLOAD_SIZE,
+            });
+        }
+        if payload.len() < len {
+            return Err(IvcRingError::BufferTooSmall {
+                required: len,
+                available: payload.len(),
+            });
+        }
         unsafe {
             // The consumer observes this slot only after tail acquire. Payload
             // bytes are copied out before head release returns ownership.

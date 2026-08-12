@@ -71,7 +71,14 @@ pub(crate) fn append_configured_devices(
                 false,
             )
         } else {
-            base_context.clone()
+            match config
+                .virtual_device_catalog()
+                .default_fixed_resources(&request.model, &base_context)
+                .map_err(configured_error)?
+            {
+                Some(fixed) => base_context.clone().with_fixed_bindings(fixed),
+                None => base_context.clone(),
+            }
         };
         nodes.push(
             config
@@ -216,5 +223,62 @@ mod tests {
             .unwrap();
         assert_eq!(serial.mmio(&registers).unwrap(), (0x1000_1000, 0x100));
         assert_eq!(serial.wired_irq(&irq).unwrap().input().value(), 17);
+    }
+
+    #[test]
+    fn ivc_channel_uses_machine_owned_notify_irq_and_planned_shared_range() {
+        let config = AxVMConfig::new(AxVMConfigParams {
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            virtual_device_requests: vec![VirtualDeviceRequest {
+                id: "ivc0".into(),
+                model: "ivc-channel".into(),
+                options: Default::default(),
+            }],
+            ..Default::default()
+        });
+        let controller = DeviceNodeId::new("controller").unwrap();
+        let mut nodes = vec![DeviceNodeSpec::firmware_only(controller.clone())];
+        append_configured_devices(
+            &config,
+            &mut nodes,
+            &controller,
+            InterruptControllerId::new(0),
+        )
+        .unwrap();
+
+        let mut graph = DeviceGraphBuilder::new();
+        for node in nodes {
+            graph.add(node).unwrap();
+        }
+        let mut pools = ResourcePools::new();
+        pools.add_auto_mmio(0x1000_0000..0x1001_0000).unwrap();
+        pools
+            .add_auto_guest_range(0xb000_0000..0xb002_0000)
+            .unwrap();
+        pools.allow_fixed_pio(0x3f8..0x400).unwrap();
+        pools
+            .allow_fixed_controller_inputs(
+                InterruptControllerId::new(0),
+                ControllerInputId::new(4)..ControllerInputId::new(5),
+            )
+            .unwrap();
+        pools
+            .allow_fixed_controller_inputs(
+                InterruptControllerId::new(0),
+                ControllerInputId::new(160)..ControllerInputId::new(161),
+            )
+            .unwrap();
+        let graph = graph.declare().unwrap().resolve(pools).unwrap();
+
+        let registers = ResourceSlot::new("registers").unwrap();
+        let notify = ResourceSlot::new("notify").unwrap();
+        let ivc = graph
+            .resources_for(&DeviceNodeId::new("ivc0").unwrap())
+            .unwrap();
+        assert_eq!(
+            ivc.guest_range(&registers).unwrap(),
+            (0xb001_0000, super::ivc::IVC_CHANNEL_SHARED_RANGE_SIZE)
+        );
+        assert_eq!(ivc.wired_irq(&notify).unwrap().input().value(), 160);
     }
 }

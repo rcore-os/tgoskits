@@ -14,6 +14,7 @@ pub(super) struct AddressAllocator<'a> {
 struct AddressAllocations {
     mmio: Vec<RangeOwner<u64>>,
     pio: Vec<RangeOwner<u16>>,
+    guest_range: Vec<RangeOwner<u64>>,
 }
 
 impl<'a> AddressAllocator<'a> {
@@ -23,6 +24,7 @@ impl<'a> AddressAllocator<'a> {
             allocated: AddressAllocations {
                 mmio: pools.reserved_mmio().to_vec(),
                 pio: pools.reserved_pio().to_vec(),
+                guest_range: pools.reserved_guest_range().to_vec(),
             },
         }
     }
@@ -117,6 +119,54 @@ impl<'a> AddressAllocator<'a> {
             ResourceNamespace::Pio,
         )?;
         Ok(ResolvedResource::Pio { base, size })
+    }
+
+    pub(super) fn allocate_guest_range(
+        &mut self,
+        requester: &str,
+        slot: &ResourceSlot,
+        size: u64,
+        alignment: u64,
+        request: ResourceRequest<u64>,
+    ) -> Result<ResolvedResource, ResourcePlanningError> {
+        let base = match request {
+            ResourceRequest::Auto => find_u64_range_high(
+                self.pools.auto_guest_range(),
+                &self.allocated.guest_range,
+                size,
+                alignment,
+            )
+            .ok_or_else(|| exhausted(ResourceNamespace::GuestRange, requester, slot))?,
+            ResourceRequest::Fixed(base) => {
+                if base % alignment != 0
+                    || !range_allowed(Some(self.pools.fixed_guest_range()), base, size)
+                {
+                    return Err(fixed_not_allowed(
+                        ResourceNamespace::GuestRange,
+                        format!("{base:#x}+{size:#x}"),
+                        requester,
+                        slot,
+                    ));
+                }
+                base
+            }
+        };
+        let end = base.checked_add(size).ok_or_else(|| {
+            fixed_not_allowed(
+                ResourceNamespace::GuestRange,
+                format!("{base:#x}+{size:#x}"),
+                requester,
+                slot,
+            )
+        })?;
+        reserve_allocated_range(
+            &mut self.allocated.guest_range,
+            base,
+            end,
+            requester,
+            ResourceNamespace::GuestRange,
+        )?;
+        Ok(ResolvedResource::GuestRange { base, size })
     }
 }
 

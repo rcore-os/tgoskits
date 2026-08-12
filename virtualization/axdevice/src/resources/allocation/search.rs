@@ -24,6 +24,32 @@ pub(super) fn find_u64_range(
     None
 }
 
+pub(super) fn find_u64_range_high(
+    pools: &[Range<u64>],
+    occupied: &[RangeOwner<u64>],
+    size: u64,
+    alignment: u64,
+) -> Option<u64> {
+    for pool in pools.iter().rev() {
+        let mut candidate = align_down(pool.end.checked_sub(size)?, alignment)?;
+        loop {
+            if candidate < pool.start {
+                break;
+            }
+            let end = candidate.checked_add(size)?;
+            let conflict = first_conflict(occupied, candidate, end);
+            match conflict {
+                Some(owner) => {
+                    let next_end = owner.range.start.min(candidate);
+                    candidate = align_down(next_end.checked_sub(size)?, alignment)?;
+                }
+                None => return Some(candidate),
+            }
+        }
+    }
+    None
+}
+
 pub(super) fn find_u16_range(
     pools: &[Range<u16>],
     occupied: &[RangeOwner<u16>],
@@ -103,6 +129,11 @@ fn first_conflict<T: Copy + Ord>(
 fn align_up(value: u64, alignment: u64) -> Option<u64> {
     let mask = alignment.checked_sub(1)?;
     value.checked_add(mask).map(|value| value & !mask)
+}
+
+fn align_down(value: u64, alignment: u64) -> Option<u64> {
+    let mask = alignment.checked_sub(1)?;
+    Some(value & !mask)
 }
 
 pub(super) trait CheckedAdd: Sized {

@@ -235,7 +235,7 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
         boot_policy: GuestBootPolicy::KeepConfigured,
         serial_profile: Some(serial_profile),
         serial_backend_factory: Some(crate::guest_console::serial_backend_factory(cfg.base.id)),
-        virtual_device_requests: cfg.devices.virtual_device_requests(),
+        virtual_device_requests: cfg.devices.virtual_device_requests().to_vec(),
         virtual_device_catalog: Some(alloc::sync::Arc::new(virtual_device_catalog)),
     })
 }

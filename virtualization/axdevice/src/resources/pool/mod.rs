@@ -35,12 +35,14 @@ struct AddressPools {
 struct AddressRanges {
     mmio: Vec<Range<u64>>,
     pio: Vec<Range<u16>>,
+    guest_range: Vec<Range<u64>>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct AddressReservations {
     mmio: Vec<RangeOwner<u64>>,
     pio: Vec<RangeOwner<u16>>,
+    guest_range: Vec<RangeOwner<u64>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -100,14 +102,17 @@ impl ResourcePools {
                 automatic: AddressRanges {
                     mmio: Vec::new(),
                     pio: Vec::new(),
+                    guest_range: Vec::new(),
                 },
                 fixed: AddressRanges {
                     mmio: Vec::new(),
                     pio: Vec::new(),
+                    guest_range: Vec::new(),
                 },
                 reserved: AddressReservations {
                     mmio: Vec::new(),
                     pio: Vec::new(),
+                    guest_range: Vec::new(),
                 },
             },
             wired_irqs: WiredIrqPools {

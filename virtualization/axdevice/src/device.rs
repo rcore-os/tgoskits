@@ -347,12 +347,16 @@ impl DeviceRuntime {
             .allocate(size)
     }
 
-    /// Returns the optional VM-local IRQ line used by IVC notify.
-    pub fn ivc_notify_irq(&self) -> Option<usize> {
-        self.services
-            .require::<IvcNotifyIrqKey>()
-            .ok()
-            .map(|irq| *irq)
+    /// Delivers an IVC notify event through the graph-owned peer IRQ endpoint.
+    pub fn notify_ivc_peer(&self) -> DeviceManagerResult<Option<usize>> {
+        match self.services.require::<IvcNotifyIrqKey>() {
+            Ok(endpoint) => {
+                endpoint.notify()?;
+                Ok(Some(endpoint.input()))
+            }
+            Err(DeviceManagerError::ResourceNotFound { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Releases a previously allocated IVC channel.
