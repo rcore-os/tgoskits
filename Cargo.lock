@@ -2345,7 +2345,6 @@ dependencies = [
  "dma-api",
  "enum_dispatch",
  "futures",
- "id-arena",
  "libusb1-sys",
  "log",
  "mbarrier",
@@ -4147,12 +4146,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "id-arena"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
-
-[[package]]
 name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5220,6 +5213,26 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
+]
+
+[[package]]
+name = "norm-uvc-src"
+version = "0.3.0-nc"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1a6f448c5f1b7dcce6912046ae1f1b882c3609a4ddd0604de0cba001a21be70"
+dependencies = [
+ "cc",
+ "libusb1-sys",
+]
+
+[[package]]
+name = "norm-uvc-sys"
+version = "0.3.0-nc"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30b9613350adb12df332766a9c427c2320fc2dbe4a02795452b26946246b2771"
+dependencies = [
+ "bindgen 0.72.1",
+ "norm-uvc-src",
 ]
 
 [[package]]
@@ -9127,7 +9140,7 @@ dependencies = [
 name = "uvc-fps"
 version = "0.1.0"
 dependencies = [
- "pkg-config",
+ "norm-uvc-sys",
 ]
 
 [[package]]

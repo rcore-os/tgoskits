@@ -14,6 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use norm_uvc_sys as _;
+
 const UVC_FRAME_FORMAT_ANY: c_int = 0;
 const UVC_FRAME_FORMAT_YUYV: c_int = 3;
 const UVC_FRAME_FORMAT_MJPEG: c_int = 7;
@@ -247,6 +249,7 @@ struct Options {
     interval: Duration,
     duration: Option<Duration>,
     max_frames: Option<u64>,
+    restart_rounds: u64,
     save: SaveOptions,
 }
 
@@ -263,6 +266,7 @@ impl Default for Options {
             interval: Duration::from_secs(1),
             duration: None,
             max_frames: None,
+            restart_rounds: 1,
             save: SaveOptions::default(),
         }
     }
@@ -404,36 +408,45 @@ fn run() -> Result<(), String> {
         }),
         ..FrameCounters::default()
     };
+    let lifecycle_started = Instant::now();
+    let mut total_frames = 0;
+    let mut total_bytes = 0;
+    for round in 1..=options.restart_rounds {
+        println!(
+            "uvc-fps: lifecycle round={round}/{} phase=start active_alt=0->streaming",
+            options.restart_rounds
+        );
+        let summary = run_streaming_round(devh, &mut ctrl, &options, &counters)?;
+        if summary.frames == 0 || summary.bytes == 0 {
+            return Err(format!(
+                "lifecycle round {round} completed without receiving a frame"
+            ));
+        }
+        total_frames += summary.frames;
+        total_bytes += summary.bytes;
+        println!(
+            "uvc-fps: lifecycle round={round}/{} phase=stopped active_alt=streaming->0 \
+             async_iso_cancel_completion=ok frames={} bytes={}",
+            options.restart_rounds, summary.frames, summary.bytes
+        );
+        if round < options.restart_rounds {
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let elapsed = lifecycle_started.elapsed();
+    let elapsed_secs = elapsed.as_secs_f64().max(f64::EPSILON);
+    let summary = RunSummary {
+        elapsed,
+        frames: total_frames,
+        bytes: total_bytes,
+        avg_fps: total_frames as f64 / elapsed_secs,
+        avg_throughput_mib_s: total_bytes as f64 / elapsed_secs / 1024.0 / 1024.0,
+    };
     println!(
-        "uvc-fps: entering uvc_start_streaming format_index={} frame_index={} interval={} \
-         max_payload={} iface={}",
-        ctrl.b_format_index,
-        ctrl.b_frame_index,
-        ctrl.dw_frame_interval,
-        ctrl.dw_max_payload_transfer_size,
-        ctrl.b_interface_number
+        "uvc-fps: lifecycle PASS rounds={} active_alt=streaming->0->streaming pause_resume=ok \
+         async_iso_cancel_completion=ok",
+        options.restart_rounds
     );
-    let start_streaming_start = Instant::now();
-    check_uvc(
-        unsafe {
-            uvc_start_streaming(
-                devh,
-                &mut ctrl,
-                Some(frame_callback),
-                &counters as *const FrameCounters as *mut c_void,
-                0,
-            )
-        },
-        "uvc_start_streaming",
-    )?;
-    let stream_guard = UvcStreamGuard(devh);
-
-    println!(
-        "uvc-fps: streaming started elapsed_ms={}",
-        start_streaming_start.elapsed().as_millis()
-    );
-    let summary = report_loop(&options, &counters);
-    drop(stream_guard);
 
     if let Some(save) = &counters.save {
         if save.last_only {
@@ -453,6 +466,47 @@ fn run() -> Result<(), String> {
         summary.avg_throughput_mib_s
     );
     Ok(())
+}
+
+fn run_streaming_round(
+    devh: *mut UvcDeviceHandle,
+    ctrl: &mut UvcStreamCtrl,
+    options: &Options,
+    counters: &FrameCounters,
+) -> Result<RunSummary, String> {
+    println!(
+        "uvc-fps: entering uvc_start_streaming format_index={} frame_index={} interval={} \
+         max_payload={} iface={}",
+        ctrl.b_format_index,
+        ctrl.b_frame_index,
+        ctrl.dw_frame_interval,
+        ctrl.dw_max_payload_transfer_size,
+        ctrl.b_interface_number
+    );
+    let start_streaming_start = Instant::now();
+    check_uvc(
+        unsafe {
+            uvc_start_streaming(
+                devh,
+                ctrl,
+                Some(frame_callback),
+                counters as *const FrameCounters as *mut c_void,
+                0,
+            )
+        },
+        "uvc_start_streaming",
+    )?;
+    let stream_guard = UvcStreamGuard(devh);
+    println!(
+        "uvc-fps: streaming started elapsed_ms={}",
+        start_streaming_start.elapsed().as_millis()
+    );
+    let summary = report_loop(options, counters);
+    // libuvc's stop boundary cancels every libusb transfer and waits until
+    // their terminal callbacks have freed all transfer objects. On StarryOS,
+    // that is the observable completion boundary for usbfs DISCARDURB/REAPURB.
+    stream_guard.stop_and_wait();
+    Ok(summary)
 }
 
 fn print_opening_options(options: &Options) {
@@ -943,8 +997,10 @@ fn reserve_saved_id(counters: &FrameCounters, max_saved: Option<u64>) -> Option<
 fn report_loop(options: &Options, counters: &FrameCounters) -> RunSummary {
     let started = Instant::now();
     let mut last = started;
-    let mut last_frames = 0;
-    let mut last_bytes = 0;
+    let start_frames = counters.frames.load(Ordering::Relaxed);
+    let start_bytes = counters.bytes.load(Ordering::Relaxed);
+    let mut last_frames = start_frames;
+    let mut last_bytes = start_bytes;
 
     loop {
         let next_sleep = options
@@ -980,7 +1036,7 @@ fn report_loop(options: &Options, counters: &FrameCounters) -> RunSummary {
 
         if options
             .max_frames
-            .is_some_and(|max_frames| frames >= max_frames)
+            .is_some_and(|max_frames| frames.saturating_sub(start_frames) >= max_frames)
             || options
                 .duration
                 .is_some_and(|duration| now.duration_since(started) >= duration)
@@ -994,8 +1050,14 @@ fn report_loop(options: &Options, counters: &FrameCounters) -> RunSummary {
     }
 
     let elapsed = started.elapsed();
-    let frames = counters.frames.load(Ordering::Relaxed);
-    let bytes = counters.bytes.load(Ordering::Relaxed);
+    let frames = counters
+        .frames
+        .load(Ordering::Relaxed)
+        .saturating_sub(start_frames);
+    let bytes = counters
+        .bytes
+        .load(Ordering::Relaxed)
+        .saturating_sub(start_bytes);
     let elapsed_secs = elapsed.as_secs_f64().max(f64::EPSILON);
     RunSummary {
         elapsed,
@@ -1075,6 +1137,9 @@ fn parse_args() -> Result<Options, String> {
                     return Err(format!("{name} must be greater than zero"));
                 }
                 options.max_frames = Some(max_frames);
+            }
+            "--restart-rounds" => {
+                options.restart_rounds = parse_positive_u64(name, inline_value, &mut args)?;
             }
             "--save-dir" => {
                 options.save.dir = Some(PathBuf::from(parse_value(name, inline_value, &mut args)?));
@@ -1172,12 +1237,14 @@ fn print_help() {
          mjpeg]\n  --width <PIXELS>        Frame width [default: 640]\n  --height <PIXELS>       \
          Frame height [default: 480]\n  --fps <FPS>             Requested frame rate [default: \
          30]\n  --auto-min-data       Select the lowest-data probeable mode matching --format\n  \
-         --list-modes          Print UVC descriptor modes and exit\n  --interval-sec <SECS>   Reporting interval [default: 1]\n  --duration-sec <SECS>   \
-         Stop after this many seconds\n  --max-frames <N>        Stop after at least N frames\n  \
-         --save-dir <DIR>        Save frames to DIR with incrementing file names\n  --save-last       \
-         Cache frames while streaming, then save only the final frame\n  --save-every <N>        Save \
-         every Nth frame when --save-dir is set [default: 1]\n  --max-saved <N>        Stop saving \
-         after N saved frames\n  -h, --help              Print help"
+         --list-modes          Print UVC descriptor modes and exit\n  --interval-sec <SECS>   \
+         Reporting interval [default: 1]\n  --duration-sec <SECS>   Stop after this many seconds \
+         per streaming round\n  --max-frames <N>        Stop each round after at least N frames\n  \
+         --restart-rounds <N>    Stop and restart streaming N times [default: 1]\n  --save-dir \
+         <DIR>        Save frames to DIR with incrementing file names\n  --save-last       Cache \
+         frames while streaming, then save only the final frame\n  --save-every <N>        Save \
+         every Nth frame when --save-dir is set [default: 1]\n  --max-saved <N>        Stop \
+         saving after N saved frames\n  -h, --help              Print help"
     );
 }
 
@@ -1220,6 +1287,15 @@ impl Drop for UvcDeviceHandleGuard {
 }
 
 struct UvcStreamGuard(*mut UvcDeviceHandle);
+
+impl UvcStreamGuard {
+    fn stop_and_wait(mut self) {
+        if !self.0.is_null() {
+            unsafe { uvc_stop_streaming(self.0) };
+            self.0 = ptr::null_mut();
+        }
+    }
+}
 
 impl Drop for UvcStreamGuard {
     fn drop(&mut self) {

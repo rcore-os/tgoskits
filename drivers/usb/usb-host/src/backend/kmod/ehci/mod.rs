@@ -1,14 +1,18 @@
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicUsize, Ordering},
-    task::Context,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    task::{Context, Poll},
     time::Duration,
 };
 
 use ax_sync::SpinLock as Mutex;
-use dma_api::CoherentBox;
-use futures::{FutureExt, future::BoxFuture, task::AtomicWaker};
+use dma_api::{CoherentArray, CoherentBox};
+use futures::{
+    FutureExt,
+    future::{BoxFuture, poll_fn},
+    task::AtomicWaker,
+};
 use mbarrier::{mb, wmb};
 use usb_if::{
     descriptor::{
@@ -22,13 +26,17 @@ use usb_if::{
 };
 
 use super::{
-    hub::{HubInfo, HubOp, PortChangeInfo, PortState},
+    hub::{HubInfo, HubOp, PortChangeInfo, PortEvent, PortState},
     kcore::CoreOp,
     osal::{Kernel, KernelOp},
 };
 use crate::{
     DeviceAddressInfo, Mmio,
-    backend::ty::{DeviceOp, Event, EventHandlerOp, HubParams, ep::Endpoint, transfer::Transfer},
+    backend::ty::{
+        DeviceOp, Event, EventHandlerOp, HubParams,
+        ep::{EndpointHandle, EndpointOp},
+        transfer::Transfer,
+    },
     err::{HostError, Result},
 };
 
@@ -40,6 +48,7 @@ const EHCI_LINK_TERMINATE: u32 = 1;
 const USBCMD: usize = 0x00;
 const USBSTS: usize = 0x04;
 const USBINTR: usize = 0x08;
+const FRINDEX: usize = 0x0c;
 const CTRLDSSEGMENT: usize = 0x10;
 const PERIODICLISTBASE: usize = 0x14;
 const ASYNCLISTADDR: usize = 0x18;
@@ -73,6 +82,7 @@ const PORT_POWER: u32 = 1 << 12;
 const PORT_OWNER: u32 = 1 << 13;
 
 const EHCI_WAIT_ITERS: usize = 1_000_000;
+const PERIODIC_UNLINK_SAFE_UFRAMES: u32 = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QtdPid {
@@ -346,63 +356,256 @@ pub struct EhciNewParams {
 }
 
 #[derive(Clone)]
-struct AsyncSchedule(Arc<Mutex<AsyncScheduleInner>>);
+struct AsyncSchedule {
+    inner: Arc<Mutex<AsyncScheduleInner>>,
+    advance: Arc<AsyncAdvanceState>,
+    periodic: Arc<Mutex<PeriodicScheduleInner>>,
+    regs: EhciRegisters,
+}
+
+struct AsyncAdvanceState {
+    requested: AtomicUsize,
+    completed: AtomicUsize,
+    in_progress: AtomicBool,
+    waker: AtomicWaker,
+}
 
 struct AsyncScheduleInner {
     head: CoherentBox<QueueHead>,
-    active_qh: Option<u32>,
+    active_qhs: BTreeMap<u32, usize>,
+}
+
+struct PeriodicScheduleInner {
+    frame_list: CoherentArray<u32>,
+    active_qhs: BTreeMap<u32, usize>,
+}
+
+#[derive(Clone, Copy)]
+enum UnlinkBoundary {
+    Async(usize),
+    Periodic(u32),
 }
 
 impl AsyncSchedule {
-    fn new(kernel: &Kernel) -> Result<Self> {
+    fn new(kernel: &Kernel, regs: EhciRegisters) -> Result<Self> {
         let mut head = kernel
             .coherent_box_zero_with_align::<QueueHead>(32)
             .map_err(HostError::from)?;
         let addr = head.dma_addr().as_u64() as u32;
         head.write_cpu(QueueHead::async_head(addr));
-        Ok(Self(Arc::new(Mutex::new(AsyncScheduleInner {
-            head,
-            active_qh: None,
-        }))))
+        let mut frame_list = kernel
+            .coherent_array_zero_with_align::<u32>(1024, 4096)
+            .map_err(HostError::from)?;
+        frame_list.write_with_cpu(1024, |entries| entries.fill(EHCI_LINK_TERMINATE));
+        Ok(Self {
+            inner: Arc::new(Mutex::new(AsyncScheduleInner {
+                head,
+                active_qhs: BTreeMap::new(),
+            })),
+            advance: Arc::new(AsyncAdvanceState {
+                requested: AtomicUsize::new(0),
+                completed: AtomicUsize::new(0),
+                in_progress: AtomicBool::new(false),
+                waker: AtomicWaker::new(),
+            }),
+            periodic: Arc::new(Mutex::new(PeriodicScheduleInner {
+                frame_list,
+                active_qhs: BTreeMap::new(),
+            })),
+            regs,
+        })
     }
 
     fn head_addr(&self) -> u32 {
         // SAFETY: EHCI schedule access is serialized by the controller path.
-        unsafe { self.0.lock_raw() }.head.dma_addr().as_u64() as u32
+        unsafe { self.inner.lock_raw() }.head.dma_addr().as_u64() as u32
     }
 
-    fn attach(&self, qh: &mut CoherentBox<QueueHead>) -> Result<()> {
+    fn periodic_addr(&self) -> u32 {
+        // SAFETY: Controller initialization owns schedule publication.
+        unsafe { self.periodic.lock_raw() }
+            .frame_list
+            .dma_addr()
+            .as_u64() as u32
+    }
+
+    fn attach(&self, qh: &mut CoherentBox<QueueHead>, transfer_type: EndpointType) -> Result<()> {
+        if matches!(transfer_type, EndpointType::Interrupt) {
+            return self.attach_periodic(qh);
+        }
         // SAFETY: EHCI schedule mutation excludes local controller re-entry.
-        let mut inner = unsafe { self.0.lock_raw() };
+        let mut inner = unsafe { self.inner.lock_raw() };
         let qh_addr = qh.dma_addr().as_u64() as u32;
-        if inner.active_qh.is_some_and(|active| active != qh_addr) {
-            return Err(USBError::TransferError(TransferError::QueueFull));
+        if inner.active_qhs.contains_key(&qh_addr) {
+            return Ok(());
         }
 
-        let head_addr = inner.head.dma_addr().as_u64() as u32;
+        let first_link = inner.head.read_cpu().horizontal_link;
         qh.modify_cpu(|qh| {
-            qh.horizontal_link = ehci_qh_link(head_addr);
+            qh.horizontal_link = first_link;
         });
         inner.head.modify_cpu(|head| {
             head.horizontal_link = ehci_qh_link(qh_addr);
         });
-        inner.active_qh = Some(qh_addr);
+        inner
+            .active_qhs
+            .insert(qh_addr, qh.as_ptr().as_ptr() as usize);
         wmb();
         Ok(())
     }
 
-    fn detach(&self, qh_addr: u32) {
+    fn attach_periodic(&self, qh: &mut CoherentBox<QueueHead>) -> Result<()> {
+        // SAFETY: Periodic schedule mutation excludes local controller re-entry.
+        let mut inner = unsafe { self.periodic.lock_raw() };
+        let qh_addr = qh.dma_addr().as_u64() as u32;
+        if inner.active_qhs.contains_key(&qh_addr) {
+            return Ok(());
+        }
+        let first_link = inner.frame_list.read_cpu(0).unwrap_or(EHCI_LINK_TERMINATE);
+        qh.modify_cpu(|qh| qh.horizontal_link = first_link);
+        inner
+            .frame_list
+            .write_with_cpu(1024, |entries| entries.fill(ehci_qh_link(qh_addr)));
+        inner
+            .active_qhs
+            .insert(qh_addr, qh.as_ptr().as_ptr() as usize);
+        wmb();
+        Ok(())
+    }
+
+    fn detach(&self, qh_addr: u32, transfer_type: EndpointType) -> Option<UnlinkBoundary> {
+        if matches!(transfer_type, EndpointType::Interrupt) {
+            return self.detach_periodic(qh_addr).map(UnlinkBoundary::Periodic);
+        }
         // SAFETY: EHCI schedule mutation excludes local controller re-entry.
-        let mut inner = unsafe { self.0.lock_raw() };
-        if inner.active_qh != Some(qh_addr) {
+        let mut inner = unsafe { self.inner.lock_raw() };
+        let qh_cpu_addr = inner.active_qhs.get(&qh_addr).copied()?;
+        // SAFETY: An attached QH is owned by its endpoint and cannot be moved
+        // or dropped until this schedule removes it. Schedule mutation is
+        // serialized, so reading its link cannot race another task mutation.
+        let successor =
+            unsafe { (qh_cpu_addr as *const QueueHead).read_volatile() }.horizontal_link;
+        if inner.head.read_cpu().horizontal_link & !0x1f == qh_addr & !0x1f {
+            inner
+                .head
+                .modify_cpu(|head| head.horizontal_link = successor);
+        } else if let Some(predecessor_cpu_addr) =
+            inner.active_qhs.iter().find_map(|(address, cpu_addr)| {
+                if *address == qh_addr {
+                    return None;
+                }
+                // SAFETY: Every entry is an attached, live QH under the same
+                // schedule mutation exclusion described above.
+                let predecessor = unsafe { (*(*cpu_addr as *const QueueHead)).horizontal_link };
+                ((predecessor & !0x1f) == (qh_addr & !0x1f)).then_some(*cpu_addr)
+            })
+        {
+            // SAFETY: The predecessor remains attached and uniquely mutated by
+            // this serialized schedule path.
+            unsafe {
+                core::ptr::addr_of_mut!(
+                    (*(predecessor_cpu_addr as *mut QueueHead)).horizontal_link
+                )
+                .write_volatile(successor);
+            }
+        } else {
+            warn!("ehci: attached QH {qh_addr:#x} is missing from the hardware chain");
+            return None;
+        }
+        inner.active_qhs.remove(&qh_addr);
+        wmb();
+        // Linux keeps each async QH through two IAA cycles. Some controllers
+        // can still write back the overlay after the first interrupt, so DMA
+        // ownership cannot return to software at that boundary.
+        let boundary = self.advance.requested.fetch_add(2, Ordering::AcqRel) + 2;
+        self.kick_async_advance();
+        Some(UnlinkBoundary::Async(boundary))
+    }
+
+    fn detach_periodic(&self, qh_addr: u32) -> Option<u32> {
+        // SAFETY: Periodic schedule mutation excludes local controller re-entry.
+        let mut inner = unsafe { self.periodic.lock_raw() };
+        let qh_cpu_addr = inner.active_qhs.get(&qh_addr).copied()?;
+        // SAFETY: The attached QH remains owned by its endpoint until the
+        // periodic prefetch boundary has elapsed.
+        let successor =
+            unsafe { (qh_cpu_addr as *const QueueHead).read_volatile() }.horizontal_link;
+        let first_link = inner.frame_list.read_cpu(0).unwrap_or(EHCI_LINK_TERMINATE);
+        if first_link & !0x1f == qh_addr & !0x1f {
+            inner
+                .frame_list
+                .write_with_cpu(1024, |entries| entries.fill(successor));
+        } else if let Some(predecessor_cpu_addr) =
+            inner.active_qhs.iter().find_map(|(address, cpu_addr)| {
+                if *address == qh_addr {
+                    return None;
+                }
+                // SAFETY: Entries are attached QHs under serialized mutation.
+                let predecessor = unsafe { (*(*cpu_addr as *const QueueHead)).horizontal_link };
+                ((predecessor & !0x1f) == (qh_addr & !0x1f)).then_some(*cpu_addr)
+            })
+        {
+            // SAFETY: The predecessor remains attached and uniquely mutated.
+            unsafe {
+                core::ptr::addr_of_mut!(
+                    (*(predecessor_cpu_addr as *mut QueueHead)).horizontal_link
+                )
+                .write_volatile(successor);
+            }
+        } else {
+            error!("ehci: periodic QH {qh_addr:#x} is missing from the frame chain");
+            return None;
+        }
+        inner.active_qhs.remove(&qh_addr);
+        wmb();
+        Some(self.regs.op_read32(FRINDEX) & 0x3fff)
+    }
+
+    fn complete_async_advance(&self) {
+        self.advance.in_progress.store(false, Ordering::Release);
+        let requested = self.advance.requested.load(Ordering::Acquire);
+        let _ =
+            self.advance
+                .completed
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |completed| {
+                    (completed < requested).then_some(completed + 1)
+                });
+        self.advance.waker.wake();
+        self.kick_async_advance();
+    }
+
+    fn kick_async_advance(&self) {
+        if self.advance.completed.load(Ordering::Acquire)
+            >= self.advance.requested.load(Ordering::Acquire)
+            || self
+                .advance
+                .in_progress
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
             return;
         }
-        let head_addr = inner.head.dma_addr().as_u64() as u32;
-        inner.head.modify_cpu(|head| {
-            head.horizontal_link = ehci_qh_link(head_addr);
-        });
-        inner.active_qh = None;
         wmb();
+        self.regs
+            .op_update32(USBCMD, |cmd| cmd | USBCMD_INT_ASYNC_ADVANCE_DOORBELL);
+        // Flush the posted command write before considering the IAA cycle live.
+        let _ = self.regs.op_read32(USBCMD);
+    }
+
+    fn unlink_completed(&self, boundary: UnlinkBoundary) -> bool {
+        match boundary {
+            UnlinkBoundary::Async(epoch) => self.advance.completed.load(Ordering::Acquire) >= epoch,
+            UnlinkBoundary::Periodic(start) => {
+                let current = self.regs.op_read32(FRINDEX) & 0x3fff;
+                current.wrapping_sub(start) & 0x3fff >= PERIODIC_UNLINK_SAFE_UFRAMES
+            }
+        }
+    }
+
+    fn register_unlink_waker(&self, boundary: UnlinkBoundary, cx: &mut Context<'_>) {
+        if matches!(boundary, UnlinkBoundary::Async(_)) {
+            self.advance.waker.register(cx.waker());
+        }
     }
 }
 
@@ -445,7 +648,12 @@ impl QueueHead {
         Self {
             horizontal_link: EHCI_LINK_TERMINATE,
             endpoint_chars,
-            endpoint_caps: 1 << 30,
+            endpoint_caps: (1 << 30)
+                | if matches!(ep_type, EndpointType::Interrupt) {
+                    1
+                } else {
+                    0
+                },
             current_qtd: 0,
             overlay: QueueTransferDescriptor::terminated(),
         }
@@ -551,10 +759,10 @@ impl Ehci {
     pub fn new(params: EhciNewParams) -> Result<Self> {
         let regs = EhciRegisters::new(params.mmio);
         let kernel = Kernel::new(EHCI_DMA_MASK, params.kernel);
-        let schedule = AsyncSchedule::new(&kernel)?;
+        let schedule = AsyncSchedule::new(&kernel, regs)?;
         let wakeups = TransferWakeups::new();
         let root_hub = EhciRootHub::new(regs, kernel.clone());
-        let event_handler = EhciEventHandler::new(regs, wakeups.clone());
+        let event_handler = EhciEventHandler::new(regs, schedule.clone(), wakeups.clone());
 
         Ok(Self {
             regs,
@@ -577,7 +785,8 @@ impl Ehci {
         self.wait_until(|| self.regs.op_read32(USBCMD) & USBCMD_HCRESET == 0)?;
 
         self.regs.op_write32(CTRLDSSEGMENT, 0);
-        self.regs.op_write32(PERIODICLISTBASE, 0);
+        self.regs
+            .op_write32(PERIODICLISTBASE, self.schedule.periodic_addr());
         self.regs
             .op_write32(ASYNCLISTADDR, self.schedule.head_addr());
         self.regs.op_write32(CONFIGFLAG, 1);
@@ -592,7 +801,7 @@ impl Ehci {
         );
 
         self.regs.op_update32(USBCMD, |cmd| {
-            (cmd | USBCMD_RUN_STOP | USBCMD_ASYNC_ENABLE) & !USBCMD_PERIODIC_ENABLE
+            cmd | USBCMD_RUN_STOP | USBCMD_ASYNC_ENABLE | USBCMD_PERIODIC_ENABLE
         });
         self.wait_until(|| self.regs.op_read32(USBSTS) & USBSTS_HALTED == 0)?;
         self.kernel.delay(Duration::from_millis(100));
@@ -711,12 +920,20 @@ impl EhciRootHub {
         Ok(info)
     }
 
-    async fn changed_ports_inner(&mut self) -> Result<Vec<PortChangeInfo>> {
+    async fn changed_ports_inner(&mut self) -> Result<Vec<PortEvent>> {
         let mut out = Vec::new();
 
         for port_id in 1..=self.regs.ports() {
             let idx = port_id as usize - 1;
             if matches!(self.ports[idx], PortState::Probed) {
+                if !self.regs.port_read(port_id).connected() {
+                    self.ports[idx] = PortState::Uninit;
+                    self.regs.port_update(port_id, |value| {
+                        (value | PORT_CONNECT_CHANGE)
+                            & !(PORT_ENABLE_CHANGE | PORT_OVER_CURRENT_CHANGE)
+                    });
+                    out.push(PortEvent::Disconnected { port_id });
+                }
                 continue;
             }
 
@@ -733,12 +950,11 @@ impl EhciRootHub {
             let status = self.regs.port_read(port_id);
             if status.is_high_speed_device_ready() {
                 self.ports[idx] = PortState::Probed;
-                out.push(PortChangeInfo {
+                out.push(PortEvent::Connected(PortChangeInfo {
                     root_port_id: port_id,
                     port_id,
                     port_speed: Speed::High,
-                    tt_port_on_hub: None,
-                });
+                }));
             } else if status.connected() && !status.enabled() {
                 warn!(
                     "ehci: port {} has non-high-speed device ({:?}); handing to companion is not \
@@ -769,7 +985,7 @@ impl HubOp for EhciRootHub {
         self.init_ports(info).boxed()
     }
 
-    fn changed_ports<'a>(&'a mut self) -> BoxFuture<'a, Result<Vec<PortChangeInfo>>> {
+    fn changed_ports<'a>(&'a mut self) -> BoxFuture<'a, Result<Vec<PortEvent>>> {
         self.changed_ports_inner().boxed()
     }
 
@@ -780,6 +996,7 @@ impl HubOp for EhciRootHub {
 
 struct EhciEventHandler {
     regs: EhciRegisters,
+    schedule: AsyncSchedule,
     wakeups: TransferWakeups,
 }
 
@@ -787,8 +1004,12 @@ unsafe impl Send for EhciEventHandler {}
 unsafe impl Sync for EhciEventHandler {}
 
 impl EhciEventHandler {
-    fn new(regs: EhciRegisters, wakeups: TransferWakeups) -> Self {
-        Self { regs, wakeups }
+    fn new(regs: EhciRegisters, schedule: AsyncSchedule, wakeups: TransferWakeups) -> Self {
+        Self {
+            regs,
+            schedule,
+            wakeups,
+        }
     }
 }
 
@@ -806,6 +1027,9 @@ impl EventHandlerOp for EhciEventHandler {
         }
 
         self.regs.op_write32(USBSTS, pending);
+        if pending & USBSTS_INTERRUPT_ASYNC_ADVANCE != 0 {
+            self.schedule.complete_async_advance();
+        }
         if pending & USBSTS_PORT_CHANGE != 0 {
             return Event::PortChange { port: 0 };
         }
@@ -826,10 +1050,10 @@ struct EhciDevice {
     kernel: Kernel,
     _port_speed: Speed,
     desc: DeviceDescriptor,
-    ctrl_ep: Endpoint,
+    ctrl_ep: EndpointHandle,
     config_desc: Vec<ConfigurationDescriptor>,
     current_config_value: Option<u8>,
-    eps: BTreeMap<u8, Endpoint>,
+    eps: BTreeMap<u8, EndpointHandle>,
     ep_interfaces: BTreeMap<u8, u8>,
 }
 
@@ -857,7 +1081,7 @@ impl EhciDevice {
             kernel,
             _port_speed: port_speed,
             desc: unsafe { core::mem::zeroed() },
-            ctrl_ep: Endpoint::new(EndpointInfo::control(), raw),
+            ctrl_ep: EndpointHandle::new(EndpointInfo::control(), raw),
             config_desc: Vec::new(),
             current_config_value: None,
             eps: BTreeMap::new(),
@@ -912,15 +1136,49 @@ impl EhciDevice {
     }
 
     async fn set_configuration_inner(&mut self, configuration_value: u8) -> Result<()> {
-        self.ctrl_ep.set_configuration(configuration_value).await?;
+        let old_endpoints = self.eps.values().cloned().collect::<Vec<_>>();
+        for endpoint in &old_endpoints {
+            endpoint.revoke();
+        }
+        if Self::quiesce_endpoints(old_endpoints.iter()).await.is_err() {
+            return Err(USBError::InterfaceBroken);
+        }
+        if let Err(err) = self.ctrl_ep.set_configuration(configuration_value).await {
+            for endpoint in &old_endpoints {
+                endpoint.reactivate();
+            }
+            return Err(err.into());
+        }
         self.current_config_value = Some(configuration_value);
         self.eps.clear();
         self.ep_interfaces.clear();
         Ok(())
     }
 
-    async fn claim_interface_inner(&mut self, interface: u8, alternate: u8) -> Result<()> {
-        self.ctrl_ep
+    async fn claim_interface_inner(
+        &mut self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<BTreeMap<u8, EndpointHandle>> {
+        let pending_endpoints = self.prepare_interface_endpoints(interface, alternate)?;
+        let stale_addresses = self
+            .ep_interfaces
+            .iter()
+            .filter_map(|(address, owner)| (*owner == interface).then_some(*address))
+            .collect::<Vec<_>>();
+        let old_endpoints = stale_addresses
+            .iter()
+            .filter_map(|address| self.eps.get(address).cloned())
+            .collect::<Vec<_>>();
+        for endpoint in &old_endpoints {
+            endpoint.revoke();
+        }
+        if Self::quiesce_endpoints(old_endpoints.iter()).await.is_err() {
+            return Err(USBError::InterfaceBroken);
+        }
+
+        if let Err(err) = self
+            .ctrl_ep
             .control_out(
                 ControlSetup {
                     request_type: RequestType::Standard,
@@ -931,15 +1189,100 @@ impl EhciDevice {
                 },
                 &[],
             )
-            .await?;
-        self.setup_interface_endpoints(interface, alternate)?;
+            .await
+        {
+            for endpoint in &old_endpoints {
+                endpoint.reactivate();
+            }
+            return Err(err.into());
+        }
+        for address in stale_addresses {
+            self.eps.remove(&address);
+            self.ep_interfaces.remove(&address);
+        }
+        for (address, endpoint) in &pending_endpoints {
+            self.eps.insert(*address, endpoint.clone());
+            self.ep_interfaces.insert(*address, interface);
+        }
+        Ok(pending_endpoints)
+    }
+
+    async fn release_interface_inner(&mut self, interface: u8) -> Result<()> {
+        let stale_addresses = self
+            .ep_interfaces
+            .iter()
+            .filter_map(|(address, owner)| (*owner == interface).then_some(*address))
+            .collect::<Vec<_>>();
+        let old_endpoints = stale_addresses
+            .iter()
+            .filter_map(|address| self.eps.get(address).cloned())
+            .collect::<Vec<_>>();
+        for endpoint in &old_endpoints {
+            endpoint.revoke();
+        }
+        if Self::quiesce_endpoints(old_endpoints.iter()).await.is_err() {
+            return Err(USBError::InterfaceBroken);
+        }
+        for address in stale_addresses {
+            self.eps.remove(&address);
+            self.ep_interfaces.remove(&address);
+        }
         Ok(())
     }
 
-    fn setup_interface_endpoints(&mut self, interface: u8, alternate: u8) -> Result<()> {
+    async fn disconnect_inner(&mut self) -> Result<()> {
+        let mut endpoints = self.eps.values().cloned().collect::<Vec<_>>();
+        endpoints.push(self.ctrl_ep.clone());
+        for endpoint in &endpoints {
+            endpoint.revoke();
+        }
+        if Self::quiesce_endpoints(endpoints.iter()).await.is_err() {
+            return Err(USBError::InterfaceBroken);
+        }
+        self.eps.clear();
+        self.ep_interfaces.clear();
+        Ok(())
+    }
+
+    async fn quiesce_endpoints<'a>(
+        endpoints: impl Iterator<Item = &'a EndpointHandle>,
+    ) -> Result<()> {
+        for endpoint in endpoints {
+            let request_id = endpoint.with_raw_mut::<EhciEndpoint, _>(|raw| {
+                raw.inflight.as_ref().map(|submitted| submitted.request_id)
+            });
+            let Some(request_id) = request_id else {
+                continue;
+            };
+            endpoint
+                .with_raw_mut::<EhciEndpoint, _>(|raw| raw.cancel_request(request_id))
+                .map_err(USBError::from)?;
+            poll_fn(|cx| {
+                endpoint.with_raw_mut::<EhciEndpoint, _>(|raw| {
+                    if let Some(result) = raw.reclaim_request(request_id) {
+                        return Poll::Ready(match result {
+                            Ok(_) | Err(TransferError::Cancelled) => Ok(()),
+                            Err(err) => Err(USBError::from(err)),
+                        });
+                    }
+                    raw.register_waker(request_id, cx);
+                    Poll::Pending
+                })
+            })
+            .await?;
+        }
+        Ok(())
+    }
+
+    fn prepare_interface_endpoints(
+        &self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<BTreeMap<u8, EndpointHandle>> {
         let endpoints = self
             .find_interface_endpoints(interface, alternate)?
             .to_vec();
+        let mut prepared = BTreeMap::new();
         for desc in endpoints {
             if matches!(desc.transfer_type, EndpointType::Isochronous) {
                 warn!(
@@ -956,10 +1299,9 @@ impl EhciDevice {
                 self.address,
                 info,
             )?;
-            self.eps.insert(desc.address, Endpoint::new(info, raw));
-            self.ep_interfaces.insert(desc.address, interface);
+            prepared.insert(desc.address, EndpointHandle::new(info, raw));
         }
-        Ok(())
+        Ok(prepared)
     }
 
     fn find_interface_endpoints(
@@ -1000,11 +1342,11 @@ impl DeviceOp for EhciDevice {
         &self.config_desc
     }
 
-    fn ctrl_ep_ref(&self) -> &Endpoint {
+    fn ctrl_ep_ref(&self) -> &EndpointHandle {
         &self.ctrl_ep
     }
 
-    fn ctrl_ep_mut(&mut self) -> &mut Endpoint {
+    fn ctrl_ep_mut(&mut self) -> &mut EndpointHandle {
         &mut self.ctrl_ep
     }
 
@@ -1012,16 +1354,20 @@ impl DeviceOp for EhciDevice {
         &'a mut self,
         interface: u8,
         alternate: u8,
-    ) -> BoxFuture<'a, Result<()>> {
+    ) -> BoxFuture<'a, Result<BTreeMap<u8, EndpointHandle>>> {
         self.claim_interface_inner(interface, alternate).boxed()
+    }
+
+    fn release_interface<'a>(&'a mut self, interface: u8) -> BoxFuture<'a, Result<()>> {
+        self.release_interface_inner(interface).boxed()
     }
 
     fn set_configuration<'a>(&'a mut self, configuration_value: u8) -> BoxFuture<'a, Result<()>> {
         self.set_configuration_inner(configuration_value).boxed()
     }
 
-    fn endpoint(&mut self, desc: &EndpointDescriptor) -> Result<Endpoint> {
-        self.eps.remove(&desc.address).ok_or(USBError::NotFound)
+    fn disconnect(&mut self) -> BoxFuture<'_, Result<()>> {
+        self.disconnect_inner().boxed()
     }
 
     fn update_hub(&mut self, _params: HubParams) -> BoxFuture<'_, Result<()>> {
@@ -1034,6 +1380,7 @@ struct EhciEndpoint {
     schedule: AsyncSchedule,
     kernel: Kernel,
     qh: CoherentBox<QueueHead>,
+    transfer_type: EndpointType,
     next_request_id: u64,
     inflight: Option<SubmittedTransfer>,
     waker: AtomicWaker,
@@ -1064,6 +1411,7 @@ impl EhciEndpoint {
             schedule,
             kernel,
             qh,
+            transfer_type: info.transfer_type,
             next_request_id: 1,
             inflight: None,
             waker: AtomicWaker::new(),
@@ -1164,6 +1512,7 @@ impl EhciEndpoint {
             chunk_lengths,
             _setup_packet: setup_packet,
             cancelled: false,
+            unlink_boundary: None,
         })
     }
 
@@ -1175,10 +1524,11 @@ impl EhciEndpoint {
             .dma_addr()
             .as_u64() as u32;
         self.qh.modify_cpu(|qh| qh.set_next_qtd(first_qtd));
-        self.schedule.attach(&mut self.qh)?;
+        self.schedule.attach(&mut self.qh, self.transfer_type)?;
         mb();
-        self.regs
-            .op_update32(USBCMD, |cmd| cmd | USBCMD_ASYNC_ENABLE | USBCMD_RUN_STOP);
+        self.regs.op_update32(USBCMD, |cmd| {
+            cmd | USBCMD_ASYNC_ENABLE | USBCMD_PERIODIC_ENABLE | USBCMD_RUN_STOP
+        });
         Ok(())
     }
 
@@ -1186,14 +1536,27 @@ impl EhciEndpoint {
         &mut self,
         id: RequestId,
     ) -> Option<core::result::Result<TransferCompletion, TransferError>> {
-        let submitted = self.inflight.as_mut()?;
+        let submitted = self.inflight.as_ref()?;
         if submitted.request_id != id {
             return Some(Err(TransferError::InvalidEndpoint));
         }
+        if let Some(boundary) = submitted.unlink_boundary {
+            if !self.schedule.unlink_completed(boundary) {
+                return None;
+            }
+            let mut submitted = self.inflight.take()?;
+            self.qh.modify_cpu(|qh| {
+                qh.current_qtd = 0;
+                qh.overlay = QueueTransferDescriptor::terminated();
+            });
+            mb();
+            if submitted.cancelled {
+                return Some(Err(TransferError::Cancelled));
+            }
+            return Some(Self::complete_transfer(&mut submitted, id));
+        }
 
-        let mut actual_length = 0usize;
         let mut all_done = true;
-        let mut error = None;
         for (qtd, requested) in submitted
             .qtds
             .iter()
@@ -1205,47 +1568,68 @@ impl EhciEndpoint {
                 break;
             }
             if token.has_error() {
-                error = Some(TransferError::Other(anyhow!(
-                    "EHCI qTD failed token={:#x}",
-                    token.raw()
-                )));
                 break;
             }
-            actual_length += requested.saturating_sub(token.total_bytes());
+            let _ = requested;
         }
 
         if !all_done {
             return None;
         }
+        self.begin_unlink(id).err().map(Err)
+    }
 
-        let mut submitted = self.inflight.take()?;
+    fn begin_unlink(&mut self, id: RequestId) -> core::result::Result<(), TransferError> {
+        let submitted = self
+            .inflight
+            .as_mut()
+            .ok_or(TransferError::InvalidEndpoint)?;
+        if submitted.request_id != id {
+            return Err(TransferError::InvalidEndpoint);
+        }
+        if submitted.unlink_boundary.is_some() {
+            return Ok(());
+        }
         let qh_addr = self.qh.dma_addr().as_u64() as u32;
-        self.schedule.detach(qh_addr);
-        self.regs
-            .op_update32(USBCMD, |cmd| cmd | USBCMD_INT_ASYNC_ADVANCE_DOORBELL);
+        let boundary = self
+            .schedule
+            .detach(qh_addr, self.transfer_type)
+            .ok_or(TransferError::InvalidEndpoint)?;
+        submitted.unlink_boundary = Some(boundary);
+        Ok(())
+    }
 
-        if submitted.cancelled {
-            return Some(Err(TransferError::Cancelled));
+    fn complete_transfer(
+        submitted: &mut SubmittedTransfer,
+        id: RequestId,
+    ) -> core::result::Result<TransferCompletion, TransferError> {
+        let mut actual_length = 0usize;
+        for (qtd, requested) in submitted
+            .qtds
+            .iter()
+            .zip(submitted.chunk_lengths.iter().copied())
+        {
+            let token = qtd.read_cpu().token();
+            if token.has_error() {
+                return Err(TransferError::Other(anyhow!(
+                    "EHCI qTD failed token={:#x}",
+                    token.raw()
+                )));
+            }
+            actual_length += requested.saturating_sub(token.total_bytes());
         }
-        if let Some(err) = error {
-            return Some(Err(err));
-        }
-
         let Some(transfer) = submitted.transfer.take() else {
-            return Some(Err(TransferError::Other(anyhow!(
-                "EHCI transfer missing state"
-            ))));
+            return Err(TransferError::Other(anyhow!("EHCI transfer missing state")));
         };
         if actual_length > 0 && matches!(transfer.direction, Direction::In) {
             transfer.complete_for_cpu_all();
         }
-
-        Some(Ok(TransferCompletion {
+        Ok(TransferCompletion {
             request_id: id,
             status: TransferStatus::Completed,
             actual_length,
             iso_packets: Vec::new(),
-        }))
+        })
     }
 }
 
@@ -1286,6 +1670,13 @@ impl crate::backend::ty::ep::EndpointOp for EhciEndpoint {
 
     fn register_waker(&self, _id: RequestId, cx: &mut Context<'_>) {
         self.waker.register(cx.waker());
+        if let Some(boundary) = self
+            .inflight
+            .as_ref()
+            .and_then(|submitted| submitted.unlink_boundary)
+        {
+            self.schedule.register_unlink_waker(boundary, cx);
+        }
         cx.waker().wake_by_ref();
     }
 
@@ -1298,7 +1689,7 @@ impl crate::backend::ty::ep::EndpointOp for EhciEndpoint {
             return Err(TransferError::InvalidEndpoint);
         }
         submitted.cancelled = true;
-        Ok(())
+        self.begin_unlink(id)
     }
 
     fn reset(&mut self) -> crate::backend::ty::ep::EndpointResetFuture {
@@ -1306,7 +1697,7 @@ impl crate::backend::ty::ep::EndpointOp for EhciEndpoint {
             Err(TransferError::QueueFull)
         } else {
             let qh_addr = self.qh.dma_addr().as_u64() as u32;
-            self.schedule.detach(qh_addr);
+            let _ = self.schedule.detach(qh_addr, self.transfer_type);
             self.qh.modify_cpu(|qh| {
                 qh.current_qtd = 0;
                 qh.overlay = QueueTransferDescriptor::terminated();
@@ -1325,6 +1716,7 @@ struct SubmittedTransfer {
     chunk_lengths: Vec<usize>,
     _setup_packet: Option<CoherentBox<[u8; 8]>>,
     cancelled: bool,
+    unlink_boundary: Option<UnlinkBoundary>,
 }
 
 fn new_qtd(
@@ -1385,15 +1777,102 @@ fn usb_to_transfer_error(err: USBError) -> TransferError {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{
+        alloc::{alloc_zeroed, dealloc},
+        boxed::Box,
+    };
+    use core::{
+        alloc::Layout,
+        num::NonZeroUsize,
+        ptr::NonNull,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
     use usb_if::{
+        descriptor::EndpointType,
         endpoint::TransferRequest,
         host::{ControlSetup, hub::Speed},
         transfer::{Direction, Recipient, Request, RequestType},
     };
 
     use super::{
-        ControlTdPlan, EhciPortStatus, QtdPid, QtdToken, build_control_td_plan, split_bulk_lengths,
+        AsyncSchedule, ControlTdPlan, EHCI_DMA_MASK, EhciPortStatus, EhciRegisters, FRINDEX,
+        PERIODIC_UNLINK_SAFE_UFRAMES, QtdPid, QtdToken, QueueHead, UnlinkBoundary,
+        build_control_td_plan, split_bulk_lengths,
     };
+    use crate::{backend::kmod::osal::Kernel, osal::KernelOp};
+
+    struct TestKernel;
+
+    static TEST_DMA_ADDR: AtomicU64 = AtomicU64::new(0x1000);
+
+    impl DmaOp for TestKernel {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            // SAFETY: The mock coherent allocator below owns the returned test
+            // allocation until the matching deallocation call.
+            unsafe { self.alloc_coherent(constraints, layout) }
+        }
+
+        unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+            // SAFETY: Contiguous handles are created by `alloc_coherent`.
+            unsafe { self.dealloc_coherent(handle) }
+                .expect("test coherent DMA release must succeed")
+        }
+
+        unsafe fn alloc_coherent(
+            &self,
+            constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            // SAFETY: Unit tests supply valid layouts. The allocation remains
+            // owned by the DMA handle until `dealloc_coherent` consumes it.
+            let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+            let align = constraints.align.max(layout.align()).max(1) as u64;
+            let size = layout.size().max(1) as u64;
+            let current = TEST_DMA_ADDR.fetch_add(size + align, Ordering::Relaxed);
+            let dma_addr = (current + align - 1) & !(align - 1);
+            // SAFETY: `ptr`, `layout`, and the deterministic fake DMA address
+            // describe the test allocation and never reach hardware.
+            Some(unsafe { DmaAllocHandle::new(ptr, dma_addr.into(), layout) })
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
+            // SAFETY: The handle was allocated with `alloc_zeroed` and retains
+            // the exact layout required for deallocation.
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+            Ok(())
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            addr: NonNull<u8>,
+            size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            let layout = Layout::from_size_align(size.get(), 1)?;
+            // SAFETY: The mock map borrows the caller-owned buffer for the
+            // duration of the test and never submits the address to hardware.
+            Ok(unsafe { DmaMapHandle::new(addr, (addr.as_ptr() as u64).into(), layout, None) })
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
+    }
+
+    impl KernelOp for TestKernel {
+        fn delay(&self, _duration: core::time::Duration) {}
+    }
+
+    static TEST_KERNEL: TestKernel = TestKernel;
 
     #[test]
     fn port_status_reports_high_speed_only_when_enabled_and_line_status_is_k_state() {
@@ -1486,5 +1965,84 @@ mod tests {
         let lengths = split_bulk_lengths(48 * 1024, Direction::Out);
 
         assert_eq!(lengths, [20 * 1024, 20 * 1024, 8 * 1024]);
+    }
+
+    #[test]
+    fn async_schedule_accepts_multiple_endpoint_queue_heads() {
+        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let mut mmio = Box::new([0u32; 64]);
+        let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
+        let schedule = AsyncSchedule::new(&kernel, regs).unwrap();
+        let mut first = kernel
+            .coherent_box_zero_with_align::<QueueHead>(32)
+            .unwrap();
+        let mut second = kernel
+            .coherent_box_zero_with_align::<QueueHead>(32)
+            .unwrap();
+        first.write_cpu(QueueHead::endpoint(
+            2,
+            1,
+            usb_if::descriptor::EndpointType::Bulk,
+            512,
+        ));
+        second.write_cpu(QueueHead::endpoint(
+            2,
+            2,
+            usb_if::descriptor::EndpointType::Bulk,
+            512,
+        ));
+
+        schedule.attach(&mut first, EndpointType::Bulk).unwrap();
+        schedule.attach(&mut second, EndpointType::Bulk).unwrap();
+    }
+
+    #[test]
+    fn periodic_qh_waits_nine_microframes_before_reclaim() {
+        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let mut mmio = Box::new([0u32; 64]);
+        let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
+        let schedule = AsyncSchedule::new(&kernel, regs).unwrap();
+        let mut qh = kernel
+            .coherent_box_zero_with_align::<QueueHead>(32)
+            .unwrap();
+        qh.write_cpu(QueueHead::endpoint(2, 1, EndpointType::Interrupt, 64));
+        schedule.attach(&mut qh, EndpointType::Interrupt).unwrap();
+
+        let boundary = schedule
+            .detach(qh.dma_addr().as_u64() as u32, EndpointType::Interrupt)
+            .expect("attached periodic QH must be unlinked");
+        assert!(matches!(boundary, UnlinkBoundary::Periodic(0)));
+        assert!(!schedule.unlink_completed(boundary));
+
+        regs.op_write32(FRINDEX, PERIODIC_UNLINK_SAFE_UFRAMES - 1);
+        assert!(!schedule.unlink_completed(boundary));
+        regs.op_write32(FRINDEX, PERIODIC_UNLINK_SAFE_UFRAMES);
+        assert!(schedule.unlink_completed(boundary));
+    }
+
+    #[test]
+    fn async_qh_waits_for_two_iaa_cycles_before_reclaim() {
+        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let mut mmio = Box::new([0u32; 64]);
+        let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
+        let schedule = AsyncSchedule::new(&kernel, regs).unwrap();
+        let mut qh = kernel
+            .coherent_box_zero_with_align::<QueueHead>(32)
+            .unwrap();
+        qh.write_cpu(QueueHead::endpoint(2, 1, EndpointType::Bulk, 512));
+        schedule.attach(&mut qh, EndpointType::Bulk).unwrap();
+
+        let boundary = schedule
+            .detach(qh.dma_addr().as_u64() as u32, EndpointType::Bulk)
+            .expect("attached async QH must be unlinked");
+        assert!(!schedule.unlink_completed(boundary));
+
+        schedule.complete_async_advance();
+        assert!(
+            !schedule.unlink_completed(boundary),
+            "the first IAA may still be followed by a hardware overlay writeback"
+        );
+        schedule.complete_async_advance();
+        assert!(schedule.unlink_completed(boundary));
     }
 }

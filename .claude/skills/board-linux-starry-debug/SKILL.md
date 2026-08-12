@@ -1,6 +1,6 @@
 ---
 name: board-linux-starry-debug
-description: Debug physical-board workflows that need Linux-side deployment or inspection before running StarryOS or ArceOS through the local board service. Use this skill when a board workload depends on files in the board Linux rootfs, when the user says to use `board connect`, when SSH/rsync deployment must happen while holding a board lease, when StarryOS reports a deployed binary as `not found`, or when diagnosing mismatches between Linux-visible files and StarryOS-visible files on OrangePi-5-Plus or similar boards.
+description: Debug physical-board workflows that need session-file delivery or Linux-side inspection before running StarryOS or ArceOS through the local board service. Prefer sessionFile delivery when the target has a usable network driver; use Linux rootfs deployment only when persistent state is required or the target network cannot fetch session assets.
 ---
 
 # Board Linux Starry Debug
@@ -18,6 +18,33 @@ Use this workflow when one physical board must be kept leased while you:
 
 This avoids the common mistake of testing a newly copied binary on Linux, then rebooting into StarryOS before the ext4 state is safely visible to the next boot.
 
+## Asset Delivery Decision
+
+When the target kernel has a usable network driver and the guest has `curl` or
+`wget`, prefer the board session file path:
+
+1. Declare or generate the asset through the Starry board case/app overlay.
+2. Let `BoardSession::upload_shared_file` upload it under the session.
+3. Download `${sessionFile:<relative-path>}` from `shell_init_cmd` or `init.sh`.
+4. Use bounded retries because the link and DHCP route may become ready after
+   the shell prompt.
+
+This is the default for test binaries, scripts, fixtures, and other ephemeral
+assets. It keeps runs isolated and avoids mutating a shared board rootfs.
+
+Use the Linux deployment flow below only when at least one concrete condition
+holds:
+
+- the target has no network driver or cannot route to the board server;
+- the workload explicitly validates persistent Linux/Starry shared-rootfs state;
+- the payload must survive beyond the board session;
+- Linux-side inspection, package installation, or a Linux smoke test is itself
+  part of the requested evidence.
+
+Do not fall back to SSH/rsync merely because a session download raced network
+startup. Add a bounded retry first, and keep an explicit failure marker when the
+asset cannot be fetched.
+
 ## Local Board Service
 
 Prefer the repository's local board service unless the user explicitly gives a shared service endpoint.
@@ -32,6 +59,8 @@ If the requested board type is missing, list first and use the exact local type.
 `board connect` holds the lease until the outer process exits. Logging out of the Linux shell inside serial does not necessarily release the board.
 
 ## Linux Deployment Flow
+
+This flow is the exception selected by the decision above.
 
 1. Keep `board connect` open until Linux reaches a login or shell prompt.
 2. Get the IP from the boot banner or run:

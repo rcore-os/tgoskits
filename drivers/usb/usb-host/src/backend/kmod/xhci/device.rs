@@ -28,25 +28,32 @@ use crate::{
     DeviceAddressInfo,
     backend::{
         Dci,
-        ty::{DeviceOp, HubParams, ep::Endpoint},
+        ty::{DeviceOp, HubParams, ep::EndpointHandle},
     },
     err::Result,
     osal::Kernel,
 };
 
+fn endpoint_address_dci(address: u8) -> u8 {
+    let endpoint_number = address & 0x0f;
+    endpoint_number * 2 + u8::from(address & 0x80 != 0)
+}
+
 pub struct Device {
     id: SlotId,
     ctx: ContextData,
     desc: DeviceDescriptor,
-    ctrl_ep: Option<Endpoint>,
+    ctrl_ep: Option<EndpointHandle>,
     transfer_result_handler: TransferResultHandler,
     bell: Arc<Mutex<SlotBell>>,
     kernel: Kernel,
     current_config_value: Option<u8>,
     config_desc: Vec<ConfigurationDescriptor>,
     port_speed: Speed,
-    eps: BTreeMap<u8, Endpoint>,
+    eps: BTreeMap<u8, EndpointHandle>,
     ep_interfaces: BTreeMap<u8, u8>,
+    interface_alternates: BTreeMap<u8, u8>,
+    quarantined_eps: Vec<EndpointHandle>,
     cmd: CommandRing,
 }
 
@@ -79,29 +86,34 @@ impl Device {
             port_speed: Speed::Full,
             eps: BTreeMap::new(),
             ep_interfaces: BTreeMap::new(),
+            interface_alternates: BTreeMap::new(),
+            quarantined_eps: Vec::new(),
             cmd: host.cmd.clone(),
         })
     }
 
-    fn new_ep(&mut self, dci: Dci) -> Result<XhciEndpoint> {
-        let ep = XhciEndpoint::new(
+    fn create_ep(&self, dci: Dci) -> Result<XhciEndpoint> {
+        XhciEndpoint::new(
             self.id,
             dci,
             &self.kernel,
             self.bell.clone(),
             self.cmd.clone(),
-        )?;
-        self.transfer_result_handler
-            .register_queue(self.id.as_u8(), dci.as_u8(), ep.ring());
+        )
+    }
 
+    fn create_registered_ep(&self, dci: Dci) -> Result<XhciEndpoint> {
+        let ep = self.create_ep(dci)?;
+        self.transfer_result_handler
+            .register_queue(self.id.as_u8(), dci.as_u8(), ep.ring())?;
         Ok(ep)
     }
 
-    fn control_endpoint(&self) -> &Endpoint {
+    fn control_endpoint(&self) -> &EndpointHandle {
         self.ctrl_ep.as_ref().unwrap()
     }
 
-    fn control_endpoint_mut(&mut self) -> &mut Endpoint {
+    fn control_endpoint_mut(&mut self) -> &mut EndpointHandle {
         self.ctrl_ep.as_mut().unwrap()
     }
 
@@ -110,8 +122,8 @@ impl Device {
         self.port_speed = info.port_speed;
         // let speed = info.port_speed.to_xhci_portsc_value();
 
-        let ep = self.new_ep(Dci::CTRL)?;
-        self.ctrl_ep = Some(Endpoint::new(EndpointInfo::control(), ep));
+        let ep = self.create_registered_ep(Dci::CTRL)?;
+        self.ctrl_ep = Some(EndpointHandle::new(EndpointInfo::control(), ep));
         self.address(host, info).await?;
         // self.dump_device_out();
         let base = self.get_device_descriptor_base().await?;
@@ -284,13 +296,13 @@ impl Device {
             let endpoint_0 = input.device_mut().endpoint_mut(dci.as_usize());
             // • EP Type = Control.
             endpoint_0.set_endpoint_type(xhci::context::EndpointType::Control);
-            // • Max Packet Size = The default maximum packet size for the Default Control Endpoint,
+            // • Max Packet Size = The default maximum packet size for the Default Control EndpointHandle,
             //   as function of the PORTSC Port Speed field.
             endpoint_0.set_max_packet_size(max_packet_size);
             // • Max Burst Size = 0.
             endpoint_0.set_max_burst_size(0);
             // • TR Dequeue Pointer = Start address of first segment of the Default Control
-            //   Endpoint Transfer Ring.
+            //   EndpointHandle Transfer Ring.
             endpoint_0.set_tr_dequeue_pointer(ctrl_ring_addr.raw());
             // • Dequeue Cycle State (DCS) = 1. Reflects Cycle bit state for valid TRBs written
             //   by software.
@@ -375,84 +387,304 @@ impl Device {
     }
 
     async fn _set_configuration(&mut self, configuration_value: u8) -> Result {
-        self.ctx.perper_change();
-        self.control_endpoint_mut()
-            .set_configuration(configuration_value)
-            .await?;
+        let old_endpoints = self.eps.clone();
+        let old_descriptors = self
+            .interface_alternates
+            .iter()
+            .map(|(interface, alternate)| {
+                self.find_interface_endpoints(*interface, *alternate)
+                    .map(<[_]>::to_vec)
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        for endpoint in old_endpoints.values() {
+            endpoint.revoke();
+        }
+        if self.stop_endpoints(old_endpoints.values()).await.is_err() {
+            return Err(USBError::InterfaceBroken);
+        }
 
-        self.current_config_value = Some(configuration_value);
+        self.prepare_configure_context(0, 0, &old_descriptors, &[], &BTreeMap::new());
+        if self.configure_endpoint().await.is_err() {
+            if self
+                .resume_stopped_endpoints(old_endpoints.values())
+                .await
+                .is_err()
+            {
+                return Err(USBError::InterfaceBroken);
+            }
+            return Err(USBError::Other(anyhow!(
+                "xHCI failed to disable endpoints before SET_CONFIGURATION"
+            )));
+        }
+
+        if let Err(err) = self
+            .control_endpoint_mut()
+            .set_configuration(configuration_value)
+            .await
+        {
+            self.prepare_configure_context(0, 0, &[], &old_descriptors, &old_endpoints);
+            if self.configure_endpoint().await.is_err()
+                || self
+                    .resume_stopped_endpoints(old_endpoints.values())
+                    .await
+                    .is_err()
+            {
+                return Err(USBError::InterfaceBroken);
+            }
+            return Err(err.into());
+        }
+
+        self.publish_endpoint_routes(&old_endpoints, &BTreeMap::new())?;
         self.eps.clear();
         self.ep_interfaces.clear();
+        self.interface_alternates.clear();
 
+        self.ctx.perper_change();
         self.ctx.with_input(|input| {
             let c = input.control_mut();
             c.set_configuration_value(configuration_value);
         });
-        self.evaluate().await?;
+        if self.evaluate().await.is_err() {
+            return Err(USBError::InterfaceBroken);
+        }
+        self.current_config_value = Some(configuration_value);
         debug!("Device configuration set to {configuration_value}");
         Ok(())
     }
 
-    async fn _claim_interface(&mut self, interface: u8, alternate: u8) -> Result {
-        self.ctx.perper_change();
-        self.ctx.with_input(|input| {
-            let c = input.control_mut();
-            c.set_interface_number(interface);
-            c.set_alternate_setting(alternate);
-        });
-
-        self.control_endpoint_mut()
-            .control_out(
-                ControlSetup {
-                    request_type: RequestType::Standard,
-                    recipient: Recipient::Interface,
-                    request: usb_if::transfer::Request::SetInterface,
-                    value: alternate as _, // alternate setting goes in value
-                    index: interface as _, // interface number goes in index
-                },
-                &[],
-            )
-            .await?;
-        self.setup_interface_endpoints(interface, alternate).await?;
-        debug!("Interface {interface} set successfully");
-        Ok(())
-    }
-
-    async fn setup_interface_endpoints(&mut self, interface: u8, alternate: u8) -> Result {
-        self.ctx.perper_change();
+    async fn _claim_interface(
+        &mut self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<BTreeMap<u8, EndpointHandle>> {
+        let new_descriptors = self
+            .find_interface_endpoints(interface, alternate)?
+            .to_vec();
+        self.validate_endpoint_addresses(interface, &new_descriptors)?;
+        let pending_endpoints = self.prepare_endpoints(&new_descriptors)?;
+        let old_alternate = self.interface_alternates.get(&interface).copied();
+        let old_descriptors = old_alternate
+            .map(|old| {
+                self.find_interface_endpoints(interface, old)
+                    .map(<[_]>::to_vec)
+            })
+            .transpose()?
+            .unwrap_or_default();
         let stale_endpoints = self
             .ep_interfaces
             .iter()
             .filter_map(|(address, ep_interface)| (*ep_interface == interface).then_some(*address))
             .collect::<Vec<_>>();
-        let drop_dcis = stale_endpoints
-            .iter()
-            .filter_map(|address| {
-                self.find_ep_desc_in_current_config(*address)
-                    .ok()
-                    .map(|desc| desc.dci())
-            })
-            .collect::<Vec<_>>();
-        let mut old_endpoints = Vec::with_capacity(stale_endpoints.len());
+        let mut old_endpoints = BTreeMap::new();
         for address in &stale_endpoints {
-            if let Some(endpoint) = self.eps.remove(address) {
-                old_endpoints.push(endpoint);
+            if let Some(endpoint) = self.eps.get(address).cloned() {
+                endpoint.revoke();
+                old_endpoints.insert(*address, endpoint);
             }
-            self.ep_interfaces.remove(address);
         }
-        self.ctx.with_input(|input| {
-            let control_context = input.control_mut();
-            for dci in drop_dcis {
-                control_context.set_drop_context_flag(dci as _);
-            }
-        });
 
-        for desc in self
-            .find_interface_endpoints(interface, alternate)?
-            .to_vec()
+        if let Err(err) = self.stop_endpoints(old_endpoints.values()).await {
+            for endpoint in old_endpoints.values() {
+                endpoint.reactivate();
+            }
+            return Err(err);
+        }
+
+        self.prepare_configure_context(
+            interface,
+            alternate,
+            &old_descriptors,
+            &new_descriptors,
+            &pending_endpoints,
+        );
+
+        if let Err(err) = self.configure_endpoint().await {
+            self.resume_stopped_endpoints(old_endpoints.values())
+                .await?;
+            return Err(err);
+        }
+
+        let set_interface_result = self
+            .control_endpoint_mut()
+            .control_out(
+                ControlSetup {
+                    request_type: RequestType::Standard,
+                    recipient: Recipient::Interface,
+                    request: usb_if::transfer::Request::SetInterface,
+                    value: alternate.into(),
+                    index: interface.into(),
+                },
+                &[],
+            )
+            .await;
+        if let Err(err) = set_interface_result {
+            let rollback = self
+                .rollback_interface_configuration(
+                    interface,
+                    old_alternate,
+                    &new_descriptors,
+                    &old_descriptors,
+                    &old_endpoints,
+                )
+                .await;
+            if let Err(rollback_err) = rollback {
+                for endpoint in pending_endpoints.values() {
+                    endpoint.revoke();
+                    self.quarantined_eps.push(endpoint.clone());
+                }
+                warn!(
+                    "SET_INTERFACE {interface}:{alternate} failed ({err}); xHCI rollback failed: \
+                     {rollback_err}"
+                );
+                return Err(USBError::InterfaceBroken);
+            }
+            return Err(err.into());
+        }
+
+        if self
+            .publish_endpoint_routes(&old_endpoints, &pending_endpoints)
+            .is_err()
         {
+            for endpoint in pending_endpoints.values() {
+                endpoint.revoke();
+                self.quarantined_eps.push(endpoint.clone());
+            }
+            return Err(USBError::InterfaceBroken);
+        }
+        for address in stale_endpoints {
+            self.eps.remove(&address);
+            self.ep_interfaces.remove(&address);
+        }
+        for (address, endpoint) in &pending_endpoints {
+            self.eps.insert(*address, endpoint.clone());
+            self.ep_interfaces.insert(*address, interface);
+        }
+        self.interface_alternates.insert(interface, alternate);
+        debug!("Interface {interface} alternate {alternate} committed");
+        Ok(pending_endpoints)
+    }
+
+    async fn _release_interface(&mut self, interface: u8) -> Result {
+        let stale_addresses = self
+            .ep_interfaces
+            .iter()
+            .filter_map(|(address, owner)| (*owner == interface).then_some(*address))
+            .collect::<Vec<_>>();
+        let old_endpoints = stale_addresses
+            .iter()
+            .filter_map(|address| self.eps.get(address).cloned().map(|ep| (*address, ep)))
+            .collect::<BTreeMap<_, _>>();
+        for endpoint in old_endpoints.values() {
+            endpoint.revoke();
+        }
+        if let Err(err) = self.stop_endpoints(old_endpoints.values()).await {
+            for endpoint in old_endpoints.values() {
+                endpoint.reactivate();
+            }
+            return Err(err);
+        }
+
+        let old_alternate = self
+            .interface_alternates
+            .get(&interface)
+            .copied()
+            .unwrap_or(0);
+        let old_descriptors = self
+            .find_interface_endpoints(interface, old_alternate)?
+            .to_vec();
+        self.prepare_configure_context(
+            interface,
+            old_alternate,
+            &old_descriptors,
+            &[],
+            &BTreeMap::new(),
+        );
+        if self.configure_endpoint().await.is_err() {
+            if self
+                .resume_stopped_endpoints(old_endpoints.values())
+                .await
+                .is_err()
+            {
+                return Err(USBError::InterfaceBroken);
+            }
+            return Err(USBError::Other(anyhow!(
+                "xHCI failed to disable interface {interface}"
+            )));
+        }
+        self.publish_endpoint_routes(&old_endpoints, &BTreeMap::new())?;
+        for address in stale_addresses {
+            self.eps.remove(&address);
+            self.ep_interfaces.remove(&address);
+        }
+        self.interface_alternates.remove(&interface);
+        Ok(())
+    }
+
+    async fn _disconnect(&mut self) -> Result {
+        let mut old_endpoints = self.eps.clone();
+        if let Some(control) = &self.ctrl_ep {
+            old_endpoints.insert(0, control.clone());
+        }
+        for endpoint in old_endpoints.values() {
+            endpoint.revoke();
+        }
+
+        // Flush every endpoint first, matching usb_hcd_flush_endpoint(). A
+        // physical disconnect does not prevent the controller from executing
+        // Stop Endpoint for the slot; if a stop command fails, Disable Slot is
+        // still the final hardware-ownership boundary for all remaining rings.
+        for endpoint in old_endpoints.values() {
+            let future = endpoint.with_raw_mut::<XhciEndpoint, _>(|raw| raw.stop_future());
+            if future.await.is_ok() {
+                endpoint.with_raw_mut::<XhciEndpoint, _>(XhciEndpoint::retire_all_after_stop);
+            }
+        }
+
+        let disable = self
+            .cmd
+            .cmd_request(command::Allowed::DisableSlot(
+                *command::DisableSlot::default().set_slot_id(self.id.into()),
+            ))
+            .await;
+        if let Err(err) = disable {
+            for endpoint in old_endpoints.values() {
+                self.quarantined_eps.push(endpoint.clone());
+            }
+            warn!("xHCI Disable Slot failed during disconnect: {err}");
+            return Err(USBError::InterfaceBroken);
+        }
+
+        for endpoint in old_endpoints.values() {
+            endpoint.with_raw_mut::<XhciEndpoint, _>(XhciEndpoint::retire_all_after_stop);
+        }
+        if self
+            .publish_endpoint_routes(&old_endpoints, &BTreeMap::new())
+            .is_err()
+        {
+            // Disable Slot has stopped hardware ownership, but a mismatched
+            // software route means the endpoint registry is no longer a
+            // trustworthy release boundary. Keep every ring quarantined and
+            // fail closed instead of dropping DMA-backed queue ownership.
+            self.quarantined_eps.extend(old_endpoints.values().cloned());
+            return Err(USBError::InterfaceBroken);
+        }
+        self.eps.clear();
+        self.ep_interfaces.clear();
+        self.interface_alternates.clear();
+        Ok(())
+    }
+
+    fn prepare_endpoints(
+        &self,
+        descriptors: &[EndpointDescriptor],
+    ) -> Result<BTreeMap<u8, EndpointHandle>> {
+        let mut endpoints = BTreeMap::new();
+        for desc in descriptors {
             let dci = desc.dci();
-            let mut ep_raw = self.new_ep(dci.into())?;
+            let mut ep_raw = self.create_ep(dci.into())?;
             let periodic_burst_size = match self.port_speed {
                 Speed::High
                     if matches!(
@@ -469,57 +701,81 @@ impl Device {
                 periodic_burst_size,
                 desc.interval,
             );
-            let ring_addr = ep_raw.bus_addr();
-            self.eps
-                .insert(desc.address, Endpoint::new((&desc).into(), ep_raw));
-            self.ep_interfaces.insert(desc.address, interface);
+            endpoints.insert(desc.address, EndpointHandle::new(desc.into(), ep_raw));
+        }
+        Ok(endpoints)
+    }
 
-            let xhci_interval =
-                self.calculate_xhci_interval(desc.interval, desc.transfer_type, desc.interval);
+    fn prepare_configure_context(
+        &mut self,
+        interface: u8,
+        alternate: u8,
+        drop_descriptors: &[EndpointDescriptor],
+        add_descriptors: &[EndpointDescriptor],
+        endpoints: &BTreeMap<u8, EndpointHandle>,
+    ) {
+        self.ctx.perper_change();
+        let drop_dcis = drop_descriptors
+            .iter()
+            .map(EndpointDescriptor::dci)
+            .collect::<Vec<_>>();
+        self.ctx.with_input(|input| {
+            let control = input.control_mut();
+            control.set_interface_number(interface);
+            control.set_alternate_setting(alternate);
+            for dci in &drop_dcis {
+                control.set_drop_context_flag((*dci).into());
+            }
+        });
 
-            self.ctx.with_input(|input| {
-                let control_context = input.control_mut();
-
-                control_context.set_add_context_flag(dci as _);
-                control_context.clear_drop_context_flag(dci as _);
-
-                debug!(
-                    "init ep addr {:#x}  dci {dci} {:?}",
-                    desc.address, desc.transfer_type
-                );
-
-                let ep_mut = input.device_mut().endpoint_mut(dci as _);
-
-                debug!(
-                    "Set XHCI interval: {} (original bInterval: {})",
-                    xhci_interval, desc.interval
-                );
-                ep_mut.set_interval(xhci_interval);
-                ep_mut.set_endpoint_type(desc.endpoint_type());
-                ep_mut.set_tr_dequeue_pointer(ring_addr.raw());
-                ep_mut.set_max_packet_size(desc.max_packet_size);
-                ep_mut.set_error_count(3);
-                ep_mut.set_dequeue_cycle_state();
-
-                match desc.transfer_type {
-                    EndpointType::Isochronous | EndpointType::Interrupt => {
-                        // init for isoch/interrupt
-                        ep_mut.set_max_packet_size(desc.max_packet_size);
-                        ep_mut.set_max_burst_size(periodic_burst_size.try_into().unwrap());
-                        ep_mut.set_mult(0); //always 0 for interrupt
-                        let max_esit_payload =
-                            desc.max_packet_size as usize * (periodic_burst_size + 1);
-                        ep_mut
-                            .set_average_trb_length(max_esit_payload.min(u16::MAX as usize) as u16);
-                        ep_mut.set_max_endpoint_service_time_interval_payload_low(
-                            max_esit_payload.min(u16::MAX as usize) as u16,
-                        );
-                    }
-                    _ => {}
+        for descriptor in add_descriptors {
+            let endpoint = endpoints
+                .get(&descriptor.address)
+                .expect("prepared endpoint must match its descriptor");
+            let ring_addr = endpoint.with_raw_mut::<XhciEndpoint, _>(|raw| raw.bus_addr());
+            let dci = descriptor.dci();
+            let xhci_interval = self.calculate_xhci_interval(
+                descriptor.interval,
+                descriptor.transfer_type,
+                descriptor.interval,
+            );
+            let periodic_burst_size = match self.port_speed {
+                Speed::High
+                    if matches!(
+                        descriptor.transfer_type,
+                        EndpointType::Isochronous | EndpointType::Interrupt
+                    ) =>
+                {
+                    descriptor.packets_per_microframe.saturating_sub(1)
                 }
-
-                if let EndpointType::Isochronous = desc.transfer_type {
-                    ep_mut.set_error_count(0);
+                _ => 0,
+            };
+            self.ctx.with_input(|input| {
+                input.control_mut().set_add_context_flag(dci.into());
+                let endpoint_context = input.device_mut().endpoint_mut(dci.into());
+                endpoint_context.set_interval(xhci_interval);
+                endpoint_context.set_endpoint_type(descriptor.endpoint_type());
+                endpoint_context.set_tr_dequeue_pointer(ring_addr.raw());
+                endpoint_context.set_max_packet_size(descriptor.max_packet_size);
+                endpoint_context.set_error_count(3);
+                endpoint_context.set_dequeue_cycle_state();
+                if matches!(
+                    descriptor.transfer_type,
+                    EndpointType::Isochronous | EndpointType::Interrupt
+                ) {
+                    endpoint_context
+                        .set_max_burst_size(periodic_burst_size.min(u8::MAX as usize) as u8);
+                    endpoint_context.set_mult(0);
+                    let max_esit_payload =
+                        descriptor.max_packet_size as usize * (periodic_burst_size + 1);
+                    endpoint_context
+                        .set_average_trb_length(max_esit_payload.min(u16::MAX as usize) as u16);
+                    endpoint_context.set_max_endpoint_service_time_interval_payload_low(
+                        max_esit_payload.min(u16::MAX as usize) as u16,
+                    );
+                }
+                if matches!(descriptor.transfer_type, EndpointType::Isochronous) {
+                    endpoint_context.set_error_count(0);
                 }
             });
         }
@@ -527,11 +783,8 @@ impl Device {
         let max_dci = self
             .eps
             .keys()
-            .filter_map(|address| {
-                self.find_ep_desc_in_current_config(*address)
-                    .ok()
-                    .map(|desc| desc.dci())
-            })
+            .map(|address| endpoint_address_dci(*address))
+            .chain(add_descriptors.iter().map(EndpointDescriptor::dci))
             .max()
             .unwrap_or(1);
         self.ctx.with_input(|input| {
@@ -541,17 +794,122 @@ impl Device {
                 .set_context_entries(max_dci + 1)
         });
         mb();
+    }
 
-        let _result = self
-            .cmd
+    async fn configure_endpoint(&mut self) -> Result {
+        self.cmd
             .cmd_request(command::Allowed::ConfigureEndpoint(
                 *command::ConfigureEndpoint::default()
                     .set_slot_id(self.id.into())
                     .set_input_context_pointer(self.ctx.input_bus_addr()),
             ))
             .await?;
-        // Keep old endpoint rings alive until hardware accepts the new input context.
-        drop(old_endpoints);
+        Ok(())
+    }
+
+    async fn stop_endpoints<'a>(
+        &self,
+        endpoints: impl Iterator<Item = &'a EndpointHandle>,
+    ) -> Result {
+        let endpoints = endpoints.cloned().collect::<Vec<_>>();
+        let mut stopped = Vec::new();
+        for endpoint in endpoints {
+            let future = endpoint.with_raw_mut::<XhciEndpoint, _>(|raw| raw.stop_future());
+            if let Err(err) = future.await {
+                self.resume_stopped_endpoints(stopped.iter()).await?;
+                return Err(err.into());
+            }
+            endpoint.with_raw_mut::<XhciEndpoint, _>(XhciEndpoint::retire_all_after_stop);
+            stopped.push(endpoint);
+        }
+        Ok(())
+    }
+
+    async fn resume_stopped_endpoints<'a>(
+        &self,
+        endpoints: impl Iterator<Item = &'a EndpointHandle>,
+    ) -> Result {
+        for endpoint in endpoints {
+            let future = endpoint.with_raw_mut::<XhciEndpoint, _>(|raw| raw.resume_future());
+            future.await?;
+            endpoint.reactivate();
+        }
+        Ok(())
+    }
+
+    async fn rollback_interface_configuration(
+        &mut self,
+        interface: u8,
+        old_alternate: Option<u8>,
+        new_descriptors: &[EndpointDescriptor],
+        old_descriptors: &[EndpointDescriptor],
+        old_endpoints: &BTreeMap<u8, EndpointHandle>,
+    ) -> Result {
+        let rollback_alternate = old_alternate.unwrap_or(0);
+        self.prepare_configure_context(
+            interface,
+            rollback_alternate,
+            new_descriptors,
+            old_descriptors,
+            old_endpoints,
+        );
+        self.configure_endpoint().await?;
+        if let Some(old_alternate) = old_alternate {
+            self.control_endpoint_mut()
+                .control_out(
+                    ControlSetup {
+                        request_type: RequestType::Standard,
+                        recipient: Recipient::Interface,
+                        request: usb_if::transfer::Request::SetInterface,
+                        value: old_alternate.into(),
+                        index: interface.into(),
+                    },
+                    &[],
+                )
+                .await?;
+        }
+        for endpoint in old_endpoints.values() {
+            endpoint.reactivate();
+        }
+        Ok(())
+    }
+
+    fn publish_endpoint_routes(
+        &self,
+        old_endpoints: &BTreeMap<u8, EndpointHandle>,
+        new_endpoints: &BTreeMap<u8, EndpointHandle>,
+    ) -> Result {
+        let old_routes = old_endpoints.values().map(|endpoint| {
+            let dci = endpoint_address_dci(endpoint.info().address.raw());
+            let queue =
+                endpoint.with_raw_mut::<XhciEndpoint, _>(|raw| raw.ring().finished_handle());
+            (dci, queue)
+        });
+        let new_routes = new_endpoints.values().map(|endpoint| {
+            let dci = endpoint_address_dci(endpoint.info().address.raw());
+            let queue =
+                endpoint.with_raw_mut::<XhciEndpoint, _>(|raw| raw.ring().finished_handle());
+            (dci, queue)
+        });
+        self.transfer_result_handler
+            .replace_queues(self.id.as_u8(), old_routes, new_routes)?;
+        Ok(())
+    }
+
+    fn validate_endpoint_addresses(
+        &self,
+        interface: u8,
+        descriptors: &[EndpointDescriptor],
+    ) -> Result {
+        for descriptor in descriptors {
+            if self
+                .ep_interfaces
+                .get(&descriptor.address)
+                .is_some_and(|owner| *owner != interface)
+            {
+                return Err(USBError::InvalidParameter);
+            }
+        }
 
         Ok(())
     }
@@ -568,30 +926,6 @@ impl Device {
                         if alt.alternate_setting == alternate {
                             return Ok(&alt.endpoints);
                         }
-                    }
-                }
-            }
-        }
-        Err(USBError::NotFound)
-    }
-
-    fn current_config_desc(&self) -> Result<&ConfigurationDescriptor> {
-        let Some(current_config_value) = self.current_config_value else {
-            return Err(USBError::ConfigurationNotSet);
-        };
-        self.config_desc
-            .iter()
-            .find(|config| config.configuration_value == current_config_value)
-            .ok_or(USBError::NotFound)
-    }
-
-    fn find_ep_desc_in_current_config(&self, address: u8) -> Result<&EndpointDescriptor> {
-        let config = self.current_config_desc()?;
-        for iface in &config.interfaces {
-            for alt in &iface.alt_settings {
-                for desc in &alt.endpoints {
-                    if desc.address == address {
-                        return Ok(desc);
                     }
                 }
             }
@@ -721,11 +1055,11 @@ impl DeviceOp for Device {
         &self.desc
     }
 
-    fn ctrl_ep_ref(&self) -> &Endpoint {
+    fn ctrl_ep_ref(&self) -> &EndpointHandle {
         self.control_endpoint()
     }
 
-    fn ctrl_ep_mut(&mut self) -> &mut Endpoint {
+    fn ctrl_ep_mut(&mut self) -> &mut EndpointHandle {
         self.control_endpoint_mut()
     }
 
@@ -733,21 +1067,24 @@ impl DeviceOp for Device {
         &'a mut self,
         interface: u8,
         alternate: u8,
-    ) -> BoxFuture<'a, Result<()>> {
+    ) -> BoxFuture<'a, Result<BTreeMap<u8, EndpointHandle>>> {
         self._claim_interface(interface, alternate).boxed()
+    }
+
+    fn release_interface<'a>(&'a mut self, interface: u8) -> BoxFuture<'a, Result<()>> {
+        self._release_interface(interface).boxed()
     }
 
     fn set_configuration<'a>(&'a mut self, configuration_value: u8) -> BoxFuture<'a, Result<()>> {
         self._set_configuration(configuration_value).boxed()
     }
 
-    fn configuration_descriptors(&self) -> &[ConfigurationDescriptor] {
-        &self.config_desc
+    fn disconnect(&mut self) -> BoxFuture<'_, Result<()>> {
+        self._disconnect().boxed()
     }
 
-    fn endpoint(&mut self, desc: &usb_if::descriptor::EndpointDescriptor) -> Result<Endpoint> {
-        let ep = self.eps.remove(&desc.address);
-        ep.ok_or(USBError::NotFound)
+    fn configuration_descriptors(&self) -> &[ConfigurationDescriptor] {
+        &self.config_desc
     }
 
     fn update_hub(&mut self, params: HubParams) -> BoxFuture<'_, Result<()>> {

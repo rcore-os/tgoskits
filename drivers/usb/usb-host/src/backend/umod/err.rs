@@ -43,10 +43,22 @@ impl core::error::Error for LibUsbErr {}
 impl From<LibUsbErr> for USBError {
     fn from(err: LibUsbErr) -> Self {
         match err.code {
+            LIBUSB_ERROR_NO_DEVICE => USBError::TransferError(TransferError::Disconnected),
             LIBUSB_ERROR_NOT_FOUND => USBError::NotFound,
             LIBUSB_ERROR_TIMEOUT => USBError::Timeout,
             LIBUSB_ERROR_NO_MEM => USBError::NoMemory,
             _ => USBError::Other(anyhow!("LibUSB error {}: {}", err.code, err.msg)),
+        }
+    }
+}
+
+impl From<LibUsbErr> for TransferError {
+    fn from(err: LibUsbErr) -> Self {
+        match err.code {
+            LIBUSB_ERROR_NO_DEVICE => TransferError::Disconnected,
+            LIBUSB_ERROR_TIMEOUT => TransferError::Timeout,
+            LIBUSB_ERROR_PIPE => TransferError::Stall,
+            _ => TransferError::Other(anyhow!("LibUSB transfer error {}: {}", err.code, err.msg)),
         }
     }
 }
@@ -57,7 +69,7 @@ pub(crate) fn transfer_status_to_result(status: i32) -> Result<(), TransferError
         LIBUSB_TRANSFER_TIMED_OUT => Err(TransferError::Timeout),
         LIBUSB_TRANSFER_CANCELLED => Err(TransferError::Cancelled),
         LIBUSB_TRANSFER_STALL => Err(TransferError::Stall),
-        LIBUSB_TRANSFER_NO_DEVICE => Err(TransferError::Other(anyhow!("No device"))),
+        LIBUSB_TRANSFER_NO_DEVICE => Err(TransferError::Disconnected),
         LIBUSB_TRANSFER_OVERFLOW => Err(TransferError::Other(anyhow!("Overflow"))),
         _ => Err(TransferError::Other(anyhow!(
             "Unknown transfer status: {status}"

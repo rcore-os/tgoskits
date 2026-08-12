@@ -8,6 +8,10 @@ pub enum TransferError {
     QueueFull,
     #[error("Invalid endpoint")]
     InvalidEndpoint,
+    #[error("Endpoint was revoked by an interface reconfiguration")]
+    EndpointRevoked,
+    #[error("Device disconnected")]
+    Disconnected,
     #[error("No device")]
     NoDevice,
     #[error("Not supported")]
@@ -44,6 +48,8 @@ pub enum USBError {
     SlotLimitReached,
     #[error("Configuration not set")]
     ConfigurationNotSet,
+    #[error("USB interface state could not be recovered")]
+    InterfaceBroken,
     #[error("Not supported")]
     NotSupported,
     #[error("Other error: {0}")]

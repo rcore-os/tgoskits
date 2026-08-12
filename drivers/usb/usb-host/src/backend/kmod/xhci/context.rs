@@ -7,12 +7,9 @@ use super::SlotId;
 use crate::{err::*, osal::Kernel};
 
 pub struct DeviceContextList {
-    pub dcbaa: CoherentArray<u64>,
+    dcbaa: CoherentArray<u64>,
     max_slots: usize,
 }
-
-unsafe impl Send for DeviceContextList {}
-unsafe impl Sync for DeviceContextList {}
 
 pub(crate) struct Context32 {
     out: CoherentBox<Device32Byte>,
@@ -125,11 +122,19 @@ impl DeviceContextList {
         self.dcbaa.set_cpu(slot_id.as_usize(), ctx.dcbaa());
         Ok(ctx)
     }
+
+    pub(crate) fn bus_addr(&self) -> u64 {
+        self.dcbaa.dma_addr().as_u64()
+    }
+
+    pub(crate) fn set_scratchpad_array(&mut self, bus_addr: u64) {
+        self.dcbaa.set_cpu(0, bus_addr);
+    }
 }
 
 pub struct ScratchpadBufferArray {
-    pub entries: CoherentArray<u64>,
-    pub _pages: Vec<ContiguousArray<u8>>,
+    entries: CoherentArray<u64>,
+    _pages: Vec<ContiguousArray<u8>>,
 }
 
 impl ScratchpadBufferArray {
