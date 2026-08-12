@@ -582,10 +582,18 @@ impl TaskSystem {
         if !cpu.has_expired_kernel_timer() && cpu.has_due_kernel_timer(monotonic_now) {
             cpu.as_mut().promote_due_kernel_timers(monotonic_now, 1);
         }
-        let kernel_timer_reserved = cpu.has_expired_kernel_timer();
-        let task_budget = budget.saturating_sub(usize::from(kernel_timer_reserved));
+        // A claimed kernel callback has already crossed the hard-IRQ expiry
+        // boundary and is the direct analogue of pending PREEMPT_RT hrtimer
+        // work. Return it to the worker before unrelated task timeout wakeups;
+        // the sticky work generation preserves those task expirations for the
+        // next pass. Claim at most one callback so task timers cannot starve.
+        let kernel_timer = cpu
+            .remote()
+            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
+            .kernel_timers
+            .claim_expired();
         let mut processed = 0;
-        while processed < task_budget {
+        while kernel_timer.is_none() && processed < budget {
             if !cpu.has_expired_task_deadlines() && cpu.has_due_task_deadline(monotonic_now) {
                 let remaining = budget - processed;
                 cpu.as_mut()
@@ -610,14 +618,6 @@ impl TaskSystem {
             }
             processed += 1;
         }
-        let kernel_timer = if processed < budget {
-            cpu.remote()
-                .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
-                .kernel_timers
-                .claim_expired()
-        } else {
-            None
-        };
         let pending = cpu.has_expired_task_deadlines()
             || cpu.has_due_task_deadline(monotonic_now)
             || cpu.has_expired_kernel_timer()
