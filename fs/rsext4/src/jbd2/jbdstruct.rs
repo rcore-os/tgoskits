@@ -39,6 +39,8 @@ pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8]>);
 /// still be pending.
 pub(crate) struct Jbd2CheckpointTransaction {
     pub(crate) sequence: u32,
+    pub(crate) log_start: u32,
+    pub(crate) log_records: usize,
     pub(crate) updates: Vec<Jbd2Update>,
     pub(crate) revoked_blocks: Vec<AbsoluteBN>,
 }
@@ -48,7 +50,7 @@ pub struct JBD2DEVSYSTEM {
     pub jbd2_super_block: JournalSuperBlock,
     pub start_block: AbsoluteBN, // Physical block containing the journal superblock.
     pub max_len: u32,            // Total number of blocks in the journal area.
-    pub head: u32,               // Commit cursor as a relative log block.
+    pub head: u32,               // Next writable relative log block.
     pub sequence: u32,           // Next expected transaction sequence ID.
     pub commit_queue: Vec<Jbd2Update>, // Pending updates in the current transaction.
     pub(crate) revoke_queue: Vec<AbsoluteBN>,

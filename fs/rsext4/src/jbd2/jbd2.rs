@@ -1,6 +1,10 @@
 //! JBD2 transaction commit and replay logic.
 
-use alloc::{collections::BTreeMap, vec, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec,
+    vec::Vec,
+};
 
 use crate::{
     blockdev::*,
@@ -437,53 +441,32 @@ impl JBD2DEVSYSTEM {
             .last_logical_block(journal_blocks)
             .ok_or_else(Ext4Error::corrupted)?;
 
-        // The first commit initializes `s_start` in the journal superblock.
+        // The first record of a clean journal initializes the durable tail at
+        // the current head. The head remains an absolute ring cursor, so a
+        // later tail advance never changes the next writable record.
         if self.jbd2_super_block.s_start == 0 {
             let previous_superblock = self.jbd2_super_block;
-            self.jbd2_super_block.s_start = self.jbd2_super_block.s_first;
+            self.jbd2_super_block.s_start = self.head;
+            self.jbd2_super_block.s_sequence = self.sequence;
             if let Err(error) =
                 self.write_journal_superblock_with_mapping(block_dev, journal_blocks)
             {
                 self.jbd2_super_block = previous_superblock;
                 return Err(error);
             }
-            self.head += 1;
-            let mut rel = self
-                .jbd2_super_block
-                .s_start
-                .checked_add(self.head)
-                .and_then(|v| v.checked_sub(1))
-                .ok_or_else(Ext4Error::invalid_input)?;
-            // Wrap when the cursor runs past the end of the journal ring.
-            if rel > last_rel {
-                self.head = 0;
-                rel = self.jbd2_super_block.s_start;
-            }
-            let target_use = self.journal_phys_block(journal_blocks, rel)?;
-            self.used_log_records = self
-                .used_log_records
-                .checked_add(1)
-                .ok_or_else(Ext4Error::overflow)?;
-            Ok(target_use)
-        } else {
-            self.head += 1;
-            let mut rel = self
-                .jbd2_super_block
-                .s_start
-                .checked_add(self.head)
-                .and_then(|v| v.checked_sub(1))
-                .ok_or_else(Ext4Error::invalid_input)?;
-            if rel > last_rel {
-                self.head = 0;
-                rel = self.jbd2_super_block.s_start;
-            }
-            let target_use = self.journal_phys_block(journal_blocks, rel)?;
-            self.used_log_records = self
-                .used_log_records
-                .checked_add(1)
-                .ok_or_else(Ext4Error::overflow)?;
-            Ok(target_use)
         }
+        let rel = self.head;
+        let target_use = self.journal_phys_block(journal_blocks, rel)?;
+        self.head = if rel >= last_rel {
+            self.jbd2_super_block.s_first
+        } else {
+            rel.checked_add(1).ok_or_else(Ext4Error::overflow)?
+        };
+        self.used_log_records = self
+            .used_log_records
+            .checked_add(1)
+            .ok_or_else(Ext4Error::overflow)?;
+        Ok(target_use)
     }
 
     fn write_revoke_records<D: FilesystemBlockIo>(
@@ -562,6 +545,7 @@ impl JBD2DEVSYSTEM {
         journal_blocks: &[AbsoluteBN],
     ) -> Ext4Result<bool> {
         let tid = self.sequence;
+        let transaction_log_start = self.head;
 
         if self.commit_queue.is_empty() && self.revoke_queue.is_empty() {
             return Ok(false);
@@ -780,6 +764,8 @@ impl JBD2DEVSYSTEM {
         self.checkpoint_transactions
             .push(Jbd2CheckpointTransaction {
                 sequence: tid,
+                log_start: transaction_log_start,
+                log_records: required_log_records,
                 updates: core::mem::take(&mut self.commit_queue),
                 revoked_blocks: core::mem::take(&mut self.revoke_queue),
             });
@@ -787,41 +773,68 @@ impl JBD2DEVSYSTEM {
         Ok(true)
     }
 
-    /// Writes every committed transaction to its home locations and advances
-    /// the on-disk journal tail only after those writes are durable.
+    /// Checkpoints an oldest-first prefix of committed transactions and
+    /// advances the durable tail once while leaving every later transaction
+    /// replayable.
     pub(crate) fn checkpoint_transactions_with_mapping<D: FilesystemBlockIo>(
         &mut self,
         block_dev: &mut D,
         journal_blocks: &[AbsoluteBN],
+        max_transactions: usize,
     ) -> Ext4Result<bool> {
-        if self.checkpoint_transactions.is_empty() {
+        let completed_transactions = max_transactions.min(self.checkpoint_transactions.len());
+        if completed_transactions == 0 {
             return Ok(false);
         }
 
-        for transaction in &self.checkpoint_transactions {
+        let mut later_blocks = BTreeSet::new();
+        for transaction in &self.checkpoint_transactions[completed_transactions..] {
+            later_blocks.extend(transaction.updates.iter().map(|update| update.0));
+            later_blocks.extend(transaction.revoked_blocks.iter().copied());
+        }
+        for transaction in self.checkpoint_transactions[..completed_transactions]
+            .iter()
+            .rev()
+        {
             for update in &transaction.updates {
-                let superseded = self.checkpoint_transactions.iter().any(|later| {
-                    Self::transaction_id_after(later.sequence, transaction.sequence)
-                        && later.revoked_blocks.contains(&update.0)
-                });
-                if !superseded {
+                if !later_blocks.contains(&update.0) {
                     block_dev.write(&update.1[..], update.0, 1)?;
                 }
             }
-            block_dev.flush()?;
+            later_blocks.extend(transaction.updates.iter().map(|update| update.0));
+            later_blocks.extend(transaction.revoked_blocks.iter().copied());
         }
+        block_dev.flush()?;
 
-        self.checkpoint_transactions.clear();
-        self.jbd2_super_block.s_sequence = self.sequence;
-        self.jbd2_super_block.s_start = 0;
-        self.head = 0;
-        self.used_log_records = 0;
-        self.write_journal_superblock_with_mapping_flags(
+        let completed_records = self.checkpoint_transactions[..completed_transactions]
+            .iter()
+            .try_fold(0usize, |records, transaction| {
+                records
+                    .checked_add(transaction.log_records)
+                    .ok_or_else(Ext4Error::overflow)
+            })?;
+        let remaining_records = self
+            .used_log_records
+            .checked_sub(completed_records)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:log_accounting"))?;
+        let (next_sequence, next_start) = self
+            .checkpoint_transactions
+            .get(completed_transactions)
+            .map_or((self.sequence, 0), |next| (next.sequence, next.log_start));
+        let previous_superblock = self.jbd2_super_block;
+        self.jbd2_super_block.s_sequence = next_sequence;
+        self.jbd2_super_block.s_start = next_start;
+        if let Err(error) = self.write_journal_superblock_with_mapping_flags(
             block_dev,
             journal_blocks,
             WriteFlags::METADATA | WriteFlags::FUA,
-        )?;
-        block_dev.flush()?;
+        ) {
+            self.jbd2_super_block = previous_superblock;
+            return Err(error);
+        }
+
+        self.checkpoint_transactions.drain(..completed_transactions);
+        self.used_log_records = remaining_records;
 
         Ok(true)
     }
@@ -1167,7 +1180,7 @@ impl JBD2DEVSYSTEM {
             }
         };
 
-        self.head = 0;
+        self.head = self.jbd2_super_block.s_first;
 
         // Preserve the replay cause if recording progress also fails. The
         // persistence error is secondary and must not replace the first error.

@@ -170,12 +170,15 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 *existing = update;
                 return Ok(());
             }
-            Self::running_transaction_credits(system)? >= transaction_capacity
+            Self::running_transaction_credits(system)?
+                .checked_add(1)
+                .ok_or_else(Ext4Error::overflow)?
+                > transaction_capacity
         };
 
         if needs_commit {
             self.commit_pending_transaction()?;
-            self.checkpoint_pending_transactions()?;
+            self.checkpoint_until_capacity(1)?;
         }
 
         let system = self.system.as_mut().ok_or_else(|| {
@@ -283,7 +286,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         JBD2DEVSYSTEM {
             start_block: journal_start_block,
             max_len: super_block.s_maxlen,
-            head: 0,
+            head: super_block.s_first,
             sequence: super_block.s_sequence,
             jbd2_super_block: super_block,
             commit_queue: Vec::new(),
@@ -421,7 +424,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         Ok(committed)
     }
 
-    fn checkpoint_pending_transactions(&mut self) -> Ext4Result<bool> {
+    fn checkpoint_transactions(&mut self, max_transactions: usize) -> Ext4Result<bool> {
         self.ensure_not_aborted("jbd2:checkpoint_after_abort")?;
         if !self.journal_use {
             return Ok(false);
@@ -431,8 +434,11 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 Ext4Error::journal_aborted().with_operation("jbd2:checkpoint_without_state")
             );
         };
-        let result =
-            system.checkpoint_transactions_with_mapping(&mut self.inner, &self.journal_blocks);
+        let result = system.checkpoint_transactions_with_mapping(
+            &mut self.inner,
+            &self.journal_blocks,
+            max_transactions,
+        );
         let checkpointed = match result {
             Ok(checkpointed) => checkpointed,
             Err(error) => {
@@ -445,6 +451,52 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return Err(error);
         }
         Ok(checkpointed)
+    }
+
+    #[cfg(test)]
+    fn checkpoint_pending_transactions(&mut self) -> Ext4Result<bool> {
+        self.checkpoint_transactions(1)
+    }
+
+    fn checkpoint_all_pending_transactions(&mut self) -> Ext4Result<bool> {
+        self.checkpoint_transactions(usize::MAX)
+    }
+
+    fn checkpoint_until_capacity(&mut self, credits: usize) -> Ext4Result<()> {
+        let mut available_records = self.journal_available_log_records()?;
+        let block_size = self.inner.block_size() as usize;
+        let system = self.system.as_ref().ok_or_else(|| {
+            Ext4Error::journal_aborted().with_operation("jbd2:checkpoint_without_state")
+        })?;
+        let mut checkpoint_count = 0usize;
+        loop {
+            let available_credits = if available_records < 3 {
+                0
+            } else {
+                Self::transaction_capacity_in_records(
+                    &system.jbd2_super_block,
+                    block_size,
+                    available_records,
+                )?
+            };
+            if available_credits >= credits {
+                break;
+            }
+            let transaction = system
+                .checkpoint_transactions
+                .get(checkpoint_count)
+                .ok_or_else(|| Ext4Error::no_space().with_operation("jbd2:log_space"))?;
+            available_records = available_records
+                .checked_add(transaction.log_records)
+                .ok_or_else(Ext4Error::overflow)?;
+            checkpoint_count = checkpoint_count
+                .checked_add(1)
+                .ok_or_else(Ext4Error::overflow)?;
+        }
+        if checkpoint_count != 0 && !self.checkpoint_transactions(checkpoint_count)? {
+            return Err(Ext4Error::no_space().with_operation("jbd2:log_space"));
+        }
+        Ok(())
     }
 
     fn journal_transaction_capacity(&self) -> Ext4Result<usize> {
@@ -648,7 +700,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// Commits and checkpoints all buffered journal transactions during unmount.
     pub fn umount_commit(&mut self) -> Ext4Result<()> {
         self.commit()?;
-        self.checkpoint_pending_transactions()?;
+        self.checkpoint_all_pending_transactions()?;
         Ok(())
     }
 
@@ -717,7 +769,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         };
         if needs_commit {
             self.commit_pending_transaction()?;
-            self.checkpoint_pending_transactions()?;
+            self.checkpoint_until_capacity(credits)?;
         }
 
         let queue_snapshot = {
@@ -868,7 +920,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             });
         if needs_boundary {
             self.commit_pending_transaction()?;
-            self.checkpoint_pending_transactions()?;
+            self.checkpoint_all_pending_transactions()?;
         }
         if let Some(handle) = self.active_handle.as_mut()
             && !handle.touched_blocks.contains(&block_id)
@@ -1019,7 +1071,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 return Err(Ext4Error::busy().with_operation("jbd2:flush_with_active_handle"));
             }
             self.commit_pending_transaction()?;
-            self.checkpoint_pending_transactions()?;
+            self.checkpoint_all_pending_transactions()?;
         }
         self.inner.flush()
     }
@@ -2188,6 +2240,215 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_reclaims_only_oldest_committed_transaction() {
+        let superblock = csum_v3_superblock();
+        let journal_start = AbsoluteBN::new(128);
+        let first_target = AbsoluteBN::new(10);
+        let second_target = AbsoluteBN::new(11);
+        let first_payload = vec![0x51; BLOCK_SIZE];
+        let second_payload = vec![0xa6; BLOCK_SIZE];
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(superblock, journal_start)
+            .expect("install checksummed journal");
+
+        dev.write_blocks(&first_payload, first_target, 1, true)
+            .expect("queue first transaction");
+        dev.commit().expect("commit first transaction");
+        dev.write_blocks(&second_payload, second_target, 1, true)
+            .expect("queue second transaction");
+        dev.commit().expect("commit second transaction");
+
+        dev.checkpoint_pending_transactions()
+            .expect("checkpoint only the oldest transaction");
+
+        let first_offset = first_target.as_usize().expect("first target") * BLOCK_SIZE;
+        let second_offset = second_target.as_usize().expect("second target") * BLOCK_SIZE;
+        assert_eq!(
+            &dev.inner._device().data[first_offset..first_offset + BLOCK_SIZE],
+            first_payload
+        );
+        assert!(
+            dev.inner._device().data[second_offset..second_offset + BLOCK_SIZE]
+                .iter()
+                .all(|byte| *byte == 0),
+            "a single checkpoint step must leave the later home image pending"
+        );
+        let system = dev.system.as_ref().expect("journal state");
+        assert_eq!(system.checkpoint_transactions.len(), 1);
+        assert_eq!(system.checkpoint_transactions[0].sequence, 2);
+        assert_ne!(system.jbd2_super_block.s_start, 0);
+        assert_eq!(system.jbd2_super_block.s_sequence, 2);
+
+        let replay_superblock = system.jbd2_super_block;
+        let inner = dev.into_inner();
+        let mut replay_dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        replay_dev
+            .set_journal_superblock(replay_superblock, journal_start)
+            .expect("install advanced journal tail");
+        assert_eq!(replay_dev.journal_replay_checked(), ReplayStatus::Complete);
+        let inner = replay_dev.into_inner();
+        assert_eq!(
+            &inner.data[second_offset..second_offset + BLOCK_SIZE],
+            second_payload,
+            "the later committed transaction must remain replayable"
+        );
+    }
+
+    #[test]
+    fn flush_batches_committed_transactions_into_one_tail_fua() {
+        let superblock = csum_v3_superblock();
+        let journal_start = AbsoluteBN::new(128);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(superblock, journal_start)
+            .expect("install checksummed journal");
+
+        dev.write_blocks(&vec![0x51; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
+            .expect("queue first transaction");
+        dev.commit().expect("commit first transaction");
+        dev.write_blocks(&vec![0xa6; BLOCK_SIZE], AbsoluteBN::new(11), 1, true)
+            .expect("queue second transaction");
+        dev.commit().expect("commit second transaction");
+        assert_eq!(dev.inner._device().fua_writes, 2);
+
+        dev.flush()
+            .expect("checkpoint every committed transaction as one batch");
+
+        assert_eq!(
+            dev.inner._device().fua_writes,
+            3,
+            "one flush batch must publish the final journal tail with one FUA"
+        );
+        assert!(
+            dev.system
+                .as_ref()
+                .expect("journal state")
+                .checkpoint_transactions
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn checkpoint_batch_writes_only_latest_home_block_version() {
+        let superblock = csum_v3_superblock();
+        let journal_start = AbsoluteBN::new(128);
+        let target = AbsoluteBN::new(10);
+        let latest_payload = vec![0xa6; BLOCK_SIZE];
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(superblock, journal_start)
+            .expect("install checksummed journal");
+
+        dev.write_blocks(&vec![0x51; BLOCK_SIZE], target, 1, true)
+            .expect("queue first transaction");
+        dev.commit().expect("commit first transaction");
+        dev.write_blocks(&latest_payload, target, 1, true)
+            .expect("queue replacement transaction");
+        dev.commit().expect("commit replacement transaction");
+        dev.inner._device_mut().write_calls = 0;
+
+        dev.flush()
+            .expect("checkpoint every committed transaction as one batch");
+
+        assert_eq!(
+            dev.inner._device().write_calls,
+            2,
+            "checkpoint must write one latest home image and one tail superblock"
+        );
+        let target_offset = target.as_usize().expect("target") * BLOCK_SIZE;
+        assert_eq!(
+            &dev.inner._device().data[target_offset..target_offset + BLOCK_SIZE],
+            latest_payload
+        );
+    }
+
+    #[test]
+    fn failed_tail_fua_preserves_oldest_replay_boundary() {
+        let superblock = csum_v3_superblock();
+        let journal_start = AbsoluteBN::new(128);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(superblock, journal_start)
+            .expect("install checksummed journal");
+        dev.write_blocks(&vec![0x37; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
+            .expect("queue first transaction");
+        dev.commit().expect("commit first transaction");
+        dev.write_blocks(&vec![0x92; BLOCK_SIZE], AbsoluteBN::new(11), 1, true)
+            .expect("queue second transaction");
+        dev.commit().expect("commit second transaction");
+
+        let (tail_sequence, tail_start, used_records) = {
+            let system = dev.system.as_ref().expect("journal state");
+            (
+                system.jbd2_super_block.s_sequence,
+                system.jbd2_super_block.s_start,
+                system.used_log_records,
+            )
+        };
+        dev.inner._device_mut().fail_fua = true;
+
+        let error = dev
+            .checkpoint_pending_transactions()
+            .expect_err("tail FUA failure must abort checkpoint");
+
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+        let system = dev.system.as_ref().expect("journal state");
+        assert_eq!(system.jbd2_super_block.s_sequence, tail_sequence);
+        assert_eq!(system.jbd2_super_block.s_start, tail_start);
+        assert_eq!(system.used_log_records, used_records);
+        assert_eq!(system.checkpoint_transactions.len(), 2);
+    }
+
+    #[test]
+    fn partial_checkpoint_reuses_wrapped_log_without_losing_later_transactions() {
+        let superblock = small_journal_superblock();
+        let journal_start = AbsoluteBN::new(128);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(superblock, journal_start)
+            .expect("install small journal");
+
+        for transaction in 0..4u32 {
+            dev.write_blocks(
+                &vec![0x40 + transaction as u8; BLOCK_SIZE],
+                AbsoluteBN::new(10 + u64::from(transaction)),
+                1,
+                true,
+            )
+            .expect("queue transaction before wrap");
+            dev.commit().expect("commit transaction before wrap");
+        }
+        dev.checkpoint_pending_transactions()
+            .expect("reclaim first transaction");
+        dev.write_blocks(&vec![0x44; BLOCK_SIZE], AbsoluteBN::new(14), 1, true)
+            .expect("queue transaction at ring end");
+        dev.commit().expect("commit transaction at ring end");
+        dev.checkpoint_pending_transactions()
+            .expect("reclaim second transaction");
+        dev.write_blocks(&vec![0x45; BLOCK_SIZE], AbsoluteBN::new(15), 1, true)
+            .expect("queue wrapped transaction");
+        dev.commit().expect("commit wrapped transaction");
+
+        let system = dev.system.as_ref().expect("journal state");
+        assert_eq!(system.checkpoint_transactions.len(), 4);
+        assert_eq!(system.jbd2_super_block.s_sequence, 3);
+        assert_eq!(system.jbd2_super_block.s_start, 7);
+        assert_eq!(system.head, 4);
+        let replay_superblock = system.jbd2_super_block;
+        let inner = dev.into_inner();
+        let mut replay_dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        replay_dev
+            .set_journal_superblock(replay_superblock, journal_start)
+            .expect("install partial-checkpoint tail");
+        assert_eq!(replay_dev.journal_replay_checked(), ReplayStatus::Complete);
+        let inner = replay_dev.into_inner();
+        for transaction in 0..6u32 {
+            let offset = (10 + transaction) as usize * BLOCK_SIZE;
+            assert_eq!(
+                inner.data[offset],
+                0x40 + transaction as u8,
+                "transaction {transaction} must survive checkpoint and replay"
+            );
+        }
+    }
+
+    #[test]
     fn later_writer_revoke_preserves_reused_home_block_after_replay() {
         let superblock = csum_v3_superblock();
         let journal_start = AbsoluteBN::new(128);
@@ -2400,7 +2661,7 @@ mod tests {
         let expected_fua_writes = match stage {
             "open-superblock" | "descriptor" | "payload" | "descriptor-payload-barrier" => 1,
             "commit" | "checkpoint" | "commit-barrier" | "checkpoint-barrier" => 2,
-            "close-superblock" | "superblock-barrier" => 3,
+            "close-superblock" => 3,
             _ => panic!("unknown commit fault stage: {stage}"),
         };
         assert_eq!(
@@ -2442,7 +2703,6 @@ mod tests {
             "descriptor-payload-barrier",
             "commit-barrier",
             "checkpoint-barrier",
-            "superblock-barrier",
         ];
         for (index, stage) in flush_stages.iter().enumerate() {
             assert_commit_stage_fault_aborts_journal(

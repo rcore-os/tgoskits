@@ -439,6 +439,11 @@ impl<B: BlockIo> BlockDev<B> {
         &self.dev
     }
 
+    #[cfg(test)]
+    pub fn _device_mut(&mut self) -> &mut B {
+        &mut self.dev
+    }
+
     fn filesystem_io(&self, block: AbsoluteBN, count: u32) -> Ext4Result<(SectorId, u32, usize)> {
         self.validate_filesystem_geometry(self.filesystem_block_size)?;
         let logical_sector_size = self.geometry.logical_block_size as usize;
