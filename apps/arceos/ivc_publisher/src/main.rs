@@ -10,6 +10,15 @@ fn main() {
     publisher::run();
 }
 
+#[cfg(any(feature = "arceos", test))]
+mod demo_config {
+    pub const CHANNEL_KEY: usize = 0x4956_4301;
+    pub const CHANNEL_SIZE: usize = 0x1_0000;
+    pub const NOTIFY_IRQ: Option<usize> = Some(160);
+    pub const PUBLISHER_VM_ID: usize = 1;
+    pub const SUBSCRIBER_VM_ID: usize = 2;
+}
+
 #[cfg(not(feature = "arceos"))]
 fn main() {}
 
@@ -33,13 +42,7 @@ mod publisher {
     const PUBLISH_COUNT: u64 = 5;
     static NOTIFY_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 
-    mod demo_config {
-        pub const CHANNEL_KEY: usize = 0x4956_4301;
-        pub const CHANNEL_SIZE: usize = 0x1_0000;
-        pub const NOTIFY_IRQ: Option<usize> = Some(60);
-        pub const PUBLISHER_VM_ID: usize = 1;
-        pub const SUBSCRIBER_VM_ID: usize = 2;
-    }
+    use crate::demo_config;
 
     pub fn run() {
         let shm_base_gpa = HyperCallOutputSlot::new(0);
@@ -227,5 +230,19 @@ mod publisher {
             // the shared region before subscribers can use the phase-2 rings.
             Some(&mut *(vaddr.as_mut_ptr() as *mut IvcRegion))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qemu_ivc_notify_irq_matches_guest_config() {
+        assert_eq!(demo_config::CHANNEL_KEY, 0x4956_4301);
+        assert_eq!(demo_config::CHANNEL_SIZE, 0x1_0000);
+        assert_eq!(demo_config::NOTIFY_IRQ, Some(160));
+        assert_eq!(demo_config::PUBLISHER_VM_ID, 1);
+        assert_eq!(demo_config::SUBSCRIBER_VM_ID, 2);
     }
 }

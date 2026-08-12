@@ -844,6 +844,7 @@ mod tests {
         for (name, compatible, base, irq) in [
             ("timer@10002000", "vendor,soc-timer", 0x1000_2000, 12),
             ("virtio_mmio@10001000", "virtio,mmio", 0x1000_1000, 11),
+            ("gpio@10003000", "vendor,gpio", 0x1000_3000, 13),
         ] {
             let node = fdt.add_node(root, Node::new(name));
             fdt.node_mut(node)
@@ -1275,7 +1276,13 @@ mod tests {
             vm_cfg
                 .pass_through_irqs()
                 .iter()
-                .any(|interrupt| interrupt.source == 12)
+                .all(|interrupt| interrupt.source != 12)
+        );
+        assert!(
+            vm_cfg
+                .pass_through_irqs()
+                .iter()
+                .any(|interrupt| interrupt.source == 13)
         );
     }
 }
