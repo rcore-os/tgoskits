@@ -560,6 +560,66 @@ fn pop_available_head_read_failure_faults_queue() {
 }
 
 #[test]
+fn read_avail_idx_pre_read_failure_faults_queue() {
+    let mem = Arc::new(MockMem::new(0x3002));
+    let mut q = VirtioQueue::new(0, 4, mem.clone());
+    q.set_desc_table_addr(GuestPhysAddr::from(0x2000)).unwrap();
+    // The avail ring header is configured but its `idx` field (base + 2)
+    // crosses the mapped boundary: the pre-read must fail and latch.
+    q.set_avail_ring_addr(GuestPhysAddr::from(0x3000)).unwrap();
+    q.set_used_ring_addr(GuestPhysAddr::from(0x4000)).unwrap();
+    q.set_ready(true);
+    let mut memory = axvirtio_common::AddressSpaceMemory::new(&*mem);
+    assert_eq!(
+        q.read_avail_idx_with_memory(&mut memory).unwrap_err(),
+        VirtioError::InvalidAddress
+    );
+    assert!(
+        q.is_faulted(),
+        "avail-index pre-read failure on a configured queue must fault it"
+    );
+    // The queue stays faulted: the same read and the drain entry points reject
+    // until reset, instead of repeating the failure every call.
+    assert_eq!(
+        q.read_avail_idx_with_memory(&mut memory).unwrap_err(),
+        VirtioError::QueueFaulted
+    );
+    assert_eq!(
+        q.pop_available_head_with_memory(&mut memory).unwrap_err(),
+        VirtioError::QueueFaulted
+    );
+    assert_eq!(
+        q.read_avail_entry_with_memory(0, &mut memory).unwrap_err(),
+        VirtioError::QueueFaulted
+    );
+}
+
+#[test]
+fn read_avail_entry_pre_read_failure_faults_queue() {
+    let mem = Arc::new(MockMem::new(0x3004));
+    let mut q = VirtioQueue::new(0, 4, mem.clone());
+    q.set_desc_table_addr(GuestPhysAddr::from(0x2000)).unwrap();
+    q.set_avail_ring_addr(GuestPhysAddr::from(0x3000)).unwrap();
+    q.set_used_ring_addr(GuestPhysAddr::from(0x4000)).unwrap();
+    q.set_ready(true);
+    let mut memory = axvirtio_common::AddressSpaceMemory::new(&*mem);
+    // entry 0 lives at avail + 4 == 0x3004, which is beyond the mapped
+    // boundary, so the 2-byte entry read fails.
+    assert_eq!(
+        q.read_avail_entry_with_memory(0, &mut memory).unwrap_err(),
+        VirtioError::InvalidAddress
+    );
+    assert!(
+        q.is_faulted(),
+        "avail-entry pre-read failure on a configured queue must fault it"
+    );
+    assert_eq!(
+        q.read_avail_entry_with_memory(0, &mut memory).unwrap_err(),
+        VirtioError::QueueFaulted
+    );
+}
+
+#[test]
 fn add_used_write_failure_faults_queue() {
     let mem = Arc::new(MockMem::new(0x100));
     let mut q = VirtioQueue::new(0, 4, mem.clone());

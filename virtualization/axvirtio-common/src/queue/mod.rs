@@ -295,14 +295,27 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
     }
 
     /// Reads the available index with a scoped memory capability.
+    ///
+    /// Returns [`VirtioError::QueueFaulted`] when the queue is faulted and
+    /// [`VirtioError::QueueNotReady`] when the available ring is not
+    /// configured (not a runtime failure, so the queue is not faulted). A read
+    /// failure of a configured ring is a runtime failure and latches the
+    /// fault, matching the other avail-ring pre-read paths.
     pub fn read_avail_idx_with_memory(
         &self,
         memory: &mut dyn crate::GuestMemory,
     ) -> VirtioResult<u16> {
-        self.avail_ring
-            .as_ref()
-            .ok_or(VirtioError::QueueNotReady)?
-            .read_avail_idx_with_memory(memory)
+        if self.faulted.get() {
+            return Err(VirtioError::QueueFaulted);
+        }
+        let Some(avail_ring) = self.avail_ring.as_ref() else {
+            return Err(VirtioError::QueueNotReady);
+        };
+        let result = avail_ring.read_avail_idx_with_memory(memory);
+        if result.is_err() {
+            self.latch_fault();
+        }
+        result
     }
 
     /// Add a used buffer to the used ring
@@ -356,11 +369,7 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
         if !self.is_valid() {
             return Err(VirtioError::QueueNotReady);
         }
-        let avail_idx = if let Some(avail_ring) = &self.avail_ring {
-            avail_ring.read_avail_idx_with_memory(memory)?
-        } else {
-            return Err(VirtioError::QueueNotReady);
-        };
+        let avail_idx = self.read_avail_idx_with_memory(memory)?;
         let last = self.get_last_avail_idx();
         let pending = avail_idx.wrapping_sub(last);
         if pending > self.size {
@@ -507,15 +516,28 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
     }
 
     /// Reads an available-ring entry with a scoped memory capability.
+    ///
+    /// Returns [`VirtioError::QueueFaulted`] when the queue is faulted and
+    /// [`VirtioError::QueueNotReady`] when the available ring is not
+    /// configured (not a runtime failure, so the queue is not faulted). A read
+    /// failure of a configured ring is a runtime failure and latches the
+    /// fault, matching the other avail-ring pre-read paths.
     pub fn read_avail_entry_with_memory(
         &self,
         ring_index: u16,
         memory: &mut dyn crate::GuestMemory,
     ) -> VirtioResult<u16> {
-        self.avail_ring
-            .as_ref()
-            .ok_or(VirtioError::QueueNotReady)?
-            .read_avail_ring_entry_with_memory(ring_index, memory)
+        if self.faulted.get() {
+            return Err(VirtioError::QueueFaulted);
+        }
+        let Some(avail_ring) = self.avail_ring.as_ref() else {
+            return Err(VirtioError::QueueNotReady);
+        };
+        let result = avail_ring.read_avail_ring_entry_with_memory(ring_index, memory);
+        if result.is_err() {
+            self.latch_fault();
+        }
+        result
     }
 
     /// Update last available index

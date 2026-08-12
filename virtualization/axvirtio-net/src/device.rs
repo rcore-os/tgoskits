@@ -100,6 +100,18 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
         self.state.is_driver_ok()
     }
 
+    /// Whether the queue with the given index has latched the faulted state.
+    ///
+    /// A faulted queue rejects `pop`/`complete` and all guest-data paths until
+    /// the guest resets the device; the VMM can poll this to surface the
+    /// condition instead of silently dropping service.
+    pub fn is_queue_faulted(&self, index: usize) -> bool {
+        self.state
+            .queues_lock()
+            .get(index)
+            .is_some_and(|q| q.is_faulted())
+    }
+
     /// Current interrupt status bits.
     pub fn interrupt_status(&self) -> u32 {
         self.state.interrupt_status()
@@ -199,7 +211,19 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
             return DeviceEvent::None;
         }
 
-        let avail_idx = tx.read_avail_idx_with_memory(memory).unwrap_or(0);
+        // The available-index pre-read latches a fault on a configured queue
+        // whose ring became unreadable; stop draining and let the guest reset
+        // the device instead of treating the queue as empty.
+        let avail_idx = match tx.read_avail_idx_with_memory(memory) {
+            Ok(idx) => idx,
+            Err(error) => {
+                warn!(
+                    "virtio-net TX queue is faulted; stop draining until the guest resets the \
+                     device: {error:?}"
+                );
+                return DeviceEvent::None;
+            }
+        };
         let last = tx.get_last_avail_idx();
         let pending = avail_idx.wrapping_sub(last).min(tx.size);
         for _ in 0..pending {
