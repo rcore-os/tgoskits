@@ -1866,3 +1866,28 @@ flow 可以进入，所以 update drain 是受类型所有权证明的立即条�
 cleanup；把 `transaction.c:816-907` 拆为 wait-updates、lock-updates、unlock-updates。普通 commit phase
 已实现，但 `jbd2_journal_lock_updates()` 面向 freeze/特殊操作的 reservation-drain 与 balanced barrier
 owner 尚未实现，继续保持同一红测台账，不能把 `&mut` 独占误报为该 API 全语义完成。
+
+性能 A/B 以本检查点前的 `e5f6e295a` 为 baseline、`67249506b` 为 implementation，固定 CPU 2、
+`powersave` governor、release、memory backend、4 KiB block、20 MiB payload。sequential 采用 10 个
+交错批次、每批每端 3 次预热与 20 次测量，得到 200+200 个样本。sync-cycle 首轮同样为 200+200；
+其中只有约 240 ns 的 clean-sync 被计时噪声放大为 median +5.83%、p95 +21.10%，真正执行 commit 的
+dirty-sync 已为 median +0.40%、p95 +5.97%。没有删除该首轮或单独重跑 implementation，而是继续
+追加 15 个双端交错批次，将完整 sync-cycle 判定窗口扩为 500+500。
+
+最终 1,400 条原始记录保存在
+`book/design/data/rsext4-perf/2026-08-13-jbd2-transaction-phase.csv`：
+
+| workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sequential write | 6,413,302 ns | 6,411,346 ns | -0.030% | 8,195,429 ns | 7,595,639 ns | -7.319% |
+| sequential read | 6,656,752 ns | 6,575,437 ns | -1.222% | 8,109,444 ns | 7,989,184 ns | -1.483% |
+| sequential unmount | 18,610 ns | 18,568 ns | -0.226% | 25,176 ns | 26,375 ns | +4.762% |
+| dirty sync（500 次） | 8,803 ns | 8,822 ns | +0.216% | 13,131 ns | 12,689 ns | -3.366% |
+| clean sync（500 次） | 247 ns | 253 ns | +2.429% | 411 ns | 437 ns | +6.326% |
+| sync-cycle unmount（500 次） | 5,914 ns | 5,909 ns | -0.085% | 8,344 ns | 8,494 ns | +1.798% |
+
+六项 median/p95 全部满足相对前一检查点的 5%/10% 门槛。phase 切换只在有 pending metadata 的
+commit start 执行；clean-sync 不进入该路径，其扩样用于量化主机 timer/scheduler noise，不作为
+实现收益。完整 `cargo test -p rsext4 --all-features` 在最终代码形状上为 279 个 unit 加全部
+integration/Linux image/e2fsck 绿；`--no-default-features` 为 278 个 unit 加全部 integration/Linux
+image/e2fsck 绿，三组目标 clippy、格式、portable-core boundary 与 Linux source-map audit 同步通过。
