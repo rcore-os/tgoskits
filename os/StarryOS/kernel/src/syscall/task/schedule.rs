@@ -25,6 +25,7 @@ use crate::{
         Cred, ProcessData, UserTaskRef,
         future::{UserWaitOutcome, block_on_user_until, block_on_user_until_wall},
         get_process_data, get_process_group, get_task, get_zombie_nice, processes,
+        resolve_user_pid,
     },
     time::{SleepDeadline, TimeValueLike},
 };
@@ -484,7 +485,8 @@ fn scheduler_tid(current: &crate::task::UserTaskRef, pid: i32) -> AxResult<u32> 
     if pid == 0 {
         Ok(current.as_thread().tid())
     } else {
-        u32::try_from(pid).map_err(|_| AxError::InvalidInput)
+        let local_pid = u32::try_from(pid).map_err(|_| AxError::InvalidInput)?;
+        resolve_user_pid(current, local_pid)
     }
 }
 
@@ -587,13 +589,14 @@ pub fn sys_getpriority(
     debug!("sys_getpriority <= which: {which}, who: {who}");
 
     match which {
-        PRIO_PROCESS => match get_task(if who == 0 { 0 } else { who }) {
+        PRIO_PROCESS => match get_task(priority_process_id(current, who)?) {
             Ok(task) => Ok(raw_priority(task.as_thread().nice())),
             Err(AxError::NoSuchProcess) if who != 0 => {
-                let nice = get_process_data(who)
+                let pid = resolve_user_pid(current, who)?;
+                let nice = get_process_data(pid)
                     .ok()
                     .and_then(|process| process.retired_leader_nice())
-                    .or_else(|| get_zombie_nice(who))
+                    .or_else(|| get_zombie_nice(pid))
                     .ok_or(AxError::NoSuchProcess)?;
                 Ok(raw_priority(nice))
             }
@@ -603,7 +606,7 @@ pub fn sys_getpriority(
             let pgid = if who == 0 {
                 current.as_thread().proc_data.proc.group().pgid()
             } else {
-                get_process_group(who)?.pgid()
+                get_process_group(resolve_user_pid(current, who)?)?.pgid()
             };
             min_priority_for_tasks(tasks_for_processes(
                 processes()
@@ -638,7 +641,7 @@ pub fn sys_setpriority(
     let nice = prio.clamp(-20, 19);
     match which {
         PRIO_PROCESS => {
-            let task = get_task(if who == 0 { 0 } else { who })?;
+            let task = get_task(priority_process_id(current, who)?)?;
             check_setpriority_permission(current, &task, nice)?;
             set_thread_scheduler_nice(&task, nice)?;
             Ok(0)
@@ -647,7 +650,7 @@ pub fn sys_setpriority(
             let pgid = if who == 0 {
                 current.as_thread().proc_data.proc.group().pgid()
             } else {
-                get_process_group(who)?.pgid()
+                get_process_group(resolve_user_pid(current, who)?)?.pgid()
             };
             set_priority_for_tasks(
                 current,
@@ -674,6 +677,14 @@ pub fn sys_setpriority(
             )
         }
         _ => Err(AxError::InvalidInput),
+    }
+}
+
+fn priority_process_id(current: &UserTaskRef, who: u32) -> AxResult<u32> {
+    if who == 0 {
+        Ok(current.as_thread().tid())
+    } else {
+        resolve_user_pid(current, who)
     }
 }
 
