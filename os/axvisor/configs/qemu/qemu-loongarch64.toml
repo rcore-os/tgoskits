@@ -12,7 +12,7 @@ args = [
   "-device",
   "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
   "-drive",
-  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+  "id=disk0,if=none,format=raw,snapshot=on,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
 ]
 fail_regex = []
 success_regex = []
