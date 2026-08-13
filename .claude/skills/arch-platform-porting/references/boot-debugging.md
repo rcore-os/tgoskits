@@ -225,9 +225,12 @@ work even when the kernel image and CPU topology are correct.
   from dense logical CPU indices. Both the maintained single-core board test
   and an eight-core boot have been validated.
 - GICv2 CPU target bits are firmware/controller interface IDs, not dense
-  logical CPU indices. Record each CPU's banked `GICD_ITARGETSR0` mask during
-  per-CPU initialization and reuse that mask for SPI affinity, AxVM-assigned
-  physical SPIs, and SGIs.
+  logical CPU indices. Scan all 32 banked private `GICD_ITARGETSR` bytes during
+  per-CPU initialization and record the unique one-hot mask in the shared route table
+  used by SPI affinity, AxVM-assigned physical SPIs, and SGIs. A zero mask is
+  valid only for a uniprocessor controller whose target registers are RAZ/WI;
+  leave its SPI targets untouched and use the SGI self-filter instead of
+  inventing a CPU bit. SMP must fail discovery when no unique target bit exists.
 - The RK3576 CRU node must be `rockchip,rk3576-cru` at `0x2720_0000`, size
   `0x50000`. Early driver evidence should include
   `RK3576 CRU reg: addr=0x27200000, size=0x50000` followed by

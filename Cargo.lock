@@ -432,6 +432,7 @@ dependencies = [
  "log",
  "paste",
  "rdif-intc",
+ "thiserror 2.0.20",
  "tock-registers 0.10.1",
 ]
 
