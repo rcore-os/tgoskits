@@ -128,6 +128,11 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
 
     /// Handles an MMIO write using a guest-memory capability scoped to this
     /// device access.
+    ///
+    /// The capability backs the `QUEUE_READY` ring-layout validation as well
+    /// as queue processing, so runtimes whose queues were constructed with a
+    /// non-translating placeholder accessor (e.g. axvisor) can still make
+    /// queues ready.
     pub fn mmio_write_with_memory(
         &self,
         addr: GuestPhysAddr,
@@ -135,7 +140,10 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
         val: usize,
         memory: &mut dyn axvirtio_common::GuestMemory,
     ) -> VirtioResult<BlockDeviceEvent> {
-        match self.state.mmio_write(addr, width, val)? {
+        match self
+            .state
+            .mmio_write_with_memory(addr, width, val, memory)?
+        {
             MmioWriteAction::None => Ok(BlockDeviceEvent::None),
             MmioWriteAction::Reset => {
                 // A transport reset invalidates every in-flight descriptor,
