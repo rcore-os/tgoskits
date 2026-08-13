@@ -269,8 +269,10 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                             power_up_deadline_passed(self.host.inner(), request.mmc_started_ms);
                         if request.mmc_polls >= SdioInitTiming::MAX_POLLS || elapsed_exceeded {
                             warn!(
-                                "sdio: CMD1 timed out after {} polls (~{} ms at the recommended \
-                                 cadence)",
+                                "sdio: controller={} media=MMC preference={:?} CMD1 timed out \
+                                 after {} polls (~{} ms at the recommended cadence)",
+                                self.diagnostic_identity().unwrap_or("unidentified"),
+                                request.preference,
                                 request.mmc_polls,
                                 request.mmc_polls * SdioInitTiming::POLL_TICK_MS_HINT,
                             );

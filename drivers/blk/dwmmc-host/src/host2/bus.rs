@@ -40,6 +40,8 @@ pub(super) enum BusRequestState {
 pub(super) enum DwMmcResetState {
     Start,
     WaitReset { polls: u32 },
+    WaitDmaRequest { polls: u32 },
+    WaitSecondFifoReset { polls: u32 },
 }
 
 pub(super) enum DwMmcClockState {
@@ -180,15 +182,16 @@ impl DwMmc {
                     self.regs.intmask().write(0);
                     self.clear_all_int_status();
                     self.irq.state.clear(u32::MAX);
-                    self.regs.ctype().write(crate::regs::CType::new());
-                    self.regs.uhs().write(crate::regs::UHS::new());
-                    self.program_linux_init_baseline();
-                    if restore_completion_irq {
-                        self.enable_completion_irq();
-                    } else {
-                        self.completion_irq_enabled
-                            .store(false, core::sync::atomic::Ordering::Release);
+                    if self.idmac_ring.is_some() || self.dma_poisoned {
+                        if self.regs.status().read().dma_req() {
+                            *state = DwMmcResetState::WaitDmaRequest { polls: 0 };
+                        } else {
+                            self.start_second_fifo_reset();
+                            *state = DwMmcResetState::WaitSecondFifoReset { polls: 0 };
+                        }
+                        return Ok(sdio_host2::RequestProgress::WaitingForIrq);
                     }
+                    self.finish_host2_reset_all(restore_completion_irq);
                     return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
                 }
                 if *polls >= DWMMC_RESET_POLLS {
@@ -200,6 +203,55 @@ impl DwMmc {
                 *polls += 1;
                 Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
+            DwMmcResetState::WaitDmaRequest { polls } => {
+                if !self.regs.status().read().dma_req() {
+                    self.start_second_fifo_reset();
+                    *state = DwMmcResetState::WaitSecondFifoReset { polls: 0 };
+                    return Ok(sdio_host2::RequestProgress::WaitingForIrq);
+                }
+                if *polls >= DWMMC_RESET_POLLS {
+                    self.log_host2_timeout("reset-all-dma-request");
+                    return Err(map_protocol_error(Error::Timeout(ErrorContext::new(
+                        Phase::Init,
+                    ))));
+                }
+                *polls += 1;
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+            }
+            DwMmcResetState::WaitSecondFifoReset { polls } => {
+                if !self.regs.ctrl().read().fifo_reset() {
+                    self.finish_host2_reset_all(restore_completion_irq);
+                    return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
+                }
+                if *polls >= DWMMC_RESET_POLLS {
+                    self.log_host2_timeout("reset-all-second-fifo");
+                    return Err(map_protocol_error(Error::Timeout(ErrorContext::new(
+                        Phase::Init,
+                    ))));
+                }
+                *polls += 1;
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+            }
+        }
+    }
+
+    fn start_second_fifo_reset(&mut self) {
+        self.regs.ctrl().update(|ctrl| ctrl.with_fifo_reset(true));
+    }
+
+    fn finish_host2_reset_all(&mut self, restore_completion_irq: bool) {
+        self.regs.ctype().write(crate::regs::CType::new());
+        self.regs.uhs().write(crate::regs::UHS::new());
+        self.program_linux_init_baseline();
+        if let Some(ring) = self.idmac_ring.as_mut() {
+            ring.clear_after_reset();
+        }
+        self.dma_poisoned = false;
+        if restore_completion_irq {
+            self.enable_completion_irq();
+        } else {
+            self.completion_irq_enabled
+                .store(false, core::sync::atomic::Ordering::Release);
         }
     }
 

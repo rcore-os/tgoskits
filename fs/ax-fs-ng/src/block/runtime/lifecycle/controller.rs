@@ -354,7 +354,10 @@ fn advance_controller_once(
     let mut update = match controller.advance(event) {
         Ok(update) => update,
         Err(error) => {
-            warn!("block controller transition {event:?} failed: {error:?}");
+            warn!(
+                "block controller {} transition {event:?} failed: {error:?}",
+                controller.name()
+            );
             return Err(error);
         }
     };

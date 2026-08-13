@@ -2,12 +2,24 @@ use core::{num::NonZeroUsize, time::Duration};
 
 use rdif_block::{
     BatchSubmitDisposition, BlockController, CompletedRequest, CompletionSink, ControllerEvent,
-    ControllerState, OwnedRequest, OwnedRequestBatch, RequestFlags, RequestId, RequestOp,
-    SubmissionSink,
+    ControllerState, DriverGeneric, OwnedRequest, OwnedRequestBatch, RequestFlags, RequestId,
+    RequestOp, SubmissionSink,
 };
 
 use super::*;
 use crate::rdif::{BlockConfig, BlockDevice};
+
+#[test]
+fn controller_uses_card_diagnostic_identity() {
+    let host = MockHost::new(Vec::new());
+    let config = BlockConfig::dma("sdmmc-test", 1, test_device_dma());
+    let mut card = SdioSdmmc::new(host);
+    card.set_diagnostic_identity("rockchip-dwmmc:/mmc@fe2c0000");
+
+    let controller = BlockDevice::new(card, config);
+
+    assert_eq!(controller.name(), "rockchip-dwmmc:/mmc@fe2c0000");
+}
 
 #[test]
 fn controller_teardown_is_idempotent_after_watchdog_shutdown() {
