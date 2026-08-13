@@ -7,7 +7,7 @@ use ax_cgroup::{CgroupError, CgroupNode};
 pub use ax_cgroup::{attach_initial_process, begin_fork, relative_path, root};
 use ax_errno::{AxError, LinuxError};
 
-use crate::task::{ProcessData, get_process_data};
+use crate::task::{ProcessData, UserTaskRef, get_process_data, resolve_user_pid, visible_user_pid};
 
 const INTERFACE_FILES: [&str; 3] = [
     "cgroup.procs",
@@ -39,10 +39,13 @@ pub fn controllers_text(_node: &CgroupNode) -> &'static str {
     ""
 }
 
-pub fn procs_text(node: &CgroupNode) -> String {
+pub fn procs_text(current: &UserTaskRef, node: &CgroupNode) -> String {
     let mut text = String::new();
-    for pid in node.members() {
-        let _ = writeln!(text, "{pid}");
+    for global_pid in node.members() {
+        let local_pid = visible_user_pid(current, u64::from(global_pid));
+        if local_pid != 0 {
+            let _ = writeln!(text, "{local_pid}");
+        }
     }
     text
 }
@@ -51,13 +54,22 @@ pub fn subtree_control_text(_node: &CgroupNode) -> &'static str {
     ""
 }
 
-pub fn write_procs(node: Arc<CgroupNode>, data: &[u8]) -> Result<(), AxError> {
-    let pid = core::str::from_utf8(data)
+pub fn write_procs(
+    current: &UserTaskRef,
+    node: Arc<CgroupNode>,
+    data: &[u8],
+) -> Result<(), AxError> {
+    let local_pid = core::str::from_utf8(data)
         .map_err(|_| AxError::InvalidInput)?
         .trim()
         .parse::<u32>()
         .map_err(|_| AxError::InvalidInput)?;
-    migrate_process(pid, node).map_err(cgroup_error)
+    let global_pid = if local_pid == 0 {
+        current.as_thread().proc_data.proc.pid()
+    } else {
+        resolve_user_pid(current, local_pid)?
+    };
+    migrate_process(global_pid, node).map_err(cgroup_error)
 }
 
 pub fn write_subtree_control(_node: &CgroupNode, _data: &[u8]) -> Result<(), AxError> {
