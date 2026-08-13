@@ -33,6 +33,7 @@ ax-display
 ax-driver
 rdrive
 ax-hal
+ax-cpu
 ax-sync
 ax-task
 ax-input
