@@ -4,6 +4,7 @@
 use core::sync::atomic::Ordering;
 
 use super::*;
+use crate::ParkPublication;
 
 #[cfg(test)]
 static PARK_COMMIT_WAKE_RACE_ARMED: core::sync::atomic::AtomicBool =
@@ -151,10 +152,10 @@ impl TaskSystem {
         self.complete_context_switch(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let core = Arc::clone(current.runtime_core_arc());
-        let mut sched = core.sched().lock();
-        if sched.lifecycle.state() != ThreadState::Running
-            || sched.placement.execution_cpu() != Some(cpu.owner())
-            || sched.placement.on_cpu() != Some(cpu.owner())
+        let placement = core.sched().placement();
+        if core.state() != ThreadState::Running
+            || placement.execution_cpu() != Some(cpu.owner())
+            || placement.on_cpu() != Some(cpu.owner())
         {
             return Err(TaskError::StaleThreadId);
         }
@@ -162,7 +163,7 @@ impl TaskSystem {
             return Ok(ParkPrepare::Notified);
         }
         let generation = core.next_park_generation()?;
-        sched.transition(&core, ThreadState::Parking)?;
+        core.transition_state(ThreadState::Parking)?;
         Ok(ParkPrepare::Prepared(ParkTicket::new(
             core.id(),
             generation,
@@ -267,25 +268,23 @@ impl TaskSystem {
         let resumed = {
             let placement = previous_core.sched().placement();
             let sched = &mut *previous_sched;
-            // This is the serialization edge shared with wake_thread_direct.
-            // A wake that observes Parking publishes PARK_NOTIFIED while
-            // holding this same lock. Rechecking and either restoring Running
-            // or publishing Blocked in one transaction makes that wake the
-            // unique winner instead of dropping it between two observations.
-            if previous_core.take_park_notification() {
-                sched
-                    .transition(&previous_core, ThreadState::Running)
-                    .unwrap_or_else(|_| {
-                        task_runtime::fatal_invariant(
-                            0x504b_1103,
-                            previous_core.id().as_u64() as usize,
-                        )
-                    });
+            #[cfg(test)]
+            park_after_final_wake_check_hook(self, previous_core.id());
+            // Lifecycle and wake publication share one atomic word. A wake
+            // that observes Parking sets PARK_NOTIFIED in that word; this CAS
+            // either consumes it and restores Running or uniquely publishes
+            // Blocked before a later waker enters the task-lock activation
+            // path.
+            if previous_core
+                .publish_blocked_from_parking()
+                .unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x504b_1103, previous_core.id().as_u64() as usize)
+                })
+                == ParkPublication::Notified
+            {
                 true
             } else {
-                #[cfg(test)]
-                park_after_final_wake_check_hook(self, previous_core.id());
-                if sched.lifecycle.state() != ThreadState::Parking
+                if sched.lifecycle.state() != ThreadState::Blocked
                     || placement.execution_cpu() != Some(cpu.owner())
                     || placement.on_cpu() != Some(cpu.owner())
                 {
@@ -331,14 +330,6 @@ impl TaskSystem {
                         .base_entity_mut()
                         .capture_fair_sleep_lag(virtual_time, timing_granularity_ns);
                 }
-                sched
-                    .transition(&previous_core, ThreadState::Blocked)
-                    .unwrap_or_else(|_| {
-                        task_runtime::fatal_invariant(
-                            0x504b_1106,
-                            previous_core.id().as_u64() as usize,
-                        )
-                    });
                 placement.block_current(cpu.owner());
                 false
             }
@@ -407,14 +398,14 @@ impl TaskSystem {
         if core.park_generation() != token.generation() {
             return Err(TaskError::StaleThreadId);
         }
-        let mut sched = core.sched().lock();
-        if sched.lifecycle.state() != ThreadState::Parking
-            || sched.placement.execution_cpu() != Some(cpu.owner())
-            || sched.placement.on_cpu() != Some(cpu.owner())
+        let placement = core.sched().placement();
+        if core.state() != ThreadState::Parking
+            || placement.execution_cpu() != Some(cpu.owner())
+            || placement.on_cpu() != Some(cpu.owner())
         {
             return Err(TaskError::StaleThreadId);
         }
-        sched.transition(&core, ThreadState::Running)?;
+        core.transition_state(ThreadState::Running)?;
         cpu.finish_park_preemption(true);
         token.mark_resolved();
         Ok(())

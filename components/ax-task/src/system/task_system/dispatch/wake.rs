@@ -274,16 +274,26 @@ impl TaskSystem {
         wake_during_final_park_publication_hook(self, core.id());
         #[cfg(test)]
         wake_before_thread_lock_race_hook(self, core.id());
+        let wake_publication = core.publish_wake();
+        if wake_publication.already_pending() {
+            return WakeResult::AlreadyPending;
+        }
+        match wake_publication.state() {
+            ThreadState::Parking
+            | ThreadState::Ready
+            | ThreadState::Running
+            | ThreadState::Waking
+            | ThreadState::New => return WakeResult::Notified,
+            ThreadState::Exited => {
+                core.discard_failed_wake();
+                return WakeResult::Exited;
+            }
+            ThreadState::Blocked => {}
+        }
         let mut sched = core.sched().lock();
         if sched.lifecycle.state() == ThreadState::Exited {
+            core.discard_failed_wake();
             return WakeResult::Exited;
-        }
-        // Serialize publication with lifecycle and placement just as Linux
-        // serializes try_to_wake_up() with p->pi_lock. A failed target lookup
-        // may clear only the wake owned by this transaction; a concurrent
-        // waker cannot observe and coalesce with it until that decision ends.
-        if core.publish_wake() {
-            return WakeResult::AlreadyPending;
         }
         if matches!(
             sched.lifecycle.state(),

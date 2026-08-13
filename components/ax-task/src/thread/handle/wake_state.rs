@@ -3,30 +3,21 @@
 use super::*;
 
 impl ThreadCore {
-    pub(crate) fn publish_wake(&self) -> bool {
-        self.wake_state
-            .fetch_or(WAKE_STATE_PUBLISHED, Ordering::AcqRel)
-            & WAKE_PENDING
-            != 0
+    pub(crate) fn publish_wake(&self) -> WakePublication {
+        self.state.publish_wake()
     }
 
     pub(crate) fn consume_wake(&self, preserve_park_notification: bool) -> bool {
-        let consumed = if preserve_park_notification {
-            WAKE_PENDING
-        } else {
-            WAKE_STATE_PUBLISHED
-        };
-        self.wake_state.fetch_and(!consumed, Ordering::AcqRel) & WAKE_PENDING != 0
+        self.state.consume_wake(preserve_park_notification)
     }
 
     pub(crate) fn discard_failed_wake(&self) {
-        self.wake_state
-            .fetch_and(!WAKE_STATE_PUBLISHED, Ordering::AcqRel);
+        self.state.discard_failed_wake();
     }
 
     #[cfg(test)]
     pub(crate) fn wake_is_pending(&self) -> bool {
-        self.wake_state.load(Ordering::Acquire) & WAKE_PENDING != 0
+        self.state.wake_is_pending()
     }
 
     pub(crate) fn register_sleep_timer(&self, cpu: CpuId, generation: u64) {
@@ -64,10 +55,11 @@ impl ThreadCore {
     }
 
     pub(crate) fn take_park_notification(&self) -> bool {
-        self.wake_state
-            .fetch_and(!WAKE_STATE_PUBLISHED, Ordering::AcqRel)
-            & PARK_NOTIFIED
-            != 0
+        self.state.take_park_notification()
+    }
+
+    pub(crate) fn publish_blocked_from_parking(&self) -> Result<ParkPublication, TaskError> {
+        self.state.publish_blocked_from_parking()
     }
 
     pub(crate) fn next_park_generation(&self) -> Result<u64, TaskError> {

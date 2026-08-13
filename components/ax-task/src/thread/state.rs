@@ -4,6 +4,11 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::TaskError;
 
+const STATE_MASK: u8 = 0b111;
+const WAKE_PENDING: u8 = 1 << 3;
+const PARK_NOTIFIED: u8 = 1 << 4;
+const WAKE_STATE_PUBLISHED: u8 = WAKE_PENDING | PARK_NOTIFIED;
+
 /// Observable lifecycle state of a thread.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +35,28 @@ pub(crate) struct ThreadLifecycle {
     state: AtomicU8,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WakePublication {
+    state: ThreadState,
+    already_pending: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ParkPublication {
+    Notified,
+    Blocked,
+}
+
+impl WakePublication {
+    pub(crate) const fn state(self) -> ThreadState {
+        self.state
+    }
+
+    pub(crate) const fn already_pending(self) -> bool {
+        self.already_pending
+    }
+}
+
 impl ThreadLifecycle {
     pub(crate) const fn new() -> Self {
         Self {
@@ -38,29 +65,98 @@ impl ThreadLifecycle {
     }
 
     pub(crate) fn state(&self) -> ThreadState {
-        decode_state(self.state.load(Ordering::Acquire))
+        decode_state(self.state.load(Ordering::Acquire) & STATE_MASK)
     }
 
     pub(crate) fn transition(&self, next: ThreadState) -> Result<(), TaskError> {
-        let current = self.state();
-        if !transition_is_valid(current, next) {
-            return Err(TaskError::InvalidTransition {
-                from: current,
-                to: next,
-            });
-        }
-        self.state
-            .compare_exchange(
-                current as u8,
-                next as u8,
+        let mut observed = self.state.load(Ordering::Acquire);
+        loop {
+            let current = decode_state(observed & STATE_MASK);
+            if !transition_is_valid(current, next) {
+                return Err(TaskError::InvalidTransition {
+                    from: current,
+                    to: next,
+                });
+            }
+            let updated = (observed & !STATE_MASK) | next as u8;
+            match self.state.compare_exchange_weak(
+                observed,
+                updated,
                 Ordering::AcqRel,
                 Ordering::Acquire,
-            )
-            .map(|_| ())
-            .map_err(|observed| TaskError::InvalidTransition {
-                from: decode_state(observed),
-                to: next,
-            })
+            ) {
+                Ok(_) => return Ok(()),
+                Err(updated) => observed = updated,
+            }
+        }
+    }
+
+    pub(crate) fn publish_wake(&self) -> WakePublication {
+        let previous = self.state.fetch_or(WAKE_STATE_PUBLISHED, Ordering::AcqRel);
+        WakePublication {
+            state: decode_state(previous & STATE_MASK),
+            already_pending: previous & WAKE_PENDING != 0,
+        }
+    }
+
+    pub(crate) fn consume_wake(&self, preserve_park_notification: bool) -> bool {
+        let consumed = if preserve_park_notification {
+            WAKE_PENDING
+        } else {
+            WAKE_STATE_PUBLISHED
+        };
+        self.state.fetch_and(!consumed, Ordering::AcqRel) & WAKE_PENDING != 0
+    }
+
+    pub(crate) fn discard_failed_wake(&self) {
+        self.state
+            .fetch_and(!WAKE_STATE_PUBLISHED, Ordering::AcqRel);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wake_is_pending(&self) -> bool {
+        self.state.load(Ordering::Acquire) & WAKE_PENDING != 0
+    }
+
+    pub(crate) fn take_park_notification(&self) -> bool {
+        self.state
+            .fetch_and(!WAKE_STATE_PUBLISHED, Ordering::AcqRel)
+            & PARK_NOTIFIED
+            != 0
+    }
+
+    /// Atomically chooses between a racing wake and blocked publication.
+    pub(crate) fn publish_blocked_from_parking(&self) -> Result<ParkPublication, TaskError> {
+        let mut observed = self.state.load(Ordering::Acquire);
+        loop {
+            let current = decode_state(observed & STATE_MASK);
+            if current != ThreadState::Parking {
+                return Err(TaskError::InvalidTransition {
+                    from: current,
+                    to: ThreadState::Blocked,
+                });
+            }
+            let (updated, publication) = if observed & PARK_NOTIFIED != 0 {
+                (
+                    (observed & !(STATE_MASK | WAKE_STATE_PUBLISHED)) | ThreadState::Running as u8,
+                    ParkPublication::Notified,
+                )
+            } else {
+                (
+                    (observed & !(STATE_MASK | WAKE_STATE_PUBLISHED)) | ThreadState::Blocked as u8,
+                    ParkPublication::Blocked,
+                )
+            };
+            match self.state.compare_exchange_weak(
+                observed,
+                updated,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(publication),
+                Err(updated) => observed = updated,
+            }
+        }
     }
 }
 
@@ -131,5 +227,33 @@ mod tests {
             ThreadState::Ready,
             ThreadState::Blocked
         ));
+    }
+
+    #[test]
+    fn wake_publication_atomically_defeats_blocked_publication() {
+        let lifecycle = ThreadLifecycle::new();
+        lifecycle.transition(ThreadState::Ready).unwrap();
+        lifecycle.transition(ThreadState::Running).unwrap();
+        lifecycle.transition(ThreadState::Parking).unwrap();
+        assert_eq!(lifecycle.publish_wake().state(), ThreadState::Parking);
+        assert_eq!(
+            lifecycle.publish_blocked_from_parking().unwrap(),
+            ParkPublication::Notified
+        );
+        assert_eq!(lifecycle.state(), ThreadState::Running);
+        assert!(!lifecycle.wake_is_pending());
+    }
+
+    #[test]
+    fn blocked_publication_wins_before_late_wake() {
+        let lifecycle = ThreadLifecycle::new();
+        lifecycle.transition(ThreadState::Ready).unwrap();
+        lifecycle.transition(ThreadState::Running).unwrap();
+        lifecycle.transition(ThreadState::Parking).unwrap();
+        assert_eq!(
+            lifecycle.publish_blocked_from_parking().unwrap(),
+            ParkPublication::Blocked
+        );
+        assert_eq!(lifecycle.publish_wake().state(), ThreadState::Blocked);
     }
 }

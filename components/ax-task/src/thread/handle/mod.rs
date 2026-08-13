@@ -13,10 +13,11 @@ mod wake_batch;
 pub use wake_batch::ThreadWakeBatch;
 
 use crate::{
-    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitNodeStorage, PiWaitState,
-    RtPriority, RunQueueNodeStorage, SchedulePolicy, SchedulerTickWork, SchedulerTickWorkClaim,
-    SchedulerTimestamp, SchedulingKey, SchedulingUrgency, TaskError, ThreadAffinityCompletion,
-    ThreadExtensionView, ThreadId, ThreadLifecycle, ThreadSchedCell, ThreadState,
+    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, ParkPublication, PiWaitNodeStorage,
+    PiWaitState, RtPriority, RunQueueNodeStorage, SchedulePolicy, SchedulerTickWork,
+    SchedulerTickWorkClaim, SchedulerTimestamp, SchedulingKey, SchedulingUrgency, TaskError,
+    ThreadAffinityCompletion, ThreadExtensionView, ThreadId, ThreadLifecycle, ThreadSchedCell,
+    ThreadState, WakePublication,
     inbox::{InboxKind, InboxNode},
     runtime::{PreemptGuardToken, task_runtime},
     task_work::TaskWorkDoorbell,
@@ -27,9 +28,6 @@ const REAP_CLAIMED: usize = 1 << (usize::BITS - 1);
 const REAP_MAX_UPGRADE_READERS: usize = REAP_CLAIMED - 1;
 const SCHEDULER_ACTIVITY_CLOSED: usize = 1 << (usize::BITS - 1);
 const SCHEDULER_ACTIVITY_MAX_READERS: usize = SCHEDULER_ACTIVITY_CLOSED - 1;
-const WAKE_PENDING: u8 = 1 << 0;
-const PARK_NOTIFIED: u8 = 1 << 1;
-const WAKE_STATE_PUBLISHED: u8 = WAKE_PENDING | PARK_NOTIFIED;
 
 #[cfg(feature = "lockdep")]
 struct ThreadHeldLocks {
@@ -455,7 +453,6 @@ pub(crate) struct ThreadCore {
     scheduler_activity_gate: AtomicUsize,
     scheduler_inbox_deliveries: AtomicUsize,
     pub(super) affinity_completion: ThreadAffinityCompletion,
-    wake_state: AtomicU8,
     park_generation: AtomicU64,
     wake_cpu_hint: AtomicU32,
     affinity_update_node: InboxNode,
@@ -511,7 +508,6 @@ impl ThreadCore {
             scheduler_activity_gate: AtomicUsize::new(0),
             scheduler_inbox_deliveries: AtomicUsize::new(0),
             affinity_completion: ThreadAffinityCompletion::new(1),
-            wake_state: AtomicU8::new(0),
             park_generation: AtomicU64::new(0),
             wake_cpu_hint: AtomicU32::new(u32::MAX),
             affinity_update_node: InboxNode::new(InboxKind::OwnerControl),
