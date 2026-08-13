@@ -26,7 +26,10 @@ use crate::task::PtraceStopFpData;
 use crate::task::PtraceStopFpData;
 use crate::{
     mm::{AddrSpace, IoVec, VmMutPtr, VmPtr, vm_read_slice, vm_write_slice},
-    task::{Cred, ProcessData, get_process_cred, get_process_data, get_task},
+    task::{
+        Cred, ProcessData, get_process_cred, get_process_data, get_task, resolve_user_pid,
+        visible_process_pid,
+    },
 };
 
 const PTRACE_TRACEME: u32 = 0;
@@ -248,6 +251,12 @@ pub fn sys_ptrace(
     data: usize,
 ) -> AxResult<isize> {
     info!("sys_ptrace <= request: {request}, pid: {pid}, addr: {addr:#x}, data: {data:#x}");
+
+    let pid = if request == PTRACE_TRACEME {
+        pid
+    } else {
+        resolve_ptrace_target_pid(current, pid)? as usize
+    };
 
     match request {
         PTRACE_TRACEME => ptrace_traceme(current),
@@ -1225,13 +1234,18 @@ fn process_vm_copy(
 }
 
 fn process_vm_tracee(current: &crate::task::UserTaskRef, pid: usize) -> AxResult<Arc<ProcessData>> {
-    let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+    let tracee_pid = resolve_ptrace_target_pid(current, pid)?;
     let current_pid = current.as_thread().proc_data.proc.pid();
     if tracee_pid == current_pid {
         get_process_data(tracee_pid).map_err(|_| AxError::from(LinuxError::ESRCH))
     } else {
-        ptrace_stopped_tracee(current, pid)
+        ptrace_stopped_tracee(current, tracee_pid as usize)
     }
+}
+
+fn resolve_ptrace_target_pid(current: &crate::task::UserTaskRef, pid: usize) -> AxResult<Pid> {
+    let local_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+    resolve_user_pid(current, local_pid).map_err(|_| AxError::from(LinuxError::ESRCH))
 }
 
 fn ptrace_tracee_by_pid_or_tid(pid: Pid) -> AxResult<Arc<ProcessData>> {
@@ -1991,9 +2005,24 @@ impl PreparedPtraceCloneEvent {
 
     /// Publishes the clone event after the child is fully registered.
     pub fn publish(self) {
+        let child_pid = ptrace_pid_event_message(&self.parent, self.child_pid);
         self.parent
-            .set_ptrace_pending_event(self.parent_tid, self.event, self.child_pid as usize);
+            .set_ptrace_pending_event(self.parent_tid, self.event, child_pid);
     }
+}
+
+/// Projects a PID-bearing ptrace event into the tracer's active PID namespace.
+///
+/// Linux captures this identity when publishing the event, while the referenced
+/// task is still alive. Deferring projection until `PTRACE_GETEVENTMSG` could
+/// lose the mapping after exec de-threading or child exit.
+fn ptrace_pid_event_message(tracee: &ProcessData, global_pid: Pid) -> usize {
+    tracee
+        .ptrace_tracer_pid()
+        .and_then(|tracer_pid| get_process_data(tracer_pid).ok())
+        .map_or(0, |tracer| {
+            visible_process_pid(&tracer, global_pid as u64) as usize
+        })
 }
 
 /// Validates and prepares a ptrace clone event without mutating parent state.
@@ -2035,7 +2064,8 @@ pub fn ptrace_notify_exec(tracee_pid: Pid) -> bool {
     if options & PTRACE_O_TRACEEXEC == 0 {
         return false;
     }
-    tracee.set_ptrace_pending_event(tracee_pid, PTRACE_EVENT_EXEC, tracee_pid as usize);
+    let event_pid = ptrace_pid_event_message(&tracee, tracee_pid);
+    tracee.set_ptrace_pending_event(tracee_pid, PTRACE_EVENT_EXEC, event_pid);
     true
 }
 
@@ -2065,7 +2095,8 @@ pub fn ptrace_notify_vfork_done(parent_pid: Pid, parent_tid: Pid, child_pid: Pid
     if options & PTRACE_O_TRACEVFORKDONE == 0 {
         return false;
     }
-    parent.set_ptrace_pending_event(parent_tid, PTRACE_EVENT_VFORK_DONE, child_pid as usize);
+    let child_pid = ptrace_pid_event_message(&parent, child_pid);
+    parent.set_ptrace_pending_event(parent_tid, PTRACE_EVENT_VFORK_DONE, child_pid);
     true
 }
 
