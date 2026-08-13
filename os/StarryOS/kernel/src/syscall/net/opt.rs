@@ -274,14 +274,11 @@ mod conv {
 
     impl Ucred {
         pub fn sys_to_rust(val: ucred) -> AxResult<UnixCredentials> {
-            Ok(UnixCredentials {
-                pid: val.pid,
-                uid: val.uid,
-                gid: val.gid,
-            })
+            Ok(UnixCredentials::from_parts(val.pid, val.uid, val.gid))
         }
 
         pub fn rust_to_sys(val: UnixCredentials) -> AxResult<UcredOutput> {
+            let val = crate::file::Socket::project_unix_credentials(&val);
             Ok(UcredOutput {
                 pid: val.pid,
                 uid: val.uid,

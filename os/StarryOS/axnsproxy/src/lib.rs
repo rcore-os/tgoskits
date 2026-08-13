@@ -18,8 +18,8 @@ pub use ipc::{IpcNamespace, ROOT_IPC_NS};
 pub use mnt::{MntNamespace, ROOT_MNT_NS};
 pub use net::{NetNamespace, ROOT_NET_NS};
 pub use pid::{
-    JobControlId, JobControlIdRef, PidNamespace, PidNamespaceRef, PidReservationKind, ROOT_PID_NS,
-    pid_namespace_lineage,
+    JobControlId, JobControlIdRef, PidIdentity, PidIdentityRef, PidNamespace, PidNamespaceRef,
+    PidReservationKind, ROOT_PID_NS, pid_namespace_lineage,
 };
 pub use user::{ROOT_USER_NS, UserNamespace};
 pub use uts::{ROOT_UTS_NS, UtNamespace, build_utsname};

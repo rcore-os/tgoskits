@@ -11,6 +11,7 @@ use alloc::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_lazyinit::OnceLock;
 use axpoll::{IoEvents, PollSet};
 use starry_process::{Pid, Process, ProcessCpuTime, init_proc};
 
@@ -21,6 +22,7 @@ use crate::sync::{IrqMutex, PiMutex};
 pub(crate) struct ProcessIdentity {
     process: Arc<Process>,
     pid_namespaces: Arc<[axnsproxy::PidNamespaceRef]>,
+    pid_identity: OnceLock<axnsproxy::PidIdentityRef>,
     exit_event: Arc<PollSet>,
     state: IrqMutex<ProcessIdentityState>,
 }
@@ -59,6 +61,7 @@ impl ProcessIdentity {
         Arc::new(Self {
             process,
             pid_namespaces,
+            pid_identity: OnceLock::new(),
             exit_event,
             state: IrqMutex::new(ProcessIdentityState::Live(proc_data)),
         })
@@ -82,6 +85,25 @@ impl ProcessIdentity {
     /// Returns all PID namespace identities from the active level to root.
     pub(crate) fn pid_namespaces(&self) -> &[axnsproxy::PidNamespaceRef] {
         &self.pid_namespaces
+    }
+
+    /// Captures the immutable namespace PID numbers after publication.
+    fn publish_pid_identity(&self) -> AxResult<()> {
+        if self.pid_identity.is_initialized() {
+            return Ok(());
+        }
+        let identity = axnsproxy::PidIdentity::capture(self.pid() as u64, &self.pid_namespaces)?;
+        self.pid_identity.call_once(|| identity);
+        Ok(())
+    }
+
+    /// Returns the generation identity shared by pidfds, Unix credentials, and
+    /// job-control owners.
+    pub(crate) fn pid_identity(&self) -> axnsproxy::PidIdentityRef {
+        self.pid_identity
+            .get()
+            .expect("published process must own a PID identity")
+            .clone()
     }
 
     /// Returns whether this generation is visible in one namespace level.
@@ -227,6 +249,9 @@ static PROCESS_TABLE: PiMutex<BTreeMap<Pid, Arc<ProcessIdentity>>> = PiMutex::ne
 pub(crate) fn register_process_identity(proc_data: &Arc<ProcessData>) {
     let pid = proc_data.proc.pid();
     let identity = proc_data.identity();
+    identity
+        .publish_pid_identity()
+        .expect("published process must have complete namespace PID mappings");
     let mut process_table = PROCESS_TABLE.lock();
     match process_table.get(&pid) {
         Some(registered) if Arc::ptr_eq(registered, &identity) => {}
@@ -245,6 +270,7 @@ pub(crate) fn register_process_identity(proc_data: &Arc<ProcessData>) {
 pub(crate) fn register_prepared_process_identity(proc_data: &Arc<ProcessData>) -> AxResult<()> {
     let pid = proc_data.proc.pid();
     let identity = proc_data.identity();
+    identity.publish_pid_identity()?;
     let mut process_table = PROCESS_TABLE.lock();
     if process_table.contains_key(&pid) {
         return Err(AxError::BadState);

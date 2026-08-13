@@ -29,8 +29,7 @@ pub fn sys_setsid(current: &crate::task::UserTaskRef) -> AxResult<isize> {
         return Err(AxError::OperationNotPermitted);
     }
 
-    let identity =
-        axnsproxy::JobControlId::retain(proc.pid() as u64, proc_data.identity().pid_namespaces())?;
+    let identity = axnsproxy::JobControlId::retain(proc_data.identity().pid_identity())?;
     if let Some((session, pg)) = proc.create_session(identity) {
         register_session(&session);
         register_process_group(&pg);
@@ -72,10 +71,7 @@ pub fn sys_setpgid(current: &crate::task::UserTaskRef, pid: i32, pgid: i32) -> A
     let proc = &proc_data.proc;
 
     if pgid == 0 || pgid == proc.pid() {
-        let identity = axnsproxy::JobControlId::retain(
-            proc.pid() as u64,
-            proc_data.identity().pid_namespaces(),
-        )?;
+        let identity = axnsproxy::JobControlId::retain(proc_data.identity().pid_identity())?;
         if let Some(pg) = proc.create_group(identity) {
             register_process_group(&pg);
         } else {

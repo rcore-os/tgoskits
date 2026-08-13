@@ -62,7 +62,7 @@ pub fn sys_socket(
         return socket.add_to_fd_table(cloexec).map(|fd| fd as isize);
     }
 
-    let pid = current.as_thread().proc_data.proc.pid();
+    let unix_credentials = Socket::current_unix_credentials();
     let ip_domain = if domain == AF_INET || domain == AF_INET6 {
         domain
     } else {
@@ -91,9 +91,11 @@ pub fn sys_socket(
             }
             UdpSocket::new().into()
         }
-        (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(pid)).into(),
-        (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(pid)).into(),
-        (AF_UNIX, SOCK_SEQPACKET) => UnixSocket::new(DgramTransport::new_seqpacket(pid)).into(),
+        (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(unix_credentials)).into(),
+        (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(unix_credentials)).into(),
+        (AF_UNIX, SOCK_SEQPACKET) => {
+            UnixSocket::new(DgramTransport::new_seqpacket(unix_credentials)).into()
+        }
         (AF_NETLINK, SOCK_RAW) | (AF_NETLINK, SOCK_DGRAM) => {
             match proto {
                 NETLINK_KOBJECT_UEVENT | NETLINK_ROUTE | NETLINK_GENERIC => {}
@@ -303,18 +305,18 @@ pub fn sys_socketpair(
         return Err(AxError::from(LinuxError::EAFNOSUPPORT));
     }
 
-    let pid = current.as_thread().proc_data.proc.pid();
+    let credentials = Socket::current_unix_credentials();
     let (sock1, sock2) = match ty {
         SOCK_STREAM => {
-            let (sock1, sock2) = StreamTransport::new_pair(pid);
+            let (sock1, sock2) = StreamTransport::new_pair(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         SOCK_DGRAM => {
-            let (sock1, sock2) = DgramTransport::new_pair(pid);
+            let (sock1, sock2) = DgramTransport::new_pair(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         SOCK_SEQPACKET => {
-            let (sock1, sock2) = DgramTransport::new_pair_seqpacket(pid);
+            let (sock1, sock2) = DgramTransport::new_pair_seqpacket(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         _ => {

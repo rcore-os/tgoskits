@@ -8,6 +8,9 @@ use ax_runtime::sync::IrqMutex;
 /// Shared ownership handle for one PID namespace generation.
 pub type PidNamespaceRef = Arc<PidNamespace>;
 
+/// Shared generation-specific PID identity, analogous to Linux `struct pid`.
+pub type PidIdentityRef = Arc<PidIdentity>;
+
 /// Shared ownership of one PID number while it identifies a process group or
 /// session.
 pub type JobControlIdRef = Arc<JobControlId>;
@@ -77,6 +80,77 @@ struct PidEntry {
     job_control_refs: usize,
 }
 
+struct PidNamespaceIdentity {
+    namespace: PidNamespaceRef,
+    local_pid: u32,
+}
+
+/// Immutable PID numbers assigned to one task generation at every namespace
+/// level where it is visible.
+///
+/// Live namespace indexes answer lookups from a number to a task. They are
+/// removed when the task is reaped and may later identify another generation.
+/// This snapshot instead travels with delayed identity users such as Unix
+/// credentials and pidfds, matching Linux `struct pid` and its immutable
+/// namespace-specific `upid` array.
+pub struct PidIdentity {
+    global_pid: u64,
+    mappings: Arc<[PidNamespaceIdentity]>,
+}
+
+impl PidIdentity {
+    /// Captures every published namespace PID for one task generation.
+    pub fn capture(global_pid: u64, namespaces: &[PidNamespaceRef]) -> AxResult<PidIdentityRef> {
+        let mut mappings = Vec::new();
+        mappings
+            .try_reserve_exact(namespaces.len())
+            .map_err(|_| AxError::NoMemory)?;
+        for namespace in namespaces {
+            let local_pid = namespace.local_pid(global_pid).ok_or(AxError::BadState)?;
+            mappings.push(PidNamespaceIdentity {
+                namespace: namespace.clone(),
+                local_pid,
+            });
+        }
+        if mappings.is_empty() {
+            return Err(AxError::BadState);
+        }
+        Ok(Arc::new(Self {
+            global_pid,
+            mappings: mappings.into(),
+        }))
+    }
+
+    /// Creates the identity used by the initial root process before kernel PID
+    /// publication is available.
+    pub fn new_root(global_pid: u64) -> PidIdentityRef {
+        let local_pid = u32::try_from(global_pid).expect("root PID exceeds the userspace ABI");
+        Arc::new(Self {
+            global_pid,
+            mappings: Arc::from([PidNamespaceIdentity {
+                namespace: ROOT_PID_NS.clone(),
+                local_pid,
+            }]),
+        })
+    }
+
+    /// Returns the kernel-global numeric identity.
+    pub fn global_pid(&self) -> u64 {
+        self.global_pid
+    }
+
+    /// Projects this generation into an observing PID namespace.
+    ///
+    /// The saved number remains valid after the live namespace index releases
+    /// the task, while an unrelated namespace cannot observe the identity.
+    pub fn visible_pid(&self, observer: &PidNamespaceRef) -> Option<u32> {
+        self.mappings
+            .iter()
+            .find(|mapping| Arc::ptr_eq(&mapping.namespace, observer))
+            .map(|mapping| mapping.local_pid)
+    }
+}
+
 /// A process-group or session identifier retained at every visible PID
 /// namespace level.
 ///
@@ -85,51 +159,61 @@ struct PidEntry {
 /// live PGID or SID. This handle gives Starry the same ownership rule instead
 /// of coupling job-control visibility to the former leader's task lifetime.
 pub struct JobControlId {
-    global_pid: u64,
-    namespaces: Arc<[PidNamespaceRef]>,
+    identity: PidIdentityRef,
 }
 
 impl JobControlId {
     /// Creates an identity in the root namespace, where IDs need no mapping.
     pub fn new_root(global_pid: u64) -> JobControlIdRef {
         Arc::new(Self {
-            global_pid,
-            namespaces: Arc::from([]),
+            identity: PidIdentity::new_root(global_pid),
         })
     }
 
     /// Retains an already-published process PID as a PGID or SID.
-    pub fn retain(global_pid: u64, namespaces: &[PidNamespaceRef]) -> AxResult<JobControlIdRef> {
+    pub fn retain(identity: PidIdentityRef) -> AxResult<JobControlIdRef> {
         let mut retained: Vec<PidNamespaceRef> = Vec::new();
-        for namespace in namespaces.iter().filter(|namespace| namespace.level() > 0) {
-            if let Err(error) = namespace.retain_job_control_pid(global_pid) {
+        for mapping in identity
+            .mappings
+            .iter()
+            .filter(|mapping| mapping.namespace.level() > 0)
+        {
+            if let Err(error) = mapping
+                .namespace
+                .retain_job_control_pid(identity.global_pid)
+            {
                 for retained_namespace in retained.iter().rev() {
                     assert!(
-                        retained_namespace.release_job_control_pid(global_pid),
+                        retained_namespace.release_job_control_pid(identity.global_pid),
                         "job-control PID retention rollback lost its owner"
                     );
                 }
                 return Err(error);
             }
-            retained.push(namespace.clone());
+            retained.push(mapping.namespace.clone());
         }
-        Ok(Arc::new(Self {
-            global_pid,
-            namespaces: retained.into(),
-        }))
+        Ok(Arc::new(Self { identity }))
     }
 
     /// Returns the kernel-global numeric identity.
     pub fn global_pid(&self) -> u64 {
-        self.global_pid
+        self.identity.global_pid()
     }
 }
 
 impl Drop for JobControlId {
     fn drop(&mut self) {
-        for namespace in self.namespaces.iter().rev() {
+        for mapping in self
+            .identity
+            .mappings
+            .iter()
+            .rev()
+            .filter(|mapping| mapping.namespace.level() > 0)
+        {
             assert!(
-                namespace.release_job_control_pid(self.global_pid),
+                mapping
+                    .namespace
+                    .release_job_control_pid(self.identity.global_pid),
                 "job-control PID owner outlived its namespace mapping"
             );
         }

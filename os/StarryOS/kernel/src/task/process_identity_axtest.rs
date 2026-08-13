@@ -27,6 +27,7 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
     let identity = Arc::new(ProcessIdentity {
         process: process.clone(),
         pid_namespaces: Arc::from([Arc::clone(&axnsproxy::ROOT_PID_NS)]),
+        pid_identity: ax_lazyinit::OnceLock::new(),
         exit_event: Arc::new(PollSet::new()),
         state: IrqMutex::new(ProcessIdentityState::Zombie(ZombieSnapshot {
             cred: Arc::new(Cred::default()),

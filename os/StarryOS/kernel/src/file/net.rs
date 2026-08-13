@@ -113,14 +113,35 @@ impl Socket {
         self.ip_domain
     }
 
-    pub(crate) fn with_current_sender_credentials(mut options: SendOptions) -> SendOptions {
+    /// Captures the current process generation for Unix socket ownership.
+    pub(crate) fn current_unix_credentials() -> UnixCredentials {
         let current = current_user_task();
-        let credentials = current.as_thread().cred();
-        options.sender_credentials = Some(UnixCredentials {
-            pid: current.as_thread().proc_data.proc.pid(),
-            uid: credentials.uid,
-            gid: credentials.gid,
-        });
+        let thread = current.as_thread();
+        let credentials = thread.cred();
+        UnixCredentials::from_parts(
+            thread.proc_data.proc.pid(),
+            credentials.uid,
+            credentials.gid,
+        )
+        .with_identity(thread.proc_data.identity().pid_identity())
+    }
+
+    /// Projects a transport-owned process generation into the caller's active
+    /// PID namespace while retaining numeric credentials for generic users.
+    pub(crate) fn project_unix_credentials(credentials: &UnixCredentials) -> UnixCredentials {
+        let pid =
+            credentials
+                .identity::<axnsproxy::PidIdentity>()
+                .map_or(credentials.pid, |identity| {
+                    let current = current_user_task();
+                    let namespace = current.as_thread().proc_data.namespace_snapshot();
+                    identity.visible_pid(&namespace.pid_ns).unwrap_or(0)
+                });
+        UnixCredentials::from_parts(pid, credentials.uid, credentials.gid)
+    }
+
+    pub(crate) fn with_current_sender_credentials(mut options: SendOptions) -> SendOptions {
+        options.sender_credentials = Some(Self::current_unix_credentials());
         options
     }
 }

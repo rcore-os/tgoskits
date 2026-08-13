@@ -123,7 +123,8 @@ int main(void)
         int result = send_datagram(sockets[1], "first") |
                      send_datagram(sockets[1], "peek") |
                      send_datagram(sockets[1], "truncate") |
-                     write_datagram(sockets[1], "write");
+                     write_datagram(sockets[1], "write") |
+                     send_datagram(sockets[1], "reaped");
         close(sockets[1]);
         _exit(result == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
     }
@@ -177,6 +178,12 @@ int main(void)
     expect_true(waitpid(child, &status, 0) == child &&
                     WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS,
                 "credential sender exits successfully");
+
+    struct received_message reaped = receive_message(sockets[0], 0, 1);
+    expect_true(reaped.length == 6 && reaped.has_credentials,
+                "receive queued credentials after sender reap");
+    expect_true(reaped.has_credentials && reaped.credentials.pid == child,
+                "queued credentials retain the reaped sender identity");
 
     enabled = 0;
     expect_true(setsockopt(sockets[0], SOL_SOCKET, SO_PASSCRED, &enabled,

@@ -180,7 +180,7 @@ pub enum IpCmsg {
 
 /// Transport-independent socket-level ancillary data reported through
 /// `recvmsg`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SocketCmsg {
     /// Sender credentials requested with `SO_PASSCRED`.
     Credentials(UnixCredentials),
