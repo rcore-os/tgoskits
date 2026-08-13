@@ -103,7 +103,7 @@ sg2002-cvi-usb-camera = [
     "dep:cvi-vdec-uapi",
     "dep:sg200x-jpu",
 ]
-smp = ["ax-std/smp", "ipi"]
+smp = ["ax-std/smp"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = []
