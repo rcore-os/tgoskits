@@ -78,6 +78,44 @@ impl<'a> ExtentTree<'a> {
         }
     }
 
+    fn merged_leaf_extent_len(left: Ext4Extent, right: Ext4Extent) -> Ext4Result<Option<u16>> {
+        if left.is_unwritten() != right.is_unwritten() {
+            return Ok(None);
+        }
+
+        let left_len = left.len();
+        let right_len = right.len();
+        let Some(logical_end) = left.ee_block.checked_add(left_len) else {
+            return Ok(None);
+        };
+        if logical_end != right.ee_block {
+            return Ok(None);
+        }
+
+        let Some(physical_end) = left.start_block().checked_add(u64::from(left_len)) else {
+            return Ok(None);
+        };
+        if physical_end != right.start_block() {
+            return Ok(None);
+        }
+
+        let Some(merged_len) = left_len.checked_add(right_len) else {
+            return Ok(None);
+        };
+        let max_len = if left.is_unwritten() {
+            u32::from(Ext4Extent::EXT_UNINIT_MAX_LEN)
+        } else {
+            u32::from(Ext4Extent::EXT_INIT_MAX_LEN)
+        };
+        if merged_len > max_len {
+            return Ok(None);
+        }
+
+        left.build_len_like(merged_len)
+            .map(Some)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:merge_length"))
+    }
+
     fn merge_leaf_extent_right(
         entries: &mut Vec<Ext4Extent>,
         left_index: usize,
@@ -88,57 +126,38 @@ impl<'a> ExtentTree<'a> {
         else {
             return Ok(false);
         };
-        let left = entries[left_index];
-        let right = entries[right_index];
-        if left.is_unwritten() != right.is_unwritten() {
-            return Ok(false);
-        }
-
-        let left_len = left.len();
-        let right_len = right.len();
-        let Some(logical_end) = left.ee_block.checked_add(left_len) else {
+        let Some(merged_len) =
+            Self::merged_leaf_extent_len(entries[left_index], entries[right_index])?
+        else {
             return Ok(false);
         };
-        if logical_end != right.ee_block {
-            return Ok(false);
-        }
 
-        let Some(physical_end) = left.start_block().checked_add(u64::from(left_len)) else {
-            return Ok(false);
-        };
-        if physical_end != right.start_block() {
-            return Ok(false);
-        }
-
-        let Some(merged_len) = left_len.checked_add(right_len) else {
-            return Ok(false);
-        };
-        let max_len = if left.is_unwritten() {
-            u32::from(Ext4Extent::EXT_UNINIT_MAX_LEN)
-        } else {
-            u32::from(Ext4Extent::EXT_INIT_MAX_LEN)
-        };
-        if merged_len > max_len {
-            return Ok(false);
-        }
-
-        entries[left_index].ee_len = left
-            .build_len_like(merged_len)
-            .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:merge_length"))?;
+        entries[left_index].ee_len = merged_len;
         entries.remove(right_index);
         Ok(true)
     }
 
-    fn merge_leaf_extent_neighbors(
+    fn insert_and_merge_leaf_extent(
         entries: &mut Vec<Ext4Extent>,
         inserted_index: usize,
+        new_extent: Ext4Extent,
     ) -> Ext4Result<()> {
-        let merge_index =
-            if inserted_index > 0 && Self::merge_leaf_extent_right(entries, inserted_index - 1)? {
-                inserted_index - 1
+        let merge_index = if inserted_index > 0 {
+            let left_index = inserted_index - 1;
+            if let Some(merged_len) = Self::merged_leaf_extent_len(entries[left_index], new_extent)?
+            {
+                // Sequential append is the common path. Merge it in place so
+                // normalization does not insert and immediately remove a tail.
+                entries[left_index].ee_len = merged_len;
+                left_index
             } else {
+                entries.insert(inserted_index, new_extent);
                 inserted_index
-            };
+            }
+        } else {
+            entries.insert(inserted_index, new_extent);
+            inserted_index
+        };
 
         while Self::merge_leaf_extent_right(entries, merge_index)? {}
         Ok(())
@@ -160,8 +179,7 @@ impl<'a> ExtentTree<'a> {
                 let pos = entries
                     .binary_search_by_key(&new_ext.ee_block, |e| e.ee_block)
                     .unwrap_or_else(|i| i);
-                entries.insert(pos, new_ext);
-                Self::merge_leaf_extent_neighbors(entries, pos)?;
+                Self::insert_and_merge_leaf_extent(entries, pos, new_ext)?;
                 header.eh_entries = entries.len() as u16;
 
                 // If the leaf still fits, write it back and stop bubbling.

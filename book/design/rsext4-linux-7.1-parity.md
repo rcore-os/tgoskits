@@ -186,7 +186,7 @@ cookie 并清空 continuation。VFS directory sink 接收 raw `&[u8]` 名称，�
 | `mount-option-block-validity` | core did not protect system metadata blocks | default `block_validity` plus Linux-compatible `noblock_validity` mount/remount lifecycle | mount/remount options | 绿：RW/RO mount 默认建立 layout + internal-journal owner system-zone index，`with_block_validity(false)` 在 initial mount 与 replay reload 保持空索引；owned `remount` 禁用时释放，重新启用时先完整构建后一次发布。crafted block-bitmap extent 确定性红测证明仅修改 option 但不释放 index 仍拒绝；同一测试现要求 disable 允许、reenable 再拒绝，extent 与 legacy indirect 共用同一 index |
 | `mmp-readonly-mount` | known MMP incompat 在 Linux 允许的只读 inspection mount 也被无条件拒绝 | 只读 mount 完全跳过 MMP block I/O；可写 mount 必须在任何其他 mutation 前 claim owner，周期 refresh，并在 RW→RO/unmount 的 ext4/JBD2 clean 持久化后发布 MMP clean | mount feature negotiation / MMP lifecycle | 进行中（portable core 与 adapter lifecycle 绿）：feature 单测在旧实现稳定返回 `UnsupportedFeature(bits=0x100)`；当前 Linux `mkfs.ext4 -O mmp` 镜像可 RO/no-replay mount 并读取根 inode，卸载后 64 MiB 镜像逐字节不变。注入确定性 entropy/delay 后，同一镜像完成 magic/checksum 校验、随机 sequence claim、稳定性复查、refresh 与 clean unmount，写序确认 MMP clean 是最后一次 metadata write，最终 `e2fsck -fn` clean；缺少 capability 时初始 RW 与 RO→RW 都在 mutation 前返回 typed `UnsupportedCapability`并保留 options。当前 ArceOS 没有可信 entropy provider，因此其 writable MMP 保持 `EOPNOTSUPP`；平台 RNG、真实多主机互斥和完整断电故障矩阵仍为红项 |
 | `mount-remount-full` | mount options 仅有 readonly/replay，remount 无统一 state transition | 完整对齐 Linux ext4 mount/remount options，ro↔rw、journal/data mode、barrier/discard/error policy 与失败回滚 | mount/remount/JBD2 options | 进行中：owned core 已实现 RW→RO 的 pending metadata sync/journal checkpoint/clean-superblock 后发布，以及 RO→RW 的 device-readonly、writable feature、recovery/orphan、journal-state 预检和 dirty/recovery superblock 持久化后发布；replay policy 仍是 mount-time immutable option。确定性红测证明旧实现无条件返回 `remount:mode`，同一测试现完成 RW→RO mutation gate 与 RO→RW 恢复；one-shot flush fault 保持旧 options，物理只读设备返回 typed `ReadOnly`，read-only unmount 不再向设备写入且已卸载 owner 拒绝原地 remount。MMP 初始 RW 与 RO→RW 现先 claim owner；RW→RO 与 unmount 保持 owner 到 ext4/JBD2 clean 持久化完成后才发布 MMP clean。clean release 失败的 remount 会重新 claim 并恢复 RW 持久状态，无法恢复则锁存 failed state；refresh I/O 失败同样拒绝后续 mutation。ax-fs-ng 的只读 sync/shutdown 现也在 sleepable mutex 下调用同一 owned core，MMP worker 在锁外等待、仅在 refresh 时取得独占 owner；但 adapter 仍复制固定 readonly bool，尚未接入 VFS remount。journal/data mode、barrier/discard/error policy、quota、平台 entropy 与更完整的磁盘副作用回滚仍为红项，不能声称 Linux remount 完整性 |
-| `extent-mutation-rollback` | split/remove/rebuild 的 metadata write 或 bitmap I/O 失败可留下泄漏、部分释放或不可达节点 | plan/validate/journal persist，任一失败保持旧树与 bitmap/i_blocks 一致 | mapping rewrite | 红（preallocation、shift、单 ring range-remove、leaf insertion normalization 与 restartable legacy truncate/reap/punch 子路径已绿）：HUGE_FILE checked accounting 已在分配/释放前预检；preallocation 的每个 extent insertion chunk 现由 filesystem transaction 完整拥有，新 metadata 构建与 bitmap/GDT/superblock/inode 发布任一步失败都会共同撤销。collapse/insert 先只读规划，再在一个 transaction 内保留旧树、构建 replacement、共同发布 root/size/final `i_blocks`、释放旧 data/metadata block，并显式刷新新旧 block 所在 group；不能仅凭最终 free counter 判断 bitmap dirty，因为同组 alloc/free 可能抵消。replacement node post-write 与 block-bitmap publish 的确定性红测曾分别留下未发布 leaf 或部分 allocator 状态，同一测试现经重挂载验证 mapping、free count 与 inode accounting 完整恢复。leaf insertion 依照 `extents.c:1786-1932` 先尝试左邻，再持续合并右邻；initialized/unwritten 状态、逻辑/物理连续性或 wire length 上限任一不满足时保持两个完整 extent，不能把左侧填满后制造 Linux 不会生成的 tail。punch/truncate 也先读取完整 external tree 与 initialized/unwritten extent 集合，按所有旧节点、涉及 allocation group、inode 和 superblock 预留 credits，再在同一 transaction 中逐段删除并最终发布 inode、bitmap/GDT 与 superblock；第二次 leaf write 故障的 punch/truncate 红测现均恢复全部 mapping、size、`i_blocks` 与 free count。被移除的空 extent 或 legacy indirect metadata block 现在与 detach mutation 位于同一 handle，并生成 writer revoke；稍后 transaction 的 revoke 会抑制较早 committed image 的 replay/checkpoint，同 transaction metadata reuse 则取消 revoke。其他尚未迁移的 extent split/merge fault matrix 与独立 committing owner 仍未完成，故本总项继续保持红色。Linux split failure 恢复原 extent 依据为 `extents.c:3226-3302`；punch/truncate 事务与 restart 依据为 `inode.c:4255-4533,4566-4697`、`extents.c:2701-2728,2837-3090`；revoke/checkpoint 依据为 `fs/jbd2/revoke.c:300-660`、`fs/jbd2/checkpoint.c:126-353`。 |
+| `extent-mutation-rollback` | split/remove/rebuild 的 metadata write 或 bitmap I/O 失败可留下泄漏、部分释放或不可达节点 | plan/validate/journal persist，任一失败保持旧树与 bitmap/i_blocks 一致 | mapping rewrite | 红（preallocation、shift、单 ring range-remove、leaf right-merge normalization 与 restartable legacy truncate/reap/punch 子路径已绿）：HUGE_FILE checked accounting 已在分配/释放前预检；preallocation 的每个 extent insertion chunk 现由 filesystem transaction 完整拥有，新 metadata 构建与 bitmap/GDT/superblock/inode 发布任一步失败都会共同撤销。collapse/insert 先只读规划，再在一个 transaction 内保留旧树、构建 replacement、共同发布 root/size/final `i_blocks`、释放旧 data/metadata block，并显式刷新新旧 block 所在 group；不能仅凭最终 free counter 判断 bitmap dirty，因为同组 alloc/free 可能抵消。replacement node post-write 与 block-bitmap publish 的确定性红测曾分别留下未发布 leaf 或部分 allocator 状态，同一测试现经重挂载验证 mapping、free count 与 inode accounting 完整恢复。leaf insertion 依照 `extents.c:1786-1860` 先尝试左邻，再持续合并右邻；initialized/unwritten 状态、逻辑/物理连续性或 wire length 上限任一不满足时保持两个完整 extent，不能把左侧填满后制造 Linux 不会生成的 tail。punch/truncate 也先读取完整 external tree 与 initialized/unwritten extent 集合，按所有旧节点、涉及 allocation group、inode 和 superblock 预留 credits，再在同一 transaction 中逐段删除并最终发布 inode、bitmap/GDT 与 superblock；第二次 leaf write 故障的 punch/truncate 红测现均恢复全部 mapping、size、`i_blocks` 与 free count。被移除的空 extent 或 legacy indirect metadata block 现在与 detach mutation 位于同一 handle，并生成 writer revoke；稍后 transaction 的 revoke 会抑制较早 committed image 的 replay/checkpoint，同 transaction metadata reuse 则取消 revoke。`ext4_ext_try_to_merge_up()` 的 insertion-time 单子叶 root 退化、其他尚未迁移的 extent split/merge fault matrix 与独立 committing owner 仍未完成，故本总项继续保持红色。Linux split failure 恢复原 extent 依据为 `extents.c:3226-3302`；punch/truncate 事务与 restart 依据为 `inode.c:4255-4533,4566-4697`、`extents.c:2701-2728,2837-3090`；revoke/checkpoint 依据为 `fs/jbd2/revoke.c:300-660`、`fs/jbd2/checkpoint.c:126-353`。 |
 | `mkdir-mutation-rollback` | child inode 初始化后，父 link/group accounting 或目录项插入失败可留下孤儿 inode、泄漏块或部分发布的计数 | mkdir 的 inode、block、父目录项、父 link count 与 group stats 属于同一可回滚 transaction | namespace/JBD2 rewrite | 绿：link 上限在分配前预检；39-credit namespace transaction 共同恢复 child inode/block、parent dentry/inode、allocation bitmap/GDT/superblock 与 directory count。ENOSPC 和目录块写后 I/O 两类确定性红测分别覆盖分配失败与持久化失败，均保持重挂载状态不变 |
 | `rename-mutation-rollback` | 跨父目录 rename 在新项、旧项、父 link count 或 `..` 更新任一步失败时可留下部分状态 | rename 的全部目录项、link count、`..` 与被替换 inode 更新崩溃原子且可回滚 | namespace/JBD2 rewrite | 绿（已实现 flags）：查找、same-inode/no-replace/type/ancestry/link-count/free preflight 在独占 `&mut` owner 下完成，真正 mutation 由 62/74-credit filesystem transaction 统一拥有。旧目录块写后故障红测证明旧实现返 I/O error 后仍丢失源名；同一测试现重挂载恢复源名/内容并移除目标名。exchange 第二侧目录块、跨父目录 `..` 块、replacement inode-table 三个附加故障点分别验证两侧名称、父 nlink/`..`、target nlink/orphan head 全部恢复。手工局部 rollback 已删除。`WHITEOUT` 尚未进入 mutation，因此继续由 `typed-rename-flags` 红项追踪。Linux v7.1 依据为 `fs/ext4/namei.c:3765-4195`、`fs/ext4/ext4_jbd2.h:21-50,78-90` |
 | `io-failure-no-panic` | mount/commit paths contain `expect` | all errors propagated | codec/JBD2 rewrite | 进行中：mount/JBD2 与 extent root/child traversal 已移除 panic/静默失败；inode allocation bitmap 查询由吞掉 I/O/corruption 并返回 `false` 改为 `Ext4Result<bool>`，共享故障开关确定性红测已证明旧实现将 read failure 报作 free，同一测试现保留原始 `Io`。缓存中的四处 `unwrap` 已逐控制流复核，均由 non-empty cache-line 不变量支配，不属于可达错误；其余生产路径仍待继续审计 |
@@ -2063,7 +2063,7 @@ terminal unmounted state，保留原始 I/O error，并拒绝 sync、remount 和
 
 ### 7.58 extent leaf insertion normalization 检查点
 
-Linux v7.1 `fs/ext4/extents.c:1786-1932` 的 leaf normalization 先用
+Linux v7.1 `fs/ext4/extents.c:1786-1860` 的 leaf normalization 先用
 `ext4_can_extents_be_merged()` 检查 initialized/unwritten 状态一致、逻辑与物理区间都连续，并要求合并
 长度能由对应的 on-disk `ee_len` 表示。`ext4_ext_try_to_merge()` 优先把新 extent 向左合并；若左侧没有
 发生合并，才从新 extent 开始向右合并。`ext4_ext_try_to_merge_right()` 会继续扫描同一 leaf 的全部可合并
@@ -2079,11 +2079,36 @@ Linux v7.1 `fs/ext4/extents.c:1786-1932` 的 leaf normalization 先用
 32767 的真实编码上限决定能否整体合并。超过上限、状态不同或任一方向不连续都保持原来的两个完整
 extent。外部 leaf 在 normalization 后通过既有 checked node codec 写回；专门用例强制构造 depth-1 tree，
 丢弃内存中的 tree 后重新从 block device 遍历，证明三段合并后的 extent 已持久化而非只修改 clone。
-现有 remove owner 对单子节点 root promotion 与 metadata block 回收负责，对应
-`ext4_ext_try_to_merge_up()` 的树退化语义；本切片没有把普通 insert 扩大为跨 leaf 重平衡。
+现有 remove owner 只负责 remove 后的单子节点 root promotion 与 metadata block 回收；它不能替代
+`ext4_ext_try_to_merge_up()` 对历史单子叶 root 的 insertion-time 退化，因此后者继续作为独立红项。
+本切片也没有把普通 insert 扩大为跨 leaf 重平衡；Linux 的 right-merge 本来就不跨 leaf。
 
 回归矩阵覆盖 bridge 同时合并左右邻、状态不同时只合并合法一侧、initialized 超限时不做 partial merge、
 unwritten 恰好到上限与超过上限、以及 external leaf reload。Linux source map 因而只把
-`extents.c:1786-1932` 标为 reviewed；`1-1785` 与 `1933-6308` 仍保持 coarse，本检查点不宣称整个
-`extents.c` 已完成。该 normalization 位于 sequential append 已经命中 predecessor merge 的路径，性能
-是否变化必须由同机交错 A/B 判定；在采集该证据前不声明无回退。
+`extents.c:1786-1860` 标为 reviewed；`1-1785` 与 `1861-6308` 仍保持 coarse，本检查点不宣称整个
+`extents.c` 已完成。
+
+首个正确性实现 `dae8d9499` 相对 `4cf9505a3` 的 500+500 交错 A/B 发现 dirty-sync median +7.51%、
+clean-sync p95 +10.76%、unmount median +5.15%，因此保留为性能红证据
+`book/design/data/rsext4-perf/2026-08-13-extent-leaf-normalization.csv`，没有用功能测试绿色掩盖热路径
+回退。旧实现的常见 append 会原地扩大 predecessor；首版却先 `Vec::insert` 再立即 `remove`。后续
+`9ea3c593b` 恢复原位 append fast path，只有不能向左合并时才插入新 entry，再继续执行 Linux 的
+right-merge。
+
+最终 A/B 固定 CPU 2、`powersave` governor、release、memory backend、4 KiB block 与 20 MiB payload。
+sequential 使用 25 个交错批次、每批每端 3 次预热与 20 次测量，得到 500+500；sync-cycle 首个
+500+500 窗口的 dirty p95 被少数 batch 尾延迟推高 15.9%，但 median 为 -2.0%，独立批次分析也没有
+发现执行顺序或前后时段漂移。没有删除该窗口，而是对称追加第二个 500+500，最终 3,000 条原始记录
+保存在 `book/design/data/rsext4-perf/2026-08-13-extent-leaf-normalization-fast-path.csv`：
+
+| workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sequential write | 6,443,749 ns | 6,404,617 ns | -0.607% | 7,192,451 ns | 7,189,518 ns | -0.041% |
+| sequential read | 6,283,132 ns | 6,328,687 ns | +0.725% | 8,002,624 ns | 8,152,259 ns | +1.870% |
+| sequential unmount | 18,680 ns | 18,330 ns | -1.874% | 22,291 ns | 21,239 ns | -4.720% |
+| dirty sync（1,000 次） | 9,764 ns | 10,096 ns | +3.400% | 23,781 ns | 23,376 ns | -1.703% |
+| clean sync（1,000 次） | 277 ns | 279 ns | +0.722% | 791 ns | 819 ns | +3.540% |
+| sync-cycle unmount（1,000 次） | 6,761 ns | 6,630 ns | -1.938% | 16,857 ns | 16,817 ns | -0.237% |
+
+六项 median/p95 全部满足 5%/10% 门槛。sequential append 直接经过本切片，证明共享写入热路径没有
+回退；sync-cycle 只守护共同 transaction/sync 路径，不能声明 leaf normalization 改善了 sync 性能。
