@@ -76,27 +76,30 @@ pub fn handle_syscall(uctx: &mut UserContext) {
     };
 
     trace!("Syscall {sysno:?}");
-    match ax_task::current()
-        .as_thread()
-        .seccomp_state()
-        .evaluate(uctx)
-    {
-        SeccompDecision::Allow => {}
-        SeccompDecision::Errno(errno) => {
-            uctx.set_retval(seccomp_errno(errno));
-            return;
-        }
-        SeccompDecision::KillProcess => {
-            do_exit(Signo::SIGSYS as i32, true);
-            return;
-        }
-        SeccompDecision::KillThread => {
-            do_exit(Signo::SIGSYS as i32, false);
-            return;
-        }
-        SeccompDecision::UnsupportedAction => {
-            uctx.set_retval(-LinuxError::ENOSYS.code() as usize);
-            return;
+    // Fast path: skip the seccomp lock + SeccompState clone + evaluate entirely when
+    // no filter is installed (the common case). `seccomp_active` is a lock-free
+    // one-way flag, so this can never bypass an installed filter.
+    let curr = ax_task::current();
+    let thread = curr.as_thread();
+    if thread.seccomp_active() {
+        match thread.seccomp_state().evaluate(uctx) {
+            SeccompDecision::Allow => {}
+            SeccompDecision::Errno(errno) => {
+                uctx.set_retval(seccomp_errno(errno));
+                return;
+            }
+            SeccompDecision::KillProcess => {
+                do_exit(Signo::SIGSYS as i32, true);
+                return;
+            }
+            SeccompDecision::KillThread => {
+                do_exit(Signo::SIGSYS as i32, false);
+                return;
+            }
+            SeccompDecision::UnsupportedAction => {
+                uctx.set_retval(-LinuxError::ENOSYS.code() as usize);
+                return;
+            }
         }
     }
 

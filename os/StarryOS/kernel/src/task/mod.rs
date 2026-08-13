@@ -204,6 +204,13 @@ pub struct Thread {
     /// seccomp syscall filtering state.
     seccomp: IrqMutex<SeccompState>,
 
+    /// Lock-free mirror of `seccomp.is_active()`. Read on every syscall to skip the
+    /// `seccomp` lock + `SeccompState` clone + evaluate when no filter is installed
+    /// (the overwhelmingly common case). seccomp is one-way (disabled -> active, never
+    /// back), so this only ever transitions false -> true and can never bypass an
+    /// installed filter. Mirrors Linux's `TIF_SECCOMP` bit.
+    seccomp_active: AtomicBool,
+
     /// Process credentials (uid, gid, etc.).
     cred: IrqMutex<Arc<Cred>>,
 
@@ -274,6 +281,7 @@ impl Thread {
             rseq_signature: AtomicU32::new(0),
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
+            seccomp_active: AtomicBool::new(false),
             seccomp: IrqMutex::new(SeccompState::default()),
             cred: IrqMutex::new(cred),
 
@@ -428,6 +436,12 @@ impl Thread {
         self.no_new_privs.store(true, Ordering::Relaxed);
     }
 
+    /// Lock-free check of whether any seccomp mode is installed. When false, the
+    /// syscall dispatch skips the seccomp lock+clone+evaluate entirely.
+    pub fn seccomp_active(&self) -> bool {
+        self.seccomp_active.load(Ordering::Acquire)
+    }
+
     /// Get a snapshot of the current seccomp state.
     pub fn seccomp_state(&self) -> SeccompState {
         self.seccomp.lock().clone()
@@ -435,17 +449,25 @@ impl Thread {
 
     /// Replace seccomp state. Used by clone inheritance.
     pub fn set_seccomp_state(&self, state: SeccompState) {
+        // Publish activeness before/with the state so a concurrent syscall reader
+        // never sees active=false while the filter is installed.
+        self.seccomp_active
+            .store(state.is_active(), Ordering::Release);
         *self.seccomp.lock() = state;
     }
 
     /// Enable strict seccomp mode.
     pub fn install_seccomp_strict(&self) -> AxResult<()> {
-        self.seccomp.lock().install_strict()
+        self.seccomp.lock().install_strict()?;
+        self.seccomp_active.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Append a seccomp filter. Filters are inherited and evaluated in order.
     pub fn append_seccomp_filter(&self, insns: Vec<SockFilter>) -> AxResult<()> {
-        self.seccomp.lock().append_filter(insns)
+        self.seccomp.lock().append_filter(insns)?;
+        self.seccomp_active.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Get a snapshot of the current credentials (clones the `Arc`).

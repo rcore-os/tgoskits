@@ -158,6 +158,12 @@ struct SeccompData {
 }
 
 impl SeccompState {
+    /// Whether any seccomp mode is installed (strict or filter). When false, the
+    /// syscall path can skip locking+cloning+evaluating this state entirely.
+    pub fn is_active(&self) -> bool {
+        self.mode != SeccompMode::Disabled
+    }
+
     /// Enable Linux strict seccomp mode for this thread.
     ///
     /// Strict mode can only be installed from the disabled state.  Once a
