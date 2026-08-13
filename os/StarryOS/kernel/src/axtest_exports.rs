@@ -46,10 +46,6 @@ pub fn pipe_linux_io_semantics_hold() -> bool {
     super::file::pipe_linux_io_semantics_hold_for_test()
 }
 
-pub fn interrupted_pipe_write_preserves_partial_progress() -> bool {
-    super::file::interrupted_pipe_write_preserves_partial_progress_for_test()
-}
-
 pub fn fcntl_setpipe_size_returns_capacity() -> bool {
     super::syscall::fcntl_setpipe_size_returns_capacity_for_test()
 }

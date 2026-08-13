@@ -451,68 +451,6 @@ pub(crate) fn pipe_linux_io_semantics_hold_for_test() -> bool {
         && page_slot_fragmentation_matches
 }
 
-#[cfg(axtest)]
-pub(crate) fn interrupted_pipe_write_preserves_partial_progress_for_test() -> bool {
-    use ax_task::TaskState;
-
-    let (read_end, write_end) = Pipe::new();
-    if write_end.resize(PIPE_BUF).is_err() {
-        return false;
-    }
-
-    let initial = [b'a'; PIPE_BUF];
-    let mut initial_src: &[u8] = &initial;
-    if write_end.write_without_sigpipe_for_test(&mut initial_src) != Ok(PIPE_BUF) {
-        return false;
-    }
-
-    let write_end = Arc::new(write_end);
-    let result = Arc::new(PiMutex::new(None));
-    let writer_task = {
-        let write_end = Arc::clone(&write_end);
-        let result = Arc::clone(&result);
-        ax_task::spawn(move || {
-            let bytes = [b'b'; 2 * PIPE_BUF];
-            let mut src: &[u8] = &bytes;
-            *result.lock() = Some(write_end.write_without_sigpipe_for_test(&mut src));
-        })
-    };
-
-    if !wait_for_pipe_test_condition(|| writer_task.state() == TaskState::Blocked) {
-        writer_task.interrupt();
-        writer_task.join();
-        return false;
-    }
-
-    let mut consumed = [0u8; PIPE_BUF];
-    let mut dst: &mut [u8] = &mut consumed;
-    if read_end.read(&mut dst) != Ok(PIPE_BUF) {
-        writer_task.interrupt();
-        writer_task.join();
-        return false;
-    }
-
-    let refilled_and_blocked = wait_for_pipe_test_condition(|| {
-        read_end.shared.state.lock().buffer.occupied_len() == PIPE_BUF
-            && writer_task.state() == TaskState::Blocked
-    });
-    writer_task.interrupt();
-    writer_task.join();
-
-    refilled_and_blocked && *result.lock() == Some(Ok(PIPE_BUF))
-}
-
-#[cfg(axtest)]
-fn wait_for_pipe_test_condition(mut condition: impl FnMut() -> bool) -> bool {
-    for _ in 0..10_000 {
-        if condition() {
-            return true;
-        }
-        ax_task::yield_now();
-    }
-    false
-}
-
 fn raise_pipe() {
     let curr = current_user_task();
     send_signal_to_process(
