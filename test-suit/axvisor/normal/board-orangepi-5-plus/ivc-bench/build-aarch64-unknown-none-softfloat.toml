@@ -1,0 +1,10 @@
+features = [
+  "ax-driver/rockchip-sdhci",
+  "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "test-suit/axvisor/normal/board-orangepi-5-plus/ivc-bench/configs/arceos-ivc-bench-publisher.toml",
+  "test-suit/axvisor/normal/board-orangepi-5-plus/ivc-bench/configs/arceos-ivc-bench-subscriber.toml",
+]

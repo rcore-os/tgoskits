@@ -42,7 +42,7 @@ static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), HostIVCChannel>> = Mutex::ne
 ///
 /// Requests larger than this are truncated; the hypercall ABI always writes
 /// the actual granted size back to the guest, so guests must check it.
-pub const MAX_IVC_CHANNEL_SIZE: usize = 0x10_0000;
+pub const MAX_IVC_CHANNEL_SIZE: usize = 0x100_0000;
 
 /// Allocates guest-physical bindings inside one graph-owned IVC MMIO aperture.
 pub(crate) trait IvcApertureAllocator: Send + Sync {

@@ -372,6 +372,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-ivc-bench-publisher"
+version = "0.1.0"
+dependencies = [
+ "ax-mm",
+ "ax-std",
+ "axhvc",
+ "axivc",
+]
+
+[[package]]
+name = "arceos-ivc-bench-subscriber"
+version = "0.1.0"
+dependencies = [
+ "ax-mm",
+ "ax-std",
+ "axhvc",
+ "axivc",
+]
+
+[[package]]
 name = "arceos-ivc-publisher"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,12 @@
+board_type = "OrangePi-5-Plus"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "Failed to initialize guest VM",
+  "ivc bench publish failed",
+  "AXVISOR_IVC_BENCH_RESULT=FAIL",
+]
+success_regex = [
+  "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?AXVISOR_IVC_BENCH_RESULT=PASS cases=4 testTime=100 bytes=[0-9]+ chunks=[0-9]+\\s*$",
+]
+timeout = 600

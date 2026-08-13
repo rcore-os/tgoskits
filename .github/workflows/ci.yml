@@ -513,7 +513,7 @@ jobs:
             self_hosted_owner: rcore-os
             command: cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
             cache_key: ""
-            container_image: base
+            container_image: baseivc
             limit_to_owner: ""
             main_pr_only: false
           - name: Test starry riscv64 qemu
@@ -743,6 +743,14 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
             command: cargo xtask axvisor test board --board orangepi-5-plus-linux
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test axvisor self-hosted board orangepi-5-plus ivc bench
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: test-suit/axvisor/normal/board-orangepi-5-plus/ivc-bench/prepare.sh && cargo xtask axvisor test board --board orangepi-5-plus-ivc-bench --test-case board-orangepi-5-plus/ivc-bench
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os

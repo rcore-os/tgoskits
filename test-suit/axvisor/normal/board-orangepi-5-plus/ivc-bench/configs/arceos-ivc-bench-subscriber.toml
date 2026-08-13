@@ -1,0 +1,24 @@
+[base]
+id = 2
+name = "arceos-ivc-bench-subscriber"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x500]
+
+[kernel]
+entry_point = 0x4008_0000
+image_location = "memory"
+kernel_load_addr = 0x4008_0000
+kernel_path = "${workspace}/tmp/axbuild/axvisor/ivc-bench/arceos-ivc-bench-subscriber.bin"
+dtb_load_addr = 0x4000_0000
+memory_regions = [
+  [0x4000_0000, 0x4000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"

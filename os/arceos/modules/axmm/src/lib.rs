@@ -133,6 +133,26 @@ pub fn iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
     }
 }
 
+/// Maps a physical memory region as normal cacheable memory.
+///
+/// This is intended for shared RAM windows that are discovered through a
+/// device-like control path but should be accessed with normal memory
+/// attributes. Device MMIO must continue to use [`iomap`].
+pub fn iomap_cacheable(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
+    if size == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    addr.as_usize()
+        .checked_add(size)
+        .ok_or(AxError::InvalidInput)?;
+    match ax_hal::mem::prepare_iomap(addr, size, IomapAttrs::CACHEABLE).map_err(map_iomap_error)? {
+        IomapDecision::Mapped(vaddr) => Ok(vaddr),
+        IomapDecision::UseGeneric(paddr) => {
+            iomap_generic_with_flags(paddr, size, MappingFlags::READ | MappingFlags::WRITE)
+        }
+    }
+}
+
 fn map_iomap_error(err: IomapError) -> AxError {
     match err {
         IomapError::InvalidInput => AxError::InvalidInput,
@@ -149,6 +169,18 @@ fn checked_align_up_4k(addr: usize) -> AxResult<PhysAddr> {
 }
 
 fn iomap_generic(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
+    iomap_generic_with_flags(
+        addr,
+        size,
+        MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
+    )
+}
+
+fn iomap_generic_with_flags(
+    addr: PhysAddr,
+    size: usize,
+    flags: MappingFlags,
+) -> AxResult<VirtAddr> {
     let end = addr
         .as_usize()
         .checked_add(size)
@@ -160,7 +192,6 @@ fn iomap_generic(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
     let size_aligned = checked_align_up_4k(end)? - addr_aligned;
     let offset = addr - addr_aligned;
 
-    let flags = MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE;
     let mut tb = kernel_aspace().lock_irqsave();
 
     let mapped = if tb.contains_range(virt_aligned, size_aligned) {
