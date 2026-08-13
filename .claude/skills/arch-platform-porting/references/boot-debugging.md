@@ -290,7 +290,7 @@ device-specific drivers.
 - Relocated symbols must be resolved relative to the running image. In the LoongArch SMP path, the secondary exception vector had to use a runtime symbol helper such as `sym_running_addr!(__exception_vectors)`, while the TLB refill entry needed the corresponding physical address.
 - A secondary CPU can fault before it has a working serial path. Put markers before and after DMW setup, stack switch, page table register setup, trap-vector setup, and jump to the common secondary entry.
 - Initialize trap vectors on every CPU, not only the boot CPU.
-- Flush or barrier boot arguments before `cpu_on`; otherwise secondaries can observe stale stack, page table, or per-CPU data.
+- Flush or barrier boot arguments before the architecture CPU-on transport; otherwise secondaries can observe stale stack, page table, or per-CPU data.
 - Keep logical CPU ID mapping separate from firmware CPU IDs. LoongArch CPU IDs in firmware data are not guaranteed to be dense array indices.
 - Compare ordering with local Linux architecture code when uncertain. For LoongArch, useful topics include DMW setup, CSR write ordering, TLB refill vector, exception entry, SMP boot argument handoff, and cache/TLB barriers.
 
@@ -348,7 +348,7 @@ Important details:
 | Immediate reset after MMU enable | wrong page table root, missing identity/current mapping, bad barrier/TLB flush, invalid jump target |
 | High-half fetch fault | kernel high map, relocation offset, symbol address basis, direct-map window |
 | TLB refill recursion | TLB refill vector address, stack mapping, refill handler mapping, CSR ordering |
-| Secondary CPU silent | per-CPU `KICKED/ALIVE/SHOULD_ONLINE` state, architecture wake delivery, `cpu_on` argument, cache flush, stack, per-CPU base, trap setup, logical CPU ID mapping; on x86 verify SIPI is `APIC_DM_STARTUP` (`0x600`) rather than INIT level encoding |
+| Secondary CPU silent | inspect the per-CPU `KICKED/ALIVE/SHOULD_ONLINE` state and the active startup handle first: `KICKED` means transport/common-entry progress is missing, while `ALIVE` means the control path has not called `release`; then check architecture wake delivery, CPU-on argument, cache flush, stack, per-CPU base, trap setup, and logical CPU ID mapping. A second `start_secondary_cpu` must return `StartupInProgress`, not spin. On x86 verify SIPI is `APIC_DM_STARTUP` (`0x600`) rather than INIT level encoding, and never clear the active owner after a dropped handle or timeout because a late AP may still use the shared trampoline. |
 | ArceOS works but Starry fails | rootfs staging, std/musl ABI, console/input feature, tty assumptions, CPR sizing |
 | Starry shell works but grouped tests fail | generated runner path, copied assets, success regex, `shell_init_cmd` versus `test_commands` |
 | AArch64 Axvisor stops at first dynamic MMIO read | missing `ax-cpu/arm-el2`, inactive EL1 page-table root, stale `TTBR0_EL2` boot table |
