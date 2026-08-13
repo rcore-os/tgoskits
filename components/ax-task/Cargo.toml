@@ -13,6 +13,7 @@ qperf-metrics = []
 host-test = ["smp"]
 lockdep = ["dep:axpanic"]
 smp = []
+task-test-hooks = []
 
 [dependencies]
 axpanic = { workspace = true, optional = true }

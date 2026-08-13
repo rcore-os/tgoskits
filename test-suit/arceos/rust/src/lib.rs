@@ -58,6 +58,7 @@ pub mod net;
         feature = "task-irq",
         feature = "task-kernel-timer",
         feature = "task-parallel",
+        feature = "task-pi-mutex",
         feature = "task-priority",
         feature = "task-sleep",
         feature = "task-smp-online",
@@ -126,6 +127,7 @@ test_runner!(
     task::kernel_timer::run
 );
 test_runner!("task-parallel", run_task_parallel, task::parallel::run);
+test_runner!("task-pi-mutex", run_task_pi_mutex, task::pi_mutex::run);
 test_runner!("task-priority", run_task_priority, task::priority::run);
 test_runner!("task-sleep", run_task_sleep, task::sleep::run);
 test_runner!(
@@ -228,6 +230,12 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "task-parallel")]
     TestCase::new("task-parallel", "parallel computation", run_task_parallel),
+    #[cfg(feature = "task-pi-mutex")]
+    TestCase::new(
+        "task-pi-mutex",
+        "PI mutex late wake after waiter exit",
+        run_task_pi_mutex,
+    ),
     #[cfg(all(
         feature = "task-priority",
         not(any(feature = "sched-cfs", feature = "sched-rr"))

@@ -7,8 +7,6 @@ use crate::{
     lock_raw_pi_mutex_waiters, try_lock_raw_pi_mutex_waiters,
 };
 
-const PI_RELEASE_WAKE_INVARIANT: u32 = 0x5049_574b;
-
 #[derive(Clone, Copy)]
 enum PiRqFollowup {
     RemoteReschedule,

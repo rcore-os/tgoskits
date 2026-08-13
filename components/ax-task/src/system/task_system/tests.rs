@@ -6406,7 +6406,7 @@ fn pi_chain_walk_ignores_a_previous_owner_that_requeues_on_the_origin_lock() {
 
 #[test]
 fn pi_release_wakes_the_selected_waiter_before_returning() {
-    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
     system
         .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
@@ -6434,6 +6434,7 @@ fn pi_release_wakes_the_selected_waiter_before_returning() {
 
     let lock = PiMutexCore::new();
     let token = commit_pi_wait(&system, &lock, waiter.id(), owner.id()).unwrap();
+    let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu.as_mut());
     system
         .pi_mutex_release(lock.mutex_ref().unwrap(), owner.id())
         .unwrap();

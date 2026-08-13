@@ -37,6 +37,7 @@ static WAKE_DURING_FINAL_PARK_PUBLICATION_COMPLETED: core::sync::atomic::AtomicB
 #[derive(Clone, Copy)]
 enum WakerCpuSource {
     Current,
+    #[cfg(test)]
     Explicit(Option<CpuId>),
 }
 
@@ -50,6 +51,7 @@ impl WakerCpuSource {
                 let runtime_cpu = unsafe { task_runtime::current_cpu_id() };
                 Some(CpuId::new(runtime_cpu.as_u32()))
             }
+            #[cfg(test)]
             Self::Explicit(waker) => waker,
         }
     }
@@ -245,6 +247,7 @@ impl TaskSystem {
     /// Lock order is thread scheduler state, then target runqueue. This is the
     /// active PREEMPT_RT wakeup model: no owner inbox or later safe point owns
     /// the transition from blocked to physically queued.
+    #[cfg(test)]
     pub(crate) fn wake_thread_direct(
         &self,
         core: Arc<ThreadCore>,

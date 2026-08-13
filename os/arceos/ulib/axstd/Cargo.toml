@@ -62,6 +62,7 @@ tls = ["ax-runtime/tls"]
 
 # Multi-threading and scheduler
 multitask = ["ax-api/multitask", "ax-posix-api/multitask", "ax-runtime/multitask"]
+task-test-hooks = ["multitask", "ax-api/task-test-hooks"]
 lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep"]
 task-ext = []
 tracepoint-hooks = []

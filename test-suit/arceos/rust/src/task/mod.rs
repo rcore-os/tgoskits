@@ -8,6 +8,8 @@ pub mod irq;
 pub mod kernel_timer;
 #[cfg(feature = "task-parallel")]
 pub mod parallel;
+#[cfg(feature = "task-pi-mutex")]
+pub mod pi_mutex;
 #[cfg(any(feature = "task-priority", feature = "sched-cfs", feature = "sched-rr"))]
 pub mod priority;
 #[cfg(feature = "task-sleep")]

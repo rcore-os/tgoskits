@@ -25,6 +25,8 @@ pub mod runtime;
 mod scheduler;
 pub mod sync;
 mod system;
+#[cfg(feature = "task-test-hooks")]
+pub mod task_test_hooks;
 mod task_work;
 mod thread;
 mod thread_start;

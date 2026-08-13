@@ -1,0 +1,119 @@
+//! Deterministic scheduler interleavings for target-side task tests.
+//!
+//! This module is available only through the non-default `task-test-hooks`
+//! feature. It controls the real task system; it does not install a modeled
+//! runtime or own a second scheduler state.
+
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+
+use crate::ThreadId;
+
+static TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
+static PI_RELEASE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+
+const STAGE_IDLE: u8 = 0;
+const STAGE_CONFIGURING: u8 = 1;
+const STAGE_ARMED: u8 = 2;
+const STAGE_WAITER_REGISTERED: u8 = 3;
+const STAGE_RELEASE_BEFORE_WAKE: u8 = 4;
+const STAGE_WAITER_MAY_CLAIM: u8 = 5;
+const STAGE_RELEASE_MAY_WAKE: u8 = 6;
+
+/// Arms the PI release/claim/exit interleaving for one live waiter.
+pub fn arm_pi_release_claim_exit(waiter: u64) {
+    assert_ne!(waiter, 0, "a task-test waiter identity must be non-zero");
+    assert_eq!(
+        PI_RELEASE_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one PI release task-test interleaving may be armed"
+    );
+    TARGET_WAITER.store(waiter, Ordering::Relaxed);
+    PI_RELEASE_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the target waiter committed its PI registration.
+pub fn pi_waiter_registered() -> bool {
+    PI_RELEASE_STAGE.load(Ordering::Acquire) == STAGE_WAITER_REGISTERED
+}
+
+/// Lets the target waiter observe and claim the ownerless handoff.
+pub fn allow_pi_waiter_claim() {
+    assert_eq!(
+        PI_RELEASE_STAGE.compare_exchange(
+            STAGE_RELEASE_BEFORE_WAKE,
+            STAGE_WAITER_MAY_CLAIM,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_RELEASE_BEFORE_WAKE),
+        "PI waiter claim must follow ownerless release publication"
+    );
+}
+
+/// Returns whether release published ownerless state but has not woken yet.
+pub fn pi_release_before_wake() -> bool {
+    PI_RELEASE_STAGE.load(Ordering::Acquire) == STAGE_RELEASE_BEFORE_WAKE
+}
+
+/// Lets the releasing task drain its delayed wake after the waiter exits.
+pub fn allow_pi_release_wake() {
+    assert_eq!(
+        PI_RELEASE_STAGE.compare_exchange(
+            STAGE_WAITER_MAY_CLAIM,
+            STAGE_RELEASE_MAY_WAKE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_WAITER_MAY_CLAIM),
+        "PI late wake must follow waiter claim and exit"
+    );
+}
+
+pub(crate) fn registered_waiter(waiter: ThreadId) {
+    if PI_RELEASE_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || TARGET_WAITER.load(Ordering::Relaxed) != waiter.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        PI_RELEASE_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_WAITER_REGISTERED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "target PI waiter reached registration in an invalid test stage"
+    );
+    while PI_RELEASE_STAGE.load(Ordering::Acquire) < STAGE_WAITER_MAY_CLAIM {
+        core::hint::spin_loop();
+    }
+}
+
+pub(crate) fn release_before_wake(waiter: ThreadId) {
+    if PI_RELEASE_STAGE.load(Ordering::Acquire) != STAGE_WAITER_REGISTERED
+        || TARGET_WAITER.load(Ordering::Relaxed) != waiter.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        PI_RELEASE_STAGE.compare_exchange(
+            STAGE_WAITER_REGISTERED,
+            STAGE_RELEASE_BEFORE_WAKE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_WAITER_REGISTERED),
+        "target PI release reached late wake in an invalid test stage"
+    );
+    while PI_RELEASE_STAGE.load(Ordering::Acquire) != STAGE_RELEASE_MAY_WAKE {
+        core::hint::spin_loop();
+    }
+    TARGET_WAITER.store(0, Ordering::Relaxed);
+    PI_RELEASE_STAGE.store(STAGE_IDLE, Ordering::Release);
+}

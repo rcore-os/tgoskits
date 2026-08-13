@@ -201,6 +201,8 @@ impl TaskSystem {
             }
             drop(_owner_activity);
             drop(_waiter_activity);
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::registered_waiter(waiter);
             return Ok(PiMutexLockResult::Waiting(unsafe {
                 // SAFETY: both waiter-tree edges are committed and retain this
                 // physical lock identity until claim or cancellation.
@@ -255,7 +257,8 @@ impl TaskSystem {
     ) -> Result<(), TaskError> {
         let _preempt = PreemptScope::enter();
         let old_owner_core = self.pi_thread_core(old_owner)?;
-        let selected = {
+        let mut wakes = ThreadWakeBatch::new();
+        let selected_id = {
             let mutex_core = lock.core();
             let lock_state = lock_pi_mutex_waiters(lock);
             let snapshot = mutex_core.owner_snapshot();
@@ -290,21 +293,24 @@ impl TaskSystem {
             }
             self.replace_owner_lock_top(old_owner, Some(selected_entry), None)?;
             mutex_core.publish_ownerless();
+            let selected_id = selected.id();
+            let _queued = wakes.push(ThreadWakeHandle::from_core(selected));
             drop(lock_state);
-            selected
+            selected_id
         };
-        self.recompute_pi_cleanup_chain(old_owner, selected.id())
+        self.recompute_pi_cleanup_chain(old_owner, selected_id)
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5049_1211, old_owner.as_u64() as usize)
             });
-        let selected_id = selected.id();
-        match self.wake_thread_direct(selected, None) {
-            WakeResult::Notified | WakeResult::AlreadyPending => Ok(()),
-            WakeResult::Exited | WakeResult::Unavailable => task_runtime::fatal_invariant(
-                PI_RELEASE_WAKE_INVARIANT,
-                selected_id.as_u64() as usize,
-            ),
-        }
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::release_before_wake(selected_id);
+        // The ownerless publication and waiter generation commit the mutex
+        // handoff. As with Linux wake_q, this delayed wake is only a scheduling
+        // hint: the selected waiter may claim, run, and exit before the batch
+        // drains. The batch retains its task reference and intentionally
+        // ignores a wake that no longer changes task state.
+        let _woken = wakes.wake_all();
+        Ok(())
     }
 
     /// Claims an ownerless handoff selected for this waiter.

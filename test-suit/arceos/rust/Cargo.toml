@@ -22,6 +22,7 @@ task-irq = ["ax-std", "ax-std/multitask", "ax-std/irq"]
 task-kernel-timer = ["ax-std", "ax-std/multitask", "ax-std/irq"]
 task-tls = ["ax-std", "ax-std/tls", "ax-std/alloc", "ax-std/multitask"]
 task-parallel = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask", "ax-std/irq"]
+task-pi-mutex = ["ax-std", "ax-std/multitask", "ax-std/task-test-hooks"]
 task-priority = ["ax-std", "ax-std/alloc", "ax-std/multitask"]
 task-sleep = ["ax-std", "ax-std/multitask", "ax-std/irq"]
 task-smp-online = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
@@ -54,6 +55,7 @@ all = [
     "task-kernel-timer",
     "task-tls",
     "task-parallel",
+    "task-pi-mutex",
     "task-priority",
     "task-sleep",
     "net-loopback",
