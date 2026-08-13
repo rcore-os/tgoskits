@@ -482,18 +482,16 @@ impl HyperCall {
                     self.code,
                     key
                 );
-                let (base_gpa, size) = ivc::unpublish_channel(self.vm.id(), key)
+                let teardown = ivc::unpublish_channel(self.vm.id(), key)
                     .map_err(|error| self.operation_error("unpublish IVC channel", error))?;
-                // The publisher's GPA mapping is always unmapped; subscribers keep their own
-                // GPA views. The shared HPA frame is freed when the last subscriber leaves.
-                self.vm.unmap_region(base_gpa, size).map_err(|error| {
-                    self.operation_error("unmap unpublished IVC channel", error)
-                })?;
-                self.vm
-                    .release_ivc_channel(base_gpa, size)
-                    .map_err(|error| {
-                        self.operation_error("release unpublished IVC channel", error)
-                    })?;
+                if !crate::vm::release_ivc_teardown_for_vm(self.vm.id(), teardown, &self.vm) {
+                    return Err(HyperCallError::Internal {
+                        code: self.code,
+                        operation: "release unpublished IVC channel",
+                        detail: "failed to unmap guest GPA or release the IVC aperture range"
+                            .into(),
+                    });
+                }
 
                 Ok(HyperCallOutcome::Return(0))
             }
@@ -548,26 +546,32 @@ impl HyperCall {
                     actual_size,
                     MappingFlags::READ | MappingFlags::WRITE,
                 ) {
-                    if let Err(unsub_err) = ivc::unsubscribe_from_channel_of_publisher(
+                    match ivc::unsubscribe_from_channel_of_publisher(
                         publisher_vm_id,
                         key,
                         self.vm.id(),
                     ) {
-                        warn!(
-                            "VM[{}] failed to rollback IVC subscription to VM[{}] key {key:#x} \
-                             after mapping failure: {unsub_err:?}",
-                            self.vm.id(),
-                            publisher_vm_id
-                        );
-                    }
-                    if let Err(release_err) =
-                        self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
-                    {
-                        warn!(
-                            "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after subscribe \
-                             mapping failure: {release_err:?}",
-                            self.vm.id()
-                        );
+                        Ok(teardown) => {
+                            if let Err(release_err) =
+                                self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
+                            {
+                                warn!(
+                                    "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after \
+                                     subscribe mapping failure: {release_err:?}",
+                                    self.vm.id()
+                                );
+                            } else {
+                                teardown.commit();
+                            }
+                        }
+                        Err(unsub_err) => {
+                            warn!(
+                                "VM[{}] failed to rollback IVC subscription to VM[{}] key \
+                                 {key:#x} after mapping failure: {unsub_err:?}",
+                                self.vm.id(),
+                                publisher_vm_id
+                            );
+                        }
                     }
                     return Err(self.operation_error("map subscriber IVC channel", err));
                 }
@@ -577,33 +581,26 @@ impl HyperCall {
                     .write_to_guest_of(shm_base_gpa_ptr, &shm_base_gpa.as_usize())
                     .and_then(|_| self.vm.write_to_guest_of(shm_size_ptr, &actual_size))
                 {
-                    if let Err(unmap_err) = self.vm.unmap_region(shm_base_gpa, actual_size) {
-                        warn!(
-                            "VM[{}] failed to unmap IVC GPA {shm_base_gpa:#x} after subscribe \
-                             guest write failure: {unmap_err:?}",
-                            self.vm.id()
-                        );
-                    }
-                    if let Err(unsub_err) = ivc::unsubscribe_from_channel_of_publisher(
+                    match ivc::unsubscribe_from_channel_of_publisher(
                         publisher_vm_id,
                         key,
                         self.vm.id(),
                     ) {
-                        warn!(
-                            "VM[{}] failed to rollback IVC subscription to VM[{}] key {key:#x} \
-                             after guest write failure: {unsub_err:?}",
-                            self.vm.id(),
-                            publisher_vm_id
-                        );
-                    }
-                    if let Err(release_err) =
-                        self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
-                    {
-                        warn!(
-                            "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after subscribe \
-                             guest write failure: {release_err:?}",
-                            self.vm.id()
-                        );
+                        Ok(teardown) => {
+                            crate::vm::release_ivc_teardown_for_vm(
+                                self.vm.id(),
+                                teardown,
+                                &self.vm,
+                            );
+                        }
+                        Err(unsub_err) => {
+                            warn!(
+                                "VM[{}] failed to rollback IVC subscription to VM[{}] key \
+                                 {key:#x} after guest write failure: {unsub_err:?}",
+                                self.vm.id(),
+                                publisher_vm_id
+                            );
+                        }
                     }
                     return Err(self.guest_memory_error(
                         "write subscribed IVC channel result",
@@ -631,19 +628,19 @@ impl HyperCall {
                     self.code,
                     publisher_vm_id
                 );
-                let (base_gpa, size) =
+                let teardown =
                     ivc::unsubscribe_from_channel_of_publisher(publisher_vm_id, key, self.vm.id())
                         .map_err(|error| {
                             self.operation_error("unsubscribe from IVC channel", error)
                         })?;
-                self.vm.unmap_region(base_gpa, size).map_err(|error| {
-                    self.operation_error("unmap unsubscribed IVC channel", error)
-                })?;
-                self.vm
-                    .release_ivc_channel(base_gpa, size)
-                    .map_err(|error| {
-                        self.operation_error("release unsubscribed IVC channel", error)
-                    })?;
+                if !crate::vm::release_ivc_teardown_for_vm(self.vm.id(), teardown, &self.vm) {
+                    return Err(HyperCallError::Internal {
+                        code: self.code,
+                        operation: "release unsubscribed IVC channel",
+                        detail: "failed to unmap guest GPA or release the IVC aperture range"
+                            .into(),
+                    });
+                }
 
                 Ok(HyperCallOutcome::Return(0))
             }

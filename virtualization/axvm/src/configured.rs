@@ -48,7 +48,6 @@ pub struct FixedWiredBinding {
 pub struct FixedDeviceBindings {
     mmio: BTreeMap<ResourceSlot, (u64, u64)>,
     pio: BTreeMap<ResourceSlot, (u16, u16)>,
-    guest_range: BTreeMap<ResourceSlot, (u64, u64)>,
     wired: BTreeMap<ResourceSlot, FixedWiredBinding>,
 }
 
@@ -63,11 +62,6 @@ impl FixedDeviceBindings {
         self
     }
 
-    pub fn with_guest_range(mut self, slot: ResourceSlot, base: u64, size: u64) -> Self {
-        self.guest_range.insert(slot, (base, size));
-        self
-    }
-
     pub fn with_wired(mut self, slot: ResourceSlot, binding: FixedWiredBinding) -> Self {
         self.wired.insert(slot, binding);
         self
@@ -79,10 +73,6 @@ impl FixedDeviceBindings {
 
     pub fn pio(&self, slot: &ResourceSlot) -> Option<(u16, u16)> {
         self.pio.get(slot).copied()
-    }
-
-    pub fn guest_range(&self, slot: &ResourceSlot) -> Option<(u64, u64)> {
-        self.guest_range.get(slot).copied()
     }
 
     pub fn wired(&self, slot: &ResourceSlot) -> Option<&FixedWiredBinding> {

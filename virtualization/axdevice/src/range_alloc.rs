@@ -1,4 +1,4 @@
-//! Runtime allocation inside a guest range reserved by the device graph.
+//! Runtime allocation inside an IVC MMIO aperture reserved by the device graph.
 
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::ops::Range;
@@ -10,22 +10,22 @@ use axvm_types::GuestPhysAddr;
 
 use crate::*;
 
-/// Allocates guest-physical ranges from one graph-owned window.
-pub trait GuestRangeAllocator: Send + Sync {
-    /// Reserves one page-aligned guest range.
+/// Allocates guest-physical bindings inside one graph-owned IVC aperture.
+pub trait IvcApertureAllocator: Send + Sync {
+    /// Reserves one page-aligned range.
     fn allocate(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr>;
 
-    /// Releases a previously reserved guest range.
+    /// Releases a previously reserved range.
     fn release(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult;
 }
 
-/// Type key for a VM's guest-range allocator service.
-pub struct GuestRangeAllocatorKey;
+/// Type key for a VM's IVC aperture allocator service.
+pub struct IvcApertureAllocatorKey;
 
-impl ServiceKey for GuestRangeAllocatorKey {
-    type Service = dyn GuestRangeAllocator;
+impl ServiceKey for IvcApertureAllocatorKey {
+    type Service = dyn IvcApertureAllocator;
 
-    const NAME: &'static str = "guest-range-allocator";
+    const NAME: &'static str = "ivc-aperture-allocator";
     const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
@@ -70,16 +70,16 @@ impl ServiceKey for IvcNotifyIrqKey {
     const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
-/// Default allocator for a range already claimed by a [`DeviceModel`](crate::DeviceModel).
+/// Default allocator for an IVC MMIO aperture claimed by a [`DeviceModel`](crate::DeviceModel).
 ///
-/// This type does not reserve guest address space. A model must first declare
-/// and consume the corresponding resource slot, then publish this allocator in
+/// This type does not reserve guest address space. The IVC model first declares
+/// and consumes a normal MMIO resource slot, then publishes this allocator in
 /// the same device bundle so the resource lease owns its lifetime.
-pub struct GuestRangePool {
+pub struct IvcAperturePool {
     ranges: Mutex<RangeAllocator>,
 }
 
-impl GuestRangePool {
+impl IvcAperturePool {
     fn ranges(&self) -> RawSpinLockGuard<'_, RangeAllocator> {
         // SAFETY: VM device-resource planning serializes same-vCPU entry; the
         // raw lock excludes concurrent resource operations on other CPUs.
@@ -91,12 +91,12 @@ impl GuestRangePool {
         let end = base
             .checked_add(length)
             .ok_or_else(|| DeviceManagerError::InvalidConfig {
-                operation: "create guest range allocator",
-                detail: "reserved guest range overflows the address space".into(),
+                operation: "create IVC aperture allocator",
+                detail: "IVC aperture overflows the address space".into(),
             })?;
         if length == 0 || !is_aligned_4k(base) || !is_aligned_4k(length) {
             return Err(DeviceManagerError::InvalidConfig {
-                operation: "create guest range allocator",
+                operation: "create IVC aperture allocator",
                 detail: alloc::format!(
                     "base {base:#x} and length {length:#x} must be non-zero and 4 KiB aligned"
                 ),
@@ -108,36 +108,36 @@ impl GuestRangePool {
     }
 
     /// Converts this pool into the typed runtime service capability.
-    pub fn into_service(self) -> Arc<dyn GuestRangeAllocator> {
+    pub fn into_service(self) -> Arc<dyn IvcApertureAllocator> {
         Arc::new(self)
     }
 }
 
-impl GuestRangeAllocator for GuestRangePool {
+impl IvcApertureAllocator for IvcAperturePool {
     fn allocate(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
-        validate_size(size, "allocate guest range")?;
+        validate_size(size, "allocate IVC aperture range")?;
         self.ranges()
             .allocate(size)
             .map(|range| GuestPhysAddr::from_usize(range.start))
             .ok_or(DeviceManagerError::OutOfMemory {
-                operation: "allocate guest range",
+                operation: "allocate IVC aperture range",
             })
     }
 
     fn release(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
-        validate_size(size, "release guest range")?;
+        validate_size(size, "release IVC aperture range")?;
         let end =
             addr.as_usize()
                 .checked_add(size)
                 .ok_or_else(|| DeviceManagerError::InvalidInput {
-                    operation: "release guest range",
-                    detail: "guest range end overflows the address space".into(),
+                    operation: "release IVC aperture range",
+                    detail: "IVC aperture range end overflows the address space".into(),
                 })?;
         if self.ranges().release(addr.as_usize()..end) {
             Ok(())
         } else {
             Err(DeviceManagerError::InvalidInput {
-                operation: "release guest range",
+                operation: "release IVC aperture range",
                 detail: alloc::format!(
                     "range {:#x}..{end:#x} is outside the pool or is not allocated",
                     addr.as_usize()
@@ -218,5 +218,24 @@ impl RangeAllocator {
             self.free.insert(index, range);
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ivc_aperture_reuses_range_after_release() {
+        let pool = IvcAperturePool::new(0x1000_0000, 0x2000).unwrap();
+
+        let first = pool.allocate(0x1000).unwrap();
+        let second = pool.allocate(0x1000).unwrap();
+        assert_ne!(first, second);
+
+        pool.release(first, 0x1000).unwrap();
+        let reused = pool.allocate(0x1000).unwrap();
+
+        assert_eq!(reused, first);
     }
 }

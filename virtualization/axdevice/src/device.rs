@@ -340,10 +340,10 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    /// Allocates an IVC channel from a graph-claimed guest range service.
+    /// Allocates an IVC channel binding from a graph-claimed MMIO aperture.
     pub fn alloc_ivc_channel(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
         self.services
-            .require::<GuestRangeAllocatorKey>()?
+            .require::<IvcApertureAllocatorKey>()?
             .allocate(size)
     }
 
@@ -362,7 +362,7 @@ impl DeviceRuntime {
     /// Releases a previously allocated IVC channel.
     pub fn release_ivc_channel(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
         self.services
-            .require::<GuestRangeAllocatorKey>()?
+            .require::<IvcApertureAllocatorKey>()?
             .release(addr, size)
     }
 

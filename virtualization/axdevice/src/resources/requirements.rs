@@ -137,17 +137,6 @@ pub enum DeviceRequirement {
         /// Base-port request.
         request: ResourceRequest<u16>,
     },
-    /// One graph-owned guest-physical RAM range.
-    GuestRange {
-        /// Model-defined slot.
-        slot: ResourceSlot,
-        /// Range size in bytes.
-        size: u64,
-        /// Required power-of-two alignment.
-        alignment: u64,
-        /// Base-address request.
-        request: ResourceRequest<u64>,
-    },
     /// One wired input on a specific virtual interrupt controller.
     WiredIrq {
         /// Model-defined slot.
@@ -183,7 +172,6 @@ impl DeviceRequirement {
         match self {
             Self::Mmio { slot, .. }
             | Self::Pio { slot, .. }
-            | Self::GuestRange { slot, .. }
             | Self::WiredIrq { slot, .. }
             | Self::HostIrq { slot, .. }
             | Self::Msi { slot, .. } => slot,
@@ -194,7 +182,6 @@ impl DeviceRequirement {
         match self {
             Self::Mmio { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
             Self::Pio { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
-            Self::GuestRange { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
             Self::WiredIrq { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
             Self::HostIrq { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
             Self::Msi { request, .. } => {
@@ -260,30 +247,6 @@ impl DeviceRequirements {
             ));
         }
         self.insert(DeviceRequirement::Pio {
-            slot,
-            size,
-            alignment,
-            request,
-        })?;
-        Ok(self)
-    }
-
-    /// Adds one guest-physical shared range requirement.
-    pub fn with_guest_range(
-        mut self,
-        slot: ResourceSlot,
-        size: u64,
-        alignment: u64,
-        request: ResourceRequest<u64>,
-    ) -> DeviceManagerResult<Self> {
-        if size == 0 || !alignment.is_power_of_two() {
-            return Err(invalid_requirement(
-                "declare guest range resource",
-                &slot,
-                "non-zero size and power-of-two alignment",
-            ));
-        }
-        self.insert(DeviceRequirement::GuestRange {
             slot,
             size,
             alignment,

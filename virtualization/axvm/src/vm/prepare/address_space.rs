@@ -38,22 +38,6 @@ impl AxVMResources {
         owned_regions: &[GuestOwnedRegion],
     ) -> AxVmResult {
         let graph = self.planned_devices().graph();
-        let shared_guest_ranges = graph
-            .nodes()
-            .map(|node| graph.resources_for(node.id()))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flat_map(|resolved| {
-                resolved
-                    .guest_ranges()
-                    .map(|(_, base, size)| {
-                        GuestOwnedRegion::new_for_u64(base, size, VmRegionKind::SharedGuestRange)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<AxVmResult<Vec<_>>>()?;
-        let mut owned_regions = owned_regions.to_vec();
-        owned_regions.extend_from_slice(&shared_guest_ranges);
         let emulated_resources = graph
             .nodes()
             .filter(|node| {
@@ -94,20 +78,9 @@ impl AxVMResources {
             stage2_guest_address_space_size(self.nested_paging.gpa_bits),
             &passthrough_devices,
             &[],
-            &owned_regions,
+            owned_regions,
             &emulated_resources,
         )?;
-
-        for region in &shared_guest_ranges {
-            debug!(
-                "VM[{vm_id}] stage2 shared guest range carveout: [{:#x}, {:#x})",
-                region.base,
-                region.base + region.length
-            );
-            self.address_space
-                .unmap(GuestPhysAddr::from(region.base), region.length)
-                .map_err(|error| AxVmError::from_addrspace("unmap shared guest range", error))?;
-        }
 
         for mapping in address_layout.mappings() {
             debug!(

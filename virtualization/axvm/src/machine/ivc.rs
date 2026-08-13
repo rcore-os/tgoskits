@@ -53,7 +53,7 @@ fn ivc_channel_from_resources(
             "IVC firmware model for {device_id} must declare exactly one register slot"
         )));
     };
-    let (base_gpa, length) = resources.guest_range(registers)?;
+    let (base_gpa, length) = resources.mmio(registers)?;
     let [notify] = firmware.interrupt_slots() else {
         return Err(AxVmError::invalid_config(std::format!(
             "IVC firmware model for {device_id} must declare exactly one interrupt slot"

@@ -706,8 +706,8 @@ impl AxVMResources {
 
     fn teardown_ivc_bindings(&mut self) -> AxVmResult {
         let vm_id = self.config.id();
-        let bindings = crate::runtime::ivc::teardown_vm(vm_id);
-        release_ivc_guest_bindings(vm_id, bindings, self)
+        let teardowns = crate::runtime::ivc::teardown_vm(vm_id);
+        release_ivc_teardowns(vm_id, teardowns, self)
     }
 }
 
@@ -748,30 +748,73 @@ impl IvcGuestBindingRelease for AxVMResources {
     }
 }
 
-fn release_ivc_guest_bindings(
+impl IvcGuestBindingRelease for &AxVM {
+    fn unmap_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult {
+        self.unmap_region(binding.gpa, binding.size)
+    }
+
+    fn release_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult {
+        self.release_ivc_channel(binding.gpa, binding.size)
+    }
+}
+
+fn release_ivc_teardowns(
     vm_id: usize,
-    bindings: Vec<crate::runtime::ivc::IvcGuestBinding>,
+    teardowns: Vec<crate::runtime::ivc::IvcTeardown>,
     release: &mut impl IvcGuestBindingRelease,
 ) -> AxVmResult {
-    for binding in bindings {
-        if let Err(err) = release.unmap_ivc_guest_binding(binding) {
-            warn!(
-                "VM[{}] failed to unmap IVC binding at GPA={:#x}: {err:?}",
-                vm_id,
-                binding.gpa.as_usize()
-            );
-        }
-        if let Err(err) = release.release_ivc_guest_binding(binding) {
-            warn!(
-                "VM[{}] failed to release IVC binding at GPA={:#x}: {err:?}",
-                vm_id,
-                binding.gpa.as_usize()
-            );
+    for teardown in teardowns {
+        let binding = teardown.binding();
+        if release_one_ivc_guest_binding(vm_id, binding, release) {
+            teardown.commit();
         }
     }
     Ok(())
 }
 
+fn release_one_ivc_guest_binding(
+    vm_id: usize,
+    binding: crate::runtime::ivc::IvcGuestBinding,
+    release: &mut impl IvcGuestBindingRelease,
+) -> bool {
+    if let Err(err) = release.unmap_ivc_guest_binding(binding) {
+        warn!(
+            "VM[{}] failed to unmap IVC binding at GPA={:#x}: {err:?}",
+            vm_id,
+            binding.gpa.as_usize()
+        );
+        return false;
+    }
+    if let Err(err) = release.release_ivc_guest_binding(binding) {
+        warn!(
+            "VM[{}] failed to release IVC binding at GPA={:#x}: {err:?}",
+            vm_id,
+            binding.gpa.as_usize()
+        );
+        return false;
+    }
+    true
+}
+
+pub(crate) fn release_ivc_teardown_for_vm(
+    vm_id: usize,
+    teardown: crate::runtime::ivc::IvcTeardown,
+    vm: &AxVM,
+) -> bool {
+    let binding = teardown.binding();
+    let mut release = vm;
+    let released = release_one_ivc_guest_binding(vm_id, binding, &mut release);
+    if released {
+        teardown.commit();
+    }
+    released
+}
 #[cfg(test)]
 mod ivc_lifecycle_tests {
     use std::vec::Vec;
@@ -809,20 +852,25 @@ mod ivc_lifecycle_tests {
     }
 
     #[test]
-    fn ivc_lifecycle_cleanup_unmaps_before_releasing_guest_range() {
-        let bindings = vec![
+    fn ivc_lifecycle_cleanup_unmaps_before_releasing_aperture_range() {
+        let mut release = RecordingIvcBindingRelease::default();
+
+        assert!(release_one_ivc_guest_binding(
+            1,
             crate::runtime::ivc::IvcGuestBinding {
                 gpa: GuestPhysAddr::from_usize(0x7000_0000),
                 size: 0x1000,
             },
+            &mut release
+        ));
+        assert!(release_one_ivc_guest_binding(
+            1,
             crate::runtime::ivc::IvcGuestBinding {
                 gpa: GuestPhysAddr::from_usize(0x7000_1000),
                 size: 0x1000,
             },
-        ];
-        let mut release = RecordingIvcBindingRelease::default();
-
-        release_ivc_guest_bindings(1, bindings, &mut release).unwrap();
+            &mut release
+        ));
 
         assert_eq!(
             release.events,
@@ -836,17 +884,20 @@ mod ivc_lifecycle_tests {
     }
 
     #[test]
-    fn ivc_lifecycle_cleanup_is_best_effort_after_global_teardown() {
-        let bindings = vec![crate::runtime::ivc::IvcGuestBinding {
-            gpa: GuestPhysAddr::from_usize(0x7100_0000),
-            size: 0x1000,
-        }];
+    fn ivc_lifecycle_cleanup_does_not_commit_after_release_failure() {
         let mut release = RecordingIvcBindingRelease {
             fail_release: true,
             ..Default::default()
         };
 
-        release_ivc_guest_bindings(2, bindings, &mut release).unwrap();
+        assert!(!release_one_ivc_guest_binding(
+            2,
+            crate::runtime::ivc::IvcGuestBinding {
+                gpa: GuestPhysAddr::from_usize(0x7100_0000),
+                size: 0x1000,
+            },
+            &mut release
+        ));
 
         assert_eq!(release.events, ["unmap:0x71000000", "release:0x71000000"]);
     }
@@ -1326,7 +1377,12 @@ impl AxVM {
     }
 
     pub(crate) fn finish_stop(&self) -> AxVmResult {
-        self.machine.lock().finish_stop()
+        let mut machine = self.machine.lock();
+        machine.finish_stop()?;
+        if let Some(resources) = machine.resources_mut() {
+            resources.teardown_ivc_bindings()?;
+        }
+        Ok(())
     }
 
     fn wait_until_stopped(&self) -> AxVmResult {

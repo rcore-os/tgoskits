@@ -31,38 +31,6 @@ impl ResourcePools {
         )
     }
 
-    /// Adds a guest-physical RAM range used only for automatic shared-range allocation.
-    pub fn add_auto_guest_range(&mut self, range: Range<u64>) -> DeviceManagerResult {
-        insert_range(
-            &mut self.addresses.automatic.guest_range,
-            range,
-            "automatic guest range",
-        )
-    }
-
-    /// Allows fixed shared guest-range requests inside `range`.
-    pub fn allow_fixed_guest_range(&mut self, range: Range<u64>) -> DeviceManagerResult {
-        insert_range(
-            &mut self.addresses.fixed.guest_range,
-            range,
-            "fixed guest range",
-        )
-    }
-
-    /// Reserves a guest-physical RAM range before shared-range allocation.
-    pub fn reserve_guest_range(
-        &mut self,
-        owner: impl Into<String>,
-        range: Range<u64>,
-    ) -> DeviceManagerResult {
-        reserve_range(
-            &mut self.addresses.reserved.guest_range,
-            nonempty_owner(owner.into())?,
-            range,
-            "guest range",
-        )
-    }
-
     /// Adds a port-I/O range used only for automatic allocation.
     pub fn add_auto_pio(&mut self, range: Range<u16>) -> DeviceManagerResult {
         insert_range(&mut self.addresses.automatic.pio, range, "automatic PIO")
@@ -109,17 +77,5 @@ impl ResourcePools {
 
     pub(crate) fn reserved_pio(&self) -> &[RangeOwner<u16>] {
         &self.addresses.reserved.pio
-    }
-
-    pub(crate) fn auto_guest_range(&self) -> &[Range<u64>] {
-        &self.addresses.automatic.guest_range
-    }
-
-    pub(crate) fn fixed_guest_range(&self) -> &[Range<u64>] {
-        &self.addresses.fixed.guest_range
-    }
-
-    pub(crate) fn reserved_guest_range(&self) -> &[RangeOwner<u64>] {
-        &self.addresses.reserved.guest_range
     }
 }

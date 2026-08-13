@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn ivc_channel_uses_machine_owned_notify_irq_and_planned_shared_range() {
+    fn ivc_channel_uses_resolved_notify_irq_and_planned_mmio_aperture() {
         let config = AxVMConfig::new(AxVMConfigParams {
             phys_cpu_ls: PhysCpuList::new(1, None, None),
             virtual_device_requests: vec![VirtualDeviceRequest {
@@ -252,9 +252,6 @@ mod tests {
         }
         let mut pools = ResourcePools::new();
         pools.add_auto_mmio(0x1000_0000..0x1001_0000).unwrap();
-        pools
-            .add_auto_guest_range(0xb000_0000..0xb002_0000)
-            .unwrap();
         pools.allow_fixed_pio(0x3f8..0x400).unwrap();
         pools
             .allow_fixed_controller_inputs(
@@ -263,9 +260,9 @@ mod tests {
             )
             .unwrap();
         pools
-            .allow_fixed_controller_inputs(
+            .add_auto_controller_inputs(
                 InterruptControllerId::new(0),
-                ControllerInputId::new(160)..ControllerInputId::new(161),
+                ControllerInputId::new(32)..ControllerInputId::new(36),
             )
             .unwrap();
         let graph = graph.declare().unwrap().resolve(pools).unwrap();
@@ -276,9 +273,9 @@ mod tests {
             .resources_for(&DeviceNodeId::new("ivc0").unwrap())
             .unwrap();
         assert_eq!(
-            ivc.guest_range(&registers).unwrap(),
-            (0xb001_0000, super::ivc::IVC_CHANNEL_SHARED_RANGE_SIZE)
+            ivc.mmio(&registers).unwrap(),
+            (0x1000_0000, super::ivc::IVC_CHANNEL_SHARED_RANGE_SIZE)
         );
-        assert_eq!(ivc.wired_irq(&notify).unwrap().input().value(), 160);
+        assert_eq!(ivc.wired_irq(&notify).unwrap().input().value(), 32);
     }
 }

@@ -78,7 +78,7 @@ pub use loongarch_pch_pic::{
 };
 pub use model::{DeviceFirmwareProperty, DeviceFirmwareSpec, DeviceModel};
 pub use range_alloc::{
-    GuestRangeAllocator, GuestRangeAllocatorKey, GuestRangePool, IvcNotifyEndpoint,
+    IvcApertureAllocator, IvcApertureAllocatorKey, IvcAperturePool, IvcNotifyEndpoint,
     IvcNotifyIrqKey, WiredIvcNotifyEndpoint,
 };
 pub use registration::{

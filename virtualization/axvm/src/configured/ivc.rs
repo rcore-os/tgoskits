@@ -3,55 +3,24 @@
 use std::sync::Arc;
 
 use axdevice::*;
-use axdevice_base::{ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger};
+use axdevice_base::{InterruptControllerId, InterruptSharing, InterruptTrigger};
 use axvmconfig::VirtualDeviceRequest;
 
 use crate::{
     ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext,
-    FixedDeviceBindings, FixedWiredBinding,
+    FixedDeviceBindings,
 };
 
 const REGISTERS_SLOT: &str = "registers";
 const NOTIFY_IRQ_SLOT: &str = "notify";
 pub(crate) const IVC_CHANNEL_SHARED_RANGE_SIZE: u64 = 0x1_0000;
-const DEFAULT_IVC_NOTIFY_IRQ: usize = 160;
 
 pub(crate) const IVC_REGISTRATIONS: &[ConfiguredModelRegistration] =
     &[ConfiguredModelRegistration {
         model: "ivc-channel",
         create: create_ivc_channel,
-        default_fixed_resources: Some(default_fixed_resources),
+        default_fixed_resources: None,
     }];
-
-fn default_fixed_resources(
-    context: &DeviceInstantiationContext,
-) -> Result<FixedDeviceBindings, ConfiguredDeviceError> {
-    let controller =
-        context
-            .default_wired_controller()
-            .ok_or_else(|| ConfiguredDeviceError::Instantiation {
-                device: "ivc-channel".into(),
-                model: "ivc-channel".into(),
-                detail: "IVC notify requires a default wired interrupt domain".into(),
-            })?;
-    Ok(FixedDeviceBindings::default().with_wired(
-        ResourceSlot::new(NOTIFY_IRQ_SLOT).map_err(ivc_static_slot_error)?,
-        FixedWiredBinding {
-            controller,
-            input: ControllerInputId::new(DEFAULT_IVC_NOTIFY_IRQ),
-            trigger: InterruptTrigger::EdgeTriggered,
-            sharing: InterruptSharing::Exclusive,
-        },
-    ))
-}
-
-fn ivc_static_slot_error(error: axdevice::DeviceManagerError) -> ConfiguredDeviceError {
-    ConfiguredDeviceError::Instantiation {
-        device: "ivc-channel".into(),
-        model: "ivc-channel".into(),
-        detail: error.to_string(),
-    }
-}
 
 fn request_error(
     request: &VirtualDeviceRequest,
@@ -118,19 +87,19 @@ impl DeviceModel for IvcChannelModel {
     fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
         let register_slot = static_slot(REGISTERS_SLOT)?;
         let irq_slot = static_slot(NOTIFY_IRQ_SLOT)?;
-        let guest_range_request = self
+        let mmio_request = self
             .fixed
-            .guest_range(&register_slot)
+            .mmio(&register_slot)
             .map_or(ResourceRequest::Auto, |(base, _)| {
                 ResourceRequest::Fixed(base)
             });
         let fixed_irq = self.fixed.wired(&irq_slot);
         DeviceRequirements::new()
-            .with_guest_range(
+            .with_mmio(
                 register_slot,
                 IVC_CHANNEL_SHARED_RANGE_SIZE,
                 0x1000,
-                guest_range_request,
+                mmio_request,
             )?
             .with_wired_irq(
                 irq_slot,
@@ -152,11 +121,11 @@ impl DeviceModel for IvcChannelModel {
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
-        let (base, length) = context.guest_range(REGISTERS_SLOT)?;
+        let (base, length) = context.mmio(REGISTERS_SLOT)?;
         let notify_irq = context.irq(NOTIFY_IRQ_SLOT)?;
         let bundle = DeviceBundle::new()
-            .with_service::<GuestRangeAllocatorKey>(
-                GuestRangePool::new(
+            .with_service::<IvcApertureAllocatorKey>(
+                IvcAperturePool::new(
                     usize::try_from(base).map_err(|_| DeviceManagerError::InvalidConfig {
                         operation: "create IVC channel",
                         detail: "base GPA does not fit usize".into(),

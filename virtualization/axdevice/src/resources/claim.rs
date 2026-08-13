@@ -199,12 +199,6 @@ impl ResourceClaimSet {
             .ok_or_else(|| claim_kind_error(&self.device_id, slot, "PIO"))
     }
 
-    pub(crate) fn guest_range(&self, slot: &ResourceSlot) -> DeviceManagerResult<(u64, u64)> {
-        self.claim(slot)?
-            .guest_range()
-            .ok_or_else(|| claim_kind_error(&self.device_id, slot, "guest range"))
-    }
-
     pub(crate) fn wired_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedWiredIrq> {
         self.claim(slot)?
             .wired_irq()

@@ -36,12 +36,6 @@ impl<'a> DeviceBuildContext<'a> {
         self.resources.consume(&slot, ResourceClaimSet::pio)
     }
 
-    /// Consumes a planned guest-physical shared range slot.
-    pub fn guest_range(&mut self, slot: impl AsRef<str>) -> DeviceManagerResult<(u64, u64)> {
-        let slot = ResourceSlot::new(slot.as_ref())?;
-        self.resources.consume(&slot, ResourceClaimSet::guest_range)
-    }
-
     /// Consumes a planned host physical IRQ slot.
     ///
     /// This returns only the immutable identity. Architecture code remains

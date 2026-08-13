@@ -29,8 +29,6 @@ pub(super) fn reserve_guest_memory(
         merged.push(range);
     }
     for (index, range) in merged.into_iter().enumerate() {
-        pools.add_auto_guest_range(range.clone())?;
-        pools.allow_fixed_guest_range(range.clone())?;
         pools.reserve_mmio(std::format!("guest-memory-{index}"), range)?;
     }
     Ok(())
@@ -107,7 +105,6 @@ pub(super) fn allow_fixed_requirements(
                 }
                 DeviceRequirement::Mmio { .. }
                 | DeviceRequirement::Pio { .. }
-                | DeviceRequirement::GuestRange { .. }
                 | DeviceRequirement::WiredIrq { .. }
                 | DeviceRequirement::HostIrq { .. } => {}
             }

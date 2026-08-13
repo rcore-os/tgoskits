@@ -38,9 +38,6 @@ pub enum VmRegionKind {
     /// The range is owned by an emulated device and must fault into device
     /// emulation instead of being stage-2 mapped as passthrough.
     EmulatedDevice,
-    /// The range is reserved from guest RAM mappings for graph-owned shared
-    /// memory that runtime code maps to an explicit shared frame.
-    SharedGuestRange,
     /// The range is reserved from passthrough mapping.
     Reserved,
 }
@@ -130,24 +127,6 @@ pub(crate) struct GuestOwnedRegion {
 impl GuestOwnedRegion {
     pub(crate) const fn new(base: usize, length: usize, kind: VmRegionKind) -> Self {
         Self { base, length, kind }
-    }
-
-    pub(crate) fn new_for_u64(base: u64, length: u64, kind: VmRegionKind) -> AxVmResult<Self> {
-        Ok(Self {
-            base: usize::try_from(base).map_err(|_| {
-                ax_err_type!(
-                    InvalidInput,
-                    format!("{} base exceeds usize: {base:#x}", kind.name())
-                )
-            })?,
-            length: usize::try_from(length).map_err(|_| {
-                ax_err_type!(
-                    InvalidInput,
-                    format!("{} length exceeds usize: {length:#x}", kind.name())
-                )
-            })?,
-            kind,
-        })
     }
 }
 
@@ -637,8 +616,6 @@ fn owned_overlap_allowed(existing: &PlannedRegion, new: &PlannedRegion) -> bool 
         (existing.kind, new.kind),
         (VmRegionKind::Memory, VmRegionKind::BootDescription)
             | (VmRegionKind::BootDescription, VmRegionKind::Memory)
-            | (VmRegionKind::Memory, VmRegionKind::SharedGuestRange)
-            | (VmRegionKind::SharedGuestRange, VmRegionKind::Memory)
             | (VmRegionKind::Reserved, VmRegionKind::EmulatedDevice)
             | (VmRegionKind::EmulatedDevice, VmRegionKind::Reserved)
     ) && (existing.contains(new) || new.contains(existing))
@@ -651,7 +628,6 @@ impl VmRegionKind {
             Self::Memory => "memory",
             Self::BootDescription => "boot description",
             Self::EmulatedDevice => "emulated device",
-            Self::SharedGuestRange => "shared guest range",
             Self::Reserved => "reserved",
         }
     }
@@ -807,33 +783,6 @@ mod tests {
         let owned_regions = layout.owned_regions().collect::<Vec<_>>();
         assert_eq!(owned_regions.len(), 1);
         assert_eq!(owned_regions[0].kind, VmRegionKind::Reserved);
-    }
-
-    #[test]
-    fn shared_guest_range_can_carve_out_guest_memory() {
-        let owned = [
-            GuestOwnedRegion::new(0x2000, 0x4000, VmRegionKind::Memory),
-            GuestOwnedRegion::new(0x5000, 0x1000, VmRegionKind::SharedGuestRange),
-        ];
-
-        let layout = build_address_layout(
-            AddressSpacePolicy::Passthrough,
-            GUEST_BASE,
-            GUEST_SIZE,
-            &[],
-            &[],
-            &owned,
-            &[],
-        )
-        .unwrap();
-
-        assert!(layout.mappings().iter().all(|mapping| {
-            !ranges_overlap(mapping.gpa.as_usize(), mapping.size, 0x5000, 0x1000)
-        }));
-        let owned_regions = layout.owned_regions().collect::<Vec<_>>();
-        assert_eq!(owned_regions.len(), 2);
-        assert_eq!(owned_regions[0].kind, VmRegionKind::Memory);
-        assert_eq!(owned_regions[1].kind, VmRegionKind::SharedGuestRange);
     }
 
     #[test]

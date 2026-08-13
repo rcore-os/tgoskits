@@ -117,7 +117,6 @@ impl ResolvedMsi {
 pub(crate) enum ResolvedResource {
     Mmio { base: u64, size: u64 },
     Pio { base: u16, size: u16 },
-    GuestRange { base: u64, size: u64 },
     WiredIrq(ResolvedWiredIrq),
     HostIrq(HostIrqId),
     Msi(ResolvedMsi),
@@ -134,13 +133,6 @@ impl ResolvedResource {
     pub(crate) const fn pio(&self) -> Option<(u16, u16)> {
         match self {
             Self::Pio { base, size } => Some((*base, *size)),
-            _ => None,
-        }
-    }
-
-    pub(crate) const fn guest_range(&self) -> Option<(u64, u64)> {
-        match self {
-            Self::GuestRange { base, size } => Some((*base, *size)),
             _ => None,
         }
     }
@@ -205,22 +197,6 @@ impl ResolvedDeviceResources {
         self.entries
             .iter()
             .filter_map(|(slot, resource)| resource.pio().map(|(base, size)| (slot, base, size)))
-    }
-
-    /// Returns a resolved guest-physical shared range.
-    pub fn guest_range(&self, slot: &ResourceSlot) -> DeviceManagerResult<(u64, u64)> {
-        self.resource(slot)?
-            .guest_range()
-            .ok_or_else(|| resource_kind_error(slot, "guest range"))
-    }
-
-    /// Iterates all resolved guest ranges in stable slot order.
-    pub fn guest_ranges(&self) -> impl Iterator<Item = (&ResourceSlot, u64, u64)> {
-        self.entries.iter().filter_map(|(slot, resource)| {
-            resource
-                .guest_range()
-                .map(|(base, size)| (slot, base, size))
-        })
     }
 
     /// Returns a resolved wired interrupt.
@@ -300,7 +276,6 @@ fn hash_resource(value: &mut u64, resource: &ResolvedResource) {
     let fields = match resource {
         ResolvedResource::Mmio { base, size } => [0, *base, *size, 0, 0, 0, 0],
         ResolvedResource::Pio { base, size } => [1, u64::from(*base), u64::from(*size), 0, 0, 0, 0],
-        ResolvedResource::GuestRange { base, size } => [5, *base, *size, 0, 0, 0, 0],
         ResolvedResource::WiredIrq(irq) => [
             2,
             irq.controller().value() as u64,

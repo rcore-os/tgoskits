@@ -15,16 +15,6 @@ fn mmio_request(id: &str, request: ResourceRequest<u64>) -> DevicePlanRequest {
     .unwrap()
 }
 
-fn guest_range_request(id: &str, request: ResourceRequest<u64>) -> DevicePlanRequest {
-    DevicePlanRequest::new(
-        id,
-        DeviceRequirements::new()
-            .with_guest_range(slot("shared"), 0x1000, 0x1000, request)
-            .unwrap(),
-    )
-    .unwrap()
-}
-
 #[test]
 fn planning_is_fixed_first_deterministic_and_reports_exhaustion() {
     let pools = || {
@@ -72,38 +62,6 @@ fn planning_is_fixed_first_deterministic_and_reports_exhaustion() {
 }
 
 #[test]
-fn guest_ranges_use_their_own_guest_physical_namespace() {
-    let mut pools = ResourcePools::new();
-    pools
-        .add_auto_guest_range(0x8000_0000..0x8000_3000)
-        .unwrap();
-    pools
-        .allow_fixed_guest_range(0x8000_0000..0x8000_3000)
-        .unwrap();
-    pools
-        .reserve_guest_range("boot-image", 0x8000_0000..0x8000_1000)
-        .unwrap();
-
-    let plan = VmResourcePlanner::new(pools)
-        .plan([
-            guest_range_request("fixed", ResourceRequest::Fixed(0x8000_1000)),
-            guest_range_request("auto", ResourceRequest::Auto),
-        ])
-        .unwrap();
-
-    assert_eq!(
-        plan.resources("fixed")
-            .unwrap()
-            .guest_range(&slot("shared")),
-        Ok((0x8000_1000, 0x1000))
-    );
-    assert_eq!(
-        plan.resources("auto").unwrap().guest_range(&slot("shared")),
-        Ok((0x8000_2000, 0x1000))
-    );
-}
-
-#[test]
 fn fixed_mmio_still_conflicts_with_reserved_guest_memory() {
     let mut pools = ResourcePools::new();
     pools.allow_fixed_mmio(0x8000_0000..0x8000_1000).unwrap();
@@ -130,6 +88,16 @@ fn irq_request(
     trigger: InterruptTrigger,
     sharing: InterruptSharing,
 ) -> DevicePlanRequest {
+    fixed_irq_request(id, controller, ControllerInputId::new(40), trigger, sharing)
+}
+
+fn fixed_irq_request(
+    id: &str,
+    controller: InterruptControllerId,
+    input: ControllerInputId,
+    trigger: InterruptTrigger,
+    sharing: InterruptSharing,
+) -> DevicePlanRequest {
     DevicePlanRequest::new(
         id,
         DeviceRequirements::new()
@@ -138,7 +106,7 @@ fn irq_request(
                 controller,
                 trigger,
                 sharing,
-                ResourceRequest::Fixed(ControllerInputId::new(40)),
+                ResourceRequest::Fixed(input),
             )
             .unwrap(),
     )
@@ -219,6 +187,29 @@ fn wired_irq_namespaces_and_sharing_are_checked() {
             ])
             .is_err()
     );
+}
+
+#[test]
+fn fixed_wired_irq_outside_controller_domain_is_rejected() {
+    let controller = InterruptControllerId::new(0);
+    let error = VmResourcePlanner::new(irq_pools(&[controller]))
+        .plan([fixed_irq_request(
+            "ivc0",
+            controller,
+            ControllerInputId::new(160),
+            InterruptTrigger::EdgeTriggered,
+            InterruptSharing::Exclusive,
+        )])
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ResourcePlanningError::FixedNotAllowed {
+            namespace: ResourceNamespace::ControllerInput(found),
+            requester,
+            ..
+        } if found == controller && requester == "ivc0"
+    ));
 }
 
 #[test]

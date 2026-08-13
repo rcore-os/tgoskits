@@ -14,8 +14,6 @@ pub enum ResourceNamespace {
     Mmio,
     /// x86 port-I/O address space.
     Pio,
-    /// Guest physical RAM range carved out for a graph-owned shared region.
-    GuestRange,
     /// Inputs of one VM-local interrupt controller.
     ControllerInput(InterruptControllerId),
     /// Physical interrupt sources in the host interrupt domain.
@@ -38,7 +36,6 @@ impl fmt::Display for ResourceNamespace {
         match self {
             Self::Mmio => formatter.write_str("mmio"),
             Self::Pio => formatter.write_str("pio"),
-            Self::GuestRange => formatter.write_str("guest-range"),
             Self::ControllerInput(controller) => {
                 write!(formatter, "controller-input({})", controller.value())
             }
