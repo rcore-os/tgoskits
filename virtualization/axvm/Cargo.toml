@@ -11,7 +11,7 @@ license = "Apache-2.0"
 
 [features]
 fs = ["ax-std/fs"]
-host-fs = ["ax-std/fs", "dep:ax-driver"]
+host-fs = ["ax-std/fs"]
 host-test = [
     "ax-std/host-test",
     "axdevice/host-test",
@@ -58,7 +58,7 @@ axvmconfig = { workspace = true, default-features = false }
 fdt-edit = { workspace = true }
 fdt-raw = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-ax-driver = { workspace = true, optional = true, features = ["pci"] }
+ax-driver = { workspace = true, features = ["pci"] }
 x86 = "0.52"
 x86_vcpu = { workspace = true }
 x86_vlapic = { workspace = true }

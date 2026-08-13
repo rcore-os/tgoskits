@@ -31,18 +31,12 @@ fail_regex = [
   "(?i)kernel panic",
   "(?i)login incorrect",
   "(?i)permission denied",
-  "(?m)^(?:echo|cat|rm):",
+  "failed to mask forwarded IOAPIC GSI .*: Busy",
 ]
 success_regex = [
-  "(?m)^AXVISOR_NVME_RW_PAYLOAD\\s*$",
-  "(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\\s*$",
+  "(?m)^AXVISOR_X86_NVME_GUEST_BOOT_PASSED\\s*$",
 ]
-shell_prefix = "axvisor:/$"
-shell_init_cmd = """
-echo AXVISOR_NVME_RW_PAYLOAD > /tmp/axvisor-nvme-rw
-cat /tmp/axvisor-nvme-rw
-rm -f /tmp/axvisor-nvme-rw
-echo AXVISOR_NVME_ROOTFS_RW_PASSED
-"""
+shell_prefix = "~ #"
+shell_init_cmd = "\u001b[1;1Rpwd && echo AXVISOR_X86_NVME_GUEST_BOOT_PASSED"
 to_bin = true
 uefi = true

@@ -220,11 +220,8 @@ pub(crate) fn register_qemu_block_passthrough_irq(vm: &crate::AxVMRef) -> AxVmRe
     let (_, _, _, guest_gsi) = crate::boot::x86_qemu_passthrough_block_intx();
     let info = qemu_block_passthrough_pci_info();
 
-    let route = match ax_driver::pci::resolve_intx_binding(info) {
-        Ok(Some(binding)) => {
-            let trigger = intx_forwarding_trigger(&binding);
-            resolve_binding_irq(binding).map(|host_irq| (host_irq, trigger))
-        }
+    let host_irq = match ax_driver::pci::resolve_intx_binding(info) {
+        Ok(Some(binding)) => resolve_qemu_nvme_host_irq(binding),
         Ok(None) => {
             warn!("x86 QEMU block passthrough PCI INTx route was not found for {info:?}");
             return Ok(());
@@ -235,10 +232,14 @@ pub(crate) fn register_qemu_block_passthrough_irq(vm: &crate::AxVMRef) -> AxVmRe
         }
     };
 
-    match route {
-        Ok((host_irq, trigger)) => {
+    match host_irq {
+        Ok(host_irq) => {
+            let host_delivery = crate::InterruptTriggerMode::EdgeTriggered;
             crate::register_x86_ioapic_irq_forwarding_route_with_trigger(
-                vm, guest_gsi, host_irq, trigger,
+                vm,
+                guest_gsi,
+                host_irq,
+                host_delivery,
             )?;
             crate::register_x86_ioapic_irq_forwarding_activator(
                 vm,
@@ -247,7 +248,7 @@ pub(crate) fn register_qemu_block_passthrough_irq(vm: &crate::AxVMRef) -> AxVmRe
             )?;
             info!(
                 "Registered x86 QEMU block passthrough PCI INTx forwarding route: guest GSI \
-                 {guest_gsi} <- host IRQ {host_irq:?}, trigger {trigger:?}"
+                 {guest_gsi} <- host IRQ {host_irq:?}, host delivery {host_delivery:?}"
             );
         }
         Err(error) => {
@@ -314,19 +315,22 @@ fn resolve_binding_irq(
 }
 
 #[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
-fn intx_forwarding_trigger(binding: &ax_driver::BindingIrq) -> crate::InterruptTriggerMode {
+fn resolve_qemu_nvme_host_irq(
+    binding: ax_driver::BindingIrq,
+) -> Result<modules::ax_hal::irq::IrqId, modules::ax_hal::irq::IrqError> {
+    use ax_driver::{BindingIrq, BindingIrqSource};
+    use modules::ax_hal::irq::{self, AcpiIrqTrigger, IrqSource};
+
     match binding {
-        ax_driver::BindingIrq::Source(ax_driver::BindingIrqSource::AcpiGsiRoute(route)) => {
-            match route.trigger {
-                modules::ax_hal::irq::AcpiIrqTrigger::Edge => {
-                    crate::InterruptTriggerMode::EdgeTriggered
-                }
-                modules::ax_hal::irq::AcpiIrqTrigger::Level => {
-                    crate::InterruptTriggerMode::LevelTriggered
-                }
-            }
+        BindingIrq::Source(BindingIrqSource::AcpiGsiRoute(mut route)) => {
+            // QEMU's NVMe legacy fallback drives a short assert/deassert pulse.
+            // Program the host IOAPIC as edge-triggered so its Remote-IRR state
+            // cannot turn that pulse into a stuck level interrupt. The guest
+            // keeps the level-triggered PCI INTx route described by its ACPI.
+            route.trigger = AcpiIrqTrigger::Edge;
+            irq::resolve_irq_source(IrqSource::AcpiGsiRoute(route))
         }
-        _ => crate::InterruptTriggerMode::LevelTriggered,
+        binding => resolve_binding_irq(binding),
     }
 }
 

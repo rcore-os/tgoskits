@@ -4,7 +4,7 @@ use alloc::format;
 
 use log::{info, warn};
 use nvme_driver::{Config, Nvme, NvmeBlockDriver, NvmeIntxSource};
-use pcie::{CommandRegister, DeviceType, Endpoint};
+use pcie::{CommandRegister, DeviceType};
 use rdrive::probe::{
     OnProbeError,
     pci::{FnOnProbe, ProbePci},
@@ -98,7 +98,7 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     )
     .map_err(|err| OnProbeError::other(format!("failed to initialize NVMe: {err:?}")))?;
     let intx_source = PciNvmeIntxSource {
-        endpoint: probe.take_endpoint(),
+        endpoint: crate::pci::take_intx_endpoint_for_handoff(probe.endpoint_mut()),
     };
     let driver = NvmeBlockDriver::from_nvme(nvme).with_intx_source(intx_source);
     let irq = probe.register_block(driver, PciIrqRequirement::Required)?;
@@ -136,17 +136,18 @@ fn register_msix_block(
     .map_err(|err| OnProbeError::other(format!("failed to initialize NVMe: {err:?}")))?;
     let driver = NvmeBlockDriver::from_nvme(nvme);
 
+    crate::pci::retain_endpoint_for_handoff(probe.endpoint_mut());
     let (_, _, plat_dev) = probe.into_parts();
     let _legacy_irq = plat_dev.register_irq_bound_block(driver, irq_lease);
     Ok(vector_count)
 }
 
 struct PciNvmeIntxSource {
-    endpoint: Endpoint,
+    endpoint: crate::pci::PciIntxEndpoint,
 }
 
 impl NvmeIntxSource for PciNvmeIntxSource {
     fn is_asserted(&self) -> bool {
-        self.endpoint.status().interrupt_status()
+        self.endpoint.interrupt_status()
     }
 }

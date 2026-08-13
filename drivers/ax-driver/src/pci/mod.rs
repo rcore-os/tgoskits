@@ -1,13 +1,13 @@
 use alloc::format;
-#[cfg(virtio_dev)]
+#[cfg(any(virtio_dev, feature = "nvme"))]
 use alloc::sync::Arc;
 
 use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
 use heapless::Vec as ArrayVec;
 use mmio_api::MmioOp;
-#[cfg(any(test, virtio_dev))]
+#[cfg(any(test, virtio_dev, feature = "nvme"))]
 use pcie::CommandRegister;
-#[cfg(virtio_dev)]
+#[cfg(any(virtio_dev, feature = "nvme"))]
 use rdrive::probe::pci::{Endpoint, EndpointRc};
 use rdrive::{
     PlatformDevice,
@@ -38,7 +38,7 @@ pub(crate) use fdt::fdt_irq_for_endpoint;
 pub use msi::{PciIrqLease, PciMsiTarget, PciMsixAllocation};
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
-#[cfg(virtio_dev)]
+#[cfg(any(virtio_dev, feature = "nvme"))]
 const MAX_TAKEN_ENDPOINT_CONFIGS: usize = 16;
 
 fn raw_lock<T>(lock: &Mutex<T>) -> RawSpinLockGuard<'_, T> {
@@ -171,7 +171,7 @@ impl LegacyIrqRoute {
 
 static LEGACY_IRQ_ROUTES: Mutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQS>> =
     Mutex::new(ArrayVec::new());
-#[cfg(virtio_dev)]
+#[cfg(any(virtio_dev, feature = "nvme"))]
 static TAKEN_ENDPOINT_CONFIGS: Mutex<ArrayVec<TakenEndpointConfig, MAX_TAKEN_ENDPOINT_CONFIGS>> =
     Mutex::new(ArrayVec::new());
 
@@ -293,22 +293,20 @@ pub fn resolve_intx_irq(info: PciInfo) -> Result<Option<usize>, OnProbeError> {
 }
 
 pub fn prepare_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
-    #[cfg(virtio_dev)]
+    #[cfg(any(virtio_dev, feature = "nvme"))]
     {
         if info.interrupt_pin == 0 {
             return Err(OnProbeError::NotMatch);
         }
 
-        let bdf = as_device_function(info.address);
         let configs = raw_lock(&TAKEN_ENDPOINT_CONFIGS);
         let config = configs
             .iter()
-            .find(|config| config.bdf == bdf)
+            .find(|config| config.address == info.address)
             .ok_or(OnProbeError::NotMatch)?;
 
-        config
-            .access
-            .update_command(prepare_intx_passthrough_command);
+        config.disable_msix()?;
+        config.update_command(prepare_intx_passthrough_command);
         log::info!(
             "prepared PCI INTx passthrough endpoint {} with native config handoff",
             info.address
@@ -316,7 +314,7 @@ pub fn prepare_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
         Ok(())
     }
 
-    #[cfg(not(virtio_dev))]
+    #[cfg(not(any(virtio_dev, feature = "nvme")))]
     {
         let _ = info;
         Err(OnProbeError::Unsupported(
@@ -326,22 +324,19 @@ pub fn prepare_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
 }
 
 pub fn unmask_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
-    #[cfg(virtio_dev)]
+    #[cfg(any(virtio_dev, feature = "nvme"))]
     {
         if info.interrupt_pin == 0 {
             return Err(OnProbeError::NotMatch);
         }
 
-        let bdf = as_device_function(info.address);
         let configs = raw_lock(&TAKEN_ENDPOINT_CONFIGS);
         let config = configs
             .iter()
-            .find(|config| config.bdf == bdf)
+            .find(|config| config.address == info.address)
             .ok_or(OnProbeError::NotMatch)?;
 
-        config
-            .access
-            .update_command(unmask_intx_passthrough_command);
+        config.update_command(unmask_intx_passthrough_command);
         log::info!(
             "unmasked PCI INTx passthrough endpoint {} after guest route became ready",
             info.address
@@ -349,7 +344,7 @@ pub fn unmask_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
         Ok(())
     }
 
-    #[cfg(not(virtio_dev))]
+    #[cfg(not(any(virtio_dev, feature = "nvme")))]
     {
         let _ = info;
         Err(OnProbeError::Unsupported(
@@ -358,7 +353,55 @@ pub fn unmask_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
     }
 }
 
-#[cfg(any(test, virtio_dev))]
+/// Reads one aligned dword from a PCI endpoint retained for guest handoff.
+pub fn read_handoff_config_u32(address: PciAddress, offset: u16) -> Option<u32> {
+    #[cfg(any(virtio_dev, feature = "nvme"))]
+    {
+        if offset >= 256 || offset & 3 != 0 {
+            return None;
+        }
+        let configs = raw_lock(&TAKEN_ENDPOINT_CONFIGS);
+        let config = configs.iter().find(|config| config.address == address)?;
+        return Some(raw_lock(&config.endpoint).read(offset));
+    }
+
+    #[cfg(not(any(virtio_dev, feature = "nvme")))]
+    {
+        let _ = (address, offset);
+        None
+    }
+}
+
+/// Updates selected bytes in one aligned dword of a retained PCI endpoint.
+pub fn update_handoff_config_u32(
+    address: PciAddress,
+    offset: u16,
+    byte_mask: u32,
+    value: u32,
+) -> bool {
+    #[cfg(any(virtio_dev, feature = "nvme"))]
+    {
+        if offset >= 256 || offset & 3 != 0 {
+            return false;
+        }
+        let configs = raw_lock(&TAKEN_ENDPOINT_CONFIGS);
+        let Some(config) = configs.iter().find(|config| config.address == address) else {
+            return false;
+        };
+        let endpoint = raw_lock(&config.endpoint);
+        let old = endpoint.read(offset);
+        endpoint.write(offset, (old & !byte_mask) | (value & byte_mask));
+        true
+    }
+
+    #[cfg(not(any(virtio_dev, feature = "nvme")))]
+    {
+        let _ = (address, offset, byte_mask, value);
+        false
+    }
+}
+
+#[cfg(any(test, virtio_dev, feature = "nvme"))]
 fn prepare_intx_passthrough_command(mut command: CommandRegister) -> CommandRegister {
     command.insert(
         CommandRegister::IO_ENABLE
@@ -369,7 +412,7 @@ fn prepare_intx_passthrough_command(mut command: CommandRegister) -> CommandRegi
     command
 }
 
-#[cfg(any(test, virtio_dev))]
+#[cfg(any(test, virtio_dev, feature = "nvme"))]
 fn unmask_intx_passthrough_command(mut command: CommandRegister) -> CommandRegister {
     command.remove(CommandRegister::INTERRUPT_DISABLE);
     command
@@ -1132,7 +1175,6 @@ fn take_virtio_transport_with_intx_policy(
     enable_virtio_pci_command(endpoint);
 
     let config_access = EndpointConfigAccess::new(bdf, endpoint.take());
-    remember_taken_endpoint_config(&config_access);
 
     let mut root = PciRoot::new(config_access);
     PciTransport::new::<VirtIoHalImpl, _>(&mut root, bdf).map_err(|err| {
@@ -1142,26 +1184,53 @@ fn take_virtio_transport_with_intx_policy(
     })
 }
 
-#[cfg(virtio_dev)]
-fn remember_taken_endpoint_config(access: &EndpointConfigAccess) {
+#[cfg(any(virtio_dev, feature = "nvme"))]
+fn share_endpoint_for_handoff(endpoint: Endpoint) -> Arc<Mutex<Endpoint>> {
+    let address = endpoint.address();
+    let endpoint = Arc::new(Mutex::new(endpoint));
     let mut configs = raw_lock(&TAKEN_ENDPOINT_CONFIGS);
-    if let Some(config) = configs.iter_mut().find(|config| config.bdf == access.bdf) {
-        config.access = access.clone_for_handoff();
-        return;
+    if let Some(config) = configs.iter_mut().find(|config| config.address == address) {
+        config.endpoint = Arc::clone(&endpoint);
+        return endpoint;
     }
 
     if configs
         .push(TakenEndpointConfig {
-            bdf: access.bdf,
-            access: access.clone_for_handoff(),
+            address,
+            endpoint: Arc::clone(&endpoint),
         })
         .is_err()
     {
         log::warn!(
             "too many taken PCI endpoint configs; dropping passthrough handoff access for {}",
-            access.bdf
+            address
         );
     }
+    endpoint
+}
+
+#[cfg(feature = "nvme")]
+pub(crate) struct PciIntxEndpoint {
+    endpoint: Arc<Mutex<Endpoint>>,
+}
+
+#[cfg(feature = "nvme")]
+impl PciIntxEndpoint {
+    pub(crate) fn interrupt_status(&self) -> bool {
+        raw_lock(&self.endpoint).status().interrupt_status()
+    }
+}
+
+#[cfg(feature = "nvme")]
+pub(crate) fn take_intx_endpoint_for_handoff(endpoint: &mut EndpointRc) -> PciIntxEndpoint {
+    PciIntxEndpoint {
+        endpoint: share_endpoint_for_handoff(endpoint.take()),
+    }
+}
+
+#[cfg(feature = "nvme")]
+pub(crate) fn retain_endpoint_for_handoff(endpoint: &mut EndpointRc) {
+    let _ = share_endpoint_for_handoff(endpoint.take());
 }
 
 #[cfg(virtio_dev)]
@@ -1208,10 +1277,31 @@ fn as_device_function_info(endpoint: &Endpoint) -> DeviceFunctionInfo {
     }
 }
 
-#[cfg(virtio_dev)]
+#[cfg(any(virtio_dev, feature = "nvme"))]
 struct TakenEndpointConfig {
-    bdf: DeviceFunction,
-    access: EndpointConfigAccess,
+    address: PciAddress,
+    endpoint: Arc<Mutex<Endpoint>>,
+}
+
+#[cfg(any(virtio_dev, feature = "nvme"))]
+impl TakenEndpointConfig {
+    fn disable_msix(&self) -> Result<(), OnProbeError> {
+        let mut endpoint = raw_lock(&self.endpoint);
+        endpoint.set_msix_enabled(false).map_err(|error| {
+            OnProbeError::other(format!(
+                "failed to disable MSI-X for PCI INTx passthrough endpoint {}: {error}",
+                self.address
+            ))
+        })?;
+        Ok(())
+    }
+
+    fn update_command<F>(&self, f: F)
+    where
+        F: FnOnce(CommandRegister) -> CommandRegister,
+    {
+        raw_lock(&self.endpoint).update_command(f);
+    }
 }
 
 #[cfg(virtio_dev)]
@@ -1225,25 +1315,12 @@ impl EndpointConfigAccess {
     fn new(bdf: DeviceFunction, endpoint: Endpoint) -> Self {
         Self {
             bdf,
-            endpoint: Arc::new(Mutex::new(endpoint)),
+            endpoint: share_endpoint_for_handoff(endpoint),
         }
     }
 
     fn assert_same_function(&self, device_function: DeviceFunction) {
         assert_eq!(device_function, self.bdf);
-    }
-
-    fn clone_for_handoff(&self) -> Self {
-        // SAFETY: EndpointConfigAccess serializes all shared config-space
-        // accesses through the same internal mutex.
-        unsafe { self.unsafe_clone() }
-    }
-
-    fn update_command<F>(&self, f: F)
-    where
-        F: FnOnce(CommandRegister) -> CommandRegister,
-    {
-        raw_lock(&self.endpoint).update_command(f);
     }
 }
 

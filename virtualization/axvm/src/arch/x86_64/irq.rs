@@ -813,10 +813,18 @@ fn forward_passthrough_gsi(
         return false;
     };
     let ioapic = devices.services().require::<X86InterruptDomainKey>().ok();
-    let Some(guest_irq) = ioapic
-        .as_ref()
-        .and_then(|ioapic| ioapic.assert_gsi(guest_gsi))
-    else {
+    let Some(guest_irq) = ioapic.as_ref().and_then(|ioapic| {
+        if host_level_triggered {
+            ioapic.assert_gsi(guest_gsi)
+        } else {
+            ioapic
+                .vector_for_gsi(guest_gsi)
+                .map(|vector| x86_vlapic::IoApicInterrupt {
+                    vector,
+                    level_triggered: false,
+                })
+        }
+    }) else {
         if ioapic
             .as_ref()
             .is_some_and(|ioapic| ioapic.vector_for_gsi(guest_gsi).is_some())
@@ -922,10 +930,10 @@ fn ioapic_irq_forwarding_handler(
         return irq::IrqReturn::Unhandled;
     };
 
-    if !mask_forwarded_host_gsi(domain, gsi) {
+    let level_triggered = domain.is_forwarded_host_gsi_level_triggered(gsi);
+    if level_triggered && !mask_forwarded_host_gsi(domain, gsi) {
         return irq::IrqReturn::Unhandled;
     }
-    let level_triggered = domain.is_forwarded_host_gsi_level_triggered(gsi);
     domain.mark_forwarded_gsi_pending(gsi, level_triggered);
     irq::IrqReturn::Handled
 }

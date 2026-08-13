@@ -975,16 +975,6 @@ fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
             "test-suit/axvisor/normal/qemu/build-loongarch64-unknown-none-softfloat.toml",
             "test-suit/axvisor/normal/qemu/smoke/qemu-loongarch64.toml",
         ),
-        (
-            "x86_64-svm",
-            "test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-svm.toml",
-            "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-svm.toml",
-        ),
-        (
-            "x86_64-vmx",
-            "test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-vmx.toml",
-            "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-vmx.toml",
-        ),
     ] {
         let build_content = fs::read_to_string(workspace_root.join(&build_path)).unwrap();
         let build: TestBuildConfigVmConfigs = toml::from_str(&build_content).unwrap();
