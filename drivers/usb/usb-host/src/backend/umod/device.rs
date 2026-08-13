@@ -1,8 +1,16 @@
 use core::{mem::MaybeUninit, num::NonZero};
-use std::{fmt::Debug, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Debug,
+    sync::Arc,
+    task::Poll,
+};
 
-use futures::FutureExt;
-use libusb1_sys::*;
+use futures::{FutureExt, future::poll_fn};
+use libusb1_sys::{
+    constants::{LIBUSB_ERROR_NO_DEVICE, LIBUSB_SUCCESS},
+    *,
+};
 use usb_if::{
     descriptor::{
         ConfigurationDescriptor, DeviceDescriptor, InterfaceDescriptor, InterfaceDescriptors,
@@ -12,7 +20,10 @@ use usb_if::{
 
 use super::{context::Context, endpoint::EndpointImpl};
 use crate::{
-    backend::ty::{DeviceInfoOp, DeviceOp, ep::Endpoint},
+    backend::ty::{
+        DeviceInfoOp, DeviceOp,
+        ep::{EndpointHandle, EndpointOp},
+    },
     err::*,
 };
 
@@ -57,7 +68,7 @@ impl Drop for DeviceInfo {
 
 impl DeviceInfoOp for DeviceInfo {
     fn id(&self) -> usize {
-        0
+        self.raw as usize
     }
 
     fn backend_name(&self) -> &str {
@@ -174,10 +185,15 @@ fn libusb_get_configuration_descriptors(
 }
 
 pub struct Device {
+    id: usize,
     handle: Arc<DeviceHandle>,
     desc: DeviceDescriptor,
     configs: Vec<ConfigurationDescriptor>,
-    ctrl_ep: Endpoint,
+    ctrl_ep: EndpointHandle,
+    claimed_interfaces: BTreeMap<u8, u8>,
+    detached_interfaces: BTreeSet<u8>,
+    eps: BTreeMap<u8, EndpointHandle>,
+    ep_interfaces: BTreeMap<u8, u8>,
 }
 
 unsafe impl Send for Device {}
@@ -198,48 +214,222 @@ impl Device {
 
         // 创建控制端点（endpoint address 0）
         let ctrl_ep_impl = EndpointImpl::new(handle.clone(), 0);
-        let ctrl_ep = Endpoint::new(EndpointInfo::control(), ctrl_ep_impl);
+        let ctrl_ep = EndpointHandle::new(EndpointInfo::control(), ctrl_ep_impl);
 
         Ok(Self {
+            id: info.raw as usize,
             handle,
             desc,
             configs,
             ctrl_ep,
+            claimed_interfaces: BTreeMap::new(),
+            detached_interfaces: BTreeSet::new(),
+            eps: BTreeMap::new(),
+            ep_interfaces: BTreeMap::new(),
         })
     }
 
-    async fn _claim_interface(&mut self, interface: u8, alternate: u8) -> Result<()> {
-        let res = usb!(libusb_kernel_driver_active(
-            self.handle.raw(),
-            interface as _
-        ))?;
-
-        if res == 1 {
-            usb!(libusb_detach_kernel_driver(
+    async fn _claim_interface(
+        &mut self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<BTreeMap<u8, EndpointHandle>> {
+        let pending = self.prepare_endpoints(interface, alternate)?;
+        let first_claim = !self.claimed_interfaces.contains_key(&interface);
+        let mut detached_now = false;
+        if first_claim {
+            let res = usb!(libusb_kernel_driver_active(
                 self.handle.raw(),
                 interface as _
             ))?;
-            debug!("Kernel driver detached for interface {interface}");
+            if res == 1 {
+                usb!(libusb_detach_kernel_driver(
+                    self.handle.raw(),
+                    interface as _
+                ))?;
+                detached_now = true;
+                debug!("Kernel driver detached for interface {interface}");
+            }
+            if let Err(err) = usb!(libusb_claim_interface(self.handle.raw(), interface as _)) {
+                if detached_now {
+                    let _ =
+                        unsafe { libusb_attach_kernel_driver(self.handle.raw(), interface as _) };
+                }
+                return Err(err.into());
+            }
+            debug!("Interface {interface} claimed successfully");
         }
 
-        usb!(libusb_claim_interface(self.handle.raw(), interface as _))?;
+        let old_endpoints = self.interface_endpoints(interface);
+        for endpoint in &old_endpoints {
+            endpoint.revoke();
+        }
+        if Self::quiesce_endpoints(old_endpoints.iter()).await.is_err() {
+            if first_claim {
+                self.rollback_first_claim(interface, detached_now)?;
+            }
+            return Err(USBError::InterfaceBroken);
+        }
 
-        debug!("Interface {interface} claimed successfully");
-        if alternate != 0 {
-            usb!(libusb_set_interface_alt_setting(
+        if self.claimed_interfaces.get(&interface).copied() != Some(alternate)
+            && let Err(err) = usb!(libusb_set_interface_alt_setting(
                 self.handle.raw(),
                 interface as _,
-                alternate as _,
-            ))?;
-            debug!("Interface {interface} set to alternate setting {alternate} successfully");
+                alternate as _
+            ))
+        {
+            for endpoint in old_endpoints {
+                endpoint.reactivate();
+            }
+            if first_claim {
+                self.rollback_first_claim(interface, detached_now)?;
+            }
+            return Err(err.into());
         }
+        self.eps
+            .retain(|address, _| self.ep_interfaces.get(address).copied() != Some(interface));
+        self.ep_interfaces.retain(|_, owner| *owner != interface);
+        self.ep_interfaces
+            .extend(pending.keys().copied().map(|address| (address, interface)));
+        self.eps.extend(pending.clone());
+        if detached_now {
+            self.detached_interfaces.insert(interface);
+        }
+        self.claimed_interfaces.insert(interface, alternate);
+        Ok(pending)
+    }
+
+    fn rollback_first_claim(&self, interface: u8, detached_now: bool) -> Result<()> {
+        let release = unsafe { libusb_release_interface(self.handle.raw(), interface as _) };
+        if release != LIBUSB_SUCCESS && release != LIBUSB_ERROR_NO_DEVICE {
+            return Err(USBError::InterfaceBroken);
+        }
+        if detached_now {
+            let attach = unsafe { libusb_attach_kernel_driver(self.handle.raw(), interface as _) };
+            if attach != LIBUSB_SUCCESS && attach != LIBUSB_ERROR_NO_DEVICE {
+                return Err(USBError::InterfaceBroken);
+            }
+        }
+        if release == LIBUSB_ERROR_NO_DEVICE {
+            return Err(usb_if::err::TransferError::Disconnected.into());
+        }
+        Ok(())
+    }
+
+    fn prepare_endpoints(
+        &self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<BTreeMap<u8, EndpointHandle>> {
+        let descriptors = self
+            .configs
+            .iter()
+            .flat_map(|config| &config.interfaces)
+            .filter(|descriptors| descriptors.interface_number == interface)
+            .flat_map(|descriptors| &descriptors.alt_settings)
+            .find(|descriptor| descriptor.alternate_setting == alternate)
+            .ok_or(USBError::NotFound)?;
+        Ok(descriptors
+            .endpoints
+            .iter()
+            .map(|descriptor| {
+                let info = EndpointInfo::from(descriptor);
+                (
+                    descriptor.address,
+                    EndpointHandle::new(
+                        info,
+                        EndpointImpl::new(self.handle.clone(), descriptor.address),
+                    ),
+                )
+            })
+            .collect())
+    }
+
+    fn interface_endpoints(&self, interface: u8) -> Vec<EndpointHandle> {
+        self.eps
+            .iter()
+            .filter(|(address, _)| self.ep_interfaces.get(address).copied() == Some(interface))
+            .map(|(_, endpoint)| endpoint.clone())
+            .collect()
+    }
+
+    async fn quiesce_endpoints<'a>(
+        endpoints: impl Iterator<Item = &'a EndpointHandle>,
+    ) -> Result<()> {
+        for endpoint in endpoints {
+            let ids = endpoint.with_raw_mut::<EndpointImpl, _>(|raw| raw.pending_request_ids());
+            for id in ids {
+                endpoint
+                    .with_raw_mut::<EndpointImpl, _>(|raw| raw.cancel_request(id))
+                    .map_err(USBError::from)?;
+                poll_fn(|cx| {
+                    endpoint.with_raw_mut::<EndpointImpl, _>(|raw| {
+                        if let Some(result) = raw.reclaim_request(id) {
+                            return Poll::Ready(match result {
+                                Ok(_)
+                                | Err(usb_if::err::TransferError::Cancelled)
+                                | Err(usb_if::err::TransferError::Disconnected) => Ok(()),
+                                Err(err) => Err(USBError::from(err)),
+                            });
+                        }
+                        raw.register_waker(id, cx);
+                        Poll::Pending
+                    })
+                })
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn _release_interface(&mut self, interface: u8) -> Result<()> {
+        let endpoints = self.interface_endpoints(interface);
+        for endpoint in &endpoints {
+            endpoint.revoke();
+        }
+        if Self::quiesce_endpoints(endpoints.iter()).await.is_err() {
+            return Err(USBError::InterfaceBroken);
+        }
+        usb!(libusb_release_interface(self.handle.raw(), interface as _))?;
+        if self.detached_interfaces.remove(&interface) {
+            let _ = unsafe { libusb_attach_kernel_driver(self.handle.raw(), interface as _) };
+        }
+        self.eps
+            .retain(|address, _| self.ep_interfaces.get(address).copied() != Some(interface));
+        self.ep_interfaces.retain(|_, owner| *owner != interface);
+        self.claimed_interfaces.remove(&interface);
+        Ok(())
+    }
+
+    async fn _disconnect(&mut self) -> Result<()> {
+        let mut endpoints = self.eps.values().cloned().collect::<Vec<_>>();
+        endpoints.push(self.ctrl_ep.clone());
+        for endpoint in &endpoints {
+            endpoint.revoke();
+        }
+        Self::quiesce_endpoints(endpoints.iter()).await?;
+
+        let claimed = self.claimed_interfaces.keys().copied().collect::<Vec<_>>();
+        for interface in claimed {
+            let status = unsafe { libusb_release_interface(self.handle.raw(), interface as _) };
+            if status != LIBUSB_SUCCESS && status != LIBUSB_ERROR_NO_DEVICE {
+                let Err(err) = super::err::libusb_error_to_usb_error(status) else {
+                    return Err(USBError::InvalidParameter);
+                };
+                return Err(err.into());
+            }
+        }
+        self.eps.clear();
+        self.ep_interfaces.clear();
+        self.claimed_interfaces.clear();
+        self.detached_interfaces.clear();
         Ok(())
     }
 }
 
 impl DeviceOp for Device {
     fn id(&self) -> usize {
-        unimplemented!("DeviceOp::id is not implemented for the libusb backend")
+        self.id
     }
 
     fn backend_name(&self) -> &str {
@@ -254,11 +444,11 @@ impl DeviceOp for Device {
         &self.configs
     }
 
-    fn ctrl_ep_ref(&self) -> &Endpoint {
+    fn ctrl_ep_ref(&self) -> &EndpointHandle {
         &self.ctrl_ep
     }
 
-    fn ctrl_ep_mut(&mut self) -> &mut Endpoint {
+    fn ctrl_ep_mut(&mut self) -> &mut EndpointHandle {
         &mut self.ctrl_ep
     }
 
@@ -266,8 +456,16 @@ impl DeviceOp for Device {
         &'a mut self,
         interface: u8,
         alternate: u8,
-    ) -> futures::future::BoxFuture<'a, std::result::Result<(), USBError>> {
+    ) -> futures::future::BoxFuture<'a, std::result::Result<BTreeMap<u8, EndpointHandle>, USBError>>
+    {
         async move { self._claim_interface(interface, alternate).await }.boxed()
+    }
+
+    fn release_interface<'a>(
+        &'a mut self,
+        interface: u8,
+    ) -> futures::future::BoxFuture<'a, std::result::Result<(), USBError>> {
+        async move { self._release_interface(interface).await }.boxed()
     }
 
     fn set_configuration<'a>(
@@ -275,21 +473,27 @@ impl DeviceOp for Device {
         configuration_value: u8,
     ) -> futures::future::BoxFuture<'a, std::result::Result<(), USBError>> {
         async move {
+            let endpoints = self.eps.values().cloned().collect::<Vec<_>>();
+            for endpoint in &endpoints {
+                endpoint.revoke();
+            }
+            if Self::quiesce_endpoints(endpoints.iter()).await.is_err() {
+                return Err(USBError::InterfaceBroken);
+            }
             usb!(libusb_set_configuration(
                 self.handle.raw(),
                 configuration_value as _
             ))?;
+            self.eps.clear();
+            self.ep_interfaces.clear();
+            self.claimed_interfaces.clear();
             Ok(())
         }
         .boxed()
     }
 
-    fn endpoint(
-        &mut self,
-        desc: &usb_if::descriptor::EndpointDescriptor,
-    ) -> std::result::Result<Endpoint, USBError> {
-        let ep = EndpointImpl::new(self.handle.clone(), desc.address);
-        Ok(Endpoint::new(EndpointInfo::from(desc), ep))
+    fn disconnect(&mut self) -> futures::future::BoxFuture<'_, std::result::Result<(), USBError>> {
+        self._disconnect().boxed()
     }
 
     fn update_hub(

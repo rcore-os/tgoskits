@@ -63,9 +63,9 @@ mod tests {
             let mut ls = Vec::new();
             for _ in 0..2 {
                 let ls2 = host.probe_devices().await.unwrap();
-                if !ls2.is_empty() {
-                    info!("found {} devices", ls2.len());
-                    ls = ls2;
+                if !ls2.connected.is_empty() {
+                    info!("found {} devices", ls2.connected.len());
+                    ls = ls2.connected;
                     break;
                 }
                 sleep(Duration::from_millis(100)).await;
@@ -113,7 +113,7 @@ mod tests {
                 let config_value = device.current_configuration_descriptor().await.unwrap();
                 info!("get configuration: {config_value:?}");
 
-                device
+                let interface_session = device
                     .claim_interface(
                         interface_desc.interface_number,
                         interface_desc.alternate_setting,
@@ -130,7 +130,7 @@ mod tests {
                             usb_if::transfer::Direction::In
                         )
                     ) {
-                        let mut ep = device.endpoint(ep_desc.address).unwrap();
+                        let ep = interface_session.endpoint(ep_desc.address).unwrap();
                         let mut buff = alloc::vec![0u8; 64];
 
                         match ep.wait(TransferRequest::bulk_in(&mut buff)).await {

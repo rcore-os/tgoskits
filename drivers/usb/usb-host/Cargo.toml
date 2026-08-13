@@ -26,7 +26,6 @@ dma-api = {workspace = true}
 anyhow = { workspace = true }
 enum_dispatch = "0.3"
 futures = {workspace = true, features = ["alloc"]}
-id-arena = {version = "2", default-features = false}
 log = "0.4"
 mbarrier = "0.1"
 nb = "1.1"

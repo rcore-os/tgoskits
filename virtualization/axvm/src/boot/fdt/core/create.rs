@@ -360,6 +360,7 @@ pub(crate) fn patch_guest_fdt_for_runtime(
         plic_profile,
     )?;
     install_configured_virtio_net(&mut tree, crate_config, gic_profile, plic_profile)?;
+    install_configured_virtio_blk(&mut tree, crate_config, gic_profile, plic_profile)?;
     super::timer::install_machine_timer(&mut tree, timer_profile)?;
     super::serial::install_machine_serial(&mut tree, serial_profile, serial_identity)?;
     for serial in additional_serials {
@@ -389,7 +390,7 @@ fn install_configured_virtio_net(
 
     const BASE: u32 = 0x0a00_0000;
     const SIZE: u32 = 0x200;
-    let interrupt = virtio_net_interrupt_binding(gic_profile, plic_profile)?;
+    let interrupt = virtio_interrupt_binding(gic_profile, plic_profile, 48)?;
     let node_id = tree.ensure_path("/virtio_mmio@a000000")?;
     tree.set_property(
         node_id,
@@ -399,7 +400,41 @@ fn install_configured_virtio_net(
         .view_typed_mut(node_id)
         .ok_or_else(|| ax_err_type!(InvalidData, "new virtio-net node is missing"))?
         .set_regs(&[RegInfo::new(BASE as u64, Some(SIZE as u64))]);
-    tree.set_property(node_id, u32_list_property("interrupts", interrupt.cells()))?;
+    tree.set_property(node_id, u32_list_property("interrupts", &interrupt.cells()))?;
+    tree.set_property(
+        node_id,
+        u32_list_property("interrupt-parent", &[interrupt.parent()]),
+    )?;
+    tree.set_property(node_id, Property::new("dma-coherent", std::vec![]))?;
+    Ok(())
+}
+
+fn install_configured_virtio_blk(
+    tree: &mut FdtTree,
+    config: &GuestConfig,
+    gic_profile: Option<&crate::machine::GuestGicProfile>,
+    plic_profile: Option<&crate::machine::GuestPlicProfile>,
+) -> AxVmResult {
+    if !config
+        .devices
+        .virtual_devices
+        .iter()
+        .any(|device| device.model == "virtio-blk")
+    {
+        return Ok(());
+    }
+
+    let interrupt = virtio_interrupt_binding(gic_profile, plic_profile, 49)?;
+    let node_id = tree.ensure_path("/virtio_mmio@a000200")?;
+    tree.set_property(
+        node_id,
+        super::tree::prop_string("compatible", "virtio,mmio"),
+    )?;
+    tree.inner_mut()
+        .view_typed_mut(node_id)
+        .ok_or_else(|| ax_err_type!(InvalidData, "new virtio-blk node is missing"))?
+        .set_regs(&[RegInfo::new(0x0a00_0200, Some(0x200))]);
+    tree.set_property(node_id, u32_list_property("interrupts", &interrupt.cells()))?;
     tree.set_property(
         node_id,
         u32_list_property("interrupt-parent", &[interrupt.parent()]),
@@ -409,49 +444,57 @@ fn install_configured_virtio_net(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum VirtioNetInterruptBinding {
-    Gic { parent: u32 },
-    Plic { parent: u32 },
+enum VirtioInterruptBinding {
+    Gic { parent: u32, spi: u32 },
+    Plic { parent: u32, source: u32 },
 }
 
-impl VirtioNetInterruptBinding {
+impl VirtioInterruptBinding {
     const fn parent(self) -> u32 {
         match self {
-            Self::Gic { parent } | Self::Plic { parent } => parent,
+            Self::Gic { parent, .. } | Self::Plic { parent, .. } => parent,
         }
     }
 
-    const fn cells(self) -> &'static [u32] {
-        // AxVisor routes controller input 48 to virtio-net. GIC firmware
-        // describes that input as SPI 16 (SPIs start at 32), while a PLIC
-        // binding uses the controller input directly as source 48.
+    fn cells(self) -> Vec<u32> {
+        // GIC firmware describes controller inputs as SPIs relative to 32,
+        // while a PLIC binding uses the controller input directly.
         match self {
-            Self::Gic { .. } => &[0, 16, 1],
-            Self::Plic { .. } => &[48],
+            Self::Gic { spi, .. } => std::vec![0, spi, 1],
+            Self::Plic { source, .. } => std::vec![source],
         }
     }
 }
 
-fn virtio_net_interrupt_binding(
+fn virtio_interrupt_binding(
     gic_profile: Option<&crate::machine::GuestGicProfile>,
     plic_profile: Option<&crate::machine::GuestPlicProfile>,
-) -> AxVmResult<VirtioNetInterruptBinding> {
+    controller_input: u32,
+) -> AxVmResult<VirtioInterruptBinding> {
+    let spi = controller_input
+        .checked_sub(32)
+        .ok_or_else(|| ax_err_type!(InvalidData, "virtio interrupt input is not a GIC SPI"))?;
     match (gic_profile, plic_profile) {
         (Some(gic), None) => gic
             .node_phandle
-            .map(|parent| VirtioNetInterruptBinding::Gic { parent })
-            .ok_or_else(|| ax_err_type!(InvalidData, "guest GIC has no phandle for virtio-net")),
+            .map(|parent| VirtioInterruptBinding::Gic { parent, spi })
+            .ok_or_else(|| ax_err_type!(InvalidData, "guest GIC has no phandle for virtio device")),
         (None, Some(plic)) => plic
             .node_phandle
-            .map(|parent| VirtioNetInterruptBinding::Plic { parent })
-            .ok_or_else(|| ax_err_type!(InvalidData, "guest PLIC has no phandle for virtio-net")),
+            .map(|parent| VirtioInterruptBinding::Plic {
+                parent,
+                source: controller_input,
+            })
+            .ok_or_else(|| {
+                ax_err_type!(InvalidData, "guest PLIC has no phandle for virtio device")
+            }),
         (Some(_), Some(_)) => Err(ax_err_type!(
             InvalidData,
-            "virtio-net cannot select between guest GIC and PLIC"
+            "virtio device cannot select between guest GIC and PLIC"
         )),
         (None, None) => Err(ax_err_type!(
             InvalidData,
-            "virtio-net requires a guest GIC or PLIC interrupt controller"
+            "virtio device requires a guest GIC or PLIC interrupt controller"
         )),
     }
 }
@@ -553,6 +596,16 @@ mod tests {
         config
     }
 
+    fn virtio_blk_config() -> GuestConfig {
+        let mut config = GuestConfig::default();
+        config.devices.virtual_devices.push(VirtualDeviceRequest {
+            id: "virtblk0".into(),
+            model: "virtio-blk".into(),
+            options: Default::default(),
+        });
+        config
+    }
+
     fn gic_profile(phandle: u32) -> GuestGicProfile {
         GuestGicProfile {
             compatible: "arm,gic-400".into(),
@@ -634,6 +687,64 @@ mod tests {
                 .get_u32_iter()
                 .collect::<std::vec::Vec<_>>(),
             [0, 16, 1]
+        );
+    }
+
+    #[test]
+    fn riscv_virtio_blk_uses_one_cell_plic_interrupt_binding() {
+        let mut tree = FdtTree::new();
+        super::install_configured_virtio_blk(
+            &mut tree,
+            &virtio_blk_config(),
+            None,
+            Some(&plic_profile(9)),
+        )
+        .unwrap();
+        let node = tree.inner().get_by_path("/virtio_mmio@a000200").unwrap();
+
+        assert_eq!(
+            node.as_node()
+                .get_property("interrupt-parent")
+                .unwrap()
+                .get_u32(),
+            Some(9)
+        );
+        assert_eq!(
+            node.as_node()
+                .get_property("interrupts")
+                .unwrap()
+                .get_u32_iter()
+                .collect::<std::vec::Vec<_>>(),
+            [49]
+        );
+    }
+
+    #[test]
+    fn aarch64_virtio_blk_uses_three_cell_gic_interrupt_binding() {
+        let mut tree = FdtTree::new();
+        super::install_configured_virtio_blk(
+            &mut tree,
+            &virtio_blk_config(),
+            Some(&gic_profile(7)),
+            None,
+        )
+        .unwrap();
+        let node = tree.inner().get_by_path("/virtio_mmio@a000200").unwrap();
+
+        assert_eq!(
+            node.as_node()
+                .get_property("interrupt-parent")
+                .unwrap()
+                .get_u32(),
+            Some(7)
+        );
+        assert_eq!(
+            node.as_node()
+                .get_property("interrupts")
+                .unwrap()
+                .get_u32_iter()
+                .collect::<std::vec::Vec<_>>(),
+            [0, 17, 1]
         );
     }
 
