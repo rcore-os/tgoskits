@@ -12,6 +12,7 @@ use std::{
 static READY_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
 static SLEEP_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
 static DONE_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
+static TIMEOUT_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
 static READY: AtomicBool = AtomicBool::new(false);
 static MAY_SLEEP: AtomicBool = AtomicBool::new(false);
 static GO: AtomicBool = AtomicBool::new(false);
@@ -128,6 +129,20 @@ pub fn run() -> crate::TestResult {
             run_queue: 0,
         }),
         "one Linux-style task-sched/rq wake transaction must own one runtime IRQ guard"
+    );
+    task_test_hooks::arm_deadline_publication_probe(this_cpu_id());
+    assert!(api::ax_wait_queue_wait_until(
+        &TIMEOUT_WQ,
+        || false,
+        Some(Duration::from_millis(1)),
+    ));
+    assert_eq!(
+        task_test_hooks::take_deadline_publication_entries(),
+        Some(task_test_hooks::DeadlinePublicationEntries {
+            observation: 0,
+            publication: 1,
+        }),
+        "one deadline derivation and publication must share one base lock"
     );
     Ok(())
 }

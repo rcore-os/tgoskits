@@ -210,7 +210,12 @@ impl CpuRemote {
         &self,
         source: DeadlineBaseGuardSource,
     ) -> Option<CpuDeadlineReadGuard<'_>> {
-        self.deadline.read_if_active(source)
+        let deadlines = self.deadline.read_if_active(source);
+        #[cfg(feature = "task-test-hooks")]
+        if deadlines.is_some() && source == DeadlineBaseGuardSource::Observation {
+            crate::task_test_hooks::record_deadline_observation_entry(self.owner());
+        }
+        deadlines
     }
 
     /// Locks physical clockevent publication metadata.
@@ -218,7 +223,10 @@ impl CpuRemote {
     /// Publication changes neither the logical timer queue nor expiry
     /// ownership, so it must not rewrite the derived active bit.
     pub(crate) fn lock_deadline_publication(&self) -> IrqTicketGuard<'_, CpuDeadlineState> {
-        self.deadline.lock_publication()
+        let publication = self.deadline.lock_publication();
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_deadline_publication_entry(self.owner());
+        publication
     }
 
     /// Locks a transition that may change queue, buffered expiry, or softirq

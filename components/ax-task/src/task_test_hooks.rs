@@ -15,6 +15,10 @@ static PI_CHAIN_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static WAKE_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static PARK_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static SWITCH_TAIL_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
+static DEADLINE_PUBLICATION_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
+static DEADLINE_PUBLICATION_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static DEADLINE_PUBLICATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static DEADLINE_PUBLICATION_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 
 const STAGE_IDLE: u8 = 0;
 const STAGE_CONFIGURING: u8 = 1;
@@ -111,6 +115,87 @@ impl IrqOwnerProbe {
             "{name} IRQ-owner scopes were recorded in an invalid stage"
         );
     }
+}
+
+/// Arms one real local deadline publication for lock-entry accounting.
+pub fn arm_deadline_publication_probe(cpu: usize) {
+    let target = u64::try_from(cpu)
+        .ok()
+        .and_then(|cpu| cpu.checked_add(1))
+        .expect("a task-test CPU identity must fit the encoded probe target");
+    assert_eq!(
+        DEADLINE_PUBLICATION_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one deadline publication probe may be armed"
+    );
+    DEADLINE_PUBLICATION_TARGET_CPU.store(target, Ordering::Relaxed);
+    DEADLINE_PUBLICATION_OBSERVATION_ENTRIES.store(0, Ordering::Relaxed);
+    DEADLINE_PUBLICATION_ENTRIES.store(0, Ordering::Relaxed);
+    DEADLINE_PUBLICATION_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Deadline-base lock entries observed for one real local publication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeadlinePublicationEntries {
+    /// Separate deadline observation locks taken before publication.
+    pub observation: u64,
+    /// Authoritative publication locks taken by the transaction.
+    pub publication: u64,
+}
+
+/// Takes deadline-base entries for the armed local publication.
+pub fn take_deadline_publication_entries() -> Option<DeadlinePublicationEntries> {
+    if DEADLINE_PUBLICATION_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let entries = DeadlinePublicationEntries {
+        observation: DEADLINE_PUBLICATION_OBSERVATION_ENTRIES.load(Ordering::Relaxed),
+        publication: DEADLINE_PUBLICATION_ENTRIES.load(Ordering::Relaxed),
+    };
+    DEADLINE_PUBLICATION_TARGET_CPU.store(0, Ordering::Relaxed);
+    DEADLINE_PUBLICATION_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(entries)
+}
+
+fn deadline_publication_probe_matches(cpu: crate::CpuId) -> bool {
+    DEADLINE_PUBLICATION_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && DEADLINE_PUBLICATION_TARGET_CPU.load(Ordering::Relaxed) == u64::from(cpu.as_u32()) + 1
+}
+
+pub(crate) fn record_deadline_observation_entry(cpu: crate::CpuId) {
+    if deadline_publication_probe_matches(cpu) {
+        DEADLINE_PUBLICATION_OBSERVATION_ENTRIES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_deadline_publication_entry(cpu: crate::CpuId) {
+    if !deadline_publication_probe_matches(cpu) {
+        return;
+    }
+    DEADLINE_PUBLICATION_ENTRIES.fetch_add(1, Ordering::Relaxed);
+    assert_eq!(
+        DEADLINE_PUBLICATION_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "deadline publication was recorded in an invalid stage"
+    );
 }
 
 /// Arms one real context-switch tail for IRQ-owner accounting.

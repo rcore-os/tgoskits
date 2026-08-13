@@ -3224,6 +3224,30 @@ scheduler baton 的普通 task-system 调用者使用。park、wake、switch-tai
 86.524 秒（-0.86%）。端到端 workload 仍未在窗口内完成，所以这一检查点只关闭 switch-tail
 重复 owner，性能阶段仍继续。
 
+第四项重复 owner 位于 `CpuDeadlineBase` 的“先观测、后发布”两段锁。Linux 的 hrtick/clockevent
+推导在 rq raw lock 与 IRQ-off 事务中形成非 timer 候选，再按 rq lock -> hrtimer base lock 的固定
+顺序读取 timer head、比较并提交物理事件；调度切换中的重编程可以延后到 schedule exit，但不会为
+同一次发布先后获取两次 hrtimer base lock。ax-task 原先每次 deadline derivation 先用 Observation
+guard 读取 task/kernel timer head，随后再用 Publication guard 比较 publication 与 generation；两个
+guard 之间的队首也不是同一个一致性快照。现在先在既有 rq/RT-period 锁序下计算非 timer 候选，
+再以一个 Publication guard 同时读取 timer head、比较旧 publication、提交 generation，保持
+rq/RT-period -> deadline-base 顺序且只保留一个权威事务。
+
+真实 ArceOS timeout wait 在一次本地发布上记录 deadline-base 入口：旧实现确定性得到
+`DeadlinePublicationEntries { observation: 1, publication: 1 }` 并失败，新实现为 `0/1`。相同
+x86_64/4-vCPU、60 秒 ext4 marker 窗口仍到 `file-0535`，switch 数从 125,555 变为 124,000
+（-1.24%）。`CpuDeadlineBase` 总 guard 从 617,564 降至 440,735（-28.63%），其中 Observation
+从 206,933 降至 33,459，Publication 与 derivation 保持一一对应；全部 runtime IRQ guard 从
+1,645,178 降至 1,458,352（-11.36%）。本轮 host user 为 95.305 秒，较上一轮 86.524 秒增加
+10.15%，且工作负载仍未完成，因此只确认重复 base lock 被结构性消除，不声称端到端改善；新的
+高频项是独立的 root RT-period owner（235,405 次），应继续按 Linux RT bandwidth 生命周期处理。
+
+AxVM 不存在另一套 host 物理 timer：AArch64/LoongArch vCPU 与设备定时任务已经经 ax-task kernel
+timer 队列，最终统一交给 ax-runtime `LocalClockEvent` 编程。客户机虚拟 counter/PPI、generation
+和注入状态属于 guest architecture state，语义上不能并入 host scheduler deadline；可复用的是现有
+host timer transport，而不是删除客户机自己的状态机。Linux RT bandwidth period timer 同样是独立
+的 replenishment source，不能为了减少锁次数与 hrtick/普通 kernel timer 合并。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

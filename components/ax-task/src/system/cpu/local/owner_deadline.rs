@@ -39,6 +39,26 @@ enum SchedulerDeadlineRqClockEvent {
     After(core::time::Duration),
 }
 
+enum SchedulerDeadlinePublicationOutcome {
+    Unchanged(SchedulerDeadlineUpdate),
+    Changed(SchedulerDeadlineUpdate),
+}
+
+impl SchedulerDeadlinePublicationOutcome {
+    const fn update(self) -> SchedulerDeadlineUpdate {
+        match self {
+            Self::Unchanged(update) | Self::Changed(update) => update,
+        }
+    }
+
+    const fn changed_update(self) -> Option<SchedulerDeadlineUpdate> {
+        match self {
+            Self::Unchanged(_) => None,
+            Self::Changed(update) => Some(update),
+        }
+    }
+}
+
 impl CpuLocal {
     pub(crate) fn scheduler_work_due(
         self: Pin<&mut Self>,
@@ -77,6 +97,7 @@ impl CpuLocal {
             .next_oneshot_deadline_from_rq_observation(monotonic_now, rq_observation)
     }
 
+    #[cfg(test)]
     fn next_oneshot_deadline_from_rq_observation(
         self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
@@ -87,25 +108,21 @@ impl CpuLocal {
             .remote
             .read_active_deadline_base(DeadlineBaseGuardSource::Observation)
         {
-            if deadlines.softirq_activated {
-                // Linux suppresses `softirq_expires_next` only after the hard
-                // hrtimer path has set `softirq_activated` and woken
-                // `ktimers/%u`. A merely overdue queue head remains the next
-                // physical event so the device's minimum delta creates that
-                // ownership transfer instead of silently stopping progress.
-                None
-            } else {
-                [
-                    deadlines.queue.next_deadline(),
-                    deadlines.kernel_timers.next_deadline(),
-                ]
-                .into_iter()
-                .flatten()
-                .min()
-            }
+            Self::next_timer_deadline(&deadlines)
         } else {
             None
         };
+        let non_timer =
+            self.next_non_timer_deadline_from_rq_observation(monotonic_now, rq_observation);
+        [timer, non_timer].into_iter().flatten().min()
+    }
+
+    fn next_non_timer_deadline_from_rq_observation(
+        self: Pin<&mut Self>,
+        monotonic_now: MonotonicInstant,
+        rq_observation: SchedulerDeadlineRqObservation,
+    ) -> Option<MonotonicDeadline> {
+        let this = self.as_ref().get_ref();
         let scheduler = match rq_observation.clock_event {
             // Deadline selection is a pure observation. An already-due hard
             // scheduler timer remains a physical clockevent source and the
@@ -124,10 +141,31 @@ impl CpuLocal {
             .then(|| this.dispatch.fair_balance_deadline())
             .flatten();
         let rt_period = this.rt_bandwidth.deadline_for(this.owner);
-        [timer, scheduler, fair_balance, rt_period]
+        [scheduler, fair_balance, rt_period]
             .into_iter()
             .flatten()
             .min()
+    }
+
+    fn next_timer_deadline(
+        deadlines: &crate::system::cpu::remote::CpuDeadlineState,
+    ) -> Option<MonotonicDeadline> {
+        if deadlines.softirq_activated {
+            // Linux suppresses `softirq_expires_next` only after the hard
+            // hrtimer path has set `softirq_activated` and woken
+            // `ktimers/%u`. A merely overdue queue head remains the next
+            // physical event so the device's minimum delta creates that
+            // ownership transfer instead of silently stopping progress.
+            None
+        } else {
+            [
+                deadlines.queue.next_deadline(),
+                deadlines.kernel_timers.next_deadline(),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+        }
     }
 
     pub(crate) fn next_scheduler_deadline_update(
@@ -135,18 +173,9 @@ impl CpuLocal {
         monotonic_now: MonotonicInstant,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<SchedulerDeadlineUpdate, TaskError> {
-        let publication = self
-            .as_mut()
-            .scheduler_deadline_publication(monotonic_now, source);
-        let mut task_deadlines = self.remote.lock_deadline_publication();
-        if task_deadlines.publication == Some(publication) {
-            return SchedulerDeadlineUpdate::try_new(
-                task_deadlines.generation,
-                publication.deadline,
-            )
-            .ok_or(TaskError::InvalidConfiguration);
-        }
-        Self::commit_scheduler_deadline_publication(&mut task_deadlines, publication)
+        self.as_mut()
+            .update_scheduler_deadline_publication(monotonic_now, source)
+            .map(SchedulerDeadlinePublicationOutcome::update)
     }
 
     pub(crate) fn next_scheduler_deadline_update_if_changed(
@@ -154,14 +183,9 @@ impl CpuLocal {
         monotonic_now: MonotonicInstant,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
-        let publication = self
-            .as_mut()
-            .scheduler_deadline_publication(monotonic_now, source);
-        let mut task_deadlines = self.remote.lock_deadline_publication();
-        if task_deadlines.publication == Some(publication) {
-            return Ok(None);
-        }
-        Self::commit_scheduler_deadline_publication(&mut task_deadlines, publication).map(Some)
+        self.as_mut()
+            .update_scheduler_deadline_publication(monotonic_now, source)
+            .map(SchedulerDeadlinePublicationOutcome::changed_update)
     }
 
     pub(crate) fn next_scheduler_deadline_update_if_changed_from_rq_observation(
@@ -170,50 +194,60 @@ impl CpuLocal {
         rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
-        let publication = self
-            .as_mut()
-            .scheduler_deadline_publication_from_rq_observation(
+        self.as_mut()
+            .update_scheduler_deadline_publication_from_rq_observation(
                 monotonic_now,
                 rq_observation,
                 source,
-            );
-        let mut task_deadlines = self.remote.lock_deadline_publication();
-        if task_deadlines.publication == Some(publication) {
-            return Ok(None);
-        }
-        Self::commit_scheduler_deadline_publication(&mut task_deadlines, publication).map(Some)
+            )
+            .map(SchedulerDeadlinePublicationOutcome::changed_update)
     }
 
-    fn scheduler_deadline_publication(
+    fn update_scheduler_deadline_publication(
         mut self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
         source: SchedulerDeadlineDerivationSource,
-    ) -> SchedulerDeadlinePublicationState {
+    ) -> Result<SchedulerDeadlinePublicationOutcome, TaskError> {
         let rq_observation = self.scheduler_deadline_rq_observation();
         self.as_mut()
-            .scheduler_deadline_publication_from_rq_observation(
+            .update_scheduler_deadline_publication_from_rq_observation(
                 monotonic_now,
                 rq_observation,
                 source,
             )
     }
 
-    fn scheduler_deadline_publication_from_rq_observation(
+    fn update_scheduler_deadline_publication_from_rq_observation(
         mut self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
         rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
-    ) -> SchedulerDeadlinePublicationState {
+    ) -> Result<SchedulerDeadlinePublicationOutcome, TaskError> {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_scheduler_deadline_derivation(source);
         #[cfg(test)]
         self.remote.record_scheduler_deadline_derivation_for_test();
         #[cfg(not(feature = "qperf-metrics"))]
         let _ = source;
-        let deadline = self
+        // Preserve the established rq/RT-period -> deadline-base lock order.
+        // The task/kernel timer head and publication metadata are then read
+        // and committed under one authoritative base lock.
+        let non_timer = self
             .as_mut()
-            .next_oneshot_deadline_from_rq_observation(monotonic_now, rq_observation);
-        SchedulerDeadlinePublicationState { deadline }
+            .next_non_timer_deadline_from_rq_observation(monotonic_now, rq_observation);
+        let mut task_deadlines = self.remote.lock_deadline_publication();
+        let timer = Self::next_timer_deadline(&task_deadlines);
+        let publication = SchedulerDeadlinePublicationState {
+            deadline: [timer, non_timer].into_iter().flatten().min(),
+        };
+        if task_deadlines.publication == Some(publication) {
+            let update =
+                SchedulerDeadlineUpdate::try_new(task_deadlines.generation, publication.deadline)
+                    .ok_or(TaskError::InvalidConfiguration)?;
+            return Ok(SchedulerDeadlinePublicationOutcome::Unchanged(update));
+        }
+        Self::commit_scheduler_deadline_publication(&mut task_deadlines, publication)
+            .map(SchedulerDeadlinePublicationOutcome::Changed)
     }
 
     fn commit_scheduler_deadline_publication(
