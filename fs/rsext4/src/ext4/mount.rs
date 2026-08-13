@@ -134,7 +134,7 @@ impl Ext4FileSystem {
     ) -> Ext4Result<()> {
         use crate::runtime::{Event, FeatureEvent};
 
-        let unsupported_incompat = superblock.unsupported_incompat_features();
+        let unsupported_incompat = superblock.unsupported_incompat_features(read_only);
         if unsupported_incompat != 0 {
             observer.event(Event::Feature(FeatureEvent::UnsupportedIncompat(
                 unsupported_incompat,

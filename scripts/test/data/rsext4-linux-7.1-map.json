@@ -918,15 +918,30 @@
       "segments": [
         {
           "start": 1,
-          "end": 404,
-          "symbol": "<whole-file>",
+          "end": 113,
+          "symbol": "ext4_mmp_csum/read_mmp_block/write_mmp_block",
           "classification": "core",
-          "state_machine": "pending symbol-level decomposition",
-          "invariant": "every frozen source line has an explicit provisional owner",
+          "state_machine": "writable MMP owner checksums and synchronously reads/writes the protection block; read-only mounts do not enter these primitives",
+          "invariant": "MMP block validation and persistence belong to the writable mount owner and must never be partially emulated by a read-only inspection mount",
           "rust_owner": "rsext4::lifecycle::mmp",
-          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "reason": "read-only negotiation deliberately performs no MMP I/O, matching Linux; checksum, priority I/O and writable ownership remain pending as one lifecycle",
           "test_ids": [
-            "linux-map-complete"
+            "linux-map-complete",
+            "mmp-readonly-mount"
+          ]
+        },
+        {
+          "start": 114,
+          "end": 404,
+          "symbol": "kmmpd/ext4_multi_mount_protect/ext4_stop_mmpd",
+          "classification": "core",
+          "state_machine": "writable mount validates clean/stable sequence -> claims random sequence -> refreshes from a runtime task -> publishes clean on stop",
+          "invariant": "a writable mount is admitted only after exclusive MMP ownership is established and remains refreshed until unmount or remount-read-only",
+          "rust_owner": "rsext4::lifecycle::mmp plus injected Clock/entropy/runtime scheduling capabilities",
+          "reason": "portable on-disk state and timing policy belong to core, while periodic execution must be injected without depending on an OS task API; not implemented yet",
+          "test_ids": [
+            "linux-map-complete",
+            "mmp-readonly-mount"
           ]
         }
       ]
@@ -1255,8 +1270,36 @@
       "segments": [
         {
           "start": 1,
-          "end": 5984,
+          "end": 5495,
           "symbol": "<whole-file prefix>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::ext4",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "feature-gate-strict",
+            "filesystem-block-dynamic"
+          ]
+        },
+        {
+          "start": 5496,
+          "end": 5500,
+          "symbol": "ext4_fill_super MMP writable-mount gate",
+          "classification": "core",
+          "state_machine": "read-only mount skips MMP owner; writable mount must establish multi-mount protection before journal and namespace activation",
+          "invariant": "MMP may be accepted without reading or writing its block only while the mount remains read-only; read-write mount and remount must fail before mutation when no MMP lifecycle owner exists",
+          "rust_owner": "rsext4::superblock::features::Ext4Superblock::check_features; rsext4::ext4::mount",
+          "reason": "the portable core now matches Linux read-only admission and keeps writable MMP unsupported until periodic ownership can be expressed through OS-independent capabilities",
+          "test_ids": [
+            "feature-gate-strict",
+            "mmp-readonly-mount"
+          ]
+        },
+        {
+          "start": 5501,
+          "end": 5984,
+          "symbol": "<whole-file prefix continuation>",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",

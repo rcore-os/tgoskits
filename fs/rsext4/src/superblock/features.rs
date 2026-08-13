@@ -14,6 +14,12 @@ const SUPPORTED_INCOMPAT_FEATURES: u32 = Ext4Superblock::EXT4_FEATURE_INCOMPAT_F
     | Ext4Superblock::EXT4_FEATURE_INCOMPAT_FLEX_BG
     | Ext4Superblock::EXT4_FEATURE_INCOMPAT_CSUM_SEED;
 
+// Linux does not inspect or update the MMP block for a read-only mount. A
+// writable mount still requires a runtime-owned refresh loop, so MMP remains
+// outside SUPPORTED_INCOMPAT_FEATURES until that lifecycle is implemented.
+const READ_ONLY_SUPPORTED_INCOMPAT_FEATURES: u32 =
+    SUPPORTED_INCOMPAT_FEATURES | Ext4Superblock::EXT4_FEATURE_INCOMPAT_MMP;
+
 const SUPPORTED_RO_COMPAT_FEATURES: u32 = Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER
     | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_LARGE_FILE
     | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE
@@ -106,8 +112,13 @@ impl Ext4Superblock {
         self.has_feature_compat(Self::EXT4_FEATURE_COMPAT_HAS_JOURNAL)
     }
 
-    pub(crate) fn unsupported_incompat_features(&self) -> u32 {
-        self.s_feature_incompat & !SUPPORTED_INCOMPAT_FEATURES
+    pub(crate) fn unsupported_incompat_features(&self, read_only: bool) -> u32 {
+        let supported = if read_only {
+            READ_ONLY_SUPPORTED_INCOMPAT_FEATURES
+        } else {
+            SUPPORTED_INCOMPAT_FEATURES
+        };
+        self.s_feature_incompat & !supported
     }
 
     pub(crate) fn unsupported_ro_compat_features(&self) -> u32 {
@@ -122,7 +133,7 @@ impl Ext4Superblock {
             );
         }
 
-        let unsupported_incompat = self.unsupported_incompat_features();
+        let unsupported_incompat = self.unsupported_incompat_features(read_only);
         if unsupported_incompat != 0 {
             return Err(Ext4Error::unsupported_feature(
                 FeatureSet::Incompatible,
@@ -200,6 +211,27 @@ mod tests {
             Some(ErrorContext::Feature {
                 set: FeatureSet::Incompatible,
                 bits: Ext4Superblock::EXT4_FEATURE_INCOMPAT_ENCRYPT,
+            })
+        );
+    }
+
+    #[test]
+    fn mmp_without_a_runtime_owner_is_read_only_compatible() {
+        let sb = Ext4Superblock {
+            s_feature_incompat: Ext4Superblock::EXT4_FEATURE_INCOMPAT_MMP,
+            ..Default::default()
+        };
+
+        sb.check_features(true)
+            .expect("Linux does not start MMP protection for a read-only mount");
+
+        let err = sb.check_features(false).unwrap_err();
+        assert_eq!(err.kind(), Ext4ErrorKind::UnsupportedFeature);
+        assert_eq!(
+            err.context(),
+            Some(ErrorContext::Feature {
+                set: FeatureSet::Incompatible,
+                bits: Ext4Superblock::EXT4_FEATURE_INCOMPAT_MMP,
             })
         );
     }

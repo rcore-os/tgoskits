@@ -373,6 +373,87 @@ fn create_ext4_geometry_image(
 }
 
 #[test]
+fn linux_mmp_image_mounts_read_only_without_mutating_the_protection_block() {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) =
+        create_ext4_test_image_with_args("rsext4-linux-mmp-readonly", "64M", &["-O", "mmp"]);
+    let original_image = fs::read(&image).expect("snapshot Linux MMP image");
+
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_800_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let error = match Ext4::mount(device, services, MountOptions::read_write()) {
+            Ok(_) => panic!("writable MMP mount needs a runtime-owned refresh loop"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), Ext4ErrorKind::UnsupportedFeature);
+        assert_eq!(
+            error.context(),
+            Some(ErrorContext::Feature {
+                set: FeatureSet::Incompatible,
+                bits: rsext4::superblock::Ext4Superblock::EXT4_FEATURE_INCOMPAT_MMP,
+            })
+        );
+    }
+
+    {
+        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
+        let services = MountServices::new(
+            TestClock(Cell::new(1_800_000_000)),
+            (),
+            (),
+            (),
+            NoopObserver,
+        );
+        let mut filesystem = Ext4::mount(
+            device,
+            services,
+            MountOptions::read_only_no_journal_replay(),
+        )
+        .expect("mount Linux MMP image read-only");
+        let root = filesystem
+            .inode(filesystem.root_inode())
+            .expect("inspect MMP image root inode");
+        assert!(root.is_directory());
+
+        let read_only_options = filesystem.options();
+        let error = filesystem
+            .remount(MountOptions {
+                readonly: false,
+                ..read_only_options
+            })
+            .expect_err("MMP must also gate a read-only to writable remount");
+        assert_eq!(error.kind(), Ext4ErrorKind::UnsupportedFeature);
+        assert_eq!(
+            error.context(),
+            Some(ErrorContext::Feature {
+                set: FeatureSet::Incompatible,
+                bits: rsext4::superblock::Ext4Superblock::EXT4_FEATURE_INCOMPAT_MMP,
+            })
+        );
+        assert_eq!(filesystem.options(), read_only_options);
+        filesystem.unmount().expect("unmount MMP image read-only");
+    }
+
+    assert_eq!(
+        fs::read(&image).expect("read MMP image after rsext4 mount"),
+        original_image,
+        "read-only mount must not rewrite the superblock or MMP protection block"
+    );
+    e2fsck_readonly_clean(&image, "read-only Linux MMP image");
+    fs::remove_dir_all(temp_dir).expect("remove MMP temp dir");
+}
+
+#[test]
 fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
     for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
         require_tool(tool);
