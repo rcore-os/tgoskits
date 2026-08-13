@@ -255,7 +255,7 @@ fn run_std_tests<R: CargoRunner>(
 fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeatureProfile]> {
     match package {
         "arm_vgic" | "axdevice" | "axfs-ng-vfs" | "rsext4" | "scope-local" | "ax-sync" | "axvm"
-        | "ax-display" | "ax-input" | "ax-ipi" | "ax-log" | "ax-runtime" | "ax-api" => {
+        | "ax-display" | "ax-input" | "ax-ipi" | "ax-log" | "ax-runtime" | "ax-api" | "rdrive" => {
             Some(HOST_TEST_FEATURE_PROFILES)
         }
         "ax-task" => Some(AX_TASK_FEATURE_PROFILES),

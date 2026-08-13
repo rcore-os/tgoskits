@@ -31,6 +31,7 @@ ax-timer-list
 ax-alloc
 ax-display
 ax-driver
+rdrive
 ax-hal
 ax-sync
 ax-task
