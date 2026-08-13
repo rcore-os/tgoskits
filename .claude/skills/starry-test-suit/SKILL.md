@@ -96,6 +96,11 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
   `${sessionFile:<relative-path>}`, `${boardServerIp}`, or
   `${boardServerHttpBaseUrl}` in `shell_init_cmd` when a board must download a
   session asset or contact the board-facing server address.
+- When the target has a usable network driver, session-file delivery is the
+  default for ephemeral board-test assets. Use bounded download retries because
+  the link or DHCP route may become ready after the shell prompt. Use persistent
+  Linux rootfs deployment only when the target cannot fetch session files or
+  persistent shared-rootfs state is itself under test.
 - A board case with `c/CMakeLists.txt` installs into
   `target/<target>/board-cases/<case>/runs/<run-id>/upload/`. Every regular
   installed file is uploaded automatically with the same relative path. Do not

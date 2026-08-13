@@ -13,7 +13,7 @@ lto = false
 [workspace]
 resolver = "3"
 members = [
-    "apps/starry/orangepi-5-plus-uvc/uvc-fps",
+    "apps/starry/orangepi-5-plus-uvc/rust",
 
     "bootloader/axloader",
 

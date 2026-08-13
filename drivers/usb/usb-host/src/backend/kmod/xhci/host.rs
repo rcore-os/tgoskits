@@ -53,9 +53,6 @@ pub struct Xhci {
     irq_mask: Arc<XhciIrqMaskState>,
 }
 
-unsafe impl Send for Xhci {}
-unsafe impl Sync for Xhci {}
-
 impl CoreOp for Xhci {
     fn root_hub(&mut self) -> Box<dyn HubOp> {
         Box::new(
@@ -391,10 +388,10 @@ impl Xhci {
     }
 
     fn setup_dcbaap(&mut self) -> Result {
-        let dcbaa_addr = self.dev()?.dcbaa.dma_addr();
+        let dcbaa_addr = self.dev()?.bus_addr();
         debug!("DCBAAP: {dcbaa_addr}");
         self.reg.write().operational.dcbaap.update_volatile(|r| {
-            r.set(dcbaa_addr.as_u64());
+            r.set(dcbaa_addr);
         });
         Ok(())
     }
@@ -480,7 +477,7 @@ impl Xhci {
 
             let bus_addr = scratchpad_buf_arr.bus_addr();
 
-            self.dev_mut()?.dcbaa.set_cpu(0, bus_addr);
+            self.dev_mut()?.set_scratchpad_array(bus_addr);
 
             debug!("Setting up {buf_count} scratchpads, at {bus_addr:#0x}");
             scratchpad_buf_arr
@@ -748,6 +745,7 @@ impl EventHandler {
         let mut port_events = 0usize;
         let mut transfer_events = 0usize;
         let mut other_events = 0usize;
+        let mut controller_fault = false;
         let mut event_loop = 0usize;
 
         while let Some(allowed) = self.event_ring(guard).next() {
@@ -792,10 +790,13 @@ impl EventHandler {
                     // Interrupts synchronize queue state only. Do not call
                     // into OS glue or take manager/file/device locks here; the
                     // waiter that owns the queue will advance the transfer flow.
-                    unsafe {
+                    let routed = unsafe {
                         self.transfer_result_handler
                             .set_finished(slot_id, ep_id, ptr.into(), c)
                     };
+                    if !routed {
+                        controller_fault = true;
+                    }
                 }
                 _ => {
                     other_events += 1;
@@ -816,7 +817,9 @@ impl EventHandler {
             other_events,
             self.event_ring(guard).erst_dequeue_pointer()
         );
-        if matches!(event, Event::Nothing) && transfer_events > 0 {
+        if controller_fault {
+            event = Event::Stopped;
+        } else if matches!(event, Event::Nothing) && transfer_events > 0 {
             event = Event::TransferActivity {
                 count: transfer_events,
             };

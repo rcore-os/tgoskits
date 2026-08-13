@@ -352,11 +352,7 @@ impl ArchTrait for Arch {
 
     fn systimer_set_interval(ticks: usize) {
         let now = Self::systimer_tick() as u64;
-        let next = if ticks == usize::MAX {
-            u64::MAX
-        } else {
-            crate::timer::saturating_deadline_from_interval(now, ticks as u64)
-        };
+        let next = crate::timer::riscv64_interval::absolute_deadline(now, ticks as u64);
         let _ = sbi::set_timer(next);
     }
 

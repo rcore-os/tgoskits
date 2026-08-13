@@ -27,7 +27,6 @@ pub use relocate::relocate;
 
 use crate::{ArchTrait, DCacheOp, efi_stub, irq::IrqId, power::CpuOnError};
 
-const MIN_TICKS: usize = 4;
 #[cfg(feature = "tls")]
 const BOOT_TLS_SIZE: usize = 64 * 1024;
 
@@ -122,7 +121,7 @@ impl ArchTrait for Arch {
         tcfg::read().en()
     }
     fn systimer_set_interval(ticks: usize) {
-        let ticks = crate::timer::aligned_interval_ticks(ticks, MIN_TICKS, 4);
+        let ticks = crate::timer::loongarch64_interval::aligned_ticks(ticks);
 
         // 先禁用定时器
         tcfg::set_en(false);

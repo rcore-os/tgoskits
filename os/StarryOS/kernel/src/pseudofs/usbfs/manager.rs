@@ -8,7 +8,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use crab_usb::{
-    Device, DeviceInfo, Endpoint, ProbedDevice,
+    Device, DeviceInfo, EndpointHandle, InterfaceSession, ProbeChanges,
     usb_if::{
         endpoint::{RequestId, TransferCompletion, TransferRequest},
         err::{TransferError, USBError},
@@ -33,7 +33,7 @@ use super::{
 };
 use crate::{
     mm::{VmMutPtr, vm_load, vm_write_slice},
-    sync::{IrqMutex as Mutex, PiMutex, RwLock},
+    sync::{IrqMutex as Mutex, Mutex as BlockingMutex, PiMutex},
     task::future::IrqNotify,
 };
 
@@ -85,13 +85,14 @@ struct UsbDeviceRecord {
     next_session_id: u64,
 }
 
-type EndpointHandle = Arc<Mutex<Endpoint>>;
+struct LiveInterfaceSession {
+    owner: u64,
+    session: InterfaceSession,
+}
 
 struct LiveDeviceState {
-    device: PiMutex<Device>,
-    endpoints: RwLock<BTreeMap<u8, EndpointHandle>>,
-    endpoint_interfaces: RwLock<BTreeMap<u8, u8>>,
-    interface_owners: Mutex<BTreeMap<u8, u64>>,
+    device: BlockingMutex<Device>,
+    interfaces: BlockingMutex<BTreeMap<u8, LiveInterfaceSession>>,
 }
 
 pub(super) struct IsoTransferResult {
@@ -145,7 +146,7 @@ impl SubmittedTransfer {
     pub(super) fn queue_key(&self) -> SubmittedTransferQueue {
         match &self.inner {
             SubmittedTransferInner::Endpoint { endpoint, .. } => {
-                SubmittedTransferQueue::Endpoint(Arc::as_ptr(endpoint) as usize)
+                SubmittedTransferQueue::Endpoint(endpoint.info().address.raw() as usize)
             }
             SubmittedTransferInner::Control { live_device, .. } => {
                 SubmittedTransferQueue::Control(Arc::as_ptr(live_device) as usize)
@@ -158,10 +159,7 @@ impl SubmittedTransfer {
             SubmittedTransferInner::Endpoint {
                 endpoint,
                 request_id,
-            } => endpoint
-                .lock()
-                .reclaim(*request_id)
-                .map_err(map_transfer_error),
+            } => endpoint.reclaim(*request_id).map_err(map_transfer_error),
             SubmittedTransferInner::Control {
                 live_device,
                 request_id,
@@ -179,7 +177,7 @@ impl SubmittedTransfer {
             SubmittedTransferInner::Endpoint {
                 endpoint,
                 request_id,
-            } => endpoint.lock().poll_request(*request_id, cx),
+            } => endpoint.poll_request(*request_id, cx),
             SubmittedTransferInner::Control {
                 live_device,
                 request_id,
@@ -200,10 +198,7 @@ impl SubmittedTransfer {
             SubmittedTransferInner::Endpoint {
                 endpoint,
                 request_id,
-            } => endpoint
-                .lock()
-                .cancel(*request_id)
-                .map_err(map_transfer_error),
+            } => endpoint.cancel(*request_id).map_err(map_transfer_error),
             SubmittedTransferInner::Control {
                 live_device,
                 request_id,
@@ -215,43 +210,16 @@ impl SubmittedTransfer {
                 .map_err(map_transfer_error),
         }
     }
-
-    pub(super) fn retire_after_quiesce(&self) -> AxResult<()> {
-        match &self.inner {
-            SubmittedTransferInner::Endpoint {
-                endpoint,
-                request_id,
-            } => endpoint
-                .lock()
-                .retire_after_quiesce(*request_id)
-                .map_err(map_transfer_error),
-            SubmittedTransferInner::Control { .. } => Err(AxError::Unsupported),
-        }
-    }
-
-    pub(super) fn supports_retire_after_quiesce(&self) -> bool {
-        match &self.inner {
-            SubmittedTransferInner::Endpoint { endpoint, .. } => {
-                endpoint.lock().supports_retire_after_quiesce()
-            }
-            SubmittedTransferInner::Control { .. } => false,
-        }
-    }
 }
 
 fn wait_endpoint(
     endpoint: EndpointHandle,
     request: TransferRequest,
 ) -> AxResult<TransferCompletion> {
-    let request_id = endpoint
-        .lock()
-        .submit(request)
-        .map_err(map_transfer_error)?;
-    crate::task::future::block_on(poll_fn(|cx| {
-        match endpoint.lock().poll_request(request_id, cx) {
-            Poll::Ready(result) => Poll::Ready(result.map_err(map_transfer_error)),
-            Poll::Pending => Poll::Pending,
-        }
+    let request_id = endpoint.submit(request).map_err(map_transfer_error)?;
+    crate::task::future::block_on(poll_fn(|cx| match endpoint.poll_request(request_id, cx) {
+        Poll::Ready(result) => Poll::Ready(result.map_err(map_transfer_error)),
+        Poll::Pending => Poll::Pending,
     }))
 }
 
@@ -327,21 +295,23 @@ impl UsbDeviceLease {
     }
 
     pub(super) fn bulk_in(&self, endpoint: u8, data: &mut [u8]) -> AxResult<usize> {
-        self.manager.live_bulk_in(self.stable_id, endpoint, data)
+        self.manager
+            .live_bulk_in(self.stable_id, self.session_id, endpoint, data)
     }
 
     pub(super) fn bulk_out(&self, endpoint: u8, data: &[u8]) -> AxResult<usize> {
-        self.manager.live_bulk_out(self.stable_id, endpoint, data)
+        self.manager
+            .live_bulk_out(self.stable_id, self.session_id, endpoint, data)
     }
 
     pub(super) fn interrupt_in(&self, endpoint: u8, data: &mut [u8]) -> AxResult<usize> {
         self.manager
-            .live_interrupt_in(self.stable_id, endpoint, data)
+            .live_interrupt_in(self.stable_id, self.session_id, endpoint, data)
     }
 
     pub(super) fn interrupt_out(&self, endpoint: u8, data: &[u8]) -> AxResult<usize> {
         self.manager
-            .live_interrupt_out(self.stable_id, endpoint, data)
+            .live_interrupt_out(self.stable_id, self.session_id, endpoint, data)
     }
 
     pub(super) fn iso_in(
@@ -350,8 +320,13 @@ impl UsbDeviceLease {
         data: &mut [u8],
         packet_lengths: &[usize],
     ) -> AxResult<IsoTransferResult> {
-        self.manager
-            .live_iso_in(self.stable_id, endpoint, data, packet_lengths)
+        self.manager.live_iso_in(
+            self.stable_id,
+            self.session_id,
+            endpoint,
+            data,
+            packet_lengths,
+        )
     }
 
     pub(super) fn iso_out(
@@ -360,8 +335,13 @@ impl UsbDeviceLease {
         data: &[u8],
         packet_lengths: &[usize],
     ) -> AxResult<usize> {
-        self.manager
-            .live_iso_out(self.stable_id, endpoint, data, packet_lengths)
+        self.manager.live_iso_out(
+            self.stable_id,
+            self.session_id,
+            endpoint,
+            data,
+            packet_lengths,
+        )
     }
 
     pub(super) fn submit_endpoint_transfer(
@@ -369,8 +349,12 @@ impl UsbDeviceLease {
         endpoint: u8,
         request: TransferRequest,
     ) -> AxResult<SubmittedTransfer> {
-        self.manager
-            .live_submit_endpoint_transfer(self.stable_id, endpoint, request)
+        self.manager.live_submit_endpoint_transfer(
+            self.stable_id,
+            self.session_id,
+            endpoint,
+            request,
+        )
     }
 
     pub(super) fn submit_control_transfer(
@@ -399,18 +383,14 @@ impl UsbDeviceLease {
         )
     }
 
-    pub(super) fn release_endpoints(&self, endpoints: &[u8]) -> AxResult<()> {
-        self.manager
-            .live_release_endpoints(self.stable_id, endpoints)
-    }
-
     pub(super) fn release_interface(&self, interface: u8) -> AxResult<()> {
         self.manager
             .live_release_interface(self.stable_id, self.session_id, interface)
     }
 
     pub(super) fn clear_halt(&self, endpoint: u8) -> AxResult<()> {
-        self.manager.live_clear_halt(self.stable_id, endpoint)
+        self.manager
+            .live_clear_halt(self.stable_id, self.session_id, endpoint)
     }
 }
 
@@ -830,12 +810,11 @@ impl UsbFsManager {
         }
     }
 
-    fn apply_probe_results(
-        &self,
-        device_id: RDriveDeviceId,
-        bus_num: u8,
-        devices: Vec<ProbedDevice>,
-    ) {
+    fn apply_probe_results(&self, device_id: RDriveDeviceId, bus_num: u8, changes: ProbeChanges) {
+        let ProbeChanges {
+            connected: devices,
+            disconnected,
+        } = changes;
         let mut state = self.state.lock();
         let Some(host_index) = state
             .hosts
@@ -866,6 +845,20 @@ impl UsbFsManager {
             updates
         };
 
+        let disconnected_devices = disconnected
+            .into_iter()
+            .filter_map(|disconnected_id| {
+                let stable_id = UsbStableId {
+                    host_device_id: device_id,
+                    device_id: disconnected_id,
+                };
+                let record = state.devices.get_mut(&stable_id)?;
+                record.present = false;
+                record.unopened_info = None;
+                record.live_device.clone()
+            })
+            .collect::<Vec<_>>();
+
         for (stable_id, snapshot, unopened_info, openable) in updates {
             let record = state
                 .devices
@@ -886,6 +879,14 @@ impl UsbFsManager {
             record.present = true;
             record.openable = openable;
             record.unopened_info = unopened_info;
+        }
+        drop(state);
+
+        for live_device in disconnected_devices {
+            let mut device = live_device.device.lock();
+            if let Err(err) = crate::task::future::block_on(device.disconnect()) {
+                warn!("usbfs: failed to quiesce disconnected USB device: {err:?}");
+            }
         }
     }
 
@@ -944,10 +945,8 @@ impl UsbFsManager {
                 let mut state = self.state.lock();
                 let record = state.devices.get_mut(&stable_id).ok_or(AxError::NotFound)?;
                 record.live_device = Some(Arc::new(LiveDeviceState {
-                    device: PiMutex::new(live_device),
-                    endpoints: RwLock::new(BTreeMap::new()),
-                    endpoint_interfaces: RwLock::new(BTreeMap::new()),
-                    interface_owners: Mutex::new(BTreeMap::new()),
+                    device: BlockingMutex::new(live_device),
+                    interfaces: BlockingMutex::new(BTreeMap::new()),
                 }));
                 Ok(())
             }
@@ -999,13 +998,19 @@ impl UsbFsManager {
             .ok_or(AxError::NoSuchDevice)
     }
 
-    fn live_endpoint(&self, stable_id: UsbStableId, endpoint: u8) -> AxResult<EndpointHandle> {
+    fn live_endpoint(
+        &self,
+        stable_id: UsbStableId,
+        session_id: u64,
+        endpoint: u8,
+    ) -> AxResult<EndpointHandle> {
         let live_device = self.live_device_by_id(stable_id)?;
         live_device
-            .endpoints
-            .read()
-            .get(&endpoint)
-            .cloned()
+            .interfaces
+            .lock()
+            .values()
+            .filter(|claimed| claimed.owner == session_id)
+            .find_map(|claimed| claimed.session.endpoint(endpoint).ok())
             .ok_or(AxError::NotFound)
     }
 
@@ -1029,15 +1034,15 @@ impl UsbFsManager {
         }
     }
 
-    fn live_clear_halt(&self, stable_id: UsbStableId, endpoint: u8) -> AxResult<()> {
+    fn live_clear_halt(
+        &self,
+        stable_id: UsbStableId,
+        session_id: u64,
+        endpoint: u8,
+    ) -> AxResult<()> {
         self.live_ensure_configured(stable_id)?;
         let live_device = self.live_device_by_id(stable_id)?;
-        let endpoint_handle = live_device
-            .endpoints
-            .read()
-            .get(&endpoint)
-            .cloned()
-            .ok_or(AxError::NotFound)?;
+        let endpoint_handle = self.live_endpoint(stable_id, session_id, endpoint)?;
 
         clear_halt_then_reset(
             || {
@@ -1048,7 +1053,7 @@ impl UsbFsManager {
                 .map(|_| ())
             },
             || {
-                let reset = endpoint_handle.lock().reset();
+                let reset = endpoint_handle.reset();
                 crate::task::future::block_on(reset).map_err(map_transfer_error)
             },
         )
@@ -1063,49 +1068,26 @@ impl UsbFsManager {
     ) -> AxResult<()> {
         self.live_ensure_configured(stable_id)?;
         let live_device = self.live_device_by_id(stable_id)?;
-        {
-            let mut owners = live_device.interface_owners.lock();
-            if let Some(owner) = owners.get(&interface)
-                && *owner != session_id
-            {
+        let mut interfaces = live_device.interfaces.lock();
+        let mut device = live_device.device.lock();
+        if let Some(claimed) = interfaces.get_mut(&interface) {
+            if claimed.owner != session_id {
                 return Err(AxError::ResourceBusy);
             }
-            owners.insert(interface, session_id);
+            return crate::task::future::block_on(
+                claimed.session.set_alternate(&mut device, alternate),
+            )
+            .map_err(map_usb_error);
         }
-
-        {
-            let mut device = live_device.device.lock();
-            if let Err(err) =
-                crate::task::future::block_on(device.claim_interface(interface, alternate))
-                    .map_err(map_usb_error)
-            {
-                live_device.interface_owners.lock().remove(&interface);
-                return Err(err);
-            }
-            let endpoints = match device.take_endpoints_for_interface(interface) {
-                Ok(endpoints) => endpoints,
-                Err(err) => {
-                    live_device.interface_owners.lock().remove(&interface);
-                    return Err(map_usb_error(err));
-                }
-            };
-            let mut live_endpoints = live_device.endpoints.write();
-            let mut endpoint_interfaces = live_device.endpoint_interfaces.write();
-            let stale_endpoints = endpoint_interfaces
-                .iter()
-                .filter_map(|(address, ep_interface)| {
-                    (*ep_interface == interface).then_some(*address)
-                })
-                .collect::<Vec<_>>();
-            for address in stale_endpoints {
-                endpoint_interfaces.remove(&address);
-                live_endpoints.remove(&address);
-            }
-            for (address, endpoint) in endpoints {
-                endpoint_interfaces.insert(address, interface);
-                live_endpoints.insert(address, Arc::new(Mutex::new(endpoint)));
-            }
-        }
+        let session = crate::task::future::block_on(device.claim_interface(interface, alternate))
+            .map_err(map_usb_error)?;
+        interfaces.insert(
+            interface,
+            LiveInterfaceSession {
+                owner: session_id,
+                session,
+            },
+        );
         Ok(())
     }
 
@@ -1127,28 +1109,34 @@ impl UsbFsManager {
 
     fn live_set_configuration(&self, stable_id: UsbStableId, configuration: u8) -> AxResult<()> {
         let live_device = self.live_device_by_id(stable_id)?;
+        let mut interfaces = live_device.interfaces.lock();
         let mut device = live_device.device.lock();
         crate::task::future::block_on(device.set_configuration(configuration))
             .map_err(map_usb_error)?;
-        live_device.endpoints.write().clear();
-        live_device.endpoint_interfaces.write().clear();
-        live_device.interface_owners.lock().clear();
+        interfaces.clear();
         Ok(())
     }
 
     fn live_bulk_in(
         &self,
         stable_id: UsbStableId,
+        session_id: u64,
         endpoint: u8,
         data: &mut [u8],
     ) -> AxResult<usize> {
-        let endpoint = self.live_endpoint(stable_id, endpoint)?;
+        let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::bulk_in(data))
             .map(|completion| completion.actual_length)
     }
 
-    fn live_bulk_out(&self, stable_id: UsbStableId, endpoint: u8, data: &[u8]) -> AxResult<usize> {
-        let endpoint = self.live_endpoint(stable_id, endpoint)?;
+    fn live_bulk_out(
+        &self,
+        stable_id: UsbStableId,
+        session_id: u64,
+        endpoint: u8,
+        data: &[u8],
+    ) -> AxResult<usize> {
+        let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::bulk_out(data))
             .map(|completion| completion.actual_length)
     }
@@ -1156,10 +1144,11 @@ impl UsbFsManager {
     fn live_interrupt_in(
         &self,
         stable_id: UsbStableId,
+        session_id: u64,
         endpoint: u8,
         data: &mut [u8],
     ) -> AxResult<usize> {
-        let endpoint = self.live_endpoint(stable_id, endpoint)?;
+        let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::interrupt_in(data))
             .map(|completion| completion.actual_length)
     }
@@ -1167,10 +1156,11 @@ impl UsbFsManager {
     fn live_interrupt_out(
         &self,
         stable_id: UsbStableId,
+        session_id: u64,
         endpoint: u8,
         data: &[u8],
     ) -> AxResult<usize> {
-        let endpoint = self.live_endpoint(stable_id, endpoint)?;
+        let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::interrupt_out(data))
             .map(|completion| completion.actual_length)
     }
@@ -1178,11 +1168,12 @@ impl UsbFsManager {
     fn live_iso_in(
         &self,
         stable_id: UsbStableId,
+        session_id: u64,
         endpoint: u8,
         data: &mut [u8],
         packet_lengths: &[usize],
     ) -> AxResult<IsoTransferResult> {
-        let endpoint = self.live_endpoint(stable_id, endpoint)?;
+        let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::iso_in(data, packet_lengths)).map(|completion| {
             IsoTransferResult {
                 actual_length: completion.actual_length,
@@ -1193,11 +1184,12 @@ impl UsbFsManager {
     fn live_iso_out(
         &self,
         stable_id: UsbStableId,
+        session_id: u64,
         endpoint: u8,
         data: &[u8],
         packet_lengths: &[usize],
     ) -> AxResult<usize> {
-        let endpoint = self.live_endpoint(stable_id, endpoint)?;
+        let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::iso_out(data, packet_lengths))
             .map(|completion| completion.actual_length)
     }
@@ -1205,14 +1197,12 @@ impl UsbFsManager {
     fn live_submit_endpoint_transfer(
         &self,
         stable_id: UsbStableId,
+        session_id: u64,
         endpoint: u8,
         request: TransferRequest,
     ) -> AxResult<SubmittedTransfer> {
-        let endpoint = self.live_endpoint(stable_id, endpoint)?;
-        let request_id = endpoint
-            .lock()
-            .submit(request)
-            .map_err(map_transfer_error)?;
+        let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
+        let request_id = endpoint.submit(request).map_err(map_transfer_error)?;
         Ok(SubmittedTransfer {
             inner: SubmittedTransferInner::Endpoint {
                 endpoint,
@@ -1242,17 +1232,6 @@ impl UsbFsManager {
         })
     }
 
-    fn live_release_endpoints(&self, stable_id: UsbStableId, endpoints: &[u8]) -> AxResult<()> {
-        let live_device = self.live_device_by_id(stable_id)?;
-        let mut live_endpoints = live_device.endpoints.write();
-        let mut endpoint_interfaces = live_device.endpoint_interfaces.write();
-        for endpoint in endpoints {
-            live_endpoints.remove(endpoint);
-            endpoint_interfaces.remove(endpoint);
-        }
-        Ok(())
-    }
-
     fn live_release_interface(
         &self,
         stable_id: UsbStableId,
@@ -1260,25 +1239,17 @@ impl UsbFsManager {
         interface: u8,
     ) -> AxResult<()> {
         let live_device = self.live_device_by_id(stable_id)?;
-        {
-            let mut owners = live_device.interface_owners.lock();
-            if owners.get(&interface).copied() == Some(session_id) {
-                owners.remove(&interface);
-            }
+        let mut interfaces = live_device.interfaces.lock();
+        let mut device = live_device.device.lock();
+        let claimed = interfaces
+            .get_mut(&interface)
+            .ok_or(AxError::InvalidInput)?;
+        if claimed.owner != session_id {
+            return Err(AxError::ResourceBusy);
         }
-
-        let stale_endpoints = live_device
-            .endpoint_interfaces
-            .read()
-            .iter()
-            .filter_map(|(address, ep_interface)| (*ep_interface == interface).then_some(*address))
-            .collect::<Vec<_>>();
-        let mut live_endpoints = live_device.endpoints.write();
-        let mut endpoint_interfaces = live_device.endpoint_interfaces.write();
-        for address in stale_endpoints {
-            live_endpoints.remove(&address);
-            endpoint_interfaces.remove(&address);
-        }
+        crate::task::future::block_on(claimed.session.release(&mut device))
+            .map_err(map_usb_error)?;
+        interfaces.remove(&interface);
         Ok(())
     }
 
@@ -1634,11 +1605,13 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> UsbHostInitReport {
 fn map_transfer_error(err: TransferError) -> AxError {
     match err {
         TransferError::Timeout => AxError::TimedOut,
-        TransferError::Cancelled => AxError::from(LinuxError::ENOENT),
+        TransferError::Cancelled | TransferError::EndpointRevoked => {
+            AxError::from(LinuxError::ENOENT)
+        }
         TransferError::Stall => AxError::BrokenPipe,
         TransferError::QueueFull => AxError::ResourceBusy,
         TransferError::InvalidEndpoint => AxError::InvalidInput,
-        TransferError::NoDevice => AxError::NoSuchDevice,
+        TransferError::NoDevice | TransferError::Disconnected => AxError::NoSuchDevice,
         TransferError::NotSupported => AxError::Unsupported,
         TransferError::Other(_) => AxError::Io,
     }
@@ -1650,6 +1623,7 @@ fn map_usb_error(err: USBError) -> AxError {
         USBError::NoMemory => AxError::NoMemory,
         USBError::TransferError(err) => map_transfer_error(err),
         USBError::NotInitialized | USBError::ConfigurationNotSet => AxError::BadState,
+        USBError::InterfaceBroken => AxError::Io,
         USBError::NotFound => AxError::NoSuchDevice,
         USBError::InvalidParameter => AxError::InvalidInput,
         USBError::SlotLimitReached => AxError::ResourceBusy,

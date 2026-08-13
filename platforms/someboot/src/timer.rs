@@ -147,45 +147,29 @@ pub(crate) mod aarch64_deadline {
     }
 }
 
-/// Converts a relative interval into the latest representable absolute
-/// deadline without overflowing the architectural counter domain.
 #[cfg(any(target_arch = "riscv64", test))]
-pub(crate) const fn saturating_deadline_from_interval(
-    current_ticks: u64,
-    interval_ticks: u64,
-) -> u64 {
-    let interval_ticks = if interval_ticks == 0 {
-        1
-    } else {
-        interval_ticks
-    };
-    current_ticks.saturating_add(interval_ticks)
+pub(crate) mod riscv64_interval {
+    /// Converts an SBI relative interval into an absolute timer deadline.
+    pub(crate) fn absolute_deadline(current_ticks: u64, interval_ticks: u64) -> u64 {
+        let interval_ticks = if interval_ticks == 0 {
+            1
+        } else {
+            interval_ticks
+        };
+        current_ticks.saturating_add(interval_ticks)
+    }
 }
 
-/// Clamps and rounds a relative interval up to an architectural granularity.
 #[cfg(any(target_arch = "loongarch64", test))]
-pub(crate) const fn aligned_interval_ticks(
-    interval_ticks: usize,
-    min_ticks: usize,
-    alignment: usize,
-) -> usize {
-    assert!(alignment > 0, "timer alignment must be non-zero");
-    let max_aligned = usize::MAX - usize::MAX % alignment;
-    let clamped = if interval_ticks < min_ticks {
-        min_ticks
-    } else {
-        interval_ticks
-    };
-    let clamped = if clamped > max_aligned {
-        max_aligned
-    } else {
-        clamped
-    };
-    let remainder = clamped % alignment;
-    if remainder == 0 {
-        clamped
-    } else {
-        clamped + alignment - remainder
+pub(crate) mod loongarch64_interval {
+    const ALIGNMENT: usize = 4;
+    const MIN_TICKS: usize = 4;
+
+    /// Converts a relative interval to the bounded 4-tick value encoded by TCFG.
+    pub(crate) fn aligned_ticks(interval_ticks: usize) -> usize {
+        let max_aligned = usize::MAX - usize::MAX % ALIGNMENT;
+        let clamped = interval_ticks.max(MIN_TICKS).min(max_aligned);
+        (clamped + (ALIGNMENT - 1)) & !(ALIGNMENT - 1)
     }
 }
 
@@ -310,6 +294,26 @@ mod tests {
     }
 
     #[test]
+    fn riscv64_deadline_saturates_at_counter_limit() {
+        assert_eq!(
+            riscv64_interval::absolute_deadline(u64::MAX - 3, 8),
+            u64::MAX
+        );
+        assert_eq!(riscv64_interval::absolute_deadline(10, 0), 11);
+        assert_eq!(riscv64_interval::absolute_deadline(u64::MAX, 0), u64::MAX);
+    }
+
+    #[test]
+    fn loongarch64_interval_clamps_before_rounding() {
+        assert_eq!(loongarch64_interval::aligned_ticks(1), 4);
+        assert_eq!(loongarch64_interval::aligned_ticks(5), 8);
+        assert_eq!(
+            loongarch64_interval::aligned_ticks(usize::MAX),
+            usize::MAX & !3
+        );
+    }
+
+    #[test]
     fn el1_virtual_timer_uses_virtual_counter_and_compare_register() {
         let registers = RecordingEl1TimerRegisters::new(0x1234_5678_0000_0000, 17);
         let interval = u32::MAX as u64 + 17;
@@ -414,18 +418,5 @@ mod tests {
         fn write_hyp_physical_compare(&self, deadline: u64) {
             self.hyp_physical_compare.set(Some(deadline));
         }
-    }
-
-    #[test]
-    fn saturating_deadline_does_not_wrap_at_counter_limit() {
-        assert_eq!(saturating_deadline_from_interval(u64::MAX - 3, 8), u64::MAX);
-        assert_eq!(saturating_deadline_from_interval(10, 0), 11);
-    }
-
-    #[test]
-    fn aligned_interval_clamps_before_rounding() {
-        assert_eq!(aligned_interval_ticks(1, 4, 4), 4);
-        assert_eq!(aligned_interval_ticks(5, 4, 4), 8);
-        assert_eq!(aligned_interval_ticks(usize::MAX, 4, 4), usize::MAX & !3);
     }
 }
