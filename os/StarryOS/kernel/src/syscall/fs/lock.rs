@@ -43,7 +43,7 @@ use crate::{
     file::{File, FileLike, get_file_like},
     mm::UserPtr,
     sync::RwLock,
-    task::futex::WaitQueue,
+    task::{futex::WaitQueue, visible_user_pid},
 };
 
 type InodeKey = (u64, u64); // (device, inode_no)
@@ -51,6 +51,23 @@ type OfdAddr = usize;
 
 /// Linux convention: `F_OFD_GETLK` reports `l_pid = -1` for an OFD owner.
 const OFD_PID_REPORTED: i32 = -1;
+
+#[derive(Clone, Copy, Debug)]
+enum ReportedLockOwner {
+    Posix(Pid),
+    Ofd,
+}
+
+impl ReportedLockOwner {
+    /// Projects the internal owner into the namespace of the task observing
+    /// `F_GETLK`, matching Linux `locks_translate_pid()`.
+    fn visible_pid(self, current: &crate::task::UserTaskRef) -> i32 {
+        match self {
+            Self::Posix(pid) => visible_user_pid(current, pid as u64) as i32,
+            Self::Ofd => OFD_PID_REPORTED,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LockKind {
@@ -81,11 +98,11 @@ impl FOwner {
         }
     }
 
-    /// pid value to report back via `F_GETLK`.
-    fn report_pid(&self) -> i32 {
+    /// Internal owner identity to project at the `F_GETLK` ABI boundary.
+    fn reported_owner(&self) -> ReportedLockOwner {
         match self {
-            FOwner::Posix { pid } => *pid as i32,
-            FOwner::Ofd { .. } => OFD_PID_REPORTED,
+            FOwner::Posix { pid } => ReportedLockOwner::Posix(*pid),
+            FOwner::Ofd { .. } => ReportedLockOwner::Ofd,
         }
     }
 
@@ -717,7 +734,7 @@ pub fn fcntl_getlk(
         let report = find_conflict(entries, &requester, start, end, req_kind).map(|e| {
             (
                 e.kind,
-                e.owner.report_pid(),
+                e.owner.reported_owner(),
                 e.start,
                 if e.end == i64::MAX {
                     0
@@ -733,7 +750,7 @@ pub fn fcntl_getlk(
     }
     drop(table);
 
-    if let Some((kind, pid, l_start, l_len)) = report {
+    if let Some((kind, owner, l_start, l_len)) = report {
         fl.l_type = (if kind == LockKind::Read {
             F_RDLCK
         } else {
@@ -742,7 +759,7 @@ pub fn fcntl_getlk(
         fl.l_whence = SEEK_SET as i16;
         fl.l_start = l_start;
         fl.l_len = l_len;
-        fl.l_pid = pid;
+        fl.l_pid = owner.visible_pid(current);
     } else {
         fl.l_type = F_UNLCK as i16;
     }
