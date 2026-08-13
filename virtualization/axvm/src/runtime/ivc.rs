@@ -16,10 +16,16 @@
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     format,
-    sync::Mutex,
+    sync::{Arc, Mutex, MutexGuard},
+    vec,
+    vec::Vec,
 };
 
-use ax_memory_addr::{PAGE_SIZE_4K, align_up_4k};
+use ax_memory_addr::{PAGE_SIZE_4K, align_up_4k, is_aligned_4k};
+use axdevice::{
+    DeviceManagerError, DeviceManagerResult, DeviceRuntime, ServiceCardinality, ServiceKey,
+};
+use axdevice_base::IrqLine;
 
 use crate::{
     AxVmError, AxVmResult, GuestPhysAddr, HostPhysAddr, ax_err_type, host::PagingHandler,
@@ -37,6 +43,235 @@ static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), HostIVCChannel>> = Mutex::ne
 /// Requests larger than this are truncated; the hypercall ABI always writes
 /// the actual granted size back to the guest, so guests must check it.
 pub const MAX_IVC_CHANNEL_SIZE: usize = 0x10_0000;
+
+/// Allocates guest-physical bindings inside one graph-owned IVC MMIO aperture.
+pub(crate) trait IvcApertureAllocator: Send + Sync {
+    fn allocate(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr>;
+
+    fn release(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult;
+}
+
+/// Type key for a VM's IVC aperture allocator service.
+pub(crate) struct IvcApertureAllocatorKey;
+
+impl ServiceKey for IvcApertureAllocatorKey {
+    type Service = dyn IvcApertureAllocator;
+
+    const NAME: &'static str = "ivc-aperture-allocator";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
+
+/// VM-local endpoint used by IVC peer notification.
+pub(crate) trait IvcNotifyEndpoint: Send + Sync {
+    fn notify(&self) -> DeviceManagerResult;
+
+    fn input(&self) -> usize;
+}
+
+/// IVC notify endpoint backed by one graph-owned wired IRQ line.
+pub(crate) struct WiredIvcNotifyEndpoint {
+    line: IrqLine,
+}
+
+impl WiredIvcNotifyEndpoint {
+    /// Wraps a planned wired IRQ line as an IVC notify endpoint.
+    pub(crate) const fn new(line: IrqLine) -> Self {
+        Self { line }
+    }
+}
+
+impl IvcNotifyEndpoint for WiredIvcNotifyEndpoint {
+    fn notify(&self) -> DeviceManagerResult {
+        self.line.pulse().map_err(DeviceManagerError::from)
+    }
+
+    fn input(&self) -> usize {
+        self.line.input().value()
+    }
+}
+
+/// Type key for the optional VM-local IRQ endpoint used by IVC peer notification.
+pub(crate) struct IvcNotifyEndpointKey;
+
+impl ServiceKey for IvcNotifyEndpointKey {
+    type Service = dyn IvcNotifyEndpoint;
+
+    const NAME: &'static str = "ivc-notify-endpoint";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
+
+/// Default allocator for an IVC MMIO aperture claimed by an IVC device model.
+pub(crate) struct IvcAperturePool {
+    ranges: Mutex<RangeAllocator>,
+}
+
+impl IvcAperturePool {
+    fn ranges(&self) -> MutexGuard<'_, RangeAllocator> {
+        self.ranges.lock_unpoisoned()
+    }
+
+    /// Creates an allocator over one non-empty, page-aligned range.
+    pub(crate) fn new(base: usize, length: usize) -> DeviceManagerResult<Self> {
+        let end = base
+            .checked_add(length)
+            .ok_or_else(|| DeviceManagerError::InvalidConfig {
+                operation: "create IVC aperture allocator",
+                detail: "IVC aperture overflows the address space".into(),
+            })?;
+        if length == 0 || !is_aligned_4k(base) || !is_aligned_4k(length) {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "create IVC aperture allocator",
+                detail: format!(
+                    "base {base:#x} and length {length:#x} must be non-zero and 4 KiB aligned"
+                ),
+            });
+        }
+        Ok(Self {
+            ranges: Mutex::new(RangeAllocator::new(base..end)),
+        })
+    }
+
+    /// Converts this pool into the typed runtime service capability.
+    pub(crate) fn into_service(self) -> Arc<dyn IvcApertureAllocator> {
+        Arc::new(self)
+    }
+}
+
+impl IvcApertureAllocator for IvcAperturePool {
+    fn allocate(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
+        validate_aperture_size(size, "allocate IVC aperture range")?;
+        self.ranges()
+            .allocate(size)
+            .map(|range| GuestPhysAddr::from_usize(range.start))
+            .ok_or(DeviceManagerError::OutOfMemory {
+                operation: "allocate IVC aperture range",
+            })
+    }
+
+    fn release(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
+        validate_aperture_size(size, "release IVC aperture range")?;
+        let end =
+            addr.as_usize()
+                .checked_add(size)
+                .ok_or_else(|| DeviceManagerError::InvalidInput {
+                    operation: "release IVC aperture range",
+                    detail: "IVC aperture range end overflows the address space".into(),
+                })?;
+        if self.ranges().release(addr.as_usize()..end) {
+            Ok(())
+        } else {
+            Err(DeviceManagerError::InvalidInput {
+                operation: "release IVC aperture range",
+                detail: format!(
+                    "range {:#x}..{end:#x} is outside the pool or is not allocated",
+                    addr.as_usize()
+                ),
+            })
+        }
+    }
+}
+
+pub(crate) fn alloc_guest_binding(
+    devices: &DeviceRuntime,
+    size: usize,
+) -> DeviceManagerResult<GuestPhysAddr> {
+    devices.service::<IvcApertureAllocatorKey>()?.allocate(size)
+}
+
+pub(crate) fn release_guest_binding(
+    devices: &DeviceRuntime,
+    addr: GuestPhysAddr,
+    size: usize,
+) -> DeviceManagerResult {
+    devices
+        .service::<IvcApertureAllocatorKey>()?
+        .release(addr, size)
+}
+
+pub(crate) fn notify_peer(devices: &DeviceRuntime) -> DeviceManagerResult<Option<usize>> {
+    match devices.service::<IvcNotifyEndpointKey>() {
+        Ok(endpoint) => {
+            endpoint.notify()?;
+            Ok(Some(endpoint.input()))
+        }
+        Err(DeviceManagerError::ResourceNotFound { .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn validate_aperture_size(size: usize, operation: &'static str) -> DeviceManagerResult {
+    if size == 0 || !is_aligned_4k(size) {
+        Err(DeviceManagerError::InvalidInput {
+            operation,
+            detail: format!("size {size:#x} must be non-zero and 4 KiB aligned"),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+struct RangeAllocator {
+    initial: core::ops::Range<usize>,
+    free: Vec<core::ops::Range<usize>>,
+}
+
+impl RangeAllocator {
+    fn new(range: core::ops::Range<usize>) -> Self {
+        Self {
+            initial: range.clone(),
+            free: vec![range],
+        }
+    }
+
+    fn allocate(&mut self, size: usize) -> Option<core::ops::Range<usize>> {
+        let index = self
+            .free
+            .iter()
+            .enumerate()
+            .filter(|(_, range)| range.end - range.start >= size)
+            .min_by_key(|(_, range)| range.end - range.start)
+            .map(|(index, _)| index)?;
+        let start = self.free[index].start;
+        let end = start + size;
+        if self.free[index].end == end {
+            self.free.remove(index);
+        } else {
+            self.free[index].start = end;
+        }
+        Some(start..end)
+    }
+
+    fn release(&mut self, range: core::ops::Range<usize>) -> bool {
+        if range.start >= range.end
+            || range.start < self.initial.start
+            || range.end > self.initial.end
+        {
+            return false;
+        }
+        let index = self
+            .free
+            .iter()
+            .position(|free| free.start > range.start)
+            .unwrap_or(self.free.len());
+        if index > 0 && self.free[index - 1].end > range.start
+            || index < self.free.len() && range.end > self.free[index].start
+        {
+            return false;
+        }
+        if index > 0 && self.free[index - 1].end == range.start {
+            self.free[index - 1].end = range.end;
+            if index < self.free.len() && self.free[index - 1].end == self.free[index].start {
+                let next = self.free.remove(index);
+                self.free[index - 1].end = next.end;
+            }
+        } else if index < self.free.len() && range.end == self.free[index].start {
+            self.free[index].start = range.start;
+        } else {
+            self.free.insert(index, range);
+        }
+        true
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IvcNotifyRoute {

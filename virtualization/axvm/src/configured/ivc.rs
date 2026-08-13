@@ -8,7 +8,7 @@ use axvmconfig::VirtualDeviceRequest;
 
 use crate::{
     ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext,
-    FixedDeviceBindings,
+    FixedDeviceBindings, runtime::ivc,
 };
 
 const REGISTERS_SLOT: &str = "registers";
@@ -124,8 +124,8 @@ impl DeviceModel for IvcChannelModel {
         let (base, length) = context.mmio(REGISTERS_SLOT)?;
         let notify_irq = context.irq(NOTIFY_IRQ_SLOT)?;
         let bundle = DeviceBundle::new()
-            .with_service::<IvcApertureAllocatorKey>(
-                IvcAperturePool::new(
+            .with_service::<ivc::IvcApertureAllocatorKey>(
+                ivc::IvcAperturePool::new(
                     usize::try_from(base).map_err(|_| DeviceManagerError::InvalidConfig {
                         operation: "create IVC channel",
                         detail: "base GPA does not fit usize".into(),
@@ -137,7 +137,9 @@ impl DeviceModel for IvcChannelModel {
                 )?
                 .into_service(),
             )?
-            .with_service::<IvcNotifyIrqKey>(Arc::new(WiredIvcNotifyEndpoint::new(notify_irq)))?;
+            .with_service::<ivc::IvcNotifyEndpointKey>(Arc::new(
+                ivc::WiredIvcNotifyEndpoint::new(notify_irq),
+            ))?;
         Ok(bundle)
     }
 }

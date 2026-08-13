@@ -314,12 +314,7 @@ model = "ivc-channel"
             .build_graph_node(node, graph.resource_plan())
             .unwrap();
     }
-    let runtime = runtime.finish(graph.resource_plan()).unwrap();
-    assert_eq!(runtime.notify_ivc_peer().unwrap(), Some(32));
-    assert_eq!(
-        runtime.alloc_ivc_channel(0x1000).unwrap(),
-        axvm_types::GuestPhysAddr::from_usize(0x1000_0000)
-    );
+    let _runtime = runtime.finish(graph.resource_plan()).unwrap();
 }
 
 #[test]

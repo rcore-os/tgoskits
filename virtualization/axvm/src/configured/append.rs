@@ -163,10 +163,69 @@ fn configured_error(error: ConfiguredDeviceError) -> AxVmError {
 
 #[cfg(test)]
 mod tests {
-    use std::vec;
+    use std::{sync::Arc, vec};
+
+    use axdevice_base::{IrqResult, VirtualInterruptController, WiredIrqInput, WiredIrqSink};
 
     use super::*;
     use crate::config::{AxVMConfig, AxVMConfigParams, PhysCpuList};
+
+    struct TestInterruptController;
+    struct TestInterruptSink;
+
+    impl WiredIrqSink for TestInterruptSink {
+        fn set_level(&self, _input: ControllerInputId, _asserted: bool) -> IrqResult {
+            Ok(())
+        }
+
+        fn pulse(&self, _input: ControllerInputId) -> IrqResult {
+            Ok(())
+        }
+    }
+
+    impl VirtualInterruptController for TestInterruptController {
+        fn id(&self) -> InterruptControllerId {
+            InterruptControllerId::new(0)
+        }
+
+        fn wired_input(
+            &self,
+            input: ControllerInputId,
+            trigger: InterruptTrigger,
+        ) -> IrqResult<WiredIrqInput> {
+            Ok(WiredIrqInput::new(
+                self.id(),
+                input,
+                trigger,
+                Arc::new(TestInterruptSink),
+            ))
+        }
+    }
+
+    struct TestInterruptControllerModel;
+
+    impl DeviceModel for TestInterruptControllerModel {
+        fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+            Ok(DeviceRequirements::new())
+        }
+
+        fn build(
+            &self,
+            _context: &mut DeviceBuildContext<'_>,
+        ) -> DeviceManagerResult<DeviceBundle> {
+            let controller: Arc<dyn VirtualInterruptController> = Arc::new(TestInterruptController);
+            Ok(DeviceBundle::from_registration(
+                DeviceRegistration::InterruptController(ControllerRegistration::new(
+                    InterruptControllerId::new(0),
+                    controller,
+                )),
+            ))
+        }
+    }
+
+    fn test_interrupt_controller_node(id: DeviceNodeId) -> DeviceNodeSpec {
+        DeviceNodeSpec::virtual_device(id, Arc::new(TestInterruptControllerModel))
+    }
 
     #[test]
     fn console_override_and_extra_serial_share_deterministic_planning() {
@@ -237,7 +296,7 @@ mod tests {
             ..Default::default()
         });
         let controller = DeviceNodeId::new("controller").unwrap();
-        let mut nodes = vec![DeviceNodeSpec::firmware_only(controller.clone())];
+        let mut nodes = vec![test_interrupt_controller_node(controller.clone())];
         append_configured_devices(
             &config,
             &mut nodes,
@@ -277,5 +336,17 @@ mod tests {
             (0x1000_0000, super::ivc::IVC_CHANNEL_SHARED_RANGE_SIZE)
         );
         assert_eq!(ivc.wired_irq(&notify).unwrap().input().value(), 32);
+
+        let mut runtime = DeviceRuntimeBuilder::new(Default::default());
+        for node in graph.nodes() {
+            runtime
+                .build_graph_node(node, graph.resource_plan())
+                .unwrap();
+        }
+        let runtime = runtime.finish(graph.resource_plan()).unwrap();
+        assert_eq!(
+            crate::runtime::ivc::alloc_guest_binding(&runtime, 0x1000).unwrap(),
+            GuestPhysAddr::from_usize(0x1000_0000)
+        );
     }
 }

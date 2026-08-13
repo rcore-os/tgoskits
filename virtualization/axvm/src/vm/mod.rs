@@ -738,8 +738,7 @@ impl IvcGuestBindingRelease for AxVMResources {
         binding: crate::runtime::ivc::IvcGuestBinding,
     ) -> AxVmResult {
         if let Some(devices) = &self.devices {
-            devices
-                .release_ivc_channel(binding.gpa, binding.size)
+            crate::runtime::ivc::release_guest_binding(devices, binding.gpa, binding.size)
                 .map_err(|error| {
                     AxVmError::device("release IVC binding during lifecycle cleanup", error)
                 })?;
@@ -1826,9 +1825,8 @@ impl AxVM {
     pub fn alloc_ivc_channel(&self, expected_size: usize) -> AxVmResult<(GuestPhysAddr, usize)> {
         // Ensure the expected size is aligned to 4K.
         let size = align_up_4k(expected_size);
-        let gpa = self
-            .get_devices()?
-            .alloc_ivc_channel(size)
+        let devices = self.get_devices()?;
+        let gpa = crate::runtime::ivc::alloc_guest_binding(&devices, size)
             .map_err(|error| AxVmError::memory("reserve IVC guest address range", error))?;
         Ok((gpa, size))
     }
@@ -1840,8 +1838,7 @@ impl AxVM {
     /// ## Returns
     /// * `AxVmResult<()>` - An empty result indicating success or failure.
     pub fn release_ivc_channel(&self, gpa: GuestPhysAddr, size: usize) -> AxVmResult {
-        self.get_devices()?
-            .release_ivc_channel(gpa, size)
+        crate::runtime::ivc::release_guest_binding(self.get_devices()?.as_ref(), gpa, size)
             .map_err(|error| AxVmError::memory("release IVC guest address range", error))?;
         Ok(())
     }

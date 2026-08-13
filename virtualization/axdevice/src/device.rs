@@ -340,30 +340,15 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    /// Allocates an IVC channel binding from a graph-claimed MMIO aperture.
-    pub fn alloc_ivc_channel(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
-        self.services
-            .require::<IvcApertureAllocatorKey>()?
-            .allocate(size)
-    }
-
-    /// Delivers an IVC notify event through the graph-owned peer IRQ endpoint.
-    pub fn notify_ivc_peer(&self) -> DeviceManagerResult<Option<usize>> {
-        match self.services.require::<IvcNotifyIrqKey>() {
-            Ok(endpoint) => {
-                endpoint.notify()?;
-                Ok(Some(endpoint.input()))
-            }
-            Err(DeviceManagerError::ResourceNotFound { .. }) => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Releases a previously allocated IVC channel.
-    pub fn release_ivc_channel(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
-        self.services
-            .require::<IvcApertureAllocatorKey>()?
-            .release(addr, size)
+    /// Returns a typed service contributed by one emulated device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no provider exists for `K`, or when `K` is a
+    /// multi-provider service that must be queried through a future explicit
+    /// multi-provider runtime API.
+    pub fn service<K: ServiceKey>(&self) -> DeviceManagerResult<Arc<K::Service>> {
+        self.services.require::<K>()
     }
 
     /// Registers a bundle atomically.  If any device fails to register,

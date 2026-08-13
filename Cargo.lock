@@ -1327,7 +1327,6 @@ dependencies = [
 name = "axdevice"
 version = "0.5.7"
 dependencies = [
- "ax-memory-addr",
  "ax-sync",
  "axdevice_base",
  "axvm-types",
