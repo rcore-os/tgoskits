@@ -78,6 +78,72 @@ impl<'a> ExtentTree<'a> {
         }
     }
 
+    fn merge_leaf_extent_right(
+        entries: &mut Vec<Ext4Extent>,
+        left_index: usize,
+    ) -> Ext4Result<bool> {
+        let Some(right_index) = left_index
+            .checked_add(1)
+            .filter(|index| *index < entries.len())
+        else {
+            return Ok(false);
+        };
+        let left = entries[left_index];
+        let right = entries[right_index];
+        if left.is_unwritten() != right.is_unwritten() {
+            return Ok(false);
+        }
+
+        let left_len = left.len();
+        let right_len = right.len();
+        let Some(logical_end) = left.ee_block.checked_add(left_len) else {
+            return Ok(false);
+        };
+        if logical_end != right.ee_block {
+            return Ok(false);
+        }
+
+        let Some(physical_end) = left.start_block().checked_add(u64::from(left_len)) else {
+            return Ok(false);
+        };
+        if physical_end != right.start_block() {
+            return Ok(false);
+        }
+
+        let Some(merged_len) = left_len.checked_add(right_len) else {
+            return Ok(false);
+        };
+        let max_len = if left.is_unwritten() {
+            u32::from(Ext4Extent::EXT_UNINIT_MAX_LEN)
+        } else {
+            u32::from(Ext4Extent::EXT_INIT_MAX_LEN)
+        };
+        if merged_len > max_len {
+            return Ok(false);
+        }
+
+        entries[left_index].ee_len = left
+            .build_len_like(merged_len)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:merge_length"))?;
+        entries.remove(right_index);
+        Ok(true)
+    }
+
+    fn merge_leaf_extent_neighbors(
+        entries: &mut Vec<Ext4Extent>,
+        inserted_index: usize,
+    ) -> Ext4Result<()> {
+        let merge_index =
+            if inserted_index > 0 && Self::merge_leaf_extent_right(entries, inserted_index - 1)? {
+                inserted_index - 1
+            } else {
+                inserted_index
+            };
+
+        while Self::merge_leaf_extent_right(entries, merge_index)? {}
+        Ok(())
+    }
+
     /// Recursive insert worker.
     ///
     /// `phy_block == None` means the current node is the inline inode root.
@@ -94,96 +160,8 @@ impl<'a> ExtentTree<'a> {
                 let pos = entries
                     .binary_search_by_key(&new_ext.ee_block, |e| e.ee_block)
                     .unwrap_or_else(|i| i);
-
-                if pos > 0 {
-                    let prev = &mut entries[pos - 1];
-
-                    let prev_logical = prev.ee_block;
-                    let prev_len = prev.len();
-                    let new_logical = new_ext.ee_block;
-                    let new_len = new_ext.len();
-
-                    if prev_len != 0
-                        && new_len != 0
-                        && prev.is_unwritten() == new_ext.is_unwritten()
-                    {
-                        let prev_end = prev_logical.saturating_add(prev_len);
-
-                        if new_logical == prev_end {
-                            let prev_phys_start =
-                                ((prev.ee_start_hi as u64) << 32) | prev.ee_start_lo as u64;
-                            let new_phys_start =
-                                ((new_ext.ee_start_hi as u64) << 32) | new_ext.ee_start_lo as u64;
-
-                            if new_phys_start == prev_phys_start + prev_len as u64 {
-                                let total = prev_len + new_len;
-                                let max_len = if prev.is_unwritten() {
-                                    Ext4Extent::EXT_UNINIT_MAX_LEN as u32
-                                } else {
-                                    Ext4Extent::EXT_INIT_MAX_LEN as u32
-                                };
-
-                                if total <= max_len {
-                                    prev.ee_len =
-                                        prev.build_len_like(total).ok_or(Ext4Error::corrupted())?;
-
-                                    if entries.len() <= header.eh_max as usize {
-                                        if let Some(block_id) = phy_block {
-                                            // Persist the updated leaf if it is
-                                            // already backed by a real block.
-                                            let disk_node = ExtentNode::Leaf {
-                                                header: *header,
-                                                entries: entries.clone(),
-                                            };
-                                            self.write_node_to_block(
-                                                block_dev, block_id, &disk_node,
-                                            )?;
-                                        }
-                                        return Ok(None);
-                                    }
-                                } else {
-                                    prev.ee_len = prev
-                                        .build_len_like(max_len)
-                                        .ok_or(Ext4Error::corrupted())?;
-
-                                    let remain = total - max_len;
-                                    if remain > 0 {
-                                        let tail_logical = prev_logical + max_len;
-                                        let tail_phys = prev_phys_start + max_len as u64;
-
-                                        let tail = Ext4Extent {
-                                            ee_block: tail_logical,
-                                            ee_len: new_ext
-                                                .build_len_like(remain)
-                                                .ok_or(Ext4Error::corrupted())?,
-                                            ee_start_hi: (tail_phys >> 32) as u16,
-                                            ee_start_lo: (tail_phys & 0xFFFF_FFFF) as u32,
-                                        };
-
-                                        let insert_pos = pos;
-                                        entries.insert(insert_pos, tail);
-                                        header.eh_entries = entries.len() as u16;
-
-                                        if entries.len() <= header.eh_max as usize {
-                                            if let Some(block_id) = phy_block {
-                                                let disk_node = ExtentNode::Leaf {
-                                                    header: *header,
-                                                    entries: entries.clone(),
-                                                };
-                                                self.write_node_to_block(
-                                                    block_dev, block_id, &disk_node,
-                                                )?;
-                                            }
-                                            return Ok(None);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
                 entries.insert(pos, new_ext);
+                Self::merge_leaf_extent_neighbors(entries, pos)?;
                 header.eh_entries = entries.len() as u16;
 
                 // If the leaf still fits, write it back and stop bubbling.

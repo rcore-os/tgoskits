@@ -921,6 +921,185 @@ mod tests {
     }
 
     #[test]
+    fn inserted_extent_merges_with_both_adjacent_extents() {
+        let (mut dev, mut fs) = setup_fs(16 * 1024);
+        let mut inode = new_extent_inode();
+        let base = alloc_contiguous(&mut fs, &mut dev, 6);
+
+        let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+        tree.insert_extent(&mut fs, Ext4Extent::new(0, base.raw(), 2), &mut dev)
+            .unwrap();
+        tree.insert_extent(
+            &mut fs,
+            Ext4Extent::new(4, base.checked_add(4).unwrap().raw(), 2),
+            &mut dev,
+        )
+        .unwrap();
+        tree.insert_extent(
+            &mut fs,
+            Ext4Extent::new(2, base.checked_add(2).unwrap().raw(), 2),
+            &mut dev,
+        )
+        .unwrap();
+
+        let extents = tree.all_extents(&mut dev).unwrap();
+        assert_eq!(extents.len(), 1);
+        assert_eq!(extents[0].ee_block, 0);
+        assert_eq!(extents[0].start_block(), base.raw());
+        assert_eq!(extents[0].len(), 6);
+    }
+
+    #[test]
+    fn inserted_extent_only_merges_with_neighbors_in_the_same_state() {
+        let (mut dev, mut fs) = setup_fs(16 * 1024);
+        let mut inode = new_extent_inode();
+        let base = alloc_contiguous(&mut fs, &mut dev, 6);
+
+        let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+        tree.insert_extent(
+            &mut fs,
+            Ext4Extent::new_unwritten(0, base.raw(), 2).unwrap(),
+            &mut dev,
+        )
+        .unwrap();
+        tree.insert_extent(
+            &mut fs,
+            Ext4Extent::new(4, base.checked_add(4).unwrap().raw(), 2),
+            &mut dev,
+        )
+        .unwrap();
+        tree.insert_extent(
+            &mut fs,
+            Ext4Extent::new(2, base.checked_add(2).unwrap().raw(), 2),
+            &mut dev,
+        )
+        .unwrap();
+
+        let extents = tree.all_extents(&mut dev).unwrap();
+        assert_eq!(extents.len(), 2);
+        assert!(extents[0].is_unwritten());
+        assert_eq!(extents[0].len(), 2);
+        assert!(extents[1].is_initialized());
+        assert_eq!(extents[1].ee_block, 2);
+        assert_eq!(extents[1].len(), 4);
+    }
+
+    #[test]
+    fn inserted_extent_does_not_partially_merge_past_the_wire_limit() {
+        let (mut dev, mut fs) = setup_fs(64 * 1024);
+        let mut inode = new_extent_inode();
+        let first_len = u32::from(Ext4Extent::EXT_INIT_MAX_LEN) - 1;
+        let physical_start = 20_000;
+
+        let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+        tree.insert_extent(
+            &mut fs,
+            Ext4Extent::new(0, physical_start, first_len as u16),
+            &mut dev,
+        )
+        .unwrap();
+        tree.insert_extent(
+            &mut fs,
+            Ext4Extent::new(first_len, physical_start + u64::from(first_len), 2),
+            &mut dev,
+        )
+        .unwrap();
+
+        let extents = tree.all_extents(&mut dev).unwrap();
+        assert_eq!(extents.len(), 2);
+        assert_eq!(extents[0].ee_block, 0);
+        assert_eq!(extents[0].len(), first_len);
+        assert_eq!(extents[1].ee_block, first_len);
+        assert_eq!(extents[1].len(), 2);
+    }
+
+    #[test]
+    fn inserted_unwritten_extent_preserves_its_wire_limit_and_state() {
+        let (mut dev, mut fs) = setup_fs(64 * 1024);
+        let max_len = u32::from(Ext4Extent::EXT_UNINIT_MAX_LEN);
+        let physical_start = 20_000;
+
+        let mut merged_inode = new_extent_inode();
+        let mut merged_tree = ExtentTree::new(&mut merged_inode, BLOCK_SIZE);
+        merged_tree
+            .insert_extent(
+                &mut fs,
+                Ext4Extent::new_unwritten(0, physical_start, max_len - 2).unwrap(),
+                &mut dev,
+            )
+            .unwrap();
+        merged_tree
+            .insert_extent(
+                &mut fs,
+                Ext4Extent::new_unwritten(max_len - 2, physical_start + u64::from(max_len - 2), 2)
+                    .unwrap(),
+                &mut dev,
+            )
+            .unwrap();
+        let merged = merged_tree.all_extents(&mut dev).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].is_unwritten());
+        assert_eq!(merged[0].len(), max_len);
+
+        let mut split_inode = new_extent_inode();
+        let mut split_tree = ExtentTree::new(&mut split_inode, BLOCK_SIZE);
+        split_tree
+            .insert_extent(
+                &mut fs,
+                Ext4Extent::new_unwritten(0, physical_start, max_len - 1).unwrap(),
+                &mut dev,
+            )
+            .unwrap();
+        split_tree
+            .insert_extent(
+                &mut fs,
+                Ext4Extent::new_unwritten(max_len - 1, physical_start + u64::from(max_len - 1), 2)
+                    .unwrap(),
+                &mut dev,
+            )
+            .unwrap();
+        let split = split_tree.all_extents(&mut dev).unwrap();
+        assert_eq!(split.len(), 2);
+        assert!(split.iter().all(Ext4Extent::is_unwritten));
+        assert_eq!(split[0].len(), max_len - 1);
+        assert_eq!(split[1].len(), 2);
+    }
+
+    #[test]
+    fn inserted_extent_merge_is_persisted_in_an_external_leaf() {
+        let (mut dev, mut fs) = setup_fs(32 * 1024);
+        let mut inode = new_extent_inode();
+        let physical_start = 10_000;
+        let initial_logical = [0, 4, 8, 12, 16];
+
+        {
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+            for logical in initial_logical {
+                tree.insert_extent(
+                    &mut fs,
+                    Ext4Extent::new(logical, physical_start + u64::from(logical), 2),
+                    &mut dev,
+                )
+                .unwrap();
+            }
+            assert_eq!(tree.load_root_from_inode().unwrap().header().eh_depth, 1);
+            tree.insert_extent(
+                &mut fs,
+                Ext4Extent::new(14, physical_start + 14, 2),
+                &mut dev,
+            )
+            .unwrap();
+        }
+
+        let mut reloaded = ExtentTree::new(&mut inode, BLOCK_SIZE);
+        let extents = reloaded.all_extents(&mut dev).unwrap();
+        assert_eq!(extents.len(), 4);
+        assert_eq!(extents[3].ee_block, 12);
+        assert_eq!(extents[3].start_block(), physical_start + 12);
+        assert_eq!(extents[3].len(), 6);
+    }
+
+    #[test]
     fn insert_rejects_empty_internal_root_without_mutating_inode() {
         let (mut dev, mut fs) = setup_fs(16 * 1024);
         let mut inode = new_extent_inode();

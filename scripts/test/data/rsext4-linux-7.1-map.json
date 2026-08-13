@@ -339,8 +339,41 @@
       "segments": [
         {
           "start": 1,
+          "end": 1785,
+          "symbol": "<coarse interval>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::extents_tree",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "extent-checked-codec",
+            "extent-mutation-rollback",
+            "extent-unwritten-preallocation",
+            "fallocate-preallocation-full-stack",
+            "fallocate-range-zero-punch",
+            "fallocate-range-collapse-insert",
+            "fiemap-full-stack"
+          ]
+        },
+        {
+          "start": 1786,
+          "end": 1932,
+          "symbol": "ext4_can_extents_be_merged; ext4_ext_try_to_merge_right; ext4_ext_try_to_merge_up; ext4_ext_try_to_merge",
+          "classification": "core",
+          "state_machine": "insert one checked leaf extent, prefer merging it into the left neighbor, continue merging the surviving extent rightward, then collapse a one-leaf tree when credits allow",
+          "invariant": "only logically and physically contiguous extents with the same initialized state and a representable combined wire length may merge; exceeding the wire limit leaves both extents intact",
+          "rust_owner": "rsext4::extents_tree::insert and rsext4::extents_tree::remove",
+          "reason": "leaf normalization and tree-collapse allocation accounting are portable ext4 on-disk semantics; cross-leaf merging is not performed by Linux",
+          "test_ids": [
+            "extent-mutation-rollback",
+            "extent-unwritten-preallocation"
+          ]
+        },
+        {
+          "start": 1933,
           "end": 6308,
-          "symbol": "<whole-file>",
+          "symbol": "<coarse interval>",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",
