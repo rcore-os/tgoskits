@@ -62,7 +62,7 @@ fn counting_callback() {
         target_cpu,
         "IPI callback ran on the wrong CPU"
     );
-    EXECUTED_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+    EXECUTED_CALLBACKS.fetch_add(1, Ordering::Release);
 }
 
 unsafe fn counting_hard_call(argument: *mut ()) {
@@ -221,7 +221,7 @@ pub fn run() -> crate::TestResult {
     for round in 0..TEST_ROUNDS {
         TARGET_CPU.store(target_cpu, Ordering::Relaxed);
         SENT_CALLBACKS.store(0, Ordering::Relaxed);
-        EXECUTED_CALLBACKS.store(0, Ordering::Relaxed);
+        EXECUTED_CALLBACKS.store(0, Ordering::Release);
         EXECUTED_HARD_CALLS.store(0, Ordering::Relaxed);
 
         let ready = Arc::new(AtomicUsize::new(0));
@@ -276,7 +276,7 @@ pub fn run() -> crate::TestResult {
             thread::yield_now();
         }
         assert_eq!(
-            EXECUTED_CALLBACKS.load(Ordering::Relaxed),
+            EXECUTED_CALLBACKS.load(Ordering::Acquire),
             expected,
             "all asynchronous callbacks must complete in round {round}"
         );
