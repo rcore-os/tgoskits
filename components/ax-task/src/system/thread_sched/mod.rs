@@ -67,6 +67,17 @@ impl ThreadSchedCell {
             .lock(crate::runtime::IrqGuardSource::ThreadSchedTicket)
     }
 
+    /// Locks scheduler state below the runtime's IRQ-off scheduler baton.
+    ///
+    /// # Safety
+    ///
+    /// The scheduler frame must remain active until the returned guard is
+    /// dropped. Ordinary task context must use [`Self::lock`].
+    pub(super) unsafe fn lock_scheduler_frame(&self) -> IrqTicketGuard<'_, ThreadSchedState> {
+        // SAFETY: forwarded from this method's scheduler-baton contract.
+        unsafe { self.state.lock_irq_disabled() }
+    }
+
     /// Locks scheduler state during offline CPU bootstrap.
     ///
     /// # Safety

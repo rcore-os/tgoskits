@@ -230,7 +230,10 @@ impl TaskSystem {
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let previous_core_hint = current.map(|thread| Arc::clone(thread.runtime_core_arc()));
-        let mut previous_sched = previous_core_hint.as_ref().map(|core| core.sched().lock());
+        let mut previous_sched = previous_core_hint.as_ref().map(|core| {
+            // SAFETY: propagated from the selected entry contract.
+            unsafe { rq_entry.lock_thread_sched(core.sched()) }
+        });
         // SAFETY: the public task entry chooses irqsave; the scheduler-frame
         // entry is exposed only by its unsafe wrapper below.
         let mut transaction = unsafe { rq_entry.begin(self, &remote) };
@@ -335,7 +338,8 @@ impl TaskSystem {
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let previous_core_hint = Arc::clone(current.runtime_core_arc());
-        let mut previous_sched = previous_core_hint.sched().lock();
+        // SAFETY: propagated from the selected entry contract.
+        let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
         // SAFETY: propagated from the selected entry contract.
         let mut transaction = unsafe { rq_entry.begin(self, &remote) };
         let clock = transaction.clock();
@@ -492,7 +496,8 @@ impl TaskSystem {
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let previous_core_hint = Arc::clone(current.runtime_core_arc());
-        let mut previous_sched = previous_core_hint.sched().lock();
+        // SAFETY: propagated from the selected entry contract.
+        let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
         // SAFETY: propagated from the selected entry contract.
         let mut transaction = unsafe { rq_entry.begin(self, &remote) };
         let clock = transaction.clock();

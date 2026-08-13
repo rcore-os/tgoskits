@@ -3,7 +3,10 @@
 use super::*;
 use crate::{
     BalanceScan, EnqueueReason, FairEntity, PickedThread, QueuedThreadSnapshot, RtEligibility,
-    system::task_system::{SwitchEndpoint, TaskSystem},
+    system::{
+        task_system::{SwitchEndpoint, TaskSystem},
+        thread_sched::{ThreadSchedCell, ThreadSchedState},
+    },
 };
 
 #[derive(Clone, Copy)]
@@ -20,6 +23,24 @@ enum OwnerRqContext {
 }
 
 impl OwnerRqEntry {
+    /// Locks task scheduler state under this rq entry's IRQ ownership model.
+    ///
+    /// # Safety
+    ///
+    /// `SchedulerFrame` requires an active IRQ-off runtime scheduler baton.
+    pub(in crate::system) unsafe fn lock_thread_sched(
+        self,
+        cell: &ThreadSchedCell,
+    ) -> IrqTicketGuard<'_, ThreadSchedState> {
+        match self {
+            Self::IrqSave => cell.lock(),
+            Self::SchedulerFrame => {
+                // SAFETY: forwarded from this method's contract.
+                unsafe { cell.lock_scheduler_frame() }
+            }
+        }
+    }
+
     /// Begins the selected rq locking protocol.
     ///
     /// # Safety

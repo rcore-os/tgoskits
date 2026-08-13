@@ -3191,6 +3191,22 @@ guard，再由 `OwnerRqTxn::begin()` 建立第二个 runtime IRQ guard。不能�
 后为 `thread_sched=1, run_queue=0` 并通过。该检查点只关闭 try-to-wake-up 的重复 owner；
 schedule/park/exit 的 scheduler-frame/task-lock 层次和端到端性能差距仍需继续收敛。
 
+第二项高频重复 owner 来自 scheduler frame 内部。Linux `__schedule()` 在外层关闭 IRQ 后依次取得
+task/rq raw lock；ax-task 的 rq 已通过 `OwnerRqEntry::SchedulerFrame` 复用 scheduler baton，但
+park、exit、schedule、yield 仍对 task scheduler state 调用普通 irqsave lock，形成同一事务内的
+第二个 runtime IRQ owner。现在 `OwnerRqEntry` 同时决定 task 与 rq 的加锁协议：普通 task context
+保持 `IrqSave`，只有带 `SchedulerFrame` 类型分支的入口才能调用 raw task lock；该 unsafe 边界要求
+runtime scheduler baton 覆盖两个 guard 的完整生命周期，不再新增另一套 IRQ 状态判断。
+
+同一个 ArceOS Rust remote wait-queue 回归在 sleeper 真正进入 park 提交前挂载一次性观测。旧实现
+稳定记录 `ParkIrqOwnerEntries { thread_sched: 1, run_queue: 0 }` 并失败；修复后为 `0/0`，同时 wake
+事务仍保持上一检查点的 `1/0`。相同 x86_64/4-vCPU、60 秒 ext4 marker 窗口推进到同一
+`file-0535`，switch 数量也接近（124,526 对 124,152）：thread-sched runtime IRQ guard 从
+512,870 降至 373,137（-27.24%），全部 runtime IRQ guard 从 1,909,076 降至 1,785,929
+（-6.45%），rq ticket 从 312,088 降至 250,724（-19.66%）。host user 从 88.012 秒降至
+87.275 秒，仅改善 0.84%，工作负载仍未在 60 秒窗口完成；因此这里只确认 scheduler-frame
+所有权重复已消除，不把局部结构下降误报为相对 dev 的端到端性能达标。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

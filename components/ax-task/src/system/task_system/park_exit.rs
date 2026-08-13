@@ -216,9 +216,16 @@ impl TaskSystem {
         let previous_core_hint = Arc::clone(current.runtime_core_arc());
         #[cfg(test)]
         park_commit_wake_race_hook(self, previous_core_hint.id());
-        let mut previous_sched = previous_core_hint.sched().lock();
+        // SAFETY: propagated from the selected entry contract.
+        let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
         // SAFETY: propagated from the selected entry contract.
         let mut transaction = unsafe { rq_entry.begin(self, &remote) };
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_irq_owner_scopes(
+            previous_core_hint.id(),
+            previous_sched.owns_runtime_irq_scope(),
+            transaction.owns_runtime_irq_scope(),
+        );
         transaction.adopt_scheduler_request(initial_request);
         let scheduler_request = transaction.merge_scheduler_request();
         let clock = transaction.clock();
@@ -550,7 +557,8 @@ impl TaskSystem {
 
         let remote = Arc::clone(cpu.remote());
         let initial_request = remote.claim_scheduler_request();
-        let mut exited_sched = exited_core.sched().lock();
+        // SAFETY: propagated from the selected entry contract.
+        let mut exited_sched = unsafe { rq_entry.lock_thread_sched(exited_core.sched()) };
         // SAFETY: propagated from the selected entry contract.
         let mut transaction = unsafe { rq_entry.begin(self, &remote) };
         let clock = transaction.clock();
