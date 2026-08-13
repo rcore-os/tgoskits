@@ -17,7 +17,10 @@ use crate::{
         VmMutPtr, VmPtr, atomic_update_user_u32_nofault, fault_in_user_u32_read,
         fault_in_user_u32_write, read_user_u32_nofault,
     },
-    task::{FutexAccessError, FutexContext, FutexKeyMode, FutexWaitError, UserTaskRef, get_task},
+    task::{
+        FutexAccessError, FutexContext, FutexKeyMode, FutexWaitError, UserTaskRef, get_task,
+        resolve_user_pid,
+    },
     time::TimeValueLike,
 };
 
@@ -416,7 +419,12 @@ pub fn sys_get_robust_list(
     head: *mut *const robust_list_head,
     size: *mut usize,
 ) -> AxResult<isize> {
-    let task = get_task(tid)?;
+    let global_tid = if tid == 0 {
+        0
+    } else {
+        resolve_user_pid(current, tid)?
+    };
+    let task = get_task(global_tid)?;
     head.vm_write(current, task.as_thread().robust_list_head() as _)?;
     size.vm_write(current, size_of::<robust_list_head>())?;
 

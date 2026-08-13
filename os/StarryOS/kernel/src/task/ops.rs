@@ -23,7 +23,7 @@ use super::{
     published_victim_tids, reap_process, register_prepared_process_identity,
     register_process_identity, release_thread_pid, resolve_futex_for_process_teardown,
     send_signal_to_process, send_signal_to_thread, unregister_prepared_process_identity,
-    wait_for_victims,
+    visible_user_pid, wait_for_victims,
 };
 use crate::{
     mm::{VmMutPtr, VmPtr},
@@ -415,9 +415,10 @@ fn handle_futex_death(
     let futex_word = address as *mut u32;
     // Linux compares the robust-futex owner field against task_pid_vnr(curr),
     // i.e. the user-visible TID written by userspace through gettid().
-    // After non-leader execve, that value is Thread::tid(), not the scheduler
-    // task id.
-    let owner_tid = thr.tid() & FUTEX_TID_MASK;
+    // After non-leader execve, the global identity is Thread::tid(), not the
+    // scheduler task id. Userspace stores that identity as seen from this
+    // task's active PID namespace.
+    let owner_tid = visible_user_pid(current, thr.tid() as u64) & FUTEX_TID_MASK;
     let value = futex_word.vm_read(current)?;
     let owner = value & FUTEX_TID_MASK;
 
