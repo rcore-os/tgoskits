@@ -1735,7 +1735,6 @@ mod tests {
     struct MemBlockDev {
         data: Vec<u8>,
         fail_flush: bool,
-        fail_write_block: Option<AbsoluteBN>,
         fail_fua: bool,
         fail_read_sector: Option<u64>,
         fail_write_sector: Option<u64>,
@@ -1751,7 +1750,6 @@ mod tests {
             Self {
                 data: vec![0; blocks * BLOCK_SIZE],
                 fail_flush: false,
-                fail_write_block: None,
                 fail_fua: false,
                 fail_read_sector: None,
                 fail_write_sector: None,
@@ -1767,19 +1765,6 @@ mod tests {
             Self {
                 data: vec![0; blocks * BLOCK_SIZE],
                 fail_flush: true,
-                fail_write_block: None,
-                fail_fua: false,
-                fail_read_sector: None,
-                fail_write_sector: None,
-                fua_writes: 0,
-            }
-        }
-
-        fn with_failing_write_block(blocks: usize, block: AbsoluteBN) -> Self {
-            Self {
-                data: vec![0; blocks * BLOCK_SIZE],
-                fail_flush: false,
-                fail_write_block: Some(block),
                 fail_fua: false,
                 fail_read_sector: None,
                 fail_write_sector: None,
@@ -1795,7 +1780,6 @@ mod tests {
             Self {
                 data: vec![0; blocks * BLOCK_SIZE],
                 fail_flush: true,
-                fail_write_block: None,
                 fail_fua: true,
                 fail_read_sector: None,
                 fail_write_sector: None,
@@ -2121,12 +2105,6 @@ mod tests {
             }
             if self.fail_write_sector == Some(block_id.raw()) {
                 self.fail_write_sector = None;
-                return Err(Ext4Error::io());
-            }
-            if self
-                .fail_write_block
-                .is_some_and(|block| crate::io::SectorId::new(block.raw()) == block_id)
-            {
                 return Err(Ext4Error::io());
             }
             let start = block_id.as_usize()? * BLOCK_SIZE;

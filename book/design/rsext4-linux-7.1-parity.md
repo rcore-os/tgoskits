@@ -54,7 +54,7 @@ offset、长度和已经校验过的 mutation context。
 
 | Linux 范围 | 关键入口/不变量 | Rust owner | 状态 | 验证 |
 | --- | --- | --- | --- | --- |
-| `fs/ext4/super.c`, `ext4.h` | feature negotiation、mount/remount、错误策略、geometry | `rsext4::ext4` / `superblock` | core | `feature_gate`, Linux image matrix |
+| `fs/ext4/super.c`, `ext4.h` | feature negotiation、mount/remount、错误策略、geometry；普通 mount 只接受存在、已链接、regular 且未加密的 internal journal inode，不修复或合成缺失 inode | `rsext4::ext4` / `superblock` | core | `feature_gate`, journal inode admission, Linux image matrix |
 | `fs/ext4/inode.c`, `indirect.c`, `inline.c` | inode lifecycle、map blocks、writeback modes、truncate | inode/mapping services | core | map/truncate、orphan intent 与 restart/crash differential |
 | `fs/ext4/extents.c`, `extents_status.c` | checked tree、unwritten extent、split/merge、status cache | extent service | core | codec/property、range-mutation restart tests |
 | `fs/ext4/mballoc.c`, `balloc.c`, `ialloc.c` | multiblock allocation、preallocation、rollback、quota charge | allocator service | core | ENOSPC/fault injection |
@@ -74,8 +74,13 @@ offset、长度和已经校验过的 mutation context。
 区间连续性和字段完整性；`--linux-src <path>` 进一步对照真实 Linux checkout 的
 HEAD、完整文件集合、blob 和行数。最终门禁必须增加 `--require-reviewed`，拒绝
 任何仍用 `coarse` 整文件占位的条目。当前清单覆盖 61 个 tracked 文件、77,895
-行，其中 8 个 Linux build/KUnit 文件已完成排除审阅，其余文件仍必须按顶层
+行，其中 9 个 Linux 文件已完成区间审阅，其余文件仍必须按顶层
 符号和预处理分支拆分，因此 `linux-map-complete` 继续保持红项。
+
+Linux v7.1 `fs/ext4/super.c:5504-5510,5886-5960` 在 root inode 之前装载
+internal journal，并拒绝不存在、`i_nlink == 0`、非 regular 或加密的 journal
+inode。`rsext4` 的普通 mount 同样只校验并装载既有 inode；创建默认 inode 8
+被限制在 `mkfs` 的 crate-private bootstrap 路径，不能由损坏镜像触发修复写入。
 
 ## 4. 公共 API 迁移
 

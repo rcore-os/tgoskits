@@ -42,6 +42,12 @@ fn validate_recovered_journal_mapping(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum JournalBootstrap {
+    ExistingOnly,
+    CreateDefaultForMkfs,
+}
+
 impl Ext4FileSystem {
     pub fn device_has_error_state<B: BlockIo>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<bool> {
         let superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
@@ -343,10 +349,61 @@ impl Ext4FileSystem {
         E: crate::runtime::EntropySource,
         W: crate::runtime::Delay,
     {
+        Self::mount_with_services_and_journal_bootstrap(
+            block_dev,
+            options,
+            observer,
+            entropy,
+            delay,
+            mmp_identity,
+            JournalBootstrap::ExistingOnly,
+        )
+    }
+
+    pub(super) fn mount_for_mkfs<B: BlockIo>(
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> Result<Self, Ext4Error> {
+        let mut observer = crate::runtime::NoopObserver;
+        let mut entropy = ();
+        let mut delay = ();
+        Self::mount_with_services_and_journal_bootstrap(
+            block_dev,
+            MountOptions::read_write(),
+            &mut observer,
+            &mut entropy,
+            &mut delay,
+            crate::runtime::MmpIdentity::default(),
+            JournalBootstrap::CreateDefaultForMkfs,
+        )
+    }
+
+    fn mount_with_services_and_journal_bootstrap<B, O, E, W>(
+        block_dev: &mut Jbd2Dev<B>,
+        options: MountOptions,
+        observer: &mut O,
+        entropy: &mut E,
+        delay: &mut W,
+        mmp_identity: crate::runtime::MmpIdentity,
+        journal_bootstrap: JournalBootstrap,
+    ) -> Result<Self, Ext4Error>
+    where
+        B: BlockIo,
+        O: crate::runtime::Observer,
+        E: crate::runtime::EntropySource,
+        W: crate::runtime::Delay,
+    {
         use crate::runtime::{Event, MountEvent};
 
         observer.event(Event::Mount(MountEvent::Started));
-        match Self::mount_inner(block_dev, options, observer, entropy, delay, mmp_identity) {
+        match Self::mount_inner(
+            block_dev,
+            options,
+            observer,
+            entropy,
+            delay,
+            mmp_identity,
+            journal_bootstrap,
+        ) {
             Ok(fs) => {
                 observer.event(Event::Mount(MountEvent::Succeeded));
                 Ok(fs)
@@ -365,6 +422,7 @@ impl Ext4FileSystem {
         entropy: &mut E,
         delay: &mut W,
         mmp_identity: crate::runtime::MmpIdentity,
+        journal_bootstrap: JournalBootstrap,
     ) -> Result<Self, Ext4Error>
     where
         B: BlockIo,
@@ -448,8 +506,8 @@ impl Ext4FileSystem {
 
         let mount_result = (|| -> Ext4Result<()> {
             let mut journal_mapping: Option<(InodeNumber, Vec<AbsoluteBN>)> = None;
-            // Journal bootstrap has two stages: ensure the journal inode exists,
-            // then load its superblock and enable replay on the device wrapper.
+            // A normal mount only accepts an existing valid journal. The private
+            // mkfs bootstrap path creates the default journal before loading it.
             {
                 let needs_recovery = fs
                     .superblock
@@ -466,20 +524,25 @@ impl Ext4FileSystem {
                     let mut journal_inode = fs.get_inode_by_num(block_dev, journal_inode_num)?;
                     let journal_exists = journal_inode.i_mode != 0;
                     if !journal_exists {
-                        if needs_recovery {
+                        if needs_recovery
+                            || journal_bootstrap != JournalBootstrap::CreateDefaultForMkfs
+                        {
                             observer.event(Event::Recovery(RecoveryEvent::JournalMissing));
-                            return Err(Ext4Error::corrupted());
+                            return Err(
+                                Ext4Error::corrupted().with_operation("journal:missing_inode")
+                            );
                         }
                         if journal_inode_num.raw() != JOURNAL_FILE_INODE as u32 {
-                            return Err(
-                                Ext4Error::corrupted()
-                                    .with_operation("journal:missing_custom_inode"),
-                            );
+                            return Err(Ext4Error::corrupted()
+                                .with_operation("journal:missing_custom_inode"));
                         }
                         create_journal_entry(&mut fs, block_dev)?;
                         journal_inode = fs.get_inode_by_num(block_dev, journal_inode_num)?;
                     }
-                    if !journal_inode.is_file() || journal_inode.i_links_count == 0 {
+                    if !journal_inode.is_file()
+                        || journal_inode.i_links_count == 0
+                        || journal_inode.i_flags & Ext4Inode::EXT4_ENCRYPT_FL != 0
+                    {
                         observer.event(Event::Recovery(RecoveryEvent::JournalMissing));
                         return Err(Ext4Error::corrupted().with_operation("journal:invalid_inode"));
                     }

@@ -86,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replay JBD2 in scan, revoke, and replay passes so a later transaction can
   revoke an earlier transaction's logged payload without hiding newer data.
 - Create the internal journal explicitly during mkfs, and reject missing,
-  unlinked, or non-regular journal inodes on mount instead of repairing them.
+  unlinked, non-regular, or encrypted journal inodes on mount instead of
+  repairing them.
 - Copy only metadata payloads touched by a transaction while retaining complete
   rollback ownership for allocator, bitmap, inode, and superblock state.
 - Restore physical metadata preimages when a journal-disabled transaction

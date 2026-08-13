@@ -19,6 +19,7 @@ use rsext4::{
         ext4_block_bitmap_csum32, ext4_group_desc_csum16, ext4_inode_bitmap_csum32,
         ext4_superblock_csum32, jbd2_update_superblock_checksum,
     },
+    disknode::Ext4Inode,
     endian::DiskFormat,
     error::{Ext4Error, Ext4Result},
     jbd2::jbdstruct::{
@@ -1374,6 +1375,79 @@ fn mount_rejects_missing_journal_inode_without_panicking() {
         panic!("mount must reject a missing journal inode");
     };
     assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
+}
+
+#[test]
+fn mount_rejects_encrypted_journal_inode_without_panicking() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut first_mount_dev = new_jbd2_dev(device.clone());
+    let mut fs = mount(&mut first_mount_dev).expect("mount failed");
+    let journal_inode = InodeNumber::new(JOURNAL_FILE_INODE as u32).expect("valid journal inode");
+    fs.modify_inode(&mut first_mount_dev, journal_inode, |inode| {
+        inode.i_flags |= Ext4Inode::EXT4_ENCRYPT_FL;
+    })
+    .expect("encrypt journal inode");
+    sync_with_axfs_ng_order(&mut first_mount_dev, &mut fs)
+        .expect("persist encrypted journal inode");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut remount_dev = new_jbd2_dev(device.clone());
+        mount(&mut remount_dev)
+    }));
+
+    assert!(result.is_ok(), "an encrypted journal inode must not panic");
+    let Err(error) = result.unwrap() else {
+        panic!("mount must reject an encrypted journal inode");
+    };
+    assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
+    assert_eq!(
+        error.context(),
+        Some(ErrorContext::Operation {
+            op: "journal:invalid_inode"
+        })
+    );
+}
+
+#[test]
+fn mount_rejects_unlinked_and_non_regular_journal_inodes() {
+    for invalid_kind in ["unlinked", "directory"] {
+        let device = SharedCrcDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = new_jbd2_dev(device.clone());
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+        let mut first_mount_dev = new_jbd2_dev(device.clone());
+        let mut fs = mount(&mut first_mount_dev).expect("mount failed");
+        let journal_inode =
+            InodeNumber::new(JOURNAL_FILE_INODE as u32).expect("valid journal inode");
+        fs.modify_inode(
+            &mut first_mount_dev,
+            journal_inode,
+            |inode| match invalid_kind {
+                "unlinked" => inode.i_links_count = 0,
+                "directory" => inode.i_mode = Ext4Inode::S_IFDIR | 0o700,
+                _ => unreachable!("fixed invalid journal fixture"),
+            },
+        )
+        .expect("invalidate journal inode");
+        sync_with_axfs_ng_order(&mut first_mount_dev, &mut fs)
+            .expect("persist invalid journal inode");
+
+        let mut remount_dev = new_jbd2_dev(device);
+        let error = match mount(&mut remount_dev) {
+            Ok(_) => panic!("mount must reject a {invalid_kind} journal inode"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
+        assert_eq!(
+            error.context(),
+            Some(ErrorContext::Operation {
+                op: "journal:invalid_inode"
+            })
+        );
+    }
 }
 
 #[test]

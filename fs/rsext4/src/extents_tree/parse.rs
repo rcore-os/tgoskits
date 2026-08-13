@@ -924,23 +924,28 @@ mod tests {
     fn insert_rejects_empty_internal_root_without_mutating_inode() {
         let (mut dev, mut fs) = setup_fs(16 * 1024);
         let mut inode = new_extent_inode();
-        let empty_root = ExtentNode::Index {
-            header: Ext4ExtentHeader {
-                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
-                eh_entries: 0,
-                eh_max: 4,
-                eh_depth: 1,
-                eh_generation: 0,
-            },
-            entries: Vec::new(),
-        };
-        ExtentTree::new(&mut inode).store_root_to_inode(&empty_root);
+        let mut empty_root = [0u8; 60];
+        Ext4ExtentHeader {
+            eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+            eh_entries: 0,
+            eh_max: 4,
+            eh_depth: 1,
+            eh_generation: 0,
+        }
+        .to_disk_bytes(&mut empty_root[..Ext4ExtentHeader::disk_size()]);
+        write_raw_inline_node(&mut inode, &empty_root);
         let inode_before = inode.i_block;
 
-        let result =
-            ExtentTree::new(&mut inode).insert_extent(&mut fs, Ext4Extent::new(0, 1, 1), &mut dev);
+        let result = ExtentTree::new(&mut inode, BLOCK_SIZE).insert_extent(
+            &mut fs,
+            Ext4Extent::new(0, 1, 1),
+            &mut dev,
+        );
 
-        assert_eq!(result, Err(Ext4Error::corrupted()));
+        assert_eq!(
+            result,
+            Err(Ext4Error::corrupted().with_operation("extent:empty_index"))
+        );
         assert_eq!(inode.i_block, inode_before);
     }
 
@@ -949,22 +954,24 @@ mod tests {
         let (mut dev, mut fs) = setup_fs(16 * 1024);
         let mut inode = new_extent_inode();
         let child_block = fs.alloc_block(&mut dev).unwrap();
-        let empty_child = ExtentNode::Index {
-            header: Ext4ExtentHeader {
-                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
-                eh_entries: 0,
-                eh_max: ExtentTree::calc_block_eh_max(),
-                eh_depth: 1,
-                eh_generation: 0,
-            },
-            entries: Vec::new(),
-        };
+        let mut empty_child = vec![0u8; BLOCK_SIZE];
+        Ext4ExtentHeader {
+            eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+            eh_entries: 0,
+            eh_max: ((BLOCK_SIZE - Ext4ExtentHeader::disk_size()) / Ext4ExtentIdx::disk_size())
+                as u16,
+            eh_depth: 1,
+            eh_generation: 0,
+        }
+        .to_disk_bytes(&mut empty_child[..Ext4ExtentHeader::disk_size()]);
+        dev.write_blocks(&empty_child, child_block, 1, false)
+            .unwrap();
         let root = ExtentNode::Index {
             header: Ext4ExtentHeader {
                 eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
                 eh_entries: 1,
                 eh_max: 4,
-                eh_depth: 1,
+                eh_depth: 2,
                 eh_generation: 0,
             },
             entries: vec![Ext4ExtentIdx {
@@ -975,23 +982,24 @@ mod tests {
             }],
         };
         {
-            let mut tree = ExtentTree::new(&mut inode);
-            tree.write_node_to_block(&mut dev, child_block, &empty_child)
-                .unwrap();
-            tree.store_root_to_inode(&root);
+            let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+            tree.store_root_to_inode(&root).unwrap();
         }
 
         let inode_before = inode.i_block;
         dev.read_block(child_block).unwrap();
         let child_before = dev.buffer().to_vec();
 
-        let result = ExtentTree::new(&mut inode).insert_extent(
+        let result = ExtentTree::new(&mut inode, BLOCK_SIZE).insert_extent(
             &mut fs,
             Ext4Extent::new(0, child_block.raw(), 1),
             &mut dev,
         );
 
-        assert_eq!(result, Err(Ext4Error::corrupted()));
+        assert_eq!(
+            result,
+            Err(Ext4Error::corrupted().with_operation("extent:empty_index"))
+        );
         assert_eq!(inode.i_block, inode_before);
         dev.read_block(child_block).unwrap();
         assert_eq!(dev.buffer(), child_before);

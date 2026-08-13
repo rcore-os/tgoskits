@@ -1298,7 +1298,7 @@
         },
         {
           "start": 5501,
-          "end": 5984,
+          "end": 5885,
           "symbol": "<whole-file prefix continuation>",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
@@ -1308,6 +1308,34 @@
           "test_ids": [
             "feature-gate-strict",
             "filesystem-block-dynamic"
+          ]
+        },
+        {
+          "start": 5886,
+          "end": 5960,
+          "symbol": "ext4_get_journal_inode; ext4_journal_bmap; ext4_open_inode_journal",
+          "classification": "core",
+          "state_machine": "load existing internal journal inode -> reject missing, unlinked, non-regular, or encrypted inode -> resolve its checked block mapping -> initialize JBD2 owner",
+          "invariant": "ordinary mount never synthesizes or repairs a missing internal journal inode; only the crate-private mkfs bootstrap may create default inode 8 before ordinary journal admission",
+          "rust_owner": "rsext4::ext4::mount; rsext4::jbd2::create_journal_entry; rsext4::ext4::mkfs",
+          "reason": "journal inode admission and mapping are portable ext4 persistence semantics; creation belongs to explicit image formatting rather than corruption repair during mount",
+          "test_ids": [
+            "mount-rejects-missing-journal-inode",
+            "mount-rejects-invalid-journal-inode",
+            "mkfs-creates-internal-journal"
+          ]
+        },
+        {
+          "start": 5961,
+          "end": 5984,
+          "symbol": "ext4_get_journal_blkdev open path",
+          "classification": "core",
+          "state_machine": "open external journal device before validating its geometry and superblock",
+          "invariant": "external journal ownership remains explicit and must not be confused with internal journal inode bootstrap",
+          "rust_owner": "rsext4::jbd2; rsext4::io",
+          "reason": "external journal support is a registered red item, while the portable core must still classify its Linux ownership boundary",
+          "test_ids": [
+            "jbd2-writer-revoke-checkpoint"
           ]
         },
         {

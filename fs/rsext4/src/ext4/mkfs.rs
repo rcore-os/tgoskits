@@ -345,10 +345,10 @@ pub fn mkfs_with_options<B: BlockIo>(
             &layout,
         )?;
 
-        // Reuse the normal mount/bootstrap path to create root and lost+found so
-        // mkfs and mount share the same initialization logic.
+        // Reuse the private mkfs bootstrap mount to create the journal, root,
+        // and lost+found. Ordinary mounts never synthesize a missing journal.
         {
-            let mut fs = Ext4FileSystem::mount(block_dev)?;
+            let mut fs = Ext4FileSystem::mount_for_mkfs(block_dev)?;
             fs.umount(block_dev)?;
         }
 
