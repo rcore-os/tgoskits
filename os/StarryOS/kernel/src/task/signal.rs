@@ -11,7 +11,7 @@ use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
 use super::{
     ProcessData, RttimeLimitAction, Thread, UserTaskRef, current_user_task, do_exit,
     get_process_data, get_process_group, get_task, is_zombie_pid,
-    signal_publication::publish_before_fatal_stop_release,
+    signal_publication::publish_before_fatal_stop_release, visible_process_pid,
 };
 #[cfg(target_arch = "riscv64")]
 use crate::mm::vm_read_slice;
@@ -291,7 +291,8 @@ fn notify_ptrace_waiter(thr: &Thread, signo: Signo) {
     if let Some(waiter_pid) = waiter_pid
         && let Ok(parent_data) = get_process_data(waiter_pid)
     {
-        let sigchld = SignalInfo::new_sigchld(
+        let sigchld = new_sigchld_for_receiver(
+            &parent_data,
             thr.proc_data.proc.pid(),
             thr.cred().uid,
             CLD_TRAPPED as i32,
@@ -439,6 +440,9 @@ fn notify_parent_job_change(proc_data: &ProcessData, code: i32, status: i32) {
     let Some(parent) = proc.parent() else {
         return;
     };
+    let Ok(parent_data) = get_process_data(parent.pid()) else {
+        return;
+    };
     // si_uid carries the child's real UID; read it from any live thread.
     let child_uid = proc
         .threads()
@@ -446,12 +450,26 @@ fn notify_parent_job_change(proc_data: &ProcessData, code: i32, status: i32) {
         .next()
         .and_then(|tid| get_task(tid).ok())
         .map_or(0, |task| task.as_thread().cred().uid);
-    let sig = SignalInfo::new_sigchld(proc.pid(), child_uid, code, status);
+    let sig = new_sigchld_for_receiver(&parent_data, proc.pid(), child_uid, code, status);
     let _ = send_signal_to_process(parent.pid(), Some(sig));
-    if let Ok(data) = get_process_data(parent.pid()) {
-        // Job-control report is published before waking waiters.
-        unsafe { data.child_exit_event().wake(axpoll::IoEvents::IN) };
-    }
+    // Job-control report is published before waking waiters.
+    unsafe { parent_data.child_exit_event().wake(axpoll::IoEvents::IN) };
+}
+
+/// Builds child status in the namespace of the process that will dequeue it.
+pub(crate) fn new_sigchld_for_receiver(
+    receiver: &ProcessData,
+    child_pid: Pid,
+    child_uid: u32,
+    code: i32,
+    status: i32,
+) -> SignalInfo {
+    SignalInfo::new_sigchld(
+        visible_process_pid(receiver, u64::from(child_pid)),
+        child_uid,
+        code,
+        status,
+    )
 }
 
 /// Enter a job-control stop: record the stop, notify the parent, then park the

@@ -6,7 +6,7 @@ use ax_errno::{AxError, AxResult};
 use ax_std::os::arceos::task::WaitQueue;
 use starry_process::Pid;
 
-use super::{ProcessIdentity, UserTaskRef};
+use super::{ProcessData, ProcessIdentity, UserTaskRef};
 use crate::sync::{PiMutex, PiMutexGuard};
 
 pub(crate) type PidNamespaceRef = axnsproxy::PidNamespaceRef;
@@ -36,9 +36,12 @@ pub(crate) fn resolve_user_pid(current: &UserTaskRef, local_pid: Pid) -> AxResul
 
 /// Returns a global task identity as seen from the caller's PID namespace.
 pub(crate) fn visible_user_pid(current: &UserTaskRef, global_pid: u64) -> Pid {
-    current
-        .as_thread()
-        .proc_data
+    visible_process_pid(&current.as_thread().proc_data, global_pid)
+}
+
+/// Returns a global task identity as seen from a receiving process's PID namespace.
+pub(crate) fn visible_process_pid(process: &ProcessData, global_pid: u64) -> Pid {
+    process
         .namespace_snapshot()
         .pid_ns
         .local_pid(global_pid)

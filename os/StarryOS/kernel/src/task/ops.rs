@@ -18,11 +18,12 @@ use weak_map::WeakMap;
 use super::{
     AlarmTarget, AlarmToken, Cred, OrphanReaper, PendingTimerActions, ProcessData, Thread,
     TimerState, UserTaskRef, WeakUserTaskRef, ZombieSnapshot, current_user_task, get_process_data,
-    get_zombie_cred, is_zombie_process, namespace_shutdown_parent, orphan_reaper_for,
-    process_belongs_to_pid_namespace, processes, publish_zombie, published_victim_tids,
-    reap_process, register_prepared_process_identity, register_process_identity,
-    release_thread_pid, resolve_futex_for_process_teardown, send_signal_to_process,
-    send_signal_to_thread, unregister_prepared_process_identity, wait_for_victims,
+    get_zombie_cred, is_zombie_process, namespace_shutdown_parent, new_sigchld_for_receiver,
+    orphan_reaper_for, process_belongs_to_pid_namespace, processes, publish_zombie,
+    published_victim_tids, reap_process, register_prepared_process_identity,
+    register_process_identity, release_thread_pid, resolve_futex_for_process_teardown,
+    send_signal_to_process, send_signal_to_thread, unregister_prepared_process_identity,
+    wait_for_victims,
 };
 use crate::{
     mm::{VmMutPtr, VmPtr},
@@ -734,7 +735,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // Linux removes scheduler reachability independently of the stable PID
         // identity retained for wait and pidfd operations.
         remove_task_from_table(thr.tid());
-        if let Some(parent) = process.parent() {
+        if let Some(parent) = process.parent()
+            && let Ok(data) = get_process_data(parent.pid())
+        {
             if let Some(signo) = thr.proc_data.exit_signal() {
                 use starry_signal::Signo;
 
@@ -742,16 +745,14 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 let (code, status) = decode_wait_status(process_exit_code);
 
                 let sig = if signo == Signo::SIGCHLD {
-                    SignalInfo::new_sigchld(process.pid(), child_uid, code, status)
+                    new_sigchld_for_receiver(&data, process.pid(), child_uid, code, status)
                 } else {
                     SignalInfo::new_kernel(signo)
                 };
                 let _ = send_signal_to_process(parent.pid(), Some(sig));
             }
-            if let Ok(data) = get_process_data(parent.pid()) {
-                // Child exit state is published before waking waiters.
-                unsafe { data.child_exit_event().wake(axpoll::IoEvents::IN) };
-            }
+            // Child exit state is published before waking waiters.
+            unsafe { data.child_exit_event().wake(axpoll::IoEvents::IN) };
         }
         if let Some(tracer_pid) = ptrace_tracer_pid
             && process
