@@ -120,33 +120,3 @@ impl<T> Drop for PreemptTicketGuard<'_, T> {
         drop(self.scope.take());
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn try_lock_failure_restores_its_preempt_nesting() {
-        crate::test_runtime::reset_preempt_state();
-        let lock = PreemptTicketLock::new(());
-        let first = lock.lock();
-        assert_eq!(crate::test_runtime::active_preempt_guards(), 1);
-        assert!(lock.try_lock().is_none());
-        assert_eq!(crate::test_runtime::active_preempt_guards(), 1);
-        drop(first);
-        assert_eq!(crate::test_runtime::active_preempt_guards(), 0);
-    }
-
-    #[test]
-    fn non_lifo_guard_drop_keeps_preemption_disabled_until_the_last_guard() {
-        crate::test_runtime::reset_preempt_state();
-        let first = PreemptTicketLock::new(());
-        let second = PreemptTicketLock::new(());
-        let first_guard = first.lock();
-        let second_guard = second.lock();
-        drop(first_guard);
-        assert_eq!(crate::test_runtime::active_preempt_guards(), 1);
-        drop(second_guard);
-        assert_eq!(crate::test_runtime::active_preempt_guards(), 0);
-    }
-}

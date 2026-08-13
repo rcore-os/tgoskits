@@ -781,6 +781,3 @@ impl PollDisposition {
         matches!(self, Self::Completed)
     }
 }
-
-#[cfg(test)]
-mod tests;

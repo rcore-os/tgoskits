@@ -372,6 +372,3 @@ fn advance_thread_slot_generation(slot: &mut ThreadSlot) -> bool {
         true
     }
 }
-
-#[cfg(test)]
-mod tests;

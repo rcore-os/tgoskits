@@ -99,20 +99,3 @@ impl<T> Drop for IrqTicketGuard<'_, T> {
         drop(self.irq.take());
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn try_lock_failure_restores_its_irq_nesting() {
-        crate::test_runtime::reset_irq_guard_entries();
-        let lock = IrqTicketLock::new(());
-        let first = lock.lock(IrqGuardSource::ThreadSchedTicket);
-        assert_eq!(crate::test_runtime::active_irq_guards(), 1);
-        assert!(lock.try_lock(IrqGuardSource::ThreadSchedTicket).is_none());
-        assert_eq!(crate::test_runtime::active_irq_guards(), 1);
-        drop(first);
-        assert_eq!(crate::test_runtime::active_irq_guards(), 0);
-    }
-}

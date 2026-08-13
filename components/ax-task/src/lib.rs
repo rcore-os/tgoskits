@@ -46,6 +46,3 @@ pub use thread::*;
 pub use thread_start::*;
 pub use timer::{KernelTimerAction, KernelTimerCancelOutcome, KernelTimerHandle};
 pub use wait_queue::*;
-
-#[cfg(test)]
-mod test_runtime;

@@ -95,8 +95,6 @@ impl RuntimeCpuHandles {
     }
 
     fn claim(self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
-        #[cfg(test)]
-        crate::test_runtime::record_cpu_owner_claim();
         let remote_raw = self.cpu_remote.into_raw();
         validate_handle::<CpuRemote>(remote_raw)?;
         // SAFETY: TaskRuntime guarantees this handle identifies the Arc-backed

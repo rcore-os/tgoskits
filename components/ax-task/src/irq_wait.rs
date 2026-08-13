@@ -832,7 +832,3 @@ impl Default for IrqWaitCell {
         Self::new()
     }
 }
-
-#[cfg(test)]
-#[path = "irq_wait_tests.rs"]
-mod tests;

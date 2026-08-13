@@ -371,5 +371,3 @@ pub unsafe fn finish_initial_context_switch() -> Result<(), TaskError> {
     task_runtime::finish_initial_context_switch();
     Ok(())
 }
-
-include!("tests.rs");

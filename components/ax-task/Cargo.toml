@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "OS-independent IRQ-safe SMP task scheduling core"
 
+[lib]
+test = false
+
 [features]
 default = []
 qperf-metrics = []

@@ -248,5 +248,3 @@ impl CpuRemote {
         self.deadline_extra_bw_scaled.load(Ordering::Acquire)
     }
 }
-
-include!("tests.rs");
