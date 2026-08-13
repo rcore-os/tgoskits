@@ -661,6 +661,19 @@ impl BlockDeviceHandle {
                 .all(|queue| queue.info().limits.supports_flush)
     }
 
+    #[cfg(feature = "ext4")]
+    pub(crate) fn supports_fua(&self) -> bool {
+        let queues = self.inner.hctxs.lock();
+        !queues.is_empty()
+            && queues.iter().all(|queue| {
+                queue
+                    .info()
+                    .limits
+                    .supported_flags
+                    .contains(RequestFlags::FUA)
+            })
+    }
+
     /// Enqueues one DMA-owning request on the current CPU software channel.
     ///
     /// `NOWAIT` affects only bounded channel admission and is removed before
@@ -797,6 +810,14 @@ impl BlockDeviceHandle {
     #[cfg(any(feature = "ext4", feature = "fat"))]
     pub(crate) fn write_blocks(&self, block_id: u64, buf: &[u8]) -> AxResult {
         io::write_blocks(self, block_id, buf)
+    }
+
+    #[cfg(feature = "ext4")]
+    pub(crate) fn write_blocks_fua(&self, block_id: u64, buf: &[u8]) -> AxResult {
+        if !self.supports_fua() {
+            return Err(AxError::Unsupported);
+        }
+        io::write_blocks_fua(self, block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]

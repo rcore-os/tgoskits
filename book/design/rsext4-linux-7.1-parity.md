@@ -134,7 +134,7 @@ cookie 并清空 continuation。VFS directory sink 接收 raw `&[u8]` 名称，�
 | --- | --- | --- | --- | --- |
 | `boundary-no-os-deps` | `ax-kspin`、`log` direct dependencies | boundary script passes | portable core skeleton | 绿：`RSEXT4_BOUNDARY_PASSED` |
 | `domain-error-no-errno` | core 公开并按 Linux `Errno` 分支 | typed domain error，errno 仅由 adapter 映射 | portable core skeleton | 绿：core 已无 `Errno`；`ax-fs-ng` 集中映射 |
-| `blockio-adapter-capabilities` | ax-fs-ng 丢弃 `DeviceInfo.read_only` 并无条件宣告 flush/barrier | adapter 只传递底层真实能力；只读写入在设备 I/O 前返回 typed read-only；缺少 durability 返回 unsupported capability | OS glue/capability boundary | 进行中：确定性红测证明旧 `Ext4Disk` 把只读 mock 报成可写、把无 flush mock 报成 flush+barrier；同一测试现验证只读写入零底层调用、unsupported capability 和真实 flush-as-barrier。native handle 从 `DeviceInfo` 和所有 hardware queue 聚合该状态。physical block size、flagged FUA 请求和 discard 仍为红项 |
+| `blockio-adapter-capabilities` | ax-fs-ng 丢弃 `DeviceInfo.read_only` 并无条件宣告 flush/barrier，且不向 rdif request 传递 FUA | adapter 只传递底层真实能力；只读写入在设备 I/O 前返回 typed read-only；缺少 durability 返回 unsupported capability；native FUA 必须标记每个拆分请求且不增加 post-write flush | OS glue/capability boundary | 进行中：只读/flush 红测证明旧 `Ext4Disk` 会伪造能力；native FUA 红测又证明旧 adapter 永远报告 `fua=false`。同一组测试现验证只读写入零底层调用、unsupported capability、真实 flush-as-barrier、一次 native FUA/零普通 write/零 flush，以及 4 个拆分 request 全部带 `RequestFlags::FUA`。native handle 只在非空且所有 hardware queue 均宣告能力时报告 FUA；无 native FUA 时仍由 OS 无关 `BlockDev` 执行同步 write-then-flush fallback。physical block size 与 discard 仍为红项 |
 | `readonly-adapter-lifecycle` | ax-fs-ng 在取得 mount owner 前对 readonly sync/shutdown 直接返回成功，丢失 core 的 device flush boundary，且 mounted 状态永不结束 | RO/RW 一律在同一 sleepable mutex 下调用 owned core typed sync/unmount；adapter 不复制 journal/cache/lifecycle 分支 | OS glue/lock/lifecycle boundary | 绿：共享只读镜像 fixture 先固定旧 sync 的 flush 计数不变，以及 shutdown 后仍可原地 remount；同一测试现验证真实 device flush 与 `Busy(op=remount:unmounted)`。完整 ax-fs-ng ext4 84+3 tests 和 6/6 clippy 通过 |
 | `owned-mount-boundary` | caller 分别持有公开字段的 `Ext4FileSystem` 和公开 `Jbd2Dev`，且 block device 必须同时实现 `Clock` | 私有 `Ext4<D, S>` 独占 device/cache/journal/services；`BlockIo` 与 `Clock` 分离；只公开 typed operations/DTO | portable core skeleton | 进行中：`Ext4<D, MountedServices<...>>` 已消费 device 与 `MountServices`，独立 clock callback 驱动 metadata 链路；ax-fs-ng 现由一个 sleepable mutex 独占 `MountedExt4`，mount、inode I/O、readdir、namespace mutation、sync/unmount 不再 split 或访问 core cache/superblock/JBD2，手写 `unsafe Send/Sync` 已删除。host harness 也已改用 typed `format` 与 owned inode I/O，不再依赖 legacy path/JBD2 proxy。`InodeInfo::file_type`/`is_directory` 和根级 `InodeNumber` re-export 已移除 adapter 对 `disknode::Ext4Inode` 与 `bmalloc` 模块路径的生产依赖。mount fallback 只在 mount 前明确读到 `EXT4_ERROR_FS` 时选择只读 replay，RW/replay failure 不再复用已污染或 abort 的 owner；invalid revoke 红测证明旧实现把首个 `Corrupted` 覆盖成 `JournalAborted`，同一测试现保留首错。显式 forensic no-replay 继续由 typed mount options 提供。旧 path/fd re-export、公开 `Ext4FileSystem`/`Jbd2Dev` 与 `initial_jbd2dev` 仍待 crate tests/axtest 迁移后删除，因此尚不能转绿 |
 | `typed-inode-metadata` | owned DTO 无 project ID 和 inode flags，adapter 只能访问磁盘 inode 或调用 path helper | `InodeInfo` 仅公开 typed project ID/用户可见 flags；`InodeMetadataUpdate` 仅能改 Linux user-modifiable bits；未启用 project feature 时 0 为 no-op，非 0 返回 unsupported | inode/capability boundary | 进行中：旧公共 API 编译红测缺少 `InodeFlags`/project 字段；同一 owned 测试现验证内部 `EXTENTS` 保留、`NO_DUMP|NO_ATIME` typed 更新和未启用 feature 时的 project 0 no-op/非 0 unsupported。固定 `mkfs.ext4 -I 256 -O project` 镜像现由 owned core 设置 project 1234/`PROJINHERIT`，子 inode 继承后 Linux `debugfs stat` 解码一致且 `e2fsck -fn` clean。quota transfer 和同一 filesystem-owned transaction 仍为红项 |
@@ -1952,3 +1952,34 @@ Linux 内存/cache mechanics，checkpoint、replay 与 durable tail 的磁盘语
 最终代码形状下，`cargo test -p rsext4 --all-features` 为 282 个 unit 加全部
 integration/Linux image/e2fsck 绿，`--no-default-features` 为 281 个 unit 加全部 integration/Linux
 image/e2fsck 绿；三组目标 clippy、格式、portable-core boundary 与 Linux source-map audit 同步通过。
+
+### 7.55 ax-fs-ng native FUA capability 检查点
+
+Linux v7.1 `fs/jbd2/commit.c:152-156` 在 barrier 开启且非 async commit 时用
+`REQ_PREFLUSH | REQ_FUA` 发布 commit record；`fs/jbd2/journal.c:1767-1774` 也要求以
+`REQ_FUA` 发布 journal tail，避免复用日志空间前旧 tail 尚未落盘。portable core 因而只接受两种
+明确的 durability：底层真实实现 `WriteFlags::FUA`，或设备不支持 FUA 但支持 flush 时由私有
+`BlockDev` 同步执行普通 write 后 flush。底层 `BlockIo` 默认实现继续拒绝 FUA，adapter 不能把
+普通 write、no-op flush 或单个硬件队列的能力伪装成稳定介质语义。
+
+旧 `ax-fs-ng::Ext4Disk` 无条件报告 `fua=false`，`NativeHandleBlockDevice` 也只能提交
+`RequestFlags::NONE`。确定性 adapter 红测先要求 FUA-capable mock 在一次 metadata FUA write 后
+得到一次 FUA write、零普通 write、零 flush；旧实现首先在 capability 断言失败。当前 adapter 用
+独立的 `supports_fua()`/`write_block_fua()` 能力表达该动作，不向 `rsext4` 泄漏 rdif、IRQ、queue
+或锁类型；只读与 unsupported 在设备 I/O 前返回 typed error。native handle 只在 hctx 集合非空且
+所有 hardware queue 的 `supported_flags` 都包含 `RequestFlags::FUA` 时宣告能力，避免一次
+filesystem write 被调度到能力较弱的 queue。
+
+第二个 runtime 回归把 4 个 512-byte block 交给 `max_blocks_per_request=1` 的 queue。旧统一写路径
+会给全部拆分 request 填 `RequestFlags::NONE`；当前 `write_blocks_with_flags()` 将同一 typed flag
+传到每个 transfer chunk，测例在 IRQ completion 前确定性观察到 4/4 FUA request。FUA write 不持
+hctx 的 `IrqMutex` 等待 I/O：capability 查询只在短临界区读取 immutable queue limits，释放后才进入
+software channel admission 与 completion wait。flush 仍是独立 request 和设备级 barrier，供 core 的
+write-then-flush fallback 保序。
+
+host core benchmark 的 memory `BlockIo` 不经过 `ax-fs-ng`/rdif adapter，也不提供 native FUA，
+因此本切片没有可归因的 host A/B workload；把该数字混入冻结的 core performance gate 会只测到相同
+fallback。这里不声明未经硬件测量的 latency 收益，只记录可观察的调用差异为 1 次 native FUA、0 次
+额外 flush。验证覆盖 `ax-fs-ng` 无 feature、fat-only、ext4-only、fat+ext4 四种 host 组合；ext4-only
+为 86 个 unit 加 3 个 integration，fat+ext4 为 88 个 unit 加 3 个 integration，全部通过。physical
+block size 与 discard capability 仍保留在 `blockio-adapter-capabilities` 红项中。

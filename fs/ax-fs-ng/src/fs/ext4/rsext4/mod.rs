@@ -8,7 +8,7 @@ pub use fs::*;
 pub use inode::*;
 use rsext4::{
     BlockIo, DeviceCapabilities, DeviceGeometry, Event, Ext4Timestamp, MountedServices, Observer,
-    SectorId,
+    SectorId, WriteFlags,
     error::{Ext4Error, Ext4Result},
 };
 
@@ -66,6 +66,34 @@ impl BlockIo for Ext4Disk {
             .map_err(|_| Ext4Error::io())
     }
 
+    fn write_with_flags(
+        &mut self,
+        buffer: &[u8],
+        sector: SectorId,
+        count: u32,
+        flags: WriteFlags,
+    ) -> Ext4Result<()> {
+        if !flags.contains(WriteFlags::FUA) {
+            return self.write(buffer, sector, count);
+        }
+        if self.0.is_read_only() {
+            return Err(Ext4Error::read_only());
+        }
+        if !self.0.supports_fua() {
+            return Err(Ext4Error::unsupported_capability("block_io:fua"));
+        }
+        let dev_block = self.0.block_size();
+        let required_size = dev_block
+            .checked_mul(count as usize)
+            .ok_or_else(Ext4Error::overflow)?;
+        if buffer.len() < required_size {
+            return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
+        }
+        self.0
+            .write_block_fua(sector.raw(), &buffer[..required_size])
+            .map_err(|_| Ext4Error::io())
+    }
+
     fn geometry(&self) -> DeviceGeometry {
         DeviceGeometry::new(self.0.block_size() as u32, self.0.num_blocks())
     }
@@ -76,6 +104,7 @@ impl BlockIo for Ext4Disk {
             read_only: self.0.is_read_only(),
             flush: supports_flush,
             barrier: supports_flush,
+            fua: self.0.supports_fua(),
             ..DeviceCapabilities::default()
         }
     }
@@ -116,7 +145,9 @@ mod tests {
     struct CapabilityDevice {
         read_only: bool,
         supports_flush: bool,
+        supports_fua: bool,
         writes: Arc<AtomicUsize>,
+        fua_writes: Arc<AtomicUsize>,
         flushes: Arc<AtomicUsize>,
     }
 
@@ -141,6 +172,10 @@ mod tests {
             self.supports_flush
         }
 
+        fn supports_fua(&self) -> bool {
+            self.supports_fua
+        }
+
         fn read_block(&mut self, _block_id: u64, buf: &mut [u8]) -> AxResult {
             buf.fill(0);
             Ok(())
@@ -148,6 +183,11 @@ mod tests {
 
         fn write_block(&mut self, _block_id: u64, _buf: &[u8]) -> AxResult {
             self.writes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> AxResult {
+            self.fua_writes.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
@@ -160,25 +200,35 @@ mod tests {
     fn test_disk(
         read_only: bool,
         supports_flush: bool,
-    ) -> (Ext4Disk, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        supports_fua: bool,
+    ) -> (
+        Ext4Disk,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+    ) {
         let writes = Arc::new(AtomicUsize::new(0));
+        let fua_writes = Arc::new(AtomicUsize::new(0));
         let flushes = Arc::new(AtomicUsize::new(0));
         let device = CapabilityDevice {
             read_only,
             supports_flush,
+            supports_fua,
             writes: Arc::clone(&writes),
+            fua_writes: Arc::clone(&fua_writes),
             flushes: Arc::clone(&flushes),
         };
         (
             Ext4Disk::new(Box::new(device), BlockRegion::from_num_blocks(16)),
             writes,
+            fua_writes,
             flushes,
         )
     }
 
     #[test]
     fn ext4_disk_propagates_read_only_and_rejects_writes() {
-        let (mut disk, writes, _) = test_disk(true, true);
+        let (mut disk, writes, ..) = test_disk(true, true, true);
 
         assert!(disk.capabilities().read_only);
         let error = disk
@@ -190,11 +240,12 @@ mod tests {
 
     #[test]
     fn ext4_disk_does_not_invent_flush_or_barrier_support() {
-        let (mut disk, _, flushes) = test_disk(false, false);
+        let (mut disk, _, _, flushes) = test_disk(false, false, false);
 
         let capabilities = disk.capabilities();
         assert!(!capabilities.flush);
         assert!(!capabilities.barrier);
+        assert!(!capabilities.fua);
         assert_eq!(
             disk.flush().expect_err("unsupported flush").kind(),
             Ext4ErrorKind::UnsupportedCapability
@@ -203,12 +254,18 @@ mod tests {
             disk.barrier().expect_err("unsupported barrier").kind(),
             Ext4ErrorKind::UnsupportedCapability
         );
+        assert_eq!(
+            disk.write_with_flags(&[0x5a; 512], SectorId::new(0), 1, WriteFlags::FUA)
+                .expect_err("unsupported FUA")
+                .kind(),
+            Ext4ErrorKind::UnsupportedCapability
+        );
         assert_eq!(flushes.load(Ordering::Relaxed), 0);
     }
 
     #[test]
     fn ext4_disk_uses_advertised_flush_as_its_barrier() {
-        let (mut disk, _, flushes) = test_disk(false, true);
+        let (mut disk, _, _, flushes) = test_disk(false, true, false);
 
         let capabilities = disk.capabilities();
         assert!(capabilities.flush);
@@ -216,5 +273,23 @@ mod tests {
         disk.flush().expect("flush supported device");
         disk.barrier().expect("barrier supported device");
         assert_eq!(flushes.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn ext4_disk_forwards_native_fua_without_a_flush() {
+        let (mut disk, writes, fua_writes, flushes) = test_disk(false, true, true);
+
+        assert!(disk.capabilities().fua);
+        disk.write_with_flags(
+            &[0x5a; 512],
+            SectorId::new(0),
+            1,
+            rsext4::WriteFlags::FUA | rsext4::WriteFlags::METADATA,
+        )
+        .expect("native FUA write");
+
+        assert_eq!(writes.load(Ordering::Relaxed), 0);
+        assert_eq!(fua_writes.load(Ordering::Relaxed), 1);
+        assert_eq!(flushes.load(Ordering::Relaxed), 0);
     }
 }

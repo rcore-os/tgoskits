@@ -1610,11 +1610,12 @@
           "classification": "core",
           "state_machine": "descriptor and payload durable -> commit record FUA publication -> wait",
           "invariant": "with barriers enabled and without async commit, the commit record is submitted with preflush and FUA ordering",
-          "rust_owner": "rsext4::jbd2::jbd2::commit_transaction_with_mapping",
-          "reason": "the portable writer uses an explicit flush before a METADATA|FUA commit write and propagates unsupported durability capabilities",
+          "rust_owner": "rsext4::jbd2::jbd2::commit_transaction_with_mapping; rsext4::blockdev::cached_device::BlockDev::write_blocks_with_flags; ax_fs_ng::block::runtime::lifecycle::BlockDeviceHandle",
+          "reason": "the portable writer uses an explicit flush before a METADATA|FUA commit write, falls back to synchronous write-then-flush only when native FUA is absent, and the OS adapter advertises native FUA only when every hardware queue can mark every split request",
           "test_ids": [
             "jbd2-writer-revoke-checkpoint",
-            "jbd2-legacy-checksum-write-replay"
+            "jbd2-legacy-checksum-write-replay",
+            "blockio-adapter-capabilities"
           ]
         },
         {

@@ -1228,6 +1228,11 @@ mod tests {
             true
         }
 
+        #[cfg(feature = "ext4")]
+        fn supports_fua(&self) -> bool {
+            false
+        }
+
         fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
             if self.remaining_failures > 0 {
                 self.remaining_failures -= 1;
@@ -1251,6 +1256,11 @@ mod tests {
             let target = self.data.get_mut(start..end).ok_or(AxError::InvalidInput)?;
             target.copy_from_slice(buf);
             Ok(())
+        }
+
+        #[cfg(feature = "ext4")]
+        fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> AxResult {
+            Err(AxError::Unsupported)
         }
 
         #[cfg(any(feature = "ext4", feature = "fat"))]

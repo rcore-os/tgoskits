@@ -21,7 +21,8 @@ use irq_framework::{HwIrq, IrqDomainId, IrqId};
 use rdif_block::{
     BatchSubmitDisposition, BatchSubmitResult, CompletedRequest, CompletionSink, ControlEvent,
     DriverGeneric, GroupIrqSink, HardIrqHandler, HardwareQueue, IrqAck, IrqDisposition,
-    IrqQueueMask, OwnedRequestBatch, QueueLimits, RequestId, SharedHardIrqHandler, SubmissionSink,
+    IrqQueueMask, OwnedRequestBatch, QueueLimits, RequestFlags, RequestId, SharedHardIrqHandler,
+    SubmissionSink,
 };
 
 use super::{device::create_cpu_channels, *};
@@ -138,6 +139,7 @@ impl SharedHardIrqHandler for SharedSpuriousHandler {
 #[derive(Default)]
 struct BatchingQueueCounters {
     submitted: AtomicUsize,
+    fua_submitted: AtomicUsize,
     commits: AtomicUsize,
     largest_batch: AtomicUsize,
 }
@@ -176,6 +178,9 @@ impl HardwareQueue for BatchingReadQueue {
             let Some(request) = requests.pop_front() else {
                 break;
             };
+            if request.flags.contains(RequestFlags::FUA) {
+                self.counters.fua_submitted.fetch_add(1, Ordering::AcqRel);
+            }
             self.next_id += 1;
             let id = RequestId::new(self.next_id);
             let data = request
@@ -652,6 +657,7 @@ fn batching_queue_info() -> QueueInfo {
     limits.max_blocks_per_request = 1;
     limits.max_inflight = 4;
     limits.max_submit_batch = 4;
+    limits.supported_flags = RequestFlags::FUA;
     QueueInfo {
         id: 0,
         device: DeviceInfo::new(32, 512),
@@ -764,6 +770,73 @@ fn read_blocks_queues_the_next_bounded_window_before_waiting() {
             .is_ok()
     );
     read_thread.join().unwrap();
+    assert_eq!(handle.shutdown(), 1);
+}
+
+#[cfg(feature = "ext4")]
+#[test]
+fn fua_write_marks_every_split_request() {
+    let _registrar_guard = lock_test_irq_registrar();
+    crate::os::task::install_test_runtime_ops();
+    install_dma_op(&TEST_DMA_OP);
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
+
+    let counters = Arc::new(BatchingQueueCounters::default());
+    let controller = BatchingReadController {
+        queue: Some(BatchingReadQueue {
+            counters: Arc::clone(&counters),
+            next_id: 0,
+            pending: Vec::new(),
+        }),
+    };
+    let irq = IrqId::new(IrqDomainId(1), HwIrq(12));
+    let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
+        "fua-write",
+        [BlockIrqSource { source_id: 0, irq }],
+        Box::new(controller),
+    ))
+    .unwrap();
+    assert!(handle.supports_fua());
+
+    let writer = Arc::clone(&handle);
+    let (result_tx, result_rx) = mpsc::channel();
+    let write_thread = thread::spawn(move || {
+        let buffer = vec![0x5a; 4 * 512];
+        result_tx.send(writer.write_blocks_fua(0, &buffer)).unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while counters.submitted.load(Ordering::Acquire) < 4 {
+        assert!(
+            Instant::now() < deadline,
+            "FUA write requests were not submitted"
+        );
+        thread::yield_now();
+    }
+    while counters.commits.load(Ordering::Acquire) < 1 {
+        assert!(
+            Instant::now() < deadline,
+            "maintenance task did not commit the FUA write window"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(counters.fua_submitted.load(Ordering::Acquire), 4);
+    assert_eq!(
+        TEST_IRQ_REGISTRAR.run_registered_action(),
+        BlockIrqOutcome::Wake
+    );
+    assert!(
+        result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .is_ok()
+    );
+    write_thread.join().unwrap();
     assert_eq!(handle.shutdown(), 1);
 }
 

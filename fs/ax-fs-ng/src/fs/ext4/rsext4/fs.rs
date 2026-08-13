@@ -226,6 +226,10 @@ mod tests {
             true
         }
 
+        fn supports_fua(&self) -> bool {
+            false
+        }
+
         fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
             let start = usize::try_from(block_id)
                 .map_err(|_| AxError::InvalidInput)?
@@ -251,6 +255,10 @@ mod tests {
             let target = storage.get_mut(start..end).ok_or(AxError::InvalidInput)?;
             target.copy_from_slice(buf);
             Ok(())
+        }
+
+        fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> AxResult {
+            Err(AxError::Unsupported)
         }
 
         fn flush(&mut self) -> AxResult {
