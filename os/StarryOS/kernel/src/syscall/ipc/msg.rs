@@ -898,9 +898,10 @@ pub fn sys_msgctl(
         let user_buf = ptr.vm_read(current)?;
 
         // Update permission information (fields allowed by man-page)
-        msg_queue.msqid_ds.msg_perm.uid = user_buf.msg_perm.uid;
-        msg_queue.msqid_ds.msg_perm.gid = user_buf.msg_perm.gid;
-        msg_queue.msqid_ds.msg_perm.mode = user_buf.msg_perm.mode & 0o777; // Only take permission bits
+        msg_queue
+            .msqid_ds
+            .msg_perm
+            .update_from_user(&user_buf.msg_perm);
 
         // Update queue size limit (requires privilege check)
         let old_qbytes = msg_queue.msqid_ds.msg_qbytes;

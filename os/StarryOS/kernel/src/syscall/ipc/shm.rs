@@ -18,6 +18,7 @@ use super::{
 use crate::{
     mm::{AddrSpace, Backend, SharedPages, UserPtr, VmMutPtr},
     sync::PiMutex,
+    task::visible_user_pid,
 };
 
 bitflags::bitflags! {
@@ -105,6 +106,12 @@ impl ShmidDs {
             __unused5: 0,
         }
     }
+}
+
+fn project_shm_pids(current: &crate::task::UserTaskRef, mut value: ShmidDs) -> ShmidDs {
+    value.shm_cpid = visible_user_pid(current, value.shm_cpid as u64) as __kernel_pid_t;
+    value.shm_lpid = visible_user_pid(current, value.shm_lpid as u64) as __kernel_pid_t;
+    value
 }
 
 /// System-wide shared memory info returned by IPC_INFO.
@@ -738,7 +745,7 @@ pub fn sys_shmctl(
                     return Err(AxError::PermissionDenied);
                 }
                 let ptr = buf.as_ptr();
-                ptr.vm_write(current, guard.shmid_ds)?;
+                ptr.vm_write(current, project_shm_pids(current, guard.shmid_ds))?;
                 Ok(*actual_shmid as isize)
             });
         return result;
@@ -782,16 +789,20 @@ pub fn sys_shmctl(
     };
     let mut shm_inner = shm_inner_arc.lock();
 
-    let output = if cmd == IPC_SET {
-        shm_inner.shmid_ds = requested.expect("IPC_SET input was copied before locking");
-        None
-    } else if cmd == IPC_STAT {
-        (!buf.is_null()).then_some(shm_inner.shmid_ds)
-    } else {
+    if cmd == IPC_SET {
+        let requested = requested.expect("IPC_SET input was copied before locking");
+        shm_inner
+            .shmid_ds
+            .shm_perm
+            .update_from_user(&requested.shm_perm);
+        shm_inner.shmid_ds.shm_ctime = monotonic_time_nanos() as __kernel_time_t;
+        return Ok(0);
+    }
+    if cmd != IPC_STAT {
         return Err(AxError::InvalidInput);
-    };
+    }
 
-    shm_inner.shmid_ds.shm_ctime = monotonic_time_nanos() as __kernel_time_t;
+    let output = (!buf.is_null()).then_some(project_shm_pids(current, shm_inner.shmid_ds));
     drop(shm_inner);
     if let Some(output) = output {
         buf.write(current, output)?;

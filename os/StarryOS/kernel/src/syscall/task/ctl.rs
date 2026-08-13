@@ -15,7 +15,7 @@ use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct, C
 
 use crate::{
     mm::{UserPtr, VmMutPtr, VmPtr, vm_load_string, vm_write_slice},
-    task::{Cred, get_process_data, get_task},
+    task::{Cred, get_task, resolve_user_pid},
 };
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
@@ -82,7 +82,7 @@ fn validate_mbind_request(addr: usize, len: usize, mode: i32, flags: u32) -> AxR
     Ok(policy)
 }
 
-/// Validate the cap header and return the target pid (0 means self).
+/// Validate the cap header and return the namespace-visible target PID.
 fn validate_cap_header(
     current: &crate::task::UserTaskRef,
     header_ptr: *mut __user_cap_header_struct,
@@ -99,7 +99,6 @@ fn validate_cap_header(
         return Err(AxError::InvalidInput);
     }
     let pid = header.pid as u32;
-    let _ = get_process_data(pid)?;
     Ok(pid)
 }
 
@@ -112,6 +111,7 @@ fn cred_for_pid(current: &crate::task::UserTaskRef, pid: u32) -> AxResult<alloc:
     if pid == 0 {
         return Ok(current.as_thread().cred());
     }
+    let pid = resolve_user_pid(current, pid)?;
     let task = get_task(pid).map_err(|_| AxError::NoSuchProcess)?;
     Ok(task.as_thread().cred())
 }
@@ -217,7 +217,12 @@ pub fn sys_capset(
 
     let thread_ref = current;
     let thread = thread_ref.as_thread();
-    if pid != 0 && pid != thread.tid() {
+    let target = if pid == 0 {
+        thread.tid()
+    } else {
+        resolve_user_pid(current, pid)?
+    };
+    if target != thread.tid() {
         return Err(AxError::OperationNotPermitted);
     }
 

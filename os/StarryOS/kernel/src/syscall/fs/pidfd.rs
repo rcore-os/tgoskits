@@ -12,6 +12,7 @@ use crate::{
     task::{
         get_task, pidfd_process_identity, pidfd_thread_identity, resolve_user_pid,
         send_signal_to_process, send_signal_to_process_group, send_signal_to_thread,
+        visible_user_pid,
     },
 };
 
@@ -55,7 +56,12 @@ fn make_pidfd_siginfo(
     };
     let curr = current;
     let thread = curr.as_thread();
-    SignalInfo::new_user(signo, code, thread.proc_data.proc.pid(), thread.cred().uid)
+    SignalInfo::new_user(
+        signo,
+        code,
+        visible_user_pid(current, thread.proc_data.proc.pid() as u64),
+        thread.cred().uid,
+    )
 }
 
 pub fn sys_pidfd_open(current: &crate::task::UserTaskRef, pid: u32, flags: u32) -> AxResult<isize> {

@@ -202,6 +202,12 @@ int main(void)
 
         struct shmid_ds set = info;
         set.shm_perm.mode = (set.shm_perm.mode & ~0777u) | 0600u;
+        set.shm_perm.cuid += 1000;
+        set.shm_perm.cgid += 1000;
+        set.shm_segsz += SEG_SIZE;
+        set.shm_cpid += 1000;
+        set.shm_lpid += 1000;
+        set.shm_nattch += 7;
         CHECK_RET(shmctl(seg, IPC_SET, &set), 0,
                   "shmctl IPC_SET updates the segment");
 
@@ -211,6 +217,18 @@ int main(void)
                   "shmctl IPC_STAT after IPC_SET");
         CHECK((after.shm_perm.mode & 0777u) == 0600u,
               "IPC_SET applied the new permission bits");
+        CHECK(after.shm_perm.cuid == info.shm_perm.cuid,
+              "IPC_SET preserves the creator uid");
+        CHECK(after.shm_perm.cgid == info.shm_perm.cgid,
+              "IPC_SET preserves the creator gid");
+        CHECK(after.shm_segsz == info.shm_segsz,
+              "IPC_SET preserves the segment size");
+        CHECK(after.shm_cpid == info.shm_cpid,
+              "IPC_SET preserves the creator pid");
+        CHECK(after.shm_lpid == info.shm_lpid,
+              "IPC_SET preserves the last-operation pid");
+        CHECK(after.shm_nattch == info.shm_nattch,
+              "IPC_SET preserves the attach count");
 
         if (p != (void *)-1)
         {

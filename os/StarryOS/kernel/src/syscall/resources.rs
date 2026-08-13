@@ -8,7 +8,7 @@ use starry_process::Pid;
 
 use crate::{
     mm::{UserPtr, VmPtr},
-    task::{ProcessData, Thread, get_process_data},
+    task::{ProcessData, Thread, get_process_data, resolve_user_pid},
     time::TimeValueLike,
 };
 
@@ -19,7 +19,13 @@ pub fn sys_prlimit64(
     new_limit: *const rlimit64,
     old_limit: *mut rlimit64,
 ) -> AxResult<isize> {
-    // pid lookup first — match Linux error priority (ESRCH before EINVAL)
+    // Linux resolves explicit PIDs in the caller's active PID namespace.
+    // Keep lookup first to preserve ESRCH-before-EINVAL error priority.
+    let pid = if pid == 0 {
+        current.as_thread().proc_data.proc.pid()
+    } else {
+        resolve_user_pid(current, pid)?
+    };
     let proc_data = get_process_data(pid)?;
 
     if resource >= RLIM_NLIMITS {
