@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
-    sync::atomic::{AtomicI32, Ordering},
+    sync::atomic::{AtomicI32, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -47,6 +47,11 @@ pub struct TimerSpec {
 pub struct PosixTimerTable {
     next_id: AtomicI32,
     timers: Mutex<BTreeMap<i32, PosixTimer>>,
+    /// Lock-free "might have timers" hint: the exact `timers` length, republished
+    /// under the `timers` lock by every mutator. Lets the per-syscall
+    /// `poll_process_timer` path skip the global process lookup + the timers lock
+    /// entirely when the process has no POSIX timers (the overwhelming case).
+    count: AtomicUsize,
 }
 
 impl Default for PosixTimerTable {
@@ -54,6 +59,7 @@ impl Default for PosixTimerTable {
         Self {
             next_id: AtomicI32::new(0),
             timers: Mutex::new(BTreeMap::new()),
+            count: AtomicUsize::new(0),
         }
     }
 }
@@ -125,18 +131,42 @@ impl PosixTimerTable {
             interval_ns: 0,
             deadline_ns: 0,
         };
-        self.timers.lock().insert(id, timer);
+        let mut timers = self.timers.lock();
+        timers.insert(id, timer);
+        self.publish_count(&timers);
         Ok(id)
     }
 
     /// Delete a timer. Returns true if it existed.
     pub fn delete(&self, id: i32) -> bool {
-        self.timers.lock().remove(&id).is_some()
+        let mut timers = self.timers.lock();
+        let removed = timers.remove(&id).is_some();
+        self.publish_count(&timers);
+        removed
     }
 
     /// Clear all timers. Used on execve.
     pub fn clear(&self) {
-        self.timers.lock().clear();
+        let mut timers = self.timers.lock();
+        timers.clear();
+        self.publish_count(&timers);
+    }
+
+    /// Republish the lock-free `count` hint as the exact map length. Called under
+    /// the `timers` lock by every mutator so `count` can never drift or
+    /// underflow (e.g. an `execve` clear racing a concurrent create/delete would
+    /// otherwise over-count or wrap with the old outside-the-lock fetch_add/sub).
+    /// `Relaxed` is sufficient: readers use it only as a "might have timers" hint,
+    /// and the alarm task fires every armed timer at its deadline regardless.
+    fn publish_count(&self, timers: &BTreeMap<i32, PosixTimer>) {
+        self.count.store(timers.len(), Ordering::Relaxed);
+    }
+
+    /// Whether this process might have any POSIX timer. Used by the per-syscall
+    /// `poll_process_timer` fast path to skip the global lookup + timers lock
+    /// when there are none.
+    pub fn maybe_has_timers(&self) -> bool {
+        self.count.load(Ordering::Relaxed) != 0
     }
 
     /// Set (arm/disarm) a timer. Returns the old (interval, remaining) in nanos.

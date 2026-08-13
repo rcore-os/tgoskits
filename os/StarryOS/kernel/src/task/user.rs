@@ -362,8 +362,12 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         if poll_timer {
                             // POSIX timers are also driven by the alarm task, but polling
                             // here closes the window where an expired timer is only noticed
-                            // after the current syscall returns to userspace.
-                            poll_process_timer(&thr.proc_data.identity());
+                            // after the current syscall returns to userspace. Skip the
+                            // global process lookup + the timers lock entirely when this
+                            // process has no POSIX timers (the overwhelming common case).
+                            if thr.proc_data.posix_timers.maybe_has_timers() {
+                                poll_process_timer(&thr.proc_data.identity());
+                            }
                             poll_timer = false;
                         }
                         while check_signals(thr, &mut uctx, None, pending_restart) {
