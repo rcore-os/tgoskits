@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    xattr::{external_store_revoke_records, read_external_store, release_external_store},
+    *,
+};
 use crate::{
     entries::{decode_directory_record_length, encode_directory_record_length},
     hashtree::Ext4InodeHashTreeExt,
@@ -108,7 +111,12 @@ fn inode_owned_blocks<B: BlockIo>(
     Ok(used_blocks)
 }
 
-fn reap_transaction_credits(fs: &Ext4FileSystem, inode: &Ext4Inode) -> Ext4Result<usize> {
+fn reap_transaction_credits(
+    fs: &Ext4FileSystem,
+    inode: &Ext4Inode,
+    has_external_xattr: bool,
+    revoke_records: usize,
+) -> Ext4Result<TransactionCredits> {
     let block_size = u32::try_from(fs.superblock.block_size())
         .map_err(|_| Ext4Error::corrupted().with_operation("orphan:reap_block_size"))?;
     let sectors_per_block = u64::from(block_size / 512);
@@ -119,15 +127,25 @@ fn reap_transaction_credits(fs: &Ext4FileSystem, inode: &Ext4Inode) -> Ext4Resul
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
     let owned_blocks = inode.blocks_count(block_size, huge_file);
+    if has_external_xattr && owned_blocks < sectors_per_block {
+        return Err(Ext4Error::corrupted().with_operation("xattr:i_blocks"));
+    }
     if owned_blocks == 0 {
-        return Ok(EMPTY_REAP_TRANSACTION_CREDITS);
+        return Ok(TransactionCredits::metadata_with_revokes(
+            EMPTY_REAP_TRANSACTION_CREDITS,
+            revoke_records,
+        ));
     }
     let data_credits = owned_blocks
         .div_ceil(sectors_per_block)
         .clamp(2, REAP_MAX_TRANSACTION_DATA);
-    REAP_BASE_TRANSACTION_CREDITS
+    let metadata_credits = REAP_BASE_TRANSACTION_CREDITS
         .checked_add(usize::try_from(data_credits).map_err(|_| Ext4Error::overflow())?)
-        .ok_or_else(Ext4Error::overflow)
+        .ok_or_else(Ext4Error::overflow)?;
+    Ok(TransactionCredits::metadata_with_revokes(
+        metadata_credits,
+        revoke_records,
+    ))
 }
 
 fn flush_reap_metadata<B: BlockIo>(
@@ -197,10 +215,20 @@ pub fn reap_unlinked_inode<B: BlockIo>(
     // zero-link inode remains durably orphaned across this boundary, so a
     // crash after mapping removal simply resumes the final reap on mount.
     truncate_legacy_indirect_mapping_before_free(fs, block_dev, inode_num, &mut inode)?;
-    let credits = reap_transaction_credits(fs, &inode)?;
+    let external_xattr = read_external_store(block_dev, fs, &inode)?;
+    let credits = reap_transaction_credits(
+        fs,
+        &inode,
+        external_xattr.is_some(),
+        external_store_revoke_records(external_xattr.as_ref()),
+    )?;
     let counters_before = fs.group_counter_snapshot();
 
     fs.with_metadata_transaction(block_dev, credits, |fs, block_dev| {
+        if let Some(external_xattr) = external_xattr {
+            release_external_store(block_dev, fs, external_xattr)?;
+            inode.set_file_acl(0)?;
+        }
         let used_blocks = inode_owned_blocks(fs, block_dev, inode_num, &mut inode)?;
         for block in used_blocks {
             fs.free_block(block_dev, block)?;

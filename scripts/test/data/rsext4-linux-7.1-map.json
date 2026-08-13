@@ -1577,8 +1577,35 @@
       "segments": [
         {
           "start": 1,
+          "end": 2905,
+          "symbol": "<coarse interval>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::metadata::xattr",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        },
+        {
+          "start": 2906,
+          "end": 3014,
+          "symbol": "ext4_xattr_delete_inode",
+          "classification": "core",
+          "state_machine": "validate and release each inode-owned external xattr reference before final inode allocation release, updating shared refcounts or revoking the final block in the same transaction that clears i_file_acl",
+          "invariant": "a shared xattr block remains allocated until its final reference; any validation or publication failure preserves the orphan inode, i_file_acl, block bitmap, refcount, and free-block accounting",
+          "rust_owner": "rsext4::file::xattr and rsext4::file::delete",
+          "reason": "external xattr block ownership and orphan-inode cleanup are portable ext4 on-disk and journal semantics; EA-inode value reference deletion remains a separate unsupported feature",
+          "test_ids": [
+            "classic-orphan-recovery",
+            "persistent-xattr-inline-external"
+          ]
+        },
+        {
+          "start": 3015,
           "end": 3230,
-          "symbol": "<whole-file>",
+          "symbol": "<coarse interval>",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",

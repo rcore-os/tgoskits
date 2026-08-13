@@ -22,6 +22,7 @@ const XATTR_BLOCK_HEADER_SIZE: usize = 32;
 const XATTR_ENTRY_SIZE: usize = 16;
 const XATTR_TERMINATOR_SIZE: usize = 4;
 const XATTR_SIZE_MAX: u32 = 1 << 24;
+const XATTR_REFCOUNT_MAX: u32 = 1024;
 const XATTR_BLOCK_CHECKSUM_OFFSET: usize = 16;
 const XATTR_TRANSACTION_CREDITS: usize = 8;
 
@@ -102,7 +103,7 @@ struct StoredXattr {
     value: StoredXattrValue,
 }
 
-struct ExternalStore {
+pub(super) struct ExternalStore {
     block: AbsoluteBN,
     refcount: u32,
     entries: Vec<StoredXattr>,
@@ -286,11 +287,7 @@ fn persist_xattrs<B: BlockIo>(
 
     let feature_was_missing =
         filesystem.superblock.s_feature_compat & Ext4Superblock::EXT4_FEATURE_COMPAT_EXT_ATTR == 0;
-    let revoke_records = usize::from(
-        external
-            .as_ref()
-            .is_some_and(|external| external.refcount == 1),
-    );
+    let revoke_records = external_store_revoke_records(external.as_ref());
     let credits = TransactionCredits::metadata_with_revokes(transaction_credits, revoke_records);
     filesystem.with_metadata_transaction(device, credits, |filesystem, device| {
         let mut allocated_block = None;
@@ -363,23 +360,14 @@ fn persist_xattrs<B: BlockIo>(
             return Err(error);
         }
 
-        if let Some(old) = &external
+        if let Some(old) = external
             && Some(old.block) != target_block
+            && let Some(group) = release_external_store(device, filesystem, old)?
         {
-            if old.refcount > 1 {
-                let mut old_image = old.raw.clone();
-                old_image[4..8].copy_from_slice(&(old.refcount - 1).to_le_bytes());
-                set_external_block_checksum(&filesystem.superblock, old.block, &mut old_image)?;
-                device.write_blocks(&old_image, old.block, 1, true)?;
-            } else {
-                device.forget_detached_metadata(old.block)?;
-                filesystem.free_block(device, old.block)?;
-                let (group, _) = filesystem.block_allocator.global_to_group(old.block)?;
-                if !touched_bitmap_groups.contains(&group) {
-                    touched_bitmap_groups.push(group);
-                }
-                superblock_dirty = true;
+            if !touched_bitmap_groups.contains(&group) {
+                touched_bitmap_groups.push(group);
             }
+            superblock_dirty = true;
         }
         filesystem.superblock.s_feature_compat |= Ext4Superblock::EXT4_FEATURE_COMPAT_EXT_ATTR;
         if feature_was_missing {
@@ -626,7 +614,7 @@ fn parse_inline_store(
     .map(Some)
 }
 
-fn read_external_store<B: BlockIo>(
+pub(super) fn read_external_store<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     filesystem: &Ext4FileSystem,
     inode: &Ext4Inode,
@@ -658,6 +646,35 @@ fn read_external_store<B: BlockIo>(
     }))
 }
 
+pub(super) fn external_store_revoke_records(external: Option<&ExternalStore>) -> usize {
+    usize::from(external.is_some_and(|external| external.refcount == 1))
+}
+
+/// Drops one inode's reference to a checked external xattr store.
+///
+/// The caller must run this transition in the same metadata transaction that
+/// clears the inode's `i_file_acl`. A shared store remains allocated with its
+/// checksum updated; an exclusively owned store is revoked before allocator
+/// reuse and returns the block group whose bitmap metadata changed.
+pub(super) fn release_external_store<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    filesystem: &mut Ext4FileSystem,
+    external: ExternalStore,
+) -> Ext4Result<Option<BGIndex>> {
+    if external.refcount > 1 {
+        let mut image = external.raw;
+        image[4..8].copy_from_slice(&(external.refcount - 1).to_le_bytes());
+        set_external_block_checksum(&filesystem.superblock, external.block, &mut image)?;
+        device.write_blocks(&image, external.block, 1, true)?;
+        return Ok(None);
+    }
+
+    device.forget_detached_metadata(external.block)?;
+    filesystem.free_block(device, external.block)?;
+    let (group, _) = filesystem.block_allocator.global_to_group(external.block)?;
+    Ok(Some(group))
+}
+
 fn validate_external_header(
     superblock: &Ext4Superblock,
     block_number: AbsoluteBN,
@@ -668,6 +685,10 @@ fn validate_external_header(
         || read_u32_le(&block[8..12]) != 1
     {
         return Err(Ext4Error::corrupted().with_operation("xattr:block_header"));
+    }
+    let refcount = read_u32_le(&block[4..8]);
+    if refcount == 0 || refcount > XATTR_REFCOUNT_MAX {
+        return Err(Ext4Error::corrupted().with_operation("xattr:block_refcount"));
     }
     if ext4_superblock_has_metadata_csum(superblock) {
         let stored =
@@ -1120,6 +1141,214 @@ mod fault_tests {
     }
 
     #[test]
+    fn reaping_inode_releases_its_external_xattr_block() {
+        let (device, _) = FailingMemoryDevice::new(32 * 1024);
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut journal).expect("mkfs must succeed");
+        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        mkfile(&mut journal, &mut filesystem, "/victim", None, None).expect("create baseline file");
+        filesystem
+            .sync_filesystem(&mut journal)
+            .expect("sync baseline filesystem");
+        journal.umount_commit().expect("commit baseline metadata");
+
+        let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/victim")
+            .expect("lookup victim")
+            .expect("victim must exist")
+            .0;
+        let free_blocks_before_xattr = filesystem.statfs().free_blocks;
+        set_inode_xattr(
+            &mut journal,
+            &mut filesystem,
+            inode_number,
+            XattrNamespace::User,
+            b"reap",
+            &vec![0x5a; 512],
+            XattrSetMode::Create,
+        )
+        .expect("create external xattr");
+        filesystem
+            .sync_filesystem(&mut journal)
+            .expect("sync external xattr");
+        journal.umount_commit().expect("commit external xattr");
+
+        let inode = filesystem
+            .get_inode_by_num(&mut journal, inode_number)
+            .expect("read inode with external xattr");
+        assert_ne!(inode.file_acl(), 0, "fixture must use an external block");
+        assert_eq!(
+            filesystem.statfs().free_blocks + 1,
+            free_blocks_before_xattr
+        );
+
+        let outcome =
+            crate::file::unlink(&mut filesystem, &mut journal, "/victim").expect("unlink victim");
+        assert!(outcome.requires_reap());
+        crate::file::reap_unlinked_inode(&mut filesystem, &mut journal, outcome.inode)
+            .expect("reap victim");
+        assert_eq!(filesystem.statfs().free_blocks, free_blocks_before_xattr);
+
+        filesystem
+            .umount(&mut journal)
+            .expect("unmount reaped filesystem");
+        let remounted = mount(&mut journal).expect("remount reaped filesystem");
+        assert_eq!(remounted.statfs().free_blocks, free_blocks_before_xattr);
+    }
+
+    #[test]
+    fn reaping_shared_external_xattr_releases_only_the_final_reference() {
+        let (device, _) = FailingMemoryDevice::new(32 * 1024);
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut journal).expect("mkfs must succeed");
+        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let (first, second, shared_block) =
+            create_shared_external_xattr(&mut journal, &mut filesystem);
+        let free_blocks_with_shared_xattr = filesystem.statfs().free_blocks;
+
+        let first_outcome = crate::file::unlink(&mut filesystem, &mut journal, "/first")
+            .expect("unlink first inode");
+        assert_eq!(first_outcome.inode, first);
+        crate::file::reap_unlinked_inode(&mut filesystem, &mut journal, first)
+            .expect("reap first shared reference");
+        assert_eq!(
+            filesystem.statfs().free_blocks,
+            free_blocks_with_shared_xattr,
+            "the shared external block must remain allocated"
+        );
+        let second_inode = filesystem
+            .get_inode_by_num(&mut journal, second)
+            .expect("read surviving inode");
+        let surviving_store = read_external_store(&mut journal, &filesystem, &second_inode)
+            .expect("read surviving external store")
+            .expect("surviving inode keeps external xattr");
+        assert_eq!(surviving_store.block, shared_block);
+        assert_eq!(surviving_store.refcount, 1);
+        assert_eq!(
+            get_inode_xattr(
+                &mut journal,
+                &mut filesystem,
+                second,
+                XattrNamespace::User,
+                b"shared",
+            )
+            .expect("read surviving shared xattr"),
+            vec![0x5a; 512]
+        );
+
+        filesystem
+            .umount(&mut journal)
+            .expect("unmount after first shared reap");
+        let mut remounted = mount(&mut journal).expect("remount after first shared reap");
+        let persisted_inode = remounted
+            .get_inode_by_num(&mut journal, second)
+            .expect("read persisted surviving inode");
+        let persisted_store = read_external_store(&mut journal, &remounted, &persisted_inode)
+            .expect("read persisted external store")
+            .expect("persisted external store must remain");
+        assert_eq!(persisted_store.refcount, 1);
+
+        let second_outcome = crate::file::unlink(&mut remounted, &mut journal, "/second")
+            .expect("unlink final inode");
+        assert_eq!(second_outcome.inode, second);
+        crate::file::reap_unlinked_inode(&mut remounted, &mut journal, second)
+            .expect("reap final shared reference");
+        assert_eq!(
+            remounted.statfs().free_blocks,
+            free_blocks_with_shared_xattr + 1
+        );
+    }
+
+    #[test]
+    fn failed_external_xattr_reap_restores_orphan_and_allocation() {
+        let (device, fail_write_sector) = FailingMemoryDevice::new(32 * 1024);
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut journal).expect("mkfs must succeed");
+        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        mkfile(&mut journal, &mut filesystem, "/victim", None, None).expect("create baseline file");
+        filesystem
+            .sync_filesystem(&mut journal)
+            .expect("sync baseline filesystem");
+        journal.umount_commit().expect("commit baseline metadata");
+
+        let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/victim")
+            .expect("lookup victim")
+            .expect("victim must exist")
+            .0;
+        let free_blocks_before_xattr = filesystem.statfs().free_blocks;
+        set_inode_xattr(
+            &mut journal,
+            &mut filesystem,
+            inode_number,
+            XattrNamespace::User,
+            b"reap",
+            &vec![0x5a; 512],
+            XattrSetMode::Create,
+        )
+        .expect("create external xattr");
+        filesystem
+            .sync_filesystem(&mut journal)
+            .expect("sync external xattr");
+        journal.umount_commit().expect("commit external xattr");
+        let inode = filesystem
+            .get_inode_by_num(&mut journal, inode_number)
+            .expect("read inode with external xattr");
+        let external = read_external_store(&mut journal, &filesystem, &inode)
+            .expect("read external store")
+            .expect("fixture must use external xattr");
+        let (xattr_group, _) = filesystem
+            .block_allocator
+            .global_to_group(external.block)
+            .expect("locate external xattr group");
+        let block_bitmap = filesystem
+            .get_group_desc(xattr_group)
+            .expect("read external xattr group descriptor")
+            .block_bitmap();
+
+        journal
+            .set_journal_use(false)
+            .expect("switch fixture to direct metadata writes");
+        let outcome =
+            crate::file::unlink(&mut filesystem, &mut journal, "/victim").expect("unlink victim");
+        assert!(outcome.requires_reap());
+        let free_blocks_before_reap = filesystem.statfs().free_blocks;
+        fail_write_sector.set(Some(block_bitmap));
+
+        let error = crate::file::reap_unlinked_inode(&mut filesystem, &mut journal, outcome.inode)
+            .expect_err("external xattr bitmap publication must fail");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+        assert_eq!(filesystem.statfs().free_blocks, free_blocks_before_reap);
+        assert!(
+            filesystem
+                .inode_is_allocated_checked(&mut journal, inode_number)
+                .expect("check restored inode allocation")
+        );
+        assert!(
+            filesystem
+                .orphan_contains(&mut journal, inode_number)
+                .expect("check restored orphan membership")
+        );
+        let restored_inode = filesystem
+            .get_inode_by_num(&mut journal, inode_number)
+            .expect("read restored inode");
+        assert_eq!(restored_inode.file_acl(), external.block.raw());
+        assert_eq!(
+            get_inode_xattr(
+                &mut journal,
+                &mut filesystem,
+                inode_number,
+                XattrNamespace::User,
+                b"reap",
+            )
+            .expect("read restored xattr"),
+            vec![0x5a; 512]
+        );
+
+        crate::file::reap_unlinked_inode(&mut filesystem, &mut journal, inode_number)
+            .expect("retry external xattr reap");
+        assert_eq!(filesystem.statfs().free_blocks, free_blocks_before_xattr);
+    }
+
+    #[test]
     fn shared_external_xattr_cow_preserves_the_other_inode() {
         let (device, _) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
@@ -1414,5 +1643,20 @@ mod tests {
         )
         .expect_err("embedded xattr name terminator must be rejected");
         assert_eq!(error.kind(), crate::error::Ext4ErrorKind::Corrupted);
+    }
+
+    #[test]
+    fn checked_external_xattr_rejects_invalid_refcounts() {
+        let mut block = alloc::vec![0u8; XATTR_BLOCK_HEADER_SIZE + XATTR_TERMINATOR_SIZE];
+        block[0..4].copy_from_slice(&XATTR_MAGIC.to_le_bytes());
+        block[8..12].copy_from_slice(&1u32.to_le_bytes());
+
+        for invalid_refcount in [0, XATTR_REFCOUNT_MAX + 1] {
+            block[4..8].copy_from_slice(&invalid_refcount.to_le_bytes());
+            let error =
+                validate_external_header(&Ext4Superblock::default(), AbsoluteBN::new(1), &block)
+                    .expect_err("invalid xattr refcount must be rejected");
+            assert_eq!(error.kind(), crate::error::Ext4ErrorKind::Corrupted);
+        }
     }
 }
