@@ -35,7 +35,6 @@ ax-cpumask = { workspace = true }
 ax-crate-interface = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-memory-set = { workspace = true }
-ax-percpu.workspace = true
 cpu-local.workspace = true
 page-table-generic = { workspace = true }
 ax-std = { workspace = true, default-features = false, features = [

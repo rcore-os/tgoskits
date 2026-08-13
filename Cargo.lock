@@ -1583,7 +1583,6 @@ dependencies = [
  "ax-driver",
  "ax-memory-addr",
  "ax-memory-set",
- "ax-percpu",
  "ax-plat",
  "ax-std",
  "axaddrspace",
