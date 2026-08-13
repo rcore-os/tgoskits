@@ -7,7 +7,16 @@ mod eventfd;
 mod syscalls;
 
 pub fn run() -> crate::TestResult {
+    let baseline = syscalls::eventfd(0, 0).expect("failed to probe the baseline fd slot");
+    let baseline_slot = baseline.as_raw();
+    drop(baseline);
     eventfd::run()?;
     epoll::run()?;
+    let after = syscalls::eventfd(0, 0).expect("failed to probe the final fd slot");
+    assert_eq!(
+        after.as_raw(),
+        baseline_slot,
+        "eventfd/epoll tests must release every fd they allocate"
+    );
     Ok(())
 }
