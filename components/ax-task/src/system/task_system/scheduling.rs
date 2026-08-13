@@ -214,13 +214,17 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         current: Option<&ThreadHandle>,
     ) -> Result<ScheduleDecision, TaskError> {
-        self.schedule_owner(cpu, current, OwnerRqEntry::IrqSave)
+        self.schedule_owner(
+            cpu,
+            current.map(|thread| thread.runtime_core_arc().as_ref()),
+            OwnerRqEntry::IrqSave,
+        )
     }
 
     fn schedule_owner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
-        current: Option<&ThreadHandle>,
+        current: Option<&ThreadCore>,
         rq_entry: OwnerRqEntry,
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
@@ -230,8 +234,8 @@ impl TaskSystem {
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let previous_core_hint = current.map(|thread| Arc::clone(thread.runtime_core_arc()));
-        let mut previous_sched = previous_core_hint.as_ref().map(|core| {
+        let previous_core_hint = current;
+        let mut previous_sched = previous_core_hint.map(|core| {
             // SAFETY: propagated from the selected entry contract.
             unsafe { rq_entry.lock_thread_sched(core.sched()) }
         });
@@ -249,7 +253,9 @@ impl TaskSystem {
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();
-        if previous_core.as_ref().map(Arc::as_ptr) != previous_core_hint.as_ref().map(Arc::as_ptr) {
+        if previous_core.as_deref().map(core::ptr::from_ref)
+            != previous_core_hint.map(core::ptr::from_ref)
+        {
             task_runtime::fatal_invariant(0x5343_1201, cpu.owner().as_u32() as usize);
         }
         let mut migration = None;
@@ -310,7 +316,7 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         current: &ThreadHandle,
     ) -> Result<SchedulerOutcome, TaskError> {
-        self.schedule_if_requested_owner(cpu, current, OwnerRqEntry::IrqSave)
+        self.schedule_if_requested_owner(cpu, current.runtime_core_arc(), OwnerRqEntry::IrqSave)
     }
 
     /// Services scheduler work while the runtime owns the IRQ-off baton.
@@ -321,15 +327,15 @@ impl TaskSystem {
     pub(crate) unsafe fn schedule_if_requested_in_scheduler_frame(
         &self,
         cpu: Pin<&mut CpuLocal>,
-        current: &ThreadHandle,
+        current: &CurrentThreadRef,
     ) -> Result<SchedulerOutcome, TaskError> {
-        self.schedule_if_requested_owner(cpu, current, OwnerRqEntry::SchedulerFrame)
+        self.schedule_if_requested_owner(cpu, current.runtime_core(), OwnerRqEntry::SchedulerFrame)
     }
 
     fn schedule_if_requested_owner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
-        current: &ThreadHandle,
+        current: &ThreadCore,
         rq_entry: OwnerRqEntry,
     ) -> Result<SchedulerOutcome, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
@@ -339,7 +345,7 @@ impl TaskSystem {
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let previous_core_hint = Arc::clone(current.runtime_core_arc());
+        let previous_core_hint = current;
         // SAFETY: propagated from the selected entry contract.
         let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
         // SAFETY: propagated from the selected entry contract.
@@ -373,7 +379,7 @@ impl TaskSystem {
         let previous_endpoint = transaction.current_switch_endpoint();
         if previous_core
             .as_ref()
-            .is_none_or(|core| !Arc::ptr_eq(core, &previous_core_hint))
+            .is_none_or(|core| !core::ptr::eq(core.as_ref(), previous_core_hint))
         {
             task_runtime::fatal_invariant(0x5343_1204, cpu.owner().as_u32() as usize);
         }
@@ -469,7 +475,7 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         current: &ThreadHandle,
     ) -> Result<ScheduleDecision, TaskError> {
-        self.yield_current_owner(cpu, current, OwnerRqEntry::IrqSave)
+        self.yield_current_owner(cpu, current.runtime_core_arc(), OwnerRqEntry::IrqSave)
     }
 
     /// Yields while the runtime owns the IRQ-off scheduler baton.
@@ -480,15 +486,15 @@ impl TaskSystem {
     pub(crate) unsafe fn yield_current_in_scheduler_frame(
         &self,
         cpu: Pin<&mut CpuLocal>,
-        current: &ThreadHandle,
+        current: &CurrentThreadRef,
     ) -> Result<ScheduleDecision, TaskError> {
-        self.yield_current_owner(cpu, current, OwnerRqEntry::SchedulerFrame)
+        self.yield_current_owner(cpu, current.runtime_core(), OwnerRqEntry::SchedulerFrame)
     }
 
     fn yield_current_owner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
-        current: &ThreadHandle,
+        current: &ThreadCore,
         rq_entry: OwnerRqEntry,
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
@@ -498,7 +504,7 @@ impl TaskSystem {
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let previous_core_hint = Arc::clone(current.runtime_core_arc());
+        let previous_core_hint = current;
         // SAFETY: propagated from the selected entry contract.
         let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
         // SAFETY: propagated from the selected entry contract.
@@ -516,7 +522,7 @@ impl TaskSystem {
         let previous_endpoint = transaction.current_switch_endpoint();
         if previous_core
             .as_ref()
-            .is_none_or(|core| !Arc::ptr_eq(core, &previous_core_hint))
+            .is_none_or(|core| !core::ptr::eq(core.as_ref(), previous_core_hint))
         {
             task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize);
         }

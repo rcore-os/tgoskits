@@ -1,6 +1,7 @@
 //! Move-only runtime resources and architecture context ABI.
 
 use alloc::sync::Arc;
+use core::{marker::PhantomData, ptr::NonNull};
 
 macro_rules! opaque_handle {
     ($(#[$meta:meta])* $name:ident) => {
@@ -714,6 +715,31 @@ pub struct CurrentThreadPublication {
     owner: CurrentThreadOwnerHandle,
 }
 
+/// Borrowed view of the scheduler-owned current-thread reference.
+///
+/// Unlike [`crate::ThreadHandle`], this capability does not acquire an
+/// external lifetime lease. It is confined to the current execution context;
+/// the architecture publication and scheduler-owned `rq->curr` reference keep
+/// the pointed-to core alive until the synchronous operation returns.
+pub(crate) struct CurrentThreadRef {
+    identity: crate::ThreadId,
+    core: NonNull<crate::ThreadCore>,
+    _not_send: PhantomData<*mut ()>,
+}
+
+impl CurrentThreadRef {
+    pub(crate) const fn id(&self) -> crate::ThreadId {
+        self.identity
+    }
+
+    pub(crate) fn runtime_core(&self) -> &crate::ThreadCore {
+        // SAFETY: construction validates the current publication while the
+        // scheduler retains its owner-side reference. The borrow cannot
+        // outlive this non-Send capability.
+        unsafe { self.core.as_ref() }
+    }
+}
+
 impl CurrentThreadPublication {
     /// Sentinel returned by an unbound bootstrap execution context.
     pub const NONE: Self = Self {
@@ -741,6 +767,35 @@ impl CurrentThreadPublication {
             identity: ThreadIdentityV1::new(identity.slot(), identity.generation()),
             owner,
         }
+    }
+
+    /// Borrows the scheduler-owned current reference without creating an
+    /// external handle or changing any Arc count.
+    ///
+    /// # Safety
+    ///
+    /// The runtime must have copied this publication from the architecture-
+    /// selected current context. The caller must use the returned capability
+    /// only in the synchronous operation of that context and must not exit the
+    /// thread while it remains live.
+    pub(crate) unsafe fn borrow_current(self) -> Result<CurrentThreadRef, crate::TaskError> {
+        if !self.identity.is_bound() {
+            return Err(crate::TaskError::NoRunnableThread);
+        }
+        let core = NonNull::new(core::ptr::with_exposed_provenance_mut::<crate::ThreadCore>(
+            self.owner.into_raw(),
+        ))
+        .ok_or(crate::TaskError::InvalidRuntimeHandle)?;
+        let identity = crate::ThreadId::from_parts(self.identity.slot, self.identity.generation);
+        let current = CurrentThreadRef {
+            identity,
+            core,
+            _not_send: PhantomData,
+        };
+        if current.runtime_core().id() != identity {
+            return Err(crate::TaskError::InvalidRuntimeHandle);
+        }
+        Ok(current)
     }
 
     /// Acquires an ordinary external scheduler handle from the current

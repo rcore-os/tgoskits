@@ -14,9 +14,9 @@ use crate::{
     inbox::PublishResult,
     lock::PreemptScope,
     runtime::{
-        IrqGuardToken, MonotonicDeadline, MonotonicInstant, RuntimeCpuId, RuntimeScheduleOrigin,
-        RuntimeSchedulerEntry, RuntimeSchedulerReturn, RuntimeStatus, SchedSwitchRecord,
-        task_runtime,
+        CurrentThreadRef, IrqGuardToken, MonotonicDeadline, MonotonicInstant, RuntimeCpuId,
+        RuntimeScheduleOrigin, RuntimeSchedulerEntry, RuntimeSchedulerReturn, RuntimeStatus,
+        SchedSwitchRecord, task_runtime,
     },
     timer::{
         KernelTimerCallback, KernelTimerCancelOutcome, KernelTimerEntry, KernelTimerHandle,
@@ -99,6 +99,11 @@ pub fn current_thread_handle() -> Result<ThreadHandle, TaskError> {
     #[cfg(feature = "qperf-metrics")]
     crate::metrics::record_current_thread_handle_query();
     let publication = current_thread_publication()?;
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::record_current_handle_query(ThreadId::from_parts(
+        publication.identity().slot,
+        publication.identity().generation,
+    ));
     // SAFETY: the scheduler retains the executing task's owner-side Arc across
     // preemption and migration until this synchronous operation returns.
     unsafe { publication.acquire_handle() }
@@ -133,6 +138,14 @@ fn current_thread_publication() -> Result<crate::runtime::CurrentThreadPublicati
         return Err(TaskError::InvalidRuntimeHandle);
     }
     Ok(publication)
+}
+
+fn current_thread_ref() -> Result<CurrentThreadRef, TaskError> {
+    let publication = current_thread_publication()?;
+    // SAFETY: the runtime publication was selected from this architecture
+    // context. The non-Send borrow remains inside one synchronous facade
+    // operation and the operation cannot exit the current thread.
+    unsafe { publication.borrow_current() }
 }
 
 /// Tests the current CPU's sticky reschedule request while migration is pinned.
@@ -291,7 +304,7 @@ pub fn set_thread_affinity_and_wait(thread: ThreadId, affinity: CpuSet) -> Resul
 /// are completed by the remote owner's next scheduler safe point.
 pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
     validate_schedule_context(RuntimeScheduleOrigin::Yield)?;
-    let current = current_thread_handle()?;
+    let current = current_thread_ref()?;
     let mut scheduler_frame = RuntimeSchedulerFrameGuard::enter(
         RuntimeScheduleOrigin::Yield,
         RuntimeSchedulerEntry::Task,

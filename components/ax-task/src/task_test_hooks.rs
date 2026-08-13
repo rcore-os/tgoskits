@@ -24,6 +24,9 @@ static RT_POLICY_DELIVERY_TARGET: AtomicU64 = AtomicU64::new(0);
 static RT_POLICY_DELIVERY_REQUIRED: AtomicU8 = AtomicU8::new(0);
 static RT_POLICY_DELIVERY_EVENTS: AtomicU8 = AtomicU8::new(0);
 static RT_POLICY_DELIVERY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static CURRENT_HANDLE_QUERY_TARGET: AtomicU64 = AtomicU64::new(0);
+static CURRENT_HANDLE_QUERY_COUNT: AtomicU64 = AtomicU64::new(0);
+static CURRENT_HANDLE_QUERY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 
 const STAGE_IDLE: u8 = 0;
 const STAGE_CONFIGURING: u8 = 1;
@@ -41,6 +44,54 @@ const RT_POLICY_OWNER_WORK: u8 = 1 << 1;
 /// Enters and exits one ordinary preemption scope through the real runtime.
 pub fn exercise_preempt_guard() {
     drop(crate::lock::PreemptScope::enter());
+}
+
+/// Arms external-handle accounting for one real scheduler thread.
+pub fn arm_current_handle_query_probe(thread: u64) {
+    assert_ne!(
+        thread, 0,
+        "a current-handle probe identity must be non-zero"
+    );
+    assert_eq!(
+        CURRENT_HANDLE_QUERY_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one current-handle query probe may be armed"
+    );
+    CURRENT_HANDLE_QUERY_TARGET.store(thread, Ordering::Relaxed);
+    CURRENT_HANDLE_QUERY_COUNT.store(0, Ordering::Relaxed);
+    CURRENT_HANDLE_QUERY_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes the number of external current handles acquired while armed.
+pub fn take_current_handle_query_count() -> Option<u64> {
+    if CURRENT_HANDLE_QUERY_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let count = CURRENT_HANDLE_QUERY_COUNT.load(Ordering::Relaxed);
+    CURRENT_HANDLE_QUERY_TARGET.store(0, Ordering::Relaxed);
+    CURRENT_HANDLE_QUERY_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(count)
+}
+
+pub(crate) fn record_current_handle_query(thread: ThreadId) {
+    if CURRENT_HANDLE_QUERY_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && CURRENT_HANDLE_QUERY_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        CURRENT_HANDLE_QUERY_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 struct IrqOwnerProbe {

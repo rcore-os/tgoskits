@@ -74,8 +74,9 @@ use crate::{
     runtime::{
         AddressSpaceDestroyOutcome, AddressSpaceMembarrierId, AddressSpaceMembarrierState,
         AddressSpaceReclaimArmOutcome, ContextThreadBinding, CpuRemoteHandle,
-        CurrentThreadPublication, MembarrierRegistration, MembarrierRegistrationPhase,
-        MonotonicDeadline, MonotonicInstant, RuntimeCpuId, RuntimeStatus, task_runtime,
+        CurrentThreadPublication, CurrentThreadRef, MembarrierRegistration,
+        MembarrierRegistrationPhase, MonotonicDeadline, MonotonicInstant, RuntimeCpuId,
+        RuntimeStatus, task_runtime,
     },
     system::cpu::{
         CpuRunQueueState, CurrentClassState, CurrentDispatch, CurrentDispatchState,
