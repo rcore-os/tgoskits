@@ -575,19 +575,15 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if self.inner.has_dirty_entries() {
             return Err(Ext4Error::busy().with_operation("jbd2:commit_with_unfinished_block_edit"));
         }
-        let system = self.system.as_ref().ok_or_else(|| {
-            Ext4Error::journal_aborted().with_operation("jbd2:commit_without_state")
-        })?;
-        let has_pending_transaction = !system.running_transaction.updates.is_empty()
-            || !system.running_transaction.revoked_blocks.is_empty();
-        let commit_time = if has_pending_transaction {
-            Jbd2CommitTimestamp::try_from((self.clock)(self.inner._device())?)?
-        } else {
-            Jbd2CommitTimestamp::UNIX_EPOCH
-        };
         let system = self.system.as_mut().ok_or_else(|| {
             Ext4Error::journal_aborted().with_operation("jbd2:commit_without_state")
         })?;
+        if system.running_transaction.updates.is_empty()
+            && system.running_transaction.revoked_blocks.is_empty()
+        {
+            return Ok(false);
+        }
+        let commit_time = Jbd2CommitTimestamp::try_from((self.clock)(self.inner._device())?)?;
         let result = system.commit_transaction_with_mapping(
             &mut self.inner,
             &self.journal_blocks,

@@ -36,13 +36,6 @@ pub(crate) struct Jbd2CommitTimestamp {
     nanoseconds: u32,
 }
 
-impl Jbd2CommitTimestamp {
-    pub(crate) const UNIX_EPOCH: Self = Self {
-        seconds: 0,
-        nanoseconds: 0,
-    };
-}
-
 impl TryFrom<Ext4Timestamp> for Jbd2CommitTimestamp {
     type Error = Ext4Error;
 

@@ -2254,3 +2254,24 @@ CRC/FUA publication 前写入 commit header；空 commit 仍不读时钟。定�
 改成 0、把越界纳秒截断；当前 typed commit timestamp 在 owner 由 running 转 committing 前返回
 `InvalidInput`，保留 running queue 且不 abort journal。该改动每个真实 commit 多一次
 clock callback，不声称吞吐改善；它与最终 dev/head `sync-cycle` 对照共用性能门槛。
+
+首个实现提交 `897d40a01` 在空 commit 路径先做一次 immutable `system` 查找和
+pending 分支，再做 mutable 查找，因此即使不读时钟也污染 clean-sync 热路径。固定 CPU 2、
+`powersave` governor、同一 nightly/release/memory backend/4 KiB/20 MiB workload，20 个交错批次、
+每端每批 3 次预热和 20 次测量，共800 条原始记录保存于
+`book/design/data/rsext4-perf/2026-08-13-jbd2-stale-clock-before-fast-path.csv`。相对 parent
+`a91e89cd8`，dirty-sync median/p95 为 +4.737%/-2.793%，clean-sync 为 +9.437%/+6.375%，
+unmount 为 +3.223%/+0.652%；clean-sync median 越过 5% 硬门槛。
+
+`aaf882ecf` 将空 running transaction 的早返收敛到单次 mutable owner 查找，只在真实 pending
+transaction 上读时钟和进入 commit state machine。同样配置独立重采 800 条，保存于
+`book/design/data/rsext4-perf/2026-08-13-jbd2-stale-clock-fast-path.csv`：
+
+| sync-cycle metric | parent median | current median | 变化 | parent p95 | current p95 | 变化 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| dirty sync | 11,412 ns | 11,559 ns | +1.288% | 17,723 ns | 15,614 ns | -11.900% |
+| clean sync | 225 ns | 221 ns | -1.778% | 463 ns | 346 ns | -25.270% |
+| unmount | 7,650.5 ns | 7,661.5 ns | +0.144% | 12,050 ns | 10,589 ns | -12.124% |
+
+六项 median/p95 都通过 5%/10% 门槛。这只证明时间语义未导致该切片的性能
+回退，不宣称新功能提升吞吐；最终 PR 仍需对当时最新 dev 重做完整 workload 验收。
