@@ -9,6 +9,7 @@ use crate::{mem::phys_to_virt, power::CpuOnError, smp::PerCpuMeta};
 pub const AP_TRAMPOLINE_PADDR: usize = 0x8000;
 const AP_TRAMPOLINE_VECTOR: u8 = (AP_TRAMPOLINE_PADDR >> 12) as u8;
 const AP_TRAMPOLINE_SIZE: usize = 0x1000;
+
 const LAPIC_REG_ESR: u32 = 0x280;
 const LAPIC_REG_ICR_LOW: u32 = 0x300;
 const LAPIC_REG_ICR_HIGH: u32 = 0x310;
@@ -19,8 +20,8 @@ const IA32_APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
 // INIT IPI (level-triggered): assert then deassert.
 const ICR_INIT_ASSERT: u32 = 0x0000_c500;
 const ICR_INIT_DEASSERT: u32 = 0x0000_8500;
-// STARTUP IPI, matching Linux APIC_DM_STARTUP. The edge-triggered delivery
-// does not carry the level-assert bit used by INIT.
+// STARTUP IPI, matching Linux APIC_DM_STARTUP. Edge-triggered delivery does
+// not carry the level-assert bit used by INIT.
 const ICR_STARTUP_BASE: u32 = 0x0000_0600;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -28,11 +28,17 @@ const CPU_BOOT_KICKED: u32 = 1;
 const CPU_BOOT_ALIVE: u32 = 2;
 const CPU_BOOT_SHOULD_ONLINE: u32 = 3;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CpuBootStatus {
+    WaitingForAlive,
+    Alive,
+}
+
 /// Per-CPU synchronization owned by the generic secondary-boot core.
 ///
-/// This is deliberately separate from [`PerCpuMeta`]. The metadata is an
+/// This object is deliberately separate from [`PerCpuMeta`]. Metadata is an
 /// immutable trampoline ABI after publication, while this object is the sole
-/// mutable owner of the `KICKED -> ALIVE -> SHOULD_ONLINE` handshake.
+/// mutable owner of the `DEAD -> KICKED -> ALIVE -> SHOULD_ONLINE` handshake.
 #[repr(C)]
 pub(crate) struct CpuBootSync {
     state: AtomicU32,
@@ -46,29 +52,38 @@ impl CpuBootSync {
     }
 
     fn prepare_kick(&self) -> Result<(), CpuBootPrepareError> {
-        let mut state = self.state.load(Ordering::Acquire);
-        loop {
-            match state {
-                CPU_BOOT_DEAD | CPU_BOOT_KICKED | CPU_BOOT_ALIVE => {}
-                _ => return Err(CpuBootPrepareError::Limbo { state }),
-            }
-            match self.state.compare_exchange_weak(
-                state,
+        self.state
+            .compare_exchange(
+                CPU_BOOT_DEAD,
                 CPU_BOOT_KICKED,
                 Ordering::AcqRel,
                 Ordering::Acquire,
-            ) {
-                Ok(_) => return Ok(()),
-                Err(observed) => state = observed,
-            }
+            )
+            .map(|_| ())
+            .map_err(|state| CpuBootPrepareError::UnexpectedState { state })
+    }
+
+    fn report_alive(&self) -> Result<(), CpuBootPrepareError> {
+        self.state
+            .compare_exchange(
+                CPU_BOOT_KICKED,
+                CPU_BOOT_ALIVE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|state| CpuBootPrepareError::UnexpectedState { state })
+    }
+
+    fn status(&self) -> Result<CpuBootStatus, CpuBootPrepareError> {
+        match self.state.load(Ordering::Acquire) {
+            CPU_BOOT_KICKED => Ok(CpuBootStatus::WaitingForAlive),
+            CPU_BOOT_ALIVE => Ok(CpuBootStatus::Alive),
+            state => Err(CpuBootPrepareError::UnexpectedState { state }),
         }
     }
 
-    fn report_alive(&self) {
-        self.state.swap(CPU_BOOT_ALIVE, Ordering::AcqRel);
-    }
-
-    fn try_release_alive(&self) -> bool {
+    fn release_alive(&self) -> Result<(), CpuBootPrepareError> {
         self.state
             .compare_exchange(
                 CPU_BOOT_ALIVE,
@@ -76,7 +91,8 @@ impl CpuBootSync {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
-            .is_ok()
+            .map(|_| ())
+            .map_err(|state| CpuBootPrepareError::UnexpectedState { state })
     }
 
     fn wait_until_released(&self) {
@@ -95,8 +111,8 @@ impl CpuBootSync {
 pub(crate) enum CpuBootPrepareError {
     #[error("logical CPU {cpu_index} has no published boot synchronization")]
     Missing { cpu_index: usize },
-    #[error("CPU boot synchronization is in limbo state {state}")]
-    Limbo { state: u32 },
+    #[error("CPU boot synchronization is in unexpected state {state}")]
+    UnexpectedState { state: u32 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -365,19 +381,32 @@ pub(crate) fn prepare_secondary_boot(cpu_index: usize) -> Result<(), CpuBootPrep
         .prepare_kick()
 }
 
-pub(crate) fn try_release_secondary(cpu_index: usize) -> bool {
-    try_release_secondary_from(cpu_boot_sync(cpu_index), cpu_index)
+pub(crate) fn secondary_boot_status(
+    cpu_index: usize,
+) -> Result<CpuBootStatus, CpuBootPrepareError> {
+    cpu_boot_sync(cpu_index)
+        .ok_or(CpuBootPrepareError::Missing { cpu_index })?
+        .status()
 }
 
-fn try_release_secondary_from(sync: Option<&CpuBootSync>, cpu_index: usize) -> bool {
-    sync.unwrap_or_else(|| panic!("missing boot synchronization for CPU {cpu_index}"))
-        .try_release_alive()
+pub(crate) fn release_secondary_boot(cpu_index: usize) -> Result<(), CpuBootPrepareError> {
+    release_secondary_boot_from(cpu_boot_sync(cpu_index), cpu_index)
+}
+
+fn release_secondary_boot_from(
+    sync: Option<&CpuBootSync>,
+    cpu_index: usize,
+) -> Result<(), CpuBootPrepareError> {
+    sync.ok_or(CpuBootPrepareError::Missing { cpu_index })?
+        .release_alive()
 }
 
 pub(crate) fn synchronize_secondary_boot(cpu_index: usize) {
     let sync = cpu_boot_sync(cpu_index)
         .unwrap_or_else(|| panic!("missing boot synchronization for CPU {cpu_index}"));
-    sync.report_alive();
+    sync.report_alive().unwrap_or_else(|error| {
+        panic!("CPU {cpu_index} reported alive from an invalid boot state: {error}")
+    });
     sync.wait_until_released();
 }
 
@@ -679,33 +708,66 @@ mod tests {
 
         first.prepare_kick().unwrap();
         second.prepare_kick().unwrap();
-        second.report_alive();
+        second.report_alive().unwrap();
 
-        assert!(!first.try_release_alive());
-        assert!(second.try_release_alive());
+        assert_eq!(
+            first.release_alive(),
+            Err(CpuBootPrepareError::UnexpectedState {
+                state: CPU_BOOT_KICKED
+            })
+        );
+        second.release_alive().unwrap();
         assert_eq!(first.state(), CPU_BOOT_KICKED);
         assert_eq!(second.state(), CPU_BOOT_SHOULD_ONLINE);
+    }
+
+    #[test]
+    fn boot_sync_observation_does_not_release_an_alive_cpu() {
+        let sync = CpuBootSync::new();
+
+        sync.prepare_kick().unwrap();
+        assert_eq!(sync.status(), Ok(CpuBootStatus::WaitingForAlive));
+
+        sync.report_alive().unwrap();
+        assert_eq!(sync.status(), Ok(CpuBootStatus::Alive));
+        assert_eq!(sync.state(), CPU_BOOT_ALIVE);
     }
 
     #[test]
     fn boot_sync_rejects_a_cpu_already_released_to_online_startup() {
         let sync = CpuBootSync::new();
         sync.prepare_kick().unwrap();
-        sync.report_alive();
-        assert!(sync.try_release_alive());
+        sync.report_alive().unwrap();
+        sync.release_alive().unwrap();
 
         assert_eq!(
             sync.prepare_kick(),
-            Err(CpuBootPrepareError::Limbo {
+            Err(CpuBootPrepareError::UnexpectedState {
                 state: CPU_BOOT_SHOULD_ONLINE
             })
         );
     }
 
     #[test]
-    #[should_panic(expected = "missing boot synchronization for CPU")]
-    fn releasing_an_unpublished_cpu_is_an_invariant_violation() {
-        let _ = try_release_secondary_from(None, usize::MAX);
+    fn boot_sync_rejects_alive_before_the_cpu_is_kicked() {
+        let sync = CpuBootSync::new();
+
+        assert_eq!(
+            sync.report_alive(),
+            Err(CpuBootPrepareError::UnexpectedState {
+                state: CPU_BOOT_DEAD
+            })
+        );
+    }
+
+    #[test]
+    fn releasing_an_unpublished_cpu_returns_a_typed_error() {
+        assert_eq!(
+            release_secondary_boot_from(None, usize::MAX),
+            Err(CpuBootPrepareError::Missing {
+                cpu_index: usize::MAX
+            })
+        );
     }
 
     #[test]

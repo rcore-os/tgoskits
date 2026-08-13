@@ -45,7 +45,7 @@ pub use ax_plat_macros::secondary_main;
 | `ConsoleIf` | `console.rs` | `write_bytes`、`read_bytes`、`device_id`、`claim_runtime_output`，以及 `irq` feature 下的 IRQ 系列 |
 | `MemIf` | `mem.rs` | `phys_ram_ranges`、`reserved_phys_ram_ranges`、`mmio_ranges`、`phys_to_virt`、`virt_to_phys`、`kernel_aspace` |
 | `TimeIf` | `time.rs` | `current_ticks`、`ticks_to_nanos`、`nanos_to_ticks`、`epochoffset_nanos`，`irq` 下还有 `irq_num`/`set_oneshot_timer` |
-| `PowerIf` | `power.rs` | `system_off`、`system_reset`、`cpu_num`，`smp` 下 `cpu_boot(cpu_id, stack_top_paddr)` |
+| `PowerIf` | `power.rs` | `system_off`、`system_reset`、`cpu_num`，`smp` 下同步 `cpu_boot(cpu_id, stack_top_paddr)`；动态平台内部可轮询 someboot 的非阻塞启动 handle |
 | `IrqIf` | `irq.rs` | `set_enable`、`set_affinity`、`handle`、`send_ipi`、`ipi_irq`、`resolve_source`、`resolve_percpu` |
 | `LoongArchHvIrqIf` | `irq/loongarch64_hv.rs` | 虚拟中断注入 / guest IRQ 路由（仅 LoongArch hypervisor） |
 
