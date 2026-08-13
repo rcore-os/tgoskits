@@ -125,6 +125,7 @@ impl Ext4FileSystem {
         self.superblock.verify_superblock()?;
         self.superblock.validate_geometry()?;
         self.superblock.check_features(read_only)?;
+        Self::validate_journal_source(&self.superblock)?;
         Self::initialize_directory_hash_policy(&mut self.superblock, read_only);
         if !read_only {
             Self::dirty_for_mount(&mut self.superblock);
@@ -155,6 +156,26 @@ impl Ext4FileSystem {
         }
 
         superblock.check_features(read_only)
+    }
+
+    fn validate_journal_source(superblock: &Ext4Superblock) -> Ext4Result<()> {
+        if !superblock.has_journal() {
+            return Ok(());
+        }
+
+        match (
+            superblock.s_journal_inum != 0,
+            superblock.s_journal_dev != 0,
+        ) {
+            (true, false) => Ok(()),
+            (false, true) => Err(Ext4Error::unsupported_capability(
+                "block_io:external_journal",
+            )),
+            (true, true) => {
+                Err(Ext4Error::invalid_input().with_operation("journal:ambiguous_source"))
+            }
+            (false, false) => Err(Ext4Error::corrupted().with_operation("journal:missing_source")),
+        }
     }
 
     fn clear_recovery_state(&mut self) {
@@ -448,6 +469,7 @@ impl Ext4FileSystem {
             return Err(Ext4Error::bad_superblock().with_operation("superblock:device_capacity"));
         }
         Self::check_mount_features(&superblock, options.readonly, observer)?;
+        Self::validate_journal_source(&superblock)?;
         Self::initialize_directory_hash_policy(&mut superblock, options.readonly);
 
         // Continue mounting even for an error-state filesystem so higher layers

@@ -1355,6 +1355,34 @@
         },
         {
           "start": 5999,
+          "end": 6079,
+          "symbol": "ext4_get_journal_blkdev remainder; ext4_open_dev_journal",
+          "classification": "core",
+          "state_machine": "validate external journal magic, feature, checksum, UUID, range, and single-user ownership -> initialize the external JBD2 device",
+          "invariant": "external journal I/O and filesystem home I/O must have distinct injected owners; absent external-device capability fails explicitly and never falls back to the filesystem device",
+          "rust_owner": "rsext4::ext4::mount; future external-journal BlockIo owner",
+          "reason": "the current single-device core fails closed until journal/home routing and external UUID/durability semantics can be implemented without an OS device lookup dependency",
+          "test_ids": [
+            "external-journal-capability",
+            "jbd2-writer-revoke-checkpoint"
+          ]
+        },
+        {
+          "start": 6080,
+          "end": 6116,
+          "symbol": "ext4_load_journal source selection",
+          "classification": "core",
+          "state_machine": "decode internal inode and external device declarations -> reject ambiguous source -> open exactly one journal owner",
+          "invariant": "a journal-enabled filesystem declares exactly one source; simultaneous inode/device is invalid, missing source is corruption, and external-only requires an injected external BlockIo owner",
+          "rust_owner": "rsext4::ext4::mount::validate_journal_source",
+          "reason": "journal-source selection is portable on-disk admission policy even while OS-specific device discovery remains outside the core",
+          "test_ids": [
+            "journal-source-admission",
+            "external-journal-capability"
+          ]
+        },
+        {
+          "start": 6117,
           "end": 7606,
           "symbol": "<whole-file suffix>",
           "classification": "core",

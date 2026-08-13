@@ -1451,6 +1451,78 @@ fn mount_rejects_unlinked_and_non_regular_journal_inodes() {
 }
 
 #[test]
+fn mount_rejects_both_internal_and_external_journal_declarations() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut superblock = read_superblock(&device);
+    assert_ne!(superblock.s_journal_inum, 0);
+    superblock.s_journal_dev = 1;
+    superblock.update_checksum();
+    write_superblock(&device, &superblock);
+    let image_before = device.data.borrow().clone();
+
+    let mut mount_dev = new_jbd2_dev(device.clone());
+    let error = match mount(&mut mount_dev) {
+        Ok(_) => panic!("mount must reject simultaneous journal inode and device"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind(), Ext4ErrorKind::InvalidInput);
+    assert_eq!(
+        error.context(),
+        Some(ErrorContext::Operation {
+            op: "journal:ambiguous_source"
+        })
+    );
+    assert_eq!(*device.data.borrow(), image_before);
+}
+
+#[test]
+fn mount_reports_external_or_missing_journal_source_without_mutation() {
+    for (journal_inode, journal_device, expected_kind, expected_context) in [
+        (
+            0,
+            1,
+            Ext4ErrorKind::UnsupportedCapability,
+            ErrorContext::Capability {
+                name: "block_io:external_journal",
+            },
+        ),
+        (
+            0,
+            0,
+            Ext4ErrorKind::Corrupted,
+            ErrorContext::Operation {
+                op: "journal:missing_source",
+            },
+        ),
+    ] {
+        let device = SharedCrcDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = new_jbd2_dev(device.clone());
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+        let mut superblock = read_superblock(&device);
+        superblock.s_journal_inum = journal_inode;
+        superblock.s_journal_dev = journal_device;
+        superblock.update_checksum();
+        write_superblock(&device, &superblock);
+        let image_before = device.data.borrow().clone();
+
+        let mut mount_dev = new_jbd2_dev(device.clone());
+        let error = match mount(&mut mount_dev) {
+            Ok(_) => panic!("mount must reject an unavailable journal source"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), expected_kind);
+        assert_eq!(error.context(), Some(expected_context));
+        assert_eq!(*device.data.borrow(), image_before);
+    }
+}
+
+#[test]
 fn journal_start_write_failure_rolls_back_and_aborts_without_retry() {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut format_dev = new_jbd2_dev(device.clone());

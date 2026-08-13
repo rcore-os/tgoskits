@@ -81,6 +81,10 @@ Linux v7.1 `fs/ext4/super.c:5504-5510,5886-5960` 在 root inode 之前装载
 internal journal，并拒绝不存在、`i_nlink == 0`、非 regular 或加密的 journal
 inode。`rsext4` 的普通 mount 同样只校验并装载既有 inode；创建默认 inode 8
 被限制在 `mkfs` 的 crate-private bootstrap 路径，不能由损坏镜像触发修复写入。
+`super.c:6080-6116` 还要求 internal inode 与 external device 二选一。core 在任何
+mount mutation 前拒绝二者同时声明或均缺失；external-only 镜像则返回 typed
+`UnsupportedCapability(block_io:external_journal)`，直到双设备 journal/home I/O
+ownership、UUID 与 durability 边界完整实现，而不是静默退回主设备上的 inode。
 
 ## 4. 公共 API 迁移
 
