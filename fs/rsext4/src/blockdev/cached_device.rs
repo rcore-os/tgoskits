@@ -449,8 +449,11 @@ impl<B: BlockIo> BlockDev<B> {
 
     fn validate_filesystem_geometry(&self, block_size: usize) -> Ext4Result<()> {
         let logical_sector_size = self.geometry.logical_block_size as usize;
+        let physical_sector_size =
+            (self.geometry.physical_block_size as usize).max(logical_sector_size);
         if logical_sector_size == 0
             || !logical_sector_size.is_power_of_two()
+            || !physical_sector_size.is_power_of_two()
             || !(crate::config::MIN_BLOCK_SIZE as usize..=crate::config::MAX_BLOCK_SIZE as usize)
                 .contains(&block_size)
             || !block_size.is_power_of_two()
@@ -596,6 +599,7 @@ mod tests {
 
     struct StrictSectorDevice {
         data: Vec<u8>,
+        physical_block_size: u32,
     }
 
     struct DurabilityDevice {
@@ -629,6 +633,7 @@ mod tests {
 
         fn geometry(&self) -> DeviceGeometry {
             DeviceGeometry::new(SECTOR_SIZE as u32, (self.data.len() / SECTOR_SIZE) as u64)
+                .with_physical_block_size(self.physical_block_size)
         }
 
         fn capabilities(&self) -> DeviceCapabilities {
@@ -702,7 +707,10 @@ mod tests {
             *byte = index as u8;
         }
 
-        let mut dev = BlockDev::new(StrictSectorDevice { data });
+        let mut dev = BlockDev::new(StrictSectorDevice {
+            data,
+            physical_block_size: SECTOR_SIZE as u32,
+        });
         dev.read_block(block).expect("read a full filesystem block");
         assert_eq!(dev.buffer()[0], 0);
         assert_eq!(dev.buffer()[511], 255);
@@ -717,13 +725,56 @@ mod tests {
     }
 
     #[test]
+    fn filesystem_geometry_accepts_blocks_smaller_than_the_physical_block() {
+        let data = vec![0; 16 * crate::config::BLOCK_SIZE];
+        let mut dev = BlockDev::new(StrictSectorDevice {
+            data,
+            physical_block_size: 4096,
+        });
+
+        dev.set_filesystem_block_size(1024)
+            .expect("physical blocks do not change logical-sector addressing");
+    }
+
+    #[test]
+    fn filesystem_geometry_rejects_invalid_physical_blocks() {
+        let data = vec![0; 16 * crate::config::BLOCK_SIZE];
+        let mut dev = BlockDev::new(StrictSectorDevice {
+            data,
+            physical_block_size: 1536,
+        });
+
+        assert_eq!(
+            dev.set_filesystem_block_size(crate::config::BLOCK_SIZE)
+                .expect_err("non-power-of-two physical geometry is invalid")
+                .kind(),
+            crate::Ext4ErrorKind::BadSuperblock
+        );
+    }
+
+    #[test]
+    fn filesystem_geometry_normalizes_an_unreported_physical_block() {
+        let data = vec![0; 16 * crate::config::BLOCK_SIZE];
+        let mut dev = BlockDev::new(StrictSectorDevice {
+            data,
+            physical_block_size: 0,
+        });
+
+        dev.set_filesystem_block_size(1024)
+            .expect("an unreported physical size defaults to the logical size");
+    }
+
+    #[test]
     fn byte_offset_io_reads_superblock_across_device_sectors() {
         let mut data = vec![0; 16 * crate::config::BLOCK_SIZE];
         for (index, byte) in data[1024..2048].iter_mut().enumerate() {
             *byte = (index as u8).wrapping_mul(17);
         }
         let expected = data[1024..2048].to_vec();
-        let mut dev = BlockDev::new(StrictSectorDevice { data });
+        let mut dev = BlockDev::new(StrictSectorDevice {
+            data,
+            physical_block_size: SECTOR_SIZE as u32,
+        });
         let mut superblock = [0; 1024];
 
         dev.read_device_bytes(1024, &mut superblock)
@@ -736,7 +787,10 @@ mod tests {
     fn write_to_cached_target_invalidates_older_alias() {
         let data = vec![0; 16 * crate::config::BLOCK_SIZE];
         let target = AbsoluteBN::new(2);
-        let mut dev = BlockDev::new(StrictSectorDevice { data });
+        let mut dev = BlockDev::new(StrictSectorDevice {
+            data,
+            physical_block_size: SECTOR_SIZE as u32,
+        });
 
         dev.read_block(target).unwrap();
         dev.read_block(AbsoluteBN::new(1)).unwrap();
@@ -753,7 +807,10 @@ mod tests {
         let target = AbsoluteBN::new(2);
         let start = target.as_usize().unwrap() * crate::config::BLOCK_SIZE;
         data[start..start + crate::config::BLOCK_SIZE].fill(0x11);
-        let mut dev = BlockDev::new(StrictSectorDevice { data });
+        let mut dev = BlockDev::new(StrictSectorDevice {
+            data,
+            physical_block_size: SECTOR_SIZE as u32,
+        });
 
         dev.read_block(target).expect("cache detached metadata");
         dev.buffer_mut().fill(0x22);

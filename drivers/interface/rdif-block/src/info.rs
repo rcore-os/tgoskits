@@ -5,7 +5,10 @@ use crate::request::RequestFlags;
 #[derive(Debug, Clone, Copy)]
 pub struct DeviceInfo {
     pub num_blocks: u64,
+    /// Addressing unit used by every request LBA and block count.
     pub logical_block_size: usize,
+    /// Smallest device block that may require read-modify-write internally.
+    pub physical_block_size: usize,
     pub read_only: bool,
     pub name: Option<&'static str>,
     pub vendor: Option<&'static str>,
@@ -17,11 +20,33 @@ impl DeviceInfo {
         Self {
             num_blocks,
             logical_block_size,
+            physical_block_size: logical_block_size,
             read_only: false,
             name: None,
             vendor: None,
             model: None,
         }
+    }
+
+    /// Overrides the physical block size reported by the device.
+    pub const fn with_physical_block_size(mut self, physical_block_size: usize) -> Self {
+        self.physical_block_size = physical_block_size;
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeviceInfo;
+
+    #[test]
+    fn physical_block_size_defaults_to_the_logical_block_size() {
+        let default_geometry = DeviceInfo::new(16, 512);
+        let native_geometry = default_geometry.with_physical_block_size(4096);
+
+        assert_eq!(default_geometry.physical_block_size, 512);
+        assert_eq!(native_geometry.logical_block_size, 512);
+        assert_eq!(native_geometry.physical_block_size, 4096);
     }
 }
 

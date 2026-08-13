@@ -1255,8 +1255,37 @@
       "segments": [
         {
           "start": 1,
+          "end": 5984,
+          "symbol": "<whole-file prefix>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::ext4",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "feature-gate-strict",
+            "filesystem-block-dynamic"
+          ]
+        },
+        {
+          "start": 5985,
+          "end": 5998,
+          "symbol": "ext4_get_journal_blkdev logical block geometry",
+          "classification": "core",
+          "state_machine": "external journal device open -> logical block compatibility check -> superblock read",
+          "invariant": "filesystem blocks must contain an integral logical-sector transfer; physical block size remains an independent device hint and does not reject a smaller filesystem block",
+          "rust_owner": "rsext4::io::DeviceGeometry; rsext4::blockdev::cached_device::BlockDev::validate_filesystem_geometry; ax_fs_ng::fs::ext4::rsext4::Ext4Disk",
+          "reason": "the portable boundary preserves logical and physical sizes separately and validates logical-sector addressing; external journal device ownership is still a registered JBD2 red item",
+          "test_ids": [
+            "filesystem-block-dynamic",
+            "blockio-adapter-capabilities",
+            "jbd2-writer-revoke-checkpoint"
+          ]
+        },
+        {
+          "start": 5999,
           "end": 7606,
-          "symbol": "<whole-file>",
+          "symbol": "<whole-file suffix>",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",

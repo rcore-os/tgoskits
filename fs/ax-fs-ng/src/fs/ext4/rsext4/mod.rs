@@ -14,7 +14,10 @@ use rsext4::{
 
 use crate::block::{BlockRegion, FsBlockDevice, RegionBlockDevice};
 
-pub(crate) struct Ext4Disk(RegionBlockDevice<Box<dyn FsBlockDevice>>);
+pub(crate) struct Ext4Disk {
+    device: RegionBlockDevice<Box<dyn FsBlockDevice>>,
+    geometry: DeviceGeometry,
+}
 
 pub(crate) type MountedExt4 = rsext4::Ext4<Ext4Disk, MountedServices<(), (), (), Ext4Observer>>;
 
@@ -31,37 +34,44 @@ impl Observer for Ext4Observer {
 }
 
 impl Ext4Disk {
-    pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> Self {
-        Self(RegionBlockDevice::new(dev, region))
+    pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> Ext4Result<Self> {
+        let device = RegionBlockDevice::new(dev, region);
+        let logical_block_size =
+            u32::try_from(device.block_size()).map_err(|_| Ext4Error::overflow())?;
+        let physical_block_size =
+            u32::try_from(device.physical_block_size()).map_err(|_| Ext4Error::overflow())?;
+        let geometry = DeviceGeometry::new(logical_block_size, device.num_blocks())
+            .with_physical_block_size(physical_block_size);
+        Ok(Self { device, geometry })
     }
 }
 
 impl BlockIo for Ext4Disk {
     fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
-        if self.0.is_read_only() {
+        if self.device.is_read_only() {
             return Err(Ext4Error::read_only());
         }
-        let dev_block = self.0.block_size();
+        let dev_block = self.device.block_size();
         let required_size = dev_block
             .checked_mul(count as usize)
             .ok_or_else(Ext4Error::overflow)?;
         if buffer.len() < required_size {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
-        self.0
+        self.device
             .write_block(sector.raw(), &buffer[..required_size])
             .map_err(|_| Ext4Error::io())
     }
 
     fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()> {
-        let dev_block = self.0.block_size();
+        let dev_block = self.device.block_size();
         let required_size = dev_block
             .checked_mul(count as usize)
             .ok_or_else(Ext4Error::overflow)?;
         if buffer.len() < required_size {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
-        self.0
+        self.device
             .read_block(sector.raw(), &mut buffer[..required_size])
             .map_err(|_| Ext4Error::io())
     }
@@ -76,48 +86,48 @@ impl BlockIo for Ext4Disk {
         if !flags.contains(WriteFlags::FUA) {
             return self.write(buffer, sector, count);
         }
-        if self.0.is_read_only() {
+        if self.device.is_read_only() {
             return Err(Ext4Error::read_only());
         }
-        if !self.0.supports_fua() {
+        if !self.device.supports_fua() {
             return Err(Ext4Error::unsupported_capability("block_io:fua"));
         }
-        let dev_block = self.0.block_size();
+        let dev_block = self.device.block_size();
         let required_size = dev_block
             .checked_mul(count as usize)
             .ok_or_else(Ext4Error::overflow)?;
         if buffer.len() < required_size {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
-        self.0
+        self.device
             .write_block_fua(sector.raw(), &buffer[..required_size])
             .map_err(|_| Ext4Error::io())
     }
 
     fn geometry(&self) -> DeviceGeometry {
-        DeviceGeometry::new(self.0.block_size() as u32, self.0.num_blocks())
+        self.geometry
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
-        let supports_flush = self.0.supports_flush();
+        let supports_flush = self.device.supports_flush();
         DeviceCapabilities {
-            read_only: self.0.is_read_only(),
+            read_only: self.device.is_read_only(),
             flush: supports_flush,
             barrier: supports_flush,
-            fua: self.0.supports_fua(),
+            fua: self.device.supports_fua(),
             ..DeviceCapabilities::default()
         }
     }
 
     fn flush(&mut self) -> Ext4Result<()> {
-        if !self.0.supports_flush() {
+        if !self.device.supports_flush() {
             return Err(Ext4Error::unsupported_capability("block_io:flush"));
         }
-        self.0.flush().map_err(|_| Ext4Error::io())
+        self.device.flush().map_err(|_| Ext4Error::io())
     }
 
     fn barrier(&mut self) -> Ext4Result<()> {
-        if !self.0.supports_flush() {
+        if !self.device.supports_flush() {
             return Err(Ext4Error::unsupported_capability("block_io:barrier"));
         }
         self.flush()
@@ -146,6 +156,8 @@ mod tests {
         read_only: bool,
         supports_flush: bool,
         supports_fua: bool,
+        logical_block_size: usize,
+        physical_block_size: usize,
         writes: Arc<AtomicUsize>,
         fua_writes: Arc<AtomicUsize>,
         flushes: Arc<AtomicUsize>,
@@ -161,7 +173,11 @@ mod tests {
         }
 
         fn block_size(&self) -> usize {
-            512
+            self.logical_block_size
+        }
+
+        fn physical_block_size(&self) -> usize {
+            self.physical_block_size
         }
 
         fn is_read_only(&self) -> bool {
@@ -214,12 +230,15 @@ mod tests {
             read_only,
             supports_flush,
             supports_fua,
+            logical_block_size: 512,
+            physical_block_size: 4096,
             writes: Arc::clone(&writes),
             fua_writes: Arc::clone(&fua_writes),
             flushes: Arc::clone(&flushes),
         };
         (
-            Ext4Disk::new(Box::new(device), BlockRegion::from_num_blocks(16)),
+            Ext4Disk::new(Box::new(device), BlockRegion::from_num_blocks(16))
+                .expect("valid test-device geometry"),
             writes,
             fua_writes,
             flushes,
@@ -291,5 +310,33 @@ mod tests {
         assert_eq!(writes.load(Ordering::Relaxed), 0);
         assert_eq!(fua_writes.load(Ordering::Relaxed), 1);
         assert_eq!(flushes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn ext4_disk_preserves_physical_block_geometry() {
+        let (disk, ..) = test_disk(false, true, true);
+
+        assert_eq!(disk.geometry().logical_block_size, 512);
+        assert_eq!(disk.geometry().physical_block_size, 4096);
+    }
+
+    #[test]
+    fn ext4_disk_rejects_geometry_that_cannot_cross_the_core_boundary() {
+        let device = CapabilityDevice {
+            read_only: false,
+            supports_flush: true,
+            supports_fua: false,
+            logical_block_size: u32::MAX as usize + 1,
+            physical_block_size: u32::MAX as usize + 1,
+            writes: Arc::new(AtomicUsize::new(0)),
+            fua_writes: Arc::new(AtomicUsize::new(0)),
+            flushes: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let error = match Ext4Disk::new(Box::new(device), BlockRegion::from_num_blocks(16)) {
+            Ok(_) => panic!("oversized adapter geometry must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), Ext4ErrorKind::Overflow);
     }
 }

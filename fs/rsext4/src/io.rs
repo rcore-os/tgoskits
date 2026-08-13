@@ -50,6 +50,12 @@ impl DeviceGeometry {
             block_count,
         }
     }
+
+    /// Overrides the physical block size while preserving logical-sector I/O.
+    pub const fn with_physical_block_size(mut self, physical_block_size: u32) -> Self {
+        self.physical_block_size = physical_block_size;
+        self
+    }
 }
 
 /// Optional durability and maintenance operations provided by a device.

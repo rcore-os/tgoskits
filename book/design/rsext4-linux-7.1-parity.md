@@ -134,7 +134,7 @@ cookie 并清空 continuation。VFS directory sink 接收 raw `&[u8]` 名称，�
 | --- | --- | --- | --- | --- |
 | `boundary-no-os-deps` | `ax-kspin`、`log` direct dependencies | boundary script passes | portable core skeleton | 绿：`RSEXT4_BOUNDARY_PASSED` |
 | `domain-error-no-errno` | core 公开并按 Linux `Errno` 分支 | typed domain error，errno 仅由 adapter 映射 | portable core skeleton | 绿：core 已无 `Errno`；`ax-fs-ng` 集中映射 |
-| `blockio-adapter-capabilities` | ax-fs-ng 丢弃 `DeviceInfo.read_only` 并无条件宣告 flush/barrier，且不向 rdif request 传递 FUA | adapter 只传递底层真实能力；只读写入在设备 I/O 前返回 typed read-only；缺少 durability 返回 unsupported capability；native FUA 必须标记每个拆分请求且不增加 post-write flush | OS glue/capability boundary | 进行中：只读/flush 红测证明旧 `Ext4Disk` 会伪造能力；native FUA 红测又证明旧 adapter 永远报告 `fua=false`。同一组测试现验证只读写入零底层调用、unsupported capability、真实 flush-as-barrier、一次 native FUA/零普通 write/零 flush，以及 4 个拆分 request 全部带 `RequestFlags::FUA`。native handle 只在非空且所有 hardware queue 均宣告能力时报告 FUA；无 native FUA 时仍由 OS 无关 `BlockDev` 执行同步 write-then-flush fallback。physical block size 与 discard 仍为红项 |
+| `blockio-adapter-capabilities` | ax-fs-ng 丢弃 read-only、flush/barrier、FUA 与 physical block geometry | adapter 只传递底层真实能力；只读写入在设备 I/O 前返回 typed read-only；缺少 durability 返回 unsupported capability；native FUA 标记每个拆分请求且不增加 post-write flush；physical 与 logical geometry 不混淆 | OS glue/capability boundary | 进行中：只读/flush/FUA 红测现验证零底层只读写、unsupported、真实 flush-as-barrier、一次 native FUA/零普通 write/零 flush，以及 4 个拆分 request 全部带 FUA。512 logical/4096 physical 红测证明旧 adapter 把 physical 错报成 512；同一测试现从 rdif `DeviceInfo` 经 native/region adapter 保留 4096，core 拒绝无效 physical geometry 但允许 filesystem block 小于 physical block。discard 仍为红项；alignment offset/io_min/io_opt 将作为独立 block geometry 能力继续追踪 |
 | `readonly-adapter-lifecycle` | ax-fs-ng 在取得 mount owner 前对 readonly sync/shutdown 直接返回成功，丢失 core 的 device flush boundary，且 mounted 状态永不结束 | RO/RW 一律在同一 sleepable mutex 下调用 owned core typed sync/unmount；adapter 不复制 journal/cache/lifecycle 分支 | OS glue/lock/lifecycle boundary | 绿：共享只读镜像 fixture 先固定旧 sync 的 flush 计数不变，以及 shutdown 后仍可原地 remount；同一测试现验证真实 device flush 与 `Busy(op=remount:unmounted)`。完整 ax-fs-ng ext4 84+3 tests 和 6/6 clippy 通过 |
 | `owned-mount-boundary` | caller 分别持有公开字段的 `Ext4FileSystem` 和公开 `Jbd2Dev`，且 block device 必须同时实现 `Clock` | 私有 `Ext4<D, S>` 独占 device/cache/journal/services；`BlockIo` 与 `Clock` 分离；只公开 typed operations/DTO | portable core skeleton | 进行中：`Ext4<D, MountedServices<...>>` 已消费 device 与 `MountServices`，独立 clock callback 驱动 metadata 链路；ax-fs-ng 现由一个 sleepable mutex 独占 `MountedExt4`，mount、inode I/O、readdir、namespace mutation、sync/unmount 不再 split 或访问 core cache/superblock/JBD2，手写 `unsafe Send/Sync` 已删除。host harness 也已改用 typed `format` 与 owned inode I/O，不再依赖 legacy path/JBD2 proxy。`InodeInfo::file_type`/`is_directory` 和根级 `InodeNumber` re-export 已移除 adapter 对 `disknode::Ext4Inode` 与 `bmalloc` 模块路径的生产依赖。mount fallback 只在 mount 前明确读到 `EXT4_ERROR_FS` 时选择只读 replay，RW/replay failure 不再复用已污染或 abort 的 owner；invalid revoke 红测证明旧实现把首个 `Corrupted` 覆盖成 `JournalAborted`，同一测试现保留首错。显式 forensic no-replay 继续由 typed mount options 提供。旧 path/fd re-export、公开 `Ext4FileSystem`/`Jbd2Dev` 与 `initial_jbd2dev` 仍待 crate tests/axtest 迁移后删除，因此尚不能转绿 |
 | `typed-inode-metadata` | owned DTO 无 project ID 和 inode flags，adapter 只能访问磁盘 inode 或调用 path helper | `InodeInfo` 仅公开 typed project ID/用户可见 flags；`InodeMetadataUpdate` 仅能改 Linux user-modifiable bits；未启用 project feature 时 0 为 no-op，非 0 返回 unsupported | inode/capability boundary | 进行中：旧公共 API 编译红测缺少 `InodeFlags`/project 字段；同一 owned 测试现验证内部 `EXTENTS` 保留、`NO_DUMP|NO_ATIME` typed 更新和未启用 feature 时的 project 0 no-op/非 0 unsupported。固定 `mkfs.ext4 -I 256 -O project` 镜像现由 owned core 设置 project 1234/`PROJINHERIT`，子 inode 继承后 Linux `debugfs stat` 解码一致且 `e2fsck -fn` clean。quota transfer 和同一 filesystem-owned transaction 仍为红项 |
@@ -1982,4 +1982,32 @@ host core benchmark 的 memory `BlockIo` 不经过 `ax-fs-ng`/rdif adapter，也
 fallback。这里不声明未经硬件测量的 latency 收益，只记录可观察的调用差异为 1 次 native FUA、0 次
 额外 flush。验证覆盖 `ax-fs-ng` 无 feature、fat-only、ext4-only、fat+ext4 四种 host 组合；ext4-only
 为 86 个 unit 加 3 个 integration，fat+ext4 为 88 个 unit 加 3 个 integration，全部通过。physical
-block size 与 discard capability 仍保留在 `blockio-adapter-capabilities` 红项中。
+block size 由下一检查点接通；discard capability 继续保留在 `blockio-adapter-capabilities` 红项中。
+
+### 7.56 logical/physical block geometry 检查点
+
+Linux v7.1 `include/linux/blkdev.h:389-394` 将 logical、physical、alignment offset、minimum I/O
+和 optimal I/O 作为不同 queue limit；`block/ioctl.c:683-692` 也分别通过 `BLKSSZGET` 与
+`BLKPBSZGET` 对外报告。ext4 的块寻址仍以 logical sector 为单位：例如 external journal mount 在
+`fs/ext4/super.c:5985-5998` 只要求 filesystem block 不小于设备 logical block；mballoc 的 stripe
+对齐来自 ext4/RAID geometry，不是把 filesystem block 强制提升到 physical block。
+
+旧 rdif `DeviceInfo` 只有 `logical_block_size`，`NativeHandleBlockDevice` 与 `Ext4Disk` 因而把设备
+physical geometry 永久压成 logical。确定性 adapter 红测构造 512-byte logical、4096-byte physical
+设备，旧 `Ext4Disk::geometry()` 稳定返回 physical=512；当前 `DeviceInfo` 明确保存两者，未显式
+报告的 driver 按 Linux block layer 的默认规则使用 physical=logical，已知信息则通过 typed builder
+覆盖。region adapter 只改变 LBA 范围和起点，不改变底层 physical block size；partition alignment
+offset 尚未建模，不能用拒绝非 physical-aligned partition 的方式伪造该语义。
+
+rdif transfer planner 在请求 admission 前按 Linux `block/blk-settings.c:340-365` 规范化 geometry：未
+报告或比 logical 更小的 physical size 提升为 logical，只有规范化后非 2 次幂的 descriptor 被拒绝。
+portable core 对 injected service 执行同一规则，但不会使用 physical size 改写 LBA 或 block mapping。
+专门回归验证 1 KiB filesystem block 在 4 KiB physical/512-byte logical device 上可用，防止后续把
+performance hint 错当成 mount compatibility 条件。adapter 在取得 mount owner 前还会把 `usize`
+geometry checked-convert 为 core 的 `u32` wire type；超出边界时返回 typed overflow，而不是把失败
+静默伪装成零后再误报为坏 superblock。
+
+本切片只增加 immutable descriptor 字段和 mount-time validation，不改变冻结 benchmark 的 timed
+read/write/sync/unmount 主路径，因此没有可归因的 host A/B，也不声明性能收益。验证要求覆盖 rdif
+descriptor/planner、rsext4 checked geometry、ax-fs adapter 与现有 feature matrix；alignment offset、
+io_min/io_opt 和 discard 继续作为独立 capability 红项，而不是把尚无 consumer 的字段一起塞入接口。

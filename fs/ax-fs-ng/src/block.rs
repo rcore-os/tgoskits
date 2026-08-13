@@ -38,6 +38,8 @@ pub(crate) trait FsBlockDevice: Send {
     fn name(&self) -> &str;
     fn num_blocks(&self) -> u64;
     fn block_size(&self) -> usize;
+    #[cfg(feature = "ext4")]
+    fn physical_block_size(&self) -> usize;
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn is_read_only(&self) -> bool;
     #[cfg(feature = "ext4")]
@@ -64,6 +66,11 @@ impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
 
     fn block_size(&self) -> usize {
         (**self).block_size()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn physical_block_size(&self) -> usize {
+        (**self).physical_block_size()
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
@@ -153,6 +160,11 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
         self.inner.block_size()
     }
 
+    #[cfg(feature = "ext4")]
+    fn physical_block_size(&self) -> usize {
+        self.inner.physical_block_size()
+    }
+
     fn is_read_only(&self) -> bool {
         self.inner.is_read_only()
     }
@@ -216,6 +228,11 @@ impl FsBlockDevice for NativeHandleBlockDevice {
 
     fn block_size(&self) -> usize {
         self.handle.device_info().logical_block_size
+    }
+
+    #[cfg(feature = "ext4")]
+    fn physical_block_size(&self) -> usize {
+        self.handle.device_info().physical_block_size
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]

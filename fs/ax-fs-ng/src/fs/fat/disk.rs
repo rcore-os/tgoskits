@@ -274,6 +274,11 @@ mod tests {
             512
         }
 
+        #[cfg(feature = "ext4")]
+        fn physical_block_size(&self) -> usize {
+            512
+        }
+
         fn is_read_only(&self) -> bool {
             false
         }

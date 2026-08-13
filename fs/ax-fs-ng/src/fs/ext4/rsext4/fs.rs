@@ -122,7 +122,7 @@ impl Ext4Filesystem {
         dev: Box<dyn FsBlockDevice>,
         region: BlockRegion,
     ) -> VfsResult<Filesystem> {
-        let disk = Ext4Disk::new(dev, region);
+        let disk = Ext4Disk::new(dev, region).map_err(into_vfs_err)?;
         let services = MountServices::new(Ext4Clock, (), (), (), Ext4Observer);
         let ext4 =
             rsext4::Ext4::mount_with_readonly_fallback(disk, services).map_err(into_vfs_err)?;
@@ -218,6 +218,10 @@ mod tests {
             TEST_SECTOR_BYTES
         }
 
+        fn physical_block_size(&self) -> usize {
+            TEST_SECTOR_BYTES
+        }
+
         fn is_read_only(&self) -> bool {
             self.read_only
         }
@@ -279,7 +283,8 @@ mod tests {
         let disk = Ext4Disk::new(
             Box::new(format_device),
             BlockRegion::from_num_blocks(blocks),
-        );
+        )
+        .expect("valid format-device geometry");
         rsext4::format(disk, Ext4Clock, MkfsOptions::default()).expect("format test image");
 
         {
@@ -299,7 +304,8 @@ mod tests {
             read_only: true,
             flushes: Arc::clone(&flushes),
         };
-        let disk = Ext4Disk::new(Box::new(mount_device), BlockRegion::from_num_blocks(blocks));
+        let disk = Ext4Disk::new(Box::new(mount_device), BlockRegion::from_num_blocks(blocks))
+            .expect("valid mount-device geometry");
         let services = MountServices::new(Ext4Clock, (), (), (), Ext4Observer);
         let ext4 = rsext4::Ext4::mount_with_readonly_fallback(disk, services)
             .expect("mount error-state image read-only");
