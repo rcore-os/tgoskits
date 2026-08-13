@@ -123,8 +123,17 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
     }
 
     /// Set queue size
+    ///
+    /// Rejected once any ring address is programmed or the queue is ready: the
+    /// ring objects snapshot the size when their address is set, so a later
+    /// resize would leave layout validation and runtime ring accesses derived
+    /// from different sizes, letting the queue serve requests outside the
+    /// validated regions.
     pub fn set_size(&mut self, size: u16) -> VirtioResult<()> {
         if size == 0 || size > self.max_size || (size & (size - 1)) != 0 {
+            return Err(VirtioError::InvalidQueue);
+        }
+        if self.ready || self.is_configured() {
             return Err(VirtioError::InvalidQueue);
         }
         self.size = size;

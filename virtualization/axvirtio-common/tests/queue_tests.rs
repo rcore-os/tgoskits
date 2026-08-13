@@ -204,6 +204,34 @@ fn setter_combined_layout_fails_alignment_validation() {
 }
 
 #[test]
+fn set_size_after_ring_addresses_is_rejected() {
+    // The ring objects snapshot the queue size when their address is
+    // programmed, so changing `size` after that would validate the layout for
+    // the new size while runtime ring accesses stay bounded by the old one: a
+    // guest could serve requests outside the validated regions. The layout
+    // must therefore stay consistent with the size the rings were built for.
+    let mem = Arc::new(MockMem::new(4096));
+    let mut q = VirtioQueue::new(0, 8, mem.clone());
+    q.set_size(4).unwrap();
+    q.set_desc_table_addr(GuestPhysAddr::from(0x1000)).unwrap();
+    q.set_avail_ring_addr(GuestPhysAddr::from(0x2000)).unwrap();
+    q.set_used_ring_addr(GuestPhysAddr::from(0x3000)).unwrap();
+    assert_eq!(
+        q.set_size(8).unwrap_err(),
+        VirtioError::InvalidQueue,
+        "resizing after ring addresses are programmed must be rejected"
+    );
+    assert_eq!(q.size, 4, "the size must not change on a rejected write");
+
+    // The same guard applies while the queue is ready: the programmed rings
+    // are in use.
+    let mut f = Fixture::new(4);
+    f.queue.set_ready(true);
+    assert_eq!(f.queue.set_size(4).unwrap_err(), VirtioError::InvalidQueue);
+    assert!(f.queue.is_valid(), "the ready queue must stay usable");
+}
+
+#[test]
 fn reset_clears_addresses_ready_and_indexes() {
     let mut f = Fixture::new(4);
     f.set_avail_idx(2);
