@@ -23,7 +23,12 @@ use crate::{
 };
 
 struct FrameRefCnt {
-    count: u8,
+    /// Number of address spaces sharing this frame COW. A `u8` overflowed at 255
+    /// sharers — a read-only libc/text frame shared by ~250 forked processes
+    /// (e.g. `hackbench -P g10`) tripped it and `fork()` failed with EFAULT. Linux
+    /// uses a 32-bit refcount; `u32` (4 billion sharers) is effectively unbounded
+    /// here, and the overflow path now returns `NoMemory` (ENOMEM), not EFAULT.
+    count: u32,
 }
 
 impl FrameRefCnt {
@@ -42,7 +47,7 @@ struct FrameTableRefCount {
 }
 
 impl FrameTableRefCount {
-    const INITIAL_CNT: u8 = 1;
+    const INITIAL_CNT: u32 = 1;
 
     const fn new() -> Self {
         Self {
@@ -361,7 +366,10 @@ impl CowBackend {
         drop(frame_table);
         let mut frame = frame.lock();
         assert!(frame.count > 0, "invalid frame reference count");
-        debug_assert!(frame.count < u8::MAX, "frame reference count near overflow");
+        debug_assert!(
+            frame.count < u32::MAX,
+            "frame reference count near overflow"
+        );
         match frame.count {
             1 => {
                 pt.protect_page(vaddr, vma_flags)
@@ -583,11 +591,17 @@ impl BackendOps for CowBackend {
                         .ok_or(AxError::BadAddress)?;
                     let mut frame = frame.lock();
                     assert!(frame.count > 0, "referencing unreferenced frame");
-                    frame.count += 1;
-                    if frame.count == u8::MAX {
-                        warn!("frame reference count overflow");
-                        return Err(AxError::BadAddress);
-                    }
+                    // Overflow is effectively unreachable with a u32 refcount, but
+                    // if it ever happens report it as ENOMEM (out of a shareable
+                    // resource) rather than EFAULT — a fork hitting a real limit
+                    // must not look like a bad pointer to userspace.
+                    frame.count = match frame.count.checked_add(1) {
+                        Some(c) => c,
+                        None => {
+                            warn!("frame reference count overflow");
+                            return Err(AxError::NoMemory);
+                        }
+                    };
                     old_pt
                         .protect_page(vaddr, cow_flags)
                         .map_err(paging_error_to_ax_error)?;
