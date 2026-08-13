@@ -19,7 +19,7 @@ use crate::{
     mm::{VmMutPtr, VmPtr, vm_load, vm_load_path_string},
     pseudofs::{Device, dev::tty},
     sync::SpinRwLock,
-    task::get_task,
+    task::{get_task, resolve_user_pid},
 };
 
 /// Convert open flags to [`OpenOptions`].
@@ -311,10 +311,14 @@ fn try_open_nsfd(
         return None;
     }
 
-    let pid: u32 = if pid_str == "self" {
+    let pid = if pid_str == "self" {
         current.as_thread().proc_data.proc.pid()
     } else {
-        pid_str.parse().ok()?
+        let local_pid = pid_str.parse().ok()?;
+        match resolve_user_pid(current, local_pid) {
+            Ok(pid) => pid,
+            Err(_) => return Some(Err(AxError::NotFound)),
+        }
     };
 
     let proc_data = match crate::task::get_process_data(pid) {
