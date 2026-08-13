@@ -11,7 +11,7 @@ use crate::{
     bmalloc::{AbsoluteBN, InodeNumber},
     checksum::{
         jbd2_commit_block_csum32, jbd2_compat_checksum_append, jbd2_descriptor_block_csum32,
-        jbd2_tag_csum32, jbd2_update_superblock_checksum,
+        jbd2_partial_commit_block_csum32, jbd2_tag_csum32, jbd2_update_superblock_checksum,
     },
     crc32c::crc32c::ext4_superblock_has_metadata_csum,
     disknode::*,
@@ -1164,7 +1164,13 @@ impl JBD2DEVSYSTEM {
                                 &self.jbd2_super_block.s_uuid,
                                 &record_buf,
                             );
-                            if computed != Some(commit.h_chksum[0]) {
+                            let stored = commit.h_chksum[0];
+                            if computed != Some(stored)
+                                && jbd2_partial_commit_block_csum32(
+                                    &self.jbd2_super_block.s_uuid,
+                                    &record_buf,
+                                ) != Some(stored)
+                            {
                                 return ReplayScan::Incomplete(ReplayFailure::at(
                                     JournalReplayPhase::Replay,
                                     Ext4Error::checksum()

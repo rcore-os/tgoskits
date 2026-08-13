@@ -2004,8 +2004,68 @@
       "segments": [
         {
           "start": 1,
+          "end": 430,
+          "symbol": "<coarse-prefix>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::recovery",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay",
+            "jbd2-abort-sticky",
+            "jbd2-legacy-checksum-write-replay"
+          ]
+        },
+        {
+          "start": 431,
+          "end": 468,
+          "symbol": "jbd2_commit_block_csum_verify and jbd2_commit_block_csum_verify_partial",
+          "classification": "core",
+          "state_machine": "full commit checksum verification followed by zero-tail partial-write fallback",
+          "invariant": "CSUM_V2/V3 recovery accepts a commit block when either the full block or the 60-byte commit header plus zero-filled tail matches the stored CRC32C",
+          "rust_owner": "rsext4::checksum::journal",
+          "reason": "the portable journal checksum layer owns the exact JBD2 wire checksum inputs without importing Linux buffer-head allocation details",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay",
+            "jbd2-partial-commit-replay",
+            "jbd2-legacy-checksum-write-replay"
+          ]
+        },
+        {
+          "start": 469,
+          "end": 819,
+          "symbol": "<coarse-middle>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::recovery",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay",
+            "jbd2-abort-sticky",
+            "jbd2-legacy-checksum-write-replay"
+          ]
+        },
+        {
+          "start": 820,
+          "end": 878,
+          "symbol": "do_one_pass commit-block checksum decision",
+          "classification": "core",
+          "state_machine": "PASS_SCAN commit validation and transaction-sequence advancement",
+          "invariant": "partial commit fallback is attempted only after the full CSUM_V2/V3 checksum fails, and a matching fallback advances the transaction as committed",
+          "rust_owner": "rsext4::jbd2::JBD2DEVSYSTEM::scan_one_transaction",
+          "reason": "the portable replay scanner owns committed-range discovery and must preserve Linux's acceptance boundary before any home-block replay",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay",
+            "jbd2-partial-commit-replay",
+            "jbd2-abort-sticky"
+          ]
+        },
+        {
+          "start": 879,
           "end": 996,
-          "symbol": "<whole-file>",
+          "symbol": "<coarse-suffix>",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",

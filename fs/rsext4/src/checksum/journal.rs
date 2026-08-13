@@ -3,7 +3,9 @@
 use crate::{
     crc32c::{crc32c_append, crc32c_init},
     endian::DiskFormat,
-    jbd2::jbdstruct::{JBD2_CRC32C_CHKSUM, JBD2_UUID_SIZE, JournalSuperBlock},
+    jbd2::jbdstruct::{
+        JBD2_COMMIT_HEADER_SIZE, JBD2_CRC32C_CHKSUM, JBD2_UUID_SIZE, JournalSuperBlock,
+    },
 };
 
 const JBD2_BLOCK_TAIL_SIZE: usize = 4;
@@ -74,6 +76,30 @@ pub(crate) fn jbd2_descriptor_block_csum32(
 /// Computes the checksum stored in `commit_header.h_chksum[0]`.
 pub(crate) fn jbd2_commit_block_csum32(uuid: &[u8; JBD2_UUID_SIZE], block: &[u8]) -> Option<u32> {
     checksum_with_zeroed_u32(jbd2_checksum_seed(uuid), block, JBD2_COMMIT_CHECKSUM_OFFSET)
+}
+
+/// Computes Linux's fallback checksum for a commit block whose tail was only
+/// partially persisted.
+pub(crate) fn jbd2_partial_commit_block_csum32(
+    uuid: &[u8; JBD2_UUID_SIZE],
+    block: &[u8],
+) -> Option<u32> {
+    let commit_header = block.get(..JBD2_COMMIT_HEADER_SIZE)?;
+    let checksum_end = JBD2_COMMIT_CHECKSUM_OFFSET.checked_add(4)?;
+    let mut checksum = crc32c_append(
+        jbd2_checksum_seed(uuid),
+        &commit_header[..JBD2_COMMIT_CHECKSUM_OFFSET],
+    );
+    checksum = crc32c_append(checksum, &[0; 4]);
+    checksum = crc32c_append(checksum, &commit_header[checksum_end..]);
+
+    const ZERO_CHUNK: [u8; 64] = [0; 64];
+    let mut zero_tail_len = block.len() - JBD2_COMMIT_HEADER_SIZE;
+    while zero_tail_len >= ZERO_CHUNK.len() {
+        checksum = crc32c_append(checksum, &ZERO_CHUNK);
+        zero_tail_len -= ZERO_CHUNK.len();
+    }
+    Some(crc32c_append(checksum, &ZERO_CHUNK[..zero_tail_len]))
 }
 
 fn checksum_with_zeroed_u32(seed: u32, block: &[u8], offset: usize) -> Option<u32> {

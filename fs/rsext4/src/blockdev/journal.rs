@@ -1741,9 +1741,10 @@ mod tests {
         config::BLOCK_SIZE,
         endian::DiskFormat,
         jbd2::jbdstruct::{
-            CommitHeader, JBD2_BLOCKTYPE_REVOKE, JBD2_CRC32C_CHKSUM, JBD2_DESCRIPTOR_HEADER_SIZE,
-            JBD2_TAG3_SIZE, JBD2_UUID_SIZE, JOURNAL_ESCAPE, Jbd2CommitPhase,
-            Jbd2JournalRevokeHeadS, JournalBlockTag3S, JournalBlockTagS, JournalHeaderS,
+            CommitHeader, JBD2_BLOCKTYPE_REVOKE, JBD2_COMMIT_HEADER_SIZE, JBD2_CRC32C_CHKSUM,
+            JBD2_DESCRIPTOR_HEADER_SIZE, JBD2_TAG3_SIZE, JBD2_UUID_SIZE, JOURNAL_ESCAPE,
+            Jbd2CommitPhase, Jbd2JournalRevokeHeadS, JournalBlockTag3S, JournalBlockTagS,
+            JournalHeaderS,
         },
     };
 
@@ -3370,6 +3371,28 @@ mod tests {
         assert_csum_v3_corruption_is_rejected(|data| {
             data[131 * BLOCK_SIZE + 16] ^= 1;
         });
+    }
+
+    #[test]
+    fn csum_v3_replay_accepts_partial_commit_block_checksum() {
+        let (mut inner, superblock, target) = committed_csum_v3_fixture();
+        inner.data[131 * BLOCK_SIZE + JBD2_COMMIT_HEADER_SIZE] = 0x7e;
+
+        let mut replay_dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
+        replay_dev
+            .set_journal_superblock_with_mapping(
+                superblock,
+                (128..192).map(AbsoluteBN::new).collect(),
+            )
+            .expect("install csum-v3 journal");
+
+        assert_eq!(replay_dev.journal_replay_checked(), ReplayStatus::Complete);
+        let inner = replay_dev.into_inner();
+        let target_start = target.as_usize().unwrap() * BLOCK_SIZE;
+        assert_eq!(
+            &inner.data[target_start..target_start + BLOCK_SIZE],
+            vec![0xa5; BLOCK_SIZE]
+        );
     }
 
     #[test]

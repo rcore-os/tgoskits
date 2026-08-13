@@ -599,6 +599,12 @@ impl DiskFormat for Jbd2JournalRevokeTail {
     }
 }
 
+/// Size of `struct commit_header` in the JBD2 wire format.
+///
+/// This must not use `size_of::<CommitHeader>()` because the Rust structure can
+/// contain trailing alignment padding that is absent from the on-disk record.
+pub(crate) const JBD2_COMMIT_HEADER_SIZE: usize = 60;
+
 // Commit block header
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
