@@ -2255,7 +2255,10 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
     );
 
     let free_before_external = filesystem.statfs().free_blocks;
-    let large_value = vec![b'z'; 300];
+    // This value fits in one external block by itself, but does not fit there
+    // together with the pre-existing inline sibling. Linux keeps that sibling
+    // in the inode body instead of migrating the whole xattr set.
+    let large_value = vec![b'z'; filesystem_block_size as usize - 80];
     filesystem
         .set_xattr(
             context,
@@ -2265,7 +2268,7 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
             &large_value,
             XattrSetMode::Replace,
         )
-        .expect("migrate inline xattrs to an external block");
+        .expect("move the enlarged xattr to an external block");
     assert_eq!(
         filesystem
             .get_xattr(file.number, XattrNamespace::User, b"rsext4")
@@ -2282,16 +2285,30 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
                 FileExtentTarget::ExtendedAttributes,
                 1,
             )
-            .expect("inspect externalized xattr")
+            .expect("inspect split inline and external xattrs")
             .extents[0]
             .state,
-        FileExtentState::Initialized
+        FileExtentState::Inline,
+        "Linux FIEMAP_XATTR reports the inode-body store before i_file_acl"
     );
 
     filesystem
-        .remove_xattr(context, file.number, XattrNamespace::User, b"rsext4")
-        .expect("remove externalized xattr");
+        .set_xattr(
+            context,
+            file.number,
+            XattrNamespace::User,
+            b"rsext4",
+            b"inline-again",
+            XattrSetMode::Replace,
+        )
+        .expect("move the reduced xattr back into the inode body");
     assert_eq!(filesystem.statfs().free_blocks, free_before_external);
+    assert_eq!(
+        filesystem
+            .get_xattr(file.number, XattrNamespace::User, b"rsext4")
+            .expect("read re-inlined xattr"),
+        b"inline-again"
+    );
     assert_eq!(
         filesystem
             .get_xattr(file.number, XattrNamespace::User, b"fiemap")
@@ -2312,6 +2329,9 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
             .state,
         FileExtentState::Inline
     );
+    filesystem
+        .remove_xattr(context, file.number, XattrNamespace::User, b"rsext4")
+        .expect("remove re-inlined xattr");
     assert_eq!(
         filesystem
             .remove_xattr(context, file.number, XattrNamespace::User, b"rsext4",)

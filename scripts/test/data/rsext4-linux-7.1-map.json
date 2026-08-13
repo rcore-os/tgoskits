@@ -1577,6 +1577,58 @@
       "segments": [
         {
           "start": 1,
+          "end": 1628,
+          "symbol": "<coarse interval>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::metadata::xattr",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        },
+        {
+          "start": 1629,
+          "end": 1853,
+          "symbol": "ext4_xattr_set_entry",
+          "classification": "core",
+          "state_machine": "validate one store's available entry and value space, replace or insert the requested local value, compact old payload, and recompute external entry and block hashes",
+          "invariant": "one local-value xattr update either fits wholly in the selected inode-body or external-block store or returns ENOSPC without modifying either store; EA-inode values remain an explicitly unsupported incompatible feature",
+          "rust_owner": "rsext4::file::xattr::{encode_xattrs,encode_inline_xattrs,encode_external_xattrs}",
+          "reason": "entry packing, offset validation, local-value replacement, zero-length values, and external hashes are portable ext4 on-disk semantics; inline-data and EA-inode ownership are separate unsupported feature gaps",
+          "test_ids": [
+            "persistent-xattr-inline-external"
+          ]
+        },
+        {
+          "start": 1854,
+          "end": 2336,
+          "symbol": "<coarse interval>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::metadata::xattr",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "linux-map-complete"
+          ]
+        },
+        {
+          "start": 2337,
+          "end": 2498,
+          "symbol": "ext4_xattr_set_handle",
+          "classification": "core",
+          "state_machine": "find inode-body before external storage, attempt the requested value in the inode body, fall back on ENOSPC to the external block, and remove only the old copy of that same name from the other store",
+          "invariant": "moving one xattr between inode-body and external storage preserves unrelated siblings in their existing stores, keeps CREATE and REPLACE atomic, and publishes allocation, inode pointer, ctime, version, checksums, and old-store release in one bounded metadata transaction",
+          "rust_owner": "rsext4::file::xattr::{set_inode_xattr,remove_inode_xattr,persist_xattrs}",
+          "reason": "the two-store placement and transaction semantics are portable ext4 core behavior; Linux VFS locking and syscall namespace policy remain adapter responsibilities",
+          "test_ids": [
+            "persistent-xattr-inline-external"
+          ]
+        },
+        {
+          "start": 2499,
           "end": 2905,
           "symbol": "<coarse interval>",
           "classification": "core",
