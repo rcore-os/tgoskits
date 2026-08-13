@@ -34,8 +34,14 @@ rdif-pcie = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86.workspace = true
 
+[dev-dependencies]
+ax-runtime = { workspace = true, features = ["host-test"] }
+
 [features]
 axtest = ["dep:axtest"]
+# Keep the host-test feature explicit for the std-test runner. The integration
+# tests link ax-runtime as the sole synchronization provider.
+host-test = ["ax-sync/host-test"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

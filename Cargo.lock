@@ -6643,6 +6643,7 @@ version = "0.23.9"
 dependencies = [
  "acpi",
  "ax-lazyinit",
+ "ax-runtime",
  "ax-sync",
  "axtest",
  "fdt-edit",

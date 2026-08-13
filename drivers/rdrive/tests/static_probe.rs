@@ -1,3 +1,5 @@
+mod common;
+
 use rdrive::{
     DriverGeneric, Platform, PlatformDevice, get_one,
     probe::OnProbeError,

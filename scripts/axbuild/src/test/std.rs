@@ -187,7 +187,7 @@ fn run_std_tests<R: CargoRunner>(
 
 fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeatureProfile]> {
     match package {
-        "ax-sync" | "ax-display" | "ax-input" | "ax-ipi" | "ax-log" | "ax-api" => {
+        "ax-sync" | "ax-display" | "ax-input" | "ax-ipi" | "ax-log" | "ax-api" | "rdrive" => {
             Some(HOST_TEST_FEATURE_PROFILES)
         }
         _ => None,
@@ -438,9 +438,16 @@ mod tests {
     #[test]
     fn transitive_platform_consumers_use_host_test_feature_profile() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = ["ax-display", "ax-input", "ax-ipi", "ax-log", "ax-api"]
-            .map(str::to_string)
-            .to_vec();
+        let packages = [
+            "ax-display",
+            "ax-input",
+            "ax-ipi",
+            "ax-log",
+            "ax-api",
+            "rdrive",
+        ]
+        .map(str::to_string)
+        .to_vec();
         let mut runner = FakeCargoRunner::succeeding();
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();

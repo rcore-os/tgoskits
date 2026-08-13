@@ -146,6 +146,11 @@ impl<G: GetLinksWrapped> List<G> {
         self.list.is_empty()
     }
 
+    /// Returns the number of elements currently in the list.
+    pub const fn len(&self) -> usize {
+        self.list.len()
+    }
+
     /// Adds the given object to the end (back) of the list.
     ///
     /// It is dropped if it's already on this (or another) list; this can happen for

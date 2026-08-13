@@ -129,10 +129,11 @@ impl BlockRuntime {
     pub fn from_rdif_devices(devices: impl IntoIterator<Item = RdifBlockDevice>) -> Self {
         let mut registered = Vec::new();
         for device in devices {
+            let name = device.name.clone();
             match BlockDeviceHandle::start(device) {
                 Ok(handle) => registered.push(handle),
                 Err(error) => {
-                    warn!("failed to start IRQ-driven block controller: {error:?}");
+                    warn!("failed to start IRQ-driven block controller {name}: {error:?}");
                 }
             }
         }

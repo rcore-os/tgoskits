@@ -253,11 +253,47 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
     }
 
     /// Handle a standard MMIO write and report any action the device must take.
+    ///
+    /// The `QUEUE_READY` layout validation is screened against the selected
+    /// queue's own guest-memory accessor. Runtimes whose real guest memory
+    /// only exists as a scoped capability at MMIO access time must use
+    /// [`mmio_write_with_memory`](Self::mmio_write_with_memory) instead.
     pub fn mmio_write(
         &self,
         addr: GuestPhysAddr,
         width: AccessWidth,
         val: usize,
+    ) -> VirtioResult<MmioWriteAction> {
+        self.mmio_write_inner(addr, width, val, None)
+    }
+
+    /// Handles a standard MMIO write using a scoped guest-memory capability.
+    ///
+    /// The capability is used for the `QUEUE_READY` layout validation and
+    /// must be backed by the same guest memory the queues' runtime accesses
+    /// use; passing a capability over different memory makes the layout
+    /// check vacuous.
+    pub fn mmio_write_with_memory(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        val: usize,
+        memory: &mut dyn crate::GuestMemory,
+    ) -> VirtioResult<MmioWriteAction> {
+        self.mmio_write_inner(addr, width, val, Some(memory))
+    }
+
+    /// Shared MMIO write implementation.
+    ///
+    /// `ready_memory` is the scoped capability used to screen the selected
+    /// queue's ring layout on a `QUEUE_READY` write; `None` falls back to a
+    /// capability built from the queue's own accessor.
+    fn mmio_write_inner(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        val: usize,
+        ready_memory: Option<&mut dyn crate::GuestMemory>,
     ) -> VirtioResult<MmioWriteAction> {
         if !transport::is_address_in_range(addr, self.base_ipa, self.length) {
             return Ok(MmioWriteAction::None);
@@ -294,8 +330,26 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             }
             vc::VIRTIO_MMIO_QUEUE_READY => {
                 let sel = *self.queue_sel.lock_irqsave();
+                // Hold the queues lock across the layout check and the ready
+                // transition so validation and `set_ready` form one atomic
+                // enforcement point. The probe is bounded (first/last byte of
+                // the three ring regions) and performs no callbacks, so the
+                // hold is short.
                 if let Some(q) = self.queues.lock_irqsave().get_mut(sel as usize) {
-                    q.set_ready(val != 0);
+                    let layout_ok = if q.is_configured() {
+                        match ready_memory {
+                            Some(memory) => q.validate_layout_with_memory(memory),
+                            None => {
+                                let accessor = q.accessor().clone();
+                                let mut memory = crate::AddressSpaceMemory::new(&*accessor);
+                                q.validate_layout_with_memory(&mut memory)
+                            }
+                        }
+                        .is_ok()
+                    } else {
+                        false
+                    };
+                    q.set_ready(val != 0 && layout_ok);
                 }
             }
             vc::VIRTIO_MMIO_QUEUE_NOTIFY => return Ok(MmioWriteAction::QueueNotified(val as u16)),

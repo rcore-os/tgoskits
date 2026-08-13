@@ -27,10 +27,12 @@ use sdhci_host::{HostClock, HostResetHook, HostTimer, Sdhci, rdif as sdhci_rdif}
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
-    sdio::{card::SdioSdmmc, init::CardInitPreference},
+    sdio::card::SdioSdmmc,
 };
 
-use super::clock::enable_node_clocks;
+use super::{
+    card_init_preference, clock::enable_node_clocks, media_name, supports_block_card_protocol,
+};
 use crate::{block::ProbeFdtBlock, mmio::iomap};
 
 // RK3588 DWCMSHC follows Linux's normal SDHCI completion path: hard IRQ only
@@ -152,6 +154,13 @@ crate::model_register!(
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let info = probe.info();
+    if !supports_block_card_protocol(info.node.as_node()) {
+        info!(
+            "rockchip-sdhci: skip SDIO-only controller {}",
+            info.node.path()
+        );
+        return Ok(());
+    }
     let resets = apply_rockchip_sdhci_resources(info)?;
     let base_reg = info
         .node
@@ -194,9 +203,17 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         ))
     })?;
 
-    info!("rockchip-sdhci: defer eMMC protocol initialization to IRQ-driven hctx");
-    let card = SdioSdmmc::new(host);
-    let dev = sdhci_rdif::initializing_device(card, config, CardInitPreference::MmcFirst);
+    let preference = card_init_preference(info.node.as_node());
+    let identity = alloc::format!("rockchip-sdhci:{}", info.node.path());
+    info!(
+        "rockchip-sdhci: defer protocol initialization controller={} media={} preference={:?}",
+        identity,
+        media_name(preference),
+        preference
+    );
+    let mut card = SdioSdmmc::new(host);
+    card.set_diagnostic_identity(identity);
+    let dev = sdhci_rdif::initializing_device(card, config, preference);
     let irq = probe.register_block(dev)?;
     info!("rockchip-sdhci block device registered irq={:?}", irq);
     Ok(())

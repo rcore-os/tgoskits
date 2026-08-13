@@ -17,6 +17,7 @@ use axdevice_base::{
 use axvirtio_blk::{
     BlockBackend, ManagedVirtioBlockDevice, VirtioBlockConfig, VirtioMmioBlockDevice, VirtioResult,
 };
+use axvirtio_common::{AddressSpaceMemory, NoGuestMemoryAccessor};
 use axvm_types::{AccessWidth, GuestPhysAddr};
 
 // ============================================================================
@@ -515,6 +516,12 @@ mod mmio_device_tests {
     const VIRTIO_MMIO_DEVICE_FEATURES_SEL: u32 = 0x014;
     const VIRTIO_MMIO_QUEUE_NUM_MAX: u32 = 0x034;
     const VIRTIO_MMIO_STATUS: u32 = 0x070;
+    const VIRTIO_MMIO_QUEUE_SEL: u32 = 0x030;
+    const VIRTIO_MMIO_QUEUE_NUM: u32 = 0x038;
+    const VIRTIO_MMIO_QUEUE_READY: u32 = 0x044;
+    const VIRTIO_MMIO_QUEUE_DESC_LOW: u32 = 0x080;
+    const VIRTIO_MMIO_QUEUE_AVAIL_LOW: u32 = 0x090;
+    const VIRTIO_MMIO_QUEUE_USED_LOW: u32 = 0x0a0;
     const VIRTIO_MMIO_CONFIG: u32 = 0x100;
 
     const MMIO_MAGIC: u32 = 0x74726976; // "virt" in little endian
@@ -701,6 +708,84 @@ mod mmio_device_tests {
         // Queue 100 should not exist
         let queue = device.get_queue(100);
         assert!(queue.is_none());
+    }
+
+    #[test]
+    fn test_queue_ready_requires_scoped_memory_with_placeholder_accessor() {
+        // axvisor constructs the block device with `NoGuestMemoryAccessor` and
+        // holds real guest memory only as a scoped capability at MMIO access
+        // time (`os/axvisor/src/virtio_blk.rs`). The `QUEUE_READY` layout
+        // validation must be screened against that scoped memory: the
+        // accessor-based fallback cannot translate any guest address, while
+        // the scoped path validates the same layout against the real backing
+        // and must make the queue ready.
+        let backend = MockBlockBackend::new(2048, 512);
+        let config = VirtioBlockConfig::default();
+        let base_ipa = GuestPhysAddr::from(0x0a000000);
+        let device =
+            VirtioMmioBlockDevice::new(base_ipa, 0x200, backend, config, NoGuestMemoryAccessor)
+                .unwrap();
+
+        // Program a valid in-bounds layout (desc 0x1000, avail 0x2000,
+        // used 0x3000; all inside the 1 MiB backing below).
+        for (reg, val) in [
+            (VIRTIO_MMIO_QUEUE_SEL, 0),
+            (VIRTIO_MMIO_QUEUE_NUM, 4),
+            (VIRTIO_MMIO_QUEUE_DESC_LOW, 0x1000),
+            (VIRTIO_MMIO_QUEUE_AVAIL_LOW, 0x2000),
+            (VIRTIO_MMIO_QUEUE_USED_LOW, 0x3000),
+        ] {
+            device
+                .mmio_write(
+                    GuestPhysAddr::from(base_ipa.as_usize() + reg as usize),
+                    AccessWidth::Dword,
+                    val,
+                )
+                .unwrap();
+        }
+
+        // The accessor-based path must reject the layout: the queue's own
+        // accessor cannot translate any guest address.
+        device
+            .mmio_write(
+                GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_QUEUE_READY as usize),
+                AccessWidth::Dword,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            device
+                .mmio_read(
+                    GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_QUEUE_READY as usize),
+                    AccessWidth::Dword,
+                )
+                .unwrap(),
+            0,
+            "the queue's own accessor cannot satisfy the layout probe"
+        );
+
+        // The scoped-memory path validates the same addresses against the real
+        // backing and must make the queue ready.
+        let backing = MockGuestMemoryAccessor::new(1024 * 1024);
+        let mut memory = AddressSpaceMemory::new(&backing);
+        device
+            .mmio_write_with_memory(
+                GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_QUEUE_READY as usize),
+                AccessWidth::Dword,
+                1,
+                &mut memory,
+            )
+            .unwrap();
+        assert_eq!(
+            device
+                .mmio_read(
+                    GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_QUEUE_READY as usize),
+                    AccessWidth::Dword,
+                )
+                .unwrap(),
+            1,
+            "the scoped-memory path must make the queue ready"
+        );
     }
 }
 
