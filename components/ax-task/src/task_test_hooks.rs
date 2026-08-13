@@ -17,8 +17,13 @@ static PARK_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static SWITCH_TAIL_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static DEADLINE_PUBLICATION_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static DEADLINE_PUBLICATION_RT_PERIOD_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static RT_POLICY_DELIVERY_TARGET: AtomicU64 = AtomicU64::new(0);
+static RT_POLICY_DELIVERY_REQUIRED: AtomicU8 = AtomicU8::new(0);
+static RT_POLICY_DELIVERY_EVENTS: AtomicU8 = AtomicU8::new(0);
+static RT_POLICY_DELIVERY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 
 const STAGE_IDLE: u8 = 0;
 const STAGE_CONFIGURING: u8 = 1;
@@ -30,6 +35,8 @@ const STAGE_RELEASE_MAY_WAKE: u8 = 6;
 const STAGE_CHAIN_DECIDED: u8 = 3;
 const STAGE_OWNER_MAY_CHANGE: u8 = 4;
 const STAGE_COMPLETE: u8 = 3;
+const RT_POLICY_RESCHEDULE: u8 = 1 << 0;
+const RT_POLICY_OWNER_WORK: u8 = 1 << 1;
 
 struct IrqOwnerProbe {
     target: AtomicU64,
@@ -135,6 +142,7 @@ pub fn arm_deadline_publication_probe(cpu: usize) {
     );
     DEADLINE_PUBLICATION_TARGET_CPU.store(target, Ordering::Relaxed);
     DEADLINE_PUBLICATION_OBSERVATION_ENTRIES.store(0, Ordering::Relaxed);
+    DEADLINE_PUBLICATION_RT_PERIOD_OBSERVATION_ENTRIES.store(0, Ordering::Relaxed);
     DEADLINE_PUBLICATION_ENTRIES.store(0, Ordering::Relaxed);
     DEADLINE_PUBLICATION_STAGE.store(STAGE_ARMED, Ordering::Release);
 }
@@ -144,6 +152,8 @@ pub fn arm_deadline_publication_probe(cpu: usize) {
 pub struct DeadlinePublicationEntries {
     /// Separate deadline observation locks taken before publication.
     pub observation: u64,
+    /// Root RT-period locks taken while deriving the clockevent deadline.
+    pub rt_period_observation: u64,
     /// Authoritative publication locks taken by the transaction.
     pub publication: u64,
 }
@@ -163,6 +173,8 @@ pub fn take_deadline_publication_entries() -> Option<DeadlinePublicationEntries>
     }
     let entries = DeadlinePublicationEntries {
         observation: DEADLINE_PUBLICATION_OBSERVATION_ENTRIES.load(Ordering::Relaxed),
+        rt_period_observation: DEADLINE_PUBLICATION_RT_PERIOD_OBSERVATION_ENTRIES
+            .load(Ordering::Relaxed),
         publication: DEADLINE_PUBLICATION_ENTRIES.load(Ordering::Relaxed),
     };
     DEADLINE_PUBLICATION_TARGET_CPU.store(0, Ordering::Relaxed);
@@ -181,6 +193,12 @@ pub(crate) fn record_deadline_observation_entry(cpu: crate::CpuId) {
     }
 }
 
+pub(crate) fn record_deadline_rt_period_lock_entry(cpu: crate::CpuId) {
+    if deadline_publication_probe_matches(cpu) {
+        DEADLINE_PUBLICATION_RT_PERIOD_OBSERVATION_ENTRIES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn record_deadline_publication_entry(cpu: crate::CpuId) {
     if !deadline_publication_probe_matches(cpu) {
         return;
@@ -196,6 +214,94 @@ pub(crate) fn record_deadline_publication_entry(cpu: crate::CpuId) {
         Ok(STAGE_ARMED),
         "deadline publication was recorded in an invalid stage"
     );
+}
+
+/// Arms one real policy transition for owner-delivery accounting.
+pub fn arm_rt_policy_delivery_probe(thread: u64) {
+    assert_ne!(thread, 0, "an RT-policy probe identity must be non-zero");
+    assert_eq!(
+        RT_POLICY_DELIVERY_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one RT-policy delivery probe may be armed"
+    );
+    RT_POLICY_DELIVERY_TARGET.store(thread, Ordering::Relaxed);
+    RT_POLICY_DELIVERY_REQUIRED.store(0, Ordering::Relaxed);
+    RT_POLICY_DELIVERY_EVENTS.store(0, Ordering::Relaxed);
+    RT_POLICY_DELIVERY_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Logical owner events published by one RT policy transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RtPolicyDeliveryEvents {
+    /// The policy transaction required the owner to reconsider its dispatch.
+    pub reschedule_required: bool,
+    /// The owner was actually asked to reconsider its current dispatch.
+    pub reschedule_delivered: bool,
+    /// The policy transaction newly activated root scheduler work.
+    pub owner_work_required: bool,
+    /// The owner was actually asked to publish newly activated scheduler work.
+    pub owner_work_delivered: bool,
+}
+
+/// Takes logical delivery events for the armed RT policy transition.
+pub fn take_rt_policy_delivery_events() -> Option<RtPolicyDeliveryEvents> {
+    if RT_POLICY_DELIVERY_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let required = RT_POLICY_DELIVERY_REQUIRED.load(Ordering::Relaxed);
+    let delivered = RT_POLICY_DELIVERY_EVENTS.load(Ordering::Relaxed);
+    RT_POLICY_DELIVERY_TARGET.store(0, Ordering::Relaxed);
+    RT_POLICY_DELIVERY_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(RtPolicyDeliveryEvents {
+        reschedule_required: required & RT_POLICY_RESCHEDULE != 0,
+        reschedule_delivered: delivered & RT_POLICY_RESCHEDULE != 0,
+        owner_work_required: required & RT_POLICY_OWNER_WORK != 0,
+        owner_work_delivered: delivered & RT_POLICY_OWNER_WORK != 0,
+    })
+}
+
+pub(crate) fn record_rt_policy_delivery_requirements(
+    thread: ThreadId,
+    reschedule: bool,
+    owner_work: bool,
+) {
+    if RT_POLICY_DELIVERY_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || RT_POLICY_DELIVERY_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    let required = (u8::from(reschedule) * RT_POLICY_RESCHEDULE)
+        | (u8::from(owner_work) * RT_POLICY_OWNER_WORK);
+    RT_POLICY_DELIVERY_REQUIRED.store(required, Ordering::Relaxed);
+}
+
+fn record_rt_policy_delivery(thread: ThreadId, event: u8) {
+    if RT_POLICY_DELIVERY_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && RT_POLICY_DELIVERY_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        RT_POLICY_DELIVERY_EVENTS.fetch_or(event, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_rt_policy_reschedule(thread: ThreadId) {
+    record_rt_policy_delivery(thread, RT_POLICY_RESCHEDULE);
+}
+
+pub(crate) fn record_rt_policy_owner_work(thread: ThreadId) {
+    record_rt_policy_delivery(thread, RT_POLICY_OWNER_WORK);
 }
 
 /// Arms one real context-switch tail for IRQ-owner accounting.

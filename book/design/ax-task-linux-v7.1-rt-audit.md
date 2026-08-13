@@ -3248,6 +3248,41 @@ timer 队列，最终统一交给 ax-runtime `LocalClockEvent` 编程。客户�
 host timer transport，而不是删除客户机自己的状态机。Linux RT bandwidth period timer 同样是独立
 的 replenishment source，不能为了减少锁次数与 hrtick/普通 kernel timer 合并。
 
+第五项重复 owner 是共享物理 clockevent 对 root RT period expiry 的轮询。Linux 的
+`struct rt_bandwidth` 以 `rt_period_timer` 自身保存下一次 expiry；`do_start_rt_bandwidth()` 只在
+激活状态机时取得 `rt_runtime_lock`，普通 scheduler decision 不为了合并硬件事件读取它。timer
+callback 在锁内 `hrtimer_forward_now()` 推进 expiry，再释放 root lock 扫描并补充各 rq。ax-task
+此前把 root period 合并进唯一 `LocalClockEvent` 时，每次 deadline derivation 都调用
+`RootRtBandwidth::deadline_for()` 重新取得 period state lock；这不是另一套 timer，却把 Linux
+hrtimer 已发布的 expiry 错误退化为高频共享状态查询。
+
+现在唯一 `RootRtBandwidth` 在 activate、begin-period 推进、owner migration 和停止四个权威状态
+转换中同步发布 per-CPU expiry 投影，generic scheduler deadline 只 Acquire 读取本 CPU 投影。状态锁
+仍唯一拥有 owner、generation、firing 和 deadline；投影只承担 Linux hrtimer expiry 对物理
+clockevent transport 的输入职责。迁移先发布 replacement 再撤销 offline CPU，因此并发 derivation
+至多保留一次无害的提前事件，不会漏掉 active period。begin/finish 分段锁、firing 期间的 activation
+记账和各 rq runtime ledger 均未合并或旁路。
+
+ArceOS `task-rt-policy` 在 CPU1 保持真实 FIFO worker 令 root period active，同时让 CPU0 注册真实
+sleep deadline：旧实现确定性得到
+`DeadlinePublicationEntries { observation: 0, rt_period_observation: 1, publication: 1 }` 并失败，
+修复后为 `0/0/1`。相同 x86_64/4-vCPU、60 秒 ext4 marker qperf 窗口仍推进到 `file-0535`，switch
+从 124,000 变为 126,191（+1.77%）；root RT-period ticket 从 235,405 降至 20,330（-91.36%），
+全部 runtime IRQ guard 从 1,458,352 降至 1,289,114（-11.60%），host user 从 95.305 秒降至
+85.881 秒（-9.89%）。deadline derivation 增加 3.57%，对应 `CpuDeadlineBase` guard 增加 4.15%，
+说明 period 成本没有被转移到隐藏的第二套锁；workload 仍未完成，不能据此宣称已达到 dev 的最终
+端到端性能目标。
+
+CI run `31729428661` 的唯一真实失败进一步暴露了同一 owner publication 边界：running Fair task
+切换为 FIFO 时，事务可以同时返回 `preempts_current` 和 `rt_period_started`。旧 `else if` 只发布
+remote reschedule，吞掉新激活 period 的 `REQUEST_OWNER_WORK`；物理 IPI 可以合并，但两个逻辑请求
+不能互相替代。Linux 的 `start_rt_bandwidth()` 同样独立于 class dispatch/preemption 通知。ArceOS
+target-side probe 在旧实现确定性观察到事务要求 `reschedule=true, owner_work=true`，实际只交付
+`true/false`；改为两个独立 publication 后为 `true/true`。完整 RISC-V Rust 测例序列还验证了另一种
+合法状态：前序 RT runtime 尚待下一 period callback 清空时，事务与交付均为 `true/false`。这与
+Linux `do_sched_rt_period_timer()` 在无 runnable 但仍有 `rt_time` 时继续 period 的语义一致，不应靠
+强制停表或测试延时掩盖。定向 `task-rt-policy` 和 CI 对应的 `all` 序列均已通过。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

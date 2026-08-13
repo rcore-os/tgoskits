@@ -30,7 +30,12 @@ task-tls = ["ax-std", "ax-std/tls", "ax-std/alloc", "ax-std/multitask"]
 task-parallel = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask", "ax-std/irq"]
 task-pi-mutex = ["ax-std", "ax-std/multitask", "ax-std/task-test-hooks"]
 task-priority = ["ax-std", "ax-std/alloc", "ax-std/multitask"]
-task-rt-policy = ["ax-std", "ax-std/alloc", "ax-std/multitask"]
+task-rt-policy = [
+    "ax-std",
+    "ax-std/alloc",
+    "ax-std/multitask",
+    "ax-std/task-test-hooks",
+]
 task-sleep = ["ax-std", "ax-std/multitask", "ax-std/irq"]
 task-smp-online = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
 task-stack-guard-page = ["ax-std", "ax-std/multitask", "ax-std/paging", "ax-std/stack-guard-page"]

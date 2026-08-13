@@ -2,7 +2,7 @@ use std::{
     hint,
     os::arceos::{
         api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::ax_hal::percpu::this_cpu_id,
+        modules::{ax_hal::percpu::this_cpu_id, ax_task::task_test_hooks},
         task::{
             FairMode, Nice, RtPriority, SchedulePolicy, ThreadId, current_thread_id,
             set_thread_policy,
@@ -83,6 +83,7 @@ pub fn run() -> crate::TestResult {
                 return;
             };
             worker_id.store(current.as_u64(), Ordering::Release);
+            task_test_hooks::arm_rt_policy_delivery_probe(current.as_u64());
             if set_thread_policy(
                 current,
                 SchedulePolicy::fifo(RtPriority::new(2).expect("priority 2 must be valid")),
@@ -92,6 +93,20 @@ pub fn run() -> crate::TestResult {
                 promotion_failed.store(true, Ordering::Release);
                 return;
             }
+            let delivery = task_test_hooks::take_rt_policy_delivery_events()
+                .expect("the armed RT-policy delivery probe must complete");
+            assert!(
+                delivery.reschedule_required,
+                "running RT promotion must require a dispatch reconsideration"
+            );
+            assert_eq!(
+                delivery.reschedule_delivered, delivery.reschedule_required,
+                "RT promotion must preserve its dispatch request"
+            );
+            assert_eq!(
+                delivery.owner_work_delivered, delivery.owner_work_required,
+                "RT promotion must preserve independently activated period work"
+            );
             promoted.store(true, Ordering::Release);
             while !stop.load(Ordering::Acquire) {
                 heartbeat.fetch_add(1, Ordering::Relaxed);
@@ -112,6 +127,18 @@ pub fn run() -> crate::TestResult {
         }
         hint::spin_loop();
     }
+    task_test_hooks::arm_deadline_publication_probe(this_cpu_id());
+    thread::sleep(Duration::from_millis(1));
+    assert_eq!(
+        task_test_hooks::take_deadline_publication_entries(),
+        Some(task_test_hooks::DeadlinePublicationEntries {
+            observation: 0,
+            rt_period_observation: 0,
+            publication: 1,
+        }),
+        "scheduler deadline derivation must consume the published RT-period expiry without \
+         entering its state lock"
+    );
     let started = Instant::now();
     spin_until(FIRST_CROSS_PERIOD_SAMPLE, started);
     let first = heartbeat.load(Ordering::Acquire);

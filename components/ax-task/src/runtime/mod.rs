@@ -43,6 +43,8 @@ pub(crate) enum IrqGuardSource {
     CpuDeadlineLifecycleTicket,
     RootRtRuntimeTicket,
     RootRtPeriodTicket,
+    #[cfg(feature = "task-test-hooks")]
+    RootRtPeriodDeadlineObservationTicket,
     RootDeadlineIndexTicket,
     ExplicitScope,
     RuntimeCpu,
@@ -60,6 +62,13 @@ pub(crate) fn enter_preempt_guard(source: PreemptGuardSource) -> PreemptGuardTok
 
 pub(crate) fn enter_irq_guard(source: IrqGuardSource) -> IrqGuardToken {
     let token = task_runtime::irq_guard_enter();
+    #[cfg(feature = "task-test-hooks")]
+    if source as usize == IrqGuardSource::RootRtPeriodDeadlineObservationTicket as usize {
+        // SAFETY: the runtime IRQ token acquired above pins this operation to
+        // the calling CPU until the matching guard exits.
+        let cpu = crate::CpuId::new(unsafe { task_runtime::current_cpu_id() }.as_u32());
+        crate::task_test_hooks::record_deadline_rt_period_lock_entry(cpu);
+    }
     #[cfg(feature = "qperf-metrics")]
     crate::metrics::record_runtime_irq_guard_entry(source, token.is_none());
     #[cfg(not(feature = "qperf-metrics"))]

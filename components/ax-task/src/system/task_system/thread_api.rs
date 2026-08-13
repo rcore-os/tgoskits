@@ -247,13 +247,25 @@ impl TaskSystem {
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5049_1216, core.id().as_u64() as usize)
             });
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_rt_policy_delivery_requirements(
+            core.id(),
+            applied.preempts_current,
+            applied.rt_period_started,
+        );
         if applied.preempts_current {
             remote.request_remote_reschedule();
-        } else if applied.rt_period_started {
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_rt_policy_reschedule(core.id());
+        }
+        if applied.rt_period_started {
             // The RT period deadline is pinned to the rq owner. Ask that owner
-            // to run the existing deadline derivation path; a remote setter
-            // must not program another CPU's physical timer directly.
+            // to run the existing deadline derivation path independently of
+            // a simultaneous dispatch request; a remote setter must not
+            // program another CPU's physical timer directly.
             remote.kick_scheduler_work();
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_rt_policy_owner_work(core.id());
         }
         Ok(())
     }

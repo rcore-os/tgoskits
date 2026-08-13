@@ -140,6 +140,7 @@ pub fn run() -> crate::TestResult {
         task_test_hooks::take_deadline_publication_entries(),
         Some(task_test_hooks::DeadlinePublicationEntries {
             observation: 0,
+            rt_period_observation: 0,
             publication: 1,
         }),
         "one deadline derivation and publication must share one base lock"

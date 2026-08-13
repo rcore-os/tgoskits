@@ -1,6 +1,7 @@
 //! Linux-style root-domain and per-runqueue real-time bandwidth state.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(test)]
 use crate::lock::IrqTicketGuard;
@@ -9,6 +10,8 @@ use crate::{
     lock::IrqTicketLock,
     runtime::{MonotonicDeadline, MonotonicInstant},
 };
+
+const NO_RT_PERIOD_DEADLINE: u64 = u64::MAX;
 
 /// Linux `rt_rq` runtime-transfer ledger protected by `rt_runtime_lock`.
 ///
@@ -165,6 +168,7 @@ pub(crate) struct RootRtBandwidth {
     runtime_ns: u64,
     runtime_lock: IrqTicketLock<()>,
     period_active: AtomicBool,
+    published_deadlines: Vec<AtomicU64>,
     state: IrqTicketLock<RootRtBandwidthState>,
 }
 
@@ -176,6 +180,9 @@ impl RootRtBandwidth {
             runtime_ns: config.rt_runtime_ns(),
             runtime_lock: IrqTicketLock::new(()),
             period_active: AtomicBool::new(false),
+            published_deadlines: (0..config.cpu_count())
+                .map(|_| AtomicU64::new(NO_RT_PERIOD_DEADLINE))
+                .collect(),
             state: IrqTicketLock::new(RootRtBandwidthState {
                 owner: None,
                 deadline: None,
@@ -199,6 +206,11 @@ impl RootRtBandwidth {
             .lock(crate::runtime::IrqGuardSource::RootRtRuntimeTicket)
     }
 
+    fn publish_deadline(&self, cpu: CpuId, deadline: Option<MonotonicDeadline>) {
+        let encoded = deadline.map_or(NO_RT_PERIOD_DEADLINE, MonotonicDeadline::as_nanos);
+        self.published_deadlines[cpu.as_usize()].store(encoded, Ordering::Release);
+    }
+
     /// Starts the root period on the CPU that activated RT work.
     pub(crate) fn activate(&self, cpu: CpuId, now: MonotonicInstant) -> bool {
         if !self.enabled {
@@ -214,8 +226,13 @@ impl RootRtBandwidth {
                 .checked_add(1)
                 .expect("root RT bandwidth generation exhausted");
             state.owner = Some(cpu);
-            state.deadline =
-                Some(now.deadline_after(core::time::Duration::from_nanos(self.period_ns)));
+            let deadline = now.deadline_after(core::time::Duration::from_nanos(self.period_ns));
+            state.deadline = Some(deadline);
+            // Linux exposes the period through the hrtimer expiry rather than
+            // making every scheduler decision re-enter rt_runtime_lock. This
+            // per-owner projection is the equivalent input to our shared
+            // physical clockevent transport; `state` remains authoritative.
+            self.publish_deadline(cpu, Some(deadline));
             // Publish only after the authoritative timer identity is complete.
             // Readers use this Linux-style rt_period_active bit solely to
             // reject the empty state without entering the IRQ-safe lock.
@@ -234,12 +251,9 @@ impl RootRtBandwidth {
         if !self.period_active.load(Ordering::Acquire) {
             return None;
         }
-        let state = self
-            .state
-            .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket);
-        (state.owner == Some(cpu))
-            .then_some(state.deadline)
-            .flatten()
+        MonotonicDeadline::from_nanos(
+            self.published_deadlines[cpu.as_usize()].load(Ordering::Acquire),
+        )
     }
 
     /// Begins one due root-period callback on its pinned owner CPU.
@@ -262,6 +276,7 @@ impl RootRtBandwidth {
             .and_then(MonotonicDeadline::from_nanos)
             .expect("RT period deadline exceeded the monotonic clock domain");
         state.deadline = Some(next_ns);
+        self.publish_deadline(cpu, Some(next_ns));
         state.firing = true;
         state.activation_during_firing = false;
         Some(RtPeriodFiring {
@@ -285,9 +300,13 @@ impl RootRtBandwidth {
             state.activation_during_firing = false;
             return;
         }
-        state.owner = None;
+        let owner = state
+            .owner
+            .take()
+            .expect("an active RT period must retain its clockevent owner");
         state.deadline = None;
         state.activation_during_firing = false;
+        self.publish_deadline(owner, None);
         self.period_active.store(false, Ordering::Release);
     }
 
@@ -296,10 +315,18 @@ impl RootRtBandwidth {
         let mut state = self
             .state
             .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket);
-        if state.owner != Some(offline) || state.deadline.is_none() {
+        if state.owner != Some(offline) {
             return false;
         }
+        let Some(deadline) = state.deadline else {
+            return false;
+        };
         state.owner = Some(replacement);
+        // Publish the replacement before withdrawing the old projection so a
+        // concurrent physical-clockevent derivation can at worst retain one
+        // harmless early event; it can never lose the active period deadline.
+        self.publish_deadline(replacement, Some(deadline));
+        self.publish_deadline(offline, None);
         true
     }
 
