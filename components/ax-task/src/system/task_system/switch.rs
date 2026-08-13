@@ -8,6 +8,94 @@ pub(super) struct OwnerScheduleOut {
 }
 
 impl TaskSystem {
+    /// Returns whether ordinary preemption can complete under the rq lock.
+    ///
+    /// Linux's `__schedule()` handles the common put-prev path with only
+    /// `rq->lock`. Ax-task needs the task scheduler lock only when a migration
+    /// request or Deadline timer ownership must cross the task/rq boundary.
+    pub(super) fn owner_preemption_is_rq_owned(
+        &self,
+        transaction: &OwnerRqTxn<'_>,
+        core: &ThreadCore,
+    ) -> bool {
+        let dispatch = transaction.current().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1116, core.id().as_u64() as usize)
+        });
+        if dispatch.thread() != core.id() {
+            task_runtime::fatal_invariant(0x5343_1117, core.id().as_u64() as usize);
+        }
+        let placement = core.sched().placement();
+        placement.requested_migration().is_none()
+            && dispatch.affinity().contains(transaction.owner())
+            && dispatch.deadline_bandwidth_scaled() == 0
+            && !matches!(dispatch.schedule_policy(), SchedulePolicy::Deadline(_))
+    }
+
+    /// Performs the common Linux `put_prev_task()` path with rq as sole owner.
+    pub(super) fn schedule_out_owner_preempt_in_rq(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        transaction: &mut OwnerRqTxn<'_>,
+        core: Arc<ThreadCore>,
+    ) {
+        self.ensure_owner_cpu_online(&cpu).unwrap_or_else(|_| {
+            task_runtime::fatal_invariant(0x5343_1118, cpu.owner().as_u32() as usize)
+        });
+        let owner = cpu.owner();
+        let placement = core.sched().placement();
+        if core.state() != ThreadState::Running
+            || placement.execution_cpu() != Some(owner)
+            || placement.on_cpu() != Some(owner)
+            || !self.owner_preemption_is_rq_owned(transaction, &core)
+        {
+            task_runtime::fatal_invariant(0x5343_1119, core.id().as_u64() as usize);
+        }
+
+        // Pairs prior task accesses with publication of a different rq->curr.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        if transaction.idle() == Some(core.id()) {
+            let dispatch = transaction.take_current().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1105, core.id().as_u64() as usize)
+            });
+            let active = dispatch.into_active().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1107, core.id().as_u64() as usize)
+            });
+            transaction.return_idle_schedule(core.id(), active);
+            core.transition_state(ThreadState::Ready)
+                .unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x5343_1108, core.id().as_u64() as usize)
+                });
+            placement.put_prev_idle(owner);
+            return;
+        }
+
+        let policy = transaction
+            .current()
+            .map(CurrentDispatch::schedule_policy)
+            .unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1111, core.id().as_u64() as usize)
+            });
+        core.transition_state(ThreadState::Ready)
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5343_110c, core.id().as_u64() as usize)
+            });
+        let queued_entity = if transaction.is_linked_current(core.id()) {
+            let queued_entity = transaction.put_prev_task(core.id(), EnqueueReason::Preempted);
+            let dispatch = transaction.take_current().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1105, core.id().as_u64() as usize)
+            });
+            if dispatch.thread() != core.id() || dispatch.into_active().is_some() {
+                task_runtime::fatal_invariant(0x5343_1106, core.id().as_u64() as usize);
+            }
+            queued_entity
+        } else {
+            transaction.put_prev_unlinked_current(core.id(), EnqueueReason::Preempted)
+        };
+        placement.put_prev(owner);
+        core.publish_effective_schedule(policy, &queued_entity);
+        core.set_wake_cpu_hint(owner);
+    }
+
     /// Completes every owner-side selection through the same balance and
     /// one-shot programming sequence.
     ///

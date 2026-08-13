@@ -27,6 +27,9 @@ static RT_POLICY_DELIVERY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static CURRENT_HANDLE_QUERY_TARGET: AtomicU64 = AtomicU64::new(0);
 static CURRENT_HANDLE_QUERY_COUNT: AtomicU64 = AtomicU64::new(0);
 static CURRENT_HANDLE_QUERY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static NO_SWITCH_THREAD_LOCK_TARGET: AtomicU64 = AtomicU64::new(0);
+static NO_SWITCH_THREAD_LOCK_COUNT: AtomicU64 = AtomicU64::new(0);
+static NO_SWITCH_THREAD_LOCK_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 
 const STAGE_IDLE: u8 = 0;
 const STAGE_CONFIGURING: u8 = 1;
@@ -92,6 +95,93 @@ pub(crate) fn record_current_handle_query(thread: ThreadId) {
     {
         CURRENT_HANDLE_QUERY_COUNT.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Arms task-lock accounting for one real scheduler no-switch pass.
+pub fn arm_no_switch_thread_lock_probe(thread: u64) {
+    assert_ne!(thread, 0, "a no-switch probe identity must be non-zero");
+    assert_eq!(
+        NO_SWITCH_THREAD_LOCK_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one no-switch task-lock probe may be armed"
+    );
+    NO_SWITCH_THREAD_LOCK_TARGET.store(thread, Ordering::Relaxed);
+    NO_SWITCH_THREAD_LOCK_COUNT.store(0, Ordering::Relaxed);
+    NO_SWITCH_THREAD_LOCK_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Publishes owner work without requesting a context switch on this CPU.
+pub fn request_current_owner_work() -> Result<(), crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
+    remote.request_scheduler_work();
+    Ok(())
+}
+
+/// Takes task-lock entries from the armed no-switch scheduler pass.
+pub fn take_no_switch_thread_lock_count() -> Option<u64> {
+    if NO_SWITCH_THREAD_LOCK_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let count = NO_SWITCH_THREAD_LOCK_COUNT.load(Ordering::Relaxed);
+    NO_SWITCH_THREAD_LOCK_TARGET.store(0, Ordering::Relaxed);
+    NO_SWITCH_THREAD_LOCK_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(count)
+}
+
+/// Cancels a probe when the sampled scheduler pass performed a real switch.
+pub fn cancel_no_switch_thread_lock_probe() {
+    assert_eq!(
+        NO_SWITCH_THREAD_LOCK_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "only an unfinished no-switch task-lock probe may be cancelled"
+    );
+    NO_SWITCH_THREAD_LOCK_TARGET.store(0, Ordering::Relaxed);
+    NO_SWITCH_THREAD_LOCK_STAGE.store(STAGE_IDLE, Ordering::Release);
+}
+
+pub(crate) fn record_no_switch_thread_lock(thread: ThreadId) {
+    if NO_SWITCH_THREAD_LOCK_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && NO_SWITCH_THREAD_LOCK_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        NO_SWITCH_THREAD_LOCK_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn complete_no_switch_thread_lock_probe(thread: ThreadId) {
+    if NO_SWITCH_THREAD_LOCK_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || NO_SWITCH_THREAD_LOCK_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        NO_SWITCH_THREAD_LOCK_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "the no-switch task-lock probe completed in an invalid stage"
+    );
 }
 
 struct IrqOwnerProbe {

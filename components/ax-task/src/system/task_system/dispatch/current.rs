@@ -16,6 +16,7 @@ impl TaskSystem {
             CurrentDispatchState {
                 thread: core.id(),
                 schedule,
+                affinity: metadata.affinity,
                 deadline_donor: metadata.deadline_donor,
                 rt_quota_exempt,
                 deadline_bandwidth_scaled: metadata.deadline_bandwidth_scaled,

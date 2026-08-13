@@ -3,7 +3,7 @@ use core::ops::Deref;
 use super::*;
 #[cfg(test)]
 use crate::FairEntity;
-use crate::SchedulerClass;
+use crate::{EnqueueReason, SchedulerClass};
 
 /// Typed reason for entering the per-CPU runqueue with irqsave semantics.
 ///
@@ -180,6 +180,28 @@ impl CpuRunQueueState {
             return self.queue.linked_current_entity_mut(thread);
         }
         Some(self.queue.current_mut()?.active_mut().entity_mut())
+    }
+
+    /// Requeues a Fair/stop current using only its rq-owned dispatch state.
+    pub(crate) fn put_prev_unlinked_current(
+        &mut self,
+        thread: ThreadId,
+        reason: EnqueueReason,
+    ) -> Result<SchedulingEntity, TaskError> {
+        if self.current_thread() != Some(thread) || self.queue.is_linked_current(thread) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        let current_fair = self
+            .current_scheduling_entity()
+            .and_then(|entity| entity.fair());
+        self.queue.update_fair_virtual_time(current_fair);
+        let dispatch = self.queue.take_current().ok_or(TaskError::NotReady)?;
+        let queued = dispatch
+            .into_queued_thread()
+            .ok_or(TaskError::InvalidConfiguration)?;
+        let queued_entity = self.queue.enqueue_task(queued, reason, current_fair)?;
+        self.queue.update_fair_virtual_time(current_fair);
+        Ok(queued_entity)
     }
 
     pub(crate) fn install_current(&mut self, current: CurrentDispatch) {

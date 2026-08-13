@@ -20,6 +20,7 @@ pub(crate) struct CurrentDispatch {
 pub(super) struct CurrentTaskIdentity {
     pub(super) thread: ThreadId,
     pub(super) runtime_core: Arc<ThreadCore>,
+    affinity: Arc<CpuSet>,
     runtime_binding: crate::runtime::ThreadRuntimeBinding,
 }
 
@@ -47,6 +48,7 @@ pub(super) struct CurrentRuntimeAccounting {
 pub(crate) struct CurrentDispatchState {
     pub(crate) thread: ThreadId,
     pub(crate) schedule: CurrentClassState,
+    pub(crate) affinity: Arc<CpuSet>,
     pub(crate) deadline_donor: Option<ThreadId>,
     pub(crate) rt_quota_exempt: bool,
     pub(crate) deadline_bandwidth_scaled: u64,
@@ -166,6 +168,44 @@ impl CurrentDispatch {
         }
     }
 
+    /// Converts an unlinked current dispatch into one rq-owned queued task.
+    ///
+    /// The complete task-control snapshot travels with the active entity, so
+    /// ordinary `put_prev_task()` never has to reopen the task scheduler lock.
+    pub(crate) fn into_queued_thread(self) -> Option<QueuedThread> {
+        let Self {
+            task,
+            class,
+            accounting: _,
+        } = self;
+        if class.role != DispatchRole::Task {
+            return None;
+        }
+        let active = match class
+            .schedule
+            .expect("rq transaction must reinstall current class state")
+        {
+            CurrentClassState::Owned(active) => active,
+            CurrentClassState::Linked { .. } => return None,
+        };
+        let metadata = RqTaskMetadata {
+            affinity: task.affinity,
+            deadline_donor: class.deadline_donor,
+            deadline_bandwidth_scaled: class.deadline_bandwidth_scaled,
+            policy_generation: class.policy_generation,
+            runtime_binding: task.runtime_binding,
+        };
+        let migration_capable = metadata.affinity.is_migration_capable();
+        Some(QueuedThread::new(
+            task.thread,
+            active,
+            task.runtime_core,
+            class.rt_quota_exempt,
+            migration_capable,
+            metadata,
+        ))
+    }
+
     pub(crate) fn take_owned_for_reclassify(&mut self) -> Option<ActiveSchedulingState> {
         match self
             .class
@@ -198,6 +238,7 @@ impl CurrentDispatch {
         metadata: RqTaskMetadata,
         rt_quota_exempt: bool,
     ) {
+        self.task.affinity = metadata.affinity;
         self.class.deadline_donor = metadata.deadline_donor;
         self.class.deadline_bandwidth_scaled = metadata.deadline_bandwidth_scaled;
         self.class.policy_generation = metadata.policy_generation;
@@ -211,6 +252,14 @@ impl CurrentDispatch {
         } else {
             self.schedule_policy().placement_demand()
         }
+    }
+
+    pub(crate) fn affinity(&self) -> &CpuSet {
+        &self.task.affinity
+    }
+
+    pub(crate) const fn deadline_bandwidth_scaled(&self) -> u64 {
+        self.class.deadline_bandwidth_scaled
     }
 
     pub(crate) const fn is_dedicated_idle(&self) -> bool {
@@ -253,6 +302,7 @@ impl CurrentDispatch {
             task: CurrentTaskIdentity {
                 thread: state.thread,
                 runtime_core: Arc::clone(runtime_core),
+                affinity: state.affinity,
                 runtime_binding: state.runtime_binding,
             },
             class: CurrentClassDispatch {

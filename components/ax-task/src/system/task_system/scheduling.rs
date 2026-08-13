@@ -1,8 +1,80 @@
 //! Owner scheduling entry points, runtime charging, and load balancing requests.
 
-use super::*;
+use super::{dispatch::OwnerDispatchCommit, *};
+
+struct RequestedPreemptionCommit {
+    decision: ScheduleDecision,
+    dispatch: OwnerDispatchCommit,
+    deadline_rq_observation: SchedulerDeadlineRqObservation,
+    wall_now_ns: u64,
+}
+
+struct RequestedPreemptionState {
+    previous: Option<ThreadId>,
+    previous_core: Option<Arc<ThreadCore>>,
+    previous_endpoint: Option<SwitchEndpoint>,
+    dispatch: OwnerDispatchCommit,
+    migration: Option<PreparedMigrationDelivery>,
+    now_ns: u64,
+}
 
 impl TaskSystem {
+    fn commit_requested_preemption_in_rq(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        mut transaction: OwnerRqTxn<'_>,
+        state: RequestedPreemptionState,
+    ) -> RequestedPreemptionCommit {
+        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, state.previous);
+        let next_core = next.core;
+        let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1206, next_core.id().as_u64() as usize)
+        });
+        let migrated = state.migration.is_some();
+        Self::stage_switch_handoff(
+            cpu.as_mut(),
+            state.previous,
+            state.previous_core.as_ref().map(Arc::clone),
+            Arc::clone(&next_core),
+            state.migration,
+        );
+        let reason = if migrated {
+            SwitchReason::Migrated
+        } else {
+            SwitchReason::Preempted
+        };
+        let deadline_rq_observation =
+            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
+        transaction.commit_and_acknowledge_scheduler_request();
+        let decision = Self::owner_switch_plan(
+            state.previous_core.as_ref(),
+            state.previous_endpoint,
+            &next_core,
+            next_endpoint,
+            reason,
+            state.now_ns,
+        );
+        RequestedPreemptionCommit {
+            decision,
+            dispatch: state.dispatch,
+            deadline_rq_observation,
+            wall_now_ns: state.now_ns,
+        }
+    }
+
+    fn finish_requested_preemption(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        commit: RequestedPreemptionCommit,
+    ) -> SchedulerOutcome {
+        self.finish_owner_dispatch_commit(cpu.as_mut(), commit.dispatch, commit.wall_now_ns);
+        SchedulerOutcome::Decision(self.finish_owner_selection(
+            cpu.as_mut(),
+            commit.decision,
+            commit.deadline_rq_observation,
+        ))
+    }
+
     /// Requests one owner-mediated pull from the busiest remote CPU.
     ///
     /// The target never locks or mutates the source runqueue. Its pinned request
@@ -346,12 +418,11 @@ impl TaskSystem {
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let previous_core_hint = current;
-        // SAFETY: propagated from the selected entry contract.
-        let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
+        // Probe the rq-owned decision first. Linux's ordinary no-switch pass
+        // never acquires p->pi_lock; task scheduler state is needed only after
+        // this transaction proves that put_prev_task() will run.
         // SAFETY: propagated from the selected entry contract.
         let mut transaction = unsafe { rq_entry.begin(self, &remote) };
-        let clock = transaction.clock();
-        let now_ns = clock.wall().as_nanos();
         transaction.adopt_scheduler_request(initial_request);
         if transaction.current().is_some() {
             let _settled = transaction.settle_current(0);
@@ -375,20 +446,19 @@ impl TaskSystem {
         }
         let switch_requested = request.preempt_requested();
         let previous = transaction.current_thread();
-        let previous_core = transaction.current_core();
-        let previous_endpoint = transaction.current_switch_endpoint();
-        if previous_core
-            .as_ref()
-            .is_none_or(|core| !core::ptr::eq(core.as_ref(), previous_core_hint))
+        if transaction
+            .current()
+            .is_none_or(|dispatch| !core::ptr::eq(dispatch.runtime_core(), previous_core_hint))
         {
             task_runtime::fatal_invariant(0x5343_1204, cpu.owner().as_u32() as usize);
         }
-        if previous_core.is_some() && !switch_requested {
+        if !switch_requested {
             let runtime_overrun_work = self.sync_owner_current_dispatch_in_rq(&mut transaction);
             let deadline_rq_observation =
                 transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
             transaction.commit_and_acknowledge_scheduler_request();
-            drop(previous_sched);
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::complete_no_switch_thread_lock_probe(previous_core_hint.id());
             if let Some(core) = runtime_overrun_work {
                 self.publish_deadline_overrun_work(core);
             }
@@ -418,6 +488,63 @@ impl TaskSystem {
                 SchedulerOutcome::Quiescent
             });
         }
+        if self.owner_preemption_is_rq_owned(&transaction, previous_core_hint) {
+            let now_ns = transaction.clock().wall().as_nanos();
+            let previous_core = transaction.current_core();
+            let previous_endpoint = transaction.current_switch_endpoint();
+            let dispatch_commit =
+                self.commit_owner_settled_current_dispatch_in_rq(&mut transaction);
+            let outgoing = previous_core.as_ref().map(Arc::clone).unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1204, cpu.owner().as_u32() as usize)
+            });
+            self.schedule_out_owner_preempt_in_rq(cpu.as_mut(), &mut transaction, outgoing);
+            let commit = self.commit_requested_preemption_in_rq(
+                cpu.as_mut(),
+                transaction,
+                RequestedPreemptionState {
+                    previous,
+                    previous_core,
+                    previous_endpoint,
+                    dispatch: dispatch_commit,
+                    migration: None,
+                    now_ns,
+                },
+            );
+            return Ok(self.finish_requested_preemption(cpu.as_mut(), commit));
+        }
+        // Preserve the merged claim locally while releasing rq. The request
+        // generation remains unacknowledged, so publications in this gap are
+        // merged by the second transaction instead of being lost.
+        transaction.commit();
+
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_no_switch_thread_lock(previous_core_hint.id());
+        // A real switch follows the established p->pi_lock -> rq order. The
+        // second rq pass resamples its clock and revalidates current rather
+        // than carrying a stale snapshot across the unlocked interval.
+        // SAFETY: propagated from the selected entry contract.
+        let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
+        // SAFETY: propagated from the selected entry contract.
+        let mut transaction = unsafe { rq_entry.begin(self, &remote) };
+        transaction.adopt_scheduler_request(request);
+        if transaction.current().is_some() {
+            let _settled = transaction.settle_current(0);
+        }
+        let request = transaction.merge_scheduler_request();
+        if !request.preempt_requested() {
+            task_runtime::fatal_invariant(0x5343_120a, cpu.owner().as_u32() as usize);
+        }
+        let clock = transaction.clock();
+        let now_ns = clock.wall().as_nanos();
+        let previous = transaction.current_thread();
+        let previous_core = transaction.current_core();
+        let previous_endpoint = transaction.current_switch_endpoint();
+        if previous_core
+            .as_ref()
+            .is_none_or(|core| !core::ptr::eq(core.as_ref(), previous_core_hint))
+        {
+            task_runtime::fatal_invariant(0x5343_1204, cpu.owner().as_u32() as usize);
+        }
         let dispatch_commit = self.commit_owner_settled_current_dispatch_in_rq(&mut transaction);
         let mut migration = None;
         if let Some(core) = previous_core.as_ref() {
@@ -431,39 +558,20 @@ impl TaskSystem {
             );
             migration = schedule_out.migration;
         }
-        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, previous);
-        let next_core = next.core;
-        let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1206, next_core.id().as_u64() as usize)
-        });
-        let migrated = migration.is_some();
-        Self::stage_switch_handoff(
+        let commit = self.commit_requested_preemption_in_rq(
             cpu.as_mut(),
-            previous,
-            previous_core.as_ref().map(Arc::clone),
-            Arc::clone(&next_core),
-            migration,
+            transaction,
+            RequestedPreemptionState {
+                previous,
+                previous_core,
+                previous_endpoint,
+                dispatch: dispatch_commit,
+                migration,
+                now_ns,
+            },
         );
-        let reason = if migrated {
-            SwitchReason::Migrated
-        } else {
-            SwitchReason::Preempted
-        };
-        let deadline_rq_observation =
-            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-        transaction.commit_and_acknowledge_scheduler_request();
         drop(previous_sched);
-        let decision = Self::owner_switch_plan(
-            previous_core.as_ref(),
-            previous_endpoint,
-            &next_core,
-            next_endpoint,
-            reason,
-            now_ns,
-        );
-        self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
-        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
-        Ok(SchedulerOutcome::Decision(decision))
+        Ok(self.finish_requested_preemption(cpu.as_mut(), commit))
     }
 
     /// Moves the current thread to its class tail and selects another thread.

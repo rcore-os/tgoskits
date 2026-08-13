@@ -8,7 +8,7 @@ use std::{
                     take_preempt_guard_owner_resolution_count,
                 },
             },
-            ax_task::task_test_hooks,
+            ax_task::{schedule_current_cpu, task_test_hooks},
         },
         task::current_thread_id,
     },
@@ -42,6 +42,26 @@ pub fn run() -> crate::TestResult {
         task_test_hooks::take_current_handle_query_count(),
         Some(0),
         "scheduler-owned yield must not construct an external current-thread handle"
+    );
+    let mut no_switch_observed = false;
+    for _ in 0..32 {
+        task_test_hooks::arm_no_switch_thread_lock_probe(current.as_u64());
+        task_test_hooks::request_current_owner_work()
+            .expect("task-yield must publish local owner work");
+        schedule_current_cpu().expect("task-yield must service local owner work");
+        if let Some(count) = task_test_hooks::take_no_switch_thread_lock_count() {
+            assert_eq!(
+                count, 0,
+                "a scheduler no-switch pass must remain entirely rq-owned"
+            );
+            no_switch_observed = true;
+            break;
+        }
+        task_test_hooks::cancel_no_switch_thread_lock_probe();
+    }
+    assert!(
+        no_switch_observed,
+        "task-yield must observe one scheduler no-switch pass"
     );
 
     FINISHED_TASKS.store(0, Ordering::Release);

@@ -531,6 +531,18 @@ impl<'a> OwnerRqTxn<'a> {
             })
     }
 
+    pub(crate) fn put_prev_unlinked_current(
+        &mut self,
+        thread: ThreadId,
+        reason: EnqueueReason,
+    ) -> SchedulingEntity {
+        self.run_queue_mut()
+            .put_prev_unlinked_current(thread, reason)
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5251_1010, thread.as_u64() as usize)
+            })
+    }
+
     pub(crate) fn install_current(&mut self, dispatch: CurrentDispatch) {
         let role = if self.run_queue().idle() == Some(dispatch.thread()) {
             DispatchRole::DedicatedIdle
