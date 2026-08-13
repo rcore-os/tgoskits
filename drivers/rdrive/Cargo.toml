@@ -35,7 +35,10 @@ rdif-pcie = { workspace = true }
 x86.workspace = true
 
 [dev-dependencies]
-ax-runtime = { workspace = true, features = ["host-test"] }
+# Keep this path-only so Cargo strips the test-only reverse edge when publishing.
+# `ax-runtime` depends on `rdrive`; inheriting its workspace version would make
+# the two crates a publish-time dependency cycle.
+ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
 
 [features]
 axtest = ["dep:axtest"]
