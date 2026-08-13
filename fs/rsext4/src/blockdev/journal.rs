@@ -10,7 +10,7 @@ use crate::{
     error::{Ext4Error, Ext4Result},
     io::{BlockIo, WriteFlags},
     jbd2::{
-        jbd2::{ReplayFailure, ReplayStatus},
+        jbd2::{Jbd2CommitTimestamp, ReplayFailure, ReplayStatus},
         jbdstruct::{
             JBD2_BLOCKTYPE_SUPERBLOCK_V1, JBD2_BLOCKTYPE_SUPERBLOCK_V2,
             JBD2_FEATURE_COMPAT_CHECKSUM, JBD2_FEATURE_INCOMPAT_64BIT,
@@ -575,10 +575,24 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if self.inner.has_dirty_entries() {
             return Err(Ext4Error::busy().with_operation("jbd2:commit_with_unfinished_block_edit"));
         }
-        let Some(system) = self.system.as_mut() else {
-            return Err(Ext4Error::journal_aborted().with_operation("jbd2:commit_without_state"));
+        let system = self.system.as_ref().ok_or_else(|| {
+            Ext4Error::journal_aborted().with_operation("jbd2:commit_without_state")
+        })?;
+        let has_pending_transaction = !system.running_transaction.updates.is_empty()
+            || !system.running_transaction.revoked_blocks.is_empty();
+        let commit_time = if has_pending_transaction {
+            Jbd2CommitTimestamp::try_from((self.clock)(self.inner._device())?)?
+        } else {
+            Jbd2CommitTimestamp::UNIX_EPOCH
         };
-        let result = system.commit_transaction_with_mapping(&mut self.inner, &self.journal_blocks);
+        let system = self.system.as_mut().ok_or_else(|| {
+            Ext4Error::journal_aborted().with_operation("jbd2:commit_without_state")
+        })?;
+        let result = system.commit_transaction_with_mapping(
+            &mut self.inner,
+            &self.journal_blocks,
+            commit_time,
+        );
         let committed = match result {
             Ok(committed) => committed,
             Err(error) => {
@@ -2183,6 +2197,30 @@ mod tests {
         }
     }
 
+    struct FixedCommitClock;
+
+    impl crate::runtime::Clock for FixedCommitClock {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
+            Ok(Ext4Timestamp::new(1_723_456_789, 123_456_789))
+        }
+    }
+
+    struct FailingCommitClock;
+
+    impl crate::runtime::Clock for FailingCommitClock {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
+            Err(Ext4Error::io().with_operation("test:unexpected_empty_commit_clock"))
+        }
+    }
+
+    struct InvalidCommitClock(Ext4Timestamp);
+
+    impl crate::runtime::Clock for InvalidCommitClock {
+        fn now(&self) -> Ext4Result<Ext4Timestamp> {
+            Ok(self.0)
+        }
+    }
+
     #[test]
     fn auto_commit_invalidates_stale_block_cache() {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
@@ -2929,6 +2967,66 @@ mod tests {
             commit.h_chksum[0],
             reference_jbd2_block_checksum(&superblock.s_uuid, commit_bytes, 16)
         );
+    }
+
+    #[test]
+    fn commit_record_uses_the_injected_filesystem_clock() {
+        let mut dev = Jbd2Dev::with_clock(0, MemBlockDev::new(256), FixedCommitClock, true);
+        let superblock = csum_v3_superblock();
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
+        dev.write_blocks(&vec![0xa5; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
+            .expect("queue metadata");
+
+        dev.umount_commit().expect("commit metadata");
+
+        let inner = dev.into_inner();
+        let commit = CommitHeader::from_disk_bytes(&inner.data[131 * BLOCK_SIZE..132 * BLOCK_SIZE]);
+        assert_eq!(commit.h_commit_sec, 1_723_456_789);
+        assert_eq!(commit.h_commit_nsec, 123_456_789);
+    }
+
+    #[test]
+    fn empty_commit_does_not_read_the_filesystem_clock() {
+        let mut dev = Jbd2Dev::with_clock(0, MemBlockDev::new(256), FailingCommitClock, true);
+        let superblock = csum_v3_superblock();
+        dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
+            .expect("install csum-v3 journal");
+
+        dev.commit().expect("empty commit must not need time");
+    }
+
+    #[test]
+    fn commit_rejects_invalid_filesystem_time_before_switching_transaction_owner() {
+        for timestamp in [
+            Ext4Timestamp { sec: -1, nsec: 0 },
+            Ext4Timestamp {
+                sec: 1,
+                nsec: Ext4Timestamp::MAX_NSEC + 1,
+            },
+        ] {
+            let mut dev = Jbd2Dev::with_clock(
+                0,
+                MemBlockDev::new(256),
+                InvalidCommitClock(timestamp),
+                true,
+            );
+            let superblock = csum_v3_superblock();
+            dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
+                .expect("install csum-v3 journal");
+            dev.write_blocks(&vec![0xa5; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
+                .expect("queue metadata");
+
+            let error = dev
+                .commit()
+                .expect_err("invalid clock value must not reach a commit record");
+
+            assert_eq!(error.kind(), crate::Ext4ErrorKind::InvalidInput);
+            assert!(dev.journal_abort_cause().is_none());
+            let system = dev.system.as_ref().expect("journal state");
+            assert_eq!(system.running_transaction.updates.len(), 1);
+            assert!(system.committing_transaction.is_none());
+        }
     }
 
     #[test]

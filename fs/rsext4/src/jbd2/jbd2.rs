@@ -30,6 +30,35 @@ use crate::{
 /// This is a private wire-format value, not an OS errno exposed by the core.
 const JBD2_DISK_ERROR_IO: u32 = 0xffff_fffb;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Jbd2CommitTimestamp {
+    seconds: u64,
+    nanoseconds: u32,
+}
+
+impl Jbd2CommitTimestamp {
+    pub(crate) const UNIX_EPOCH: Self = Self {
+        seconds: 0,
+        nanoseconds: 0,
+    };
+}
+
+impl TryFrom<Ext4Timestamp> for Jbd2CommitTimestamp {
+    type Error = Ext4Error;
+
+    fn try_from(timestamp: Ext4Timestamp) -> Ext4Result<Self> {
+        let seconds = u64::try_from(timestamp.sec)
+            .map_err(|_| Ext4Error::invalid_input().with_operation("jbd2:commit_time_seconds"))?;
+        if timestamp.nsec > Ext4Timestamp::MAX_NSEC {
+            return Err(Ext4Error::invalid_input().with_operation("jbd2:commit_time_nanoseconds"));
+        }
+        Ok(Self {
+            seconds,
+            nanoseconds: timestamp.nsec,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ReplayTag {
     block: AbsoluteBN,
@@ -47,6 +76,20 @@ enum ReplayChecksum {
 struct ReplayPayload {
     tag: ReplayTag,
     journal_rel: u32,
+}
+
+#[derive(Debug)]
+enum ReplayDescriptor {
+    EmptyTail,
+    Tagged {
+        tags: Vec<ReplayTag>,
+        checksum_valid: bool,
+    },
+}
+
+struct ReplayRevoke {
+    blocks: Vec<AbsoluteBN>,
+    checksum_valid: bool,
 }
 
 enum JournalPayload<'a> {
@@ -158,6 +201,7 @@ struct ReplayTransaction {
     start_rel: u32,
     sequence: u32,
     next_rel: u32,
+    commit_time: u64,
     payloads: Vec<ReplayPayload>,
     revoked_blocks: Vec<AbsoluteBN>,
 }
@@ -260,12 +304,12 @@ impl JBD2DEVSYSTEM {
         }
     }
 
-    fn parse_replay_tags(&self, desc_buf: &[u8]) -> Ext4Result<Vec<ReplayTag>> {
+    fn parse_replay_tags(&self, desc_buf: &[u8]) -> Ext4Result<ReplayDescriptor> {
         let checksum_mode = self.checksum_mode()?;
         let has_block_checksums = checksum_mode.has_block_checksums();
         let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
         let block_size = desc_buf.len();
-        let descriptor_end = if has_block_checksums {
+        let (descriptor_end, checksum_valid) = if has_block_checksums {
             let checksum_offset = block_size.checked_sub(4).ok_or_else(|| {
                 Ext4Error::corrupted().with_operation("jbd2:replay_descriptor_size")
             })?;
@@ -277,15 +321,13 @@ impl JBD2DEVSYSTEM {
                 .ok_or_else(|| {
                     Ext4Error::corrupted().with_operation("jbd2:replay_descriptor_checksum_size")
                 })?;
-            if stored != computed {
-                return Err(Ext4Error::checksum().with_operation("jbd2:replay_descriptor_checksum"));
-            }
-            checksum_offset
+            (checksum_offset, stored == computed)
         } else {
-            block_size
+            (block_size, true)
         };
         let mut tags = Vec::new();
         let mut off = JBD2_DESCRIPTOR_HEADER_SIZE;
+        let mut saw_last_tag = false;
 
         while off < descriptor_end {
             let parsed = if checksum_mode == Jbd2ChecksumMode::CsumV3 {
@@ -363,7 +405,12 @@ impl JBD2DEVSYSTEM {
 
             let (block, flags, checksum, all_zero) = parsed;
             if all_zero && desc_buf[off..descriptor_end].iter().all(|b| *b == 0) {
-                break;
+                if tags.is_empty() {
+                    return Ok(ReplayDescriptor::EmptyTail);
+                }
+                return Err(
+                    Ext4Error::corrupted().with_operation("jbd2:replay_descriptor_missing_last")
+                );
             }
 
             let last = (flags & u32::from(JBD2_FLAG_LAST_TAG)) != 0;
@@ -384,18 +431,28 @@ impl JBD2DEVSYSTEM {
                 off = uuid_end;
             }
             if last {
+                saw_last_tag = true;
                 break;
             }
         }
 
-        Ok(tags)
+        if !saw_last_tag {
+            return Err(
+                Ext4Error::corrupted().with_operation("jbd2:replay_descriptor_missing_last")
+            );
+        }
+
+        Ok(ReplayDescriptor::Tagged {
+            tags,
+            checksum_valid,
+        })
     }
 
-    fn parse_revoke_blocks(&self, revoke_buf: &[u8]) -> Ext4Result<Vec<AbsoluteBN>> {
+    fn parse_revoke_blocks(&self, revoke_buf: &[u8]) -> Ext4Result<ReplayRevoke> {
         if revoke_buf.len() < 16 {
             return Err(Ext4Error::corrupted().with_operation("jbd2:replay_revoke_header"));
         }
-        let record_end = if self.checksum_mode()?.has_block_checksums() {
+        let (record_end, checksum_valid) = if self.checksum_mode()?.has_block_checksums() {
             let checksum_offset = revoke_buf.len().checked_sub(4).ok_or_else(|| {
                 Ext4Error::corrupted().with_operation("jbd2:replay_revoke_checksum_size")
             })?;
@@ -407,12 +464,9 @@ impl JBD2DEVSYSTEM {
                 .ok_or_else(|| {
                     Ext4Error::corrupted().with_operation("jbd2:replay_revoke_checksum_size")
                 })?;
-            if stored != computed {
-                return Err(Ext4Error::checksum().with_operation("jbd2:replay_revoke_checksum"));
-            }
-            checksum_offset
+            (checksum_offset, stored == computed)
         } else {
-            revoke_buf.len()
+            (revoke_buf.len(), true)
         };
         let revoke = Jbd2JournalRevokeHeadS::from_disk_bytes(&revoke_buf[0..16]);
         let count = usize::try_from(revoke.r_count).map_err(|_| Ext4Error::overflow())?;
@@ -450,7 +504,10 @@ impl JBD2DEVSYSTEM {
             off = entry_end;
         }
 
-        Ok(blocks)
+        Ok(ReplayRevoke {
+            blocks,
+            checksum_valid,
+        })
     }
 
     fn write_journal_superblock_with_mapping<D: FilesystemBlockIo>(
@@ -680,6 +737,7 @@ impl JBD2DEVSYSTEM {
         &mut self,
         block_dev: &mut D,
         journal_blocks: &[AbsoluteBN],
+        commit_time: Jbd2CommitTimestamp,
     ) -> Ext4Result<bool> {
         if !self.start_committing_transaction()? {
             return Ok(false);
@@ -901,8 +959,8 @@ impl JBD2DEVSYSTEM {
             h_chksum_size: 0,
             h_padding: [0; 2],
             h_chksum: [0; 8],
-            h_commit_sec: 0,
-            h_commit_nsec: 0,
+            h_commit_sec: commit_time.seconds,
+            h_commit_nsec: commit_time.nanoseconds,
         };
 
         commit_block.to_disk_bytes(&mut commit_buffer);
@@ -1027,12 +1085,25 @@ impl JBD2DEVSYSTEM {
         Ok(true)
     }
 
+    fn checksum_failure_or_stale_end(
+        failure: ReplayFailure,
+        commit_time: u64,
+        last_commit_time: u64,
+    ) -> ReplayScan {
+        if commit_time < last_commit_time {
+            ReplayScan::CleanEnd
+        } else {
+            ReplayScan::Incomplete(failure)
+        }
+    }
+
     fn scan_one_transaction<D: FilesystemBlockIo>(
         &self,
         block_dev: &mut D,
         ring: &ReplayRing<'_>,
         start_rel: u32,
         expect_seq: u32,
+        last_commit_time: u64,
     ) -> ReplayScan {
         let mut record_rel = start_rel;
         let mut payloads: Vec<ReplayPayload> = Vec::new();
@@ -1049,7 +1120,7 @@ impl JBD2DEVSYSTEM {
             ));
         };
         let block_size = block_dev.block_size();
-        if block_size < JBD2_DESCRIPTOR_HEADER_SIZE {
+        if block_size < JBD2_COMMIT_HEADER_SIZE {
             return ReplayScan::Incomplete(ReplayFailure::at(
                 JournalReplayPhase::Initialize,
                 Ext4Error::corrupted().with_operation("jbd2:replay_block_size"),
@@ -1067,6 +1138,7 @@ impl JBD2DEVSYSTEM {
             }
         };
         let mut compat_checksum = u32::MAX;
+        let mut deferred_checksum_failure = None;
 
         for _ in 0..max_records {
             let record_phys = match ring.phys(record_rel) {
@@ -1096,8 +1168,8 @@ impl JBD2DEVSYSTEM {
 
             match hdr.h_blocktype {
                 JBD2_BLOCKTYPE_DESCRIPTOR => {
-                    let tags = match self.parse_replay_tags(&record_buf) {
-                        Ok(tags) => tags,
+                    let descriptor = match self.parse_replay_tags(&record_buf) {
+                        Ok(descriptor) => descriptor,
                         Err(error) => {
                             return ReplayScan::Incomplete(ReplayFailure::at(
                                 JournalReplayPhase::Scan,
@@ -1106,6 +1178,20 @@ impl JBD2DEVSYSTEM {
                             ));
                         }
                     };
+                    let ReplayDescriptor::Tagged {
+                        tags,
+                        checksum_valid,
+                    } = descriptor
+                    else {
+                        return ReplayScan::CleanEnd;
+                    };
+                    if !checksum_valid && deferred_checksum_failure.is_none() {
+                        deferred_checksum_failure = Some(ReplayFailure::at(
+                            JournalReplayPhase::Scan,
+                            Ext4Error::checksum().with_operation("jbd2:replay_descriptor_checksum"),
+                            start_rel,
+                        ));
+                    }
                     if checksum_mode == Jbd2ChecksumMode::CompatChecksum {
                         compat_checksum = jbd2_compat_checksum_append(compat_checksum, &record_buf);
                     }
@@ -1142,6 +1228,13 @@ impl JBD2DEVSYSTEM {
                 }
                 JBD2_BLOCKTYPE_COMMIT => {
                     let commit = CommitHeader::from_disk_bytes(&record_buf);
+                    if let Some(failure) = deferred_checksum_failure {
+                        return Self::checksum_failure_or_stale_end(
+                            failure,
+                            commit.h_commit_sec,
+                            last_commit_time,
+                        );
+                    }
                     match checksum_mode {
                         Jbd2ChecksumMode::CompatChecksum => {
                             let checked = commit.h_chksum_type == JBD2_CRC32_CHKSUM
@@ -1151,12 +1244,16 @@ impl JBD2DEVSYSTEM {
                                 && commit.h_chksum_size == 0
                                 && commit.h_chksum[0] == 0;
                             if !checked && !unused {
-                                return ReplayScan::Incomplete(ReplayFailure::at(
-                                    JournalReplayPhase::Replay,
-                                    Ext4Error::checksum()
-                                        .with_operation("jbd2:replay_compat_checksum"),
-                                    start_rel,
-                                ));
+                                return Self::checksum_failure_or_stale_end(
+                                    ReplayFailure::at(
+                                        JournalReplayPhase::Replay,
+                                        Ext4Error::checksum()
+                                            .with_operation("jbd2:replay_compat_checksum"),
+                                        start_rel,
+                                    ),
+                                    commit.h_commit_sec,
+                                    last_commit_time,
+                                );
                             }
                         }
                         Jbd2ChecksumMode::CsumV2 | Jbd2ChecksumMode::CsumV3 => {
@@ -1171,12 +1268,16 @@ impl JBD2DEVSYSTEM {
                                     &record_buf,
                                 ) != Some(stored)
                             {
-                                return ReplayScan::Incomplete(ReplayFailure::at(
-                                    JournalReplayPhase::Replay,
-                                    Ext4Error::checksum()
-                                        .with_operation("jbd2:replay_commit_checksum"),
-                                    start_rel,
-                                ));
+                                return Self::checksum_failure_or_stale_end(
+                                    ReplayFailure::at(
+                                        JournalReplayPhase::Replay,
+                                        Ext4Error::checksum()
+                                            .with_operation("jbd2:replay_commit_checksum"),
+                                        start_rel,
+                                    ),
+                                    commit.h_commit_sec,
+                                    last_commit_time,
+                                );
                             }
                         }
                         Jbd2ChecksumMode::None => {}
@@ -1188,13 +1289,14 @@ impl JBD2DEVSYSTEM {
                         start_rel,
                         sequence: expect_seq,
                         next_rel,
+                        commit_time: commit.h_commit_sec,
                         payloads,
                         revoked_blocks,
                     });
                 }
                 JBD2_BLOCKTYPE_REVOKE => {
-                    let blocks = match self.parse_revoke_blocks(&record_buf) {
-                        Ok(blocks) => blocks,
+                    let revoke = match self.parse_revoke_blocks(&record_buf) {
+                        Ok(revoke) => revoke,
                         Err(error) => {
                             return ReplayScan::Incomplete(ReplayFailure::at(
                                 JournalReplayPhase::Revoke,
@@ -1203,7 +1305,14 @@ impl JBD2DEVSYSTEM {
                             ));
                         }
                     };
-                    revoked_blocks.extend(blocks);
+                    if !revoke.checksum_valid && deferred_checksum_failure.is_none() {
+                        deferred_checksum_failure = Some(ReplayFailure::at(
+                            JournalReplayPhase::Revoke,
+                            Ext4Error::checksum().with_operation("jbd2:replay_revoke_checksum"),
+                            start_rel,
+                        ));
+                    }
+                    revoked_blocks.extend(revoke.blocks);
                 }
                 _ => {
                     return ReplayScan::CleanEnd;
@@ -1377,14 +1486,22 @@ impl JBD2DEVSYSTEM {
         let mut journal_rel = initial_rel;
         let mut expect_seq = initial_sequence;
         let mut transactions = Vec::new();
+        let mut last_commit_time = 0;
 
         // Pass 1: discover and validate the complete committed transaction
         // range. No home block is written in this pass.
         let scan_failure = loop {
-            match self.scan_one_transaction(block_dev, &ring, journal_rel, expect_seq) {
+            match self.scan_one_transaction(
+                block_dev,
+                &ring,
+                journal_rel,
+                expect_seq,
+                last_commit_time,
+            ) {
                 ReplayScan::Committed(transaction) => {
                     journal_rel = transaction.next_rel;
                     expect_seq = transaction.sequence.wrapping_add(1);
+                    last_commit_time = transaction.commit_time;
                     transactions.push(transaction);
                 }
                 ReplayScan::CleanEnd => break None,
@@ -1550,6 +1667,11 @@ mod tests {
         blocks: Vec<u8>,
     }
 
+    struct SmallReplayIo {
+        block_size: usize,
+        blocks: Vec<u8>,
+    }
+
     impl ReplayDevice {
         fn new(block_count: usize) -> Self {
             Self {
@@ -1616,6 +1738,43 @@ mod tests {
         }
     }
 
+    impl FilesystemBlockIo for SmallReplayIo {
+        fn block_size(&self) -> usize {
+            self.block_size
+        }
+
+        fn read(&mut self, buffer: &mut [u8], block: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+            let start = block.as_usize()? * self.block_size;
+            let end = start
+                .checked_add(buffer.len())
+                .ok_or_else(Ext4Error::overflow)?;
+            buffer.copy_from_slice(
+                self.blocks
+                    .get(start..end)
+                    .ok_or_else(Ext4Error::invalid_input)?,
+            );
+            Ok(())
+        }
+
+        fn write(&mut self, _buffer: &[u8], _block: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+            Ok(())
+        }
+
+        fn write_with_flags(
+            &mut self,
+            buffer: &[u8],
+            block: AbsoluteBN,
+            count: u32,
+            _flags: WriteFlags,
+        ) -> Ext4Result<()> {
+            self.write(buffer, block, count)
+        }
+
+        fn flush(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+    }
+
     fn replay_superblock() -> JournalSuperBlock {
         JournalSuperBlock {
             s_maxlen: JOURNAL_LEN,
@@ -1624,6 +1783,15 @@ mod tests {
             s_sequence: 1,
             ..JournalSuperBlock::default()
         }
+    }
+
+    fn replay_csum_v3_superblock() -> JournalSuperBlock {
+        let mut superblock = replay_superblock();
+        superblock.s_feature_incompat = JBD2_FEATURE_INCOMPAT_64BIT | JBD2_FEATURE_INCOMPAT_CSUM_V3;
+        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
+        superblock.s_uuid = [0x5a; JBD2_UUID_SIZE];
+        jbd2_update_superblock_checksum(&mut superblock);
+        superblock
     }
 
     fn write_descriptor(device: &mut ReplayDevice, relative: u32, sequence: u32) {
@@ -1671,15 +1839,117 @@ mod tests {
     }
 
     fn replay_fixture(device: ReplayDevice) -> (ReplayStatus, ReplayDevice) {
+        replay_fixture_with_superblock(device, replay_superblock())
+    }
+
+    fn replay_fixture_with_superblock(
+        device: ReplayDevice,
+        superblock: JournalSuperBlock,
+    ) -> (ReplayStatus, ReplayDevice) {
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         let journal_blocks = (JOURNAL_START..JOURNAL_START + u64::from(JOURNAL_LEN))
             .map(AbsoluteBN::new)
             .collect();
         journal
-            .set_journal_superblock_with_mapping(replay_superblock(), journal_blocks)
+            .set_journal_superblock_with_mapping(superblock, journal_blocks)
             .expect("install replay journal");
         let status = journal.journal_replay_checked();
         (status, journal.into_inner())
+    }
+
+    fn write_csum_v3_transaction(
+        device: &mut ReplayDevice,
+        superblock: &JournalSuperBlock,
+        descriptor_rel: u32,
+        sequence: u32,
+        home_block: u64,
+        payload_byte: u8,
+        commit_seconds: u64,
+    ) {
+        let payload_rel = descriptor_rel + 1;
+        let commit_rel = descriptor_rel + 2;
+        let payload_checksum = {
+            let payload = device.block_mut(JOURNAL_START + u64::from(payload_rel));
+            payload.fill(payload_byte);
+            jbd2_tag_csum32(&superblock.s_uuid, sequence, payload)
+        };
+
+        let descriptor = device.block_mut(JOURNAL_START + u64::from(descriptor_rel));
+        JournalHeaderS {
+            h_magic: JBD2_MAGIC,
+            h_blocktype: JBD2_BLOCKTYPE_DESCRIPTOR,
+            h_sequence: sequence,
+        }
+        .to_disk_bytes(&mut descriptor[..JBD2_DESCRIPTOR_HEADER_SIZE]);
+        JournalBlockTag3S {
+            t_blocknr: home_block as u32,
+            t_flags: u32::from(JBD2_FLAG_LAST_TAG),
+            t_blocknr_high: (home_block >> 32) as u32,
+            t_checksum: payload_checksum,
+        }
+        .to_disk_bytes(
+            &mut descriptor
+                [JBD2_DESCRIPTOR_HEADER_SIZE..JBD2_DESCRIPTOR_HEADER_SIZE + JBD2_TAG3_SIZE],
+        );
+        let uuid_start = JBD2_DESCRIPTOR_HEADER_SIZE + JBD2_TAG3_SIZE;
+        descriptor[uuid_start..uuid_start + JBD2_UUID_SIZE].copy_from_slice(&superblock.s_uuid);
+        let descriptor_checksum = jbd2_descriptor_block_csum32(&superblock.s_uuid, descriptor)
+            .expect("descriptor checksum");
+        descriptor[BLOCK_SIZE - 4..].copy_from_slice(&descriptor_checksum.to_be_bytes());
+
+        write_csum_v3_commit(device, superblock, commit_rel, sequence, commit_seconds);
+    }
+
+    fn write_csum_v3_commit(
+        device: &mut ReplayDevice,
+        superblock: &JournalSuperBlock,
+        relative: u32,
+        sequence: u32,
+        commit_seconds: u64,
+    ) {
+        let commit = device.block_mut(JOURNAL_START + u64::from(relative));
+        CommitHeader {
+            h_header: JournalHeaderS {
+                h_magic: JBD2_MAGIC,
+                h_blocktype: JBD2_BLOCKTYPE_COMMIT,
+                h_sequence: sequence,
+            },
+            h_chksum_type: JBD2_CRC32C_CHKSUM,
+            h_chksum_size: JBD2_CRC32_CHKSUM_SIZE,
+            h_padding: [0; 2],
+            h_chksum: [0; 8],
+            h_commit_sec: commit_seconds,
+            h_commit_nsec: 0,
+        }
+        .to_disk_bytes(commit);
+        let commit_checksum =
+            jbd2_commit_block_csum32(&superblock.s_uuid, commit).expect("commit checksum");
+        commit[16..20].copy_from_slice(&commit_checksum.to_be_bytes());
+    }
+
+    fn write_csum_v3_revoke_transaction(
+        device: &mut ReplayDevice,
+        superblock: &JournalSuperBlock,
+        revoke_rel: u32,
+        sequence: u32,
+        revoked_block: u64,
+        commit_seconds: u64,
+    ) {
+        let revoke = device.block_mut(JOURNAL_START + u64::from(revoke_rel));
+        Jbd2JournalRevokeHeadS {
+            r_header: JournalHeaderS {
+                h_magic: JBD2_MAGIC,
+                h_blocktype: JBD2_BLOCKTYPE_REVOKE,
+                h_sequence: sequence,
+            },
+            r_count: 24,
+        }
+        .to_disk_bytes(&mut revoke[..16]);
+        revoke[16..24].copy_from_slice(&revoked_block.to_be_bytes());
+        let revoke_checksum =
+            jbd2_descriptor_block_csum32(&superblock.s_uuid, revoke).expect("revoke checksum");
+        revoke[BLOCK_SIZE - 4..].copy_from_slice(&revoke_checksum.to_be_bytes());
+        write_csum_v3_commit(device, superblock, revoke_rel + 1, sequence, commit_seconds);
     }
 
     fn transaction_system(phase: Jbd2RunningTransactionPhase) -> JBD2DEVSYSTEM {
@@ -1772,10 +2042,228 @@ mod tests {
     }
 
     #[test]
+    fn stale_descriptor_checksum_ends_scan_after_older_committed_transaction() {
+        let superblock = replay_csum_v3_superblock();
+        let mut device = ReplayDevice::new(256);
+        device.block_mut(HOME_BLOCK).fill(0x11);
+        write_csum_v3_transaction(&mut device, &superblock, 1, 1, HOME_BLOCK, 0xa5, 10);
+        write_csum_v3_transaction(&mut device, &superblock, 4, 2, HOME_BLOCK + 1, 0x6d, 9);
+        device.block_mut(JOURNAL_START + 4)[BLOCK_SIZE - 1] ^= 1;
+
+        let (status, device) = replay_fixture_with_superblock(device, superblock);
+
+        assert_eq!(status, ReplayStatus::Complete);
+        assert!(device.block(HOME_BLOCK).iter().all(|byte| *byte == 0xa5));
+        assert!(device.block(HOME_BLOCK + 1).iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn stale_commit_checksum_ends_scan_after_older_committed_transaction() {
+        let superblock = replay_csum_v3_superblock();
+        let mut device = ReplayDevice::new(256);
+        device.block_mut(HOME_BLOCK).fill(0x11);
+        write_csum_v3_transaction(&mut device, &superblock, 1, 1, HOME_BLOCK, 0xa5, 10);
+        write_csum_v3_transaction(&mut device, &superblock, 4, 2, HOME_BLOCK + 1, 0x6d, 9);
+        device.block_mut(JOURNAL_START + 6)[16] ^= 1;
+
+        let (status, device) = replay_fixture_with_superblock(device, superblock);
+
+        assert_eq!(status, ReplayStatus::Complete);
+        assert!(device.block(HOME_BLOCK).iter().all(|byte| *byte == 0xa5));
+        assert!(device.block(HOME_BLOCK + 1).iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn stale_revoke_checksum_ends_scan_after_older_committed_transaction() {
+        let superblock = replay_csum_v3_superblock();
+        let mut device = ReplayDevice::new(256);
+        device.block_mut(HOME_BLOCK).fill(0x11);
+        write_csum_v3_transaction(&mut device, &superblock, 1, 1, HOME_BLOCK, 0xa5, 10);
+        write_csum_v3_revoke_transaction(&mut device, &superblock, 4, 2, HOME_BLOCK + 1, 9);
+        device.block_mut(JOURNAL_START + 4)[BLOCK_SIZE - 1] ^= 1;
+
+        let (status, device) = replay_fixture_with_superblock(device, superblock);
+
+        assert_eq!(status, ReplayStatus::Complete);
+        assert!(device.block(HOME_BLOCK).iter().all(|byte| *byte == 0xa5));
+        assert!(device.block(HOME_BLOCK + 1).iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn equal_or_increasing_commit_time_rejects_every_checksum_failure_kind() {
+        #[derive(Clone, Copy, Debug)]
+        enum Corruption {
+            Descriptor,
+            Commit,
+            Revoke,
+        }
+
+        for commit_seconds in [10, 11] {
+            for corruption in [
+                Corruption::Descriptor,
+                Corruption::Commit,
+                Corruption::Revoke,
+            ] {
+                let superblock = replay_csum_v3_superblock();
+                let mut device = ReplayDevice::new(256);
+                write_csum_v3_transaction(&mut device, &superblock, 1, 1, HOME_BLOCK, 0xa5, 10);
+                let expected_phase = match corruption {
+                    Corruption::Descriptor => {
+                        write_csum_v3_transaction(
+                            &mut device,
+                            &superblock,
+                            4,
+                            2,
+                            HOME_BLOCK + 1,
+                            0x6d,
+                            commit_seconds,
+                        );
+                        device.block_mut(JOURNAL_START + 4)[BLOCK_SIZE - 1] ^= 1;
+                        JournalReplayPhase::Scan
+                    }
+                    Corruption::Commit => {
+                        write_csum_v3_transaction(
+                            &mut device,
+                            &superblock,
+                            4,
+                            2,
+                            HOME_BLOCK + 1,
+                            0x6d,
+                            commit_seconds,
+                        );
+                        device.block_mut(JOURNAL_START + 6)[16] ^= 1;
+                        JournalReplayPhase::Replay
+                    }
+                    Corruption::Revoke => {
+                        write_csum_v3_revoke_transaction(
+                            &mut device,
+                            &superblock,
+                            4,
+                            2,
+                            HOME_BLOCK + 1,
+                            commit_seconds,
+                        );
+                        device.block_mut(JOURNAL_START + 4)[BLOCK_SIZE - 1] ^= 1;
+                        JournalReplayPhase::Revoke
+                    }
+                };
+
+                let (status, device) = replay_fixture_with_superblock(device, superblock);
+                let failure = status.failure().unwrap_or_else(|| {
+                    panic!("{corruption:?} at commit time {commit_seconds} must remain corruption")
+                });
+                assert_eq!(failure.phase(), expected_phase);
+                assert_eq!(failure.cause().kind(), Ext4ErrorKind::ChecksumMismatch);
+                assert!(device.block(HOME_BLOCK).iter().all(|byte| *byte == 0));
+                assert!(device.block(HOME_BLOCK + 1).iter().all(|byte| *byte == 0));
+            }
+        }
+    }
+
+    #[test]
     fn transaction_id_order_wraps_like_linux_tid_gt() {
         assert!(JBD2DEVSYSTEM::transaction_id_after(0, u32::MAX));
         assert!(!JBD2DEVSYSTEM::transaction_id_after(u32::MAX, 0));
         assert!(!JBD2DEVSYSTEM::transaction_id_after(7, 7));
+    }
+
+    #[test]
+    fn replay_rejects_block_too_small_for_commit_header_without_panicking() {
+        const SMALL_BLOCK_SIZE: usize = 32;
+
+        let system = transaction_system(Jbd2RunningTransactionPhase::Running);
+        let mut io = SmallReplayIo {
+            block_size: SMALL_BLOCK_SIZE,
+            blocks: vec![0; 32 * SMALL_BLOCK_SIZE],
+        };
+        JournalHeaderS {
+            h_magic: JBD2_MAGIC,
+            h_blocktype: JBD2_BLOCKTYPE_COMMIT,
+            h_sequence: 1,
+        }
+        .to_disk_bytes(
+            &mut io.blocks[SMALL_BLOCK_SIZE..SMALL_BLOCK_SIZE + JBD2_DESCRIPTOR_HEADER_SIZE],
+        );
+        let ring = ReplayRing {
+            blocks: &[],
+            start_block: AbsoluteBN::new(0),
+            first_rel: 1,
+            last_rel: 15,
+        };
+
+        let result = system.scan_one_transaction(&mut io, &ring, 1, 1, 0);
+
+        assert!(matches!(result, ReplayScan::Incomplete(_)));
+    }
+
+    #[test]
+    fn replay_rejects_descriptor_without_a_last_tag() {
+        let system = transaction_system(Jbd2RunningTransactionPhase::Running);
+        let mut descriptor = vec![0; BLOCK_SIZE];
+        JournalHeaderS {
+            h_magic: JBD2_MAGIC,
+            h_blocktype: JBD2_BLOCKTYPE_DESCRIPTOR,
+            h_sequence: 1,
+        }
+        .to_disk_bytes(&mut descriptor[..JBD2_DESCRIPTOR_HEADER_SIZE]);
+        JournalBlockTagS {
+            t_blocknr: HOME_BLOCK as u32,
+            t_checksum: 0,
+            t_flags: JBD2_FLAG_SAME_UUID,
+        }
+        .to_disk_bytes(
+            &mut descriptor
+                [JBD2_DESCRIPTOR_HEADER_SIZE..JBD2_DESCRIPTOR_HEADER_SIZE + JBD2_TAG_SIZE],
+        );
+
+        let error = system
+            .parse_replay_tags(&descriptor)
+            .expect_err("descriptor tags must terminate with LAST_TAG");
+
+        assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
+    }
+
+    #[test]
+    fn replay_discards_an_empty_descriptor_even_before_an_adjacent_commit() {
+        let system = transaction_system(Jbd2RunningTransactionPhase::Running);
+        let mut io = SmallReplayIo {
+            block_size: BLOCK_SIZE,
+            blocks: vec![0; 256 * BLOCK_SIZE],
+        };
+        let descriptor_start = (JOURNAL_START as usize + 1) * BLOCK_SIZE;
+        let descriptor = &mut io.blocks[descriptor_start..descriptor_start + BLOCK_SIZE];
+        JournalHeaderS {
+            h_magic: JBD2_MAGIC,
+            h_blocktype: JBD2_BLOCKTYPE_DESCRIPTOR,
+            h_sequence: 1,
+        }
+        .to_disk_bytes(&mut descriptor[..JBD2_DESCRIPTOR_HEADER_SIZE]);
+        let commit_start = (JOURNAL_START as usize + 2) * BLOCK_SIZE;
+        let commit = &mut io.blocks[commit_start..commit_start + BLOCK_SIZE];
+        CommitHeader {
+            h_header: JournalHeaderS {
+                h_magic: JBD2_MAGIC,
+                h_blocktype: JBD2_BLOCKTYPE_COMMIT,
+                h_sequence: 1,
+            },
+            h_chksum_type: 0,
+            h_chksum_size: 0,
+            h_padding: [0; 2],
+            h_chksum: [0; 8],
+            h_commit_sec: 0,
+            h_commit_nsec: 0,
+        }
+        .to_disk_bytes(commit);
+        let ring = ReplayRing {
+            blocks: &[],
+            start_block: AbsoluteBN::new(JOURNAL_START),
+            first_rel: 1,
+            last_rel: JOURNAL_LEN - 1,
+        };
+
+        let result = system.scan_one_transaction(&mut io, &ring, 1, 1, 0);
+
+        assert!(matches!(result, ReplayScan::CleanEnd));
     }
 
     #[test]

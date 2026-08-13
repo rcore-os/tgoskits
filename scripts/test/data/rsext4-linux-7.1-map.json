@@ -1850,14 +1850,15 @@
           "end": 175,
           "symbol": "journal_submit_commit_record; journal_wait_on_commit_record",
           "classification": "core",
-          "state_machine": "descriptor and payload durable -> commit record FUA publication -> wait",
-          "invariant": "with barriers enabled and without async commit, the commit record is submitted with preflush and FUA ordering",
+          "state_machine": "descriptor and payload durable -> filesystem-clock timestamp capture -> commit record FUA publication -> wait",
+          "invariant": "with barriers enabled and without async commit, a non-empty commit record carries real seconds/nanoseconds and is submitted with preflush and FUA ordering",
           "rust_owner": "rsext4::jbd2::jbd2::commit_transaction_with_mapping; rsext4::blockdev::cached_device::BlockDev::write_blocks_with_flags; ax_fs_ng::block::runtime::lifecycle::BlockDeviceHandle",
-          "reason": "the portable writer uses an explicit flush before a METADATA|FUA commit write, falls back to synchronous write-then-flush only when native FUA is absent, and the OS adapter advertises native FUA only when every hardware queue can mark every split request",
+          "reason": "the portable writer reads the injected filesystem clock only for a real transaction, writes the wire timestamp before checksum publication, uses an explicit flush before a METADATA|FUA commit write, and falls back to synchronous write-then-flush only when native FUA is absent",
           "test_ids": [
             "jbd2-writer-revoke-checkpoint",
             "jbd2-legacy-checksum-write-replay",
-            "blockio-adapter-capabilities"
+            "blockio-adapter-capabilities",
+            "jbd2-stale-checksum-tail"
           ]
         },
         {
@@ -2034,8 +2035,8 @@
         },
         {
           "start": 469,
-          "end": 819,
-          "symbol": "<coarse-middle>",
+          "end": 587,
+          "symbol": "replay helpers before do_one_pass",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",
@@ -2048,24 +2049,111 @@
           ]
         },
         {
+          "start": 588,
+          "end": 645,
+          "symbol": "do_one_pass initialization",
+          "classification": "core",
+          "state_machine": "pass-local scan state initialization",
+          "invariant": "each recovery pass begins with no deferred checksum failure and a zero last-commit timestamp",
+          "rust_owner": "rsext4::jbd2::JBD2DEVSYSTEM::replay_with_mapping",
+          "reason": "the portable committed-range scan owns expected sequence, ring cursor, deferred checksum state, and the last accepted commit timestamp",
+          "test_ids": [
+            "jbd2-stale-checksum-tail",
+            "jbd2-abort-sticky"
+          ]
+        },
+        {
+          "start": 646,
+          "end": 702,
+          "symbol": "do_one_pass log traversal prefix",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::recovery",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay",
+            "jbd2-abort-sticky"
+          ]
+        },
+        {
+          "start": 703,
+          "end": 721,
+          "symbol": "do_one_pass descriptor checksum deferral",
+          "classification": "core",
+          "state_machine": "descriptor checksum failure -> deferred commit-time decision",
+          "invariant": "PASS_SCAN does not reject a structurally parseable descriptor solely for a block checksum mismatch before its commit timestamp can distinguish current corruption from stale lazy-init data",
+          "rust_owner": "rsext4::jbd2::JBD2DEVSYSTEM::{parse_replay_tags,scan_one_transaction}",
+          "reason": "the checked Rust parser retains structural rejection while the scan owner defers only the checksum decision",
+          "test_ids": [
+            "jbd2-stale-checksum-tail",
+            "jbd2-csum-v3-write-replay"
+          ]
+        },
+        {
+          "start": 722,
+          "end": 793,
+          "symbol": "do_one_pass descriptor handling and commit rationale",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::jbd2::recovery",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay",
+            "jbd2-abort-sticky"
+          ]
+        },
+        {
+          "start": 794,
+          "end": 819,
+          "symbol": "do_one_pass deferred checksum commit-time decision",
+          "classification": "core",
+          "state_machine": "deferred checksum failure -> compare commit time -> corruption or clean stale end",
+          "invariant": "a deferred failure is ignored only when commit_time is strictly older than the last accepted transaction; equal or increasing time remains corruption",
+          "rust_owner": "rsext4::jbd2::JBD2DEVSYSTEM::{checksum_failure_or_stale_end,scan_one_transaction}",
+          "reason": "the portable scanner carries the last accepted commit time across transactions and ends before replaying stale payloads",
+          "test_ids": [
+            "jbd2-stale-checksum-tail",
+            "jbd2-abort-sticky"
+          ]
+        },
+        {
           "start": 820,
           "end": 878,
           "symbol": "do_one_pass commit-block checksum decision",
           "classification": "core",
-          "state_machine": "PASS_SCAN commit validation and transaction-sequence advancement",
-          "invariant": "partial commit fallback is attempted only after the full CSUM_V2/V3 checksum fails, and a matching fallback advances the transaction as committed",
+          "state_machine": "PASS_SCAN commit validation, stale-time decision, and transaction-sequence advancement",
+          "invariant": "partial commit fallback is attempted only after the full CSUM_V2/V3 checksum fails; a remaining mismatch ends cleanly only for a strictly older timestamp, while a valid commit advances the sequence and last-commit time",
           "rust_owner": "rsext4::jbd2::JBD2DEVSYSTEM::scan_one_transaction",
           "reason": "the portable replay scanner owns committed-range discovery and must preserve Linux's acceptance boundary before any home-block replay",
           "test_ids": [
             "jbd2-csum-v3-write-replay",
             "jbd2-partial-commit-replay",
-            "jbd2-abort-sticky"
+            "jbd2-abort-sticky",
+            "jbd2-stale-checksum-tail"
           ]
         },
         {
           "start": 879,
+          "end": 904,
+          "symbol": "do_one_pass revoke checksum deferral",
+          "classification": "core",
+          "state_machine": "revoke checksum failure -> deferred commit-time decision",
+          "invariant": "PASS_SCAN records a revoke checksum mismatch without publishing revoke ownership until the containing transaction is accepted",
+          "rust_owner": "rsext4::jbd2::JBD2DEVSYSTEM::{parse_revoke_blocks,scan_one_transaction,build_revoke_table}",
+          "reason": "the portable scanner parses checked revoke records but builds the global revoke table only from transactions accepted by the committed-range pass",
+          "test_ids": [
+            "jbd2-csum-v3-write-replay",
+            "jbd2-abort-sticky",
+            "jbd2-legacy-checksum-write-replay",
+            "jbd2-stale-checksum-tail"
+          ]
+        },
+        {
+          "start": 905,
           "end": 996,
-          "symbol": "<coarse-suffix>",
+          "symbol": "do_one_pass completion and recovery entry points",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",

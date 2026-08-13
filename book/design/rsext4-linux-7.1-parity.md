@@ -170,6 +170,7 @@ cookie 并清空 continuation。VFS directory sink 接收 raw `&[u8]` 名称，�
 | `jbd2-abort-sticky` | descriptor/payload flush 失败只返回一次 I/O error，随后仍可从已推进的 ring cursor 重试、继续 metadata write 或关闭 journal 绕过错误 | 首次提交/恢复错误保留原始 cause；同一 mount 的后续 mutation、handle、flush、unmount 全部稳定拒绝，并持久化 journal errno | JBD2 rewrite | 进行中：所有 auto-commit、handle precommit 与 unmount commit 已收口到单一 transaction owner；任一 commit/persistence failure 锁存首个 cause，本次返回原始 typed error，后续 write/handle/flush/unmount/reinstall 返回 `JournalAborted`。未发布 mutable cache image 属于 operation ownership 错误，在任何 journal I/O 前返回 typed `Busy`，不会伪装成 persistence abort。journal mode 切换改为 fallible state transition：abort 时拒绝，pending queue 或 active handle 时返回 busy，不能再关闭 journal 后绕过未提交 metadata。replay 现在以 typed `JournalReplayPhase` 区分 initialize/scan/revoke/replay/persist，保留 I/O、checksum 与 corruption 原始 domain cause、事务 restart 位置和 progress 持久化次错；mount 返回首错并通过 `Observer` 发送完整 typed failure，不再统一伪装为 corruption，越界 `s_start` 也不再清日志报成功。descriptor read 确定性红测已在旧实现证明 `Corrupted != Io`，payload read、home write、checksum+flush 首错优先、final flush 与 replay superblock write fault 均有定点测试。首次 abort 同时以私有 JBD2 wire code 持久化 `s_errno`，重新计算 checksum，并通过原生 FUA 或明确的 write-then-flush fallback 等待 durability；两种能力都缺失时返回 unsupported，record 失败单独保存且不覆盖首次 cause。当前 single-payload transaction 的 open-superblock、descriptor、payload、commit、checkpoint、close-superblock 六次 write 与四个 flush barrier 已逐项注入并验证 sticky first-error。recovery 已拆为不写 home block 的完整 committed-range scan、按 transaction ID 建表的 revoke pass、以及 sequence-aware replay pass；`T1 payload + T2 revoke` 的确定性红测证明旧 transaction-local set 会错误覆盖 home block，同一测试现保留旧值，反向 `T1 revoke + T2 payload` 与 `u32` TID wrap 比较也已覆盖。精细 on-disk error mapping、scan/pass-end 与 fast-commit 一致性、`ACK_ERR`/shutdown、ext4 `continue`/`remount-ro` policy，以及 multi-payload checkpoint/revoke 的完整 fault matrix 仍为红项 |
 | `jbd2-csum-v3-write-replay` | writer emits legacy tags while accepted CSUM_V3/64BIT journals require tag3/high block numbers | Linux-compatible descriptor tags and checksum followed by self/Linux replay | JBD2 rewrite | 绿：writer 生成 tag3/64-bit block number、escaped payload CRC32C、descriptor/commit checksum；replay 在任何 home write 前校验 commit 与全部非 revoke payload，并校验 descriptor/revoke tail；Linux `debugfs` 多块事务与逐边界损坏测试通过；mkfs 将 ext4 `metadata_csum`/`64bit` 映射为对应 JBD2 feature |
 | `jbd2-partial-commit-replay` | replay 只接受完整 commit block CRC32C，拒绝 Linux 会按已持久化 commit header 接受的零尾 partial-write 事务 | CSUM_V2/V3 完整校验失败后，以 60-byte wire header 和全零 block tail 重算；匹配则仍作为 committed transaction 回放 | JBD2 checksum/recovery | 绿：确定性用例只污染 commit header 后第一个 tail byte，旧实现返回 `ChecksumMismatch` 且不写 home block；同一测试现完成 payload replay。完整 checksum 匹配时通过短路保持单次 CRC，COMPAT/无 checksum 模式不进入回退。Linux v7.1 依据为 `include/linux/jbd2.h:167-177`、`fs/jbd2/recovery.c:431-468,820-878` |
+| `jbd2-stale-checksum-tail` | PASS_SCAN 遇到 descriptor/revoke/commit checksum 失败时立即 abort，无法区分当前 transaction 损坏与 lazy journal initialization 遗留的 stale block；writer 同时把 commit time 固定写 0 | scan 只延迟 block-checksum failure，在结构可解析的 commit block 上按 `commit_time < last_commit_time` 识别 stale tail，相等或递增仍拒绝；真实 writer 由 filesystem clock 写入 seconds/nanoseconds | JBD2 commit/recovery | 绿：CSUM_V3 两个 transaction 的 descriptor、commit 和 revoke 三种定点损坏矩阵均证明 10→9 只回放前一个 transaction；旧实现均返回 incomplete，当前实现正常结束 scan。显式 10→10/11 三类损坏矩阵均保持 `ChecksumMismatch`。32-byte block 改为 typed corruption；纯 header+零尾 descriptor 明确 clean-end，已有 tag 却无 `LAST_TAG` 则拒绝，不再 panic/接受相邻伪 commit。注入时钟用例证明非空 commit 的 `h_commit_sec/h_commit_nsec` 精确写入，负秒/越界纳秒在 owner switch 前返回 `InvalidInput`。Linux v7.1 依据为 `fs/jbd2/commit.c:114-144`、`fs/jbd2/recovery.c:588-645,703-721,794-904` |
 | `jbd2-legacy-checksum-write-replay` | validator 拒绝 `FEATURE_COMPAT_CHECKSUM`/`CSUM_V2`，非 CSUM_V3 writer 把 tag/commit checksum 写成零，replay 也不校验旧格式 transaction | checksum mode 必须互斥协商；compat checksum 使用 descriptor+payload 的 raw CRC32-BE；CSUM_V2 使用 10/14-byte tag、低 16-bit payload CRC32C 及 descriptor/revoke/commit block checksum | JBD2 codec/commit/recovery | 绿：私有 typed mode 统一 `None`/`CompatChecksum`/`CsumV2`/`CsumV3`，拒绝混合 feature 与 checksum type 错配；writer/replay 覆盖 compat aggregate、CSUM_V2 32/64-bit tag padding、descriptor/revoke tail、commit 与 payload corruption。e2fsprogs `journal_open -c -v 2` 生成的多块 compat transaction 已由 Linux/debugfs 与 rsext4 分别 replay，rsext4 结果通过 `e2fsck -fn`；现代 e2fsprogs 不直接生成 legacy CSUM_V2，因此该模式由 Linux 7.1 源码布局和独立合成 corruption vectors 覆盖。external journal、async commit 与 fast commit 仍为红项 |
 | `jbd2-superblock-checked-codec` | journal superblock 对短于 1024-byte 的块直接 slice/`unwrap` panic，且错误拒绝 Linux V1 | mount 只使用 checked 1024-byte prefix codec；V1/V2 按版本分别校验，V1 不读取或改写 V2 extension fields | JBD2 codec/mount | 绿：deterministic 编译红测先证明 checked decode/encode 缺失，同一 0/1023-byte matrix 现返回 typed corruption；V1 validator 红测证明旧实现以 `jbd2:superblock_header` 拒绝，现有 validator、真实 mount 与 metadata commit 均忽略 V2 feature/UUID/checksum 尾部，sequence/start 写回保持尾部原值。错误公开名 `JournalSuperBllockS` 已破坏性改为 `JournalSuperBlock`。Linux v7.1 依据为 `include/linux/jbd2.h:226-277,1328-1389`、`fs/jbd2/journal.c:1309-1394,1458-1507` |
 | `extent-checked-codec` | raw extent nodes are sorted after parsing and malformed roots/children can be treated as holes | checked structural validation preserves on-disk order and propagates corruption | mapping rewrite | 绿：root/child codec 检查 magic、Linux on-disk depth 上限 5、capacity、非空 index、logical/physical overflow 与 leaf/index ordering；确定性红测证明旧 parser 会接受结构合法但 depth=6 的 index，同一测试现固定 depth=5 接受、6/32/33 拒绝，parse、递归校验与 split/promotion 共用同一上限。`EXT4_EXTENTS_FL` 是唯一格式判据，坏 magic 不再降级为 legacy/hole；读取、查找、插入、删除、HTree 和 block resolver 均传播 typed error，不再排序或吞错；hard-link parent corruption 完成确定性红绿验证。Linux v7.1 依据为 `ext4_extents.h:86-87`、`extents.c:491-494,900-906` |
@@ -2219,3 +2220,37 @@ constant 处理 60-byte header，以固定小块增量喂入零 tail，不分配
 这一冷恢复分支不改变 writer、正常完整 commit replay、sync 或 unmount 热路径，本检查点不单独声明
 性能收益；最终 PR 仍以冻结 dev/head workload 做整体性能验收。source map 仅把
 `recovery.c:431-468,820-878` 拆为 reviewed segment，其余 recovery 区间继续保持 coarse。
+
+### 7.63 JBD2 stale checksum tail 与 commit time 检查点
+
+Linux v7.1 `fs/jbd2/recovery.c:588-645` 在每个 recovery pass 中把
+`need_check_commit_time=false`、`last_trans_commit_time=0` 作为 scanner-owned state。descriptor checksum
+失败在 PASS_SCAN 只设置 deferred flag（`703-721`），revoke checksum 失败也共用该 flag
+（`880-904`）；之后遇到结构可解析的 commit block，`794-878` 仅在 commit time 小于
+上一个已接受 transaction 时把损坏解释为 lazy-initialized stale tail 并正常结束恢复；
+时间相等或递增意味着同一 journal 内的真实损坏，必须拒绝。commit block 自身的
+COMPAT/CSUM_V2/CSUM_V3 checksum 失败也进入同一时间判定。
+
+确定性红测用两个完整 CSUM_V3 transaction：第一个 commit time=10，第二个=9，
+分别翻转第二个 descriptor tail、commit checksum 和 revoke tail 的一个 byte。旧 scanner 在三个
+分支都返回 incomplete，commit corruption 甚至已进入 replay phase；同一矩阵现返回
+`ReplayStatus::Complete`，第一个 payload 回放、stale transaction 的 home block 保持不变。
+显式非 stale 矩阵对 descriptor/commit/revoke 三种损坏分别执行 10→10 与 10→11，六组都要求
+`ChecksumMismatch`、精确 replay phase 且零 home write，锁定 `commit_time >= last_commit_time`
+必须拒绝，没有把校验失败扩大成静默成功。
+
+边界复核又暴露两个旧问题：scanner 只依据 12-byte journal header 检查 block size，
+之后却无条件解码 60-byte commit header，32-byte fixture 稳定 panic；另一方面，旧 parser
+把纯 header+全零 tail 解成零 tag，因此可能继续接受紧邻的伪 commit。当前 scanner 在 I/O 前
+要求至少 60 bytes；parser 将零 tag 尾明确表示为未提交 `EmptyTail` 并 clean-end，而已有
+tag 却没有 `LAST_TAG` 则返回 typed corruption。单元用例在空 descriptor 后放置相邻 commit
+仍要求 clean-end；原有 Linux-image 集成用例继续要求空 descriptor tail 正常丢弃。
+
+Linux v7.1 `fs/jbd2/commit.c:114-144` 在 commit record checksum 之前写入 coarse realtime seconds/
+nanoseconds。旧 Rust writer 一直写 0，使上述 stale 判定在自身产生的 journal 上缺失时间
+信号。现在只有非空 running transaction 会读取已注入的 filesystem clock，并在
+CRC/FUA publication 前写入 commit header；空 commit 仍不读时钟。定点用例要求
+`1_723_456_789s + 123_456_789ns` 原样出现在线格式。另一红测证明旧 writer 会把负秒静默
+改成 0、把越界纳秒截断；当前 typed commit timestamp 在 owner 由 running 转 committing 前返回
+`InvalidInput`，保留 running queue 且不 abort journal。该改动每个真实 commit 多一次
+clock callback，不声称吞吐改善；它与最终 dev/head `sync-cycle` 对照共用性能门槛。
