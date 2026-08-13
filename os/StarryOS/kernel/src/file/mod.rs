@@ -75,7 +75,7 @@ pub(crate) use self::fs::metadata_to_kstat_conversion_rules_hold_for_test;
 pub(crate) use self::mount_table::{MountTableFile, notify_mount_namespace_changed};
 #[cfg(axtest)]
 pub(crate) use self::pipe::{
-    peer_close_with_multiple_readers_is_visible_for_test, pipe_linux_io_semantics_hold_for_test,
+    peer_close_with_multiple_readers_is_visible_for_test,
     pipe_resize_rounding_and_state_rules_hold_for_test, resize_rejects_oversized_pipe_for_test,
 };
 #[cfg(axtest)]

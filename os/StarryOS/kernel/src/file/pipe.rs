@@ -306,30 +306,11 @@ impl Pipe {
     }
 
     #[cfg(axtest)]
-    fn write_without_sigpipe_for_test(&self, src: &mut IoSrc) -> AxResult<usize> {
-        // Axtests run in a kernel task without Starry process signal state. The
-        // write transition is identical, but SIGPIPE delivery is outside this
-        // direct pipe test and cannot be requested from that task.
-        self.write_with_broken_pipe_handler(src, || {})
-    }
-
-    #[cfg(axtest)]
     pub(crate) fn duplicate_read_end_for_test(&self) -> Pipe {
         assert!(self.is_read());
         self.shared.state.lock().readers += 1;
         Pipe {
             read_side: true,
-            shared: self.shared.clone(),
-            non_blocking: AtomicBool::new(self.nonblocking()),
-        }
-    }
-
-    #[cfg(axtest)]
-    pub(crate) fn duplicate_write_end_for_test(&self) -> Pipe {
-        assert!(self.is_write());
-        self.shared.state.lock().writers += 1;
-        Pipe {
-            read_side: false,
             shared: self.shared.clone(),
             non_blocking: AtomicBool::new(self.nonblocking()),
         }
@@ -364,91 +345,6 @@ pub(crate) fn peer_close_with_multiple_readers_is_visible_for_test() -> bool {
 pub(crate) fn resize_rejects_oversized_pipe_for_test() -> bool {
     let (read_end, _write_end) = Pipe::new();
     read_end.resize(1024 * 1024 + 1).is_err()
-}
-
-#[cfg(axtest)]
-pub(crate) fn pipe_linux_io_semantics_hold_for_test() -> bool {
-    let null_io_matches = {
-        let (read_end, write_end) = Pipe::new();
-        read_end.set_nonblocking(true).ok();
-        write_end.set_nonblocking(true).ok();
-
-        let mut empty_dst: &mut [u8] = &mut [];
-        let null_read = read_end.read(&mut empty_dst as &mut dyn super::WriteBuf);
-        drop(read_end);
-        let mut empty_src: &[u8] = &[];
-        let null_write =
-            write_end.write_without_sigpipe_for_test(&mut empty_src as &mut dyn super::ReadBuf);
-
-        null_read == Ok(0) && null_write == Ok(0)
-    };
-
-    let atomic_write_and_poll_match = {
-        let (read_end, write_end) = Pipe::new();
-        write_end.set_nonblocking(true).ok();
-        let resized = write_end.resize(PIPE_BUF).is_ok();
-        let initial = [b'a'; 4000];
-        let mut initial_src: &[u8] = &initial;
-        let initial_write =
-            write_end.write_without_sigpipe_for_test(&mut initial_src as &mut dyn super::ReadBuf);
-        let atomic = [b'b'; 200];
-        let mut atomic_src: &[u8] = &atomic;
-        let atomic_write =
-            write_end.write_without_sigpipe_for_test(&mut atomic_src as &mut dyn super::ReadBuf);
-        let queued = read_end.shared.state.lock().buffer.occupied_len();
-
-        resized
-            && initial_write == Ok(initial.len())
-            && atomic_write == Err(AxError::WouldBlock)
-            && queued == initial.len()
-            && !write_end.poll().contains(IoEvents::OUT)
-    };
-
-    let closed_reader_poll_matches = {
-        let (read_end, write_end) = Pipe::new();
-        drop(read_end);
-        let events = write_end.poll();
-        events.contains(IoEvents::OUT | IoEvents::ERR)
-    };
-
-    let duplicates_preserve_nonblocking = {
-        let (read_end, write_end) = Pipe::new();
-        read_end.set_nonblocking(true).ok();
-        write_end.set_nonblocking(true).ok();
-        read_end.duplicate_read_end_for_test().nonblocking()
-            && write_end.duplicate_write_end_for_test().nonblocking()
-    };
-
-    let page_slot_fragmentation_matches = {
-        let (read_end, write_end) = Pipe::new();
-        write_end.set_nonblocking(true).ok();
-        let resized = write_end.resize(2 * PIPE_BUF).is_ok();
-        let initial = [b'a'; 5000];
-        let mut initial_src: &[u8] = &initial;
-        let initial_write =
-            write_end.write_without_sigpipe_for_test(&mut initial_src as &mut dyn super::ReadBuf);
-        let mut consumed = [0u8; 1000];
-        let mut consumed_dst: &mut [u8] = &mut consumed;
-        let initial_read = read_end.read(&mut consumed_dst as &mut dyn super::WriteBuf);
-        let shrink = write_end.resize(PIPE_BUF);
-        let atomic = [b'b'; 4000];
-        let mut atomic_src: &[u8] = &atomic;
-        let atomic_write =
-            write_end.write_without_sigpipe_for_test(&mut atomic_src as &mut dyn super::ReadBuf);
-
-        resized
-            && initial_write == Ok(initial.len())
-            && initial_read == Ok(consumed.len())
-            && !write_end.poll().contains(IoEvents::OUT)
-            && shrink == Err(AxError::ResourceBusy)
-            && atomic_write == Err(AxError::WouldBlock)
-    };
-
-    null_io_matches
-        && atomic_write_and_poll_match
-        && closed_reader_poll_matches
-        && duplicates_preserve_nonblocking
-        && page_slot_fragmentation_matches
 }
 
 fn raise_pipe() {

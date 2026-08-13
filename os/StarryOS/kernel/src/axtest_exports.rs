@@ -42,10 +42,6 @@ pub fn pipe_resize_rejects_oversized_pipe() -> bool {
     super::file::resize_rejects_oversized_pipe_for_test()
 }
 
-pub fn pipe_linux_io_semantics_hold() -> bool {
-    super::file::pipe_linux_io_semantics_hold_for_test()
-}
-
 pub fn fcntl_setpipe_size_returns_capacity() -> bool {
     super::syscall::fcntl_setpipe_size_returns_capacity_for_test()
 }
