@@ -8,7 +8,7 @@ use crate::{
 
 /// A [`Session`] is a collection of [`ProcessGroup`]s.
 pub struct Session {
-    sid: Pid,
+    sid: axnsproxy::JobControlIdRef,
     pub(crate) process_groups: RelationLock<SessionGroups>,
     // Terminal initialization can allocate and update TTY job-control state.
     // The multitask build therefore uses the same sleepable PI lock as process
@@ -18,7 +18,7 @@ pub struct Session {
 
 impl Session {
     /// Create a new [`Session`].
-    pub(crate) fn new(sid: Pid) -> Arc<Self> {
+    pub(crate) fn new(sid: axnsproxy::JobControlIdRef) -> Arc<Self> {
         Arc::new(Self {
             sid,
             process_groups: RelationLock::new(SessionGroups::with_capacity(1)),
@@ -30,7 +30,7 @@ impl Session {
 impl Session {
     /// The [`Session`] ID.
     pub fn sid(&self) -> Pid {
-        self.sid
+        self.sid.global_pid() as Pid
     }
 
     /// The [`ProcessGroup`]s that belong to this [`Session`].
@@ -86,6 +86,6 @@ impl Session {
 
 impl fmt::Debug for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Session({})", self.sid)
+        write!(f, "Session({})", self.sid())
     }
 }

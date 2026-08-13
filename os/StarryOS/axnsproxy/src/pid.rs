@@ -8,6 +8,10 @@ use ax_runtime::sync::IrqMutex;
 /// Shared ownership handle for one PID namespace generation.
 pub type PidNamespaceRef = Arc<PidNamespace>;
 
+/// Shared ownership of one PID number while it identifies a process group or
+/// session.
+pub type JobControlIdRef = Arc<JobControlId>;
+
 /// The initial root PID namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWPID)` or `clone(CLONE_NEWPID)`.
 pub static ROOT_PID_NS: LazyLock<PidNamespaceRef> =
@@ -37,6 +41,8 @@ struct PidNamespaceState {
     next_pid: u32,
     /// Generation-specific PID entries, including unpublished reservations.
     pid_map: BTreeMap<u64, PidEntry>,
+    /// Published namespace-local PIDs indexed back to their global identity.
+    global_pid_map: BTreeMap<u32, u64>,
     lifecycle: PidNamespaceLifecycle,
 }
 
@@ -67,6 +73,67 @@ struct PidEntry {
     local_pid: u32,
     kind: PidReservationKind,
     publication: PidPublication,
+    task_retired: bool,
+    job_control_refs: usize,
+}
+
+/// A process-group or session identifier retained at every visible PID
+/// namespace level.
+///
+/// Linux stores PID, PGID, and SID references in the same refcounted
+/// `struct pid`. A process may be reaped while its numeric identity remains a
+/// live PGID or SID. This handle gives Starry the same ownership rule instead
+/// of coupling job-control visibility to the former leader's task lifetime.
+pub struct JobControlId {
+    global_pid: u64,
+    namespaces: Arc<[PidNamespaceRef]>,
+}
+
+impl JobControlId {
+    /// Creates an identity in the root namespace, where IDs need no mapping.
+    pub fn new_root(global_pid: u64) -> JobControlIdRef {
+        Arc::new(Self {
+            global_pid,
+            namespaces: Arc::from([]),
+        })
+    }
+
+    /// Retains an already-published process PID as a PGID or SID.
+    pub fn retain(global_pid: u64, namespaces: &[PidNamespaceRef]) -> AxResult<JobControlIdRef> {
+        let mut retained: Vec<PidNamespaceRef> = Vec::new();
+        for namespace in namespaces.iter().filter(|namespace| namespace.level() > 0) {
+            if let Err(error) = namespace.retain_job_control_pid(global_pid) {
+                for retained_namespace in retained.iter().rev() {
+                    assert!(
+                        retained_namespace.release_job_control_pid(global_pid),
+                        "job-control PID retention rollback lost its owner"
+                    );
+                }
+                return Err(error);
+            }
+            retained.push(namespace.clone());
+        }
+        Ok(Arc::new(Self {
+            global_pid,
+            namespaces: retained.into(),
+        }))
+    }
+
+    /// Returns the kernel-global numeric identity.
+    pub fn global_pid(&self) -> u64 {
+        self.global_pid
+    }
+}
+
+impl Drop for JobControlId {
+    fn drop(&mut self) {
+        for namespace in self.namespaces.iter().rev() {
+            assert!(
+                namespace.release_job_control_pid(self.global_pid),
+                "job-control PID owner outlived its namespace mapping"
+            );
+        }
+    }
 }
 
 impl PidNamespace {
@@ -136,6 +203,14 @@ impl PidNamespace {
             return Some(global_tid as u32);
         }
         self.state.lock().local_pid(global_tid)
+    }
+
+    /// Resolves a published namespace-local PID to its global task identity.
+    pub fn global_pid(&self, local_pid: u32) -> Option<u64> {
+        if self.level == 0 {
+            return Some(local_pid as u64);
+        }
+        self.state.lock().global_pid(local_pid)
     }
 
     /// Returns the target PID as seen from `observer` through the target's
@@ -209,6 +284,14 @@ impl PidNamespace {
     pub fn release_process_pid(&self, global_pid: u64) -> bool {
         self.state.lock().release_process_pid(global_pid)
     }
+
+    fn retain_job_control_pid(&self, global_pid: u64) -> AxResult<()> {
+        self.state.lock().retain_job_control_pid(global_pid)
+    }
+
+    fn release_job_control_pid(&self, global_pid: u64) -> bool {
+        self.state.lock().release_job_control_pid(global_pid)
+    }
 }
 
 impl PidNamespaceState {
@@ -216,6 +299,7 @@ impl PidNamespaceState {
         Self {
             next_pid: 1,
             pid_map: BTreeMap::new(),
+            global_pid_map: BTreeMap::new(),
             lifecycle,
         }
     }
@@ -258,6 +342,8 @@ impl PidNamespaceState {
                 local_pid: local,
                 kind,
                 publication: PidPublication::Reserved,
+                task_retired: false,
+                job_control_refs: 0,
             },
         );
         if namespace_init {
@@ -277,6 +363,9 @@ impl PidNamespaceState {
         if !matches!(self.lifecycle, PidNamespaceLifecycle::Active { .. }) {
             return Err(AxError::NoMemory);
         }
+        if self.global_pid_map.contains_key(&local_pid) {
+            return Err(AxError::BadState);
+        }
         let entry = self
             .pid_map
             .get_mut(&global_tid)
@@ -286,6 +375,8 @@ impl PidNamespaceState {
             return Err(AxError::BadState);
         }
         entry.publication = PidPublication::Published;
+        let previous = self.global_pid_map.insert(local_pid, global_tid);
+        debug_assert!(previous.is_none());
         Ok(())
     }
 
@@ -299,12 +390,21 @@ impl PidNamespaceState {
         let Some(entry) = self
             .pid_map
             .get(&global_tid)
-            .filter(|entry| entry.local_pid == local_pid)
+            .filter(|entry| {
+                entry.local_pid == local_pid && !entry.task_retired && entry.job_control_refs == 0
+            })
             .copied()
         else {
             return false;
         };
         self.pid_map.remove(&global_tid);
+        if entry.publication == PidPublication::Published {
+            assert_eq!(
+                self.global_pid_map.remove(&local_pid),
+                Some(global_tid),
+                "published PID rollback lost its reverse namespace index"
+            );
+        }
         if matches!(
             self.lifecycle,
             PidNamespaceLifecycle::Active { init_global_tid }
@@ -322,7 +422,14 @@ impl PidNamespaceState {
     /// Resolve a global TID to its namespace-local PID.
     /// In the root namespace (level 0), global and local PIDs are 1:1.
     fn local_pid(&self, global_tid: u64) -> Option<u32> {
-        self.pid_map.get(&global_tid).map(|entry| entry.local_pid)
+        self.pid_map
+            .get(&global_tid)
+            .filter(|entry| entry.publication == PidPublication::Published)
+            .map(|entry| entry.local_pid)
+    }
+
+    fn global_pid(&self, local_pid: u32) -> Option<u64> {
+        self.global_pid_map.get(&local_pid).copied()
     }
 
     /// Returns the global TID of this namespace's init process.
@@ -362,7 +469,9 @@ impl PidNamespaceState {
         self.pid_map
             .iter()
             .filter_map(|(global_tid, entry)| {
-                (*global_tid != init_global_tid && entry.publication == PidPublication::Published)
+                (*global_tid != init_global_tid
+                    && !entry.task_retired
+                    && entry.publication == PidPublication::Published)
                     .then_some(*global_tid)
             })
             .collect()
@@ -374,6 +483,7 @@ impl PidNamespaceState {
             .filter_map(|(global_tid, entry)| {
                 (*global_tid != init_global_tid
                     && *global_tid != reaper_global_tid
+                    && !entry.task_retired
                     && entry.publication == PidPublication::Published)
                     .then_some(*global_tid)
             })
@@ -383,14 +493,16 @@ impl PidNamespaceState {
     /// Returns whether any reservation outside the namespace init remains.
     fn has_members_excluding(&self, init_global_tid: u64) -> bool {
         self.pid_map
-            .keys()
-            .any(|global_tid| *global_tid != init_global_tid)
+            .iter()
+            .any(|(global_tid, entry)| *global_tid != init_global_tid && !entry.task_retired)
     }
 
     fn has_shutdown_victims(&self, init_global_tid: u64, reaper_global_tid: u64) -> bool {
-        self.pid_map
-            .keys()
-            .any(|global_tid| *global_tid != init_global_tid && *global_tid != reaper_global_tid)
+        self.pid_map.iter().any(|(global_tid, entry)| {
+            *global_tid != init_global_tid
+                && *global_tid != reaper_global_tid
+                && !entry.task_retired
+        })
     }
 
     /// Releases one namespace-local thread ID after scheduler-visible exit.
@@ -420,12 +532,67 @@ impl PidNamespaceState {
 
     fn release_published_pid(&mut self, global_tid: u64, kind: PidReservationKind) -> bool {
         let matches = self.pid_map.get(&global_tid).is_some_and(|entry| {
-            entry.kind == kind && entry.publication == PidPublication::Published
+            entry.kind == kind
+                && entry.publication == PidPublication::Published
+                && !entry.task_retired
         });
         if matches {
-            self.pid_map.remove(&global_tid);
+            let entry = self
+                .pid_map
+                .get_mut(&global_tid)
+                .expect("published PID disappeared before release");
+            entry.task_retired = true;
+            if entry.job_control_refs == 0 {
+                self.remove_retired_identity(global_tid);
+            }
         }
         matches
+    }
+
+    fn retain_job_control_pid(&mut self, global_pid: u64) -> AxResult<()> {
+        let entry = self
+            .pid_map
+            .get_mut(&global_pid)
+            .filter(|entry| {
+                entry.kind == PidReservationKind::Process
+                    && entry.publication == PidPublication::Published
+                    && !entry.task_retired
+            })
+            .ok_or(AxError::NoSuchProcess)?;
+        entry.job_control_refs = entry
+            .job_control_refs
+            .checked_add(1)
+            .ok_or(AxError::NoMemory)?;
+        Ok(())
+    }
+
+    fn release_job_control_pid(&mut self, global_pid: u64) -> bool {
+        let Some(entry) = self
+            .pid_map
+            .get_mut(&global_pid)
+            .filter(|entry| entry.job_control_refs != 0)
+        else {
+            return false;
+        };
+        entry.job_control_refs -= 1;
+        if entry.job_control_refs == 0 && entry.task_retired {
+            self.remove_retired_identity(global_pid);
+        }
+        true
+    }
+
+    fn remove_retired_identity(&mut self, global_pid: u64) {
+        let entry = self
+            .pid_map
+            .remove(&global_pid)
+            .expect("retired PID disappeared before final owner release");
+        assert!(entry.task_retired);
+        assert_eq!(entry.job_control_refs, 0);
+        assert_eq!(
+            self.global_pid_map.remove(&entry.local_pid),
+            Some(global_pid),
+            "PID namespace reverse index diverged from its identity owner"
+        );
     }
 }
 
@@ -485,7 +652,8 @@ mod tests {
         let local_pid = reserve_process(&mut namespace, 42, true);
 
         assert_eq!(local_pid, 1);
-        assert_eq!(namespace.local_pid(42), Some(1));
+        assert_eq!(namespace.local_pid(42), None);
+        assert_eq!(namespace.global_pid(1), None);
         assert_eq!(namespace.init_global_tid(), Some(42));
 
         assert!(namespace.rollback_pid_reservation(42, local_pid));
@@ -503,7 +671,56 @@ mod tests {
 
         assert!(!namespace.rollback_pid_reservation(42, second));
         assert_eq!(namespace.local_pid(42), Some(first));
-        assert_eq!(namespace.local_pid(43), Some(second));
+        assert_eq!(namespace.global_pid(first), Some(42));
+        assert_eq!(namespace.local_pid(43), None);
+        assert_eq!(namespace.global_pid(second), None);
+    }
+
+    #[test]
+    fn published_reservation_rollback_removes_both_indexes() {
+        let mut namespace = new_child_state();
+        let local_pid = reserve_process(&mut namespace, 42, true);
+        namespace.publish_reserved_pid(42, local_pid).unwrap();
+
+        assert!(namespace.rollback_pid_reservation(42, local_pid));
+        assert_eq!(namespace.local_pid(42), None);
+        assert_eq!(namespace.global_pid(local_pid), None);
+        assert_eq!(reserve_process(&mut namespace, 43, true), local_pid);
+        namespace.publish_reserved_pid(43, local_pid).unwrap();
+    }
+
+    #[test]
+    fn published_pid_has_one_bidirectional_namespace_identity() {
+        let mut namespace = new_child_state();
+        let init = reserve_process(&mut namespace, 42, true);
+
+        assert_eq!(namespace.local_pid(42), None);
+        assert_eq!(namespace.global_pid(init), None);
+
+        namespace.publish_reserved_pid(42, init).unwrap();
+        assert_eq!(namespace.local_pid(42), Some(init));
+        assert_eq!(namespace.global_pid(init), Some(42));
+
+        assert!(namespace.release_process_pid(42));
+        assert_eq!(namespace.local_pid(42), None);
+        assert_eq!(namespace.global_pid(init), None);
+    }
+
+    #[test]
+    fn reaped_process_keeps_its_job_control_number_until_the_group_releases_it() {
+        let mut namespace = new_child_state();
+        let init = reserve_process(&mut namespace, 42, true);
+        namespace.publish_reserved_pid(42, init).unwrap();
+        namespace.retain_job_control_pid(42).unwrap();
+
+        assert!(namespace.release_process_pid(42));
+        assert_eq!(namespace.local_pid(42), Some(init));
+        assert_eq!(namespace.global_pid(init), Some(42));
+        assert!(!namespace.has_members_excluding(0));
+
+        assert!(namespace.release_job_control_pid(42));
+        assert_eq!(namespace.local_pid(42), None);
+        assert_eq!(namespace.global_pid(init), None);
     }
 
     #[test]

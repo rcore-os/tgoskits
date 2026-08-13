@@ -14,7 +14,8 @@ use crate::{
     task::{
         block_next_signal, check_signals,
         future::{UserWaitOutcome, block_on_user, block_on_user_timeout},
-        get_process_cred, processes, send_signal_to_process, send_signal_to_thread,
+        get_process_cred, get_task, processes, resolve_user_pid, send_signal_to_process,
+        send_signal_to_thread, visible_user_pid,
     },
     time::TimeValueLike,
 };
@@ -112,7 +113,7 @@ pub(crate) fn make_siginfo(
     Ok(Some(SignalInfo::new_user(
         signo,
         code,
-        thread.proc_data.proc.pid(),
+        visible_user_pid(current, thread.proc_data.proc.pid() as u64),
         thread.cred().uid,
     )))
 }
@@ -164,14 +165,25 @@ fn kill_process_group_checked(
     sig: Option<SignalInfo>,
 ) -> AxResult<()> {
     let pg = crate::task::get_process_group(pgid)?;
-    if let Some(sig) = sig {
-        for proc in pg.processes() {
-            if check_kill_permission(current, proc.pid()).is_ok() {
-                let _ = send_signal_to_process(proc.pid(), Some(sig));
-            }
+    let mut visible_members = 0;
+    let mut permitted_members = 0;
+    for proc in pg.processes() {
+        if visible_user_pid(current, proc.pid() as u64) == 0 {
+            continue;
+        }
+        visible_members += 1;
+        if check_kill_permission(current, proc.pid()).is_ok() {
+            permitted_members += 1;
+            let _ = send_signal_to_process(proc.pid(), sig);
         }
     }
-    Ok(())
+    if visible_members == 0 {
+        Err(AxError::NoSuchProcess)
+    } else if permitted_members == 0 {
+        Err(AxError::OperationNotPermitted)
+    } else {
+        Ok(())
+    }
 }
 
 pub fn sys_kill(current: &crate::task::UserTaskRef, pid: i32, signo: u32) -> AxResult<isize> {
@@ -180,14 +192,13 @@ pub fn sys_kill(current: &crate::task::UserTaskRef, pid: i32, signo: u32) -> AxR
 
     match pid {
         1.. => {
-            check_kill_permission(current, pid as _)?;
+            let pid = resolve_user_pid(current, pid as _)?;
+            check_kill_permission(current, pid)?;
             if let Some(sig) = sig {
                 let curr = current;
                 let thread = curr.as_thread();
                 let signo = sig.signo();
-                if pid as Pid == thread.proc_data.proc.pid()
-                    && !thread.signal().signal_blocked(signo)
-                {
+                if pid == thread.proc_data.proc.pid() && !thread.signal().signal_blocked(signo) {
                     // A process-directed signal may be delivered to any
                     // unblocked thread. Prefer the current thread for
                     // self-signals so `kill(getpid(), SIGSTOP)` cannot return
@@ -195,10 +206,10 @@ pub fn sys_kill(current: &crate::task::UserTaskRef, pid: i32, signo: u32) -> AxR
                     // thread observes the stop.
                     send_signal_to_thread(None, thread.tid() as Pid, Some(sig))?;
                 } else {
-                    send_signal_to_process(pid as _, Some(sig))?;
+                    send_signal_to_process(pid, Some(sig))?;
                 }
             } else {
-                send_signal_to_process(pid as _, None)?;
+                send_signal_to_process(pid, None)?;
             }
         }
         0 => {
@@ -211,7 +222,8 @@ pub fn sys_kill(current: &crate::task::UserTaskRef, pid: i32, signo: u32) -> AxR
             let curr_pid = current.as_thread().proc_data.proc.pid();
             if let Some(sig) = sig {
                 for proc_data in processes() {
-                    if proc_data.proc.is_init() || proc_data.proc.pid() == curr_pid {
+                    let visible_pid = visible_user_pid(current, proc_data.proc.pid() as u64);
+                    if visible_pid <= 1 || proc_data.proc.pid() == curr_pid {
                         continue;
                     }
                     if check_kill_permission(current, proc_data.proc.pid()).is_ok() {
@@ -221,7 +233,11 @@ pub fn sys_kill(current: &crate::task::UserTaskRef, pid: i32, signo: u32) -> AxR
             }
         }
         ..-1 => {
-            kill_process_group_checked(current, (-pid) as Pid, sig)?;
+            let local_pgid =
+                pid.checked_neg()
+                    .ok_or_else(|| AxError::from(LinuxError::ESRCH))? as Pid;
+            let pgid = resolve_user_pid(current, local_pgid)?;
+            kill_process_group_checked(current, pgid, sig)?;
         }
     }
     Ok(0)
@@ -231,8 +247,9 @@ pub fn sys_tkill(current: &crate::task::UserTaskRef, tid: i32, signo: u32) -> Ax
     if tid <= 0 {
         return Err(AxError::InvalidInput);
     }
-    let tid = tid as Pid;
-    check_kill_permission(current, tid)?;
+    let tid = resolve_user_pid(current, tid as Pid)?;
+    let task = get_task(tid)?;
+    check_kill_permission(current, task.as_thread().proc_data.proc.pid())?;
     let sig = make_siginfo(current, signo, SI_TKILL)?;
     send_signal_to_thread(None, tid, sig)?;
     Ok(0)
@@ -244,6 +261,11 @@ pub fn sys_tgkill(
     tid: Pid,
     signo: u32,
 ) -> AxResult<isize> {
+    if tgid == 0 || tid == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let tgid = resolve_user_pid(current, tgid)?;
+    let tid = resolve_user_pid(current, tid)?;
     check_kill_permission(current, tgid)?;
     let sig = make_siginfo(current, signo, SI_TKILL)?;
     send_signal_to_thread(Some(tgid), tid, sig)?;

@@ -5,6 +5,10 @@ use starry_process::init_proc;
 mod common;
 use common::ProcessExt;
 
+fn job_id(pid: u32) -> axnsproxy::JobControlIdRef {
+    axnsproxy::JobControlId::new_root(pid as u64)
+}
+
 #[test]
 fn basic() {
     let init = init_proc();
@@ -25,7 +29,7 @@ fn create() {
     let session = group.session();
 
     let child = parent.new_child();
-    let (child_session, child_group) = child.create_session().unwrap();
+    let (child_session, child_group) = child.create_session(job_id(child.pid())).unwrap();
 
     assert_eq!(child_group.pgid(), child.pid());
     assert_eq!(child_session.sid(), child.pid());
@@ -45,14 +49,15 @@ fn create() {
 
 #[test]
 fn create_leader() {
-    assert!(init_proc().create_session().is_none());
+    let init = init_proc();
+    assert!(init.create_session(job_id(init.pid())).is_none());
 }
 
 #[test]
 fn cleanup() {
     let child = init_proc().new_child();
     let session = {
-        let (session, _) = child.create_session().unwrap();
+        let (session, _) = child.create_session(job_id(child.pid())).unwrap();
         Arc::downgrade(&session)
     };
 
@@ -70,7 +75,7 @@ fn create_group() {
     let session = group.session();
 
     let child = parent.new_child();
-    let child_group = child.create_group().unwrap();
+    let child_group = child.create_group(job_id(child.pid())).unwrap();
 
     assert!(Arc::ptr_eq(&child_group.session(), &session));
 
@@ -87,7 +92,7 @@ fn move_to_different_session() {
     let parent = init_proc().new_child();
     let child = parent.new_child();
 
-    let (session, group) = parent.create_session().unwrap();
+    let (session, group) = parent.create_session(job_id(parent.pid())).unwrap();
 
     assert!(!Arc::ptr_eq(&group, &child.group()));
     assert!(!Arc::ptr_eq(&session, &child.group().session()));
@@ -98,7 +103,7 @@ fn move_to_different_session() {
 #[test]
 fn cleanup_groups() {
     let child = init_proc().new_child();
-    let (session, _) = child.create_session().unwrap();
+    let (session, _) = child.create_session(job_id(child.pid())).unwrap();
 
     child.reparent_children_to(&init_proc());
     child.retire();

@@ -10,8 +10,8 @@ use crate::{
     mm::VmPtr,
     syscall::signal::check_kill_permission,
     task::{
-        get_task, pidfd_process_identity, pidfd_thread_identity, send_signal_to_process,
-        send_signal_to_process_group, send_signal_to_thread,
+        get_task, pidfd_process_identity, pidfd_thread_identity, resolve_user_pid,
+        send_signal_to_process, send_signal_to_process_group, send_signal_to_thread,
     },
 };
 
@@ -58,7 +58,7 @@ fn make_pidfd_siginfo(
     SignalInfo::new_user(signo, code, thread.proc_data.proc.pid(), thread.cred().uid)
 }
 
-pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
+pub fn sys_pidfd_open(current: &crate::task::UserTaskRef, pid: u32, flags: u32) -> AxResult<isize> {
     debug!("sys_pidfd_open <= pid: {pid}, flags: {flags}");
 
     let flags = PidFdFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
@@ -67,6 +67,7 @@ pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
     if (pid as i32) <= 0 {
         return Err(AxError::InvalidInput);
     }
+    let pid = resolve_user_pid(current, pid)?;
 
     let fd = if flags.contains(PidFdFlags::THREAD) {
         match get_task(pid) {

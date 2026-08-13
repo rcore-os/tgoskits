@@ -62,12 +62,13 @@ fn handle_user_page_fault(
 pub fn new_user_task(
     mut uctx: UserContext,
     set_child_tid: usize,
+    child_tid: Pid,
 ) -> impl FnOnce() + Send + 'static {
     move || {
         let curr = current_user_task();
 
         if let Some(tid) = (set_child_tid as *mut Pid).nullable() {
-            tid.vm_write(&curr, curr.as_thread().tid() as Pid).ok();
+            tid.vm_write(&curr, child_tid).ok();
         }
 
         info!("Enter user space: ip={:#x}, sp={:#x}", uctx.ip(), uctx.sp());

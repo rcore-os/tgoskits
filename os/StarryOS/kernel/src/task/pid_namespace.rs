@@ -2,9 +2,11 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use ax_errno::{AxError, AxResult};
 use ax_std::os::arceos::task::WaitQueue;
+use starry_process::Pid;
 
-use super::ProcessIdentity;
+use super::{ProcessIdentity, UserTaskRef};
 use crate::sync::{PiMutex, PiMutexGuard};
 
 pub(crate) type PidNamespaceRef = axnsproxy::PidNamespaceRef;
@@ -16,6 +18,31 @@ static PUBLICATION: PiMutex<()> = PiMutex::new(());
 /// Serializes the clone no-failure publication point with namespace shutdown.
 pub(crate) fn lock_publication() -> PiMutexGuard<'static, ()> {
     PUBLICATION.lock()
+}
+
+/// Resolves a userspace PID in the calling task's active PID namespace.
+pub(crate) fn resolve_user_pid(current: &UserTaskRef, local_pid: Pid) -> AxResult<Pid> {
+    let namespace = current
+        .as_thread()
+        .proc_data
+        .namespace_snapshot()
+        .pid_ns
+        .clone();
+    namespace
+        .global_pid(local_pid)
+        .and_then(|pid| Pid::try_from(pid).ok())
+        .ok_or(AxError::NoSuchProcess)
+}
+
+/// Returns a global task identity as seen from the caller's PID namespace.
+pub(crate) fn visible_user_pid(current: &UserTaskRef, global_pid: u64) -> Pid {
+    current
+        .as_thread()
+        .proc_data
+        .namespace_snapshot()
+        .pid_ns
+        .local_pid(global_pid)
+        .unwrap_or(0)
 }
 
 /// Starts namespace shutdown before relationship or zombie publication.

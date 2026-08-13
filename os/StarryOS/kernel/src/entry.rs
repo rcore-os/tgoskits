@@ -113,7 +113,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default(), scope);
     let task = spawn_user_thread(
-        new_user_task(uctx, 0),
+        new_user_task(uctx, 0, 1),
         name,
         crate::config::KERNEL_STACK_SIZE,
         thr,

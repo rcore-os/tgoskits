@@ -103,7 +103,11 @@ pub fn mount_all() -> LinuxResult<()> {
 
     mount_at(&fs, "/dev/mqueue", mqueue::new_mqueuefs())?;
 
-    mount_at(&fs, "/proc", proc::new_procfs())?;
+    mount_at(
+        &fs,
+        "/proc",
+        proc::new_procfs(axnsproxy::ROOT_PID_NS.clone()),
+    )?;
 
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;
     if usbfs::has_manager() {

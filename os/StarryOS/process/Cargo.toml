@@ -15,6 +15,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 multitask = ["ax-runtime/multitask"]
 
 [dependencies]
+axnsproxy.workspace = true
 ax-runtime.workspace = true
 ax-lazyinit = { workspace = true }
 weak-map = "0.1"

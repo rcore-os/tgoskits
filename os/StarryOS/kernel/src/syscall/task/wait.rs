@@ -16,8 +16,8 @@ use crate::{
     task::{
         JobStatus, ProcessData, ProcessIdentity, decode_wait_status, future::block_on_user,
         get_process_data, get_task, get_zombie_cred, is_reaped_process, is_zombie_clone_child,
-        processes, reap_process, traced_zombies_for, wait_on_pollset, zombie_exit_code,
-        zombie_wait_parent_tid,
+        processes, reap_process, resolve_user_pid, traced_zombies_for, visible_user_pid,
+        wait_on_pollset, zombie_exit_code, zombie_wait_parent_tid,
     },
 };
 
@@ -273,9 +273,13 @@ pub fn sys_waitpid(
     } else if pid == 0 {
         WaitTarget::Pgid(proc.group().pgid())
     } else if pid > 0 {
-        WaitTarget::Pid(pid as _)
+        WaitTarget::Pid(
+            resolve_user_pid(current, pid as _).map_err(|_| AxError::from(LinuxError::ECHILD))?,
+        )
     } else {
-        WaitTarget::Pgid(-pid as _)
+        WaitTarget::Pgid(
+            resolve_user_pid(current, -pid as _).map_err(|_| AxError::from(LinuxError::ECHILD))?,
+        )
     };
 
     let candidate_scan = WaitCandidateScan::new(|| {
@@ -315,11 +319,12 @@ pub fn sys_waitpid(
                 exit_code.vm_write(current, status)?;
             }
             data.mark_ptrace_stop_reported_for(stop_tid);
-            return Ok(Some(wait_pid as _));
+            return Ok(Some(visible_user_pid(current, wait_pid as u64) as _));
         } else if let Some((child, child_exit_code)) = children
             .iter()
             .find_map(|child| zombie_exit_code(child).map(|exit_code| (child, exit_code)))
         {
+            let child_pid = visible_user_pid(current, child.pid() as u64);
             // Copy status before claiming the unique reap transition. A failed
             // user write leaves the zombie available for a later retry.
             if let Some(exit_code) = exit_code.nullable() {
@@ -327,7 +332,7 @@ pub fn sys_waitpid(
             }
             if let Some(cpu_time) = reap_process(child) {
                 proc_data.add_child_cpu_time(cpu_time.user(), cpu_time.system());
-                return Ok(Some(child.pid() as _));
+                return Ok(Some(child_pid as _));
             }
         }
 
@@ -354,7 +359,7 @@ pub fn sys_waitpid(
                         exit_code.vm_write(current, raw)?;
                     }
                     cdata.take_job_status_if(want_stopped, want_continued);
-                    return Ok(Some(child.pid() as _));
+                    return Ok(Some(visible_user_pid(current, child.pid() as u64) as _));
                 }
             }
         }
@@ -422,7 +427,10 @@ pub fn sys_waitid(
             if id <= 0 {
                 return Err(AxError::InvalidInput);
             }
-            WaitTarget::Pid(id as Pid)
+            WaitTarget::Pid(
+                resolve_user_pid(current, id as Pid)
+                    .map_err(|_| AxError::from(LinuxError::ECHILD))?,
+            )
         }
         P_PGID => {
             if id < 0 {
@@ -431,7 +439,8 @@ pub fn sys_waitid(
             let pgid = if id == 0 {
                 proc.group().pgid()
             } else {
-                id as Pid
+                resolve_user_pid(current, id as Pid)
+                    .map_err(|_| AxError::from(LinuxError::ECHILD))?
             };
             WaitTarget::Pgid(pgid)
         }
@@ -477,7 +486,8 @@ pub fn sys_waitid(
                 })
             })
         {
-            let child_pid = target.ptrace_report_pid(child, &data);
+            let child_pid =
+                visible_user_pid(current, target.ptrace_report_pid(child, &data) as u64);
             let child_uid = child_uid(child);
             data.select_ptrace_stop(stop_tid);
 
@@ -515,8 +525,12 @@ pub fn sys_waitid(
                         ),
                     };
                     if let Some(infop) = infop.nullable() {
-                        let siginfo =
-                            SignalInfo::new_sigchld(child.pid(), child_uid(child), code, status);
+                        let siginfo = SignalInfo::new_sigchld(
+                            visible_user_pid(current, child.pid() as u64),
+                            child_uid(child),
+                            code,
+                            status,
+                        );
                         infop.cast::<SignalInfo>().vm_write(current, siginfo)?;
                     }
                     if !options.contains(WaitIdOptions::WNOWAIT) {
@@ -532,7 +546,7 @@ pub fn sys_waitid(
                 .iter()
                 .find_map(|child| zombie_exit_code(child).map(|exit_code| (child, exit_code)))
         {
-            let child_pid = child.pid();
+            let child_pid = visible_user_pid(current, child.pid() as u64);
             let (code, status) = decode_wait_status(child_exit_code);
             let child_uid = child_uid(child);
 

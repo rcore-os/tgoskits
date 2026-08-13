@@ -246,6 +246,13 @@ impl LocalPidReservations {
         Ok(())
     }
 
+    fn local_pid(&self, namespace: &axnsproxy::PidNamespaceRef) -> Option<Pid> {
+        self.entries
+            .iter()
+            .find(|entry| Arc::ptr_eq(&entry.namespace, namespace))
+            .map(|entry| entry.local_pid)
+    }
+
     fn commit(mut self) {
         self.committed = true;
     }
@@ -481,6 +488,7 @@ impl CloneArgs {
         let curr = current;
         let curr_thread = curr.as_thread();
         let old_proc_data = &curr_thread.proc_data;
+        let parent_pid_namespace = old_proc_data.namespace_snapshot().pid_ns.clone();
         if flags.contains(CloneFlags::NEWCGROUP) && !curr_thread.cred().has_cap_sys_admin() {
             return Err(AxError::OperationNotPermitted);
         }
@@ -639,8 +647,23 @@ impl CloneArgs {
         } else {
             PidReservationKind::Process
         };
-        let local_pid_reservation =
-            LocalPidReservations::reserve(pid_namespace, tid as u64, pid_kind, namespace_init)?;
+        let local_pid_reservation = LocalPidReservations::reserve(
+            pid_namespace.clone(),
+            tid as u64,
+            pid_kind,
+            namespace_init,
+        )?;
+        let namespace_pid = |namespace: &axnsproxy::PidNamespaceRef| -> AxResult<Pid> {
+            if namespace.level() == 0 {
+                return Ok(tid);
+            }
+            local_pid_reservation
+                .as_ref()
+                .and_then(|reservation| reservation.local_pid(namespace))
+                .ok_or(AxError::BadState)
+        };
+        let parent_visible_tid = namespace_pid(&parent_pid_namespace)?;
+        let child_visible_tid = namespace_pid(&pid_namespace)?;
 
         let parent_cred = Some(curr_thread.cred());
         let thr = Thread::new(
@@ -723,7 +746,7 @@ impl CloneArgs {
 
         #[cfg(target_arch = "riscv64")]
         let prepared_task = prepare_user_thread_with_fp_state_and_policy(
-            new_user_task(new_uctx, set_child_tid),
+            new_user_task(new_uctx, set_child_tid, child_visible_tid),
             alloc::string::String::from(curr.name().as_ref()),
             crate::config::KERNEL_STACK_SIZE,
             child_fp_state,
@@ -734,7 +757,7 @@ impl CloneArgs {
         .map_err(map_task_creation_error)?;
         #[cfg(not(target_arch = "riscv64"))]
         let prepared_task = prepare_user_thread_with_policy(
-            new_user_task(new_uctx, set_child_tid),
+            new_user_task(new_uctx, set_child_tid, child_visible_tid),
             alloc::string::String::from(curr.name().as_ref()),
             crate::config::KERNEL_STACK_SIZE,
             thr,
@@ -758,7 +781,9 @@ impl CloneArgs {
             .map(|installed| UserWriteRollback::install(current, pidfd as *mut i32, installed.fd()))
             .transpose()?;
         let parent_tid_write = (flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0)
-            .then(|| UserWriteRollback::install(current, parent_tid_ptr as *mut Pid, tid))
+            .then(|| {
+                UserWriteRollback::install(current, parent_tid_ptr as *mut Pid, parent_visible_tid)
+            })
             .transpose()?;
 
         let mut cgroup_guard = if flags.contains(CloneFlags::THREAD) {
@@ -858,7 +883,7 @@ impl CloneArgs {
             let _ = super::ptrace::ptrace_notify_vfork_done(parent_pid, parent_tid, tid as Pid);
         }
 
-        Ok(tid as _)
+        Ok(parent_visible_tid as _)
     }
 }
 

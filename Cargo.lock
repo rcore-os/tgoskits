@@ -8025,6 +8025,7 @@ version = "0.4.16"
 dependencies = [
  "ax-lazyinit",
  "ax-runtime",
+ "axnsproxy",
  "ctor 0.4.3",
  "weak-map",
 ]

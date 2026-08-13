@@ -5,6 +5,10 @@ use starry_process::init_proc;
 mod common;
 use common::ProcessExt;
 
+fn job_id(pid: u32) -> axnsproxy::JobControlIdRef {
+    axnsproxy::JobControlId::new_root(pid as u64)
+}
+
 #[test]
 fn basic() {
     let init = init_proc();
@@ -24,7 +28,7 @@ fn create() {
     let parent = init_proc();
 
     let child = parent.new_child();
-    let child_group = child.create_group().unwrap();
+    let child_group = child.create_group(job_id(child.pid())).unwrap();
 
     assert!(Arc::ptr_eq(&child_group, &child.group()));
     assert_eq!(child_group.pgid(), child.pid());
@@ -47,7 +51,7 @@ fn create_leader() {
     let init = init_proc();
     let group = init.group();
 
-    assert!(init.create_group().is_none());
+    assert!(init.create_group(job_id(init.pid())).is_none());
     assert!(Arc::ptr_eq(&group, &init.group()));
 }
 
@@ -55,7 +59,7 @@ fn create_leader() {
 fn cleanup() {
     let child = init_proc().new_child();
 
-    let group = Arc::downgrade(&child.create_group().unwrap());
+    let group = Arc::downgrade(&child.create_group(job_id(child.pid())).unwrap());
     assert!(group.upgrade().is_some());
 
     child.reparent_children_to(&init_proc());
@@ -67,7 +71,7 @@ fn cleanup() {
 #[test]
 fn inherit() {
     let parent = init_proc().new_child();
-    let group = parent.create_group().unwrap();
+    let group = parent.create_group(job_id(parent.pid())).unwrap();
 
     let child = parent.new_child();
     assert!(Arc::ptr_eq(&group, &child.group()));
@@ -79,14 +83,14 @@ fn move_to() {
     let parent = init_proc();
 
     let child1 = parent.new_child();
-    let child1_group = child1.create_group().unwrap();
+    let child1_group = child1.create_group(job_id(child1.pid())).unwrap();
 
     assert!(child1.move_to_group(&child1.group()));
     assert!(Arc::ptr_eq(&child1_group, &child1.group()));
     assert_eq!(child1_group.processes().len(), 1);
 
     let child2 = parent.new_child();
-    let child2_group = child2.create_group().unwrap();
+    let child2_group = child2.create_group(job_id(child2.pid())).unwrap();
 
     assert!(child2.move_to_group(&child1_group));
     assert!(Arc::ptr_eq(&child1_group, &child2.group()));
@@ -105,7 +109,7 @@ fn move_cleanup() {
     let group = parent.group();
 
     let child = parent.new_child();
-    let child_group = Arc::downgrade(&child.create_group().unwrap());
+    let child_group = Arc::downgrade(&child.create_group(job_id(child.pid())).unwrap());
 
     assert!(child_group.upgrade().is_some());
     assert!(child.move_to_group(&group));
@@ -118,7 +122,7 @@ fn move_back() {
     let group = parent.group();
 
     let child = parent.new_child();
-    let child_group = child.create_group().unwrap();
+    let child_group = child.create_group(job_id(child.pid())).unwrap();
 
     assert!(child.move_to_group(&group));
     assert!(child.move_to_group(&child_group));
@@ -131,7 +135,7 @@ fn move_back() {
 #[test]
 fn cleanup_processes() {
     let parent = init_proc().new_child();
-    let group = parent.create_group().unwrap();
+    let group = parent.create_group(job_id(parent.pid())).unwrap();
 
     parent.reparent_children_to(&init_proc());
     parent.retire();

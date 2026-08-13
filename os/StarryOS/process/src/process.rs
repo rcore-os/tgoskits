@@ -307,7 +307,11 @@ impl Process {
     /// be a [`ProcessGroup`] leader.
     ///
     /// Checking [`Session`] conflicts is unnecessary.
-    pub fn create_session(self: &Arc<Self>) -> Option<(Arc<Session>, Arc<ProcessGroup>)> {
+    pub fn create_session(
+        self: &Arc<Self>,
+        identity: axnsproxy::JobControlIdRef,
+    ) -> Option<(Arc<Session>, Arc<ProcessGroup>)> {
+        assert_eq!(identity.global_pid(), self.pid as u64);
         {
             let group = self.group.lock();
             if group.session.sid() == self.pid {
@@ -315,8 +319,8 @@ impl Process {
             }
         }
 
-        let new_session = Session::new(self.pid);
-        let new_group = ProcessGroup::get_or_create(self.pid, &new_session);
+        let new_session = Session::new(identity.clone());
+        let new_group = ProcessGroup::get_or_create(identity, &new_session);
         self.set_group(&new_group);
 
         Some((new_session, new_group))
@@ -331,7 +335,11 @@ impl Process {
     ///
     /// The caller has to ensure that the new [`ProcessGroup`] does not conflict
     /// with any existing [`ProcessGroup`].
-    pub fn create_group(self: &Arc<Self>) -> Option<Arc<ProcessGroup>> {
+    pub fn create_group(
+        self: &Arc<Self>,
+        identity: axnsproxy::JobControlIdRef,
+    ) -> Option<Arc<ProcessGroup>> {
+        assert_eq!(identity.global_pid(), self.pid as u64);
         let session = {
             let group = self.group.lock();
             if group.pgid() == self.pid {
@@ -340,7 +348,7 @@ impl Process {
             group.session.clone()
         };
 
-        let new_group = ProcessGroup::get_or_create(self.pid, &session);
+        let new_group = ProcessGroup::get_or_create(identity, &session);
         self.set_group(&new_group);
 
         Some(new_group)
@@ -569,8 +577,9 @@ impl Process {
     fn allocate(pid: Pid, parent: Option<Arc<Process>>) -> Arc<Process> {
         let group = parent.as_ref().map_or_else(
             || {
-                let session = Session::new(pid);
-                ProcessGroup::get_or_create(pid, &session)
+                let identity = axnsproxy::JobControlId::new_root(pid as u64);
+                let session = Session::new(identity.clone());
+                ProcessGroup::get_or_create(identity, &session)
             },
             |p| p.group(),
         );
@@ -789,7 +798,8 @@ mod tests {
         let init = test_init();
         let process = init.fork(91);
         let source = process.group();
-        let target = ProcessGroup::get_or_create(92, &source.session());
+        let target =
+            ProcessGroup::get_or_create(axnsproxy::JobControlId::new_root(92), &source.session());
         let source_members = source.processes.lock();
         let start = StdArc::new(Barrier::new(2));
         let move_start = start.clone();

@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/mount.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -187,11 +188,16 @@ static void *publish_thread_pidfd(void *arg)
 {
     int socket = *(int *)arg;
     pid_t tid = (pid_t)syscall(SYS_gettid);
+    pid_t clear_child_tid = tid;
+    pid_t set_tid_result =
+        (pid_t)syscall(SYS_set_tid_address, &clear_child_tid);
     int pidfd = (int)syscall(SYS_pidfd_open, tid, PIDFD_THREAD);
-    if (pidfd < 0 || send_pidfd(socket, pidfd, tid) != 0) {
+    if (set_tid_result != tid || pidfd < 0 ||
+        send_pidfd(socket, pidfd, tid) != 0) {
         fprintf(stderr,
-                "FAIL: publish PIDFD_THREAD tid=%d pidfd=%d errno=%d (%s)\n",
-                tid, pidfd, errno, strerror(errno));
+                "FAIL: publish PIDFD_THREAD tid=%d set_tid_address=%d "
+                "pidfd=%d errno=%d (%s)\n",
+                tid, set_tid_result, pidfd, errno, strerror(errno));
         if (pidfd >= 0)
             close(pidfd);
         return (void *)1;
@@ -221,23 +227,35 @@ static int check_thread_pidfd_fdinfo(struct received_pidfd thread_pidfd)
                                   &reported_nspid_inner);
     fclose(stream);
 
-    if (pid_result != 0 || reported_pid != thread_pidfd.tid ||
-        nspid_result != 0 || reported_nspid_outer != thread_pidfd.tid ||
-        reported_nspid_inner != 2) {
+    if (pid_result != 0 || reported_pid <= 0 || nspid_result != 0 ||
+        reported_nspid_outer != reported_pid ||
+        reported_nspid_inner != thread_pidfd.tid) {
         fprintf(stderr,
-                "FAIL: PIDFD_THREAD fdinfo Pid=%d NSpid=%d %d expected=%d %d 2\n",
+                "FAIL: PIDFD_THREAD fdinfo Pid=%d NSpid=%d %d "
+                "expected=<outer-tid> <outer-tid> %d\n",
                 reported_pid, reported_nspid_outer, reported_nspid_inner,
-                thread_pidfd.tid, thread_pidfd.tid);
+                thread_pidfd.tid);
         return -1;
     }
     return 0;
 }
 
+static int remount_procfs_for_current_pid_namespace(void)
+{
+    if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0)
+        return -1;
+    if (umount2("/proc", MNT_DETACH) != 0)
+        return -1;
+    return mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC,
+                 NULL);
+}
+
 static int check_transferred_pidfd_in_child_pid_namespace(int socket)
 {
-    if (unshare(CLONE_NEWPID) != 0) {
-        fprintf(stderr, "FAIL: unshare(CLONE_NEWPID): errno=%d (%s)\n", errno,
-                strerror(errno));
+    if (unshare(CLONE_NEWNS | CLONE_NEWPID) != 0) {
+        fprintf(stderr,
+                "FAIL: unshare(CLONE_NEWNS | CLONE_NEWPID): errno=%d (%s)\n",
+                errno, strerror(errno));
         return 1;
     }
 
@@ -248,6 +266,12 @@ static int check_transferred_pidfd_in_child_pid_namespace(int socket)
         return 1;
     }
     if (namespace_init == 0) {
+        if (remount_procfs_for_current_pid_namespace() != 0) {
+            fprintf(stderr, "FAIL: remount procfs: errno=%d (%s)\n", errno,
+                    strerror(errno));
+            close(socket);
+            return 1;
+        }
         struct received_pidfd received = recv_pidfd(socket);
         int result = received.fd >= 0 ? pidfd_is_hidden_in_fdinfo(received.fd) : -1;
         if (received.fd >= 0)
@@ -305,15 +329,27 @@ int main(void)
     }
 
     int pidfd = -1;
+    pid_t parent_tid = -1;
+    pid_t child_tid = -1;
     struct clone_args args = {
-        .flags = CLONE_PIDFD | CLONE_NEWPID,
+        .flags = CLONE_PIDFD | CLONE_NEWPID | CLONE_PARENT_SETTID |
+                 CLONE_CHILD_SETTID,
         .pidfd = (unsigned long long)&pidfd,
+        .child_tid = (unsigned long long)&child_tid,
+        .parent_tid = (unsigned long long)&parent_tid,
         .exit_signal = SIGCHLD,
     };
 
     pid_t child = (pid_t)syscall(SYS_clone3, &args, sizeof(args));
     if (child == 0) {
         close(thread_sockets[0]);
+        if (getpid() != 1 || getppid() != 0 || child_tid != 1) {
+            fprintf(stderr,
+                    "FAIL: PID namespace init getpid=%d getppid=%d "
+                    "child_tid=%d expected=1 0 1\n",
+                    getpid(), getppid(), child_tid);
+            return 1;
+        }
         pthread_t thread;
         int err = pthread_create(&thread, NULL, publish_thread_pidfd,
                                  &thread_sockets[1]);
@@ -326,10 +362,11 @@ int main(void)
             pause();
     }
     close(thread_sockets[1]);
-    if (child < 0 || pidfd < 0) {
+    if (child < 0 || pidfd < 0 || parent_tid != child) {
         fprintf(stderr,
-                "FAIL: clone3(CLONE_PIDFD | CLONE_NEWPID): errno=%d (%s) pidfd=%d\n",
-                errno, strerror(errno), pidfd);
+                "FAIL: clone3 PID namespace publication: errno=%d (%s) "
+                "pidfd=%d child=%d parent_tid=%d\n",
+                errno, strerror(errno), pidfd, child, parent_tid);
         return 1;
     }
 

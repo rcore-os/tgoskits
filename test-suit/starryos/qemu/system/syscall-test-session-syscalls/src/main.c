@@ -136,6 +136,81 @@ static void test_setpgid(void)
     CHECK_ERR(setpgid(0, 999999), EPERM, "setpgid 不存在 pgid -> EPERM");
 }
 
+static void test_reaped_group_leader_identity(void)
+{
+    printf("--- reaped process-group leader identity ---\n");
+
+    int leader_ready[2];
+    int leader_release[2];
+    int member_ready[2];
+    int member_release[2];
+    int joiner_ready[2];
+    int joiner_release[2];
+    pipe(leader_ready);
+    pipe(leader_release);
+    pipe(member_ready);
+    pipe(member_release);
+    pipe(joiner_ready);
+    pipe(joiner_release);
+
+    pid_t leader = fork();
+    if (leader == 0) {
+        close(leader_ready[0]);
+        close(leader_release[1]);
+        sync_child_ready(leader_ready[1]);
+        wait_child_ready(leader_release[0]);
+        _exit(0);
+    }
+    close(leader_ready[1]);
+    close(leader_release[0]);
+    wait_child_ready(leader_ready[0]);
+    close(leader_ready[0]);
+    CHECK_RET(setpgid(leader, leader), 0, "create process group for leader");
+
+    pid_t member = fork();
+    if (member == 0) {
+        close(member_ready[0]);
+        close(member_release[1]);
+        sync_child_ready(member_ready[1]);
+        wait_child_ready(member_release[0]);
+        _exit(0);
+    }
+    close(member_ready[1]);
+    close(member_release[0]);
+    wait_child_ready(member_ready[0]);
+    close(member_ready[0]);
+    CHECK_RET(setpgid(member, leader), 0, "join member to leader process group");
+
+    sync_child_ready(leader_release[1]);
+    close(leader_release[1]);
+    waitpid(leader, NULL, 0);
+
+    CHECK(getpgid(member) == leader,
+          "reaped leader PGID remains visible while group has a member");
+
+    pid_t joiner = fork();
+    if (joiner == 0) {
+        close(joiner_ready[0]);
+        close(joiner_release[1]);
+        sync_child_ready(joiner_ready[1]);
+        wait_child_ready(joiner_release[0]);
+        _exit(0);
+    }
+    close(joiner_ready[1]);
+    close(joiner_release[0]);
+    wait_child_ready(joiner_ready[0]);
+    close(joiner_ready[0]);
+    CHECK_RET(setpgid(joiner, leader), 0,
+              "join existing process group after its leader is reaped");
+
+    sync_child_ready(member_release[1]);
+    sync_child_ready(joiner_release[1]);
+    close(member_release[1]);
+    close(joiner_release[1]);
+    waitpid(member, NULL, 0);
+    waitpid(joiner, NULL, 0);
+}
+
 static void test_setsid(void)
 {
     printf("--- setsid ---\n");
@@ -247,6 +322,7 @@ int main(void)
 
     test_getsid_getpgid_basic();
     test_setpgid();
+    test_reaped_group_leader_identity();
     test_setsid();
     test_cross_session();
 

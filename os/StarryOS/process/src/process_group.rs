@@ -8,7 +8,7 @@ use crate::{
 
 /// A [`ProcessGroup`] is a collection of [`Process`]es.
 pub struct ProcessGroup {
-    pgid: Pid,
+    pgid: axnsproxy::JobControlIdRef,
     pub(crate) session: Arc<Session>,
     pub(crate) processes: RelationLock<GroupMembers>,
 }
@@ -20,7 +20,10 @@ impl ProcessGroup {
     /// session registry is the corresponding identity authority here: racing
     /// parent/child `setpgid()` calls must converge on one group rather than
     /// creating two objects with the same PGID.
-    pub(crate) fn get_or_create(pgid: Pid, session: &Arc<Session>) -> Arc<Self> {
+    pub(crate) fn get_or_create(
+        pgid: axnsproxy::JobControlIdRef,
+        session: &Arc<Session>,
+    ) -> Arc<Self> {
         let group = Arc::new(Self {
             pgid,
             session: session.clone(),
@@ -35,7 +38,7 @@ impl ProcessGroup {
 impl ProcessGroup {
     /// The [`ProcessGroup`] ID.
     pub fn pgid(&self) -> Pid {
-        self.pgid
+        self.pgid.global_pid() as Pid
     }
 
     /// The [`Session`] that the [`ProcessGroup`] belongs to.
@@ -64,7 +67,7 @@ impl fmt::Debug for ProcessGroup {
         write!(
             f,
             "ProcessGroup({}, session={})",
-            self.pgid,
+            self.pgid(),
             self.session.sid()
         )
     }
@@ -80,18 +83,18 @@ mod tests {
 
     #[test]
     fn duplicate_live_group_identity_reuses_the_session_group() {
-        let session = Session::new(7);
+        let session = Session::new(axnsproxy::JobControlId::new_root(7));
         let start = Arc::new(Barrier::new(2));
 
         let first_session = session.clone();
         let first_start = start.clone();
         let first = thread::spawn(move || {
             first_start.wait();
-            ProcessGroup::get_or_create(11, &first_session)
+            ProcessGroup::get_or_create(axnsproxy::JobControlId::new_root(11), &first_session)
         });
         let second = thread::spawn(move || {
             start.wait();
-            ProcessGroup::get_or_create(11, &session)
+            ProcessGroup::get_or_create(axnsproxy::JobControlId::new_root(11), &session)
         });
 
         let first = first.join().unwrap();

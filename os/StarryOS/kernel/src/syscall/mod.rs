@@ -717,7 +717,7 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) {
         Sysno::timerfd_gettime => sys_timerfd_gettime(current, uctx.arg0() as _, uctx.arg1() as _),
 
         // pidfd
-        Sysno::pidfd_open => sys_pidfd_open(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::pidfd_open => sys_pidfd_open(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::pidfd_getfd => sys_pidfd_getfd(
             current,
             uctx.arg0() as _,
@@ -1038,12 +1038,12 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) {
             uctx.arg2(),
             uctx.arg3(),
         ),
-        Sysno::getsid => sys_getsid(uctx.arg0() as _),
+        Sysno::getsid => sys_getsid(current, uctx.arg0() as _),
         Sysno::setsid => sys_setsid(current),
-        Sysno::getpgid => sys_getpgid(uctx.arg0() as _),
+        Sysno::getpgid => sys_getpgid(current, uctx.arg0() as _),
         #[cfg(target_arch = "x86_64")]
         Sysno::getpgrp => sys_getpgrp(current),
-        Sysno::setpgid => sys_setpgid(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::setpgid => sys_setpgid(current, uctx.arg0() as _, uctx.arg1() as _),
 
         // signal
         Sysno::rt_sigprocmask => sys_rt_sigprocmask(
