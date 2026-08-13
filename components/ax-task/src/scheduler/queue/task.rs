@@ -12,9 +12,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub(crate) struct RqTaskMetadata {
     pub(crate) affinity: Arc<CpuSet>,
-    pub(crate) deadline_donor: Option<ThreadId>,
     pub(crate) deadline_bandwidth_scaled: u64,
-    pub(crate) policy_generation: u64,
     pub(crate) runtime_binding: crate::runtime::ThreadRuntimeBinding,
 }
 
@@ -23,9 +21,7 @@ impl RqTaskMetadata {
     pub(crate) fn test(cpu_count: usize) -> Self {
         Self {
             affinity: Arc::new(CpuSet::all(cpu_count)),
-            deadline_donor: None,
             deadline_bandwidth_scaled: 0,
-            policy_generation: 1,
             runtime_binding: crate::runtime::ThreadRuntimeBinding::new(
                 crate::runtime::ExecutionContextHandle::NONE,
                 crate::runtime::AddressSpaceHandle::NONE,

@@ -26,8 +26,8 @@ impl TaskSystem {
         }
         let placement = core.sched().placement();
         placement.requested_migration().is_none()
-            && dispatch.affinity().contains(transaction.owner())
-            && dispatch.deadline_bandwidth_scaled() == 0
+            && dispatch.metadata().affinity.contains(transaction.owner())
+            && dispatch.metadata().deadline_bandwidth_scaled == 0
             && !matches!(dispatch.schedule_policy(), SchedulePolicy::Deadline(_))
     }
 

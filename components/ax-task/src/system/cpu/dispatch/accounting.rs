@@ -140,12 +140,12 @@ impl CurrentDispatch {
         if !entity
             .deadline_owner_flags()
             .contains(crate::DeadlineFlags::RECLAIM)
-            || self.class.deadline_bandwidth_scaled == 0
+            || self.metadata().deadline_bandwidth_scaled == 0
             || max_bw_scaled == 0
         {
             return 0;
         }
-        let own_bw_scaled = self.class.deadline_bandwidth_scaled;
+        let own_bw_scaled = self.metadata().deadline_bandwidth_scaled;
         if own_bw_scaled > max_bw_scaled {
             crate::runtime::task_runtime::fatal_invariant(
                 0x444c_1011,

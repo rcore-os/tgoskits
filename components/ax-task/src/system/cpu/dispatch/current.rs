@@ -20,18 +20,14 @@ pub(crate) struct CurrentDispatch {
 pub(super) struct CurrentTaskIdentity {
     pub(super) thread: ThreadId,
     pub(super) runtime_core: Arc<ThreadCore>,
-    affinity: Arc<CpuSet>,
-    runtime_binding: crate::runtime::ThreadRuntimeBinding,
+    metadata: RqTaskMetadata,
 }
 
 /// Scheduler-class state owned by the current runqueue interval.
 #[derive(Debug)]
 pub(super) struct CurrentClassDispatch {
     pub(super) schedule: Option<CurrentClassState>,
-    deadline_donor: Option<ThreadId>,
     rt_quota_exempt: bool,
-    pub(super) deadline_bandwidth_scaled: u64,
-    policy_generation: u64,
     pub(super) deadline_overrun: bool,
     role: DispatchRole,
 }
@@ -48,12 +44,8 @@ pub(super) struct CurrentRuntimeAccounting {
 pub(crate) struct CurrentDispatchState {
     pub(crate) thread: ThreadId,
     pub(crate) schedule: CurrentClassState,
-    pub(crate) affinity: Arc<CpuSet>,
-    pub(crate) deadline_donor: Option<ThreadId>,
+    pub(crate) metadata: RqTaskMetadata,
     pub(crate) rt_quota_exempt: bool,
-    pub(crate) deadline_bandwidth_scaled: u64,
-    pub(crate) policy_generation: u64,
-    pub(crate) runtime_binding: crate::runtime::ThreadRuntimeBinding,
 }
 
 /// Class-state ownership during one dispatch interval.
@@ -188,21 +180,14 @@ impl CurrentDispatch {
             CurrentClassState::Owned(active) => active,
             CurrentClassState::Linked { .. } => return None,
         };
-        let metadata = RqTaskMetadata {
-            affinity: task.affinity,
-            deadline_donor: class.deadline_donor,
-            deadline_bandwidth_scaled: class.deadline_bandwidth_scaled,
-            policy_generation: class.policy_generation,
-            runtime_binding: task.runtime_binding,
-        };
-        let migration_capable = metadata.affinity.is_migration_capable();
+        let migration_capable = task.metadata.affinity.is_migration_capable();
         Some(QueuedThread::new(
             task.thread,
             active,
             task.runtime_core,
             class.rt_quota_exempt,
             migration_capable,
-            metadata,
+            task.metadata,
         ))
     }
 
@@ -238,12 +223,12 @@ impl CurrentDispatch {
         metadata: RqTaskMetadata,
         rt_quota_exempt: bool,
     ) {
-        self.task.affinity = metadata.affinity;
-        self.class.deadline_donor = metadata.deadline_donor;
-        self.class.deadline_bandwidth_scaled = metadata.deadline_bandwidth_scaled;
-        self.class.policy_generation = metadata.policy_generation;
-        self.task.runtime_binding = metadata.runtime_binding;
+        self.task.metadata = metadata;
         self.class.rt_quota_exempt = rt_quota_exempt;
+    }
+
+    pub(crate) const fn metadata(&self) -> &RqTaskMetadata {
+        &self.task.metadata
     }
 
     pub(crate) fn placement_demand(&self) -> u64 {
@@ -252,14 +237,6 @@ impl CurrentDispatch {
         } else {
             self.schedule_policy().placement_demand()
         }
-    }
-
-    pub(crate) fn affinity(&self) -> &CpuSet {
-        &self.task.affinity
-    }
-
-    pub(crate) const fn deadline_bandwidth_scaled(&self) -> u64 {
-        self.class.deadline_bandwidth_scaled
     }
 
     pub(crate) const fn is_dedicated_idle(&self) -> bool {
@@ -302,15 +279,11 @@ impl CurrentDispatch {
             task: CurrentTaskIdentity {
                 thread: state.thread,
                 runtime_core: Arc::clone(runtime_core),
-                affinity: state.affinity,
-                runtime_binding: state.runtime_binding,
+                metadata: state.metadata,
             },
             class: CurrentClassDispatch {
                 schedule: Some(state.schedule),
-                deadline_donor: state.deadline_donor,
                 rt_quota_exempt: state.rt_quota_exempt,
-                deadline_bandwidth_scaled: state.deadline_bandwidth_scaled,
-                policy_generation: state.policy_generation,
                 deadline_overrun: false,
                 role: DispatchRole::Task,
             },
@@ -324,17 +297,17 @@ impl CurrentDispatch {
     pub(crate) fn switch_endpoint(&self) -> SwitchEndpoint {
         SwitchEndpoint::new(
             self.task.thread,
-            self.task.runtime_binding,
+            self.task.metadata.runtime_binding,
             self.task.runtime_core.extension_view(),
         )
     }
 
     pub(crate) const fn address_space(&self) -> crate::runtime::AddressSpaceHandle {
-        self.task.runtime_binding.address_space()
+        self.task.metadata.runtime_binding.address_space()
     }
 
     pub(crate) fn update_runtime_binding(&mut self, binding: crate::runtime::ThreadRuntimeBinding) {
-        self.task.runtime_binding = binding;
+        self.task.metadata.runtime_binding = binding;
     }
 
     pub(crate) const fn with_role(mut self, role: DispatchRole) -> Self {

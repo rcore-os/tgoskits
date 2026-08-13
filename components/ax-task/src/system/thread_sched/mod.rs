@@ -236,9 +236,7 @@ impl ThreadSchedState {
     pub(super) fn rq_task_metadata(&self) -> Result<crate::scheduler::RqTaskMetadata, TaskError> {
         Ok(crate::scheduler::RqTaskMetadata {
             affinity: Arc::clone(&self.affinity.affinity),
-            deadline_donor: self.pi.deadline_donor,
             deadline_bandwidth_scaled: self.deadline.bandwidth.reservation_scaled(),
-            policy_generation: self.policy.dispatch_generation,
             runtime_binding: self.runtime.binding(),
         })
     }
