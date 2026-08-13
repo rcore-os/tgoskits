@@ -700,6 +700,32 @@ fn mount_accepts_v1_journal_without_reading_v2_extension_fields() {
 }
 
 #[test]
+fn mount_accepts_internal_journal_uuid_distinct_from_filesystem_uuid() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut first_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut first_dev).expect("mkfs failed");
+    let first_fs = mount(&mut first_dev).expect("initial mount failed");
+    let filesystem_uuid = first_fs.superblock.s_uuid;
+    let journal_block = first_fs
+        .journal_sb_block_start
+        .expect("journal superblock should be mapped")
+        .raw();
+    umount(first_fs, &mut first_dev).expect("initial unmount failed");
+
+    let mut bytes = device.read_block_bytes(journal_block);
+    let mut journal = JournalSuperBlock::decode_checked(&bytes).unwrap();
+    journal.s_uuid = filesystem_uuid.map(|byte| !byte);
+    jbd2_update_superblock_checksum(&mut journal);
+    journal.to_disk_bytes(&mut bytes);
+    device.write_block_bytes(journal_block, &bytes);
+
+    let mut remount_dev = new_jbd2_dev(device);
+    let remounted =
+        mount(&mut remount_dev).expect("Linux accepts an independent UUID for an internal journal");
+    umount(remounted, &mut remount_dev).expect("internal journal unmount");
+}
+
+#[test]
 fn axfs_ng_sync_order_preserves_inode_bitmap_across_remount() {
     // Test idea: mirror axfs-ng's sync_to_disk ordering, then remount and keep
     // creating files. Inodes allocated before the sync must remain marked in

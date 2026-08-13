@@ -598,9 +598,6 @@ impl Ext4FileSystem {
                         .clone();
 
                     let j_sb = JournalSuperBlock::decode_checked(&journal_data)?;
-                    if !j_sb.is_v1() && j_sb.s_uuid != fs.superblock.s_uuid {
-                        return Err(Ext4Error::corrupted().with_operation("jbd2:uuid"));
-                    }
 
                     block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks.clone())?;
 

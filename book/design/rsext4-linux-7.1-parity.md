@@ -85,6 +85,11 @@ inode。`rsext4` 的普通 mount 同样只校验并装载既有 inode；创建�
 mount mutation 前拒绝二者同时声明或均缺失；external-only 镜像则返回 typed
 `UnsupportedCapability(block_io:external_journal)`，直到双设备 journal/home I/O
 ownership、UUID 与 durability 边界完整实现，而不是静默退回主设备上的 inode。
+内部 journal 的 JBD2 superblock UUID 是 journal 自己的 checksum seed，Linux
+`ext4_open_inode_journal()` 不要求它等于 filesystem `s_uuid`；只有 external journal
+设备才比较主 filesystem 的 `s_journal_uuid` 与 journal-device ext4 superblock 的
+`s_uuid`。对应确定性回归会改写内部 JBD2 UUID 并重算 superblock checksum，要求
+mount 继续成功，避免把 Linux 可挂载的内部 journal 错报为 `EUCLEAN`。
 
 ## 4. 公共 API 迁移
 
