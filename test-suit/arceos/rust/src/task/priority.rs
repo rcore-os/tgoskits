@@ -1,4 +1,12 @@
-use std::{os::arceos::api::task::ax_set_current_priority, sync::Arc, thread, time, vec, vec::Vec};
+use std::{
+    os::arceos::{
+        api::task::ax_set_current_priority,
+        task::{current_thread_id, set_thread_policy, thread_policy},
+    },
+    sync::Arc,
+    thread, time, vec,
+    vec::Vec,
+};
 
 struct TaskParam {
     data_len: usize,
@@ -43,7 +51,9 @@ fn load(n: &u64) -> u64 {
 }
 
 pub fn run() -> crate::TestResult {
-    ax_set_current_priority(-20).ok();
+    let runner = current_thread_id().expect("task-priority runner must have an identity");
+    let runner_policy = thread_policy(runner).expect("task-priority runner must have a policy");
+    ax_set_current_priority(-20).expect("failed to raise the task-priority runner priority");
 
     let data = TASK_PARAMS
         .iter()
@@ -61,7 +71,7 @@ pub fn run() -> crate::TestResult {
         let data_len = param.data_len;
         let nice = param.nice;
         tasks.push(thread::spawn(move || {
-            ax_set_current_priority(nice).ok();
+            ax_set_current_priority(nice).expect("failed to set task-priority worker priority");
             let partial_sum = data[..data_len].iter().map(load).sum::<u64>();
             let leave_time = start_time.elapsed().as_millis() as u64;
             (partial_sum, leave_time)
@@ -81,5 +91,12 @@ pub fn run() -> crate::TestResult {
     }
 
     assert_eq!(expect, actual);
+    set_thread_policy(runner, runner_policy)
+        .expect("failed to restore the task-priority runner policy");
+    assert_eq!(
+        thread_policy(runner),
+        Ok(runner_policy),
+        "task-priority must not leak its runner policy into the next test"
+    );
     Ok(())
 }
