@@ -19,5 +19,8 @@ tls = []
 # Use a thread-local register model for host-side tests.
 host-test = []
 
+# Expose deterministic target-side observations to the ArceOS task test suite.
+task-test-hooks = []
+
 [dependencies]
 thiserror.workspace = true

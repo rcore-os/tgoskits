@@ -9,8 +9,13 @@ pub use ax_plat::percpu::{
 };
 pub use cpu_local::{
     CpuAreaRef, CpuLocalError, CpuPin, CurrentContext, CurrentThreadHeader, ExclusiveCpu,
-    PreemptExit, PreparedThreadSwitch, PreviousThreadBinding, RuntimeThreadCookie,
-    ThreadSwitchError, with_cpu_pin, with_exclusive_cpu,
+    PreemptExit, PreemptGuardOwner, PreparedThreadSwitch, PreviousThreadBinding,
+    RuntimeThreadCookie, ThreadSwitchError, with_cpu_pin, with_exclusive_cpu,
+};
+#[cfg(feature = "task-test-hooks")]
+#[doc(hidden)]
+pub use cpu_local::{
+    reset_preempt_guard_owner_resolution_count, take_preempt_guard_owner_resolution_count,
 };
 
 #[inline(always)]
@@ -49,6 +54,12 @@ pub fn scheduler_preempt_guard_depth() -> Result<u32, CpuLocalError> {
     with_stable_scheduler_current(cpu_local::scheduler_preempt_guard_depth)
 }
 
+/// Reads ordinary preemption nesting from a live guard owner.
+#[inline(always)]
+pub fn scheduler_owned_preempt_guard_depth(owner: PreemptGuardOwner) -> u32 {
+    cpu_local::scheduler_owned_preempt_guard_depth(owner)
+}
+
 /// Publishes scheduler work into the stable current task.
 #[inline(always)]
 pub fn scheduler_set_preempt_need_resched() -> Result<(), CpuLocalError> {
@@ -63,20 +74,31 @@ pub fn scheduler_clear_preempt_need_resched() -> Result<(), CpuLocalError> {
 
 /// Enters one preemption guard on the stable current task.
 #[inline(always)]
-pub fn scheduler_enter_preempt_guard() -> Result<(), CpuLocalError> {
+pub fn scheduler_enter_preempt_guard() -> Result<PreemptGuardOwner, CpuLocalError> {
     with_stable_scheduler_current(cpu_local::scheduler_enter_preempt_guard)
 }
 
 /// Prepares one preemption-guard exit on the stable current task.
 #[inline(always)]
-pub fn scheduler_prepare_preempt_guard_exit() -> Result<PreemptExit, CpuLocalError> {
-    with_stable_scheduler_current(cpu_local::scheduler_prepare_preempt_guard_exit)
+pub fn scheduler_prepare_preempt_guard_exit(owner: PreemptGuardOwner) -> PreemptExit {
+    cpu_local::scheduler_prepare_preempt_guard_exit(owner)
 }
 
 /// Consumes the final guard retained by the stable current task.
 #[inline(always)]
-pub fn scheduler_consume_final_preempt_guard() -> Result<bool, CpuLocalError> {
-    with_stable_scheduler_current(cpu_local::scheduler_consume_final_preempt_guard)
+pub fn scheduler_consume_final_preempt_guard(owner: PreemptGuardOwner) -> bool {
+    cpu_local::scheduler_consume_final_preempt_guard(owner)
+}
+
+/// Resolves the owner of an already-live ordinary preemption guard.
+///
+/// # Safety
+///
+/// The caller must retain the live guard depth until the returned owner is
+/// consumed by the matching exit path.
+#[inline(always)]
+pub unsafe fn scheduler_current_preempt_guard_owner() -> Result<PreemptGuardOwner, CpuLocalError> {
+    with_stable_scheduler_current(|| unsafe { cpu_local::scheduler_current_preempt_guard_owner() })
 }
 
 /// Returns the direct current CPU-area base under an explicit pin.

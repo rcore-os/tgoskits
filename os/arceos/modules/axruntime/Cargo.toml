@@ -19,6 +19,11 @@ host-test = [
   "ax-task/host-test",
   "ax-percpu/host-test",
 ]
+task-test-hooks = [
+  "multitask",
+  "ax-hal/task-test-hooks",
+  "ax-task/task-test-hooks",
+]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi"]
 # Scheduler-only users still share ax-ipi's typed, coalescible physical edge;
 # logical pending state remains in ax-task.

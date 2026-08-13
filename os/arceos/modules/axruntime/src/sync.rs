@@ -12,7 +12,7 @@ pub use ax_task::sync::api::*;
 fn context_preempt_enter() -> usize {
     #[cfg(feature = "multitask")]
     {
-        usize::from(crate::guard::enter_lock_preempt())
+        crate::guard::enter_lock_preempt().map_or(0, ax_hal::percpu::PreemptGuardOwner::into_raw)
     }
     #[cfg(not(feature = "multitask"))]
     {
@@ -25,7 +25,11 @@ unsafe fn context_preempt_exit(state: usize) {
         return;
     }
     #[cfg(feature = "multitask")]
-    crate::guard::exit_preempt();
+    {
+        let owner = unsafe { ax_hal::percpu::PreemptGuardOwner::from_raw(state) }
+            .expect("a live synchronization guard must retain its preemption owner");
+        crate::guard::exit_preempt(owner);
+    }
     #[cfg(not(feature = "multitask"))]
     unreachable!("a uniprocessor runtime cannot own a preemption token");
 }
@@ -35,7 +39,11 @@ unsafe fn context_preempt_exit_irq_return(state: usize) {
         return;
     }
     #[cfg(feature = "multitask")]
-    crate::guard::exit_preempt_from_irq_return();
+    {
+        let owner = unsafe { ax_hal::percpu::PreemptGuardOwner::from_raw(state) }
+            .expect("an IRQ-return guard must retain its preemption owner");
+        crate::guard::exit_preempt_from_irq_return(owner);
+    }
     #[cfg(not(feature = "multitask"))]
     unreachable!("a uniprocessor runtime cannot own an IRQ-return preemption token");
 }
@@ -64,7 +72,7 @@ fn context_hardirq_exit() {
     crate::irq_time::exit();
 }
 
-fn context_operations() -> ax_task::sync::bridge::ContextOperations {
+static CONTEXT_OPERATIONS: ax_task::sync::bridge::ContextOperations =
     ax_task::sync::bridge::ContextOperations {
         preempt_enter: context_preempt_enter,
         preempt_exit: context_preempt_exit,
@@ -73,8 +81,7 @@ fn context_operations() -> ax_task::sync::bridge::ContextOperations {
         irq_restore: context_irq_restore,
         hardirq_enter: context_hardirq_enter,
         hardirq_exit: context_hardirq_exit,
-    }
-}
+    };
 
 fn into_sync_context_state(
     state: ax_task::sync::bridge::ContextState,
@@ -95,7 +102,7 @@ impl ax_sync::interface::ContextOps for RuntimeContextOps {
     fn enter(context: u8) -> ax_sync::interface::ContextState {
         into_sync_context_state(ax_task::sync::bridge::context_enter(
             context,
-            &context_operations(),
+            &CONTEXT_OPERATIONS,
         ))
     }
 
@@ -103,27 +110,27 @@ impl ax_sync::interface::ContextOps for RuntimeContextOps {
         ax_task::sync::bridge::context_exit(
             context,
             into_task_context_state(state),
-            &context_operations(),
+            &CONTEXT_OPERATIONS,
         );
     }
 
     fn irq_return_preempt_enter() -> usize {
-        ax_task::sync::bridge::irq_return_preempt_enter(&context_operations())
+        ax_task::sync::bridge::irq_return_preempt_enter(&CONTEXT_OPERATIONS)
     }
 
     fn irq_return_preempt_exit(state: usize) {
         // SAFETY: ax-sync returns only the token created by the paired enter.
         unsafe {
-            ax_task::sync::bridge::irq_return_preempt_exit(state, &context_operations());
+            ax_task::sync::bridge::irq_return_preempt_exit(state, &CONTEXT_OPERATIONS);
         }
     }
 
     fn hardirq_enter() {
-        ax_task::sync::bridge::hardirq_enter(&context_operations());
+        ax_task::sync::bridge::hardirq_enter(&CONTEXT_OPERATIONS);
     }
 
     fn hardirq_exit() {
-        ax_task::sync::bridge::hardirq_exit(&context_operations());
+        ax_task::sync::bridge::hardirq_exit(&CONTEXT_OPERATIONS);
     }
 }
 
@@ -153,7 +160,7 @@ impl ax_sync::interface::SpinOps for RuntimeSpinOps {
                 is_try,
                 caller,
             },
-            &context_operations(),
+            &CONTEXT_OPERATIONS,
         );
         ax_sync::interface::AcquireResult::new(acquired, into_sync_context_state(context_state))
     }
@@ -169,7 +176,7 @@ impl ax_sync::interface::SpinOps for RuntimeSpinOps {
             lock_addr,
             context,
             into_task_context_state(context_state),
-            &context_operations(),
+            &CONTEXT_OPERATIONS,
         );
     }
 
@@ -208,7 +215,7 @@ impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
                 is_try,
                 caller,
             },
-            &context_operations(),
+            &CONTEXT_OPERATIONS,
         );
         ax_sync::interface::AcquireResult::new(acquired, into_sync_context_state(context_state))
     }
@@ -226,7 +233,7 @@ impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
             context,
             into_task_context_state(context_state),
             mode,
-            &context_operations(),
+            &CONTEXT_OPERATIONS,
         );
     }
 

@@ -40,6 +40,7 @@ host-test = [
     "ax-percpu/host-test",
     "ax-sync/host-test",
 ]
+task-test-hooks = ["cpu-local/task-test-hooks"]
 
 default = []
 ipi = ["irq"]

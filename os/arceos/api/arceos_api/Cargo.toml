@@ -25,7 +25,11 @@ multitask = [
   "dep:ax-task",
   "ax-runtime/multitask",
 ]
-task-test-hooks = ["multitask", "ax-task/task-test-hooks"]
+task-test-hooks = [
+  "multitask",
+  "ax-runtime/task-test-hooks",
+  "ax-task/task-test-hooks",
+]
 fs = ["dep:ax-fs-ng"]
 net = ["dep:ax-net"]
 display = ["dep:ax-display"]

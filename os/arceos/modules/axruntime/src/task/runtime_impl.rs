@@ -151,11 +151,13 @@ impl_task_runtime! {
             }
             #[cfg(not(test))]
             {
-                if crate::guard::enter_lock_preempt() {
-                    // SAFETY: enter_lock_preempt established one matching live depth.
-                    unsafe { PreemptGuardToken::from_raw(1) }
-                } else {
-                    PreemptGuardToken::NONE
+                match crate::guard::enter_lock_preempt() {
+                    Some(owner) => {
+                        // SAFETY: the architecture owner identifies the live
+                        // depth established by enter_lock_preempt.
+                        unsafe { PreemptGuardToken::from_raw(owner.into_raw()) }
+                    }
+                    None => PreemptGuardToken::NONE,
                 }
             }
         }
@@ -166,7 +168,13 @@ impl_task_runtime! {
                 "inherited owner scope passed to ordinary preemption exit"
             );
             #[cfg(not(test))]
-            crate::guard::exit_preempt();
+            {
+                let owner = unsafe {
+                    ax_hal::percpu::PreemptGuardOwner::from_raw(token.into_raw())
+                }
+                .expect("task preemption token must retain its architecture owner");
+                crate::guard::exit_preempt(owner);
+            }
         }
 
         unsafe fn preempt_guard_exit_irq_return(token: PreemptGuardToken) {
@@ -175,7 +183,13 @@ impl_task_runtime! {
                 "inherited owner scope passed to IRQ-return preemption exit"
             );
             #[cfg(not(test))]
-            crate::guard::exit_preempt_from_irq_return();
+            {
+                let owner = unsafe {
+                    ax_hal::percpu::PreemptGuardOwner::from_raw(token.into_raw())
+                }
+                .expect("IRQ-return token must retain its architecture owner");
+                crate::guard::exit_preempt_from_irq_return(owner);
+            }
         }
 
         fn hardirq_enter() {

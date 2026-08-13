@@ -1,6 +1,58 @@
 //! Architecture register primitives and shared validation.
 
-use core::{pin::Pin, ptr::NonNull, sync::atomic::Ordering};
+#[cfg(feature = "task-test-hooks")]
+use core::sync::atomic::AtomicUsize;
+use core::{num::NonZeroUsize, pin::Pin, ptr::NonNull, sync::atomic::Ordering};
+
+#[cfg(feature = "task-test-hooks")]
+static PREEMPT_GUARD_OWNER_RESOLUTIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// Architecture-selected owner of one live ordinary preemption guard.
+///
+/// Fixed-anchor architectures encode their CPU-local preemption word with a
+/// private sentinel. Load/store architectures encode the pinned current-thread
+/// header so the matching exit can reuse the exact owner selected at entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct PreemptGuardOwner(NonZeroUsize);
+
+impl PreemptGuardOwner {
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    const FIXED_CPU: Self = Self(NonZeroUsize::MIN);
+
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    fn from_current(current: NonNull<CurrentThreadHeader>) -> Self {
+        // CurrentThreadHeader is aligned and therefore always non-null here.
+        Self(unsafe { NonZeroUsize::new_unchecked(current.as_ptr() as usize) })
+    }
+
+    /// Reconstructs a runtime-transported owner token.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must have been returned by [`Self::into_raw`] for a live guard on
+    /// this execution context and must be consumed by exactly one matching
+    /// preemption-guard exit.
+    pub const unsafe fn from_raw(raw: usize) -> Option<Self> {
+        match NonZeroUsize::new(raw) {
+            Some(raw) => Some(Self(raw)),
+            None => None,
+        }
+    }
+
+    /// Returns the opaque representation used by the runtime boundary.
+    pub const fn into_raw(self) -> usize {
+        self.0.get()
+    }
+
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    fn current(self) -> &'static CurrentThreadHeader {
+        // SAFETY: construction accepts only the current pinned header. The
+        // live preemption depth prevents that task from completing or moving
+        // between construction and the matching exit operation.
+        unsafe { &*(self.0.get() as *const CurrentThreadHeader) }
+    }
+}
 
 use crate::{
     CpuAreaRef, CpuLocalError, CpuPin, CurrentThreadHeader, PreemptExit, ThreadSwitchError,
@@ -98,6 +150,21 @@ pub fn scheduler_preempt_guard_depth() -> Result<u32, CpuLocalError> {
     }
 }
 
+/// Reads ordinary preemption nesting from a live guard owner.
+#[doc(hidden)]
+#[inline(always)]
+pub fn scheduler_owned_preempt_guard_depth(owner: PreemptGuardOwner) -> u32 {
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    {
+        assert_eq!(owner, PreemptGuardOwner::FIXED_CPU);
+        unsafe { imp::preempt_guard_depth() }
+    }
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    {
+        owner.current().preempt_guard_depth()
+    }
+}
+
 /// Publishes scheduler work into the architecture-selected preemption word.
 #[doc(hidden)]
 #[inline(always)]
@@ -124,44 +191,100 @@ pub fn scheduler_clear_preempt_need_resched() -> Result<(), CpuLocalError> {
     Ok(())
 }
 
-/// Enters one ordinary preemption guard on the architecture-selected owner.
+/// Enters one ordinary preemption guard and returns its architecture owner.
 #[doc(hidden)]
 #[inline(always)]
-pub fn scheduler_enter_preempt_guard() -> Result<(), CpuLocalError> {
+pub fn scheduler_enter_preempt_guard() -> Result<PreemptGuardOwner, CpuLocalError> {
     #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
     unsafe {
         imp::enter_preempt_guard();
+        Ok(PreemptGuardOwner::FIXED_CPU)
     }
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
-    with_scheduler_preempt_state(CurrentThreadHeader::enter_preempt_guard)?;
-    Ok(())
+    {
+        let owner = resolve_preempt_guard_owner()?;
+        owner.current().enter_preempt_guard();
+        Ok(owner)
+    }
 }
 
 /// Consumes a nested guard or retains the final depth for baton conversion.
 #[doc(hidden)]
 #[inline(always)]
-pub fn scheduler_prepare_preempt_guard_exit() -> Result<PreemptExit, CpuLocalError> {
+pub fn scheduler_prepare_preempt_guard_exit(owner: PreemptGuardOwner) -> PreemptExit {
     #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
     {
-        Ok(unsafe { imp::prepare_preempt_guard_exit() })
+        assert_eq!(owner, PreemptGuardOwner::FIXED_CPU);
+        unsafe { imp::prepare_preempt_guard_exit() }
     }
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
     {
-        with_scheduler_preempt_state(CurrentThreadHeader::prepare_preempt_guard_exit)
+        owner.current().prepare_preempt_guard_exit()
     }
+}
+
+/// Resolves the owner of an already-live ordinary preemption guard.
+///
+/// # Safety
+///
+/// The current execution context must retain at least one ordinary preemption
+/// depth until the returned owner is consumed by the matching exit path.
+#[doc(hidden)]
+#[inline(always)]
+pub unsafe fn scheduler_current_preempt_guard_owner() -> Result<PreemptGuardOwner, CpuLocalError> {
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    {
+        Ok(PreemptGuardOwner::FIXED_CPU)
+    }
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    {
+        resolve_preempt_guard_owner()
+    }
+}
+
+#[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+#[inline(always)]
+fn resolve_preempt_guard_owner() -> Result<PreemptGuardOwner, CpuLocalError> {
+    record_preempt_guard_owner_resolution();
+    // SAFETY: synchronous execution keeps this task allocation alive. Entry
+    // immediately publishes the guard depth before the token can escape; the
+    // current-owner variant requires an already-live depth from its caller.
+    unsafe { scheduler_current_thread() }.map(PreemptGuardOwner::from_current)
+}
+
+#[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+#[inline(always)]
+fn record_preempt_guard_owner_resolution() {
+    #[cfg(feature = "task-test-hooks")]
+    PREEMPT_GUARD_OWNER_RESOLUTIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Resets the target-side count of preemption-guard owner resolutions.
+#[cfg(feature = "task-test-hooks")]
+#[doc(hidden)]
+pub fn reset_preempt_guard_owner_resolution_count() {
+    PREEMPT_GUARD_OWNER_RESOLUTIONS.store(0, Ordering::Relaxed);
+}
+
+/// Takes the target-side count of preemption-guard owner resolutions.
+#[cfg(feature = "task-test-hooks")]
+#[doc(hidden)]
+pub fn take_preempt_guard_owner_resolution_count() -> usize {
+    PREEMPT_GUARD_OWNER_RESOLUTIONS.swap(0, Ordering::Relaxed)
 }
 
 /// Converts the exact final ordinary guard into scheduler-owned state.
 #[doc(hidden)]
 #[inline(always)]
-pub fn scheduler_consume_final_preempt_guard() -> Result<bool, CpuLocalError> {
+pub fn scheduler_consume_final_preempt_guard(owner: PreemptGuardOwner) -> bool {
     #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
     {
-        Ok(unsafe { imp::consume_final_preempt_guard() })
+        assert_eq!(owner, PreemptGuardOwner::FIXED_CPU);
+        unsafe { imp::consume_final_preempt_guard() }
     }
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
     {
-        with_scheduler_preempt_state(CurrentThreadHeader::consume_final_preempt_guard)
+        owner.current().consume_final_preempt_guard()
     }
 }
 
@@ -520,7 +643,8 @@ mod tests {
                 crate::with_cpu_pin(|pin| {
                     install_bootstrap_thread(pin, first.as_ref())
                         .expect("first task publication must succeed");
-                    scheduler_enter_preempt_guard().expect("first guard enter must succeed");
+                    let first_owner =
+                        scheduler_enter_preempt_guard().expect("first guard enter must succeed");
                     assert_eq!(scheduler_preempt_guard_depth(), Ok(1));
 
                     let (prepared, mut previous) =
@@ -536,9 +660,9 @@ mod tests {
                         Ok(0),
                         "an incoming task must not inherit the previous task's guard depth",
                     );
-                    scheduler_enter_preempt_guard().expect("second guard enter must succeed");
-                    let _ = scheduler_prepare_preempt_guard_exit()
-                        .expect("second guard exit must succeed");
+                    let second_owner =
+                        scheduler_enter_preempt_guard().expect("second guard enter must succeed");
+                    let _ = scheduler_prepare_preempt_guard_exit(second_owner);
                     assert_eq!(scheduler_preempt_guard_depth(), Ok(0));
 
                     let (prepared, mut previous) =
@@ -554,8 +678,7 @@ mod tests {
                         Ok(1),
                         "the suspended task must retain its guard depth",
                     );
-                    let _ = scheduler_prepare_preempt_guard_exit()
-                        .expect("first guard exit must succeed");
+                    let _ = scheduler_prepare_preempt_guard_exit(first_owner);
                     assert_eq!(scheduler_preempt_guard_depth(), Ok(0));
                 })
             }

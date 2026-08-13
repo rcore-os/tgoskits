@@ -38,6 +38,11 @@ const STAGE_COMPLETE: u8 = 3;
 const RT_POLICY_RESCHEDULE: u8 = 1 << 0;
 const RT_POLICY_OWNER_WORK: u8 = 1 << 1;
 
+/// Enters and exits one ordinary preemption scope through the real runtime.
+pub fn exercise_preempt_guard() {
+    drop(crate::lock::PreemptScope::enter());
+}
+
 struct IrqOwnerProbe {
     target: AtomicU64,
     thread_sched_entries: AtomicU64,

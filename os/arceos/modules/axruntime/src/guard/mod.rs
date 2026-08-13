@@ -37,7 +37,9 @@ pub(crate) fn release_bootstrap_preemption() {
         1,
         "bootstrap release requires the exact Linux boot preemption depth"
     );
-    finish_kernel_preempt_guard(PreemptExitOrigin::Task);
+    let owner = unsafe { ax_hal::percpu::scheduler_current_preempt_guard_owner() }
+        .expect("bootstrap preemption owner is invalid");
+    finish_kernel_preempt_guard(PreemptExitOrigin::Task, owner);
     assert_eq!(
         current_preempt_depth(),
         0,
@@ -204,7 +206,7 @@ impl PreemptExitOrigin {
 }
 
 #[cfg(feature = "multitask")]
-fn exit_lock_preempt(origin: PreemptExitOrigin) {
+fn exit_lock_preempt(origin: PreemptExitOrigin, owner: ax_hal::percpu::PreemptGuardOwner) {
     let irqs_were_enabled = ax_hal::asm::irqs_enabled();
     let irq_return = origin.is_irq_return();
     assert!(
@@ -218,10 +220,9 @@ fn exit_lock_preempt(origin: PreemptExitOrigin) {
     ax_hal::asm::disable_irqs();
     #[cfg(feature = "multitask")]
     let must_schedule = with_guard_state_mut(|state| {
-        let preempt_depth = current_preempt_depth();
         let must_schedule = preempt_exit_needs_schedule(
             state,
-            preempt_depth,
+            ax_hal::percpu::scheduler_owned_preempt_guard_depth(owner),
             origin,
             irqs_were_enabled,
             in_hard_irq_pinned,
@@ -229,8 +230,7 @@ fn exit_lock_preempt(origin: PreemptExitOrigin) {
 
         if !must_schedule {
             assert!(
-                ax_hal::percpu::scheduler_consume_final_preempt_guard()
-                    .expect("architecture preemption state is invalid"),
+                ax_hal::percpu::scheduler_consume_final_preempt_guard(owner),
                 "final preemption guard changed under local IRQ exclusion"
             );
         }
@@ -238,8 +238,7 @@ fn exit_lock_preempt(origin: PreemptExitOrigin) {
     });
     #[cfg(not(feature = "multitask"))]
     assert!(
-        ax_hal::percpu::scheduler_consume_final_preempt_guard()
-            .expect("architecture preemption state is invalid"),
+        ax_hal::percpu::scheduler_consume_final_preempt_guard(owner),
         "final preemption guard changed under local IRQ exclusion"
     );
 
@@ -273,9 +272,9 @@ fn exit_lock_preempt(origin: PreemptExitOrigin) {
 }
 
 #[cfg(all(feature = "multitask", not(test)))]
-pub(crate) fn enter_preempt() {
+pub(crate) fn enter_preempt() -> ax_hal::percpu::PreemptGuardOwner {
     ax_hal::percpu::scheduler_enter_preempt_guard()
-        .expect("architecture preemption state is invalid");
+        .expect("architecture preemption state is invalid")
 }
 
 /// Enters an ordinary lock-preemption scope unless a stronger owner scope is active.
@@ -285,44 +284,42 @@ pub(crate) fn enter_preempt() {
 /// outer rq/IRQ transaction covers its internal task-state locks, so those
 /// locks must not repeatedly mutate the suspended task's preemption word.
 #[cfg(all(feature = "multitask", not(test)))]
-pub(crate) fn enter_lock_preempt() -> bool {
+pub(crate) fn enter_lock_preempt() -> Option<ax_hal::percpu::PreemptGuardOwner> {
     if !ax_hal::asm::irqs_enabled() && read_state().owns_cpu_context() {
-        return false;
+        return None;
     }
-    enter_preempt();
-    true
+    Some(enter_preempt())
 }
 
 #[cfg(all(feature = "multitask", test))]
-pub(crate) const fn enter_lock_preempt() -> bool {
-    false
+pub(crate) const fn enter_lock_preempt() -> Option<ax_hal::percpu::PreemptGuardOwner> {
+    None
 }
 
 #[cfg(all(feature = "multitask", not(test)))]
-pub(crate) fn exit_preempt() {
-    let exit = ax_hal::percpu::scheduler_prepare_preempt_guard_exit()
-        .expect("architecture preemption state is invalid");
+pub(crate) fn exit_preempt(owner: ax_hal::percpu::PreemptGuardOwner) {
+    let exit = ax_hal::percpu::scheduler_prepare_preempt_guard_exit(owner);
     match exit {
         ax_hal::percpu::PreemptExit::NestedConsumed
         | ax_hal::percpu::PreemptExit::FinalConsumed => {}
         ax_hal::percpu::PreemptExit::FinalPending => {
-            exit_lock_preempt(PreemptExitOrigin::Task);
+            exit_lock_preempt(PreemptExitOrigin::Task, owner);
         }
     }
 }
 
 #[cfg(all(feature = "multitask", test))]
-pub(crate) fn exit_preempt() {
+pub(crate) fn exit_preempt(_owner: ax_hal::percpu::PreemptGuardOwner) {
     panic!("unit-test runtime cannot exit an unowned preemption guard")
 }
 
 #[cfg(all(feature = "multitask", not(test)))]
-pub(crate) fn exit_preempt_from_irq_return() {
-    finish_kernel_preempt_guard(PreemptExitOrigin::IrqReturn);
+pub(crate) fn exit_preempt_from_irq_return(owner: ax_hal::percpu::PreemptGuardOwner) {
+    finish_kernel_preempt_guard(PreemptExitOrigin::IrqReturn, owner);
 }
 
 #[cfg(all(feature = "multitask", test))]
-pub(crate) fn exit_preempt_from_irq_return() {
+pub(crate) fn exit_preempt_from_irq_return(_owner: ax_hal::percpu::PreemptGuardOwner) {
     panic!("unit-test runtime cannot exit an unowned IRQ-return guard")
 }
 
@@ -377,14 +374,26 @@ pub(crate) fn enter_scheduler_frame_guard(
     }
 
     ax_hal::asm::disable_irqs();
-    let preempt_depth = current_preempt_depth();
+    let preempt_owner = match entry {
+        RuntimeSchedulerEntry::PreemptExit | RuntimeSchedulerEntry::IrqReturn => Some(
+            // SAFETY: both entries retain the exact final preemption depth
+            // until scheduler-frame admission consumes it below.
+            unsafe { ax_hal::percpu::scheduler_current_preempt_guard_owner() }
+                .expect("scheduler entry preemption owner is invalid"),
+        ),
+        RuntimeSchedulerEntry::Task | RuntimeSchedulerEntry::IrqGuardExit => None,
+    };
+    let preempt_depth = preempt_owner.map_or_else(current_preempt_depth, |owner| {
+        ax_hal::percpu::scheduler_owned_preempt_guard_depth(owner)
+    });
     let claimed = with_guard_state_mut(|state| match entry {
         RuntimeSchedulerEntry::Task => state.claim_task_scheduler(preempt_depth),
         RuntimeSchedulerEntry::PreemptExit | RuntimeSchedulerEntry::IrqReturn => {
             let mut claimed = *state;
             if !claimed.claim_preempt_exit_scheduler(preempt_depth)
-                || !ax_hal::percpu::scheduler_consume_final_preempt_guard()
-                    .expect("architecture preemption state is invalid")
+                || !ax_hal::percpu::scheduler_consume_final_preempt_guard(
+                    preempt_owner.expect("preemption entry must retain its guard owner"),
+                )
             {
                 false
             } else {
@@ -527,19 +536,17 @@ fn with_guard_state_mut<R>(
 }
 
 #[cfg(feature = "multitask")]
-fn finish_kernel_preempt_guard(origin: PreemptExitOrigin) {
-    let Ok(exit) = ax_hal::percpu::scheduler_prepare_preempt_guard_exit() else {
-        #[cfg(not(feature = "host-test"))]
-        panic!("architecture preemption state is invalid while enabling preemption");
-        #[cfg(feature = "host-test")]
-        return;
-    };
+fn finish_kernel_preempt_guard(
+    origin: PreemptExitOrigin,
+    owner: ax_hal::percpu::PreemptGuardOwner,
+) {
+    let exit = ax_hal::percpu::scheduler_prepare_preempt_guard_exit(owner);
     match exit {
         ax_hal::percpu::PreemptExit::NestedConsumed
         | ax_hal::percpu::PreemptExit::FinalConsumed => return,
         ax_hal::percpu::PreemptExit::FinalPending => {}
     }
-    exit_lock_preempt(origin);
+    exit_lock_preempt(origin, owner);
 }
 
 #[cfg(test)]

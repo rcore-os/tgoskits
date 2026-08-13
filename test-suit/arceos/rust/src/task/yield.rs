@@ -1,4 +1,14 @@
 use std::{
+    os::arceos::modules::{
+        ax_hal::{
+            asm::{disable_irqs, enable_irqs, irqs_enabled},
+            percpu::{
+                reset_preempt_guard_owner_resolution_count,
+                take_preempt_guard_owner_resolution_count,
+            },
+        },
+        ax_task::task_test_hooks,
+    },
     println,
     sync::atomic::{AtomicUsize, Ordering},
     thread,
@@ -8,6 +18,21 @@ const NUM_TASKS: usize = 10;
 static FINISHED_TASKS: AtomicUsize = AtomicUsize::new(0);
 
 pub fn run() -> crate::TestResult {
+    assert!(
+        irqs_enabled(),
+        "task-yield must start with local IRQs enabled"
+    );
+    disable_irqs();
+    reset_preempt_guard_owner_resolution_count();
+    task_test_hooks::exercise_preempt_guard();
+    let owner_resolutions = take_preempt_guard_owner_resolution_count();
+    enable_irqs();
+    assert_eq!(
+        owner_resolutions,
+        usize::from(!cfg!(target_arch = "x86_64")),
+        "one generic lock-preemption scope must resolve its task owner only once"
+    );
+
     FINISHED_TASKS.store(0, Ordering::Release);
     for i in 0..NUM_TASKS {
         thread::spawn(move || {
