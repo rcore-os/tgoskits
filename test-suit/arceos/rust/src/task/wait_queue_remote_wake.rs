@@ -2,7 +2,7 @@ use core::sync::atomic::AtomicUsize;
 use std::{
     os::arceos::{
         api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
-        modules::ax_hal::percpu::this_cpu_id,
+        modules::{ax_hal::percpu::this_cpu_id, ax_task::task_test_hooks},
     },
     sync::atomic::{AtomicBool, Ordering},
     thread,
@@ -38,11 +38,12 @@ fn pin_current_to_cpu(cpu_id: usize) {
     );
 }
 
-fn wake_sleep_queue_after_waiter_enqueued() {
+fn wake_sleep_queue_after_waiter_enqueued(sleeper: u64) {
     for _ in 0..WAITER_ENQUEUE_RETRIES {
-        if api::ax_wait_queue_wake(&SLEEP_WQ, 1) == 1 {
+        if task_test_hooks::thread_is_blocked(sleeper) {
+            task_test_hooks::arm_wake_irq_owner_probe(sleeper);
             GO.store(true, Ordering::Release);
-            let _ = api::ax_wait_queue_wake(&SLEEP_WQ, 1);
+            assert_eq!(api::ax_wait_queue_wake(&SLEEP_WQ, 1), 1);
             return;
         }
         thread::yield_now();
@@ -80,11 +81,12 @@ pub fn run() -> crate::TestResult {
         DONE.store(true, Ordering::Release);
         api::ax_wait_queue_wake(&DONE_WQ, 1);
     });
+    let sleeper_id = sleeper.thread().id().as_u64().get();
 
     api::ax_wait_queue_wait_until(&READY_WQ, || READY.load(Ordering::Acquire), None);
     assert_eq!(SLEEPER_CPU.load(Ordering::Acquire), sleeper_cpu);
     assert_eq!(this_cpu_id(), waker_cpu);
-    wake_sleep_queue_after_waiter_enqueued();
+    wake_sleep_queue_after_waiter_enqueued(sleeper_id);
 
     assert!(
         !api::ax_wait_queue_wait_until(
@@ -95,5 +97,13 @@ pub fn run() -> crate::TestResult {
         "remote wait-queue wakeup did not make bounded progress"
     );
     sleeper.join().unwrap();
+    assert_eq!(
+        task_test_hooks::take_wake_irq_owner_entries(),
+        Some(task_test_hooks::WakeIrqOwnerEntries {
+            thread_sched: 1,
+            run_queue: 0,
+        }),
+        "one Linux-style task-sched/rq wake transaction must own one runtime IRQ guard"
+    );
     Ok(())
 }

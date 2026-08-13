@@ -18,6 +18,15 @@ pub(crate) struct IrqTicketLock<T> {
     raw: RawTicketLock<T>,
 }
 
+/// Borrowed proof that one outer guard retains local IRQ exclusion.
+///
+/// The lifetime is tied to the mutable borrow of that guard. Nested raw ticket
+/// guards therefore cannot outlive the runtime IRQ owner that protects them.
+pub(crate) struct IrqOwner<'a> {
+    _guard: PhantomData<&'a mut ()>,
+    _not_send: PhantomData<*mut ()>,
+}
+
 impl<T> IrqTicketLock<T> {
     /// Creates an unlocked IRQ-safe ticket lock.
     pub(crate) const fn new(value: T) -> Self {
@@ -54,6 +63,19 @@ impl<T> IrqTicketLock<T> {
         }
     }
 
+    /// Acquires a nested ticket under a borrowed outer IRQ owner.
+    ///
+    /// This is the typed equivalent of Linux taking `p->pi_lock` with
+    /// `irqsave` and then taking `rq->lock` raw. The returned guard borrows the
+    /// owner proof, so restoring the outer IRQ state first is not expressible.
+    pub(crate) fn lock_nested<'a>(&'a self, _owner: &'a IrqOwner<'_>) -> IrqTicketGuard<'a, T> {
+        IrqTicketGuard {
+            raw: Some(self.raw.lock()),
+            irq: None,
+            _not_send: PhantomData,
+        }
+    }
+
     /// Attempts acquisition and restores local IRQ state on failure.
     #[cfg(test)]
     pub(crate) fn try_lock(&self, source: IrqGuardSource) -> Option<IrqTicketGuard<'_, T>> {
@@ -80,6 +102,28 @@ impl<T> Deref for IrqTicketGuard<'_, T> {
         self.raw
             .as_deref()
             .expect("IRQ ticket guard always owns its raw guard")
+    }
+}
+
+impl<T> IrqTicketGuard<'_, T> {
+    /// Splits protected state from a proof that this guard retains IRQ-off.
+    pub(crate) fn split_irq_owner(&mut self) -> (&mut T, IrqOwner<'_>) {
+        let state = self
+            .raw
+            .as_deref_mut()
+            .expect("IRQ ticket guard always owns its raw guard");
+        (
+            state,
+            IrqOwner {
+                _guard: PhantomData,
+                _not_send: PhantomData,
+            },
+        )
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) const fn owns_runtime_irq_scope(&self) -> bool {
+        self.irq.is_some()
     }
 }
 

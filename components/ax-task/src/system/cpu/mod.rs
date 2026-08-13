@@ -44,7 +44,7 @@ use crate::{
     RtRunQueueBandwidth, RunQueue, SchedulePolicy, SchedulingEntity, TaskError, TaskSystemConfig,
     ThreadId, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult, SchedulerInbox},
-    lock::{IrqScope, IrqTicketGuard, IrqTicketLock},
+    lock::{IrqOwner, IrqScope, IrqTicketGuard, IrqTicketLock},
     runtime::{
         AddressSpaceMembarrierState, MonotonicDeadline, MonotonicInstant, RuntimeCpuId,
         RuntimeStatus, SchedulerDeadlineUpdate, task_runtime,

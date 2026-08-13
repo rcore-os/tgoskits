@@ -3166,6 +3166,31 @@ runnable leaf。两轮分别有 125,515/127,875 次 switch，均以状态 143 �
 `file-0538`；host user 只下降 0.272%。因此这里只确认 rq acquisition 的结构性根因已消除，不把
 单轮 host 时间波动解释为吞吐改善，相对 dev 的性能问题仍未关闭。
 
+2026-08-14 在最新 current/dev 上重新建立了同配置独立基线。current 的
+`test-ext4-inode-unique` guest/QEMU 时间为 86.136/91.20 秒，最新 dev 为约 65/70.49 秒；current
+慢 32.5%，超过 20% 阈值，不能继续等待完整大组掩盖问题。current 的 60.472 秒 qperf 窗口推进到
+`file-0535`，host user 88.012 秒；124,526 次真实 switch 中 Blocked 77,875（62.5%）、Preempted
+46,646，direct-wake activation/enqueue 与 Blocked 精确相等。相同窗口 runtime IRQ guard 进入
+1,909,076 次，其中 thread-sched ticket 512,870 次、owner-rq irqsave transaction 143,833 次。
+历史 dev 在相同 60 秒窗口执行 217,773 次 switch 却只消耗 72.312 秒 host user，而 current 只执行
+121,350 次 switch 已消耗 88.154 秒；因此主因是每次 block/wake/switch 的固定事务成本，而不是
+switch 数量增加。
+
+第一项高频重复 owner 已按 Linux task/rq 锁层次修复。Linux
+`kernel/sched/core.c::_task_rq_lock()` 只对 `p->pi_lock` 执行一次 `raw_spin_lock_irqsave()`，随后
+raw-lock `rq`；`__schedule()` 同样由外层 `local_irq_disable()`/scheduler baton 提供 IRQ owner，
+不会对内层 rq 重复 irqsave。旧 ax-task 的 direct wake 先取得 `ThreadSchedCell` 的 runtime IRQ
+guard，再由 `OwnerRqTxn::begin()` 建立第二个 runtime IRQ guard。不能根据“IRQ 当前已关”让 runtime
+返回空 token：token 允许非 LIFO 生命周期，这会让外层先释放时恢复 IRQ，而内层 raw lock 仍存活。
+
+新 `IrqOwner<'a>` 是从外层 `IrqTicketGuard` 可变借用拆出的类型化证明；
+`IrqTicketLock::lock_nested()` 返回的 raw ticket guard 同时借用该证明，因此内层 rq guard 在类型上
+不能越过外层 IRQ owner。direct wake 的 Deadline source-rq 与最终 target-rq 都复用同一证明，不
+保留第二套“IRQ 已关闭”推断状态。ArceOS Rust remote wait-queue 测试先等待目标真实进入 Blocked，
+再通过生产 wake 路径记录 guard 所有权：旧实现确定性为 `thread_sched=1, run_queue=1` 并失败，修复
+后为 `thread_sched=1, run_queue=0` 并通过。该检查点只关闭 try-to-wake-up 的重复 owner；
+schedule/park/exit 的 scheduler-frame/task-lock 层次和端到端性能差距仍需继续收敛。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

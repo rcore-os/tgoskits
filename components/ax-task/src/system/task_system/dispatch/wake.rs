@@ -415,13 +415,16 @@ impl TaskSystem {
     fn activate_waking_thread_locked(
         &self,
         core: &Arc<ThreadCore>,
-        mut sched: crate::lock::IrqTicketGuard<'_, ThreadSchedState>,
+        mut sched_guard: crate::lock::IrqTicketGuard<'_, ThreadSchedState>,
         target: CpuId,
         publication: CpuRemotePublication<'_>,
     ) -> WakeResult {
         // PREEMPT_RT keeps wake ownership in the waker. `finish_task()` only
         // release-publishes that the old stack is inactive; switch tail never
         // reopens the task lock to finish this wake or enqueues on its behalf.
+        #[cfg(feature = "task-test-hooks")]
+        let sched_owns_runtime_irq = sched_guard.owns_runtime_irq_scope();
+        let (sched, irq_owner) = sched_guard.split_irq_owner();
         sched.placement.wait_until_not_on_cpu();
         if sched.lifecycle.state() != ThreadState::Waking || sched.placement.on_cpu().is_some() {
             task_runtime::fatal_invariant(0x574b_0005, core.id().as_u64() as usize);
@@ -441,10 +444,10 @@ impl TaskSystem {
             .filter(|source| *source != target)
         {
             let source_remote = &self.cpu_remotes[source.as_usize()];
-            let mut source_run_queue = OwnerRqTxn::begin(self, source_remote);
+            let mut source_run_queue = OwnerRqTxn::begin_nested(self, source_remote, &irq_owner);
             Self::detach_owner_deadline_bandwidth_in_rq(
                 core,
-                &mut sched,
+                sched,
                 source_remote,
                 &mut source_run_queue,
             );
@@ -456,7 +459,13 @@ impl TaskSystem {
             source_remote.request_scheduler_work();
             source_remote.kick_scheduler_work();
         }
-        let mut run_queue = OwnerRqTxn::begin(self, remote);
+        let mut run_queue = OwnerRqTxn::begin_nested(self, remote, &irq_owner);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_wake_irq_owner_scopes(
+            core.id(),
+            sched_owns_runtime_irq,
+            run_queue.owns_runtime_irq_scope(),
+        );
         let now_ns = run_queue.clock().wall().as_nanos();
         let policy = sched.policy.active().policy();
         let mut queued_entity = sched.policy.active().entity().clone();
@@ -465,15 +474,15 @@ impl TaskSystem {
             queued_entity.activate_deadline(now_ns);
             *sched.policy.active_mut().entity_mut() = queued_entity.clone();
         }
-        Self::activate_deadline_bandwidth_locked(core, &mut sched, &mut run_queue, target);
+        Self::activate_deadline_bandwidth_locked(core, sched, &mut run_queue, target);
         if deadline_wake
             && queued_entity
                 .deadline()
                 .is_some_and(DeadlineEntity::is_throttled)
         {
-            self.link_owner_throttled_deadline_locked(&mut run_queue, core, &mut sched, target);
+            self.link_owner_throttled_deadline_locked(&mut run_queue, core, sched, target);
             run_queue.commit();
-            drop(sched);
+            drop(sched_guard);
             self.publish_owner_deadline_refresh_reserved(core, target, publication);
             return WakeResult::Notified;
         }
@@ -511,7 +520,7 @@ impl TaskSystem {
         core.set_wake_cpu_hint(target);
         let rt_deadline_push_pending = self.rt_deadline_push_pending(remote);
         run_queue.commit();
-        drop(sched);
+        drop(sched_guard);
         let rt_period_started = self.activate_owner_rt_period_for_policy(target, policy);
 
         #[cfg(feature = "qperf-metrics")]

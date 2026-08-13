@@ -16,7 +16,13 @@ sched-rr = ["ax-std", "ax-std/alloc", "ax-std/multitask"]
 sched-cfs = ["ax-std", "ax-std/alloc", "ax-std/multitask"]
 task-affinity = ["ax-std", "ax-std/multitask"]
 task-wait-queue = ["ax-std", "ax-std/multitask", "ax-std/irq"]
-task-wait-queue-remote-wake = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
+task-wait-queue-remote-wake = [
+    "ax-std",
+    "ax-std/multitask",
+    "ax-std/irq",
+    "ax-std/ipi",
+    "ax-std/task-test-hooks",
+]
 task-ipi = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
 task-irq = ["ax-std", "ax-std/multitask", "ax-std/irq"]
 task-kernel-timer = ["ax-std", "ax-std/multitask", "ax-std/irq"]

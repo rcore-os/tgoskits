@@ -73,8 +73,38 @@ impl<'a> OwnerRqTxn<'a> {
         self.run_queue_mut().owner_transaction_queue_mut()
     }
 
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn owns_runtime_irq_scope(&self) -> bool {
+        self.run_queue
+            .as_ref()
+            .expect("an unfinished rq transaction must retain its lock")
+            .owns_runtime_irq_scope()
+    }
+
     pub(crate) fn begin(system: &'a TaskSystem, remote: &'a CpuRemote) -> Self {
         let mut run_queue = remote.lock_run_queue(RunQueueGuardSource::Transaction);
+        let clock = run_queue.update_clock();
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_owner_rq_irqsave_transaction();
+        Self {
+            system,
+            remote,
+            run_queue: Some(run_queue),
+            clock,
+            request: None,
+            context: OwnerRqContext::RuntimeIrqSave,
+            finished: false,
+        }
+    }
+
+    /// Begins an rq transaction below a task scheduler lock that already owns
+    /// local IRQ exclusion.
+    pub(crate) fn begin_nested(
+        system: &'a TaskSystem,
+        remote: &'a CpuRemote,
+        irq_owner: &'a IrqOwner<'_>,
+    ) -> Self {
+        let mut run_queue = remote.lock_run_queue_nested(irq_owner);
         let clock = run_queue.update_clock();
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_owner_rq_irqsave_transaction();

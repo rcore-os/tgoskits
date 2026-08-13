@@ -6,12 +6,16 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
-use crate::ThreadId;
+use crate::{ThreadId, ThreadState};
 
 static TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
 static PI_RELEASE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static TARGET_CHAIN_TOP: AtomicU64 = AtomicU64::new(0);
 static PI_CHAIN_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static WAKE_IRQ_OWNER_TARGET: AtomicU64 = AtomicU64::new(0);
+static WAKE_IRQ_OWNER_THREAD_SCHED_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static WAKE_IRQ_OWNER_RUN_QUEUE_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static WAKE_IRQ_OWNER_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 
 const STAGE_IDLE: u8 = 0;
 const STAGE_CONFIGURING: u8 = 1;
@@ -22,6 +26,83 @@ const STAGE_WAITER_MAY_CLAIM: u8 = 5;
 const STAGE_RELEASE_MAY_WAKE: u8 = 6;
 const STAGE_CHAIN_DECIDED: u8 = 3;
 const STAGE_OWNER_MAY_CHANGE: u8 = 4;
+const STAGE_COMPLETE: u8 = 3;
+
+/// Arms one real blocked-to-runnable wake for IRQ-owner accounting.
+pub fn arm_wake_irq_owner_probe(thread: u64) {
+    assert_ne!(thread, 0, "a task-test wake identity must be non-zero");
+    assert_eq!(
+        WAKE_IRQ_OWNER_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one wake IRQ-owner probe may be armed"
+    );
+    WAKE_IRQ_OWNER_TARGET.store(thread, Ordering::Relaxed);
+    WAKE_IRQ_OWNER_THREAD_SCHED_ENTRIES.store(0, Ordering::Relaxed);
+    WAKE_IRQ_OWNER_RUN_QUEUE_ENTRIES.store(0, Ordering::Relaxed);
+    WAKE_IRQ_OWNER_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Runtime IRQ-owner entries observed inside one real wake transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WakeIrqOwnerEntries {
+    /// Entries taken by the target thread scheduler lock.
+    pub thread_sched: u64,
+    /// Entries taken by runqueue transactions nested below that task lock.
+    pub run_queue: u64,
+}
+
+/// Takes task-sched and rq runtime IRQ-owner entries for the wake.
+pub fn take_wake_irq_owner_entries() -> Option<WakeIrqOwnerEntries> {
+    if WAKE_IRQ_OWNER_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let entries = WakeIrqOwnerEntries {
+        thread_sched: WAKE_IRQ_OWNER_THREAD_SCHED_ENTRIES.load(Ordering::Relaxed),
+        run_queue: WAKE_IRQ_OWNER_RUN_QUEUE_ENTRIES.load(Ordering::Relaxed),
+    };
+    WAKE_IRQ_OWNER_TARGET.store(0, Ordering::Relaxed);
+    WAKE_IRQ_OWNER_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(entries)
+}
+
+/// Returns whether one generation-valid target is physically blocked.
+pub fn thread_is_blocked(thread: u64) -> bool {
+    let thread = ThreadId::from_parts(thread as u32, (thread >> 32) as u32);
+    crate::thread_handle(thread).is_ok_and(|handle| handle.state() == ThreadState::Blocked)
+}
+
+pub(crate) fn record_wake_irq_owner_scopes(thread: ThreadId, thread_sched: bool, run_queue: bool) {
+    if WAKE_IRQ_OWNER_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || WAKE_IRQ_OWNER_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    WAKE_IRQ_OWNER_THREAD_SCHED_ENTRIES.store(u64::from(thread_sched), Ordering::Relaxed);
+    WAKE_IRQ_OWNER_RUN_QUEUE_ENTRIES.store(u64::from(run_queue), Ordering::Relaxed);
+    assert_eq!(
+        WAKE_IRQ_OWNER_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "wake IRQ-owner scopes were recorded in an invalid stage"
+    );
+}
 
 /// Arms the PI release/claim/exit interleaving for one live waiter.
 pub fn arm_pi_release_claim_exit(waiter: u64) {

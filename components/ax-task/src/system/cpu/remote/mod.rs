@@ -136,6 +136,14 @@ impl CpuRemote {
         self.run_queue.lock(source.irq_guard_source())
     }
 
+    /// Acquires this rq below an already-held task scheduler IRQ owner.
+    pub(crate) fn lock_run_queue_nested<'a>(
+        &'a self,
+        owner: &'a IrqOwner<'_>,
+    ) -> IrqTicketGuard<'a, CpuRunQueueState> {
+        self.run_queue.lock_nested(owner)
+    }
+
     #[cfg(test)]
     pub(crate) fn timer_deadline_rq_observations(&self) -> u64 {
         self.timer_deadline_rq_observations.load(Ordering::Relaxed)
