@@ -593,8 +593,62 @@
       "segments": [
         {
           "start": 1,
+          "end": 724,
+          "symbol": "<coarse interval>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::allocator",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "mkdir-mutation-rollback",
+            "special-inode-rdev"
+          ]
+        },
+        {
+          "start": 725,
+          "end": 735,
+          "symbol": "find_inode_bit",
+          "classification": "core",
+          "state_machine": "scan the selected group bitmap from its group-local candidate offset and return the first reusable inode bit",
+          "invariant": "inode bitmap positions are group-local; the global reserved inode range must not shift the scan origin of nonzero block groups",
+          "rust_owner": "rsext4::bmalloc::inode",
+          "reason": "group-local inode selection is portable ext4 allocation semantics",
+          "test_ids": [
+            "inode-allocator-reserved-range"
+          ]
+        },
+        {
+          "start": 736,
+          "end": 1072,
+          "symbol": "<coarse interval>",
+          "classification": "core",
+          "state_machine": "pending symbol-level decomposition",
+          "invariant": "every frozen source line has an explicit provisional owner",
+          "rust_owner": "rsext4::allocator",
+          "reason": "portable ext4/JBD2 on-disk semantics and persistence invariants belong to rsext4",
+          "test_ids": [
+            "mkdir-mutation-rollback",
+            "special-inode-rdev"
+          ]
+        },
+        {
+          "start": 1073,
+          "end": 1083,
+          "symbol": "__ext4_new_inode reserved-inode guard",
+          "classification": "core",
+          "state_machine": "reject a cleared reserved inode bit only when allocating from block group zero",
+          "invariant": "EXT4_FIRST_INO protects global inode numbers in the first block group and imposes no reservation on the same relative positions in later groups",
+          "rust_owner": "rsext4::bmalloc::inode",
+          "reason": "the reserved inode namespace and block-group bitmap mapping are portable ext4 allocation semantics",
+          "test_ids": [
+            "inode-allocator-reserved-range"
+          ]
+        },
+        {
+          "start": 1084,
           "end": 1626,
-          "symbol": "<whole-file>",
+          "symbol": "<coarse interval>",
           "classification": "core",
           "state_machine": "pending symbol-level decomposition",
           "invariant": "every frozen source line has an explicit provisional owner",
