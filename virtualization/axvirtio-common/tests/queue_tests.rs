@@ -389,6 +389,32 @@ fn validate_layout_rejects_overlapping_rings() {
 }
 
 #[test]
+fn validate_layout_rejects_used_ring_aliasing_avail_footer() {
+    let mem = Arc::new(MockMem::new(0x1_0000));
+    let mut q = VirtioQueue::new(0, 4, mem);
+    q.set_desc_table_addr(GuestPhysAddr::from(0x1000)).unwrap();
+    q.set_avail_ring_addr(GuestPhysAddr::from(0x2000)).unwrap();
+    // The used ring starts exactly at the available ring's `used_event`
+    // footer address (avail + 4 + size*2). The 2-byte footer belongs to the
+    // available ring region, so the two rings alias and must be rejected.
+    q.set_used_ring_addr(GuestPhysAddr::from(0x200c)).unwrap();
+    assert_eq!(q.validate_layout().unwrap_err(), VirtioError::RingOverlap);
+}
+
+#[test]
+fn validate_layout_rejects_avail_ring_aliasing_used_footer() {
+    let mem = Arc::new(MockMem::new(0x1_0000));
+    let mut q = VirtioQueue::new(0, 4, mem);
+    q.set_desc_table_addr(GuestPhysAddr::from(0x1000)).unwrap();
+    // The available ring starts exactly at the used ring's `avail_event`
+    // footer address (used + 4 + size*8), aliasing the footer bytes the
+    // device writes after `add_used`.
+    q.set_avail_ring_addr(GuestPhysAddr::from(0x3024)).unwrap();
+    q.set_used_ring_addr(GuestPhysAddr::from(0x3000)).unwrap();
+    assert_eq!(q.validate_layout().unwrap_err(), VirtioError::RingOverlap);
+}
+
+#[test]
 fn validate_layout_rejects_overflowing_ring() {
     let mem = Arc::new(MockMem::new(0x1_0000));
     let mut q = VirtioQueue::new(0, 4, mem);
@@ -620,6 +646,52 @@ fn read_avail_entry_pre_read_failure_faults_queue() {
 }
 
 #[test]
+fn read_avail_idx_non_memory_read_failure_faults_queue() {
+    let mem = Arc::new(MockMem::new(0x3002));
+    let mut q = VirtioQueue::new(0, 4, mem);
+    q.set_desc_table_addr(GuestPhysAddr::from(0x2000)).unwrap();
+    // The avail ring header is configured but its `idx` field (base + 2)
+    // crosses the mapped boundary; the non-`_with_memory` API reads through
+    // the queue's own accessor and must latch the fault like its
+    // `_with_memory` twin.
+    q.set_avail_ring_addr(GuestPhysAddr::from(0x3000)).unwrap();
+    q.set_used_ring_addr(GuestPhysAddr::from(0x4000)).unwrap();
+    q.set_ready(true);
+    assert_eq!(q.read_avail_idx().unwrap_err(), VirtioError::InvalidAddress);
+    assert!(
+        q.is_faulted(),
+        "avail-index read failure through the non-memory API must fault the queue"
+    );
+    // The queue stays faulted: repeating the read reports QueueFaulted
+    // instead of retrying the failing access.
+    assert_eq!(q.read_avail_idx().unwrap_err(), VirtioError::QueueFaulted);
+}
+
+#[test]
+fn read_avail_entry_non_memory_read_failure_faults_queue() {
+    let mem = Arc::new(MockMem::new(0x3004));
+    let mut q = VirtioQueue::new(0, 4, mem);
+    q.set_desc_table_addr(GuestPhysAddr::from(0x2000)).unwrap();
+    q.set_avail_ring_addr(GuestPhysAddr::from(0x3000)).unwrap();
+    q.set_used_ring_addr(GuestPhysAddr::from(0x4000)).unwrap();
+    q.set_ready(true);
+    // Entry 0 lives at avail + 4 == 0x3004, beyond the mapped boundary; the
+    // non-`_with_memory` API must latch the fault like its twin.
+    assert_eq!(
+        q.read_avail_entry(0).unwrap_err(),
+        VirtioError::InvalidAddress
+    );
+    assert!(
+        q.is_faulted(),
+        "avail-entry read failure through the non-memory API must fault the queue"
+    );
+    assert_eq!(
+        q.read_avail_entry(0).unwrap_err(),
+        VirtioError::QueueFaulted
+    );
+}
+
+#[test]
 fn add_used_write_failure_faults_queue() {
     let mem = Arc::new(MockMem::new(0x100));
     let mut q = VirtioQueue::new(0, 4, mem.clone());
@@ -634,6 +706,26 @@ fn add_used_write_failure_faults_queue() {
     );
     assert_eq!(q.add_used(0, 0).unwrap_err(), VirtioError::QueueFaulted);
     assert_eq!(q.complete(0, 0).unwrap_err(), VirtioError::QueueFaulted);
+}
+
+#[test]
+fn add_used_without_used_ring_reports_not_ready_without_faulting() {
+    let mem = Arc::new(MockMem::new(0x1_0000));
+    let mut q = VirtioQueue::new(0, 4, mem);
+    q.set_desc_table_addr(GuestPhysAddr::from(0x1000)).unwrap();
+    q.set_avail_ring_addr(GuestPhysAddr::from(0x2000)).unwrap();
+    // Program the used address through the public field so the layout
+    // validates while the used-ring object stays unconfigured; this is the
+    // state the historical fallback used to turn into a silent "success".
+    q.used_ring_addr = GuestPhysAddr::from(0x3000);
+    q.set_ready(true);
+    assert!(q.is_valid());
+    assert_eq!(q.add_used(0, 0).unwrap_err(), VirtioError::QueueNotReady);
+    assert!(
+        !q.is_faulted(),
+        "an unconfigured used ring is not a runtime failure"
+    );
+    assert!(q.get_used_ring().is_none());
 }
 
 #[test]

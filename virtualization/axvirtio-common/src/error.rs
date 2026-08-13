@@ -47,8 +47,10 @@ pub enum VirtioError {
     /// The queue is faulted after a runtime ring/descriptor failure and must be
     /// reset before further use. Unlike [`QueueNotReady`](Self::QueueNotReady),
     /// which is a normal pre-configuration state, a faulted queue has served
-    /// requests and hit a runtime failure; it rejects all queue operations and
-    /// writes no guest memory until `reset`.
+    /// requests and hit a runtime failure; its guest-serving data paths
+    /// (`pop`/`complete`, chain walks and data access) reject with this error
+    /// and write no guest memory until `reset`, while the configuration
+    /// setters remain usable.
     QueueFaulted,
     /// Resource not found
     NotFound,
