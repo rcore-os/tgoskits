@@ -172,16 +172,6 @@ impl<'a> ExtentTree<'a> {
         let mut root = self.load_root_from_inode()?;
         self.validate_node(&root, None, None, block_dev.total_blocks(), true)?;
 
-        fn inline_eh_max_for_node(node: &ExtentNode) -> u16 {
-            let inline_bytes = 15usize * 4;
-            let hdr_size = Ext4ExtentHeader::disk_size();
-            let entry_size = match node {
-                ExtentNode::Leaf { .. } => Ext4Extent::disk_size(),
-                ExtentNode::Index { .. } => Ext4ExtentIdx::disk_size(),
-            };
-            (inline_bytes.saturating_sub(hdr_size) / entry_size) as u16
-        }
-
         fn extent_start_phys(e: &Ext4Extent) -> u64 {
             ((e.ee_start_hi as u64) << 32) | (e.ee_start_lo as u64)
         }
@@ -512,7 +502,7 @@ impl<'a> ExtentTree<'a> {
         }
 
         // Phase 3: store the updated root, collapsing one-child index roots back into the inode when legal.
-        let en_max = inline_eh_max_for_node(&root);
+        let en_max = self.inline_eh_max_for_node(&root);
         match &mut root {
             ExtentNode::Leaf { header, entries } => {
                 header.eh_entries = entries.len() as u16;
@@ -538,27 +528,10 @@ impl<'a> ExtentTree<'a> {
                     let child_phy = AbsoluteBN::new(
                         ((entries[0].ei_leaf_hi as u64) << 32) | (entries[0].ei_leaf_lo as u64),
                     );
-                    let mut child_node =
+                    let child_node =
                         self.read_child_node(block_dev, &entries[0], header.eh_depth - 1)?;
 
-                    let inline_max = inline_eh_max_for_node(&child_node) as usize;
-                    let child_entries_len = match &child_node {
-                        ExtentNode::Leaf { entries, .. } => entries.len(),
-                        ExtentNode::Index { entries, .. } => entries.len(),
-                    };
-
-                    if child_entries_len <= inline_max {
-                        *child_node.header_mut() = {
-                            let mut h = *child_node.header();
-                            h.eh_max = inline_eh_max_for_node(&child_node);
-                            h
-                        };
-
-                        self.can_sub_inode_sectors_for_blocks(fs, 1)?;
-                        self.store_root_to_inode(&child_node)?;
-                        block_dev.forget_detached_metadata(child_phy)?;
-                        fs.free_block(block_dev, child_phy)?;
-                        self.sub_inode_sectors_for_block(fs)?;
+                    if self.collapse_external_root_child(fs, block_dev, child_phy, child_node)? {
                         return Ok(());
                     }
                 }

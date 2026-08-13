@@ -1,4 +1,5 @@
 use super::{split::SplitInfo, *};
+use crate::blockdev::{TransactionCredits, TransactionHandleExtension};
 
 impl<'a> ExtentTree<'a> {
     /// Inserts a new extent into the inode's extent tree.
@@ -23,7 +24,13 @@ impl<'a> ExtentTree<'a> {
         let split_result = self.insert_recursive(fs, block_dev, &mut root, new_ext, None)?;
 
         match split_result {
-            None => self.store_root_to_inode(&root),
+            None => {
+                if self.try_collapse_single_leaf_root(fs, block_dev, &root)? {
+                    Ok(())
+                } else {
+                    self.store_root_to_inode(&root)
+                }
+            }
             Some(split_info) => {
                 // Root split: promote the old inline root into a real block and
                 // rebuild the inode root as an index node.
@@ -76,6 +83,39 @@ impl<'a> ExtentTree<'a> {
                 self.store_root_to_inode(&new_root_node)
             }
         }
+    }
+
+    fn try_collapse_single_leaf_root<B: BlockIo>(
+        &mut self,
+        fs: &mut Ext4FileSystem,
+        block_dev: &mut Jbd2Dev<B>,
+        root: &ExtentNode,
+    ) -> Ext4Result<bool> {
+        let ExtentNode::Index { header, entries } = root else {
+            return Ok(false);
+        };
+        if header.eh_depth != 1 || entries.len() != 1 {
+            return Ok(false);
+        }
+
+        let child_block = AbsoluteBN::new(
+            (u64::from(entries[0].ei_leaf_hi) << 32) | u64::from(entries[0].ei_leaf_lo),
+        );
+        let child = self.read_child_node(block_dev, &entries[0], 0)?;
+        let ExtentNode::Leaf { entries, .. } = &child else {
+            return Err(Ext4Error::corrupted().with_operation("extent:merge_up_child"));
+        };
+        if entries.len() > usize::from(self.inline_eh_max_for_node(&child)) {
+            return Ok(false);
+        }
+
+        let extension = block_dev
+            .extend_active_transaction_credits(TransactionCredits::metadata_with_revokes(2, 1))?;
+        if !matches!(extension, Some(TransactionHandleExtension::Extended)) {
+            return Ok(false);
+        }
+
+        self.collapse_external_root_child(fs, block_dev, child_block, child)
     }
 
     fn merged_leaf_extent_len(left: Ext4Extent, right: Ext4Extent) -> Ext4Result<Option<u16>> {

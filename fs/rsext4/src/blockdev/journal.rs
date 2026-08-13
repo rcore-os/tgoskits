@@ -1387,6 +1387,21 @@ impl<B: BlockIo> Jbd2Dev<B> {
         Ok(TransactionHandleExtension::Extended)
     }
 
+    /// Extends the current scoped transaction when one exists.
+    ///
+    /// Best-effort metadata normalization leaves a valid on-disk shape
+    /// unchanged when a low-level caller has no transaction owner.
+    pub(crate) fn extend_active_transaction_credits(
+        &mut self,
+        additional_credits: TransactionCredits,
+    ) -> Ext4Result<Option<TransactionHandleExtension>> {
+        if self.active_handle.is_none() && self.active_direct_handle.is_none() {
+            return Ok(None);
+        }
+        self.extend_transaction_credits(additional_credits)
+            .map(Some)
+    }
+
     fn capture_direct_preimage(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
         let Some(handle) = self.active_direct_handle.as_ref() else {
             return Ok(());

@@ -6,7 +6,7 @@ mod journal;
 
 pub use buffer::BlockBuffer;
 pub use journal::{Jbd2Dev, Jbd2RunState};
-pub(crate) use journal::{ReservedJournalHandle, TransactionCredits};
+pub(crate) use journal::{ReservedJournalHandle, TransactionCredits, TransactionHandleExtension};
 
 pub use crate::io::BlockIo;
 use crate::{bmalloc::AbsoluteBN, error::Ext4Result, io::WriteFlags};

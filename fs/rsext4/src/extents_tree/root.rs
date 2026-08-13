@@ -349,6 +349,52 @@ impl<'a> ExtentTree<'a> {
         inode.set_blocks_count(next, self.block_size as u32, huge_file_feature)
     }
 
+    pub(super) fn inline_eh_max_for_node(&self, node: &ExtentNode) -> u16 {
+        let inline_bytes = self.inode.i_block.len() * core::mem::size_of::<u32>();
+        let entry_size = match node {
+            ExtentNode::Leaf { .. } => Ext4Extent::disk_size(),
+            ExtentNode::Index { .. } => Ext4ExtentIdx::disk_size(),
+        };
+        (inline_bytes.saturating_sub(Ext4ExtentHeader::disk_size()) / entry_size) as u16
+    }
+
+    /// Publishes an external root child in the inode before releasing its block.
+    ///
+    /// The caller owns enough metadata and revoke credits in the current
+    /// filesystem transaction. Returning `false` means the child does not fit
+    /// and leaves both the inode and allocation state unchanged.
+    pub(super) fn collapse_external_root_child<B: BlockIo>(
+        &mut self,
+        fs: &mut Ext4FileSystem,
+        block_dev: &mut Jbd2Dev<B>,
+        child_block: AbsoluteBN,
+        mut child: ExtentNode,
+    ) -> Ext4Result<bool> {
+        let inline_max = self.inline_eh_max_for_node(&child);
+        let child_entries = match &child {
+            ExtentNode::Leaf { entries, .. } => entries.len(),
+            ExtentNode::Index { entries, .. } => entries.len(),
+        };
+        if child_entries > usize::from(inline_max) {
+            return Ok(false);
+        }
+
+        self.can_sub_inode_sectors_for_blocks(fs, 1)?;
+        let inode_before = *self.inode;
+        let result = (|| {
+            child.header_mut().eh_max = inline_max;
+            self.store_root_to_inode(&child)?;
+            block_dev.forget_detached_metadata(child_block)?;
+            fs.free_block(block_dev, child_block)?;
+            self.sub_inode_sectors_for_block(fs)
+        })();
+        if let Err(error) = result {
+            *self.inode = inode_before;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
     /// Walks all extent-tree blocks that live outside the inode's inline root.
     pub fn external_node_blocks<B: BlockIo>(
         &self,

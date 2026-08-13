@@ -389,24 +389,26 @@ impl<'a> ExtentTree<'a> {
 mod tests {
     extern crate std;
 
-    use alloc::{vec, vec::Vec};
+    use alloc::{rc::Rc, vec, vec::Vec};
     use core::cell::Cell;
 
     use super::*;
     use crate::{
-        blockdev::{BlockIo, Jbd2Dev},
+        blockdev::{BlockIo, Jbd2Dev, TransactionCredits},
         bmalloc::{AbsoluteBN, InodeNumber},
         config::BLOCK_SIZE,
         disknode::Ext4Timestamp,
         error::{ErrorContext, Ext4Error, Ext4Result},
         ext4::{mkfs, mount},
         loopfile::resolve_inode_block,
+        superblock::Ext4Superblock,
     };
 
     struct MemBlockDev {
         data: Vec<u8>,
         total_blocks: u64,
         now: Cell<i64>,
+        fail_write_block: Rc<Cell<Option<u64>>>,
     }
 
     impl MemBlockDev {
@@ -415,6 +417,7 @@ mod tests {
                 data: vec![0; total_blocks as usize * BLOCK_SIZE],
                 total_blocks,
                 now: Cell::new(1_700_000_000),
+                fail_write_block: Rc::new(Cell::new(None)),
             }
         }
     }
@@ -426,6 +429,10 @@ mod tests {
             block_id: crate::io::SectorId,
             count: u32,
         ) -> Ext4Result<()> {
+            if self.fail_write_block.get() == Some(block_id.raw()) {
+                self.fail_write_block.set(None);
+                return Err(Ext4Error::io().with_operation("test:injected_write"));
+            }
             let required = BLOCK_SIZE * count as usize;
             if buffer.len() < required {
                 return Err(Ext4Error::buffer_too_small(buffer.len(), required));
@@ -487,6 +494,25 @@ mod tests {
         (jbd, fs)
     }
 
+    fn setup_journaled_fs(total_blocks: u64) -> (Jbd2Dev<MemBlockDev>, Ext4FileSystem) {
+        let dev = MemBlockDev::new(total_blocks);
+        let mut jbd = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        mkfs(&mut jbd).unwrap();
+        let fs = mount(&mut jbd).unwrap();
+        (jbd, fs)
+    }
+
+    fn setup_fault_fs(
+        total_blocks: u64,
+    ) -> (Jbd2Dev<MemBlockDev>, Ext4FileSystem, Rc<Cell<Option<u64>>>) {
+        let dev = MemBlockDev::new(total_blocks);
+        let fail_write_block = Rc::clone(&dev.fail_write_block);
+        let mut jbd = Jbd2Dev::initial_jbd2dev(0, dev, false);
+        mkfs(&mut jbd).unwrap();
+        let fs = mount(&mut jbd).unwrap();
+        (jbd, fs, fail_write_block)
+    }
+
     fn new_extent_inode() -> Ext4Inode {
         let mut inode = Ext4Inode::default();
         inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
@@ -507,6 +533,58 @@ mod tests {
             prev = next;
         }
         first
+    }
+
+    fn build_single_external_leaf_root<B: BlockIo>(
+        fs: &mut Ext4FileSystem,
+        dev: &mut Jbd2Dev<B>,
+        inode: &mut Ext4Inode,
+    ) -> (AbsoluteBN, AbsoluteBN, u64, bool) {
+        let data_start = alloc_contiguous(fs, dev, 4);
+        let child_block = fs.alloc_block(dev).unwrap();
+        let sectors_per_block = (BLOCK_SIZE / 512) as u64;
+        let huge_file_feature = fs
+            .superblock
+            .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+        inode
+            .set_blocks_count(5 * sectors_per_block, BLOCK_SIZE as u32, huge_file_feature)
+            .unwrap();
+
+        let child = ExtentNode::Leaf {
+            header: Ext4ExtentHeader {
+                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+                eh_entries: 1,
+                eh_max: ((BLOCK_SIZE - Ext4ExtentHeader::disk_size() - 4) / Ext4Extent::disk_size())
+                    as u16,
+                eh_depth: 0,
+                eh_generation: 0,
+            },
+            entries: vec![Ext4Extent::new(0, data_start.raw(), 2)],
+        };
+        let root = ExtentNode::Index {
+            header: Ext4ExtentHeader {
+                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+                eh_entries: 1,
+                eh_max: 4,
+                eh_depth: 1,
+                eh_generation: 0,
+            },
+            entries: vec![Ext4ExtentIdx {
+                ei_block: 0,
+                ei_leaf_lo: child_block.raw() as u32,
+                ei_leaf_hi: (child_block.raw() >> 32) as u16,
+                ei_unused: 0,
+            }],
+        };
+        let mut tree = ExtentTree::new(inode, BLOCK_SIZE);
+        tree.write_node_to_block(dev, child_block, &child).unwrap();
+        tree.store_root_to_inode(&root).unwrap();
+        (
+            data_start,
+            child_block,
+            sectors_per_block,
+            huge_file_feature,
+        )
     }
 
     fn raw_leaf(extents: &[Ext4Extent], depth: u16) -> [u8; 60] {
@@ -1097,6 +1175,157 @@ mod tests {
         assert_eq!(extents[3].ee_block, 12);
         assert_eq!(extents[3].start_block(), physical_start + 12);
         assert_eq!(extents[3].len(), 6);
+    }
+
+    #[test]
+    fn insertion_collapses_a_single_external_leaf_back_into_the_inode() {
+        let (mut dev, mut fs) = setup_journaled_fs(32 * 1024);
+        let mut inode = new_extent_inode();
+        let (data_start, child_block, sectors_per_block, huge_file_feature) =
+            build_single_external_leaf_root(&mut fs, &mut dev, &mut inode);
+        let free_blocks_before = fs.superblock.free_blocks_count();
+
+        fs.with_metadata_transaction(&mut dev, TransactionCredits::metadata(8), |fs, dev| {
+            ExtentTree::new(&mut inode, BLOCK_SIZE).insert_extent(
+                fs,
+                Ext4Extent::new(4, data_start.checked_add(2).unwrap().raw(), 2),
+                dev,
+            )
+        })
+        .unwrap();
+
+        let tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+        let collapsed = tree.load_root_from_inode().unwrap();
+        assert_eq!(collapsed.header().eh_depth, 0);
+        assert_eq!(collapsed.header().eh_entries, 2);
+        assert!(tree.external_node_blocks(&mut dev).unwrap().is_empty());
+        assert_eq!(
+            inode.blocks_count(BLOCK_SIZE as u32, huge_file_feature),
+            4 * sectors_per_block
+        );
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before + 1);
+        assert_eq!(fs.alloc_block(&mut dev).unwrap(), child_block);
+    }
+
+    #[test]
+    fn insertion_without_a_transaction_keeps_the_valid_external_leaf() {
+        let (mut dev, mut fs) = setup_fs(32 * 1024);
+        let mut inode = new_extent_inode();
+        let (data_start, child_block, sectors_per_block, huge_file_feature) =
+            build_single_external_leaf_root(&mut fs, &mut dev, &mut inode);
+        let free_blocks_before = fs.superblock.free_blocks_count();
+
+        ExtentTree::new(&mut inode, BLOCK_SIZE)
+            .insert_extent(
+                &mut fs,
+                Ext4Extent::new(4, data_start.checked_add(2).unwrap().raw(), 2),
+                &mut dev,
+            )
+            .unwrap();
+
+        let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+        let root = tree.load_root_from_inode().unwrap();
+        assert_eq!(root.header().eh_depth, 1);
+        assert_eq!(tree.external_node_blocks(&mut dev).unwrap(), [child_block]);
+        assert_eq!(tree.all_extents(&mut dev).unwrap().len(), 2);
+        assert_eq!(
+            inode.blocks_count(BLOCK_SIZE as u32, huge_file_feature),
+            5 * sectors_per_block
+        );
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+    }
+
+    #[test]
+    fn insertion_keeps_a_single_leaf_that_no_longer_fits_in_the_inode() {
+        let (mut dev, mut fs) = setup_journaled_fs(32 * 1024);
+        let mut inode = new_extent_inode();
+        let (data_start, child_block, sectors_per_block, huge_file_feature) =
+            build_single_external_leaf_root(&mut fs, &mut dev, &mut inode);
+        let fifth_data_block = fs.alloc_block(&mut dev).unwrap();
+        inode
+            .set_blocks_count(6 * sectors_per_block, BLOCK_SIZE as u32, huge_file_feature)
+            .unwrap();
+        let full_inline_child = ExtentNode::Leaf {
+            header: Ext4ExtentHeader {
+                eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+                eh_entries: 4,
+                eh_max: ((BLOCK_SIZE - Ext4ExtentHeader::disk_size() - 4) / Ext4Extent::disk_size())
+                    as u16,
+                eh_depth: 0,
+                eh_generation: 0,
+            },
+            entries: (0..4)
+                .map(|index| {
+                    Ext4Extent::new(index * 2, data_start.checked_add(index).unwrap().raw(), 1)
+                })
+                .collect(),
+        };
+        ExtentTree::new(&mut inode, BLOCK_SIZE)
+            .write_node_to_block(&mut dev, child_block, &full_inline_child)
+            .unwrap();
+        let free_blocks_before = fs.superblock.free_blocks_count();
+
+        fs.with_metadata_transaction(&mut dev, TransactionCredits::metadata(8), |fs, dev| {
+            ExtentTree::new(&mut inode, BLOCK_SIZE).insert_extent(
+                fs,
+                Ext4Extent::new(8, fifth_data_block.raw(), 1),
+                dev,
+            )
+        })
+        .unwrap();
+
+        let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+        assert_eq!(tree.load_root_from_inode().unwrap().header().eh_depth, 1);
+        assert_eq!(tree.external_node_blocks(&mut dev).unwrap(), [child_block]);
+        assert_eq!(tree.all_extents(&mut dev).unwrap().len(), 5);
+        assert_eq!(
+            inode.blocks_count(BLOCK_SIZE as u32, huge_file_feature),
+            6 * sectors_per_block
+        );
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+    }
+
+    #[test]
+    fn failed_merge_up_restores_the_external_tree_and_allocation() {
+        let (mut dev, mut fs, fail_write_block) = setup_fault_fs(32 * 1024);
+        let mut inode = new_extent_inode();
+        let (data_start, child_block, sectors_per_block, huge_file_feature) =
+            build_single_external_leaf_root(&mut fs, &mut dev, &mut inode);
+        let inode_before = inode;
+        let free_blocks_before = fs.superblock.free_blocks_count();
+        let (child_group, _) = fs.block_allocator.global_to_group(child_block).unwrap();
+        let bitmap_block = fs.group_descs[child_group.as_usize().unwrap()].block_bitmap();
+        fail_write_block.set(Some(bitmap_block));
+        let counters_before = fs.group_counter_snapshot();
+
+        let error = fs
+            .with_metadata_transaction(&mut dev, TransactionCredits::metadata(12), |fs, dev| {
+                let mut updated_inode = inode_before;
+                ExtentTree::new(&mut updated_inode, BLOCK_SIZE).insert_extent(
+                    fs,
+                    Ext4Extent::new(4, data_start.checked_add(2).unwrap().raw(), 2),
+                    dev,
+                )?;
+                fs.flush_changed_group_metadata(dev, &counters_before)?;
+                fs.sync_superblock(dev)?;
+                Ok(updated_inode)
+            })
+            .expect_err("block bitmap failure must abort merge-up");
+        assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+
+        assert_eq!(inode.i_block, inode_before.i_block);
+        assert_eq!(
+            inode.blocks_count(BLOCK_SIZE as u32, huge_file_feature),
+            5 * sectors_per_block
+        );
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        let mut tree = ExtentTree::new(&mut inode, BLOCK_SIZE);
+        assert_eq!(tree.load_root_from_inode().unwrap().header().eh_depth, 1);
+        assert_eq!(tree.external_node_blocks(&mut dev).unwrap(), [child_block]);
+        let extents = tree.all_extents(&mut dev).unwrap();
+        assert_eq!(extents.len(), 1);
+        assert_eq!(extents[0].ee_block, 0);
+        assert_ne!(fs.alloc_block(&mut dev).unwrap(), child_block);
     }
 
     #[test]

@@ -358,20 +358,20 @@
         },
         {
           "start": 1786,
-          "end": 1860,
-          "symbol": "ext4_can_extents_be_merged; ext4_ext_try_to_merge_right",
+          "end": 1932,
+          "symbol": "ext4_can_extents_be_merged; ext4_ext_try_to_merge_right; ext4_ext_try_to_merge_up; ext4_ext_try_to_merge",
           "classification": "core",
-          "state_machine": "merge a checked leaf extent into the selected neighbor and continue merging the survivor rightward",
+          "state_machine": "prefer merging a checked leaf extent into its left neighbor, continue merging the survivor rightward, then collapse a depth-one single-leaf tree when the child fits in the inode root and the active transaction can extend",
           "invariant": "only logically and physically contiguous extents with the same initialized state and a representable combined wire length may merge; exceeding the wire limit leaves both extents intact",
-          "rust_owner": "rsext4::extents_tree::insert",
-          "reason": "leaf normalization is portable ext4 on-disk semantics; cross-leaf merging is not performed by Linux",
+          "rust_owner": "rsext4::extents_tree::insert and rsext4::extents_tree::root",
+          "reason": "leaf normalization, revoke-aware metadata-block release, and inode block accounting are portable ext4 on-disk semantics; cross-leaf merging is not performed by Linux",
           "test_ids": [
             "extent-mutation-rollback",
             "extent-unwritten-preallocation"
           ]
         },
         {
-          "start": 1861,
+          "start": 1933,
           "end": 6308,
           "symbol": "<coarse interval>",
           "classification": "core",
