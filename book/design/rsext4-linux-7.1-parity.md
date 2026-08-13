@@ -2137,4 +2137,28 @@ revoke、block bitmap/GDT 回收、`i_blocks` 扣减的顺序完成状态转换�
 child、extent 集合、free count 与 `i_blocks` 全部恢复，child 也没有提前重入 allocator。
 
 本检查点补齐 `extents.c:1861-1932`，与 7.58 的 right-merge 一起使 `1786-1932` 成为连续 reviewed
-segment。性能由相邻提交的同机 A/B 单独判定；在采集前不把 structural cold path 误报为零成本。
+segment。
+
+首个功能提交 `9af7a5f36` 相对 `3acc11385` 的完整 A/B 保存在
+`book/design/data/rsext4-perf/2026-08-13-extent-merge-up.csv`：sequential 为 500+500，sync-cycle 在
+独立重复后为 1,000+1,000。dirty-sync 与 sequential 已过门槛，但第二轮 clean-sync median 仍为
++7.69%，完整窗口为 +8.86%；这条路径虽然不执行 merge-up，也不能以 structural cold path 为由豁免。
+分析定位到普通 inline-leaf insertion 每次都会进入 merge-up 函数，直到函数内部才拒绝 root shape。
+
+`b80dd453f` 在 caller 已持有的 parsed root 上先做 depth/index count fast reject，真正的 merge-up 与共用
+collapse helper 标为 cold、non-inline。最终同机 A/B 固定 CPU 2、`powersave` governor、release、
+memory backend、4 KiB block、20 MiB payload，10 个交错批次、每批每端 3 次预热与 20 次测量，800 条
+原始记录保存在
+`book/design/data/rsext4-perf/2026-08-13-extent-merge-up-fast-path.csv`：
+
+| workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sequential write | 6,441,373 ns | 6,472,611 ns | +0.485% | 7,164,373 ns | 7,267,198 ns | +1.435% |
+| sequential read | 6,207,498 ns | 6,347,436 ns | +2.254% | 8,028,244 ns | 7,853,175 ns | -2.180% |
+| sequential unmount | 18,226 ns | 18,414 ns | +1.032% | 21,313 ns | 21,865 ns | +2.590% |
+| dirty sync | 8,314 ns | 8,098 ns | -2.598% | 12,905 ns | 9,927 ns | -23.076% |
+| clean sync | 218 ns | 208 ns | -4.587% | 286 ns | 267 ns | -6.643% |
+| sync-cycle unmount | 5,588 ns | 5,434 ns | -2.756% | 8,433 ns | 7,020 ns | -16.756% |
+
+六项 median/p95 全部满足 5%/10% 门槛。这里不把改善声明为 merge-up 收益；它只证明冷语义没有污染
+普通 leaf insertion 及共同 sync/unmount 热路径。

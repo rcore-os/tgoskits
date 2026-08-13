@@ -25,7 +25,12 @@ impl<'a> ExtentTree<'a> {
 
         match split_result {
             None => {
-                if self.try_collapse_single_leaf_root(fs, block_dev, &root)? {
+                let may_collapse = matches!(
+                    &root,
+                    ExtentNode::Index { header, entries }
+                        if header.eh_depth == 1 && entries.len() == 1
+                );
+                if may_collapse && self.try_collapse_single_leaf_root(fs, block_dev, &root)? {
                     Ok(())
                 } else {
                     self.store_root_to_inode(&root)
@@ -85,6 +90,8 @@ impl<'a> ExtentTree<'a> {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn try_collapse_single_leaf_root<B: BlockIo>(
         &mut self,
         fs: &mut Ext4FileSystem,

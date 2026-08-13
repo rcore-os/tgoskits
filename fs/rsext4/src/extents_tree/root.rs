@@ -363,6 +363,8 @@ impl<'a> ExtentTree<'a> {
     /// The caller owns enough metadata and revoke credits in the current
     /// filesystem transaction. Returning `false` means the child does not fit
     /// and leaves both the inode and allocation state unchanged.
+    #[cold]
+    #[inline(never)]
     pub(super) fn collapse_external_root_child<B: BlockIo>(
         &mut self,
         fs: &mut Ext4FileSystem,
