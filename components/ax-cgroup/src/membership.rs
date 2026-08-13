@@ -1,10 +1,6 @@
 //! Process membership and task-lifecycle transactions.
 
-use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use ax_lazyinit::LazyInit;
 use ax_sync::SpinLock;
@@ -41,7 +37,7 @@ pub enum CgroupTaskExit {
 }
 
 struct MembershipState {
-    pending_tasks: BTreeSet<ProcessId>,
+    pending_tasks: BTreeMap<ProcessId, ProcessId>,
     tasks: BTreeMap<ProcessId, Arc<CgroupNode>>,
 }
 
@@ -50,7 +46,7 @@ static PROVIDER: LazyInit<&'static dyn CgroupProvider> = LazyInit::new();
 
 pub(crate) fn init() {
     STATE.init_once(SpinLock::new(MembershipState {
-        pending_tasks: BTreeSet::new(),
+        pending_tasks: BTreeMap::new(),
         tasks: BTreeMap::new(),
     }));
 }
@@ -95,6 +91,11 @@ pub struct CgroupForkGuard {
 }
 
 impl CgroupForkGuard {
+    /// Return the cgroup inherited by the reserved task.
+    pub fn cgroup(&self) -> Arc<CgroupNode> {
+        Arc::clone(&self.cgroup)
+    }
+
     /// Publish inherited membership before the child becomes runnable.
     pub fn commit(&mut self) {
         if matches!(self.state, ForkState::Committed) {
@@ -129,19 +130,44 @@ impl Drop for CgroupForkGuard {
 }
 
 /// Reserve a pids charge for a process or thread that is not runnable yet.
-pub(crate) fn begin_task(
+pub(crate) fn begin_task_at(
     parent: Arc<CgroupNode>,
+    process_id: ProcessId,
     task_id: ProcessId,
     child_kind: CgroupChildKind,
 ) -> CgroupResult<CgroupForkGuard> {
     let mut state = state()?.lock_irqsave();
-    if state.pending_tasks.contains(&task_id) || state.tasks.contains_key(&task_id) {
+    reserve_task(&mut state, parent, process_id, task_id, child_kind)
+}
+
+/// Resolve the process's current cgroup and reserve a task charge atomically
+/// with migration and other membership transactions.
+pub(crate) fn begin_task(
+    process_id: ProcessId,
+    task_id: ProcessId,
+    child_kind: CgroupChildKind,
+) -> CgroupResult<CgroupForkGuard> {
+    let mut state = state()?.lock_irqsave();
+    let parent = provider()?
+        .membership(process_id)
+        .ok_or(CgroupError::NoSuchProcess)?;
+    reserve_task(&mut state, parent, process_id, task_id, child_kind)
+}
+
+fn reserve_task(
+    state: &mut MembershipState,
+    parent: Arc<CgroupNode>,
+    process_id: ProcessId,
+    task_id: ProcessId,
+    child_kind: CgroupChildKind,
+) -> CgroupResult<CgroupForkGuard> {
+    if state.pending_tasks.contains_key(&task_id) || state.tasks.contains_key(&task_id) {
         return Err(CgroupError::ResourceBusy);
     }
 
     let charged_path = ancestry(&parent);
     charge_path(&charged_path)?;
-    state.pending_tasks.insert(task_id);
+    state.pending_tasks.insert(task_id, process_id);
     Ok(CgroupForkGuard {
         cgroup: parent,
         task_id,
@@ -166,7 +192,11 @@ pub(crate) fn migrate_process(pid: ProcessId, target: Arc<CgroupNode>) -> Cgroup
             .then_some(())
             .ok_or(CgroupError::NoSuchProcess);
     }
-    if state.pending_tasks.contains(&pid) {
+    if state
+        .pending_tasks
+        .values()
+        .any(|process_id| *process_id == pid)
+    {
         return Err(CgroupError::ResourceBusy);
     }
 
@@ -175,7 +205,7 @@ pub(crate) fn migrate_process(pid: ProcessId, target: Arc<CgroupNode>) -> Cgroup
         return Err(CgroupError::NoSuchProcess);
     }
     for task_id in &task_ids {
-        if state.pending_tasks.contains(task_id)
+        if state.pending_tasks.contains_key(task_id)
             || !state
                 .tasks
                 .get(task_id)
@@ -361,7 +391,8 @@ mod tests {
     }
 
     fn commit_process(root: &Arc<CgroupNode>, pid: ProcessId) {
-        let mut guard = begin_task(Arc::clone(root), pid, CgroupChildKind::Process).unwrap();
+        let mut guard =
+            begin_task_at(Arc::clone(root), pid, pid, CgroupChildKind::Process).unwrap();
         guard.commit();
         PROVIDER
             .memberships
@@ -442,10 +473,11 @@ mod tests {
         let root = crate::root();
         let pid = process_id(1006);
 
-        drop(begin_task(Arc::clone(&root), pid, CgroupChildKind::Process).unwrap());
+        drop(begin_task_at(Arc::clone(&root), pid, pid, CgroupChildKind::Process).unwrap());
         assert!(!root.has_member(pid));
 
-        let mut guard = begin_task(Arc::clone(&root), pid, CgroupChildKind::Process).unwrap();
+        let mut guard =
+            begin_task_at(Arc::clone(&root), pid, pid, CgroupChildKind::Process).unwrap();
         guard.commit();
         drop(guard);
         assert!(root.has_member(pid));
@@ -465,7 +497,8 @@ mod tests {
         root.write_subtree_control("+pids").unwrap();
         commit_process(&cgroup, pid);
 
-        let mut guard = begin_task(Arc::clone(&cgroup), tid, CgroupChildKind::Thread).unwrap();
+        let mut guard =
+            begin_task_at(Arc::clone(&cgroup), pid, tid, CgroupChildKind::Thread).unwrap();
         guard.commit();
 
         assert!(cgroup.has_member(pid));
@@ -490,7 +523,8 @@ mod tests {
         let tid = process_id(1010);
         commit_process(&source, pid);
 
-        let mut thread = begin_task(Arc::clone(&source), tid, CgroupChildKind::Thread).unwrap();
+        let mut thread =
+            begin_task_at(Arc::clone(&source), pid, tid, CgroupChildKind::Thread).unwrap();
         thread.commit();
         PROVIDER
             .task_groups
@@ -529,14 +563,7 @@ mod tests {
         let tid = process_id(1012);
         root.write_subtree_control("+pids").unwrap();
         commit_process(&source, pid);
-        let pending = begin_task(Arc::clone(&source), tid, CgroupChildKind::Thread).unwrap();
-        PROVIDER
-            .task_groups
-            .lock()
-            .unwrap()
-            .get_mut(&pid)
-            .unwrap()
-            .push(tid);
+        let pending = begin_task(pid, tid, CgroupChildKind::Thread).unwrap();
 
         assert_eq!(source.pids_current_text().unwrap(), "2\n");
         assert_eq!(
@@ -567,7 +594,7 @@ mod tests {
         child.write_pids_max("1").unwrap();
 
         assert!(matches!(
-            begin_task(Arc::clone(&child), tid, CgroupChildKind::Thread),
+            begin_task_at(Arc::clone(&child), pid, tid, CgroupChildKind::Thread),
             Err(CgroupError::LimitExceeded)
         ));
         assert_eq!(child.pids_events_text().unwrap(), "max 1\n");
@@ -585,7 +612,8 @@ mod tests {
         let tid = process_id(1016);
         root.write_subtree_control("+pids").unwrap();
         commit_process(&cgroup, pid);
-        let mut thread = begin_task(Arc::clone(&cgroup), tid, CgroupChildKind::Thread).unwrap();
+        let mut thread =
+            begin_task_at(Arc::clone(&cgroup), pid, tid, CgroupChildKind::Thread).unwrap();
         thread.commit();
 
         exit_task(pid, pid, CgroupTaskExit::Thread).unwrap();
@@ -606,10 +634,33 @@ mod tests {
         let pid = process_id(1017);
         let tid = process_id(1018);
         commit_process(&cgroup, pid);
-        let mut thread = begin_task(Arc::clone(&cgroup), tid, CgroupChildKind::Thread).unwrap();
+        let mut thread =
+            begin_task_at(Arc::clone(&cgroup), pid, tid, CgroupChildKind::Thread).unwrap();
         thread.commit();
 
         assert_eq!(rename_task(tid, pid), Err(CgroupError::ResourceBusy));
+        exit_task(pid, tid, CgroupTaskExit::Thread).unwrap();
+        exit_task(pid, pid, CgroupTaskExit::LastProcessTask).unwrap();
+    }
+
+    #[test]
+    fn task_reservation_uses_the_process_current_membership() {
+        let _guard = setup();
+        let root = crate::root();
+        let source = root.create_child("reservation-source").unwrap();
+        let target = root.create_child("reservation-target").unwrap();
+        let pid = process_id(1019);
+        let tid = process_id(1020);
+        root.write_subtree_control("+pids").unwrap();
+        commit_process(&source, pid);
+        migrate_process(pid, Arc::clone(&target)).unwrap();
+
+        let mut task = begin_task(pid, tid, CgroupChildKind::Thread).unwrap();
+        assert!(Arc::ptr_eq(&task.cgroup(), &target));
+        assert_eq!(source.pids_current_text().unwrap(), "0\n");
+        assert_eq!(target.pids_current_text().unwrap(), "2\n");
+
+        task.commit();
         exit_task(pid, tid, CgroupTaskExit::Thread).unwrap();
         exit_task(pid, pid, CgroupTaskExit::LastProcessTask).unwrap();
     }

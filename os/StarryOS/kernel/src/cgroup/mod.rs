@@ -74,11 +74,11 @@ pub fn attach_initial_process(identity: &Arc<PidIdentity>) -> Result<(), CgroupE
 
 /// Reserve one task charge before publishing a child identity.
 pub fn begin_task(
-    parent: Arc<CgroupNode>,
+    process: &Arc<PidIdentity>,
     child: &Arc<PidIdentity>,
     child_kind: CgroupChildKind,
 ) -> Result<CgroupForkGuard, CgroupError> {
-    ax_cgroup::begin_task(parent, process_id(child), child_kind)
+    ax_cgroup::begin_task(process_id(process), process_id(child), child_kind)
 }
 
 /// Release one exact task generation and optionally its process membership.

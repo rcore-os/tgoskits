@@ -126,14 +126,22 @@ Validation on base `edd793e51512e8e3c1e09a8dc0f553abad09c417` completed on
 | --- | --- |
 | `cargo fmt --all -- --check` | passed |
 | `cargo xtask lock-lint` | passed |
-| `cargo test -p ax-cgroup` | 19 passed |
+| `cargo test -p ax-cgroup` | 20 passed |
 | `cargo xtask clippy --package ax-cgroup` | passed |
 | `cargo check -p ax-cgroup` | passed |
 | `cargo check -p starry-kernel` | passed |
 | `cargo xtask clippy --package starry-kernel` | 25 configurations passed with the full cross-toolchain `PATH` |
-| `cargo xtask starry build --arch aarch64` | passed; ELF and BIN regenerated |
-| `cargo xtask starry test qemu --arch aarch64 --test-case qemu/system/cgroup-basic` | 48 passed, 0 failed |
-| `cargo xtask starry test qemu --arch aarch64 --test-case qemu/system/cgroup-pids` | 55 passed, 0 failed |
+| `cargo xtask starry build --arch aarch64` | passed on final worktree |
+| `cargo xtask starry build --arch riscv64` | passed on final worktree |
+| `cargo xtask starry build --arch loongarch64` | passed on final worktree |
+| `cargo xtask starry build --arch x86_64` | passed on final worktree |
+| aarch64 `qemu/system/cgroup-pids` | 55 passed, 0 failed |
+| riscv64 `qemu/system/cgroup-pids` | 55 passed, 0 failed |
+| loongarch64 `qemu/system/cgroup-pids` | passed the same focused binary |
+| x86_64 `qemu/system/cgroup-pids` | 55 passed, 0 failed |
 
-Only aarch64 is claimed by this evidence. Other architectures remain
-unverified for this increment.
+The host regression also covers rejecting migration while a pending task is
+unpublished and resolving a reservation from the process's current cgroup.
+All four supported QEMU architectures were rebuilt and rerun after the final
+API convergence. Existing Cargo artifacts, rootfs archives, and grouped-case
+assets were reused; no `cargo clean` was run.

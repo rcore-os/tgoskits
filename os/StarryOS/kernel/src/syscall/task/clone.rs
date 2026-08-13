@@ -288,7 +288,6 @@ impl CloneArgs {
         }
 
         let parent_pid_ns = curr_thread.active_pid_namespace();
-        let inherited_cgroup = old_proc_data.cgroup.read().clone();
         let target_pid_ns = if flags.contains(CloneFlags::THREAD) {
             parent_pid_ns.clone()
         } else if flags.contains(CloneFlags::NEWPID) {
@@ -296,6 +295,37 @@ impl CloneArgs {
         } else {
             old_proc_data.nsproxy.lock().pid_ns_for_children.clone()
         };
+        let reservation_kind = if flags.contains(CloneFlags::THREAD) {
+            PidReservationKind::Thread
+        } else {
+            PidReservationKind::ProcessLeader
+        };
+        let reservation = PidReservation::reserve(&target_pid_ns, reservation_kind)?;
+        let root_tid = TidNumber::from(
+            reservation
+                .number_in(&crate::task::ROOT_PID_NS)
+                .ok_or(StarryError::BadState)?,
+        );
+        let parent_visible_tid = TidNumber::from(
+            reservation
+                .number_in(&parent_pid_ns)
+                .ok_or(StarryError::BadState)?,
+        );
+        let identity = reservation.identity();
+        let tid_lease = identity.acquire_role::<Tid>()?;
+        let mut tgid_lease = (!flags.contains(CloneFlags::THREAD))
+            .then(|| identity.acquire_role::<Tgid>())
+            .transpose()?;
+        let mut clone_transaction = CloneTransaction::new(identity.clone());
+
+        let child_kind = if flags.contains(CloneFlags::THREAD) {
+            ax_cgroup::CgroupChildKind::Thread
+        } else {
+            ax_cgroup::CgroupChildKind::Process
+        };
+        let mut cgroup_guard =
+            crate::cgroup::begin_task(&old_proc_data.identity(), &identity, child_kind)?;
+        let inherited_cgroup = cgroup_guard.cgroup();
         let mut prepared_nsproxy = (!flags.contains(CloneFlags::THREAD)).then(|| {
             let mut nsproxy = old_proc_data.nsproxy.lock().clone_all();
             if flags.contains(CloneFlags::NEWUTS) {
@@ -321,28 +351,6 @@ impl CloneArgs {
             }
             nsproxy
         });
-        let reservation_kind = if flags.contains(CloneFlags::THREAD) {
-            PidReservationKind::Thread
-        } else {
-            PidReservationKind::ProcessLeader
-        };
-        let reservation = PidReservation::reserve(&target_pid_ns, reservation_kind)?;
-        let root_tid = TidNumber::from(
-            reservation
-                .number_in(&crate::task::ROOT_PID_NS)
-                .ok_or(StarryError::BadState)?,
-        );
-        let parent_visible_tid = TidNumber::from(
-            reservation
-                .number_in(&parent_pid_ns)
-                .ok_or(StarryError::BadState)?,
-        );
-        let identity = reservation.identity();
-        let tid_lease = identity.acquire_role::<Tid>()?;
-        let mut tgid_lease = (!flags.contains(CloneFlags::THREAD))
-            .then(|| identity.acquire_role::<Tgid>())
-            .transpose()?;
-        let mut clone_transaction = CloneTransaction::new(identity.clone());
 
         let new_proc_data = if flags.contains(CloneFlags::THREAD) {
             new_task
@@ -461,13 +469,6 @@ impl CloneArgs {
             *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
         }
 
-        let child_kind = if flags.contains(CloneFlags::THREAD) {
-            ax_cgroup::CgroupChildKind::Thread
-        } else {
-            ax_cgroup::CgroupChildKind::Process
-        };
-        let mut cgroup_guard =
-            crate::cgroup::begin_task(inherited_cgroup.clone(), &identity, child_kind)?;
         // Reserve pids before publishing the new TID in its thread group.
         new_proc_data.proc.add_thread(root_tid);
 
