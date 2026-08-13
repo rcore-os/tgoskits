@@ -31,6 +31,7 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
         state: IrqMutex::new(ProcessIdentityState::Zombie(ZombieSnapshot {
             cred: Arc::new(Cred::default()),
             nice: 0,
+            exit_code: 0,
             ptrace_tracer_pid: None,
             is_clone_child: false,
             wait_parent_tid: TEST_PID,

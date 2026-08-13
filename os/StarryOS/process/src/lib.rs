@@ -14,8 +14,8 @@ mod session;
 pub type Pid = u32;
 
 pub use process::{
-    PreparedFork, Process, ProcessCpuTime, ProcessExitRelations, PublishedFork, ThreadExit,
-    init_proc,
+    LastThreadExitOwner, PreparedFork, Process, ProcessCpuTime, ProcessExitRelations,
+    PublishedFork, ThreadExit, init_proc,
 };
 pub use process_group::ProcessGroup;
 pub use session::Session;

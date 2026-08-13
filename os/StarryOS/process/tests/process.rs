@@ -143,7 +143,7 @@ fn thread_exit() {
         7,
         ProcessCpuTime::new(Duration::from_millis(5), Duration::from_millis(7)),
     );
-    assert_eq!(first, ThreadExit::Remaining);
+    assert!(matches!(first, ThreadExit::Remaining));
     assert_eq!(child.exit_code(), 7);
 
     let mut snapshot = child.start_group_exit(9).unwrap();
@@ -156,13 +156,15 @@ fn thread_exit() {
         3,
         ProcessCpuTime::new(Duration::from_millis(2), Duration::from_millis(3)),
     );
+    let ThreadExit::Last(last) = last else {
+        panic!("the final TID must own process exit");
+    };
     assert_eq!(
-        last,
-        ThreadExit::Last(ProcessCpuTime::new(
-            Duration::from_millis(7),
-            Duration::from_millis(10)
-        ))
+        last.cpu_time(),
+        ProcessCpuTime::new(Duration::from_millis(7), Duration::from_millis(10))
     );
+    assert_eq!(last.exit_code(), 9);
+    assert!(Arc::ptr_eq(last.process(), &child));
     assert_eq!(child.exit_code(), 9);
     assert!(child.start_group_exit(11).is_none());
     assert_eq!(child.exit_code(), 9);
@@ -173,26 +175,25 @@ fn repeated_thread_exit_does_not_report_last_twice() {
     let child = init_proc().new_child();
     child.add_thread(101);
 
+    let ThreadExit::Last(last) = child.exit_thread(
+        101,
+        7,
+        ProcessCpuTime::new(Duration::from_millis(2), Duration::from_millis(3)),
+    ) else {
+        panic!("the only TID must own process exit");
+    };
     assert_eq!(
-        child.exit_thread(
-            101,
-            7,
-            ProcessCpuTime::new(Duration::from_millis(2), Duration::from_millis(3))
-        ),
-        ThreadExit::Last(ProcessCpuTime::new(
-            Duration::from_millis(2),
-            Duration::from_millis(3)
-        ))
+        last.cpu_time(),
+        ProcessCpuTime::new(Duration::from_millis(2), Duration::from_millis(3))
     );
-    assert_eq!(
+    assert!(matches!(
         child.exit_thread(
             101,
             9,
             ProcessCpuTime::new(Duration::from_secs(20), Duration::from_secs(30))
         ),
-        ThreadExit::AlreadyExited,
-        "an already-removed thread must not publish process exit again"
-    );
+        ThreadExit::AlreadyExited
+    ));
     assert_eq!(
         child.exit_code(),
         7,

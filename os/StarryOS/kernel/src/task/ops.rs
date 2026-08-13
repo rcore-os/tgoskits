@@ -619,13 +619,26 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     }
     thr.account_cpu_time_now();
     let (utime, stime) = task_cpu_time(&curr);
-    let thread_exit = process.exit_thread(thr.tid(), exit_code, ProcessCpuTime::new(utime, stime));
-    if !matches!(thread_exit, ThreadExit::Last(_)) {
-        remove_task_from_table(thr.tid());
-    }
+    let last_thread_exit =
+        match process.exit_thread(thr.tid(), exit_code, ProcessCpuTime::new(utime, stime)) {
+            ThreadExit::AlreadyExited => {
+                panic!("a thread exit owner removed the same TID more than once")
+            }
+            ThreadExit::Remaining => {
+                remove_task_from_table(thr.tid());
+                None
+            }
+            ThreadExit::Last(owner) => Some(owner),
+        };
 
     let mut shutdown_reap_parent = None;
-    if let ThreadExit::Last(process_cpu_time) = thread_exit {
+    if let Some(process_exit) = last_thread_exit {
+        assert!(
+            Arc::ptr_eq(process_exit.process(), process),
+            "last-thread exit owner changed process generation"
+        );
+        let process_cpu_time = process_exit.cpu_time();
+        let process_exit_code = process_exit.exit_code();
         crate::cgroup::exit_process(&thr.proc_data);
         thr.proc_data.release_cgroup_namespace();
 
@@ -710,6 +723,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             ZombieSnapshot {
                 cred: zombie_cred,
                 nice: zombie_nice,
+                exit_code: process_exit_code,
                 ptrace_tracer_pid,
                 is_clone_child,
                 wait_parent_tid,
@@ -725,7 +739,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 use starry_signal::Signo;
 
                 let child_uid = thr.cred().uid;
-                let (code, status) = decode_wait_status(process.exit_code());
+                let (code, status) = decode_wait_status(process_exit_code);
 
                 let sig = if signo == Signo::SIGCHLD {
                     SignalInfo::new_sigchld(process.pid(), child_uid, code, status)

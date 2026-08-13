@@ -30,6 +30,17 @@ pub(crate) struct ThreadGroup {
     pub(crate) exited_cpu_time: ProcessCpuTime,
 }
 
+impl ThreadGroup {
+    fn begin_group_exit(&mut self, exit_code: i32) -> bool {
+        if self.group_exited || self.threads.is_empty() {
+            return false;
+        }
+        self.group_exited = true;
+        self.exit_code = exit_code;
+        true
+    }
+}
+
 /// CPU time accumulated by threads that have exited from a process.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ProcessCpuTime {
@@ -59,15 +70,54 @@ impl ProcessCpuTime {
     }
 }
 
+/// Unique ownership of the final process exit selected under the thread-group
+/// lock.
+///
+/// The owner is deliberately neither [`Clone`] nor [`Copy`]. It freezes the
+/// exact process generation and wait-visible exit data at the same transition
+/// that removes the final live TID.
+pub struct LastThreadExitOwner {
+    process: Arc<Process>,
+    exit_code: i32,
+    cpu_time: ProcessCpuTime,
+}
+
+impl LastThreadExitOwner {
+    /// Returns the exact process generation whose final thread exited.
+    pub fn process(&self) -> &Arc<Process> {
+        &self.process
+    }
+
+    /// Returns the frozen Linux wait status.
+    pub const fn exit_code(&self) -> i32 {
+        self.exit_code
+    }
+
+    /// Returns the CPU time accumulated by all threads in the process.
+    pub const fn cpu_time(&self) -> ProcessCpuTime {
+        self.cpu_time
+    }
+}
+
+impl fmt::Debug for LastThreadExitOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LastThreadExitOwner")
+            .field("pid", &self.process.pid())
+            .field("exit_code", &self.exit_code)
+            .field("cpu_time", &self.cpu_time)
+            .finish()
+    }
+}
+
 /// Result of removing one TID from a process thread group.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum ThreadExit {
     /// The TID had already left the thread group.
     AlreadyExited,
     /// Other threads remain alive.
     Remaining,
-    /// This was the last thread; the payload is the frozen process CPU time.
-    Last(ProcessCpuTime),
+    /// This was the last thread and owns the final process-exit transition.
+    Last(LastThreadExitOwner),
 }
 
 /// A process.
@@ -351,7 +401,12 @@ impl Process {
         }
         tg.exited_cpu_time.add(cpu_time);
         if tg.threads.is_empty() {
-            ThreadExit::Last(tg.exited_cpu_time)
+            tg.group_exited = true;
+            ThreadExit::Last(LastThreadExitOwner {
+                process: self.clone(),
+                exit_code: tg.exit_code,
+                cpu_time: tg.exited_cpu_time,
+            })
         } else {
             ThreadExit::Remaining
         }
@@ -407,8 +462,9 @@ impl Process {
                 drop(thread_group);
                 continue;
             }
-            thread_group.group_exited = true;
-            thread_group.exit_code = exit_code;
+            if !thread_group.begin_group_exit(exit_code) {
+                return None;
+            }
             threads.extend(thread_group.threads.iter().copied());
             return Some(threads);
         }
@@ -601,7 +657,7 @@ mod tests {
     #[cfg(feature = "multitask")]
     use ax_runtime::sync::LockdepMutexExt;
 
-    use super::Process;
+    use super::{Process, ThreadGroup};
     use crate::ProcessGroup;
 
     const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
@@ -790,5 +846,16 @@ mod tests {
         assert!(relations.into_retained_children().is_empty());
         assert!(!namespace_reaper.accepts_child_publication());
         assert!(prepared.publish().is_none());
+    }
+
+    #[test]
+    fn empty_thread_group_cannot_restart_group_exit() {
+        let mut thread_group = ThreadGroup {
+            exit_code: 7,
+            ..ThreadGroup::default()
+        };
+
+        assert!(!thread_group.begin_group_exit(9));
+        assert_eq!(thread_group.exit_code, 7);
     }
 }

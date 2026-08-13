@@ -16,7 +16,7 @@ use crate::{
     task::{
         JobStatus, ProcessData, ProcessIdentity, decode_wait_status, future::block_on_user,
         get_process_data, get_task, get_zombie_cred, is_reaped_process, is_zombie_clone_child,
-        is_zombie_process, processes, reap_process, traced_zombies_for, wait_on_pollset,
+        processes, reap_process, traced_zombies_for, wait_on_pollset, zombie_exit_code,
         zombie_wait_parent_tid,
     },
 };
@@ -316,11 +316,14 @@ pub fn sys_waitpid(
             }
             data.mark_ptrace_stop_reported_for(stop_tid);
             return Ok(Some(wait_pid as _));
-        } else if let Some(child) = children.iter().find(|child| is_zombie_process(child)) {
+        } else if let Some((child, child_exit_code)) = children
+            .iter()
+            .find_map(|child| zombie_exit_code(child).map(|exit_code| (child, exit_code)))
+        {
             // Copy status before claiming the unique reap transition. A failed
             // user write leaves the zombie available for a later retry.
             if let Some(exit_code) = exit_code.nullable() {
-                exit_code.vm_write(current, child.exit_code())?;
+                exit_code.vm_write(current, child_exit_code)?;
             }
             if let Some(cpu_time) = reap_process(child) {
                 proc_data.add_child_cpu_time(cpu_time.user(), cpu_time.system());
@@ -525,10 +528,12 @@ pub fn sys_waitid(
         }
 
         if options.contains(WaitIdOptions::WEXITED)
-            && let Some(child) = children.iter().find(|child| is_zombie_process(child))
+            && let Some((child, child_exit_code)) = children
+                .iter()
+                .find_map(|child| zombie_exit_code(child).map(|exit_code| (child, exit_code)))
         {
             let child_pid = child.pid();
-            let (code, status) = decode_wait_status(child.exit_code());
+            let (code, status) = decode_wait_status(child_exit_code);
             let child_uid = child_uid(child);
 
             if let Some(infop) = infop.nullable() {

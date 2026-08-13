@@ -42,6 +42,7 @@ impl ProcessIdentityState {
 pub(crate) struct ZombieSnapshot {
     pub(crate) cred: Arc<Cred>,
     pub(crate) nice: i32,
+    pub(crate) exit_code: i32,
     pub(crate) ptrace_tracer_pid: Option<Pid>,
     pub(crate) is_clone_child: bool,
     pub(crate) wait_parent_tid: Pid,
@@ -505,6 +506,11 @@ pub fn get_zombie_nice(pid: Pid) -> Option<i32> {
         .lock()
         .get(&pid)?
         .zombie_snapshot(|zombie| zombie.nice)
+}
+
+/// Returns the frozen wait status for an exact zombie process generation.
+pub(crate) fn zombie_exit_code(process: &Arc<Process>) -> Option<i32> {
+    process_identity(process)?.zombie_snapshot(|zombie| zombie.exit_code)
 }
 
 pub(crate) fn is_zombie_clone_child(pid: Pid) -> Option<bool> {
