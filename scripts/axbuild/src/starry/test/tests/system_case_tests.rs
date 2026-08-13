@@ -19,12 +19,20 @@ fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
             .get("test_commands")
             .and_then(toml::Value::as_array)
             .unwrap();
+        assert_eq!(
+            config
+                .get("grouped_command_selection")
+                .and_then(toml::Value::as_str),
+            Some("preserve_all"),
+            "{} must preserve the shared aggregator command when filtering subcases",
+            path.display()
+        );
         assert!(
             test_commands
                 .iter()
                 .filter_map(toml::Value::as_str)
-                .any(|command| command.contains("/usr/bin/starry-test-suit/*")),
-            "{} must scan installed system test binaries",
+                .any(|command| command.starts_with("/usr/bin/starry-run-system-tests")),
+            "{} must invoke the shared isolated system test runner",
             path.display()
         );
         let success_regex = config
@@ -56,9 +64,49 @@ fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
 }
 
 #[test]
-fn starry_system_grouped_qemu_configs_report_each_result_once() {
+fn starry_system_grouped_qemu_configs_reuse_isolated_runner() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
+    let runner_path = system_dir.join("common/starry_system_test_runner.c");
+    let runner = fs::read_to_string(&runner_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", runner_path.display()));
+    for marker in [
+        "STARRY_SYSTEM_TEST_BEGIN:",
+        "STARRY_SYSTEM_TEST_PASSED:",
+        "STARRY_SYSTEM_TEST_FAILED:",
+        "STARRY_SYSTEM_TEST_SUMMARY:",
+        "STARRY_GROUPED_TESTS_PASSED",
+        "STARRY_GROUPED_TEST_FAILED:",
+    ] {
+        assert!(
+            runner.contains(marker),
+            "{} must preserve the {marker} marker",
+            runner_path.display()
+        );
+    }
+    assert!(
+        runner.contains("setsid()")
+            && runner.contains("CLONE_NEWPID | CLONE_NEWNS | SIGCHLD")
+            && runner.contains("clone(supervise_case_namespace")
+            && runner.contains("mount(\"proc\", \"/proc\", \"proc\"")
+            && runner.contains("pid_t child = fork()")
+            && runner.contains("waitpid(child, &status, 0)")
+            && runner.contains("waitpid(namespace_init, &status, 0)")
+            && runner.contains("execl(args->path, args->path, (char *)NULL)"),
+        "{} must run each test below one PID-namespace lifecycle owner",
+        runner_path.display()
+    );
+
+    let isolation_source_path = system_dir.join("test-case-task-isolation/src/leak.c");
+    let isolation_source = fs::read_to_string(&isolation_source_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", isolation_source_path.display()));
+    assert!(
+        isolation_source.contains("setsid()")
+            && isolation_source.contains("CASE_TASK_ISOLATION_LEAK_PUBLISHED"),
+        "{} must escape the inherited process group before testing descendant cleanup",
+        isolation_source_path.display()
+    );
+
     let mut paths = ["aarch64", "loongarch64", "riscv64", "x86_64"]
         .map(|arch| system_dir.join(format!("qemu-{arch}.toml")))
         .to_vec();
@@ -78,61 +126,30 @@ fn starry_system_grouped_qemu_configs_report_each_result_once() {
             .unwrap_or_default();
 
         assert!(
-            command.contains("STARRY_SYSTEM_TEST_BEGIN: $bin"),
-            "{} must identify each test before it starts",
-            path.display()
-        );
-        assert!(
-            command.contains("STARRY_SYSTEM_TEST_PASSED: $bin elapsed_s=$elapsed_s"),
-            "{} must report one traceable duration for each passing test",
-            path.display()
-        );
-        assert!(
-            command.contains("$system_fail_marker: $bin status=$exit_status elapsed_s=$elapsed_s"),
-            "{} must report the status and duration of each failing test",
-            path.display()
-        );
-        assert!(
-            command.contains(
-                "STARRY_SYSTEM_TEST_SUMMARY: total=$total passed=$passed failed=$failed \
-                 elapsed_s=$suite_elapsed_s"
-            ),
-            "{} must report one compact suite timing summary",
-            path.display()
-        );
-        assert!(
-            !command.contains("STARRY_SYSTEM_TEST_TIMING") && !command.contains("timing_file="),
-            "{} must not duplicate per-test durations in a trailing timing block",
-            path.display()
-        );
-        let failure_branch = command.find("else\n").unwrap_or_else(|| {
-            panic!(
-                "{} must contain a failure branch for grouped subcases",
-                path.display()
-            )
-        });
-        let failure_command = &command[failure_branch..];
-        let exit_status_position = failure_command.find("exit_status=$?").unwrap_or_else(|| {
-            panic!(
-                "{} must preserve grouped subcase exit status",
-                path.display()
-            )
-        });
-        let failed_count_position = failure_command
-            .find("failed=$((failed + 1))")
-            .unwrap_or_else(|| panic!("{} must mark failed grouped subcases", path.display()));
-        assert!(
-            exit_status_position < failed_count_position,
-            "{} must capture `$?` before assigning shell variables in the failure branch",
-            path.display()
-        );
-        assert!(
-            command.contains("STARRY_GROUPED_TESTS_PASSED")
-                && command.contains("STARRY_GROUPED_TEST_FAILED"),
-            "{} must keep existing grouped success/fail markers",
+            command.starts_with("/usr/bin/starry-run-system-tests")
+                && !command.contains("for bin in"),
+            "{} must reuse the shared runner instead of duplicating its loop",
             path.display()
         );
     }
+}
+
+#[test]
+fn starry_system_runner_bounds_each_pid_namespace() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let runner_path =
+        workspace_root.join("test-suit/starryos/qemu/system/common/starry_system_test_runner.c");
+    let runner = fs::read_to_string(&runner_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", runner_path.display()));
+
+    assert!(
+        runner.contains("CASE_TIMEOUT_SECONDS")
+            && runner.contains("RUNNER_TIMEOUT_STATUS")
+            && runner.contains("waitpid(namespace_init, status, WNOHANG)")
+            && runner.contains("kill(namespace_init, SIGKILL)"),
+        "{} must bound every case at the PID-namespace owner and kill that owner on timeout",
+        runner_path.display()
+    );
 }
 
 #[test]
@@ -340,8 +357,8 @@ fn zombie_bugfix_commands_are_in_system_grouped_qemu_case() {
             system_commands
                 .iter()
                 .filter_map(toml::Value::as_str)
-                .any(|command| command.contains("/usr/bin/starry-test-suit/*")),
-            "{} must scan installed system test binaries",
+                .any(|command| command.starts_with("/usr/bin/starry-run-system-tests")),
+            "{} must delegate installed binary discovery to the shared runner",
             system_path.display()
         );
     }
@@ -380,8 +397,8 @@ fn tty_bugfix_commands_are_in_system_grouped_qemu_case() {
             system_commands
                 .iter()
                 .filter_map(toml::Value::as_str)
-                .any(|command| command.contains("/usr/bin/starry-test-suit/*")),
-            "{} must scan installed system test binaries",
+                .any(|command| command.starts_with("/usr/bin/starry-run-system-tests")),
+            "{} must delegate installed binary discovery to the shared runner",
             system_path.display()
         );
     }

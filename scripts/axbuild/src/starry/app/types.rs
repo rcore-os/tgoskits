@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::ValueEnum;
 
-use crate::test::case::{HostHttpServerConfig, TestQemuSubcase};
+use crate::test::case::{GroupedCommandSelection, HostHttpServerConfig, TestQemuSubcase};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum StarryAppKind {
@@ -40,6 +40,7 @@ pub(crate) struct StarryAppQemuCase {
     pub(crate) rootfs_path: PathBuf,
     pub(crate) snapshot: bool,
     pub(crate) test_commands: Vec<String>,
+    pub(crate) grouped_command_selection: GroupedCommandSelection,
     pub(crate) host_symbolize_success_regex: Vec<String>,
     pub(crate) host_http_server: Option<HostHttpServerConfig>,
     pub(crate) subcases: Vec<TestQemuSubcase>,

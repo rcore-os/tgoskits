@@ -93,8 +93,17 @@ qemu/system/<subcase>/
 
 子测例目录不要再放 `qemu-*.toml`。架构过滤不能依赖子目录下的 runtime config，而应在代码或 CMake 中显式处理。
 
-`system/qemu-*.toml` 的 `test_commands` 使用 grouped runner 风格，扫描
-`/usr/bin/starry-test-suit/*` 并逐个执行。所有子测例通过后打印：
+`system/qemu-*.toml` 的 `test_commands` 统一调用
+`/usr/bin/starry-run-system-tests`。该 runner 稳定排序并扫描
+`/usr/bin/starry-test-suit/*`，为每个 binary 建立独立 PID 和 mount namespace，并重挂载
+绑定该 PID namespace 的 procfs。最小 namespace-init supervisor 等待 binary 主进程并保留
+其退出结果，随后以该结果退出；每个子测例最多运行 120 秒，超时后 outer runner 会杀死
+namespace init，内核通过 PID namespace shutdown 路径清理并回收全部 descendants。后代即使
+调用 `setpgid()` 或 `setsid()` 也不能逃出这个所有权边界。所有子测例
+通过后打印：
+
+这些配置同时声明 `grouped_command_selection = "preserve_all"`，表示单子测例过滤只裁剪
+要构建的 C subcase，不把共享聚合器误当作某个 subcase 的直接命令。
 
 ```text
 STARRY_GROUPED_TESTS_PASSED
@@ -106,8 +115,8 @@ timing 列表。例如：
 
 ```text
 STARRY_SYSTEM_TEST_BEGIN: /usr/bin/starry-test-suit/mytest
-STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/mytest elapsed_s=1
-STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=1
+STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/mytest elapsed_s=0.012
+STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.012
 ```
 
 开始标记用于在超时时定位卡住的 binary；失败时保留该 binary 的原始输出、
@@ -292,7 +301,7 @@ success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
 ```
 
-运行器会稳定排序子目录、构建 C subcase，并注入 grouped runner 支持文件。每个命令执行前后都会打印带 `step=当前/总数`、`epoch=`、`status=` 和 `command=` 的标记，例如：
+普通（非 `qemu/system`）grouped case 的运行器会稳定排序子目录、构建 C subcase，并注入 grouped runner 支持文件。每个命令执行前后都会打印带 `step=当前/总数`、`epoch=`、`status=` 和 `command=` 的标记，例如：
 
 ```text
 STARRY_GROUPED_TEST_BEGIN: step=1/2 epoch=... command=/usr/bin/test-a

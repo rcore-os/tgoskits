@@ -46,6 +46,7 @@ fn fake_case(root: &Path, name: &str) -> TestQemuCase {
         case_dir: case_dir.clone(),
         qemu_config_path: case_dir.join("qemu-aarch64.toml"),
         test_commands: Vec::new(),
+        grouped_command_selection: Default::default(),
         host_symbolize_success_regex: Vec::new(),
         host_http_server: None,
         subcases: Vec::new(),
@@ -281,6 +282,29 @@ fn grouped_runner_commands_keep_dynamic_shell_loop_with_explicit_filter() {
     let selected = selected_grouped_c_subcases(&case, vec![&beta]).unwrap();
     let runner_commands = selected_grouped_runner_commands(&case, &selected).unwrap();
 
+    assert_eq!(runner_commands, case.test_commands);
+}
+
+#[test]
+fn grouped_runner_commands_preserve_explicit_aggregator_with_subcase_filter() {
+    let root = tempdir().unwrap();
+    let mut case = fake_case(root.path(), "system");
+    case.test_commands = vec!["/usr/bin/starry-run-system-tests".to_string()];
+    case.grouped_command_selection = GroupedCommandSelection::PreserveAll;
+    case.grouped_subcase_filter = Some(BTreeSet::from(["beta".to_string()]));
+
+    let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
+    let beta = fake_c_subcase(root.path(), &case, "beta", &["beta"]);
+    let selected = selected_grouped_c_subcases(&case, vec![&alpha, &beta]).unwrap();
+    let runner_commands = selected_grouped_runner_commands(&case, &selected).unwrap();
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(|subcase| subcase.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["beta"]
+    );
     assert_eq!(runner_commands, case.test_commands);
 }
 

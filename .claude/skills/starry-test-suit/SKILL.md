@@ -48,7 +48,7 @@ Each QEMU case may use at most one asset pipeline:
 - `c`: case directory has `c/CMakeLists.txt`; CMake builds and installs artifacts into a rootfs overlay.
 - `sh`: case directory has `sh/`; scripts are copied into the guest overlay.
 - `python`: case directory has `python/`; the runner installs `python3` in staging and copies `.py` files into `/usr/bin/`.
-- `grouped`: `qemu-<arch>.toml` defines `test_commands`; subdirectories such as `<subcase>/c/` are built and a `/usr/bin/starry-run-case-tests` runner is injected. The `qemu/system` grouped cases use `system/CMakeLists.txt` as one root CMake project, keep each subcase's `CMakeLists.txt` and `src/` directly under `system/<subcase>`, scan `/usr/bin/starry-test-suit/*`, and use `STARRY_GROUPED_TESTS_PASSED` as the success marker. Single grouped subcases run through `-c qemu/<subcase>` or `-c qemu/system/<subcase>`.
+- `grouped`: `qemu-<arch>.toml` defines `test_commands`; subdirectories such as `<subcase>/c/` are built and a `/usr/bin/starry-run-case-tests` runner is injected. The `qemu/system` grouped cases use `system/CMakeLists.txt` as one root CMake project, keep each subcase's `CMakeLists.txt` and `src/` directly under `system/<subcase>`, and invoke the shared `/usr/bin/starry-run-system-tests` binary. That runner scans `/usr/bin/starry-test-suit/*`, runs each binary below a minimal PID-namespace-init supervisor with a matching procfs mount, kills the namespace init after a bounded per-case timeout so all descendants are reclaimed, and emits `STARRY_GROUPED_TESTS_PASSED` only after every binary passes. Single grouped subcases run through `-c qemu/<subcase>` or `-c qemu/system/<subcase>`.
 
 Pipeline cases use per-case rootfs copies and cache injected images under `target/<target>/qemu-cases/.../cache/rootfs/`. Plain cases do not copy the rootfs.
 
@@ -89,6 +89,8 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
 - Use `prebuild.sh` only for packages or setup that must happen inside the staging rootfs.
 - For grouped cases, keep `test_commands` aligned with installed guest paths and include the grouped success/fail regexes.
 - For `qemu/system` C subcases, install binaries to `usr/bin/starry-test-suit`. Put shared system rootfs preparation in `system/prebuild.sh`, not in subcase-local `prebuild.sh`. If a subcase is arch-specific, generate an explicit skip binary or skip in the program; do not rely on subcase-local `qemu-<arch>.toml` filtering.
+- Keep `qemu/system` execution, per-case timeout, and descendant cleanup in the shared `starry-run-system-tests` binary; do not copy the scan/result loop into architecture TOML files. Each binary must run under its own PID namespace so `setpgid()` or `setsid()` cannot escape the runner's task-lifecycle ownership.
+- Set `grouped_command_selection = "preserve_all"` when `test_commands` contains a shared aggregator such as `starry-run-system-tests`; direct per-subcase command lists keep the default `direct_subcases` selection.
 - Board case names and board config names should match the actual board target, such as `board-orangepi-5-plus.toml`.
 - Board cases may declare `session_files` relative to the directory containing
   `board-<board>.toml`. Keep each path unchanged from local lookup through the

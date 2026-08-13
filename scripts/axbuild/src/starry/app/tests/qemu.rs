@@ -16,7 +16,7 @@ use crate::{
         StarryAppQemuCase, discover_apps,
         test_support::{write_case_file, write_test_image_config},
     },
-    test::case::HostHttpServerConfig,
+    test::case::{GroupedCommandSelection, HostHttpServerConfig},
 };
 
 #[test]
@@ -126,7 +126,8 @@ fn qemu_case_fields_load_grouped_commands_and_subcases() {
         "qemu/sqlite",
         "qemu-x86_64.toml",
         "args = []\nuefi = false\nto_bin = true\nsuccess_regex = []\nfail_regex = \
-         []\ntest_commands = [\"/usr/bin/app-sqlite\", \"/usr/bin/app-sqlite-deep\"]\n",
+         []\ntest_commands = [\"/usr/bin/app-sqlite\", \
+         \"/usr/bin/app-sqlite-deep\"]\ngrouped_command_selection = \"preserve_all\"\n",
     );
     write_case_file(
         root.path(),
@@ -153,6 +154,10 @@ fn qemu_case_fields_load_grouped_commands_and_subcases() {
     assert_eq!(
         fields.test_case.test_commands,
         vec!["/usr/bin/app-sqlite", "/usr/bin/app-sqlite-deep"]
+    );
+    assert_eq!(
+        fields.test_case.grouped_command_selection,
+        GroupedCommandSelection::PreserveAll
     );
     assert_eq!(fields.test_case.subcases.len(), 2);
 }
@@ -383,6 +388,7 @@ fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
         rootfs_path: PathBuf::from("/tmp/rootfs.img"),
         snapshot: true,
         test_commands: Vec::new(),
+        grouped_command_selection: Default::default(),
         host_symbolize_success_regex: vec!["symbolized".to_string()],
         host_http_server: Some(HostHttpServerConfig {
             bind: "127.0.0.1".to_string(),
