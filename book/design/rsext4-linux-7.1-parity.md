@@ -91,6 +91,18 @@ ownership、UUID 与 durability 边界完整实现，而不是静默退回主设
 `s_uuid`。对应确定性回归会改写内部 JBD2 UUID 并重算 superblock checksum，要求
 mount 继续成功，避免把 Linux 可挂载的内部 journal 错报为 `EUCLEAN`。
 
+Linux v7.1 对 legacy `uninit_bg`（`RO_COMPAT_GDT_CSUM`）使用 UUID、little-endian
+group number 和 group descriptor 字节计算 CRC16；它不复用 `metadata_csum` 的
+CRC32C，也不校验 legacy bitmap checksum 字段。core 现在按 feature 选择两种
+descriptor checksum 算法，并在首次使用 `BLOCK_UNINIT` bitmap 时忽略陈旧磁盘内容，
+根据 superblock/GDT/bitmap/inode-table/journal 的实际 system-zone layout 合成 Linux
+等价 bitmap，成功分配后才清 flag 并写回 descriptor checksum。`INODE_UNINIT` 首次
+分配同样不读取陈旧 bitmap；若 group 尚未标记 `INODE_ZEROED`，目标 inode record
+从全零 raw bytes 初始化，避免解析或保留未初始化 inode-table 尾部。group 0 出现任一
+UNINIT bitmap flag 视为损坏。固定 `mkfs.ext4 -O ^metadata_csum,uninit_bg` 镜像回归
+覆盖 RW mount、create/write、两次 `e2fsck -fn` 和 remount/read；另有磁盘 bitmap
+全 `0xff` 及未清零 inode record 的低层测试约束首次分配语义。
+
 ## 4. 公共 API 迁移
 
 v0.8 删除 `Ext4FileSystem` 公共字段、公开 `Jbd2Dev`、Linux `Errno` core

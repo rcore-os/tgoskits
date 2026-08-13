@@ -85,13 +85,17 @@ impl Ext4GroupDesc {
             return Err(Ext4Error::corrupted().with_operation("group_descriptor:record_size"));
         }
 
+        let has_group_desc_checksum = ext4_superblock_has_metadata_csum(superblock)
+            || superblock.has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_GDT_CSUM);
         if ext4_superblock_has_metadata_csum(superblock) {
             self.update_bitmap_checksums(superblock, block_bitmap, inode_bitmap);
+        }
+        if has_group_desc_checksum {
             self.bg_checksum = 0;
         }
         self.encode_checked(raw_record)?;
 
-        if ext4_superblock_has_metadata_csum(superblock) {
+        if has_group_desc_checksum {
             self.bg_checksum = ext4_group_desc_csum16_zeroed(superblock, group_id, raw_record)
                 .ok_or_else(|| {
                     Ext4Error::corrupted().with_operation("group_descriptor:checksum_size")
@@ -111,7 +115,9 @@ impl Ext4GroupDesc {
         if raw_record.len() != superblock.get_desc_size() as usize {
             return Err(Ext4Error::corrupted().with_operation("group_descriptor:record_size"));
         }
-        if !ext4_superblock_has_metadata_csum(superblock) {
+        if !ext4_superblock_has_metadata_csum(superblock)
+            && !superblock.has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_GDT_CSUM)
+        {
             return Ok(());
         }
 

@@ -153,6 +153,16 @@ impl InodeCache {
         // A failed load leaves the previous cache contents untouched.
         let (inode, raw_inode) = self.load_inode(block_dev, block_num, offset)?;
 
+        self.make_room(block_dev)?;
+
+        self.cache.insert(
+            inode_num,
+            CachedInode::new(inode, raw_inode, inode_num, block_num, offset),
+        );
+        Ok(())
+    }
+
+    fn make_room<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         if self.cache.len() >= self.max_entries
             && let Some(victim_num) = self.lru_inode()
         {
@@ -172,9 +182,43 @@ impl InodeCache {
             self.cache.remove(&victim_num);
         }
 
+        Ok(())
+    }
+
+    /// Installs an all-zero record for a newly allocated inode without reading
+    /// stale bytes from an inode table that Linux has not initialized yet.
+    pub(crate) fn initialize_zeroed<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        inode_num: InodeNumber,
+        block_num: AbsoluteBN,
+        offset: usize,
+    ) -> Ext4Result<()> {
+        if self
+            .cache
+            .get(&inode_num)
+            .is_some_and(|cached| cached.dirty)
+        {
+            return Err(Ext4Error::corrupted().with_operation("inode_cache:initialize_dirty"));
+        }
+        let end = offset
+            .checked_add(self.inode_size)
+            .ok_or_else(Ext4Error::overflow)?;
+        if end > block_dev.block_size() as usize {
+            return Err(Ext4Error::corrupted().with_operation("inode_cache:initialize_range"));
+        }
+        self.cache.remove(&inode_num);
+        self.make_room(block_dev)?;
+
         self.cache.insert(
             inode_num,
-            CachedInode::new(inode, raw_inode, inode_num, block_num, offset),
+            CachedInode::new(
+                Ext4Inode::default(),
+                alloc::vec![0; self.inode_size],
+                inode_num,
+                block_num,
+                offset,
+            ),
         );
         Ok(())
     }

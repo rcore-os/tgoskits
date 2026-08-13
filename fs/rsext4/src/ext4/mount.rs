@@ -829,6 +829,9 @@ impl Ext4FileSystem {
             let raw_record = &buffer[in_block..end];
             let desc = Ext4GroupDesc::decode_checked(raw_record)?;
             desc.verify_checksum_in_bytes(superblock, group_id, raw_record)?;
+            if group_id == 0 && (desc.is_block_bitmap_uninit() || desc.is_inode_bitmap_uninit()) {
+                return Err(Ext4Error::corrupted().with_operation("group_descriptor:group0_uninit"));
+            }
             group_descs.push(desc);
         }
 

@@ -3457,6 +3457,71 @@ fn unwritten_preallocation_partial_write_remounts_and_passes_e2fsck() {
     fs::remove_dir_all(temp_dir).expect("remove unwritten temp dir");
 }
 
+#[test]
+fn linux_uninit_bg_image_mounts_writable_and_remains_clean() {
+    for tool in ["mkfs.ext4", "dumpe2fs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+    let (temp_dir, image) = create_ext4_test_image_with_args(
+        "rsext4-uninit-bg",
+        "256M",
+        &["-O", "^metadata_csum,uninit_bg", "-E", "lazy_itable_init=1"],
+    );
+    let dump = run_command(
+        {
+            let mut command = Command::new("dumpe2fs");
+            command.arg(&image);
+            command
+        },
+        "dumpe2fs uninit_bg fixture",
+    );
+    let dump = command_text(&dump);
+    assert!(
+        dump.contains("uninit_bg"),
+        "fixture lacks uninit_bg\n{dump}"
+    );
+    assert!(
+        !dump.contains("metadata_csum"),
+        "fixture unexpectedly enables metadata_csum\n{dump}"
+    );
+    assert!(
+        dump.contains("[INODE_UNINIT, ITABLE_ZEROED]"),
+        "fixture lacks a lazily initialized group\n{dump}"
+    );
+
+    {
+        let device = FileBlockDevice::open(image.clone());
+        let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = mount(&mut device).expect("mount legacy uninit_bg image writable");
+        mkfile(&mut device, &mut filesystem, "/uninit-bg", None, None)
+            .expect("create file on uninit_bg image");
+        write_file(
+            &mut device,
+            &mut filesystem,
+            "/uninit-bg",
+            0,
+            b"linux-gdt-csum-parity",
+        )
+        .expect("write file on uninit_bg image");
+        umount(filesystem, &mut device).expect("unmount uninit_bg image");
+    }
+
+    e2fsck_readonly_clean(&image, "legacy uninit_bg write");
+    {
+        let device = FileBlockDevice::open(image.clone());
+        let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = mount(&mut device).expect("remount legacy uninit_bg image");
+        assert_eq!(
+            read_file(&mut device, &mut filesystem, "/uninit-bg")
+                .expect("read file from remounted uninit_bg image"),
+            b"linux-gdt-csum-parity"
+        );
+        umount(filesystem, &mut device).expect("unmount remounted uninit_bg image");
+    }
+    e2fsck_readonly_clean(&image, "remounted legacy uninit_bg image");
+    fs::remove_dir_all(temp_dir).expect("remove uninit_bg temp dir");
+}
+
 fn shifted_range_geometry_round_trip(filesystem_block_size: u32) {
     for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
         require_tool(tool);

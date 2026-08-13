@@ -3,6 +3,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
+    bitmap::bitmap_utils::set_bit,
     blockgroup_description::Ext4GroupDesc,
     bmalloc::{AbsoluteBN, InodeNumber},
     error::{Ext4Error, Ext4Result},
@@ -100,6 +101,50 @@ impl SystemZoneMap {
             index += 1;
         }
         true
+    }
+
+    /// Synthesizes Linux's in-memory image for an uninitialized block bitmap.
+    ///
+    /// All filesystem-owned metadata in this group is marked allocated, and
+    /// bits beyond the final partial group are marked unavailable. The stale
+    /// on-disk bitmap is intentionally ignored until this image is published
+    /// together with a descriptor that clears `EXT4_BG_BLOCK_UNINIT`.
+    pub(crate) fn initialize_group_block_bitmap(
+        &self,
+        superblock: &Ext4Superblock,
+        group: u32,
+        bitmap: &mut [u8],
+    ) -> Ext4Result<()> {
+        bitmap.fill(0);
+        let group_start = group_first_block(superblock, group)?;
+        let group_end = group_start
+            .checked_add(u64::from(superblock.s_blocks_per_group))
+            .ok_or_else(Ext4Error::overflow)?
+            .min(superblock.blocks_count());
+        let valid_blocks = group_end
+            .checked_sub(group_start)
+            .ok_or_else(Ext4Error::overflow)?;
+
+        for zone in self.zones.iter().copied() {
+            let start = zone.start.max(group_start);
+            let end = zone.end.min(group_end);
+            for block in start..end {
+                let relative =
+                    u32::try_from(block - group_start).map_err(|_| Ext4Error::overflow())?;
+                if !set_bit(bitmap, relative) {
+                    return Err(
+                        Ext4Error::corrupted().with_operation("block_bitmap:uninit_metadata")
+                    );
+                }
+            }
+        }
+        for relative in valid_blocks..u64::from(superblock.s_blocks_per_group) {
+            let relative = u32::try_from(relative).map_err(|_| Ext4Error::overflow())?;
+            if !set_bit(bitmap, relative) {
+                return Err(Ext4Error::corrupted().with_operation("block_bitmap:uninit_tail"));
+            }
+        }
+        Ok(())
     }
 
     fn finish(filesystem_blocks: u64, mut zones: Vec<SystemZone>) -> Ext4Result<Self> {

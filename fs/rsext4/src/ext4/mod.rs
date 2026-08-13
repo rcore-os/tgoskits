@@ -3,7 +3,7 @@
 use ::alloc::{collections::VecDeque, vec, vec::Vec};
 
 use crate::{
-    bitmap::InodeBitmap,
+    bitmap::{InodeBitmap, bitmap_utils::count_set_bits_in_bitmap},
     blockdev::*,
     blockgroup_description::*,
     bmalloc::*,

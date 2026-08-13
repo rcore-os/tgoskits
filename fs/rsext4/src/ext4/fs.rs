@@ -383,6 +383,28 @@ impl Ext4FileSystem {
             .modify(block_dev, inode_num, block_num, offset, wrapped_f)
     }
 
+    /// Prepares a newly allocated inode from a logically uninitialized table.
+    pub(crate) fn initialize_zeroed_inode_record<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        inode_num: InodeNumber,
+    ) -> Ext4Result<()> {
+        let (group_idx, _idx_in_group) = self.inode_allocator.global_to_group(inode_num)?;
+        let inode_table_start = self
+            .group_descs
+            .get(group_idx.as_usize()?)
+            .ok_or_else(Ext4Error::corrupted)?
+            .inode_table();
+        let (block_num, offset, _group) = self.inodetable_cache.calc_inode_location(
+            inode_num,
+            self.superblock.s_inodes_per_group,
+            AbsoluteBN::new(inode_table_start),
+            self.block_size(),
+        )?;
+        self.inodetable_cache
+            .initialize_zeroed(block_dev, inode_num, block_num, offset)
+    }
+
     /// Loads one inode by number through the inode-table cache.
     pub fn get_inode_by_num<B: BlockIo>(
         &mut self,
