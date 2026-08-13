@@ -366,7 +366,7 @@ fn enable_vpcie3v3_supply(supply: Option<Phandle>) -> Result<(), OnProbeError> {
         .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
     FdtPinctrl::apply_fixed_regulator(
         &mut *pinctrl,
-        &fdt,
+        fdt,
         regulator.as_node(),
         &RockchipFdtPinctrlParser,
         "rk3588-pcie-regulator",
