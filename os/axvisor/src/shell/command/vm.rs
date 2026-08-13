@@ -257,9 +257,13 @@ fn start_vm_by_id(vm_id: usize, attach_console: bool) {
             println!("✓ VM[{}] started successfully", vm_id);
             if attach_console {
                 match crate::guest_console::attach(vm_id) {
-                    Ok(()) => println!(
-                        "✓ Attached VM[{vm_id}] console; use Ctrl+Alt+H to return to the shell"
-                    ),
+                    Ok(()) => {
+                        println!(
+                            "✓ Attached VM[{vm_id}] console; use Ctrl+X, then h to return to the \
+                             shell"
+                        );
+                        crate::guest_console::activate(vm_id);
+                    }
                     Err(error) => println!("✗ Failed to attach VM[{vm_id}] console: {error:#}"),
                 }
             }
@@ -649,7 +653,8 @@ fn vm_console(cmd: &ParsedCommand) {
 
     match crate::guest_console::attach(vm_id) {
         Ok(()) => {
-            println!("✓ Attached VM[{vm_id}] console; use Ctrl+Alt+H to return to the shell");
+            println!("✓ Attached VM[{vm_id}] console; use Ctrl+X, then h to return to the shell");
+            crate::guest_console::activate(vm_id);
         }
         Err(error) => println!("✗ Failed to attach VM[{vm_id}] console: {error:#}"),
     }

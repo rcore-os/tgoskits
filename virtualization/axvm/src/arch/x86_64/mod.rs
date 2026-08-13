@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use ax_std::os::arceos::sync::RawSpinLock;
+use ax_std::os::arceos::sync::{IrqSafeMutex, IrqSafeMutexGuard};
 use axdevice::*;
 use axdevice_base::*;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
@@ -505,9 +505,9 @@ struct X86IoApicModel {
 /// VM-owned domain.
 pub(super) struct X86InterruptDomain {
     wired: Arc<X86WiredState>,
-    inputs: RawSpinLock<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
-    forwarding: RawSpinLock<irq::X86IoApicForwardingState>,
-    forwarding_hooks: RawSpinLock<std::vec::Vec<host_irq::IrqHandle>>,
+    inputs: IrqSafeMutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
+    forwarding: IrqSafeMutex<irq::X86IoApicForwardingState>,
+    forwarding_hooks: IrqSafeMutex<std::vec::Vec<host_irq::IrqHandle>>,
 }
 
 struct X86WiredState {
@@ -532,6 +532,20 @@ impl ServiceKey for X86InterruptDomainRuntimeKey {
 }
 
 impl X86InterruptDomain {
+    fn inputs(
+        &self,
+    ) -> IrqSafeMutexGuard<'_, BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>> {
+        self.inputs.lock()
+    }
+
+    fn forwarding(&self) -> IrqSafeMutexGuard<'_, irq::X86IoApicForwardingState> {
+        self.forwarding.lock()
+    }
+
+    fn forwarding_hooks(&self) -> IrqSafeMutexGuard<'_, std::vec::Vec<host_irq::IrqHandle>> {
+        self.forwarding_hooks.lock()
+    }
+
     fn new(vm_id: usize, ioapic: Arc<dyn X86IoApicDeviceOps>) -> Self {
         Self {
             wired: Arc::new(X86WiredState {
@@ -540,9 +554,9 @@ impl X86InterruptDomain {
                 pending_level: AtomicUsize::new(0),
                 kick: DeferredVcpuKick::new(vm_id),
             }),
-            inputs: RawSpinLock::new(BTreeMap::new()),
-            forwarding: RawSpinLock::new(irq::X86IoApicForwardingState::new()),
-            forwarding_hooks: RawSpinLock::new(std::vec::Vec::new()),
+            inputs: IrqSafeMutex::new(BTreeMap::new()),
+            forwarding: IrqSafeMutex::new(irq::X86IoApicForwardingState::new()),
+            forwarding_hooks: IrqSafeMutex::new(std::vec::Vec::new()),
         }
     }
 
@@ -564,11 +578,11 @@ impl X86InterruptDomain {
     }
 
     pub(super) fn add_forwarding_hook(&self, hook: host_irq::IrqHandle) {
-        self.forwarding_hooks.lock().push(hook);
+        self.forwarding_hooks().push(hook);
     }
 
     pub(super) fn take_forwarding_hooks(&self) -> std::vec::Vec<host_irq::IrqHandle> {
-        std::mem::take(&mut *self.forwarding_hooks.lock())
+        std::mem::take(&mut *self.forwarding_hooks())
     }
 }
 
@@ -607,7 +621,7 @@ impl VirtualInterruptController for X86InterruptDomain {
                 detail: std::format!("GSI {gsi} is outside 0..{}", irq::IOAPIC_GSI_COUNT),
             });
         }
-        let mut inputs = self.inputs.lock();
+        let mut inputs = self.inputs();
         if let Some((registered_trigger, registered)) = inputs.get(&gsi) {
             if *registered_trigger != trigger {
                 return Err(IrqError::InvalidInput {
@@ -923,12 +937,28 @@ fn restore_host_interrupt_flag(host_rflags: u64) {
 
 #[cfg(test)]
 mod tests {
+    use ax_std::os::arceos::sync::IrqSafeMutex;
+
     use super::*;
+
     fn assert_x86_exit_type<T: VmArchVcpuOps<Exit = X86VmExit>>() {}
+
+    fn assert_irq_safe_lock<T: ?Sized>(_: &IrqSafeMutex<T>) {}
 
     #[test]
     fn axvm_x86_vcpu_uses_x86_exit_type() {
         assert_x86_exit_type::<AxvmX86Vcpu>();
+    }
+
+    #[test]
+    fn interrupt_domain_shared_state_uses_irq_safe_locks() {
+        fn check(domain: &X86InterruptDomain) {
+            assert_irq_safe_lock(&domain.inputs);
+            assert_irq_safe_lock(&domain.forwarding);
+            assert_irq_safe_lock(&domain.forwarding_hooks);
+        }
+
+        let _ = check as fn(&X86InterruptDomain);
     }
 
     #[test]

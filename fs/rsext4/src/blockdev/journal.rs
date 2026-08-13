@@ -336,6 +336,7 @@ mod tests {
     struct MemBlockDev {
         data: Vec<u8>,
         fail_flush: bool,
+        fail_write_block: Option<AbsoluteBN>,
     }
 
     impl MemBlockDev {
@@ -343,6 +344,7 @@ mod tests {
             Self {
                 data: vec![0; blocks * BLOCK_SIZE],
                 fail_flush: false,
+                fail_write_block: None,
             }
         }
 
@@ -350,6 +352,15 @@ mod tests {
             Self {
                 data: vec![0; blocks * BLOCK_SIZE],
                 fail_flush: true,
+                fail_write_block: None,
+            }
+        }
+
+        fn with_failing_write_block(blocks: usize, block: AbsoluteBN) -> Self {
+            Self {
+                data: vec![0; blocks * BLOCK_SIZE],
+                fail_flush: false,
+                fail_write_block: Some(block),
             }
         }
     }
@@ -363,6 +374,9 @@ mod tests {
         }
 
         fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+            if self.fail_write_block == Some(block_id) {
+                return Err(Ext4Error::io());
+            }
             let start = block_id.as_usize()? * BLOCK_SIZE;
             let end = start + buffer.len();
             self.data[start..end].copy_from_slice(buffer);
@@ -450,5 +464,55 @@ mod tests {
             .expect_err("unmount commit must propagate the device error");
 
         assert_eq!(error, Ext4Error::io());
+    }
+
+    #[test]
+    fn umount_commit_returns_journal_superblock_write_failure_without_panicking() {
+        let journal_superblock = AbsoluteBN::new(128);
+        let mut dev = Jbd2Dev::initial_jbd2dev(
+            0,
+            MemBlockDev::with_failing_write_block(256, journal_superblock),
+            true,
+        );
+        dev.set_journal_superblock(JournalSuperBllockS::default(), journal_superblock);
+        dev.write_block(AbsoluteBN::new(10), true)
+            .expect("queue metadata update");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dev.umount_commit()));
+
+        assert!(result.is_ok(), "journal I/O failure must not panic");
+        assert_eq!(result.unwrap(), Err(Ext4Error::io()));
+    }
+
+    #[test]
+    fn umount_commit_returns_cache_invalidation_failure_without_panicking() {
+        let cached_block = AbsoluteBN::new(20);
+        let mut dev = Jbd2Dev::initial_jbd2dev(
+            0,
+            MemBlockDev::with_failing_write_block(256, cached_block),
+            true,
+        );
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.read_block(cached_block).expect("prime cached block");
+        dev.buffer_mut()[0] = 1;
+        dev.write_block(AbsoluteBN::new(10), true)
+            .expect("queue metadata update");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dev.umount_commit()));
+
+        assert!(result.is_ok(), "cache invalidation failure must not panic");
+        assert_eq!(result.unwrap(), Err(Ext4Error::io()));
+    }
+
+    #[test]
+    fn rejects_an_empty_journal_mapping() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+
+        let error = dev
+            .set_journal_superblock_with_mapping(JournalSuperBllockS::default(), Vec::new())
+            .expect_err("empty journal mappings are corrupt");
+
+        assert_eq!(error, Ext4Error::corrupted());
+        assert_eq!(dev.journal_sequence(), None);
     }
 }

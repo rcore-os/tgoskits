@@ -20,7 +20,7 @@
 
 use alloc::{boxed::Box, collections::VecDeque, string::String, vec::Vec};
 
-use ax_sync::spin::SpinNoIrq;
+use ax_sync::SpinLock;
 use irq_framework::IrqId;
 use rd_net::{Net, NetError, RxQueue, TxQueue};
 
@@ -209,7 +209,7 @@ pub struct RdNetDriver {
     irq: Option<IrqId>,
     control: Net,
     irq_handler: Option<rd_net::IrqHandler>,
-    state: SpinNoIrq<RdNetState>,
+    state: SpinLock<RdNetState>,
 }
 
 impl RdNetDriver {
@@ -226,7 +226,7 @@ impl RdNetDriver {
             irq,
             control: net,
             irq_handler,
-            state: SpinNoIrq::new(RdNetState {
+            state: SpinLock::new(RdNetState {
                 tx_queue,
                 rx_queue,
                 pending_rx: VecDeque::with_capacity(RX_PREFETCH_TARGET),
@@ -269,7 +269,7 @@ impl EthernetDriver for RdNetDriver {
     }
 
     fn alloc_tx_buffer(&mut self, size: usize) -> NetDeviceResult<Box<dyn NetTxBuffer>> {
-        let capacity = self.state.lock().tx_queue.buf_size();
+        let capacity = self.state.lock_irqsave().tx_queue.buf_size();
         if size > capacity {
             return Err(NetDeviceError::InvalidParam);
         }
@@ -283,7 +283,7 @@ impl EthernetDriver for RdNetDriver {
     fn transmit(&mut self, tx_buf: &mut dyn NetTxBuffer) -> NetDeviceResult {
         let packet_len = tx_buf.packet_len();
         let tx_len = packet_len.max(ETH_ZLEN);
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let (_ret, mut pending) = state
             .tx_queue
             .prepare_send(tx_len, |buffer| {
@@ -296,7 +296,7 @@ impl EthernetDriver for RdNetDriver {
     }
 
     fn receive(&mut self) -> NetDeviceResult<Box<dyn NetRxBuffer>> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         self.prefetch_rx_packets(&mut state, RX_PREFETCH_TARGET)?;
         state
             .pending_rx

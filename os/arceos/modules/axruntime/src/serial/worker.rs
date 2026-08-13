@@ -6,7 +6,7 @@ use axpoll::IoEvents;
 use rdif_serial::{Config, ConfigError, RxErrorFlags, RxFlag, RxSample, SerialEventSet};
 
 use super::{
-    RuntimeShared, RxItem,
+    RuntimeIrqBridge, RuntimeShared, RxItem,
     control::{CONTROL_QUEUE_CAPACITY, ControlOp},
     ingress::TxFrameCursor,
     spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
@@ -162,6 +162,11 @@ impl SerialWorker {
                     force_service |= result.is_ok();
                     result
                 }
+                ControlOp::DiscardRx => {
+                    self.discard_rx();
+                    Ok(())
+                }
+                ControlOp::DiscardTx => self.discard_tx(),
             };
             command.complete(result);
         }
@@ -173,12 +178,12 @@ impl SerialWorker {
             return Ok(());
         }
         {
-            let mut port = self.shared.port.lock();
+            let mut port = self.shared.port.lock_irqsave();
             port.startup(config).map_err(map_config_error)?;
             port.mask_all();
         }
         if let Err(err) = self.shared.enable_irq() {
-            let mut port = self.shared.port.lock();
+            let mut port = self.shared.port.lock_irqsave();
             port.mask_all();
             port.shutdown();
             return Err(err);
@@ -199,7 +204,7 @@ impl SerialWorker {
         self.latched_rx_errors = RxErrorFlags::empty();
         self.port_rx_ready = false;
         {
-            let mut port = self.shared.port.lock();
+            let mut port = self.shared.port.lock_irqsave();
             port.mask_all();
             port.shutdown();
         }
@@ -212,7 +217,7 @@ impl SerialWorker {
             return Err(AxError::BadState);
         }
         let result = {
-            let mut port = self.shared.port.lock();
+            let mut port = self.shared.port.lock_irqsave();
             port.mask_all();
             port.set_config(config).map_err(map_config_error)
         };
@@ -234,6 +239,46 @@ impl SerialWorker {
         self.shared.tx_progress.notify_all(true);
     }
 
+    fn discard_tx(&mut self) -> AxResult {
+        let hardware_idle = {
+            let mut port = self.shared.port.lock_irqsave();
+            if !port.discard_tx() {
+                return Err(AxError::OperationNotSupported);
+            }
+            port.tx_idle()
+        };
+        self.shared.ingress.discard_pending();
+        self.pending_frame = None;
+        self.pending_rearm.remove(SerialEventSet::TX_SPACE);
+        self.immediate_events.remove(SerialEventSet::TX_SPACE);
+        if !hardware_idle && !self.shared.polling {
+            self.pending_rearm.insert(SerialEventSet::TX_SPACE);
+        }
+
+        self.shared.publish_tx_space();
+        if self.shared.ingress.mark_idle_if_empty(true, hardware_idle) {
+            self.shared.publish_tx_idle();
+        }
+        Ok(())
+    }
+
+    fn discard_rx(&mut self) {
+        self.pending_rx = None;
+        self.port_rx_ready = false;
+        self.latched_rx_errors = RxErrorFlags::empty();
+        self.pending_rearm.remove(SerialEventSet::RX);
+        self.immediate_events.remove(SerialEventSet::RX);
+
+        {
+            let mut port = self.shared.port.lock_irqsave();
+            discard_rx_sources(&mut **port, &mut self.irq_rx, &self.shared.bridge);
+        }
+
+        if !self.shared.polling {
+            self.pending_rearm.insert(SerialEventSet::RX);
+        }
+    }
+
     fn service_rx(&mut self, path: RxPath) -> RxServiceOutcome {
         let mut processed = 0;
         let mut published = false;
@@ -247,7 +292,7 @@ impl SerialWorker {
             } else {
                 let next = match path {
                     RxPath::Irq => self.irq_rx.pop(),
-                    RxPath::Port => self.shared.port.lock().read_rx(),
+                    RxPath::Port => self.shared.port.lock_irqsave().read_rx(),
                 };
                 let Some(sample) = next else {
                     source_drained = true;
@@ -301,7 +346,7 @@ impl SerialWorker {
 
         if path == RxPath::Port && source_drained {
             let ready = {
-                let mut port = self.shared.port.lock();
+                let mut port = self.shared.port.lock_irqsave();
                 rearm_drained_rx(
                     true,
                     self.shared.polling,
@@ -330,7 +375,7 @@ impl SerialWorker {
     fn service_tx(&mut self) -> TxServiceOutcome {
         let mut remaining_budget = TX_BUDGET;
         let mut woke_space = false;
-        let mut port = self.shared.port.lock();
+        let mut port = self.shared.port.lock_irqsave();
 
         while remaining_budget > 0 {
             if self.pending_frame.is_none() {
@@ -380,7 +425,7 @@ impl SerialWorker {
         let hardware_idle = if !self.shared.started() {
             true
         } else {
-            self.shared.port.lock().tx_idle()
+            self.shared.port.lock_irqsave().tx_idle()
         };
         if !hardware_idle && !self.shared.polling {
             self.pending_rearm |= SerialEventSet::TX_SPACE;
@@ -406,10 +451,23 @@ impl SerialWorker {
             return;
         }
 
-        let ready = self.shared.port.lock().rearm(sources);
+        let ready = self.shared.port.lock_irqsave().rearm(sources);
         self.pending_rearm |= ready;
         self.immediate_events |= ready;
     }
+}
+
+fn discard_rx_sources(
+    port: &mut dyn rdif_serial::UartPort,
+    irq_rx: &mut SpscConsumer<RxSample>,
+    bridge: &RuntimeIrqBridge,
+) {
+    port.discard_rx();
+    irq_rx.clear();
+    bridge.latch.discard_rx();
+    bridge
+        .rx_overflow
+        .store(false, core::sync::atomic::Ordering::Release);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -510,7 +568,90 @@ fn rearm_drained_rx(
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
+    use core::sync::atomic::{AtomicBool, Ordering};
+
     use super::*;
+
+    struct SourcePort {
+        source_pending: Arc<AtomicBool>,
+    }
+
+    impl rdif_serial::UartPort for SourcePort {
+        fn startup(&mut self, _config: &Config) -> Result<(), ConfigError> {
+            Ok(())
+        }
+
+        fn shutdown(&mut self) {}
+
+        fn set_config(&mut self, _config: &Config) -> Result<(), ConfigError> {
+            Ok(())
+        }
+
+        fn read_rx(&mut self) -> Option<RxSample> {
+            self.source_pending
+                .swap(false, Ordering::AcqRel)
+                .then_some(RxSample {
+                    byte: Some(b'h'),
+                    ..RxSample::default()
+                })
+        }
+
+        fn discard_rx(&mut self) {
+            self.source_pending.store(false, Ordering::Release);
+        }
+
+        fn write_tx(&mut self, _bytes: &[u8]) -> usize {
+            0
+        }
+
+        fn discard_tx(&mut self) -> bool {
+            true
+        }
+
+        fn tx_idle(&mut self) -> bool {
+            true
+        }
+
+        fn mask_all(&mut self) {}
+
+        fn rearm(&mut self, _sources: SerialEventSet) -> SerialEventSet {
+            SerialEventSet::empty()
+        }
+    }
+
+    #[test]
+    fn discard_rx_clears_hardware_and_irq_sources_before_returning() {
+        let source_pending = Arc::new(AtomicBool::new(true));
+        let mut port: Box<dyn rdif_serial::UartPort> = Box::new(SourcePort {
+            source_pending: source_pending.clone(),
+        });
+        let (mut irq_tx, mut irq_rx) = super::super::spsc::channel(2);
+        irq_tx
+            .push(RxSample {
+                byte: Some(b'i'),
+                ..RxSample::default()
+            })
+            .unwrap();
+        let bridge = RuntimeIrqBridge::new();
+        bridge.rx_overflow.store(true, Ordering::Release);
+        bridge.latch.publish(rdif_serial::SerialIrqEvent {
+            events: SerialEventSet::RX_DATA | SerialEventSet::TX_SPACE,
+            rx_errors: RxErrorFlags::OVERRUN,
+            rearm: SerialEventSet::RX | SerialEventSet::TX_SPACE,
+        });
+
+        discard_rx_sources(&mut *port, &mut irq_rx, &bridge);
+
+        assert!(!source_pending.load(Ordering::Acquire));
+        assert!(port.read_rx().is_none());
+        assert!(irq_rx.pop().is_none());
+        assert!(!bridge.rx_overflow.load(Ordering::Acquire));
+        let event = bridge.latch.take().unwrap();
+        assert_eq!(event.events, SerialEventSet::TX_SPACE);
+        assert!(event.rx_errors.is_empty());
+        assert_eq!(event.rearm, SerialEventSet::TX_SPACE);
+    }
 
     #[test]
     fn normalized_sample_reserves_byte_and_overrun_slots_together() {

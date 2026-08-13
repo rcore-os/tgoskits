@@ -12,11 +12,13 @@ use ax_memory_addr::VirtAddr;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
 
 use super::*;
-use crate::{AxVmResult, ax_err};
+use crate::{
+    AxVmResult,
+    architecture::cpu_up::{self, CpuUpExit, CpuUpOps},
+    ax_err,
+};
 
 mod capabilities;
-#[path = "../../architecture/cpu_up.rs"]
-mod cpu_up;
 pub(crate) mod fdt;
 mod firmware_plan;
 mod gic;
@@ -34,7 +36,6 @@ pub(crate) use vm_plan::Aarch64VmPlan;
 mod vtimer;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
-use cpu_up::{CpuUpExit, CpuUpOps};
 pub use images::ImageLoader;
 use sysreg::{SysRegReadExit, SysRegWriteExit};
 use vgic::Aarch64VgicRuntimeKey;
@@ -244,45 +245,52 @@ impl ArchOps for Aarch64Arch {
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         runtime: &crate::vm::VmRuntimeHandle,
     ) {
-        runtime.wait_until(|| {
-            if !vm.running() {
-                return true;
+        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        if !vm.running() {
+            return;
+        }
+        if wait_snapshot.has_pending_event(runtime) {
+            return;
+        }
+        match vcpu.get_arch_vcpu().has_pending_interrupt() {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                warn!(
+                    "VM[{}] VCpu[{}] cannot query VGIC pending state before WFI wait: {error:?}",
+                    vm.id(),
+                    vcpu.id()
+                );
+                return;
             }
-            match vcpu.get_arch_vcpu().has_pending_interrupt() {
-                Ok(true) => true,
-                Ok(false) => match vcpu.get_arch_vcpu().arm_timer_wait() {
-                    Ok(()) => match vcpu.get_arch_vcpu().has_pending_interrupt() {
-                        Ok(pending) => pending,
-                        Err(error) => {
-                            warn!(
-                                "VM[{}] VCpu[{}] cannot recheck VGIC after arming timer: {error:?}",
-                                vm.id(),
-                                vcpu.id()
-                            );
-                            true
-                        }
-                    },
-                    Err(error) => {
-                        warn!(
-                            "VM[{}] VCpu[{}] cannot rearm architectural timer before WFI wait: \
-                             {error:?}",
-                            vm.id(),
-                            vcpu.id()
-                        );
-                        true
-                    }
-                },
-                Err(error) => {
-                    warn!(
-                        "VM[{}] VCpu[{}] cannot query VGIC pending state before WFI wait: \
-                         {error:?}",
-                        vm.id(),
-                        vcpu.id()
-                    );
-                    true
-                }
+        }
+        if let Err(error) = vcpu.get_arch_vcpu().arm_timer_wait() {
+            warn!(
+                "VM[{}] VCpu[{}] cannot rearm architectural timer before WFI wait: {error:?}",
+                vm.id(),
+                vcpu.id()
+            );
+            return;
+        }
+        match vcpu.get_arch_vcpu().has_pending_interrupt() {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                warn!(
+                    "VM[{}] VCpu[{}] cannot recheck VGIC after arming timer: {error:?}",
+                    vm.id(),
+                    vcpu.id()
+                );
+                return;
             }
-        });
+        }
+
+        crate::vm::wait_for_vcpu_event_if_idle(
+            runtime,
+            &wait_snapshot,
+            || vm.running(),
+            |condition| runtime.wait_until(condition),
+        );
     }
 }
 

@@ -9,7 +9,6 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_io::prelude::*;
 use ax_net::{InterfaceId, InterfaceInfo, InterfaceKind};
-use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
@@ -24,6 +23,7 @@ use super::{
 };
 use crate::{
     file::{IoDst, IoSrc, get_file_like},
+    sync::Mutex,
     syscall::in_root_net_ns,
 };
 

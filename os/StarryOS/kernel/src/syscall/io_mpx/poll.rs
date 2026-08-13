@@ -70,12 +70,6 @@ fn collect_ready_poll_events(
     let mut res = 0usize;
     for ((fd, events), revent_index) in fds.0.iter().zip(revent_indices.iter()) {
         let mut result = fd.poll();
-        if result.contains(IoEvents::IN) {
-            result |= IoEvents::RDNORM;
-        }
-        if result.contains(IoEvents::OUT) {
-            result |= IoEvents::WRNORM;
-        }
         // POSIX: POLLHUP and POLLERR are always reported in revents,
         // even if not requested in events. They must NOT be masked out.
         let always_report =
@@ -104,15 +98,15 @@ fn do_poll(
     let mut revent_indices = Vec::with_capacity(poll_fds.len());
     for (index, fd) in poll_fds.iter_mut().enumerate() {
         fd.revents = 0;
-        if fd.fd == -1 {
-            // Skip -1
+        if fd.fd < 0 {
+            // Linux ignores every negative descriptor and returns zero revents.
             continue;
         }
         match get_file_like(fd.fd) {
             Ok(f) => {
                 fds.push((
                     f,
-                    IoEvents::from_bits(fd.events as _).ok_or(AxError::InvalidInput)?
+                    IoEvents::from_bits_truncate(u32::from(fd.events as u16))
                         | IoEvents::ALWAYS_POLL,
                 ));
                 revent_indices.push(index);
@@ -162,11 +156,13 @@ pub fn sys_poll(fds: UserPtr<pollfd>, nfds: u32, timeout: i32) -> AxResult<isize
     } else {
         Some(TimeValue::from_millis(timeout as u64))
     };
-    let res = do_poll(&mut poll_fds, timeout, None)?;
+    let res = do_poll(&mut poll_fds, timeout, None);
+    // Linux copies the cleared/recomputed revents array back even when the
+    // wait is interrupted. A copy fault still takes precedence over EINTR.
     if nfds > 0 {
         write_poll_revents(fds, &poll_fds)?;
     }
-    Ok(res)
+    res
 }
 
 pub fn sys_ppoll(
@@ -188,11 +184,13 @@ pub fn sys_ppoll(
         &mut poll_fds,
         timeout,
         nullable!(sigmask.get_as_ref())?.copied(),
-    )?;
+    );
+    // Match poll(2): interruption does not leave the caller's old revents
+    // values visible, and a failed writeback is reported as EFAULT.
     if nfds > 0 {
         write_poll_revents(fds, &poll_fds)?;
     }
-    Ok(res)
+    res
 }
 
 #[cfg(axtest)]

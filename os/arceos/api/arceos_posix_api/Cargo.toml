@@ -1,6 +1,6 @@
 [package]
 name = "ax-posix-api"
-version = "0.5.31"
+version = "0.5.32"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -21,8 +21,8 @@ default = []
 smp = []
 irq = []
 alloc = ["dep:ax-alloc"]
-multitask = ["alloc", "ax-task/multitask", "ax-sync/multitask"]
-lockdep = ["multitask", "ax-sync/lockdep", "ax-kspin/lockdep"]
+multitask = ["alloc", "ax-task/multitask", "ax-runtime/multitask"]
+lockdep = ["multitask", "ax-runtime/lockdep"]
 fd = ["alloc", "dep:scope-local"]
 fs = ["dep:ax-fs-ng", "fd"]
 net = ["dep:ax-net", "fd"]
@@ -38,20 +38,18 @@ eventfd = ["fd"]
 ax-alloc = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
-ax-kspin.workspace = true
 ax-log.workspace = true
 ax-net = { workspace = true, optional = true }
 ax-runtime.workspace = true
-ax-sync.workspace = true
 ax-task = { workspace = true, optional = true }
 
 # Other crates
 ax-errno.workspace = true
 ax-io.workspace = true
+ax-lazyinit.workspace = true
 axpoll.workspace = true
 flatten_objects = "0.2"
 scope-local = { workspace = true, optional = true }
-spin.workspace = true
 
 [build-dependencies]
 bindgen.workspace = true

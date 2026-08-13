@@ -161,6 +161,39 @@ fn x86_and_aarch64_keep_task_tls_separate_from_the_cpu_anchor() {
 }
 
 #[test]
+fn aarch64_current_stays_in_sp_el0_when_tls_is_enabled() {
+    let install = AARCH64
+        .split_once("unsafe fn install_cpu_base")
+        .unwrap()
+        .1
+        .split_once("unsafe fn read_cpu_base")
+        .unwrap()
+        .0;
+    assert!(install.contains("SP_EL0"));
+    assert!(!install.contains("cfg!(feature = \"tls\")"));
+
+    let read_current = AARCH64
+        .split_once("unsafe fn read_current_thread")
+        .unwrap()
+        .1
+        .split_once("unsafe fn write_current_thread")
+        .unwrap()
+        .0;
+    assert!(read_current.contains("SP_EL0"));
+    assert!(!read_current.contains("area_runtime_anchor"));
+
+    let write_current = AARCH64
+        .split_once("unsafe fn write_current_thread")
+        .unwrap()
+        .1
+        .split_once("unsafe fn read_kernel_tls")
+        .unwrap()
+        .0;
+    assert!(write_current.contains("SP_EL0"));
+    assert!(!write_current.contains("cfg!(feature = \"tls\")"));
+}
+
+#[test]
 fn loongarch_mirrors_the_direct_area_base_in_ks3() {
     let backend = LOONGARCH64;
     assert!(backend.contains("csrwr {shadow}, 0x33"));

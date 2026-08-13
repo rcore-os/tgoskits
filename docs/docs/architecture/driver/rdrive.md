@@ -50,15 +50,18 @@ pub struct Manager {
 - `registers`：所有已注册的 `DriverRegister`，按 `ProbeLevel` 和 `ProbePriority` 排序。
 - `dev_container`：类型化设备 registry，`BTreeMap<DeviceId, DeviceOwner>`。
 
-`Manager` 全局唯一，通过 `Once<Mutex<Manager>>` 保护：
+`Manager` 全局唯一，通过 `OnceLock<SpinLock<Manager>>` 保护：
 
 ```rust
-static CONTAINER: Once<Mutex<Manager>> = Once::new();
+static CONTAINER: OnceLock<SpinLock<Manager>> = OnceLock::new();
 
-pub(crate) fn container() -> &'static Mutex<Manager> { ... }
+pub(crate) fn container() -> &'static SpinLock<Manager> { ... }
 ```
 
-`Mutex` 使用 `ax-kspin::SpinRaw`，在多核环境下提供互斥访问。所有写操作（register、probe、insert device）经过 `edit()` 闭包，所有读操作（query）经过 `container().lock()`。
+registry 使用 `ax_sync::SpinLock`，并由内部 `lock_container()` 通过 `unsafe lock_raw()` 获取。
+该路径不在 hard IRQ 中运行，且 discovery/runtime 调用方维持历史的串行排他契约；因此不会触发
+runtime preempt hook。所有写操作（register、probe、insert device）经过 `edit()` 闭包，所有读操作
+（query）也经同一内部入口获取。
 
 ## DriverRegister
 

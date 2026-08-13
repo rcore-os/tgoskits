@@ -6,9 +6,10 @@ use crate::KernelTlsBase;
 
 /// Architecture-neutral task state participating in the final switch tail.
 ///
-/// The current-header pointer is consumed only by LinuxCurrent assembly. The
-/// kernel TLS base is consumed only by TLS-enabled unikernel assembly. Keeping
-/// both in one C-layout component centralizes their adjacency and ownership.
+/// Architecture switch tails consume the current-header pointer whenever the
+/// hardware provides a task register independent of kernel TLS. Backends whose
+/// task register is also the TLS base use the CPU runtime anchor for current.
+/// Keeping both values adjacent centralizes their switch-time ownership.
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct TaskLocalState {

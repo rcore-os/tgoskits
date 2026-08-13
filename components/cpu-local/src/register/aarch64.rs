@@ -1,5 +1,9 @@
 use super::*;
 
+pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentModel {
+    current_source_aliases_kernel_tls: false,
+};
+
 fn current_el() -> Result<usize, CpuLocalError> {
     let current_el: usize;
     unsafe { core::arch::asm!("mrs {value}, CurrentEL", value = out(reg) current_el) };
@@ -21,9 +25,7 @@ pub(super) unsafe fn install_cpu_base(area_base: usize, boot_thread: usize) {
         2 => unsafe { core::arch::asm!("msr TPIDR_EL2, {base}", base = in(reg) area_base) },
         _ => unreachable!(),
     }
-    if !cfg!(feature = "tls") {
-        unsafe { core::arch::asm!("msr SP_EL0, {current}", current = in(reg) boot_thread) };
-    }
+    unsafe { core::arch::asm!("msr SP_EL0, {current}", current = in(reg) boot_thread) };
 }
 
 pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
@@ -36,20 +38,14 @@ pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
     Ok(area_base)
 }
 
-pub(super) unsafe fn read_current_thread(area_base: usize) -> usize {
-    if cfg!(feature = "tls") {
-        unsafe { area_runtime_anchor(area_base) }.current_thread_raw()
-    } else {
-        let current: usize;
-        unsafe { core::arch::asm!("mrs {current}, SP_EL0", current = out(reg) current) };
-        current
-    }
+pub(super) unsafe fn read_current_thread(_area_base: usize) -> usize {
+    let current: usize;
+    unsafe { core::arch::asm!("mrs {current}, SP_EL0", current = out(reg) current) };
+    current
 }
 
 pub(super) unsafe fn write_current_thread(value: usize) {
-    if !cfg!(feature = "tls") {
-        unsafe { core::arch::asm!("msr SP_EL0, {value}", value = in(reg) value) };
-    }
+    unsafe { core::arch::asm!("msr SP_EL0, {value}", value = in(reg) value) };
 }
 
 #[cfg(feature = "tls")]
@@ -62,10 +58,4 @@ pub(super) unsafe fn read_kernel_tls() -> usize {
 #[cfg(feature = "tls")]
 pub(super) unsafe fn write_kernel_tls(value: usize) {
     unsafe { core::arch::asm!("msr TPIDR_EL0, {value}", value = in(reg) value) };
-}
-
-unsafe fn area_runtime_anchor(area_base: usize) -> &'static crate::CpuRuntimeAnchor {
-    unsafe {
-        &*((area_base + crate::CPU_AREA_RUNTIME_ANCHOR_OFFSET) as *const crate::CpuRuntimeAnchor)
-    }
 }

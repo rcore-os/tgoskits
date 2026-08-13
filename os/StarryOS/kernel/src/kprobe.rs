@@ -19,11 +19,10 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_kspin::{RawSpinNoIrq, SpinNoIrq};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{
     cpu::{KernelTrapFrame, UserRegisters},
-    paging::{MappingFlags, PageSize},
+    paging::MappingFlags,
 };
 use kprobe::{
     KprobeAuxiliaryOps, KretprobeBuilder, ProbeBuilder, ProbePointList,
@@ -33,15 +32,18 @@ use kprobe::{
     unregister_kretprobe as kprobe_crate_unregister_kretprobe,
 };
 
-use crate::task::AsThread;
+use crate::{
+    sync::{IrqMutex, RawSpinNoIrq},
+    task::AsThread,
+};
 
 /// Raw mutex used as the `L` type parameter for the `kprobe` crate's
 /// `ProbeManager` / `Kprobe` / `Kretprobe` (the perf subsystem refers to the
 /// concrete probe types parameterized on it — see [`KernelKprobe`] /
 /// [`KernelKretprobe`]).
 ///
-/// Backed by [`ax_kspin::RawSpinNoIrq`], which disables kernel preemption and
-/// local IRQs across the critical section (`NoPreemptIrqSave` semantics, the
+/// Backed by [`crate::sync::RawSpinNoIrq`], which disables kernel preemption and
+/// local IRQs across the critical section (IRQ-save semantics, the
 /// same as the rest of the kernel's spin locks). This matters because the lock
 /// is taken on trap / kprobe-callback paths: a plain atomic spin lock that left
 /// preemption and IRQs enabled could be re-entered on the same CPU and would
@@ -162,7 +164,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
         let vaddr = mm
             .find_free_area(mm.base(), PAGE_SIZE_4K, range, PAGE_SIZE_4K)
             .expect("uprobe: no free user va for exec memory");
-        let backend = crate::mm::Backend::new_alloc(vaddr, PageSize::Size4K, "uprobe-ols");
+        let backend = crate::mm::Backend::new_alloc(vaddr, PAGE_SIZE_4K, "uprobe-ols");
         mm.map(
             vaddr,
             PAGE_SIZE_4K,
@@ -234,8 +236,8 @@ pub type KernelKretprobe = kprobe::Kretprobe<KernelRawMutex, KernelKprobeOps>;
 pub type KprobeAuxiliary = KernelKprobeOps;
 
 static KPROBE_MANAGER: KprobeManager = KprobeManager::new();
-static KPROBE_POINT_LIST: SpinNoIrq<KprobePointList> = SpinNoIrq::new(KprobePointList::new());
-static INSTANCE: SpinNoIrq<Vec<RetprobeInstance>> = SpinNoIrq::new(Vec::new());
+static KPROBE_POINT_LIST: IrqMutex<KprobePointList> = IrqMutex::new(KprobePointList::new());
+static INSTANCE: IrqMutex<Vec<RetprobeInstance>> = IrqMutex::new(Vec::new());
 
 fn with_manager<F, R>(f: F) -> R
 where

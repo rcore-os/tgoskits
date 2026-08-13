@@ -10,7 +10,7 @@ use linux_raw_sys::net::{
     TCPI_OPT_ECN, TCPI_OPT_ECN_SEEN, TCPI_OPT_SACK, TCPI_OPT_SYN_DATA, TCPI_OPT_TIMESTAMPS,
     TCPI_OPT_WSCALE, socklen_t, tcp_info,
 };
-use starry_vm::vm_write_slice;
+use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
     file::{FileLike, Socket, netlink::NetlinkSocket},
@@ -277,6 +277,7 @@ macro_rules! call_dispatch {
             (PROTO_TCP, TCP_USER_TIMEOUT) => TcpUserTimeout as Int<u32>,
 
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
+            (PROTO_IP, IP_RECVTTL) => RecvTtl as IntBool,
             (PROTO_IP, linux_raw_sys::net::IP_RECVTOS) => RecvTos as IntBool,
             (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
             // Path-MTU discovery mode is stored for ABI compatibility (dnsmasq TFTP sets
@@ -318,15 +319,46 @@ pub fn sys_getsockopt(
     optval: UserPtr<u8>,
     optlen: UserPtr<socklen_t>,
 ) -> AxResult<isize> {
-    let optlen = optlen.get_as_mut()?;
+    let optlen_ptr = optlen.as_ptr();
+    let initial_optlen = optlen_ptr.vm_read()?;
     debug!(
         "sys_getsockopt <= fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
         fd,
         level,
         optname,
         optval.address(),
-        optlen,
+        initial_optlen,
     );
+
+    fn write_fixed<T: bytemuck::NoUninit>(
+        val: UserPtr<u8>,
+        len_ptr: *mut socklen_t,
+        len: socklen_t,
+        value: T,
+    ) -> AxResult<()> {
+        if (len as usize) < size_of::<T>() {
+            return Err(AxError::InvalidInput);
+        }
+        val.as_ptr().cast::<T>().vm_write(value)?;
+        len_ptr.vm_write(size_of::<T>() as socklen_t)?;
+        Ok(())
+    }
+
+    if let Ok(socket) = NetlinkSocket::from_fd(fd) {
+        use linux_raw_sys::net::{SO_REUSEADDR, SOL_SOCKET};
+
+        if (level, optname) == (SOL_SOCKET, SO_REUSEADDR) {
+            write_fixed(
+                optval,
+                optlen_ptr,
+                initial_optlen,
+                i32::from(socket.reuse_address()),
+            )?;
+            return Ok(0);
+        }
+    }
+
+    let optlen = optlen.get_as_mut()?;
 
     fn get<'a, T: 'static>(val: UserPtr<u8>, len: &mut socklen_t) -> AxResult<&'a mut T> {
         if (*len as usize) < size_of::<T>() {
@@ -336,23 +368,15 @@ pub fn sys_getsockopt(
         val.cast().get_as_mut()
     }
 
-    if let Ok(socket) = NetlinkSocket::from_fd(fd) {
-        use linux_raw_sys::net::{SO_REUSEADDR, SOL_SOCKET};
-
-        if (level, optname) == (SOL_SOCKET, SO_REUSEADDR) {
-            *get::<i32>(optval, optlen)? = i32::from(socket.reuse_address());
-            return Ok(0);
-        }
-    }
-
     let socket = Socket::from_fd(fd)?;
 
-    // SO_TYPE is handled at the kernel level because the socket type is
-    // known from the Socket enum variant, not from a per-protocol option.
+    // SO_TYPE is normally implied by the kernel socket variant. Raw and Unix
+    // transports have multiple Linux-visible socket types, so query their
+    // per-socket options instead.
     {
         use ax_net::Socket as SocketInner;
         use linux_raw_sys::net::{
-            SO_ACCEPTCONN, SO_BINDTODEVICE, SO_TYPE, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SOL_SOCKET,
+            SO_ACCEPTCONN, SO_BINDTODEVICE, SO_TYPE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET,
         };
 
         if level == SOL_SOCKET && optname == SO_ACCEPTCONN {
@@ -366,10 +390,7 @@ pub fn sys_getsockopt(
             let so_type: i32 = match &**socket {
                 SocketInner::Tcp(_) => SOCK_STREAM as i32,
                 SocketInner::Udp(_) => SOCK_DGRAM as i32,
-                SocketInner::Raw(_) => SOCK_RAW as i32,
-                // Unix sockets carry stream/dgram/seqpacket; the concrete type
-                // lives in the transport's socket options, not the enum variant.
-                SocketInner::Unix(_) => {
+                SocketInner::Raw(_) | SocketInner::Unix(_) => {
                     let mut t = 0i32;
                     socket.get_option(GetSocketOption::SocketType(&mut t))?;
                     t

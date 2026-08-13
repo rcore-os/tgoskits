@@ -1,5 +1,9 @@
 use super::*;
 
+pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentModel {
+    current_source_aliases_kernel_tls: true,
+};
+
 pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
     Ok(())
 }

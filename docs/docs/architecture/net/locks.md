@@ -26,7 +26,7 @@ flowchart TB
     RxQueue["shared RX queue<br/>Mutex<VecDeque> + AtomicUsize"]
     TxQueue["per-device TX queue<br/>Mutex<VecDeque> + AtomicUsize"]
     DevLock["DeviceHandle.inner<br/>Mutex<Device>"]
-    DriverLock["driver state<br/>SpinNoIrq"]
+    DriverLock["driver state<br/>SpinLock::lock_irqsave()"]
     Wake["WaitQueue / PollSet / AtomicBool"]
 
     App -->|"socket state"| SocketLock
@@ -410,11 +410,12 @@ fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
 
 ### raw socket 暂存锁
 
-raw socket 使用读写锁保存 filter/TTL，并用 `SpinNoIrq` 保护本地暂存包。文件顶部在 `raw.rs` 把 `SpinNoIrq` 别名为 `Mutex`，字段定义在 `raw.rs`：
+raw socket 使用读写锁保存 filter/TTL，并用 `SpinLock` 保护本地暂存包。文件顶部在 `raw.rs`
+把 `SpinLock` 别名为 `Mutex`，获取暂存包时使用 `lock_irqsave()`：
 
 ```rust
-// raw.rs:35,70-84
-use ax_kspin::SpinNoIrq as Mutex;
+// raw.rs，简化示意
+use ax_sync::{SpinLock as Mutex, SpinRwLock as RwLock};
 
 pub struct RawSocket {
     handle: SocketHandle,
@@ -604,27 +605,27 @@ while !self.rx_buffer.is_full() {
 Ethernet IRQ 共享状态定义在 `device/ethernet.rs`：
 
 ```rust
-// device/ethernet.rs:123-138
+// device/ethernet.rs，简化示意
 struct EthernetIrqState {
     irq: Option<usize>,
-    irq_registration: spin::Once<Box<dyn EthernetIrqRegistration>>,
+    irq_registration: ax_lazyinit::OnceLock<Box<dyn EthernetIrqRegistration>>,
     oob_rx: bool,
-    driver: SpinNoIrq<Box<dyn EthernetDriver>>,
+    driver: SpinLock<Box<dyn EthernetDriver>>,
     poll_ready: PollSet,
 }
 
 impl EthernetIrqState {
     fn handle_irq(&self) -> NetIrqEvents {
-        self.driver.lock().handle_irq()
+        self.driver.lock_irqsave().handle_irq()
     }
 }
 ```
 
-`SpinNoIrq` 下只允许 driver 短操作，例如 IRQ event 读取、TX/RX queue 操作、poll-ready 注册。不得在 guard 内 sleep、wait、调用 socket API 或进入 `Service::poll()`。
+`lock_irqsave()` guard 下只允许 driver 短操作，例如 IRQ event 读取、TX/RX queue 操作、poll-ready 注册。不得在 guard 内 sleep、wait、调用 socket API 或进入 `Service::poll()`。
 
 ### rd-net adapter state
 
-`rd-net` 适配器在 `device/driver.rs` 用 `SpinNoIrq` 保护底层 TX/RX queue 和 `pending_rx`：
+`rd-net` 适配器在 `device/driver.rs` 用 `SpinLock` 的 IRQ-save 获取保护底层 TX/RX queue 和 `pending_rx`：
 
 ```rust
 // device/driver.rs:179-204
@@ -633,10 +634,10 @@ pub struct RdNetDriver {
     mac: [u8; 6],
     irq: Option<usize>,
     irq_handler: Option<rd_net::IrqHandler>,
-    state: SpinNoIrq<RdNetState>,
+    state: SpinLock<RdNetState>,
 }
 
-state: SpinNoIrq::new(RdNetState {
+state: SpinLock::new(RdNetState {
     tx_queue,
     rx_queue,
     pending_rx: VecDeque::with_capacity(RX_PREFETCH_TARGET),
@@ -698,7 +699,7 @@ SERVICE
 ```text
 SOCKET_SET.inner -> SERVICE        // 反向获取协议核心锁
 DeviceHandle.inner -> SERVICE      // 设备 worker 反向进入协议核心
-SpinNoIrq guard -> block_on/wait   // 禁 IRQ/抢占状态下阻塞
+SpinLock irqsave guard -> block_on/wait // 禁 IRQ/抢占状态下阻塞
 SERVICE/SOCKET_SET -> long sleep   // 阻塞协议栈推进
 ```
 
@@ -763,10 +764,10 @@ UDP send:
 
 raw recv with peer filter:
   SOCKET_SET.inner.lock()
-  -> deferred_rx SpinNoIrq only for local stash
+  -> deferred_rx SpinLock::lock_irqsave() only for local stash
 ```
 
-UDP/raw 的本地地址、peer 地址、TTL 使用读写锁或短 `SpinNoIrq`，因为这些状态和 smoltcp socket payload 的生命周期不同。
+UDP/raw 的本地地址、peer 地址、TTL 使用读写锁或短 IRQ-save `SpinLock`，因为这些状态和 smoltcp socket payload 的生命周期不同。
 
 ### 控制面查询与提交
 
@@ -795,8 +796,8 @@ DHCP/static commit:
 RX worker:
   DeviceHandle.inner.lock()
   -> Device::recv()
-       -> EthernetIrqState.driver SpinNoIrq
-       -> RdNetDriver.state SpinNoIrq
+       -> EthernetIrqState.driver SpinLock::lock_irqsave()
+       -> RdNetDriver.state SpinLock::lock_irqsave()
   -> shared RX queue lock
   -> request_poll()
 
@@ -804,8 +805,8 @@ TX worker:
   per-device TX queue lock
   -> DeviceHandle.inner.lock()
   -> Device::send()
-       -> EthernetIrqState.driver SpinNoIrq
-       -> RdNetDriver.state SpinNoIrq
+       -> EthernetIrqState.driver SpinLock::lock_irqsave()
+       -> RdNetDriver.state SpinLock::lock_irqsave()
 ```
 
 设备 worker 不持有 `SERVICE` 或 `SOCKET_SET`。它们只在设备和 Router queue 之间搬运 packet。队列满时丢包并唤醒 net-poll worker，不创建无界 backlog。
@@ -814,7 +815,7 @@ TX worker:
 
 ```text
 Ethernet IRQ:
-  EthernetIrqState.driver SpinNoIrq
+  EthernetIrqState.driver SpinLock::lock_irqsave()
   -> poll_ready.wake()
   -> return Wake
 
@@ -838,7 +839,7 @@ IRQ handler 不进入 `SERVICE`、`SOCKET_SET` 或 Router。它只读取 driver 
 - 控制面查询需要在不持 `SERVICE` 的情况下返回接口、DNS 和路由快照，否则 `ifconfig`、netlink、DNS server 查询会和协议 poll 强耦合。
 - TCP/UDP bind side table 是 POSIX public 语义，不等同于 smoltcp socket payload state，单独维护可以避免扫描整个 `SocketSet`。
 - Unix/vsock 不经过 smoltcp，不能依赖 `SERVICE` 表达本地传输状态。
-- `SpinNoIrq` 只服务 IRQ/driver 短临界区，不能和任务级 `Mutex` 混用成一个大锁。
+- IRQ-save `SpinLock` 只服务 IRQ/driver 短临界区，不能和任务级 `Mutex` 混用成一个大锁。
 
 因此当前锁不是冗余叠加，而是按所有权边界拆分：协议核心、控制面、socket public state、Router queue、设备驱动、本地传输各自保护自己的状态。
 
@@ -871,8 +872,8 @@ net-poll worker:
 修改 `ax-net` 锁相关代码时，应确认：
 
 - 新路径没有 `SOCKET_SET.inner -> SERVICE` 的反向获取。
-- 设备 worker 没有在持有 `DeviceHandle.inner` 或 driver `SpinNoIrq` 时进入 `SERVICE` / `SOCKET_SET`。
-- `SpinNoIrq` guard 内没有 sleep、wait、block_on、DNS 查询或 socket API。
+- 设备 worker 没有在持有 `DeviceHandle.inner` 或 driver IRQ-save `SpinLock` 时进入 `SERVICE` / `SOCKET_SET`。
+- `lock_irqsave()` guard 内没有 sleep、wait、block_on、DNS 查询或 socket API。
 - 新增全局表优先使用短临界区，并说明它与 `SERVICE` / `SOCKET_SET` 的顺序。
 - 新增 socket 局部状态优先用原子或 `RwLock`，避免把整个 POSIX 操作包在全局 `SocketSet` 锁内。
 - 新增 worker wake 路径只设置原子/waker，不直接执行 smoltcp poll。

@@ -256,6 +256,9 @@ fn load_cargo_config_injects_vmconfigs() {
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");
     let vmconfigs = vec![root.path().join("a.toml"), root.path().join("b.toml")];
+    for vmconfig in &vmconfigs {
+        fs::write(vmconfig, "[kernel]\n").unwrap();
+    }
     fs::write(
         &config_path,
         r#"

@@ -50,9 +50,9 @@ fn print_shell_intro() {
 
 fn print_console_shortcuts() {
     println!("Console shortcuts:");
-    println!("  Ctrl+Alt+H  return to the Axvisor shell");
-    println!("  Ctrl+Alt+[  attach the previous running guest");
-    println!("  Ctrl+Alt+]  attach the next running guest");
+    println!("  Ctrl+X, then h  return to the Axvisor shell");
+    println!("  Ctrl+X, then [  attach the previous running guest");
+    println!("  Ctrl+X, then ]  attach the next running guest");
 }
 
 // Initialize the console shell.
@@ -104,9 +104,10 @@ pub fn console_init() {
                     ConsoleInputEvent::Attached(vm_id) => {
                         println!();
                         println!(
-                            "[Axvisor] attached VM[{vm_id}] console; use Ctrl+Alt+H to return to \
-                             the shell"
+                            "[Axvisor] attached VM[{vm_id}] console; use Ctrl+X, then h to return \
+                             to the shell"
                         );
+                        crate::guest_console::activate(vm_id);
                         continue;
                     }
                     ConsoleInputEvent::Detached(vm_id) => {

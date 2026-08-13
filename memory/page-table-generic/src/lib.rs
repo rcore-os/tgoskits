@@ -16,6 +16,9 @@ pub use walk::*;
 
 pub type PagingResult<T = ()> = Result<T, PagingError>;
 
+/// The opaque leaf-entry configuration used by a page-table metadata type.
+pub type PteConfigOf<T> = <<T as TableMeta>::P as PageTableEntry>::PteConfig;
+
 pub trait FrameAllocator: Clone + Sync + Send + 'static {
     fn alloc_frame(&self) -> Option<PhysAddr>;
 
@@ -37,7 +40,7 @@ pub trait FrameAllocator: Clone + Sync + Send + 'static {
             return;
         }
         for i in 0..frames {
-            self.dealloc_frame(PhysAddr::new(start.raw() + i * frame_size));
+            self.dealloc_frame(PhysAddr::from_usize(start.as_usize() + i * frame_size));
         }
     }
 }
@@ -57,46 +60,69 @@ pub trait TableMeta: Sync + Send + Clone + Copy + 'static {
     /// Whether addresses must fit the address width described by [`LEVEL_BITS`].
     const STRICT_ADDRESS_WIDTH: bool = false;
 
+    /// Converts an address reconstructed from page-table indexes into the
+    /// architecture's virtual-address representation.
+    fn canonicalize_vaddr(vaddr: VirtAddr) -> VirtAddr {
+        vaddr
+    }
+
     /// 刷新TLB
     fn flush(vaddr: Option<VirtAddr>);
 }
 
 pub trait PageTableEntry: Debug + Sync + Send + Clone + Copy + Sized + 'static {
-    /// 从 PteConfig 创建页表项
-    ///
-    /// # 参数
-    /// - `config`: 包含所有页表项配置的结构
-    ///
-    /// # 返回
-    /// 新的页表项实例
-    fn from_config(config: PteConfig) -> Self;
+    /// Configuration understood by this concrete PTE format.
+    type PteConfig: Copy;
 
-    /// 将页表项转换为 PteConfig
-    ///
-    /// # 参数
-    /// - `is_dir`: 是否为目录项（影响物理地址布局解析）
-    ///   - true: 目录项（可能包含大页映射或子页表指针）
-    ///   - false: 页表项（叶子级别，基本页映射）
-    ///
-    /// # 返回
-    /// 包含当前页表项所有状态的 PteConfig
-    fn to_config(&self, is_dir: bool) -> PteConfig;
+    /// Creates a leaf or block entry.
+    fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self;
 
-    fn valid(&self) -> bool;
+    /// Creates an entry that points to a child page-table frame.
+    fn new_table(paddr: PhysAddr) -> Self;
+
+    /// Returns the physical address encoded by this entry.
+    ///
+    /// `is_dir` lets formats with level-dependent layouts decode the address
+    /// without exposing those layout rules to the generic walker.
+    fn paddr(&self, is_dir: bool) -> PhysAddr;
+
+    /// Decodes the owner-defined leaf configuration.
+    fn config(&self, is_dir: bool) -> Self::PteConfig;
+
+    /// Returns whether this entry participates in address translation.
+    ///
+    /// Implementations must recognize both leaf mappings and child-table entries.
+    fn present(&self) -> bool;
+
+    /// Returns whether this entry is a block mapping at the current level.
+    fn huge(&self, is_dir: bool) -> bool;
+
+    /// Returns whether this entry contains no descriptor state at all.
+    ///
+    /// This is distinct from [`Self::present`]: a non-present leaf may retain its
+    /// physical address so that a later protection change can activate it.
+    fn unused(&self) -> bool;
+
+    /// Clears all descriptor state from this entry.
+    fn clear(&mut self);
 }
 
 pub trait PageTableOp: Send + 'static {
+    type PteConfig: Copy;
+
     fn addr(&self) -> PhysAddr;
-    fn map(&mut self, config: &MapConfig) -> PagingResult;
+    fn map(&mut self, config: &MapConfig<Self::PteConfig>) -> PagingResult;
     fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> Result<(), PagingError>;
 }
 
 impl<T: TableMeta, A: FrameAllocator> PageTableOp for PageTable<T, A> {
+    type PteConfig = PteConfigOf<T>;
+
     fn addr(&self) -> PhysAddr {
         self.root_paddr()
     }
 
-    fn map(&mut self, config: &MapConfig) -> PagingResult {
+    fn map(&mut self, config: &MapConfig<Self::PteConfig>) -> PagingResult {
         PageTableRef::map(self, config)
     }
 
@@ -106,11 +132,13 @@ impl<T: TableMeta, A: FrameAllocator> PageTableOp for PageTable<T, A> {
 }
 
 impl<T: TableMeta, A: FrameAllocator> PageTableOp for PageTableRef<T, A> {
+    type PteConfig = PteConfigOf<T>;
+
     fn addr(&self) -> PhysAddr {
         self.root_paddr()
     }
 
-    fn map(&mut self, config: &MapConfig) -> PagingResult {
+    fn map(&mut self, config: &MapConfig<Self::PteConfig>) -> PagingResult {
         self.map(config)
     }
 

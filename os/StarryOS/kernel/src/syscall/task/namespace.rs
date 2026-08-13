@@ -3,8 +3,6 @@ use core::ops::DerefMut;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::{FS_CONTEXT, FsContext};
-use ax_kspin::SpinRwLock;
-use ax_sync::Mutex;
 use ax_task::current;
 use axnsproxy::NsProxy;
 use flatten_objects::FlattenObjects;
@@ -15,6 +13,7 @@ use linux_raw_sys::general::{
 
 use crate::{
     file::{FD_TABLE, FileDescriptor, NsFd, PidFd, get_file_like},
+    sync::{FsMutex, RwLock},
     task::{AX_FILE_LIMIT, AsThread, Thread, get_task},
 };
 
@@ -30,21 +29,18 @@ const SUPPORTED_NS_FLAGS: u32 = UNSHARE_NAMESPACE_FLAGS | CLONE_FS | CLONE_FILES
 
 const SUPPORTED_SETNS_FLAGS: u32 = SUPPORTED_NS_FLAGS & !CLONE_FILES;
 
-type SharedFileTable = Arc<SpinRwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>>;
+type SharedFileTable = Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>>;
 
 struct PreparedUnshare {
     file_table: Option<SharedFileTable>,
-    fs_context: Option<Arc<Mutex<FsContext>>>,
+    fs_context: Option<Arc<FsMutex<FsContext>>>,
     nsproxy: Option<NsProxy>,
 }
 
 impl PreparedUnshare {
     fn prepare(flags: u32, thread: &Thread) -> AxResult<Self> {
-        let file_table = (flags & CLONE_FILES != 0).then(|| {
-            Arc::new(SpinRwLock::new(
-                crate::file::current_fd_table().read().clone(),
-            ))
-        });
+        let file_table = (flags & CLONE_FILES != 0)
+            .then(|| Arc::new(RwLock::new(crate::file::current_fd_table().read().clone())));
 
         let mut nsproxy = (flags & UNSHARE_NAMESPACE_FLAGS != 0)
             .then(|| thread.proc_data.nsproxy.lock().clone_for_unshare());
@@ -78,7 +74,7 @@ impl PreparedUnshare {
                     nsproxy.unshare_mnt();
                 }
             }
-            Some(Arc::new(Mutex::new(fs_context)))
+            Some(Arc::new(FsMutex::new(fs_context)))
         } else {
             None
         };

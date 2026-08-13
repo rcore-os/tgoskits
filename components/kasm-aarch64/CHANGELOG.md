@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/rcore-os/tgoskits/compare/kasm-aarch64-v0.2.1...kasm-aarch64-v0.2.2) - 2026-08-09
+
+### Other
+
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+
 ## [0.2.0](https://github.com/rcore-os/somehal/compare/kasm-aarch64-v0.1.3...kasm-aarch64-v0.2.0) - 2025-08-19
 
 ### Fixed

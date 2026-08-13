@@ -1,5 +1,8 @@
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    mem,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use axfs_ng_vfs::VfsResult;
 
@@ -15,8 +18,8 @@ impl Drop for ReclaimGuard {
     }
 }
 
-static GLOBAL_CACHED_FILES: ax_kspin::SpinRwLock<Vec<Arc<CachedFileShared>>> =
-    ax_kspin::SpinRwLock::new(Vec::new());
+static GLOBAL_CACHED_FILES: ax_sync::SpinRwLock<Vec<Arc<CachedFileShared>>> =
+    ax_sync::SpinRwLock::new(Vec::new());
 static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// Reclaims clean disk-backed cache pages without holding listener callbacks
@@ -52,9 +55,8 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
 }
 
 pub(super) fn register_cached_file(file: &Arc<CachedFileShared>) {
-    let mut guard = GLOBAL_CACHED_FILES.write();
-    guard.retain(|cached| Arc::strong_count(cached) > 1 || cached.has_dirty_pages());
-    guard.push(file.clone());
+    prune_cached_files();
+    GLOBAL_CACHED_FILES.write().push(file.clone());
 }
 
 pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
@@ -69,9 +71,20 @@ pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
     }
 
     drop(files);
-    let mut guard = GLOBAL_CACHED_FILES.write();
-    guard.retain(|cached| Arc::strong_count(cached) > 1 || cached.has_dirty_pages());
+    prune_cached_files();
     first_error.map_or(Ok(()), Err)
+}
+
+fn prune_cached_files() {
+    // Cached-file destruction can reach a sleepable filesystem lock. Move the
+    // registry contents out under the spin lock, prune them after releasing
+    // it, then merge survivors with registrations that arrived meanwhile.
+    let mut files = {
+        let mut registry = GLOBAL_CACHED_FILES.write();
+        mem::take(&mut *registry)
+    };
+    files.retain(|cached| Arc::strong_count(cached) > 1 || cached.has_dirty_pages());
+    GLOBAL_CACHED_FILES.write().append(&mut files);
 }
 
 impl CachedFileShared {

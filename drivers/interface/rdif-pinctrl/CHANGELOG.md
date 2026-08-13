@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/rcore-os/tgoskits/compare/rdif-pinctrl-v0.1.3...rdif-pinctrl-v0.1.4) - 2026-08-09
+
+### Other
+
+- updated the following local packages: axtest, rdif-base
+
 ## [0.1.3](https://github.com/rcore-os/tgoskits/compare/rdif-pinctrl-v0.1.2...rdif-pinctrl-v0.1.3) - 2026-08-03
 
 ### Other

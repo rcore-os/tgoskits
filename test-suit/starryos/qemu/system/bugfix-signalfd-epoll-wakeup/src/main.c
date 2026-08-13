@@ -17,6 +17,7 @@
 static int passed;
 static int failed;
 static _Atomic int waiter_entered;
+static _Atomic int waiter_finished;
 
 struct waiter_context {
     int epoll_fd;
@@ -49,6 +50,7 @@ static void *wait_for_signalfd_event(void *opaque)
     context->wait_result = epoll_wait(context->epoll_fd, &context->event, 1, 2000);
     context->wait_errno = errno;
     if (context->wait_result != 1) {
+        atomic_store_explicit(&waiter_finished, 1, memory_order_release);
         return NULL;
     }
 
@@ -59,6 +61,7 @@ static void *wait_for_signalfd_event(void *opaque)
         sizeof(context->signal_info)
     );
     context->read_errno = errno;
+    atomic_store_explicit(&waiter_finished, 1, memory_order_release);
     return NULL;
 }
 
@@ -76,23 +79,29 @@ static int wait_for_epoll_waiter(void)
     return nanosleep(&settle, NULL);
 }
 
-static int check_inherited_signalfd_epoll(int epoll_fd, int signal_fd)
+static int update_and_consume_child_signal(int signal_fd)
 {
-    struct epoll_event event;
+    sigset_t mask;
     struct signalfd_siginfo signal_info;
 
-    errno = 0;
-    int wait_result = epoll_wait(epoll_fd, &event, 1, 500);
-    if (wait_result != 0) {
-        printf("FAIL: inherited epoll reported signalfd in child: result=%d errno=%d (%s)\n",
-               wait_result, errno, strerror(errno));
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGUSR1);
+    if (signalfd(signal_fd, &mask, SFD_CLOEXEC | SFD_NONBLOCK) != signal_fd) {
+        printf("FAIL: child could not update inherited signalfd: errno=%d (%s)\n",
+               errno, strerror(errno));
+        return EXIT_FAILURE;
+    }
+
+    if (kill(getpid(), SIGUSR1) != 0) {
+        printf("FAIL: child could not queue SIGUSR1: errno=%d (%s)\n",
+               errno, strerror(errno));
         return EXIT_FAILURE;
     }
 
     errno = 0;
     ssize_t read_length = read(signal_fd, &signal_info, sizeof(signal_info));
     if (read_length != (ssize_t)sizeof(signal_info)) {
-        printf("FAIL: inherited signalfd did not read child SIGUSR1: result=%zd errno=%d (%s)\n",
+        printf("FAIL: inherited signalfd did not read self-sent SIGUSR1: result=%zd errno=%d (%s)\n",
                read_length, errno, strerror(errno));
         return EXIT_FAILURE;
     }
@@ -102,7 +111,7 @@ static int check_inherited_signalfd_epoll(int epoll_fd, int signal_fd)
         return EXIT_FAILURE;
     }
 
-    printf("PASS: inherited signalfd reads child SIGUSR1 without epoll readiness\n");
+    printf("PASS: inherited signalfd reads the child's self-sent SIGUSR1\n");
     return EXIT_SUCCESS;
 }
 
@@ -113,9 +122,31 @@ static void test_forked_child_signalfd_epoll_isolation(int epoll_fd, int signal_
         .tv_nsec = 100 * 1000 * 1000,
     };
     int ready_pipe[2] = {-1, -1};
+    struct waiter_context context = {
+        .epoll_fd = epoll_fd,
+        .signal_fd = signal_fd,
+        .wait_result = -1,
+        .wait_errno = 0,
+        .read_length = -1,
+        .read_errno = 0,
+    };
+    pthread_t waiter;
+
+    atomic_store_explicit(&waiter_entered, 0, memory_order_release);
+    atomic_store_explicit(&waiter_finished, 0, memory_order_release);
+    int waiter_started = pthread_create(&waiter, NULL, wait_for_signalfd_event,
+                                        &context) == 0;
+    expect_true(waiter_started, "start parent EPOLLET waiter before fork");
+    if (!waiter_started) {
+        return;
+    }
+    expect_true(wait_for_epoll_waiter() == 0,
+                "wait for parent EPOLLET waiter to block");
 
     expect_true(pipe(ready_pipe) == 0, "create fork readiness pipe");
     if (ready_pipe[0] < 0 || ready_pipe[1] < 0) {
+        pthread_kill(waiter, SIGUSR1);
+        pthread_join(waiter, NULL);
         return;
     }
 
@@ -124,13 +155,15 @@ static void test_forked_child_signalfd_epoll_isolation(int epoll_fd, int signal_
     expect_true(child >= 0, "fork inherited signalfd and epoll");
     if (child == 0) {
         const char ready = 'R';
+        int child_result;
 
         close(ready_pipe[0]);
+        child_result = update_and_consume_child_signal(signal_fd);
         if (write(ready_pipe[1], &ready, sizeof(ready)) != (ssize_t)sizeof(ready)) {
             _exit(EXIT_FAILURE);
         }
         close(ready_pipe[1]);
-        _exit(check_inherited_signalfd_epoll(epoll_fd, signal_fd));
+        _exit(child_result);
     }
 
     close(ready_pipe[1]);
@@ -138,16 +171,29 @@ static void test_forked_child_signalfd_epoll_isolation(int epoll_fd, int signal_
         char ready = '\0';
         expect_true(read(ready_pipe[0], &ready, sizeof(ready)) == (ssize_t)sizeof(ready) &&
                         ready == 'R',
-                    "wait for child epoll_wait setup");
-        expect_true(nanosleep(&settle, NULL) == 0, "let child enter epoll_wait");
-        expect_true(kill(child, SIGUSR1) == 0, "send SIGUSR1 to child process");
+                    "wait for child signalfd activity");
 
         int status = 0;
         expect_true(waitpid(child, &status, 0) == child, "wait for child process");
         expect_true(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS,
-                    "inherited epoll ignores child signalfd readiness");
+                    "child consumes its own signal through inherited signalfd");
+        expect_true(nanosleep(&settle, NULL) == 0,
+                    "let the parent waiter refresh its signalfd registration");
+        expect_true(atomic_load_explicit(&waiter_finished, memory_order_acquire) == 0,
+                    "child signalfd activity does not publish parent epoll readiness");
+        expect_true(pthread_kill(waiter, SIGUSR1) == 0,
+                    "send SIGUSR1 to the blocked parent waiter after child activity");
     }
     close(ready_pipe[0]);
+
+    expect_true(pthread_join(waiter, NULL) == 0,
+                "join parent EPOLLET waiter after fork");
+    expect_true(context.wait_result == 1 && context.event.data.fd == signal_fd &&
+                    (context.event.events & EPOLLIN) != 0,
+                "parent EPOLLET waiter remains registered after child activity");
+    expect_true(context.read_length == (ssize_t)sizeof(context.signal_info) &&
+                    context.signal_info.ssi_signo == SIGUSR1,
+                "parent waiter reads its post-fork SIGUSR1");
 }
 
 int main(void)
@@ -166,7 +212,7 @@ int main(void)
     expect_true(epoll_fd >= 0, "create epoll");
 
     struct epoll_event interest = {
-        .events = EPOLLIN,
+        .events = EPOLLIN | EPOLLET,
         .data.fd = signal_fd,
     };
     expect_true(signal_fd >= 0 && epoll_fd >= 0 &&
@@ -183,6 +229,8 @@ int main(void)
         .read_errno = 0,
     };
     pthread_t waiter;
+    atomic_store_explicit(&waiter_entered, 0, memory_order_release);
+    atomic_store_explicit(&waiter_finished, 0, memory_order_release);
     int waiter_started = signal_fd >= 0 && epoll_fd >= 0 &&
                          pthread_create(&waiter, NULL, wait_for_signalfd_event, &context) == 0;
     expect_true(waiter_started, "start epoll_wait thread");

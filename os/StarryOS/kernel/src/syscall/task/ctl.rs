@@ -403,6 +403,19 @@ pub fn sys_prctl(
             };
             (arg2 as *mut i32).vm_write(enabled)?;
         }
+        PR_GET_KEEPCAPS => {
+            return Ok(current().as_thread().cred().keep_capabilities() as isize);
+        }
+        PR_SET_KEEPCAPS => {
+            if arg2 > 1 {
+                return Err(AxError::InvalidInput);
+            }
+            let thread_ref = current();
+            let thread = thread_ref.as_thread();
+            let mut new = (*thread.cred()).clone();
+            new.set_keep_capabilities(arg2 != 0);
+            thread.set_thread_cred(new);
+        }
         PR_CAPBSET_READ => {
             // Query whether a capability is still present in the bounding set.
             if arg2 > CAP_LAST_CAP as usize {
@@ -632,22 +645,13 @@ pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
         ) == (0x1111_1111u64 | ((0x4444_4444u64) << 32))
         // cap_data_from_cred: round-trips Cred capability fields into u32 pairs.
         && {
-            let cred = Cred {
-                uid: 0,
-                gid: 0,
-                euid: 0,
-                egid: 0,
-                suid: 0,
-                sgid: 0,
-                fsuid: 0,
-                fsgid: 0,
-                groups: Arc::from([].as_slice()),
-                cap_inheritable: 0x1234_5678_9abc_def0,
-                cap_permitted: 0xfedc_ba98_7654_3210,
-                cap_effective: 0x0fed_cba9_8765_4321,
-                cap_bounding: u64::MAX,
-                cap_ambient: 0,
-            };
+            let mut cred = Cred::root();
+            cred.groups = Arc::from([].as_slice());
+            cred.cap_inheritable = 0x1234_5678_9abc_def0;
+            cred.cap_permitted = 0xfedc_ba98_7654_3210;
+            cred.cap_effective = 0x0fed_cba9_8765_4321;
+            cred.cap_bounding = u64::MAX;
+            cred.cap_ambient = 0;
             let data = cap_data_from_cred(&cred);
             data[0].effective == 0x8765_4321
                 && data[1].effective == 0x0fed_cba9

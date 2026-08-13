@@ -19,8 +19,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
 use ax_task::current;
 use axfs_ng_vfs::{Location, NodeFlags};
 use axpoll::{IoEvents, Pollable};
@@ -43,11 +41,15 @@ pub use self::{
 };
 use crate::{
     pseudofs::{Device, DeviceOps},
+    sync::{IrqMutex, Mutex},
     task::{AsThread, get_process_group, send_signal_to_process_group},
 };
 
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
 const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
+const TCIFLUSH: usize = 0;
+const TCOFLUSH: usize = 1;
+const TCIOFLUSH: usize = 2;
 
 pub(crate) enum TerminalDevice {
     Location(Location),
@@ -91,7 +93,7 @@ pub struct Tty<R, W> {
     writer: W,
     is_ptm: bool,
     open_count: AtomicUsize,
-    binding: SpinNoIrq<Option<Weak<dyn Any + Send + Sync>>>,
+    binding: IrqMutex<Option<Weak<dyn Any + Send + Sync>>>,
 }
 
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
@@ -106,7 +108,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             writer,
             is_ptm,
             open_count: AtomicUsize::new(0),
-            binding: SpinNoIrq::new(None),
+            binding: IrqMutex::new(None),
         })
     }
 }
@@ -228,7 +230,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 };
                 self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF {
-                    self.ldisc.lock().drain_input();
+                    self.ldisc.lock().drain_input()?;
                 }
             }
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
@@ -244,7 +246,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 };
                 self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF2 {
-                    self.ldisc.lock().drain_input();
+                    self.ldisc.lock().drain_input()?;
                 }
             }
             TIOCGPGRP => {
@@ -293,6 +295,16 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 self.writer.drain()?;
                 return Err(AxError::Unsupported);
             }
+            TCFLSH => match arg {
+                TCIFLUSH => self.ldisc.lock().drain_input()?,
+                TCOFLUSH => self.ldisc.lock().discard_output(&self.writer)?,
+                TCIOFLUSH => {
+                    let mut ldisc = self.ldisc.lock();
+                    ldisc.discard_output(&self.writer)?;
+                    ldisc.drain_input()?;
+                }
+                _ => return Err(AxError::InvalidInput),
+            },
             TIOCSPTLCK => {}
             TIOCGPTN => {
                 (arg as *mut u32).vm_write(self.pty_number())?;

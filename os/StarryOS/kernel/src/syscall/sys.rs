@@ -2,7 +2,6 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
@@ -16,7 +15,10 @@ use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 
 #[cfg(target_arch = "riscv64")]
 use crate::mm::UserPtr;
-use crate::task::{AsThread, SockFilter, SockFprog, get_task, processes};
+use crate::{
+    sync::Mutex,
+    task::{AsThread, SockFilter, SockFprog, get_task, processes},
+};
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
 /// which becomes `u32::MAX` after the `as u32` cast in the dispatch table).
@@ -122,8 +124,8 @@ impl SyslogState {
     }
 }
 
-static SYSLOG_STATE: spin::LazyLock<Mutex<SyslogState>> =
-    spin::LazyLock::new(|| Mutex::new(SyslogState::new()));
+static SYSLOG_STATE: ax_lazyinit::LazyLock<Mutex<SyslogState>> =
+    ax_lazyinit::LazyLock::new(|| Mutex::new(SyslogState::new()));
 
 pub fn sys_reboot(magic: u32, magic2: u32, cmd: u32, _arg: usize) -> AxResult<isize> {
     if !current().as_thread().cred().has_cap_sys_boot() {
@@ -175,13 +177,20 @@ fn dumpable_should_reset(old: &crate::task::Cred, new: &crate::task::Cred) -> bo
     old.euid != new.euid || old.egid != new.egid || old.fsuid != new.fsuid || old.fsgid != new.fsgid
 }
 
-fn commit_cred_with_id_rules(
-    thread: &crate::task::Thread,
-    old: &crate::task::Cred,
-    mut new: crate::task::Cred,
-) {
-    new.apply_id_change_capability_rules(old);
-    thread.set_cred(new);
+fn commit_cred_with_id_rules(thread: &crate::task::Thread, new: crate::task::Cred) {
+    thread.update_process_creds(|old| {
+        let mut target = old.clone();
+        target.uid = new.uid;
+        target.gid = new.gid;
+        target.euid = new.euid;
+        target.egid = new.egid;
+        target.suid = new.suid;
+        target.sgid = new.sgid;
+        target.fsuid = new.fsuid;
+        target.fsgid = new.fsgid;
+        target.apply_id_change_capability_rules(old);
+        target
+    });
 }
 
 fn user_ns_overflow_uid() -> u32 {
@@ -316,7 +325,7 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> AxResult<isize> {
     // fsuid always tracks euid.
     new.fsuid = new.euid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    commit_cred_with_id_rules(thread, &old, new);
+    commit_cred_with_id_rules(thread, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -364,7 +373,7 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> AxResult<isize> {
 
     new.fsgid = new.egid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    commit_cred_with_id_rules(thread, &old, new);
+    commit_cred_with_id_rules(thread, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -400,7 +409,7 @@ pub fn sys_setuid(uid: u32) -> AxResult<isize> {
 
     new.fsuid = new.euid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    commit_cred_with_id_rules(thread, &old, new);
+    commit_cred_with_id_rules(thread, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -431,7 +440,7 @@ pub fn sys_setgid(gid: u32) -> AxResult<isize> {
 
     new.fsgid = new.egid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    commit_cred_with_id_rules(thread, &old, new);
+    commit_cred_with_id_rules(thread, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -481,7 +490,7 @@ pub fn sys_setreuid(ruid: u32, euid: u32) -> AxResult<isize> {
 
     new.fsuid = new.euid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    commit_cred_with_id_rules(thread, &old, new);
+    commit_cred_with_id_rules(thread, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -523,7 +532,7 @@ pub fn sys_setregid(rgid: u32, egid: u32) -> AxResult<isize> {
 
     new.fsgid = new.egid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    commit_cred_with_id_rules(thread, &old, new);
+    commit_cred_with_id_rules(thread, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -567,7 +576,7 @@ pub fn sys_setfsuid(fsuid: u32) -> AxResult<isize> {
         let mut new = (*old).clone();
         new.fsuid = fsuid;
         let reset_dumpable = dumpable_should_reset(&old, &new);
-        commit_cred_with_id_rules(thread, &old, new);
+        commit_cred_with_id_rules(thread, new);
         if reset_dumpable {
             thread.proc_data.set_dumpable(0);
         }
@@ -597,7 +606,7 @@ pub fn sys_setfsgid(fsgid: u32) -> AxResult<isize> {
         let mut new = (*old).clone();
         new.fsgid = fsgid;
         let reset_dumpable = dumpable_should_reset(&old, &new);
-        commit_cred_with_id_rules(thread, &old, new);
+        commit_cred_with_id_rules(thread, new);
         if reset_dumpable {
             thread.proc_data.set_dumpable(0);
         }
@@ -652,9 +661,12 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
         Vec::new()
     };
 
-    let mut new = (*old).clone();
-    new.groups = Arc::from(groups.into_boxed_slice());
-    commit_cred_with_id_rules(thread, &old, new);
+    let groups: Arc<[u32]> = Arc::from(groups.into_boxed_slice());
+    thread.update_process_creds(|old| {
+        let mut new = old.clone();
+        new.groups = groups.clone();
+        new
+    });
     Ok(0)
 }
 

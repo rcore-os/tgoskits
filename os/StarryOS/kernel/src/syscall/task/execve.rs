@@ -13,7 +13,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::Mutex;
 use ax_task::{current, future::block_on, yield_now};
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
@@ -25,6 +24,7 @@ use crate::{
     config::USER_HEAP_BASE,
     file::{ResolveAtResult, memfd::Memfd, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
+    sync::Mutex,
     task::{AsThread, rebind_task_tid, zap_thread},
 };
 
@@ -138,7 +138,7 @@ fn do_execve(
     // the holder has crossed into irreversible teardown — which we observe
     // by `zap_thread` setting our `exit_request`.
     //
-    // We can't use `ax_sync::Mutex::lock` directly: it sleeps on
+    // We can't use `Mutex::lock` directly: it sleeps on
     // `WaitQueue::wait_until`, which is not awakened by zap's
     // `task.interrupt()`, and (worse) on release the loser would acquire
     // the mutex and proceed with execve on top of the holder's already-
@@ -271,20 +271,6 @@ fn do_execve(
         }));
     }
 
-    // Collect CLOEXEC fds to close *after* sibling teardown. Snapshotting
-    // before teardown would miss any fd a sibling promoted to CLOEXEC (via
-    // `open(... O_CLOEXEC)`, `fcntl(F_SETFD)`, or `close_range(..., CLOEXEC)`)
-    // between our snapshot and its own exit, leaking those fds into the new
-    // image. Once all siblings are reaped, the snapshot reflects the final
-    // post-quiescence table. The close pass below runs under the same
-    // `crate::file::current_fd_table().write()` guard so no new fds appear between scan and close.
-    let current_fd_table = crate::file::current_fd_table();
-    let mut fd_table = current_fd_table.write();
-    let cloexec_fds: Vec<_> = fd_table
-        .ids()
-        .filter(|it| fd_table.get(*it).unwrap().cloexec)
-        .collect();
-
     // ----------------------------------------------------------------
     // Phase 2: point of no return — commit all changes.
     // Nothing below may fail; errors here would leave the process broken.
@@ -293,13 +279,19 @@ fn do_execve(
     // Replace the aspace Arc so the parent's shared Arc<Mutex<AddrSpace>>
     // (from CLONE_VM) is never touched. The parent's page table register
     // keeps pointing at the original still-live AddrSpace.
-    let new_pt_root = new_aspace.page_table_root();
     let newaspace_arc = Arc::new(Mutex::new(new_aspace));
-    proc_data.replace_aspace(newaspace_arc);
+    proc_data.replace_current_aspace(&curr, newaspace_arc);
     proc_data.mark_vm_aspace_private_after_exec();
 
-    // Switch the hardware page table now that the new aspace is installed.
-    curr.switch_page_table(new_pt_root);
+    // PR_SET_KEEPCAPS is deliberately not inherited by a new executable
+    // image. Do this only after crossing the point of no return so a failed
+    // exec leaves the caller's credential state untouched.
+    let old_cred = thr.cred();
+    if old_cred.keep_capabilities() {
+        let mut new_cred = (*old_cred).clone();
+        new_cred.set_keep_capabilities(false);
+        thr.set_cred(new_cred);
+    }
 
     curr.set_name(&new_name);
     *proc_data.exe_path.write() = new_exe_path;
@@ -336,9 +328,15 @@ fn do_execve(
     thr.set_robust_list_head(0);
     thr.clear_rseq_state();
 
-    // Remove CLOEXEC fds from the table under the write guard we took
-    // for the post-teardown snapshot — no fd can be added or have its
-    // CLOEXEC bit flipped between scan and close — but defer the actual
+    // Collect and remove CLOEXEC fds after sibling teardown. Snapshotting
+    // before teardown would miss any fd a sibling promoted to CLOEXEC (via
+    // `open(... O_CLOEXEC)`, `fcntl(F_SETFD)`, or `close_range(..., CLOEXEC)`)
+    // between our snapshot and its own exit. The scan and removal share one
+    // short write critical section, but that guard must not span the address
+    // space and signal commit above: `FD_TABLE` uses a preempt-disabling lock,
+    // while those operations may acquire sleeping mutexes.
+    //
+    // Defer the actual
     // `release_locks_on_close` (POSIX-lock release, OFD waker wakes,
     // FileDescriptor drop) until after we've dropped the table write
     // lock. The wakers fire on the global advisory-lock waiter queues
@@ -350,13 +348,21 @@ fn do_execve(
     // after the lock is released, which is equivalent: no new fd can
     // appear in the slots we just emptied because nothing else in this
     // process is running yet (siblings reaped, new image not started).
-    let mut closing = Vec::with_capacity(cloexec_fds.len());
-    for fd in cloexec_fds {
-        if let Some(f) = fd_table.remove(fd) {
-            closing.push(f);
+    let closing = {
+        let current_fd_table = crate::file::current_fd_table();
+        let mut fd_table = current_fd_table.write();
+        let cloexec_fds: Vec<_> = fd_table
+            .ids()
+            .filter(|it| fd_table.get(*it).unwrap().cloexec)
+            .collect();
+        let mut closing = Vec::with_capacity(cloexec_fds.len());
+        for fd in cloexec_fds {
+            if let Some(f) = fd_table.remove(fd) {
+                closing.push(f);
+            }
         }
-    }
-    drop(fd_table);
+        closing
+    };
     for f in closing {
         crate::file::release_locks_on_close(f);
     }

@@ -4,9 +4,9 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_kernel_guard::NoPreempt;
+use ax_lazyinit::OnceLock;
 use ax_percpu::CpuPin;
-use spin::Once;
+use ax_sync::PreemptGuard;
 
 use crate::{
     boxed::ItemBox,
@@ -53,7 +53,7 @@ impl Default for Scope {
     }
 }
 
-static GLOBAL_SCOPE: Once<Scope> = Once::new();
+static GLOBAL_SCOPE: OnceLock<Scope> = OnceLock::new();
 static GLOBAL_SCOPE_STATE: AtomicUsize = AtomicUsize::new(GlobalScopeState::Uninitialized as usize);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -111,7 +111,7 @@ impl ActiveScope {
     /// the duration in which it is set as the active scope, and that no data
     /// races or aliasing violations occur.
     pub unsafe fn set(scope: &Scope) {
-        let _guard = NoPreempt::new();
+        let _guard = PreemptGuard::new();
         // SAFETY: the guard prevents migration while the per-CPU pointer is
         // selected and updated.
         unsafe {
@@ -131,7 +131,7 @@ impl ActiveScope {
 
     /// Set the active scope to the global scope.
     pub fn set_global() {
-        let _guard = NoPreempt::new();
+        let _guard = PreemptGuard::new();
         // SAFETY: the guard prevents migration while the per-CPU pointer is
         // cleared.
         unsafe {
@@ -147,7 +147,7 @@ impl ActiveScope {
 
     /// Returns true if the active scope is the global scope.
     pub fn is_global() -> bool {
-        let _guard = NoPreempt::new();
+        let _guard = PreemptGuard::new();
         // SAFETY: the guard prevents migration for the complete read.
         unsafe {
             ax_percpu::with_cpu_pin(Self::is_global_pinned)
@@ -215,7 +215,7 @@ impl ActiveScope {
 }
 
 fn current_context_identity() -> usize {
-    let _guard = NoPreempt::new();
+    let _guard = PreemptGuard::new();
     // SAFETY: the guard keeps the current thread header stable while its opaque
     // identity is acquired. The header itself is pinned for the task lifetime,
     // so this identity remains valid if the task later migrates during an

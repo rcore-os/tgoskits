@@ -366,10 +366,10 @@ jobs:
             container_image: base
             fetch_depth: full
             upload_xtask_bin_artifact: true
-          - name: Run spin-lint
+          - name: Run lock-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask spin-lint
+            command: cargo xtask lock-lint
             cache_key: ""
             container_image: base
             fetch_depth: "1"
@@ -442,71 +442,58 @@ jobs:
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
-          - name: Test axvisor aarch64 qemu (smoke + axtest)
-            use_container: false
-            runs_on: '["self-hosted","linux","qcs"]'
-            self_hosted_owner: rcore-os
-            command: |
-              cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
-              cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
-            cache_key: ""
-            container_image: base
-            limit_to_owner: ""
-            main_pr_only: false
-          - name: Test axvisor aarch64 qemu (backtrace-panic)
-            use_container: false
-            runs_on: '["self-hosted","linux","qcs"]'
-            self_hosted_owner: rcore-os
-            command: cargo xtask axvisor test qemu --arch aarch64 --test-case backtrace-panic
-            cache_key: ""
-            container_image: base
-            limit_to_owner: ""
-            main_pr_only: false
-          - name: Test axvisor aarch64 qemu (no-backtrace)
-            use_container: false
-            runs_on: '["self-hosted","linux","qcs"]'
-            self_hosted_owner: rcore-os
-            command: cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
-            cache_key: ""
-            container_image: base
-            limit_to_owner: ""
-            main_pr_only: false
-          - name: Test axvisor aarch64 qemu (timer stress)
+          - name: Test axvisor aarch64 qemu (smoke + axtest + timer stress)
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
             timeout_minutes: 30
             command: |
+              echo "==> axvisor aarch64 smoke"
+              cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
+              echo "==> axvisor aarch64 virtio-blk ArceOS guest"
+              timeout 240s apps/arceos/virtio-blk-test/run.sh
+              echo "==> axvisor aarch64 axtest"
+              cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
+              echo "==> pull qemu-aarch64 image"
               cargo xtask image pull qemu-aarch64 --output-dir tmp/axbuild/images
+              echo "==> axvisor aarch64 gicv2 timer stress"
               cargo xtask axvisor test qemu --arch aarch64 --test-case gicv2-timer-stress
+              echo "==> axvisor aarch64 gicv3 timer stress"
               cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
             cache_key: ""
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
-          - name: Test axvisor riscv64 qemu (smoke)
+          - name: Test axvisor aarch64 qemu (panic modes)
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: cargo xtask axvisor test qemu --arch riscv64 --test-case smoke
+            timeout_minutes: 30
+            command: |
+              echo "==> axvisor aarch64 backtrace panic"
+              cargo xtask axvisor test qemu --arch aarch64 --test-case backtrace-panic
+              echo "==> axvisor aarch64 no-backtrace panic"
+              cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
             cache_key: ""
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
-          - name: Test axvisor riscv64 qemu (backtrace-panic)
+          - name: Test axvisor riscv64 qemu (smoke + panic modes)
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: cargo xtask axvisor test qemu --arch riscv64 --test-case backtrace-panic
-            cache_key: ""
-            container_image: base
-            limit_to_owner: ""
-            main_pr_only: false
-          - name: Test axvisor riscv64 qemu (no-backtrace)
-            use_container: false
-            runs_on: '["self-hosted","linux","qcs"]'
-            self_hosted_owner: rcore-os
-            command: cargo xtask axvisor test qemu --arch riscv64 --test-case no-backtrace
+            timeout_minutes: 30
+            command: |
+              echo "==> axvisor riscv64 smoke"
+              cargo xtask axvisor test qemu --arch riscv64 --test-case smoke
+              echo "==> axvisor riscv64 IPI cross-test"
+              cargo xtask cross-test --arch riscv64 \
+                --package riscv_vcpu --package axvm \
+                --features axvm/host-test --no-default-features --lib ipi
+              echo "==> axvisor riscv64 backtrace panic"
+              cargo xtask axvisor test qemu --arch riscv64 --test-case backtrace-panic
+              echo "==> axvisor riscv64 no-backtrace panic"
+              cargo xtask axvisor test qemu --arch riscv64 --test-case no-backtrace
             cache_key: ""
             container_image: base
             limit_to_owner: ""
@@ -680,11 +667,20 @@ jobs:
           #   apk_region: us
           #   limit_to_owner: ""
           #   main_pr_only: true
-          - name: Test axvisor self-hosted x86_64(svm)
+          - name: Test axvisor self-hosted x86_64 (svm smoke + ACPI)
             use_container: false
             runs_on: '["self-hosted","linux","amd","kvm"]'
             require_kvm: true
-            command: cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
+            timeout_minutes: 30
+            command: |
+              echo "==> axvisor x86_64 svm smoke"
+              cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
+              echo "==> pull qemu-x86_64 image"
+              cargo xtask image pull qemu-x86_64 --output-dir tmp/axbuild/images
+              echo "==> axvisor x86_64 svm direct ACPI boot"
+              cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-svm
+              echo "==> axvisor x86_64 svm nested OVMF ACPI boot"
+              cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-svm
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
@@ -705,58 +701,7 @@ jobs:
             timeout_minutes: 25
             command: |
               rustup target add x86_64-unknown-uefi
-              find_uefi_firmware() {
-                # ostool stores verified prebuilts under std::env::temp_dir().
-                for candidate in \
-                  "${TMPDIR:-/tmp}/ostool/ovmf/x64/code.fd" \
-                  /usr/share/OVMF/OVMF_CODE_4M.fd \
-                  /usr/share/OVMF/OVMF_CODE.fd \
-                  /usr/share/ovmf/OVMF.fd \
-                  /usr/share/qemu/OVMF.fd; do
-                  if [ -f "${candidate}" ]; then
-                    printf '%s\n' "${candidate}"
-                    return 0
-                  fi
-                done
-                return 1
-              }
-              UEFI_FIRMWARE="$(find_uefi_firmware || true)"
-              if [ -z "${UEFI_FIRMWARE}" ]; then
-                # apt against the runner mirrors fails transiently with exit 100
-                # (mirror hiccup / lock); a bare invocation lets a flaky mirror
-                # abort the whole smoke, so retry with backoff before giving up.
-                for attempt in 1 2 3; do
-                  if sudo apt-get update -o Acquire::Retries=3 \
-                    && sudo apt-get install -y --no-install-recommends \
-                         -o Acquire::Retries=3 ovmf; then
-                    break
-                  fi
-                  if [ "${attempt}" -eq 3 ]; then
-                    echo "ERROR: apt-get failed to install OVMF after 3 attempts." >&2
-                    exit 1
-                  fi
-                  sleep "$((attempt * 10))"
-                done
-                UEFI_FIRMWARE="$(find_uefi_firmware || true)"
-              fi
-              if [ -z "${UEFI_FIRMWARE}" ]; then
-                echo "ERROR: installed OVMF firmware image was not found under /usr/share." >&2
-                exit 1
-              fi
-              export AXLOADER_X86_64_UEFI_FIRMWARE="${UEFI_FIRMWARE}"
-              cargo axloader test qemu --target x86_64-unknown-uefi
-            cache_key: ""
-            container_image: ""
-            limit_to_owner: rcore-os
-            main_pr_only: false
-          - name: Test axvisor x86_64 ACPI direct boot (svm)
-            use_container: false
-            runs_on: '["self-hosted","linux","amd","kvm"]'
-            require_kvm: true
-            timeout_minutes: 30
-            command: |
-              cargo xtask image pull qemu-x86_64 --output-dir tmp/axbuild/images
-              cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-svm
+              cargo xtask axloader test qemu --target x86_64-unknown-uefi
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
@@ -827,6 +772,33 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
             command: cargo xtask starry test board --board orangepi-5-plus
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test OrangePi 5 Plus robot native StarryOS
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            timeout_minutes: 90
+            command: cargo xtask starry test board --board orangepi-5-plus-robot
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test OrangePi 5 Plus robot AxVisor StarryOS guest
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            timeout_minutes: 90
+            command: cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test OrangePi 5 Plus robot AxVisor Linux guest
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            timeout_minutes: 90
+            command: cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os

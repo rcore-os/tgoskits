@@ -30,12 +30,14 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
-use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io, timeout_at_wall};
 use axpoll::{IoEvents, PollSet, Pollable};
 use event_listener::{Event, listener};
 
-use crate::file::{FileLike, IoDst, IoSrc};
+use crate::{
+    file::{FileLike, IoDst, IoSrc},
+    sync::Mutex,
+};
 
 /// `clockid_t` values recognized by `timerfd_create`. Kept narrow for now —
 /// musl and glibc both pass `CLOCK_REALTIME` or `CLOCK_MONOTONIC`. Other

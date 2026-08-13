@@ -17,7 +17,7 @@ impl<'a> ExtentTree<'a> {
 
         let mut root = match self.load_root_from_inode() {
             Some(node) => node,
-            None => return Err(Ext4Error::unsupported()),
+            None => return Err(Ext4Error::corrupted()),
         };
 
         match &root {
@@ -339,13 +339,14 @@ impl<'a> ExtentTree<'a> {
                     new_ext.start_block(),
                     phy_block
                 );
+                // Internal nodes must always have a child to descend into.
+                if entries.is_empty() {
+                    return Err(Ext4Error::corrupted());
+                }
+
                 // Descend through the last child whose key is <= the new extent.
-                let idx_pos = if entries.is_empty() {
-                    0
-                } else {
-                    let pp = entries.partition_point(|idx| idx.ei_block <= new_ext.ee_block);
-                    if pp == 0 { 0 } else { pp - 1 }
-                };
+                let pp = entries.partition_point(|idx| idx.ei_block <= new_ext.ee_block);
+                let idx_pos = if pp == 0 { 0 } else { pp - 1 };
 
                 let child_phy_block = AbsoluteBN::new(
                     ((entries[idx_pos].ei_leaf_hi as u64) << 32)
@@ -354,7 +355,7 @@ impl<'a> ExtentTree<'a> {
                 block_dev.read_block(child_phy_block)?;
                 let child_bytes = block_dev.buffer();
                 let mut child_node =
-                    Self::parse_node_from_bytes(child_bytes).expect("Can't parse node from bytes!");
+                    Self::parse_node_from_bytes(child_bytes).ok_or(Ext4Error::corrupted())?;
 
                 let child_split_res = self.insert_recursive(
                     fs,

@@ -1,5 +1,5 @@
 use crate::{
-    FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfig, TableMeta,
+    FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfigOf, TableMeta,
     VirtAddr,
 };
 
@@ -15,7 +15,7 @@ pub struct Frame<T: TableMeta, A: FrameAllocator> {
 impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for Frame<T, A> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Frame")
-            .field("paddr", &format_args!("{:#x}", self.paddr.raw()))
+            .field("paddr", &format_args!("{:#x}", self.paddr.as_usize()))
             .finish()
     }
 }
@@ -91,8 +91,7 @@ where
 
     /// 从PTE创建子Frame（用于遍历子页表）
     pub fn from_pte(pte: &T::P, level: usize, allocator: A) -> Self {
-        let config = pte.to_config(level > 1);
-        Self::from_paddr(config.paddr, allocator)
+        Self::from_paddr(pte.paddr(level > 1), allocator)
     }
 
     /// 获取页表项的可变切片
@@ -165,7 +164,64 @@ where
         let level_index_bits = T::LEVEL_BITS[total_levels - level];
         let mask = (1 << level_index_bits) - 1;
 
-        (vaddr.raw() >> shift) & mask
+        (vaddr.as_usize() >> shift) & mask
+    }
+
+    pub(crate) fn level_for_page_size(page_size: usize) -> Option<usize> {
+        (1..=Self::PT_LEVEL).find(|level| Self::level_size(*level) == page_size)
+    }
+
+    pub fn protect_recursive(
+        &mut self,
+        vaddr: VirtAddr,
+        config: PteConfigOf<T>,
+        level: usize,
+    ) -> PagingResult<usize> {
+        let index = Self::virt_to_index(vaddr, level);
+        let entry = self.as_slice()[index];
+        if entry.unused() {
+            return Err(PagingError::not_mapped());
+        }
+        let is_dir = level > 1;
+        let is_huge = entry.huge(is_dir);
+        if is_huge || level == 1 {
+            self.as_slice_mut()[index] = T::P::new_page(entry.paddr(is_dir), config, is_huge);
+            return Ok(Self::level_size(level));
+        }
+        if !entry.present() {
+            return Err(PagingError::not_mapped());
+        }
+
+        let mut child = Self::from_paddr(entry.paddr(is_dir), self.allocator.clone());
+        child.protect_recursive(vaddr, config, level - 1)
+    }
+
+    pub fn remap_recursive(
+        &mut self,
+        vaddr: VirtAddr,
+        paddr: PhysAddr,
+        config: PteConfigOf<T>,
+        level: usize,
+    ) -> PagingResult<usize> {
+        let index = Self::virt_to_index(vaddr, level);
+        let entry = self.as_slice()[index];
+        if entry.unused() {
+            return Err(PagingError::not_mapped());
+        }
+        let is_dir = level > 1;
+        let is_huge = entry.huge(is_dir);
+        if is_huge || level == 1 {
+            let page_size = Self::level_size(level);
+            let aligned_paddr = PhysAddr::from_usize(paddr.as_usize() & !(page_size - 1));
+            self.as_slice_mut()[index] = T::P::new_page(aligned_paddr, config, is_huge);
+            return Ok(page_size);
+        }
+        if !entry.present() {
+            return Err(PagingError::not_mapped());
+        }
+
+        let mut child = Self::from_paddr(entry.paddr(is_dir), self.allocator.clone());
+        child.remap_recursive(vaddr, paddr, config, level - 1)
     }
 
     /// 重建完整的虚拟地址
@@ -215,10 +271,14 @@ where
             let entry_info = {
                 let entries = self.as_slice();
                 if i < entries.len() {
-                    let config = entries[i].to_config(level > 1);
-                    (config.valid, config.huge, config.paddr)
+                    let entry = entries[i];
+                    (
+                        entry.present(),
+                        entry.huge(level > 1),
+                        entry.paddr(level > 1),
+                    )
                 } else {
-                    (false, false, crate::PhysAddr::new(0))
+                    (false, false, crate::PhysAddr::from_usize(0))
                 }
             };
 
@@ -239,11 +299,7 @@ where
 
                 // 子页表帧已释放，清除PTE
                 let entries_mut = self.as_slice_mut();
-                let invalid_config = PteConfig {
-                    valid: false,
-                    ..Default::default()
-                };
-                entries_mut[i] = T::P::from_config(invalid_config);
+                entries_mut[i].clear();
             }
         }
     }
@@ -276,6 +332,18 @@ where
         vaddr: VirtAddr,
         level: usize,
     ) -> PagingResult<(T::P, usize)> {
+        let (pte, level) = self.find_occupied_leaf(vaddr, level)?;
+        if !pte.present() {
+            return Err(PagingError::not_mapped());
+        }
+        Ok((pte, level))
+    }
+
+    pub(crate) fn find_occupied_leaf(
+        &self,
+        vaddr: VirtAddr,
+        level: usize,
+    ) -> PagingResult<(T::P, usize)> {
         // 计算当前级别的页表索引
         let index = Self::virt_to_index(vaddr, level);
 
@@ -283,21 +351,24 @@ where
         let entries = self.as_slice();
         let pte = entries[index];
 
-        // 检查页表项是否有效
-        let config = pte.to_config(level > 1);
-        if !config.valid {
+        if pte.unused() {
             return Err(PagingError::not_mapped());
         }
 
         // 如果是大页映射或叶子级别，直接返回页表项及其级别
-        if config.huge || level == 1 {
+        if pte.huge(level > 1) || level == 1 {
             return Ok((pte, level));
         }
 
         // 否则，继续递归到下一级页表
         if level > 1 {
+            if !pte.present() {
+                return Err(PagingError::hierarchy_error(
+                    "Non-present intermediate entry is not a leaf",
+                ));
+            }
             let child_frame: Frame<T, A> = Frame::from_pte(&pte, level, self.allocator.clone());
-            return child_frame.translate_recursive_with_level(vaddr, level - 1);
+            return child_frame.find_occupied_leaf(vaddr, level - 1);
         }
 
         // 不应该到达这里
@@ -323,25 +394,66 @@ where
 
         let entries = self.as_slice();
         let entry = &entries[index];
-        let config = entry.to_config(level > 1);
-
-        if config.valid && !config.huge {
+        if entry.present() && !entry.huge(true) {
             // 递归释放子帧（子帧的级别是 level - 1）
             let mut child_frame = Frame::<T, A>::from_pte(entry, level, self.allocator.clone());
             child_frame.deallocate_recursive(level - 1);
 
             // 将当前PTE设为invalid
             let entries_mut = self.as_slice_mut();
-            let invalid_config = PteConfig {
-                valid: false,
-                ..Default::default()
-            };
-            entries_mut[index] = T::P::from_config(invalid_config);
+            entries_mut[index].clear();
 
             true
         } else {
             false
         }
+    }
+
+    pub(crate) fn clone_entry_from(
+        &mut self,
+        source: &Self,
+        index: usize,
+        level: usize,
+    ) -> PagingResult<bool> {
+        if index >= self.len() || index >= source.len() {
+            return Err(PagingError::hierarchy_error(
+                "Entry index exceeds page-table frame size",
+            ));
+        }
+        if !self.as_slice()[index].unused() {
+            return Ok(false);
+        }
+
+        let source_entry = source.as_slice()[index];
+        if source_entry.unused() {
+            return Ok(false);
+        }
+        if level == 1 || source_entry.huge(true) {
+            self.as_slice_mut()[index] = source_entry;
+            return Ok(true);
+        }
+        if !source_entry.present() {
+            return Err(PagingError::hierarchy_error(
+                "Non-present intermediate entry is not a leaf",
+            ));
+        }
+
+        let source_child = Self::from_paddr(source_entry.paddr(true), source.allocator.clone());
+        let mut target_child = Self::new(self.allocator.clone())?;
+        if let Err(err) = target_child.clone_children_from(&source_child, level - 1) {
+            target_child.deallocate_recursive(level - 1);
+            return Err(err);
+        }
+
+        self.as_slice_mut()[index] = T::P::new_table(target_child.paddr);
+        Ok(true)
+    }
+
+    fn clone_children_from(&mut self, source: &Self, level: usize) -> PagingResult {
+        for index in 0..source.len() {
+            self.clone_entry_from(source, index, level)?;
+        }
+        Ok(())
     }
 }
 

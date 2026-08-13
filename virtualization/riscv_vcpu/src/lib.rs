@@ -30,6 +30,7 @@ mod percpu;
 mod registers;
 mod regs;
 mod sbi_console;
+mod sbi_ipi;
 mod trap;
 pub mod types;
 mod vcpu;
@@ -42,8 +43,8 @@ pub use detect::{detect_h_extension as has_hardware_support, max_guest_page_tabl
 pub use regs::GprIndex;
 pub use types::{
     RiscvAccessFlags, RiscvAccessWidth, RiscvGuestPhysAddr, RiscvGuestVirtAddr, RiscvHostPhysAddr,
-    RiscvHostVirtAddr, RiscvNestedPagingConfig, RiscvVcpuError, RiscvVcpuId, RiscvVcpuResult,
-    RiscvVmExit, RiscvVmId,
+    RiscvHostVirtAddr, RiscvIpiAbi, RiscvIpiCompletion, RiscvIpiRequest, RiscvNestedPagingConfig,
+    RiscvVcpuError, RiscvVcpuId, RiscvVcpuResult, RiscvVmExit, RiscvVmId,
 };
 
 pub use self::{

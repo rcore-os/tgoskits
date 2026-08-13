@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.7...axbacktrace-v0.4.8) - 2026-08-09
+
+### Other
+
+- updated the following local packages: axtest
+
 ## [0.4.7](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.6...axbacktrace-v0.4.7) - 2026-08-03
 
 ### Other

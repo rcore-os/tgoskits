@@ -19,15 +19,16 @@ use alloc::{
 use core::{any::Any, task::Context};
 
 use ax_fs_ng::vfs::OpenOptions;
-use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, FsIoEvents, FsPollable, Location, Metadata, MetadataUpdate, NodeFlags, NodeOps,
     NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 
-use crate::pseudofs::dummy_stat_fs;
+use crate::{
+    pseudofs::dummy_stat_fs,
+    sync::{IrqMutex, Mutex},
+};
 
 const COPY_BUF_SIZE: usize = 4096;
 const OVERLAY_MAGIC: u32 = 0x794c7630;
@@ -66,7 +67,7 @@ pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         lower_dirs: options.lower_dirs,
         upper_dir: options.upper_dir,
         _work_dir: options.work_dir,
-        root: SpinNoIrq::new(None),
+        root: IrqMutex::new(None),
     });
     let root = OverlayDir::entry(
         fs.clone(),
@@ -114,7 +115,7 @@ struct OverlayFs {
     upper_dir: Option<Location>,
     _work_dir: Option<Location>,
     // root_dir() may be called from VFS mount paths with preemption disabled.
-    root: SpinNoIrq<Option<DirEntry>>,
+    root: IrqMutex<Option<DirEntry>>,
 }
 
 impl FilesystemOps for OverlayFs {

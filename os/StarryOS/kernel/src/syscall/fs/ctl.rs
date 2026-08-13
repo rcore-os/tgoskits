@@ -337,6 +337,7 @@ pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
             *dir_offset = offset;
             true
         })?;
+    drop(dir_offset);
 
     if has_remaining && buffer.offset == 0 {
         return Err(AxError::InvalidInput);
@@ -526,13 +527,13 @@ pub fn sys_readlinkat(
 
     debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
 
-    with_fs(dirfd, |fs| {
+    let link = with_fs(dirfd, |fs| {
         let entry = fs.resolve_no_follow(path)?;
-        let link = entry.read_link()?;
-        let read = size.min(link.len());
-        vm_write_slice(buf, &link.as_bytes()[..read])?;
-        Ok(read as isize)
-    })
+        entry.read_link()
+    })?;
+    let read = size.min(link.len());
+    vm_write_slice(buf, &link.as_bytes()[..read])?;
+    Ok(read as isize)
 }
 
 #[cfg(target_arch = "x86_64")]

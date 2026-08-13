@@ -1,8 +1,36 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
 
+extern crate alloc;
+
+use ax_hal as _;
 use ax_std as _;
 use axvm as _;
+
+mod host {
+    pub(super) fn write_host_bytes(_bytes: &[u8]) {}
+}
+
+mod manager {
+    pub struct AxvmManager;
+
+    impl AxvmManager {
+        pub fn notify_vm(_vm_id: axvm::VMId) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        pub fn vm_by_id(_vm_id: axvm::VMId) -> Option<axvm::AxVMRef> {
+            None
+        }
+
+        pub fn vm_list() -> Vec<axvm::AxVMRef> {
+            Vec::new()
+        }
+    }
+}
+
+#[path = "../src/guest_console/mux/mod.rs"]
+mod guest_console_mux;
 
 #[cfg(feature = "fs")]
 #[path = "../src/shell/command/fs.rs"]
@@ -14,7 +42,7 @@ mod tests {
     #[cfg(feature = "fs")]
     use std::{
         ffi::OsString,
-        fs::{self, FileTimes, OpenOptions},
+        fs,
         io::{self, ErrorKind},
         string::ToString,
         time::{Duration, SystemTime, UNIX_EPOCH},
@@ -24,7 +52,7 @@ mod tests {
     use super::shell_fs::{
         CopyMode, RemoveOptions, collect_directory_entry_names, copy_after_rename_failure,
         copy_operands, copy_path, ensure_recursive_destination_outside_source, ignore_remove_error,
-        metadata_for_remove, move_file_or_dir, remove_path, touch_file,
+        metadata_for_remove, move_file_or_dir, remove_path, touch_file_at,
     };
 
     #[test]
@@ -36,32 +64,23 @@ mod tests {
     #[test]
     fn touch_preserves_content_and_updates_times() {
         let path = "/tmp/axvisor-touch-regression";
-        let old_time = SystemTime::now()
-            .checked_add(Duration::from_secs(60))
-            .expect("fixture time must be representable");
+        let touch_time = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         let _ = fs::remove_file(path);
         fs::write(path, b"preserve me").expect("create touch fixture");
-        OpenOptions::new()
-            .write(true)
-            .open(path)
-            .expect("open touch fixture")
-            .set_times(
-                FileTimes::new()
-                    .set_accessed(old_time)
-                    .set_modified(old_time),
-            )
-            .expect("set old fixture times");
 
-        let earliest_touch_time = unix_seconds(SystemTime::now());
-        touch_file(path).expect("touch fixture");
-        let latest_touch_time = unix_seconds(SystemTime::now());
+        touch_file_at(path, touch_time).expect("touch fixture");
 
         let metadata = fs::metadata(path).expect("read touched metadata");
         ax_assert_eq!(fs::read(path).expect("read touched file"), b"preserve me");
         let accessed = unix_seconds(metadata.accessed().expect("read atime"));
         let modified = unix_seconds(metadata.modified().expect("read mtime"));
-        ax_assert!((earliest_touch_time..=latest_touch_time).contains(&accessed));
-        ax_assert!((earliest_touch_time..=latest_touch_time).contains(&modified));
+        ax_assert_eq!(accessed, unix_seconds(touch_time));
+        ax_assert_eq!(modified, unix_seconds(touch_time));
+
+        let unsupported_time = UNIX_EPOCH + Duration::from_secs(u32::MAX as u64 + 1);
+        let error = touch_file_at(path, unsupported_time)
+            .expect_err("timestamps that would be truncated must fail");
+        ax_assert_eq!(error.kind(), ErrorKind::InvalidInput);
         fs::remove_file(path).expect("remove touch fixture");
     }
 

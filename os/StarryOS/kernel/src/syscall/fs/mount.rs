@@ -6,7 +6,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
-use ax_sync::Mutex;
 use ax_task::current;
 use axfs_ng_vfs::{Filesystem, MetadataUpdate, Mountpoint, NodePermission};
 use axpoll::{IoEvents, Pollable};
@@ -28,6 +27,7 @@ use crate::{
         },
         overlay::OverlayOptions,
     },
+    sync::Mutex,
     task::{AsThread, tasks},
 };
 

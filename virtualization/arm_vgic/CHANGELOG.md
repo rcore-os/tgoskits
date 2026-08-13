@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.5.5...arm_vgic-v0.5.6) - 2026-08-09
+
+### Added
+
+- *(axvisor)* support ROCK 4D guest boot ([#1880](https://github.com/rcore-os/tgoskits/pull/1880))
+
+### Other
+
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.5.5](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.5.4...arm_vgic-v0.5.5) - 2026-08-03
 
 ### Added

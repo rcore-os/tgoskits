@@ -4,7 +4,7 @@ extern crate alloc;
 
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use descriptor::{RING_END, RxDesc, TxDesc};
 use dma_api::{DeviceDma, DmaOp};
 use log::info;
@@ -240,7 +240,9 @@ impl Interface for Rtl8125 {
         );
 
         {
-            let mut start = self.queue_start.lock();
+            // SAFETY: queue servicing excludes local re-entry and this raw
+            // lock serializes concurrent queue state across CPUs.
+            let mut start = unsafe { self.queue_start.lock_raw() };
             start.tx_base = Some(desc.dma_addr().as_u64());
         }
         self.tx_created = true;
@@ -271,7 +273,8 @@ impl Interface for Rtl8125 {
             .ok()?;
 
         {
-            let mut start = self.queue_start.lock();
+            // SAFETY: see the matching queue-start acquisition above.
+            let mut start = unsafe { self.queue_start.lock_raw() };
             start.rx_base = Some(desc.dma_addr().as_u64());
         }
         self.rx_created = true;

@@ -18,6 +18,10 @@ pub(crate) fn spawn_task(task: TaskInner) -> AxTaskRef {
     arceos::spawn_task(task)
 }
 
+pub(crate) fn spawn_task_with(task: TaskInner, initialize: impl FnOnce(&AxTaskRef)) -> AxTaskRef {
+    arceos::spawn_task_with(task, initialize)
+}
+
 pub(crate) fn yield_now() {
     arceos::yield_now();
 }

@@ -2,7 +2,6 @@
 
 use ax_errno::AxError;
 use ax_memory_addr::PhysAddr;
-use ax_sync::Mutex;
 use axfs_ng_vfs::VfsResult;
 use dma_api::DmaError;
 use sg200x_bsp::soc::TOP_BASE;
@@ -10,6 +9,8 @@ use sg200x_jpu::{
     FrameLayout, FrameLayoutError, JpuCreateError, JpuDecodeError, JpuDecoder, JpuMmio, JpuScale,
 };
 use starry_vm::vm_write_slice;
+
+use crate::sync::Mutex;
 
 const JPU_REG_BASE: usize = 0x0b00_0000;
 const VC_REG_BASE: usize = 0x0b03_0000;
@@ -67,16 +68,20 @@ impl CviJpu {
     }
 
     pub fn decode_camera_to_user(&self, jpeg: &[u8], destination: *mut u8) -> VfsResult<usize> {
-        let mut state = self.state.lock();
-        if state.vdec_owned {
-            return Err(AxError::ResourceBusy);
-        }
-        let result = state
-            .decoder()?
-            .decode(jpeg)
-            .map_err(|error| map_decode_error(&error))?;
-        vm_write_slice(destination, result.yuv_data)?;
-        Ok(result.yuv_data.len())
+        let yuv_data = {
+            let mut state = self.state.lock();
+            if state.vdec_owned {
+                return Err(AxError::ResourceBusy);
+            }
+            state
+                .decoder()?
+                .decode(jpeg)
+                .map_err(|error| map_decode_error(&error))?
+                .yuv_data
+                .to_vec()
+        };
+        vm_write_slice(destination, &yuv_data)?;
+        Ok(yuv_data.len())
     }
 
     pub fn decode_vdec(&self, jpeg: &[u8], scale: JpuScale) -> VfsResult<DecodedJpuFrame> {

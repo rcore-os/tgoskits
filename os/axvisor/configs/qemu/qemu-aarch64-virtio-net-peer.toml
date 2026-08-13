@@ -1,0 +1,12 @@
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "4",
+  "-m", "4g",
+]
+fail_regex = ["VM1_VIRTIO_NET_FAIL", "VM2_VIRTIO_NET_FAIL", "(?i)panic"]
+success_regex = ["(?s)(VM1_VIRTIO_NET_PASS.*VM2_VIRTIO_NET_PASS|VM2_VIRTIO_NET_PASS.*VM1_VIRTIO_NET_PASS)"]
+timeout = 180
+to_bin = true
+uefi = false

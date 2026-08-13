@@ -1,6 +1,6 @@
 use ax_errno::AxResult;
-use ax_memory_addr::{VirtAddr, align_up_4k};
-use ax_runtime::hal::paging::{MappingFlags, PageSize};
+use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, align_up_4k};
+use ax_runtime::hal::paging::MappingFlags;
 use ax_task::current;
 use linux_raw_sys::general::RLIMIT_DATA;
 
@@ -62,7 +62,7 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
                     expand_size,
                     MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
                     false,
-                    Backend::new_alloc(expand_start, PageSize::Size4K, "[heap]"),
+                    Backend::new_alloc(expand_start, PAGE_SIZE_4K, "[heap]"),
                 )
                 .is_err()
             {

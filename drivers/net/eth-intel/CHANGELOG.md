@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13](https://github.com/rcore-os/tgoskits/compare/eth-intel-v0.1.12...eth-intel-v0.1.13) - 2026-08-09
+
+### Other
+
+- updated the following local packages: dma-api, rdif-eth, mmio-api
+
 ## [0.1.12](https://github.com/rcore-os/tgoskits/compare/eth-intel-v0.1.11...eth-intel-v0.1.12) - 2026-08-03
 
 ### Other

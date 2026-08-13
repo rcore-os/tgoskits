@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 
-use ax_kspin::{SpinRaw as SpinMutex, SpinRawGuard as SpinMutexGuard, SpinRwLock as RwLock};
+use ax_sync::{RawSpinLockGuard as SpinMutexGuard, SpinLock as SpinMutex, SpinRwLock as RwLock};
 
 use super::reg::{DisableIrqGuard, XhciRegisters};
 
@@ -25,7 +25,9 @@ impl<T> IrqLock<T> {
 
     pub fn lock(&self) -> IrqLockGuard<'_, T> {
         let _disable_guard = self.reg.write().disable_irq_guard();
-        let guard = self.inner.lock();
+        // SAFETY: the controller interrupter is disabled before acquisition,
+        // excluding same-CPU event-handler re-entry.
+        let guard = unsafe { self.inner.lock_raw() };
         IrqLockGuard {
             _guard: guard,
             data: unsafe { &mut *self.data.get() },

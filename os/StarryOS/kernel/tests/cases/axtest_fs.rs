@@ -12,6 +12,16 @@ fn pipe_resize_rejects_oversized_pipe() {
 }
 
 #[axtest]
+fn pipe_linux_io_semantics_hold() {
+    ax_assert!(axtest_exports::pipe_linux_io_semantics_hold());
+}
+
+#[axtest]
+fn interrupted_pipe_write_preserves_partial_progress() {
+    ax_assert!(axtest_exports::interrupted_pipe_write_preserves_partial_progress());
+}
+
+#[axtest]
 fn fcntl_setpipe_size_returns_capacity() {
     ax_assert!(axtest_exports::fcntl_setpipe_size_returns_capacity());
 }
@@ -24,6 +34,26 @@ fn private_mmap_rejects_fault_at_file_eof() {
 #[axtest]
 fn concurrent_epoll_reverse_add_is_serialized() {
     ax_assert!(axtest_exports::concurrent_epoll_reverse_add_is_serialized());
+}
+
+#[axtest]
+fn epoll_level_aliases_rotate_in_linux_callback_order() {
+    ax_assert!(axtest_exports::epoll_level_aliases_rotate_in_linux_callback_order());
+}
+
+#[axtest]
+fn epoll_edge_readiness_requires_a_new_notification() {
+    ax_assert!(axtest_exports::epoll_edge_readiness_requires_a_new_notification());
+}
+
+#[axtest]
+fn epoll_edge_callback_does_not_reenter_target() {
+    ax_assert!(axtest_exports::epoll_edge_callback_does_not_reenter_target());
+}
+
+#[axtest]
+fn epoll_hup_does_not_synthesize_readable() {
+    ax_assert!(axtest_exports::epoll_hup_does_not_synthesize_readable());
 }
 
 #[axtest]

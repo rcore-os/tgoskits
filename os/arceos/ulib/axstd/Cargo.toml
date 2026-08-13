@@ -1,6 +1,6 @@
 [package]
 name = "ax-std"
-version = "0.5.30"
+version = "0.5.31"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -29,8 +29,7 @@ arceos = ["irq", "paging", "std-compat", "smp"]
 host-test = [
     "ax-api/host-test",
     "ax-hal/host-test",
-    "ax-kernel-guard/host-test",
-    "ax-kspin/host-test",
+
     "ax-percpu/host-test",
     "ax-task/host-test",
 ]
@@ -39,7 +38,7 @@ host-test = [
 std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 
 # Multicore
-smp = ["ax-runtime/smp", "ax-kspin/smp", "ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]
@@ -63,8 +62,12 @@ paging = ["alloc", "ax-runtime/paging"]
 tls = ["ax-runtime/tls"]
 
 # Multi-threading and scheduler
-multitask = ["ax-api/multitask", "ax-posix-api/multitask", "ax-runtime/multitask"]
-lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep"]
+multitask = [
+    "ax-api/multitask",
+    "ax-posix-api/multitask",
+    "ax-runtime/multitask",
+]
+lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep",]
 task-ext = ["ax-task/task-ext"]
 tracepoint-hooks = ["ax-task/tracepoint-hooks"]
 sched-rr = ["irq", "multitask", "ax-task/sched-rr"]
@@ -135,13 +138,9 @@ ax-driver.workspace = true
 ax-errno.workspace = true
 ax-hal.workspace = true
 ax-io.workspace = true
-ax-kernel-guard.workspace = true
-ax-kspin.workspace = true
 ax-lazyinit.workspace = true
 ax-percpu.workspace = true
 ax-posix-api.workspace = true
 ax-runtime.workspace = true
 ax-task.workspace = true
 libc.workspace = true
-lock_api.workspace = true
-spin.workspace = true

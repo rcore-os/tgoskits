@@ -37,11 +37,9 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_io::{Read, Write};
-use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, pmu};
-use ax_sync::Mutex;
 use axpoll::Pollable;
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
@@ -55,6 +53,7 @@ use crate::{
     file::{FileLike, Kstat, add_file_like, get_file_like},
     mm::{VmBytes, VmBytesMut},
     pseudofs::DeviceMmap,
+    sync::{IrqMutex, Mutex},
 };
 
 /// Monotonic source of per-event `perf` ids (`PERF_EVENT_IOC_ID`,
@@ -499,12 +498,12 @@ pub fn perf_event_open(
 /// Map fd → weak<PerfEvent> so `bpf_perf_event_output` can locate the
 /// target ringbuf without owning a strong reference (the user side owns
 /// it via the fd).
-static PERF_FILE: LazyInit<SpinNoIrq<HashMap<usize, alloc::sync::Weak<dyn FileLike>>>> =
+static PERF_FILE: LazyInit<IrqMutex<HashMap<usize, alloc::sync::Weak<dyn FileLike>>>> =
     LazyInit::new();
 
 /// Initialize the perf-event runtime: build the fd→event lookup table.
 pub fn perf_event_init() {
-    PERF_FILE.init_once(SpinNoIrq::new(HashMap::new()));
+    PERF_FILE.init_once(IrqMutex::new(HashMap::new()));
 }
 
 /// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,

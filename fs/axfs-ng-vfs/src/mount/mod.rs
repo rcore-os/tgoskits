@@ -37,7 +37,10 @@ static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
 ///
 /// Callers acquire this outer guard before node-local locks. Node-local locks
 /// are never held while acquiring this guard.
-static MOUNT_TOPOLOGY_MUTATION: Mutex<()> = Mutex::new(());
+// Mount-tree transactions can resolve nodes, invoke filesystem callbacks, and
+// drop filesystem-owned objects. They therefore require a sleepable lock;
+// individual mountpoint fields below retain their short spin-locked updates.
+static MOUNT_TOPOLOGY_MUTATION: ax_sync::Mutex<()> = ax_sync::Mutex::new(());
 
 struct SyntheticMountDir {
     parent: DirEntry,
@@ -420,18 +423,21 @@ impl Mountpoint {
 
         // 1. Detach new_root from old root's children and clear the old mount
         //    slot (where new_root was attached in the old root).
-        {
+        let (removed_child, old_location) = {
             let mut new_root_loc = new_root_mp.location.lock();
-            if let Some(ref old_loc) = *new_root_loc {
+            let removed_child = new_root_loc.as_ref().and_then(|old_loc| {
                 old_loc
                     .mountpoint
                     .children
                     .lock()
-                    .remove(&old_loc.entry.key());
-            }
+                    .remove(&old_loc.entry.key())
+            });
             // new_root becomes the global root.
-            *new_root_loc = None;
-        }
+            let old_location = new_root_loc.take();
+            (removed_child, old_location)
+        };
+        drop(removed_child);
+        drop(old_location);
 
         // 2. Attach old root at put_old under new_root.
         {
@@ -484,7 +490,11 @@ impl Mountpoint {
     where
         T: Any + Send + Sync,
     {
-        *self.lifetime_guard.lock() = Some(guard);
+        let old_guard = {
+            let mut lifetime_guard = self.lifetime_guard.lock();
+            lifetime_guard.replace(guard)
+        };
+        drop(old_guard);
     }
 
     pub fn peer_group_id(&self) -> u64 {
@@ -588,19 +598,23 @@ impl Mountpoint {
             return Err(VfsError::InvalidInput);
         };
 
-        old_location
-            .mountpoint
-            .children
-            .lock()
-            .remove(&old_location.entry.key());
+        let removed_child = {
+            let mut children = old_location.mountpoint.children.lock();
+            children.remove(&old_location.entry.key())
+        };
+        drop(removed_child);
 
-        new_location
-            .mountpoint
-            .children
-            .lock()
-            .insert(new_location.entry.key(), self.clone());
+        let replaced_child = {
+            let mut children = new_location.mountpoint.children.lock();
+            children.insert(new_location.entry.key(), self.clone())
+        };
+        drop(replaced_child);
 
-        *self.location.lock() = Some(new_location.clone());
+        let old_location = {
+            let mut location = self.location.lock();
+            location.replace(new_location.clone())
+        };
+        drop(old_location);
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
@@ -1077,36 +1091,11 @@ mod tests {
     use alloc::string::ToString;
     use core::{
         any::Any,
-        cell::Cell,
         sync::atomic::{AtomicUsize, Ordering},
     };
 
     use super::*;
     use crate::StatFs;
-
-    std::thread_local! {
-        static PREEMPT_DEPTH: Cell<usize> = const { Cell::new(0) };
-    }
-
-    struct KernelGuardIfImpl;
-
-    #[ax_crate_interface::impl_interface]
-    impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
-        fn enable_preempt() {
-            PREEMPT_DEPTH.with(|depth| {
-                depth.set(
-                    depth
-                        .get()
-                        .checked_sub(1)
-                        .expect("preemption depth must be balanced"),
-                );
-            });
-        }
-
-        fn disable_preempt() {
-            PREEMPT_DEPTH.with(|depth| depth.set(depth.get() + 1));
-        }
-    }
 
     struct MockFs;
     struct ContextCheckingFs;
@@ -1140,13 +1129,11 @@ mod tests {
         }
 
         fn root_dir(&self) -> DirEntry {
-            PREEMPT_DEPTH.with(|depth| {
-                assert_eq!(
-                    depth.get(),
-                    0,
-                    "filesystem callbacks must run outside the mount topology guard"
-                );
-            });
+            assert_eq!(
+                ax_sync::host_preempt_depth(),
+                0,
+                "filesystem callbacks must run outside the mount topology guard"
+            );
             make_dir_entry("mounted-root")
         }
 

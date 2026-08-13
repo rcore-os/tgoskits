@@ -52,7 +52,7 @@ cancel_stale_runs
   `-- detect_changes
   |
   +-- [ci_checks == true]
-  |     `-- static_checks (fmt/publish-dry-run || sync-lint || spin-lint)  fail-fast: true
+  |     `-- static_checks (fmt/publish-dry-run || sync-lint || lock-lint)  fail-fast: true
   |           `-- test_checks (所有测试并发)     fail-fast: true
   |
   `-- [push/dispatch 到 main/dev]
@@ -70,7 +70,7 @@ branch push router
   `-- [no open PR]         workflow_dispatch(run_target=ci) -> ci.yml
 ```
 
-`static_checks` 作为测试矩阵的前置门禁：格式检查、workspace 发布 dry-run、sync-lint 或 spin-lint 不通过时，后续测试不会启动。`static_checks` 和 `test_checks` 都启用 `fail-fast: true`，任意矩阵项失败会取消同矩阵内其他任务，减少 runner 占用。
+`static_checks` 作为测试矩阵的前置门禁：格式检查、workspace 发布 dry-run、sync-lint 或 lock-lint 不通过时，后续测试不会启动。`static_checks` 和 `test_checks` 都启用 `fail-fast: true`，任意矩阵项失败会取消同矩阵内其他任务，减少 runner 占用。
 
 ## 变更检测
 
@@ -97,7 +97,7 @@ push 到 `main` / `dev` 时强制运行 CI 检查。非 `main` / `dev` 分支没
 |----------|--------|----------|-----------|----------|
 | Check formatting | `self-hosted linux qcs`（非 `rcore-os` 回退到 `ubuntu-latest` + `base` 容器） | 通常否 | 无 | `cargo fmt --all -- --check` 和 `cargo publish --workspace --dry-run --no-verify` |
 | Run sync-lint | `ubuntu-latest` | 是（`base`） | 无 | `cargo xtask sync-lint --since <base>`；需要完整 git 历史，并上传编译好的 `tg-xtask` 供后续容器 job 复用 |
-| Run spin-lint | `ubuntu-latest` | 是（`base`） | 无 | `cargo xtask spin-lint`，校验 vendored `spin` 迁移约束 |
+| Run lock-lint | `ubuntu-latest` | 是（`base`） | 无 | `cargo xtask lock-lint`，校验统一锁依赖、OS facade 和 runtime provider 约束 |
 
 ## Test Checks
 
@@ -120,7 +120,7 @@ push 到 `main` / `dev` 时强制运行 CI 检查。非 `main` / `dev` 分支没
 | Test arceos loongarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch loongarch64`；仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted x86_64(svm) | `self-hosted linux amd kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm`；验证 SVM 宿主启动及宿主 NVMe 根文件系统写入/回读，仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted x86_64(vmx) | `self-hosted linux intel kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx`；验证 VMX 宿主启动及宿主 NVMe 根文件系统写入/回读，仅 `rcore-os` 仓库触发 |
-| Test axloader HTTP smoke | `self-hosted linux intel kvm` | 否 | 无 | 安装 `x86_64-unknown-uefi` target 与 OVMF，运行 `cargo axloader test qemu --target x86_64-unknown-uefi`；仅 `rcore-os` 仓库触发 |
+| Test axloader HTTP smoke | `self-hosted linux intel kvm` | 否 | 无 | 安装 `x86_64-unknown-uefi` target，通过 Ostool 获取并校验 OVMF，运行 `cargo xtask axloader test qemu --target x86_64-unknown-uefi`；仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted board orangepi-5-plus-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board orangepi-5-plus-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted board orangepi-5-plus-starry | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board orangepi-5-plus-starry`；物理板卡；仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted board roc-rk3568-pc-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board roc-rk3568-pc-linux`；物理板卡；仅 `rcore-os` 仓库触发 |

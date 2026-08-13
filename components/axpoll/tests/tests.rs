@@ -160,6 +160,27 @@ fn wake_only_matching_interests() {
 }
 
 #[test]
+fn wake_one_keeps_remaining_matching_waiters_registered() {
+    let ps = PollSet::new();
+    let first_counter = Counter::new();
+    let second_counter = Counter::new();
+    let first_waker = Waker::from(first_counter.clone());
+    let second_waker = Waker::from(second_counter.clone());
+
+    unsafe {
+        ps.register(&first_waker, IoEvents::IN);
+        ps.register(&second_waker, IoEvents::IN);
+    }
+
+    assert_eq!(unsafe { ps.wake_one(IoEvents::IN) }, 1);
+    assert_eq!(first_counter.count() + second_counter.count(), 1);
+    assert_eq!(unsafe { ps.wake_one(IoEvents::IN) }, 1);
+    assert_eq!(first_counter.count(), 1);
+    assert_eq!(second_counter.count(), 1);
+    assert_eq!(unsafe { ps.wake_one(IoEvents::IN) }, 0);
+}
+
+#[test]
 fn concurrent_registers_preserve_interests() {
     const NUM_WAITERS: usize = 64;
 

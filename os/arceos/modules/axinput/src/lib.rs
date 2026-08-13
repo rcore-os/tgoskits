@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use core::mem;
 
 use ax_lazyinit::LazyInit;
-use ax_sync::Mutex;
+use ax_task::sync::SpinLock as Mutex;
 pub use device::{ErasedInputDevice, InputDevice, InputError, InputIrqEvent, InputResult};
 pub use event::{AbsInfo, Event, EventType};
 pub use id::InputDeviceId;

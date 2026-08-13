@@ -1,7 +1,6 @@
 use alloc::{string::String, sync::Arc};
 use core::{any::Any, time::Duration};
 
-use ax_kspin::SpinNoIrq;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirNode, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeOps,
     NodePermission, NodeType, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
@@ -9,6 +8,7 @@ use axfs_ng_vfs::{
 use slab::Slab;
 
 use super::DirMaker;
+use crate::sync::IrqMutex;
 
 /// Returns a dummy filesystem statistics.
 pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
@@ -32,8 +32,8 @@ pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
 pub struct SimpleFs {
     name: String,
     fs_type: u32,
-    inodes: SpinNoIrq<Slab<()>>,
-    root: SpinNoIrq<Option<DirEntry>>,
+    inodes: IrqMutex<Slab<()>>,
+    root: IrqMutex<Option<DirEntry>>,
 }
 
 impl SimpleFs {
@@ -46,8 +46,8 @@ impl SimpleFs {
         let fs = Arc::new(Self {
             name,
             fs_type,
-            inodes: SpinNoIrq::new(Slab::new()),
-            root: SpinNoIrq::new(None),
+            inodes: IrqMutex::new(Slab::new()),
+            root: IrqMutex::new(None),
         });
         let root = root(fs.clone());
         fs.set_root(DirEntry::new_dir(
@@ -88,10 +88,10 @@ impl FilesystemOps for SimpleFs {
 pub struct SimpleFsNode {
     fs: Arc<SimpleFs>,
     ino: u64,
-    // SpinNoIrq instead of Mutex: metadata may be read/updated on paths that
+    // IrqMutex instead of Mutex: metadata may be read/updated on paths that
     // are already in atomic context (IRQs disabled), so a blocking mutex would
     // trigger a might_sleep() panic.
-    pub(crate) metadata: SpinNoIrq<Metadata>,
+    pub(crate) metadata: IrqMutex<Metadata>,
 }
 
 impl SimpleFsNode {
@@ -117,7 +117,7 @@ impl SimpleFsNode {
         Self {
             fs,
             ino,
-            metadata: SpinNoIrq::new(metadata),
+            metadata: IrqMutex::new(metadata),
         }
     }
 }

@@ -152,8 +152,12 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
             Ok(progress) => Ok(progress),
             Err(err) => {
                 warn!(
-                    "sdio: init state {:?} aborted ({:?}), resetting host",
-                    request.state, err
+                    "sdio: controller={} preference={:?} init state {:?} aborted ({:?}), \
+                     restoring bus baseline",
+                    self.diagnostic_identity().unwrap_or("unidentified"),
+                    request.preference,
+                    request.state,
+                    err
                 );
                 if let Err(recovery) = self.abort_init_request(request) {
                     warn!("sdio: init request recovery failed: {recovery:?}");

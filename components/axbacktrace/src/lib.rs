@@ -11,7 +11,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use spin::Once;
+use ax_lazyinit::OnceLock;
 
 #[cfg(feature = "dwarf")]
 mod dwarf;
@@ -22,8 +22,8 @@ mod axtest;
 #[cfg(feature = "dwarf")]
 pub use dwarf::{DwarfReader, FrameIter};
 
-static IP_RANGE: Once<Range<usize>> = Once::new();
-static FP_RANGE: Once<Range<usize>> = Once::new();
+static IP_RANGE: OnceLock<Range<usize>> = OnceLock::new();
+static FP_RANGE: OnceLock<Range<usize>> = OnceLock::new();
 
 #[cfg(target_arch = "x86_64")]
 const TARGET_ARCH: &str = "x86_64";

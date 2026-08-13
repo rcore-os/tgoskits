@@ -15,11 +15,10 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ax_driver::serial::SerialDevice;
 pub use ax_driver::serial::SerialDeviceInfo;
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
+use ax_lazyinit::OnceLock;
 use ax_task::{AxCpuMask, IrqNotify, TaskInner, WaitQueue};
 use axpoll::{IoEvents, PollSet};
 pub use rdif_serial::{Config, ConfigError, DataBits, Parity, RxFlag, StopBits};
-use spin::Once;
 pub use state::SerialStats;
 
 use self::{
@@ -29,13 +28,14 @@ use self::{
     state::{SerialIrqLatch, SerialStatsAtomic},
     worker::SerialWorker,
 };
+use crate::sync::SpinLock;
 
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
 const PANIC_TX_READY_SPINS: usize = 100_000;
 const IRQ_RX_CAPACITY: usize = 16_384;
 const SUBSCRIPTION_RX_CAPACITY: usize = 4_096;
 
-static SERIAL_RUNTIMES: Once<Box<[SerialRuntimeHandle]>> = Once::new();
+static SERIAL_RUNTIMES: OnceLock<Box<[SerialRuntimeHandle]>> = OnceLock::new();
 static ACTIVE_CONSOLE: AtomicUsize = AtomicUsize::new(NO_ACTIVE_CONSOLE);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,9 +74,9 @@ struct RuntimeShared {
     info: SerialDeviceInfo,
     owner_cpu: usize,
     polling: bool,
-    port: SpinNoIrq<Box<dyn rdif_serial::UartPort>>,
+    port: SpinLock<Box<dyn rdif_serial::UartPort>>,
     ingress: TxIngress,
-    rx_subscription: SpinNoIrq<Option<SpscConsumer<RxItem>>>,
+    rx_subscription: SpinLock<Option<SpscConsumer<RxItem>>>,
     control: ControlQueue,
     bridge: Arc<RuntimeIrqBridge>,
     stats: Arc<SerialStatsAtomic>,
@@ -85,7 +85,7 @@ struct RuntimeShared {
     rx_progress: WaitQueue,
     tx_progress: WaitQueue,
     started: AtomicBool,
-    irq_handle: Once<ax_hal::irq::IrqHandle>,
+    irq_handle: OnceLock<ax_hal::irq::IrqHandle>,
 }
 
 impl RuntimeShared {
@@ -166,9 +166,9 @@ impl SerialRuntimeHandle {
     /// Dropping the subscription returns the consumer to this runtime so a
     /// failed owner initialization does not permanently consume the RX path.
     pub fn take_rx_subscription(&self) -> Option<SerialRxSubscription> {
-        let consumer = self.shared.rx_subscription.lock().take()?;
+        let consumer = self.shared.rx_subscription.lock_irqsave().take()?;
         Some(SerialRxSubscription {
-            consumer: SpinNoIrq::new(Some(consumer)),
+            consumer: SpinLock::new(Some(consumer)),
             shared: self.shared.clone(),
         })
     }
@@ -291,6 +291,13 @@ impl SerialTxSender {
         }
     }
 
+    pub fn discard_pending(&self) -> AxResult {
+        self.shared.ensure_started()?;
+        self.shared
+            .control
+            .submit(ControlOp::DiscardTx, &self.shared.bridge.notify)
+    }
+
     pub fn poll_source(&self) -> Arc<PollSet> {
         self.shared.tx_source.clone()
     }
@@ -298,14 +305,14 @@ impl SerialTxSender {
 
 /// The unique RX consumer for one UART runtime.
 pub struct SerialRxSubscription {
-    consumer: SpinNoIrq<Option<SpscConsumer<RxItem>>>,
+    consumer: SpinLock<Option<SpscConsumer<RxItem>>>,
     shared: Arc<RuntimeShared>,
 }
 
 impl SerialRxSubscription {
     pub fn drain(&self, out: &mut [RxItem]) -> usize {
         let count = {
-            let mut subscription = self.consumer.lock();
+            let mut subscription = self.consumer.lock_irqsave();
             // `None` is only observable from `Drop`, which requires exclusive
             // access. Keep the runtime boundary non-panicking if that invariant
             // is changed by a future ownership refactor.
@@ -323,21 +330,39 @@ impl SerialRxSubscription {
         self.shared.ensure_started()?;
         self.shared.rx_progress.wait_until(|| {
             self.consumer
-                .lock()
+                .lock_irqsave()
                 .as_ref()
                 .is_some_and(|consumer| !consumer.is_empty())
                 || !self.shared.started()
         });
         self.consumer
-            .lock()
+            .lock_irqsave()
             .as_ref()
             .is_some_and(|consumer| !consumer.is_empty())
             .then_some(())
             .ok_or(AxError::BadState)
     }
 
+    pub fn discard_pending(&self) -> AxResult {
+        self.shared.ensure_started()?;
+        self.clear_pending();
+        let result = self
+            .shared
+            .control
+            .submit(ControlOp::DiscardRx, &self.shared.bridge.notify);
+        self.clear_pending();
+        result
+    }
+
     pub fn poll_source(&self) -> Arc<PollSet> {
         self.shared.rx_source.clone()
+    }
+
+    fn clear_pending(&self) {
+        if let Some(consumer) = self.consumer.lock_irqsave().as_mut() {
+            consumer.clear();
+        }
+        self.shared.bridge.notify.notify();
     }
 }
 
@@ -346,7 +371,7 @@ impl Drop for SerialRxSubscription {
         let Some(consumer) = self.consumer.get_mut().take() else {
             return;
         };
-        let mut available = self.shared.rx_subscription.lock();
+        let mut available = self.shared.rx_subscription.lock_irqsave();
         debug_assert!(
             available.is_none(),
             "serial runtime cannot have two RX consumers"
@@ -400,9 +425,9 @@ fn build_runtime(
         info,
         owner_cpu: primary_cpu,
         polling,
-        port: SpinNoIrq::new(port),
+        port: SpinLock::new(port),
         ingress: TxIngress::new(),
-        rx_subscription: SpinNoIrq::new(Some(rx_output_consumer)),
+        rx_subscription: SpinLock::new(Some(rx_output_consumer)),
         control: ControlQueue::new(),
         bridge: bridge.clone(),
         stats: stats.clone(),
@@ -411,7 +436,7 @@ fn build_runtime(
         rx_progress: WaitQueue::new(),
         tx_progress: WaitQueue::new(),
         started: AtomicBool::new(false),
-        irq_handle: Once::new(),
+        irq_handle: OnceLock::new(),
     });
 
     let worker = SerialWorker::new(shared.clone(), irq_rx_consumer, rx_output_producer);
@@ -501,7 +526,7 @@ pub(crate) fn route_console_bytes(bytes: &[u8]) -> Option<usize> {
     let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
     let runtime = runtimes().get(index)?;
     if axpanic::oops_in_progress() {
-        let Some(mut port) = runtime.shared.port.try_lock() else {
+        let Some(mut port) = runtime.shared.port.try_lock_irqsave() else {
             runtime.shared.stats.add_log_dropped(bytes.len());
             return Some(0);
         };

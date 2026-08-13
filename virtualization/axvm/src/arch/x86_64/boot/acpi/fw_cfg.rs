@@ -164,25 +164,218 @@ fn clear_checksum(
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
+
     use super::*;
 
-    #[test]
-    fn loader_checksum_targets_start_zeroed() {
-        let blobs = build_fw_cfg_blobs(&super::super::config::test_plan(2)).unwrap();
+    const LOADER_ENTRY_SIZE: usize = 128;
 
-        for entry in blobs.loader.chunks_exact(128) {
-            if u32::from_le_bytes(entry[..4].try_into().unwrap()) != 3 {
-                continue;
+    #[derive(Debug, Eq, PartialEq)]
+    enum DecodedLoaderCommand {
+        Allocate {
+            file: String,
+            alignment: u32,
+            zone: u8,
+        },
+        Pointer {
+            pointer_file: String,
+            pointee_file: String,
+            pointer_offset: u32,
+            pointer_size: u8,
+        },
+        Checksum {
+            file: String,
+            checksum_offset: u32,
+            start: u32,
+            length: u32,
+        },
+    }
+
+    #[test]
+    fn fw_cfg_blobs_describe_the_complete_x86_acpi_loader_plan() {
+        let blobs = build_fw_cfg_blobs(&super::super::config::test_plan(2)).unwrap();
+        let commands = decode_loader(&blobs.loader);
+
+        assert_eq!(blobs.loader.len(), 15 * LOADER_ENTRY_SIZE);
+        assert_eq!(commands.len(), 15);
+        assert_eq!(
+            commands[0],
+            DecodedLoaderCommand::Allocate {
+                file: TABLE_FILE.into(),
+                alignment: 64,
+                zone: LoaderZone::High as u8,
             }
-            let file_end = entry[4..60].iter().position(|byte| *byte == 0).unwrap();
-            let file = &entry[4..4 + file_end];
-            let checksum_offset = u32::from_le_bytes(entry[60..64].try_into().unwrap()) as usize;
-            let data = match file {
-                b"etc/acpi/tables" => &blobs.tables,
-                b"etc/acpi/rsdp" => &blobs.rsdp,
-                _ => panic!("unexpected checksum file"),
-            };
-            assert_eq!(data[checksum_offset], 0, "checksum target in {file:?}");
+        );
+        assert_eq!(
+            commands[1],
+            DecodedLoaderCommand::Allocate {
+                file: RSDP_FILE.into(),
+                alignment: 16,
+                zone: LoaderZone::Fseg as u8,
+            }
+        );
+
+        let xsdt = acpi_table_range(&blobs.tables, b"XSDT");
+        let fadt = acpi_table_range(&blobs.tables, b"FACP");
+        let facs = acpi_table_range(&blobs.tables, b"FACS");
+        let dsdt = acpi_table_range(&blobs.tables, b"DSDT");
+        let madt = acpi_table_range(&blobs.tables, b"APIC");
+        let spcr = acpi_table_range(&blobs.tables, b"SPCR");
+
+        for (command, pointer_file, offset, target) in [
+            (&commands[2], TABLE_FILE, fadt.start + 132, &facs),
+            (&commands[3], TABLE_FILE, fadt.start + 140, &dsdt),
+            (&commands[4], TABLE_FILE, xsdt.start + 36, &fadt),
+            (&commands[5], TABLE_FILE, xsdt.start + 44, &madt),
+            (&commands[6], TABLE_FILE, xsdt.start + 52, &spcr),
+            (&commands[7], RSDP_FILE, 24, &xsdt),
+        ] {
+            assert_pointer_command(
+                command,
+                pointer_file,
+                offset,
+                target,
+                &blobs.tables,
+                &blobs.rsdp,
+            );
         }
+
+        for (command, table) in commands[8..13]
+            .iter()
+            .zip([&xsdt, &fadt, &dsdt, &madt, &spcr])
+        {
+            assert_checksum_command(command, TABLE_FILE, table, &blobs.tables);
+        }
+        assert_eq!(
+            commands[13],
+            DecodedLoaderCommand::Checksum {
+                file: RSDP_FILE.into(),
+                checksum_offset: 8,
+                start: 0,
+                length: 20,
+            }
+        );
+        assert_eq!(blobs.rsdp[8], 0);
+        assert_eq!(
+            commands[14],
+            DecodedLoaderCommand::Checksum {
+                file: RSDP_FILE.into(),
+                checksum_offset: 32,
+                start: 0,
+                length: blobs.rsdp.len() as u32,
+            }
+        );
+        assert_eq!(blobs.rsdp[32], 0);
+    }
+
+    fn decode_loader(bytes: &[u8]) -> Vec<DecodedLoaderCommand> {
+        assert_eq!(bytes.len() % LOADER_ENTRY_SIZE, 0);
+        bytes
+            .chunks_exact(LOADER_ENTRY_SIZE)
+            .map(|entry| match read_u32(entry, 0) {
+                1 => DecodedLoaderCommand::Allocate {
+                    file: read_file(&entry[4..60]),
+                    alignment: read_u32(entry, 60),
+                    zone: entry[64],
+                },
+                2 => DecodedLoaderCommand::Pointer {
+                    pointer_file: read_file(&entry[4..60]),
+                    pointee_file: read_file(&entry[60..116]),
+                    pointer_offset: read_u32(entry, 116),
+                    pointer_size: entry[120],
+                },
+                3 => DecodedLoaderCommand::Checksum {
+                    file: read_file(&entry[4..60]),
+                    checksum_offset: read_u32(entry, 60),
+                    start: read_u32(entry, 64),
+                    length: read_u32(entry, 68),
+                },
+                command => panic!("unexpected table-loader command {command}"),
+            })
+            .collect()
+    }
+
+    fn read_file(field: &[u8]) -> String {
+        let length = field
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(field.len());
+        String::from_utf8(field[..length].to_vec()).unwrap()
+    }
+
+    fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+        u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+    }
+
+    fn acpi_table_range(tables: &[u8], signature: &[u8; 4]) -> Range<usize> {
+        let start = tables
+            .windows(signature.len())
+            .position(|window| window == signature)
+            .unwrap_or_else(|| panic!("missing ACPI table signature {signature:?}"));
+        let length = read_u32(tables, start + 4) as usize;
+        let end = start.checked_add(length).unwrap();
+        assert!(end <= tables.len(), "ACPI table extends past blob end");
+        start..end
+    }
+
+    fn assert_pointer_command(
+        command: &DecodedLoaderCommand,
+        pointer_file: &str,
+        expected_offset: usize,
+        target: &Range<usize>,
+        tables: &[u8],
+        rsdp: &[u8],
+    ) {
+        let DecodedLoaderCommand::Pointer {
+            pointer_file: actual_pointer_file,
+            pointee_file,
+            pointer_offset,
+            pointer_size,
+        } = command
+        else {
+            panic!("expected pointer command, got {command:?}");
+        };
+        assert_eq!(actual_pointer_file, pointer_file);
+        assert_eq!(pointee_file, TABLE_FILE);
+        assert_eq!(*pointer_offset as usize, expected_offset);
+        assert_eq!(*pointer_size, 8);
+
+        let source = if pointer_file == TABLE_FILE {
+            tables
+        } else {
+            assert_eq!(pointer_file, RSDP_FILE);
+            rsdp
+        };
+        let pointer_end = expected_offset.checked_add(8).unwrap();
+        assert!(pointer_end <= source.len());
+        assert_eq!(read_u64(source, expected_offset) as usize, target.start);
+        assert!(target.end <= tables.len());
+    }
+
+    fn assert_checksum_command(
+        command: &DecodedLoaderCommand,
+        expected_file: &str,
+        table: &Range<usize>,
+        data: &[u8],
+    ) {
+        let DecodedLoaderCommand::Checksum {
+            file,
+            checksum_offset,
+            start,
+            length,
+        } = command
+        else {
+            panic!("expected checksum command, got {command:?}");
+        };
+        assert_eq!(file, expected_file);
+        assert_eq!(*checksum_offset as usize, table.start + 9);
+        assert_eq!(*start as usize, table.start);
+        assert_eq!(*length as usize, table.len());
+        assert!(table.end <= data.len());
+        assert_eq!(data[*checksum_offset as usize], 0);
     }
 }

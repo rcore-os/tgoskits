@@ -126,7 +126,7 @@ mod sg2002_usb_msc {
         irq::{Registration, resolve_binding_irq},
     };
     use crab_usb::{
-        DeviceInfo, Endpoint, Event,
+        DeviceInfo, EndpointHandle, Event,
         err::{TransferError, USBError},
         usb_if::{descriptor::EndpointType, endpoint::TransferRequest, transfer::Direction},
     };
@@ -323,8 +323,8 @@ mod sg2002_usb_msc {
         axtest::axtest_println!("SG2002_DWC2_INIT_DONE");
         axtest::axtest_println!("SG2002_DWC2_PROBE_START");
         let devices = host.host_mut().probe_devices().await?;
-        axtest::axtest_println!("SG2002_DWC2_PROBE_DONE devices={}", devices.len());
-        for probed in devices {
+        axtest::axtest_println!("SG2002_DWC2_PROBE_DONE devices={}", devices.connected.len());
+        for probed in devices.connected {
             let Some(info) = probed.as_device_info() else {
                 continue;
             };
@@ -358,16 +358,15 @@ mod sg2002_usb_msc {
         product_id: u16,
     ) -> Result<MscSmokeReport, SmokeError> {
         let mut device = host.host_mut().open_device(&info).await?;
-        device
+        let interface_session = device
             .claim_interface(msc.interface_number, msc.alternate_setting)
             .await?;
-        let mut endpoints = device.take_endpoints_for_interface(msc.interface_number)?;
-        let mut bulk_in = endpoints
-            .remove(&msc.bulk_in)
-            .ok_or(SmokeError::MissingBulkEndpoint)?;
-        let mut bulk_out = endpoints
-            .remove(&msc.bulk_out)
-            .ok_or(SmokeError::MissingBulkEndpoint)?;
+        let mut bulk_in = interface_session
+            .endpoint(msc.bulk_in)
+            .map_err(|_| SmokeError::MissingBulkEndpoint)?;
+        let mut bulk_out = interface_session
+            .endpoint(msc.bulk_out)
+            .map_err(|_| SmokeError::MissingBulkEndpoint)?;
         let mut tag = BotTag(1);
 
         let mut inquiry = [0u8; 36];
@@ -508,8 +507,8 @@ mod sg2002_usb_msc {
     }
 
     async fn run_read_bench(
-        bulk_out: &mut Endpoint,
-        bulk_in: &mut Endpoint,
+        bulk_out: &mut EndpointHandle,
+        bulk_in: &mut EndpointHandle,
         tag: &mut BotTag,
         capacity: Capacity,
         config: BenchConfig,
@@ -574,8 +573,8 @@ mod sg2002_usb_msc {
     }
 
     async fn run_write_bench(
-        bulk_out: &mut Endpoint,
-        bulk_in: &mut Endpoint,
+        bulk_out: &mut EndpointHandle,
+        bulk_in: &mut EndpointHandle,
         tag: &mut BotTag,
         capacity: Capacity,
         config: WriteBenchConfig,
@@ -684,8 +683,8 @@ mod sg2002_usb_msc {
     }
 
     async fn bot_inquiry(
-        bulk_out: &mut Endpoint,
-        bulk_in: &mut Endpoint,
+        bulk_out: &mut EndpointHandle,
+        bulk_in: &mut EndpointHandle,
         tag: &mut BotTag,
         data: &mut [u8; 36],
     ) -> Result<(), SmokeError> {
@@ -695,8 +694,8 @@ mod sg2002_usb_msc {
     }
 
     async fn wait_until_ready(
-        bulk_out: &mut Endpoint,
-        bulk_in: &mut Endpoint,
+        bulk_out: &mut EndpointHandle,
+        bulk_in: &mut EndpointHandle,
         tag: &mut BotTag,
     ) -> Result<(), SmokeError> {
         let command = [0x00, 0, 0, 0, 0, 0];
@@ -721,8 +720,8 @@ mod sg2002_usb_msc {
     }
 
     async fn bot_request_sense(
-        bulk_out: &mut Endpoint,
-        bulk_in: &mut Endpoint,
+        bulk_out: &mut EndpointHandle,
+        bulk_in: &mut EndpointHandle,
         tag: &mut BotTag,
         data: &mut [u8; 18],
     ) -> Result<(), SmokeError> {
@@ -732,8 +731,8 @@ mod sg2002_usb_msc {
     }
 
     async fn bot_read_capacity(
-        bulk_out: &mut Endpoint,
-        bulk_in: &mut Endpoint,
+        bulk_out: &mut EndpointHandle,
+        bulk_in: &mut EndpointHandle,
         tag: &mut BotTag,
     ) -> Result<Capacity, SmokeError> {
         let command = [0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -748,8 +747,8 @@ mod sg2002_usb_msc {
     }
 
     async fn bot_read10(
-        bulk_out: &mut Endpoint,
-        bulk_in: &mut Endpoint,
+        bulk_out: &mut EndpointHandle,
+        bulk_in: &mut EndpointHandle,
         tag: &mut BotTag,
         lba: u32,
         blocks: u16,
@@ -761,8 +760,8 @@ mod sg2002_usb_msc {
     }
 
     async fn bot_write10(
-        bulk_out: &mut Endpoint,
-        bulk_in: &mut Endpoint,
+        bulk_out: &mut EndpointHandle,
+        bulk_in: &mut EndpointHandle,
         tag: &mut BotTag,
         lba: u32,
         blocks: u16,
@@ -774,8 +773,8 @@ mod sg2002_usb_msc {
     }
 
     async fn bot_command_no_data(
-        bulk_out: &mut Endpoint,
-        bulk_in: &mut Endpoint,
+        bulk_out: &mut EndpointHandle,
+        bulk_in: &mut EndpointHandle,
         tag: &mut BotTag,
         command: &[u8],
     ) -> Result<(), SmokeError> {
@@ -788,8 +787,8 @@ mod sg2002_usb_msc {
     }
 
     async fn bot_command_in(
-        bulk_out: &mut Endpoint,
-        bulk_in: &mut Endpoint,
+        bulk_out: &mut EndpointHandle,
+        bulk_in: &mut EndpointHandle,
         tag: &mut BotTag,
         command: &[u8],
         data: &mut [u8],
@@ -804,8 +803,8 @@ mod sg2002_usb_msc {
     }
 
     async fn bot_command_out(
-        bulk_out: &mut Endpoint,
-        bulk_in: &mut Endpoint,
+        bulk_out: &mut EndpointHandle,
+        bulk_in: &mut EndpointHandle,
         tag: &mut BotTag,
         command: &[u8],
         data: &[u8],
@@ -820,7 +819,7 @@ mod sg2002_usb_msc {
     }
 
     async fn transfer_exact_out(
-        endpoint: &mut Endpoint,
+        endpoint: &mut EndpointHandle,
         data: &[u8],
         stage: &'static str,
     ) -> Result<(), SmokeError> {
@@ -836,7 +835,7 @@ mod sg2002_usb_msc {
     }
 
     async fn transfer_exact_in(
-        endpoint: &mut Endpoint,
+        endpoint: &mut EndpointHandle,
         data: &mut [u8],
         stage: &'static str,
     ) -> Result<(), SmokeError> {
@@ -852,7 +851,7 @@ mod sg2002_usb_msc {
     }
 
     async fn read_csw(
-        bulk_in: &mut Endpoint,
+        bulk_in: &mut EndpointHandle,
         expected_tag: u32,
         opcode: u8,
     ) -> Result<(), SmokeError> {

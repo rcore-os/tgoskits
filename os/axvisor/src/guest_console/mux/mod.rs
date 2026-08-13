@@ -9,6 +9,7 @@ use alloc::{
 use anyhow::{Result, bail};
 use axvm::{SerialBackend, SerialBackendFactory, VMId, VmStatus};
 use core::ops::Bound::{Excluded, Unbounded};
+use log::warn;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use super::host::write_host_bytes;
@@ -17,11 +18,7 @@ mod output;
 
 use output::GuestOutputMux;
 
-// Terminals encode Alt as a leading ESC, so Ctrl-Alt-[ is ESC ESC and
-// Ctrl-Alt-] is ESC followed by the Ctrl-] byte (group separator).
-const ESC: u8 = 0x1b;
-const CTRL_H: u8 = 0x08;
-const CTRL_RIGHT_BRACKET: u8 = 0x1d;
+const CTRL_X: u8 = 0x18;
 const INPUT_QUEUE_CAPACITY: usize = 4096;
 
 static GUEST_CONSOLE_MUX: LazyLock<GuestConsoleMux> = LazyLock::new(GuestConsoleMux::new);
@@ -47,6 +44,7 @@ pub enum ConsoleInputEvent {
 struct RoutedInput {
     event: ConsoleInputEvent,
     wake_vm: Option<VMId>,
+    host_output: Vec<u8>,
 }
 
 /// Application-owned host console multiplexer.
@@ -112,6 +110,7 @@ impl GuestConsoleMux {
     }
 
     fn set_running(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
+        let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
         state.running.clear();
         for vm_id in running {
@@ -122,14 +121,19 @@ impl GuestConsoleMux {
         let detached = state
             .attached
             .filter(|vm_id| !state.running.contains(vm_id));
-        if detached.is_some() {
+        let host_output = if detached.is_some() {
             state.attached = None;
             state.shortcut_prefix_pending = false;
-        }
+            state.output.buffer_all()
+        } else {
+            Vec::new()
+        };
         let ConsoleState {
             running, output, ..
         } = &mut *state;
         output.reconcile_running(running);
+        drop(state);
+        write_host_bytes(&host_output);
         detached
     }
 
@@ -148,12 +152,17 @@ impl GuestConsoleMux {
             guest.input.clear();
         }
         state.output.reset_guest(vm_id);
-        if state.attached == Some(vm_id) {
+        let detached = state.attached == Some(vm_id);
+        let host_output = if detached {
             state.attached = None;
             state.shortcut_prefix_pending = false;
-            return true;
-        }
-        false
+            state.output.buffer_all()
+        } else {
+            Vec::new()
+        };
+        drop(state);
+        write_host_bytes(&host_output);
+        detached
     }
 
     fn remove(&self, vm_id: VMId) -> bool {
@@ -165,24 +174,34 @@ impl GuestConsoleMux {
         if state.last_attached == Some(vm_id) {
             state.last_attached = None;
         }
-        if state.attached == Some(vm_id) {
+        let detached = state.attached == Some(vm_id);
+        let host_output = if detached {
             state.attached = None;
             state.shortcut_prefix_pending = false;
-            return true;
-        }
-        false
+            state.output.buffer_all()
+        } else {
+            Vec::new()
+        };
+        drop(state);
+        write_host_bytes(&host_output);
+        detached
     }
 
     fn attach_default(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
         self.set_running(running);
+        let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
         let vm_id = state.running.first().copied()?;
         state.attached = Some(vm_id);
         state.last_attached = Some(vm_id);
+        state.shortcut_prefix_pending = false;
+        state.output.start_boot_multiplex();
+        state.output.request_preemption(vm_id);
         Some(vm_id)
     }
 
     fn attach(&self, vm_id: VMId) -> bool {
+        let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
         if !state.running.contains(&vm_id) {
             return false;
@@ -190,6 +209,9 @@ impl GuestConsoleMux {
         state.attached = Some(vm_id);
         state.last_attached = Some(vm_id);
         state.shortcut_prefix_pending = false;
+        let host_output = state.output.buffer_all();
+        drop(state);
+        write_host_bytes(&host_output);
         true
     }
 
@@ -197,61 +219,81 @@ impl GuestConsoleMux {
         self.core.lock_state().attached
     }
 
-    fn route_host_byte(&self, byte: u8) -> RoutedInput {
+    fn activate(&self, vm_id: VMId) -> Option<Vec<u8>> {
+        let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
+        (state.attached == Some(vm_id)).then_some(())?;
+        let replay = state.output.select_foreground(vm_id);
+        drop(state);
+        write_host_bytes(&replay);
+        Some(replay)
+    }
 
-        if state.shortcut_prefix_pending {
+    fn route_host_byte(&self, byte: u8) -> RoutedInput {
+        let _output_guard = self.core.lock_output();
+        let mut state = self.core.lock_state();
+        let routed = if state.shortcut_prefix_pending {
             state.shortcut_prefix_pending = false;
-            return match byte {
-                CTRL_H => match state.attached.take() {
+            match byte {
+                b'h' => match state.attached.take() {
                     Some(vm_id) => RoutedInput {
                         event: ConsoleInputEvent::Detached(vm_id),
                         wake_vm: None,
+                        host_output: state.output.buffer_all(),
                     },
                     None => RoutedInput {
                         event: ConsoleInputEvent::Consumed,
                         wake_vm: None,
+                        host_output: Vec::new(),
                     },
                 },
-                ESC => switch_guest(&mut state, GuestSwitchDirection::Previous),
-                CTRL_RIGHT_BRACKET => switch_guest(&mut state, GuestSwitchDirection::Next),
-                byte => match state.attached {
-                    Some(vm_id) => {
-                        enqueue_guest_input(&mut state, vm_id, &[ESC, byte]);
-                        RoutedInput {
-                            event: ConsoleInputEvent::Consumed,
-                            wake_vm: Some(vm_id),
-                        }
-                    }
-                    None => RoutedInput {
-                        event: ConsoleInputEvent::ShellSequence(ESC, byte),
-                        wake_vm: None,
-                    },
-                },
-            };
-        }
-
-        if byte == ESC {
+                b'[' => switch_guest(&mut state, GuestSwitchDirection::Previous),
+                b']' => switch_guest(&mut state, GuestSwitchDirection::Next),
+                CTRL_X => {
+                    route_literal_input(&mut state, &[CTRL_X], ConsoleInputEvent::ShellByte(CTRL_X))
+                }
+                byte => route_literal_input(
+                    &mut state,
+                    &[CTRL_X, byte],
+                    ConsoleInputEvent::ShellSequence(CTRL_X, byte),
+                ),
+            }
+        } else if byte == CTRL_X {
             state.shortcut_prefix_pending = true;
-            return RoutedInput {
+            RoutedInput {
                 event: ConsoleInputEvent::Consumed,
                 wake_vm: None,
-            };
-        }
-
-        match state.attached {
-            Some(vm_id) => {
-                enqueue_guest_input(&mut state, vm_id, &[byte]);
-                RoutedInput {
-                    event: ConsoleInputEvent::Consumed,
-                    wake_vm: Some(vm_id),
-                }
+                host_output: Vec::new(),
             }
-            None => RoutedInput {
-                event: ConsoleInputEvent::ShellByte(byte),
-                wake_vm: None,
-            },
+        } else {
+            route_literal_input(&mut state, &[byte], ConsoleInputEvent::ShellByte(byte))
+        };
+        drop(state);
+        write_host_bytes(&routed.host_output);
+        routed
+    }
+}
+
+fn route_literal_input(
+    state: &mut ConsoleState,
+    guest_bytes: &[u8],
+    shell_event: ConsoleInputEvent,
+) -> RoutedInput {
+    match state.attached {
+        Some(vm_id) => {
+            let host_output = state.output.select_foreground_on_input(vm_id);
+            enqueue_guest_input(state, vm_id, guest_bytes);
+            RoutedInput {
+                event: ConsoleInputEvent::Consumed,
+                wake_vm: Some(vm_id),
+                host_output,
+            }
         }
+        None => RoutedInput {
+            event: shell_event,
+            wake_vm: None,
+            host_output: Vec::new(),
+        },
     }
 }
 
@@ -283,6 +325,7 @@ fn switch_guest(state: &mut ConsoleState, direction: GuestSwitchDirection) -> Ro
         return RoutedInput {
             event: ConsoleInputEvent::NoRunningGuest,
             wake_vm: None,
+            host_output: Vec::new(),
         };
     };
 
@@ -291,6 +334,7 @@ fn switch_guest(state: &mut ConsoleState, direction: GuestSwitchDirection) -> Ro
     RoutedInput {
         event: ConsoleInputEvent::Attached(vm_id),
         wake_vm: None,
+        host_output: state.output.buffer_all(),
     }
 }
 
@@ -445,6 +489,11 @@ pub fn attach(vm_id: VMId) -> Result<()> {
         bail!("VM[{vm_id}] is not available for console attachment");
     }
     Ok(())
+}
+
+/// Activates direct output after the shell has announced an attachment.
+pub fn activate(vm_id: VMId) {
+    GUEST_CONSOLE_MUX.activate(vm_id);
 }
 
 /// Record a VM transition to Running.

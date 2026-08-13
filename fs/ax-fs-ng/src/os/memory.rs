@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{VfsError, VfsResult};
-use spin::Once;
 
 pub const PAGE_SIZE: usize = 4096;
 
@@ -34,7 +34,7 @@ impl FsPage {
     }
 }
 
-static PAGE_PROVIDER: Once<&'static dyn FsPageProvider> = Once::new();
+static PAGE_PROVIDER: OnceLock<&'static dyn FsPageProvider> = OnceLock::new();
 static PAGE_PROVIDER_READY: AtomicBool = AtomicBool::new(false);
 
 pub fn install_page_provider(provider: &'static dyn FsPageProvider) {

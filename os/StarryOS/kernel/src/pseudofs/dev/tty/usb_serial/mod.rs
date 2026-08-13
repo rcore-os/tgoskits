@@ -4,10 +4,8 @@ use alloc::{collections::VecDeque, string::ToString, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
+use ax_lazyinit::LazyLock;
 use axpoll::{IoEvents, PollSet};
-use spin::LazyLock;
 
 use self::backend::{UsbSerialPortInfo, find_usb_serial_port};
 use super::{
@@ -18,7 +16,10 @@ use super::{
         termios::Termios2,
     },
 };
-use crate::pseudofs::usbfs::{self, UsbDeviceHandle};
+use crate::{
+    pseudofs::usbfs::{self, UsbDeviceHandle},
+    sync::{IrqMutex, Mutex},
+};
 
 pub type UsbSerialTtyDriver = Tty<UsbSerialReader, UsbSerialWriter>;
 
@@ -53,8 +54,8 @@ struct UsbSerialBackendState {
     session_closing: AtomicBool,
     rx_worker_started: AtomicBool,
     tx_worker_started: AtomicBool,
-    rx_queue: SpinNoIrq<VecDeque<u8>>,
-    tx_queue: SpinNoIrq<VecDeque<u8>>,
+    rx_queue: IrqMutex<VecDeque<u8>>,
+    tx_queue: IrqMutex<VecDeque<u8>>,
     dropped_rx: AtomicUsize,
     input_source: Arc<PollSet>,
     output_source: Arc<PollSet>,
@@ -90,8 +91,8 @@ fn new_usb_serial_tty(index: usize) -> Arc<UsbSerialTtyDriver> {
         session_closing: AtomicBool::new(false),
         rx_worker_started: AtomicBool::new(false),
         tx_worker_started: AtomicBool::new(false),
-        rx_queue: SpinNoIrq::new(VecDeque::new()),
-        tx_queue: SpinNoIrq::new(VecDeque::new()),
+        rx_queue: IrqMutex::new(VecDeque::new()),
+        tx_queue: IrqMutex::new(VecDeque::new()),
         dropped_rx: AtomicUsize::new(0),
         input_source: Arc::new(PollSet::new()),
         output_source: Arc::new(PollSet::new()),
@@ -484,6 +485,11 @@ impl TtyRead for UsbSerialReader {
         }
         self.backend.drain_rx(buf)
     }
+
+    fn discard_input(&mut self) -> AxResult<()> {
+        self.backend.rx_queue.lock().clear();
+        Ok(())
+    }
 }
 
 impl TtyWrite for UsbSerialWriter {
@@ -502,6 +508,12 @@ impl TtyWrite for UsbSerialWriter {
 
     fn try_write(&self, buf: &[u8]) -> usize {
         self.backend.try_queue_bytes(buf)
+    }
+
+    fn discard_output(&self) -> AxResult<()> {
+        let _guard = self.backend.output_lock.lock();
+        self.backend.clear_tx_queue();
+        Ok(())
     }
 
     fn termios_changed(&self, old: &Termios2, new: &Termios2) {

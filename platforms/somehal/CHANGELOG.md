@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** re-export the queryable someboot secondary CPU startup handle in place of the
+  blocking `cpu_on()` API; timeout and polling policy now belong to the platform adapter.
+
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/somehal-v0.8.2...somehal-v0.8.3) - 2026-08-09
+
+### Added
+
+- *(axvisor)* support ROCK 4D guest boot ([#1880](https://github.com/rcore-os/tgoskits/pull/1880))
+
+### Fixed
+
+- *(arm-gic-driver)* use hardware CPU targets for GICv2 routing ([#1803](https://github.com/rcore-os/tgoskits/pull/1803))
+
+### Other
+
+- *(ax-ipi)* establish typed IPI publication transport ([#1916](https://github.com/rcore-os/tgoskits/pull/1916))
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/somehal-v0.8.1...somehal-v0.8.2) - 2026-08-03
 
 ### Fixed

@@ -4,14 +4,20 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::{mem::MaybeUninit, ops::Deref, ptr::NonNull};
 
 use ax_hal::percpu::{PreviousThreadBinding, this_cpu_id};
-use ax_kernel_guard::BaseGuard;
-use ax_kspin::{SpinNoIrqGuard, SpinRaw};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_sched::BaseScheduler;
 
+#[cfg(all(
+    feature = "smp",
+    feature = "ipi",
+    feature = "preempt",
+    not(feature = "host-test")
+))]
+use crate::sync::RawState;
 use crate::{
     AxCpuMask, AxTaskRef, Scheduler, TaskInner, WaitQueue,
+    sync::{GuardState, SpinLock, SpinLockIrqSaveGuard},
     task::{CurrentTask, TASK_STACK_ALIGN, TaskStack, TaskState},
     wait_queue::WaitQueueGuard,
 };
@@ -122,7 +128,7 @@ fn main_task_stack() -> TaskStack {
 
 /// Acquires guarded access to the current run queue.
 #[inline(always)]
-pub(crate) fn current_run_queue<G: BaseGuard>() -> CurrentRunQueueRef<G> {
+pub(crate) fn current_run_queue<G: GuardState>() -> CurrentRunQueueRef<G> {
     let irq_state = G::acquire();
     CurrentRunQueueRef {
         // SAFETY: the acquired guard supplies the scheduler's exclusive local
@@ -243,7 +249,7 @@ pub fn handle_ipi_reschedule() {
     }
     #[cfg(all(feature = "preempt", not(feature = "host-test")))]
     if crate::current_may_uninit().is_some() {
-        CurrentRunQueueRef::<ax_kernel_guard::NoOp>::force_resched_from_irq();
+        CurrentRunQueueRef::<RawState>::force_resched_from_irq();
     }
 }
 
@@ -619,8 +625,8 @@ mod rr_tests {
 
     use ax_sched::BaseScheduler;
 
-    use super::{AxRunQueue, AxRunQueueRef, RunQueueAccess, Scheduler, SpinRaw, TaskInner};
-    use crate::task::TaskState;
+    use super::{AxRunQueue, AxRunQueueRef, RunQueueAccess, Scheduler, SpinLock, TaskInner};
+    use crate::{sync::RawState, task::TaskState};
 
     fn new_test_task(name: &str, state: TaskState) -> crate::AxTaskRef {
         let task =
@@ -634,14 +640,16 @@ mod rr_tests {
         ax_hal::percpu::initialize_host_test_cpu();
         let mut run_queue = AxRunQueue {
             cpu_id: 1,
-            scheduler: SpinRaw::new(Scheduler::new()),
+            scheduler: SpinLock::new(Scheduler::new()),
         };
         let queued = new_test_task("queued", TaskState::Ready);
         let blocked = new_test_task("blocked", TaskState::Blocked);
 
-        run_queue.scheduler.lock().add_task(queued.clone());
+        // SAFETY: this host-side fixture is single-threaded and cannot re-enter
+        // the scheduler while the guard is alive.
+        unsafe { run_queue.scheduler.lock_raw() }.add_task(queued.clone());
         {
-            let mut run_queue_ref = AxRunQueueRef::<ax_kernel_guard::NoOp> {
+            let mut run_queue_ref = AxRunQueueRef::<RawState> {
                 // SAFETY: the stack run queue outlives this guarded test handle.
                 inner: unsafe { RunQueueAccess::new(NonNull::from(&mut run_queue)) },
                 state: (),
@@ -650,7 +658,10 @@ mod rr_tests {
             run_queue_ref.unblock_task(blocked, true);
         }
 
-        let next = run_queue.scheduler.lock().pick_next_task().unwrap();
+        // SAFETY: this host-side fixture is single-threaded and non-reentrant.
+        let next = unsafe { run_queue.scheduler.lock_raw() }
+            .pick_next_task()
+            .unwrap();
         assert!(
             Arc::ptr_eq(&next, &queued),
             "waking a blocked task with resched=true must not move it ahead of already queued RR \
@@ -677,7 +688,7 @@ mod rr_tests {
 /// 1. Implement better load balancing across CPUs for more efficient task distribution.
 /// 2. Use a more generic load balancing algorithm that can be customized or replaced.
 #[inline]
-pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<G> {
+pub(crate) fn select_run_queue<G: GuardState>(task: &AxTaskRef) -> AxRunQueueRef<G> {
     let irq_state = G::acquire();
     #[cfg(not(feature = "smp"))]
     {
@@ -738,7 +749,7 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
 /// falling back to the task's previous CPU or the normal selector if affinity
 /// requires it.
 #[inline]
-pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<G> {
+pub(crate) fn select_wake_run_queue<G: GuardState>(task: &AxTaskRef) -> AxRunQueueRef<G> {
     let irq_state = G::acquire();
     #[cfg(not(feature = "smp"))]
     {
@@ -791,7 +802,7 @@ pub(crate) struct AxRunQueue {
     /// The core scheduler of this run queue.
     /// Since irq and preempt are preserved by the kernel guard hold by `AxRunQueueRef`,
     /// we just use a simple raw spin lock here.
-    scheduler: SpinRaw<Scheduler>,
+    scheduler: SpinLock<Scheduler>,
 }
 
 /// Permanent run-queue pointer whose references remain scoped to this handle.
@@ -826,13 +837,13 @@ impl Deref for RunQueueAccess {
 /// or a remote CPU, which is used to add tasks to the run queue or unblock tasks.
 /// If you want to perform scheduling operations on the current run queue,
 /// see [`CurrentRunQueueRef`].
-pub(crate) struct AxRunQueueRef<G: BaseGuard> {
+pub(crate) struct AxRunQueueRef<G: GuardState> {
     inner: RunQueueAccess,
     state: G::State,
     _phantom: core::marker::PhantomData<G>,
 }
 
-impl<G: BaseGuard> Drop for AxRunQueueRef<G> {
+impl<G: GuardState> Drop for AxRunQueueRef<G> {
     fn drop(&mut self) {
         G::release(self.state);
     }
@@ -843,21 +854,21 @@ impl<G: BaseGuard> Drop for AxRunQueueRef<G> {
 /// Note:
 /// [`CurrentRunQueueRef`] is used to get a reference to the run queue on current CPU,
 /// in which scheduling operations can be performed.
-pub(crate) struct CurrentRunQueueRef<G: BaseGuard> {
+pub(crate) struct CurrentRunQueueRef<G: GuardState> {
     inner: RunQueueAccess,
     current_task: CurrentTask,
     state: G::State,
     _phantom: core::marker::PhantomData<G>,
 }
 
-impl<G: BaseGuard> Drop for CurrentRunQueueRef<G> {
+impl<G: GuardState> Drop for CurrentRunQueueRef<G> {
     fn drop(&mut self) {
         G::release(self.state);
     }
 }
 
 /// Management operations for run queue, including adding tasks, unblocking tasks, etc.
-impl<G: BaseGuard> AxRunQueueRef<G> {
+impl<G: GuardState> AxRunQueueRef<G> {
     /// Adds a task to the scheduler.
     ///
     /// This function is used to add a new task to the scheduler.
@@ -867,7 +878,6 @@ impl<G: BaseGuard> AxRunQueueRef<G> {
         assert!(task.is_ready());
         #[cfg(feature = "smp")]
         task.set_cpu_id(cpu_id as _);
-        self.inner.scheduler.lock().add_task(task);
         // A newly runnable task placed on a remote CPU may be one the spawner
         // must see make progress (e.g. `fork` then `waitpid`, or a broadcast
         // wake fanning a barrier out to idle CPUs). If that CPU is idle in
@@ -877,6 +887,9 @@ impl<G: BaseGuard> AxRunQueueRef<G> {
         // the window after the target's in-flight reschedule already read its
         // run queue, stranding it until the next tick or (tickless idle)
         // indefinitely — the riscv64 SMP `test-fcntl-lock-lifecycle` hang.
+        // SAFETY: `AxRunQueueRef<G>` has already entered the run-queue
+        // critical section represented by `G`.
+        unsafe { self.inner.scheduler.lock_raw() }.add_task(task);
         #[cfg(all(feature = "smp", feature = "ipi"))]
         force_kick_remote_cpu(cpu_id);
     }
@@ -924,7 +937,7 @@ impl<G: BaseGuard> AxRunQueueRef<G> {
 }
 
 /// Core functions of run queue.
-impl<G: BaseGuard> CurrentRunQueueRef<G> {
+impl<G: GuardState> CurrentRunQueueRef<G> {
     /// Unblock one task by inserting it into the current CPU's run queue.
     ///
     /// See [`AxRunQueueRef::unblock_task`] for the state-transition details.
@@ -961,7 +974,9 @@ impl<G: BaseGuard> CurrentRunQueueRef<G> {
             if let Some(t) = BUSY_TICKS.get(this_cpu_id()) {
                 t.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             }
-            if self.inner.scheduler.lock().task_tick(curr) {
+            // SAFETY: `CurrentRunQueueRef<G>` owns the run-queue critical
+            // section for this operation.
+            if unsafe { self.inner.scheduler.lock_raw() }.task_tick(curr) {
                 #[cfg(feature = "preempt")]
                 curr.set_preempt_pending(true);
             }
@@ -1017,7 +1032,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<G> {
     ///
     /// Note:
     /// preemption may happened in `enable_preempt`, which is called
-    /// each time a [`ax_kspin::NoPreemptGuard`] is dropped.
+    /// each time a preemption guard is dropped.
     #[cfg(feature = "preempt")]
     pub fn preempt_resched(&mut self) {
         // There is no need to disable IRQ and preemption here, because
@@ -1026,7 +1041,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<G> {
         assert!(curr.is_running());
 
         // When we call `preempt_resched()`, both IRQs and preemption must
-        // have been disabled by `ax_kernel_guard::NoPreemptIrqSave`. So we need
+        // have been disabled by `crate::sync::PreemptIrqSaveState`. So we need
         // to set `current_disable_count` to 1 in `can_preempt()` to obtain
         // the preemption permission.
         let can_preempt = curr.can_preempt(1);
@@ -1089,7 +1104,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<G> {
         not(feature = "host-test")
     ))]
     fn force_resched_from_irq() {
-        let mut rq = current_run_queue::<ax_kernel_guard::NoOp>();
+        let mut rq = current_run_queue::<RawState>();
         rq.force_resched_with_preempt_count(0);
     }
 
@@ -1179,7 +1194,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<G> {
 
     /// Block the current task, put current task into the wait queue and reschedule.
     /// This is special just for future.
-    pub fn future_blocked_resched(&mut self, mut woke: SpinNoIrqGuard<'_, bool>) {
+    pub fn future_blocked_resched(&mut self, mut woke: SpinLockIrqSaveGuard<'_, bool>) {
         let curr = &self.current_task;
         assert!(curr.is_running());
         assert!(!curr.is_idle());
@@ -1217,10 +1232,8 @@ impl<G: BaseGuard> CurrentRunQueueRef<G> {
     }
 
     pub fn set_current_priority(&mut self, prio: isize) -> bool {
-        self.inner
-            .scheduler
-            .lock()
-            .set_priority(&self.current_task, prio)
+        // SAFETY: `CurrentRunQueueRef<G>` owns the run-queue critical section.
+        unsafe { self.inner.scheduler.lock_raw() }.set_priority(&self.current_task, prio)
     }
 
     #[cfg(feature = "smp")]
@@ -1250,7 +1263,7 @@ impl AxRunQueue {
         scheduler.add_task(gc_task);
         Self {
             cpu_id,
-            scheduler: SpinRaw::new(scheduler),
+            scheduler: SpinLock::new(scheduler),
         }
     }
 
@@ -1312,7 +1325,8 @@ impl AxRunQueue {
             // TODO: priority
             #[cfg(feature = "smp")]
             task.set_cpu_id(self.cpu_id as _);
-            self.scheduler.lock().put_prev_task(task, preempt);
+            // SAFETY: the caller holds the run-queue context guard.
+            unsafe { self.scheduler.lock_raw() }.put_prev_task(task, preempt);
             true
         } else {
             false
@@ -1322,18 +1336,21 @@ impl AxRunQueue {
     /// Core reschedule subroutine.
     /// Pick the next task to run and switch to it.
     fn resched(&self) {
-        let next = self.scheduler.lock().pick_next_task().unwrap_or_else(|| {
-            // SAFETY: the current run-queue guard prevents migration while
-            // resolving this CPU's initialized idle task.
-            unsafe {
-                ax_hal::percpu::with_cpu_pin(|pin| {
-                    IDLE_TASK.with_current(pin, |idle| {
-                        idle.get().expect("idle task must be initialized").clone()
+        // SAFETY: the caller holds the run-queue context guard.
+        let next = unsafe { self.scheduler.lock_raw() }
+            .pick_next_task()
+            .unwrap_or_else(|| {
+                // SAFETY: the current run-queue guard prevents migration while
+                // resolving this CPU's initialized idle task.
+                unsafe {
+                    ax_hal::percpu::with_cpu_pin(|pin| {
+                        IDLE_TASK.with_current(pin, |idle| {
+                            idle.get().expect("idle task must be initialized").clone()
+                        })
                     })
-                })
-            }
-            .expect("reschedule requires an installed CPU-local area")
-        });
+                }
+                .expect("reschedule requires an installed CPU-local area")
+            });
         assert!(
             next.is_ready(),
             "next {} is not ready: {:?}",
@@ -1442,7 +1459,7 @@ fn gc_entry() {
     loop {
         // Drop all exited tasks and recycle resources.
         let n = {
-            let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+            let _guard = crate::sync::PreemptIrqSaveGuard::new();
             // SAFETY: the guard prevents migration and IRQ re-entry, and the
             // closure does not let the per-CPU borrow escape.
             unsafe {
@@ -1457,7 +1474,7 @@ fn gc_entry() {
         for _ in 0..n {
             // Do not do the slow drops in the critical section.
             let task = {
-                let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+                let _guard = crate::sync::PreemptIrqSaveGuard::new();
                 // SAFETY: the guard prevents migration and IRQ re-entry.
                 unsafe {
                     ax_hal::percpu::with_cpu_pin(|pin| {
@@ -1475,7 +1492,7 @@ fn gc_entry() {
                 } else {
                     // Otherwise (e.g, `switch_to` is not completed, held by the
                     // joiner, etc), push it back and wait for them to drop first.
-                    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+                    let _guard = crate::sync::PreemptIrqSaveGuard::new();
                     // SAFETY: the guard prevents migration and IRQ re-entry.
                     unsafe {
                         ax_hal::percpu::with_cpu_pin(|pin| {
@@ -1519,13 +1536,11 @@ fn gc_entry() {
 /// then puts the task to the scheduler of target run queue.
 #[cfg(feature = "smp")]
 pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
-    let rq = select_run_queue::<ax_kernel_guard::NoPreemptIrqSave>(&migrated_task);
+    let rq = select_run_queue::<crate::sync::PreemptIrqSaveState>(&migrated_task);
     let cpu_id = rq.inner.cpu_id;
     migrated_task.set_cpu_id(cpu_id as _);
-    rq.inner
-        .scheduler
-        .lock()
-        .put_prev_task(migrated_task, false);
+    // SAFETY: `rq` owns the target run-queue critical section.
+    unsafe { rq.inner.scheduler.lock_raw() }.put_prev_task(migrated_task, false);
     #[cfg(all(feature = "smp", feature = "ipi"))]
     // Current-task migration cannot make progress until the target CPU runs
     // the migrated task, so do not let a stale coalescing bit suppress this IPI.
@@ -1563,10 +1578,10 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
         let target = task.cpu_id() as usize;
         // Leaf lock: `resched()` already dropped this CPU's scheduler lock before
         // `switch_to`, so this takes only the target run queue's lock.
-        get_run_queue(target)
-            .scheduler
-            .lock()
-            .put_prev_task(task, false);
+        let target_run_queue = get_run_queue(target);
+        // SAFETY: this switch tail runs with preemption and local IRQs disabled;
+        // the scheduler lock supplies cross-CPU exclusion.
+        unsafe { target_run_queue.scheduler.lock_raw() }.put_prev_task(task, false);
         if target != this_cpu_id() {
             // Remote target: ask that CPU to reschedule so it picks the task up
             // (and wakes if it is idle in `wait_for_irqs`). This is a deferred wake

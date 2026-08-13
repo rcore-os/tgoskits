@@ -61,10 +61,12 @@ impl BlockNotification for RuntimeNotification {
         self.inner.notify_irq();
     }
 
+    #[track_caller]
     fn wait(&self) {
         self.inner.wait();
     }
 
+    #[track_caller]
     fn wait_timeout(&self, duration: Duration) -> bool {
         self.inner.wait_timeout(duration)
     }

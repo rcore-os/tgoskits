@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-task"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.6.6"
+version = "0.6.7"
 
 [features]
 default = []
@@ -18,22 +18,18 @@ multitask = [
   "dep:ax-cpumask",
   "dep:ax-crate-interface",
   "dep:futures-util",
-  "dep:ax-kernel-guard",
-  "dep:ax-kspin",
   "dep:ax-lazyinit",
   "dep:ax-memory-addr",
   "dep:ax-percpu",
-  "dep:spin",
 ]
-preempt = ["irq", "ax-kernel-guard/preempt"]
-smp = ["ax-kspin/smp"]
+preempt = ["irq"]
+smp = []
 stack-guard-page = ["multitask", "dep:ax-alloc", "dep:ax-mm", "ax-hal/paging"]
 lockdep = [
   "multitask",
-  "ax-kspin/lockdep",
-  "dep:ax-lockdep",
-  "ax-lockdep/task-context",
+  "dep:axpanic",
 ]
+lock-api = ["dep:lock_api"]
 task-ext = ["dep:extern-trait"]
 tls = ["ax-hal/tls"]
 # Cross-crate tracepoint hook for the scheduler context switch.
@@ -49,8 +45,6 @@ sched-rr = ["multitask", "preempt"]
 
 host-test = [
   "ax-hal/host-test",
-  "ax-kspin?/host-test",
-  "ax-kspin?/smp",
   "ax-percpu?/host-test",
 ]
 test = ["host-test"]
@@ -66,13 +60,11 @@ ax-crate-interface = {workspace = true, optional = true}
 ax-errno.workspace = true
 ax-hal.workspace = true
 ax-ipi = {workspace = true, optional = true}
-ax-kernel-guard = {workspace = true, optional = true}
-ax-lockdep = {workspace = true, optional = true}
-ax-kspin = {workspace = true, optional = true}
 ax-lazyinit = {workspace = true, optional = true}
 ax-memory-addr = {workspace = true, optional = true}
 ax-mm = {workspace = true, optional = true}
 ax-percpu = {workspace = true, optional = true}
+axpanic = {workspace = true, optional = true}
 ax-sched = { workspace = true, optional = true }
 ax-timer-list = {workspace = true, optional = true}
 axtest = {workspace = true, optional = true}
@@ -84,7 +76,10 @@ futures-util = {version = "0.3", default-features = false, optional = true, feat
   "async-await-macro",
 ]}
 log.workspace = true
-spin = {workspace = true, optional = true}
+lock_api = {workspace = true, optional = true}
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+sbi-rt = { workspace = true, features = ["legacy"] }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-hal = { workspace = true, features = ["fp-simd"] }

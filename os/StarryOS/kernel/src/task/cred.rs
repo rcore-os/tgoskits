@@ -55,6 +55,8 @@ pub struct Cred {
     pub cap_bounding: u64,
     /// Ambient Linux capabilities.
     pub cap_ambient: u64,
+    /// Preserve permitted capabilities when all root UIDs become nonzero.
+    keep_capabilities: bool,
 }
 
 impl Cred {
@@ -80,6 +82,7 @@ impl Cred {
             cap_effective: CAP_MASK,
             cap_bounding: CAP_MASK,
             cap_ambient: 0,
+            keep_capabilities: false,
         }
     }
 
@@ -104,6 +107,7 @@ impl Cred {
             cap_effective: 0,
             cap_bounding: CAP_MASK,
             cap_ambient: 0,
+            keep_capabilities: false,
         }
     }
 
@@ -114,20 +118,23 @@ impl Cred {
 
     /// Recompute capability state after UID/GID credential changes.
     ///
-    /// This models the usual Linux setxid transitions: leaving all-root UID
-    /// state drops permitted/effective/ambient caps, losing euid 0 clears the
-    /// effective set, and regaining euid 0 restores effective from permitted.
+    /// This models the usual Linux setxid transitions: leaving the last root
+    /// UID drops permitted capabilities unless `PR_SET_KEEPCAPS` is active,
+    /// losing euid 0 clears the effective set, and regaining euid 0 restores
+    /// effective capabilities from the permitted set.
     pub fn apply_id_change_capability_rules(&mut self, old: &Self) {
-        let old_all_root = old.uid == 0 && old.euid == 0 && old.suid == 0;
+        let old_has_root = old.uid == 0 || old.euid == 0 || old.suid == 0;
         let new_all_nonroot = self.uid != 0 && self.euid != 0 && self.suid != 0;
 
-        if old_all_root && new_all_nonroot {
-            self.cap_permitted = 0;
-            self.cap_effective = 0;
+        if old_has_root && new_all_nonroot {
+            if !old.keep_capabilities {
+                self.cap_permitted = 0;
+                self.cap_effective = 0;
+            }
             self.cap_ambient = 0;
-        } else if old.euid == 0 && self.euid != 0 {
+        }
+        if old.euid == 0 && self.euid != 0 {
             self.cap_effective = 0;
-            self.cap_ambient = 0;
         } else if old.euid != 0 && self.euid == 0 {
             self.cap_effective = self.cap_permitted;
         }
@@ -137,6 +144,16 @@ impl Cred {
         self.cap_inheritable &= CAP_MASK;
         self.cap_bounding &= CAP_MASK;
         self.cap_ambient &= self.cap_permitted & self.cap_inheritable;
+    }
+
+    /// Return the per-credential `PR_SET_KEEPCAPS` state.
+    pub fn keep_capabilities(&self) -> bool {
+        self.keep_capabilities
+    }
+
+    /// Update the per-credential `PR_SET_KEEPCAPS` state.
+    pub fn set_keep_capabilities(&mut self, enabled: bool) {
+        self.keep_capabilities = enabled;
     }
 
     /// Limit all capability sets to the kernel-known range and internal
@@ -262,6 +279,15 @@ pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
     dropped.cap_ambient = Cred::cap_mask();
     dropped.apply_id_change_capability_rules(&old_root);
 
+    let mut keepcaps_root = root.clone();
+    keepcaps_root.set_keep_capabilities(true);
+    let mut kept = keepcaps_root.clone();
+    kept.uid = 1000;
+    kept.euid = 1000;
+    kept.suid = 1000;
+    kept.cap_ambient = Cred::cap_mask();
+    kept.apply_id_change_capability_rules(&keepcaps_root);
+
     let old_user = Cred::unprivileged(1000, 100);
     let mut regained_effective = old_user.clone();
     regained_effective.euid = 0;
@@ -322,6 +348,10 @@ pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
         && dropped.cap_permitted == 0
         && dropped.cap_effective == 0
         && dropped.cap_ambient == 0
+        && kept.cap_permitted == Cred::cap_mask()
+        && kept.cap_effective == 0
+        && kept.cap_ambient == 0
+        && kept.keep_capabilities()
         && regained_effective.cap_effective == regained_effective.cap_permitted
         && unprivileged.cap_effective == cap_bit(CAP_SETUID)
         && unprivileged.cap_ambient == unprivileged.cap_permitted & unprivileged.cap_inheritable

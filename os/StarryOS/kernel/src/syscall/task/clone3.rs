@@ -96,7 +96,9 @@ pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> AxResult<
 
 #[cfg(axtest)]
 pub(crate) fn clone3_validation_rules_hold_for_test() -> bool {
-    use linux_raw_sys::general::{CLONE_DETACHED, CLONE_PARENT, CLONE_THREAD, SIGCHLD};
+    use linux_raw_sys::general::{
+        CLONE_DETACHED, CLONE_NEWPID, CLONE_PARENT, CLONE_THREAD, SIGCHLD,
+    };
 
     let parent_signal_rejected = CloneArgs::try_from(Clone3Args {
         flags: CLONE_PARENT as u64,
@@ -139,6 +141,12 @@ pub(crate) fn clone3_validation_rules_hold_for_test() -> bool {
         ..Default::default()
     })
     .is_ok();
+    let parent_newpid_zero_signal_accepted = CloneArgs::try_from(Clone3Args {
+        flags: (CLONE_PARENT | CLONE_NEWPID) as u64,
+        exit_signal: 0,
+        ..Default::default()
+    })
+    .is_ok_and(|args| args.flags.contains(CloneFlags::PARENT | CloneFlags::NEWPID));
     let zero_stack_ignored_size = CloneArgs::try_from(Clone3Args {
         stack: 0,
         stack_size: 0x2000,
@@ -181,6 +189,7 @@ pub(crate) fn clone3_validation_rules_hold_for_test() -> bool {
         && stack_top_is_derived_from_base_and_size
         && thread_zero_signal_accepted
         && parent_zero_signal_accepted
+        && parent_newpid_zero_signal_accepted
         && zero_stack_ignored_size
         && stack_only_no_size
         && plain_clone_accepted

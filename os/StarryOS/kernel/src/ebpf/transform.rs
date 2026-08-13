@@ -18,12 +18,8 @@ use core::{
 };
 
 use ax_io::{Read, Write};
-use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
-use ax_runtime::hal::{
-    paging::{MappingFlags, PageSize},
-    percpu::this_cpu_id,
-    time::monotonic_time_nanos,
-};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_runtime::hal::{paging::MappingFlags, percpu::this_cpu_id, time::monotonic_time_nanos};
 use kbpf_basic::{
     BpfError, KernelAuxiliaryOps,
     map::{PerCpuVariants, PerCpuVariantsOps, UnifiedMap},
@@ -227,17 +223,17 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
         // Reuse the address-space backend's frame allocator
         // (`mm::aspace::backend::alloc_frame`) so eBPF page allocation goes
         // through the same path as the rest of the kernel.
-        crate::mm::alloc_frame(true, PageSize::Size4K)
+        crate::mm::alloc_frame(true, PAGE_SIZE_4K)
             .map(|p| p.as_usize())
             .map_err(|_| BpfError::ENOMEM)
     }
 
     fn free_page(phys_addr: usize) {
-        crate::mm::dealloc_frame(PhysAddr::from_usize(phys_addr), PageSize::Size4K);
+        crate::mm::dealloc_frame(PhysAddr::from_usize(phys_addr), PAGE_SIZE_4K);
     }
 
     fn vmap(phys_addrs: &[usize]) -> kbpf_basic::BpfResult<usize> {
-        let len = phys_addrs.len() * PageSize::Size4K as usize;
+        let len = phys_addrs.len() * PAGE_SIZE_4K;
         let kspace = ax_mm::kernel_aspace();
         let mut guard = kspace.lock();
         let mut virt_start = guard
@@ -254,11 +250,11 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
                 .map_linear(
                     virt_start,
                     start_paddr,
-                    PageSize::Size4K as usize,
+                    PAGE_SIZE_4K,
                     MappingFlags::READ | MappingFlags::WRITE,
                 )
                 .map_err(|_| BpfError::EINVAL)?;
-            virt_start += PageSize::Size4K as usize;
+            virt_start += PAGE_SIZE_4K;
         }
         Ok(res_virt)
     }
@@ -267,10 +263,7 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
         let kspace = ax_mm::kernel_aspace();
         let mut guard = kspace.lock();
         guard
-            .unmap(
-                VirtAddr::from_usize(vaddr),
-                PageSize::Size4K as usize * num_pages,
-            )
+            .unmap(VirtAddr::from_usize(vaddr), PAGE_SIZE_4K * num_pages)
             .expect("vmunmap failed");
     }
 }

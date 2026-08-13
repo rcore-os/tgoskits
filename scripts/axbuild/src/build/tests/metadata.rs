@@ -76,15 +76,7 @@ fn unknown_ax_hal_features_are_not_platforms() {
 fn axvm_os_implementation_dependencies_are_facaded_by_ax_std() {
     let metadata = repo_metadata();
     let axvm = workspace_package(&metadata, "axvm").unwrap();
-    let forbidden = [
-        "ax-hal",
-        "ax-kernel-guard",
-        "ax-kspin",
-        "ax-lazyinit",
-        "ax-percpu",
-        "ax-sync",
-        "spin",
-    ];
+    let forbidden = ["ax-hal", "ax-lazyinit", "ax-percpu", "ax-sync", "spin"];
 
     let direct_forbidden = axvm
         .dependencies

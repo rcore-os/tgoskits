@@ -42,6 +42,14 @@ pub fn pipe_resize_rejects_oversized_pipe() -> bool {
     super::file::resize_rejects_oversized_pipe_for_test()
 }
 
+pub fn pipe_linux_io_semantics_hold() -> bool {
+    super::file::pipe_linux_io_semantics_hold_for_test()
+}
+
+pub fn interrupted_pipe_write_preserves_partial_progress() -> bool {
+    super::file::interrupted_pipe_write_preserves_partial_progress_for_test()
+}
+
 pub fn fcntl_setpipe_size_returns_capacity() -> bool {
     super::syscall::fcntl_setpipe_size_returns_capacity_for_test()
 }
@@ -56,6 +64,22 @@ pub fn cow_file_max_read_len_boundary_rules_hold() -> bool {
 
 pub fn concurrent_epoll_reverse_add_is_serialized() -> bool {
     super::file::concurrent_reverse_add_is_serialized_for_test()
+}
+
+pub fn epoll_level_aliases_rotate_in_linux_callback_order() -> bool {
+    super::file::level_aliases_rotate_in_linux_callback_order_for_test()
+}
+
+pub fn epoll_edge_readiness_requires_a_new_notification() -> bool {
+    super::file::edge_readiness_requires_a_new_notification_for_test()
+}
+
+pub fn epoll_edge_callback_does_not_reenter_target() -> bool {
+    super::file::edge_callback_does_not_reenter_target_for_test()
+}
+
+pub fn epoll_hup_does_not_synthesize_readable() -> bool {
+    super::file::epoll_hup_does_not_synthesize_readable_for_test()
 }
 
 pub fn process_mem_stats_formats_linux_fields() -> bool {

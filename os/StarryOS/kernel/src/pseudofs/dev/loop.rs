@@ -5,7 +5,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::FileBackend;
-use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
     general::{O_ACCMODE, O_RDONLY},
@@ -23,6 +22,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     file::{FileLike, get_file_like},
     pseudofs::{DeviceMmap, DeviceOps},
+    sync::Mutex,
 };
 
 /// HDIO_GETGEO ioctl command (get drive geometry).

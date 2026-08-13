@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5](https://github.com/rcore-os/tgoskits/compare/phytium-mci-host-v0.3.4...phytium-mci-host-v0.3.5) - 2026-08-09
+
+### Other
+
+- updated the following local packages: sdmmc-protocol, dma-api, mmio-api, sdio-host2
+
 ## [0.3.4](https://github.com/rcore-os/tgoskits/compare/phytium-mci-host-v0.3.3...phytium-mci-host-v0.3.4) - 2026-08-03
 
 ### Fixed

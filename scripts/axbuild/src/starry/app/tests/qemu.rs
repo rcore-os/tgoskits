@@ -6,6 +6,7 @@ use std::{
 };
 
 use tempfile::tempdir;
+use walkdir::WalkDir;
 
 use super::{
     app_qemu_test_case, load_qemu_app_case_fields, prepare_qemu_app_case, resolve_qemu_config,
@@ -977,5 +978,46 @@ fn claw_code_qemu_config_exits_after_smoke_check() {
             && !shell_init_cmd.contains("STARRY_CLAW_MISSING"),
         "{} must not echo full claw smoke markers as shell input",
         config_path.display()
+    );
+}
+
+#[test]
+fn debugfs_copy_commands_in_prebuild_scripts_suppress_stdout() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let mut copy_commands = 0;
+
+    for entry in WalkDir::new(repo.join("apps/starry")) {
+        let entry = entry.unwrap();
+        if entry.file_name() != "prebuild.sh" {
+            continue;
+        }
+
+        let content = fs::read_to_string(entry.path()).unwrap();
+        for (line_index, line) in content.lines().enumerate() {
+            let line = line.trim();
+            if line.starts_with('#')
+                || !line.contains("debugfs")
+                || !(line.contains("rdump ") || line.contains("-R \"write "))
+            {
+                continue;
+            }
+
+            copy_commands += 1;
+            assert!(
+                line.contains(">/dev/null") || line.contains("1>/dev/null"),
+                "{}:{} must suppress normal debugfs copy output",
+                entry.path().display(),
+                line_index + 1
+            );
+        }
+    }
+
+    assert!(
+        copy_commands > 0,
+        "expected to inspect debugfs copy commands"
     );
 }

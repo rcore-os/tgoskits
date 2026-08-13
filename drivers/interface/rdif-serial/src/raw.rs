@@ -46,8 +46,16 @@ pub trait UartPort: Send + 'static {
     /// Reads one normalized hardware sample without consulting IRQ state.
     fn read_rx(&mut self) -> Option<RxSample>;
 
+    /// Discards bytes and error state pending in the hardware receiver.
+    fn discard_rx(&mut self);
+
     /// Writes as much of `bytes` as the hardware can currently accept.
     fn write_tx(&mut self, bytes: &[u8]) -> usize;
+
+    /// Discards bytes queued in the hardware transmitter. A byte already in
+    /// the shift register may still complete.
+    /// Returns whether the hardware supports an independent TX-only discard.
+    fn discard_tx(&mut self) -> bool;
 
     /// Returns whether both the FIFO and transmitter shift register are empty.
     fn tx_idle(&mut self) -> bool;

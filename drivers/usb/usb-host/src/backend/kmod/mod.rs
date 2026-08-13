@@ -1,6 +1,6 @@
 use crate::{
     Mmio, USBHost,
-    backend::kmod::hub::{Hub, HubInfo},
+    backend::kmod::hub::{HubId, HubInfo},
 };
 
 mod dwc;
@@ -26,7 +26,6 @@ pub use dwc2::{
 };
 use ehci::Ehci;
 pub use ehci::EhciNewParams;
-use id_arena::Id;
 use kcore::*;
 pub use osal::*;
 use usb_if::Speed;
@@ -62,8 +61,8 @@ impl USBHost {
 
 pub struct DeviceAddressInfo {
     pub root_port_id: u8,
-    pub parent_hub: Option<Id<Hub>>,
+    pub parent_hub: Option<HubId>,
     pub port_speed: Speed,
     pub port_id: u8,
-    pub infos: BTreeMap<Id<Hub>, HubInfo>,
+    pub infos: BTreeMap<HubId, HubInfo>,
 }

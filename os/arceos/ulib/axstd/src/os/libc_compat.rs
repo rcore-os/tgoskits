@@ -16,8 +16,8 @@ use core::{
 use core::{sync::atomic::AtomicUsize, time::Duration};
 
 use ax_errno::LinuxError;
-use ax_kspin::SpinRaw as Mutex;
-use spin::LazyLock;
+use ax_lazyinit::LazyLock;
+use ax_runtime::sync::SpinLock as Mutex;
 
 type SizeT = libc::size_t;
 type SSizeT = libc::ssize_t;
@@ -1413,8 +1413,8 @@ pub unsafe extern "C" fn fdatasync(_fd: c_int) -> c_int {
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn futimens(_fd: c_int, _times: *const libc::timespec) -> c_int {
-    0
+pub unsafe extern "C" fn futimens(fd: c_int, times: *const libc::timespec) -> c_int {
+    ok_or_errno(unsafe { ax_posix_api::sys_futimens(fd, times.cast()) })
 }
 
 /// # Safety

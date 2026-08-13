@@ -5,8 +5,8 @@ use alloc::{
     vec::Vec,
 };
 
+use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{Location, NodePermission, NodeType, VfsError};
-use spin::Once;
 
 use crate::{
     BlockDeviceHandle, BlockRegion, FilesystemKind,
@@ -22,7 +22,7 @@ use crate::{
 };
 
 const VOLUME_METADATA_READ_RETRIES: usize = 3;
-static ROOT_BLOCK_IDENTITY: Once<RootBlockIdentity> = Once::new();
+static ROOT_BLOCK_IDENTITY: OnceLock<RootBlockIdentity> = OnceLock::new();
 
 /// Linux-facing identity of the selected physical root block device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

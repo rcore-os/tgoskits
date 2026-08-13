@@ -2,6 +2,10 @@ use core::cell::Cell;
 
 use super::*;
 
+pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentModel {
+    current_source_aliases_kernel_tls: false,
+};
+
 std::thread_local! {
     static CPU_BASE: Cell<usize> = const { Cell::new(0) };
     static KERNEL_TLS: Cell<usize> = const { Cell::new(0) };

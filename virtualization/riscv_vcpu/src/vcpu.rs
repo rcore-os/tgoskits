@@ -32,12 +32,12 @@ use riscv_h::register::{
     vstval,
     vstvec::{self, Vstvec},
 };
-use rustsbi::{Forward, RustSBI};
-use sbi_spec::{hsm, legacy, pmu, rfnc, srst};
+use rustsbi::{Forward, RustSBI, SbiRet};
+use sbi_spec::{hsm, legacy, pmu, rfnc, spi, srst};
 
 use crate::{
     EID_HVC, RiscvVcpuCreateConfig,
-    consts::traps::irq::{S_EXT, S_SOFT, is_supervisor_external},
+    consts::traps::irq::{S_EXT, S_SOFT, S_TIMER, is_supervisor_external},
     guest_mem,
     host::RiscvHostOps,
     registers::hgatp_value,
@@ -45,8 +45,9 @@ use crate::{
     sbi_console::*,
     trap::Exception,
     types::{
-        RiscvAccessFlags, RiscvAccessWidth, RiscvGuestPhysAddr, RiscvGuestVirtAddr,
-        RiscvNestedPagingConfig, RiscvVcpuError, RiscvVcpuResult, RiscvVmExit,
+        RiscvAccessFlags, RiscvAccessWidth, RiscvGuestPhysAddr, RiscvGuestVirtAddr, RiscvIpiAbi,
+        RiscvIpiCompletion, RiscvIpiRequest, RiscvNestedPagingConfig, RiscvVcpuError,
+        RiscvVcpuResult, RiscvVmExit,
     },
     vpmu::VirtualPmu,
 };
@@ -87,6 +88,8 @@ pub type RISCVVCpu<H> = RiscvVcpu<H>;
 struct RISCVVCpuSbi {
     #[rustsbi(pmu)]
     pmu: VirtualPmu,
+    #[rustsbi(ipi)]
+    ipi: crate::sbi_ipi::VirtualSbiIpi,
     #[rustsbi(console, fence, reset, info, hsm, timer)]
     forward: Forward,
 }
@@ -109,6 +112,7 @@ impl Default for RISCVVCpuSbi {
     fn default() -> Self {
         Self {
             pmu: VirtualPmu::default(),
+            ipi: crate::sbi_ipi::VirtualSbiIpi,
             forward: Forward,
         }
     }
@@ -339,14 +343,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
     /// Injects a virtual interrupt into the guest.
     pub fn inject_interrupt(&mut self, vector: usize) -> RiscvVcpuResult {
-        if !is_supervisor_external(vector) {
-            return Err(RiscvVcpuError::Unsupported);
-        }
-        unsafe {
-            hvip::set_vseip();
-        }
-        self.regs.virtual_hs_csrs.hvip |= hvip::read().bits();
-        Ok(())
+        self.set_virtual_interrupt_pending(vector, true)
     }
 
     /// Synchronizes controller-derived VSEIP state for the bound vCPU.
@@ -375,6 +372,46 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     pub fn set_return_value(&mut self, val: usize) {
         self.set_gpr_from_gpr_index(GprIndex::A0, val);
     }
+
+    /// Completes a previously returned SBI IPI request.
+    pub fn complete_ipi(&mut self, request: RiscvIpiRequest, completion: RiscvIpiCompletion) {
+        let result = match completion {
+            RiscvIpiCompletion::Success => SbiRet::success(0),
+            RiscvIpiCompletion::InvalidParameter => SbiRet::invalid_param(),
+            RiscvIpiCompletion::Failed => SbiRet::failed(),
+        };
+        match request.abi() {
+            RiscvIpiAbi::Legacy => {
+                self.set_gpr_from_gpr_index(GprIndex::A0, result.error);
+            }
+            RiscvIpiAbi::SbiV02 => self.set_sbi_result(result),
+        }
+    }
+
+    fn set_virtual_interrupt_pending(&mut self, vector: usize, pending: bool) -> RiscvVcpuResult {
+        let mut saved = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
+        match vector {
+            S_SOFT => saved.set_vssip(pending),
+            S_TIMER => saved.set_vstip(pending),
+            vector if is_supervisor_external(vector) => saved.set_vseip(pending),
+            _ => return Err(RiscvVcpuError::Unsupported),
+        }
+        self.regs.virtual_hs_csrs.hvip = saved.bits();
+
+        if self.bound {
+            unsafe {
+                match (vector, pending) {
+                    (S_SOFT, true) => hvip::set_vssip(),
+                    (S_SOFT, false) => hvip::clear_vssip(),
+                    (S_TIMER, true) => hvip::set_vstip(),
+                    (S_TIMER, false) => hvip::clear_vstip(),
+                    (_, true) => hvip::set_vseip(),
+                    (_, false) => hvip::clear_vseip(),
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<H: RiscvHostOps> RiscvVcpu<H> {
@@ -401,21 +438,22 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
 impl<H: RiscvHostOps> RiscvVcpu<H> {
     #[inline]
-    fn program_guest_timer(&mut self, deadline: usize) {
+    fn program_guest_timer(&mut self, deadline: usize) -> RiscvVcpuResult {
         #[cfg(feature = "sstc")]
         {
             self.regs.vs_csrs.vstimecmp = deadline;
         }
         sbi_rt::set_timer(deadline as u64);
+        self.set_virtual_interrupt_pending(S_TIMER, false)?;
         unsafe {
             // The guest has consumed the current VS timer event and programmed
             // a new deadline, so clear the injected VS timer pending bit and
             // re-arm HS timer delivery for the next expiration.
-            hvip::clear_vstip();
             #[cfg(feature = "sstc")]
             vstimecmp::write(deadline);
             sie::set_stimer();
         }
+        Ok(())
     }
 
     /// Gets one of the vCPU's general purpose registers.
@@ -549,7 +587,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                         legacy::LEGACY_SET_TIMER => {
                             // info!("set timer: {}", param[0]);
                             self.sbi.pmu.record_set_timer();
-                            self.program_guest_timer(param[0]);
+                            self.program_guest_timer(param[0])?;
 
                             self.set_gpr_from_gpr_index(GprIndex::A0, 0);
                         }
@@ -559,6 +597,19 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                         legacy::LEGACY_CONSOLE_GETCHAR => {
                             let c = sbi_call_legacy_0(legacy::LEGACY_CONSOLE_GETCHAR);
                             self.set_gpr_from_gpr_index(GprIndex::A0, c);
+                        }
+                        legacy::LEGACY_SEND_IPI => {
+                            return self.handle_legacy_send_ipi(param[0], |guest_va, bytes| {
+                                guest_mem::copy_from_guest_va(
+                                    bytes,
+                                    RiscvGuestVirtAddr::from(guest_va),
+                                    true,
+                                )
+                            });
+                        }
+                        legacy::LEGACY_CLEAR_IPI => {
+                            self.set_virtual_interrupt_pending(S_SOFT, false)?;
+                            self.set_gpr_from_gpr_index(GprIndex::A0, RET_SUCCESS);
                         }
                         legacy::LEGACY_SHUTDOWN => {
                             // sbi_call_legacy_0(LEGACY_SHUTDOWN)
@@ -571,10 +622,22 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                             );
                         }
                     },
+                    spi::EID_SPI => match function_id {
+                        spi::SEND_IPI => {
+                            let request =
+                                crate::sbi_ipi::decode_standard_request(param[0], param[1]);
+                            self.advance_pc(4);
+                            return Ok(RiscvVmExit::SendIpi(request));
+                        }
+                        _ => {
+                            self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
+                            return Ok(RiscvVmExit::Nothing);
+                        }
+                    },
                     EID_TIME => match function_id {
                         FID_SET_TIMER => {
                             self.sbi.pmu.record_set_timer();
-                            self.program_guest_timer(param[0]);
+                            self.program_guest_timer(param[0])?;
                             self.sbi_return(RET_SUCCESS, 0);
                             return Ok(RiscvVmExit::Nothing);
                         }
@@ -760,10 +823,8 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             Trap::Interrupt(Interrupt::SupervisorTimer) => {
                 // Forward the elapsed timer to VS and stop taking the same HS
                 // timer interrupt repeatedly until software programs a new one.
-                unsafe {
-                    hvip::set_vstip();
-                    sie::clear_stimer();
-                }
+                self.inject_interrupt(S_TIMER)?;
+                unsafe { sie::clear_stimer() };
 
                 Ok(RiscvVmExit::Nothing)
             }
@@ -812,9 +873,36 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
     #[inline]
     fn sbi_return(&mut self, a0: usize, a1: usize) {
-        self.set_gpr_from_gpr_index(GprIndex::A0, a0);
-        self.set_gpr_from_gpr_index(GprIndex::A1, a1);
+        self.set_sbi_result(SbiRet {
+            error: a0,
+            value: a1,
+        });
         self.advance_pc(4);
+    }
+
+    #[inline]
+    fn set_sbi_result(&mut self, result: SbiRet) {
+        self.set_gpr_from_gpr_index(GprIndex::A0, result.error);
+        self.set_gpr_from_gpr_index(GprIndex::A1, result.value);
+    }
+
+    fn handle_legacy_send_ipi(
+        &mut self,
+        hart_mask_ptr: usize,
+        copy_from_guest_va: impl FnMut(usize, &mut [u8]) -> usize,
+    ) -> RiscvVcpuResult<RiscvVmExit> {
+        let request = match crate::sbi_ipi::decode_legacy_request(hart_mask_ptr, copy_from_guest_va)
+        {
+            Ok(request) => request,
+            Err(error) => {
+                warn!("failed to read legacy SBI IPI hart mask at {hart_mask_ptr:#x}: {error:?}");
+                self.sbi_return(RET_ERR_FAILED, 0);
+                return Ok(RiscvVmExit::Nothing);
+            }
+        };
+
+        self.advance_pc(4);
+        Ok(RiscvVmExit::SendIpi(request))
     }
 
     #[cfg(feature = "sstc")]
@@ -896,7 +984,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             // We currently emulate that CSR access rather than exposing direct
             // hardware STCE, so this path must also program the underlying HS
             // timer instead of only updating saved VS state.
-            self.program_guest_timer(new_value);
+            self.program_guest_timer(new_value)?;
         }
 
         self.advance_pc(4);
@@ -1137,4 +1225,64 @@ fn sbi_call_legacy_1(eid: usize, arg0: usize) -> usize {
         );
     }
     error
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{RiscvHostPhysAddr, RiscvHostVirtAddr};
+
+    struct TestHost;
+
+    impl RiscvHostOps for TestHost {
+        fn virt_to_phys(_vaddr: RiscvHostVirtAddr) -> RiscvHostPhysAddr {
+            RiscvHostPhysAddr::from_usize(0)
+        }
+    }
+
+    #[test]
+    fn legacy_ipi_completion_updates_only_a0() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+        let request = RiscvIpiRequest::new(1, 0, RiscvIpiAbi::Legacy);
+
+        for (completion, expected) in [
+            (RiscvIpiCompletion::Success, SbiRet::success(0)),
+            (
+                RiscvIpiCompletion::InvalidParameter,
+                SbiRet::invalid_param(),
+            ),
+            (RiscvIpiCompletion::Failed, SbiRet::failed()),
+        ] {
+            let preserved_a1 = 0xfeed_face;
+            vcpu.set_gpr_from_gpr_index(GprIndex::A1, preserved_a1);
+
+            vcpu.complete_ipi(request, completion);
+
+            assert_eq!(vcpu.get_gpr(GprIndex::A0), expected.error);
+            assert_eq!(vcpu.get_gpr(GprIndex::A1), preserved_a1);
+        }
+    }
+
+    #[test]
+    fn sbi_v02_ipi_completion_updates_a0_and_a1() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+        let request = RiscvIpiRequest::new(1, 0, RiscvIpiAbi::SbiV02);
+
+        for (completion, expected) in [
+            (RiscvIpiCompletion::Success, SbiRet::success(0)),
+            (
+                RiscvIpiCompletion::InvalidParameter,
+                SbiRet::invalid_param(),
+            ),
+            (RiscvIpiCompletion::Failed, SbiRet::failed()),
+        ] {
+            vcpu.set_gpr_from_gpr_index(GprIndex::A0, usize::MAX);
+            vcpu.set_gpr_from_gpr_index(GprIndex::A1, usize::MAX);
+
+            vcpu.complete_ipi(request, completion);
+
+            assert_eq!(vcpu.get_gpr(GprIndex::A0), expected.error);
+            assert_eq!(vcpu.get_gpr(GprIndex::A1), expected.value);
+        }
+    }
 }

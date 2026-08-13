@@ -4,10 +4,9 @@ use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
-use ax_sync::{Mutex, MutexGuard};
 
 use super::epoll::EpollInner;
+use crate::sync::{IrqMutex, Mutex, MutexGuard};
 
 const MAX_NESTED_EPOLL_EDGES: usize = 4;
 
@@ -25,8 +24,8 @@ pub(super) struct EpollTopologyLink {
 
 #[derive(Default)]
 pub(super) struct EpollTopology {
-    parents: SpinNoIrq<Vec<EpollTopologyLink>>,
-    children: SpinNoIrq<Vec<EpollTopologyLink>>,
+    parents: IrqMutex<Vec<EpollTopologyLink>>,
+    children: IrqMutex<Vec<EpollTopologyLink>>,
 }
 
 #[derive(Clone, Copy)]

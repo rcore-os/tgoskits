@@ -16,8 +16,8 @@ mod clippy;
 pub mod context;
 pub mod image;
 mod ktest;
+mod lock_lint;
 mod rootfs;
-mod spin_lint;
 pub mod starry;
 mod support;
 mod sync_lint;
@@ -58,14 +58,16 @@ enum Commands {
     },
     /// Run std tests for the configured workspace package whitelist
     Test,
+    /// Run statically linked workspace crate tests through qemu-user
+    CrossTest(test::cross::CrossTestArgs),
     /// Run kernel axtest targets through QEMU or a remote board
     Ktest(ktest::ArgsKtest),
     /// Run clippy for workspace packages
     Clippy(ClippyArgs),
     /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
     SyncLint(SyncLintArgs),
-    /// Verify that no external `spin` package is resolved
-    SpinLint,
+    /// Verify workspace lock dependencies and OS synchronization boundaries
+    LockLint,
     /// Remote board management via ostool-server
     Board {
         #[command(subcommand)]
@@ -78,6 +80,8 @@ enum Commands {
     },
     /// TGOS image management
     Image(image::ImageArgs),
+    /// Fetch verified OVMF firmware and print its paths as JSON
+    Ovmf(support::ovmf::OvmfArgs),
     /// Axvisor host-side commands
     Axvisor {
         #[command(subcommand)]
@@ -121,13 +125,15 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::AgentReviewBench { command } => agent_review_bench::execute(command).await,
         Commands::Test => test::std::run_std_test_command(),
+        Commands::CrossTest(args) => test::cross::run(args),
         Commands::Ktest(args) => ktest::run(args).await,
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
-        Commands::SpinLint => spin_lint::run_spin_lint_command(),
+        Commands::LockLint => lock_lint::run_lock_lint_command(),
         Commands::Board { command } => board::execute(command).await,
         Commands::Backtrace { command } => backtrace::execute(command),
         Commands::Image(args) => image::run(args).await,
+        Commands::Ovmf(args) => support::ovmf::execute(args).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Axloader { command } => Axloader::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
@@ -338,6 +344,38 @@ mod tests {
                 _ => panic!("expected ktest board command"),
             },
             _ => panic!("expected ktest command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_cross_test() {
+        let cli = TestCli::try_parse_from([
+            "xtask",
+            "cross-test",
+            "--arch",
+            "riscv64",
+            "--package",
+            "riscv_vcpu",
+            "--package",
+            "axvm",
+            "--features",
+            "axvm/host-test",
+            "--no-default-features",
+            "--lib",
+            "ipi",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::CrossTest(args) => {
+                assert_eq!(args.arch, "riscv64");
+                assert_eq!(args.packages, ["riscv_vcpu", "axvm"]);
+                assert_eq!(args.features, ["axvm/host-test"]);
+                assert!(args.no_default_features);
+                assert!(args.lib);
+                assert_eq!(args.name_filter.as_deref(), Some("ipi"));
+            }
+            _ => panic!("expected cross-test command"),
         }
     }
 }

@@ -15,8 +15,9 @@ use std::{
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
+use ostool::ovmf::Arch;
 
-use crate::support::process::ProcessExt;
+use crate::support::{ovmf::OvmfFirmware, process::ProcessExt};
 
 const AXLOADER_PACKAGE: &str = "axloader";
 const AXLOADER_BIN: &str = "axloader";
@@ -25,15 +26,12 @@ const HTTP_SMOKE_BOOT_TIMEOUT: Duration = Duration::from_secs(240);
 const HTTP_SMOKE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
 const HTTP_SMOKE_MAX_ATTEMPTS: usize = 2;
 const QEMU_HOST_GATEWAY: &str = "10.0.2.2";
-const LEGACY_X86_64_UEFI_FIRMWARE_ENV: &str = "AXVISOR_X86_64_UEFI_FIRMWARE";
 
 #[derive(Clone, Copy)]
 struct LoaderSmokeTarget {
-    cargo_target: &'static str,
     arch: &'static str,
+    ovmf_arch: Arch,
     efi_output_file: &'static str,
-    firmware_env: &'static str,
-    firmware_candidates: &'static [&'static str],
     qemu_program: &'static str,
     qemu_args: fn(&Path, &Path) -> Vec<String>,
     kernel_elf: fn() -> Vec<u8>,
@@ -73,13 +71,6 @@ impl SmokeAttemptProgress {
         now >= self.deadline
     }
 }
-
-const X86_64_UEFI_FIRMWARE_CANDIDATES: &[&str] = &[
-    "/usr/share/OVMF/OVMF_CODE_4M.fd",
-    "/usr/share/OVMF/OVMF_CODE.fd",
-    "/usr/share/ovmf/OVMF.fd",
-    "/usr/share/qemu/OVMF.fd",
-];
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct ArgsBuild {
@@ -134,7 +125,7 @@ impl Axloader {
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
         match command {
             Command::Build(args) => build(&self.workspace_root, args),
-            Command::Test(args) => test(&self.workspace_root, args),
+            Command::Test(args) => test(&self.workspace_root, args).await,
         }
     }
 }
@@ -143,13 +134,13 @@ pub fn build(workspace_root: &Path, args: ArgsBuild) -> anyhow::Result<()> {
     run_loader_build(workspace_root, &args.target, args.release || !args.debug)
 }
 
-pub fn test(workspace_root: &Path, args: ArgsTest) -> anyhow::Result<()> {
+pub async fn test(workspace_root: &Path, args: ArgsTest) -> anyhow::Result<()> {
     match args.command {
-        TestCommand::Qemu(args) => test_qemu(workspace_root, args),
+        TestCommand::Qemu(args) => test_qemu(workspace_root, args).await,
     }
 }
 
-fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<()> {
+async fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<()> {
     run_cargo(
         workspace_root,
         ["test", "-p", AXLOADER_PACKAGE, "--all-targets"],
@@ -168,7 +159,7 @@ fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<()> {
     );
     result?;
 
-    run_http_smoke_test(workspace_root, &args.target)
+    run_http_smoke_test(workspace_root, &args.target).await
 }
 
 fn run_loader_build(workspace_root: &Path, target: &str, release: bool) -> anyhow::Result<()> {
@@ -196,23 +187,23 @@ fn run_cargo<'a>(
     command.exec()
 }
 
-fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()> {
+async fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()> {
     let smoke_target = smoke_target(target)?;
 
     println!("axloader http smoke: building UEFI loader ...");
     run_loader_build(workspace_root, target, true)?;
 
-    let firmware = find_uefi_firmware(smoke_target)?;
+    let firmware = OvmfFirmware::fetch(smoke_target.ovmf_arch).await?;
     println!(
         "axloader http smoke: using UEFI firmware {}",
-        firmware.display()
+        firmware.code().display()
     );
     let kernel = (smoke_target.kernel_elf)();
     let attempt_context = SmokeAttemptContext {
         workspace_root,
         target,
         smoke_target,
-        firmware: &firmware,
+        firmware: firmware.code(),
         kernel: &kernel,
     };
     let mut attempt = 1;
@@ -372,61 +363,15 @@ fn axloader_efi_path(workspace_root: &Path, target: &str) -> PathBuf {
 fn smoke_target(target: &str) -> anyhow::Result<LoaderSmokeTarget> {
     match target {
         "x86_64-unknown-uefi" => Ok(LoaderSmokeTarget {
-            cargo_target: "x86_64-unknown-uefi",
             arch: "x86_64",
+            ovmf_arch: Arch::X64,
             efi_output_file: "BOOTX64.EFI",
-            firmware_env: "AXLOADER_X86_64_UEFI_FIRMWARE",
-            firmware_candidates: X86_64_UEFI_FIRMWARE_CANDIDATES,
             qemu_program: "qemu-system-x86_64",
             qemu_args: x86_64_qemu_args,
             kernel_elf: minimal_x86_64_kernel_elf,
         }),
         _ => bail!("axloader HTTP smoke does not support target `{target}`"),
     }
-}
-
-fn find_uefi_firmware(target: LoaderSmokeTarget) -> anyhow::Result<PathBuf> {
-    if let Some(path) = std::env::var_os(target.firmware_env) {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-    if target.firmware_env == "AXLOADER_X86_64_UEFI_FIRMWARE"
-        && let Some(path) = std::env::var_os(LEGACY_X86_64_UEFI_FIRMWARE_ENV)
-    {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-
-    for path in uefi_firmware_candidates(target, &std::env::temp_dir()) {
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-
-    bail!(
-        "UEFI firmware not found for {}; set {} or install ovmf",
-        target.cargo_target,
-        target.firmware_env
-    )
-}
-
-fn uefi_firmware_candidates(target: LoaderSmokeTarget, temp_dir: &Path) -> Vec<PathBuf> {
-    let mut candidates = Vec::with_capacity(target.firmware_candidates.len() + 1);
-    if target.arch == "x86_64" {
-        candidates.push(
-            temp_dir
-                .join("ostool")
-                .join("ovmf")
-                .join("x64")
-                .join("code.fd"),
-        );
-    }
-    candidates.extend(target.firmware_candidates.iter().map(PathBuf::from));
-    candidates
 }
 
 fn spawn_axloader_qemu(
@@ -702,20 +647,6 @@ mod tests {
         assert!(boot_line.contains("\"kernel_size\":4096"));
         assert!(boot_line.contains("\"arch\":\"x86_64\""));
         assert!(boot_line.ends_with('\n'));
-    }
-
-    #[test]
-    fn x86_64_firmware_search_prefers_ostool_cache() {
-        let temp = tempfile::tempdir().unwrap();
-        let cached_firmware = temp.path().join("ostool/ovmf/x64/code.fd");
-        fs::create_dir_all(cached_firmware.parent().unwrap()).unwrap();
-        fs::write(&cached_firmware, b"OVMF").unwrap();
-        let target = smoke_target("x86_64-unknown-uefi").unwrap();
-
-        let candidates = uefi_firmware_candidates(target, temp.path());
-        let selected = candidates.into_iter().find(|path| path.is_file());
-
-        assert_eq!(selected, Some(cached_firmware));
     }
 
     #[test]

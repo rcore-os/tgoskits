@@ -77,9 +77,9 @@ mod tests {
             let mut ls = Vec::new();
             for _ in 0..10 {
                 let ls2 = host.probe_devices().await.unwrap();
-                if !ls2.is_empty() {
-                    info!("found {} devices", ls2.len());
-                    ls = ls2;
+                if !ls2.connected.is_empty() {
+                    info!("found {} devices", ls2.connected.len());
+                    ls = ls2.connected;
                     break;
                 }
                 sleep(Duration::from_millis(1000)).await;

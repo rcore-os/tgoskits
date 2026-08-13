@@ -2,6 +2,28 @@ use page_table_generic::*;
 mod mocks;
 use mocks::*;
 
+#[derive(Clone, Copy)]
+struct CanonicalT4kL4;
+
+impl TableMeta for CanonicalT4kL4 {
+    type P = PteImpl;
+
+    const PAGE_SIZE: usize = 0x1000;
+    const LEVEL_BITS: &'static [usize] = &[9, 9, 9, 9];
+    const MAX_BLOCK_LEVEL: usize = 3;
+
+    fn canonicalize_vaddr(vaddr: VirtAddr) -> VirtAddr {
+        let address = vaddr.as_usize() & ((1usize << 48) - 1);
+        VirtAddr::from_usize(if address & (1usize << 47) == 0 {
+            address
+        } else {
+            address | !((1usize << 48) - 1)
+        })
+    }
+
+    fn flush(_vaddr: Option<VirtAddr>) {}
+}
+
 // ===== 地址翻译测试 =====
 
 #[test]
@@ -74,7 +96,7 @@ fn test_translate_huge_page() {
                     "大页地址翻译失败: vaddr={:#x}, expected={:#x}, got={:#x}",
                     vaddr,
                     expected_paddr,
-                    translated.raw()
+                    translated.as_usize()
                 );
             }
             Err(e) => {
@@ -92,7 +114,7 @@ fn test_translate_huge_page() {
             println!(
                 "DEBUG: vaddr=0x{:x}, PTE paddr=0x{:x}",
                 vaddr,
-                pte.to_config(false).paddr.raw()
+                pte.to_config(false).paddr.as_usize()
             );
         }
     }
@@ -156,11 +178,11 @@ fn test_translate_multiple_mappings() {
 
     // 验证翻译结果的正确性
     if pte.to_config(false).huge {
-        let expected = pte.to_config(false).paddr.raw() + (0x200000 % (2 * MB));
-        assert_eq!(result.raw(), expected);
+        let expected = pte.to_config(false).paddr.as_usize() + (0x200000 % (2 * MB));
+        assert_eq!(result.as_usize(), expected);
     } else {
-        let expected = pte.to_config(false).paddr.raw() + (0x200000 % 0x1000);
-        assert_eq!(result.raw(), expected);
+        let expected = pte.to_config(false).paddr.as_usize() + (0x200000 % 0x1000);
+        assert_eq!(result.as_usize(), expected);
     }
 
     // 测试0x250000的翻译
@@ -169,11 +191,11 @@ fn test_translate_multiple_mappings() {
 
     // 根据PTE类型验证翻译结果
     if pte.to_config(false).huge {
-        let expected = pte.to_config(false).paddr.raw() + (0x250000 % (2 * MB));
-        assert_eq!(result.raw(), expected);
+        let expected = pte.to_config(false).paddr.as_usize() + (0x250000 % (2 * MB));
+        assert_eq!(result.as_usize(), expected);
     } else {
-        let expected = pte.to_config(false).paddr.raw() + (0x250000 % 0x1000);
-        assert_eq!(result.raw(), expected);
+        let expected = pte.to_config(false).paddr.as_usize() + (0x250000 % 0x1000);
+        assert_eq!(result.as_usize(), expected);
     }
 
     // 测试新的translate方法返回页表项
@@ -262,25 +284,25 @@ fn test_translate_complex_layout() {
         // 验证翻译的正确性，而不是假设特定的映射类型
         if pte.to_config(false).huge {
             // 大页映射：验证大页偏移计算
-            let expected = pte.to_config(false).paddr.raw() + (vaddr % (2 * MB));
+            let expected = pte.to_config(false).paddr.as_usize() + (vaddr % (2 * MB));
             assert_eq!(
-                translated.raw(),
+                translated.as_usize(),
                 expected,
                 "大页映射翻译失败: vaddr={:#x}, expected={:#x}, got={:#x}",
                 vaddr,
                 expected,
-                translated.raw()
+                translated.as_usize()
             );
         } else {
             // 普通页面映射：验证页面偏移计算
-            let expected = pte.to_config(false).paddr.raw() + (vaddr % 0x1000);
+            let expected = pte.to_config(false).paddr.as_usize() + (vaddr % 0x1000);
             assert_eq!(
-                translated.raw(),
+                translated.as_usize(),
                 expected,
                 "普通页面映射翻译失败: vaddr={:#x}, expected={:#x}, got={:#x}",
                 vaddr,
                 expected,
-                translated.raw()
+                translated.as_usize()
             );
         }
     }
@@ -363,4 +385,29 @@ fn test_translate_performance() {
         let (_, pte) = pg.translate(vaddr.into()).unwrap();
         assert!(pte.to_config(false).valid, "页表项应该有效");
     }
+}
+
+#[test]
+fn walker_reports_canonical_high_addresses() {
+    const KERNEL_PAGE: usize = 0xffff_8000_0020_0000;
+
+    let mut page_table = PageTable::<CanonicalT4kL4, Fram4k>::new(Fram4k).unwrap();
+    page_table
+        .map_page(
+            VirtAddr::from_usize(KERNEL_PAGE),
+            PhysAddr::from_usize(0x40_0000),
+            0x1000,
+            MappingFlags::READ.into(),
+        )
+        .unwrap();
+
+    let mappings = page_table
+        .walk(
+            VirtAddr::from_usize(0xffff_8000_0000_0000),
+            VirtAddr::from_usize(usize::MAX),
+        )
+        .filter(|entry| entry.is_final_mapping)
+        .collect::<Vec<_>>();
+    assert_eq!(mappings.len(), 1);
+    assert_eq!(mappings[0].vaddr, VirtAddr::from_usize(KERNEL_PAGE));
 }

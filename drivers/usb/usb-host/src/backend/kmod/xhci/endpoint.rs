@@ -1,8 +1,15 @@
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    vec,
+    vec::Vec,
+};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use dma_api::DmaDirection;
+use futures::task::AtomicWaker;
 use mbarrier::mb;
 use usb_if::{
     descriptor::{self, EndpointDescriptor},
@@ -77,13 +84,20 @@ struct SubmittedTd {
     kind: SubmittedTdKind,
     trb_count: usize,
     cancelled: bool,
+    waker: AtomicWaker,
 }
 
-#[derive(Clone)]
 enum SubmittedTdKind {
     Normal { completion_trb: TransferId },
     Control(ControlTd),
     Iso { packets: Vec<IsoPacketTd> },
+}
+
+#[derive(Clone, Copy)]
+enum ReclaimTarget {
+    Normal(TransferId),
+    Control(ControlTd),
+    Iso,
 }
 
 #[derive(Clone, Copy)]
@@ -97,13 +111,14 @@ struct IsoPacketTd {
 pub struct Endpoint {
     slot_id: SlotId,
     dci: Dci,
-    pub ring: SendRing<TransferEvent>,
+    ring: SendRing<TransferEvent>,
     bell: Arc<Mutex<SlotBell>>,
     cmd: CommandRing,
     halted: Arc<AtomicBool>,
     reset_in_progress: Arc<AtomicBool>,
     next_request_id: u64,
     inflight: BTreeMap<EndpointRequestId, SubmittedTd>,
+    stopped_completions: BTreeSet<EndpointRequestId>,
     trb_to_request: BTreeMap<TransferId, EndpointRequestId>,
     outstanding_trbs: usize,
     kernel: Kernel,
@@ -113,9 +128,6 @@ pub struct Endpoint {
     iso_start_asap: bool,
     next_iso_frame_id: u16,
 }
-
-unsafe impl Send for Endpoint {}
-unsafe impl Sync for Endpoint {}
 
 const ENDPOINT_RING_PAGES: usize = 16;
 
@@ -140,6 +152,7 @@ impl Endpoint {
             reset_in_progress: Arc::new(AtomicBool::new(false)),
             next_request_id: 1,
             inflight: BTreeMap::new(),
+            stopped_completions: BTreeSet::new(),
             trb_to_request: BTreeMap::new(),
             outstanding_trbs: 0,
             kernel: kernel.clone(),
@@ -170,7 +183,8 @@ impl Endpoint {
     fn doorbell(&mut self) {
         let mut bell = doorbell::Register::default();
         bell.set_doorbell_target(self.dci.into());
-        self.bell.lock().ring(bell);
+        // SAFETY: endpoint doorbell submission is serialized by the xHCI path.
+        unsafe { self.bell.lock_raw() }.ring(bell);
     }
 
     pub fn ring(&self) -> &SendRing<TransferEvent> {
@@ -239,7 +253,7 @@ impl Endpoint {
         event_trb: TransferId,
         event: TransferEvent,
     ) -> Result<Transfer, TransferError> {
-        let submitted = self.inflight.remove(&request_id).ok_or_else(|| {
+        let submitted = self.remove_request(request_id).ok_or_else(|| {
             warn!(
                 "xhci: completion for missing request dci={} request_id={} event_trb={:#x}",
                 self.dci.raw(),
@@ -248,6 +262,22 @@ impl Endpoint {
             );
             TransferError::InvalidEndpoint
         })?;
+
+        if submitted.cancelled {
+            return Err(TransferError::Cancelled);
+        }
+
+        if matches!(event.completion_code(), Ok(CompletionCode::StallError)) {
+            self.halted.store(true, Ordering::Release);
+        }
+        if !matches!(submitted.kind, SubmittedTdKind::Iso { .. }) {
+            self.validate_completion_code(event, &submitted.transfer)?;
+        }
+        self.transfer_from_completion(submitted, event_trb, event)
+    }
+
+    fn remove_request(&mut self, request_id: EndpointRequestId) -> Option<SubmittedTd> {
+        let submitted = self.inflight.remove(&request_id)?;
         self.outstanding_trbs = self.outstanding_trbs.saturating_sub(submitted.trb_count);
         match &submitted.kind {
             SubmittedTdKind::Normal { completion_trb } => {
@@ -264,18 +294,7 @@ impl Endpoint {
                 }
             }
         }
-
-        if submitted.cancelled {
-            return Err(TransferError::Cancelled);
-        }
-
-        if matches!(event.completion_code(), Ok(CompletionCode::StallError)) {
-            self.halted.store(true, Ordering::Release);
-        }
-        if !matches!(submitted.kind, SubmittedTdKind::Iso { .. }) {
-            self.validate_completion_code(event, &submitted.transfer)?;
-        }
-        self.transfer_from_completion(submitted, event_trb, event)
+        Some(submitted)
     }
 
     fn transfer_from_completion(
@@ -614,6 +633,63 @@ impl Endpoint {
             TransferRequest::Isochronous { packets, .. } => packets.len().max(1),
         }
     }
+
+    pub(crate) fn stop_future(&self) -> EndpointResetFuture {
+        let slot_id = self.slot_id.as_u8();
+        let endpoint_id = self.dci.as_u8();
+        let mut command_ring = self.cmd.clone();
+        Box::pin(async move {
+            let stop_endpoint = *command::StopEndpoint::default()
+                .set_endpoint_id(endpoint_id)
+                .set_slot_id(slot_id);
+            command_ring
+                .cmd_request(command::Allowed::StopEndpoint(stop_endpoint))
+                .await?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn retire_all_after_stop(&mut self) {
+        let request_ids = self.inflight.keys().copied().collect::<Vec<_>>();
+        for request_id in request_ids {
+            if let Some(submitted) = self.remove_request(request_id) {
+                self.stopped_completions.insert(request_id);
+                submitted.waker.wake();
+            }
+        }
+        debug_assert_eq!(self.outstanding_trbs, 0);
+        debug_assert!(self.trb_to_request.is_empty());
+    }
+
+    pub(crate) fn resume_future(&self) -> EndpointResetFuture {
+        let (dequeue_pointer, dequeue_cycle_state) = self.ring.enqueue_pointer();
+        let slot_id = self.slot_id.as_u8();
+        let endpoint_id = self.dci.as_u8();
+        let mut command_ring = self.cmd.clone();
+        let bell = self.bell.clone();
+        Box::pin(async move {
+            let mut set_dequeue_pointer = command::SetTrDequeuePointer::default();
+            set_dequeue_pointer
+                .set_new_tr_dequeue_pointer(dequeue_pointer.raw())
+                .set_endpoint_id(endpoint_id)
+                .set_slot_id(slot_id);
+            if dequeue_cycle_state {
+                set_dequeue_pointer.set_dequeue_cycle_state();
+            } else {
+                set_dequeue_pointer.clear_dequeue_cycle_state();
+            }
+            command_ring
+                .cmd_request(command::Allowed::SetTrDequeuePointer(set_dequeue_pointer))
+                .await?;
+
+            let mut doorbell = doorbell::Register::default();
+            doorbell.set_doorbell_target(endpoint_id);
+            // SAFETY: Configure rollback keeps the endpoint unpublished while
+            // the task path restores its dequeue pointer and rings the bell.
+            unsafe { bell.lock_raw() }.ring(doorbell);
+            Ok(())
+        })
+    }
 }
 
 impl EndpointOp for Endpoint {
@@ -628,9 +704,7 @@ impl EndpointOp for Endpoint {
 
         let mut data_bus_addr = 0;
         if transfer.buffer_len() > 0 {
-            if matches!(transfer.direction, Direction::Out) {
-                transfer.prepare_for_device_all();
-            }
+            transfer.prepare_for_device_all();
             data_bus_addr = transfer.dma_addr();
             let buffer_end = data_bus_addr + transfer.buffer_len() as u64;
             if data_bus_addr > self.kernel.dma_mask() || buffer_end > self.kernel.dma_mask() {
@@ -771,6 +845,7 @@ impl EndpointOp for Endpoint {
                 kind,
                 trb_count: required_trbs,
                 cancelled: false,
+                waker: AtomicWaker::new(),
             },
         );
         mb();
@@ -784,27 +859,39 @@ impl EndpointOp for Endpoint {
         id: RequestId,
     ) -> Option<Result<TransferCompletion, TransferError>> {
         let request_id = Self::private_request_id(id);
-        let kind = self.inflight.get(&request_id)?.kind.clone();
-        match kind {
-            SubmittedTdKind::Normal { completion_trb } => {
+        if self.stopped_completions.remove(&request_id) {
+            return Some(Err(TransferError::Cancelled));
+        }
+        let target = match &self.inflight.get(&request_id)?.kind {
+            SubmittedTdKind::Normal { completion_trb } => ReclaimTarget::Normal(*completion_trb),
+            SubmittedTdKind::Control(control_td) => ReclaimTarget::Control(*control_td),
+            SubmittedTdKind::Iso { .. } => ReclaimTarget::Iso,
+        };
+        match target {
+            ReclaimTarget::Normal(completion_trb) => {
                 let event = self.ring.get_finished(completion_trb.0)?;
                 Some(
                     self.complete_request(request_id, completion_trb, event)
                         .map(|transfer| transfer_to_completion(id, transfer)),
                 )
             }
-            SubmittedTdKind::Control(control_td) => {
+            ReclaimTarget::Control(control_td) => {
                 self.reclaim_control_request(id, request_id, control_td)
             }
-            SubmittedTdKind::Iso { .. } => self.reclaim_iso_request(id, request_id),
+            ReclaimTarget::Iso => self.reclaim_iso_request(id, request_id),
         }
     }
 
     fn register_waker(&self, id: RequestId, cx: &mut core::task::Context<'_>) {
         let request_id = Self::private_request_id(id);
+        if self.stopped_completions.contains(&request_id) {
+            cx.waker().wake_by_ref();
+            return;
+        }
         let Some(submitted) = self.inflight.get(&request_id) else {
             return;
         };
+        submitted.waker.register(cx.waker());
         match &submitted.kind {
             SubmittedTdKind::Normal { completion_trb } => {
                 self.ring.register_cx(completion_trb.0, cx);
@@ -958,5 +1045,239 @@ impl EndpointDescriptorExt for EndpointDescriptor {
                 usb_if::transfer::Direction::In => xhci::context::EndpointType::InterruptIn,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{
+        alloc::{alloc_zeroed, dealloc},
+        sync::Arc,
+    };
+    use core::{
+        alloc::Layout,
+        num::NonZeroUsize,
+        ptr::NonNull,
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
+    };
+
+    use ax_sync::{SpinLock as Mutex, SpinRwLock as RwLock};
+    use dma_api::{DmaAllocHandle, DmaConstraints, DmaError, DmaMapHandle, DmaOp};
+    use usb_if::{endpoint::TransferRequest, err::TransferError};
+
+    use super::*;
+    use crate::{
+        backend::kmod::xhci::{reg::XhciRegisters, transfer::TransferResultHandler},
+        osal::KernelOp,
+    };
+
+    struct TestKernel;
+
+    static TEST_DMA_ADDR: AtomicU64 = AtomicU64::new(0x1000);
+    static ACTIVE_STREAMING_MAPPINGS: AtomicUsize = AtomicUsize::new(0);
+
+    impl DmaOp for TestKernel {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            // SAFETY: The test kernel models contiguous DMA with the same heap-backed
+            // allocation used for coherent DMA below.
+            unsafe { self.alloc_coherent(constraints, layout) }
+        }
+
+        unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+            // SAFETY: Contiguous handles are allocated by `alloc_coherent` above.
+            unsafe { self.dealloc_coherent(handle) }
+                .expect("test coherent DMA release must succeed")
+        }
+
+        unsafe fn alloc_coherent(
+            &self,
+            constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            // SAFETY: Unit tests pass valid layouts, and the allocation remains owned by
+            // the returned DMA handle until `dealloc_coherent` consumes it.
+            let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+            let align = constraints.align.max(layout.align()).max(1) as u64;
+            let size = layout.size().max(1) as u64;
+            let current = TEST_DMA_ADDR.fetch_add(size + align, AtomicOrdering::Relaxed);
+            let dma_addr = (current + align - 1) & !(align - 1);
+            // SAFETY: `ptr` and `layout` describe the allocation above. The fake bus
+            // address is deterministic and never reaches hardware.
+            Some(unsafe { DmaAllocHandle::new(ptr, dma_addr.into(), layout) })
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
+            // SAFETY: The handle was allocated by `alloc_zeroed` with this exact layout.
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+            Ok(())
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            constraints: DmaConstraints,
+            addr: NonNull<u8>,
+            size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            let layout = Layout::from_size_align(size.get(), 1)?;
+            let align = constraints.align.max(1) as u64;
+            let current =
+                TEST_DMA_ADDR.fetch_add(size.get() as u64 + align, AtomicOrdering::Relaxed);
+            let dma_addr = (current + align - 1) & !(align - 1);
+            // SAFETY: The mapped buffer remains owned by the test until the request is
+            // retired, and the mapping is never submitted to real hardware.
+            let handle = unsafe { DmaMapHandle::new(addr, dma_addr.into(), layout, None) };
+            ACTIVE_STREAMING_MAPPINGS.fetch_add(1, AtomicOrdering::Relaxed);
+            Ok(handle)
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {
+            ACTIVE_STREAMING_MAPPINGS.fetch_sub(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    impl KernelOp for TestKernel {
+        fn delay(&self, _duration: core::time::Duration) {}
+    }
+
+    static TEST_KERNEL: TestKernel = TestKernel;
+
+    #[repr(align(64))]
+    struct AlignedMmio([u32; 4096]);
+
+    fn test_endpoint() -> (Box<AlignedMmio>, Endpoint) {
+        let mut mmio = Box::new(AlignedMmio([0; 4096]));
+        // The xHCI accessor requires a doorbell entry for slot one and a port array.
+        mmio.0[1] = 2 | (1 << 24);
+        let mmio_base = NonNull::new(mmio.0.as_mut_ptr().cast::<u8>()).unwrap();
+        let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
+        let slot_id = SlotId::from(1);
+        let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
+        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let command_ring =
+            CommandRing::new(DmaDirection::Bidirectional, &kernel, registers).unwrap();
+        let endpoint = Endpoint::new(slot_id, Dci::from(2), &kernel, bell, command_ring).unwrap();
+        (mmio, endpoint)
+    }
+
+    #[test]
+    fn stopped_iso_request_publishes_cancelled_exactly_once() {
+        let (_mmio, mut endpoint) = test_endpoint();
+        let payload = [0u8; 128];
+        let request_id = endpoint
+            .submit_request(TransferRequest::iso_out(&payload, &[64, 64]))
+            .unwrap();
+
+        assert_eq!(endpoint.inflight.len(), 1);
+        assert_eq!(endpoint.trb_to_request.len(), 2);
+        assert_eq!(endpoint.outstanding_trbs, 2);
+        assert_eq!(ACTIVE_STREAMING_MAPPINGS.load(AtomicOrdering::Relaxed), 1);
+
+        endpoint.cancel_request(request_id).unwrap();
+        endpoint.retire_all_after_stop();
+
+        assert!(endpoint.inflight.is_empty());
+        assert!(endpoint.trb_to_request.is_empty());
+        assert_eq!(endpoint.outstanding_trbs, 0);
+        assert_eq!(ACTIVE_STREAMING_MAPPINGS.load(AtomicOrdering::Relaxed), 0);
+        assert!(matches!(
+            endpoint.reclaim_request(request_id),
+            Some(Err(TransferError::Cancelled))
+        ));
+        assert!(endpoint.reclaim_request(request_id).is_none());
+    }
+
+    #[test]
+    fn pending_ring_registration_does_not_replace_active_completion_route() {
+        let mut mmio = Box::new(AlignedMmio([0; 4096]));
+        mmio.0[1] = 2 | (1 << 24);
+        let mmio_base = NonNull::new(mmio.0.as_mut_ptr().cast::<u8>()).unwrap();
+        let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
+        let slot_id = SlotId::from(1);
+        let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
+        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let command_ring =
+            CommandRing::new(DmaDirection::Bidirectional, &kernel, registers.clone()).unwrap();
+        let active = Endpoint::new(
+            slot_id,
+            Dci::from(2),
+            &kernel,
+            bell.clone(),
+            command_ring.clone(),
+        )
+        .unwrap();
+        let pending = Endpoint::new(slot_id, Dci::from(2), &kernel, bell, command_ring).unwrap();
+        let active_addr = active.ring.bus_addr();
+        let handler = TransferResultHandler::new(registers);
+
+        handler.register_queue(1, 2, &active.ring).unwrap();
+        assert!(matches!(
+            handler.register_queue(1, 2, &pending.ring),
+            Err(TransferError::QueueFull)
+        ));
+        // SAFETY: The test does not run an IRQ handler concurrently with route
+        // registration and both endpoint rings outlive the dispatch.
+        unsafe {
+            handler.set_finished(1, 2, active_addr, TransferEvent::default());
+        }
+
+        assert!(active.ring.get_finished(active_addr).is_some());
+    }
+
+    #[test]
+    fn failed_multi_endpoint_route_replacement_preserves_all_active_routes() {
+        let mut mmio = Box::new(AlignedMmio([0; 4096]));
+        mmio.0[1] = 2 | (1 << 24);
+        let mmio_base = NonNull::new(mmio.0.as_mut_ptr().cast::<u8>()).unwrap();
+        let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
+        let slot_id = SlotId::from(1);
+        let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
+        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let command_ring =
+            CommandRing::new(DmaDirection::Bidirectional, &kernel, registers.clone()).unwrap();
+        let old = Endpoint::new(
+            slot_id,
+            Dci::from(2),
+            &kernel,
+            bell.clone(),
+            command_ring.clone(),
+        )
+        .unwrap();
+        let unrelated = Endpoint::new(
+            slot_id,
+            Dci::from(3),
+            &kernel,
+            bell.clone(),
+            command_ring.clone(),
+        )
+        .unwrap();
+        let pending = Endpoint::new(slot_id, Dci::from(2), &kernel, bell, command_ring).unwrap();
+        let old_addr = old.ring.bus_addr();
+        let handler = TransferResultHandler::new(registers);
+        handler.register_queue(1, 2, &old.ring).unwrap();
+        handler.register_queue(1, 3, &unrelated.ring).unwrap();
+
+        assert!(matches!(
+            handler.replace_queues(
+                1,
+                core::iter::once((2, old.ring.finished_handle())),
+                core::iter::once((3, pending.ring.finished_handle())),
+            ),
+            Err(TransferError::QueueFull)
+        ));
+        // SAFETY: No IRQ handler runs concurrently and all rings outlive this
+        // deterministic route transaction test.
+        unsafe {
+            handler.set_finished(1, 2, old_addr, TransferEvent::default());
+        }
+        assert!(old.ring.get_finished(old_addr).is_some());
     }
 }

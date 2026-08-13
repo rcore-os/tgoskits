@@ -38,6 +38,7 @@ pub(crate) fn secondary_entry(cpu_meta_paddr: usize) {
         let virt = crate::mem::phys_to_virt(cpu_meta_paddr);
         &*(virt as *const crate::smp::PerCpuMeta)
     };
+    crate::smp::synchronize_secondary_boot(cpu_meta.cpu_idx);
 
     unsafe extern "Rust" {
         fn __someboot_secondary(cpu_meta: &PerCpuMeta);

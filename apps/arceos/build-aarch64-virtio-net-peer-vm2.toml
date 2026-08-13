@@ -1,0 +1,6 @@
+env = { AXVIRTIO_VM_TAG = "VM2", AXVIRTIO_ROLE = "client", AXVIRTIO_LOCAL_IP = "10.0.2.16", AXVIRTIO_PEER_IP = "10.0.2.15" }
+features = ["net", "multitask", "ax-driver/virtio-net"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+max_cpu_num = 1
+to_bin = true

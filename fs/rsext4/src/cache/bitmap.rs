@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use ax_kspin::SpinNoPreempt as SpinMutex;
+use ax_sync::SpinLock as SpinMutex;
 use log::debug;
 
 use crate::{

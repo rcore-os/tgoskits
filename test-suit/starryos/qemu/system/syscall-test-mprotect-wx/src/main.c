@@ -170,7 +170,7 @@ static int test_protection_faults(void)
 
     /* noexec: 写码但不 mprotect EXEC, 跳转执行 -> fault(W^X)。
      * 内核对非 EXEC 映射置 PTE no-execute 位(x86 NX / aarch64 UXN / riscv !X /
-     * loongarch NX, 见 ax-page-table-entry <arch>.rs 的 MappingFlags->PTEFlags:
+     * loongarch NX, 见 components/axcpu/src/<arch>/paging.rs 的 MappingFlags->PTE flags:
      * !EXECUTE 时置 NX)。x86/aarch64/riscv64 QEMU 在取指时强制该位 -> 子进程 fault。
      * ★loongarch64: QEMU TCG 只强制读写权限(上面 PROT_NONE/RO 已验证 fault), 不在
      * 取指时强制 NX, 故非 EXEC 页仍可执行(模拟器限制, 非内核缺陷; 内核已正确置 NX

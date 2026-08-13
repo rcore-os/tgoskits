@@ -92,6 +92,7 @@ impl<T: ?Sized> ListEntry<T> {
 /// The links of objects added to a list are owned by the list.
 pub struct RawList<G: GetLinks> {
     head: Option<NonNull<G::EntryType>>,
+    len: usize,
 }
 
 impl<G: GetLinks> Default for RawList<G> {
@@ -103,7 +104,7 @@ impl<G: GetLinks> Default for RawList<G> {
 impl<G: GetLinks> RawList<G> {
     /// Constructs a new empty RawList.
     pub const fn new() -> Self {
-        Self { head: None }
+        Self { head: None, len: 0 }
     }
 
     /// Returns an iterator for the list starting at the first entry.
@@ -114,6 +115,11 @@ impl<G: GetLinks> RawList<G> {
     /// Returns whether the RawList is empty.
     pub const fn is_empty(&self) -> bool {
         self.head.is_none()
+    }
+
+    /// Returns the number of elements currently in the list.
+    pub const fn len(&self) -> usize {
+        self.len
     }
 
     fn insert_after_priv(
@@ -158,6 +164,7 @@ impl<G: GetLinks> RawList<G> {
         // SAFETY: The links are now owned by the list, so it is safe to get a mutable reference.
         let new_entry = unsafe { &mut *links.entry.get() };
         self.insert_after_priv(existing, new_entry, Some(new));
+        self.len += 1;
         true
     }
 
@@ -187,6 +194,7 @@ impl<G: GetLinks> RawList<G> {
                 new_entry.prev = new_ptr;
             }
         }
+        self.len += 1;
         true
     }
 
@@ -253,6 +261,7 @@ impl<G: GetLinks> RawList<G> {
         entry.next = None;
         entry.prev = None;
         links.release_after_removal();
+        self.len -= 1;
         true
     }
 
@@ -666,5 +675,65 @@ mod tests {
             unsafe { list.insert_after(v[i].as_ref().into(), extra.as_ref().into()) };
             v.insert(i + 1, extra);
         });
+    }
+
+    #[test]
+    fn test_len() {
+        const MAX: usize = 10;
+        let v = build_vector(MAX);
+        let mut list = super::RawList::<Example>::new();
+
+        // An empty list must report a length of zero.
+        assert_eq!(list.len(), 0);
+        assert!(list.is_empty());
+
+        // `len()` must track every successful `push_back` one-for-one.
+        for n in 1..=MAX {
+            // SAFETY: The entry was allocated above, it's not in any lists yet, is never moved,
+            // and outlives the list.
+            unsafe { list.push_back(NonNull::from(&*v[n - 1])) };
+            assert_eq!(list.len(), n);
+        }
+
+        // Inserting after an existing element must also grow the length by exactly one.
+        let extra = Box::new(Example {
+            links: super::Links::new(),
+        });
+        // SAFETY: `v[0]` is on the list; `extra` isn't in any list yet, isn't moved, and
+        // outlives the list.
+        assert!(unsafe { list.insert_after(v[0].as_ref().into(), extra.as_ref().into()) });
+        assert_eq!(list.len(), MAX + 1);
+
+        // Removing an entry that is not on the list must be a no-op: it must not change the
+        // length and, critically, must not underflow it.
+        let not_inserted = Box::new(Example {
+            links: super::Links::new(),
+        });
+        // SAFETY: `not_inserted` was never inserted into `list`.
+        assert!(!unsafe { list.remove(&not_inserted) });
+        assert_eq!(list.len(), MAX + 1);
+
+        // Remove the extra element inserted above, then remove every original element one by
+        // one, checking that `len()` equals the number of live nodes after every removal.
+        // SAFETY: `extra` is on the list and hasn't been removed yet.
+        assert!(unsafe { list.remove(&extra) });
+        assert_eq!(list.len(), MAX);
+
+        for n in (0..MAX).rev() {
+            // SAFETY: `v[n]` was added to the list above, and wasn't removed yet.
+            assert!(unsafe { list.remove(&v[n]) });
+            assert_eq!(list.len(), n);
+
+            // Removing the same (now unlinked) entry again must be a no-op and must not
+            // underflow the counter.
+            // SAFETY: `v[n]` is no longer on any list, so calling `remove` again is a query,
+            // not a real removal.
+            assert!(!unsafe { list.remove(&v[n]) });
+            assert_eq!(list.len(), n);
+        }
+
+        // A fully drained list must report a length of zero again.
+        assert_eq!(list.len(), 0);
+        assert!(list.is_empty());
     }
 }

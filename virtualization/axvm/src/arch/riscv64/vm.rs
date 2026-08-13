@@ -40,7 +40,7 @@ impl Riscv64Arch {
                 .unwrap_or_default();
             let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
                 Ok(RiscvVcpuCreateConfig {
-                    hart_id: placement.id,
+                    hart_id: placement.phys_cpu_id,
                     dtb_addr: dtb_addr.as_usize(),
                 })
             })?;

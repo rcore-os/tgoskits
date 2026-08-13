@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7](https://github.com/rcore-os/tgoskits/compare/rdif-pcie-v0.2.6...rdif-pcie-v0.2.7) - 2026-08-09
+
+### Other
+
+- updated the following local packages: axtest, rdif-base
+
 ## [0.2.6](https://github.com/rcore-os/tgoskits/compare/rdif-pcie-v0.2.5...rdif-pcie-v0.2.6) - 2026-08-03
 
 ### Other

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use rockchip_soc::{Cru, SocType};

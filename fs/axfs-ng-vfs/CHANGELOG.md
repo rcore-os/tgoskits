@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.8](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.7...axfs-ng-vfs-v0.5.8) - 2026-08-09
+
+### Fixed
+
+- *(axvisor)* correct shell filesystem command handling ([#1616](https://github.com/rcore-os/tgoskits/pull/1616))
+- *(starry-fs)* complete mount contexts and notifications ([#1902](https://github.com/rcore-os/tgoskits/pull/1902))
+
+### Other
+
+- *(repo)* move filesystem crates to fs/ directory ([#1867](https://github.com/rcore-os/tgoskits/pull/1867))
+
 ## [0.5.7](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.6...axfs-ng-vfs-v0.5.7) - 2026-08-03
 
 ### Added

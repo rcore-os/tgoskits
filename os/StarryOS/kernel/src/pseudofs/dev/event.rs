@@ -25,7 +25,6 @@ use ax_runtime::hal::{
     irq::IrqId,
     time::{monotonic_time_nanos, wall_time},
 };
-use ax_sync::spin::SpinNoIrq as Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bitmaps::Bitmap;
@@ -38,6 +37,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 use crate::{
     mm::UserPtr,
     pseudofs::{Device, DeviceOps, DirMapping, SimpleFs},
+    sync::IrqMutex as Mutex,
 };
 const KEY_CNT: usize = EventType::Key.bits_count();
 
@@ -129,7 +129,7 @@ pub struct EventDev {
     waiters: PollSet,
     /// IRQ domain id the runtime resolved for the underlying driver.
     irq: Option<IrqId>,
-    irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
+    irq_handle: ax_lazyinit::OnceLock<ax_runtime::hal::irq::IrqHandle>,
     /// Monotonic timestamp (ns) of the last successful IRQ drain.
     /// When this is recent, IRQ delivery is considered healthy and the
     /// polling fallback stays at low frequency even with active waiters.
@@ -198,7 +198,7 @@ impl EventDev {
             }),
             waiters: PollSet::new(),
             irq,
-            irq_handle: spin::Once::new(),
+            irq_handle: ax_lazyinit::OnceLock::new(),
             last_irq_event: AtomicU64::new(0),
             polling_requested: AtomicBool::new(false),
             ev_bits,
@@ -327,7 +327,7 @@ impl EventDev {
 
     fn handle_irq(&self) -> ax_runtime::hal::irq::IrqReturn {
         // Use `lock()` rather than `try_lock()` so the virtio ISR is always
-        // acknowledged. `SpinNoIrq` guarantees the holder has local IRQs
+        // acknowledged. `IrqMutex` guarantees the holder has local IRQs
         // disabled, so this IRQ can only fire on a different CPU. Without the
         // ack, a level-triggered shared IRQ line stays asserted and can starve
         // other devices on the same line.

@@ -68,7 +68,6 @@ use core::{
 };
 
 use ax_alloc::GlobalPage;
-use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::paging::MappingFlags;
 use ax_task::IrqNotify;
 
@@ -77,7 +76,7 @@ use super::{
     sampling::{self, SampleSlot},
     sideband::{self, Mmap2Info, SidebandTarget},
 };
-use crate::task::Thread;
+use crate::{sync::IrqMutex, task::Thread};
 
 // `PROT_*` / `MAP_*` values for the `prot`/`flags` fields of MMAP2 records.
 const PROT_READ: u32 = 1;
@@ -199,9 +198,9 @@ pub struct PerTaskCounter {
     /// poll machinery. Set in process context by [`set_ring`](Self::set_ring),
     /// read in process context (`poll`/`register`/`free_hw`); never touched by
     /// the IRQ handler (which reaches the ring/notify through the registered
-    /// [`SampleSlot`]'s raw pointers). Behind a [`SpinNoIrq`] so the hot-path
+    /// [`SampleSlot`]'s raw pointers). Behind a [`IrqMutex`] so the hot-path
     /// hooks (which only read the atomics above) never block on it.
-    anchors: SpinNoIrq<Option<SamplingAnchors>>,
+    anchors: IrqMutex<Option<SamplingAnchors>>,
 
     /// `PERF_EVENT_IOC_SET_OUTPUT` redirect anchor: when this event's samples are
     /// redirected into *another* event's ring, this pins that ring's pages while
@@ -209,7 +208,7 @@ pub struct PerTaskCounter {
     /// ring and `notify_ptr` stays `0` (the target's poller re-checks
     /// `data_head`; the overflow handler guards the null notify). Set by
     /// [`set_redirect_ring`](Self::set_redirect_ring) instead of [`set_ring`](Self::set_ring).
-    redirect_anchor: SpinNoIrq<Option<Arc<dyn Any + Send + Sync>>>,
+    redirect_anchor: IrqMutex<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 /// Strong references that keep a per-task sampling event's ring + notify alive,
@@ -323,8 +322,8 @@ impl PerTaskCounter {
             ring_vaddr: AtomicUsize::new(0),
             ring_len: AtomicUsize::new(0),
             notify_ptr: AtomicUsize::new(0),
-            anchors: SpinNoIrq::new(None),
-            redirect_anchor: SpinNoIrq::new(None),
+            anchors: IrqMutex::new(None),
+            redirect_anchor: IrqMutex::new(None),
         }
     }
 
@@ -544,7 +543,7 @@ pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
 /// into the task's ring only while the task runs. (If the ring is not mapped yet,
 /// the slice is skipped — `perf` always mmaps before enable, so this is a rare race.)
 ///
-/// Runs with IRQs disabled inside `switch_to`: [`SpinNoIrq`](ax_sync::spin::SpinNoIrq)
+/// Runs with IRQs disabled inside `switch_to`: [`IrqMutex`](crate::sync::IrqMutex)
 /// + atomics + sysreg writes only, no allocation. `sampling::register` nests a
 ///   further local-IRQ-off section, which is fine.
 pub fn perf_sched_in(thr: &Thread) {

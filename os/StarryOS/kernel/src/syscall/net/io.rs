@@ -11,9 +11,9 @@ use ax_runtime::hal::time::wall_time;
 use linux_raw_sys::{
     general::{timespec, timeval},
     net::{
-        IP_TOS, IPPROTO_IPV6, IPV6_TCLASS, MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_DONTWAIT, MSG_OOB,
-        MSG_PEEK, MSG_TRUNC, SCM_CREDENTIALS, SCM_RIGHTS, SCM_TIMESTAMP, SOL_SOCKET, cmsghdr,
-        mmsghdr, msghdr, sockaddr, socklen_t, ucred,
+        IP_TOS, IP_TTL, IPPROTO_IPV6, IPV6_TCLASS, MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_DONTWAIT,
+        MSG_OOB, MSG_PEEK, MSG_TRUNC, SCM_CREDENTIALS, SCM_RIGHTS, SCM_TIMESTAMP, SOL_SOCKET,
+        cmsghdr, mmsghdr, msghdr, sockaddr, socklen_t, ucred,
     },
 };
 
@@ -288,6 +288,12 @@ fn recv_impl(
                 },
                 Err(cmsg) => match cmsg.downcast::<IpCmsg>() {
                     Ok(cmsg) => match *cmsg {
+                        IpCmsg::Ipv4Ttl(ttl) => {
+                            builder.push_sized(PROTO_IP, IP_TTL, size_of::<i32>(), |data| {
+                                data.copy_from_slice(&i32::from(ttl).to_ne_bytes());
+                                Ok(size_of::<i32>())
+                            })?
+                        }
                         IpCmsg::Ipv4Tos(tos) => {
                             builder.push_sized(PROTO_IP, IP_TOS, 1, |data| {
                                 data[0] = tos;

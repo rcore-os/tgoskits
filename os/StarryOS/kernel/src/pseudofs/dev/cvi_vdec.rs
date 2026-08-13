@@ -10,7 +10,6 @@ use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, mem::size_of};
 
 use ax_errno::AxError;
-use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use cvi_vdec_uapi::{
     COLOR_GAMUT_BT601, COMPRESS_MODE_NONE, CVI_VC_VDEC_CREATE_CHN, CVI_VC_VDEC_DESTROY_CHN,
@@ -30,7 +29,7 @@ use sg200x_jpu::{
 use starry_vm::{VmMutPtr, VmPtr, vm_read_slice};
 
 use super::cvi_jpu::{CviJpu, DecodedJpuFrame};
-use crate::pseudofs::DeviceOps;
+use crate::{pseudofs::DeviceOps, sync::Mutex};
 
 const MAX_STREAM_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;

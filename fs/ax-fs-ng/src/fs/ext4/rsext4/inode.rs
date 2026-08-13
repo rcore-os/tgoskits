@@ -322,7 +322,8 @@ impl FileNodeOps for Inode {
                     self.ino,
                     &data_blocks,
                     dev,
-                );
+                )
+                .map_err(into_vfs_err)?;
             }
 
             fs.modify_inode(dev, self.ino, |on_disk| {

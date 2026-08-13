@@ -7,7 +7,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq as Mutex;
 use ax_runtime::hal::time::{NANOS_PER_SEC, monotonic_time_nanos, wall_time};
 use linux_raw_sys::general::{
     CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,
@@ -18,6 +17,7 @@ use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
 
 use super::timer::{AlarmTarget, register_alarm_for};
+use crate::sync::IrqMutex as Mutex;
 
 /// Kernel-side representation of a POSIX timer.
 struct PosixTimer {

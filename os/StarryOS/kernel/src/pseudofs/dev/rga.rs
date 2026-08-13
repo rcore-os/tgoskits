@@ -13,7 +13,6 @@ use alloc::{borrow::Cow, collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use core::{any::Any, ffi::c_int, task::Context};
 
 use ax_errno::AxResult;
-use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use rockchip_rga::{
@@ -30,6 +29,7 @@ use crate::{
         dmabuf::{DmaBufFile, resolve_contiguous_dmabuf},
     },
     pseudofs::DeviceOps,
+    sync::Mutex,
     task::AsThread,
 };
 

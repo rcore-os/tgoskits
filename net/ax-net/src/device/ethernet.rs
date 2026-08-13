@@ -22,7 +22,7 @@
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 
-use ax_sync::spin::SpinNoIrq;
+use ax_sync::SpinLock;
 use axpoll::PollSet;
 use hashbrown::HashMap;
 use irq_framework::IrqId;
@@ -96,7 +96,8 @@ pub enum EthernetIrqRegistrationError {
     Other,
 }
 
-static ETHERNET_IRQ_REGISTRAR: spin::Once<&'static dyn EthernetIrqRegistrar> = spin::Once::new();
+static ETHERNET_IRQ_REGISTRAR: ax_lazyinit::OnceLock<&'static dyn EthernetIrqRegistrar> =
+    ax_lazyinit::OnceLock::new();
 
 pub fn set_ethernet_irq_registrar(registrar: &'static dyn EthernetIrqRegistrar) {
     ETHERNET_IRQ_REGISTRAR.call_once(|| registrar);
@@ -113,13 +114,13 @@ struct PendingNeighbor {
 
 struct EthernetIrqState {
     irq: Option<IrqId>,
-    irq_registration: spin::Once<Box<dyn EthernetIrqRegistration>>,
+    irq_registration: ax_lazyinit::OnceLock<Box<dyn EthernetIrqRegistration>>,
     /// RX readiness is delivered out-of-band (outside the ethernet IRQ
     /// framework) via the device readiness poll set, e.g. an SDIO Wi-Fi chip
     /// that owns its own card interrupt and pokes the stack through
     /// `wake_net_task_irq`.
     oob_rx: bool,
-    driver: SpinNoIrq<Box<dyn EthernetDriver>>,
+    driver: SpinLock<Box<dyn EthernetDriver>>,
     poll_ready: Arc<PollSet>,
 }
 
@@ -205,9 +206,9 @@ impl EthernetDevice {
         let irq_handler = registrar.and_then(|_| inner.take_irq_handler());
         let inner = Arc::new(EthernetIrqState {
             irq,
-            irq_registration: spin::Once::new(),
+            irq_registration: ax_lazyinit::OnceLock::new(),
             oob_rx,
-            driver: SpinNoIrq::new(inner),
+            driver: SpinLock::new(inner),
             poll_ready: Arc::new(PollSet::new()),
         });
         let pending_packets = PacketBuffer::new(
@@ -227,7 +228,7 @@ impl EthernetDevice {
                     match registrar.register_shared(&name, irq, action) {
                         Ok(registration) => {
                             inner.irq_registration.call_once(|| registration);
-                            inner.driver.lock().enable_irq();
+                            inner.driver.lock_irqsave().enable_irq();
                         }
                         Err(err) => {
                             warn!(
@@ -268,7 +269,7 @@ impl EthernetDevice {
 
     #[inline]
     fn hardware_address(&self) -> EthernetAddress {
-        EthernetAddress(self.inner.driver.lock().mac_address())
+        EthernetAddress(self.inner.driver.lock_irqsave().mac_address())
     }
 
     /// Builds an Ethernet frame around `size` bytes of payload written by `f`,
@@ -412,7 +413,7 @@ impl EthernetDevice {
             target_protocol_addr: target_ipv4,
         };
 
-        let mut inner = self.inner.driver.lock();
+        let mut inner = self.inner.driver.lock_irqsave();
         let arp_frame_len = Self::send_to(
             &mut **inner,
             EthernetAddress::BROADCAST,
@@ -505,7 +506,7 @@ impl EthernetDevice {
                     target_protocol_addr: source_protocol_addr,
                 };
 
-                let mut inner = self.inner.driver.lock();
+                let mut inner = self.inner.driver.lock_irqsave();
                 let arp_frame_len = Self::send_to(
                     &mut **inner,
                     source_hardware_addr,
@@ -556,7 +557,7 @@ impl EthernetDevice {
 
                 match action {
                     Action::Send(mac, payload) => {
-                        let mut inner = self.inner.driver.lock();
+                        let mut inner = self.inner.driver.lock_irqsave();
                         info!(
                             "{}: sending pending IPv4 packet to {} via {}",
                             self.name, next_hop, mac
@@ -616,7 +617,7 @@ impl Device for EthernetDevice {
     ) -> usize {
         loop {
             let mut rx_buf = {
-                let mut inner = self.inner.driver.lock();
+                let mut inner = self.inner.driver.lock_irqsave();
                 match inner.receive() {
                     Ok(buf) => buf,
                     Err(err) => {
@@ -636,7 +637,12 @@ impl Device for EthernetDevice {
 
             let frame_len =
                 self.handle_frame(rx_buf.packet(), interface_id, buffer, timestamp, snoop);
-            if let Err(err) = self.inner.driver.lock().recycle_rx_buffer(&mut *rx_buf) {
+            if let Err(err) = self
+                .inner
+                .driver
+                .lock_irqsave()
+                .recycle_rx_buffer(&mut *rx_buf)
+            {
                 warn!("recycle_rx_buffer failed: {:?}", err);
                 self.deferred_rx_errors += 1;
             }
@@ -650,7 +656,7 @@ impl Device for EthernetDevice {
         let is_subnet_broadcast =
             self.ip.and_then(|ip| ip.broadcast()).map(IpAddress::Ipv4) == Some(next_hop);
         if next_hop.is_broadcast() || is_subnet_broadcast {
-            let mut inner = self.inner.driver.lock();
+            let mut inner = self.inner.driver.lock_irqsave();
             let frame_len = Self::send_to(
                 &mut **inner,
                 EthernetAddress::BROADCAST,
@@ -666,7 +672,7 @@ impl Device for EthernetDevice {
 
         let need_request = match self.neighbors.get(&next_hop) {
             Some(neighbor) if neighbor.expires_at > timestamp => {
-                let mut inner = self.inner.driver.lock();
+                let mut inner = self.inner.driver.lock_irqsave();
                 let frame_len = Self::send_to(
                     &mut **inner,
                     neighbor.hardware_address,

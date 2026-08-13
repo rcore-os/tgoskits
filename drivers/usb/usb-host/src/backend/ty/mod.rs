@@ -1,11 +1,11 @@
 #[cfg(any(kmod, umod))]
-use alloc::boxed::Box;
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use core::{any::Any, fmt::Debug};
 
 use futures::future::BoxFuture;
-use usb_if::descriptor::{ConfigurationDescriptor, DeviceDescriptor, EndpointDescriptor};
+use usb_if::descriptor::{ConfigurationDescriptor, DeviceDescriptor};
 
-use crate::{backend::ty::ep::Endpoint, err::USBError};
+use crate::{backend::ty::ep::EndpointHandle, err::USBError};
 
 pub mod ep;
 #[cfg(any(kmod, umod))]
@@ -37,6 +37,12 @@ pub enum ProbedDeviceInfoOp {
     Hub(Box<dyn DeviceInfoOp>),
 }
 
+#[cfg(any(kmod, umod))]
+pub struct ProbeChangesOp {
+    pub connected: Vec<ProbedDeviceInfoOp>,
+    pub disconnected: Vec<usize>,
+}
+
 /// USB 设备特征（高层抽象）
 pub(crate) trait DeviceOp: Send + Any + 'static {
     fn id(&self) -> usize;
@@ -44,22 +50,25 @@ pub(crate) trait DeviceOp: Send + Any + 'static {
     fn descriptor(&self) -> &DeviceDescriptor;
     fn configuration_descriptors(&self) -> &[ConfigurationDescriptor];
 
-    fn ctrl_ep_ref(&self) -> &Endpoint;
+    fn ctrl_ep_ref(&self) -> &EndpointHandle;
 
-    fn ctrl_ep_mut(&mut self) -> &mut Endpoint;
+    fn ctrl_ep_mut(&mut self) -> &mut EndpointHandle;
 
     fn claim_interface<'a>(
         &'a mut self,
         interface: u8,
         alternate: u8,
-    ) -> BoxFuture<'a, Result<(), USBError>>;
+    ) -> BoxFuture<'a, Result<BTreeMap<u8, EndpointHandle>, USBError>>;
+
+    fn release_interface<'a>(&'a mut self, interface: u8) -> BoxFuture<'a, Result<(), USBError>>;
 
     fn set_configuration<'a>(
         &'a mut self,
         configuration_value: u8,
     ) -> BoxFuture<'a, Result<(), USBError>>;
 
-    fn endpoint(&mut self, desc: &EndpointDescriptor) -> Result<ep::Endpoint, USBError>;
+    /// Stops every endpoint owned by this device without issuing USB control requests.
+    fn disconnect(&mut self) -> BoxFuture<'_, Result<(), USBError>>;
 
     fn update_hub(&mut self, params: HubParams) -> BoxFuture<'_, Result<(), USBError>>;
 }

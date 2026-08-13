@@ -10,6 +10,7 @@ pub mod mmu;
 pub(crate) mod ram;
 pub(crate) mod region;
 
+pub use mmu::{MemAttributes, PteConfig};
 pub use page_table_generic::*;
 
 use crate::{ArchTrait, DCacheOp, arch::Arch, smp::cpu_area_region};
@@ -25,7 +26,7 @@ static MEMORY_MAP: StaticCell<MemoryMap> = StaticCell::new(MemoryMap::new());
 /// Load address of the kernel start
 static mut KIMAGE_START: Option<PhysAddr> = None;
 /// Load address of the kernel end
-static mut KIMAGE_END: PhysAddr = PhysAddr::new(0);
+static mut KIMAGE_END: PhysAddr = PhysAddr::from_usize(0);
 
 const MEMORY_MAP_CAPACITY: usize = 512;
 
@@ -38,9 +39,9 @@ pub(crate) fn setup_entry(
 ) {
     unsafe {
         KIMAGE_START = Some(kernel_start);
-        KIMAGE_END = kernel_end.raw().align_up(KIMAGE_MAP_ALIGN).into();
+        KIMAGE_END = kernel_end.as_usize().align_up(KIMAGE_MAP_ALIGN).into();
 
-        VM_LOAD_OFFSET = kernel_start.raw() as isize - kernel_start_link.raw() as isize;
+        VM_LOAD_OFFSET = kernel_start.as_usize() as isize - kernel_start_link.as_usize() as isize;
     }
 }
 
@@ -234,7 +235,7 @@ pub(crate) fn kimage_range() -> core::ops::Range<usize> {
             panic!("Kernel image start is not set");
         };
         let end = KIMAGE_END;
-        start.raw()..end.raw()
+        start.as_usize()..end.as_usize()
     }
 }
 

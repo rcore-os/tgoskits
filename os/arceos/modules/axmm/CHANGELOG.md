@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.31](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.5.30...ax-mm-v0.5.31) - 2026-08-09
+
+### Other
+
+- *(memory)* unify page-table execution on page-table-generic ([#1911](https://github.com/rcore-os/tgoskits/pull/1911))
+
 ## [0.5.30](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.5.29...ax-mm-v0.5.30) - 2026-08-03
 
 ### Other

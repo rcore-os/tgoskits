@@ -15,10 +15,10 @@ use core::{
     task::{Context, Waker},
 };
 
-use ax_kspin::SpinNoIrq;
+use ax_lazyinit::OnceLock;
+use ax_sync::SpinLock;
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
-use spin::Once;
 
 bitflags! {
     /// I/O events.
@@ -145,6 +145,24 @@ impl Inner {
         }
         old.cursor = 0;
     }
+
+    fn take_one_ready(&mut self, ready: IoEvents) -> Option<Entry> {
+        let len = self.len();
+        let mut selected = None;
+        let mut keep_len = 0;
+
+        for index in 0..len {
+            let entry = unsafe { self.entries[index].assume_init_read() };
+            if selected.is_none() && entry.interests.intersects(ready) {
+                selected = Some(entry);
+            } else {
+                self.entries[keep_len].write(entry);
+                keep_len += 1;
+            }
+        }
+        self.cursor = keep_len;
+        selected
+    }
 }
 
 impl Drop for Inner {
@@ -156,7 +174,7 @@ impl Drop for Inner {
 }
 
 /// A data structure for waking up tasks that are waiting for I/O events.
-pub struct PollSet(Once<SpinNoIrq<Inner>>);
+pub struct PollSet(OnceLock<SpinLock<Inner>>);
 
 impl Default for PollSet {
     fn default() -> Self {
@@ -167,7 +185,7 @@ impl Default for PollSet {
 impl PollSet {
     /// Creates a new empty [`PollSet`].
     pub const fn new() -> Self {
-        Self(Once::new())
+        Self(OnceLock::new())
     }
 
     /// Registers a waker for the requested I/O events.
@@ -180,8 +198,8 @@ impl PollSet {
     pub unsafe fn register(&self, waker: &Waker, interests: IoEvents) {
         let replaced = {
             self.0
-                .call_once(|| SpinNoIrq::new(Inner::new()))
-                .lock()
+                .call_once(|| SpinLock::new(Inner::new()))
+                .lock_irqsave()
                 .register(waker, interests)
         };
         if let Some(entry) = replaced {
@@ -204,13 +222,38 @@ impl PollSet {
         };
         let mut ready_entries = Vec::with_capacity(POLL_SET_CAPACITY);
         {
-            inner.lock().drain_ready(ready, &mut ready_entries);
+            inner.lock_irqsave().drain_ready(ready, &mut ready_entries);
         }
         let woke = ready_entries.len();
         for entry in ready_entries {
             entry.wake();
         }
         woke
+    }
+
+    /// Wakes one registered waker whose interests intersect `ready`.
+    ///
+    /// Matching wakers that are not selected remain registered. This is used
+    /// by wait queues with Linux-style exclusive wakeup semantics, where one
+    /// readiness transition should give one waiter a chance to consume work.
+    ///
+    /// # Safety
+    ///
+    /// This method is task/deferred-context only. Callers must not invoke it
+    /// from hard IRQ, NMI, or trap callbacks. The readiness state represented
+    /// by `ready` must be published before this method is called, and callers
+    /// must not hold locks that may be re-entered by waker execution or poll
+    /// wakeup paths.
+    pub unsafe fn wake_one(&self, ready: IoEvents) -> usize {
+        let Some(inner) = self.0.get() else {
+            return 0;
+        };
+        let ready_entry = inner.lock_irqsave().take_one_ready(ready);
+        let Some(entry) = ready_entry else {
+            return 0;
+        };
+        entry.wake();
+        1
     }
 
     /// Wakes up registered wakers whose interests intersect `ready` from IRQ context.
@@ -225,7 +268,7 @@ impl PollSet {
         };
         let mut ready_entries = [const { MaybeUninit::<Entry>::uninit() }; POLL_SET_CAPACITY];
         let ready_len = {
-            let mut inner = inner.lock();
+            let mut inner = inner.lock_irqsave();
             let len = inner.len();
             if len == 0 {
                 return 0;

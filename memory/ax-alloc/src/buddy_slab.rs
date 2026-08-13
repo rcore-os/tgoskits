@@ -6,7 +6,7 @@ use core::{
     slice,
 };
 
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use buddy_slab_allocator::{
     GlobalAllocator as InnerAllocator, SizeClass, SlabAllocResult, SlabAllocator,
     SlabDeallocResult, SlabPoolTrait, SlabTrait,
@@ -34,14 +34,14 @@ static SLAB_POOL: SlabPool = SlabPool;
 
 struct PercpuSlab<const PAGE_SIZE: usize = 0x1000> {
     cpu_id: Option<u16>,
-    inner: SpinNoIrq<SlabAllocator<PAGE_SIZE>>,
+    inner: SpinLock<SlabAllocator<PAGE_SIZE>>,
 }
 
 impl<const PAGE_SIZE: usize> PercpuSlab<PAGE_SIZE> {
     const fn new_uninit() -> Self {
         Self {
             cpu_id: None,
-            inner: SpinNoIrq::new(SlabAllocator::new()),
+            inner: SpinLock::new(SlabAllocator::new()),
         }
     }
 
@@ -71,17 +71,17 @@ impl<const PAGE_SIZE: usize> SlabTrait for PercpuSlab<PAGE_SIZE> {
     }
 
     fn alloc(&self, layout: Layout) -> buddy_slab_allocator::AllocResult<SlabAllocResult> {
-        self.inner.lock().alloc(layout)
+        self.inner.lock_irqsave().alloc(layout)
     }
 
     fn add_slab(&self, size_class: SizeClass, base: usize, bytes: usize) {
         self.inner
-            .lock()
+            .lock_irqsave()
             .add_slab(size_class, base, bytes, self.cpu_id_checked());
     }
 
     fn dealloc_local(&self, ptr: NonNull<u8>, layout: Layout) -> SlabDeallocResult {
-        self.inner.lock().dealloc(ptr, layout)
+        self.inner.lock_irqsave().dealloc(ptr, layout)
     }
 }
 
@@ -129,8 +129,8 @@ fn virt_to_phys(vaddr: usize) -> usize {
 
 /// The global allocator used by ArceOS when `buddy-slab` is enabled.
 pub struct GlobalAllocator {
-    inner: SpinNoIrq<InnerAllocator<PAGE_SIZE>>,
-    usages: SpinNoIrq<Usages>,
+    inner: SpinLock<InnerAllocator<PAGE_SIZE>>,
+    usages: SpinLock<Usages>,
 }
 
 impl Default for GlobalAllocator {
@@ -143,8 +143,8 @@ impl GlobalAllocator {
     /// Creates an empty [`GlobalAllocator`].
     pub const fn new() -> Self {
         Self {
-            inner: SpinNoIrq::new(InnerAllocator::<PAGE_SIZE>::new()),
-            usages: SpinNoIrq::new(Usages::new()),
+            inner: SpinLock::new(InnerAllocator::<PAGE_SIZE>::new()),
+            usages: SpinLock::new(Usages::new()),
         }
     }
 
@@ -160,7 +160,7 @@ impl GlobalAllocator {
             start_vaddr, size
         );
         let region = unsafe { slice::from_raw_parts_mut(start_vaddr as *mut u8, size) };
-        unsafe { self.inner.lock().init(region) }.map_err(Into::into)
+        unsafe { self.inner.lock_irqsave().init(region) }.map_err(Into::into)
     }
 
     /// Add the given region to the allocator.
@@ -170,7 +170,7 @@ impl GlobalAllocator {
             start_vaddr, size
         );
         let region = unsafe { slice::from_raw_parts_mut(start_vaddr as *mut u8, size) };
-        unsafe { self.inner.lock().add_region(region) }.map_err(Into::into)
+        unsafe { self.inner.lock_irqsave().add_region(region) }.map_err(Into::into)
     }
 
     /// Allocate arbitrary number of bytes. Returns the left bound of the
@@ -178,11 +178,13 @@ impl GlobalAllocator {
     pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
         let result = self
             .inner
-            .lock()
+            .lock_irqsave()
             .alloc(layout)
             .map_err(crate::AllocError::from);
         if result.is_ok() {
-            self.usages.lock().alloc(UsageKind::RustHeap, layout.size());
+            self.usages
+                .lock_irqsave()
+                .alloc(UsageKind::RustHeap, layout.size());
         }
         result
     }
@@ -191,9 +193,9 @@ impl GlobalAllocator {
     pub fn dealloc(&self, pos: NonNull<u8>, layout: Layout) {
         // Lock order: inner then usages (consistent with alloc/alloc_pages).
         // Guards are temporary — locks are never held simultaneously.
-        unsafe { self.inner.lock().dealloc(pos, layout) };
+        unsafe { self.inner.lock_irqsave().dealloc(pos, layout) };
         self.usages
-            .lock()
+            .lock_irqsave()
             .dealloc(UsageKind::RustHeap, layout.size());
     }
 
@@ -204,7 +206,7 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let mut result = self.inner.lock().alloc_pages(num_pages, alignment);
+        let mut result = self.inner.lock_irqsave().alloc_pages(num_pages, alignment);
         if result.is_err() {
             for _ in 0..4 {
                 // Reclaim num_pages (at least 16 to build free-pool headroom).
@@ -216,7 +218,7 @@ impl GlobalAllocator {
                 let reclaimed = crate::try_page_reclaim(num_pages.max(16));
                 // Retry allocation regardless of whether reclaim ran;
                 // concurrent reclaim may have freed pages.
-                result = self.inner.lock().alloc_pages(num_pages, alignment);
+                result = self.inner.lock_irqsave().alloc_pages(num_pages, alignment);
                 if result.is_ok() {
                     break;
                 }
@@ -226,7 +228,9 @@ impl GlobalAllocator {
             }
         }
         let addr = result.map_err(crate::AllocError::from)?;
-        self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
+        self.usages
+            .lock_irqsave()
+            .alloc(kind, num_pages * PAGE_SIZE);
         Ok(addr)
     }
 
@@ -237,11 +241,17 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let mut result = self.inner.lock().alloc_pages_lowmem(num_pages, alignment);
+        let mut result = self
+            .inner
+            .lock_irqsave()
+            .alloc_pages_lowmem(num_pages, alignment);
         if result.is_err() {
             for _ in 0..4 {
                 let reclaimed = crate::try_page_reclaim(num_pages.max(16));
-                result = self.inner.lock().alloc_pages_lowmem(num_pages, alignment);
+                result = self
+                    .inner
+                    .lock_irqsave()
+                    .alloc_pages_lowmem(num_pages, alignment);
                 if result.is_ok() {
                     break;
                 }
@@ -251,7 +261,9 @@ impl GlobalAllocator {
             }
         }
         let addr = result.map_err(crate::AllocError::from)?;
-        self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
+        self.usages
+            .lock_irqsave()
+            .alloc(kind, num_pages * PAGE_SIZE);
         Ok(addr)
     }
 
@@ -270,18 +282,20 @@ impl GlobalAllocator {
     pub fn dealloc_pages(&self, pos: usize, num_pages: usize, kind: UsageKind) {
         // Lock order: inner then usages (consistent with alloc_pages).
         // Guards are temporary — locks are never held simultaneously.
-        self.inner.lock().dealloc_pages(pos, num_pages);
-        self.usages.lock().dealloc(kind, num_pages * PAGE_SIZE);
+        self.inner.lock_irqsave().dealloc_pages(pos, num_pages);
+        self.usages
+            .lock_irqsave()
+            .dealloc(kind, num_pages * PAGE_SIZE);
     }
 
     /// Returns the number of allocated bytes in the allocator backend.
     pub fn used_bytes(&self) -> usize {
-        self.inner.lock().allocated_bytes()
+        self.inner.lock_irqsave().allocated_bytes()
     }
 
     /// Returns the number of available bytes in the allocator backend.
     pub fn available_bytes(&self) -> usize {
-        let inner = self.inner.lock();
+        let inner = self.inner.lock_irqsave();
         inner
             .managed_bytes()
             .saturating_sub(inner.allocated_bytes())
@@ -299,7 +313,7 @@ impl GlobalAllocator {
 
     /// Returns the usage statistics of the allocator.
     pub fn usages(&self) -> Usages {
-        *self.usages.lock()
+        *self.usages.lock_irqsave()
     }
 }
 

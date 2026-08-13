@@ -167,3 +167,49 @@ fn validate_file(file: &str) -> Result<(), AcpiBuildError> {
 fn write_file(destination: &mut [u8], file: &str) {
     destination[..file.len()].copy_from_slice(file.as_bytes());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serializes_allocate_pointer_and_checksum_command_layouts() {
+        let mut plan = AcpiLoaderPlan::new();
+        plan.allocate("etc/acpi/tables", 64, LoaderZone::High)
+            .unwrap();
+        plan.add_pointer("etc/acpi/rsdp", "etc/acpi/tables", 24, 8)
+            .unwrap();
+        plan.add_checksum("etc/acpi/rsdp", 8, 0, 20).unwrap();
+
+        let bytes = plan.serialize();
+        assert_eq!(bytes.len(), 3 * ENTRY_SIZE);
+
+        let allocate = &bytes[..ENTRY_SIZE];
+        assert_eq!(&allocate[0..4], &COMMAND_ALLOCATE.to_le_bytes());
+        assert_file_field(&allocate[4..60], "etc/acpi/tables");
+        assert_eq!(&allocate[60..64], &64u32.to_le_bytes());
+        assert_eq!(allocate[64], LoaderZone::High as u8);
+        assert!(allocate[65..].iter().all(|byte| *byte == 0));
+
+        let pointer = &bytes[ENTRY_SIZE..2 * ENTRY_SIZE];
+        assert_eq!(&pointer[0..4], &COMMAND_ADD_POINTER.to_le_bytes());
+        assert_file_field(&pointer[4..60], "etc/acpi/rsdp");
+        assert_file_field(&pointer[60..116], "etc/acpi/tables");
+        assert_eq!(&pointer[116..120], &24u32.to_le_bytes());
+        assert_eq!(pointer[120], 8);
+        assert!(pointer[121..].iter().all(|byte| *byte == 0));
+
+        let checksum = &bytes[2 * ENTRY_SIZE..];
+        assert_eq!(&checksum[0..4], &COMMAND_ADD_CHECKSUM.to_le_bytes());
+        assert_file_field(&checksum[4..60], "etc/acpi/rsdp");
+        assert_eq!(&checksum[60..64], &8u32.to_le_bytes());
+        assert_eq!(&checksum[64..68], &0u32.to_le_bytes());
+        assert_eq!(&checksum[68..72], &20u32.to_le_bytes());
+        assert!(checksum[72..].iter().all(|byte| *byte == 0));
+    }
+
+    fn assert_file_field(field: &[u8], expected: &str) {
+        assert_eq!(&field[..expected.len()], expected.as_bytes());
+        assert!(field[expected.len()..].iter().all(|byte| *byte == 0));
+    }
+}

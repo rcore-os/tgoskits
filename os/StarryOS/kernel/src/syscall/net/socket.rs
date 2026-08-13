@@ -72,6 +72,15 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             }
             TcpSocket::new().into()
         }
+        (AF_INET, SOCK_DGRAM) if proto == IPPROTO_ICMP as u32 => {
+            // StarryOS does not expose Linux's per-network-namespace
+            // `ping_group_range` policy yet, so keep ping sockets behind the
+            // existing CAP_NET_RAW capability boundary.
+            if !current().as_thread().cred().has_cap_net_raw() {
+                return Err(AxError::from(LinuxError::EPERM));
+            }
+            SocketInner::Raw(Box::new(RawSocket::new_ipv4_ping()))
+        }
         (AF_INET | AF_INET6, SOCK_DGRAM) => {
             if proto != 0 && proto != IPPROTO_UDP as _ {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));

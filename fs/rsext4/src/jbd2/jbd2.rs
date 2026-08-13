@@ -283,19 +283,14 @@ impl JBD2DEVSYSTEM {
         &mut self,
         block_dev: &mut B,
         journal_blocks: &[AbsoluteBN],
-    ) {
-        let sb_block = self
-            .journal_phys_block(journal_blocks, 0)
-            .expect("journal superblock block is invalid");
+    ) -> Ext4Result<()> {
+        let sb_block = self.journal_phys_block(journal_blocks, 0)?;
         let mut sb_data = [0u8; BLOCK_SIZE];
-        block_dev
-            .read(&mut sb_data, sb_block, 1)
-            .expect("Read journal superblock failed");
+        block_dev.read(&mut sb_data, sb_block, 1)?;
         jbd2_update_superblock_checksum(&mut self.jbd2_super_block);
         self.jbd2_super_block.to_disk_bytes(&mut sb_data[0..1024]);
-        block_dev
-            .write(&sb_data, sb_block, 1)
-            .expect("Write journal superblock failed");
+        block_dev.write(&sb_data, sb_block, 1)?;
+        Ok(())
     }
 
     /// Returns the next writable journal block, handling wrap-around.
@@ -318,8 +313,14 @@ impl JBD2DEVSYSTEM {
 
         // The first commit initializes `s_start` in the journal superblock.
         if self.jbd2_super_block.s_start == 0 {
+            let previous_superblock = self.jbd2_super_block;
             self.jbd2_super_block.s_start = self.jbd2_super_block.s_first;
-            self.write_journal_superblock_with_mapping(block_dev, journal_blocks);
+            if let Err(error) =
+                self.write_journal_superblock_with_mapping(block_dev, journal_blocks)
+            {
+                self.jbd2_super_block = previous_superblock;
+                return Err(error);
+            }
             self.head += 1;
             let mut rel = self
                 .jbd2_super_block
@@ -501,7 +502,7 @@ impl JBD2DEVSYSTEM {
         self.jbd2_super_block.s_sequence = self.sequence;
         self.jbd2_super_block.s_start = 0;
         self.head = 0;
-        self.write_journal_superblock_with_mapping(block_dev, journal_blocks);
+        self.write_journal_superblock_with_mapping(block_dev, journal_blocks)?;
         block_dev.flush()?;
         debug!(
             "[JBD2 commit] end: tid={} new_sequence={}",
@@ -841,8 +842,13 @@ impl JBD2DEVSYSTEM {
                 "[JBD2 replay] write journal superblock to block={} (sequence={} s_start={})",
                 sb_block, self.jbd2_super_block.s_sequence, self.jbd2_super_block.s_start
             );
-            self.write_journal_superblock_with_mapping(block_dev, journal_blocks);
-            let _ = block_dev.flush();
+            if self
+                .write_journal_superblock_with_mapping(block_dev, journal_blocks)
+                .is_err()
+                || block_dev.flush().is_err()
+            {
+                return ReplayStatus::Incomplete;
+            }
         }
         debug!(
             "[JBD2 replay] end: status={status:?} transactions={} records={} payloads={} \
@@ -890,9 +896,7 @@ pub fn create_journal_entry<B: BlockDevice>(
     // Allocate the journal area. Block 0 stores the journal superblock and the
     // remaining blocks hold descriptor/data/commit traffic.
     let journal_inode_num = JOURNAL_FILE_INODE;
-    let free_block = fs
-        .alloc_blocks(block_dev, 4096)
-        .expect("No enough block can alloc out!");
+    let free_block = fs.alloc_blocks(block_dev, 4096)?;
 
     // Ensure journal area starts clean: otherwise old image contents could look like valid
     // descriptor/commit blocks and replay would corrupt filesystem metadata.
@@ -919,7 +923,7 @@ pub fn create_journal_entry<B: BlockDevice>(
         InodeNumber::new(journal_inode_num as u32)?,
         &free_block,
         block_dev,
-    );
+    )?;
     debug!(
         "When creating journal inode: iblock={:?}",
         jour_inode.i_block
@@ -929,8 +933,7 @@ pub fn create_journal_entry<B: BlockDevice>(
         InodeNumber::new(journal_inode_num as u32)?,
         &mut jour_inode,
         Ext4InodeMetadataUpdate::create(Ext4Inode::S_IFREG | 0o600),
-    )
-    .expect("journal inode creation failed");
+    )?;
 
     let mut jbd2_sb = JournalSuperBllockS::default();
 

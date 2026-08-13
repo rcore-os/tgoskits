@@ -1,0 +1,8 @@
+features = [
+  "ax-driver/rockchip-dwmmc",
+  "ax-driver/rockchip-sdhci",
+  "fs",
+]
+log = "Warn"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["test-suit/axvisor/normal/board-orangepi-5-plus/robot-linux/linux-smp1-sd.toml"]

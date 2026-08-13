@@ -1,6 +1,6 @@
 [package]
 name = "riscv_vplic"
-version = "0.4.22"
+version = "0.4.23"
 edition.workspace = true
 authors = ["Jingyu liu <liujingyu24s@ict.ac.cn>"]
 description = "RISCV Virtual PLIC implementation."
@@ -15,14 +15,14 @@ license = "Apache-2.0"
 default = []
 
 [dependencies]
-ax-kspin.workspace = true
+ax-sync.workspace = true
 axdevice_base = { workspace = true }
 axvm-types = { workspace = true }
 bitmaps = { version = "3.2", default-features = false }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-ax-kspin = { workspace = true, features = ["host-test"] }
+ax-sync = { workspace = true, features = ["host-test"] }
 
 [package.metadata.docs.rs]
 default-target = ["riscv64gc-unknown-none-elf"]

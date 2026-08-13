@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/rcore-os/tgoskits/compare/rdrive-macros-v0.4.2...rdrive-macros-v0.4.3) - 2026-08-09
+
+### Other
+
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+
 ## [0.4.1](https://github.com/drivercraft/rdrive/compare/rdrive-macros-v0.4.0...rdrive-macros-v0.4.1) - 2025-06-24
 
 ### Other

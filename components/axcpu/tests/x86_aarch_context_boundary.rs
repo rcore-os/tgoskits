@@ -19,7 +19,7 @@ fn x86_task_context_switches_tls_only_in_the_naked_window() {
 }
 
 #[test]
-fn aarch64_task_context_switches_tls_only_in_the_naked_window() {
+fn aarch64_task_context_restores_current_and_tls_in_the_naked_window() {
     let source = read_arch_source("aarch64/context.rs");
     let rust_switch = function_body(&source, "pub fn prepare_switch_to");
     let naked_switch = function_body(&source, r#"unsafe extern "C" fn context_switch_raw"#);
@@ -28,6 +28,8 @@ fn aarch64_task_context_switches_tls_only_in_the_naked_window() {
     assert!(rust_switch.contains("write_user_page_table"));
     assert!(!naked_switch.contains("write_user_page_table"));
     assert!(naked_switch.contains("tpidr_el0"));
+    assert!(naked_switch.contains("sp_el0"));
+    assert!(naked_switch.contains("current_header_offset"));
     assert!(!source.contains("pub fn switch_to("));
     assert!(!task_context_definition(&source).contains("ttbr0_el1"));
 }

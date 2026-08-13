@@ -31,7 +31,7 @@
 //! `Option<Vec<u8>>` swaps and never across route lookup, smoltcp polling, or
 //! userspace buffer I/O.
 
-use alloc::vec;
+use alloc::{boxed::Box, vec};
 use core::{
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::atomic::{AtomicBool, Ordering},
@@ -40,7 +40,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError, ax_bail};
 use ax_io::prelude::*;
-use ax_kspin::{SpinNoIrq as Mutex, SpinRwLock as RwLock};
+use ax_sync::{SpinLock as Mutex, SpinRwLock as RwLock};
 use axpoll::{IoEvents, Pollable};
 pub use smoltcp::wire::{IpProtocol, IpVersion};
 use smoltcp::{
@@ -64,6 +64,12 @@ use crate::{
 enum RawIpHeader {
     Ipv4(Ipv4Repr),
     Ipv6(Ipv6Repr),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RawSocketMode {
+    Raw,
+    IcmpDatagram,
 }
 
 impl RawIpHeader {
@@ -91,6 +97,8 @@ pub struct RawSocket {
     handle: SocketHandle,
     /// IP version accepted by this socket.
     ip_version: IpVersion,
+    /// Linux-visible raw or ping-datagram behavior.
+    mode: RawSocketMode,
     /// Optional local address filter.
     local_addr: RwLock<Option<IpAddress>>,
     /// Optional connected peer filter.
@@ -101,6 +109,8 @@ pub struct RawSocket {
     deferred_rx: Mutex<Option<(IpAddress, vec::Vec<u8>)>>,
     /// Optional outgoing TTL/hop-limit override.
     ttl: RwLock<Option<u8>>,
+    /// Whether recvmsg should report the IPv4 hop limit as ancillary data.
+    recv_ttl: AtomicBool,
     /// Public read-half closed state.
     rx_closed: AtomicBool,
     /// Public write-half closed state.
@@ -112,7 +122,24 @@ pub struct RawSocket {
 impl RawSocket {
     /// Creates a raw socket for the given IP version and protocol.
     pub fn new(ip_version: IpVersion, ip_protocol: IpProtocol) -> Self {
-        let general = GeneralOptions::new(3, 2, u8::from(ip_protocol) as i32); // SOCK_RAW
+        Self::new_with_mode(ip_version, ip_protocol, RawSocketMode::Raw)
+    }
+
+    /// Creates an IPv4 ICMP ping socket with Linux `SOCK_DGRAM` semantics.
+    pub fn new_ipv4_ping() -> Self {
+        Self::new_with_mode(
+            IpVersion::Ipv4,
+            IpProtocol::Icmp,
+            RawSocketMode::IcmpDatagram,
+        )
+    }
+
+    fn new_with_mode(ip_version: IpVersion, ip_protocol: IpProtocol, mode: RawSocketMode) -> Self {
+        let socket_type = match mode {
+            RawSocketMode::Raw => 3,
+            RawSocketMode::IcmpDatagram => 2,
+        };
+        let general = GeneralOptions::new(socket_type, 2, u8::from(ip_protocol) as i32);
         general.set_device_binding(DeviceBinding::default());
         Self {
             handle: SOCKET_SET.add(smol::Socket::new(
@@ -122,11 +149,13 @@ impl RawSocket {
                 smol::PacketBuffer::new(vec![PacketMetadata::EMPTY; 256], vec![0; RAW_TX_BUF_LEN]),
             )),
             ip_version,
+            mode,
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),
             loopback_rx: Mutex::new(None),
             deferred_rx: Mutex::new(None),
             ttl: RwLock::new(None),
+            recv_ttl: AtomicBool::new(false),
             rx_closed: AtomicBool::new(false),
             tx_closed: AtomicBool::new(false),
             general,
@@ -219,17 +248,30 @@ impl RawSocket {
     /// Linux raw IPv4 receive returns the IP header plus payload, while raw IPv6
     /// receive returns only the transport payload. The returned slice preserves
     /// that ABI difference.
-    fn split_packet_for_delivery<'a>(&self, packet: &'a [u8]) -> AxResult<(IpAddress, &'a [u8])> {
+    fn split_packet_for_delivery<'a>(
+        &self,
+        packet: &'a [u8],
+    ) -> AxResult<(IpAddress, &'a [u8], u8)> {
         match self.ip_version {
             IpVersion::Ipv4 => {
                 let packet = Ipv4Packet::new_checked(packet)
                     .map_err(|_| AxError::from(LinuxError::EINVAL))?;
-                Ok((IpAddress::Ipv4(packet.src_addr()), packet.into_inner()))
+                let source = IpAddress::Ipv4(packet.src_addr());
+                let hop_limit = packet.hop_limit();
+                let payload = match self.mode {
+                    RawSocketMode::Raw => packet.into_inner(),
+                    RawSocketMode::IcmpDatagram => packet.payload(),
+                };
+                Ok((source, payload, hop_limit))
             }
             IpVersion::Ipv6 => {
                 let packet = Ipv6Packet::new_checked(packet)
                     .map_err(|_| AxError::from(LinuxError::EINVAL))?;
-                Ok((IpAddress::Ipv6(packet.src_addr()), packet.payload()))
+                Ok((
+                    IpAddress::Ipv6(packet.src_addr()),
+                    packet.payload(),
+                    packet.hop_limit(),
+                ))
             }
         }
     }
@@ -244,11 +286,18 @@ impl RawSocket {
         &self,
         source: IpAddress,
         packet: &[u8],
+        hop_limit: u8,
         dst: &mut (impl Write + IoBufMut),
         options: &mut RecvOptions<'_>,
     ) -> AxResult<usize> {
         if let Some(from) = options.from.as_deref_mut() {
             *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
+        }
+        if self.recv_ttl.load(Ordering::Relaxed)
+            && matches!(source, IpAddress::Ipv4(_))
+            && let Some(cmsg) = options.cmsg.as_deref_mut()
+        {
+            cmsg.push(Box::new(crate::IpCmsg::Ipv4Ttl(hop_limit)));
         }
 
         let written = dst.write(packet)?;
@@ -308,6 +357,9 @@ impl Configurable for RawSocket {
             O::Ttl(ttl) => {
                 **ttl = (*self.ttl.read()).unwrap_or(64);
             }
+            O::RecvTtl(enabled) => {
+                **enabled = self.recv_ttl.load(Ordering::Relaxed);
+            }
             O::SendBuffer(size) => {
                 **size = RAW_TX_BUF_LEN;
             }
@@ -332,6 +384,9 @@ impl Configurable for RawSocket {
                     return Err(AxError::InvalidInput);
                 }
                 *self.ttl.write() = Some(*ttl);
+            }
+            O::RecvTtl(enabled) => {
+                self.recv_ttl.store(*enabled, Ordering::Relaxed);
             }
             _ => return Ok(false),
         }
@@ -426,7 +481,7 @@ impl SocketOps for RawSocket {
                     .then(|| build_loopback_icmp_reply(&buf[header_len..header_len + written]))
                     .flatten()
                 {
-                    *self.loopback_rx.lock() = Some((local, reply));
+                    *self.loopback_rx.lock_irqsave() = Some((local, reply));
                 }
                 Ok(written)
             })?;
@@ -446,33 +501,33 @@ impl SocketOps for RawSocket {
             request_poll();
             self.with_smol_socket(|socket| {
                 if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
-                    self.deferred_rx.lock().clone()
+                    self.deferred_rx.lock_irqsave().clone()
                 } else {
-                    self.deferred_rx.lock().take()
+                    self.deferred_rx.lock_irqsave().take()
                 } {
                     if !self.source_matches_peer(source) {
-                        *self.deferred_rx.lock() = Some((source, packet));
+                        *self.deferred_rx.lock_irqsave() = Some((source, packet));
                         return Err(AxError::WouldBlock);
                     }
-                    let (_, payload) = self.split_packet_for_delivery(&packet)?;
-                    return self.deliver_packet(source, payload, &mut dst, &mut options);
+                    let (_, payload, hop_limit) = self.split_packet_for_delivery(&packet)?;
+                    return self.deliver_packet(source, payload, hop_limit, &mut dst, &mut options);
                 }
 
                 if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
-                    self.loopback_rx.lock().clone()
+                    self.loopback_rx.lock_irqsave().clone()
                 } else {
-                    self.loopback_rx.lock().take()
+                    self.loopback_rx.lock_irqsave().take()
                 } {
                     if !self.source_matches_peer(source) {
-                        *self.loopback_rx.lock() = Some((source, packet));
+                        *self.loopback_rx.lock_irqsave() = Some((source, packet));
                         return Err(AxError::WouldBlock);
                     }
-                    return self.deliver_packet(source, &packet, &mut dst, &mut options);
+                    return self.deliver_packet(source, &packet, 64, &mut dst, &mut options);
                 }
 
                 let wire_packet = if options.flags.contains(RecvFlags::PEEK) {
                     let packet = socket.peek().map_err(|_| AxError::WouldBlock)?;
-                    let (source, _) = self.split_packet_for_delivery(packet)?;
+                    let (source, ..) = self.split_packet_for_delivery(packet)?;
                     if let Some(peer) = *self.peer_addr.read()
                         && source != peer
                     {
@@ -482,14 +537,14 @@ impl SocketOps for RawSocket {
                 } else {
                     socket.recv().map_err(|_| AxError::WouldBlock)?
                 };
-                let (source, packet) = self.split_packet_for_delivery(wire_packet)?;
+                let (source, packet, hop_limit) = self.split_packet_for_delivery(wire_packet)?;
 
                 if !self.source_matches_peer(source) {
-                    *self.deferred_rx.lock() = Some((source, wire_packet.to_vec()));
+                    *self.deferred_rx.lock_irqsave() = Some((source, wire_packet.to_vec()));
                     return Err(AxError::WouldBlock);
                 }
 
-                self.deliver_packet(source, packet, &mut dst, &mut options)
+                self.deliver_packet(source, packet, hop_limit, &mut dst, &mut options)
             })
         })
     }
@@ -537,12 +592,12 @@ impl Pollable for RawSocket {
             events.contains(IoEvents::IN)
                 || self
                     .loopback_rx
-                    .lock()
+                    .lock_irqsave()
                     .as_ref()
                     .is_some_and(|(source, _)| self.source_matches_peer(*source))
                 || self
                     .deferred_rx
-                    .lock()
+                    .lock_irqsave()
                     .as_ref()
                     .is_some_and(|(source, _)| self.source_matches_peer(*source)),
         );

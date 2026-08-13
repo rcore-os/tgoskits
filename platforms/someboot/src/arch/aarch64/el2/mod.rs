@@ -81,7 +81,7 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     match vaddr {
         Some(addr) => {
             // VAE2IS requires (asid, va), TTBR0_EL2 doesn't have ASID field, so use 0
-            tlbi(VAE2IS::new(0, addr.raw()));
+            tlbi(VAE2IS::new(0, addr.as_usize()));
         }
         None => {
             tlbi(ALLE2);

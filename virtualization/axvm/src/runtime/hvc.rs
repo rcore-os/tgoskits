@@ -50,6 +50,7 @@ fn is_psci_code(code: HyperCallCode) -> bool {
 }
 const PSCI_RET_SUCCESS: usize = 0;
 const PSCI_VERSION_0_2: usize = 0x0000_0002;
+const ARM_SMCCC_VERSION_FUNC_ID: u64 = 0x8000_0000;
 const PSCI_RET_NOT_SUPPORTED: usize = usize::MAX;
 const PSCI_RET_INVALID_PARAMETERS: usize = (-2isize) as usize;
 const PSCI_RET_DENIED: usize = (-3isize) as usize;
@@ -185,6 +186,10 @@ fn decode_hypercall_code(raw_code: u64, abi: HyperCallAbi) -> HyperCallResult<Hy
 }
 
 fn psci_feature_result(function_id: u64) -> usize {
+    if function_id == ARM_SMCCC_VERSION_FUNC_ID {
+        return PSCI_RET_SUCCESS;
+    }
+
     match decode_hypercall_code(function_id, HyperCallAbi::AArch64) {
         Ok(
             HyperCallCode::PSCIVersion
@@ -999,6 +1004,14 @@ mod tests {
                 Some(Ok(PSCI_RET_NOT_SUPPORTED))
             );
         }
+    }
+
+    #[test]
+    fn hvc_psci_features_advertises_smccc_version_query() {
+        assert_eq!(
+            psci_feature_result(ARM_SMCCC_VERSION_FUNC_ID),
+            PSCI_RET_SUCCESS
+        );
     }
 
     #[test]

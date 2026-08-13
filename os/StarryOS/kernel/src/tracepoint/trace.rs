@@ -1,8 +1,7 @@
-use ax_sync::Mutex;
 use axfs_ng_vfs::VfsResult;
 use ktracepoint::{TraceCmdLineCacheSnapshot, TracePipeSnapshot};
 
-use crate::pseudofs::DirectRwFsFileOps;
+use crate::{pseudofs::DirectRwFsFileOps, sync::Mutex};
 
 /// File representing the trace content.
 pub struct TraceFile(Mutex<TraceFileState>);

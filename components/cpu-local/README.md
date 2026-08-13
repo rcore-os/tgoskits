@@ -12,24 +12,28 @@ the scheduler.
 | --- | --- | --- | --- |
 | x86_64 | GS base | GS runtime anchor | FS base |
 | AArch64 | TPIDR_EL1/EL2 | SP_EL0 | TPIDR_EL0 |
-| RISC-V | prefix recovery or `sscratch` | `tp=current`, `sscratch=0` | `tp=TLS`, `sscratch=CPU base` |
-| LoongArch64 | r21, mirrored in KS3 | `tp=current` | `tp=TLS` |
+| RISC-V | prefix recovery or `sscratch` | `tp` without TLS; CPU runtime anchor with TLS | `tp=TLS`, `sscratch=CPU base` |
+| LoongArch64 | r21, mirrored in KS3 | `tp` without TLS; CPU runtime anchor with TLS | `tp=TLS` |
 
 LoongArch KS4 and KS5 are deliberately outside this contract and remain
 available to vCPU scratch state.
 
-The `tls` feature selects the TLS-owning image mode; without it the current
-thread occupies the architecture task-pointer register. `host-test` provides a
-thread-local register model for host-side tests. These are the crate's only
-features; no runtime mode enum or ABI version is retained inside one final
-image.
+The `tls` feature enables task-owned kernel TLS. It does not choose current
+ownership globally. x86_64 keeps current in GS while FS owns TLS, and AArch64
+keeps current in SP_EL0 while TPIDR_EL0 owns TLS. RISC-V and LoongArch64 use the
+CPU runtime anchor for current only when their task register is occupied by
+kernel TLS. `host-test` provides a thread-local register model for host-side
+tests. These are the crate's only features; no runtime ABI mode is retained
+inside one final image.
 
 Scheduler publication follows a strict sequence: validate the pinned binding,
 bind the next task header, prepare all fallible architecture work, consume a
-`PreparedThreadSwitch` to publish the next header immediately before the raw
-switch, then consume `PreviousThreadBinding` in the incoming tail. Dropping an
-uncommitted prepared token rolls the next binding back. The binding epoch is a
-runtime stale-tail guard, not an ABI version.
+`PreparedThreadSwitch` to publish the CPU runtime anchor immediately before the
+raw switch, update a dedicated task register in that raw tail when the backend
+has one, then consume `PreviousThreadBinding` in the incoming tail. On AArch64
+the anchor is also the exception-entry backup while SP_EL0 is temporarily lent
+to userspace. Dropping an uncommitted prepared token rolls the next binding
+back. The binding epoch is a runtime stale-tail guard, not an ABI version.
 
 `CpuPin` can only be created by the higher-ranked `with_cpu_pin` boundary and
 cannot escape its migration guard. `ExclusiveCpu` additionally represents

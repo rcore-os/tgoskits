@@ -45,7 +45,7 @@ cfg_task! {
     /// A mask to specify the CPU affinity.
     pub use ax_task::AxCpuMask;
 
-    pub use ax_sync::RawMutex as AxRawMutex;
+    pub use ax_runtime::sync::RawMutex as AxRawMutex;
 
     /// A handle to a wait queue.
     ///

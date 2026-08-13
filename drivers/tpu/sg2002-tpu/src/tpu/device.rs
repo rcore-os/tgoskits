@@ -8,7 +8,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
-use ax_kspin::SpinNoPreempt as Mutex;
+use ax_sync::SpinLock as Mutex;
 
 use super::{
     TDMA_PHYS_BASE, TIU_PHYS_BASE,
