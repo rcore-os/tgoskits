@@ -55,7 +55,7 @@ fn pin_current_to_cpu(cpu_id: usize) {
     );
 }
 
-unsafe fn counting_callback(_argument: *mut ()) {
+fn counting_callback() {
     let target_cpu = TARGET_CPU.load(Ordering::Relaxed);
     assert_eq!(
         this_cpu_id(),
@@ -222,6 +222,7 @@ pub fn run() -> crate::TestResult {
         TARGET_CPU.store(target_cpu, Ordering::Relaxed);
         SENT_CALLBACKS.store(0, Ordering::Relaxed);
         EXECUTED_CALLBACKS.store(0, Ordering::Relaxed);
+        EXECUTED_HARD_CALLS.store(0, Ordering::Relaxed);
 
         let ready = Arc::new(AtomicUsize::new(0));
         let start = Arc::new(AtomicBool::new(false));
@@ -240,17 +241,23 @@ pub fn run() -> crate::TestResult {
 
                 for _ in 0..CALLBACKS_PER_SENDER {
                     SENT_CALLBACKS.fetch_add(1, Ordering::Relaxed);
-                    // SAFETY: the thunk uses only static atomics and performs
-                    // bounded hard-IRQ work.
-                    unsafe {
-                        ax_ipi::call_on_cpu(
-                            CpuId(target_cpu),
-                            counting_callback,
-                            core::ptr::null_mut(),
-                        )
-                    }
-                    .expect("counting hard call failed");
+                    ax_ipi::legacy::run_on_cpu(target_cpu, counting_callback)
+                        .expect("failed to send callback IPI");
                 }
+
+                // Exercise synchronous completion once per producer. Reusing
+                // it for every callback serializes guest vCPUs on host
+                // scheduling quanta and does not test IPI coalescing.
+                // SAFETY: call_on_cpu is synchronous, so target_cpu remains
+                // borrowed until the bounded hard-IRQ callback completes.
+                unsafe {
+                    ax_ipi::call_on_cpu(
+                        CpuId(target_cpu),
+                        counting_hard_call,
+                        core::ptr::from_ref(&target_cpu).cast_mut().cast(),
+                    )
+                }
+                .expect("concurrent counting hard call failed");
             }));
         }
 
@@ -265,10 +272,18 @@ pub fn run() -> crate::TestResult {
 
         let expected = sender_cpus.len() * CALLBACKS_PER_SENDER;
         assert_eq!(SENT_CALLBACKS.load(Ordering::Relaxed), expected);
+        while EXECUTED_CALLBACKS.load(Ordering::Acquire) != expected {
+            thread::yield_now();
+        }
         assert_eq!(
             EXECUTED_CALLBACKS.load(Ordering::Relaxed),
             expected,
-            "all synchronous hard calls must complete in round {round}"
+            "all asynchronous callbacks must complete in round {round}"
+        );
+        assert_eq!(
+            EXECUTED_HARD_CALLS.load(Ordering::Relaxed),
+            sender_cpus.len(),
+            "every concurrent synchronous hard call must complete in round {round}"
         );
     }
 
