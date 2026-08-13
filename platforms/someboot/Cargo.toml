@@ -35,7 +35,6 @@ fdt-edit.workspace = true
 fdt-raw.workspace = true
 thiserror.workspace = true
 heapless = "0.9"
-kernutil.workspace = true
 log = "0.4"
 num-align = "0.1"
 numeric-enum-macro = "0.2"

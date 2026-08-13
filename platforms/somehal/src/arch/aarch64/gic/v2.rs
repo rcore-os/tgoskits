@@ -3,8 +3,8 @@ use alloc::format;
 use aarch64_cpu::asm::barrier;
 use arm_gic_driver::{checked_intid, v2::*};
 use irq_framework::IrqId;
-use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
+use someboot::smp::StaticCell;
 
 use crate::common::ioremap;
 

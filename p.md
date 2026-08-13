@@ -4,7 +4,7 @@
 >
 > 基线：`dev`（`edd793e51`）与当前启动内存收敛 PR #1978
 >
-> 更新时间：2026-08-12
+> 更新时间：2026-08-13
 
 ## 1. 结论
 
@@ -16,7 +16,7 @@ TGOSKits 不应在公共底层实现一套接近 Linux 的统一内存管理器�
 
 这里的“多个消费者”按独立系统/子系统语义判断，而不是按 Cargo 依赖计数判断。`buddy-slab-allocator` 作为 `ax-alloc` 的私有算法边界、`dma-api`/`mmio-api` 作为多驱动 capability 边界，虽然形态不同，也都满足明确的复用职责。
 
-`kernutil` 不属于 `memory/`，也不再承载内存描述、区间算法、地址类型或架构状态；它只保留一个跨 `someboot`/`somehal` 的启动阶段原语 `StaticCell`。该原语表达“BSP 在 AP 启动前初始化一次，之后所有 CPU 仅不可变访问”，不是通用 lazy initialization 或运行期全局可变容器。
+启动阶段原语 `StaticCell` 归属 `someboot::smp`，因为只有 `someboot` 掌握 secondary CPU 的释放边界；`somehal` 通过既有的 `someboot` 依赖复用它，不再为单一类型保留独立的 `kernutil` crate。该原语表达“BSP 在 AP 启动前初始化一次，之后所有 CPU 仅不可变访问”，不是通用 lazy initialization 或运行期全局可变容器。
 
 目标架构如下：
 
@@ -84,7 +84,7 @@ StarryOS 可以在公共机制之上继续扩展，但它的复杂度不能成�
 
 ### 3.1 启动内存
 
-当前 PR 已将启动内存描述和区间规范化从 `kernutil`、`ranges-ext` 收敛到 `someboot::mem`，同时把 `kernutil` 收窄为启动期静态发布原语：
+当前 PR 已将启动内存描述和区间规范化从 `kernutil`、`ranges-ext` 收敛到 `someboot::mem`，并将唯一保留的启动期静态发布原语迁入 `someboot::smp`：
 
 - `BootMemoryMap` 使用固定容量 `heapless::Vec<_, 512>`；
 - BSP 在内核、早期 RAM、MMIO 和 CPU-local 预留完成后调用 `freeze()`；
@@ -221,7 +221,7 @@ DMA 修正必须作为明确的 breaking-change 设计处理：先列出真实 t
 | 层/组件 | 保留职责 | 明确不负责 |
 | --- | --- | --- |
 | `someboot::mem` | 固件内存图、规范化、早期 bump、boot 页表帧、启动资源预留、冻结发布 | runtime 页分配、reclaim、进程/客户机策略 |
-| `kernutil::StaticCell` | BSP 在 secondary release 前一次初始化、运行期跨 CPU 不可变访问 | boot map 多步修改、并发 lazy init、运行期更新、内部同步 |
+| `someboot::smp::StaticCell` | BSP 在 secondary release 前一次初始化、运行期跨 CPU 不可变访问 | boot map 多步修改、并发 lazy init、运行期更新、内部同步 |
 | `somehal` | 转发冻结的 boot facts；拥有运行期平台硬件状态 | 再维护一份可变内存图 |
 | `axplat-dyn` / `ax-plat::MemIf` | 将 boot facts 适配为 runtime 可用 RAM、reserved、MMIO 和地址转换/cache capability | allocator 算法和 OS 统计策略 |
 | `axhal` / `axruntime` | 构造 runtime region view，初始化 allocator，完成系统接线 | 隐式修正含糊的平台语义 |
@@ -314,11 +314,11 @@ dealloc(allocation facts)
 
 - 分支：`mem1`，对应 PR #1978；
 - 问题：`kernutil` 混合静态发布、内存描述、区间和 ID 等无共同生命周期的工具；旧 `StaticCell` 先发布 initialized 再写值，以 `T: Send` 实现 `Sync`，并允许从 `&self` 运行期取得 `&mut T`；启动内存又依赖独立的单一领域 `ranges-ext`，所有权和冻结边界不可检查；
-- 修改：将启动内存类型和规范化迁入 `someboot`，删除 `ranges-ext`；保留并收窄 `kernutil::StaticCell` 为 `unsafe init_before_smp + immutable get`，按 `T: Send + Sync` 约束并采用 write -> Release / Acquire 顺序；启动内存使用私有 `BootMemoryMap` 并在 runtime handoff 前 freeze；
+- 修改：将启动内存类型和规范化迁入 `someboot`，删除 `ranges-ext`；将保留并收窄后的 `StaticCell` 迁入拥有 secondary release 边界的 `someboot::smp`，删除只剩单一类型的 `kernutil` crate；`StaticCell` 采用 `unsafe init_before_smp + immutable get`、`T: Send + Sync` 和 write -> Release / Acquire 顺序；启动内存使用私有 `BootMemoryMap` 并在 runtime handoff 前 freeze；
 - 收益：同时明确两个互不混淆的不变量——启动内存由 `someboot` 多步构造后冻结，启动静态值由 BSP 一次发布后不可变共享；保留 pre-MMU、无 CAS 的低成本路径，并消除旧 `StaticCell` 的发布和别名风险；
 - 边界：不改变 runtime allocator、VM policy、DMA 或页表契约；
-- 兼容：删除 `ranges-ext`，移除 `kernutil` 的 memory/address/id API，并以 `init_before_smp/get/is_initialized` 替换旧 `init/update/is_init`，属于 breaking change；迁移方将 boot memory 类型改用 `someboot::mem`，仅在可证明 pre-SMP 的调用点使用新 `StaticCell`；
-- 验证：compile-fail 证明非 `Sync` 值不能进入共享 `StaticCell`；线程测试证明发布后可跨线程不可变读取；现有 someboot 单元测试、跨架构 check、目标 crate clippy 和 Starry system QEMU 回归。
+- 兼容：删除 `ranges-ext` 和 `kernutil`，移除 `kernutil` 的 memory/address/id API，以 `someboot::smp::StaticCell::{init_before_smp,get,is_initialized}` 替换旧入口，属于 breaking change；迁移方将 boot memory 类型改用 `someboot::mem`，仅在可证明 pre-SMP 的调用点使用新 `StaticCell`；
+- 验证：`someboot` 的 compile-fail 证明非 `Sync` 值不能进入共享 `StaticCell`；线程测试证明发布后可跨线程不可变读取；依赖检查证明不再存在 `kernutil` package；现有 someboot 单元测试、跨架构 check、目标 crate clippy 和 Starry system QEMU 回归。
 
 ### 7.2 PR 2：启动交接契约与算术加固
 

@@ -1,8 +1,9 @@
 use core::fmt::Display;
 
 use aarch64_cpu::asm::wfi;
-use kernutil::StaticCell;
 use smccc::{Hvc, Smc, psci};
+
+use crate::smp::StaticCell;
 
 static METHOD: StaticCell<Method> = StaticCell::uninit();
 

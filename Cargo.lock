@@ -4622,10 +4622,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kernutil"
-version = "0.2.4"
-
-[[package]]
 name = "keyboard-types"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7714,7 +7710,6 @@ dependencies = [
  "fdt-raw",
  "heapless",
  "kasm-aarch64",
- "kernutil",
  "libc",
  "log",
  "loongArch64",
@@ -7748,7 +7743,6 @@ dependencies = [
  "ax-sync",
  "cpu-local",
  "irq-framework",
- "kernutil",
  "log",
  "loongArch64",
  "mmio-api",

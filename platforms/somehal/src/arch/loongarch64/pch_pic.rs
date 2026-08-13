@@ -1,10 +1,10 @@
-use kernutil::StaticCell;
 use rdif_intc::{AcpiGsiController, AcpiIrqPolarity, AcpiIrqTrigger, Interface};
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver,
     probe::{OnProbeError, acpi::AcpiPchPic},
     register::{ProbeAcpi, ProbeFdt},
 };
+use someboot::smp::StaticCell;
 
 use super::irq_common::{PCH_PIC_VECTOR_COUNT, fdt_first_cell_vector, pch_pic_reg_bit};
 use crate::{

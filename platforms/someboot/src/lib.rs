@@ -9,6 +9,9 @@ extern crate alloc;
 #[macro_use]
 extern crate core;
 
+#[cfg(test)]
+extern crate std;
+
 #[macro_use]
 extern crate log;
 

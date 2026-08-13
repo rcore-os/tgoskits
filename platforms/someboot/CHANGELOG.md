@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Move the pre-SMP `StaticCell` into `someboot::smp`, which owns the secondary
+  CPU release boundary. Users of `kernutil::StaticCell` should migrate to
+  `someboot::smp::StaticCell`.
+
 ## [0.3.8](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.7...someboot-v0.3.8) - 2026-08-09
 
 ### Fixed

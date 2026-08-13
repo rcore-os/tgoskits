@@ -2,11 +2,10 @@ mod earlycon;
 mod memory;
 
 pub use earlycon::setup_earlycon;
-use kernutil::StaticCell;
 #[allow(unused)]
 pub use memory::{init_memory_map, memories};
 
-use crate::mem::phys_to_virt;
+use crate::{mem::phys_to_virt, smp::StaticCell};
 
 pub(crate) static mut FDT_ADDR: usize = 0;
 static FDT: StaticCell<fdt_edit::Fdt> = StaticCell::uninit();

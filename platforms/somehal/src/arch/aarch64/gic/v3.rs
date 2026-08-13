@@ -7,8 +7,8 @@ use core::{
 use aarch64_cpu::{asm::barrier, registers::ID_AA64PFR0_EL1};
 use arm_gic_driver::{checked_intid, v3::*};
 use irq_framework::IrqId;
-use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
+use someboot::smp::StaticCell;
 
 use crate::common::ioremap;
 

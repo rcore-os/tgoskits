@@ -1,10 +1,10 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use kernutil::StaticCell;
 use rdif_intc::Interface;
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::ProbeFdt,
 };
+use someboot::smp::StaticCell;
 
 use super::{
     irq_common::fdt_first_cell_vector,

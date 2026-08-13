@@ -19,7 +19,7 @@ use core::{
 ///
 /// ```compile_fail
 /// use core::cell::Cell;
-/// use kernutil::StaticCell;
+/// use someboot::smp::StaticCell;
 ///
 /// static INVALID: StaticCell<Cell<u32>> = StaticCell::new(Cell::new(0));
 /// ```

@@ -2,7 +2,6 @@ use alloc::{format, vec, vec::Vec};
 use core::{num::NonZeroU32, ptr::NonNull};
 
 use ax_riscv_plic::{PLICRegs, Plic, PlicIrqHandler};
-use kernutil::StaticCell;
 use rdif_intc::Interface;
 use rdrive::{
     Device, DriverGeneric, Phandle, module_driver,
@@ -11,6 +10,7 @@ use rdrive::{
 };
 use riscv::register::{sie, sip};
 use sbi_rt::HartMask;
+use someboot::smp::StaticCell;
 
 use crate::{
     common::ioremap,

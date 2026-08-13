@@ -26,7 +26,6 @@ anyhow = {workspace = true}
 ax-sync = { workspace = true }
 cpu-local.workspace = true
 irq-framework = { workspace = true }
-kernutil.workspace = true
 page-table-generic = {workspace = true}
 rdif-intc.workspace = true
 rdif-msi.workspace = true

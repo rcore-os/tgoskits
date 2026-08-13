@@ -13,6 +13,9 @@ use crate::{
 
 mod cpu_iter;
 mod layout;
+mod static_cell;
+
+pub use static_cell::StaticCell;
 
 static mut CPU_AREA_REGION_START: usize = 0;
 static mut CPU_AREA_REGION_END: usize = 0;

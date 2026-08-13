@@ -187,8 +187,8 @@ Use this order when auditing an early boot port:
     initialized once, frozen, and bound through the architecture CPU-local register contract.
 11. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
 
-For cross-platform static boot values, `kernutil::StaticCell` means exactly
-one BSP write before step 11 followed by immutable access from all CPUs. Its
+For cross-platform static boot values, `someboot::smp::StaticCell` means
+exactly one BSP write before step 11 followed by immutable access from all CPUs. Its
 initializer is unsafe because the type cannot itself prove the boot phase.
 Write the complete value before Release publication, read it after an Acquire
 observation, require the contained type to be `Send + Sync`, and keep any later
