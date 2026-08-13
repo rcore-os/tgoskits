@@ -226,7 +226,8 @@ impl TaskSystem {
         self.ensure_owner_cpu_context(&cpu)?;
         let remote = Arc::clone(cpu.remote());
         let initial_request = remote.claim_scheduler_request();
-        self.complete_context_switch(cpu.as_mut())?;
+        // SAFETY: propagated from the selected entry contract.
+        unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let previous_core_hint = current.map(|thread| Arc::clone(thread.runtime_core_arc()));
@@ -334,7 +335,8 @@ impl TaskSystem {
         self.ensure_owner_cpu_context(&cpu)?;
         let remote = Arc::clone(cpu.remote());
         let initial_request = remote.claim_scheduler_request();
-        self.complete_context_switch(cpu.as_mut())?;
+        // SAFETY: propagated from the selected entry contract.
+        unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let previous_core_hint = Arc::clone(current.runtime_core_arc());
@@ -492,7 +494,8 @@ impl TaskSystem {
         self.ensure_owner_cpu_context(&cpu)?;
         let remote = Arc::clone(cpu.remote());
         let initial_request = remote.claim_scheduler_request();
-        self.complete_context_switch(cpu.as_mut())?;
+        // SAFETY: propagated from the selected entry contract.
+        unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let previous_core_hint = Arc::clone(current.runtime_core_arc());

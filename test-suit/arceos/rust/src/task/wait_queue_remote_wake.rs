@@ -92,6 +92,7 @@ pub fn run() -> crate::TestResult {
     assert_eq!(SLEEPER_CPU.load(Ordering::Acquire), sleeper_cpu);
     assert_eq!(this_cpu_id(), waker_cpu);
     task_test_hooks::arm_park_irq_owner_probe(sleeper_id);
+    task_test_hooks::arm_switch_tail_irq_owner_probe(sleeper_id);
     MAY_SLEEP.store(true, Ordering::Release);
     wake_sleep_queue_after_waiter_enqueued(sleeper_id);
 
@@ -111,6 +112,14 @@ pub fn run() -> crate::TestResult {
             run_queue: 0,
         }),
         "one scheduler-frame park transaction must reuse the runtime IRQ baton"
+    );
+    assert_eq!(
+        task_test_hooks::take_switch_tail_irq_owner_entries(),
+        Some(task_test_hooks::SwitchTailIrqOwnerEntries {
+            thread_sched: 0,
+            run_queue: 0,
+        }),
+        "one scheduler-frame switch tail must reuse the runtime IRQ baton"
     );
     assert_eq!(
         task_test_hooks::take_wake_irq_owner_entries(),

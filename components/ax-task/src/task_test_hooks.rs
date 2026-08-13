@@ -12,14 +12,9 @@ static TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
 static PI_RELEASE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static TARGET_CHAIN_TOP: AtomicU64 = AtomicU64::new(0);
 static PI_CHAIN_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
-static WAKE_IRQ_OWNER_TARGET: AtomicU64 = AtomicU64::new(0);
-static WAKE_IRQ_OWNER_THREAD_SCHED_ENTRIES: AtomicU64 = AtomicU64::new(0);
-static WAKE_IRQ_OWNER_RUN_QUEUE_ENTRIES: AtomicU64 = AtomicU64::new(0);
-static WAKE_IRQ_OWNER_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
-static PARK_IRQ_OWNER_TARGET: AtomicU64 = AtomicU64::new(0);
-static PARK_IRQ_OWNER_THREAD_SCHED_ENTRIES: AtomicU64 = AtomicU64::new(0);
-static PARK_IRQ_OWNER_RUN_QUEUE_ENTRIES: AtomicU64 = AtomicU64::new(0);
-static PARK_IRQ_OWNER_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static WAKE_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
+static PARK_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
+static SWITCH_TAIL_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 
 const STAGE_IDLE: u8 = 0;
 const STAGE_CONFIGURING: u8 = 1;
@@ -32,23 +27,127 @@ const STAGE_CHAIN_DECIDED: u8 = 3;
 const STAGE_OWNER_MAY_CHANGE: u8 = 4;
 const STAGE_COMPLETE: u8 = 3;
 
+struct IrqOwnerProbe {
+    target: AtomicU64,
+    thread_sched_entries: AtomicU64,
+    run_queue_entries: AtomicU64,
+    stage: AtomicU8,
+}
+
+#[derive(Clone, Copy)]
+struct IrqOwnerProbeEntries {
+    thread_sched: u64,
+    run_queue: u64,
+}
+
+impl IrqOwnerProbe {
+    const fn new() -> Self {
+        Self {
+            target: AtomicU64::new(0),
+            thread_sched_entries: AtomicU64::new(0),
+            run_queue_entries: AtomicU64::new(0),
+            stage: AtomicU8::new(STAGE_IDLE),
+        }
+    }
+
+    fn arm(&self, target: u64, name: &str) {
+        assert_ne!(target, 0, "a task-test {name} identity must be non-zero");
+        assert_eq!(
+            self.stage.compare_exchange(
+                STAGE_IDLE,
+                STAGE_CONFIGURING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ),
+            Ok(STAGE_IDLE),
+            "only one {name} IRQ-owner probe may be armed"
+        );
+        self.target.store(target, Ordering::Relaxed);
+        self.thread_sched_entries.store(0, Ordering::Relaxed);
+        self.run_queue_entries.store(0, Ordering::Relaxed);
+        self.stage.store(STAGE_ARMED, Ordering::Release);
+    }
+
+    fn take(&self) -> Option<IrqOwnerProbeEntries> {
+        if self
+            .stage
+            .compare_exchange(
+                STAGE_COMPLETE,
+                STAGE_CONFIGURING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return None;
+        }
+        let entries = IrqOwnerProbeEntries {
+            thread_sched: self.thread_sched_entries.load(Ordering::Relaxed),
+            run_queue: self.run_queue_entries.load(Ordering::Relaxed),
+        };
+        self.target.store(0, Ordering::Relaxed);
+        self.stage.store(STAGE_IDLE, Ordering::Release);
+        Some(entries)
+    }
+
+    fn record(&self, target: ThreadId, thread_sched: bool, run_queue: bool, name: &str) {
+        if self.stage.load(Ordering::Acquire) != STAGE_ARMED
+            || self.target.load(Ordering::Relaxed) != target.as_u64()
+        {
+            return;
+        }
+        self.thread_sched_entries
+            .store(u64::from(thread_sched), Ordering::Relaxed);
+        self.run_queue_entries
+            .store(u64::from(run_queue), Ordering::Relaxed);
+        assert_eq!(
+            self.stage.compare_exchange(
+                STAGE_ARMED,
+                STAGE_COMPLETE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ),
+            Ok(STAGE_ARMED),
+            "{name} IRQ-owner scopes were recorded in an invalid stage"
+        );
+    }
+}
+
+/// Arms one real context-switch tail for IRQ-owner accounting.
+pub fn arm_switch_tail_irq_owner_probe(previous: u64) {
+    SWITCH_TAIL_IRQ_OWNER_PROBE.arm(previous, "switch-tail");
+}
+
+/// Runtime IRQ-owner entries observed inside one real switch tail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SwitchTailIrqOwnerEntries {
+    /// Entries taken by the previous thread scheduler lock.
+    pub thread_sched: u64,
+    /// Entries taken by a migration runqueue transaction.
+    pub run_queue: u64,
+}
+
+/// Takes task-sched and rq runtime IRQ-owner entries for the switch tail.
+pub fn take_switch_tail_irq_owner_entries() -> Option<SwitchTailIrqOwnerEntries> {
+    SWITCH_TAIL_IRQ_OWNER_PROBE
+        .take()
+        .map(|entries| SwitchTailIrqOwnerEntries {
+            thread_sched: entries.thread_sched,
+            run_queue: entries.run_queue,
+        })
+}
+
+pub(crate) fn record_switch_tail_irq_owner_scopes(
+    previous: ThreadId,
+    thread_sched: bool,
+    run_queue: bool,
+) {
+    SWITCH_TAIL_IRQ_OWNER_PROBE.record(previous, thread_sched, run_queue, "switch-tail");
+}
+
 /// Arms one real running-to-blocked park for IRQ-owner accounting.
 pub fn arm_park_irq_owner_probe(thread: u64) {
-    assert_ne!(thread, 0, "a task-test park identity must be non-zero");
-    assert_eq!(
-        PARK_IRQ_OWNER_STAGE.compare_exchange(
-            STAGE_IDLE,
-            STAGE_CONFIGURING,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ),
-        Ok(STAGE_IDLE),
-        "only one park IRQ-owner probe may be armed"
-    );
-    PARK_IRQ_OWNER_TARGET.store(thread, Ordering::Relaxed);
-    PARK_IRQ_OWNER_THREAD_SCHED_ENTRIES.store(0, Ordering::Relaxed);
-    PARK_IRQ_OWNER_RUN_QUEUE_ENTRIES.store(0, Ordering::Relaxed);
-    PARK_IRQ_OWNER_STAGE.store(STAGE_ARMED, Ordering::Release);
+    PARK_IRQ_OWNER_PROBE.arm(thread, "park");
 }
 
 /// Runtime IRQ-owner entries observed inside one real park transaction.
@@ -62,63 +161,21 @@ pub struct ParkIrqOwnerEntries {
 
 /// Takes task-sched and rq runtime IRQ-owner entries for the park.
 pub fn take_park_irq_owner_entries() -> Option<ParkIrqOwnerEntries> {
-    if PARK_IRQ_OWNER_STAGE
-        .compare_exchange(
-            STAGE_COMPLETE,
-            STAGE_CONFIGURING,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_err()
-    {
-        return None;
-    }
-    let entries = ParkIrqOwnerEntries {
-        thread_sched: PARK_IRQ_OWNER_THREAD_SCHED_ENTRIES.load(Ordering::Relaxed),
-        run_queue: PARK_IRQ_OWNER_RUN_QUEUE_ENTRIES.load(Ordering::Relaxed),
-    };
-    PARK_IRQ_OWNER_TARGET.store(0, Ordering::Relaxed);
-    PARK_IRQ_OWNER_STAGE.store(STAGE_IDLE, Ordering::Release);
-    Some(entries)
+    PARK_IRQ_OWNER_PROBE
+        .take()
+        .map(|entries| ParkIrqOwnerEntries {
+            thread_sched: entries.thread_sched,
+            run_queue: entries.run_queue,
+        })
 }
 
 pub(crate) fn record_park_irq_owner_scopes(thread: ThreadId, thread_sched: bool, run_queue: bool) {
-    if PARK_IRQ_OWNER_STAGE.load(Ordering::Acquire) != STAGE_ARMED
-        || PARK_IRQ_OWNER_TARGET.load(Ordering::Relaxed) != thread.as_u64()
-    {
-        return;
-    }
-    PARK_IRQ_OWNER_THREAD_SCHED_ENTRIES.store(u64::from(thread_sched), Ordering::Relaxed);
-    PARK_IRQ_OWNER_RUN_QUEUE_ENTRIES.store(u64::from(run_queue), Ordering::Relaxed);
-    assert_eq!(
-        PARK_IRQ_OWNER_STAGE.compare_exchange(
-            STAGE_ARMED,
-            STAGE_COMPLETE,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ),
-        Ok(STAGE_ARMED),
-        "park IRQ-owner scopes were recorded in an invalid stage"
-    );
+    PARK_IRQ_OWNER_PROBE.record(thread, thread_sched, run_queue, "park");
 }
 
 /// Arms one real blocked-to-runnable wake for IRQ-owner accounting.
 pub fn arm_wake_irq_owner_probe(thread: u64) {
-    assert_ne!(thread, 0, "a task-test wake identity must be non-zero");
-    assert_eq!(
-        WAKE_IRQ_OWNER_STAGE.compare_exchange(
-            STAGE_IDLE,
-            STAGE_CONFIGURING,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ),
-        Ok(STAGE_IDLE),
-        "only one wake IRQ-owner probe may be armed"
-    );
-    WAKE_IRQ_OWNER_TARGET.store(thread, Ordering::Relaxed);
-    WAKE_IRQ_OWNER_THREAD_SCHED_ENTRIES.store(0, Ordering::Relaxed);
-    WAKE_IRQ_OWNER_RUN_QUEUE_ENTRIES.store(0, Ordering::Relaxed);
-    WAKE_IRQ_OWNER_STAGE.store(STAGE_ARMED, Ordering::Release);
+    WAKE_IRQ_OWNER_PROBE.arm(thread, "wake");
 }
 
 /// Runtime IRQ-owner entries observed inside one real wake transaction.
@@ -132,24 +189,12 @@ pub struct WakeIrqOwnerEntries {
 
 /// Takes task-sched and rq runtime IRQ-owner entries for the wake.
 pub fn take_wake_irq_owner_entries() -> Option<WakeIrqOwnerEntries> {
-    if WAKE_IRQ_OWNER_STAGE
-        .compare_exchange(
-            STAGE_COMPLETE,
-            STAGE_CONFIGURING,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_err()
-    {
-        return None;
-    }
-    let entries = WakeIrqOwnerEntries {
-        thread_sched: WAKE_IRQ_OWNER_THREAD_SCHED_ENTRIES.load(Ordering::Relaxed),
-        run_queue: WAKE_IRQ_OWNER_RUN_QUEUE_ENTRIES.load(Ordering::Relaxed),
-    };
-    WAKE_IRQ_OWNER_TARGET.store(0, Ordering::Relaxed);
-    WAKE_IRQ_OWNER_STAGE.store(STAGE_IDLE, Ordering::Release);
-    Some(entries)
+    WAKE_IRQ_OWNER_PROBE
+        .take()
+        .map(|entries| WakeIrqOwnerEntries {
+            thread_sched: entries.thread_sched,
+            run_queue: entries.run_queue,
+        })
 }
 
 /// Returns whether one generation-valid target is physically blocked.
@@ -159,23 +204,7 @@ pub fn thread_is_blocked(thread: u64) -> bool {
 }
 
 pub(crate) fn record_wake_irq_owner_scopes(thread: ThreadId, thread_sched: bool, run_queue: bool) {
-    if WAKE_IRQ_OWNER_STAGE.load(Ordering::Acquire) != STAGE_ARMED
-        || WAKE_IRQ_OWNER_TARGET.load(Ordering::Relaxed) != thread.as_u64()
-    {
-        return;
-    }
-    WAKE_IRQ_OWNER_THREAD_SCHED_ENTRIES.store(u64::from(thread_sched), Ordering::Relaxed);
-    WAKE_IRQ_OWNER_RUN_QUEUE_ENTRIES.store(u64::from(run_queue), Ordering::Relaxed);
-    assert_eq!(
-        WAKE_IRQ_OWNER_STAGE.compare_exchange(
-            STAGE_ARMED,
-            STAGE_COMPLETE,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ),
-        Ok(STAGE_ARMED),
-        "wake IRQ-owner scopes were recorded in an invalid stage"
-    );
+    WAKE_IRQ_OWNER_PROBE.record(thread, thread_sched, run_queue, "wake");
 }
 
 /// Arms the PI release/claim/exit interleaving for one live waiter.

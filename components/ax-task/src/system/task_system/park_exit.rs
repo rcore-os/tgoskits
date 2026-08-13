@@ -515,7 +515,8 @@ impl TaskSystem {
         permit: CurrentExitPermit,
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
-        self.complete_context_switch(cpu.as_mut())?;
+        // SAFETY: propagated from this method's scheduler-frame contract.
+        unsafe { self.complete_context_switch_in_scheduler_frame(cpu.as_mut())? };
         self.drain_owner_work(cpu.as_mut())?;
         self.commit_current_exit_owner(cpu, permit, OwnerRqEntry::SchedulerFrame)
     }
@@ -671,7 +672,34 @@ impl TaskSystem {
     #[doc(hidden)]
     pub fn complete_context_switch(
         &self,
+        cpu: Pin<&mut CpuLocal>,
+    ) -> Result<SwitchInCompletion, TaskError> {
+        // SAFETY: the irqsave entry establishes its own IRQ ownership.
+        unsafe { self.complete_context_switch_owner(cpu, OwnerRqEntry::IrqSave) }
+    }
+
+    /// Completes switch tail below the runtime's IRQ-off scheduler baton.
+    ///
+    /// # Safety
+    ///
+    /// The scheduler frame must remain active until this function returns.
+    pub(crate) unsafe fn complete_context_switch_in_scheduler_frame(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+    ) -> Result<SwitchInCompletion, TaskError> {
+        // SAFETY: forwarded from this method's scheduler-frame contract.
+        unsafe { self.complete_context_switch_owner(cpu, OwnerRqEntry::SchedulerFrame) }
+    }
+
+    /// Completes switch tail under the selected IRQ ownership protocol.
+    ///
+    /// # Safety
+    ///
+    /// `SchedulerFrame` requires an active IRQ-off runtime scheduler baton.
+    pub(super) unsafe fn complete_context_switch_owner(
+        &self,
         mut cpu: Pin<&mut CpuLocal>,
+        rq_entry: OwnerRqEntry,
     ) -> Result<SwitchInCompletion, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         let Some(initial_handoff) = cpu.as_ref().get_ref().switch_handoff() else {
@@ -690,9 +718,17 @@ impl TaskSystem {
         }
         if migration_target.is_some() {
             let placement = previous_core.sched().placement();
-            let sched = previous_core.sched().lock();
+            // SAFETY: propagated from this method's selected entry contract.
+            let sched = unsafe { rq_entry.lock_thread_sched(previous_core.sched()) };
             let remote = Arc::clone(cpu.remote());
-            let transaction = OwnerRqTxn::begin(self, &remote);
+            // SAFETY: propagated from this method's selected entry contract.
+            let transaction = unsafe { rq_entry.begin(self, &remote) };
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_switch_tail_irq_owner_scopes(
+                previous_core.id(),
+                sched.owns_runtime_irq_scope(),
+                transaction.owns_runtime_irq_scope(),
+            );
             let validation = self.validate_switch_handoff_state(
                 owner,
                 transaction.deadline_bandwidth(),
@@ -733,9 +769,17 @@ impl TaskSystem {
         let (migration_target, previous_exited, affinity_completed) = if migration_target.is_some()
         {
             let placement = previous_core.sched().placement();
-            let mut sched = handoff.previous().sched().lock();
+            // SAFETY: propagated from this method's selected entry contract.
+            let mut sched = unsafe { rq_entry.lock_thread_sched(handoff.previous().sched()) };
             let remote = Arc::clone(cpu.remote());
-            let mut transaction = OwnerRqTxn::begin(self, &remote);
+            // SAFETY: propagated from this method's selected entry contract.
+            let mut transaction = unsafe { rq_entry.begin(self, &remote) };
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_switch_tail_irq_owner_scopes(
+                previous_core.id(),
+                sched.owns_runtime_irq_scope(),
+                transaction.owns_runtime_irq_scope(),
+            );
             let validation = self.validate_switch_handoff_state(
                 owner,
                 transaction.deadline_bandwidth(),
@@ -777,7 +821,14 @@ impl TaskSystem {
             // release and performs its own target selection and enqueue without
             // a second rq transaction.
             previous_core.sched().placement().finish_task(owner);
-            let sched = previous_core.sched().lock();
+            // SAFETY: propagated from this method's selected entry contract.
+            let sched = unsafe { rq_entry.lock_thread_sched(previous_core.sched()) };
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_switch_tail_irq_owner_scopes(
+                previous_core.id(),
+                sched.owns_runtime_irq_scope(),
+                false,
+            );
             let previous_exited = sched.lifecycle.state() == ThreadState::Exited;
             let affinity_completed =
                 Self::complete_affinity_if_satisfied_locked(&previous_core, &sched);

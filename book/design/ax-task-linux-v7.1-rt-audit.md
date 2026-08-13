@@ -3207,6 +3207,23 @@ runtime scheduler baton 覆盖两个 guard 的完整生命周期，不再新增�
 87.275 秒，仅改善 0.84%，工作负载仍未在 60 秒窗口完成；因此这里只确认 scheduler-frame
 所有权重复已消除，不把局部结构下降误报为相对 dev 的端到端性能达标。
 
+第三项重复 owner 位于物理 context-switch tail。Linux 把 `__schedule()` 已持有的 rq raw lock 与
+IRQ-off 状态跨 `switch_to()` 交给新上下文，并在 `finish_task_switch()` 中完成 `prev->on_cpu` 清除后
+统一 unlock/enable；tail 不重新 irqsave 获取 task/rq lock。ax-task 原先在 scheduler frame 跨架构
+switch 返回后调用安全 `complete_context_switch()`，普通路径重新取得 task irqsave lock，迁移路径
+还会重新取得 rq irqsave transaction。现在 tail 有独立的 unsafe scheduler-frame 入口，并复用
+`OwnerRqEntry::SchedulerFrame` 同时选择 task 与 rq raw protocol；安全入口仍保留 `IrqSave`，供没有
+scheduler baton 的普通 task-system 调用者使用。park、wake、switch-tail 三个一次性观测也复用同一
+`IrqOwnerProbe` 状态机，不复制探针生命周期协议。
+
+真实 ArceOS remote wait-queue 用例把目标 sleeper 的物理切换尾部加入同一检查：旧实现稳定得到
+`SwitchTailIrqOwnerEntries { thread_sched: 1, run_queue: 0 }` 并失败，修复后为 `0/0`；park/wake
+仍分别保持 `0/0` 与 `1/0`。相同 60 秒 ext4 marker 窗口仍推进到 `file-0535`，switch 数从
+124,152 变为 125,555（+1.13%）。按每次 switch 归一后，thread-sched runtime IRQ guard 再下降
+34.58%，总 runtime IRQ guard 下降 8.91%，rq ticket 下降 2.00%；host user 从 87.275 秒降至
+86.524 秒（-0.86%）。端到端 workload 仍未在窗口内完成，所以这一检查点只关闭 switch-tail
+重复 owner，性能阶段仍继续。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

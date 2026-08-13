@@ -193,7 +193,10 @@ pub(super) fn execute_switch_plan(
     // locks. Runtime handles remain live, and local IRQs stay disabled here.
     unsafe { task_runtime::switch_context(switch) };
     scheduler_frame.refresh_current_cpu();
-    if complete_current_context_switch_tail(scheduler_frame).is_err() {
+    // SAFETY: the scheduler frame retains its IRQ-off baton across the
+    // architecture switch and through switch-tail completion.
+    if unsafe { complete_current_context_switch_tail_in_scheduler_frame(scheduler_frame) }.is_err()
+    {
         task_runtime::fatal_invariant(5, 0);
     }
 }
@@ -238,6 +241,25 @@ pub(super) fn complete_current_context_switch_tail(
     let completion = {
         let mut cpu = runtime_current_cpu_mut(pin)?;
         system.complete_context_switch(cpu.as_mut())?
+    };
+    completion.finish();
+    Ok(())
+}
+
+/// Completes the inherited switch tail below a live scheduler frame.
+///
+/// # Safety
+///
+/// `scheduler_frame` must retain the IRQ-off scheduler baton until this
+/// function returns.
+unsafe fn complete_current_context_switch_tail_in_scheduler_frame(
+    scheduler_frame: &mut RuntimeSchedulerFrameGuard,
+) -> Result<(), TaskError> {
+    let system = runtime_task_system()?;
+    let completion = {
+        let mut cpu = runtime_current_cpu_mut(scheduler_frame)?;
+        // SAFETY: forwarded from this helper's scheduler-frame contract.
+        unsafe { system.complete_context_switch_in_scheduler_frame(cpu.as_mut())? }
     };
     completion.finish();
     Ok(())
