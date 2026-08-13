@@ -25,6 +25,7 @@ mod alloc;
 mod fs;
 mod lookup;
 mod mkfs;
+mod mmp;
 mod mount;
 mod orphan;
 mod owned;

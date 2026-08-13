@@ -1,10 +1,11 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     rc::Rc,
+    time::Duration,
 };
 
 use rsext4::{
@@ -104,6 +105,104 @@ impl rsext4::Clock for FileBlockDevice {
 struct CountingFileBlockDevice {
     inner: FileBlockDevice,
     reads: Rc<Cell<usize>>,
+}
+
+struct MmpWriteOrderDevice {
+    inner: FileBlockDevice,
+    mmp_sector: u64,
+    writes: Rc<RefCell<Vec<bool>>>,
+}
+
+struct MmpReleaseFailureDevice {
+    inner: FileBlockDevice,
+    mmp_sector: u64,
+    fail_clean: Rc<Cell<bool>>,
+}
+
+impl MmpReleaseFailureDevice {
+    fn open(path: PathBuf, mmp_block: u64) -> (Self, Rc<Cell<bool>>) {
+        let fail_clean = Rc::new(Cell::new(false));
+        (
+            Self {
+                inner: FileBlockDevice::open_with_sector_size(path, 512),
+                mmp_sector: mmp_block * (4096 / 512),
+                fail_clean: Rc::clone(&fail_clean),
+            },
+            fail_clean,
+        )
+    }
+
+    fn is_clean_mmp(&self, buffer: &[u8], sector: SectorId) -> bool {
+        sector.raw() == self.mmp_sector
+            && buffer.get(0..4) == Some(&0x004d_4d50_u32.to_le_bytes())
+            && buffer.get(4..8) == Some(&0xff4d_4d50_u32.to_le_bytes())
+    }
+}
+
+impl BlockIo for MmpReleaseFailureDevice {
+    fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+        self.inner.read(buffer, sector, count)
+    }
+
+    fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+        if self.fail_clean.get() && self.is_clean_mmp(buffer, sector) {
+            self.fail_clean.set(false);
+            return Err(Ext4Error::io());
+        }
+        self.inner.write(buffer, sector, count)
+    }
+
+    fn flush(&mut self) -> Ext4Result<()> {
+        self.inner.flush()
+    }
+
+    fn geometry(&self) -> DeviceGeometry {
+        self.inner.geometry()
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        self.inner.capabilities()
+    }
+}
+
+impl MmpWriteOrderDevice {
+    fn open(path: PathBuf, mmp_block: u64) -> (Self, Rc<RefCell<Vec<bool>>>) {
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        (
+            Self {
+                inner: FileBlockDevice::open_with_sector_size(path, 512),
+                mmp_sector: mmp_block * (4096 / 512),
+                writes: Rc::clone(&writes),
+            },
+            writes,
+        )
+    }
+}
+
+impl BlockIo for MmpWriteOrderDevice {
+    fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+        self.inner.read(buffer, sector, count)
+    }
+
+    fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+        let is_clean_mmp = sector.raw() == self.mmp_sector
+            && buffer.get(0..4) == Some(&0x004d_4d50_u32.to_le_bytes())
+            && buffer.get(4..8) == Some(&0xff4d_4d50_u32.to_le_bytes());
+        self.writes.borrow_mut().push(is_clean_mmp);
+        self.inner.write(buffer, sector, count)
+    }
+
+    fn flush(&mut self) -> Ext4Result<()> {
+        self.inner.flush()
+    }
+
+    fn geometry(&self) -> DeviceGeometry {
+        self.inner.geometry()
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        self.inner.capabilities()
+    }
 }
 
 impl CountingFileBlockDevice {
@@ -206,6 +305,31 @@ impl Clock for TestClock {
         let seconds = self.0.get();
         self.0.set(seconds + 1);
         Ok(Ext4Timestamp::new(seconds, 0))
+    }
+}
+
+struct FixedEntropy(u32);
+
+impl EntropySource for FixedEntropy {
+    fn fill_bytes(&mut self, output: &mut [u8]) -> Ext4Result<()> {
+        for chunk in output.chunks_mut(4) {
+            let bytes = self.0.to_ne_bytes();
+            chunk.copy_from_slice(&bytes[..chunk.len()]);
+            self.0 = self.0.wrapping_add(1);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct LogicalDelay {
+    elapsed: Duration,
+}
+
+impl Delay for LogicalDelay {
+    fn wait(&mut self, duration: Duration) -> Ext4Result<()> {
+        self.elapsed += duration;
+        Ok(())
     }
 }
 
@@ -373,7 +497,7 @@ fn create_ext4_geometry_image(
 }
 
 #[test]
-fn linux_mmp_image_mounts_read_only_without_mutating_the_protection_block() {
+fn linux_mmp_image_preserves_read_only_mounts_and_runs_writable_ownership_lifecycle() {
     for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
         require_tool(tool);
     }
@@ -382,29 +506,13 @@ fn linux_mmp_image_mounts_read_only_without_mutating_the_protection_block() {
         create_ext4_test_image_with_args("rsext4-linux-mmp-readonly", "64M", &["-O", "mmp"]);
     let original_image = fs::read(&image).expect("snapshot Linux MMP image");
 
-    {
-        let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_800_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
-        let error = match Ext4::mount(device, services, MountOptions::read_write()) {
-            Ok(_) => panic!("writable MMP mount needs a runtime-owned refresh loop"),
-            Err(error) => error,
-        };
-        assert_eq!(error.kind(), Ext4ErrorKind::UnsupportedFeature);
-        assert_eq!(
-            error.context(),
-            Some(ErrorContext::Feature {
-                set: FeatureSet::Incompatible,
-                bits: rsext4::superblock::Ext4Superblock::EXT4_FEATURE_INCOMPAT_MMP,
-            })
-        );
-    }
-
+    let superblock_offset = 1024;
+    let mmp_field_offset = superblock_offset + 0x168;
+    let mmp_block = u64::from_le_bytes(
+        original_image[mmp_field_offset..mmp_field_offset + 8]
+            .try_into()
+            .unwrap(),
+    );
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
         let services = MountServices::new(
@@ -431,15 +539,8 @@ fn linux_mmp_image_mounts_read_only_without_mutating_the_protection_block() {
                 readonly: false,
                 ..read_only_options
             })
-            .expect_err("MMP must also gate a read-only to writable remount");
-        assert_eq!(error.kind(), Ext4ErrorKind::UnsupportedFeature);
-        assert_eq!(
-            error.context(),
-            Some(ErrorContext::Feature {
-                set: FeatureSet::Incompatible,
-                bits: rsext4::superblock::Ext4Superblock::EXT4_FEATURE_INCOMPAT_MMP,
-            })
-        );
+            .expect_err("writable MMP needs injected entropy");
+        assert_eq!(error.kind(), Ext4ErrorKind::UnsupportedCapability);
         assert_eq!(filesystem.options(), read_only_options);
         filesystem.unmount().expect("unmount MMP image read-only");
     }
@@ -449,8 +550,106 @@ fn linux_mmp_image_mounts_read_only_without_mutating_the_protection_block() {
         original_image,
         "read-only mount must not rewrite the superblock or MMP protection block"
     );
+
+    let write_order;
+    {
+        let (device, writes) = MmpWriteOrderDevice::open(image.clone(), mmp_block);
+        write_order = writes;
+        let services = MountServices::new(
+            TestClock(Cell::new(1_800_000_000)),
+            FixedEntropy(0x1234_5678),
+            (),
+            (),
+            NoopObserver,
+        )
+        .with_mmp(
+            LogicalDelay::default(),
+            MmpIdentity::from_names(b"rsext4-test", b"linux-mmp.img"),
+        );
+        let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
+            .expect("claim writable Linux MMP image");
+        let interval = filesystem
+            .mmp_refresh_interval()
+            .expect("MMP mount must expose its refresh interval");
+        assert!(interval <= Duration::from_secs(300));
+        assert_eq!(filesystem.refresh_mmp(interval).unwrap(), Some(interval));
+        filesystem.unmount().expect("clean writable MMP unmount");
+    }
+    assert_eq!(
+        write_order.borrow().last(),
+        Some(&true),
+        "Linux releases MMP only after the filesystem and journal are clean"
+    );
+
+    let current_image = fs::read(&image).expect("read writable MMP image");
+    let mmp_offset = usize::try_from(mmp_block * 4096).unwrap();
+    assert_eq!(
+        u32::from_le_bytes(
+            current_image[mmp_offset + 4..mmp_offset + 8]
+                .try_into()
+                .unwrap()
+        ),
+        0xff4d_4d50,
+        "clean unmount must release the MMP lease"
+    );
     e2fsck_readonly_clean(&image, "read-only Linux MMP image");
     fs::remove_dir_all(temp_dir).expect("remove MMP temp dir");
+}
+
+#[test]
+fn failed_mmp_clean_release_leaves_a_terminal_non_mutating_mount() {
+    for tool in ["mkfs.ext4", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) =
+        create_ext4_test_image_with_args("rsext4-linux-mmp-release-fault", "64M", &["-O", "mmp"]);
+    let initial_image = fs::read(&image).expect("read Linux MMP image");
+    let mmp_field_offset = 1024 + 0x168;
+    let mmp_block = u64::from_le_bytes(
+        initial_image[mmp_field_offset..mmp_field_offset + 8]
+            .try_into()
+            .unwrap(),
+    );
+    let (device, fail_clean) = MmpReleaseFailureDevice::open(image.clone(), mmp_block);
+    let services = MountServices::new(
+        TestClock(Cell::new(1_800_000_000)),
+        FixedEntropy(0x1234_5678),
+        (),
+        (),
+        NoopObserver,
+    )
+    .with_mmp(LogicalDelay::default(), MmpIdentity::default());
+    let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
+        .expect("claim writable Linux MMP image");
+
+    fail_clean.set(true);
+    assert_eq!(filesystem.unmount().unwrap_err().kind(), Ext4ErrorKind::Io);
+    assert_eq!(filesystem.sync().unwrap_err().kind(), Ext4ErrorKind::Io);
+    assert_eq!(
+        filesystem
+            .remount(MountOptions {
+                readonly: true,
+                ..MountOptions::read_write()
+            })
+            .unwrap_err()
+            .kind(),
+        Ext4ErrorKind::Busy
+    );
+    assert_eq!(filesystem.unmount().unwrap_err().kind(), Ext4ErrorKind::Io);
+
+    let current_image = fs::read(&image).expect("read failed-release MMP image");
+    let mmp_offset = usize::try_from(mmp_block * 4096).unwrap();
+    assert_ne!(
+        u32::from_le_bytes(
+            current_image[mmp_offset + 4..mmp_offset + 8]
+                .try_into()
+                .unwrap()
+        ),
+        0xff4d_4d50,
+        "a failed CLEAN write must not be retried after ownership becomes uncertain"
+    );
+    fs::remove_dir_all(temp_dir).expect("remove MMP fault temp dir");
 }
 
 #[test]

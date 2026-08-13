@@ -1,19 +1,31 @@
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    string::String,
+    sync::{Arc, Weak},
+};
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 
 use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{
-    DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
+    DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsError, VfsResult,
+    path::MAX_NAME_LEN,
 };
-use rsext4::{InodeNumber, MountServices};
+use rsext4::{InodeNumber, MmpIdentity, MountServices};
 
-use super::{Ext4Clock, Ext4Disk, Ext4Observer, Inode, MountedExt4, util::into_vfs_err};
+use super::{
+    Ext4Clock, Ext4Delay, Ext4Disk, Ext4Entropy, Ext4Observer, Inode, MountedExt4,
+    util::into_vfs_err,
+};
 use crate::{
     block::{BlockRegion, FsBlockDevice},
-    os::sync::{SleepMutex as Mutex, SleepMutexGuard as MutexGuard},
+    os::{
+        BlockNotification, BlockThread, runtime_ops,
+        sync::{IrqMutex, SleepMutex as Mutex, SleepMutexGuard as MutexGuard},
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,9 +119,39 @@ impl Ext4State {
 }
 
 pub struct Ext4Filesystem {
+    self_ref: Weak<Self>,
     inner: Mutex<Ext4State>,
+    mmp_worker: MmpWorker,
     root_dir: LazyInit<DirEntry>,
     readonly: bool,
+}
+
+struct MmpWorker {
+    stopping: Arc<AtomicBool>,
+    notification: IrqMutex<Option<Arc<dyn BlockNotification>>>,
+    thread: IrqMutex<Option<Box<dyn BlockThread>>>,
+}
+
+impl MmpWorker {
+    fn disabled() -> Self {
+        Self {
+            stopping: Arc::new(AtomicBool::new(false)),
+            notification: IrqMutex::new(None),
+            thread: IrqMutex::new(None),
+        }
+    }
+
+    fn stop_and_join(&self) {
+        self.stopping.store(true, Ordering::Release);
+        let notification = self.notification.lock().clone();
+        if let Some(notification) = notification {
+            notification.notify();
+        }
+        let thread = self.thread.lock().take();
+        if let Some(thread) = thread {
+            thread.join();
+        }
+    }
 }
 
 impl Ext4Filesystem {
@@ -123,7 +165,9 @@ impl Ext4Filesystem {
         region: BlockRegion,
     ) -> VfsResult<Filesystem> {
         let disk = Ext4Disk::new(dev, region).map_err(into_vfs_err)?;
-        let services = MountServices::new(Ext4Clock, (), (), (), Ext4Observer);
+        let mmp_identity = MmpIdentity::from_names(b"TGOSKits", b"ax-fs-ng");
+        let services = MountServices::new(Ext4Clock, Ext4Entropy, (), (), Ext4Observer)
+            .with_mmp(Ext4Delay, mmp_identity);
         let ext4 =
             rsext4::Ext4::mount_with_readonly_fallback(disk, services).map_err(into_vfs_err)?;
         let readonly = ext4.options().readonly;
@@ -132,14 +176,25 @@ impl Ext4Filesystem {
         }
         let root_ino = ext4.root_inode();
 
-        let fs = Arc::new(Self {
+        let fs = Arc::new_cyclic(|self_ref| Self {
+            self_ref: self_ref.clone(),
             inner: Mutex::new(Ext4State {
                 ext4,
                 lifetimes: InodeLifetimeTracker::default(),
             }),
+            mmp_worker: MmpWorker::disabled(),
             root_dir: LazyInit::new(),
             readonly,
         });
+        if fs.lock().ext4.mmp_refresh_interval().is_some()
+            && let Err(error) = fs.start_mmp_worker()
+        {
+            let cleanup = fs.lock().ext4.unmount().map_err(into_vfs_err);
+            return match cleanup {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(cleanup_error),
+            };
+        }
         fs.lock().inc_ref(root_ino);
         fs.root_dir.init_once(DirEntry::new_dir(
             |this| DirNode::new(Inode::new(fs.clone(), root_ino, Some(this))),
@@ -174,11 +229,92 @@ impl Ext4Filesystem {
     }
 
     fn shutdown_filesystem(&self) -> VfsResult<()> {
-        let mut state = self.inner.lock();
-        if state.has_pending_reaps() {
+        if self.inner.lock().has_pending_reaps() {
             return Err(into_vfs_err(rsext4::Ext4Error::busy()));
         }
-        state.ext4.unmount().map_err(into_vfs_err)
+        self.mmp_worker.stop_and_join();
+        let result = self.inner.lock().ext4.unmount().map_err(into_vfs_err);
+        if result.is_err()
+            && self.inner.lock().ext4.mmp_refresh_interval().is_some()
+            && let Err(worker_error) = self.start_mmp_worker()
+        {
+            self.inner.lock().ext4.report_mmp_runtime_failure(
+                rsext4::Ext4Error::unsupported_capability("runtime:mmp_worker"),
+            );
+            return Err(worker_error);
+        }
+        result
+    }
+
+    fn start_mmp_worker(&self) -> VfsResult<()> {
+        if self.mmp_worker.thread.lock().is_some() {
+            return Ok(());
+        }
+        let runtime = runtime_ops().map_err(|error| VfsError::from(error).canonicalize())?;
+        let notification = runtime.notification();
+        if self.self_ref.upgrade().is_none() {
+            return Err(VfsError::from(ax_errno::AxError::BadState).canonicalize());
+        }
+        let worker_fs = self.self_ref.clone();
+        let worker_notification = Arc::clone(&notification);
+        let stopping = Arc::clone(&self.mmp_worker.stopping);
+        stopping.store(false, Ordering::Release);
+        let cpu = runtime.current_cpu();
+        let thread = runtime
+            .spawn_pinned(
+                String::from("ext4-mmp"),
+                cpu,
+                Box::new(move || {
+                    run_mmp_worker(worker_fs, worker_notification, stopping);
+                }),
+            )
+            .map_err(|error| VfsError::from(error).canonicalize())?;
+
+        *self.mmp_worker.notification.lock() = Some(notification);
+        *self.mmp_worker.thread.lock() = Some(thread);
+        Ok(())
+    }
+}
+
+fn run_mmp_worker(
+    filesystem: Weak<Ext4Filesystem>,
+    notification: Arc<dyn BlockNotification>,
+    stopping: Arc<AtomicBool>,
+) {
+    let mut interval = match filesystem.upgrade() {
+        Some(filesystem) => filesystem
+            .lock()
+            .ext4
+            .mmp_refresh_interval()
+            .unwrap_or(Duration::ZERO),
+        None => return,
+    };
+    let mut last_refresh = crate::os::monotonic_time();
+
+    // Linux also runs kmmpd without a delay when a crafted image contains a
+    // zero update interval. Do not reinterpret zero as "disable ownership".
+    while !stopping.load(Ordering::Acquire) {
+        notification.wait_timeout(interval);
+        if stopping.load(Ordering::Acquire) {
+            break;
+        }
+        let now = crate::os::monotonic_time();
+        let elapsed = now.saturating_sub(last_refresh);
+        let Some(filesystem) = filesystem.upgrade() else {
+            break;
+        };
+        let refresh = filesystem.lock().ext4.refresh_mmp(elapsed);
+        match refresh {
+            Ok(Some(next_interval)) => {
+                last_refresh = now;
+                interval = next_interval;
+            }
+            Ok(None) => break,
+            Err(error) => {
+                log::error!("ext4 MMP refresh failed: {error}");
+                break;
+            }
+        }
     }
 }
 
@@ -306,17 +442,20 @@ mod tests {
         };
         let disk = Ext4Disk::new(Box::new(mount_device), BlockRegion::from_num_blocks(blocks))
             .expect("valid mount-device geometry");
-        let services = MountServices::new(Ext4Clock, (), (), (), Ext4Observer);
+        let services = MountServices::new(Ext4Clock, Ext4Entropy, (), (), Ext4Observer)
+            .with_mmp(Ext4Delay, MmpIdentity::default());
         let ext4 = rsext4::Ext4::mount_with_readonly_fallback(disk, services)
             .expect("mount error-state image read-only");
         assert!(ext4.options().readonly);
 
         (
             Ext4Filesystem {
+                self_ref: Weak::new(),
                 inner: Mutex::new(Ext4State {
                     ext4,
                     lifetimes: InodeLifetimeTracker::default(),
                 }),
+                mmp_worker: MmpWorker::disabled(),
                 root_dir: LazyInit::new(),
                 readonly: true,
             },

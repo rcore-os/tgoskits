@@ -248,7 +248,7 @@ impl<B: BlockIo> BlockDev<B> {
         self.write_blocks_with_flags(buffer, block_id, count, WriteFlags::empty())
     }
 
-    fn write_blocks_with_flags(
+    pub(crate) fn write_blocks_with_flags(
         &mut self,
         buffer: &[u8],
         block_id: AbsoluteBN,

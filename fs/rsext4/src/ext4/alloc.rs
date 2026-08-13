@@ -578,6 +578,7 @@ mod tests {
             root_inode: InodeNumber::new(2).unwrap(),
             group_count: 1,
             mounted: true,
+            mmp: Default::default(),
             journal_sb_block_start: None,
             system_zones: SystemZoneMap::default(),
         }
@@ -623,6 +624,7 @@ mod tests {
             root_inode: InodeNumber::new(2).unwrap(),
             group_count: 2,
             mounted: true,
+            mmp: Default::default(),
             journal_sb_block_start: None,
             system_zones: SystemZoneMap::default(),
         }

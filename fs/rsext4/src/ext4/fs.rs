@@ -30,6 +30,8 @@ pub struct Ext4FileSystem {
     pub group_count: u32,
     /// Mount state flag.
     pub mounted: bool,
+    /// Multi-mount protection ownership for writable MMP filesystems.
+    pub(crate) mmp: super::mmp::MmpState,
     /// Physical block containing the externalized journal superblock.
     pub journal_sb_block_start: Option<AbsoluteBN>,
     /// Immutable index of filesystem metadata blocks protected from file mappings.

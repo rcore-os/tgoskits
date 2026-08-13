@@ -239,5 +239,9 @@ mod tests {
         fn wall_time(&self) -> Duration {
             TEST_START.get_or_init(Instant::now).elapsed()
         }
+
+        fn monotonic_time(&self) -> Duration {
+            TEST_START.get_or_init(Instant::now).elapsed()
+        }
     }
 }

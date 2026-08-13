@@ -47,17 +47,27 @@ impl Ext4FileSystem {
 
         observer.event(Event::Mount(MountEvent::UnmountStarted));
 
+        let previous_superblock = self.superblock;
+        let previous_superblock_dirty = self.superblock_dirty;
+
         // Mark clean in memory first so that sync_filesystem writes the
         // superblock with s_state = EXT4_VALID_FS through the journal.
         self.superblock.s_state = Self::clean_state(&self.superblock);
         self.superblock.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
         self.mark_superblock_dirty();
 
-        self.sync_filesystem_with_observer(block_dev, observer)?;
+        let persistence = (|| {
+            self.sync_filesystem_with_observer(block_dev, observer)?;
 
-        // Commit the journal transaction so all queued metadata (including
-        // the superblock with s_state = VALID_FS) is checkpointed to disk.
-        block_dev.umount_commit()?;
+            // Commit the journal transaction so all queued metadata (including
+            // the superblock with s_state = VALID_FS) is checkpointed to disk.
+            block_dev.umount_commit()
+        })();
+        if let Err(error) = persistence {
+            self.superblock = previous_superblock;
+            self.superblock_dirty = previous_superblock_dirty;
+            return Err(error);
+        }
         observer.event(Event::Journal(JournalEvent::Committed));
 
         self.mounted = false;

@@ -317,10 +317,36 @@ impl Ext4FileSystem {
         options: MountOptions,
         observer: &mut O,
     ) -> Result<Self, Ext4Error> {
+        let mut entropy = ();
+        let mut delay = ();
+        Self::mount_with_services(
+            block_dev,
+            options,
+            observer,
+            &mut entropy,
+            &mut delay,
+            crate::runtime::MmpIdentity::default(),
+        )
+    }
+
+    pub(crate) fn mount_with_services<B, O, E, W>(
+        block_dev: &mut Jbd2Dev<B>,
+        options: MountOptions,
+        observer: &mut O,
+        entropy: &mut E,
+        delay: &mut W,
+        mmp_identity: crate::runtime::MmpIdentity,
+    ) -> Result<Self, Ext4Error>
+    where
+        B: BlockIo,
+        O: crate::runtime::Observer,
+        E: crate::runtime::EntropySource,
+        W: crate::runtime::Delay,
+    {
         use crate::runtime::{Event, MountEvent};
 
         observer.event(Event::Mount(MountEvent::Started));
-        match Self::mount_inner(block_dev, options, observer) {
+        match Self::mount_inner(block_dev, options, observer, entropy, delay, mmp_identity) {
             Ok(fs) => {
                 observer.event(Event::Mount(MountEvent::Succeeded));
                 Ok(fs)
@@ -332,11 +358,20 @@ impl Ext4FileSystem {
         }
     }
 
-    fn mount_inner<B: BlockIo, O: crate::runtime::Observer>(
+    fn mount_inner<B, O, E, W>(
         block_dev: &mut Jbd2Dev<B>,
         options: MountOptions,
         observer: &mut O,
-    ) -> Result<Self, Ext4Error> {
+        entropy: &mut E,
+        delay: &mut W,
+        mmp_identity: crate::runtime::MmpIdentity,
+    ) -> Result<Self, Ext4Error>
+    where
+        B: BlockIo,
+        O: crate::runtime::Observer,
+        E: crate::runtime::EntropySource,
+        W: crate::runtime::Delay,
+    {
         use crate::runtime::{Event, IntegrityEvent, JournalEvent, RecoveryEvent, RepairEvent};
 
         // Mount flow:
@@ -363,11 +398,6 @@ impl Ext4FileSystem {
             observer.event(Event::Integrity(IntegrityEvent::CorruptionDetected));
         }
 
-        if !options.readonly {
-            // Mark the filesystem as "not cleanly unmounted" before any writes.
-            Self::dirty_for_mount(&mut superblock);
-        }
-
         let group_count = superblock.checked_block_groups_count()?;
 
         let group_descs = Self::load_group_descriptors(block_dev, &superblock, group_count)?;
@@ -392,7 +422,7 @@ impl Ext4FileSystem {
 
         let mut fs = Self {
             superblock,
-            superblock_dirty: !options.readonly,
+            superblock_dirty: false,
             dirty_group_descs: ::alloc::vec![false; group_descs.len()],
             group_descs,
             block_allocator,
@@ -403,251 +433,281 @@ impl Ext4FileSystem {
             datablock_cache,
             group_count,
             mounted: true,
+            mmp: super::mmp::MmpState::Disabled,
             journal_sb_block_start: None,
             system_zones,
         };
-        let mut journal_mapping: Option<(InodeNumber, Vec<AbsoluteBN>)> = None;
-        // Journal bootstrap has two stages: ensure the journal inode exists,
-        // then load its superblock and enable replay on the device wrapper.
-        {
-            let needs_recovery = fs
-                .superblock
-                .has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER);
-            if needs_recovery {
-                observer.event(Event::Recovery(RecoveryEvent::Required));
-            }
 
-            if fs.superblock.has_journal() {
-                let journal_inode_num = InodeNumber::new(fs.superblock.s_journal_inum)
-                    .map_err(|_| Ext4Error::corrupted().with_operation("journal:inode_number"))?;
-                let journal_inode = fs.get_inode_by_num(block_dev, journal_inode_num)?;
-                let journal_exists = journal_inode.i_mode != 0;
+        if !options.readonly {
+            fs.mmp = super::mmp::MmpState::claim(block_dev, &fs.superblock, entropy, delay)?;
+            // Mark the filesystem as not cleanly unmounted only after MMP has
+            // established this writer's exclusive ownership.
+            Self::dirty_for_mount(&mut fs.superblock);
+            fs.superblock_dirty = true;
+        }
 
-                if fs
-                    .superblock
-                    .has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL)
-                    && !journal_exists
-                {
-                    if needs_recovery {
-                        observer.event(Event::Recovery(RecoveryEvent::JournalMissing));
-                        return Err(Ext4Error::corrupted());
-                    }
-                    if journal_inode_num.raw() != JOURNAL_FILE_INODE as u32 {
-                        return Err(
-                            Ext4Error::corrupted().with_operation("journal:missing_custom_inode")
-                        );
-                    }
-                    create_journal_entry(&mut fs, block_dev)?;
-                }
-
-                let journal_blocks = fs.protect_journal_blocks(block_dev, journal_inode_num)?;
-                journal_mapping = Some((journal_inode_num, journal_blocks));
-            }
-            if needs_recovery && options.replay_journal && !fs.superblock.has_journal() {
-                observer.event(Event::Recovery(RecoveryEvent::JournalMissing));
-                return Err(Ext4Error::corrupted());
-            }
-            if (block_dev.is_use_journal() || (needs_recovery && options.replay_journal))
-                && fs.superblock.has_journal()
+        let mount_result = (|| -> Ext4Result<()> {
+            let mut journal_mapping: Option<(InodeNumber, Vec<AbsoluteBN>)> = None;
+            // Journal bootstrap has two stages: ensure the journal inode exists,
+            // then load its superblock and enable replay on the device wrapper.
             {
-                // By this point the journal inode must exist, so resolve its
-                // first data block and hand the loaded journal superblock to
-                // `Jbd2Dev`.
-                let (expected_journal_ino, journal_blocks) = journal_mapping
-                    .as_ref()
-                    .ok_or_else(|| Ext4Error::corrupted().with_operation("journal:mapping"))?;
-                let journal_first_block = journal_blocks
-                    .first()
-                    .copied()
-                    .ok_or_else(Ext4Error::corrupted)?;
-
-                fs.journal_sb_block_start = Some(journal_first_block);
-                let journal_data = fs
-                    .datablock_cache
-                    .get_or_load(block_dev, journal_first_block)?
-                    .data
-                    .clone();
-
-                let j_sb = JournalSuperBlock::decode_checked(&journal_data)?;
-                if !j_sb.is_v1() && j_sb.s_uuid != fs.superblock.s_uuid {
-                    return Err(Ext4Error::corrupted().with_operation("jbd2:uuid"));
+                let needs_recovery = fs
+                    .superblock
+                    .has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER);
+                if needs_recovery {
+                    observer.event(Event::Recovery(RecoveryEvent::Required));
                 }
 
-                block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks.clone())?;
-
-                if needs_recovery && options.replay_journal {
-                    observer.event(Event::Journal(JournalEvent::ReplayRequested));
-                    // Replay before touching ordinary filesystem metadata.
-                    // Until this completes, home blocks may be stale. A clean
-                    // filesystem with journaling enabled still needs JBD2
-                    // state initialized for future metadata writes, but it
-                    // must not force replay without the ext4 recovery bit.
-                    let original_journal_use = block_dev.is_use_journal();
-                    if !original_journal_use {
-                        block_dev.set_journal_use(true)?;
-                    }
-                    match block_dev.journal_replay_checked() {
-                        ReplayStatus::Complete => {}
-                        ReplayStatus::Incomplete(failure) => {
-                            let cause = failure.cause();
-                            observer.event(Event::Recovery(RecoveryEvent::ReplayFailed {
-                                phase: failure.phase(),
-                                cause,
-                                persistence_error: failure.persistence_error(),
-                            }));
-                            return Err(cause);
-                        }
-                    }
-                    block_dev.set_journal_use(original_journal_use)?;
-
-                    // Journal replay can update the superblock, group
-                    // descriptors, bitmaps, inode table, and directory blocks.
-                    // Drop all metadata read before replay and continue
-                    // mounting from the recovered on-disk state.
-                    fs.reload_after_journal_replay(
-                        block_dev,
-                        options.readonly,
-                        options.block_validity,
-                    )?;
-                    Self::check_mount_features(&fs.superblock, options.readonly, observer)?;
-                    let recovered_journal_ino = InodeNumber::new(fs.superblock.s_journal_inum)
+                if fs.superblock.has_journal() {
+                    let journal_inode_num = InodeNumber::new(fs.superblock.s_journal_inum)
                         .map_err(|_| {
                             Ext4Error::corrupted().with_operation("journal:inode_number")
                         })?;
-                    let recovered_journal_blocks =
-                        fs.protect_journal_blocks(block_dev, recovered_journal_ino)?;
-                    validate_recovered_journal_mapping(
-                        *expected_journal_ino,
-                        journal_blocks,
-                        recovered_journal_ino,
-                        &recovered_journal_blocks,
-                    )?;
-                    fs.clear_recovery_state();
-                } else if !options.readonly && block_dev.is_use_journal() {
-                    fs.set_recovery_state();
+                    let mut journal_inode = fs.get_inode_by_num(block_dev, journal_inode_num)?;
+                    let journal_exists = journal_inode.i_mode != 0;
+                    if !journal_exists {
+                        if needs_recovery {
+                            observer.event(Event::Recovery(RecoveryEvent::JournalMissing));
+                            return Err(Ext4Error::corrupted());
+                        }
+                        if journal_inode_num.raw() != JOURNAL_FILE_INODE as u32 {
+                            return Err(
+                                Ext4Error::corrupted()
+                                    .with_operation("journal:missing_custom_inode"),
+                            );
+                        }
+                        create_journal_entry(&mut fs, block_dev)?;
+                        journal_inode = fs.get_inode_by_num(block_dev, journal_inode_num)?;
+                    }
+                    if !journal_inode.is_file() || journal_inode.i_links_count == 0 {
+                        observer.event(Event::Recovery(RecoveryEvent::JournalMissing));
+                        return Err(Ext4Error::corrupted().with_operation("journal:invalid_inode"));
+                    }
+
+                    let journal_blocks = fs.protect_journal_blocks(block_dev, journal_inode_num)?;
+                    journal_mapping = Some((journal_inode_num, journal_blocks));
                 }
-            }
-            // If the filesystem was created without a journal (e.g. small images
-            // where mkfs.ext4 omits it), disable journal_use so that metadata
-            // writes bypass the journal path instead of hitting the
-            // "system uninitialized" guard on every write.
-            if !fs.superblock.has_journal() {
-                block_dev.set_journal_use(false)?;
-            }
-        }
-
-        // Classic orphan-list recovery must observe metadata after JBD2 replay
-        // and complete before ordinary namespace repair can allocate inodes or
-        // blocks. Read-only mounts validate but never mutate the chain.
-        if options.readonly {
-            fs.validate_orphan_chain(block_dev)?;
-        } else {
-            fs.recover_orphans(block_dev)?;
-        }
-
-        // rootinode check !
-        {
-            let root_inode = fs.get_root(block_dev).map_err(|_| Ext4Error::io())?;
-            if root_inode.i_mode == 0 || !root_inode.is_dir() {
-                if options.readonly {
+                if needs_recovery && options.replay_journal && !fs.superblock.has_journal() {
+                    observer.event(Event::Recovery(RecoveryEvent::JournalMissing));
                     return Err(Ext4Error::corrupted());
                 }
+                if (block_dev.is_use_journal() || (needs_recovery && options.replay_journal))
+                    && fs.superblock.has_journal()
+                {
+                    // By this point the journal inode must exist, so resolve its
+                    // first data block and hand the loaded journal superblock to
+                    // `Jbd2Dev`.
+                    let (expected_journal_ino, journal_blocks) = journal_mapping
+                        .as_ref()
+                        .ok_or_else(|| Ext4Error::corrupted().with_operation("journal:mapping"))?;
+                    let journal_first_block = journal_blocks
+                        .first()
+                        .copied()
+                        .ok_or_else(Ext4Error::corrupted)?;
 
-                fs.create_root_dir(block_dev).map_err(|_| Ext4Error::io())?;
-                observer.event(Event::Repair(RepairEvent::RootRecreated));
-            }
-        }
+                    fs.journal_sb_block_start = Some(journal_first_block);
+                    let journal_data = fs
+                        .datablock_cache
+                        .get_or_load(block_dev, journal_first_block)?
+                        .data
+                        .clone();
 
-        // Verify the recovery directory after the root directory is known good.
-        {
-            if !fs.valid_lost_found_hint(block_dev)? {
-                match get_file_inode(&mut fs, block_dev, "/lost+found") {
-                    Ok(Some((ino, inode))) if inode.is_dir() => {
-                        fs.superblock.s_lpf_ino = ino.raw();
-                        fs.mark_superblock_dirty();
-                        if !options.readonly {
-                            fs.sync_superblock(block_dev)?;
-                        }
-                        observer.event(Event::Repair(RepairEvent::DirectoryIndexFallback));
+                    let j_sb = JournalSuperBlock::decode_checked(&journal_data)?;
+                    if !j_sb.is_v1() && j_sb.s_uuid != fs.superblock.s_uuid {
+                        return Err(Ext4Error::corrupted().with_operation("jbd2:uuid"));
                     }
-                    Ok(Some((_ino, _inode))) => {
+
+                    block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks.clone())?;
+
+                    if needs_recovery && options.replay_journal {
+                        observer.event(Event::Journal(JournalEvent::ReplayRequested));
+                        // Replay before touching ordinary filesystem metadata.
+                        // Until this completes, home blocks may be stale. A clean
+                        // filesystem with journaling enabled still needs JBD2
+                        // state initialized for future metadata writes, but it
+                        // must not force replay without the ext4 recovery bit.
+                        let original_journal_use = block_dev.is_use_journal();
+                        if !original_journal_use {
+                            block_dev.set_journal_use(true)?;
+                        }
+                        match block_dev.journal_replay_checked() {
+                            ReplayStatus::Complete => {}
+                            ReplayStatus::Incomplete(failure) => {
+                                let cause = failure.cause();
+                                observer.event(Event::Recovery(RecoveryEvent::ReplayFailed {
+                                    phase: failure.phase(),
+                                    cause,
+                                    persistence_error: failure.persistence_error(),
+                                }));
+                                return Err(cause);
+                            }
+                        }
+                        block_dev.set_journal_use(original_journal_use)?;
+
+                        // Journal replay can update the superblock, group
+                        // descriptors, bitmaps, inode table, and directory blocks.
+                        // Drop all metadata read before replay and continue
+                        // mounting from the recovered on-disk state.
+                        fs.reload_after_journal_replay(
+                            block_dev,
+                            options.readonly,
+                            options.block_validity,
+                        )?;
+                        Self::check_mount_features(&fs.superblock, options.readonly, observer)?;
+                        let recovered_journal_ino = InodeNumber::new(fs.superblock.s_journal_inum)
+                            .map_err(|_| {
+                                Ext4Error::corrupted().with_operation("journal:inode_number")
+                            })?;
+                        let recovered_journal_blocks =
+                            fs.protect_journal_blocks(block_dev, recovered_journal_ino)?;
+                        validate_recovered_journal_mapping(
+                            *expected_journal_ino,
+                            journal_blocks,
+                            recovered_journal_ino,
+                            &recovered_journal_blocks,
+                        )?;
+                        fs.clear_recovery_state();
+                    } else if !options.readonly && block_dev.is_use_journal() {
+                        fs.set_recovery_state();
+                    }
+                }
+                // If the filesystem was created without a journal (e.g. small images
+                // where mkfs.ext4 omits it), disable journal_use so that metadata
+                // writes bypass the journal path instead of hitting the
+                // "system uninitialized" guard on every write.
+                if !fs.superblock.has_journal() {
+                    block_dev.set_journal_use(false)?;
+                }
+            }
+
+            // Classic orphan-list recovery must observe metadata after JBD2 replay
+            // and complete before ordinary namespace repair can allocate inodes or
+            // blocks. Read-only mounts validate but never mutate the chain.
+            if options.readonly {
+                fs.validate_orphan_chain(block_dev)?;
+            } else {
+                fs.recover_orphans(block_dev)?;
+            }
+
+            // rootinode check !
+            {
+                let root_inode = fs.get_root(block_dev).map_err(|_| Ext4Error::io())?;
+                if root_inode.i_mode == 0 || !root_inode.is_dir() {
+                    if options.readonly {
                         return Err(Ext4Error::corrupted());
                     }
-                    Ok(None) => {
-                        if !options.readonly {
-                            create_lost_found_directory(&mut fs, block_dev)?;
-                            observer.event(Event::Repair(RepairEvent::LostFoundRecreated));
+
+                    fs.create_root_dir(block_dev).map_err(|_| Ext4Error::io())?;
+                    observer.event(Event::Repair(RepairEvent::RootRecreated));
+                }
+            }
+
+            // Verify the recovery directory after the root directory is known good.
+            {
+                if !fs.valid_lost_found_hint(block_dev)? {
+                    match get_file_inode(&mut fs, block_dev, "/lost+found") {
+                        Ok(Some((ino, inode))) if inode.is_dir() => {
+                            fs.superblock.s_lpf_ino = ino.raw();
+                            fs.mark_superblock_dirty();
+                            if !options.readonly {
+                                fs.sync_superblock(block_dev)?;
+                            }
+                            observer.event(Event::Repair(RepairEvent::DirectoryIndexFallback));
+                        }
+                        Ok(Some((_ino, _inode))) => {
+                            return Err(Ext4Error::corrupted());
+                        }
+                        Ok(None) => {
+                            if !options.readonly {
+                                create_lost_found_directory(&mut fs, block_dev)?;
+                                observer.event(Event::Repair(RepairEvent::LostFoundRecreated));
+                            }
+                        }
+                        Err(err) => {
+                            return Err(err);
                         }
                     }
-                    Err(err) => {
-                        return Err(err);
-                    }
                 }
             }
-        }
 
-        // Emit a one-shot bitmap usage summary and verify bitmap checksums on
-        // group 0 when metadata checksums are enabled.
-        {
-            let g0 = match fs.group_descs.first() {
-                Some(desc) => desc,
-                None => return Err(Ext4Error::bad_superblock()),
-            };
-            let inode_bitmap_blk = g0.inode_bitmap();
-            let data_bitmap_blk = g0.block_bitmap();
-            let inode_cache_key = CacheKey::new_inode(BGIndex::new(0));
-            let data_cache_key = CacheKey::new_block(BGIndex::new(0));
+            // Emit a one-shot bitmap usage summary and verify bitmap checksums on
+            // group 0 when metadata checksums are enabled.
+            {
+                let g0 = match fs.group_descs.first() {
+                    Some(desc) => desc,
+                    None => return Err(Ext4Error::bad_superblock()),
+                };
+                let inode_bitmap_blk = g0.inode_bitmap();
+                let data_bitmap_blk = g0.block_bitmap();
+                let inode_cache_key = CacheKey::new_inode(BGIndex::new(0));
+                let data_cache_key = CacheKey::new_block(BGIndex::new(0));
 
-            let inode_bitmap_data = fs
-                .bitmap_cache
-                .get_or_load(
+                let inode_bitmap_data = fs
+                    .bitmap_cache
+                    .get_or_load(
+                        block_dev,
+                        inode_cache_key,
+                        AbsoluteBN::new(inode_bitmap_blk),
+                    )?
+                    .clone();
+                let blockbitmap_data = fs.bitmap_cache.get_or_load(
                     block_dev,
-                    inode_cache_key,
-                    AbsoluteBN::new(inode_bitmap_blk),
-                )?
-                .clone();
-            let blockbitmap_data = fs.bitmap_cache.get_or_load(
-                block_dev,
-                data_cache_key,
-                AbsoluteBN::new(data_bitmap_blk),
-            )?;
+                    data_cache_key,
+                    AbsoluteBN::new(data_bitmap_blk),
+                )?;
 
-            if ext4_superblock_has_metadata_csum(&fs.superblock) {
-                if !g0.is_inode_bitmap_uninit() {
-                    let computed_inode =
-                        ext4_inode_bitmap_csum32(&fs.superblock, &inode_bitmap_data.data);
-                    let expected_inode = computed_inode;
-                    if !g0.inode_bitmap_csum_matches(&fs.superblock, expected_inode) {
-                        observer.event(Event::Integrity(IntegrityEvent::ChecksumMismatch));
+                if ext4_superblock_has_metadata_csum(&fs.superblock) {
+                    if !g0.is_inode_bitmap_uninit() {
+                        let computed_inode =
+                            ext4_inode_bitmap_csum32(&fs.superblock, &inode_bitmap_data.data);
+                        let expected_inode = computed_inode;
+                        if !g0.inode_bitmap_csum_matches(&fs.superblock, expected_inode) {
+                            observer.event(Event::Integrity(IntegrityEvent::ChecksumMismatch));
 
-                        return Err(Ext4Error::checksum());
+                            return Err(Ext4Error::checksum());
+                        }
                     }
-                }
 
-                if !g0.is_block_bitmap_uninit() {
-                    let computed_block =
-                        ext4_block_bitmap_csum32(&fs.superblock, &blockbitmap_data.data);
-                    let expected_block = computed_block;
-                    if !g0.block_bitmap_csum_matches(&fs.superblock, expected_block) {
-                        observer.event(Event::Integrity(IntegrityEvent::ChecksumMismatch));
+                    if !g0.is_block_bitmap_uninit() {
+                        let computed_block =
+                            ext4_block_bitmap_csum32(&fs.superblock, &blockbitmap_data.data);
+                        let expected_block = computed_block;
+                        if !g0.block_bitmap_csum_matches(&fs.superblock, expected_block) {
+                            observer.event(Event::Integrity(IntegrityEvent::ChecksumMismatch));
 
-                        return Err(Ext4Error::checksum());
+                            return Err(Ext4Error::checksum());
+                        }
                     }
                 }
             }
-        }
 
-        // Flush metadata once at the end of mount so any replay state changes
-        // or bootstrap repairs are persisted before normal operation begins.
-        // The superblock is written with EXT4_VALID_FS cleared so a later mount
-        // can distinguish an unclean shutdown from a real EXT4_ERROR_FS state.
-        if !options.readonly {
-            fs.sync_filesystem_with_observer(block_dev, observer)?;
-            block_dev.umount_commit()?;
-            observer.event(Event::Journal(JournalEvent::Committed));
-        }
+            // Flush metadata once at the end of mount so any replay state changes
+            // or bootstrap repairs are persisted before normal operation begins.
+            // The superblock is written with EXT4_VALID_FS cleared so a later mount
+            // can distinguish an unclean shutdown from a real EXT4_ERROR_FS state.
+            if !options.readonly {
+                fs.mmp.refresh(
+                    block_dev,
+                    &fs.superblock,
+                    mmp_identity,
+                    core::time::Duration::ZERO,
+                )?;
+                fs.sync_filesystem_with_observer(block_dev, observer)?;
+                block_dev.umount_commit()?;
+                observer.event(Event::Journal(JournalEvent::Committed));
+            }
 
-        Ok(fs)
+            Ok(())
+        })();
+
+        match mount_result {
+            Ok(()) => Ok(fs),
+            Err(error) => {
+                let superblock = fs.superblock;
+                let cleanup = fs.mmp.release_clean(block_dev, &superblock);
+                Err(crate::file::error_after_cleanup(error, cleanup))
+            }
+        }
     }
 
     /// Loads all block-group descriptors in on-disk order.

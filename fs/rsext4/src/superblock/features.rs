@@ -12,13 +12,11 @@ const SUPPORTED_INCOMPAT_FEATURES: u32 = Ext4Superblock::EXT4_FEATURE_INCOMPAT_F
     | Ext4Superblock::EXT4_FEATURE_INCOMPAT_EXTENTS
     | Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT
     | Ext4Superblock::EXT4_FEATURE_INCOMPAT_FLEX_BG
-    | Ext4Superblock::EXT4_FEATURE_INCOMPAT_CSUM_SEED;
+    | Ext4Superblock::EXT4_FEATURE_INCOMPAT_CSUM_SEED
+    | Ext4Superblock::EXT4_FEATURE_INCOMPAT_MMP;
 
-// Linux does not inspect or update the MMP block for a read-only mount. A
-// writable mount still requires a runtime-owned refresh loop, so MMP remains
-// outside SUPPORTED_INCOMPAT_FEATURES until that lifecycle is implemented.
-const READ_ONLY_SUPPORTED_INCOMPAT_FEATURES: u32 =
-    SUPPORTED_INCOMPAT_FEATURES | Ext4Superblock::EXT4_FEATURE_INCOMPAT_MMP;
+// Linux does not inspect or update the MMP block for a read-only mount.
+const READ_ONLY_SUPPORTED_INCOMPAT_FEATURES: u32 = SUPPORTED_INCOMPAT_FEATURES;
 
 const SUPPORTED_RO_COMPAT_FEATURES: u32 = Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER
     | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_LARGE_FILE
@@ -216,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn mmp_without_a_runtime_owner_is_read_only_compatible() {
+    fn mmp_disk_format_is_supported_for_both_mount_modes() {
         let sb = Ext4Superblock {
             s_feature_incompat: Ext4Superblock::EXT4_FEATURE_INCOMPAT_MMP,
             ..Default::default()
@@ -225,15 +223,8 @@ mod tests {
         sb.check_features(true)
             .expect("Linux does not start MMP protection for a read-only mount");
 
-        let err = sb.check_features(false).unwrap_err();
-        assert_eq!(err.kind(), Ext4ErrorKind::UnsupportedFeature);
-        assert_eq!(
-            err.context(),
-            Some(ErrorContext::Feature {
-                set: FeatureSet::Incompatible,
-                bits: Ext4Superblock::EXT4_FEATURE_INCOMPAT_MMP,
-            })
-        );
+        sb.check_features(false)
+            .expect("runtime capabilities are checked by the writable mount lifecycle");
     }
 
     #[test]

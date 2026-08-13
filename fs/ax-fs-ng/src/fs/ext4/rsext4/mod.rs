@@ -7,8 +7,8 @@ use alloc::boxed::Box;
 pub use fs::*;
 pub use inode::*;
 use rsext4::{
-    BlockIo, DeviceCapabilities, DeviceGeometry, Event, Ext4Timestamp, MountedServices, Observer,
-    SectorId, WriteFlags,
+    BlockIo, Delay, DeviceCapabilities, DeviceGeometry, EntropySource, Event, Ext4Timestamp,
+    MountedServices, Observer, SectorId, WriteFlags,
     error::{Ext4Error, Ext4Result},
 };
 
@@ -19,7 +19,8 @@ pub(crate) struct Ext4Disk {
     geometry: DeviceGeometry,
 }
 
-pub(crate) type MountedExt4 = rsext4::Ext4<Ext4Disk, MountedServices<(), (), (), Ext4Observer>>;
+pub(crate) type MountedExt4 =
+    rsext4::Ext4<Ext4Disk, MountedServices<Ext4Entropy, (), (), Ext4Observer, Ext4Delay>>;
 
 #[derive(Default)]
 pub(crate) struct Ext4Observer;
@@ -27,9 +28,40 @@ pub(crate) struct Ext4Observer;
 #[derive(Default)]
 pub(crate) struct Ext4Clock;
 
+#[derive(Default)]
+pub(crate) struct Ext4Entropy;
+
+#[derive(Default)]
+pub(crate) struct Ext4Delay;
+
 impl Observer for Ext4Observer {
     fn event(&mut self, event: Event) {
         log::debug!("rsext4 event: {event:?}");
+    }
+}
+
+impl EntropySource for Ext4Entropy {
+    fn fill_bytes(&mut self, output: &mut [u8]) -> Ext4Result<()> {
+        if !crate::os::has_entropy_provider() {
+            return Err(Ext4Error::unsupported_capability("runtime:entropy"));
+        }
+        crate::os::fill_entropy(output).map_err(|_| Ext4Error::io())
+    }
+}
+
+impl Delay for Ext4Delay {
+    fn wait(&mut self, duration: core::time::Duration) -> Ext4Result<()> {
+        let runtime = crate::os::runtime_ops()
+            .map_err(|_| Ext4Error::unsupported_capability("runtime:delay"))?;
+        if !runtime.can_block() {
+            return Err(Ext4Error::unsupported_capability("runtime:blocking_delay"));
+        }
+        let notification = runtime.notification();
+        if notification.wait_timeout(duration) {
+            Ok(())
+        } else {
+            Err(Ext4Error::timeout().with_operation("mmp:startup_interrupted"))
+        }
     }
 }
 

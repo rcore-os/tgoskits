@@ -49,9 +49,9 @@ pub use file::{
 pub use io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, WriteFlags};
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};
 pub use runtime::{
-    Clock, CryptoOperation, CryptoProvider, DigestAlgorithm, EncryptionAlgorithm, EntropySource,
-    Event, KeyDescriptor, KeyProvider, KeyPurpose, MountServices, MountedServices, NoopObserver,
-    Observer,
+    Clock, CryptoOperation, CryptoProvider, Delay, DigestAlgorithm, EncryptionAlgorithm,
+    EntropySource, Event, KeyDescriptor, KeyProvider, KeyPurpose, MmpIdentity, MountServices,
+    MountedServices, NoopObserver, Observer,
 };
 
 pub mod api;

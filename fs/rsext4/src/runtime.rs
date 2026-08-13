@@ -1,5 +1,7 @@
 //! OS-independent runtime capabilities used by the ext4 core.
 
+use core::time::Duration;
+
 use crate::{
     disknode::Ext4Timestamp,
     error::{Ext4Error, Ext4Result},
@@ -13,6 +15,63 @@ pub trait Clock {
 /// Cryptographically suitable entropy supplied by the embedding runtime.
 pub trait EntropySource {
     fn fill_bytes(&mut self, output: &mut [u8]) -> Ext4Result<()>;
+}
+
+impl EntropySource for () {
+    fn fill_bytes(&mut self, _output: &mut [u8]) -> Ext4Result<()> {
+        Err(Ext4Error::unsupported_capability("runtime:entropy"))
+    }
+}
+
+/// Blocking delay used only by MMP's synchronous mount-time ownership check.
+///
+/// Periodic MMP scheduling remains the embedding runtime's responsibility. The
+/// core returns the required refresh interval and never creates a task or owns
+/// an OS timer.
+pub trait Delay {
+    fn wait(&mut self, duration: Duration) -> Ext4Result<()>;
+}
+
+impl Delay for () {
+    fn wait(&mut self, _duration: Duration) -> Ext4Result<()> {
+        Err(Ext4Error::unsupported_capability("runtime:delay"))
+    }
+}
+
+/// Pure identity data recorded in the ext4 MMP protection block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MmpIdentity {
+    node_name: [u8; 64],
+    device_name: [u8; 32],
+}
+
+impl MmpIdentity {
+    /// Builds a fixed-width Linux MMP identity, truncating overlong names.
+    pub fn from_names(node_name: &[u8], device_name: &[u8]) -> Self {
+        let mut identity = Self::default();
+        let node_len = core::cmp::min(node_name.len(), identity.node_name.len());
+        let device_len = core::cmp::min(device_name.len(), identity.device_name.len());
+        identity.node_name[..node_len].copy_from_slice(&node_name[..node_len]);
+        identity.device_name[..device_len].copy_from_slice(&device_name[..device_len]);
+        identity
+    }
+
+    pub(crate) const fn node_name(&self) -> &[u8; 64] {
+        &self.node_name
+    }
+
+    pub(crate) const fn device_name(&self) -> &[u8; 32] {
+        &self.device_name
+    }
+}
+
+impl Default for MmpIdentity {
+    fn default() -> Self {
+        Self {
+            node_name: [0; 64],
+            device_name: [0; 32],
+        }
+    }
 }
 
 /// Encryption algorithms that can be requested by ext4 policies.
@@ -158,12 +217,14 @@ impl Observer for NoopObserver {
 ///
 /// This is a composition type, not a catch-all runtime trait. Algorithms take
 /// the narrow capability they use, which keeps dependencies auditable.
-pub struct MountServices<C, E, P, K, O> {
+pub struct MountServices<C, E, P, K, O, W = ()> {
     pub clock: C,
     pub entropy: E,
     pub crypto: P,
     pub keys: K,
     pub observer: O,
+    pub mmp_delay: W,
+    pub mmp_identity: MmpIdentity,
 }
 
 /// Capabilities retained by a mounted filesystem after its clock has moved
@@ -171,25 +232,36 @@ pub struct MountServices<C, E, P, K, O> {
 ///
 /// The fields stay private so callers use typed filesystem operations instead
 /// of reaching through the mount object to invoke providers directly.
-pub struct MountedServices<E, P, K, O> {
-    pub(crate) _entropy: E,
+pub struct MountedServices<E, P, K, O, W = ()> {
+    pub(crate) entropy: E,
     pub(crate) _crypto: P,
     pub(crate) _keys: K,
     pub(crate) observer: O,
+    pub(crate) mmp_delay: W,
+    pub(crate) mmp_identity: MmpIdentity,
 }
 
-impl<E, P, K, O> MountedServices<E, P, K, O> {
-    pub(crate) const fn new(entropy: E, crypto: P, keys: K, observer: O) -> Self {
+impl<E, P, K, O, W> MountedServices<E, P, K, O, W> {
+    pub(crate) const fn new(
+        entropy: E,
+        crypto: P,
+        keys: K,
+        observer: O,
+        mmp_delay: W,
+        mmp_identity: MmpIdentity,
+    ) -> Self {
         Self {
-            _entropy: entropy,
+            entropy,
             _crypto: crypto,
             _keys: keys,
             observer,
+            mmp_delay,
+            mmp_identity,
         }
     }
 }
 
-impl<C, E, P, K, O> MountServices<C, E, P, K, O> {
+impl<C, E, P, K, O> MountServices<C, E, P, K, O, ()> {
     pub const fn new(clock: C, entropy: E, crypto: P, keys: K, observer: O) -> Self {
         Self {
             clock,
@@ -197,6 +269,26 @@ impl<C, E, P, K, O> MountServices<C, E, P, K, O> {
             crypto,
             keys,
             observer,
+            mmp_delay: (),
+            mmp_identity: MmpIdentity {
+                node_name: [0; 64],
+                device_name: [0; 32],
+            },
+        }
+    }
+}
+
+impl<C, E, P, K, O, W> MountServices<C, E, P, K, O, W> {
+    /// Injects the mount-time MMP delay and diagnostic identity capabilities.
+    pub fn with_mmp<N>(self, delay: N, identity: MmpIdentity) -> MountServices<C, E, P, K, O, N> {
+        MountServices {
+            clock: self.clock,
+            entropy: self.entropy,
+            crypto: self.crypto,
+            keys: self.keys,
+            observer: self.observer,
+            mmp_delay: delay,
+            mmp_identity: identity,
         }
     }
 }

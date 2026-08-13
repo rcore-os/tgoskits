@@ -139,6 +139,7 @@ fn create_test_fs() -> Ext4FileSystem {
         root_inode: InodeNumber::new(2).unwrap(),
         group_count: 1,
         mounted: true,
+        mmp: Default::default(),
         journal_sb_block_start: None,
         system_zones: SystemZoneMap::default(),
     }

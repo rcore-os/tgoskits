@@ -373,15 +373,17 @@ where
     Ok(device.into_inner())
 }
 
-impl<D, E, P, K, O> Ext4<D, MountedServices<E, P, K, O>>
+impl<D, E, P, K, O, W> Ext4<D, MountedServices<E, P, K, O, W>>
 where
     D: BlockIo,
+    E: crate::runtime::EntropySource,
     O: Observer,
+    W: crate::runtime::Delay,
 {
     /// Mounts an ext4 filesystem and transfers ownership of all capabilities.
     pub fn mount<C>(
         device: D,
-        services: MountServices<C, E, P, K, O>,
+        services: MountServices<C, E, P, K, O, W>,
         options: MountOptions,
     ) -> Ext4Result<Self>
     where
@@ -389,18 +391,33 @@ where
     {
         let MountServices {
             clock,
-            entropy,
+            mut entropy,
             crypto,
             keys,
             mut observer,
+            mut mmp_delay,
+            mmp_identity,
         } = services;
         let mut device = Jbd2Dev::with_clock(0, device, clock, true);
-        let filesystem =
-            Ext4FileSystem::mount_with_options_and_observer(&mut device, options, &mut observer)?;
+        let filesystem = Ext4FileSystem::mount_with_services(
+            &mut device,
+            options,
+            &mut observer,
+            &mut entropy,
+            &mut mmp_delay,
+            mmp_identity,
+        )?;
         Ok(Self {
             filesystem,
             device,
-            services: MountedServices::new(entropy, crypto, keys, observer),
+            services: MountedServices::new(
+                entropy,
+                crypto,
+                keys,
+                observer,
+                mmp_delay,
+                mmp_identity,
+            ),
             options,
         })
     }
@@ -413,17 +430,19 @@ where
     /// second attempt would lose the first error and observe polluted state.
     pub fn mount_with_readonly_fallback<C>(
         device: D,
-        services: MountServices<C, E, P, K, O>,
+        services: MountServices<C, E, P, K, O, W>,
     ) -> Ext4Result<Self>
     where
         C: Clock + Send + 'static,
     {
         let MountServices {
             clock,
-            entropy,
+            mut entropy,
             crypto,
             keys,
             mut observer,
+            mut mmp_delay,
+            mmp_identity,
         } = services;
         let mut device = Jbd2Dev::with_clock(0, device, clock, true);
         let read_write = MountOptions::read_write();
@@ -437,19 +456,38 @@ where
         } else {
             read_write
         };
-        let filesystem =
-            Ext4FileSystem::mount_with_options_and_observer(&mut device, options, &mut observer)?;
+        let filesystem = Ext4FileSystem::mount_with_services(
+            &mut device,
+            options,
+            &mut observer,
+            &mut entropy,
+            &mut mmp_delay,
+            mmp_identity,
+        )?;
 
         Ok(Self {
             filesystem,
             device,
-            services: MountedServices::new(entropy, crypto, keys, observer),
+            services: MountedServices::new(
+                entropy,
+                crypto,
+                keys,
+                observer,
+                mmp_delay,
+                mmp_identity,
+            ),
             options,
         })
     }
 }
 
-impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
+impl<D, E, P, K, O, W> Ext4<D, MountedServices<E, P, K, O, W>>
+where
+    D: BlockIo,
+    E: crate::runtime::EntropySource,
+    O: Observer,
+    W: crate::runtime::Delay,
+{
     pub const fn options(&self) -> MountOptions {
         self.options
     }
@@ -467,10 +505,8 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         self.filesystem
             .set_block_validity(&mut self.device, options.block_validity)?;
         let mode_result = match (previous_options.readonly, options.readonly) {
-            (false, true) => self.filesystem.remount_read_only(&mut self.device),
-            (true, false) => self
-                .filesystem
-                .remount_read_write(&mut self.device, &mut self.services.observer),
+            (false, true) => self.remount_read_only(),
+            (true, false) => self.remount_read_write(),
             _ => Ok(()),
         };
         if let Err(error) = mode_result {
@@ -1273,10 +1309,53 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
         if self.options.readonly {
             return self.device.flush();
         }
+        self.filesystem.mmp.ensure_writable("sync:mmp_failed")?;
         self.filesystem
             .sync_filesystem_with_observer(&mut self.device, &mut self.services.observer)
     }
 
+    /// Refreshes MMP ownership after the embedding runtime's lock-free wait.
+    ///
+    /// `elapsed` is the monotonic duration since the previous successful MMP
+    /// publication. The caller must not hold this mount's outer lock while
+    /// waiting for the returned interval.
+    pub fn refresh_mmp(
+        &mut self,
+        elapsed: core::time::Duration,
+    ) -> Ext4Result<Option<core::time::Duration>> {
+        if self.options.readonly || !self.filesystem.mmp.is_active() {
+            return Ok(None);
+        }
+        let interval = self.filesystem.mmp.refresh(
+            &mut self.device,
+            &self.filesystem.superblock,
+            self.services.mmp_identity,
+            elapsed,
+        )?;
+        Ok(Some(interval))
+    }
+
+    /// Returns the periodic MMP interval without performing I/O.
+    pub const fn mmp_refresh_interval(&self) -> Option<core::time::Duration> {
+        self.filesystem.mmp.refresh_interval()
+    }
+
+    /// Latches loss of the embedding runtime's periodic MMP driver.
+    ///
+    /// Once reported, all subsequent mutations fail until a new mount owns a
+    /// functioning runtime driver.
+    pub fn report_mmp_runtime_failure(&mut self, error: Ext4Error) {
+        if self.filesystem.mmp.is_active() {
+            self.filesystem.mmp.mark_failed(error);
+        }
+    }
+
+    /// Persists a clean filesystem and then releases writable MMP ownership.
+    ///
+    /// If the final MMP write fails, the ext4/JBD2 state is already clean and
+    /// this mount becomes terminal: further mutations and remounts are
+    /// rejected. Retrying an uncertain CLEAN write could overwrite a new MMP
+    /// owner that claimed the device after observing the first write.
     pub fn unmount(&mut self) -> Ext4Result<()> {
         if self.options.readonly {
             self.filesystem
@@ -1284,14 +1363,92 @@ impl<D: BlockIo, E, P, K, O: Observer> Ext4<D, MountedServices<E, P, K, O>> {
             return Ok(());
         }
         self.filesystem
-            .umount_with_observer(&mut self.device, &mut self.services.observer)
+            .umount_with_observer(&mut self.device, &mut self.services.observer)?;
+        self.release_mmp()
     }
 
     fn ensure_writable(&self, operation: &'static str) -> Ext4Result<()> {
         if self.options.readonly {
             Err(Ext4Error::read_only().with_operation(operation))
         } else {
-            Ok(())
+            self.filesystem.mmp.ensure_writable(operation)
         }
+    }
+
+    fn remount_read_only(&mut self) -> Ext4Result<()> {
+        self.filesystem.remount_read_only(&mut self.device)?;
+        match self.release_mmp() {
+            Ok(()) => Ok(()),
+            Err(error) => self.rollback_read_only_transition(error),
+        }
+    }
+
+    fn remount_read_write(&mut self) -> Ext4Result<()> {
+        self.claim_mmp()?;
+        if let Err(error) = self
+            .filesystem
+            .remount_read_write(&mut self.device, &mut self.services.observer)
+        {
+            return Err(error_after_cleanup(error, self.release_mmp()));
+        }
+        if let Err(error) = self.refresh_claimed_mmp() {
+            let remount_cleanup = self.filesystem.remount_read_only(&mut self.device);
+            let release_cleanup = self.release_mmp();
+            let cleanup_error = error_after_cleanup(error, remount_cleanup);
+            return Err(error_after_cleanup(cleanup_error, release_cleanup));
+        }
+        Ok(())
+    }
+
+    fn claim_and_refresh_mmp(&mut self) -> Ext4Result<()> {
+        self.claim_mmp()?;
+        match self.refresh_claimed_mmp() {
+            Ok(()) => Ok(()),
+            Err(error) => Err(error_after_cleanup(error, self.release_mmp())),
+        }
+    }
+
+    fn claim_mmp(&mut self) -> Ext4Result<()> {
+        self.filesystem.mmp = super::mmp::MmpState::claim(
+            &mut self.device,
+            &self.filesystem.superblock,
+            &mut self.services.entropy,
+            &mut self.services.mmp_delay,
+        )?;
+        Ok(())
+    }
+
+    fn refresh_claimed_mmp(&mut self) -> Ext4Result<()> {
+        if !self.filesystem.mmp.is_active() {
+            return Ok(());
+        }
+        self.filesystem.mmp.refresh(
+            &mut self.device,
+            &self.filesystem.superblock,
+            self.services.mmp_identity,
+            core::time::Duration::ZERO,
+        )?;
+        Ok(())
+    }
+
+    fn release_mmp(&mut self) -> Ext4Result<()> {
+        self.filesystem
+            .mmp
+            .release_clean(&mut self.device, &self.filesystem.superblock)
+    }
+
+    fn rollback_read_only_transition(&mut self, operation_error: Ext4Error) -> Ext4Result<()> {
+        if let Err(reclaim_error) = self.claim_and_refresh_mmp() {
+            self.filesystem.mmp.mark_failed(reclaim_error);
+            return Err(reclaim_error);
+        }
+        if let Err(remount_error) = self
+            .filesystem
+            .remount_read_write(&mut self.device, &mut self.services.observer)
+        {
+            self.filesystem.mmp.mark_failed(remount_error);
+            return Err(remount_error);
+        }
+        Err(operation_error)
     }
 }

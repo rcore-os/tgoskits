@@ -8,7 +8,7 @@ use crate::{
     checksum::jbd2_superblock_csum32,
     disknode::Ext4Timestamp,
     error::{Ext4Error, Ext4Result},
-    io::BlockIo,
+    io::{BlockIo, WriteFlags},
     jbd2::{
         jbd2::{ReplayFailure, ReplayStatus},
         jbdstruct::{
@@ -474,6 +474,31 @@ impl<B: BlockIo> Jbd2Dev<B> {
 
     pub(crate) fn read_device_bytes(&mut self, offset: u64, output: &mut [u8]) -> Ext4Result<()> {
         self.inner.read_device_bytes(offset, output)
+    }
+
+    /// Reads home blocks without consulting cached or journal-owned images.
+    pub(crate) fn read_blocks_uncached(
+        &mut self,
+        output: &mut [u8],
+        block: AbsoluteBN,
+        count: u32,
+    ) -> Ext4Result<()> {
+        self.inner.read_blocks(output, block, count)
+    }
+
+    /// Publishes non-journalled metadata directly at a durability boundary.
+    pub(crate) fn write_blocks_durable(
+        &mut self,
+        input: &[u8],
+        block: AbsoluteBN,
+        count: u32,
+    ) -> Ext4Result<()> {
+        self.inner.write_blocks_with_flags(
+            input,
+            block,
+            count,
+            WriteFlags::METADATA | WriteFlags::FUA,
+        )
     }
 
     /// Returns whether journal support is enabled.
