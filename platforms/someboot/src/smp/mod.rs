@@ -28,6 +28,12 @@ const CPU_BOOT_KICKED: u32 = 1;
 const CPU_BOOT_ALIVE: u32 = 2;
 const CPU_BOOT_SHOULD_ONLINE: u32 = 3;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CpuBootStatus {
+    WaitingForAlive,
+    Alive,
+}
+
 /// Per-CPU synchronization owned by the generic secondary-boot core.
 ///
 /// This object is deliberately separate from [`PerCpuMeta`]. Metadata is an
@@ -69,7 +75,15 @@ impl CpuBootSync {
             .map_err(|state| CpuBootPrepareError::UnexpectedState { state })
     }
 
-    fn try_release_alive(&self) -> bool {
+    fn status(&self) -> Result<CpuBootStatus, CpuBootPrepareError> {
+        match self.state.load(Ordering::Acquire) {
+            CPU_BOOT_KICKED => Ok(CpuBootStatus::WaitingForAlive),
+            CPU_BOOT_ALIVE => Ok(CpuBootStatus::Alive),
+            state => Err(CpuBootPrepareError::UnexpectedState { state }),
+        }
+    }
+
+    fn release_alive(&self) -> Result<(), CpuBootPrepareError> {
         self.state
             .compare_exchange(
                 CPU_BOOT_ALIVE,
@@ -77,7 +91,8 @@ impl CpuBootSync {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
-            .is_ok()
+            .map(|_| ())
+            .map_err(|state| CpuBootPrepareError::UnexpectedState { state })
     }
 
     fn wait_until_released(&self) {
@@ -366,13 +381,24 @@ pub(crate) fn prepare_secondary_boot(cpu_index: usize) -> Result<(), CpuBootPrep
         .prepare_kick()
 }
 
-pub(crate) fn try_release_secondary(cpu_index: usize) -> bool {
-    try_release_secondary_from(cpu_boot_sync(cpu_index), cpu_index)
+pub(crate) fn secondary_boot_status(
+    cpu_index: usize,
+) -> Result<CpuBootStatus, CpuBootPrepareError> {
+    cpu_boot_sync(cpu_index)
+        .ok_or(CpuBootPrepareError::Missing { cpu_index })?
+        .status()
 }
 
-fn try_release_secondary_from(sync: Option<&CpuBootSync>, cpu_index: usize) -> bool {
-    sync.unwrap_or_else(|| panic!("missing boot synchronization for CPU {cpu_index}"))
-        .try_release_alive()
+pub(crate) fn release_secondary_boot(cpu_index: usize) -> Result<(), CpuBootPrepareError> {
+    release_secondary_boot_from(cpu_boot_sync(cpu_index), cpu_index)
+}
+
+fn release_secondary_boot_from(
+    sync: Option<&CpuBootSync>,
+    cpu_index: usize,
+) -> Result<(), CpuBootPrepareError> {
+    sync.ok_or(CpuBootPrepareError::Missing { cpu_index })?
+        .release_alive()
 }
 
 pub(crate) fn synchronize_secondary_boot(cpu_index: usize) {
@@ -684,10 +710,27 @@ mod tests {
         second.prepare_kick().unwrap();
         second.report_alive().unwrap();
 
-        assert!(!first.try_release_alive());
-        assert!(second.try_release_alive());
+        assert_eq!(
+            first.release_alive(),
+            Err(CpuBootPrepareError::UnexpectedState {
+                state: CPU_BOOT_KICKED
+            })
+        );
+        second.release_alive().unwrap();
         assert_eq!(first.state(), CPU_BOOT_KICKED);
         assert_eq!(second.state(), CPU_BOOT_SHOULD_ONLINE);
+    }
+
+    #[test]
+    fn boot_sync_observation_does_not_release_an_alive_cpu() {
+        let sync = CpuBootSync::new();
+
+        sync.prepare_kick().unwrap();
+        assert_eq!(sync.status(), Ok(CpuBootStatus::WaitingForAlive));
+
+        sync.report_alive().unwrap();
+        assert_eq!(sync.status(), Ok(CpuBootStatus::Alive));
+        assert_eq!(sync.state(), CPU_BOOT_ALIVE);
     }
 
     #[test]
@@ -695,7 +738,7 @@ mod tests {
         let sync = CpuBootSync::new();
         sync.prepare_kick().unwrap();
         sync.report_alive().unwrap();
-        assert!(sync.try_release_alive());
+        sync.release_alive().unwrap();
 
         assert_eq!(
             sync.prepare_kick(),
@@ -718,9 +761,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "missing boot synchronization for CPU")]
-    fn releasing_an_unpublished_cpu_is_an_invariant_violation() {
-        let _ = try_release_secondary_from(None, usize::MAX);
+    fn releasing_an_unpublished_cpu_returns_a_typed_error() {
+        assert_eq!(
+            release_secondary_boot_from(None, usize::MAX),
+            Err(CpuBootPrepareError::Missing {
+                cpu_index: usize::MAX
+            })
+        );
     }
 
     #[test]
