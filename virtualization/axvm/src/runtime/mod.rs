@@ -109,14 +109,30 @@ pub fn start_vm(vm_id: usize) -> AxVmResult {
 }
 
 /// Wake the primary vCPU of a VM.
+///
+/// Single-vCPU guests retain pending device work across the WFI boundary.
+/// SMP guests keep the legacy wake-only behavior until AxVM provides a
+/// per-vCPU wait queue that can target vCPU0.
 pub fn notify_vm(vm_id: usize) -> AxVmResult {
-    vm_by_id(vm_id)?;
-    notify_vm_with_wake(|| vcpus::notify_primary_vcpu(vm_id));
-    Ok(())
+    let vm = vm_by_id(vm_id)?;
+    let vcpu_num = vm.vcpu_num();
+    vm.with_runtime(|runtime| {
+        notify_runtime_for_device_poll(runtime, vcpu_num);
+        Ok(())
+    })
 }
 
-fn notify_vm_with_wake(wake_vcpu: impl FnOnce()) {
-    wake_vcpu();
+fn notify_runtime_for_device_poll(runtime: &crate::vm::VmRuntimeHandle, vcpu_num: usize) {
+    if vcpu_num == 1 {
+        runtime.notify_device_poll();
+    } else {
+        // The runtime wait queue is shared by all vCPUs, so notify_one cannot
+        // target vCPU0. Keep the legacy wake semantics for SMP guests until a
+        // dedicated per-vCPU wake path is available; publishing the shared
+        // device-poll flag here could keep a secondary vCPU spinning while
+        // the primary vCPU remains asleep.
+        runtime.notify_one();
+    }
 }
 
 pub fn stop_vm(vm_id: usize) -> AxVmResult {
@@ -163,8 +179,6 @@ const fn missing_vm_error(vm_id: usize) -> AxVmError {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, vec::Vec};
-
     use super::*;
 
     #[test]
@@ -190,12 +204,22 @@ mod tests {
     }
 
     #[test]
-    fn console_notification_does_not_poll_devices_from_the_host_input_task() {
-        let steps = RefCell::new(Vec::new());
-        notify_vm_with_wake(|| {
-            assert!(steps.borrow().is_empty());
-            steps.borrow_mut().push("wake");
-        });
-        assert_eq!(steps.into_inner(), ["wake"]);
+    fn smp_notification_does_not_publish_a_shared_device_poll_request() {
+        let runtime = crate::vm::VmRuntimeHandle::new();
+        let observed_generation = runtime.notification_generation();
+
+        notify_runtime_for_device_poll(&runtime, 2);
+
+        assert!(!runtime.device_poll_requested());
+        assert_ne!(runtime.notification_generation(), observed_generation);
+    }
+
+    #[test]
+    fn single_vcpu_notification_publishes_a_device_poll_request() {
+        let runtime = crate::vm::VmRuntimeHandle::new();
+
+        notify_runtime_for_device_poll(&runtime, 1);
+
+        assert!(runtime.device_poll_requested());
     }
 }

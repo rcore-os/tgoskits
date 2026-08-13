@@ -60,6 +60,7 @@ log = "0.4"
 heapless.workspace = true
 
 # System dependent modules provided by ArceOS.
+ax-api.workspace = true
 ax-std = { workspace = true, default-features = false, features = [
   "alloc",
   "fd",
@@ -81,6 +82,7 @@ axvm-types.workspace = true
 axdevice.workspace = true
 axdevice_base.workspace = true
 axvirtio-common.workspace = true
+axvirtio-blk.workspace = true
 axvirtio-net.workspace = true
 toml.workspace = true
 ax-driver = { workspace = true, optional = true }

@@ -450,6 +450,8 @@ jobs:
             command: |
               echo "==> axvisor aarch64 smoke"
               cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
+              echo "==> axvisor aarch64 virtio-blk ArceOS guest"
+              timeout 240s apps/arceos/virtio-blk-test/run.sh
               echo "==> axvisor aarch64 axtest"
               cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
               echo "==> pull qemu-aarch64 image"

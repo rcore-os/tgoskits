@@ -415,6 +415,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-virtio-blk-test"
+version = "0.1.0"
+dependencies = [
+ "ax-driver",
+ "ax-std",
+ "virtio-drivers",
+]
+
+[[package]]
 name = "arceos-virtio-net-peer"
 version = "0.1.0"
 dependencies = [
@@ -1491,6 +1500,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "axvirtio-blk"
+version = "0.1.0"
+dependencies = [
+ "ax-memory-addr",
+ "ax-sync",
+ "axaddrspace",
+ "axdevice_base",
+ "axvirtio-common",
+ "axvm-types",
+ "log",
+]
+
+[[package]]
 name = "axvirtio-common"
 version = "0.1.0"
 dependencies = [
@@ -1519,6 +1541,7 @@ name = "axvisor"
 version = "0.5.24"
 dependencies = [
  "anyhow",
+ "ax-api",
  "ax-driver",
  "ax-hal",
  "ax-std",
@@ -1528,6 +1551,7 @@ dependencies = [
  "axdevice",
  "axdevice_base",
  "axtest",
+ "axvirtio-blk",
  "axvirtio-common",
  "axvirtio-net",
  "axvm",

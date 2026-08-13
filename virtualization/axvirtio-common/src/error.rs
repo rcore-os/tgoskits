@@ -39,6 +39,9 @@ pub enum VirtioError {
     InvalidAddress,
     /// Resource not found
     NotFound,
+    /// The operation is valid but cannot complete until asynchronous backend
+    /// work makes progress.
+    WouldBlock,
     /// Invalid input
     InvalidInput,
 }
