@@ -15,6 +15,7 @@ enum PiRqFollowup {
 
 struct PiWaiterRefresh {
     owner: Option<ThreadId>,
+    owner_next_lock: Option<PiMutexRaw>,
     changed: bool,
 }
 

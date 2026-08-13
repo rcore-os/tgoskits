@@ -289,6 +289,9 @@ impl TaskSystem {
     fn refresh_blocked_waiter_key(
         &self,
         waiter_core: &Arc<ThreadCore>,
+        expected_lock: Option<PiMutexRaw>,
+        origin_lock: Option<PiMutexRaw>,
+        top_task: Option<ThreadId>,
     ) -> Result<PiWaiterRefresh, TaskError> {
         loop {
             let donation = self.pi_donation(waiter_core)?;
@@ -296,9 +299,20 @@ impl TaskSystem {
             let Some(registration) = waiter_sched.pi.blocked_on else {
                 return Ok(PiWaiterRefresh {
                     owner: None,
+                    owner_next_lock: None,
                     changed: false,
                 });
             };
+            if expected_lock.is_some_and(|expected| registration.lock != expected) {
+                // Linux step [3]: the task left the saved chain and may now
+                // block on an unrelated mutex. Do not graft that new edge
+                // onto this invocation's dependency graph.
+                return Ok(PiWaiterRefresh {
+                    owner: None,
+                    owner_next_lock: None,
+                    changed: false,
+                });
+            }
             let urgency = waiter_core.effective_pi_wait_urgency();
             let Some(mut lock_state) = (unsafe {
                 // SAFETY: `blocked_on` pins the mutex identity until this
@@ -312,16 +326,36 @@ impl TaskSystem {
             if waiter_sched.pi.blocked_on != Some(registration) {
                 continue;
             }
+            let owner = unsafe { registration.lock.core() }
+                .owner_snapshot()
+                .owner()
+                .map(ThreadId::from);
+            if origin_lock.is_some_and(|origin| registration.lock == origin)
+                || top_task.is_some_and(|top| owner == Some(top))
+            {
+                return Err(TaskError::PiCycle);
+            }
+            // Resolve the stable owner reference before changing either PI
+            // tree. Holding this mutex's wait-lock pins the owner identity;
+            // the Arc then carries the next task PI snapshot across publish.
+            let owner_core = owner.map(|owner| self.pi_thread_core(owner)).transpose()?;
             let old_donation = lock_state
                 .waiters
                 .donation(registration.key)
                 .ok_or(TaskError::InvalidPiState)?;
             if urgency == registration.key.urgency && donation.same_source(&old_donation) {
+                drop(waiter_sched);
+                let owner_next_lock = owner_core.as_ref().and_then(|owner| {
+                    owner
+                        .sched()
+                        .lock()
+                        .pi
+                        .blocked_on
+                        .map(|registration| registration.lock)
+                });
                 return Ok(PiWaiterRefresh {
-                    owner: unsafe { registration.lock.core() }
-                        .owner_snapshot()
-                        .owner()
-                        .map(ThreadId::from),
+                    owner,
+                    owner_next_lock,
                     changed: false,
                 });
             }
@@ -332,10 +366,6 @@ impl TaskSystem {
                 .ok_or(TaskError::InvalidPiState)?;
             let new_key = PiWaitKey::new(urgency, registration.key.sequence, waiter_core.id());
             lock_state.waiters.insert(new_key, donation, node);
-            let owner = unsafe { registration.lock.core() }
-                .owner_snapshot()
-                .owner()
-                .map(ThreadId::from);
             if let Err(error) = self.publish_lock_top_change(
                 owner,
                 old_top.clone(),
@@ -362,8 +392,20 @@ impl TaskSystem {
                 task_runtime::fatal_invariant(0x5049_1205, waiter_core.id().as_u64() as usize);
             }
             current.key = new_key;
+            drop(waiter_sched);
+            // The physical wait-lock still pins `owner` and its mutex while
+            // this owner PI-lock snapshot seeds the following chain step.
+            let owner_next_lock = owner_core.as_ref().and_then(|owner| {
+                owner
+                    .sched()
+                    .lock()
+                    .pi
+                    .blocked_on
+                    .map(|registration| registration.lock)
+            });
             return Ok(PiWaiterRefresh {
                 owner,
+                owner_next_lock,
                 changed: true,
             });
         }
@@ -377,10 +419,17 @@ impl TaskSystem {
     pub(in crate::system::task_system) fn recompute_pi_chain(
         &self,
         start: ThreadId,
-        origin_lock: Option<PiMutexRaw>,
+        origin_lock: PiMutexRaw,
+        next_lock: PiMutexRaw,
         top_task: ThreadId,
     ) -> Result<(), TaskError> {
-        self.recompute_pi_chain_bounded(start, origin_lock, top_task, self.config.pi_chain_limit())
+        self.recompute_pi_chain_bounded(
+            start,
+            Some(origin_lock),
+            Some(next_lock),
+            top_task,
+            self.config.pi_chain_limit(),
+        )
     }
 
     /// Propagates a committed PI removal or priority change through the
@@ -396,13 +445,14 @@ impl TaskSystem {
         start: ThreadId,
         top_task: ThreadId,
     ) -> Result<(), TaskError> {
-        self.recompute_pi_chain_bounded(start, None, top_task, self.config.thread_capacity())
+        self.recompute_pi_chain_bounded(start, None, None, top_task, self.config.thread_capacity())
     }
 
     fn recompute_pi_chain_bounded(
         &self,
         start: ThreadId,
         origin_lock: Option<PiMutexRaw>,
+        mut next_lock: Option<PiMutexRaw>,
         top_task: ThreadId,
         limit: usize,
     ) -> Result<(), TaskError> {
@@ -436,19 +486,17 @@ impl TaskSystem {
                     // that same lock again, which is a new edge, not a cycle.
                     return Ok(());
                 }
-                let blocked_on = current_core.sched().lock().pi.blocked_on;
-                if blocked_on.is_some_and(|registration| registration.lock == origin) {
-                    return Err(TaskError::PiCycle);
-                }
-            } else {
-                let blocked_on = current_core.sched().lock().pi.blocked_on;
-                if origin_lock.is_some_and(|origin| {
-                    blocked_on.is_some_and(|registration| registration.lock == origin)
-                }) {
-                    return Err(TaskError::PiCycle);
-                }
             }
-            let refresh = self.refresh_blocked_waiter_key(&current_core)?;
+            #[cfg(feature = "task-test-hooks")]
+            if depth == 1 && origin_lock.is_some() {
+                crate::task_test_hooks::chain_decision_committed(top_task);
+            }
+            let refresh = self.refresh_blocked_waiter_key(
+                &current_core,
+                next_lock,
+                origin_lock,
+                origin_lock.map(|_| top_task),
+            )?;
             if !refresh.changed && origin_lock.is_none() {
                 return Ok(());
             }
@@ -461,7 +509,11 @@ impl TaskSystem {
             if depth == limit {
                 return Err(TaskError::PiChainLimit { limit });
             }
+            let Some(owner_next_lock) = refresh.owner_next_lock else {
+                return Ok(());
+            };
             current = owner;
+            next_lock = Some(owner_next_lock);
         }
         Err(TaskError::PiChainLimit { limit })
     }
@@ -471,7 +523,7 @@ impl TaskSystem {
         thread: ThreadId,
     ) -> Result<(), TaskError> {
         let core = self.pi_thread_core(thread)?;
-        let refresh = self.refresh_blocked_waiter_key(&core)?;
+        let refresh = self.refresh_blocked_waiter_key(&core, None, None, None)?;
         let Some(owner) = refresh.owner else {
             return Ok(());
         };

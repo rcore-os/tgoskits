@@ -94,5 +94,79 @@ pub fn run() -> crate::TestResult {
     waiter.join().unwrap();
     task_test_hooks::allow_pi_release_wake();
     owner.join().unwrap();
+    owner_change_after_origin_registration();
     Ok(())
+}
+
+fn owner_change_after_origin_registration() {
+    let first = Arc::new(Mutex::new(()));
+    let second = Arc::new(Mutex::new(()));
+    let owner_has_first = Arc::new(AtomicBool::new(false));
+    let waiter_has_second = Arc::new(AtomicBool::new(false));
+    let release_first = Arc::new(AtomicBool::new(false));
+
+    let owner = {
+        let first = Arc::clone(&first);
+        let second = Arc::clone(&second);
+        let owner_has_first = Arc::clone(&owner_has_first);
+        let release_first = Arc::clone(&release_first);
+        thread::spawn(move || {
+            pin_current_to_cpu(0);
+            let first_guard = first.lock();
+            owner_has_first.store(true, Ordering::Release);
+            while !release_first.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+            drop(first_guard);
+            drop(second.lock());
+        })
+    };
+    wait_until(
+        || owner_has_first.load(Ordering::Acquire),
+        "PI chain owner did not acquire the origin mutex",
+    );
+
+    let start_waiter = Arc::new(AtomicBool::new(false));
+    let waiter = {
+        let first = Arc::clone(&first);
+        let second = Arc::clone(&second);
+        let waiter_has_second = Arc::clone(&waiter_has_second);
+        let start_waiter = Arc::clone(&start_waiter);
+        thread::spawn(move || {
+            pin_current_to_cpu(1);
+            let second_guard = second.lock();
+            waiter_has_second.store(true, Ordering::Release);
+            while !start_waiter.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+            drop(first.lock());
+            drop(second_guard);
+        })
+    };
+    wait_until(
+        || waiter_has_second.load(Ordering::Acquire),
+        "PI chain waiter did not acquire the second mutex",
+    );
+
+    task_test_hooks::arm_pi_chain_owner_change(waiter.thread().id().as_u64().get());
+    start_waiter.store(true, Ordering::Release);
+    wait_until(
+        task_test_hooks::pi_chain_decision_committed,
+        "PI chain waiter did not commit its chain decision",
+    );
+    task_test_hooks::arm_pi_release_claim_exit(owner.thread().id().as_u64().get());
+    release_first.store(true, Ordering::Release);
+    wait_until(
+        task_test_hooks::pi_waiter_registered,
+        "previous PI owner did not register on the second mutex",
+    );
+    task_test_hooks::allow_pi_chain_owner_change();
+    wait_until(
+        task_test_hooks::pi_release_before_wake,
+        "second mutex release did not publish its ownerless handoff",
+    );
+    task_test_hooks::allow_pi_waiter_claim();
+    owner.join().unwrap();
+    task_test_hooks::allow_pi_release_wake();
+    waiter.join().unwrap();
 }

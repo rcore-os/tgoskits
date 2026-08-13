@@ -173,10 +173,24 @@ impl TaskSystem {
                 }
                 return Err(error);
             }
+            // Linux snapshots `owner->pi_blocked_on->lock` while both the
+            // origin wait-lock and owner pi-lock protect the newly installed
+            // edge. A later `blocked_on` value can belong to an unrelated
+            // dependency created after the owner releases this mutex.
+            let owner_next_lock = initial_owner
+                .as_ref()
+                .and_then(|owner| owner.sched().lock().pi.blocked_on)
+                .map(|registration| registration.lock);
             drop(lock_state);
-            if let Some(owner) = owner
-                && let Err(error) = self.recompute_pi_chain(owner, Some(lock_raw), waiter)
-            {
+            let chain_result =
+                if let (Some(owner), Some(owner_next_lock)) = (owner, owner_next_lock) {
+                    self.recompute_pi_chain(owner, lock_raw, owner_next_lock, waiter)
+                } else {
+                    #[cfg(feature = "task-test-hooks")]
+                    crate::task_test_hooks::chain_decision_committed(waiter);
+                    Ok(())
+                };
+            if let Err(error) = chain_result {
                 let rollback_owner = self
                     .remove_registered_waiter(&waiter_core, lock_raw, generation, false)
                     .unwrap_or_else(|_| {

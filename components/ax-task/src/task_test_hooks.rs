@@ -10,6 +10,8 @@ use crate::ThreadId;
 
 static TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
 static PI_RELEASE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static TARGET_CHAIN_TOP: AtomicU64 = AtomicU64::new(0);
+static PI_CHAIN_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 
 const STAGE_IDLE: u8 = 0;
 const STAGE_CONFIGURING: u8 = 1;
@@ -18,6 +20,8 @@ const STAGE_WAITER_REGISTERED: u8 = 3;
 const STAGE_RELEASE_BEFORE_WAKE: u8 = 4;
 const STAGE_WAITER_MAY_CLAIM: u8 = 5;
 const STAGE_RELEASE_MAY_WAKE: u8 = 6;
+const STAGE_CHAIN_DECIDED: u8 = 3;
+const STAGE_OWNER_MAY_CHANGE: u8 = 4;
 
 /// Arms the PI release/claim/exit interleaving for one live waiter.
 pub fn arm_pi_release_claim_exit(waiter: u64) {
@@ -74,6 +78,42 @@ pub fn allow_pi_release_wake() {
     );
 }
 
+/// Arms a pause after one PI waiter committed its origin-lock registration.
+pub fn arm_pi_chain_owner_change(top: u64) {
+    assert_ne!(top, 0, "a task-test chain identity must be non-zero");
+    assert_eq!(
+        PI_CHAIN_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one PI chain task-test interleaving may be armed"
+    );
+    TARGET_CHAIN_TOP.store(top, Ordering::Relaxed);
+    PI_CHAIN_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the target waiter committed its chain-walk decision.
+pub fn pi_chain_decision_committed() -> bool {
+    PI_CHAIN_STAGE.load(Ordering::Acquire) == STAGE_CHAIN_DECIDED
+}
+
+/// Lets the target registration continue after the original owner changed.
+pub fn allow_pi_chain_owner_change() {
+    assert_eq!(
+        PI_CHAIN_STAGE.compare_exchange(
+            STAGE_CHAIN_DECIDED,
+            STAGE_OWNER_MAY_CHANGE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_CHAIN_DECIDED),
+        "PI chain continuation must follow origin registration"
+    );
+}
+
 pub(crate) fn registered_waiter(waiter: ThreadId) {
     if PI_RELEASE_STAGE.load(Ordering::Acquire) != STAGE_ARMED
         || TARGET_WAITER.load(Ordering::Relaxed) != waiter.as_u64()
@@ -116,4 +156,27 @@ pub(crate) fn release_before_wake(waiter: ThreadId) {
     }
     TARGET_WAITER.store(0, Ordering::Relaxed);
     PI_RELEASE_STAGE.store(STAGE_IDLE, Ordering::Release);
+}
+
+pub(crate) fn chain_decision_committed(top: ThreadId) {
+    if PI_CHAIN_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || TARGET_CHAIN_TOP.load(Ordering::Relaxed) != top.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        PI_CHAIN_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_CHAIN_DECIDED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "target PI chain reached registration in an invalid test stage"
+    );
+    while PI_CHAIN_STAGE.load(Ordering::Acquire) != STAGE_OWNER_MAY_CHANGE {
+        core::hint::spin_loop();
+    }
+    TARGET_CHAIN_TOP.store(0, Ordering::Relaxed);
+    PI_CHAIN_STAGE.store(STAGE_IDLE, Ordering::Release);
 }
