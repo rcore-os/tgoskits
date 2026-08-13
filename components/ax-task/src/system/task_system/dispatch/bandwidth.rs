@@ -3,6 +3,17 @@
 use super::*;
 
 impl TaskSystem {
+    pub(in crate::system::task_system) fn activate_owner_rt_period_for_policy(
+        &self,
+        owner: CpuId,
+        policy: SchedulePolicy,
+    ) -> bool {
+        policy.rt_priority().is_some()
+            && self
+                .root_domain
+                .activate_rt_period(owner, task_runtime::monotonic_now())
+    }
+
     pub(in crate::system::task_system) fn link_owner_throttled_deadline_locked(
         &self,
         run_queue: &mut OwnerRqTxn<'_>,

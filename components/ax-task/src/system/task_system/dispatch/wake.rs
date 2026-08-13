@@ -512,10 +512,7 @@ impl TaskSystem {
         let rt_deadline_push_pending = self.rt_deadline_push_pending(remote);
         run_queue.commit();
         drop(sched);
-        let rt_period_started = policy.rt_priority().is_some()
-            && self
-                .root_domain
-                .activate_rt_period(target, task_runtime::monotonic_now());
+        let rt_period_started = self.activate_owner_rt_period_for_policy(target, policy);
 
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_direct_wake_enqueue();

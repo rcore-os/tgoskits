@@ -4,6 +4,7 @@ pub(super) struct OwnerPolicyApply {
     pub(super) commit: PolicyGenerationCommit,
     pub(super) owner_now_ns: u64,
     pub(super) preempts_current: bool,
+    pub(super) rt_period_started: bool,
     pub(super) effective_policy: SchedulePolicy,
     pub(super) effective_entity: SchedulingEntity,
 }
@@ -126,10 +127,17 @@ impl TaskSystem {
             false
         };
         transaction.commit();
+        // Linux starts rt_bandwidth when sched_setscheduler() re-enqueues an
+        // RT entity. Current tasks are detached and reinstalled rather than
+        // passing through the ordinary wake/enqueue completion path, so the
+        // policy transaction owns the equivalent activation edge.
+        let rt_period_started = (running || queued)
+            && self.activate_owner_rt_period_for_policy(owner, effective_policy);
         Ok(OwnerPolicyApply {
             commit,
             owner_now_ns,
             preempts_current,
+            rt_period_started,
             effective_policy,
             effective_entity,
         })

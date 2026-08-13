@@ -249,6 +249,11 @@ impl TaskSystem {
             });
         if applied.preempts_current {
             remote.request_remote_reschedule();
+        } else if applied.rt_period_started {
+            // The RT period deadline is pinned to the rq owner. Ask that owner
+            // to run the existing deadline derivation path; a remote setter
+            // must not program another CPU's physical timer directly.
+            remote.kick_scheduler_work();
         }
         Ok(())
     }
