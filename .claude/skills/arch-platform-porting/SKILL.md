@@ -43,6 +43,11 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   Keep LoongArch KS4/KS5 reserved for vCPU scratch. On RISC-V, `gp` is the ordinary global
   pointer again; target specs still need `--no-relax` where the PIE relocation model requires
   it, but must not describe `gp` as CPU-local storage.
+  When kernel TLS reuses the architecture current register on LoongArch or RISC-V, scheduler
+  current and preemption-state operations read the CPU runtime anchor through the `ax-hal`
+  boundary under one raw local-IRQ exclusion window. A double-read of the CPU base is not a
+  migration pin: the task may still switch after the second read and before header validation.
+  Do not add retry, stale-header fallback, or a second current-task cache to hide that race.
   `CpuPin<'scope>` must be created only through the non-escaping guarded callback after checking
   the live CPU base, area self pointer/index, and current header. Atomic scalars require migration
   exclusion; shared `T: Sync` objects also rely on object-owned synchronization; mutable local

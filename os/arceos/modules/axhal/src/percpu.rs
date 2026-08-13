@@ -10,11 +10,74 @@ pub use ax_plat::percpu::{
 pub use cpu_local::{
     CpuAreaRef, CpuLocalError, CpuPin, CurrentContext, CurrentThreadHeader, ExclusiveCpu,
     PreemptExit, PreparedThreadSwitch, PreviousThreadBinding, RuntimeThreadCookie,
-    ThreadSwitchError, scheduler_clear_preempt_need_resched, scheduler_consume_final_preempt_guard,
-    scheduler_enter_preempt_guard, scheduler_preempt_guard_depth,
-    scheduler_prepare_preempt_guard_exit, scheduler_set_preempt_need_resched, with_cpu_pin,
-    with_exclusive_cpu,
+    ThreadSwitchError, with_cpu_pin, with_exclusive_cpu,
 };
+
+#[inline(always)]
+fn with_scheduler_current_exclusion<R>(
+    requires_exclusion: bool,
+    irqs_enabled: impl FnOnce() -> bool,
+    disable_irqs: impl FnOnce(),
+    enable_irqs: impl FnOnce(),
+    operation: impl FnOnce() -> R,
+) -> R {
+    let restore_irqs = requires_exclusion && irqs_enabled();
+    if restore_irqs {
+        disable_irqs();
+    }
+    let result = operation();
+    if restore_irqs {
+        enable_irqs();
+    }
+    result
+}
+
+#[inline(always)]
+fn with_stable_scheduler_current<R>(operation: impl FnOnce() -> R) -> R {
+    with_scheduler_current_exclusion(
+        cpu_local::scheduler_current_requires_irq_exclusion(),
+        crate::asm::irqs_enabled,
+        crate::asm::disable_irqs,
+        crate::asm::enable_irqs,
+        operation,
+    )
+}
+
+/// Reads ordinary preemption nesting from the stable current task.
+#[inline(always)]
+pub fn scheduler_preempt_guard_depth() -> Result<u32, CpuLocalError> {
+    with_stable_scheduler_current(cpu_local::scheduler_preempt_guard_depth)
+}
+
+/// Publishes scheduler work into the stable current task.
+#[inline(always)]
+pub fn scheduler_set_preempt_need_resched() -> Result<(), CpuLocalError> {
+    with_stable_scheduler_current(cpu_local::scheduler_set_preempt_need_resched)
+}
+
+/// Clears scheduler work from the stable current task.
+#[inline(always)]
+pub fn scheduler_clear_preempt_need_resched() -> Result<(), CpuLocalError> {
+    with_stable_scheduler_current(cpu_local::scheduler_clear_preempt_need_resched)
+}
+
+/// Enters one preemption guard on the stable current task.
+#[inline(always)]
+pub fn scheduler_enter_preempt_guard() -> Result<(), CpuLocalError> {
+    with_stable_scheduler_current(cpu_local::scheduler_enter_preempt_guard)
+}
+
+/// Prepares one preemption-guard exit on the stable current task.
+#[inline(always)]
+pub fn scheduler_prepare_preempt_guard_exit() -> Result<PreemptExit, CpuLocalError> {
+    with_stable_scheduler_current(cpu_local::scheduler_prepare_preempt_guard_exit)
+}
+
+/// Consumes the final guard retained by the stable current task.
+#[inline(always)]
+pub fn scheduler_consume_final_preempt_guard() -> Result<bool, CpuLocalError> {
+    with_stable_scheduler_current(cpu_local::scheduler_consume_final_preempt_guard)
+}
 
 /// Returns the direct current CPU-area base under an explicit pin.
 pub fn cpu_base(pin: &CpuPin<'_>) -> NonNull<u8> {
@@ -40,7 +103,7 @@ pub fn current_thread(pin: &CpuPin<'_>) -> Result<NonNull<CurrentThreadHeader>, 
 /// dereference the result after a context switch.
 pub unsafe fn scheduler_current_thread_unpinned()
 -> Result<NonNull<CurrentThreadHeader>, CpuLocalError> {
-    unsafe { cpu_local::scheduler_current_thread() }
+    with_stable_scheduler_current(|| unsafe { cpu_local::scheduler_current_thread() })
 }
 
 /// Runs `f` with the task-owned header selected by the architecture `current`
@@ -49,7 +112,7 @@ pub unsafe fn scheduler_current_thread_unpinned()
 pub fn with_scheduler_current_thread<R>(
     f: impl for<'current> FnOnce(&'current CurrentThreadHeader) -> R,
 ) -> Result<R, CpuLocalError> {
-    cpu_local::with_scheduler_current_thread(f)
+    with_stable_scheduler_current(|| cpu_local::with_scheduler_current_thread(f))
 }
 
 /// Reads the logical CPU ID before constructing a scheduler guard.
@@ -140,5 +203,42 @@ pub fn initialize_host_test_cpu() {
                 "invalid host CPU-local state: {error}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    use super::with_scheduler_current_exclusion;
+
+    #[test]
+    fn cpu_anchor_current_is_observed_under_local_irq_exclusion() {
+        let irq_enabled = Cell::new(true);
+        with_scheduler_current_exclusion(
+            true,
+            || irq_enabled.get(),
+            || irq_enabled.set(false),
+            || irq_enabled.set(true),
+            || {
+                assert!(
+                    !irq_enabled.get(),
+                    "CPU-anchor current may migrate while sampled"
+                )
+            },
+        );
+        assert!(irq_enabled.get(), "the caller's IRQ state must be restored");
+    }
+
+    #[test]
+    fn architecture_current_does_not_mutate_local_irq_state() {
+        let irq_enabled = Cell::new(true);
+        with_scheduler_current_exclusion(
+            false,
+            || irq_enabled.get(),
+            || panic!("an architecture current register needs no IRQ exclusion"),
+            || panic!("an architecture current register needs no IRQ restore"),
+            || assert!(irq_enabled.get()),
+        );
     }
 }

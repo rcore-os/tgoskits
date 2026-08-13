@@ -65,6 +65,23 @@ impl ArchitectureCurrentModel {
             CurrentThreadSource::Architecture
         }
     }
+
+    const fn current_thread_requires_irq_exclusion(self, tls_enabled: bool) -> bool {
+        matches!(
+            self.current_thread_source(tls_enabled),
+            CurrentThreadSource::CpuRuntimeAnchor
+        )
+    }
+}
+
+/// Reports whether an unpinned current-task read must exclude local IRQs.
+///
+/// Architectures whose current register is reused as the kernel TLS base read
+/// scheduler current from the CPU runtime anchor. Local IRQ exclusion is then
+/// required to keep the selected CPU stable through the complete operation.
+#[doc(hidden)]
+pub const fn scheduler_current_requires_irq_exclusion() -> bool {
+    imp::CURRENT_MODEL.current_thread_requires_irq_exclusion(cfg!(feature = "tls"))
 }
 
 /// Reads ordinary preemption nesting from the architecture-selected owner.
@@ -407,6 +424,7 @@ mod tests {
             aliased.current_thread_source(true),
             CurrentThreadSource::CpuRuntimeAnchor,
         );
+        assert!(aliased.current_thread_requires_irq_exclusion(true));
     }
 
     #[test]
