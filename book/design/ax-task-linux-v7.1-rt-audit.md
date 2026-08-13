@@ -3283,6 +3283,36 @@ target-side probe 在旧实现确定性观察到事务要求 `reschedule=true, o
 Linux `do_sched_rt_period_timer()` 在无 runnable 但仍有 `rt_time` 时继续 period 的语义一致，不应靠
 强制停表或测试延时掩盖。定向 `task-rt-policy` 和 CI 对应的 `all` 序列均已通过。
 
+第六项重复 owner 位于 timed park 的 hrtimer 注册/取消。Linux
+`kernel/time/hrtimer.c:1471-1495` 在一次 `lock_hrtimer_base()` 事务内完成 enqueue 与需要时的
+`hrtimer_reprogram()`；取消同样在一次 base lock 内完成 `remove_hrtimer()`
+（`kernel/time/hrtimer.c:1509-1534`）。ax-task 此前先以 Registration guard 修改 task deadline
+queue，释放后重新取得 rq observation，最后再以 Publication guard 读取同一个 timer head 并提交
+物理 deadline。一次 park arm/cancel 因而为同一个 base 状态取得两把 IRQ-save 锁；取消失败回滚还
+会第三次重进 base，并遗留了只服务该分段事务的 publication invalidation 路径。
+
+现在先按既有 rq/RT-period 语义形成非 timer 候选，随后用唯一 Registration guard 完成 queue
+arm/cancel、读取新 timer head、比较旧 publication 和提交 generation。generation exhaustion 在同一
+guard 内回滚 queue/core ownership，不再释放后重锁或失效整个 publication。kernel timer 的本地
+register/cancel 也复用同一 Registration guard；失败时在原 guard 内恢复 entry。远端 cancellation 仍保留
+Linux 的保守 stale edge 语义，不跨 CPU 重编程 clockevent。owner safe point 用 sequence 保护的一份
+`CpuDeadlineSnapshot` 同时观察 timer head 与已发布 deadline；它只是权威 base 的一致只读投影，任何
+不匹配都回到 base lock 复核，不再把两个不同时刻的 atomic 当成两个事实来源。
+
+真实 ArceOS `task-wait-queue-remote-wake` 的本地 timeout 先建立确定性红测：旧实现一次 timed park
+稳定记录 `registration=1, publication=1` 并失败，修复后为 `1/0`；随后在 probe arm 后强制插入一次
+无关 owner pass，复现 CI 分组执行时 probe 被提前完成、timed park 反而记录 `registration=0` 的失败。
+probe 现在只在 `arm_current_park_deadline()` 的事务入口开始计数，异常退出由 RAII 恢复 probe 生命周期，
+因此测量的是目标 transaction，而不是同 CPU 上一段不确定时间窗口。`task-rt-policy` 同时确认复用
+registration base 后仍以无锁投影读取 active root RT-period expiry；clockevent soft expiry 则在一个
+SoftExpiry guard 内按同一 budget 推进 task deadline 与 kernel timer。两项 x86_64 QEMU 用例与 ax-task
+六组 clippy 均通过。与上一检查点完全相同的 x86_64/Q35/4-vCPU/99 Hz、60 秒 ext4 marker 窗口均推进
+到 `file-0535`；switch 为 126,191/127,943。按 switch 归一后，deadline-base guard 从
+3.637716 降到 2.969869（-18.36%），独立 Publication guard 从 1.773716 降到 1.256739
+（-29.15%），全部 runtime IRQ guard 从 10.215578 降到 9.332093（-8.65%）。host user 从
+85.881 秒降到 85.524 秒（-0.42%）；相对 dev 的端到端差距仍超过 20%，所以该检查点只关闭 timer
+base 重复所有权，下一步继续检查 current-handle 与 block/wake 固定事务。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

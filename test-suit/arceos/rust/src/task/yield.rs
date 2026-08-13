@@ -5,7 +5,7 @@ use std::{
                 asm::{disable_irqs, enable_irqs, irqs_enabled},
                 percpu::{
                     reset_preempt_guard_owner_resolution_count,
-                    take_preempt_guard_owner_resolution_count,
+                    take_preempt_guard_owner_resolution_count, this_cpu_id,
                 },
             },
             ax_task::{schedule_current_cpu, task_test_hooks},
@@ -46,13 +46,26 @@ pub fn run() -> crate::TestResult {
     let mut no_switch_observed = false;
     for _ in 0..32 {
         task_test_hooks::arm_no_switch_thread_lock_probe(current.as_u64());
+        task_test_hooks::arm_deadline_publication_probe(this_cpu_id());
         task_test_hooks::request_current_owner_work()
             .expect("task-yield must publish local owner work");
         schedule_current_cpu().expect("task-yield must service local owner work");
+        let deadline_entries = task_test_hooks::take_deadline_publication_entries()
+            .expect("one scheduler owner pass must complete deadline publication accounting");
         if let Some(count) = task_test_hooks::take_no_switch_thread_lock_count() {
             assert_eq!(
                 count, 0,
                 "a scheduler no-switch pass must remain entirely rq-owned"
+            );
+            assert_eq!(
+                deadline_entries,
+                task_test_hooks::DeadlinePublicationEntries {
+                    observation: 0,
+                    rt_period_observation: 0,
+                    registration: 0,
+                    publication: 0,
+                },
+                "an unchanged scheduler deadline must not re-enter its authoritative base"
             );
             no_switch_observed = true;
             break;

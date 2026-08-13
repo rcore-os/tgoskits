@@ -1,10 +1,12 @@
 //! Runtime-backed task-context kernel timer registration.
 
 use super::*;
-use crate::{DeadlineBaseGuardSource, SchedulerDeadlineDerivationSource};
+use crate::{
+    DeadlineBaseGuardSource, SchedulerDeadlineDerivationSource, runtime::SchedulerDeadlineUpdate,
+};
 
 enum KernelTimerRegistrationResult {
-    Registered(KernelTimerHandle),
+    Registered(KernelTimerHandle, Option<SchedulerDeadlineUpdate>),
     Rejected(TaskError, KernelTimerEntry),
 }
 
@@ -54,32 +56,33 @@ fn register_kernel_timer_entry(entry: KernelTimerEntry) -> Result<KernelTimerHan
         let mut irq = RuntimeIrqGuard::enter();
         let mut cpu = runtime_current_cpu_mut(&mut irq)?;
         let owner = cpu.owner();
-        let inserted = cpu
-            .remote()
-            .lock_deadline_activity(DeadlineBaseGuardSource::Registration)
-            .kernel_timers
-            .insert(owner, entry);
-        match inserted {
-            Ok(handle) => match cpu.as_mut().next_scheduler_deadline_update_if_changed(
-                task_runtime::monotonic_now(),
+        let monotonic_now = task_runtime::monotonic_now();
+        let non_timer = cpu
+            .as_mut()
+            .prepare_scheduler_deadline_registration_publication(
+                monotonic_now,
                 SchedulerDeadlineDerivationSource::KernelTimer,
-            ) {
-                Ok(update) => {
-                    if let Some(update) = update {
-                        task_runtime::publish_scheduler_deadline(update);
+            );
+        let mut deadline_base = cpu
+            .remote()
+            .lock_deadline_activity(DeadlineBaseGuardSource::Registration);
+        let inserted = deadline_base.kernel_timers.insert(owner, entry);
+        match inserted {
+            Ok(handle) => {
+                match CpuLocal::update_scheduler_deadline_registration_publication_if_changed(
+                    &mut deadline_base,
+                    non_timer,
+                ) {
+                    Ok(update) => KernelTimerRegistrationResult::Registered(handle, update),
+                    Err(error) => {
+                        let removed = deadline_base
+                            .kernel_timers
+                            .cancel(handle)
+                            .expect("failed timer publication must roll back its new entry");
+                        KernelTimerRegistrationResult::Rejected(error, removed)
                     }
-                    KernelTimerRegistrationResult::Registered(handle)
                 }
-                Err(error) => {
-                    let removed = cpu
-                        .remote()
-                        .lock_deadline_activity(DeadlineBaseGuardSource::Registration)
-                        .kernel_timers
-                        .cancel(handle)
-                        .expect("failed timer publication must roll back its new entry");
-                    KernelTimerRegistrationResult::Rejected(error, removed)
-                }
-            },
+            }
             Err(entry) => KernelTimerRegistrationResult::Rejected(TaskError::TimerCapacity, entry),
         }
     };
@@ -102,22 +105,38 @@ pub fn cancel_kernel_timer(
         let remote = system
             .cpu_remote(handle.owner())
             .ok_or(TaskError::InvalidConfiguration)?;
-        let removed = remote
-            .lock_deadline_activity(DeadlineBaseGuardSource::Registration)
-            .kernel_timers
-            .cancel(handle);
-        let outcome = if removed.is_some() {
-            if current.owner() == handle.owner() {
-                match current.as_mut().next_scheduler_deadline_update_if_changed(
+        let local_owner = current.owner() == handle.owner();
+        let non_timer = local_owner.then(|| {
+            current
+                .as_mut()
+                .prepare_scheduler_deadline_registration_publication(
                     task_runtime::monotonic_now(),
                     SchedulerDeadlineDerivationSource::KernelTimer,
+                )
+        });
+        let mut deadline_base =
+            remote.lock_deadline_activity(DeadlineBaseGuardSource::Registration);
+        let mut removed = deadline_base.kernel_timers.cancel(handle);
+        let outcome = if removed.is_some() {
+            if let Some(non_timer) = non_timer {
+                match CpuLocal::update_scheduler_deadline_registration_publication_if_changed(
+                    &mut deadline_base,
+                    non_timer,
                 ) {
                     Ok(Some(update)) => {
+                        drop(deadline_base);
                         task_runtime::publish_scheduler_deadline(update);
                         Ok(KernelTimerCancelOutcome::Cancelled)
                     }
                     Ok(None) => Ok(KernelTimerCancelOutcome::Cancelled),
-                    Err(error) => Err(error),
+                    Err(error) => {
+                        deadline_base.kernel_timers.restore_cancelled(
+                            removed
+                                .take()
+                                .expect("failed cancellation publication must restore its entry"),
+                        );
+                        Err(error)
+                    }
                 }
             } else {
                 Ok(KernelTimerCancelOutcome::Cancelled)
@@ -135,7 +154,12 @@ fn finish_kernel_timer_registration(
     result: KernelTimerRegistrationResult,
 ) -> Result<KernelTimerHandle, TaskError> {
     match result {
-        KernelTimerRegistrationResult::Registered(handle) => Ok(handle),
+        KernelTimerRegistrationResult::Registered(handle, update) => {
+            if let Some(update) = update {
+                task_runtime::publish_scheduler_deadline(update);
+            }
+            Ok(handle)
+        }
         KernelTimerRegistrationResult::Rejected(error, entry) => {
             drop(entry);
             Err(error)

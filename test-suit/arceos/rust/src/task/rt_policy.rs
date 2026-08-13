@@ -127,17 +127,18 @@ pub fn run() -> crate::TestResult {
         }
         hint::spin_loop();
     }
-    task_test_hooks::arm_deadline_publication_probe(this_cpu_id());
+    task_test_hooks::arm_park_deadline_publication_probe(this_cpu_id());
     thread::sleep(Duration::from_millis(1));
     assert_eq!(
         task_test_hooks::take_deadline_publication_entries(),
         Some(task_test_hooks::DeadlinePublicationEntries {
             observation: 0,
             rt_period_observation: 0,
-            publication: 1,
+            registration: 1,
+            publication: 0,
         }),
-        "scheduler deadline derivation must consume the published RT-period expiry without \
-         entering its state lock"
+        "timed park publication must reuse its registration base and consume the published \
+         RT-period expiry without entering its state lock"
     );
     let started = Instant::now();
     spin_until(FIRST_CROSS_PERIOD_SAMPLE, started);

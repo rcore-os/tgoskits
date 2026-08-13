@@ -18,8 +18,12 @@ static SWITCH_TAIL_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static DEADLINE_PUBLICATION_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_RT_PERIOD_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static DEADLINE_PUBLICATION_REGISTRATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static DEADLINE_SOFT_EXPIRY_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
+static DEADLINE_SOFT_EXPIRY_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static DEADLINE_SOFT_EXPIRY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static RT_POLICY_DELIVERY_TARGET: AtomicU64 = AtomicU64::new(0);
 static RT_POLICY_DELIVERY_REQUIRED: AtomicU8 = AtomicU8::new(0);
 static RT_POLICY_DELIVERY_EVENTS: AtomicU8 = AtomicU8::new(0);
@@ -38,6 +42,7 @@ const STAGE_WAITER_REGISTERED: u8 = 3;
 const STAGE_RELEASE_BEFORE_WAKE: u8 = 4;
 const STAGE_WAITER_MAY_CLAIM: u8 = 5;
 const STAGE_RELEASE_MAY_WAKE: u8 = 6;
+const STAGE_WAITING_FOR_TRANSACTION: u8 = 7;
 const STAGE_CHAIN_DECIDED: u8 = 3;
 const STAGE_OWNER_MAY_CHANGE: u8 = 4;
 const STAGE_COMPLETE: u8 = 3;
@@ -272,6 +277,18 @@ impl IrqOwnerProbe {
 
 /// Arms one real local deadline publication for lock-entry accounting.
 pub fn arm_deadline_publication_probe(cpu: usize) {
+    arm_deadline_publication_probe_at_stage(cpu, STAGE_ARMED);
+}
+
+/// Arms lock-entry accounting for the next timed-park base transaction.
+///
+/// Unrelated scheduler or clockevent work on the same CPU remains outside the
+/// sample until the timed-park path explicitly begins its transaction.
+pub fn arm_park_deadline_publication_probe(cpu: usize) {
+    arm_deadline_publication_probe_at_stage(cpu, STAGE_WAITING_FOR_TRANSACTION);
+}
+
+fn arm_deadline_publication_probe_at_stage(cpu: usize, armed_stage: u8) {
     let target = u64::try_from(cpu)
         .ok()
         .and_then(|cpu| cpu.checked_add(1))
@@ -289,8 +306,9 @@ pub fn arm_deadline_publication_probe(cpu: usize) {
     DEADLINE_PUBLICATION_TARGET_CPU.store(target, Ordering::Relaxed);
     DEADLINE_PUBLICATION_OBSERVATION_ENTRIES.store(0, Ordering::Relaxed);
     DEADLINE_PUBLICATION_RT_PERIOD_OBSERVATION_ENTRIES.store(0, Ordering::Relaxed);
+    DEADLINE_PUBLICATION_REGISTRATION_ENTRIES.store(0, Ordering::Relaxed);
     DEADLINE_PUBLICATION_ENTRIES.store(0, Ordering::Relaxed);
-    DEADLINE_PUBLICATION_STAGE.store(STAGE_ARMED, Ordering::Release);
+    DEADLINE_PUBLICATION_STAGE.store(armed_stage, Ordering::Release);
 }
 
 /// Deadline-base lock entries observed for one real local publication.
@@ -300,6 +318,8 @@ pub struct DeadlinePublicationEntries {
     pub observation: u64,
     /// Root RT-period locks taken while deriving the clockevent deadline.
     pub rt_period_observation: u64,
+    /// Deadline-base locks that mutate task or kernel timer registration.
+    pub registration: u64,
     /// Authoritative publication locks taken by the transaction.
     pub publication: u64,
 }
@@ -321,6 +341,7 @@ pub fn take_deadline_publication_entries() -> Option<DeadlinePublicationEntries>
         observation: DEADLINE_PUBLICATION_OBSERVATION_ENTRIES.load(Ordering::Relaxed),
         rt_period_observation: DEADLINE_PUBLICATION_RT_PERIOD_OBSERVATION_ENTRIES
             .load(Ordering::Relaxed),
+        registration: DEADLINE_PUBLICATION_REGISTRATION_ENTRIES.load(Ordering::Relaxed),
         publication: DEADLINE_PUBLICATION_ENTRIES.load(Ordering::Relaxed),
     };
     DEADLINE_PUBLICATION_TARGET_CPU.store(0, Ordering::Relaxed);
@@ -331,6 +352,49 @@ pub fn take_deadline_publication_entries() -> Option<DeadlinePublicationEntries>
 fn deadline_publication_probe_matches(cpu: crate::CpuId) -> bool {
     DEADLINE_PUBLICATION_STAGE.load(Ordering::Acquire) == STAGE_ARMED
         && DEADLINE_PUBLICATION_TARGET_CPU.load(Ordering::Relaxed) == u64::from(cpu.as_u32()) + 1
+}
+
+pub(crate) struct ParkDeadlinePublicationProbe {
+    cpu: crate::CpuId,
+    active: bool,
+}
+
+impl ParkDeadlinePublicationProbe {
+    pub(crate) fn complete(mut self) {
+        if self.active {
+            complete_deadline_publication(self.cpu);
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for ParkDeadlinePublicationProbe {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if DEADLINE_PUBLICATION_STAGE
+            .compare_exchange(STAGE_ARMED, STAGE_IDLE, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            DEADLINE_PUBLICATION_TARGET_CPU.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+pub(crate) fn begin_park_deadline_publication(cpu: crate::CpuId) -> ParkDeadlinePublicationProbe {
+    if DEADLINE_PUBLICATION_TARGET_CPU.load(Ordering::Relaxed) != u64::from(cpu.as_u32()) + 1 {
+        return ParkDeadlinePublicationProbe { cpu, active: false };
+    }
+    let active = DEADLINE_PUBLICATION_STAGE
+        .compare_exchange(
+            STAGE_WAITING_FOR_TRANSACTION,
+            STAGE_ARMED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok();
+    ParkDeadlinePublicationProbe { cpu, active }
 }
 
 pub(crate) fn record_deadline_observation_entry(cpu: crate::CpuId) {
@@ -345,11 +409,24 @@ pub(crate) fn record_deadline_rt_period_lock_entry(cpu: crate::CpuId) {
     }
 }
 
+pub(crate) fn record_deadline_registration_entry(cpu: crate::CpuId) {
+    if deadline_publication_probe_matches(cpu) {
+        DEADLINE_PUBLICATION_REGISTRATION_ENTRIES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn record_deadline_publication_entry(cpu: crate::CpuId) {
     if !deadline_publication_probe_matches(cpu) {
         return;
     }
     DEADLINE_PUBLICATION_ENTRIES.fetch_add(1, Ordering::Relaxed);
+    complete_deadline_publication(cpu);
+}
+
+pub(crate) fn complete_deadline_publication(cpu: crate::CpuId) {
+    if !deadline_publication_probe_matches(cpu) {
+        return;
+    }
     assert_eq!(
         DEADLINE_PUBLICATION_STAGE.compare_exchange(
             STAGE_ARMED,
@@ -358,7 +435,74 @@ pub(crate) fn record_deadline_publication_entry(cpu: crate::CpuId) {
             Ordering::Acquire,
         ),
         Ok(STAGE_ARMED),
-        "deadline publication was recorded in an invalid stage"
+        "deadline publication completed in an invalid stage"
+    );
+}
+
+/// Arms lock-entry accounting for one real local soft-expiry pass.
+pub fn arm_deadline_soft_expiry_probe(cpu: usize) {
+    let target = u64::try_from(cpu)
+        .ok()
+        .and_then(|cpu| cpu.checked_add(1))
+        .expect("a task-test CPU identity must fit the encoded probe target");
+    assert_eq!(
+        DEADLINE_SOFT_EXPIRY_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one deadline soft-expiry probe may be armed"
+    );
+    DEADLINE_SOFT_EXPIRY_TARGET_CPU.store(target, Ordering::Relaxed);
+    DEADLINE_SOFT_EXPIRY_ENTRIES.store(0, Ordering::Relaxed);
+    DEADLINE_SOFT_EXPIRY_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes deadline-base lock entries from one local soft-expiry pass.
+pub fn take_deadline_soft_expiry_entries() -> Option<u64> {
+    if DEADLINE_SOFT_EXPIRY_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let entries = DEADLINE_SOFT_EXPIRY_ENTRIES.load(Ordering::Relaxed);
+    DEADLINE_SOFT_EXPIRY_TARGET_CPU.store(0, Ordering::Relaxed);
+    DEADLINE_SOFT_EXPIRY_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(entries)
+}
+
+fn deadline_soft_expiry_probe_matches(cpu: crate::CpuId) -> bool {
+    DEADLINE_SOFT_EXPIRY_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && DEADLINE_SOFT_EXPIRY_TARGET_CPU.load(Ordering::Relaxed) == u64::from(cpu.as_u32()) + 1
+}
+
+pub(crate) fn record_deadline_soft_expiry_entry(cpu: crate::CpuId) {
+    if deadline_soft_expiry_probe_matches(cpu) {
+        DEADLINE_SOFT_EXPIRY_ENTRIES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn complete_deadline_soft_expiry_pass(cpu: crate::CpuId) {
+    if !deadline_soft_expiry_probe_matches(cpu) {
+        return;
+    }
+    assert_eq!(
+        DEADLINE_SOFT_EXPIRY_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "deadline soft-expiry accounting completed in an invalid stage"
     );
 }
 

@@ -8,6 +8,19 @@
 
 use super::*;
 
+const DEADLINE_SNAPSHOT_NONE: u64 = 1 << 63;
+const DEADLINE_SNAPSHOT_UNINITIALIZED: u64 = u64::MAX;
+
+fn encode_deadline_snapshot(deadline: Option<MonotonicDeadline>) -> u64 {
+    deadline.map_or(DEADLINE_SNAPSHOT_NONE, MonotonicDeadline::as_nanos)
+}
+
+fn decode_deadline_snapshot(snapshot: u64) -> Option<MonotonicDeadline> {
+    (snapshot != DEADLINE_SNAPSHOT_NONE)
+        .then(|| MonotonicDeadline::from_nanos(snapshot))
+        .flatten()
+}
+
 /// Typed reason for entering the per-CPU task-deadline base.
 ///
 /// Each reason maps to one qperf IRQ-ticket category, so the aggregate keeps
@@ -50,6 +63,76 @@ impl DeadlineBaseGuardSource {
 pub(crate) struct CpuDeadlineBase {
     state: IrqTicketLock<CpuDeadlineState>,
     active: AtomicBool,
+    snapshot: CpuDeadlineSnapshot,
+}
+
+/// Coherent lock-free projection of the authoritative deadline base.
+///
+/// Writers are serialized by `state`. The sequence makes the timer head and
+/// its publication one observation so the owner fast path cannot combine two
+/// different base generations.
+#[derive(Debug)]
+struct CpuDeadlineSnapshot {
+    sequence: AtomicU64,
+    timer_deadline: AtomicU64,
+    publication_deadline: AtomicU64,
+}
+
+#[derive(Clone, Copy)]
+struct CpuDeadlineSnapshotValue {
+    timer_deadline: Option<MonotonicDeadline>,
+    publication: Option<SchedulerDeadlinePublicationState>,
+}
+
+impl CpuDeadlineSnapshot {
+    const fn new() -> Self {
+        Self {
+            sequence: AtomicU64::new(0),
+            timer_deadline: AtomicU64::new(DEADLINE_SNAPSHOT_NONE),
+            publication_deadline: AtomicU64::new(DEADLINE_SNAPSHOT_UNINITIALIZED),
+        }
+    }
+
+    fn publish(&self, state: &CpuDeadlineState) {
+        let sequence = self.sequence.fetch_add(1, Ordering::AcqRel);
+        self.timer_deadline.store(
+            encode_deadline_snapshot(state.timer_deadline()),
+            Ordering::Relaxed,
+        );
+        self.publication_deadline.store(
+            state
+                .publication
+                .map_or(DEADLINE_SNAPSHOT_UNINITIALIZED, |publication| {
+                    encode_deadline_snapshot(publication.deadline)
+                }),
+            Ordering::Relaxed,
+        );
+        self.sequence
+            .store(sequence.wrapping_add(2), Ordering::Release);
+    }
+
+    fn read(&self) -> CpuDeadlineSnapshotValue {
+        loop {
+            let before = self.sequence.load(Ordering::Acquire);
+            if before & 1 != 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+            let timer_deadline = self.timer_deadline.load(Ordering::Relaxed);
+            let publication_deadline = self.publication_deadline.load(Ordering::Relaxed);
+            let after = self.sequence.load(Ordering::Acquire);
+            if before == after {
+                return CpuDeadlineSnapshotValue {
+                    timer_deadline: decode_deadline_snapshot(timer_deadline),
+                    publication: (publication_deadline != DEADLINE_SNAPSHOT_UNINITIALIZED).then(
+                        || SchedulerDeadlinePublicationState {
+                            deadline: decode_deadline_snapshot(publication_deadline),
+                        },
+                    ),
+                };
+            }
+        }
+    }
 }
 
 pub(crate) struct CpuDeadlineReadGuard<'a> {
@@ -66,7 +149,12 @@ impl core::ops::Deref for CpuDeadlineReadGuard<'_> {
 
 pub(crate) struct CpuDeadlineActivityGuard<'a> {
     state: IrqTicketGuard<'a, CpuDeadlineState>,
-    active: &'a AtomicBool,
+    base: &'a CpuDeadlineBase,
+}
+
+pub(crate) struct CpuDeadlinePublicationGuard<'a> {
+    state: IrqTicketGuard<'a, CpuDeadlineState>,
+    base: &'a CpuDeadlineBase,
 }
 
 impl core::ops::Deref for CpuDeadlineActivityGuard<'_> {
@@ -85,8 +173,27 @@ impl core::ops::DerefMut for CpuDeadlineActivityGuard<'_> {
 
 impl Drop for CpuDeadlineActivityGuard<'_> {
     fn drop(&mut self) {
-        self.active
-            .store(self.state.has_active_work(), Ordering::Release);
+        self.base.publish_activity_snapshot(&self.state);
+    }
+}
+
+impl core::ops::Deref for CpuDeadlinePublicationGuard<'_> {
+    type Target = CpuDeadlineState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl core::ops::DerefMut for CpuDeadlinePublicationGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
+impl Drop for CpuDeadlinePublicationGuard<'_> {
+    fn drop(&mut self) {
+        self.base.snapshot.publish(&self.state);
     }
 }
 
@@ -95,6 +202,7 @@ impl CpuDeadlineBase {
         Self {
             state: IrqTicketLock::new(CpuDeadlineState::new(config)),
             active: AtomicBool::new(false),
+            snapshot: CpuDeadlineSnapshot::new(),
         }
     }
 
@@ -113,9 +221,13 @@ impl CpuDeadlineBase {
             .then(|| self.read(source))
     }
 
-    pub(crate) fn lock_publication(&self) -> IrqTicketGuard<'_, CpuDeadlineState> {
-        self.state
-            .lock(DeadlineBaseGuardSource::Publication.irq_guard_source())
+    pub(crate) fn lock_publication(&self) -> CpuDeadlinePublicationGuard<'_> {
+        CpuDeadlinePublicationGuard {
+            state: self
+                .state
+                .lock(DeadlineBaseGuardSource::Publication.irq_guard_source()),
+            base: self,
+        }
     }
 
     pub(crate) fn lock_activity(
@@ -124,7 +236,7 @@ impl CpuDeadlineBase {
     ) -> CpuDeadlineActivityGuard<'_> {
         CpuDeadlineActivityGuard {
             state: self.state.lock(source.irq_guard_source()),
-            active: &self.active,
+            base: self,
         }
     }
 
@@ -135,6 +247,24 @@ impl CpuDeadlineBase {
         self.active
             .load(Ordering::Acquire)
             .then(|| self.lock_activity(source))
+    }
+
+    fn publish_activity_snapshot(&self, state: &CpuDeadlineState) {
+        self.snapshot.publish(state);
+        self.active
+            .store(state.has_active_work(), Ordering::Release);
+    }
+
+    pub(crate) fn publication_snapshot_matches(
+        &self,
+        non_timer: Option<MonotonicDeadline>,
+    ) -> bool {
+        let snapshot = self.snapshot.read();
+        let deadline = [snapshot.timer_deadline, non_timer]
+            .into_iter()
+            .flatten()
+            .min();
+        snapshot.publication == Some(SchedulerDeadlinePublicationState { deadline })
     }
 }
 
@@ -181,6 +311,22 @@ impl CpuDeadlineState {
             || self.kernel_timers.has_active_work()
             || self.expired_count != 0
             || self.softirq_activated
+    }
+
+    pub(crate) fn timer_deadline(&self) -> Option<MonotonicDeadline> {
+        if self.softirq_activated {
+            // Linux suppresses `softirq_expires_next` only after the hard
+            // hrtimer path transfers progress ownership to `ktimers/%u`.
+            None
+        } else {
+            [
+                self.queue.next_deadline(),
+                self.kernel_timers.next_deadline(),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+        }
     }
 
     pub(crate) fn peek_buffered_expiration(&self) -> Option<ExpiredTaskDeadline> {

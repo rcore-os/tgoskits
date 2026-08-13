@@ -282,11 +282,21 @@ pub(crate) fn arm_current_park_deadline(
     {
         return Err(TaskError::StaleThreadId);
     }
+    let owner = cpu.owner();
+    #[cfg(feature = "task-test-hooks")]
+    let publication_probe = crate::task_test_hooks::begin_park_deadline_publication(owner);
+    let monotonic_now = task_runtime::monotonic_now();
+    let non_timer = cpu
+        .as_mut()
+        .prepare_scheduler_deadline_registration_publication(
+            monotonic_now,
+            SchedulerDeadlineDerivationSource::ParkArm,
+        );
     let (registration, update) = {
-        let owner = cpu.owner();
-        let registration = cpu
+        let mut deadline_base = cpu
             .remote()
-            .lock_deadline_activity(DeadlineBaseGuardSource::Registration)
+            .lock_deadline_activity(DeadlineBaseGuardSource::Registration);
+        let registration = deadline_base
             .queue
             .arm(
                 thread.sleep_timer(),
@@ -300,18 +310,13 @@ pub(crate) fn arm_current_park_deadline(
             })?;
         let token = registration.token();
         thread.core.register_sleep_timer(owner, token.generation());
-        let monotonic_now = task_runtime::monotonic_now();
-        let update = match cpu.as_mut().next_scheduler_deadline_update(
-            monotonic_now,
-            SchedulerDeadlineDerivationSource::ParkArm,
+        let update = match CpuLocal::update_scheduler_deadline_registration_publication(
+            &mut deadline_base,
+            non_timer,
         ) {
             Ok(update) => update,
             Err(error) => {
-                let removed = cpu
-                    .remote()
-                    .lock_deadline_activity(DeadlineBaseGuardSource::Registration)
-                    .queue
-                    .cancel(&registration);
+                let removed = deadline_base.queue.cancel(&registration);
                 let completed = thread.core.complete_sleep_timer(token.generation());
                 if !removed || !completed {
                     task_runtime::fatal_invariant(0x5444_0005, thread.id().as_u64() as usize);
@@ -321,6 +326,8 @@ pub(crate) fn arm_current_park_deadline(
         };
         (registration, update)
     };
+    #[cfg(feature = "task-test-hooks")]
+    publication_probe.complete();
     task_runtime::publish_scheduler_deadline(update);
     if ticket.attach_deadline(registration).is_err() {
         task_runtime::fatal_invariant(0x5444_0002, thread.id().as_u64() as usize);
@@ -400,25 +407,31 @@ pub(crate) fn cancel_current_park_deadline(
         }
         return Ok(cancelled);
     }
+    #[cfg(feature = "task-test-hooks")]
+    let publication_probe = crate::task_test_hooks::begin_park_deadline_publication(cpu.owner());
+    let monotonic_now = task_runtime::monotonic_now();
+    let non_timer = cpu
+        .as_mut()
+        .prepare_scheduler_deadline_registration_publication(
+            monotonic_now,
+            SchedulerDeadlineDerivationSource::ParkCancel,
+        );
     let (cancellation, update) = {
         let registration = ticket
             .deadline()
             .expect("the deadline registration remains owned until cancellation");
-        let cancellation_state = {
-            let mut deadline_base = cpu
-                .remote()
-                .lock_deadline_activity(DeadlineBaseGuardSource::Registration);
-            let cancellation = deadline_base.queue.begin_cancel(registration);
-            let expired = if cancellation.is_none() {
-                deadline_base
-                    .take_buffered_expiration(registration)
-                    .is_some()
-            } else {
-                false
-            };
-            (cancellation, expired)
+        let mut deadline_base = cpu
+            .remote()
+            .lock_deadline_activity(DeadlineBaseGuardSource::Registration);
+        let cancellation = deadline_base.queue.begin_cancel(registration);
+        let expired = if cancellation.is_none() {
+            deadline_base
+                .take_buffered_expiration(registration)
+                .is_some()
+        } else {
+            false
         };
-        let cancellation = match cancellation_state {
+        let cancellation = match (cancellation, expired) {
             (Some(cancellation), _) => cancellation,
             (None, true) => {
                 if !thread.core.complete_sleep_timer(token.generation())
@@ -443,25 +456,20 @@ pub(crate) fn cancel_current_park_deadline(
                 task_runtime::fatal_invariant(0x5444_0006, thread.id().as_u64() as usize);
             }
         };
-        let monotonic_now = task_runtime::monotonic_now();
-        let update = match cpu.as_mut().next_scheduler_deadline_update(
-            monotonic_now,
-            SchedulerDeadlineDerivationSource::ParkCancel,
+        let update = match CpuLocal::update_scheduler_deadline_registration_publication(
+            &mut deadline_base,
+            non_timer,
         ) {
             Ok(update) => update,
             Err(error) => {
-                cancellation.rollback(
-                    &mut cpu
-                        .remote()
-                        .lock_deadline_activity(DeadlineBaseGuardSource::Registration)
-                        .queue,
-                );
-                cpu.as_mut().invalidate_scheduler_deadline_publication();
+                cancellation.rollback(&mut deadline_base.queue);
                 return Err(error);
             }
         };
         (cancellation, update)
     };
+    #[cfg(feature = "task-test-hooks")]
+    publication_probe.complete();
     task_runtime::publish_scheduler_deadline(update);
     cancellation.commit();
     if !thread.core.complete_sleep_timer(token.generation()) || !ticket.clear_deadline(token) {

@@ -2,7 +2,10 @@ use core::sync::atomic::AtomicUsize;
 use std::{
     os::arceos::{
         api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
-        modules::{ax_hal::percpu::this_cpu_id, ax_task::task_test_hooks},
+        modules::{
+            ax_hal::percpu::this_cpu_id,
+            ax_task::{schedule_current_cpu, task_test_hooks},
+        },
     },
     sync::atomic::{AtomicBool, Ordering},
     thread,
@@ -130,7 +133,11 @@ pub fn run() -> crate::TestResult {
         }),
         "one Linux-style task-sched/rq wake transaction must own one runtime IRQ guard"
     );
-    task_test_hooks::arm_deadline_publication_probe(this_cpu_id());
+    task_test_hooks::arm_park_deadline_publication_probe(this_cpu_id());
+    task_test_hooks::request_current_owner_work()
+        .expect("the deadline probe must tolerate unrelated pending owner work");
+    schedule_current_cpu().expect("the unrelated owner pass must complete before timed park");
+    task_test_hooks::arm_deadline_soft_expiry_probe(this_cpu_id());
     assert!(api::ax_wait_queue_wait_until(
         &TIMEOUT_WQ,
         || false,
@@ -141,9 +148,15 @@ pub fn run() -> crate::TestResult {
         Some(task_test_hooks::DeadlinePublicationEntries {
             observation: 0,
             rt_period_observation: 0,
-            publication: 1,
+            registration: 1,
+            publication: 0,
         }),
-        "one deadline derivation and publication must share one base lock"
+        "one timed park must register and publish through one deadline-base transaction"
+    );
+    assert_eq!(
+        task_test_hooks::take_deadline_soft_expiry_entries(),
+        Some(1),
+        "one clockevent must expire task and kernel timers under one deadline-base guard"
     );
     Ok(())
 }

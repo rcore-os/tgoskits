@@ -256,6 +256,14 @@ impl KernelTimerQueue {
         None
     }
 
+    pub(crate) fn restore_cancelled(&mut self, entry: KernelTimerEntry) {
+        assert!(
+            self.active.len() + self.expired.len() + self.executing.len() < self.capacity,
+            "restoring a cancelled kernel timer must reuse its reserved capacity"
+        );
+        self.insert_at(entry);
+    }
+
     pub(crate) fn expire_due(
         &mut self,
         now: MonotonicInstant,

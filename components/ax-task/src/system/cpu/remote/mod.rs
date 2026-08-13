@@ -13,8 +13,8 @@ mod run_queue;
 mod scheduler;
 
 pub(crate) use deadline::{
-    CpuDeadlineActivityGuard, CpuDeadlineBase, CpuDeadlineReadGuard, CpuDeadlineState,
-    DeadlineBaseGuardSource, SchedulerDeadlinePublicationState,
+    CpuDeadlineActivityGuard, CpuDeadlineBase, CpuDeadlinePublicationGuard, CpuDeadlineReadGuard,
+    CpuDeadlineState, DeadlineBaseGuardSource, SchedulerDeadlinePublicationState,
 };
 pub(crate) use delivery::PreparedMigrationDelivery;
 pub(crate) use idle_pull::IdlePullReservation;
@@ -222,11 +222,18 @@ impl CpuRemote {
     ///
     /// Publication changes neither the logical timer queue nor expiry
     /// ownership, so it must not rewrite the derived active bit.
-    pub(crate) fn lock_deadline_publication(&self) -> IrqTicketGuard<'_, CpuDeadlineState> {
+    pub(crate) fn lock_deadline_publication(&self) -> CpuDeadlinePublicationGuard<'_> {
         let publication = self.deadline.lock_publication();
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_deadline_publication_entry(self.owner());
         publication
+    }
+
+    pub(crate) fn deadline_publication_snapshot_matches(
+        &self,
+        non_timer: Option<MonotonicDeadline>,
+    ) -> bool {
+        self.deadline.publication_snapshot_matches(non_timer)
     }
 
     /// Locks a transition that may change queue, buffered expiry, or softirq
@@ -235,7 +242,12 @@ impl CpuRemote {
         &self,
         source: DeadlineBaseGuardSource,
     ) -> CpuDeadlineActivityGuard<'_> {
-        self.deadline.lock_activity(source)
+        let activity = self.deadline.lock_activity(source);
+        #[cfg(feature = "task-test-hooks")]
+        if source == DeadlineBaseGuardSource::Registration {
+            crate::task_test_hooks::record_deadline_registration_entry(self.owner());
+        }
+        activity
     }
 
     /// Skips an expiry transition when the derived base publication is empty.
@@ -243,7 +255,12 @@ impl CpuRemote {
         &self,
         source: DeadlineBaseGuardSource,
     ) -> Option<CpuDeadlineActivityGuard<'_>> {
-        self.deadline.lock_activity_if_active(source)
+        let activity = self.deadline.lock_activity_if_active(source);
+        #[cfg(feature = "task-test-hooks")]
+        if activity.is_some() && source == DeadlineBaseGuardSource::SoftExpiry {
+            crate::task_test_hooks::record_deadline_soft_expiry_entry(self.owner());
+        }
+        activity
     }
 
     /// Locks Linux `rt_rq::rt_runtime_lock` after the owner rq lock when both
