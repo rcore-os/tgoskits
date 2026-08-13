@@ -214,6 +214,8 @@ jobs:
         shell: bash
         env:
           STARRY_APK_REGION: ${{ inputs.apk_region }}
+          TGOS_IMAGE_LOCAL_STORAGE: >-
+            ${{ contains(inputs.runs_on, 'self-hosted') && format('/tmp/tgoskits-images-{0}-{1}', github.repository_id, runner.name) || '' }}
           CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
           REUSABLE_COMMAND: ${{ inputs.command }}
           USE_XTASK_BIN: ${{ inputs.download_xtask_bin_artifact }}
