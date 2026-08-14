@@ -1,4 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
+use core::mem::size_of;
 
 use ax_runtime::hal::{self, time::TimeValue};
 use ax_task::{
@@ -31,6 +32,12 @@ struct SchedParam {
 pub fn sys_sched_yield() -> StarryResult<isize> {
     ax_task::yield_now();
     Ok(0)
+}
+
+/// The raw Linux affinity syscalls take their mask length as `unsigned int`.
+#[inline]
+fn sched_affinity_len(cpusetsize: usize) -> u32 {
+    cpusetsize as u32
 }
 
 fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> (StarryResult<()>, TimeValue) {
@@ -112,7 +119,11 @@ pub fn sys_sched_getaffinity(
     cpusetsize: usize,
     user_mask: *mut u8,
 ) -> StarryResult<isize> {
-    if cpusetsize * 8 < hal::cpu_num() {
+    let cpusetsize = sched_affinity_len(cpusetsize);
+    if cpusetsize.wrapping_mul(8) < hal::cpu_num() as u32 {
+        return Err(StarryError::InvalidInput);
+    }
+    if cpusetsize & (size_of::<usize>() as u32 - 1) != 0 {
         return Err(StarryError::InvalidInput);
     }
 
@@ -147,6 +158,7 @@ pub fn sys_sched_setaffinity(
     cpusetsize: usize,
     user_mask: *const u8,
 ) -> StarryResult<isize> {
+    let cpusetsize = sched_affinity_len(cpusetsize) as usize;
     let task = SchedulerTarget::try_from(pid)?.resolve()?;
     check_sched_permission(&task)?;
     let size = cpusetsize.min(hal::cpu_num().div_ceil(8));
