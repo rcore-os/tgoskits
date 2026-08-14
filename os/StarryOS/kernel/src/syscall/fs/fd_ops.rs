@@ -6,6 +6,7 @@ use core::{
 };
 
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
+use ax_memory_addr::PAGE_SIZE_4K;
 use ax_task::current;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference, VfsError};
 use bitflags::bitflags;
@@ -472,6 +473,9 @@ pub fn sys_openat2(
     let base_size = size_of::<OpenHow>();
     if size < base_size {
         return Err(StarryError::InvalidInput);
+    }
+    if size > PAGE_SIZE_4K {
+        return Err(StarryError::ArgumentListTooLong);
     }
 
     let how_value = how.vm_read()?;
