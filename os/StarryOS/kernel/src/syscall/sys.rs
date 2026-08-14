@@ -614,8 +614,12 @@ pub fn sys_setfsgid(fsgid: u32) -> StarryResult<isize> {
     Ok(prev_fsgid as isize)
 }
 
-pub fn sys_getgroups(size: usize, list: *mut u32) -> StarryResult<isize> {
+pub fn sys_getgroups(size: i32, list: *mut u32) -> StarryResult<isize> {
     debug!("sys_getgroups <= size: {size}");
+    if size < 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    let size = size as usize;
     let cred = current().as_thread().cred();
     let ngroups = cred.groups.len();
     if size == 0 {
