@@ -6,6 +6,10 @@ use core::{num::NonZeroUsize, pin::Pin, ptr::NonNull, sync::atomic::Ordering};
 
 #[cfg(feature = "task-test-hooks")]
 static PREEMPT_GUARD_OWNER_RESOLUTIONS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "task-test-hooks")]
+static PREEMPT_GUARD_OWNER_RESOLUTION_TARGET: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "task-test-hooks")]
+const PREEMPT_GUARD_OWNER_RESOLUTION_CONFIGURING: usize = 1;
 
 /// Architecture-selected owner of one live ordinary preemption guard.
 ///
@@ -245,31 +249,58 @@ pub unsafe fn scheduler_current_preempt_guard_owner() -> Result<PreemptGuardOwne
 #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
 #[inline(always)]
 fn resolve_preempt_guard_owner() -> Result<PreemptGuardOwner, CpuLocalError> {
-    record_preempt_guard_owner_resolution();
     // SAFETY: synchronous execution keeps this task allocation alive. Entry
     // immediately publishes the guard depth before the token can escape; the
     // current-owner variant requires an already-live depth from its caller.
-    unsafe { scheduler_current_thread() }.map(PreemptGuardOwner::from_current)
+    let current = unsafe { scheduler_current_thread()? };
+    record_preempt_guard_owner_resolution(current);
+    Ok(PreemptGuardOwner::from_current(current))
 }
 
 #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
 #[inline(always)]
-fn record_preempt_guard_owner_resolution() {
+fn record_preempt_guard_owner_resolution(_current: NonNull<CurrentThreadHeader>) {
     #[cfg(feature = "task-test-hooks")]
-    PREEMPT_GUARD_OWNER_RESOLUTIONS.fetch_add(1, Ordering::Relaxed);
+    if PREEMPT_GUARD_OWNER_RESOLUTION_TARGET.load(Ordering::Acquire) == _current.as_ptr() as usize {
+        PREEMPT_GUARD_OWNER_RESOLUTIONS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
-/// Resets the target-side count of preemption-guard owner resolutions.
+/// Arms preemption-guard owner-resolution accounting for the current task.
 #[cfg(feature = "task-test-hooks")]
 #[doc(hidden)]
 pub fn reset_preempt_guard_owner_resolution_count() {
+    assert_eq!(
+        PREEMPT_GUARD_OWNER_RESOLUTION_TARGET.compare_exchange(
+            0,
+            PREEMPT_GUARD_OWNER_RESOLUTION_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(0),
+        "only one preemption-guard owner-resolution probe may be armed",
+    );
     PREEMPT_GUARD_OWNER_RESOLUTIONS.store(0, Ordering::Relaxed);
+    // SAFETY: the synchronous test-hook call uses the scheduler's live current
+    // task only as a stable identity; the pointer is never dereferenced here.
+    let current = unsafe { scheduler_current_thread() }
+        .expect("a preemption-guard owner-resolution probe requires a current task");
+    PREEMPT_GUARD_OWNER_RESOLUTION_TARGET.store(current.as_ptr() as usize, Ordering::Release);
 }
 
-/// Takes the target-side count of preemption-guard owner resolutions.
+/// Takes the current task's preemption-guard owner-resolution count.
 #[cfg(feature = "task-test-hooks")]
 #[doc(hidden)]
 pub fn take_preempt_guard_owner_resolution_count() -> usize {
+    let target = PREEMPT_GUARD_OWNER_RESOLUTION_TARGET.swap(0, Ordering::AcqRel);
+    assert_ne!(
+        target, 0,
+        "a preemption-guard owner-resolution probe must be armed before taking it",
+    );
+    assert_ne!(
+        target, PREEMPT_GUARD_OWNER_RESOLUTION_CONFIGURING,
+        "a preemption-guard owner-resolution probe cannot be taken while configuring",
+    );
     PREEMPT_GUARD_OWNER_RESOLUTIONS.swap(0, Ordering::Relaxed)
 }
 
