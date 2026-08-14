@@ -704,7 +704,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::capget => sys_capget(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::capset => sys_capset(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::umask => sys_umask(uctx.arg0() as _),
-        Sysno::personality => sys_personality(uctx.arg0()),
+        Sysno::personality => sys_personality(uctx.arg0() as _),
         Sysno::setreuid => sys_setreuid(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setregid => sys_setregid(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setresuid => sys_setresuid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),

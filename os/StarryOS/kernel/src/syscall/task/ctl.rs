@@ -217,12 +217,12 @@ pub fn sys_umask(mask: u32) -> StarryResult<isize> {
     Ok(old as isize)
 }
 
-pub fn sys_personality(persona: usize) -> StarryResult<isize> {
+pub fn sys_personality(persona: u32) -> StarryResult<isize> {
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
     let old = proc_data.personality();
-    if persona as u32 != PERSONALITY_GET {
-        proc_data.replace_personality(persona);
+    if persona != PERSONALITY_GET {
+        proc_data.replace_personality(persona as usize);
     }
     Ok(old as isize)
 }
