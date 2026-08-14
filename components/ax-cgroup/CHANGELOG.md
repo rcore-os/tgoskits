@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/rcore-os/tgoskits/compare/ax-cgroup-v0.1.2...ax-cgroup-v0.1.3) - 2026-08-14
+
+### Other
+
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/ax-cgroup-v0.1.1...ax-cgroup-v0.1.2) - 2026-08-09
 
 ### Other

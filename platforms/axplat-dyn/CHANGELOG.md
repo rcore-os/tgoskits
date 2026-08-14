@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.15...axplat-dyn-v0.8.0) - 2026-08-14
+
+### Fixed
+
+- *(someboot)* [**breaking**] expose queryable secondary CPU startup ([#1981](https://github.com/rcore-os/tgoskits/pull/1981))
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.7.15](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.14...axplat-dyn-v0.7.15) - 2026-08-09
 
 ### Fixed

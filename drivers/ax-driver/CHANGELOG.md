@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.4](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.3...ax-driver-v0.12.4) - 2026-08-14
+
+### Added
+
+- *(axvisor)* add dual-guest virtio-net support ([#1927](https://github.com/rcore-os/tgoskits/pull/1927))
+
+### Fixed
+
+- *(sdmmc)* align Rockchip reset failure lifecycle ([#1987](https://github.com/rcore-os/tgoskits/pull/1987))
+- *(visionfive2)* restore booti and SD rootfs boot ([#1954](https://github.com/rcore-os/tgoskits/pull/1954))
+
+### Other
+
+- *(rdrive)* add fdt_ref() to borrow the device tree without cloning ([#2004](https://github.com/rcore-os/tgoskits/pull/2004))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.12.3](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.2...ax-driver-v0.12.3) - 2026-08-09
 
 ### Fixed

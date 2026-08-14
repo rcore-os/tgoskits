@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.5...nvme-driver-v0.7.6) - 2026-08-14
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.4...nvme-driver-v0.7.5) - 2026-08-09
 
 ### Other

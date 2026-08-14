@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.17](https://github.com/rcore-os/tgoskits/compare/starry-process-v0.4.16...starry-process-v0.4.17) - 2026-08-14
+
+### Other
+
+- *(repo)* move starry-process, starry-signal, and starry-vm to os/StarryOS ([#1974](https://github.com/rcore-os/tgoskits/pull/1974))
+
 ## [0.4.16](https://github.com/rcore-os/tgoskits/compare/starry-process-v0.4.15...starry-process-v0.4.16) - 2026-08-09
 
 ### Other

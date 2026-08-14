@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.8](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.7...ax-net-v0.12.8) - 2026-08-14
+
+### Added
+
+- *(starry)* add reproducible iperf3 board benchmark ([#1948](https://github.com/rcore-os/tgoskits/pull/1948))
+
+### Fixed
+
+- *(ax-net)* avoid sleeping mutex under datagram spin lock ([#1963](https://github.com/rcore-os/tgoskits/pull/1963))
+- *(starry-kernel)* support IPv4 ping syscall paths ([#1896](https://github.com/rcore-os/tgoskits/pull/1896))
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.12.7](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.6...ax-net-v0.12.7) - 2026-08-09
 
 ### Fixed

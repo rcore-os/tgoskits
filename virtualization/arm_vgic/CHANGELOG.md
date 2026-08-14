@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.5.6...arm_vgic-v0.5.7) - 2026-08-14
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.5.6](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.5.5...arm_vgic-v0.5.6) - 2026-08-09
 
 ### Added

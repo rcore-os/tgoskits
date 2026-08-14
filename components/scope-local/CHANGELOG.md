@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.5...scope-local-v0.4.6) - 2026-08-14
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.4.5](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.4...scope-local-v0.4.5) - 2026-08-09
 
 ### Other

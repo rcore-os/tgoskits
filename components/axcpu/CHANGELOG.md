@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.6...ax-cpu-v0.8.7) - 2026-08-14
+
+### Fixed
+
+- *(cpu-local)* keep AArch64 current independent of TLS ([#1970](https://github.com/rcore-os/tgoskits/pull/1970))
+
 ## [0.8.6](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.5...ax-cpu-v0.8.6) - 2026-08-09
 
 ### Fixed

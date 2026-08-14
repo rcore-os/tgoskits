@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5](https://github.com/rcore-os/tgoskits/compare/axnsproxy-v0.3.4...axnsproxy-v0.3.5) - 2026-08-14
+
+### Other
+
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.3.4](https://github.com/rcore-os/tgoskits/compare/axnsproxy-v0.3.3...axnsproxy-v0.3.4) - 2026-08-09
 
 ### Fixed

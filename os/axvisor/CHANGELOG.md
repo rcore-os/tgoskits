@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.25](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.24...axvisor-v0.5.25) - 2026-08-14
+
+### Added
+
+- *(axvisor)* Implement inter-VM communication (IVC) demo and protocol enhancements ([#1834](https://github.com/rcore-os/tgoskits/pull/1834))
+- *(axvirtio-blk)* add virtio-mmio block device core ([#1935](https://github.com/rcore-os/tgoskits/pull/1935))
+- *(axvisor)* add dual-guest virtio-net support ([#1927](https://github.com/rcore-os/tgoskits/pull/1927))
+
+### Fixed
+
+- *(ax-hal)* normalize hypervisor IRQ entry state ([#1949](https://github.com/rcore-os/tgoskits/pull/1949))
+- *(ax-std)* implement futimens for regular files ([#1950](https://github.com/rcore-os/tgoskits/pull/1950))
+- *(axvisor)* improve multi-VM guest console multiplexing ([#1912](https://github.com/rcore-os/tgoskits/pull/1912))
+
+### Other
+
+- *(axvisor)* remove obsolete defconfig.toml ([#1972](https://github.com/rcore-os/tgoskits/pull/1972))
+- *(axvm)* layer RISC-V SBI IPI routing ([#1920](https://github.com/rcore-os/tgoskits/pull/1920))
+
 ## [0.5.24](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.23...axvisor-v0.5.24) - 2026-08-09
 
 ### Added
