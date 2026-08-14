@@ -26,5 +26,5 @@ fn pi_mutex_external_storage_carries_the_native_generation_and_inline_waiter_sta
     );
     assert_eq!(PI_MUTEX_WAIT_STORAGE_WORDS, 5);
     assert_eq!(align_of::<PiMutexStorage>(), align_of::<usize>());
-    assert!(size_of::<PiMutexStorage>() >= 8 * size_of::<usize>());
+    assert!(size_of::<PiMutexStorage>() >= size_of::<[usize; 8]>());
 }
