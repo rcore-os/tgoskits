@@ -295,7 +295,9 @@ impl FsContext {
             match comp {
                 Component::CurDir => {}
                 Component::ParentDir => {
-                    dir = dir.parent().unwrap_or_else(|| self.root_dir.clone());
+                    if !dir.ptr_eq(&self.root_dir) {
+                        dir = dir.parent().unwrap_or_else(|| self.root_dir.clone());
+                    }
                 }
                 Component::RootDir => {
                     dir = self.root_dir.clone();
@@ -404,10 +406,14 @@ impl FsContext {
         let (dir, name) = self.resolve_inner(path, &mut 0)?;
         if let Some(name) = name {
             Ok((dir, Cow::Borrowed(name)))
-        } else if let Some(parent) = dir.parent() {
-            Ok((parent, dir.name().into_owned().into()))
         } else {
-            Err(VfsError::InvalidInput)
+            if dir.ptr_eq(&self.root_dir) {
+                Err(VfsError::InvalidInput)
+            } else if let Some(parent) = dir.parent() {
+                Ok((parent, dir.name().into_owned().into()))
+            } else {
+                Err(VfsError::InvalidInput)
+            }
         }
     }
 
@@ -473,6 +479,9 @@ impl FsContext {
     /// Removes a file from the filesystem.
     pub fn remove_file(&self, path: impl AsRef<Path>) -> VfsResult<()> {
         let entry = self.resolve_no_follow(path.as_ref())?;
+        if entry.ptr_eq(&self.root_dir) {
+            return Err(VfsError::IsADirectory);
+        }
         entry
             .parent()
             .ok_or(VfsError::IsADirectory)?
@@ -482,6 +491,9 @@ impl FsContext {
     /// Removes a directory from the filesystem.
     pub fn remove_dir(&self, path: impl AsRef<Path>) -> VfsResult<()> {
         let entry = self.resolve_no_follow(path.as_ref())?;
+        if entry.ptr_eq(&self.root_dir) {
+            return Err(VfsError::ResourceBusy);
+        }
         let dir = entry.entry().as_dir()?;
         if dir.has_children()? {
             return Err(VfsError::DirectoryNotEmpty);
