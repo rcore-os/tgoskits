@@ -67,6 +67,33 @@ const SYSTEM_OPCODE: u32 = 0x73;
 #[cfg(feature = "sstc")]
 const CSR_STIMECMP: u16 = 0x14d;
 
+fn initial_guest_sstatus() -> sstatus::Sstatus {
+    let mut status = sstatus::Sstatus::from_bits(0);
+    status.set_sie(false);
+    status.set_spie(false);
+    status.set_spp(sstatus::SPP::Supervisor);
+    // The RISC-V vCPU target exposes the F/D extensions. HS-level FS must
+    // therefore permit the guest to execute floating-point instructions; the
+    // guest still owns its architectural FS state through `vsstatus`.
+    status.set_fs(sstatus::FS::Initial);
+    status
+}
+
+fn initial_guest_hstatus() -> hstatus::Hstatus {
+    let mut status = hstatus::Hstatus::from_bits(0);
+    status.set_spv(true);
+    status.set_vsxl(hstatus::VsxlValues::Vsxl64);
+    // HS accesses performed on behalf of the guest use VS supervisor
+    // privilege until a guest trap updates SPVP.
+    status.set_spvp(true);
+    // Let the guest execute its normal supervisor instructions without
+    // spuriously trapping them back to the hypervisor.
+    status.set_vtvm(false);
+    status.set_vtw(false);
+    status.set_vtsr(false);
+    status
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct GuestTimerProgram {
     deadline: usize,
@@ -188,28 +215,11 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
     /// Completes architecture-specific setup.
     pub fn setup(&mut self, _config: ()) -> RiscvVcpuResult {
-        // Set sstatus.
-        let mut sstatus = sstatus::read();
-        sstatus.set_sie(false);
-        sstatus.set_spie(false);
-        sstatus.set_spp(sstatus::SPP::Supervisor);
-        self.regs.guest_regs.sstatus = sstatus.bits();
-
-        // Set hstatus.
-        let mut hstatus = hstatus::read();
-        hstatus.set_spv(true);
-        hstatus.set_vsxl(hstatus::VsxlValues::Vsxl64);
-        // Set SPVP bit in order to accessing VS-mode memory from HS-mode.
-        hstatus.set_spvp(true);
-        // Let the guest execute its normal supervisor instructions without
-        // spuriously trapping them back to the hypervisor.
-        hstatus.set_vtvm(false);
-        hstatus.set_vtw(false);
-        hstatus.set_vtsr(false);
-        unsafe {
-            hstatus.write();
-        }
-        self.regs.guest_regs.hstatus = hstatus.bits();
+        // Setup constructs guest-owned reset state only. Host CSRs remain
+        // owned by the physical CPU until `_run_guest` swaps them at the
+        // entry/exit boundary, matching Linux KVM's host/guest context split.
+        self.regs.guest_regs.sstatus = initial_guest_sstatus().bits();
+        self.regs.guest_regs.hstatus = initial_guest_hstatus().bits();
 
         let mut hie = hie::Hie::from_bits(0);
         hie.set_vssie(true);
@@ -1293,6 +1303,24 @@ mod tests {
         fn virt_to_phys(_vaddr: RiscvHostVirtAddr) -> RiscvHostPhysAddr {
             RiscvHostPhysAddr::from_usize(0)
         }
+    }
+
+    #[test]
+    fn guest_reset_status_is_independent_from_host_execution_state() {
+        let sstatus = initial_guest_sstatus();
+        assert!(!sstatus.sie());
+        assert!(!sstatus.spie());
+        assert_eq!(sstatus.spp(), sstatus::SPP::Supervisor);
+        assert_eq!(sstatus.fs(), sstatus::FS::Initial);
+
+        let hstatus = initial_guest_hstatus();
+        let expected = (2 << 32) | (1 << 8) | (1 << 7);
+        assert_eq!(hstatus.bits(), expected);
+        assert!(hstatus.spv());
+        assert!(hstatus.spvp());
+        assert!(!hstatus.vtvm());
+        assert!(!hstatus.vtw());
+        assert!(!hstatus.vtsr());
     }
 
     #[test]

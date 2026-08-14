@@ -93,6 +93,30 @@ VSSIP 以 level-triggered `VirtualInterruptId(1)` 发布。当前 vCPU 和远端
 HVIP 的保存副本由 `riscv_vcpu` 独占；只有当前绑定到硬件的 vCPU 才同步写 CSR。这样迁移、
 解绑和重新绑定仍以保存状态为事实源，不要求 AxVM 路由层持有 vCPU 内部锁。
 
+## vCPU CSR 执行所有权
+
+`RiscvVcpu::setup()` 只构造 guest-owned reset state，不得读取 host `sstatus`/`hstatus`
+后改写其局部字段，也不得在 setup 阶段写 live `hstatus`。host 与 guest 的
+`sstatus`/`hstatus` 只能在 `_run_guest` 汇编入口/出口边界对称交换，与 Linux KVM
+`host_context`/guest context 分离一致。否则 setup 对当前 pCPU 的污染会在 guest 退出时
+被当成 host context 保存，回到 Axvisor 任务后把普通 host 指令当成 guest 执行。
+
+guest target 公开 F/D 扩展，因此 HS-level `sstatus.FS` 的 reset 值必须为 `Initial`，
+允许 guest 执行浮点指令；guest 的架构 FS 状态仍由 `vsstatus` 拥有。这不是从 host 拷贝
+FS 作为默认值，而是按 guest ISA 构造确定的 reset state。纯函数回归
+`guest_reset_status_is_independent_from_host_execution_state` 约束了该边界。
+
+调试时必须区分两类连续故障：旧实现先在 WFI 返回后触发 host
+`InstructionFault`，`sepc == stval` 指向 `ArceOsTaskRuntime::wait_for_interrupt()` 的下一条
+指令，这是 host CSR 所有权被 setup 污染；删除 live `hstatus` 写后，guest 再暴露浮点
+illegal instruction，这是 guest ISA 与 FS reset 不一致。两者分别修正后，RISC-V Axvisor
+`smp-ipi` 正式用例与 `normal` 组均通过。
+
+`smp-ipi` 只验证 vCPU/SBI IPI，客户机不应再接管 host 正在使用的 PCI/NVMe。当前用例
+通过 `initcall_blacklist=nvme_init` 避免 guest probe 该 host-owned endpoint，并继续以
+virtio-blk `/dev/vda` 挂载测试 rootfs。这是范围明确的测试隔离，不是设备所有权架构修复；
+host/guest PCI 可见性、MMIO 与 FDT 发布必须在 issue #2016 中统一处理。
+
 ## 验证与回滚
 
 回归只保留 `linux-smp3-ipi.toml`，删除不再提供额外覆盖的 RISC-V QEMU 单核配置。三核
