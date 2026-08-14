@@ -15,7 +15,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define CORRUPTED_ELF_PATH "/tmp/elf-load-misaligned"
+#define MISALIGNED_ELF_PATH "/tmp/elf-load-misaligned"
+#define OVERSIZED_INTERP_ELF_PATH "/tmp/elf-interp-oversized"
+#define TRUNCATED_INTERP_ELF_PATH "/tmp/elf-interp-truncated"
+#define MAX_INTERPRETER_PATH_LEN 4096
 
 static int write_all(int fd, const unsigned char *buffer, size_t count)
 {
@@ -143,6 +146,69 @@ out:
     return result;
 }
 
+static int corrupt_interpreter(const char *path, int oversized)
+{
+    Elf64_Ehdr header;
+    struct stat stat_buffer;
+    int fd = open(path, O_RDWR);
+    int result = -1;
+
+    if (fd < 0) {
+        perror("open ELF for modification");
+        return -1;
+    }
+    if (fstat(fd, &stat_buffer) != 0 ||
+        read_exact_at(fd, &header, sizeof(header), 0) != 0 ||
+        memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 ||
+        header.e_ident[EI_CLASS] != ELFCLASS64 ||
+        header.e_phentsize != sizeof(Elf64_Phdr) ||
+        header.e_phnum == 0 || stat_buffer.st_size < 2 ||
+        header.e_phoff > (uint64_t)stat_buffer.st_size ||
+        (uint64_t)stat_buffer.st_size - header.e_phoff <
+            (uint64_t)header.e_phnum * sizeof(Elf64_Phdr)) {
+        fputs("unexpected ELF layout\n", stderr);
+        goto out;
+    }
+
+    for (size_t index = 0; index < header.e_phnum; index++) {
+        const off_t offset = (off_t)(header.e_phoff + index * sizeof(Elf64_Phdr));
+        Elf64_Phdr program_header;
+        if (read_exact_at(fd, &program_header, sizeof(program_header), offset) != 0) {
+            perror("read program header");
+            goto out;
+        }
+        if (program_header.p_type != PT_LOAD) {
+            continue;
+        }
+
+        // Reuse a loadable header so the test works for either static or
+        // dynamic test-suite binaries. The loader reaches PT_INTERP before
+        // mapping this segment.
+        program_header.p_type = PT_INTERP;
+        if (oversized) {
+            program_header.p_filesz = MAX_INTERPRETER_PATH_LEN + 1;
+        } else {
+            program_header.p_offset = (Elf64_Off)stat_buffer.st_size - 1;
+            program_header.p_filesz = 2;
+        }
+        if (pwrite(fd, &program_header, sizeof(program_header), offset) !=
+            (ssize_t)sizeof(program_header)) {
+            perror("write program header");
+            goto out;
+        }
+        result = 0;
+        break;
+    }
+
+    if (result != 0) {
+        fputs("ELF has no mutable PT_LOAD header\n", stderr);
+    }
+
+out:
+    close(fd);
+    return result;
+}
+
 static int expect_enoexec(const char *path)
 {
     pid_t child = fork();
@@ -190,15 +256,27 @@ int main(void)
     }
     executable[length] = '\0';
 
-    unlink(CORRUPTED_ELF_PATH);
-    if (copy_file(executable, CORRUPTED_ELF_PATH) != 0 ||
-        corrupt_load_alignment(CORRUPTED_ELF_PATH) != 0 ||
-        expect_enoexec(CORRUPTED_ELF_PATH) != 0) {
-        unlink(CORRUPTED_ELF_PATH);
+    unlink(MISALIGNED_ELF_PATH);
+    unlink(OVERSIZED_INTERP_ELF_PATH);
+    unlink(TRUNCATED_INTERP_ELF_PATH);
+    if (copy_file(executable, MISALIGNED_ELF_PATH) != 0 ||
+        corrupt_load_alignment(MISALIGNED_ELF_PATH) != 0 ||
+        expect_enoexec(MISALIGNED_ELF_PATH) != 0 ||
+        copy_file(executable, OVERSIZED_INTERP_ELF_PATH) != 0 ||
+        corrupt_interpreter(OVERSIZED_INTERP_ELF_PATH, 1) != 0 ||
+        expect_enoexec(OVERSIZED_INTERP_ELF_PATH) != 0 ||
+        copy_file(executable, TRUNCATED_INTERP_ELF_PATH) != 0 ||
+        corrupt_interpreter(TRUNCATED_INTERP_ELF_PATH, 0) != 0 ||
+        expect_enoexec(TRUNCATED_INTERP_ELF_PATH) != 0) {
+        unlink(MISALIGNED_ELF_PATH);
+        unlink(OVERSIZED_INTERP_ELF_PATH);
+        unlink(TRUNCATED_INTERP_ELF_PATH);
         return 1;
     }
-    unlink(CORRUPTED_ELF_PATH);
+    unlink(MISALIGNED_ELF_PATH);
+    unlink(OVERSIZED_INTERP_ELF_PATH);
+    unlink(TRUNCATED_INTERP_ELF_PATH);
 
-    puts("ELF_LOAD_ALIGNMENT_OK");
+    puts("ELF_LOADER_VALIDATION_OK");
     return 0;
 }
