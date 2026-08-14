@@ -49,10 +49,7 @@ fn exec_arg_vm_error(error: VmError) -> StarryError {
 }
 
 /// Copy one user-provided argv or envp vector while enforcing a shared budget.
-fn load_exec_vec(
-    ptr: *const *const c_char,
-    total: &mut usize,
-) -> StarryResult<Vec<String>> {
+fn load_exec_vec(ptr: *const *const c_char, total: &mut usize) -> StarryResult<Vec<String>> {
     if ptr.is_null() {
         return Ok(Vec::new());
     }
