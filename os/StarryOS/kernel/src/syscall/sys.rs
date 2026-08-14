@@ -633,7 +633,7 @@ pub fn sys_getgroups(size: usize, list: *mut u32) -> StarryResult<isize> {
 /// Linux limits supplementary groups to 65536 (`NGROUPS_MAX`).
 const NGROUPS_MAX: usize = 65536;
 
-pub fn sys_setgroups(size: usize, list: *const u32) -> StarryResult<isize> {
+pub fn sys_setgroups(size: i32, list: *const u32) -> StarryResult<isize> {
     debug!("sys_setgroups <= size: {size}");
     let thread = current();
     let thread = thread.as_thread();
@@ -646,9 +646,10 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> StarryResult<isize> {
     if thread.setgroups_deny() {
         return Err(StarryError::OperationNotPermitted);
     }
-    if size > NGROUPS_MAX {
+    if (size as u32) > NGROUPS_MAX as u32 {
         return Err(StarryError::InvalidInput);
     }
+    let size = size as usize;
 
     let groups = if size > 0 {
         let mut buf: Vec<MaybeUninit<u32>> = vec![MaybeUninit::uninit(); size];
