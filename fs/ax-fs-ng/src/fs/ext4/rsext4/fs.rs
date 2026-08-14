@@ -3,11 +3,9 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     string::String,
     sync::{Arc, Weak},
+    vec::Vec,
 };
-use core::{
-    sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{
@@ -123,7 +121,6 @@ pub struct Ext4Filesystem {
     inner: Mutex<Ext4State>,
     mmp_worker: MmpWorker,
     root_dir: LazyInit<DirEntry>,
-    readonly: bool,
 }
 
 struct MmpWorker {
@@ -164,14 +161,13 @@ impl Ext4Filesystem {
         dev: Box<dyn FsBlockDevice>,
         region: BlockRegion,
     ) -> VfsResult<Filesystem> {
+        let mmp_identity = mmp_identity_for_region(dev.name(), region);
         let disk = Ext4Disk::new(dev, region).map_err(into_vfs_err)?;
-        let mmp_identity = MmpIdentity::from_names(b"TGOSKits", b"ax-fs-ng");
         let services = MountServices::new(Ext4Clock, Ext4Entropy, (), (), Ext4Observer)
             .with_mmp(Ext4Delay, mmp_identity);
         let ext4 =
             rsext4::Ext4::mount_with_readonly_fallback(disk, services).map_err(into_vfs_err)?;
-        let readonly = ext4.options().readonly;
-        if readonly {
+        if ext4.options().readonly {
             warn!("ext4 recovery required a read-only fallback mount");
         }
         let root_ino = ext4.root_inode();
@@ -184,7 +180,6 @@ impl Ext4Filesystem {
             }),
             mmp_worker: MmpWorker::disabled(),
             root_dir: LazyInit::new(),
-            readonly,
         });
         if fs.lock().ext4.mmp_refresh_interval().is_some()
             && let Err(error) = fs.start_mmp_worker()
@@ -276,18 +271,31 @@ impl Ext4Filesystem {
     }
 }
 
+fn mmp_identity_for_region(device_name: &str, region: BlockRegion) -> MmpIdentity {
+    let region_suffix = alloc::format!("@{:x}", region.start_lba);
+    let prefix_len = device_name
+        .len()
+        .min(32usize.saturating_sub(region_suffix.len()));
+    let mut encoded_name = Vec::with_capacity(prefix_len + region_suffix.len());
+    encoded_name.extend_from_slice(&device_name.as_bytes()[..prefix_len]);
+    encoded_name.extend_from_slice(region_suffix.as_bytes());
+
+    // ax-fs-ng has no global UTS identity. Keep the node field empty and record
+    // the concrete device region instead of publishing a process-wide label.
+    MmpIdentity::from_names(&[], &encoded_name)
+}
+
 fn run_mmp_worker(
     filesystem: Weak<Ext4Filesystem>,
     notification: Arc<dyn BlockNotification>,
     stopping: Arc<AtomicBool>,
 ) {
-    let mut interval = match filesystem.upgrade() {
-        Some(filesystem) => filesystem
-            .lock()
-            .ext4
-            .mmp_refresh_interval()
-            .unwrap_or(Duration::ZERO),
+    let interval = match filesystem.upgrade() {
+        Some(filesystem) => filesystem.lock().ext4.mmp_refresh_interval(),
         None => return,
+    };
+    let Some(mut interval) = interval else {
+        return;
     };
     let mut last_refresh = crate::os::monotonic_time();
 
@@ -407,7 +415,7 @@ mod tests {
         }
     }
 
-    fn readonly_test_filesystem() -> (Ext4Filesystem, Arc<AtomicUsize>) {
+    fn test_filesystem(readonly_fallback: bool) -> (Ext4Filesystem, Arc<AtomicUsize>) {
         let storage = Arc::new(StdMutex::new(alloc::vec![0; TEST_DEVICE_BYTES]));
         let flushes = Arc::new(AtomicUsize::new(0));
         let blocks = (TEST_DEVICE_BYTES / TEST_SECTOR_BYTES) as u64;
@@ -423,7 +431,7 @@ mod tests {
         .expect("valid format-device geometry");
         rsext4::format(disk, Ext4Clock, MkfsOptions::default()).expect("format test image");
 
-        {
+        if readonly_fallback {
             let mut storage = storage.lock().unwrap();
             let superblock_offset = usize::try_from(SUPERBLOCK_OFFSET).unwrap();
             let superblock_bytes =
@@ -437,7 +445,7 @@ mod tests {
 
         let mount_device = SharedMemoryDevice {
             storage,
-            read_only: true,
+            read_only: readonly_fallback,
             flushes: Arc::clone(&flushes),
         };
         let disk = Ext4Disk::new(Box::new(mount_device), BlockRegion::from_num_blocks(blocks))
@@ -446,7 +454,7 @@ mod tests {
             .with_mmp(Ext4Delay, MmpIdentity::default());
         let ext4 = rsext4::Ext4::mount_with_readonly_fallback(disk, services)
             .expect("mount error-state image read-only");
-        assert!(ext4.options().readonly);
+        assert_eq!(ext4.options().readonly, readonly_fallback);
 
         (
             Ext4Filesystem {
@@ -457,7 +465,6 @@ mod tests {
                 }),
                 mmp_worker: MmpWorker::disabled(),
                 root_dir: LazyInit::new(),
-                readonly: true,
             },
             flushes,
         )
@@ -486,8 +493,18 @@ mod tests {
     }
 
     #[test]
+    fn mmp_identity_uses_the_device_name_and_region() {
+        let whole_device = mmp_identity_for_region("nvme0n1", BlockRegion::new(0, 1024));
+        let partition = mmp_identity_for_region("nvme0n1", BlockRegion::new(2048, 1024));
+
+        assert_eq!(whole_device, MmpIdentity::from_names(&[], b"nvme0n1@0"));
+        assert_eq!(partition, MmpIdentity::from_names(&[], b"nvme0n1@800"));
+        assert_ne!(whole_device, partition);
+    }
+
+    #[test]
     fn readonly_sync_preserves_the_core_device_flush_boundary() {
-        let (filesystem, flushes) = readonly_test_filesystem();
+        let (filesystem, flushes) = test_filesystem(true);
         let before = flushes.load(Ordering::Relaxed);
 
         filesystem.sync_to_disk().expect("sync read-only mount");
@@ -497,7 +514,7 @@ mod tests {
 
     #[test]
     fn readonly_shutdown_finishes_the_core_mount_lifecycle() {
-        let (filesystem, _) = readonly_test_filesystem();
+        let (filesystem, _) = test_filesystem(true);
 
         filesystem
             .shutdown_filesystem()
@@ -517,6 +534,20 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn readonly_query_tracks_core_remount_state() {
+        let (filesystem, _) = test_filesystem(false);
+        assert!(!filesystem.is_readonly());
+
+        let mut state = filesystem.lock();
+        let mut options = state.ext4.options();
+        options.readonly = true;
+        state.ext4.remount(options).expect("remount read-only");
+        drop(state);
+
+        assert!(filesystem.is_readonly());
+    }
 }
 
 impl FilesystemOps for Ext4Filesystem {
@@ -525,7 +556,7 @@ impl FilesystemOps for Ext4Filesystem {
     }
 
     fn is_readonly(&self) -> bool {
-        self.readonly
+        self.lock().ext4.options().readonly
     }
 
     fn root_dir(&self) -> DirEntry {
