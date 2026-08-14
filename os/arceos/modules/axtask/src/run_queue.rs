@@ -617,9 +617,9 @@ pub(crate) fn select_new_task_run_queue<G: GuardState>(task: &AxTaskRef) -> AxRu
 
 /// Selects a run queue for waking a blocked task.
 ///
-/// Prefer the task's previous CPU when its affinity still allows it. This
-/// preserves the task's cache locality and prevents one producer that wakes
-/// several tasks from collapsing all of them onto the producer's CPU.
+/// Prefer the waking CPU when affinity allows it. This keeps condition
+/// publication and the resumed waiter on one scheduler, while affinity-pinned
+/// tasks retain their previous CPU and use the remote IPI path.
 #[inline]
 pub(crate) fn select_wake_run_queue<G: GuardState>(task: &AxTaskRef) -> AxRunQueueRef<G> {
     let irq_state = G::acquire();
@@ -638,15 +638,15 @@ pub(crate) fn select_wake_run_queue<G: GuardState>(task: &AxTaskRef) -> AxRunQue
         let current_cpu = this_cpu_id();
         let last_cpu = task.cpu_id() as usize;
         let cpumask = task.cpumask();
-        let index = if last_cpu < crate::build_info::CPU_CAPACITY
+        let index = if cpumask.get(current_cpu)
+            && RUN_QUEUE_READY[current_cpu].load(core::sync::atomic::Ordering::Acquire)
+        {
+            current_cpu
+        } else if last_cpu < crate::build_info::CPU_CAPACITY
             && cpumask.get(last_cpu)
             && RUN_QUEUE_READY[last_cpu].load(core::sync::atomic::Ordering::Acquire)
         {
             last_cpu
-        } else if cpumask.get(current_cpu)
-            && RUN_QUEUE_READY[current_cpu].load(core::sync::atomic::Ordering::Acquire)
-        {
-            current_cpu
         } else {
             select_run_queue_index(cpumask)
         };
