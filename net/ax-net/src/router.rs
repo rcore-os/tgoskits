@@ -1197,6 +1197,9 @@ impl smoltcp::phy::TxToken for TxToken<'_> {
 
 /// Detects passive TCP opens before smoltcp consumes the incoming packet.
 fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
+    if buf.is_empty() {
+        return;
+    }
     let (src_addr, dst_addr, payload) = match IpVersion::of_packet(buf) {
         Ok(IpVersion::Ipv4) => {
             let Ok(packet) = Ipv4Packet::new_checked(buf) else {
