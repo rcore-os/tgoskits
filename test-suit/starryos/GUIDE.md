@@ -153,7 +153,7 @@ install(TARGETS mytest RUNTIME DESTINATION usr/bin/starry-test-suit)
 
 | Pipeline | 触发条件 | 行为 |
 | --- | --- | --- |
-| `plain` | 无 `test_commands`，且无 `c/`、`sh/`、`python/` | 直接启动共享 rootfs，并追加 QEMU `-snapshot` |
+| `plain` | 无 `test_commands`，且无 `c/`、`sh/`、`python/` | 直接启动共享 rootfs，由 rootfs patcher 仅对主 rootfs drive 设置 `snapshot=on` |
 | `c` | case 目录下存在 `c/` | 使用 CMake 交叉编译，安装产物到 rootfs overlay |
 | `sh` | case 目录下存在 `sh/` | 将 shell 脚本注入 `/usr/bin/` |
 | `python` | case 目录下存在 `python/` | 在 staging rootfs 中安装 `python3`，并注入 `.py` 文件 |
@@ -165,7 +165,10 @@ Pipeline case 会创建每个 case 独立的 rootfs 副本，并把注入后的 
 target/<target>/qemu-cases/<build_group>/<case>/cache/rootfs/
 ```
 
-plain case 不复制 rootfs，依赖 QEMU `-snapshot` 保证 guest 写入不落回共享镜像。
+plain case 不复制 rootfs。所有 test-suit pipeline 都由 rootfs patcher 对实际主 rootfs
+drive 应用 `snapshot=on`，保证正常退出、panic 或强制终止时 guest 写入不落回源镜像；
+不会使用会同时改变 VVFAT ESP、额外数据盘或 pflash 语义的全局 `-snapshot`。
+Pipeline 创建的副本只负责资产注入，不承担 QEMU 运行期写隔离。
 
 需要 staging rootfs 的 pipeline 依赖 `debugfs` 和 `fakeroot`。xtask 会在启动
 `debugfs rdump` 前检查 EUID；Linux 上还会检查 UID/GID identity mapping 和有效
@@ -182,6 +185,7 @@ plain case 不复制 rootfs，依赖 QEMU `-snapshot` 保证 guest 写入不落�
 | `args` | QEMU 参数，`${workspace}` / `${workspaceFolder}` 会解析为仓库根目录 |
 | `uefi` | 是否使用 UEFI |
 | `to_bin` | 是否把 ELF 转为裸二进制 |
+| `rootfs_write_policy` | test-suit 只能省略或设为 `"discard"`；`"persist"` 会被拒绝 |
 | `shell_prefix` | 等待 guest shell 的提示符 |
 | `shell_init_cmd` | plain/C/sh/python case 的 guest 命令 |
 | `test_commands` | grouped case 的 guest 命令列表；不能与 `shell_init_cmd` 同时使用 |

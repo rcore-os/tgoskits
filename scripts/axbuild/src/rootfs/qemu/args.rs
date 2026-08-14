@@ -28,6 +28,14 @@ impl DriveArg {
         self.options.set_value("file", &path.display().to_string());
     }
 
+    pub(super) fn snapshot_conflict(&self) -> Option<&str> {
+        self.options.value_other_than("snapshot", "off")
+    }
+
+    pub(super) fn set_snapshot_on(&mut self) {
+        self.options.set_value("snapshot", "on");
+    }
+
     pub(super) fn is_file_backed_block_drive(&self) -> bool {
         self.file().is_some_and(|file| !file.starts_with("fat:"))
             && self.interface() != Some("pflash")
@@ -87,6 +95,13 @@ impl QemuOptions {
         self.fields.iter().find_map(|field| {
             let (field_key, value) = field.split_once('=')?;
             (field_key == key).then_some(value)
+        })
+    }
+
+    fn value_other_than(&self, key: &str, allowed: &str) -> Option<&str> {
+        self.fields.iter().find_map(|field| {
+            let (field_key, value) = field.split_once('=')?;
+            (field_key == key && value != allowed).then_some(value)
         })
     }
 

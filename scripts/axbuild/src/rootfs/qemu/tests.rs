@@ -1,5 +1,29 @@
 use super::*;
 
+fn patch_rootfs(qemu: &mut QemuConfig, rootfs_path: &Path, mode: RootfsPatchMode) {
+    super::patch_rootfs(
+        qemu,
+        rootfs_path,
+        RootfsPatchOptions {
+            mode,
+            write_policy: RootfsWritePolicy::Persist,
+        },
+    )
+    .unwrap();
+}
+
+fn patch_discard_rootfs(qemu: &mut QemuConfig, rootfs_path: &Path, mode: RootfsPatchMode) {
+    super::patch_rootfs(
+        qemu,
+        rootfs_path,
+        RootfsPatchOptions {
+            mode,
+            write_policy: RootfsWritePolicy::Discard,
+        },
+    )
+    .unwrap();
+}
+
 #[test]
 fn drive_file_paths_extracts_file_backed_block_drive_values() {
     let qemu = QemuConfig {
@@ -121,7 +145,7 @@ fn rewrite_drive_file_paths_preserves_uefi_and_vvfat_drives() {
 }
 
 #[test]
-fn replace_drive_only_rewrites_only_rootfs_aliases() {
+fn replace_drive_only_rewrites_and_isolates_rootfs_aliases() {
     let rootfs = Path::new("/cache/rootfs.img");
     let mut qemu = QemuConfig {
         args: vec![
@@ -142,7 +166,7 @@ fn replace_drive_only_rewrites_only_rootfs_aliases() {
         ..Default::default()
     };
 
-    patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::ReplaceDriveOnly);
+    patch_discard_rootfs(&mut qemu, rootfs, RootfsPatchMode::ReplaceDriveOnly);
 
     assert_eq!(
         qemu.args,
@@ -150,7 +174,7 @@ fn replace_drive_only_rewrites_only_rootfs_aliases() {
             "-device".to_string(),
             "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
             "-drive".to_string(),
-            "id=disk0,if=none,format=raw,file=/cache/rootfs.img".to_string(),
+            "id=disk0,if=none,format=raw,file=/cache/rootfs.img,snapshot=on".to_string(),
             "-device".to_string(),
             "virtio-blk-device,drive=disk1".to_string(),
             "-drive".to_string(),
@@ -186,6 +210,56 @@ fn replace_drive_only_accepts_nvme_block_device() {
             "id=disk0,if=none,format=raw,file=/tmp/rootfs.img".to_string(),
         ]
     );
+}
+
+#[test]
+fn replace_drive_only_preserves_diskless_boot() {
+    let rootfs = Path::new("/tmp/rootfs.img");
+    let mut qemu = QemuConfig {
+        args: vec![
+            "-machine".to_string(),
+            "q35,smbus=off,usb=off,graphics=off".to_string(),
+            "-accel".to_string(),
+            "kvm".to_string(),
+            "-net".to_string(),
+            "none".to_string(),
+        ],
+        ..Default::default()
+    };
+    let original_args = qemu.args.clone();
+
+    patch_discard_rootfs(&mut qemu, rootfs, RootfsPatchMode::ReplaceDriveOnly);
+
+    assert_eq!(qemu.args, original_args);
+}
+
+#[test]
+fn replace_drive_only_rejects_unidentified_file_backed_storage() {
+    let rootfs = Path::new("/tmp/rootfs.img");
+    let mut qemu = QemuConfig {
+        args: vec![
+            "-device".to_string(),
+            "virtio-blk-pci,drive=data".to_string(),
+            "-drive".to_string(),
+            "id=data,if=none,format=raw,file=/tmp/data.img".to_string(),
+        ],
+        ..Default::default()
+    };
+    let original_args = qemu.args.clone();
+
+    let error = super::patch_rootfs(
+        &mut qemu,
+        rootfs,
+        RootfsPatchOptions {
+            mode: RootfsPatchMode::ReplaceDriveOnly,
+            write_policy: RootfsWritePolicy::Discard,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("failed to identify the QEMU rootfs drive"));
+    assert_eq!(qemu.args, original_args);
 }
 
 #[test]
@@ -237,7 +311,7 @@ fn ensure_disk_boot_net_preserves_standard_disk0_options() {
         ..Default::default()
     };
 
-    patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+    patch_discard_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
 
     assert!(
         qemu.args.contains(
@@ -246,6 +320,176 @@ fn ensure_disk_boot_net_preserves_standard_disk0_options() {
                 .to_string()
         )
     );
+}
+
+#[test]
+fn managed_rootfs_is_isolated_without_global_snapshot() {
+    let rootfs = Path::new("/tmp/new-rootfs.img");
+    let mut qemu = QemuConfig {
+        args: vec![
+            "-device".to_string(),
+            "nvme,drive=disk0,serial=tgoskits".to_string(),
+            "-drive".to_string(),
+            "id=disk0,if=none,format=raw,file=/tmp/old-rootfs.img,cache=none".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    super::patch_rootfs(
+        &mut qemu,
+        rootfs,
+        RootfsPatchOptions {
+            mode: RootfsPatchMode::EnsureDiskBootNet,
+            write_policy: RootfsWritePolicy::Discard,
+        },
+    )
+    .unwrap();
+
+    assert!(!qemu.args.iter().any(|argument| argument == "-snapshot"));
+    assert_eq!(
+        qemu.args[3],
+        "id=disk0,if=none,format=raw,file=/tmp/new-rootfs.img,cache=none,snapshot=on"
+    );
+}
+
+#[test]
+fn discard_policy_converges_global_snapshot_on_rootfs_drive_only() {
+    let rootfs = Path::new("/tmp/new-rootfs.img");
+    let data_drive = "id=data,if=none,format=raw,file=/tmp/data.img,cache=writeback";
+    let pflash = "if=pflash,unit=0,readonly=on,file=/tmp/code.fd";
+    let vvfat = "if=none,format=raw,file=fat:rw:/tmp/esp";
+    let mut qemu = QemuConfig {
+        args: vec![
+            "-snapshot".to_string(),
+            "-drive".to_string(),
+            "id=disk0,if=none,format=raw,file=/tmp/old-rootfs.img".to_string(),
+            "-drive".to_string(),
+            data_drive.to_string(),
+            "-drive".to_string(),
+            pflash.to_string(),
+            "-drive".to_string(),
+            vvfat.to_string(),
+            "-device".to_string(),
+            "nvme,drive=disk0,serial=tgoskits".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    super::patch_rootfs(
+        &mut qemu,
+        rootfs,
+        RootfsPatchOptions {
+            mode: RootfsPatchMode::EnsureDiskBootNet,
+            write_policy: RootfsWritePolicy::Discard,
+        },
+    )
+    .unwrap();
+
+    assert!(!qemu.args.iter().any(|argument| argument == "-snapshot"));
+    assert!(qemu.args.iter().any(|argument| {
+        argument == "id=disk0,if=none,format=raw,file=/tmp/new-rootfs.img,snapshot=on"
+    }));
+    assert!(qemu.args.iter().any(|argument| argument == data_drive));
+    assert!(qemu.args.iter().any(|argument| argument == pflash));
+    assert!(qemu.args.iter().any(|argument| argument == vvfat));
+}
+
+#[test]
+fn persist_policy_rejects_snapshot_conflicts() {
+    let rootfs = Path::new("/tmp/rootfs.img");
+    let options = RootfsPatchOptions {
+        mode: RootfsPatchMode::EnsureDiskBootNet,
+        write_policy: RootfsWritePolicy::Persist,
+    };
+    let mut global = QemuConfig {
+        args: vec!["-snapshot".to_string()],
+        ..Default::default()
+    };
+    let mut per_drive = QemuConfig {
+        args: vec![
+            "-drive".to_string(),
+            "id=disk0,if=none,format=raw,file=/tmp/old.img,snapshot=on".to_string(),
+            "-device".to_string(),
+            "nvme,drive=disk0,serial=tgoskits".to_string(),
+        ],
+        ..Default::default()
+    };
+    let global_args = global.args.clone();
+    let per_drive_args = per_drive.args.clone();
+
+    let global_error = super::patch_rootfs(&mut global, rootfs, options)
+        .unwrap_err()
+        .to_string();
+    let drive_error = super::patch_rootfs(&mut per_drive, rootfs, options)
+        .unwrap_err()
+        .to_string();
+
+    assert!(global_error.contains("global QEMU `-snapshot`"));
+    assert!(drive_error.contains("rootfs drive option `snapshot=on`"));
+    assert_eq!(global.args, global_args);
+    assert_eq!(per_drive.args, per_drive_args);
+}
+
+#[test]
+fn persist_policy_allows_explicit_snapshot_off() {
+    let rootfs = Path::new("/tmp/new-rootfs.img");
+    let mut qemu = QemuConfig {
+        args: vec![
+            "-drive".to_string(),
+            "id=disk0,if=none,format=raw,file=/tmp/old.img,snapshot=off".to_string(),
+            "-device".to_string(),
+            "nvme,drive=disk0,serial=tgoskits".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+
+    assert!(qemu.args.iter().any(|argument| {
+        argument == "id=disk0,if=none,format=raw,file=/tmp/new-rootfs.img,snapshot=off"
+    }));
+}
+
+#[test]
+fn rootfs_write_policy_defaults_to_discard() {
+    assert_eq!(RootfsWritePolicy::default(), RootfsWritePolicy::Discard);
+}
+
+#[test]
+fn axvisor_ktest_configs_isolate_rootfs_on_all_architectures() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+
+    for arch in ["aarch64", "riscv64", "x86_64", "loongarch64"] {
+        let config_path = repo.join(format!("os/axvisor/configs/qemu/qemu-{arch}.toml"));
+        let mut qemu: QemuConfig =
+            toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+
+        super::patch_rootfs(
+            &mut qemu,
+            Path::new("/tmp/ktest-rootfs.img"),
+            RootfsPatchOptions {
+                mode: RootfsPatchMode::EnsureDiskBootNet,
+                write_policy: RootfsWritePolicy::Discard,
+            },
+        )
+        .unwrap();
+
+        let rootfs_drive = qemu.args.windows(2).find_map(|arguments| {
+            (arguments[0] == "-drive")
+                .then(|| DriveArg::parse(&arguments[1]))
+                .filter(|drive| drive.id() == Some("disk0"))
+        });
+        assert_eq!(
+            rootfs_drive.and_then(|drive| drive.snapshot_conflict().map(str::to_owned)),
+            Some("on".to_string()),
+            "{}",
+            config_path.display()
+        );
+    }
 }
 
 #[test]
@@ -363,7 +607,7 @@ fn ensure_disk_boot_net_preserves_manually_configured_ide_drive() {
         ..Default::default()
     };
 
-    patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+    patch_discard_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
 
     assert_eq!(
         qemu.args,
@@ -391,7 +635,7 @@ fn ensure_disk_boot_net_only_rewrites_first_direct_block_drive() {
         ..Default::default()
     };
 
-    patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+    patch_discard_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
 
     assert_eq!(
         qemu.args,

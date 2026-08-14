@@ -221,8 +221,10 @@ async fn build_and_run_c_test(
         build_config.build_info.features.clone(),
     );
     let output = cbuild::build_c_app(&workspace_root, &request, &input)?;
-    let qemu = qemu_config;
+    qemu_test::validate_test_qemu_rootfs_write_policy(&test.qemu_config_path, "ArceOS")?;
+    let mut qemu = qemu_config;
     rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
+    rootfs::isolate_qemu_test_rootfs(&mut qemu)?;
     let _host_http_server = qemu_test::load_qemu_case_host_http_server(&test.qemu_config_path)?
         .as_ref()
         .map(|config| HostHttpServerGuard::start(config, &test.name))

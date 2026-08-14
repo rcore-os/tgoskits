@@ -38,7 +38,7 @@ pub(crate) struct StarryAppQemuCase {
     pub(crate) build_config_path: Option<PathBuf>,
     pub(crate) qemu_config_path: Option<PathBuf>,
     pub(crate) rootfs_path: PathBuf,
-    pub(crate) snapshot: bool,
+    pub(crate) rootfs_write_policy: crate::rootfs::qemu::RootfsWritePolicy,
     pub(crate) test_commands: Vec<String>,
     pub(crate) host_symbolize_success_regex: Vec<String>,
     pub(crate) host_http_server: Option<HostHttpServerConfig>,

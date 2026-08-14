@@ -7,8 +7,10 @@ mod args;
 
 use std::path::{Path, PathBuf};
 
+use anyhow::bail;
 use args::{DeviceArg, DriveArg};
 use ostool::run::qemu::QemuConfig;
+use serde::Deserialize;
 
 const DEFAULT_ROOTFS_WIRING: RootfsQemuWiring = RootfsQemuWiring {
     disk_id: "disk0",
@@ -59,18 +61,67 @@ impl RootfsQemuWiring {
 /// Controls how aggressively rootfs-related QEMU arguments should be patched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RootfsPatchMode {
-    /// Replace or insert `disk0` and update drives that alias its configured image.
+    /// Replace or insert `disk0`, update its aliases, or preserve a diskless boot.
     ReplaceDriveOnly,
     /// Ensure a complete disk + NVMe device + user network baseline.
     EnsureDiskBootNet,
 }
 
+/// Controls whether writes to the selected managed rootfs survive QEMU exit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum RootfsWritePolicy {
+    /// Keep all guest writes in a temporary per-drive snapshot.
+    #[default]
+    Discard,
+    /// Write guest changes back to a dedicated writable rootfs image.
+    Persist,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RootfsPatchOptions {
+    pub(crate) mode: RootfsPatchMode,
+    pub(crate) write_policy: RootfsWritePolicy,
+}
+
 /// Patches a QEMU configuration so it points at the provided rootfs image.
-pub(crate) fn patch_rootfs(qemu: &mut QemuConfig, rootfs_path: &Path, mode: RootfsPatchMode) {
-    match mode {
-        RootfsPatchMode::ReplaceDriveOnly => replace_drive_arg(&mut qemu.args, rootfs_path),
-        RootfsPatchMode::EnsureDiskBootNet => ensure_disk_boot_net_args(qemu, rootfs_path),
+pub(crate) fn patch_rootfs(
+    qemu: &mut QemuConfig,
+    rootfs_path: &Path,
+    options: RootfsPatchOptions,
+) -> anyhow::Result<()> {
+    let mut arguments = qemu.args.clone();
+    if options.write_policy == RootfsWritePolicy::Persist
+        && arguments.iter().any(|argument| argument == "-snapshot")
+    {
+        bail!(
+            "persistent rootfs `{}` conflicts with the global QEMU `-snapshot` option",
+            rootfs_path.display()
+        );
     }
+
+    let rootfs_drive_indices = match options.mode {
+        RootfsPatchMode::ReplaceDriveOnly => replace_drive_arg(&mut arguments, rootfs_path),
+        RootfsPatchMode::EnsureDiskBootNet => {
+            ensure_disk_boot_net_args(&mut arguments, rootfs_path)
+        }
+    };
+    let preserves_diskless_boot =
+        options.mode == RootfsPatchMode::ReplaceDriveOnly && !has_block_storage_wiring(&arguments);
+    if rootfs_drive_indices.is_empty() && !preserves_diskless_boot {
+        return Err(anyhow::anyhow!(
+            "failed to identify the QEMU rootfs drive for `{}`",
+            rootfs_path.display()
+        ));
+    }
+    apply_rootfs_write_policy(
+        &mut arguments,
+        &rootfs_drive_indices,
+        rootfs_path,
+        options.write_policy,
+    )?;
+    qemu.args = arguments;
+    Ok(())
 }
 
 /// Returns all file-backed block image paths referenced by `-drive` arguments.
@@ -116,7 +167,7 @@ where
 
 /// Replaces an existing `disk0` drive argument or inserts one next to the
 /// matching block-device declaration.
-fn replace_drive_arg(arguments: &mut Vec<String>, rootfs_path: &Path) {
+fn replace_drive_arg(arguments: &mut Vec<String>, rootfs_path: &Path) -> Vec<usize> {
     let wiring = DEFAULT_ROOTFS_WIRING;
     let configured_rootfs = drive_argument_indices(arguments).find_map(|index| {
         let drive = DriveArg::parse(&arguments[index]);
@@ -124,7 +175,8 @@ fn replace_drive_arg(arguments: &mut Vec<String>, rootfs_path: &Path) {
             .then(|| drive.file().map(str::to_owned))
             .flatten()
     });
-    let mut replaced = false;
+    let mut rootfs_drive_indices = Vec::new();
+    let mut has_primary_rootfs_drive = false;
 
     for index in drive_argument_indices(arguments).collect::<Vec<_>>() {
         let mut drive = DriveArg::parse(&arguments[index]);
@@ -136,12 +188,13 @@ fn replace_drive_arg(arguments: &mut Vec<String>, rootfs_path: &Path) {
         if drive.is_file_backed_block_drive() && (is_rootfs_drive || aliases_rootfs) {
             drive.set_file(rootfs_path);
             arguments[index] = drive.render();
-            replaced |= is_rootfs_drive;
+            rootfs_drive_indices.push(index);
+            has_primary_rootfs_drive |= is_rootfs_drive;
         }
     }
 
-    if replaced {
-        return;
+    if has_primary_rootfs_drive {
+        return rootfs_drive_indices;
     }
 
     let device_value_index = device_argument_indices(arguments)
@@ -150,14 +203,15 @@ fn replace_drive_arg(arguments: &mut Vec<String>, rootfs_path: &Path) {
         let insert_position = device_value_index + 1;
         arguments.insert(insert_position, "-drive".to_string());
         arguments.insert(insert_position + 1, wiring.drive_arg(rootfs_path).render());
+        return vec![insert_position + 1];
     }
+    Vec::new()
 }
 
 /// Ensures a QEMU config contains the standard block device, drive, and user
 /// networking arguments required by the rootfs-backed boot flows.
-fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, rootfs_path: &Path) {
+fn ensure_disk_boot_net_args(arguments: &mut Vec<String>, rootfs_path: &Path) -> Vec<usize> {
     let wiring = DEFAULT_ROOTFS_WIRING;
-    let arguments = &mut qemu.args;
     let device_drive_ids = device_argument_indices(arguments)
         .filter_map(|index| {
             DeviceArg::parse(&arguments[index])
@@ -193,7 +247,7 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, rootfs_path: &Path) {
     }
 
     if has_direct_sd_rootfs && !has_net_device && !has_netdev {
-        return;
+        return rootfs_drive_index.into_iter().collect();
     }
     if !has_block_device {
         arguments.push("-device".to_string());
@@ -205,8 +259,9 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, rootfs_path: &Path) {
         arguments.push(wiring.drive_arg(rootfs_path).render());
         has_drive = true;
     }
+    let rootfs_drive_index = rootfs_drive_index.unwrap_or(arguments.len() - 1);
     if has_custom_rootfs_device && !has_net_device && !has_netdev {
-        return;
+        return vec![rootfs_drive_index];
     }
     if !has_net_device {
         arguments.push("-device".to_string());
@@ -220,6 +275,50 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, rootfs_path: &Path) {
     }
 
     debug_assert!(has_block_device && has_drive && has_net_device && has_netdev);
+    vec![rootfs_drive_index]
+}
+
+fn apply_rootfs_write_policy(
+    arguments: &mut Vec<String>,
+    rootfs_drive_indices: &[usize],
+    rootfs_path: &Path,
+    write_policy: RootfsWritePolicy,
+) -> anyhow::Result<()> {
+    let rootfs_drives = rootfs_drive_indices
+        .iter()
+        .map(|&index| (index, DriveArg::parse(&arguments[index])))
+        .collect::<Vec<_>>();
+    match write_policy {
+        RootfsWritePolicy::Discard => {
+            let adjusted_drives = rootfs_drives
+                .into_iter()
+                .map(|(index, drive)| {
+                    let removed_before_rootfs = arguments[..index]
+                        .iter()
+                        .filter(|argument| argument.as_str() == "-snapshot")
+                        .count();
+                    (index - removed_before_rootfs, drive)
+                })
+                .collect::<Vec<_>>();
+            arguments.retain(|argument| argument != "-snapshot");
+            for (index, mut drive) in adjusted_drives {
+                drive.set_snapshot_on();
+                arguments[index] = drive.render();
+            }
+        }
+        RootfsWritePolicy::Persist => {
+            for (_, rootfs_drive) in rootfs_drives {
+                if let Some(snapshot) = rootfs_drive.snapshot_conflict() {
+                    bail!(
+                        "persistent rootfs `{}` conflicts with rootfs drive option `snapshot={}`",
+                        rootfs_path.display(),
+                        snapshot
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn select_rootfs_drive(
@@ -273,6 +372,13 @@ fn netdev_argument_indices(arguments: &[String]) -> impl Iterator<Item = usize> 
         .windows(2)
         .enumerate()
         .filter_map(|(index, pair)| (pair[0] == "-netdev").then_some(index + 1))
+}
+
+fn has_block_storage_wiring(arguments: &[String]) -> bool {
+    drive_argument_indices(arguments)
+        .any(|index| DriveArg::parse(&arguments[index]).is_file_backed_block_drive())
+        || device_argument_indices(arguments)
+            .any(|index| DeviceArg::parse(&arguments[index]).drive().is_some())
 }
 
 fn drive_interface_attaches_block_device(interface: &str) -> bool {

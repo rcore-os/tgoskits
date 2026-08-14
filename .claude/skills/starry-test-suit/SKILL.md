@@ -44,13 +44,13 @@ QEMU cases build the `starryos` package and run a per-arch `qemu-<arch>.toml`. B
 
 Each QEMU case may use at most one asset pipeline:
 
-- `plain`: no extra asset directory and no `test_commands`; boots the shared rootfs with QEMU `-snapshot`.
+- `plain`: no extra asset directory and no `test_commands`; boots the shared rootfs while the rootfs patcher applies `snapshot=on` only to the selected rootfs drive.
 - `c`: case directory has `c/CMakeLists.txt`; CMake builds and installs artifacts into a rootfs overlay.
 - `sh`: case directory has `sh/`; scripts are copied into the guest overlay.
 - `python`: case directory has `python/`; the runner installs `python3` in staging and copies `.py` files into `/usr/bin/`.
 - `grouped`: `qemu-<arch>.toml` defines `test_commands`; subdirectories such as `<subcase>/c/` are built and a `/usr/bin/starry-run-case-tests` runner is injected. The `qemu/system` grouped cases use `system/CMakeLists.txt` as one root CMake project, keep each subcase's `CMakeLists.txt` and `src/` directly under `system/<subcase>`, scan `/usr/bin/starry-test-suit/*`, and use `STARRY_GROUPED_TESTS_PASSED` as the success marker. Single grouped subcases run through `-c qemu/<subcase>` or `-c qemu/system/<subcase>`.
 
-Pipeline cases use per-case rootfs copies and cache injected images under `target/<target>/qemu-cases/.../cache/rootfs/`. Plain cases do not copy the rootfs.
+Pipeline cases use per-case rootfs copies and cache injected images under `target/<target>/qemu-cases/.../cache/rootfs/`. Plain cases do not copy the rootfs. The copy/cache pipeline only owns asset injection; QEMU write isolation is always owned by the rootfs patcher. Test-suit configs may omit `rootfs_write_policy` or set it to `"discard"`; `"persist"` is rejected. Do not use global `-snapshot`, because it also changes VVFAT ESP, extra-drive, and pflash semantics.
 
 ## Case Content
 

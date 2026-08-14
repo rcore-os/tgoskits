@@ -89,7 +89,9 @@ pub(crate) struct QemuCaseExtraConfig {
     #[serde(default)]
     pub(crate) host_http_server: Option<HostHttpServerConfig>,
     #[serde(default)]
-    pub(crate) snapshot: Option<bool>,
+    pub(crate) rootfs_write_policy: crate::rootfs::qemu::RootfsWritePolicy,
+    #[serde(default, rename = "snapshot")]
+    pub(super) legacy_snapshot: Option<toml::Value>,
 }
 
 pub(super) fn list_qemu_cases_unexpected_error(err: anyhow::Error) -> ListQemuCasesError {

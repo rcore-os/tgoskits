@@ -205,8 +205,11 @@ async fn run_qemu(args: ArgsKtestQemu) -> anyhow::Result<()> {
         crate::rootfs::qemu::patch_rootfs(
             &mut qemu,
             &rootfs,
-            crate::rootfs::qemu::RootfsPatchMode::EnsureDiskBootNet,
-        );
+            crate::rootfs::qemu::RootfsPatchOptions {
+                mode: crate::rootfs::qemu::RootfsPatchMode::EnsureDiskBootNet,
+                write_policy: crate::rootfs::qemu::RootfsWritePolicy::Discard,
+            },
+        )?;
     }
     patch_x86_64_uefi_kernel_loader(&mut qemu, &arch, output.elf_path()).await?;
     apply_axtest_qemu_markers(&mut qemu);
