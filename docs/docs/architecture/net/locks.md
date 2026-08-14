@@ -305,14 +305,14 @@ TCP 端口占用表在 `tcp.rs`：
 static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, HashSet<Option<smoltcp::wire::IpAddress>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
+fn register_tcp_bound(endpoint: IpListenEndpoint) -> NetResult {
     let mut bound_ports = TCP_BOUND_PORTS.lock();
     let bound_addrs = bound_ports.entry(endpoint.port).or_default();
     if bound_addrs
         .iter()
         .any(|&addr| listen_addrs_conflict(addr, endpoint.addr))
     {
-        return Err(AxError::AddrInUse);
+        return Err(NetError::AddrInUse);
     }
     bound_addrs.insert(endpoint.addr);
     Ok(())
@@ -387,7 +387,7 @@ UDP public bind side table 放在 `SocketSetWrapper.udp_binds`，bind 路径在 
 
 ```rust
 // udp.rs:183-220, 摘要
-fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
+fn bind(&self, local_addr: SocketAddrEx) -> NetResult {
     let mut guard = self.local_addr.write();
     let binding = get_control().local_binding_for(&endpoint)?;
 
@@ -433,7 +433,7 @@ pub struct RawSocket {
 // raw.rs:488-490
 if !self.source_matches_peer(source) {
     *self.deferred_rx.lock() = Some((source, wire_packet.to_vec()));
-    return Err(AxError::WouldBlock);
+    return Err(NetError::WouldBlock);
 }
 ```
 

@@ -5,7 +5,6 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_task::{
     current,
@@ -25,6 +24,7 @@ use starry_vm::VmMutPtr;
 
 use super::{FileLike, Kstat};
 use crate::{
+    StarryError, StarryResult,
     file::{IoDst, IoSrc},
     sync::Mutex,
     task::{AsThread, send_signal_to_process},
@@ -58,7 +58,7 @@ impl PipeState {
             .is_some_and(|length| length + bytes <= PIPE_BUF)
     }
 
-    fn copy_from(&mut self, src: &mut IoSrc, limit: usize) -> AxResult<usize> {
+    fn copy_from(&mut self, src: &mut IoSrc, limit: usize) -> StarryResult<usize> {
         let (left, right) = self.buffer.vacant_slices_mut();
         let left_limit = left.len().min(limit);
         // `left` covers vacant ring storage and the following `read` initializes
@@ -77,7 +77,7 @@ impl PipeState {
         Ok(copied)
     }
 
-    fn merge_from(&mut self, src: &mut IoSrc, bytes: usize) -> AxResult<usize> {
+    fn merge_from(&mut self, src: &mut IoSrc, bytes: usize) -> StarryResult<usize> {
         debug_assert!(self.can_merge(bytes));
         let copied = self.copy_from(src, bytes)?;
         *self
@@ -87,7 +87,7 @@ impl PipeState {
         Ok(copied)
     }
 
-    fn append_from(&mut self, src: &mut IoSrc) -> AxResult<usize> {
+    fn append_from(&mut self, src: &mut IoSrc) -> StarryResult<usize> {
         debug_assert!(self.has_free_buffer());
         let limit = src.remaining().min(PIPE_BUF);
         let copied = self.copy_from(src, limit)?;
@@ -184,7 +184,7 @@ impl Pipe {
         self.shared.state.lock().buffer.capacity().get()
     }
 
-    pub fn resize(&self, new_size: usize) -> AxResult<()> {
+    pub fn resize(&self, new_size: usize) -> StarryResult<()> {
         let new_size = rounded_pipe_size(new_size)?;
 
         let expanded = {
@@ -194,11 +194,11 @@ impl Pipe {
                 return Ok(());
             }
             if new_size / PIPE_BUF < state.buffers.len() {
-                return Err(AxError::ResourceBusy);
+                return Err(StarryError::ResourceBusy);
             }
             let old_buffer = mem::replace(
                 &mut state.buffer,
-                HeapRb::try_new(new_size).map_err(|_| AxError::NoMemory)?,
+                HeapRb::try_new(new_size).map_err(|_| StarryError::NoMemory)?,
             );
             let (left, right) = old_buffer.as_slices();
             let copied = state.buffer.push_slice(left) + state.buffer.push_slice(right);
@@ -217,9 +217,9 @@ impl Pipe {
         &self,
         src: &mut IoSrc,
         on_broken_pipe: impl Fn(),
-    ) -> AxResult<usize> {
+    ) -> StarryResult<usize> {
         if !self.is_write() {
-            return Err(AxError::BadFileDescriptor);
+            return Err(StarryError::BadFileDescriptor);
         }
         let size = src.remaining();
         if size == 0 {
@@ -272,9 +272,9 @@ impl Pipe {
                         return Ok(total_written);
                     }
                     on_broken_pipe();
-                    return Err(AxError::BrokenPipe);
+                    return Err(StarryError::BrokenPipe);
                 }
-                WriteStep::WouldBlock => return Err(AxError::WouldBlock),
+                WriteStep::WouldBlock => return Err(StarryError::WouldBlock),
                 WriteStep::Wrote(written) => written,
             };
 
@@ -286,20 +286,24 @@ impl Pipe {
                     return Ok(total_written);
                 }
             }
-            Err(AxError::WouldBlock)
+            Err(StarryError::WouldBlock)
         }));
 
         // Linux returns committed bytes instead of EINTR once a pipe write
         // has made progress. This also prevents SA_RESTART from replaying the
         // whole userspace buffer after the prefix is already visible.
         match result {
-            Err(AxError::Interrupted) if total_written > 0 => Ok(total_written),
+            Err(StarryError::Interrupted | StarryError::TaskInterrupted(_))
+                if total_written > 0 =>
+            {
+                Ok(total_written)
+            }
             result => result,
         }
     }
 
     #[cfg(axtest)]
-    fn write_without_sigpipe_for_test(&self, src: &mut IoSrc) -> AxResult<usize> {
+    fn write_without_sigpipe_for_test(&self, src: &mut IoSrc) -> StarryResult<usize> {
         // Axtests run in a kernel task without Starry process signal state. The
         // write transition is identical, but SIGPIPE delivery is outside this
         // direct pipe test and cannot be requested from that task.
@@ -329,16 +333,16 @@ impl Pipe {
     }
 }
 
-fn rounded_pipe_size(size: usize) -> AxResult<usize> {
+fn rounded_pipe_size(size: usize) -> StarryResult<usize> {
     let page_count = size.div_ceil(PAGE_SIZE_4K).max(1);
     let page_count = page_count
         .checked_next_power_of_two()
-        .ok_or(AxError::InvalidInput)?;
+        .ok_or(StarryError::InvalidInput)?;
     let size = page_count
         .checked_mul(PAGE_SIZE_4K)
-        .ok_or(AxError::InvalidInput)?;
+        .ok_or(StarryError::InvalidInput)?;
     if size > RING_BUFFER_MAX_SIZE {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
     Ok(size)
 }
@@ -373,7 +377,7 @@ pub(crate) fn pipe_linux_io_semantics_hold_for_test() -> bool {
         let null_write =
             write_end.write_without_sigpipe_for_test(&mut empty_src as &mut dyn super::ReadBuf);
 
-        null_read == Ok(0) && null_write == Ok(0)
+        matches!(null_read, Ok(0)) && matches!(null_write, Ok(0))
     };
 
     let atomic_write_and_poll_match = {
@@ -391,8 +395,8 @@ pub(crate) fn pipe_linux_io_semantics_hold_for_test() -> bool {
         let queued = read_end.shared.state.lock().buffer.occupied_len();
 
         resized
-            && initial_write == Ok(initial.len())
-            && atomic_write == Err(AxError::WouldBlock)
+            && matches!(initial_write, Ok(written) if written == initial.len())
+            && matches!(atomic_write, Err(StarryError::WouldBlock))
             && queued == initial.len()
             && !write_end.poll().contains(IoEvents::OUT)
     };
@@ -430,11 +434,11 @@ pub(crate) fn pipe_linux_io_semantics_hold_for_test() -> bool {
             write_end.write_without_sigpipe_for_test(&mut atomic_src as &mut dyn super::ReadBuf);
 
         resized
-            && initial_write == Ok(initial.len())
-            && initial_read == Ok(consumed.len())
+            && matches!(initial_write, Ok(written) if written == initial.len())
+            && matches!(initial_read, Ok(read) if read == consumed.len())
             && !write_end.poll().contains(IoEvents::OUT)
-            && shrink == Err(AxError::ResourceBusy)
-            && atomic_write == Err(AxError::WouldBlock)
+            && matches!(shrink, Err(StarryError::ResourceBusy))
+            && matches!(atomic_write, Err(StarryError::WouldBlock))
     };
 
     null_io_matches
@@ -455,7 +459,10 @@ pub(crate) fn interrupted_pipe_write_preserves_partial_progress_for_test() -> bo
 
     let initial = [b'a'; PIPE_BUF];
     let mut initial_src: &[u8] = &initial;
-    if write_end.write_without_sigpipe_for_test(&mut initial_src) != Ok(PIPE_BUF) {
+    if !matches!(
+        write_end.write_without_sigpipe_for_test(&mut initial_src),
+        Ok(PIPE_BUF)
+    ) {
         return false;
     }
 
@@ -479,7 +486,7 @@ pub(crate) fn interrupted_pipe_write_preserves_partial_progress_for_test() -> bo
 
     let mut consumed = [0u8; PIPE_BUF];
     let mut dst: &mut [u8] = &mut consumed;
-    if read_end.read(&mut dst) != Ok(PIPE_BUF) {
+    if !matches!(read_end.read(&mut dst), Ok(PIPE_BUF)) {
         writer_task.interrupt();
         writer_task.join();
         return false;
@@ -492,7 +499,7 @@ pub(crate) fn interrupted_pipe_write_preserves_partial_progress_for_test() -> bo
     writer_task.interrupt();
     writer_task.join();
 
-    refilled_and_blocked && *result.lock() == Some(Ok(PIPE_BUF))
+    refilled_and_blocked && matches!(&*result.lock(), Some(Ok(written)) if *written == PIPE_BUF)
 }
 
 #[cfg(axtest)]
@@ -516,9 +523,9 @@ fn raise_pipe() {
 }
 
 impl FileLike for Pipe {
-    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if !self.is_read() {
-            return Err(AxError::BadFileDescriptor);
+            return Err(StarryError::BadFileDescriptor);
         }
         if dst.is_full() {
             return Ok(0);
@@ -543,16 +550,16 @@ impl FileLike for Pipe {
             } else if writers == 0 {
                 Ok(0)
             } else {
-                Err(AxError::WouldBlock)
+                Err(StarryError::WouldBlock)
             }
         }))
     }
 
-    fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
+    fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
         self.write_with_broken_pipe_handler(src, raise_pipe)
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(Kstat {
             mode: S_IFIFO | if self.is_read() { 0o444 } else { 0o222 },
             ..Default::default()
@@ -567,7 +574,7 @@ impl FileLike for Pipe {
         if self.is_read() { O_RDONLY } else { O_WRONLY }
     }
 
-    fn set_nonblocking(&self, nonblocking: bool) -> AxResult {
+    fn set_nonblocking(&self, nonblocking: bool) -> StarryResult {
         self.non_blocking.store(nonblocking, Ordering::Release);
         Ok(())
     }
@@ -576,13 +583,13 @@ impl FileLike for Pipe {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+    fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
         match cmd {
             FIONREAD => {
                 (arg as *mut u32).vm_write(self.shared.state.lock().buffer.occupied_len() as u32)?;
                 Ok(0)
             }
-            _ => Err(AxError::NotATty),
+            _ => Err(StarryError::NotATty),
         }
     }
 }

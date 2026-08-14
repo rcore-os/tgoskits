@@ -3,10 +3,11 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_errno::{AxError, AxResult};
-
 use super::epoll::EpollInner;
-use crate::sync::{IrqMutex, Mutex, MutexGuard};
+use crate::{
+    StarryError, StarryResult,
+    sync::{IrqMutex, Mutex, MutexGuard},
+};
 
 const MAX_NESTED_EPOLL_EDGES: usize = 4;
 
@@ -47,24 +48,24 @@ pub(super) fn lock_epoll_topology() -> MutexGuard<'static, ()> {
 pub(super) fn prepare_nested_link(
     source: &Arc<EpollInner>,
     target: &Arc<EpollInner>,
-) -> AxResult<EpollTopologyLink> {
+) -> StarryResult<EpollTopologyLink> {
     if Arc::ptr_eq(source, target) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let downstream = scan_epoll_topology(target, TopologyDirection::Children, Some(source))?;
     if downstream.reached_target {
-        return Err(AxError::FilesystemLoop);
+        return Err(StarryError::FilesystemLoop);
     }
     let upstream = scan_epoll_topology(source, TopologyDirection::Parents, None)?;
     if upstream.max_depth + 1 + downstream.max_depth > MAX_NESTED_EPOLL_EDGES {
-        return Err(AxError::FilesystemLoop);
+        return Err(StarryError::FilesystemLoop);
     }
 
     let edge_id = NEXT_EPOLL_EDGE_ID
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .map(EpollEdgeId)
-        .map_err(|_| AxError::NoMemory)?;
+        .map_err(|_| StarryError::NoMemory)?;
     Ok(EpollTopologyLink {
         id: edge_id,
         node: Arc::downgrade(target),
@@ -75,19 +76,19 @@ pub(super) fn prepare_nested_link(
 pub(super) fn reserve_nested_link(
     source: &Arc<EpollInner>,
     target: &Arc<EpollInner>,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     source
         .topology
         .children
         .lock()
         .try_reserve(1)
-        .map_err(|_| AxError::NoMemory)?;
+        .map_err(|_| StarryError::NoMemory)?;
     target
         .topology
         .parents
         .lock()
         .try_reserve(1)
-        .map_err(|_| AxError::NoMemory)?;
+        .map_err(|_| StarryError::NoMemory)?;
     Ok(())
 }
 
@@ -124,7 +125,7 @@ fn scan_epoll_topology(
     start: &Arc<EpollInner>,
     direction: TopologyDirection,
     target: Option<&Arc<EpollInner>>,
-) -> AxResult<TopologyScan> {
+) -> StarryResult<TopologyScan> {
     let mut pending = Vec::new();
     let mut visited_depths = Vec::new();
     push_topology_item(&mut pending, (Arc::clone(start), 0))?;
@@ -139,7 +140,7 @@ fn scan_epoll_topology(
             };
             let next_depth = depth + 1;
             if next_depth > MAX_NESTED_EPOLL_EDGES {
-                return Err(AxError::FilesystemLoop);
+                return Err(StarryError::FilesystemLoop);
             }
             if target.is_some_and(|target| Arc::ptr_eq(&next, target)) {
                 return Ok(TopologyScan {
@@ -171,7 +172,7 @@ fn scan_epoll_topology(
 }
 
 impl EpollTopology {
-    fn snapshot_links(&self, direction: TopologyDirection) -> AxResult<Vec<EpollTopologyLink>> {
+    fn snapshot_links(&self, direction: TopologyDirection) -> StarryResult<Vec<EpollTopologyLink>> {
         let links = match direction {
             TopologyDirection::Parents => &self.parents,
             TopologyDirection::Children => &self.children,
@@ -180,7 +181,9 @@ impl EpollTopology {
         loop {
             let len = links.lock().len();
             let mut snapshot = Vec::new();
-            snapshot.try_reserve(len).map_err(|_| AxError::NoMemory)?;
+            snapshot
+                .try_reserve(len)
+                .map_err(|_| StarryError::NoMemory)?;
 
             let mut links = links.lock();
             links.retain(|link| link.node.strong_count() != 0);
@@ -193,8 +196,8 @@ impl EpollTopology {
     }
 }
 
-fn push_topology_item<T>(items: &mut Vec<T>, item: T) -> AxResult<()> {
-    items.try_reserve(1).map_err(|_| AxError::NoMemory)?;
+fn push_topology_item<T>(items: &mut Vec<T>, item: T) -> StarryResult<()> {
+    items.try_reserve(1).map_err(|_| StarryError::NoMemory)?;
     items.push(item);
     Ok(())
 }

@@ -80,7 +80,7 @@ fn new_ext4(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Files
 
 #[cfg(all(any(feature = "ext4", feature = "fat"), not(feature = "ext4")))]
 fn new_ext4(_dev: Box<dyn FsBlockDevice>, _region: BlockRegion) -> VfsResult<Filesystem> {
-    Err(ax_errno::AxError::Unsupported)
+    Err(axfs_ng_vfs::VfsError::Unsupported)
 }
 
 #[cfg(feature = "fat")]
@@ -90,5 +90,5 @@ fn new_fat(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesy
 
 #[cfg(all(any(feature = "ext4", feature = "fat"), not(feature = "fat")))]
 fn new_fat(_dev: Box<dyn FsBlockDevice>, _region: BlockRegion) -> VfsResult<Filesystem> {
-    Err(ax_errno::AxError::Unsupported)
+    Err(axfs_ng_vfs::VfsError::Unsupported)
 }

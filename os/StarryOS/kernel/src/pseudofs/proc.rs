@@ -1257,7 +1257,7 @@ impl ProcMemFile {
         let page_end = end.align_up_4k();
         let aspace = self.proc_data.aspace();
         let mut aspace = aspace.lock();
-        aspace.populate_area(page_start, page_end - page_start, flags)
+        Ok(aspace.populate_area(page_start, page_end - page_start, flags)?)
     }
 }
 
@@ -2234,14 +2234,14 @@ impl<W: core::fmt::Write> SeqWriter<W> {
 impl<W: core::fmt::Write> SeqWriter<W> {
     fn write_str(&mut self, s: &str) -> VfsResult<()> {
         self.col += s.len();
-        self.inner.write_str(s)?;
+        self.inner.write_str(s).map_err(|_| VfsError::Io)?;
         Ok(())
     }
 
     #[allow(unused)]
     fn write_char(&mut self, c: char) -> VfsResult<()> {
         self.col += c.len_utf8();
-        self.inner.write_char(c)?;
+        self.inner.write_char(c).map_err(|_| VfsError::Io)?;
         Ok(())
     }
 
@@ -2249,7 +2249,7 @@ impl<W: core::fmt::Write> SeqWriter<W> {
         if self.col < target {
             let pad = target - self.col;
             for _ in 0..pad {
-                self.inner.write_char(' ')?;
+                self.inner.write_char(' ').map_err(|_| VfsError::Io)?;
             }
             self.col = target;
         }
@@ -2257,7 +2257,7 @@ impl<W: core::fmt::Write> SeqWriter<W> {
     }
 
     fn newline(&mut self) -> VfsResult<()> {
-        self.inner.write_char('\n')?;
+        self.inner.write_char('\n').map_err(|_| VfsError::Io)?;
         self.col = 0;
         Ok(())
     }

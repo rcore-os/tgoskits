@@ -21,8 +21,70 @@ pub use node::*;
 pub use poll::*;
 pub use types::*;
 
-pub type VfsError = ax_errno::AxError;
-pub type VfsResult<T> = Result<T, VfsError>;
+/// Errors owned by the virtual-filesystem domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum VfsError {
+    #[error("filesystem object already exists")]
+    AlreadyExists,
+    #[error("bad filesystem address")]
+    BadAddress,
+    #[error("bad file descriptor")]
+    BadFileDescriptor,
+    #[error("filesystem is in an invalid state")]
+    BadState,
+    #[error("operation crosses filesystem devices")]
+    CrossesDevices,
+    #[error("directory is not empty")]
+    DirectoryNotEmpty,
+    #[error("filesystem traversal loop detected")]
+    FilesystemLoop,
+    #[error("filesystem file is too large")]
+    FileTooLarge,
+    #[error("filesystem data is invalid")]
+    InvalidData,
+    #[error("filesystem input is invalid")]
+    InvalidInput,
+    #[error("filesystem operation was interrupted")]
+    Interrupted,
+    #[error("filesystem I/O failed")]
+    Io,
+    #[error("filesystem object is a directory")]
+    IsADirectory,
+    #[error("filesystem name is too long")]
+    NameTooLong,
+    #[error("filesystem allocation failed")]
+    NoMemory,
+    #[error("filesystem device does not exist")]
+    NoSuchDevice,
+    #[error("filesystem device or address does not exist")]
+    NoSuchDeviceOrAddress,
+    #[error("filesystem object is not a directory")]
+    NotADirectory,
+    #[error("filesystem object is not a tty")]
+    NotATty,
+    #[error("filesystem object was not found")]
+    NotFound,
+    #[error("filesystem operation is not permitted")]
+    OperationNotPermitted,
+    #[error("filesystem operation is not supported by this object")]
+    OperationNotSupported,
+    #[error("filesystem permission denied")]
+    PermissionDenied,
+    #[error("filesystem is read-only")]
+    ReadOnlyFilesystem,
+    #[error("filesystem resource is busy")]
+    ResourceBusy,
+    #[error("filesystem storage is full")]
+    StorageFull,
+    #[error("filesystem operation timed out")]
+    TimedOut,
+    #[error("filesystem operation is not implemented")]
+    Unsupported,
+    #[error("filesystem operation would block")]
+    WouldBlock,
+}
+
+pub type VfsResult<T = ()> = Result<T, VfsError>;
 
 pub type Mutex<T> = ax_sync::SpinLock<T>;
 pub type MutexGuard<'a, T> = ax_sync::SpinLockGuard<'a, T>;

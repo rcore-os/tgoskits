@@ -5,7 +5,6 @@ extern crate alloc;
 
 use ax_cpumask as _;
 use ax_driver as _;
-use ax_errno as _;
 use ax_hal as _;
 use ax_io as _;
 use ax_lazyinit as _;

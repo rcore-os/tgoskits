@@ -15,7 +15,6 @@ vsock = ["dep:rdif-vsock"]
 axtest = { workspace = true, optional = true }
 async-channel = { version = "2.5", default-features = false }
 async-trait = "0.1"
-ax-errno = { workspace = true }
 ax-hal = { workspace = true }
 ax-io = { workspace = true }
 ax-lazyinit.workspace = true
@@ -32,6 +31,8 @@ log = { workspace = true }
 rd-net = { workspace = true }
 rdif-vsock = { workspace = true, optional = true }
 ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
+syscalls.workspace = true
+thiserror.workspace = true
 
 [dependencies.smoltcp]
 workspace = true

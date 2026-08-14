@@ -31,7 +31,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_arch = "aarch64")]
 use ax_alloc::GlobalPage;
-use ax_errno::{AxError, AxResult};
 #[cfg(target_arch = "aarch64")]
 use ax_hal::mem::virt_to_phys;
 #[cfg(target_arch = "aarch64")]
@@ -52,6 +51,7 @@ use super::PerfEventOps;
 use super::PerfReadValues;
 #[cfg(target_arch = "aarch64")]
 use super::sampling::{self, SampleSlot};
+use crate::{StarryError, StarryResult};
 
 /// Dynamically-assigned `perf_event_attr.type` for the ARM PMUv3 CPU PMU,
 /// exposed at `/sys/bus/event_source/devices/armv8_pmuv3_0/type`.
@@ -281,19 +281,20 @@ fn start_sampling_notify_worker(
 /// strong `Arc<GlobalPage>` (the caller threads it into the VMA retainer and/or
 /// keeps an anchor), the ring's kernel vaddr, and its physical start.
 #[cfg(target_arch = "aarch64")]
-fn alloc_sampling_ring(len: usize) -> AxResult<(Arc<GlobalPage>, usize, PhysAddr)> {
+fn alloc_sampling_ring(len: usize) -> StarryResult<(Arc<GlobalPage>, usize, PhysAddr)> {
     // libbpf/`perf` require `(1 + 2^N) * PAGE_SIZE`: one header page plus a
     // power-of-two-page data ring. Reject anything else.
     if len == 0 || !len.is_multiple_of(ax_memory_addr::PAGE_SIZE_4K) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let num_pages = len / ax_memory_addr::PAGE_SIZE_4K;
     if num_pages < 2 || !(num_pages - 1).is_power_of_two() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     // Allocate and zero the contiguous ring pages (mirror `bpf.rs`).
-    let mut pages = GlobalPage::alloc_contiguous(num_pages, ax_memory_addr::PAGE_SIZE_4K)?;
+    let mut pages = GlobalPage::alloc_contiguous(num_pages, ax_memory_addr::PAGE_SIZE_4K)
+        .map_err(|_| StarryError::NoMemory)?;
     pages.zero();
     let kvirt = pages.start_vaddr();
     let paddr = virt_to_phys(kvirt);
@@ -409,11 +410,15 @@ impl HwPerfEvent {
     /// updated after this, so `lock` stays 0 (the userspace seqlock reads once).
     /// EL0 read access to the counters is enabled globally in
     /// [`ax_cpu::pmu::init_cpu`] via `PMUSERENR_EL0`.
-    fn device_mmap_rdpmc(&self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+    fn device_mmap_rdpmc(
+        &self,
+        len: usize,
+    ) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         if len < ax_memory_addr::PAGE_SIZE_4K {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
-        let mut pages = GlobalPage::alloc_contiguous(1, ax_memory_addr::PAGE_SIZE_4K)?;
+        let mut pages = GlobalPage::alloc_contiguous(1, ax_memory_addr::PAGE_SIZE_4K)
+            .map_err(|_| StarryError::NoMemory)?;
         pages.zero();
         let kvirt = pages.start_vaddr();
         let paddr = virt_to_phys(kvirt);
@@ -555,7 +560,7 @@ fn ring_has_data(ring: &RingState) -> bool {
 
 #[cfg(target_arch = "aarch64")]
 impl PerfEventOps for HwPerfEvent {
-    fn enable(&mut self) -> AxResult<()> {
+    fn enable(&mut self) -> StarryResult<()> {
         // Per-task: just record userspace intent. The target task's next
         // `perf_sched_in` programs the counter onto HW (or an immediate one if
         // it is the running task at the next switch).
@@ -572,7 +577,7 @@ impl PerfEventOps for HwPerfEvent {
             let Counter::Programmable(n) = self.counter else {
                 // Should be unreachable: sampling always takes a programmable
                 // counter. Fail loudly rather than silently never sampling.
-                return Err(AxError::Unsupported);
+                return Err(StarryError::Unsupported);
             };
             let period = sampling.period;
             let sample_type = sampling.sample_type;
@@ -625,7 +630,7 @@ impl PerfEventOps for HwPerfEvent {
         Ok(())
     }
 
-    fn disable(&mut self) -> AxResult<()> {
+    fn disable(&mut self) -> StarryResult<()> {
         // Per-task: clear userspace intent. The next `perf_sched_out` folds the
         // live slice and stops the HW counter; future slices skip it.
         if let Some(ptc) = &self.per_task {
@@ -651,7 +656,7 @@ impl PerfEventOps for HwPerfEvent {
         Ok(())
     }
 
-    fn reset(&mut self) -> AxResult<()> {
+    fn reset(&mut self) -> StarryResult<()> {
         // Per-task: zero the accumulated count only (Linux `PERF_EVENT_IOC_RESET`
         // semantics); timing is preserved.
         if let Some(ptc) = &self.per_task {
@@ -665,7 +670,7 @@ impl PerfEventOps for HwPerfEvent {
         Ok(())
     }
 
-    fn read_values(&mut self) -> AxResult<PerfReadValues> {
+    fn read_values(&mut self) -> StarryResult<PerfReadValues> {
         // Per-task: the accumulated count + live slice lives on the shared
         // `PerTaskCounter`; serialize it per this fd's `read_format`.
         if let Some(ptc) = &self.per_task {
@@ -724,7 +729,7 @@ impl PerfEventOps for HwPerfEvent {
         ring_vaddr: usize,
         ring_len: usize,
         anchor: Arc<dyn Any + Send + Sync>,
-    ) -> AxResult<()> {
+    ) -> StarryResult<()> {
         // Per-task sampling source: stash the redirect on the shared counter so
         // the scheduler hook arms this counter to write into the target ring.
         if let Some(ptc) = &self.per_task {
@@ -740,7 +745,7 @@ impl PerfEventOps for HwPerfEvent {
         Ok(())
     }
 
-    fn device_mmap(&mut self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+    fn device_mmap(&mut self, len: usize) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         // Per-task sampling: the ring + notify/poll machinery live on the shared
         // `PerTaskCounter` (the scheduler hook builds the IRQ slot from there).
         // Allocate the ring, spawn the notify worker, and hand both to the ptc.
@@ -759,7 +764,7 @@ impl PerfEventOps for HwPerfEvent {
         // abandoned/munmap'd previous attempt does not count (its pages are
         // already freed), so the fd stays mmap-able. Mirrors `bpf.rs`.
         if sampling.ring.as_ref().is_some_and(RingState::is_mapped) {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
 
         // Allocate + zero + header-init the ring (shared with the per-task path).
@@ -793,14 +798,14 @@ impl PerfEventOps for HwPerfEvent {
 fn device_mmap_per_task(
     ptc: &Arc<super::task::PerTaskCounter>,
     len: usize,
-) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
     // Only sampling per-task events have a ring; counting events reject mmap.
     if !ptc.is_sampling() {
-        return Err(AxError::Unsupported);
+        return Err(StarryError::Unsupported);
     }
     // One live ring per fd: refuse if a ring is already mapped.
     if ptc.ring_mapped() {
-        return Err(AxError::ResourceBusy);
+        return Err(StarryError::ResourceBusy);
     }
 
     let (pages, ring_vaddr, paddr) = alloc_sampling_ring(len)?;
@@ -852,10 +857,10 @@ fn resolve_sampling(raw: u64, is_freq: bool) -> (u32, u32) {
 /// value reset to 0) but left disabled: the attr carries `disabled = 1`, and
 /// the caller drives it with `ioctl(PERF_EVENT_IOC_ENABLE)`.
 #[cfg(target_arch = "aarch64")]
-pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEvent> {
+pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> StarryResult<HwPerfEvent> {
     // No PMUv3 → no hardware events.
     let Some(info) = ax_hal::pmu::info() else {
-        return Err(AxError::Unsupported);
+        return Err(StarryError::Unsupported);
     };
 
     // Idempotent per-CPU global enable (`PMCR_EL0.E`).
@@ -897,13 +902,13 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
                  only scalar fields)",
                 attr.sample_type
             );
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         }
         // A fixed period must fit the 32-bit programmable counter (the preload is
         // 32-bit). Frequency mode carries a (small) rate here, not a period.
         if !is_freq && raw > u32::MAX as u64 {
             warn!("perf_event_open: sample_period {raw} exceeds 32-bit counter");
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
     }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
@@ -915,7 +920,7 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
         if attr.config == perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u64 && !is_sampling {
             // Counting CPU_CYCLES: the dedicated 64-bit cycle counter.
             let Some(counter) = ALLOC.lock().alloc_cycle() else {
-                return Err(AxError::NoMemory);
+                return Err(StarryError::NoMemory);
             };
             // `exclude_*` map onto the cycle filter; `configure` also resets.
             ax_cpu::pmu::cycles::configure(exclude_user, exclude_kernel);
@@ -928,7 +933,7 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
                     "perf_event_open: unsupported hardware config {:#x}",
                     attr.config
                 );
-                return Err(AxError::Unsupported);
+                return Err(StarryError::Unsupported);
             };
             alloc_programmable(event, exclude_user, exclude_kernel)?
         }
@@ -949,7 +954,7 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
             "perf_event_open: unsupported hardware type {:#x}",
             attr.type_
         );
-        return Err(AxError::Unsupported);
+        return Err(StarryError::Unsupported);
     };
 
     // Build sampling machinery for sampling events. The deferred poll worker is
@@ -1013,12 +1018,12 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
 /// before enabling). The returned `HwPerfEvent` carries no `sampling` state of
 /// its own — for per-task events the ring/notify live on the `PerTaskCounter`.
 #[cfg(target_arch = "aarch64")]
-fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEvent> {
+fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> StarryResult<HwPerfEvent> {
     use crate::task::AsThread;
 
     // Resolve the target task and its `Thread` (kernel tasks have none).
     let task = crate::task::get_task(pid as u32)?;
-    let thr = task.try_as_thread().ok_or(AxError::NoSuchProcess)?;
+    let thr = task.try_as_thread().ok_or(StarryError::NoSuchProcess)?;
 
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;
@@ -1042,11 +1047,11 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
                  PERF_SAMPLE_IP and only scalar fields)",
                 attr.sample_type
             );
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         }
         if !is_freq && raw > u32::MAX as u64 {
             warn!("perf_event_open: per-task sample_period {raw} exceeds 32-bit");
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
     }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
@@ -1061,7 +1066,7 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
                     "perf_event_open: unsupported per-task hardware config {:#x}",
                     attr.config
                 );
-                return Err(AxError::Unsupported);
+                return Err(StarryError::Unsupported);
             }
         }
     } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
@@ -1073,7 +1078,7 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
             "perf_event_open: unsupported per-task hardware type {:#x}",
             attr.type_
         );
-        return Err(AxError::Unsupported);
+        return Err(StarryError::Unsupported);
     };
 
     if !ax_cpu::pmu::event_supported(event) {
@@ -1081,13 +1086,13 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
             "perf_event_open: per-task ARM event {:#x} not implemented on this CPU",
             event
         );
-        return Err(AxError::Unsupported);
+        return Err(StarryError::Unsupported);
     }
 
     // Reserve a programmable counter slot, but do NOT configure/enable HW now:
     // the scheduler hook configures it per slice when the target runs.
     let Some(n) = alloc_programmable_counter() else {
-        return Err(AxError::NoMemory);
+        return Err(StarryError::NoMemory);
     };
 
     // `disabled = 0` ⇒ count from the next sched-in; `disabled = 1` ⇒ wait for
@@ -1141,16 +1146,20 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
 /// IMPLEMENTATION DEFINED events (`>= 0x40`) cannot be validated and are let
 /// through. The counter is configured but left disabled.
 #[cfg(target_arch = "aarch64")]
-fn alloc_programmable(event: u16, exclude_user: bool, exclude_kernel: bool) -> AxResult<Counter> {
+fn alloc_programmable(
+    event: u16,
+    exclude_user: bool,
+    exclude_kernel: bool,
+) -> StarryResult<Counter> {
     if !ax_cpu::pmu::event_supported(event) {
         warn!(
             "perf_event_open: ARM event {:#x} not implemented on this CPU",
             event
         );
-        return Err(AxError::Unsupported);
+        return Err(StarryError::Unsupported);
     }
     let Some(Counter::Programmable(n)) = ALLOC.lock().alloc_counter() else {
-        return Err(AxError::NoMemory);
+        return Err(StarryError::NoMemory);
     };
     // `configure` applies the event + filter and resets the counter to 0.
     ax_cpu::pmu::counter::configure(n, event, exclude_user, exclude_kernel);
@@ -1177,12 +1186,12 @@ impl Pollable for HwPerfEvent {
 
 #[cfg(not(target_arch = "aarch64"))]
 impl PerfEventOps for HwPerfEvent {
-    fn enable(&mut self) -> AxResult<()> {
-        Err(AxError::Unsupported)
+    fn enable(&mut self) -> StarryResult<()> {
+        Err(StarryError::Unsupported)
     }
 
-    fn disable(&mut self) -> AxResult<()> {
-        Err(AxError::Unsupported)
+    fn disable(&mut self) -> StarryResult<()> {
+        Err(StarryError::Unsupported)
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
@@ -1192,6 +1201,6 @@ impl PerfEventOps for HwPerfEvent {
 
 /// Non-aarch64 fallback: no hardware PMU support outside ARM PMUv3.
 #[cfg(not(target_arch = "aarch64"))]
-pub fn perf_event_open_hw(_attr: &perf_event_attr, _pid: i32) -> AxResult<HwPerfEvent> {
-    Err(AxError::Unsupported)
+pub fn perf_event_open_hw(_attr: &perf_event_attr, _pid: i32) -> StarryResult<HwPerfEvent> {
+    Err(StarryError::Unsupported)
 }

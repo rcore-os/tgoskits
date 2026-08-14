@@ -17,8 +17,11 @@ extern crate alloc;
 #[macro_use]
 pub mod utils;
 
+mod error;
 mod imp;
 mod sync;
+
+pub use error::{PosixError, PosixResult};
 
 /// Platform-specific constants and parameters.
 pub mod config {

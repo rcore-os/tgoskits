@@ -1,6 +1,5 @@
 use alloc::sync::Arc;
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{AxTaskExt, current, spawn_task_with};
@@ -12,6 +11,7 @@ use starry_signal::Signo;
 use starry_vm::VmMutPtr;
 
 use crate::{
+    StarryError, StarryResult,
     file::{FD_TABLE, FileLike, PidFd, close_file_like},
     mm::copy_from_kernel,
     sync::SpinLock,
@@ -122,43 +122,43 @@ pub struct CloneArgs {
 }
 
 impl CloneArgs {
-    fn validate(&self) -> AxResult<()> {
+    fn validate(&self) -> StarryResult<()> {
         let Self {
             flags, exit_signal, ..
         } = self;
 
         if *exit_signal > 0 && flags.contains(CloneFlags::THREAD) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::THREAD)
             && !flags.contains(CloneFlags::VM | CloneFlags::SIGHAND)
         {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::SIGHAND) && !flags.contains(CloneFlags::VM) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::VFORK | CloneFlags::THREAD) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::PIDFD | CloneFlags::DETACHED) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::NEWNS | CloneFlags::FS) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         // A thread must remain in the PID namespace of its thread group.
         // CLONE_PARENT only changes parentage, so Linux permits it with
         // CLONE_NEWPID. clone3 separately requires a zero exit signal when
         // CLONE_PARENT is present.
         if flags.contains(CloneFlags::NEWPID | CloneFlags::THREAD) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         Ok(())
     }
 
-    pub fn do_clone(self, uctx: &UserContext) -> AxResult<isize> {
+    pub fn do_clone(self, uctx: &UserContext) -> StarryResult<isize> {
         self.validate()?;
 
         let Self {
@@ -177,7 +177,7 @@ impl CloneArgs {
         );
 
         let exit_signal = if exit_signal > 0 {
-            Some(Signo::from_repr(exit_signal as u8).ok_or(AxError::InvalidInput)?)
+            Some(Signo::from_repr(exit_signal as u8).ok_or(StarryError::InvalidInput)?)
         } else {
             None
         };
@@ -215,7 +215,7 @@ impl CloneArgs {
         let curr_thread = curr.as_thread();
         let old_proc_data = &curr_thread.proc_data;
         if flags.contains(CloneFlags::NEWCGROUP) && !curr_thread.cred().has_cap_sys_admin() {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
 
         let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
@@ -239,7 +239,10 @@ impl CloneArgs {
             old_proc_data.clone()
         } else {
             let proc = if flags.contains(CloneFlags::PARENT) {
-                old_proc_data.proc.parent().ok_or(AxError::InvalidInput)?
+                old_proc_data
+                    .proc
+                    .parent()
+                    .ok_or(StarryError::InvalidInput)?
             } else {
                 old_proc_data.proc.clone()
             }
@@ -461,10 +464,10 @@ impl CloneArgs {
         let mut cgroup_guard = if flags.contains(CloneFlags::THREAD) {
             None
         } else {
-            Some(
-                crate::cgroup::begin_fork(new_proc_data.cgroup.read().clone(), tid as u32)
-                    .map_err(crate::cgroup::cgroup_error)?,
-            )
+            Some(crate::cgroup::begin_fork(
+                new_proc_data.cgroup.read().clone(),
+                tid as u32,
+            )?)
         };
         if let Some(guard) = &mut cgroup_guard {
             guard.commit();
@@ -538,7 +541,7 @@ pub fn sys_clone(
     #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))] child_tid: usize,
     tls: usize,
     #[cfg(not(any(target_arch = "x86_64", target_arch = "loongarch64")))] child_tid: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     const FLAG_MASK: u32 = 0xff;
     let clone_flags = CloneFlags::from_bits_truncate((flags & !FLAG_MASK) as u64);
     let exit_signal = (flags & FLAG_MASK) as u64;
@@ -546,7 +549,7 @@ pub fn sys_clone(
     trace_sys_clone(clone_flags.bits() as _, stack, parent_tid);
 
     if clone_flags.contains(CloneFlags::PIDFD | CloneFlags::PARENT_SETTID) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let args = CloneArgs {
@@ -568,12 +571,12 @@ pub fn sys_clone(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_fork(uctx: &UserContext) -> AxResult<isize> {
+pub fn sys_fork(uctx: &UserContext) -> StarryResult<isize> {
     sys_clone(uctx, SIGCHLD, 0, 0, 0, 0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_vfork(uctx: &UserContext) -> AxResult<isize> {
+pub fn sys_vfork(uctx: &UserContext) -> StarryResult<isize> {
     let flags = (CloneFlags::VFORK | CloneFlags::VM).bits() as u32 | SIGCHLD;
     sys_clone(uctx, flags, 0, 0, 0, 0)
 }

@@ -1,6 +1,6 @@
 use core::ffi::{c_char, c_int};
 
-use ax_errno::LinuxError;
+use syscalls::Errno;
 
 /// The global errno variable.
 #[cfg_attr(feature = "tls", thread_local)]
@@ -29,9 +29,7 @@ pub unsafe extern "C" fn strerror(e: c_int) -> *mut c_char {
     let err_str = if e == 0 {
         "Success"
     } else {
-        LinuxError::try_from(e)
-            .map(|e| e.as_str())
-            .unwrap_or("Unknown error")
+        Errno::new(e).description().unwrap_or("Unknown error")
     };
     unsafe {
         strerror_buf[..err_str.len()].copy_from_slice(err_str.as_bytes());

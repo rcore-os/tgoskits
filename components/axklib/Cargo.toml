@@ -13,13 +13,13 @@ license = "Apache-2.0"
 
 [dependencies]
 ax-alloc = { workspace = true }
-ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 dma-api = { workspace = true }
 irq-framework = { workspace = true }
 mbarrier = "0.1"
 mmio-api = { workspace = true }
 trait-ffi = "0.2"
+thiserror.workspace = true
 
 [features]
 default = []

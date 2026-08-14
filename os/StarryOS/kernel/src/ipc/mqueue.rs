@@ -21,7 +21,6 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use ax_runtime::hal::time::wall_time;
 use ax_task::future::{block_on, poll_io, timeout_at_wall};
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -33,6 +32,7 @@ use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
 
 use crate::{
+    Errno, StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc, Kstat},
     sync::{IrqMutex, Mutex},
     task::{AsThread, send_signal_to_process},
@@ -164,15 +164,15 @@ static MQ_USER_BYTES: Mutex<BTreeMap<u32, u64>> = Mutex::new(BTreeMap::new());
 /// soft limit). Returns `EMFILE` without mutating state when the charge would
 /// exceed the limit or overflow, mirroring `mqueue_get_inode`
 /// (ipc/mqueue.c:373-381): the increment is rolled back and `-EMFILE` returned.
-fn charge_user_bytes(uid: u32, bytes: u64, limit: u64) -> AxResult<()> {
+fn charge_user_bytes(uid: u32, bytes: u64, limit: u64) -> StarryResult<()> {
     let mut map = MQ_USER_BYTES.lock();
     let cur = map.get(&uid).copied().unwrap_or(0);
-    let next = cur.checked_add(bytes).ok_or(LinuxError::EMFILE)?;
+    let next = cur.checked_add(bytes).ok_or(Errno::EMFILE)?;
     // Linux fails when the post-increment total hits LONG_MAX or exceeds the
     // rlimit; here `next > limit` covers the rlimit test and the checked_add
     // above covers the wrap.
     if next > limit {
-        return Err(LinuxError::EMFILE.into());
+        return Err(Errno::EMFILE.into());
     }
     map.insert(uid, next);
     Ok(())
@@ -196,8 +196,13 @@ fn refund_user_bytes(uid: u32, bytes: u64) {
 /// refunded on drop). Returns `EMFILE` when the charge would exceed the limit
 /// or overflow, exactly as Linux `mqueue_get_inode` does before allocating the
 /// inode (ipc/mqueue.c:367-381).
-pub fn charge_open_bytes(uid: u32, limit: u64, max_msg: usize, msg_size: usize) -> AxResult<u64> {
-    let bytes = mq_bytes(max_msg, msg_size).ok_or(LinuxError::EMFILE)?;
+pub fn charge_open_bytes(
+    uid: u32,
+    limit: u64,
+    max_msg: usize,
+    msg_size: usize,
+) -> StarryResult<u64> {
+    let bytes = mq_bytes(max_msg, msg_size).ok_or(Errno::EMFILE)?;
     charge_user_bytes(uid, bytes, limit)?;
     Ok(bytes)
 }
@@ -456,7 +461,7 @@ impl MessageQueue {
         access_mode: u32,
         fsuid: u32,
         is_group_member: impl Fn(u32) -> bool,
-    ) -> AxResult<()> {
+    ) -> StarryResult<()> {
         // Select the permission triad: owner (fsuid == queue uid), then group
         // (fsgid or a supplementary group == queue gid), else other. Linux
         // walks the same order in `acl_permission_check`.
@@ -472,7 +477,7 @@ impl MessageQueue {
         let need_read = access_mode == O_RDONLY || access_mode == O_RDWR;
         let need_write = access_mode == O_WRONLY || access_mode == O_RDWR;
         if (need_read && granted & 0o4 == 0) || (need_write && granted & 0o2 == 0) {
-            return Err(LinuxError::EACCES.into());
+            return Err(Errno::EACCES.into());
         }
         Ok(())
     }
@@ -502,21 +507,21 @@ impl MessageQueue {
         priority: u32,
         deadline: Option<core::time::Duration>,
         non_blocking: bool,
-    ) -> AxResult<()> {
+    ) -> StarryResult<()> {
         if priority >= MQ_PRIO_MAX {
-            return Err(LinuxError::EINVAL.into());
+            return Err(Errno::EINVAL.into());
         }
         {
             let inner = self.inner.lock();
             if data.len() > inner.msg_size {
-                return Err(LinuxError::EMSGSIZE.into());
+                return Err(Errno::EMSGSIZE.into());
             }
         }
 
         let op = || {
             let mut inner = self.inner.lock();
             if inner.len >= inner.max_msg {
-                return Err(AxError::WouldBlock);
+                return Err(StarryError::WouldBlock);
             }
             let msg = Message {
                 priority,
@@ -561,7 +566,7 @@ impl MessageQueue {
             deadline,
             poll_io(self, IoEvents::OUT, non_blocking, op),
         ))
-        .map_err(|_| AxError::from(LinuxError::ETIMEDOUT))?
+        .map_err(|_| StarryError::from(Errno::ETIMEDOUT))?
     }
 
     /// Receive the highest-priority, earliest message. Blocks while empty
@@ -575,11 +580,11 @@ impl MessageQueue {
         max_len: usize,
         deadline: Option<core::time::Duration>,
         non_blocking: bool,
-    ) -> AxResult<(Vec<u8>, u32)> {
+    ) -> StarryResult<(Vec<u8>, u32)> {
         {
             let inner = self.inner.lock();
             if max_len < inner.msg_size {
-                return Err(LinuxError::EMSGSIZE.into());
+                return Err(Errno::EMSGSIZE.into());
             }
         }
 
@@ -615,7 +620,7 @@ impl MessageQueue {
                     if !inner.recv_waiters.iter().any(|w| Arc::ptr_eq(w, &waiter)) {
                         inner.recv_waiters.push_back(waiter.clone());
                     }
-                    Err(AxError::WouldBlock)
+                    Err(StarryError::WouldBlock)
                 }
             }
         };
@@ -628,7 +633,7 @@ impl MessageQueue {
             poll_io(self, IoEvents::IN, non_blocking, op),
         )) {
             Ok(inner_result) => inner_result,
-            Err(_) => Err(AxError::from(LinuxError::ETIMEDOUT)),
+            Err(_) => Err(StarryError::from(Errno::ETIMEDOUT)),
         };
 
         match result {
@@ -659,7 +664,7 @@ impl MessageQueue {
     /// register and return `EBUSY` if the slot is already taken. Registering on
     /// an already non-empty queue is allowed; Linux only fires on the empty →
     /// non-empty edge, so it simply waits for the next such transition.
-    pub fn register_notify(&self, req: NotifyRequest, pid: Pid) -> AxResult<()> {
+    pub fn register_notify(&self, req: NotifyRequest, pid: Pid) -> StarryResult<()> {
         let mut inner = self.inner.lock();
         match req {
             NotifyRequest::Unregister => {
@@ -683,7 +688,7 @@ impl MessageQueue {
             }
             NotifyRequest::Signal { signo, sigev_value } => {
                 if inner.notify.is_some() {
-                    return Err(LinuxError::EBUSY.into());
+                    return Err(Errno::EBUSY.into());
                 }
                 inner.notify = Some(Notification {
                     notify: SIGEV_SIGNAL,
@@ -697,7 +702,7 @@ impl MessageQueue {
             }
             NotifyRequest::None => {
                 if inner.notify.is_some() {
-                    return Err(LinuxError::EBUSY.into());
+                    return Err(Errno::EBUSY.into());
                 }
                 inner.notify = Some(Notification {
                     notify: SIGEV_NONE,
@@ -711,7 +716,7 @@ impl MessageQueue {
             }
             NotifyRequest::Thread { sock, cookie } => {
                 if inner.notify.is_some() {
-                    return Err(LinuxError::EBUSY.into());
+                    return Err(Errno::EBUSY.into());
                 }
                 inner.notify = Some(Notification {
                     notify: SIGEV_THREAD,
@@ -920,16 +925,16 @@ fn notify_thread_teardown(n: &Notification) {
 }
 
 impl FileLike for MessageQueue {
-    fn read(&self, _dst: &mut IoDst) -> AxResult<usize> {
+    fn read(&self, _dst: &mut IoDst) -> StarryResult<usize> {
         // Message queues are not read via read(2); mq_timedreceive is used.
-        Err(AxError::InvalidInput)
+        Err(StarryError::InvalidInput)
     }
 
-    fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
-        Err(AxError::InvalidInput)
+    fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
+        Err(StarryError::InvalidInput)
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(self.kstat())
     }
 
@@ -939,7 +944,7 @@ impl FileLike for MessageQueue {
         false
     }
 
-    fn set_nonblocking(&self, _non_blocking: bool) -> AxResult {
+    fn set_nonblocking(&self, _non_blocking: bool) -> StarryResult {
         // No-op: `O_NONBLOCK` is applied to the descriptor, not the shared queue.
         Ok(())
     }
@@ -1028,7 +1033,7 @@ impl MqDescriptor {
 }
 
 impl FileLike for MqDescriptor {
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         // `fstat(mqd)` reports the underlying mqueue inode (Linux returns the
         // mqueuefs inode's mode/uid/gid/size/times).
         Ok(self.queue.kstat())
@@ -1038,7 +1043,7 @@ impl FileLike for MqDescriptor {
         self.is_nonblocking()
     }
 
-    fn set_nonblocking(&self, non_blocking: bool) -> AxResult {
+    fn set_nonblocking(&self, non_blocking: bool) -> StarryResult {
         self.set_nonblocking_flag(non_blocking);
         Ok(())
     }
@@ -1077,15 +1082,15 @@ pub static MQ_REGISTRY: Mutex<BTreeMap<String, Arc<MessageQueue>>> = Mutex::new(
 /// Per `mq_overview(7)`: a name is a leading `/` followed by one or more
 /// characters, none of which is `/`, up to `NAME_MAX`. `EINVAL` for a bad
 /// shape, `ENAMETOOLONG` for an overlong name.
-pub fn validate_name(name: &str) -> AxResult<&str> {
+pub fn validate_name(name: &str) -> StarryResult<&str> {
     // glibc/musl strip the leading '/' before the mq_open syscall (`name + 1`),
     // so the kernel receives a bare single-component name — matching Linux
     // mqueuefs, which treats the argument as a filename under the mount.
     if name.is_empty() || name.contains('/') {
-        return Err(LinuxError::EINVAL.into());
+        return Err(Errno::EINVAL.into());
     }
     if name.len() > MQ_NAME_MAX {
-        return Err(LinuxError::ENAMETOOLONG.into());
+        return Err(Errno::ENAMETOOLONG.into());
     }
     Ok(name)
 }

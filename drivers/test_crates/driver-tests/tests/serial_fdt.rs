@@ -5,8 +5,8 @@ use core::{
 };
 
 use axklib::{
-    AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId,
-    Klib, PhysAddr, VirtAddr, impl_trait,
+    BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, Klib, KlibError,
+    KlibResult, PhysAddr, VirtAddr, impl_trait,
 };
 use fdt_edit::{Fdt, Node, Property};
 use rdrive::{Platform, register::DriverRegister};
@@ -27,7 +27,7 @@ struct KlibImpl;
 
 impl_trait! {
     impl Klib for KlibImpl {
-        fn mem_iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
+        fn mem_iomap(addr: PhysAddr, size: usize) -> KlibResult<VirtAddr> {
             assert_eq!(addr.as_usize(), TEST_UART_PADDR);
             assert_eq!(size, TEST_UART_MMIO_SIZE);
             let ptr = TEST_UART_MMIO.load(Ordering::SeqCst);
@@ -43,11 +43,11 @@ impl_trait! {
             _addr: VirtAddr,
             _size: usize,
         ) -> axklib::DmaCoherentMappingOutcome {
-            axklib::DmaCoherentMappingOutcome::NotStarted(AxError::Unsupported)
+            axklib::DmaCoherentMappingOutcome::NotStarted(KlibError::Unsupported)
         }
 
-        fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> AxResult {
-            Err(AxError::Unsupported)
+        fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> KlibResult {
+            Err(KlibError::Unsupported)
         }
 
         fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
@@ -60,8 +60,8 @@ impl_trait! {
             _dma_mask: u64,
             _num_pages: usize,
             _align: usize,
-        ) -> AxResult<VirtAddr> {
-            Err(AxError::Unsupported)
+        ) -> KlibResult<VirtAddr> {
+            Err(KlibError::Unsupported)
         }
 
         fn dma_dealloc_pages(_addr: VirtAddr, _num_pages: usize) {}
@@ -76,42 +76,42 @@ impl_trait! {
             false
         }
 
-        fn irq_set_enable(_irq: IrqId, _enabled: bool) -> AxResult {
+        fn irq_set_enable(_irq: IrqId, _enabled: bool) -> KlibResult {
             Ok(())
         }
 
         fn irq_request_shared(
             _irq: IrqId,
             _handler: BoxedIrqHandler,
-        ) -> AxResult<IrqHandle> {
-            Err(AxError::Unsupported)
+        ) -> KlibResult<IrqHandle> {
+            Err(KlibError::Unsupported)
         }
 
         fn irq_request_shared_disabled(
             _irq: IrqId,
             _handler: BoxedIrqHandler,
-        ) -> AxResult<IrqHandle> {
-            Err(AxError::Unsupported)
+        ) -> KlibResult<IrqHandle> {
+            Err(KlibError::Unsupported)
         }
 
         fn irq_request_percpu(
             _irq: IrqId,
             _cpus: IrqCpuMask,
             _handler: ConcurrentBoxedIrqHandler,
-        ) -> AxResult<IrqHandle> {
-            Err(AxError::Unsupported)
+        ) -> KlibResult<IrqHandle> {
+            Err(KlibError::Unsupported)
         }
 
-        fn irq_free(_handle: IrqHandle) -> AxResult {
-            Err(AxError::Unsupported)
+        fn irq_free(_handle: IrqHandle) -> KlibResult {
+            Err(KlibError::Unsupported)
         }
 
-        fn irq_enable(_handle: IrqHandle) -> AxResult {
-            Err(AxError::Unsupported)
+        fn irq_enable(_handle: IrqHandle) -> KlibResult {
+            Err(KlibError::Unsupported)
         }
 
-        fn irq_disable(_handle: IrqHandle) -> AxResult {
-            Err(AxError::Unsupported)
+        fn irq_disable(_handle: IrqHandle) -> KlibResult {
+            Err(KlibError::Unsupported)
         }
     }
 }

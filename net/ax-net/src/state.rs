@@ -15,7 +15,7 @@
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use ax_errno::AxResult;
+use crate::NetResult;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +83,7 @@ impl StateLock {
 pub struct StateGuard<'a>(&'a StateLock, u8);
 impl StateGuard<'_> {
     /// Runs a transition body and commits the new state only on success.
-    pub fn transit<R>(self, new: State, f: impl FnOnce() -> AxResult<R>) -> AxResult<R> {
+    pub fn transit<R>(self, new: State, f: impl FnOnce() -> NetResult<R>) -> NetResult<R> {
         match f() {
             Ok(result) => {
                 self.0.0.store(new as u8, Ordering::Release);

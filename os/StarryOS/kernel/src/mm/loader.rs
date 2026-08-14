@@ -3,7 +3,6 @@
 use alloc::{borrow::ToOwned, collections::VecDeque, string::String, vec, vec::Vec};
 use core::{ffi::CStr, iter, mem::size_of};
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
@@ -14,6 +13,7 @@ use uluru::LRUCache;
 use zerocopy::IntoBytes;
 
 use crate::{
+    StarryError, StarryResult,
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
     mm::aspace::{AddrSpace, Backend},
     sync::Mutex,
@@ -30,13 +30,13 @@ const R_RISCV_64: u32 = 2;
 const R_RISCV_COPY: u32 = 4;
 
 /// Creates a new empty user address space.
-pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
+pub fn new_user_aspace_empty() -> StarryResult<AddrSpace> {
     AddrSpace::new_empty(VirtAddr::from_usize(USER_SPACE_BASE), USER_SPACE_SIZE)
 }
 
 /// If the target architecture requires it, the kernel portion of the address
 /// space will be copied to the user address space.
-pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> AxResult {
+pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> StarryResult {
     #[cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))]
     {
         // ARMv8 (aarch64) and LoongArch64 use separate page tables for user space
@@ -52,13 +52,13 @@ pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> AxResult {
                 kspace.size(),
             )
         }
-        .map_err(|_| AxError::BadState)?;
+        .map_err(|_| StarryError::BadState)?;
     }
     Ok(())
 }
 
 /// Map the signal trampoline to the user address space.
-pub fn map_trampoline(aspace: &mut AddrSpace) -> AxResult {
+pub fn map_trampoline(aspace: &mut AddrSpace) -> StarryResult {
     let signal_trampoline_paddr =
         virt_to_phys(starry_signal::arch::signal_trampoline_address().into());
     aspace.map_linear(
@@ -159,8 +159,9 @@ fn map_elf<'a>(
     uspace: &mut AddrSpace,
     base: usize,
     entry: &'a ElfCacheEntry,
-) -> AxResult<ELFParser<'a>> {
-    let elf_parser = ELFParser::new(entry.borrow_elf(), base).map_err(|_| AxError::InvalidData)?;
+) -> StarryResult<ELFParser<'a>> {
+    let elf_parser =
+        ELFParser::new(entry.borrow_elf(), base).map_err(|_| StarryError::InvalidData)?;
     let cache = entry.borrow_cache();
 
     // PT_TLS init image may extend beyond the last PT_LOAD's file range.
@@ -295,7 +296,7 @@ fn apply_relocations(
     base: usize,
     cache: &CachedFile,
     ph: &[xmas_elf::program::ProgramHeader64],
-) -> AxResult {
+) -> StarryResult {
     // Find PT_DYNAMIC segment
     let dynamic_ph = ph
         .iter()
@@ -312,7 +313,7 @@ fn apply_relocations(
 
     if dyn_offset + dyn_size > (cache.location().len().unwrap_or(0) as usize) {
         debug!("Dynamic section extends beyond file");
-        return Err(AxError::InvalidData);
+        return Err(StarryError::InvalidData);
     }
 
     let mut dyn_data = vec![0u8; dyn_size];
@@ -350,7 +351,7 @@ fn apply_relocations(
 
     // Process .rela.dyn (R_RISCV_RELATIVE)
     if rela_addr != 0 && rela_size != 0 {
-        let rela_offset = vaddr_to_file_offset(rela_addr, ph).ok_or(AxError::InvalidData)?;
+        let rela_offset = vaddr_to_file_offset(rela_addr, ph).ok_or(StarryError::InvalidData)?;
         let rela_entry_size = 24; // sizeof(Rela<u64>) = 24 bytes
         let rela_count = rela_size as usize / rela_entry_size;
         let mut copy_count: usize = 0;
@@ -390,7 +391,7 @@ fn apply_relocations(
                     }
 
                     let sym_file_offset =
-                        vaddr_to_file_offset(symtab_addr, ph).ok_or(AxError::InvalidData)?;
+                        vaddr_to_file_offset(symtab_addr, ph).ok_or(StarryError::InvalidData)?;
                     let sym_entry_offset = sym_file_offset + sym_idx * 24;
                     let file_len = cache.location().len().unwrap_or(0) as usize;
                     if sym_entry_offset + 24 > file_len {
@@ -424,7 +425,8 @@ fn apply_relocations(
 
     // Process .rela.plt (R_RISCV_JUMP_SLOT)
     if jmprel_addr != 0 && jmprel_size != 0 {
-        let jmprel_offset = vaddr_to_file_offset(jmprel_addr, ph).ok_or(AxError::InvalidData)?;
+        let jmprel_offset =
+            vaddr_to_file_offset(jmprel_addr, ph).ok_or(StarryError::InvalidData)?;
         let rela_entry_size = 24; // sizeof(Rela<u64>) = 24 bytes
         let jmprel_count = jmprel_size as usize / rela_entry_size;
 
@@ -458,7 +460,7 @@ fn apply_relocations(
 
                     // Read symbol from .dynsym
                     let sym_file_offset =
-                        vaddr_to_file_offset(symtab_addr, ph).ok_or(AxError::InvalidData)?;
+                        vaddr_to_file_offset(symtab_addr, ph).ok_or(StarryError::InvalidData)?;
                     let sym_entry_offset = sym_file_offset + sym_idx * 24;
                     let file_len = cache.location().len().unwrap_or(0) as usize;
                     if sym_entry_offset + 24 > file_len {
@@ -492,13 +494,13 @@ fn apply_relocations(
     _base: usize,
     _cache: &CachedFile,
     _ph: &[xmas_elf::program::ProgramHeader64],
-) -> AxResult {
+) -> StarryResult {
     Ok(())
 }
 
-fn map_elf_error(err: &'static str) -> AxError {
+fn map_elf_error(err: &'static str) -> StarryError {
     debug!("Failed to parse ELF file: {err}");
-    AxError::InvalidExecutable
+    StarryError::InvalidExecutable
 }
 
 #[self_referencing]
@@ -511,13 +513,13 @@ struct ElfCacheEntry {
 }
 
 impl ElfCacheEntry {
-    fn load(loc: Location) -> AxResult<Result<Self, Vec<u8>>> {
+    fn load(loc: Location) -> StarryResult<Result<Self, Vec<u8>>> {
         let cache = CachedFile::get_or_create(loc)?;
 
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;
         data.truncate(read);
-        match ElfCacheEntry::try_new_or_recover::<AxError>(cache.clone(), data, |data| {
+        match ElfCacheEntry::try_new_or_recover::<StarryError>(cache.clone(), data, |data| {
             let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
             let range = builder.ph_range();
             if range.end as usize <= data.len() {
@@ -544,7 +546,7 @@ impl ElfLoader {
         Self(LRUCache::new())
     }
 
-    fn load(&mut self, uspace: &mut AddrSpace, loc: Location) -> AxResult<LoadResult> {
+    fn load(&mut self, uspace: &mut AddrSpace, loc: Location) -> StarryResult<LoadResult> {
         if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
             match ElfCacheEntry::load(loc)? {
                 Ok(e) => {
@@ -574,7 +576,7 @@ impl ElfLoader {
             let ldso = CStr::from_bytes_with_nul(&data)
                 .ok()
                 .and_then(|cstr| cstr.to_str().ok())
-                .ok_or(AxError::InvalidInput)?;
+                .ok_or(StarryError::InvalidInput)?;
             debug!("Loading dynamic linker: {ldso}");
             Some(ldso.to_owned())
         } else {
@@ -584,7 +586,7 @@ impl ElfLoader {
         let (elf, ldso) = if let Some(ldso) = ldso {
             let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(ldso)?;
             if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
-                let e = ElfCacheEntry::load(loc)?.map_err(|_| AxError::InvalidInput)?;
+                let e = ElfCacheEntry::load(loc)?.map_err(|_| StarryError::InvalidInput)?;
                 self.0.insert(e);
             }
 
@@ -678,7 +680,7 @@ pub fn load_user_app(
     path: &str,
     args: &[String],
     envs: &[String],
-) -> AxResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
+) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
     // `/proc/self/exe` is available in procfs; busybox can `readlink` it
     // to re-exec itself as a shell on ENOEXEC, provided the busybox build
     // includes that fallback (Alpine's prebuilt binary may not).
@@ -698,7 +700,8 @@ pub fn load_user_app(
             if data.starts_with(b"#!") {
                 let head = &data[2..data.len().min(256)];
                 let pos = head.iter().position(|c| *c == b'\n').unwrap_or(head.len());
-                let line = core::str::from_utf8(&head[..pos]).map_err(|_| AxError::InvalidInput)?;
+                let line =
+                    core::str::from_utf8(&head[..pos]).map_err(|_| StarryError::InvalidInput)?;
 
                 let new_args: Vec<String> = line
                     .trim()
@@ -714,7 +717,7 @@ pub fn load_user_app(
                     .resolve(&new_args[0])?;
                 return load_user_app(uspace, interp, &new_args[0], &new_args, envs);
             }
-            return Err(AxError::InvalidExecutable);
+            return Err(StarryError::InvalidExecutable);
         }
     };
 

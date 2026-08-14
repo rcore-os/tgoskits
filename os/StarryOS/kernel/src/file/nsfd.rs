@@ -1,7 +1,6 @@
 use alloc::{borrow::Cow, sync::Arc};
 use core::task::Context;
 
-use ax_errno::AxResult;
 use ax_fs_ng::MountNamespace as FsMountNamespace;
 use axnsproxy::{
     CgroupNamespace, IpcNamespace, MntNamespace as ProxyMntNamespace, NetNamespace, PidNamespace,
@@ -14,7 +13,7 @@ use linux_raw_sys::general::{
 };
 
 use super::FileLike;
-use crate::sync::IrqMutex;
+use crate::{StarryResult, sync::IrqMutex};
 
 /// A file descriptor that references a specific kernel namespace.
 ///
@@ -61,7 +60,7 @@ impl FileLike for NsFd {
         }
     }
 
-    fn stat(&self) -> AxResult<super::Kstat> {
+    fn stat(&self) -> StarryResult<super::Kstat> {
         let ino = match self {
             NsFd::Uts(ns) => ns.lock().id,
             NsFd::Ipc(ns) => ns.lock().ns_id,

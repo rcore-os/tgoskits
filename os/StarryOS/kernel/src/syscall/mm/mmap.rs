@@ -1,15 +1,16 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FileBackend, FileFlags};
 use ax_memory_addr::{
     MemoryAddr, PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k,
 };
+use ax_memory_set::MappingError;
 use ax_runtime::hal::paging::MappingFlags;
 use ax_task::current;
 use linux_raw_sys::general::*;
 
 use crate::{
+    StarryError, StarryResult,
     file::get_file_like,
     mm::{Backend, BackendOps, SharedPages},
     pseudofs::{Device, DeviceMmap},
@@ -134,43 +135,43 @@ pub fn sys_mmap(
     flags: u32,
     fd: i32,
     offset: isize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if length == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let curr = current();
     let curr_aspace = curr.as_thread().proc_data.aspace();
     let mut aspace = curr_aspace.lock();
     let Some(permission_flags) = MmapProt::from_bits(prot) else {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     };
     let map_flags = match MmapFlags::from_bits(flags) {
         Some(flags) => flags,
         None => {
             warn!("unknown mmap flags: {flags}");
             if (flags & MmapFlags::TYPE.bits()) == MmapFlags::SHARED_VALIDATE.bits() {
-                return Err(AxError::OperationNotSupported);
+                return Err(StarryError::OperationNotSupported);
             }
             MmapFlags::from_bits_truncate(flags)
         }
     };
     if map_flags.contains(MmapFlags::SYNC) {
-        return Err(AxError::OperationNotSupported);
+        return Err(StarryError::OperationNotSupported);
     }
     let anonymous = map_flags.contains(MmapFlags::ANONYMOUS);
     let map_type = match flags & MmapFlags::TYPE.bits() {
         MAP_SHARED => MmapFlags::SHARED,
         MAP_SHARED_VALIDATE if !anonymous => MmapFlags::SHARED,
         MAP_PRIVATE => MmapFlags::PRIVATE,
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
-    let offset: usize = offset.try_into().map_err(|_| AxError::InvalidInput)?;
+    let offset: usize = offset.try_into().map_err(|_| StarryError::InvalidInput)?;
     if !offset.is_multiple_of(PAGE_SIZE_4K) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if !anonymous && fd < 0 {
-        return Err(AxError::BadFileDescriptor);
+        return Err(StarryError::BadFileDescriptor);
     }
 
     debug!(
@@ -195,10 +196,10 @@ pub fn sys_mmap(
     // `addr + length` itself didn't overflow but rounding up to the page boundary
     // did — otherwise the wrapped value would flow into the length computation and
     // the (non-FIXED) hint search below.
-    let raw_end = addr.checked_add(length).ok_or(AxError::InvalidInput)?;
+    let raw_end = addr.checked_add(length).ok_or(StarryError::InvalidInput)?;
     let end = raw_end.align_up(page_size);
     if end < raw_end {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let mut length = end - aligned;
 
@@ -248,11 +249,11 @@ pub fn sys_mmap(
         if needs_file_mmap_checks {
             let (_backend, flags) = fl.file_mmap()?;
             if !flags.contains(FileFlags::READ) {
-                return Err(AxError::PermissionDenied);
+                return Err(StarryError::PermissionDenied);
             }
             if matches!(map_type, MmapFlags::SHARED) && permission_flags.contains(MmapProt::WRITE) {
                 if !flags.contains(FileFlags::WRITE) {
-                    return Err(AxError::PermissionDenied);
+                    return Err(StarryError::PermissionDenied);
                 }
                 // Linux: F_SEAL_WRITE forbids shared writable mappings, but still allows
                 // MAP_PRIVATE|PROT_WRITE because it does not modify the underlying file.
@@ -282,7 +283,7 @@ pub fn sys_mmap(
         aspace
             .find_free_area(VirtAddr::from(aligned), length, limit, align)
             .or(aspace.find_free_area(aspace.base(), length, limit, align))
-            .ok_or(AxError::NoMemory)?
+            .ok_or(StarryError::NoMemory)?
     };
 
     // IonBufferFile 特殊处理：直接线性映射物理地址，跳过通用 file_mmap/device_mmap 路径。
@@ -305,7 +306,7 @@ pub fn sys_mmap(
             );
             if map_length == 0 {
                 warn!("Ion buffer mmap: map_length is 0, this should not happen");
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             // 不允许越过 buffer 物理边界：否则 Backend::new_linear 会按线性偏移把
             // `range.start + range.size()` 之后的物理页映射进进程地址空间。
@@ -314,7 +315,7 @@ pub fn sys_mmap(
                     "Ion buffer mmap: requested length {} exceeds buffer size {}",
                     map_length, buffer_len
                 );
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             let mut ion_mapping_flags: MappingFlags = permission_flags.into();
             ion_mapping_flags |= MappingFlags::UNCACHED;
@@ -357,7 +358,7 @@ pub fn sys_mmap(
                         mapping_flags |= MappingFlags::UNCACHED;
                         range.start += offset;
                         if range.is_empty() {
-                            return Err(AxError::InvalidInput);
+                            return Err(StarryError::InvalidInput);
                         }
                         length = length.min(range.size().align_down(page_size));
                         let pa_va_offset =
@@ -373,7 +374,7 @@ pub fn sys_mmap(
                     Ok(DeviceMmap::PhysicalCached(mut range, retain)) => {
                         range.start += offset;
                         if range.is_empty() {
-                            return Err(AxError::InvalidInput);
+                            return Err(StarryError::InvalidInput);
                         }
                         length = length.min(range.size().align_down(page_size));
                         let pa_va_offset =
@@ -388,7 +389,7 @@ pub fn sys_mmap(
                     Ok(DeviceMmap::PhysicalResolved(range, retain)) => {
                         mapping_flags |= MappingFlags::UNCACHED;
                         if range.is_empty() {
-                            return Err(AxError::InvalidInput);
+                            return Err(StarryError::InvalidInput);
                         }
                         length = length.min(range.size().align_down(page_size));
                         let pa_va_offset =
@@ -407,8 +408,8 @@ pub fn sys_mmap(
                             Arc::new(SharedPages::borrowed(pages, PAGE_SIZE_4K, retain)?),
                         )
                     }
-                    Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
-                    Ok(_) => return Err(AxError::InvalidInput),
+                    Ok(DeviceMmap::None) => return Err(StarryError::NoSuchDevice),
+                    Ok(_) => return Err(StarryError::InvalidInput),
                     Err(_) => {
                         // Fall through to file-backed mmap
                         let (backend, flags) = file.file_mmap()?;
@@ -416,12 +417,12 @@ pub fn sys_mmap(
                         // open for reading, and MAP_SHARED+PROT_WRITE additionally
                         // requires the fd to be open for writing.
                         if !flags.contains(FileFlags::READ) {
-                            return Err(AxError::PermissionDenied);
+                            return Err(StarryError::PermissionDenied);
                         }
                         if permission_flags.contains(MmapProt::WRITE)
                             && !flags.contains(FileFlags::WRITE)
                         {
-                            return Err(AxError::PermissionDenied);
+                            return Err(StarryError::PermissionDenied);
                         }
                         match backend.clone() {
                             FileBackend::Cached(cache) => {
@@ -439,16 +440,16 @@ pub fn sys_mmap(
                                 let device = loc
                                     .entry()
                                     .downcast::<Device>()
-                                    .map_err(|_| AxError::NoSuchDevice)?;
+                                    .map_err(|_| StarryError::NoSuchDevice)?;
 
                                 match device.mmap(offset as u64, length as u64) {
                                     DeviceMmap::None => {
-                                        return Err(AxError::NoSuchDevice);
+                                        return Err(StarryError::NoSuchDevice);
                                     }
                                     DeviceMmap::Physical(range, retain) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
-                                            return Err(AxError::InvalidInput);
+                                            return Err(StarryError::InvalidInput);
                                         }
                                         length =
                                             capped_device_map_len(length, range.size(), page_size);
@@ -467,7 +468,7 @@ pub fn sys_mmap(
                                     #[cfg(feature = "rknpu")]
                                     DeviceMmap::PhysicalCached(range, retain) => {
                                         if range.is_empty() {
-                                            return Err(AxError::InvalidInput);
+                                            return Err(StarryError::InvalidInput);
                                         }
                                         length =
                                             capped_device_map_len(length, range.size(), page_size);
@@ -486,7 +487,7 @@ pub fn sys_mmap(
                                     DeviceMmap::PhysicalResolved(range, retain) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
-                                            return Err(AxError::InvalidInput);
+                                            return Err(StarryError::InvalidInput);
                                         }
                                         length =
                                             capped_device_map_len(length, range.size(), page_size);
@@ -538,14 +539,14 @@ pub fn sys_mmap(
                 // open for reading (MAP_PRIVATE still page-faults from file
                 // on initial access even when later writes are CoW).
                 if !file_flags.contains(FileFlags::READ) {
-                    return Err(AxError::PermissionDenied);
+                    return Err(StarryError::PermissionDenied);
                 }
                 Backend::new_cow(start, page_size, backend, offset as u64, None, false)
             } else {
                 Backend::new_alloc(start, page_size, "")
             }
         }
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
 
     let populate = map_flags.contains(MmapFlags::POPULATE);
@@ -591,10 +592,10 @@ pub fn sys_mmap(
     Ok(start.as_usize() as _)
 }
 
-pub fn sys_munmap(addr: usize, length: usize) -> AxResult<isize> {
+pub fn sys_munmap(addr: usize, length: usize) -> StarryResult<isize> {
     // man 2 munmap: "length was 0" → EINVAL (since Linux 2.6.12).
     if length == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     debug!("sys_munmap <= addr: {addr:#x}, length: {length:x}");
     let curr = current();
@@ -606,20 +607,20 @@ pub fn sys_munmap(addr: usize, length: usize) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
+pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> StarryResult<isize> {
     // TODO: implement PROT_GROWSUP & PROT_GROWSDOWN
     let Some(permission_flags) = MmapProt::from_bits(prot) else {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     };
     debug!("sys_mprotect <= addr: {addr:#x}, length: {length:x}, prot: {permission_flags:?}");
 
     if permission_flags.contains(MmapProt::GROWDOWN | MmapProt::GROWSUP) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     // man 2 mprotect: addr is not a multiple of page size → EINVAL.
     if !addr.is_multiple_of(PAGE_SIZE_4K) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     // length=0 is a no-op success on Linux.
     if length == 0 {
@@ -641,7 +642,7 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     // ENOMEM atomically without any half-applied protection — the errno real
     // programs test for.
     if !aspace.can_access_range(start_addr, length, MappingFlags::empty()) {
-        return Err(AxError::NoMemory);
+        return Err(StarryError::NoMemory);
     }
     if permission_flags.contains(MmapProt::WRITE) {
         let new_flags: MappingFlags = permission_flags.into();
@@ -677,12 +678,12 @@ fn find_free(
     hint: VirtAddr,
     size: usize,
     align: usize,
-) -> AxResult<VirtAddr> {
+) -> StarryResult<VirtAddr> {
     let limit = VirtAddrRange::new(aspace.base(), aspace.end());
     aspace
         .find_free_area(hint, size, limit, align)
         .or_else(|| aspace.find_free_area(aspace.base(), size, limit, align))
-        .ok_or(AxError::NoMemory)
+        .ok_or(StarryError::NoMemory)
 }
 
 struct MremapMove<'a> {
@@ -701,7 +702,7 @@ fn mremap_move(
     aspace: &mut crate::mm::AddrSpace,
     aspace_ref: &Arc<crate::sync::Mutex<crate::mm::AddrSpace>>,
     move_args: MremapMove<'_>,
-) -> AxResult {
+) -> StarryResult {
     let MremapMove {
         src,
         src_size,
@@ -773,17 +774,17 @@ pub fn sys_mremap(
     new_size: usize,
     flags: u32,
     new_addr: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!(
         "sys_mremap <= addr: {addr:#x}, old_size: {old_size:x}, new_size: {new_size:x}, flags: \
          {flags:#x}, new_addr: {new_addr:#x}"
     );
 
     if new_size == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if flags & !MREMAP_VALID_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let addr = VirtAddr::from(addr);
@@ -792,24 +793,24 @@ pub fn sys_mremap(
     let dontunmap = flags & MREMAP_DONTUNMAP != 0;
 
     if (fixed || dontunmap) && !may_move {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if dontunmap && old_size != new_size {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if fixed {
         if !new_addr.is_multiple_of(PAGE_SIZE_4K) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         let old_end = addr
             .as_usize()
             .checked_add(old_size)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
         let new_end = new_addr
             .checked_add(new_size)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
         if old_end > new_addr && new_end > addr.as_usize() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
     }
 
@@ -818,7 +819,7 @@ pub fn sys_mremap(
     let mut aspace = aspace_ref.lock();
 
     let (vma_start, vma_end, vma_flags, vma_reported_flags, src_backend, shared_pages, page_size) = {
-        let area = aspace.find_area(addr).ok_or(AxError::BadAddress)?;
+        let area = aspace.find_area(addr).ok_or(StarryError::BadAddress)?;
         let shared_pages = match area.backend() {
             Backend::Shared(sb) => Some(sb.pages().clone()),
             _ => None,
@@ -834,30 +835,30 @@ pub fn sys_mremap(
         )
     };
     if !addr.is_aligned(page_size) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let old_size = old_size.align_up(page_size);
     let new_size = new_size.align_up(page_size);
     let src_offset = addr - vma_start;
 
     if dontunmap && !matches!(&src_backend, Backend::Cow(cow) if cow.is_anonymous()) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     // old_size == 0: duplicate a shared mapping (Linux special case).
     if old_size == 0 {
         if shared_pages.is_none() || !may_move {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         let pages = shared_pages.unwrap();
         let shared_size = pages.len() * pages.size;
         if src_offset + new_size > shared_size {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let target = if fixed {
             if !new_addr.is_multiple_of(page_size) {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             aspace.unmap(VirtAddr::from(new_addr), new_size)?;
             VirtAddr::from(new_addr)
@@ -868,7 +869,7 @@ pub fn sys_mremap(
             .as_usize()
             .checked_sub(src_offset)
             .map(VirtAddr::from)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
         let backend = Backend::new_shared(backend_start, pages);
         aspace.map_with_reported_flags(
             target,
@@ -885,14 +886,14 @@ pub fn sys_mremap(
         .as_usize()
         .checked_add(old_size)
         .map(VirtAddr::from)
-        .ok_or(AxError::InvalidInput)?;
+        .ok_or(StarryError::InvalidInput)?;
     if old_end > vma_end {
-        return Err(AxError::BadAddress);
+        return Err(StarryError::BadAddress);
     }
 
     if fixed {
         if !new_addr.is_multiple_of(page_size) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         let target = VirtAddr::from(new_addr);
         aspace.unmap(target, new_size)?;
@@ -949,13 +950,17 @@ pub fn sys_mremap(
     if addr + old_size == vma_end {
         match aspace.extend_area(addr, delta) {
             Ok(()) => return Ok(addr.as_usize() as isize),
-            Err(AxError::NoMemory | AxError::AlreadyExists) => {}
+            Err(
+                StarryError::NoMemory
+                | StarryError::AlreadyExists
+                | StarryError::Mapping(MappingError::AlreadyExists),
+            ) => {}
             Err(e) => return Err(e),
         }
     }
 
     if !may_move {
-        return Err(AxError::NoMemory);
+        return Err(StarryError::NoMemory);
     }
 
     let target = find_free(&aspace, addr + old_size, new_size, page_size)?;
@@ -977,7 +982,7 @@ pub fn sys_mremap(
     Ok(target.as_usize() as isize)
 }
 
-pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
+pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> StarryResult<isize> {
     debug!("sys_madvise <= addr: {addr:#x}, length: {length:x}, advice: {advice:#x}");
 
     match advice as u32 {
@@ -986,12 +991,12 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
         | MADV_HUGEPAGE | MADV_NOHUGEPAGE | MADV_DONTDUMP | MADV_DODUMP | MADV_WIPEONFORK
         | MADV_KEEPONFORK | MADV_COLD | MADV_PAGEOUT | MADV_POPULATE_READ | MADV_POPULATE_WRITE
         | MADV_DONTNEED_LOCKED | MADV_COLLAPSE | MADV_HWPOISON | MADV_SOFT_OFFLINE => {}
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     }
 
     // man 2 madvise: addr must be page-aligned.
     if !addr.is_multiple_of(PAGE_SIZE_4K) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     if length == 0 {
@@ -1012,7 +1017,7 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
         align_up_4k(length),
         MappingFlags::empty(),
     ) {
-        return Err(AxError::NoMemory);
+        return Err(StarryError::NoMemory);
     }
 
     // MADV_DONTNEED: drop the pages now; next access re-faults to a fresh zero
@@ -1036,7 +1041,7 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
             for (_fs, _fl, _flags, backend) in aspace.areas_in_range(start_va, length) {
                 match backend {
                     Backend::Cow(cow) if cow.is_anonymous() => {}
-                    _ => return Err(AxError::InvalidInput),
+                    _ => return Err(StarryError::InvalidInput),
                 }
             }
             aspace.discard_range(start_va, length)?;
@@ -1053,7 +1058,7 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
             for (_fs, _fl, _flags, backend) in &frags {
                 match backend {
                     Backend::File(fb) if fb.is_shared() => {}
-                    _ => return Err(AxError::InvalidInput),
+                    _ => return Err(StarryError::InvalidInput),
                 }
             }
             Some(
@@ -1086,19 +1091,19 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
+pub fn sys_msync(addr: usize, length: usize, flags: u32) -> StarryResult<isize> {
     debug!("sys_msync <= addr: {addr:#x}, length: {length:x}, flags: {flags:#x}");
 
     if !addr.is_multiple_of(PAGE_SIZE_4K) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let valid_flags = MS_SYNC | MS_ASYNC | MS_INVALIDATE;
     if flags & !valid_flags != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if flags & MS_SYNC != 0 && flags & MS_ASYNC != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     if length == 0 {
@@ -1106,7 +1111,7 @@ pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
     }
 
     let start = VirtAddr::from(addr);
-    let end_val = addr.checked_add(length).ok_or(AxError::InvalidInput)?;
+    let end_val = addr.checked_add(length).ok_or(StarryError::InvalidInput)?;
     let end = VirtAddr::from(end_val);
 
     let curr = current();
@@ -1118,7 +1123,7 @@ pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
         while cursor < end {
             let area = match aspace.find_area(cursor) {
                 Some(a) => a,
-                None => return Err(AxError::NoMemory),
+                None => return Err(StarryError::NoMemory),
             };
             let range_start = area.start().max(start);
             let range_end = area.end().min(end);
@@ -1139,16 +1144,16 @@ pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_mlock(addr: usize, length: usize) -> AxResult<isize> {
+pub fn sys_mlock(addr: usize, length: usize) -> StarryResult<isize> {
     sys_mlock2(addr, length, 0)
 }
 
-pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
+pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> StarryResult<isize> {
     // Linux `mlock2` accepts only `flags == 0` or `MLOCK_ONFAULT`; any other bit
     // is rejected with EINVAL and must produce no populate/fault side effect.
     const MLOCK_ONFAULT: u32 = 0x01;
     if flags & !MLOCK_ONFAULT != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if length == 0 {
         return Ok(0);
@@ -1158,10 +1163,10 @@ pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
     // `PAGE_SIZE - 1` internally and can still wrap a near-`usize::MAX` end to a
     // small value; detect that wrap (end < raw_end) and reject, as Linux rejects
     // an out-of-range mlock with EINVAL rather than locking a tiny wrapped range.
-    let raw_end = addr.checked_add(length).ok_or(AxError::InvalidInput)?;
+    let raw_end = addr.checked_add(length).ok_or(StarryError::InvalidInput)?;
     let end = raw_end.align_up(PAGE_SIZE_4K);
     if end < raw_end {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let size = end - aligned;
 
@@ -1175,7 +1180,7 @@ pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
         // Linux does. An empty access mask makes `can_access_range` a pure
         // contiguous-coverage check.
         if !aspace.can_access_range(start, size, MappingFlags::empty()) {
-            return Err(AxError::NoMemory);
+            return Err(StarryError::NoMemory);
         }
     } else {
         // Plain mlock (flags == 0): honor the "fault now" contract by faulting

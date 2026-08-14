@@ -11,10 +11,11 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use ax_errno::{AxError, AxResult};
 use axpoll::Pollable;
 use kbpf_basic::perf::{PerfProbeArgs, PerfProbeConfig};
 use kprobe::{CallBackFunc, KretprobeBuilder, ProbeBuilder, PtRegs};
+
+use crate::{StarryError, StarryResult};
 
 /// Config value for entry probes (kprobe/uprobe), per Linux PERF_TYPE_PROBE ABI.
 pub const PROBE_CONFIG_ENTRY: u64 = 0;
@@ -93,7 +94,7 @@ impl Pollable for ProbePerfEvent {
 }
 
 impl PerfEventOps for ProbePerfEvent {
-    fn enable(&mut self) -> AxResult<()> {
+    fn enable(&mut self) -> StarryResult<()> {
         match self.probe {
             ProbeTy::Kprobe(ref k) => k.enable(),
             ProbeTy::Kretprobe(ref k) => k.kprobe().enable(),
@@ -102,7 +103,7 @@ impl PerfEventOps for ProbePerfEvent {
         Ok(())
     }
 
-    fn disable(&mut self) -> AxResult<()> {
+    fn disable(&mut self) -> StarryResult<()> {
         match self.probe {
             ProbeTy::Kprobe(ref k) => k.disable(),
             ProbeTy::Kretprobe(ref k) => k.kprobe().disable(),
@@ -115,7 +116,7 @@ impl PerfEventOps for ProbePerfEvent {
         self
     }
 
-    fn set_bpf_prog(&mut self, bpf_prog: Arc<dyn FileLike>) -> AxResult<()> {
+    fn set_bpf_prog(&mut self, bpf_prog: Arc<dyn FileLike>) -> StarryResult<()> {
         let vm = OwnedEbpfVm::new(bpf_prog)?;
 
         // Monotonically-increasing per-probe callback id. `fetch_add` is
@@ -163,19 +164,19 @@ impl CallBackFunc for KprobePerfCallBack {
     }
 }
 
-fn lookup_symbol_addr(symbol: &str) -> AxResult<usize> {
+fn lookup_symbol_addr(symbol: &str) -> StarryResult<usize> {
     // Resolve against the real in-kernel `.kallsyms` blob (the same table
     // `/proc/kallsyms` is built from) rather than a separate stub.
     crate::pseudofs::proc::KALLSYMS
         .get()
         .and_then(|t| t.lookup_name(symbol))
         .map(|addr| addr as usize)
-        .ok_or(AxError::NotFound)
+        .ok_or(StarryError::NotFound)
 }
 
 fn perf_probe_arg_to_kprobe_builder(
     args: &PerfProbeArgs,
-) -> AxResult<ProbeBuilder<KprobeAuxiliary>> {
+) -> StarryResult<ProbeBuilder<KprobeAuxiliary>> {
     let symbol = &args.name;
     let addr = lookup_symbol_addr(symbol)?;
     Ok(ProbeBuilder::new()
@@ -187,7 +188,7 @@ fn perf_probe_arg_to_kprobe_builder(
 
 fn perf_probe_arg_to_kretprobe_builder(
     args: &PerfProbeArgs,
-) -> AxResult<KretprobeBuilder<KernelRawMutex>> {
+) -> StarryResult<KretprobeBuilder<KernelRawMutex>> {
     let symbol = &args.name;
     let addr = lookup_symbol_addr(symbol)?;
     Ok(
@@ -199,7 +200,7 @@ fn perf_probe_arg_to_kretprobe_builder(
 
 /// Build a `ProbePerfEvent` for a `PERF_TYPE_KPROBE` perf_event_open call.
 /// Config `PROBE_CONFIG_ENTRY` (0) = kprobe; `PROBE_CONFIG_RETURN` (1) = kretprobe.
-pub fn perf_event_open_kprobe(args: PerfProbeArgs) -> AxResult<ProbePerfEvent> {
+pub fn perf_event_open_kprobe(args: PerfProbeArgs) -> StarryResult<ProbePerfEvent> {
     let probe = match args.config {
         PerfProbeConfig::Raw(PROBE_CONFIG_ENTRY) => {
             let builder = perf_probe_arg_to_kprobe_builder(&args)?;
@@ -209,7 +210,7 @@ pub fn perf_event_open_kprobe(args: PerfProbeArgs) -> AxResult<ProbePerfEvent> {
             let builder = perf_probe_arg_to_kretprobe_builder(&args)?;
             ProbeTy::Kretprobe(register_kretprobe(builder))
         }
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
     Ok(ProbePerfEvent::new(args, probe))
 }

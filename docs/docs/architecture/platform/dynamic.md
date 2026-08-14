@@ -32,7 +32,7 @@ dynamic  = true
 | `hv` | ✗ | `somehal/hv`；AArch64 目标再选择 `ax-cpu/arm-el2`，hypervisor 模式 |
 | `thead-mae` | ✗ | T-Head 扩展；`somehal/thead-mae` + `ax-cpu/xuantie-c9xx` |
 
-依赖：`anyhow`、`ax-cpu`、`cpu-local`、`ax-driver`、`ax-errno`、`axklib`（`buddy-slab`）、`ax-plat`、`heapless`、`log`、`ax-memory-addr`、`ax-percpu`、`rdrive`、`someboot`、`somehal`、`spin`。
+依赖：`anyhow`、`ax-cpu`、`cpu-local`、`ax-driver`、`ax-lazyinit`、`axklib`（`buddy-slab`）、`ax-plat`、`heapless`、`log`、`ax-memory-addr`、`ax-percpu`、`rdrive`、`someboot`、`somehal`、`thiserror`。
 
 ## lib.rs 总览
 
@@ -240,12 +240,13 @@ const LOONGARCH_IRQ_TRACE_LIMIT: usize = 80;
 整个模块只有一个函数 (`platforms/axplat-dyn/src/drivers/mod.rs`)：
 
 ```rust
-pub fn probe_all_devices() -> Result<(), AxError> {
+pub fn probe_all_devices() -> Result<(), PlatformProbeError> {
     if !rdrive::is_initialized() {
         warn!("rdrive is not initialized; skip platform device probe");
         return Ok(());
     }
-    rdrive::probe_all(false).map_err(|_| AxError::BadState)
+    rdrive::probe_all(false)?;
+    Ok(())
 }
 ```
 

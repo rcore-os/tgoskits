@@ -1,14 +1,13 @@
 use alloc::sync::Arc;
 use core::ffi::c_int;
 
-use ax_errno::{LinuxError, LinuxResult};
 use ax_io::PollState;
 use ax_runtime::sync::SpinRwLock as RwLock;
 use flatten_objects::FlattenObjects;
 use scope_local::scope_local;
 
 use crate::{
-    ctypes,
+    PosixError, PosixResult, ctypes,
     imp::stdio::{stdin, stdout},
 };
 
@@ -16,12 +15,12 @@ pub const AX_FILE_LIMIT: usize = 1024;
 
 #[allow(dead_code)]
 pub trait FileLike: Send + Sync {
-    fn read(&self, buf: &mut [u8]) -> LinuxResult<usize>;
-    fn write(&self, buf: &[u8]) -> LinuxResult<usize>;
-    fn stat(&self) -> LinuxResult<ctypes::stat>;
+    fn read(&self, buf: &mut [u8]) -> PosixResult<usize>;
+    fn write(&self, buf: &[u8]) -> PosixResult<usize>;
+    fn stat(&self) -> PosixResult<ctypes::stat>;
     fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync>;
-    fn poll(&self) -> LinuxResult<PollState>;
-    fn set_nonblocking(&self, nonblocking: bool) -> LinuxResult;
+    fn poll(&self) -> PosixResult<PollState>;
+    fn set_nonblocking(&self, nonblocking: bool) -> PosixResult;
 }
 
 scope_local! {
@@ -44,26 +43,26 @@ fn current_fd_table() -> Arc<RwLock<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LI
     FD_TABLE.clone_current()
 }
 
-pub fn get_file_like(fd: c_int) -> LinuxResult<Arc<dyn FileLike>> {
+pub fn get_file_like(fd: c_int) -> PosixResult<Arc<dyn FileLike>> {
     current_fd_table()
         .read()
         .get(fd as usize)
         .cloned()
-        .ok_or(LinuxError::EBADF)
+        .ok_or(PosixError::EBADF)
 }
 
-pub fn add_file_like(f: Arc<dyn FileLike>) -> LinuxResult<c_int> {
+pub fn add_file_like(f: Arc<dyn FileLike>) -> PosixResult<c_int> {
     Ok(current_fd_table()
         .write()
         .add(f)
-        .map_err(|_| LinuxError::EMFILE)? as c_int)
+        .map_err(|_| PosixError::EMFILE)? as c_int)
 }
 
-pub fn close_file_like(fd: c_int) -> LinuxResult {
+pub fn close_file_like(fd: c_int) -> PosixResult {
     let f = current_fd_table()
         .write()
         .remove(fd as usize)
-        .ok_or(LinuxError::EBADF)?;
+        .ok_or(PosixError::EBADF)?;
     drop(f);
     Ok(())
 }
@@ -77,7 +76,7 @@ pub fn sys_close(fd: c_int) -> c_int {
     syscall_body!(sys_close, close_file_like(fd).map(|_| 0))
 }
 
-fn dup_fd(old_fd: c_int) -> LinuxResult<c_int> {
+fn dup_fd(old_fd: c_int) -> PosixResult<c_int> {
     let f = get_file_like(old_fd)?;
     let new_fd = add_file_like(f)?;
     Ok(new_fd)
@@ -104,14 +103,14 @@ pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> c_int {
             }
         }
         if new_fd as usize >= AX_FILE_LIMIT {
-            return Err(LinuxError::EBADF);
+            return Err(PosixError::EBADF);
         }
 
         let f = get_file_like(old_fd)?;
         current_fd_table()
             .write()
             .add_at(new_fd as usize, f)
-            .map_err(|_| LinuxError::EMFILE)?;
+            .map_err(|_| PosixError::EMFILE)?;
 
         Ok(new_fd)
     })

@@ -9,9 +9,10 @@
 
 use alloc::vec::Vec;
 
-use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::cpu::uspace::UserContext;
 use syscalls::Sysno;
+
+use crate::{StarryError, StarryResult};
 
 const BPF_MAXINSNS: usize = 4096;
 const BPF_MEMWORDS: usize = 16;
@@ -168,9 +169,9 @@ impl SeccompState {
     ///
     /// Strict mode can only be installed from the disabled state.  Once a
     /// seccomp mode is active, Linux does not allow returning to disabled mode.
-    pub fn install_strict(&mut self) -> AxResult<()> {
+    pub fn install_strict(&mut self) -> StarryResult<()> {
         if self.mode != SeccompMode::Disabled {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         self.mode = SeccompMode::Strict;
         Ok(())
@@ -180,7 +181,7 @@ impl SeccompState {
     ///
     /// Multiple filters are all evaluated, and their raw return actions are
     /// merged using Linux seccomp action precedence.
-    pub fn append_filter(&mut self, insns: Vec<SockFilter>) -> AxResult<()> {
+    pub fn append_filter(&mut self, insns: Vec<SockFilter>) -> StarryResult<()> {
         let filter = SeccompFilter::new(insns)?;
         self.mode = SeccompMode::Filter;
         self.filters.push(filter);
@@ -227,9 +228,9 @@ impl SeccompState {
 
 impl SeccompFilter {
     /// Validate and construct a seccomp filter from userspace BPF instructions.
-    pub fn new(insns: Vec<SockFilter>) -> AxResult<Self> {
+    pub fn new(insns: Vec<SockFilter>) -> StarryResult<Self> {
         if insns.is_empty() || insns.len() > BPF_MAXINSNS {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         Ok(Self { insns })
     }

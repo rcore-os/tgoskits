@@ -1,9 +1,9 @@
-use ax_errno::AxResult;
 use ax_net::SocketOps;
 use linux_raw_sys::net::{sockaddr, socklen_t};
 
 use super::addr::{SocketAddrExt, socket_addr_ex_for_user_name};
 use crate::{
+    StarryResult,
     file::{FileLike, PacketSocket, Socket, netlink::NetlinkSocket},
     mm::UserPtr,
 };
@@ -12,7 +12,7 @@ pub fn sys_getsockname(
     fd: i32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if let Ok(packet) = PacketSocket::from_fd(fd) {
         let local_addr = packet.local_addr();
         local_addr.write_to_user(
@@ -41,7 +41,7 @@ pub fn sys_getpeername(
     fd: i32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let socket = Socket::from_fd(fd)?;
     let peer_addr = socket_addr_ex_for_user_name(socket.ip_domain(), socket.peer_addr()?);
     debug!("sys_getpeername <= fd: {fd}, addr: {peer_addr:?}");

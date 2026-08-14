@@ -6,7 +6,6 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{NANOS_PER_SEC, monotonic_time_nanos, wall_time};
 use linux_raw_sys::general::{
     CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,
@@ -17,7 +16,7 @@ use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
 
 use super::timer::{AlarmTarget, register_alarm_for};
-use crate::sync::IrqMutex as Mutex;
+use crate::{StarryError, StarryResult, sync::IrqMutex as Mutex};
 
 /// Kernel-side representation of a POSIX timer.
 struct PosixTimer {
@@ -96,12 +95,12 @@ impl PosixTimerTable {
         sigev_notify: u32,
         sigev_signo: i32,
         sigev_value: i64,
-    ) -> AxResult<i32> {
+    ) -> StarryResult<i32> {
         if !is_supported_timer_clock(clock_id) {
             if is_valid_clock(clock_id) {
-                return Err(AxError::OperationNotSupported);
+                return Err(StarryError::OperationNotSupported);
             } else {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
         }
 
@@ -109,11 +108,11 @@ impl PosixTimerTable {
             SIGEV_NONE => None,
             SIGEV_SIGNAL => {
                 if sigev_signo <= 0 || sigev_signo > 64 {
-                    return Err(AxError::InvalidInput);
+                    return Err(StarryError::InvalidInput);
                 }
                 Signo::from_repr(sigev_signo as u8)
             }
-            _ => return Err(AxError::InvalidInput),
+            _ => return Err(StarryError::InvalidInput),
         };
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);

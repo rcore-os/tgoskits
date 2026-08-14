@@ -1,7 +1,7 @@
 use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use core::mem::size_of;
 
-use axfs_ng_vfs::{DeviceId, VfsResult};
+use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 use bytemuck::AnyBitPattern;
 use crab_usb::{
     ProbedDevice,
@@ -167,33 +167,37 @@ pub(super) fn root_hub_snapshot(bus_num: u8, speed: Speed) -> UsbDeviceSnapshot 
 pub(super) fn read_usbdevfs_ctrltransfer(arg: usize) -> VfsResult<UsbdevfsCtrlTransfer> {
     (arg as *const UsbdevfsCtrlTransfer)
         .vm_read()
-        .map_err(Into::into)
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn read_usbdevfs_bulktransfer(arg: usize) -> VfsResult<UsbdevfsBulkTransfer> {
     (arg as *const UsbdevfsBulkTransfer)
         .vm_read()
-        .map_err(Into::into)
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn read_usbdevfs_setinterface(arg: usize) -> VfsResult<UsbdevfsSetInterface> {
     (arg as *const UsbdevfsSetInterface)
         .vm_read()
-        .map_err(Into::into)
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn read_usbdevfs_ioctl(arg: usize) -> VfsResult<UsbdevfsIoctl> {
-    (arg as *const UsbdevfsIoctl).vm_read().map_err(Into::into)
+    (arg as *const UsbdevfsIoctl)
+        .vm_read()
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn read_usbdevfs_disconnect_claim(arg: usize) -> VfsResult<UsbdevfsDisconnectClaim> {
     (arg as *const UsbdevfsDisconnectClaim)
         .vm_read()
-        .map_err(Into::into)
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn read_usbdevfs_u32(arg: usize) -> VfsResult<u32> {
-    (arg as *const u32).vm_read().map_err(Into::into)
+    (arg as *const u32)
+        .vm_read()
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn snapshot_probed_device(

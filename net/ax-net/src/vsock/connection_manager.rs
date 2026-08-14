@@ -19,14 +19,16 @@
 
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use ax_errno::{AxError, AxResult, ax_bail};
 use ax_sync::Mutex;
 use ax_task::WaitQueue;
 use axpoll::{IoEvents, PollSet};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::*};
 
 use super::{VsockAddr, VsockConnId};
-use crate::device::{start_vsock_poll, stop_vsock_poll};
+use crate::{
+    NetError, NetResult,
+    device::{start_vsock_poll, stop_vsock_poll},
+};
 
 pub const VSOCK_RX_BUFFER_SIZE: usize = 64 * 1024; // 64KB receive buffer
 const VSOCK_ACCEPT_QUEUE_SIZE: usize = 128; // accept queue size
@@ -271,10 +273,10 @@ impl AcceptQueue {
         self.consumer.is_empty()
     }
 
-    pub fn push(&mut self, conn_id: VsockConnId) -> AxResult<()> {
+    pub fn push(&mut self, conn_id: VsockConnId) -> NetResult<()> {
         match self.producer.try_push(conn_id) {
             Ok(_) => Ok(()),
-            Err(_) => ax_bail!(ResourceBusy, "accept queue full"),
+            Err(_) => Err(NetError::ResourceBusy),
         }
     }
 
@@ -335,7 +337,7 @@ impl VsockConnectionManager {
     }
 
     /// allocate an ephemeral port
-    pub fn allocate_port(&mut self) -> AxResult<u32> {
+    pub fn allocate_port(&mut self) -> NetResult<u32> {
         let start = self.next_ephemeral_port;
         loop {
             let port = self.next_ephemeral_port;
@@ -355,15 +357,15 @@ impl VsockConnectionManager {
             }
 
             if self.next_ephemeral_port == start {
-                ax_bail!(AddrInUse, "no available ports");
+                return Err(NetError::AddrInUse);
             }
         }
     }
 
     /// create a listen queue
-    pub fn listen(&mut self, local_addr: VsockAddr) -> AxResult<()> {
+    pub fn listen(&mut self, local_addr: VsockAddr) -> NetResult<()> {
         if self.listen_queues.contains_key(&local_addr.port) {
-            ax_bail!(AddrInUse, "port already in use");
+            return Err(NetError::AddrInUse);
         }
 
         let queue = Arc::new(Mutex::new(ListenQueue::new(local_addr)));
@@ -386,14 +388,21 @@ impl VsockConnectionManager {
     }
 
     /// accept a connection
-    pub fn accept(&mut self, port: u32) -> AxResult<(VsockConnId, VsockAddr)> {
-        let queue = self.listen_queues.get(&port).ok_or(AxError::InvalidInput)?;
+    pub fn accept(&mut self, port: u32) -> NetResult<(VsockConnId, VsockAddr)> {
+        let queue = self
+            .listen_queues
+            .get(&port)
+            .ok_or(NetError::InvalidInput)?;
 
-        let conn_id = queue.lock().accept_queue.pop().ok_or(AxError::WouldBlock)?;
+        let conn_id = queue
+            .lock()
+            .accept_queue
+            .pop()
+            .ok_or(NetError::WouldBlock)?;
 
-        let conn = self.connections.get(&conn_id).ok_or(AxError::NotFound)?;
+        let conn = self.connections.get(&conn_id).ok_or(NetError::NotFound)?;
 
-        let peer_addr = conn.lock().peer_addr.ok_or(AxError::NotFound)?;
+        let peer_addr = conn.lock().peer_addr.ok_or(NetError::NotFound)?;
 
         debug!("Accepted connection: {:?} from {:?}", conn_id, peer_addr);
         Ok((conn_id, peer_addr))
@@ -441,11 +450,11 @@ impl VsockConnectionManager {
     }
 
     /// handle a new connection request (by driver event)
-    pub fn on_connection_request(&mut self, conn_id: VsockConnId) -> AxResult<()> {
+    pub fn on_connection_request(&mut self, conn_id: VsockConnId) -> NetResult<()> {
         let queue = self
             .listen_queues
             .get(&conn_id.local_port)
-            .ok_or(AxError::NotFound)?
+            .ok_or(NetError::NotFound)?
             .clone();
 
         let local_addr = queue.lock().local_addr;
@@ -474,7 +483,7 @@ impl VsockConnectionManager {
             // full -- remove the connection
             drop(queue_guard);
             self.remove_connection(conn_id);
-            return Err(AxError::ResourceBusy);
+            return Err(NetError::ResourceBusy);
         }
 
         queue_guard.wake();
@@ -488,11 +497,11 @@ impl VsockConnectionManager {
     }
 
     /// handle data received (by driver event)
-    pub fn on_data_received(&mut self, conn_id: VsockConnId, data: &[u8]) -> AxResult<()> {
+    pub fn on_data_received(&mut self, conn_id: VsockConnId, data: &[u8]) -> NetResult<()> {
         let conn = self
             .connections
             .get(&conn_id)
-            .ok_or(AxError::NotFound)?
+            .ok_or(NetError::NotFound)?
             .clone();
 
         let mut conn_guard = conn.lock();
@@ -513,7 +522,7 @@ impl VsockConnectionManager {
     }
 
     /// handle disconnection (by driver event)
-    pub fn on_disconnected(&mut self, conn_id: VsockConnId) -> AxResult<()> {
+    pub fn on_disconnected(&mut self, conn_id: VsockConnId) -> NetResult<()> {
         if let Some(conn) = self.connections.get(&conn_id) {
             let mut conn_guard = conn.lock();
             conn_guard.state = ConnectionState::Closed;
@@ -526,7 +535,7 @@ impl VsockConnectionManager {
     }
 
     /// handle connected event (by driver event)
-    pub fn on_connected(&mut self, conn_id: VsockConnId) -> AxResult<()> {
+    pub fn on_connected(&mut self, conn_id: VsockConnId) -> NetResult<()> {
         if let Some(conn) = self.connections.get(&conn_id) {
             let mut conn_guard = conn.lock();
             conn_guard.state = ConnectionState::Connected;
@@ -540,7 +549,7 @@ impl VsockConnectionManager {
     /// The code for credit_update has been completed in the virtio_driver layer.
     /// The purpose of credit_update here is to correspond to events and
     /// notify which tasks failed to be sent due to credit not being updated
-    pub fn on_credit_update(&mut self, conn_id: VsockConnId) -> AxResult<()> {
+    pub fn on_credit_update(&mut self, conn_id: VsockConnId) -> NetResult<()> {
         if let Some(conn) = self.connections.get(&conn_id) {
             let mut conn_guard = conn.lock();
             conn_guard.tx_wait_queue_notify();

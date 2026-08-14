@@ -3,15 +3,19 @@
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 
 /// Failure while synchronously invalidating a kernel TLB range.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TlbShootdownError {
     /// The target CPU is offline.
+    #[error("target CPU is offline")]
     CpuOffline,
     /// The synchronous cross-CPU call timed out.
+    #[error("cross-CPU TLB shootdown timed out")]
     Timeout,
     /// This configuration has no cross-CPU invalidation backend.
+    #[error("cross-CPU TLB shootdown is not supported")]
     Unsupported,
     /// The platform rejected the cross-CPU operation.
+    #[error("platform rejected the cross-CPU TLB shootdown")]
     Platform,
 }
 

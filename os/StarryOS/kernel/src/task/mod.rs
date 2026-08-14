@@ -24,7 +24,6 @@ use core::{
     task::Poll,
 };
 
-use ax_errno::AxResult;
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_task::{TaskExt, TaskInner};
 use axpoll::{IoEvents, PollSet};
@@ -50,7 +49,10 @@ pub(crate) use self::{
     seccomp::seccomp_bpf_constants_hold_for_test,
     timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
 };
-use crate::sync::{ContextSwitchRwLock, IrqMutex, Mutex, PreemptIrqSaveGuard, RwLock, SpinLock};
+use crate::{
+    StarryResult,
+    sync::{ContextSwitchRwLock, IrqMutex, Mutex, PreemptIrqSaveGuard, RwLock, SpinLock},
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyscallTraceState {
@@ -457,14 +459,14 @@ impl Thread {
     }
 
     /// Enable strict seccomp mode.
-    pub fn install_seccomp_strict(&self) -> AxResult<()> {
+    pub fn install_seccomp_strict(&self) -> StarryResult<()> {
         self.seccomp.lock().install_strict()?;
         self.seccomp_active.store(true, Ordering::Release);
         Ok(())
     }
 
     /// Append a seccomp filter. Filters are inherited and evaluated in order.
-    pub fn append_seccomp_filter(&self, insns: Vec<SockFilter>) -> AxResult<()> {
+    pub fn append_seccomp_filter(&self, insns: Vec<SockFilter>) -> StarryResult<()> {
         self.seccomp.lock().append_filter(insns)?;
         self.seccomp_active.store(true, Ordering::Release);
         Ok(())

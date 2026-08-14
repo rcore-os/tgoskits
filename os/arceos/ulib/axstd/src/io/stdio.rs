@@ -28,7 +28,7 @@ impl Read for StdinRaw {
 
 impl Write for StdoutRaw {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        ax_api::stdio::ax_console_write_bytes(buf)
+        Ok(ax_api::stdio::ax_console_write_bytes(buf)?)
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())

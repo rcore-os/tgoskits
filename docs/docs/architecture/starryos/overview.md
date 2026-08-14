@@ -140,7 +140,7 @@ sequenceDiagram
     SyscallEntry->>SysHandler: 根据 Sysno 分发到 sys_xxx
     alt 文件 进程 网络 内存等普通调用
         SysHandler->>KernelService: 调用 fs task net mm 等子系统
-        KernelService-->>SysHandler: 返回 AxResult
+        KernelService-->>SysHandler: 返回 StarryResult
     else execve 等需要重装上下文的调用
         SysHandler->>KernelService: load_user_app 更新地址空间
         KernelService-->>SysHandler: 返回新的 entry 和 stack

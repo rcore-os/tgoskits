@@ -1,16 +1,16 @@
-use ax_errno::AxResult;
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, align_up_4k};
 use ax_runtime::hal::paging::MappingFlags;
 use ax_task::current;
 use linux_raw_sys::general::RLIMIT_DATA;
 
 use crate::{
+    StarryResult,
     config::{USER_HEAP_BASE, USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
     mm::Backend,
     task::AsThread,
 };
 
-pub fn sys_brk(addr: usize) -> AxResult<isize> {
+pub fn sys_brk(addr: usize) -> StarryResult<isize> {
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
     let current_top = proc_data.get_heap_top() as usize;

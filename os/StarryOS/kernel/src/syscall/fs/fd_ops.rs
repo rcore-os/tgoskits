@@ -5,15 +5,15 @@ use core::{
     ops::DerefMut,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
 use ax_task::current;
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
+use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference, VfsError};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use starry_vm::{VmMutPtr, VmPtr, vm_load};
 
 use crate::{
+    StarryError, StarryResult,
     file::{
         Directory, FD_TABLE, File, FileDescriptor, FileLike, MountTableFile, NsFd, Pipe,
         add_file_like, close_file_like, get_file_like, memfd::Memfd, with_fs,
@@ -79,7 +79,7 @@ fn add_to_fd(
     result: OpenResult,
     flags: u32,
     mount_table_namespace: Option<Arc<MountNamespace>>,
-) -> AxResult<i32> {
+) -> StarryResult<i32> {
     // FIFO + O_NONBLOCK + O_WRONLY (no reader) → ENXIO.
     //
     // man 2 open §"ENXIO" 第 1 variant：
@@ -114,7 +114,7 @@ fn add_to_fd(
         && let Ok(meta) = f.location().metadata()
         && meta.node_type == NodeType::Fifo
     {
-        return Err(AxError::NoSuchDeviceOrAddress);
+        return Err(StarryError::NoSuchDeviceOrAddress);
     }
 
     let f: Arc<dyn FileLike> = match result {
@@ -168,10 +168,10 @@ fn add_to_fd(
                         .group()
                         .session()
                         .terminal()
-                        .ok_or(AxError::NotFound)?;
+                        .ok_or(StarryError::NotFound)?;
                     let target = tty::terminal_device(term.as_ref()).ok_or_else(|| {
                         warn!("unknown controlling terminal type for /dev/tty");
-                        AxError::BadState
+                        StarryError::BadState
                     })?;
                     let loc = match target {
                         tty::TerminalDevice::Location(location) => location,
@@ -264,7 +264,7 @@ const OPENAT2_VALID_FLAGS: u64 = (O_ACCMODE
     | O_PATH
     | O_TMPFILE) as u64;
 
-fn openat2_check_extra_bytes(how: *const OpenHow, size: usize) -> AxResult<()> {
+fn openat2_check_extra_bytes(how: *const OpenHow, size: usize) -> StarryResult<()> {
     let base_size = size_of::<OpenHow>();
     if size <= base_size {
         return Ok(());
@@ -275,7 +275,7 @@ fn openat2_check_extra_bytes(how: *const OpenHow, size: usize) -> AxResult<()> {
         size - base_size,
     )?;
     if extra.iter().any(|byte| *byte != 0) {
-        return Err(AxError::ArgumentListTooLong);
+        return Err(StarryError::ArgumentListTooLong);
     }
     Ok(())
 }
@@ -286,7 +286,7 @@ fn openat2_check_extra_bytes(how: *const OpenHow, size: usize) -> AxResult<()> {
 ///
 /// Returns `Some(fd)` on success, `Some(Err(...))` on failure, or
 /// `None` if the path does not match (fall through to regular open).
-fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
+fn try_open_nsfd(path: &str, flags: u32) -> Option<StarryResult<i32>> {
     // Must be of the form /proc/<pid>/ns/<type>
     if !path.starts_with("/proc/") {
         return None;
@@ -309,13 +309,13 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
 
     let proc_data = match crate::task::get_process_data(pid) {
         Ok(p) => p,
-        Err(_) => return Some(Err(AxError::NotFound)),
+        Err(_) => return Some(Err(StarryError::NotFound)),
     };
 
     let mnt_fs_ns = if ns_type_str == "mnt" {
         let task = match get_task(pid) {
             Ok(task) => task,
-            Err(_) => return Some(Err(AxError::NotFound)),
+            Err(_) => return Some(Err(StarryError::NotFound)),
         };
         let scope = task.as_thread().scope.read();
         let fs_context = FS_CONTEXT.scope(&scope).clone();
@@ -338,7 +338,7 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
         "net" => NsFd::Net(nsproxy.net_ns.clone()),
         "user" => NsFd::User(nsproxy.user_ns.clone()),
         "cgroup" => NsFd::Cgroup(nsproxy.cgroup_ns.clone()),
-        _ => return Some(Err(AxError::NotFound)),
+        _ => return Some(Err(StarryError::NotFound)),
     };
 
     drop(nsproxy);
@@ -387,7 +387,7 @@ pub fn sys_openat(
     path: *const c_char,
     flags: i32,
     mode: __kernel_mode_t,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     // call tp:trace_sys_enter_openat
     trace_sys_enter_openat(dirfd, path as _, flags as _, mode);
 
@@ -401,7 +401,7 @@ pub fn sys_openat(
     // Empty pathname → ENOENT. openat() does not accept AT_EMPTY_PATH.
     // Fixes bug-openat-empty-path-no-enoent.
     if path.is_empty() {
-        return Err(AxError::NotFound);
+        return Err(StarryError::NotFound);
     }
 
     // O_CREAT|O_DIRECTORY is an invalid combination: open() cannot create
@@ -409,7 +409,7 @@ pub fn sys_openat(
     // Fixes bug-open-creat-directory-einval.
     // Exception: O_PATH ignores O_CREAT, so still allow PATH|CREAT|DIRECTORY.
     if uflags & O_CREAT != 0 && uflags & O_DIRECTORY != 0 && uflags & O_PATH == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     // O_TMPFILE requires O_RDWR or O_WRONLY. man: "EINVAL — O_TMPFILE was
@@ -420,7 +420,7 @@ pub fn sys_openat(
     // (see flags_to_options PATH override below). On Linux, O_PATH|O_TMPFILE|RDONLY
     // is accepted as an O_PATH handle (TMPFILE/access bits ignored), not EINVAL.
     if uflags & O_TMPFILE == O_TMPFILE && uflags & 0b11 == O_RDONLY && uflags & O_PATH == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     // Absolute path: man "If pathname is absolute, then dirfd is ignored."
@@ -448,12 +448,12 @@ pub fn sys_openat(
         && uflags & O_PATH == 0
         && with_fs(dirfd, |fs| match fs.resolve_no_follow(&path) {
             Ok(_) => Ok(false),
-            Err(AxError::NotFound) => Ok(true),
-            Err(err) => Err(err),
+            Err(VfsError::NotFound) => Ok(true),
+            Err(err) => Err(err.into()),
         })?;
 
     // Open first, then install the file so filesystem errors propagate unchanged.
-    let result = with_fs(dirfd, |fs| options.open(fs, path))?;
+    let result = with_fs(dirfd, |fs| Ok(options.open(fs, path)?))?;
     let mount_table_namespace = mount_table_namespace(&result);
     let fd = add_to_fd(result, flags as _, mount_table_namespace)?;
     if should_notify_create {
@@ -468,47 +468,47 @@ pub fn sys_openat2(
     path: *const c_char,
     how: *const OpenHow,
     size: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let base_size = size_of::<OpenHow>();
     if size < base_size {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let how_value = how.vm_read()?;
     openat2_check_extra_bytes(how, size)?;
 
     if how_value.flags & !OPENAT2_VALID_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if how_value.mode & !0o7777 != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if how_value.mode != 0 && how_value.flags & ((O_CREAT | O_TMPFILE) as u64) == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if how_value.resolve & !OPENAT2_VALID_RESOLVE != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     const NIX_RESTORE_RESOLVE: u64 = (RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS) as u64;
     if how_value.resolve != 0 && how_value.resolve != NIX_RESTORE_RESOLVE {
-        return Err(AxError::OperationNotSupported);
+        return Err(StarryError::OperationNotSupported);
     }
 
     let flags: i32 = how_value
         .flags
         .try_into()
-        .map_err(|_| AxError::InvalidInput)?;
+        .map_err(|_| StarryError::InvalidInput)?;
     let mode: __kernel_mode_t = how_value
         .mode
         .try_into()
-        .map_err(|_| AxError::InvalidInput)?;
+        .map_err(|_| StarryError::InvalidInput)?;
     let uflags = flags as u32;
 
     if uflags & O_CREAT != 0 && uflags & O_DIRECTORY != 0 && uflags & O_PATH == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if uflags & O_TMPFILE == O_TMPFILE && uflags & 0b11 == O_RDONLY && uflags & O_PATH == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     if how_value.resolve == 0 {
@@ -517,10 +517,10 @@ pub fn sys_openat2(
 
     let path = vm_load_path_string(path)?;
     if path.is_empty() {
-        return Err(AxError::NotFound);
+        return Err(StarryError::NotFound);
     }
     if path.starts_with('/') {
-        return Err(AxError::CrossesDevices);
+        return Err(StarryError::CrossesDevices);
     }
 
     let curr = current();
@@ -532,13 +532,13 @@ pub fn sys_openat2(
         let (parent, name) = fs.resolve_parent_beneath_no_symlinks(path.as_ref())?;
         match parent.lookup_no_follow(name.as_ref()) {
             Ok(location) if location.node_type() == NodeType::Symlink => {
-                return Err(AxError::FilesystemLoop);
+                return Err(StarryError::FilesystemLoop);
             }
-            Err(AxError::NotFound) | Ok(_) => {}
-            Err(error) => return Err(error),
+            Err(VfsError::NotFound) | Ok(_) => {}
+            Err(error) => return Err(error.into()),
         }
         options.no_follow(true);
-        options.open(&fs.with_current_dir(parent)?, name.as_ref())
+        Ok(options.open(&fs.with_current_dir(parent)?, name.as_ref())?)
     })?;
     let mount_table_namespace = mount_table_namespace(&result);
     add_to_fd(result, flags as u32, mount_table_namespace).map(|fd| fd as isize)
@@ -549,12 +549,12 @@ pub fn sys_openat2(
 /// Return its index in the file table (`fd`). Return `EMFILE` if it already
 /// has the maximum number of files open.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_open(path: *const c_char, flags: i32, mode: __kernel_mode_t) -> AxResult<isize> {
+pub fn sys_open(path: *const c_char, flags: i32, mode: __kernel_mode_t) -> StarryResult<isize> {
     sys_openat(AT_FDCWD as _, path, flags, mode)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_creat(path: *const c_char, mode: __kernel_mode_t) -> AxResult<isize> {
+pub fn sys_creat(path: *const c_char, mode: __kernel_mode_t) -> StarryResult<isize> {
     sys_openat(
         AT_FDCWD as _,
         path,
@@ -563,7 +563,7 @@ pub fn sys_creat(path: *const c_char, mode: __kernel_mode_t) -> AxResult<isize> 
     )
 }
 
-pub fn sys_close(fd: c_int) -> AxResult<isize> {
+pub fn sys_close(fd: c_int) -> StarryResult<isize> {
     debug!("sys_close <= {fd}");
     close_file_like(fd)?;
     Ok(0)
@@ -577,11 +577,11 @@ bitflags! {
     }
 }
 
-pub fn sys_close_range(first: u32, last: u32, flags: u32) -> AxResult<isize> {
+pub fn sys_close_range(first: u32, last: u32, flags: u32) -> StarryResult<isize> {
     if last < first {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
-    let flags = CloseRangeFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
+    let flags = CloseRangeFlags::from_bits(flags).ok_or(StarryError::InvalidInput)?;
     debug!("sys_close_range <= fds: [{first}, {last}], flags: {flags:?}");
     if flags.contains(CloseRangeFlags::UNSHARE) {
         let curr = current();
@@ -622,15 +622,15 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-fn dup_fd(old_fd: c_int, cloexec: bool) -> AxResult<isize> {
+fn dup_fd(old_fd: c_int, cloexec: bool) -> StarryResult<isize> {
     let f = get_file_like(old_fd)?;
     let new_fd = add_file_like(f, cloexec)?;
     Ok(new_fd as _)
 }
 
-fn dup_fd_min(old_fd: c_int, min_fd: c_int, cloexec: bool) -> AxResult<isize> {
+fn dup_fd_min(old_fd: c_int, min_fd: c_int, cloexec: bool) -> StarryResult<isize> {
     if min_fd < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let f = get_file_like(old_fd)?;
     let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current as i32;
@@ -645,16 +645,16 @@ fn dup_fd_min(old_fd: c_int, min_fd: c_int, cloexec: bool) -> AxResult<isize> {
             return Ok(candidate as isize);
         }
     }
-    Err(AxError::TooManyOpenFiles)
+    Err(StarryError::TooManyOpenFiles)
 }
 
-pub fn sys_dup(old_fd: c_int) -> AxResult<isize> {
+pub fn sys_dup(old_fd: c_int) -> StarryResult<isize> {
     debug!("sys_dup <= {old_fd}");
     dup_fd(old_fd, false)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> AxResult<isize> {
+pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> StarryResult<isize> {
     if old_fd == new_fd {
         get_file_like(new_fd)?;
         return Ok(new_fd as _);
@@ -669,12 +669,12 @@ bitflags::bitflags! {
     }
 }
 
-pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
-    let flags = Dup3Flags::from_bits(flags).ok_or(AxError::InvalidInput)?;
+pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> StarryResult<isize> {
+    let flags = Dup3Flags::from_bits(flags).ok_or(StarryError::InvalidInput)?;
     debug!("sys_dup3 <= old_fd: {old_fd}, new_fd: {new_fd}, flags: {flags:?}");
 
     if old_fd == new_fd {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let current_fd_table = crate::file::current_fd_table();
@@ -682,13 +682,13 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
     let mut f = fd_table
         .get(old_fd as _)
         .cloned()
-        .ok_or(AxError::BadFileDescriptor)?;
+        .ok_or(StarryError::BadFileDescriptor)?;
     f.cloexec = flags.contains(Dup3Flags::O_CLOEXEC);
 
     let prev = fd_table.remove(new_fd as _);
     fd_table
         .add_at(new_fd as _, f)
-        .map_err(|_| AxError::BadFileDescriptor)?;
+        .map_err(|_| StarryError::BadFileDescriptor)?;
     drop(fd_table);
     // `release_locks_on_close()` walks all fd tables via
     // `fd_tables_contain_file()` (acquiring `FD_TABLE`), so it must run AFTER
@@ -701,7 +701,7 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
     Ok(new_fd as _)
 }
 
-pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
+pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> StarryResult<isize> {
     debug!("sys_fcntl <= fd: {fd} cmd: {cmd} arg: {arg}");
 
     if let Some(r) = super::lock::dispatch_fcntl(fd, cmd, arg) {
@@ -717,7 +717,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             let async_mode = arg & (FASYNC as usize) != 0;
             let async_mode_changed = async_mode != f.async_mode();
             if async_mode_changed && !f.supports_async_mode() {
-                return Err(AxError::NotATty);
+                return Err(StarryError::NotATty);
             }
             f.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
             f.set_append(arg & (O_APPEND as usize) > 0)?;
@@ -747,7 +747,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             let cloexec = crate::file::current_fd_table()
                 .read()
                 .get(fd as _)
-                .ok_or(AxError::BadFileDescriptor)?
+                .ok_or(StarryError::BadFileDescriptor)?
                 .cloexec;
             Ok(if cloexec { FD_CLOEXEC as _ } else { 0 })
         }
@@ -756,7 +756,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             crate::file::current_fd_table()
                 .write()
                 .get_mut(fd as _)
-                .ok_or(AxError::BadFileDescriptor)?
+                .ok_or(StarryError::BadFileDescriptor)?
                 .cloexec = cloexec;
             Ok(0)
         }
@@ -802,7 +802,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             let hint = (arg as *const u64).vm_read()?;
             // Valid hints are RWH_WRITE_LIFE_NOT_SET..=RWH_WRITE_LIFE_EXTREME (0..=5).
             if hint > 5 {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             Ok(0)
         }
@@ -815,17 +815,17 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
         10 | 11 | 15 | 16 => Ok(0),
         _ => {
             warn!("unsupported fcntl parameters: cmd: {cmd}");
-            Err(AxError::InvalidInput)
+            Err(StarryError::InvalidInput)
         }
     }
 }
 
-fn set_pipe_size(pipe: &Pipe, size: usize) -> AxResult<isize> {
+fn set_pipe_size(pipe: &Pipe, size: usize) -> StarryResult<isize> {
     pipe.resize(size)?;
     Ok(pipe.capacity() as _)
 }
 
-pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
+pub fn sys_flock(fd: c_int, operation: c_int) -> StarryResult<isize> {
     debug!("flock <= fd: {fd}, operation: {operation}");
     super::lock::flock_op(fd, operation)
 }
@@ -833,24 +833,27 @@ pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
 #[cfg(axtest)]
 pub(crate) fn fcntl_setpipe_size_returns_capacity_for_test() -> bool {
     let (read_end, _write_end) = Pipe::new();
-    set_pipe_size(&read_end, 4097) == Ok(8192)
+    matches!(set_pipe_size(&read_end, 4097), Ok(8192))
 }
 
 #[cfg(axtest)]
 pub(crate) fn pipe_size_rounding_and_rejection_rules_hold_for_test() -> bool {
     // Sub-page sizes round up to one page (4096).
     let (read_end, _write_end) = Pipe::new();
-    set_pipe_size(&read_end, 1) == Ok(4096)
+    matches!(set_pipe_size(&read_end, 1), Ok(4096))
         // Power-of-two page multiples stay unchanged.
-        && set_pipe_size(&read_end, 8192) == Ok(8192)
+        && matches!(set_pipe_size(&read_end, 8192), Ok(8192))
         // Non-power-of-two sizes round up to the next power of two.
-        && set_pipe_size(&read_end, 4097) == Ok(8192)
+        && matches!(set_pipe_size(&read_end, 4097), Ok(8192))
         // Sizes at exactly RING_BUFFER_MAX_SIZE (1 MiB) succeed.
-        && set_pipe_size(&read_end, 1024 * 1024) == Ok(1024 * 1024)
+        && matches!(
+            set_pipe_size(&read_end, 1024 * 1024),
+            Ok(capacity) if capacity == 1024 * 1024
+        )
         // Sizes above RING_BUFFER_MAX_SIZE are rejected.
         && set_pipe_size(&read_end, 1024 * 1024 + 1).is_err()
         // Zero rounds up to a single page.
-        && set_pipe_size(&read_end, 0) == Ok(4096)
+        && matches!(set_pipe_size(&read_end, 0), Ok(4096))
 }
 
 #[cfg(axtest)]

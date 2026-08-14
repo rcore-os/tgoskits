@@ -1,8 +1,7 @@
 use alloc::{string::ToString, sync::Arc, vec::Vec};
 use core::any::Any;
 
-use ax_cgroup::CgroupNode;
-use ax_errno::LinuxError;
+use ax_cgroup::{CgroupError, CgroupNode};
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, Filesystem, FilesystemOps, Metadata,
     MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult,
@@ -91,7 +90,7 @@ impl DirectRwFsFileOps for CgroupFile {
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         match self.kind {
             CgroupFileKind::Controllers => {
-                return Err(VfsError::from(LinuxError::EACCES));
+                return Err(VfsError::PermissionDenied);
             }
             CgroupFileKind::Procs => crate::cgroup::write_procs(self.cgroup.clone(), buf)?,
             CgroupFileKind::SubtreeControl => {
@@ -209,7 +208,7 @@ impl DirNodeOps for CgroupDir {
         let child = self
             .cgroup
             .lookup_child(name)
-            .map_err(crate::cgroup::cgroup_error)?;
+            .map_err(cgroup_error_to_vfs_error)?;
         Ok(self.child_dir_entry(name, child))
     }
 
@@ -239,7 +238,7 @@ impl DirNodeOps for CgroupDir {
         let child = self
             .cgroup
             .create_child(name)
-            .map_err(crate::cgroup::cgroup_error)?;
+            .map_err(cgroup_error_to_vfs_error)?;
         Ok(self.child_dir_entry(name, child))
     }
 
@@ -253,11 +252,22 @@ impl DirNodeOps for CgroupDir {
         }
         self.cgroup
             .remove_child(name)
-            .map_err(crate::cgroup::cgroup_error)
+            .map_err(cgroup_error_to_vfs_error)
     }
 
     fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
         Err(VfsError::OperationNotPermitted)
+    }
+}
+
+fn cgroup_error_to_vfs_error(error: CgroupError) -> VfsError {
+    match error {
+        CgroupError::NotInitialized | CgroupError::InvalidInput => VfsError::InvalidInput,
+        CgroupError::NotFound => VfsError::NotFound,
+        CgroupError::AlreadyExists => VfsError::AlreadyExists,
+        CgroupError::ResourceBusy => VfsError::ResourceBusy,
+        CgroupError::NoSuchProcess => VfsError::NotFound,
+        CgroupError::DirectoryNotEmpty => VfsError::DirectoryNotEmpty,
     }
 }
 

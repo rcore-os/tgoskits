@@ -11,7 +11,6 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
@@ -21,6 +20,7 @@ use axpoll::{IoEvents, PollSet};
 use ktracepoint::*;
 
 use crate::{
+    StarryError, StarryResult,
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
     sync::{Mutex, NoPreemptMutex},
     task::AsThread,
@@ -266,9 +266,9 @@ fn common_trace_pipe_read(
 }
 
 /// Initialize registered tracepoints. This should be called after static keys are initialized, and before any tracepoint is hit.
-pub fn tracepoint_init() -> AxResult<()> {
+pub fn tracepoint_init() -> StarryResult<()> {
     let (tp_map, ext_tps) =
-        global_init_events::<KernelTraceAux>().map_err(|_| AxError::InvalidInput)?;
+        global_init_events::<KernelTraceAux>().map_err(|_| StarryError::InvalidInput)?;
 
     let ext_tps = ext_tps
         .into_iter()

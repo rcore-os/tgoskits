@@ -530,7 +530,7 @@ impl DeviceOps for TpuDevice {
             Ok(v) => Ok(v),
             Err(e) => {
                 error!("TPU ioctl error: {:?}", e);
-                Err(ax_errno::AxError::Unsupported)
+                Err(crate::StarryError::from(e).into())
             }
         }
     }

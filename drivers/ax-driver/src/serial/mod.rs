@@ -1,6 +1,5 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
 
-use ax_errno::AxError;
 use fdt_edit::{Fdt, RegFixed};
 use log::warn;
 use rdif_serial::{SplitUart, UartInfo, UartIrq, UartParts, UartPort};
@@ -10,7 +9,7 @@ mod ns16550;
 mod pl011;
 mod rockchip_fiq;
 
-use crate::{BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt};
+use crate::{BindingInfo, BindingIrq, Error, binding_info_from_acpi, binding_info_from_fdt};
 
 type ErasedUartParts = UartParts<Box<dyn UartPort>, Box<dyn UartIrq>>;
 
@@ -82,12 +81,12 @@ fn erase_uart(raw: impl SplitUart) -> ProbedUart {
 }
 
 impl TryFrom<Device<PlatformSerialDevice>> for SerialDevice {
-    type Error = AxError;
+    type Error = Error;
 
     fn try_from(base: Device<PlatformSerialDevice>) -> Result<Self, Self::Error> {
         let device_id = base.descriptor().device_id();
-        let mut dev = base.lock().map_err(|_| AxError::BadState)?;
-        let parts = dev.parts.take().ok_or(AxError::BadState)?;
+        let mut dev = base.lock().map_err(|_| Error::DeviceBusy)?;
+        let parts = dev.parts.take().ok_or(Error::DeviceAlreadyTaken)?;
         Ok(Self {
             info: SerialDeviceInfo {
                 name: dev.name.clone(),

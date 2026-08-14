@@ -447,7 +447,7 @@ pub fn select_route_with_binding(
     &self,
     dst_addr: &IpAddress,
     binding: DeviceBinding,
-) -> AxResult<RouteDecision> {
+) -> NetResult<RouteDecision> {
     let state = self.state.read();
     let routes = self.routes.read();
     let route = routes
@@ -677,7 +677,7 @@ socket 层通过控制面把本地地址、`SO_BINDTODEVICE` 和 DNS server 可�
 `bind(具体本地地址)` 会推导接口绑定。核心函数是 `local_binding_for()`：
 
 ```rust
-pub fn local_binding_for(&self, endpoint: &IpListenEndpoint) -> AxResult<DeviceBinding> {
+pub fn local_binding_for(&self, endpoint: &IpListenEndpoint) -> NetResult<DeviceBinding> {
     match endpoint.addr {
         Some(addr) => {
             let state = self.state.read();

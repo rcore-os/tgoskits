@@ -1,6 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use ax_task::{
     current,
     future::{block_on, interruptible},
@@ -16,6 +15,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use super::ptrace::PTRACE_EVENT_STOP;
 use crate::{
+    Errno, StarryError, StarryResult,
     file::{PidFd, get_file_like},
     task::{
         AsThread, JobStatus, ProcessData, ProcessIdentity, decode_wait_status, get_process_data,
@@ -104,13 +104,13 @@ impl WaitTarget {
     }
 }
 
-fn waitid_pidfd_target(fd: i32) -> AxResult<WaitTarget> {
+fn waitid_pidfd_target(fd: i32) -> StarryResult<WaitTarget> {
     if fd < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let pidfd = get_file_like(fd)?
         .downcast_arc::<PidFd>()
-        .map_err(|_| AxError::BadFileDescriptor)?;
+        .map_err(|_| StarryError::BadFileDescriptor)?;
     Ok(WaitTarget::PidFd(pidfd.identity()))
 }
 fn stopped_wait_signo(data: &ProcessData, signo: Signo) -> i32 {
@@ -237,10 +237,10 @@ fn waitable_processes(
     candidates
 }
 
-pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isize> {
-    let options = WaitPidOptions::from_bits(options).ok_or(AxError::InvalidInput)?;
+pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> StarryResult<isize> {
+    let options = WaitPidOptions::from_bits(options).ok_or(StarryError::InvalidInput)?;
     if pid == i32::MIN {
-        return Err(AxError::from(LinuxError::ESRCH));
+        return Err(StarryError::from(Errno::ESRCH));
     }
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
@@ -268,7 +268,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         )
     };
     if scan_children().is_empty() {
-        return Err(AxError::from(LinuxError::ECHILD));
+        return Err(StarryError::from(Errno::ECHILD));
     }
 
     let proc_data = curr.as_thread().proc_data.clone();
@@ -337,7 +337,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         }
 
         if children.iter().all(is_reaped_process) {
-            Err(AxError::from(LinuxError::ECHILD))
+            Err(StarryError::from(Errno::ECHILD))
         } else if options.contains(WaitPidOptions::WNOHANG) {
             Ok(Some(0))
         } else {
@@ -356,7 +356,7 @@ pub fn sys_waitid(
     id: i32,
     infop: *mut linux_raw_sys::general::siginfo,
     options: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let curr = current();
     let thr = curr.as_thread();
     let proc = &thr.proc_data.proc;
@@ -366,13 +366,13 @@ pub fn sys_waitid(
         P_ALL => WaitTarget::Any,
         P_PID => {
             if id <= 0 {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             WaitTarget::Pid(id as Pid)
         }
         P_PGID => {
             if id < 0 {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             let pgid = if id == 0 {
                 proc.group().pgid()
@@ -382,14 +382,14 @@ pub fn sys_waitid(
             WaitTarget::Pgid(pgid)
         }
         P_PIDFD => waitid_pidfd_target(id)?,
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
 
-    let options = WaitIdOptions::from_bits(options).ok_or(AxError::InvalidInput)?;
+    let options = WaitIdOptions::from_bits(options).ok_or(StarryError::InvalidInput)?;
     if !options
         .intersects(WaitIdOptions::WEXITED | WaitIdOptions::WUNTRACED | WaitIdOptions::WCONTINUED)
     {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     info!("sys_waitid <= idtype: {idtype}, id: {id}, options: {options:?}");
@@ -404,7 +404,7 @@ pub fn sys_waitid(
         )
     };
     if scan_children().is_empty() {
-        return Err(AxError::from(LinuxError::ECHILD));
+        return Err(StarryError::from(Errno::ECHILD));
     }
 
     let proc_data = curr.as_thread().proc_data.clone();
@@ -495,7 +495,7 @@ pub fn sys_waitid(
         }
 
         if children.iter().all(is_reaped_process) {
-            Err(AxError::from(LinuxError::ECHILD))
+            Err(StarryError::from(Errno::ECHILD))
         } else if options.contains(WaitIdOptions::WNOHANG) {
             if let Some(infop) = infop.nullable() {
                 let zeroed: linux_raw_sys::general::siginfo = unsafe { core::mem::zeroed() };

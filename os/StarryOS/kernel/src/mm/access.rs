@@ -8,8 +8,7 @@ use core::{
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
-use ax_errno::{AxError, AxResult};
-use ax_io::prelude::*;
+use ax_io::{IoError, prelude::*};
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
     cpu::{
@@ -23,8 +22,8 @@ use extern_trait::extern_trait;
 use starry_vm::{VmError, VmIo, VmResult, vm_load_until_nul, vm_read_slice, vm_write_slice};
 
 use crate::{
+    StarryError, StarryResult,
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
-    mm::paging_error_to_ax_error,
     task::AsThread,
 };
 
@@ -49,10 +48,10 @@ pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
     result
 }
 
-fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> AxResult<()> {
+fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> StarryResult<()> {
     let align = layout.align();
     if start.as_usize() & (align - 1) != 0 {
-        return Err(AxError::BadAddress);
+        return Err(StarryError::BadAddress);
     }
 
     let curr = current();
@@ -63,16 +62,16 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
             start.as_usize(),
             layout.size()
         );
-        return Err(AxError::BadAddress);
+        return Err(StarryError::BadAddress);
     };
     let aspace_arc = thr.proc_data.aspace();
     if unsafe { aspace_arc.raw() }.is_owned_by_current() {
-        return Err(AxError::BadAddress);
+        return Err(StarryError::BadAddress);
     }
     let mut aspace = aspace_arc.lock();
 
     if !aspace.can_access_range(start, layout.size(), access_flags) {
-        return Err(AxError::BadAddress);
+        return Err(StarryError::BadAddress);
     }
 
     let page_start = start.align_down_4k();
@@ -124,12 +123,12 @@ impl<T> UserPtr<T> {
         self.0.is_null()
     }
 
-    pub fn get_as_mut(self) -> AxResult<&'static mut T> {
+    pub fn get_as_mut(self) -> StarryResult<&'static mut T> {
         check_region(self.address(), Layout::new::<T>(), Self::ACCESS_FLAGS)?;
         Ok(unsafe { &mut *self.0 })
     }
 
-    pub fn get_as_mut_slice(self, len: usize) -> AxResult<&'static mut [T]> {
+    pub fn get_as_mut_slice(self, len: usize) -> StarryResult<&'static mut [T]> {
         if len == 0 {
             return Ok(&mut []);
         }
@@ -144,8 +143,8 @@ impl<T> UserPtr<T> {
 
 pub fn atomic_update_user_u32(
     ptr: *mut u32,
-    mut update: impl FnMut(u32) -> AxResult<u32>,
-) -> AxResult<u32> {
+    mut update: impl FnMut(u32) -> StarryResult<u32>,
+) -> StarryResult<u32> {
     check_region(
         VirtAddr::from_ptr_of(ptr),
         Layout::new::<u32>(),
@@ -210,12 +209,12 @@ impl<T> UserConstPtr<T> {
         self.0.is_null()
     }
 
-    pub fn get_as_ref(self) -> AxResult<&'static T> {
+    pub fn get_as_ref(self) -> StarryResult<&'static T> {
         check_region(self.address(), Layout::new::<T>(), Self::ACCESS_FLAGS)?;
         Ok(unsafe { &*self.0 })
     }
 
-    pub fn get_as_slice(self, len: usize) -> AxResult<&'static [T]> {
+    pub fn get_as_slice(self, len: usize) -> StarryResult<&'static [T]> {
         if len == 0 {
             return Ok(&[]);
         }
@@ -300,16 +299,16 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
 
 pub const PATH_MAX: usize = 4096;
 
-pub fn vm_load_string(ptr: *const c_char) -> AxResult<String> {
+pub fn vm_load_string(ptr: *const c_char) -> StarryResult<String> {
     #[allow(clippy::unnecessary_cast)]
     let bytes = vm_load_until_nul(ptr as *const u8)?;
-    String::from_utf8(bytes).map_err(|_| AxError::IllegalBytes)
+    String::from_utf8(bytes).map_err(|_| StarryError::IllegalBytes)
 }
 
-pub fn vm_load_path_string(ptr: *const c_char) -> AxResult<String> {
+pub fn vm_load_path_string(ptr: *const c_char) -> StarryResult<String> {
     let path = vm_load_string(ptr)?;
     if path.len() >= PATH_MAX {
-        return Err(AxError::NameTooLong);
+        return Err(StarryError::NameTooLong);
     }
     Ok(path)
 }
@@ -430,7 +429,8 @@ impl Read for VmBytes {
         let len = self.len.min(buf.len());
         vm_read_slice(self.ptr, unsafe {
             transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(&mut buf[..len])
-        })?;
+        })
+        .map_err(|_| IoError::BadAddress)?;
         self.ptr = self.ptr.wrapping_add(len);
         self.len -= len;
         Ok(len)
@@ -465,7 +465,7 @@ impl Write for VmBytesMut {
     /// Writes bytes from the provided buffer into the VM's memory.
     fn write(&mut self, buf: &[u8]) -> ax_io::Result<usize> {
         let len = self.len.min(buf.len());
-        vm_write_slice(self.ptr, &buf[..len])?;
+        vm_write_slice(self.ptr, &buf[..len]).map_err(|_| IoError::BadAddress)?;
         self.ptr = self.ptr.wrapping_add(len);
         self.len -= len;
         Ok(len)
@@ -485,7 +485,7 @@ impl IoBufMut for VmBytesMut {
 
 /// Patches kernel text, ensuring page permissions and instruction-cache
 /// synchronization are handled consistently.
-pub fn patch_kernel_text<F>(addr: VirtAddr, len: usize, action: F) -> AxResult<()>
+pub fn patch_kernel_text<F>(addr: VirtAddr, len: usize, action: F) -> StarryResult<()>
 where
     F: FnOnce(*mut u8),
 {
@@ -507,13 +507,10 @@ where
     // IRQ flag balanced — this mirrors the kprobe `set_writeable_for_address`
     // path.
     crate::stop_machine::stop_machine(
-        move || -> AxResult<()> {
+        move || -> StarryResult<()> {
             let mut guard = ax_mm::kernel_aspace().lock();
             if guard.contains_range(aligned_addr, aligned_length) {
-                let (_, original_flags, _) = guard
-                    .page_table()
-                    .query(aligned_addr)
-                    .map_err(paging_error_to_ax_error)?;
+                let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
 
                 guard.protect(
                     aligned_addr,
@@ -543,7 +540,7 @@ where
 
             #[cfg(not(target_arch = "loongarch64"))]
             {
-                Err(AxError::BadAddress)
+                Err(StarryError::BadAddress)
             }
         },
         move || sync_modified_kernel_text(aligned_addr, aligned_length),
@@ -551,7 +548,7 @@ where
 }
 
 /// Writes data to kernel text, ensuring the page permissions are properly handled.
-pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
+pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> StarryResult<()> {
     patch_kernel_text(addr, data.len(), |dst| unsafe {
         core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
     })
@@ -561,12 +558,12 @@ pub fn flush_tlb_range(start: VirtAddr, size: usize) {
     ax_runtime::hal::cache::flush_tlb_range(start, size);
 }
 
-pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) -> AxResult {
+pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) -> StarryResult {
     ax_runtime::hal::cache::flush_tlb_range_all_cpus(start, size).map_err(|err| match err {
         ax_runtime::hal::cache::TlbShootdownError::CpuOffline
-        | ax_runtime::hal::cache::TlbShootdownError::Unsupported => AxError::Unsupported,
-        ax_runtime::hal::cache::TlbShootdownError::Timeout => AxError::TimedOut,
-        ax_runtime::hal::cache::TlbShootdownError::Platform => AxError::Io,
+        | ax_runtime::hal::cache::TlbShootdownError::Unsupported => StarryError::Unsupported,
+        ax_runtime::hal::cache::TlbShootdownError::Timeout => StarryError::TimedOut,
+        ax_runtime::hal::cache::TlbShootdownError::Platform => StarryError::Io,
     })
 }
 

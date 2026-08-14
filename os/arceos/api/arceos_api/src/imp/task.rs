@@ -86,26 +86,20 @@ cfg_task! {
         task.inner.join()
     }
 
-    pub fn ax_set_current_priority(prio: isize) -> crate::AxResult {
+    pub fn ax_set_current_priority(prio: isize) -> crate::ApiResult {
         if ax_task::set_priority(prio) {
             Ok(())
         } else {
-            ax_errno::ax_err!(
-                BadState,
-                "ax_set_current_priority: failed to set task priority"
-            )
+            Err(crate::ApiError::PriorityUpdateFailed)
         }
     }
 
     #[track_caller]
-    pub fn ax_set_current_affinity(cpumask: AxCpuMask) -> crate::AxResult {
+    pub fn ax_set_current_affinity(cpumask: AxCpuMask) -> crate::ApiResult {
         if ax_task::set_current_affinity(cpumask) {
             Ok(())
         } else {
-            ax_errno::ax_err!(
-                BadState,
-                "ax_set_current_affinity: failed to set task affinity"
-            )
+            Err(crate::ApiError::AffinityUpdateFailed)
         }
     }
 

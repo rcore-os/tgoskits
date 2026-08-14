@@ -14,7 +14,6 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ax_driver::serial::SerialDevice;
 pub use ax_driver::serial::SerialDeviceInfo;
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::OnceLock;
 use ax_task::{AxCpuMask, IrqNotify, TaskInner, WaitQueue};
 use axpoll::{IoEvents, PollSet};
@@ -28,7 +27,7 @@ use self::{
     state::{SerialIrqLatch, SerialStatsAtomic},
     worker::SerialWorker,
 };
-use crate::sync::SpinLock;
+use crate::{RuntimeError, RuntimeResult, sync::SpinLock};
 
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
 const PANIC_TX_READY_SPINS: usize = 100_000;
@@ -93,8 +92,10 @@ impl RuntimeShared {
         self.started.load(Ordering::Acquire)
     }
 
-    fn ensure_started(&self) -> AxResult {
-        self.started().then_some(()).ok_or(AxError::BadState)
+    fn ensure_started(&self) -> RuntimeResult {
+        self.started()
+            .then_some(())
+            .ok_or(RuntimeError::SerialNotStarted)
     }
 
     fn set_started(&self, started: bool) {
@@ -118,16 +119,16 @@ impl RuntimeShared {
         unsafe { self.tx_source.wake(IoEvents::OUT) };
     }
 
-    fn enable_irq(&self) -> AxResult {
+    fn enable_irq(&self) -> RuntimeResult {
         let Some(handle) = self.irq_handle.get().copied() else {
             return Ok(());
         };
-        ax_hal::irq::enable_irq(handle).map_err(|err| {
+        ax_hal::irq::enable_irq(handle).map_err(|error| {
             warn!(
-                "failed to enable serial IRQ for {}: {err:?}",
+                "failed to enable serial IRQ for {}: {error:?}",
                 self.info.name
             );
-            AxError::Io
+            RuntimeError::from(error)
         })
     }
 
@@ -173,13 +174,13 @@ impl SerialRuntimeHandle {
         })
     }
 
-    pub fn start(&self, config: Config) -> AxResult {
+    pub fn start(&self, config: Config) -> RuntimeResult {
         self.shared
             .control
             .submit(ControlOp::Start(config), &self.shared.bridge.notify)
     }
 
-    pub fn shutdown(&self) -> AxResult {
+    pub fn shutdown(&self) -> RuntimeResult {
         let result = self
             .shared
             .control
@@ -195,14 +196,14 @@ impl SerialRuntimeHandle {
         result
     }
 
-    pub fn set_config(&self, config: Config) -> AxResult {
+    pub fn set_config(&self, config: Config) -> RuntimeResult {
         self.shared
             .control
             .submit(ControlOp::SetConfig(config), &self.shared.bridge.notify)
     }
 
     /// Claims both runtime log routing and the underlying platform UART output.
-    pub fn claim_console_output(&self) -> AxResult {
+    pub fn claim_console_output(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
         ACTIVE_CONSOLE.store(self.shared.index, Ordering::Release);
         ax_hal::console::claim_runtime_output();
@@ -221,7 +222,7 @@ pub struct SerialTxSender {
 }
 
 impl SerialTxSender {
-    pub fn try_write(&self, bytes: &[u8]) -> AxResult<usize> {
+    pub fn try_write(&self, bytes: &[u8]) -> RuntimeResult<usize> {
         if bytes.is_empty() {
             return Ok(0);
         }
@@ -231,29 +232,32 @@ impl SerialTxSender {
             .ingress
             .try_write(bytes, &self.shared.bridge.notify);
         if accepted == 0 {
-            Err(AxError::WouldBlock)
+            Err(RuntimeError::WouldBlock)
         } else {
             Ok(accepted)
         }
     }
 
-    pub fn wait_writable(&self) -> AxResult {
+    pub fn wait_writable(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
         self.shared
             .tx_progress
             .wait_until(|| self.shared.ingress.write_room() > 0 || !self.shared.started());
-        self.shared.started().then_some(()).ok_or(AxError::BadState)
+        self.shared
+            .started()
+            .then_some(())
+            .ok_or(RuntimeError::SerialNotStarted)
     }
 
     /// Writes every raw byte, sleeping only when the bounded runtime queue is full.
-    pub fn write_all(&self, bytes: &[u8]) -> AxResult<usize> {
+    pub fn write_all(&self, bytes: &[u8]) -> RuntimeResult<usize> {
         self.write_all_with(bytes, |shared, remaining| {
             shared.ingress.try_write(remaining, &shared.bridge.notify)
         })
     }
 
     /// Writes every text byte while expanding line feeds to CRLF.
-    pub fn write_text_all(&self, bytes: &[u8]) -> AxResult<usize> {
+    pub fn write_text_all(&self, bytes: &[u8]) -> RuntimeResult<usize> {
         self.write_all_with(bytes, |shared, remaining| {
             shared
                 .ingress
@@ -265,7 +269,7 @@ impl SerialTxSender {
         &self,
         bytes: &[u8],
         submit: impl Fn(&RuntimeShared, &[u8]) -> usize,
-    ) -> AxResult<usize> {
+    ) -> RuntimeResult<usize> {
         let mut written = 0;
         while written < bytes.len() {
             self.shared.ensure_started()?;
@@ -279,7 +283,7 @@ impl SerialTxSender {
         Ok(written)
     }
 
-    pub fn wait_idle(&self) -> AxResult {
+    pub fn wait_idle(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
         self.shared
             .tx_progress
@@ -287,11 +291,11 @@ impl SerialTxSender {
         if self.shared.ingress.is_idle() {
             Ok(())
         } else {
-            Err(AxError::BadState)
+            Err(RuntimeError::SerialNotStarted)
         }
     }
 
-    pub fn discard_pending(&self) -> AxResult {
+    pub fn discard_pending(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
         self.shared
             .control
@@ -326,7 +330,7 @@ impl SerialRxSubscription {
     }
 
     /// Blocks until RX data is available or the runtime stops.
-    pub fn wait_readable(&self) -> AxResult {
+    pub fn wait_readable(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
         self.shared.rx_progress.wait_until(|| {
             self.consumer
@@ -340,10 +344,10 @@ impl SerialRxSubscription {
             .as_ref()
             .is_some_and(|consumer| !consumer.is_empty())
             .then_some(())
-            .ok_or(AxError::BadState)
+            .ok_or(RuntimeError::SerialNotStarted)
     }
 
-    pub fn discard_pending(&self) -> AxResult {
+    pub fn discard_pending(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
         self.clear_pending();
         let result = self
@@ -407,7 +411,7 @@ fn build_runtime(
     index: usize,
     primary_cpu: usize,
     serial: SerialDevice,
-) -> AxResult<SerialRuntimeHandle> {
+) -> RuntimeResult<SerialRuntimeHandle> {
     let SerialDevice {
         info,
         mut port,
@@ -448,12 +452,12 @@ fn build_runtime(
     task.set_cpumask(AxCpuMask::one_shot(primary_cpu));
 
     if let Some(binding) = shared.info.irq.clone() {
-        let irq_id = crate::irq::resolve_binding_irq(binding).map_err(|err| {
+        let irq_id = crate::irq::resolve_binding_irq(binding).map_err(|error| {
             warn!(
-                "failed to resolve serial IRQ for {}: {err:?}",
+                "failed to resolve serial IRQ for {}: {error:?}",
                 shared.info.name
             );
-            AxError::Unsupported
+            RuntimeError::from(error)
         })?;
         let callback_bridge = bridge;
         let callback_stats = stats;
@@ -475,12 +479,12 @@ fn build_runtime(
             }),
             primary_cpu,
         );
-        let handle = ax_hal::irq::request_irq(irq_id, request).map_err(|err| {
+        let handle = ax_hal::irq::request_irq(irq_id, request).map_err(|error| {
             warn!(
-                "failed to register serial IRQ for {}: {err:?}",
+                "failed to register serial IRQ for {}: {error:?}",
                 shared.info.name
             );
-            AxError::Unsupported
+            RuntimeError::from(error)
         })?;
         shared.irq_handle.call_once(|| handle);
     }
@@ -556,7 +560,7 @@ pub(crate) fn route_console_bytes(bytes: &[u8]) -> Option<usize> {
 }
 
 /// Writes text through the active runtime console, if one has claimed output.
-pub fn write_active_console_text(bytes: &[u8]) -> Option<AxResult<usize>> {
+pub fn write_active_console_text(bytes: &[u8]) -> Option<RuntimeResult<usize>> {
     let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
     let runtime = runtimes().get(index)?;
     Some(runtime.tx_sender().write_text_all(bytes))

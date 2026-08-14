@@ -496,7 +496,8 @@ impl CachedFile {
             // `dst` may point at user memory. Copy after releasing cached-file
             // locks so a user page fault can take AddrSpace without creating a
             // cached-I/O -> AddrSpace lock order.
-            dst.write_all(&scratch.data()[..chunk_len])?;
+            dst.write_all(&scratch.data()[..chunk_len])
+                .map_err(crate::io_error_to_vfs_error)?;
             read += chunk_len;
             current += chunk_len as u64;
         }
@@ -532,7 +533,9 @@ impl CachedFile {
             let page_offset = (current - page_start) as usize;
             let chunk_len =
                 ((PAGE_SIZE - page_offset).min(buf.remaining())).min((end - current) as usize);
-            let n = buf.read(&mut scratch.data()[..chunk_len])?;
+            let n = buf
+                .read(&mut scratch.data()[..chunk_len])
+                .map_err(crate::io_error_to_vfs_error)?;
             if n == 0 {
                 break;
             }

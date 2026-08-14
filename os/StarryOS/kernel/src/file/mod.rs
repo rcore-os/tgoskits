@@ -28,7 +28,6 @@ mod wext;
 use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
 use ax_task::{TaskState, current};
@@ -91,6 +90,7 @@ pub use self::{
     pipe::Pipe,
 };
 use crate::{
+    StarryError, StarryResult,
     pseudofs::DeviceMmap,
     sync::RwLock,
     task::{AX_FILE_LIMIT, AsThread, tasks},
@@ -211,38 +211,38 @@ pub trait FileLike: Pollable + DowncastSync {
     /// File types with count errors that take precedence over `EFAULT` can
     /// override this hook. The full write operation must repeat any invariant
     /// needed to remain correct for non-scalar callers.
-    fn validate_write_len(&self, _len: usize) -> AxResult {
+    fn validate_write_len(&self, _len: usize) -> StarryResult {
         Ok(())
     }
 
-    fn read(&self, _dst: &mut IoDst) -> AxResult<usize> {
-        Err(AxError::InvalidInput)
+    fn read(&self, _dst: &mut IoDst) -> StarryResult<usize> {
+        Err(StarryError::InvalidInput)
     }
 
-    fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
-        Err(AxError::InvalidInput)
+    fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
+        Err(StarryError::InvalidInput)
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(Kstat::default())
     }
 
     fn path(&self) -> Cow<'_, str>;
 
-    fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
+    fn file_mmap(&self) -> StarryResult<(FileBackend, FileFlags)> {
         // man 2 mmap ENODEV: "The underlying filesystem of the specified file
         // does not support memory mapping." This is the right errno for fd
         // kinds that do not back onto a mappable file (directory, pipe,
         // socket, epoll, eventfd, etc.).
-        Err(AxError::NoSuchDevice)
+        Err(StarryError::NoSuchDevice)
     }
 
-    fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
-        Err(AxError::BadFileDescriptor)
+    fn device_mmap(&self, _offset: u64, _length: u64) -> StarryResult<DeviceMmap> {
+        Err(StarryError::BadFileDescriptor)
     }
 
-    fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {
-        Err(AxError::NotATty)
+    fn ioctl(&self, _cmd: u32, _arg: usize) -> StarryResult<usize> {
+        Err(StarryError::NotATty)
     }
 
     fn open_flags(&self) -> u32 {
@@ -253,7 +253,7 @@ pub trait FileLike: Pollable + DowncastSync {
         false
     }
 
-    fn set_nonblocking(&self, _nonblocking: bool) -> AxResult {
+    fn set_nonblocking(&self, _nonblocking: bool) -> StarryResult {
         Ok(())
     }
 
@@ -265,16 +265,16 @@ pub trait FileLike: Pollable + DowncastSync {
         false
     }
 
-    fn set_async_mode(&self, _async_mode: bool) -> AxResult {
-        Err(AxError::NotATty)
+    fn set_async_mode(&self, _async_mode: bool) -> StarryResult {
+        Err(StarryError::NotATty)
     }
 
-    fn owner(&self) -> AxResult<i32> {
-        Err(AxError::NotATty)
+    fn owner(&self) -> StarryResult<i32> {
+        Err(StarryError::NotATty)
     }
 
-    fn set_owner(&self, _owner: i32) -> AxResult {
-        Err(AxError::NotATty)
+    fn set_owner(&self, _owner: i32) -> StarryResult {
+        Err(StarryError::NotATty)
     }
 
     /// (device, inode) identity used as the key for advisory file locks
@@ -292,7 +292,7 @@ pub trait FileLike: Pollable + DowncastSync {
         false
     }
 
-    fn set_append(&self, _append: bool) -> AxResult {
+    fn set_append(&self, _append: bool) -> StarryResult {
         Ok(())
     }
 
@@ -306,16 +306,16 @@ pub trait FileLike: Pollable + DowncastSync {
     /// registration (`mqueue_flush_file`, ipc/mqueue.c:658).
     fn on_close(&self, _owner: Pid) {}
 
-    fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
+    fn from_fd(fd: c_int) -> StarryResult<Arc<Self>>
     where
         Self: Sized + 'static,
     {
         get_file_like(fd)?
             .downcast_arc()
-            .map_err(|_| AxError::InvalidInput)
+            .map_err(|_| StarryError::InvalidInput)
     }
 
-    fn add_to_fd_table(self, cloexec: bool) -> AxResult<c_int>
+    fn add_to_fd_table(self, cloexec: bool) -> StarryResult<c_int>
     where
         Self: Sized + 'static,
     {
@@ -344,12 +344,12 @@ pub fn current_fd_table() -> Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_L
 }
 
 /// Get a file-like object by `fd`.
-pub fn get_file_like(fd: c_int) -> AxResult<Arc<dyn FileLike>> {
+pub fn get_file_like(fd: c_int) -> StarryResult<Arc<dyn FileLike>> {
     current_fd_table()
         .read()
         .get(fd as usize)
         .map(|fd| fd.inner.clone())
-        .ok_or(AxError::BadFileDescriptor)
+        .ok_or(StarryError::BadFileDescriptor)
 }
 
 /// Returns true iff `fd` was opened with `O_PATH`.
@@ -365,26 +365,26 @@ pub fn fd_is_path(fd: c_int) -> bool {
 }
 
 /// Add a file to the file descriptor table.
-pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> AxResult<c_int> {
+pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> StarryResult<c_int> {
     let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
     let fd_table = current_fd_table();
     let mut table = fd_table.write();
     if table.count() as u64 >= max_nofile {
-        return Err(AxError::TooManyOpenFiles);
+        return Err(StarryError::TooManyOpenFiles);
     }
     let fd = FileDescriptor { inner: f, cloexec };
-    Ok(table.add(fd).map_err(|_| AxError::TooManyOpenFiles)? as c_int)
+    Ok(table.add(fd).map_err(|_| StarryError::TooManyOpenFiles)? as c_int)
 }
 
 /// Close a file by `fd`.
-pub fn close_file_like(fd: c_int) -> AxResult {
+pub fn close_file_like(fd: c_int) -> StarryResult {
     let removed = current_fd_table().write().remove(fd as usize);
     if let Some(f) = removed {
         debug!("close_file_like <= count: {}", Arc::strong_count(&f.inner));
         release_locks_on_close(f);
         return Ok(());
     }
-    Err(AxError::BadFileDescriptor)
+    Err(StarryError::BadFileDescriptor)
 }
 
 pub(crate) fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
@@ -497,12 +497,12 @@ pub fn close_all_fds() {
     }
 }
 
-pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
+pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> StarryResult<()> {
     assert_eq!(fd_table.count(), 0);
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let cx = fs_context.lock();
     let open = |options: &mut OpenOptions, flags| {
-        AxResult::Ok(Arc::new(File::new(
+        StarryResult::Ok(Arc::new(File::new(
             options.open(&cx, "/dev/console")?.into_file()?,
             flags,
         )))
@@ -515,19 +515,19 @@ pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -
             inner: tty_in,
             cloexec: false,
         })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
+        .map_err(|_| StarryError::TooManyOpenFiles)?;
     fd_table
         .add(FileDescriptor {
             inner: tty_out.clone(),
             cloexec: false,
         })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
+        .map_err(|_| StarryError::TooManyOpenFiles)?;
     fd_table
         .add(FileDescriptor {
             inner: tty_out,
             cloexec: false,
         })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
+        .map_err(|_| StarryError::TooManyOpenFiles)?;
 
     Ok(())
 }

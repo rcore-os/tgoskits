@@ -1,4 +1,3 @@
-use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{
     NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time,
 };
@@ -11,11 +10,12 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
+    StarryError, StarryResult,
     task::{AsThread, ITimerType, posix_timer::TimerSpec},
     time::TimeValueLike,
 };
 
-pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> AxResult<isize> {
+pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> StarryResult<isize> {
     let now = match clock_id as u32 {
         CLOCK_REALTIME | CLOCK_REALTIME_COARSE => wall_time(),
         CLOCK_MONOTONIC | CLOCK_MONOTONIC_RAW | CLOCK_MONOTONIC_COARSE | CLOCK_BOOTTIME => {
@@ -26,7 +26,7 @@ pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> AxR
             utime + stime
         }
         _ => {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
     };
     ts.vm_write(timespec::from_time_value(now))?;
@@ -40,7 +40,7 @@ pub struct Timezone {
     tz_dsttime: i32,
 }
 
-pub fn sys_gettimeofday(ts: *mut timeval, tz: *mut Timezone) -> AxResult<isize> {
+pub fn sys_gettimeofday(ts: *mut timeval, tz: *mut Timezone) -> StarryResult<isize> {
     if let Some(ts) = ts.nullable() {
         ts.vm_write(timeval::from_time_value(wall_time()))?;
     }
@@ -51,7 +51,7 @@ pub fn sys_gettimeofday(ts: *mut timeval, tz: *mut Timezone) -> AxResult<isize> 
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_time(tloc: *mut usize) -> AxResult<isize> {
+pub fn sys_time(tloc: *mut usize) -> StarryResult<isize> {
     let secs = wall_time().as_secs() as isize;
     if let Some(tloc) = tloc.nullable() {
         tloc.vm_write(secs as usize)?;
@@ -59,7 +59,7 @@ pub fn sys_time(tloc: *mut usize) -> AxResult<isize> {
     Ok(secs)
 }
 
-pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> AxResult<isize> {
+pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> StarryResult<isize> {
     let resolution = match clock_id as u32 {
         CLOCK_REALTIME
         | CLOCK_MONOTONIC
@@ -68,7 +68,7 @@ pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> AxR
         | CLOCK_PROCESS_CPUTIME_ID
         | CLOCK_THREAD_CPUTIME_ID => TimeValue::from_nanos(1),
         CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => TimeValue::from_millis(4),
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
     if let Some(res) = res.nullable() {
         res.vm_write(timespec::from_time_value(resolution))?;
@@ -88,7 +88,7 @@ pub struct Tms {
     tms_cstime: usize,
 }
 
-pub fn sys_times(tms: *mut Tms) -> AxResult<isize> {
+pub fn sys_times(tms: *mut Tms) -> StarryResult<isize> {
     let (utime, stime) = current().as_thread().time.borrow().output();
     let (cutime, cstime) = current().as_thread().proc_data.children_cpu_time();
     tms.vm_write(Tms {
@@ -100,8 +100,8 @@ pub fn sys_times(tms: *mut Tms) -> AxResult<isize> {
     Ok(nanos_to_ticks(monotonic_time_nanos()) as _)
 }
 
-pub fn sys_getitimer(which: i32, value: *mut itimerval) -> AxResult<isize> {
-    let ty = ITimerType::from_repr(which).ok_or(AxError::InvalidInput)?;
+pub fn sys_getitimer(which: i32, value: *mut itimerval) -> StarryResult<isize> {
+    let ty = ITimerType::from_repr(which).ok_or(StarryError::InvalidInput)?;
     let (it_interval, it_value) = current().as_thread().time.borrow().get_itimer(ty);
 
     value.vm_write(itimerval {
@@ -115,8 +115,8 @@ pub fn sys_setitimer(
     which: i32,
     new_value: *const itimerval,
     old_value: *mut itimerval,
-) -> AxResult<isize> {
-    let ty = ITimerType::from_repr(which).ok_or(AxError::InvalidInput)?;
+) -> StarryResult<isize> {
+    let ty = ITimerType::from_repr(which).ok_or(StarryError::InvalidInput)?;
     let curr = current();
 
     let (interval, remained) = match new_value.nullable() {
@@ -158,7 +158,7 @@ pub fn sys_timer_create(
     clock_id: u32,
     sevp: *const sigevent,
     timerid: *mut __kernel_timer_t,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let curr = current();
     let thr = curr.as_thread();
 
@@ -191,7 +191,7 @@ pub fn sys_timer_settime(
     flags: i32,
     new_value: *const __kernel_itimerspec,
     old_value: *mut __kernel_itimerspec,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let curr = current();
     let thr = curr.as_thread();
 
@@ -211,7 +211,7 @@ pub fn sys_timer_settime(
                 interval_nsec: new.it_interval.tv_nsec,
             },
         )
-        .map_err(|_| AxError::InvalidInput)?;
+        .map_err(|_| StarryError::InvalidInput)?;
 
     if let Some(old_value) = old_value.nullable() {
         let old_iv_sec = (old_interval / NANOS_PER_SEC) as i64;
@@ -236,7 +236,7 @@ pub fn sys_timer_settime(
 pub fn sys_timer_gettime(
     timerid: __kernel_timer_t,
     curr_value: *mut __kernel_itimerspec,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let curr = current();
     let thr = curr.as_thread();
 
@@ -244,7 +244,7 @@ pub fn sys_timer_gettime(
         .proc_data
         .posix_timers
         .gettime(timerid)
-        .map_err(|_| AxError::InvalidInput)?;
+        .map_err(|_| StarryError::InvalidInput)?;
 
     let iv_sec = (interval / NANOS_PER_SEC) as i64;
     let iv_nsec = (interval % NANOS_PER_SEC) as i64;
@@ -265,14 +265,14 @@ pub fn sys_timer_gettime(
     Ok(0)
 }
 
-pub fn sys_timer_delete(timerid: __kernel_timer_t) -> AxResult<isize> {
+pub fn sys_timer_delete(timerid: __kernel_timer_t) -> StarryResult<isize> {
     let curr = current();
     let thr = curr.as_thread();
 
     if thr.proc_data.posix_timers.delete(timerid) {
         Ok(0)
     } else {
-        Err(AxError::InvalidInput)
+        Err(StarryError::InvalidInput)
     }
 }
 

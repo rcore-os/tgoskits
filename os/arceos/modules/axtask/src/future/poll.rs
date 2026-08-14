@@ -1,8 +1,10 @@
 use core::{future::poll_fn, task::Poll};
 
-use ax_errno::{AxError, AxResult};
 use axpoll::{IoEvents, Pollable};
 
+#[cfg(feature = "irq")]
+use super::TaskResult;
+use super::{Interrupted, PollIoError};
 use crate::current;
 
 /// A helper to wrap a synchronous non-blocking I/O function into an
@@ -12,21 +14,27 @@ use crate::current;
 ///
 /// * `pollable`: The pollable object to register for I/O events.
 /// * `events`: The I/O events to wait for.
-/// * `non_blocking`: If true, the function will return `AxError::WouldBlock`
+/// * `non_blocking`: If true, the function returns the caller's would-block error
 ///   immediately when the I/O operation would block.
 /// * `f`: The synchronous non-blocking I/O function to be wrapped. It should
-///   return `AxError::WouldBlock` when the operation would block.
-pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+///   return an error recognized by [`PollIoError::is_would_block`] when the
+///   operation would block.
+pub async fn poll_io<P, F, T, E>(
     pollable: &P,
     events: IoEvents,
     non_blocking: bool,
     mut f: F,
-) -> AxResult<T> {
+) -> Result<T, E>
+where
+    P: Pollable,
+    F: FnMut() -> Result<T, E>,
+    E: PollIoError,
+{
     let curr = current();
     poll_fn(move |cx| {
         match f() {
             Ok(value) => return Poll::Ready(Ok(value)),
-            Err(AxError::WouldBlock) => {}
+            Err(error) if error.is_would_block() => {}
             Err(e) => return Poll::Ready(Err(e)),
         }
 
@@ -38,10 +46,10 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 
         match f() {
             Ok(value) => Poll::Ready(Ok(value)),
-            Err(AxError::WouldBlock) if non_blocking => Poll::Ready(Err(AxError::WouldBlock)),
-            Err(AxError::WouldBlock) => {
+            Err(error) if error.is_would_block() && non_blocking => Poll::Ready(Err(error)),
+            Err(error) if error.is_would_block() => {
                 if curr.poll_interrupt(cx).is_ready() {
-                    Poll::Ready(Err(AxError::Interrupted))
+                    Poll::Ready(Err(E::interrupted(Interrupted)))
                 } else {
                     Poll::Pending
                 }
@@ -68,7 +76,7 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 /// task. The drain task runs in normal task context and is the only
 /// place that ever calls `PollSet::wake`.
 #[cfg(feature = "irq")]
-pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) -> AxResult<()> {
+pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) -> TaskResult {
     use alloc::{collections::BTreeMap, sync::Arc};
     use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -155,16 +163,16 @@ pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) ->
     unsafe { poll.register(waker, axpoll::IoEvents::all()) };
 
     if should_install {
-        ax_hal::irq::request_shared_irq(irq, irq_waker_handler)
-            .map_err(|_| AxError::Unsupported)?;
+        ax_hal::irq::request_shared_irq(irq, irq_waker_handler)?;
     }
 
-    ax_hal::irq::set_enable(irq, true).map_err(|_| AxError::Unsupported)
+    ax_hal::irq::set_enable(irq, true)?;
+    Ok(())
 }
 
 /// Registers a waker for a temporary legacy numeric IRQ.
 #[cfg(feature = "irq")]
-pub fn register_legacy_irq_waker(irq: usize, waker: &core::task::Waker) -> AxResult<()> {
-    let irq = ax_hal::irq::try_legacy_irq(irq).map_err(|_| AxError::InvalidInput)?;
+pub fn register_legacy_irq_waker(irq: usize, waker: &core::task::Waker) -> TaskResult {
+    let irq = ax_hal::irq::try_legacy_irq(irq)?;
     register_irq_waker(irq, waker)
 }

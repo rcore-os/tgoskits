@@ -283,7 +283,7 @@ mod tests {
     use core::cell::RefCell;
 
     use super::*;
-    use crate::AxError;
+    use crate::KlibError;
 
     #[test]
     fn coherent_release_restores_mapping_before_free() {
@@ -327,7 +327,7 @@ mod tests {
         let free_events = events.clone();
 
         let result = finish_coherent_mapping(
-            DmaCoherentMappingOutcome::NotStarted(AxError::Unsupported),
+            DmaCoherentMappingOutcome::NotStarted(KlibError::Unsupported),
             move || free_events.borrow_mut().push("free"),
         );
 
@@ -341,7 +341,7 @@ mod tests {
         let free_events = events.clone();
 
         let result = finish_coherent_mapping(
-            DmaCoherentMappingOutcome::StateUncertain(AxError::TimedOut),
+            DmaCoherentMappingOutcome::StateUncertain(KlibError::TimedOut),
             move || free_events.borrow_mut().push("free"),
         );
 

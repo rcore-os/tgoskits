@@ -4,7 +4,6 @@ use alloc::{
 };
 use core::ffi::c_long;
 
-use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use axpoll::IoEvents;
@@ -21,7 +20,7 @@ use super::{
     publish_zombie, register_process_identity, send_signal_thread_inner, send_signal_to_process,
     send_signal_to_thread,
 };
-use crate::sync::RwLock;
+use crate::{StarryError, StarryResult, sync::RwLock};
 
 const FUTEX_OWNER_DIED: u32 = 0x40000000;
 const FUTEX_TID_MASK: u32 = 0x3fffffff;
@@ -102,11 +101,14 @@ pub fn tasks() -> Vec<AxTaskRef> {
 }
 
 /// Finds the task with the given TID.
-pub fn get_task(tid: Pid) -> AxResult<AxTaskRef> {
+pub fn get_task(tid: Pid) -> StarryResult<AxTaskRef> {
     if tid == 0 {
         return Ok(current().clone());
     }
-    TASK_TABLE.read().get(&tid).ok_or(AxError::NoSuchProcess)
+    TASK_TABLE
+        .read()
+        .get(&tid)
+        .ok_or(StarryError::NoSuchProcess)
 }
 
 /// Detach every live tracee that still points at `tracer_pid`.
@@ -131,7 +133,7 @@ pub fn detach_live_tracees_of(tracer_pid: Pid) {
 }
 
 /// Finds the credentials for a process that may already be a zombie.
-pub fn get_process_cred(pid: Pid) -> AxResult<Arc<Cred>> {
+pub fn get_process_cred(pid: Pid) -> StarryResult<Arc<Cred>> {
     if pid == 0 {
         return Ok(current().as_thread().cred());
     }
@@ -140,11 +142,11 @@ pub fn get_process_cred(pid: Pid) -> AxResult<Arc<Cred>> {
     {
         return Ok(thr.cred());
     }
-    get_zombie_cred(pid).ok_or(AxError::NoSuchProcess)
+    get_zombie_cred(pid).ok_or(StarryError::NoSuchProcess)
 }
 
 /// Finds the process group with the given PGID.
-pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
+pub fn get_process_group(pgid: Pid) -> StarryResult<Arc<ProcessGroup>> {
     if let Some(pg) = PROCESS_GROUP_TABLE.read().get(&pgid) {
         return Ok(pg);
     }
@@ -154,7 +156,7 @@ pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
         return Ok(pg);
     }
 
-    Err(AxError::NoSuchProcess)
+    Err(StarryError::NoSuchProcess)
 }
 
 /// Registers a process group in the global table.
@@ -260,13 +262,13 @@ pub struct RobustListHead {
     pub list_op_pending: *mut RobustList,
 }
 
-fn robust_futex_address(entry: *mut RobustList, offset: i64) -> AxResult<usize> {
+fn robust_futex_address(entry: *mut RobustList, offset: i64) -> StarryResult<usize> {
     let address = (entry as u64)
         .checked_add_signed(offset)
-        .ok_or(AxError::InvalidInput)?;
-    let address = usize::try_from(address).map_err(|_| AxError::InvalidInput)?;
+        .ok_or(StarryError::InvalidInput)?;
+    let address = usize::try_from(address).map_err(|_| StarryError::InvalidInput)?;
     if address % size_of::<u32>() != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(address)
 }
@@ -287,7 +289,7 @@ fn handle_futex_death(
     entry: *mut RobustList,
     offset: i64,
     pending: bool,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     let address = robust_futex_address(entry, offset)?;
     let futex_word = address as *mut u32;
     // Linux compares the robust-futex owner field against task_pid_vnr(curr),
@@ -314,7 +316,7 @@ fn handle_futex_death(
     Ok(())
 }
 
-pub fn exit_robust_list(thr: &Thread, head: *const RobustListHead) -> AxResult<()> {
+pub fn exit_robust_list(thr: &Thread, head: *const RobustListHead) -> StarryResult<()> {
     // Reference: https://elixir.bootlin.com/linux/v6.13.6/source/kernel/futex/core.c#L777
 
     let mut limit = ROBUST_LIST_LIMIT;
@@ -626,9 +628,11 @@ pub fn rebind_task_tid(task: &AxTaskRef, old_tid: Pid, new_tid: Pid) {
 ///
 /// Best-effort: returns `Err` if the target tid is already gone or no
 /// longer a user thread; callers should treat that as "already reaped".
-pub fn zap_thread(tid: Pid) -> AxResult<()> {
+pub fn zap_thread(tid: Pid) -> StarryResult<()> {
     let task = get_task(tid)?;
-    let thr = task.try_as_thread().ok_or(AxError::OperationNotPermitted)?;
+    let thr = task
+        .try_as_thread()
+        .ok_or(StarryError::OperationNotPermitted)?;
     thr.set_exit_request();
     // `interrupt()` alone is a no-op for a thread parked on a raw `WaitQueue`
     // (pipe read, futex wait) — no interrupt waker is registered there — so a

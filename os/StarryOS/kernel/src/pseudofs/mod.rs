@@ -18,13 +18,13 @@ pub(crate) mod usbfs;
 
 use alloc::{boxed::Box, sync::Arc};
 
-use ax_errno::LinuxResult;
 use ax_fs_ng::vfs::FsContext;
 use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
 pub use tmp::MemoryFs;
 
 pub use self::{device::*, dir::*, file::*, fs::*};
+use crate::StarryResult;
 
 /// A callback that builds a `Arc<dyn DirNodeOps>` for a given
 /// `WeakDirEntry`.
@@ -70,7 +70,7 @@ pub fn tmp_tmpfs() -> Option<Arc<tmp::MemoryFs>> {
     TMP_TMPFS.get().map(Arc::clone)
 }
 
-fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()> {
+fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> StarryResult<()> {
     let initial_resolve = fs.resolve(path);
     if initial_resolve.is_err() {
         fs.create_dir(path, DIR_PERMISSION, 0, 0)?;
@@ -82,7 +82,7 @@ fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()>
 }
 
 /// Mount all filesystems
-pub fn mount_all() -> LinuxResult<()> {
+pub fn mount_all() -> StarryResult<()> {
     info!("Initialize pseudofs...");
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();

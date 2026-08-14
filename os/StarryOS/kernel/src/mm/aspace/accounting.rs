@@ -10,9 +10,10 @@ use core::{
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::VirtAddr;
 use scope_local::scope_local;
+
+use crate::{StarryError, StarryResult};
 
 static GENERATION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -134,11 +135,11 @@ impl MemoryAccounting {
     }
 
     /// Record a Cow resident page after PTE mapping succeeds.
-    pub fn record_charge(&self, vaddr: VirtAddr, kind: RssKind) -> AxResult<()> {
+    pub fn record_charge(&self, vaddr: VirtAddr, kind: RssKind) -> StarryResult<()> {
         // SAFETY: `AddrSpace` lock held by all callers.
         let charges = unsafe { &mut *self.charges.get() };
         if charges.contains_key(&vaddr) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         charges.insert(vaddr, kind);
         self.inc(kind, 1);
@@ -211,7 +212,7 @@ impl MemoryAccounting {
 
     /// Establish an Anon charge after a file-backed COW write when no File
     /// charge exists at `vaddr` (accounting drift recovery).
-    pub fn adopt_cow_write_as_anon(&self, vaddr: VirtAddr) -> AxResult<()> {
+    pub fn adopt_cow_write_as_anon(&self, vaddr: VirtAddr) -> StarryResult<()> {
         self.record_charge(vaddr, RssKind::Anon)?;
         if self.rss_file_pages() > 0 {
             self.dec(RssKind::File, 1);
@@ -245,8 +246,8 @@ impl MemoryAccounting {
     }
 
     /// Fork: copy parent's bucket after child PTE maps the shared page.
-    pub fn copy_charge_from(&self, parent: &Self, vaddr: VirtAddr) -> AxResult<()> {
-        let kind = parent.charge_kind(vaddr).ok_or(AxError::InvalidInput)?;
+    pub fn copy_charge_from(&self, parent: &Self, vaddr: VirtAddr) -> StarryResult<()> {
+        let kind = parent.charge_kind(vaddr).ok_or(StarryError::InvalidInput)?;
         self.record_charge(vaddr, kind)?;
         Ok(())
     }
@@ -257,7 +258,7 @@ impl MemoryAccounting {
         child: &Self,
         parent: &Self,
         child_pt: &mut ax_runtime::hal::paging::PageTable,
-    ) -> AxResult<()> {
+    ) -> StarryResult<()> {
         use ax_runtime::hal::paging::PagingError;
 
         let parent_entries = parent.charge_entries();
@@ -296,7 +297,7 @@ impl MemoryAccounting {
     }
 
     /// mremap: migrate charge after PTE move (src unmapped, dst mapped).
-    pub fn move_charge(&self, src: VirtAddr, dst: VirtAddr) -> AxResult<()> {
+    pub fn move_charge(&self, src: VirtAddr, dst: VirtAddr) -> StarryResult<()> {
         // SAFETY: `AddrSpace` lock held by all callers.
         let charges = unsafe { &mut *self.charges.get() };
         let Some(kind) = charges.remove(&src) else {
@@ -305,7 +306,7 @@ impl MemoryAccounting {
         if charges.contains_key(&dst) {
             debug_assert!(false, "move_charge: dst {dst:?} already charged");
             charges.insert(src, kind);
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         charges.insert(dst, kind);
         Ok(())
