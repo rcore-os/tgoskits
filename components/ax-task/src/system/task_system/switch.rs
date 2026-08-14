@@ -204,7 +204,7 @@ impl TaskSystem {
                 .or_else(|| {
                     self.select_priority_cpu(
                         current_policy,
-                        &current_entity,
+                        current_entity,
                         &sched.affinity.affinity,
                         None,
                         Some(owner),

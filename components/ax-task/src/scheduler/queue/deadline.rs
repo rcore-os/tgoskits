@@ -439,7 +439,7 @@ impl DeadlineRunQueue {
         key: DeadlineQueueKey,
     ) -> Option<(DeadlineQueueKey, SchedulingEntity)> {
         let thread = self.remove(key)?;
-        let entity = thread.entity();
+        let entity = thread.entity_snapshot();
         let new_key = self.insert(thread);
         Some((new_key, entity))
     }

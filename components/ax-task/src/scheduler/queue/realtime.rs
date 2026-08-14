@@ -552,7 +552,7 @@ impl RealtimeRunQueue {
             self.active[index]
                 .iter()
                 .nth(position)
-                .map(QueuedThread::entity)
+                .map(QueuedThread::entity_snapshot)
         }
     }
 

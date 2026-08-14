@@ -24,15 +24,16 @@ impl RunQueue {
             Some(QueueMembershipClass::Deadline(key)) => self
                 .deadline
                 .get(key)
-                .map(QueuedThread::entity)
+                .map(QueuedThread::entity_snapshot)
                 .ok_or(TaskError::InvalidConfiguration)?,
             Some(QueueMembershipClass::Realtime(priority)) => self
                 .rt
                 .get(priority, id)
-                .map(QueuedThread::entity)
+                .map(QueuedThread::entity_snapshot)
                 .ok_or(TaskError::InvalidConfiguration)?,
             _ => current
-                .owned_scheduling_entity()
+                .owned_scheduling_entity_ref()
+                .cloned()
                 .ok_or(TaskError::InvalidConfiguration)?,
         };
         let dispatch = self.current.as_mut().ok_or(TaskError::NoRunnableThread)?;
@@ -69,17 +70,18 @@ impl RunQueue {
             Some(QueueMembershipClass::Deadline(key)) => self
                 .deadline
                 .get(key)
-                .map(QueuedThread::entity)
+                .map(QueuedThread::entity_snapshot)
                 .ok_or(TaskError::InvalidConfiguration)?,
             Some(QueueMembershipClass::Realtime(priority)) => self
                 .rt
                 .get(priority, id)
-                .map(QueuedThread::entity)
+                .map(QueuedThread::entity_snapshot)
                 .ok_or(TaskError::InvalidConfiguration)?,
             _ => self
                 .current
                 .as_ref()
-                .and_then(CurrentDispatch::owned_scheduling_entity)
+                .and_then(CurrentDispatch::owned_scheduling_entity_ref)
+                .cloned()
                 .ok_or(TaskError::InvalidConfiguration)?,
         };
         Ok((charge, policy, charged_entity, rt_quota_exempt))

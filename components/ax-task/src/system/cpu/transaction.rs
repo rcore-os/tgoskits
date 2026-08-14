@@ -236,7 +236,7 @@ impl<'a> OwnerRqTxn<'a> {
         self.run_queue_mut().current_mut()
     }
 
-    pub(crate) fn current_scheduling_entity(&self) -> Option<SchedulingEntity> {
+    pub(crate) fn current_scheduling_entity(&self) -> Option<&SchedulingEntity> {
         self.run_queue().current_scheduling_entity()
     }
 

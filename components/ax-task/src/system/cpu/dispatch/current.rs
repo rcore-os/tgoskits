@@ -116,16 +116,16 @@ impl CurrentDispatch {
         }
     }
 
-    pub(crate) fn owned_scheduling_entity(&self) -> Option<SchedulingEntity> {
+    pub(crate) fn owned_scheduling_entity_ref(&self) -> Option<&SchedulingEntity> {
         match self.schedule() {
-            CurrentClassState::Owned(active) => Some(active.entity().clone()),
+            CurrentClassState::Owned(active) => Some(active.entity()),
             CurrentClassState::Linked { .. } => None,
         }
     }
 
-    pub(crate) fn owned_base_scheduling_entity(&self) -> Option<SchedulingEntity> {
+    pub(crate) fn owned_base_scheduling_entity_ref(&self) -> Option<&SchedulingEntity> {
         match self.schedule() {
-            CurrentClassState::Owned(active) => Some(active.base_entity().clone()),
+            CurrentClassState::Owned(active) => Some(active.base_entity()),
             CurrentClassState::Linked { .. } => None,
         }
     }
@@ -343,14 +343,14 @@ impl CurrentDispatch {
     /// Absolute Deadline release/deadline events live in `rq->clock` and are
     /// retained by the linked DL entity. They must never be compared with this
     /// `rq->clock_task` duration.
-    pub(crate) fn runtime_timer_delta_for(entity: SchedulingEntity) -> Option<u64> {
+    pub(crate) fn runtime_timer_delta_for(entity: &SchedulingEntity) -> Option<u64> {
         match entity {
             SchedulingEntity::KernelStop => None,
             SchedulingEntity::Fair(fair) => Some(fair.remaining_request_ns()),
             SchedulingEntity::Fifo => None,
             SchedulingEntity::RoundRobin {
                 remaining_quantum_ns,
-            } => Some(remaining_quantum_ns),
+            } => Some(*remaining_quantum_ns),
             SchedulingEntity::Deadline(deadline) => Some(deadline.remaining_runtime_ns()),
         }
     }

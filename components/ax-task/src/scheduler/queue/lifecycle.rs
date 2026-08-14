@@ -333,12 +333,17 @@ impl RunQueue {
         true
     }
 
-    pub(crate) fn linked_current_entity(&self, id: ThreadId) -> Option<SchedulingEntity> {
+    pub(crate) fn linked_current_entity(&self, id: ThreadId) -> Option<&SchedulingEntity> {
         if self.linked_current() != Some(id) {
             return None;
         }
-        self.queued_thread_including_current(id)
-            .map(|thread| thread.entity)
+        match self.membership_class(id)? {
+            QueueMembershipClass::Deadline(key) => self.deadline.get(key).map(QueuedThread::entity),
+            QueueMembershipClass::Realtime(priority) => {
+                self.rt.get(priority, id).map(QueuedThread::entity)
+            }
+            _ => None,
+        }
     }
 
     /// Rebuilds the active EDF key after Linux-style boosted replenishment.

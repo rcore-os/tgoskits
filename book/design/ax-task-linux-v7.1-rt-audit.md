@@ -3349,6 +3349,23 @@ affinity reconciliation、initial delivery、Deadline replenishment 和 owner en
 task-IPI 进度、park/switch/wake IRQ baton 与 deadline soft expiry。因此该回归约束的是单一 entity
 所有权，而不是通过缩短 workload 或放宽唤醒时限获得绿测。
 
+第九项重复 owner 是 rq current 的只读比较仍隐式构造 snapshot。RT/Deadline current 的权威 entity
+留在 class node，Fair/stop current 的权威 entity 留在 `CurrentDispatch`；旧
+`current_scheduling_entity()` 为统一两种物理存储直接返回 owned value，所以即使 wakee 已改为借用，
+`wakeup_preempt()` 仍会在每次 non-idle 比较复制一次 current，Deadline 同样复制完整 CBS 状态。
+
+现在 `linked_current_entity()`、`CurrentDispatch::owned_scheduling_entity_ref()` 和
+`current_scheduling_entity()` 形成一条权威引用链；runtime deadline derivation、Fair virtual-time 读取与
+wake preemption 都在 rq guard 内直接借用。确实要跨越 rq mutation 或作为返回快照的路径显式调用
+`.cloned()`；`QueuedThread::entity()` 也改为借用，只保留命名明确的 `entity_snapshot()`，没有并存
+`entity()`/`entity_ref()` 两套相似 API。
+
+真实 RISC-V ArceOS remote wake 在目标 CPU 上保持一个普通 Fair current，强制经过 non-idle
+preemption 比较。旧实现稳定为 `reads=3, copies=1` 并失败，新实现为 `reads=3, copies=0` 并通过；
+occupier 与 sleeper 的 handle 都在 readiness 检查前进入 RAII owner，readiness 等待有明确上限；正常路径
+显式 stop/wake/join，断言失败或 panic 路径由析构执行同样的释放。因此该回归不会把线程、wait queue 或
+rq 状态泄漏给分组后续测例，也不会用无界等待掩盖调度失败。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

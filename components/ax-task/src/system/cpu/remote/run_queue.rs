@@ -167,11 +167,11 @@ impl CpuRunQueueState {
         self.queue.current_mut()
     }
 
-    pub(crate) fn current_scheduling_entity(&self) -> Option<SchedulingEntity> {
+    pub(crate) fn current_scheduling_entity(&self) -> Option<&SchedulingEntity> {
         let current = self.queue.current()?;
         self.queue
             .linked_current_entity(current.thread())
-            .or_else(|| current.owned_scheduling_entity())
+            .or_else(|| current.owned_scheduling_entity_ref())
     }
 
     pub(crate) fn current_scheduling_entity_mut(&mut self) -> Option<&mut SchedulingEntity> {
@@ -256,7 +256,8 @@ impl CpuRunQueueState {
             self.queue
                 .current()
                 .filter(|current| current.thread() == thread)
-                .and_then(CurrentDispatch::owned_scheduling_entity)
+                .and_then(CurrentDispatch::owned_scheduling_entity_ref)
+                .cloned()
         })
     }
 
@@ -265,7 +266,8 @@ impl CpuRunQueueState {
             self.queue
                 .current()
                 .filter(|current| current.thread() == thread)
-                .and_then(CurrentDispatch::owned_base_scheduling_entity)
+                .and_then(CurrentDispatch::owned_base_scheduling_entity_ref)
+                .cloned()
         })
     }
 
@@ -328,7 +330,7 @@ impl CpuRunQueueState {
         {
             return self
                 .current_scheduling_entity()
-                .map(|entity| (current.schedule_policy(), entity));
+                .map(|entity| (current.schedule_policy(), entity.clone()));
         }
         self.queue.scheduling_state(thread)
     }
@@ -338,7 +340,7 @@ impl CpuRunQueueState {
         let entity = self
             .queue
             .linked_current_entity(current.thread())
-            .or_else(|| current.owned_scheduling_entity())
+            .or_else(|| current.owned_scheduling_entity_ref())
             .expect("current dispatch must have one rq-owned scheduling entity");
         CurrentDispatch::runtime_timer_delta_for(entity)
     }
@@ -680,7 +682,9 @@ impl CpuRunQueueState {
         let current_entity = self
             .current_scheduling_entity()
             .expect("current dispatch must have one rq-owned scheduling entity");
-        if !current.should_preempt(&current_entity, policy, entity, fair_virtual_time) {
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_wake_entity_read(wakee, 0);
+        if !current.should_preempt(current_entity, policy, entity, fair_virtual_time) {
             return WakePreemptionDecision::KeepCurrent;
         }
         match policy {

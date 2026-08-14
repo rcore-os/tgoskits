@@ -261,8 +261,12 @@ impl QueuedThread {
         self.active.policy()
     }
 
-    pub(crate) fn entity(&self) -> SchedulingEntity {
-        self.active.entity().clone()
+    pub(crate) fn entity(&self) -> &SchedulingEntity {
+        self.active.entity()
+    }
+
+    pub(crate) fn entity_snapshot(&self) -> SchedulingEntity {
+        self.entity().clone()
     }
 
     pub(crate) fn into_active(self) -> ActiveSchedulingState {

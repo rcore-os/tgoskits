@@ -1,4 +1,4 @@
-use core::sync::atomic::AtomicUsize;
+use core::{hint, sync::atomic::AtomicUsize};
 use std::{
     os::arceos::{
         api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
@@ -9,21 +9,132 @@ use std::{
     },
     sync::atomic::{AtomicBool, Ordering},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 static READY_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
 static SLEEP_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
 static DONE_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
 static TIMEOUT_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
+static OCCUPIER_READY_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
 static READY: AtomicBool = AtomicBool::new(false);
 static MAY_SLEEP: AtomicBool = AtomicBool::new(false);
 static GO: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
+static OCCUPIER_READY: AtomicBool = AtomicBool::new(false);
+static STOP_OCCUPIER: AtomicBool = AtomicBool::new(false);
 static SLEEPER_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 const WAITER_ENQUEUE_RETRIES: usize = 1024;
 const REMOTE_WAKE_PROGRESS_TIMEOUT: Duration = Duration::from_secs(1);
+const OCCUPIER_MAX_RUNTIME: Duration = Duration::from_secs(2);
+const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
+
+struct RemoteSleeper {
+    worker: Option<thread::JoinHandle<()>>,
+    thread_id: u64,
+}
+
+impl RemoteSleeper {
+    fn spawn(cpu: usize) -> Self {
+        let worker = thread::spawn(move || {
+            pin_current_to_cpu(cpu);
+            SLEEPER_CPU.store(this_cpu_id(), Ordering::Release);
+            READY.store(true, Ordering::Release);
+            api::ax_wait_queue_wake(&READY_WQ, 1);
+
+            while !MAY_SLEEP.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            api::ax_wait_queue_wait_until(&SLEEP_WQ, || GO.load(Ordering::Acquire), None);
+            assert_eq!(this_cpu_id(), cpu, "remote wakeup resumed on the wrong CPU");
+            DONE.store(true, Ordering::Release);
+            api::ax_wait_queue_wake(&DONE_WQ, 1);
+        });
+        let thread_id = worker.thread().id().as_u64().get();
+        let sleeper = Self {
+            worker: Some(worker),
+            thread_id,
+        };
+        assert!(
+            !api::ax_wait_queue_wait_until(
+                &READY_WQ,
+                || READY.load(Ordering::Acquire),
+                Some(WORKER_READY_TIMEOUT),
+            ),
+            "remote sleeper did not become ready"
+        );
+        sleeper
+    }
+
+    const fn thread_id(&self) -> u64 {
+        self.thread_id
+    }
+
+    fn finish(mut self) {
+        if let Some(worker) = self.worker.take() {
+            worker.join().unwrap();
+        }
+    }
+}
+
+impl Drop for RemoteSleeper {
+    fn drop(&mut self) {
+        MAY_SLEEP.store(true, Ordering::Release);
+        GO.store(true, Ordering::Release);
+        api::ax_wait_queue_wake(&SLEEP_WQ, 1);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+struct TargetOccupier {
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl TargetOccupier {
+    fn spawn(cpu: usize) -> Self {
+        let worker = thread::spawn(move || {
+            pin_current_to_cpu(cpu);
+            OCCUPIER_READY.store(true, Ordering::Release);
+            api::ax_wait_queue_wake(&OCCUPIER_READY_WQ, 1);
+            let started = Instant::now();
+            while !STOP_OCCUPIER.load(Ordering::Acquire) && started.elapsed() < OCCUPIER_MAX_RUNTIME
+            {
+                hint::spin_loop();
+            }
+        });
+        let occupier = Self {
+            worker: Some(worker),
+        };
+        assert!(
+            !api::ax_wait_queue_wait_until(
+                &OCCUPIER_READY_WQ,
+                || OCCUPIER_READY.load(Ordering::Acquire),
+                Some(WORKER_READY_TIMEOUT),
+            ),
+            "target occupier did not become ready"
+        );
+        occupier
+    }
+
+    fn stop(mut self) {
+        STOP_OCCUPIER.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            worker.join().unwrap();
+        }
+    }
+}
+
+impl Drop for TargetOccupier {
+    fn drop(&mut self) {
+        STOP_OCCUPIER.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
 
 fn pin_current_to_cpu(cpu_id: usize) {
     assert!(
@@ -70,32 +181,19 @@ pub fn run() -> crate::TestResult {
     MAY_SLEEP.store(false, Ordering::Release);
     GO.store(false, Ordering::Release);
     DONE.store(false, Ordering::Release);
+    OCCUPIER_READY.store(false, Ordering::Release);
+    STOP_OCCUPIER.store(false, Ordering::Release);
     SLEEPER_CPU.store(usize::MAX, Ordering::Release);
 
     pin_current_to_cpu(waker_cpu);
-    let sleeper = thread::spawn(move || {
-        pin_current_to_cpu(sleeper_cpu);
-        SLEEPER_CPU.store(this_cpu_id(), Ordering::Release);
-        READY.store(true, Ordering::Release);
-        api::ax_wait_queue_wake(&READY_WQ, 1);
-
-        while !MAY_SLEEP.load(Ordering::Acquire) {
-            thread::yield_now();
-        }
-        api::ax_wait_queue_wait_until(&SLEEP_WQ, || GO.load(Ordering::Acquire), None);
-        assert_eq!(
-            this_cpu_id(),
-            sleeper_cpu,
-            "remote wakeup resumed on the wrong CPU"
-        );
-        DONE.store(true, Ordering::Release);
-        api::ax_wait_queue_wake(&DONE_WQ, 1);
-    });
-    let sleeper_id = sleeper.thread().id().as_u64().get();
-
-    api::ax_wait_queue_wait_until(&READY_WQ, || READY.load(Ordering::Acquire), None);
+    let sleeper = RemoteSleeper::spawn(sleeper_cpu);
+    let sleeper_id = sleeper.thread_id();
     assert_eq!(SLEEPER_CPU.load(Ordering::Acquire), sleeper_cpu);
     assert_eq!(this_cpu_id(), waker_cpu);
+    // Keep a normal task runnable on the target rq so wakeup preemption must
+    // inspect the authoritative current entity instead of taking the
+    // dedicated-idle shortcut.
+    let occupier = TargetOccupier::spawn(sleeper_cpu);
     task_test_hooks::arm_park_irq_owner_probe(sleeper_id);
     task_test_hooks::arm_switch_tail_irq_owner_probe(sleeper_id);
     MAY_SLEEP.store(true, Ordering::Release);
@@ -109,7 +207,8 @@ pub fn run() -> crate::TestResult {
         ),
         "remote wait-queue wakeup did not make bounded progress"
     );
-    sleeper.join().unwrap();
+    sleeper.finish();
+    occupier.stop();
     assert_eq!(
         task_test_hooks::take_park_irq_owner_entries(),
         Some(task_test_hooks::ParkIrqOwnerEntries {
@@ -137,10 +236,10 @@ pub fn run() -> crate::TestResult {
     assert_eq!(
         task_test_hooks::take_wake_entity_read_events(),
         Some(task_test_hooks::WakeEntityReadEvents {
-            reads: 2,
+            reads: 3,
             copies: 0,
         }),
-        "wake placement and preemption must borrow the task's single scheduling entity"
+        "wake placement and preemption must borrow both rq-owned scheduling entities"
     );
     task_test_hooks::arm_park_deadline_publication_probe(this_cpu_id());
     task_test_hooks::request_current_owner_work()
