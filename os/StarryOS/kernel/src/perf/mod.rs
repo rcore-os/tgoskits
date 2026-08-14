@@ -593,7 +593,9 @@ pub fn perf_event_open(
                 PerfTypeId::PERF_TYPE_TRACEPOINT => {
                     Box::new(tracepoint::perf_event_open_tracepoint(args)?)
                 }
-                PerfTypeId::PERF_TYPE_UPROBE => Box::new(uprobe::perf_event_open_uprobe(args)?),
+                PerfTypeId::PERF_TYPE_UPROBE => {
+                    Box::new(uprobe::perf_event_open_uprobe(args, target.task())?)
+                }
                 _ => {
                     warn!("perf_event_open: unsupported type {:?}", args.type_);
                     return Err(crate::StarryError::Unsupported);

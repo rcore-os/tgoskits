@@ -8,7 +8,7 @@ use super::{
     },
     target::{PerfCpuId, PerfTarget, PerfTargetError, PerfTargetKind, PerfTaskTarget},
 };
-use crate::task::{Cred, UserTaskRef, current_user_task, get_task};
+use crate::task::{Cred, UserTaskRef, current_user_task, get_task, resolve_user_pid};
 
 /// Strong target identity with its CPU selector validated in Linux order.
 pub(super) enum ResolvedPerfTarget {
@@ -45,9 +45,10 @@ impl ResolvedPerfTarget {
     pub(super) fn resolve(target: PerfTarget, cpu_count: usize) -> crate::StarryResult<Self> {
         match target {
             PerfTarget::Task { task, cpu } => {
+                let current = current_user_task();
                 let task = match task {
-                    PerfTaskTarget::Current => current_user_task(),
-                    PerfTaskTarget::Tid(tid) => get_task(tid)?,
+                    PerfTaskTarget::Current => current,
+                    PerfTaskTarget::Tid(tid) => get_task(resolve_user_pid(&current, tid)?)?,
                 };
                 let cpu = cpu
                     .resolve_optional(cpu_count)
@@ -96,6 +97,20 @@ impl ResolvedPerfTarget {
         }
 
         install(AuthorizedPerfTarget::Task { task, cpu })
+    }
+}
+
+impl AuthorizedPerfTarget {
+    /// Returns the strongly held task target for task-specific event backends.
+    ///
+    /// The syscall PID was resolved in the caller's active PID namespace and
+    /// authorized before this target was constructed. Backends must use this
+    /// reference instead of interpreting the namespace-local syscall PID again.
+    pub(crate) fn task(&self) -> Option<&UserTaskRef> {
+        match self {
+            Self::Task { task, .. } => Some(task),
+            Self::Cpu(_) => None,
+        }
     }
 }
 
