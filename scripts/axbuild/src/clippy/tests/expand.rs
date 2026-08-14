@@ -81,6 +81,59 @@ fn feature_expansion_is_deterministic() {
 }
 
 #[test]
+fn host_test_feature_lints_test_targets() {
+    let checks = expand(&[pkg(
+        "alpha",
+        "alpha 0.1.0 (path+file:///tmp/alpha)",
+        &[("host-test", &[])],
+        None,
+    )]);
+    let host_test = checks
+        .iter()
+        .find(|check| check.label() == "alpha (feature: host-test)")
+        .expect("host-test feature check should be planned");
+
+    assert_eq!(
+        host_test.cargo_args(),
+        vec![
+            "clippy",
+            "--no-deps",
+            "-p",
+            "alpha",
+            "--tests",
+            "--no-default-features",
+            "--features",
+            "host-test",
+            "--",
+            "-D",
+            "warnings",
+        ]
+    );
+}
+
+#[test]
+fn host_test_feature_uses_host_target_outside_docs_target_matrix() {
+    let checks = expand(&[pkg(
+        "alpha",
+        "alpha 0.1.0 (path+file:///tmp/alpha)",
+        &[("host-test", &[]), ("platform", &[])],
+        Some(&["aarch64-unknown-none-softfloat"]),
+    )]);
+    let host_test_checks = checks
+        .iter()
+        .filter(|check| check.label().contains("feature: host-test"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(host_test_checks.len(), 1);
+    assert_eq!(host_test_checks[0].label(), "alpha (feature: host-test)");
+    assert!(
+        !host_test_checks[0]
+            .cargo_args()
+            .contains(&"--target".into())
+    );
+}
+
+#[test]
 fn incremental_selection_keeps_runnable_top_levels_when_some_are_skipped() {
     let packages = vec![
         pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),

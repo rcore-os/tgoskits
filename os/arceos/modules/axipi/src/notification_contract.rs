@@ -27,6 +27,31 @@ fn first_publication_sends_and_repeated_publication_coalesces() {
 }
 
 #[test]
+fn handler_drains_latest_owner_generation_after_coalescing() {
+    let edges = DeliveryEdges::<2>::new();
+    let owner_generation = AtomicUsize::new(0);
+    let drained_generation = AtomicUsize::new(0);
+
+    owner_generation.store(1, Ordering::Release);
+    assert_eq!(edges.notify(CpuId(1), || Ok(())), Ok(IpiNotification::Sent),);
+
+    owner_generation.store(2, Ordering::Release);
+    assert_eq!(
+        edges.notify(CpuId(1), || panic!("physical edge is already armed")),
+        Ok(IpiNotification::Coalesced),
+    );
+    assert_eq!(drained_generation.load(Ordering::Acquire), 0);
+
+    edges.claim(CpuId(1));
+    drained_generation.store(owner_generation.load(Ordering::Acquire), Ordering::Release);
+    assert_eq!(
+        drained_generation.load(Ordering::Acquire),
+        2,
+        "the handler must drain owner state published behind a coalesced edge"
+    );
+}
+
+#[test]
 fn publication_after_claim_obtains_a_fresh_edge() {
     let edges = DeliveryEdges::<2>::new();
     let sends = AtomicUsize::new(0);
