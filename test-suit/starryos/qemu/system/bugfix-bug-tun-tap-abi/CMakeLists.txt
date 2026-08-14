@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-tun-tap-abi C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-tun-tap-abi src/main.c)
+target_include_directories(bug-tun-tap-abi PRIVATE ../common)
+target_compile_options(bug-tun-tap-abi PRIVATE -Wall -Wextra -Werror)
+# The concurrent TUNSETIFF/close race test spawns pthreads.
+target_link_libraries(bug-tun-tap-abi PRIVATE pthread)
+install(TARGETS bug-tun-tap-abi RUNTIME DESTINATION usr/bin/starry-test-suit)

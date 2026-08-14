@@ -32,12 +32,14 @@ use crate::config::InterfaceId;
 mod driver;
 mod ethernet;
 mod loopback;
+mod tun;
 #[cfg(feature = "vsock")]
 mod vsock;
 
 pub use driver::*;
 pub use ethernet::*;
 pub use loopback::*;
+pub use tun::*;
 #[cfg(feature = "vsock")]
 pub use vsock::*;
 

@@ -15,6 +15,15 @@
 
 pub const STANDARD_MTU: usize = 1500;
 
+/// The largest layer-3 datagram the data plane will carry on any interface,
+/// matching Linux's TUN `MAX_MTU` (`drivers/net/tun.c`). A per-interface MTU set
+/// via `SIOCSIFMTU` is honored end-to-end up to this ceiling: queue slots are
+/// heap-backed and sized to the actual frame (so raising an interface's MTU
+/// costs memory only for the packets in flight, not `depth × ceiling`), and the
+/// shared smoltcp transmission unit tracks the largest configured interface MTU.
+/// `STANDARD_MTU` remains the default until `SIOCSIFMTU` raises it.
+pub const STACK_MAX_MTU: usize = 65535;
+
 pub const TCP_RX_BUF_LEN: usize = 64 * 1024;
 pub const TCP_TX_BUF_LEN: usize = 64 * 1024;
 pub const UDP_RX_BUF_LEN: usize = 64 * 1024;
