@@ -62,6 +62,9 @@ fn apply_clock_event_action(action: crate::clock_event::ClockEventAction) {
     match action {
         crate::clock_event::ClockEventAction::None => {}
         crate::clock_event::ClockEventAction::Stop => ax_hal::time::cancel_oneshot_timer(),
+        crate::clock_event::ClockEventAction::Resume(deadline) => {
+            ax_hal::time::resume_oneshot_timer(deadline.as_nanos());
+        }
         crate::clock_event::ClockEventAction::Program(deadline) => {
             ax_hal::time::set_oneshot_timer(deadline.as_nanos());
         }
@@ -375,7 +378,7 @@ mod tests {
                 );
                 assert_eq!(
                     action,
-                    crate::clock_event::ClockEventAction::Program(deadline)
+                    crate::clock_event::ClockEventAction::Resume(deadline)
                 );
                 hardware_committed.set(true);
             },

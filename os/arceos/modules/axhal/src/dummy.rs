@@ -140,6 +140,9 @@ impl TimeIf for DummyTime {
     fn set_oneshot_timer(_deadline_ns: u64) {}
 
     #[cfg(feature = "irq")]
+    fn resume_oneshot_timer(_deadline_ns: u64) {}
+
+    #[cfg(feature = "irq")]
     fn cancel_oneshot_timer() {}
 }
 

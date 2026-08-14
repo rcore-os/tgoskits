@@ -75,16 +75,31 @@ fn program_oneshot(
     current_ticks: u64,
     frequency_hz: u64,
     program_interval: impl FnOnce(usize),
-    unmask_irq: impl FnOnce(),
 ) {
     let interval = oneshot_interval_ticks(deadline_ns, current_ticks, frequency_hz);
+    program_interval(interval);
+}
+
+#[cfg(any(feature = "irq", test))]
+fn resume_oneshot(
+    deadline_ns: u64,
+    current_ticks: u64,
+    frequency_hz: u64,
+    program_interval: impl FnOnce(usize),
+    unmask_irq: impl FnOnce(),
+) {
     // Linux returns a stopped clockevent device to ONESHOT state before
     // calling ->set_next_event(). In particular, an x86 TSC-deadline event at
     // the minimum delta can expire between the MSR write and a later LVT
     // unmask, permanently losing the only edge. Local IRQ exclusion keeps a
     // previously pending source from entering until the new event is installed.
     unmask_irq();
-    program_interval(interval);
+    program_oneshot(
+        deadline_ns,
+        current_ticks,
+        frequency_hz,
+        program_interval,
+    );
 }
 
 pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
@@ -171,6 +186,18 @@ impl ax_plat::time::TimeIf for GenericTimer {
             current_ticks,
             frequency_hz,
             somehal::timer::set_next_event_in_ticks,
+        );
+    }
+
+    #[cfg(feature = "irq")]
+    fn resume_oneshot_timer(deadline_ns: u64) {
+        let current_ticks = somehal::timer::ticks() as u64;
+        let frequency_hz = somehal::timer::freq() as u64;
+        resume_oneshot(
+            deadline_ns,
+            current_ticks,
+            frequency_hz,
+            somehal::timer::set_next_event_in_ticks,
             somehal::timer::irq_enable,
         );
     }
@@ -187,7 +214,7 @@ mod tests {
 
     use super::{
         deadline_nanos_to_ticks_at_frequency, nanos_to_ticks_at_frequency, oneshot_interval_ticks,
-        program_oneshot, ticks_to_nanos_at_frequency,
+        program_oneshot, resume_oneshot, ticks_to_nanos_at_frequency,
     };
 
     #[test]
@@ -216,7 +243,7 @@ mod tests {
     #[test]
     fn oneshot_device_reenters_oneshot_state_before_programming() {
         let step = Cell::new(0);
-        program_oneshot(
+        resume_oneshot(
             100,
             0,
             1_000_000_000,
@@ -227,5 +254,28 @@ mod tests {
             || assert_eq!(step.replace(1), 0),
         );
         assert_eq!(step.get(), 2);
+    }
+
+    #[test]
+    fn reprogramming_armed_oneshot_does_not_repeat_the_state_transition() {
+        let unmask_count = Cell::new(0);
+        let program_count = Cell::new(0);
+        resume_oneshot(
+            100,
+            0,
+            1_000_000_000,
+            |_| program_count.set(program_count.get() + 1),
+            || unmask_count.set(unmask_count.get() + 1),
+        );
+        program_oneshot(200, 0, 1_000_000_000, |_| {
+            program_count.set(program_count.get() + 1);
+        });
+
+        assert_eq!(program_count.get(), 2);
+        assert_eq!(
+            unmask_count.get(),
+            1,
+            "an already-started one-shot device only needs a new comparator"
+        );
     }
 }

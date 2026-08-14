@@ -39,6 +39,7 @@ pub(crate) enum ClockEventPhase {
 pub(crate) enum ClockEventAction {
     None,
     Stop,
+    Resume(ClockDeadline),
     Program(ClockDeadline),
 }
 
@@ -63,6 +64,12 @@ enum SchedulerTickState {
     Stopped { resume_from: Option<ClockDeadline> },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClockEventDeviceState {
+    Stopped,
+    Started,
+}
+
 /// Single owner for every source merged into one physical per-CPU clockevent.
 #[derive(Debug)]
 pub(crate) struct LocalClockEvent {
@@ -74,6 +81,7 @@ pub(crate) struct LocalClockEvent {
     scheduler_deadline: Option<ClockDeadline>,
     scheduler_tick: SchedulerTickState,
     armed_deadline: Option<ClockDeadline>,
+    device_state: ClockEventDeviceState,
 }
 
 impl LocalClockEvent {
@@ -87,6 +95,7 @@ impl LocalClockEvent {
             scheduler_deadline: None,
             scheduler_tick: SchedulerTickState::Stopped { resume_from: None },
             armed_deadline: None,
+            device_state: ClockEventDeviceState::Stopped,
         }
     }
 
@@ -146,7 +155,7 @@ impl LocalClockEvent {
         if self.phase == ClockEventPhase::Offline {
             return ClockEventAction::None;
         }
-        let must_stop = self.armed_deadline.is_some() || self.phase == ClockEventPhase::Firing;
+        let must_stop = self.device_state == ClockEventDeviceState::Started;
         self.advance_cpu_epoch();
         self.phase = ClockEventPhase::Offline;
         #[cfg(feature = "multitask")]
@@ -155,6 +164,7 @@ impl LocalClockEvent {
         }
         self.scheduler_tick = SchedulerTickState::Stopped { resume_from: None };
         self.armed_deadline = None;
+        self.device_state = ClockEventDeviceState::Stopped;
         if must_stop {
             ClockEventAction::Stop
         } else {
@@ -240,6 +250,7 @@ impl LocalClockEvent {
             // logical deadline published without turning an already-due value
             // into an interrupt storm.
             self.armed_deadline = None;
+            self.device_state = ClockEventDeviceState::Stopped;
             return ClockEventAction::Stop;
         }
         self.reconcile_arm()
@@ -308,17 +319,34 @@ impl LocalClockEvent {
         }
         let selected = self.selected_deadline();
         if selected == self.armed_deadline {
+            if selected.is_none()
+                && self.phase == ClockEventPhase::Idle
+                && self.device_state == ClockEventDeviceState::Started
+            {
+                self.device_state = ClockEventDeviceState::Stopped;
+                return ClockEventAction::Stop;
+            }
             return ClockEventAction::None;
         }
         self.armed_deadline = selected;
         match selected {
             Some(deadline) => {
                 self.phase = ClockEventPhase::Armed;
-                ClockEventAction::Program(deadline)
+                if self.device_state == ClockEventDeviceState::Stopped {
+                    self.device_state = ClockEventDeviceState::Started;
+                    ClockEventAction::Resume(deadline)
+                } else {
+                    ClockEventAction::Program(deadline)
+                }
             }
             None => {
                 self.phase = ClockEventPhase::Idle;
-                ClockEventAction::Stop
+                if self.device_state == ClockEventDeviceState::Started {
+                    self.device_state = ClockEventDeviceState::Stopped;
+                    ClockEventAction::Stop
+                } else {
+                    ClockEventAction::None
+                }
             }
         }
     }
@@ -378,14 +406,14 @@ mod tests {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(100)),
-            ClockEventAction::Program(deadline(100))
+            ClockEventAction::Resume(deadline(100))
         );
         assert_eq!(event.take_offline(), ClockEventAction::Stop);
         assert_eq!(event.phase(), ClockEventPhase::Offline);
         assert_eq!(event.armed_deadline(), None);
         assert_eq!(
             event.online(deadline(200)),
-            ClockEventAction::Program(deadline(200))
+            ClockEventAction::Resume(deadline(200))
         );
     }
 
@@ -394,12 +422,12 @@ mod tests {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(100)),
-            ClockEventAction::Program(deadline(100))
+            ClockEventAction::Resume(deadline(100))
         );
         assert_eq!(event.take_offline(), ClockEventAction::Stop);
         assert_eq!(
             event.online(deadline(200)),
-            ClockEventAction::Program(deadline(200))
+            ClockEventAction::Resume(deadline(200))
         );
 
         // A stale physical edge enters the same firing transaction as any
@@ -441,7 +469,7 @@ mod tests {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(100)),
-            ClockEventAction::Program(deadline(100))
+            ClockEventAction::Resume(deadline(100))
         );
         assert_eq!(
             event.publish_scheduler(1, Some(scheduler_deadline(1_000))),
@@ -463,7 +491,7 @@ mod tests {
 
         assert_eq!(
             event.restart_scheduler_tick_after_idle(instant(149), 25),
-            ClockEventAction::Program(deadline(150))
+            ClockEventAction::Resume(deadline(150))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(150)));
     }
@@ -487,7 +515,7 @@ mod tests {
         );
         assert_eq!(
             event.online(deadline(100)),
-            ClockEventAction::Program(deadline(90))
+            ClockEventAction::Resume(deadline(90))
         );
         assert_eq!(event.take_offline(), ClockEventAction::Stop);
         assert_eq!(
@@ -496,7 +524,7 @@ mod tests {
         );
         assert_eq!(
             event.online(deadline(200)),
-            ClockEventAction::Program(deadline(200))
+            ClockEventAction::Resume(deadline(200))
         );
         assert_eq!(event.scheduler_generation(), 7);
         assert_eq!(event.scheduler_deadline(), None);
@@ -508,7 +536,7 @@ mod tests {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(ax_task::runtime::KTIME_MAX_NANOS - 5)),
-            ClockEventAction::Program(deadline(ax_task::runtime::KTIME_MAX_NANOS - 5))
+            ClockEventAction::Resume(deadline(ax_task::runtime::KTIME_MAX_NANOS - 5))
         );
         let _firing = fire_due(&mut event, ax_task::runtime::KTIME_MAX_NANOS - 1);
         assert!(event.advance_periodic(instant(ax_task::runtime::KTIME_MAX_NANOS - 1), 10));
@@ -519,7 +547,7 @@ mod tests {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(500)),
-            ClockEventAction::Program(deadline(500))
+            ClockEventAction::Resume(deadline(500))
         );
         assert_eq!(
             event.publish_scheduler(1, Some(scheduler_deadline(300))),
@@ -538,16 +566,26 @@ mod tests {
     }
 
     #[test]
+    fn stopped_to_armed_and_reprogram_are_distinct_device_actions() {
+        let mut event = LocalClockEvent::offline();
+        let start = event.online(deadline(500));
+        let reprogram = event.publish_scheduler(1, Some(scheduler_deadline(300)));
+
+        assert_eq!(start, ClockEventAction::Resume(deadline(500)));
+        assert_eq!(reprogram, ClockEventAction::Program(deadline(300)));
+    }
+
+    #[test]
     fn removing_the_only_deadline_stops_the_physical_owner() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(1_000)),
-            ClockEventAction::Program(deadline(1_000))
+            ClockEventAction::Resume(deadline(1_000))
         );
         assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::Stop);
         assert_eq!(
             event.publish_scheduler(1, Some(scheduler_deadline(300))),
-            ClockEventAction::Program(deadline(300))
+            ClockEventAction::Resume(deadline(300))
         );
         assert_eq!(event.publish_scheduler(2, None), ClockEventAction::Stop);
         assert_eq!(event.phase(), ClockEventPhase::Idle);
@@ -574,7 +612,7 @@ mod tests {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(500)),
-            ClockEventAction::Program(deadline(500))
+            ClockEventAction::Resume(deadline(500))
         );
         let firing = fire_due(&mut event, 500);
         assert_eq!(event.phase(), ClockEventPhase::Firing);
@@ -611,7 +649,7 @@ mod tests {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(100)),
-            ClockEventAction::Program(deadline(100))
+            ClockEventAction::Resume(deadline(100))
         );
         assert_eq!(
             event.publish_scheduler(1, Some(scheduler_deadline(100))),
@@ -634,7 +672,7 @@ mod tests {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(500)),
-            ClockEventAction::Program(deadline(500))
+            ClockEventAction::Resume(deadline(500))
         );
         assert_eq!(
             event.publish_scheduler(1, Some(scheduler_deadline(100))),

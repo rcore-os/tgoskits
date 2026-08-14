@@ -85,6 +85,13 @@ pub trait TimeIf {
     #[cfg(feature = "irq")]
     fn set_oneshot_timer(deadline_ns: u64);
 
+    /// Returns a stopped one-shot timer to its active state and programs it.
+    ///
+    /// The interrupt source must become observable before the comparator is
+    /// installed so a minimum-delta event cannot expire while still masked.
+    #[cfg(feature = "irq")]
+    fn resume_oneshot_timer(deadline_ns: u64);
+
     /// Stops the current CPU's one-shot timer until it is programmed again.
     #[cfg(feature = "irq")]
     fn cancel_oneshot_timer();

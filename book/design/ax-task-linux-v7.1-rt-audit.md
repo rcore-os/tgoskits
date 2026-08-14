@@ -3403,6 +3403,27 @@ index，Fair 继续由唯一的 `balance_fair()` 状态机负责。这不是用�
 115.917 秒；最新 dev 约 112 秒，差距约 3.5%，低于 20% 门限。RISC-V 与
 LoongArch64 ArceOS Rust 组均为 `21/21`，包括生产 task-IPI 与统一 ktimer 回归。
 
+## x86 clockevent 阶段检查点（尚未完成）
+
+x86_64 Starry `test-ext4-inode-unique` 在本分支原实现中测试主体为
+103.322 秒，而同一最新 dev 基线约为 77 秒，慢约 34.2%，已经超过本轮的
+20% 性能门限。当前阶段先把物理 clockevent 的设备状态纳入唯一的
+`LocalClockEvent` owner：`Stopped -> Started` 返回 `Resume`，已经启动的设备
+只返回 `Program`，最后一个逻辑 deadline 消失时返回 `Stop`。这清除了平台层
+无法区分首次启动与普通 comparator 重编程的问题；确定性状态机回归在旧实现
+中不能区分两个 action，拆分后可以区分。
+
+但本阶段不能宣称修复了 x86 性能。拆分后的同一正式用例在 120 秒超时，只进行
+到约 `1891/2048`。继续对照 Linux 后发现 x86 硬件提交仍不一致：Linux
+`lapic_timer_shutdown()` 会先 mask LVT 并清零 TSC deadline，普通
+`lapic_next_deadline()` 只重编程 comparator；当前 someboot 的 Stop 只 mask，
+而 Resume 先 unmask 再写新 comparator，可能在新 deadline 提交前释放旧的
+pending/expired event。后续必须把 x86 Stop/Resume 修成明确的
+`mask + clear` / `program + unmask` 状态转换，再用 clockevent IRQ、scheduler
+deadline、IPI 与 context-switch 窗口计数确认是否存在中断放大。这个检查点只
+记录 owner/API 拆分及已知问题；按阶段要求，提交前不继续等待或运行验证，不能
+作为 CI、QEMU 或性能通过证据。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
@@ -3422,6 +3443,8 @@ LoongArch64 ArceOS Rust 组均为 `21/21`，包括生产 task-IPI 与统一 ktim
 
 ### 本轮必须继续处理
 
+- 修正 x86 clockevent Stop/Resume 的硬件提交顺序并清理旧 comparator，重新确认
+  `test-ext4-inode-unique` 不比 dev 慢 20% 以上；
 - 完成四架构 current-head build/QEMU 与 CI terminal 结果；
 - 对新 dev 合入的 AxVM CPU_ON/CPU_OFF/reset 生命周期保持 `TaskHandle` 适配；
 - 继续检查高频 wake/yield workload 的 scheduler-work amplification。
