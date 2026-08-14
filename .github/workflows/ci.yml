@@ -532,6 +532,7 @@ jobs:
             command: |
               echo "==> starry aarch64 GICv2 SMP4 boot"
               target/debug/tg-xtask starry qemu --arch aarch64 --smp 4 \
+                --rootfs-write-policy discard \
                 --qemu-config os/StarryOS/configs/qemu/qemu-aarch64-gicv2-boot.toml
               echo "==> starry aarch64 test suites"
               target/debug/tg-xtask starry test qemu --arch aarch64
