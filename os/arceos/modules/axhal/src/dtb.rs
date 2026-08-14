@@ -2,7 +2,7 @@
 use core::ptr::NonNull;
 
 use ax_lazyinit::{LazyLock, OnceLock};
-use fdt_parser::Fdt;
+use fdt_parser::{Fdt, Node};
 
 static BOOTARG: OnceLock<usize> = OnceLock::new();
 
@@ -78,62 +78,111 @@ fn build_cpu_capacities() -> [u16; MAX_CPU_NUM] {
     caps_from_fdt(fdt)
 }
 
+/// A `cpu@*` device-tree node the boot path treats as a real, enabled CPU.
+///
+/// Mirrors someboot's `is_cpu_node_available` (platforms/someboot/src/fdt) so
+/// this table's logical indices line up with boot's `.enumerate()` cpu_id
+/// mapping: the node is named `cpu@*`, is not firmware-disabled, and either has
+/// no `device_type` or declares `device_type = "cpu"` (nodes that reuse a
+/// `cpu@` name for something else are excluded).
+fn is_cpu_node_available(node: &Node) -> bool {
+    node.name().starts_with("cpu@")
+        && matches!(
+            node.find_property("device_type").map(|p| p.str()),
+            None | Some("cpu")
+        )
+        && matches!(
+            node.find_property("status").map(|p| p.str()),
+            None | Some("okay") | Some("ok")
+        )
+}
+
 /// Parse per-logical-CPU normalized compute capacities from `fdt`, indexed by
 /// logical `cpu_id`.
 ///
-/// `all_nodes()` yields device-tree order; the N-th *enabled* `cpu@*` node is
-/// logical CPU N (matching boot's `.enumerate()` cpu_id mapping — do NOT key by
-/// `reg`). Firmware-disabled CPUs are skipped so the index stays aligned. Each
-/// node's capacity comes from `capacity-dmips-mhz`, else a `cortex-a55`/`a76`
-/// compatible fallback, else [`DEFAULT_CPU_CAPACITY`]. Generic over the table
-/// size `N` so it can be unit-tested with fixture device trees independent of
-/// the build-time [`MAX_CPU_NUM`].
+/// Only the direct `cpu@*` children of `/cpus` are considered, filtered by
+/// [`is_cpu_node_available`] and taken in device-tree order (the N-th enabled
+/// node is logical CPU N — do NOT key by `reg`); this matches boot's CPU
+/// enumeration so a stray `cpu@*` node elsewhere in the tree cannot shift the
+/// indices. Each CPU's capacity comes from `capacity-dmips-mhz` (a raw relative
+/// value), else a `cortex-a55`/`a76` compatible fallback, else
+/// [`DEFAULT_CPU_CAPACITY`].
+///
+/// `capacity-dmips-mhz` values are normalized so the largest maps to
+/// `SCHED_CAPACITY_SCALE` (1024), the same convention Linux uses; the compat and
+/// default fallbacks are already on the 1024 scale and are left untouched, so
+/// raw DMIPS/MHz numbers can never leak into the table at a different scale.
+///
+/// Generic over the table size `N` so it can be unit-tested with fixture device
+/// trees independent of the build-time [`MAX_CPU_NUM`].
 fn caps_from_fdt<const N: usize>(fdt: &Fdt) -> [u16; N] {
-    let mut caps = [DEFAULT_CPU_CAPACITY; N];
-    let mut idx = 0usize;
+    // Pass 1: select the enabled `/cpus` children, recording each CPU's raw
+    // `capacity-dmips-mhz` (if any) and its already-1024-scaled compat/default
+    // fallback, in logical-cpu_id order.
+    let mut raw_dmips = [None::<u32>; N];
+    let mut fallback = [DEFAULT_CPU_CAPACITY; N];
+    let mut count = 0usize;
+
+    let mut cpus_level: Option<usize> = None;
     for node in fdt.all_nodes() {
-        if idx >= caps.len() {
-            break;
-        }
-        if !node.name().starts_with("cpu@") {
-            continue;
-        }
-        // Skip firmware-disabled CPUs (status != okay/ok) so `idx` stays aligned
-        // with boot's `.enumerate()` cpu_id mapping, which also skips them.
-        // Mirrors someboot's is_cpu_node_available (platforms/someboot/src/fdt).
-        let available = node
-            .find_property("status")
-            .map(|p| matches!(p.str(), "okay" | "ok"))
-            .unwrap_or(true);
-        if !available {
-            continue;
-        }
-        let cap = node
-            .find_property("capacity-dmips-mhz")
-            .map(|p| p.u32() as u16)
-            .filter(|&c| c != 0)
-            .or_else(|| {
-                node.compatibles().find_map(|compat| {
-                    if compat.contains("cortex-a55") {
-                        Some(530)
-                    } else if compat.contains("cortex-a76") {
-                        Some(1024)
-                    } else {
-                        None
+        match cpus_level {
+            None => {
+                if node.name() == "cpus" {
+                    cpus_level = Some(node.level);
+                }
+            }
+            Some(cpus_level) => {
+                // Left the `/cpus` subtree: no more CPU nodes follow.
+                if node.level <= cpus_level {
+                    break;
+                }
+                // Only direct children of `/cpus` are CPUs; skip deeper descendants.
+                if node.level == cpus_level + 1 && is_cpu_node_available(&node) {
+                    if count >= N {
+                        break;
                     }
-                })
-            })
-            .unwrap_or(DEFAULT_CPU_CAPACITY);
-        caps[idx] = cap;
-        idx += 1;
+                    raw_dmips[count] = node
+                        .find_property("capacity-dmips-mhz")
+                        .map(|p| p.u32())
+                        .filter(|&c| c != 0);
+                    fallback[count] = node
+                        .compatibles()
+                        .find_map(|compat| {
+                            if compat.contains("cortex-a55") {
+                                Some(530)
+                            } else if compat.contains("cortex-a76") {
+                                Some(1024)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(DEFAULT_CPU_CAPACITY);
+                    count += 1;
+                }
+            }
+        }
     }
-    log::info!("cpu_capacities: {:?}", &caps[..idx.max(1)]);
+
+    // Pass 2: normalize the raw DMIPS/MHz values against the largest so it maps
+    // to 1024; leave compat/default fallbacks (already 1024-scaled) as-is.
+    let max_dmips = raw_dmips[..count].iter().flatten().copied().max();
+
+    let mut caps = [DEFAULT_CPU_CAPACITY; N];
+    for i in 0..count {
+        caps[i] = match (raw_dmips[i], max_dmips) {
+            // u64 math so a large/garbage `capacity-dmips-mhz` can't overflow the
+            // `* 1024` scale; the result is clamped into `[1, 1024]` regardless.
+            (Some(dmips), Some(max)) => (dmips as u64 * 1024 / max as u64).clamp(1, 1024) as u16,
+            _ => fallback[i],
+        };
+    }
+    log::info!("cpu_capacities: {:?}", &caps[..count.max(1)]);
     caps
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
+    use alloc::{format, vec::Vec};
 
     use fdt_edit::{Fdt as EditFdt, Node, Property};
     use fdt_parser::Fdt as ParsedFdt;
@@ -142,17 +191,20 @@ mod tests {
 
     /// Fixture description of one `cpu@*` device-tree node.
     struct CpuSpec {
+        device_type: Option<&'static str>,
         status: Option<&'static str>,
         compatible: Option<&'static str>,
         dmips: Option<u32>,
     }
 
+    /// A normal enabled CPU node (`device_type = "cpu"`).
     fn cpu(
         status: Option<&'static str>,
         compatible: Option<&'static str>,
         dmips: Option<u32>,
     ) -> CpuSpec {
         CpuSpec {
+            device_type: Some("cpu"),
             status,
             compatible,
             dmips,
@@ -169,11 +221,9 @@ mod tests {
         Property::new(name, value.to_be_bytes().to_vec())
     }
 
-    /// Build a `/cpus` device tree with the given CPUs, encode it to a DTB blob,
-    /// parse it back through the same `fdt_parser` path `build_cpu_capacities`
-    /// uses, and compute the capacity table (fixed `N = 8` regardless of the
-    /// build-time `MAX_CPU_NUM`).
-    fn caps_of(cpus: &[CpuSpec]) -> [u16; 8] {
+    /// Build a device tree with `/cpus` holding `cpus`, optionally adding a stray
+    /// `cpu@*` node at the root (outside `/cpus`). Returns the encoded DTB blob.
+    fn build_dtb(cpus: &[CpuSpec], stray_root_cpu: Option<&str>) -> Vec<u8> {
         let mut fdt = EditFdt::new();
         let root = fdt.root_id();
         let cpus_node = fdt.add_node(root, Node::new("cpus"));
@@ -187,7 +237,9 @@ mod tests {
         for (i, spec) in cpus.iter().enumerate() {
             let id = fdt.add_node(cpus_node, Node::new(&format!("cpu@{i}")));
             let node = fdt.node_mut(id).unwrap();
-            node.set_property(str_prop("device_type", "cpu"));
+            if let Some(device_type) = spec.device_type {
+                node.set_property(str_prop("device_type", device_type));
+            }
             node.set_property(u32_prop("reg", i as u32));
             if let Some(status) = spec.status {
                 node.set_property(str_prop("status", status));
@@ -200,7 +252,23 @@ mod tests {
             }
         }
 
-        let bytes = fdt.encode().as_ref().to_vec();
+        if let Some(name) = stray_root_cpu {
+            // A `cpu@*` node directly under the root, not under `/cpus`. A scan
+            // that matched `cpu@*` anywhere in the tree would wrongly count it.
+            let id = fdt.add_node(root, Node::new(name));
+            let node = fdt.node_mut(id).unwrap();
+            node.set_property(str_prop("device_type", "cpu"));
+            node.set_property(str_prop("compatible", "arm,cortex-a55"));
+        }
+
+        fdt.encode().as_ref().to_vec()
+    }
+
+    /// Encode `cpus` under `/cpus`, parse through the same `fdt_parser` path
+    /// `build_cpu_capacities` uses, and compute the capacity table (fixed
+    /// `N = 8`, independent of the build-time `MAX_CPU_NUM`).
+    fn caps_of(cpus: &[CpuSpec]) -> [u16; 8] {
+        let bytes = build_dtb(cpus, None);
         let parsed = ParsedFdt::from_bytes(&bytes).expect("fixture DTB should parse");
         caps_from_fdt::<8>(&parsed)
     }
@@ -224,12 +292,19 @@ mod tests {
     }
 
     #[test]
-    fn explicit_dmips_property_wins_over_compatible() {
-        let caps = caps_of(&[cpu(None, Some("arm,cortex-a55"), Some(900))]);
+    fn dmips_values_are_normalized_to_1024_scale() {
+        // Phytium-like raw DMIPS/MHz values: the largest maps to 1024 and the
+        // rest scale proportionally, so a raw value never leaks into the table.
+        // The normalized DMIPS also takes precedence over the compatible fallback.
+        let caps = caps_of(&[
+            cpu(None, Some("arm,cortex-a55"), Some(2850)),
+            cpu(None, Some("arm,cortex-a76"), Some(5660)),
+        ]);
         assert_eq!(
-            caps[0], 900,
-            "explicit capacity-dmips-mhz overrides the compatible fallback"
+            caps[1], 1024,
+            "largest capacity-dmips-mhz normalizes to 1024"
         );
+        assert_eq!(caps[0], 515, "2850 * 1024 / 5660 = 515");
     }
 
     /// Regression for the disabled-CPU skip: a firmware-disabled `cpu@` node
@@ -247,6 +322,48 @@ mod tests {
         assert_eq!(
             caps[0], 1024,
             "disabled cpu@0 must not occupy logical index 0"
+        );
+        assert_eq!(caps[1], 530);
+    }
+
+    #[test]
+    fn cpu_node_outside_cpus_is_ignored() {
+        // Only `/cpus` children are CPUs; a stray `cpu@9` at the root must not
+        // become a third logical CPU.
+        let bytes = build_dtb(
+            &[
+                cpu(None, Some("arm,cortex-a76"), None),
+                cpu(None, Some("arm,cortex-a55"), None),
+            ],
+            Some("cpu@9"),
+        );
+        let parsed = ParsedFdt::from_bytes(&bytes).expect("fixture DTB should parse");
+        let caps = caps_from_fdt::<8>(&parsed);
+        assert_eq!(caps[0], 1024);
+        assert_eq!(caps[1], 530);
+        assert_eq!(
+            caps[2], DEFAULT_CPU_CAPACITY,
+            "a stray cpu@ outside /cpus must not be counted"
+        );
+    }
+
+    #[test]
+    fn non_cpu_device_type_is_ignored() {
+        // A `/cpus` child named `cpu@*` but declaring a non-"cpu" device_type is
+        // not a CPU (someboot excludes it) and must not consume a logical index.
+        let caps = caps_of(&[
+            CpuSpec {
+                device_type: Some("memory"),
+                status: None,
+                compatible: Some("arm,cortex-a55"),
+                dmips: None,
+            },
+            cpu(None, Some("arm,cortex-a76"), None),
+            cpu(None, Some("arm,cortex-a55"), None),
+        ]);
+        assert_eq!(
+            caps[0], 1024,
+            "a cpu@ node with device_type != cpu must not occupy index 0"
         );
         assert_eq!(caps[1], 530);
     }
