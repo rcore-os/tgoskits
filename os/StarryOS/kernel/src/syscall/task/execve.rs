@@ -8,6 +8,7 @@ use core::{
     ffi::{c_char, c_int},
     future::poll_fn,
     iter,
+    mem::size_of,
     task::Poll,
 };
 
