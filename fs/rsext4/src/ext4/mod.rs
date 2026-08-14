@@ -38,7 +38,7 @@ pub use lookup::{file_entry_exist, find_file};
 pub use mkfs::{
     BlockGroupLayout, FsLayoutInfo, MkfsOptions, compute_fs_layout, mkfs, mkfs_with_options,
 };
-pub use mount::{MountOptions, mount, mount_with_options, mount_with_options_and_observer};
+pub use mount::MountOptions;
 pub use owned::{
     DirectoryCursor, DirectoryEntry, DirectoryEntryType, DirectoryReader, Ext4, FilePermissions,
     InodeFlags, InodeInfo, InodeMetadataUpdate, MutationContext, SpecialInodeKind, format,

@@ -87,7 +87,7 @@ fn setup() -> (Jbd2Dev<MockBlockDevice>, Ext4FileSystem) {
     let device = MockBlockDevice::new(100 * 1024 * 1024);
     let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut jbd2_dev).expect("mkfs failed");
-    let fs = mount(&mut jbd2_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
     (jbd2_dev, fs)
 }
 

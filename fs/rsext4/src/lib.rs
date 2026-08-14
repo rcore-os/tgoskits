@@ -34,8 +34,7 @@ pub use error::{ErrorContext, Ext4Error, Ext4ErrorKind, Ext4Result, FeatureSet};
 pub use ext4::{
     DirectoryCursor, DirectoryEntry, DirectoryEntryType, DirectoryReader, Ext4, Ext4FileSystem,
     FilePermissions, InodeFlags, InodeInfo, InodeMetadataUpdate, MkfsOptions, MountOptions,
-    MutationContext, SpecialInodeKind, find_file, format, mkfs, mkfs_with_options, mount,
-    mount_with_options, mount_with_options_and_observer, umount,
+    MutationContext, SpecialInodeKind, find_file, format, mkfs, mkfs_with_options, umount,
 };
 pub use file::{
     FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, PreallocationOptions,

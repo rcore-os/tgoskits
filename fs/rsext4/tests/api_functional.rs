@@ -95,7 +95,7 @@ mod api_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Arrange one file with known contents, then read it through the public API.
         let test_data = b"API test data for basic operations";
@@ -126,7 +126,7 @@ mod api_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/write_test").expect("mkdir failed");
 
@@ -155,7 +155,7 @@ mod api_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         let test_data = b"0123456789ABCDEFGHIJ";
         mkfile(
@@ -195,7 +195,7 @@ mod api_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Start from a larger file so offset-based writes cover multiple regions.
         let mut initial_data = Vec::new();
@@ -241,7 +241,7 @@ mod api_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         let chunk = b"0123456789ABCDEF";
         let chunks_to_write = 1000; // Roughly 16 KiB in total.
@@ -279,7 +279,7 @@ mod api_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Create a small set of files, then open and inspect them one by one.
         for i in 1..=5 {
@@ -318,7 +318,7 @@ mod api_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Opening a missing file without create should fail.
         let result = open(&mut jbd2_dev, &mut fs, "/nonexistent.txt", false);
@@ -354,7 +354,7 @@ mod api_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkfile(
             &mut jbd2_dev,

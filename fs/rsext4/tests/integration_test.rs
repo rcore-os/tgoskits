@@ -1087,9 +1087,12 @@ fn observer_receives_typed_mount_and_unmount_transitions() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut observer = RecordingObserver::default();
-    let mut fs =
-        mount_with_options_and_observer(&mut jbd2_dev, MountOptions::read_write(), &mut observer)
-            .expect("observed mount failed");
+    let mut fs = Ext4FileSystem::mount_with_options_and_observer(
+        &mut jbd2_dev,
+        MountOptions::read_write(),
+        &mut observer,
+    )
+    .expect("observed mount failed");
     fs.umount_with_observer(&mut jbd2_dev, &mut observer)
         .expect("observed unmount failed");
 
@@ -1373,7 +1376,7 @@ fn test_basic_mount_mkfs() {
     // and then unmount cleanly to prove the basic happy path works.
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
-    let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+    let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
     mkdir(&mut jbd2_dev, &mut fs, "/test").expect("mkdir failed");
 
@@ -1391,7 +1394,7 @@ fn special_inode_does_not_initialize_an_extent_tree() {
     let device = TestBlockDevice::new(100 * 1024 * 1024);
     let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut jbd2_dev).expect("mkfs failed");
-    let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+    let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
     mkfile_with_owner(
         &mut jbd2_dev,
@@ -1442,7 +1445,7 @@ fn overlong_directory_name_is_rejected_without_truncation() {
     let device = TestBlockDevice::new(100 * 1024 * 1024);
     let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut jbd2_dev).expect("mkfs failed");
-    let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+    let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
     let overlong = "a".repeat(256);
     let path = format!("/{overlong}");
 
@@ -1462,7 +1465,7 @@ fn test_file_operations() {
     let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
     mkfs(&mut jbd2_dev).expect("mkfs failed");
-    let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+    let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
     // Test idea: mix high-level file helpers with the public open/read/write API
     // and verify that both views observe the same file contents.
@@ -1514,7 +1517,7 @@ fn large_sequential_write_uses_one_contiguous_extent() {
     let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
     mkfs(&mut jbd2_dev).expect("mkfs failed");
-    let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+    let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
     mkdir(&mut jbd2_dev, &mut fs, "/large").expect("mkdir failed");
     mkfile(&mut jbd2_dev, &mut fs, "/large/run.bin", None, None).expect("mkfile failed");

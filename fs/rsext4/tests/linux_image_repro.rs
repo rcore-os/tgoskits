@@ -690,7 +690,7 @@ fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
 
     let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
     let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
-    let mut filesystem = mount(&mut device).expect("mount Linux HTree fixture");
+    let mut filesystem = Ext4FileSystem::mount(&mut device).expect("mount Linux HTree fixture");
     assert_eq!(
         read_file(&mut device, &mut filesystem, "/indexed/entry-0799.bin")
             .expect("lookup HTree leaf through rsext4"),
@@ -1015,7 +1015,8 @@ fn failed_linear_to_htree_conversion_restores_linear_directory() {
     let conversion_index = {
         let device = FileBlockDevice::open_with_sector_size(calibration.clone(), 512);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut filesystem = mount(&mut journal).expect("mount conversion calibration");
+        let mut filesystem =
+            Ext4FileSystem::mount(&mut journal).expect("mount conversion calibration");
         mkdir(&mut journal, &mut filesystem, "/auto-indexed")
             .expect("create calibration directory");
         let mut conversion_index = None;
@@ -1055,7 +1056,8 @@ fn failed_linear_to_htree_conversion_restores_linear_directory() {
     let before_root_data;
     {
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut filesystem = mount(&mut journal).expect("mount conversion fault image");
+        let mut filesystem =
+            Ext4FileSystem::mount(&mut journal).expect("mount conversion fault image");
         mkdir(&mut journal, &mut filesystem, "/auto-indexed")
             .expect("create conversion fault directory");
         for (index, name) in existing_names.iter().enumerate() {
@@ -1122,7 +1124,8 @@ fn failed_linear_to_htree_conversion_restores_linear_directory() {
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut filesystem = mount(&mut journal).expect("remount after failed HTree conversion");
+        let mut filesystem =
+            Ext4FileSystem::mount(&mut journal).expect("remount after failed HTree conversion");
         let (directory_ino, directory) =
             rsext4::dir::get_inode_with_num(&mut filesystem, &mut journal, "/auto-indexed")
                 .expect("lookup directory after failed conversion")
@@ -1677,7 +1680,7 @@ fn failed_owned_htree_leaf_split_rolls_back_after_data_write() {
     let before_stats;
     {
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut filesystem = mount(&mut journal).expect("mount Linux image");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount Linux image");
         for index in 0..split_index {
             let name = format!("rsext4-split-{index:04}.bin");
             mkfile(
@@ -1801,7 +1804,7 @@ fn linux_image_geometry_round_trip(filesystem_block_size: u32) {
     {
         let dev = FileBlockDevice::open_with_sector_size(image.clone(), 512);
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("mount Linux-created geometry image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("mount Linux-created geometry image");
         assert!(fs.superblock.has_feature_ro_compat(
             rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE,
         ));
@@ -1881,7 +1884,7 @@ fn rsext4_mkfs_geometry_round_trip(filesystem_block_size: u32) {
     {
         let dev = FileBlockDevice::open_with_sector_size(image.clone(), 512);
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("mount rsext4-created geometry image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("mount rsext4-created geometry image");
         mkfile(&mut dev, &mut fs, "/mkfs-geometry.bin", None, None)
             .expect("create file on rsext4-created image");
         let payload = vec![0xa5; filesystem_block_size as usize + 19];
@@ -2733,7 +2736,8 @@ fn replay_checksum_journal_from_debugfs(checksum_version: u8) {
     {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let fs = mount(&mut dev).expect("mount image with pending checksummed journal");
+        let fs =
+            Ext4FileSystem::mount(&mut dev).expect("mount image with pending checksummed journal");
         umount(fs, &mut dev).expect("umount image after replay");
     }
 
@@ -2769,7 +2773,7 @@ fn e2fsck_clean_after_sparse_extent_truncate_keeps_tree_blocks_counted() {
     {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("mount image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("mount image");
 
         let path = "/extent-truncate.bin";
         mkfile(&mut dev, &mut fs, path, None, None).expect("create sparse file");
@@ -2807,7 +2811,7 @@ fn sparse_growth_round_trip(filesystem_block_size: u32) {
     {
         let dev = FileBlockDevice::open_with_sector_size(image.clone(), 512);
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("mount image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("mount image");
 
         mkfile(&mut dev, &mut fs, extent_path, None, None).expect("create extent sparse file");
         truncate(&mut dev, &mut fs, extent_path, extent_size).expect("grow extent sparse file");
@@ -2834,7 +2838,7 @@ fn sparse_growth_round_trip(filesystem_block_size: u32) {
     {
         let dev = FileBlockDevice::open_with_sector_size(image.clone(), 512);
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("remount sparse growth image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("remount sparse growth image");
         for (path, expected_size) in [(extent_path, extent_size), (legacy_path, legacy_size)] {
             let data = read_file(&mut dev, &mut fs, path).expect("read remounted sparse file");
             assert_eq!(data.len(), expected_size as usize);
@@ -2883,7 +2887,7 @@ fn legacy_write_crosses_direct_single_boundary_and_remounts_cleanly() {
     {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("mount image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("mount image");
         mkfile(&mut dev, &mut fs, path, None, None).expect("create legacy file");
         let inode_number = dir::get_inode_with_num(&mut fs, &mut dev, path)
             .expect("lookup legacy file")
@@ -2916,7 +2920,7 @@ fn legacy_write_crosses_direct_single_boundary_and_remounts_cleanly() {
     {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("remount legacy image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("remount legacy image");
         assert_eq!(
             read_file(&mut dev, &mut fs, path).expect("read remounted legacy file"),
             expected
@@ -2946,7 +2950,7 @@ fn legacy_sparse_truncate_prunes_single_double_and_triple_roots() {
     {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("mount image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("mount image");
         let huge_file = fs
             .superblock
             .has_feature_ro_compat(superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
@@ -3037,7 +3041,7 @@ fn legacy_sparse_truncate_prunes_single_double_and_triple_roots() {
     {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("remount legacy truncate image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("remount legacy truncate image");
         for (name, depth, root_start) in cases {
             let path = format!("/legacy-{name}-truncate.bin");
             let (inode_number, inode) = dir::get_inode_with_num(&mut fs, &mut dev, &path)
@@ -3085,7 +3089,7 @@ fn legacy_orphan_recovery_truncates_linked_and_reaps_unlinked_inode() {
     let (linked_inode, unlinked_inode, free_blocks_after_recovery) = {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("mount legacy orphan image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("mount legacy orphan image");
 
         let mut inode_numbers = [None; 2];
         let free_blocks_before_mapping = fs.superblock.free_blocks_count();
@@ -3164,7 +3168,7 @@ fn legacy_orphan_recovery_truncates_linked_and_reaps_unlinked_inode() {
     {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("recover legacy orphan image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("recover legacy orphan image");
         assert_eq!(fs.superblock.s_last_orphan, 0);
         assert_eq!(
             fs.superblock.free_blocks_count(),
@@ -3229,7 +3233,7 @@ fn e2fsck_clean_after_deleting_split_extent_file_frees_tree_blocks() {
     {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("mount image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("mount image");
 
         let path = "/extent-delete.bin";
         mkfile(&mut dev, &mut fs, path, None, None).expect("create sparse file");
@@ -3263,7 +3267,7 @@ fn e2fsck_clean_after_exact_32768_block_extent() {
     {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("mount image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("mount image");
 
         let path = "/extent-32768.bin";
         mkfile(&mut dev, &mut fs, path, None, None).expect("create file");
@@ -3314,7 +3318,7 @@ fn repro_linux_image_create_write_rename_then_e2fsck() {
     {
         let dev = FileBlockDevice::open(dst.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let mut fs = mount(&mut dev).expect("mount image");
+        let mut fs = Ext4FileSystem::mount(&mut dev).expect("mount image");
 
         if dir::get_inode_with_num(&mut fs, &mut dev, "/root")
             .expect("lookup root fixture directory")
@@ -3375,7 +3379,7 @@ fn unwritten_preallocation_partial_write_remounts_and_passes_e2fsck() {
     let inode_number = {
         let device = FileBlockDevice::open(image.clone());
         let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut filesystem = mount(&mut device).expect("mount image");
+        let mut filesystem = Ext4FileSystem::mount(&mut device).expect("mount image");
         mkfile(&mut device, &mut filesystem, "/preallocated", None, None)
             .expect("create preallocated file");
         let inode_number = dir::get_inode_with_num(&mut filesystem, &mut device, "/preallocated")
@@ -3417,7 +3421,8 @@ fn unwritten_preallocation_partial_write_remounts_and_passes_e2fsck() {
     {
         let device = FileBlockDevice::open(image.clone());
         let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut filesystem = mount(&mut device).expect("remount preallocated image");
+        let mut filesystem =
+            Ext4FileSystem::mount(&mut device).expect("remount preallocated image");
         let data = read_file(&mut device, &mut filesystem, "/preallocated")
             .expect("read remounted preallocated file");
         assert_eq!(data.len(), 3 * BLOCK_SIZE);
@@ -3492,7 +3497,8 @@ fn linux_uninit_bg_image_mounts_writable_and_remains_clean() {
     {
         let device = FileBlockDevice::open(image.clone());
         let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut filesystem = mount(&mut device).expect("mount legacy uninit_bg image writable");
+        let mut filesystem =
+            Ext4FileSystem::mount(&mut device).expect("mount legacy uninit_bg image writable");
         mkfile(&mut device, &mut filesystem, "/uninit-bg", None, None)
             .expect("create file on uninit_bg image");
         write_file(
@@ -3510,7 +3516,8 @@ fn linux_uninit_bg_image_mounts_writable_and_remains_clean() {
     {
         let device = FileBlockDevice::open(image.clone());
         let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut filesystem = mount(&mut device).expect("remount legacy uninit_bg image");
+        let mut filesystem =
+            Ext4FileSystem::mount(&mut device).expect("remount legacy uninit_bg image");
         assert_eq!(
             read_file(&mut device, &mut filesystem, "/uninit-bg")
                 .expect("read file from remounted uninit_bg image"),
@@ -3543,7 +3550,7 @@ fn shifted_range_geometry_round_trip(filesystem_block_size: u32) {
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
         let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut filesystem = mount(&mut device).expect("mount shifted-range image");
+        let mut filesystem = Ext4FileSystem::mount(&mut device).expect("mount shifted-range image");
         mkfile(&mut device, &mut filesystem, "/shifted.bin", None, None)
             .expect("create shifted-range file");
         write_file(&mut device, &mut filesystem, "/shifted.bin", 0, &original)
@@ -3585,7 +3592,8 @@ fn shifted_range_geometry_round_trip(filesystem_block_size: u32) {
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
         let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut filesystem = mount(&mut device).expect("remount shifted-range image");
+        let mut filesystem =
+            Ext4FileSystem::mount(&mut device).expect("remount shifted-range image");
         assert_eq!(
             read_file(&mut device, &mut filesystem, "/shifted.bin")
                 .expect("read remounted shifted-range result"),
@@ -3643,7 +3651,7 @@ fn shifted_ranges_rebuild_multiple_leaves_and_preserve_unwritten_state() {
     let inode_number = {
         let device = FileBlockDevice::open(image.clone());
         let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut filesystem = mount(&mut device).expect("mount multi-leaf image");
+        let mut filesystem = Ext4FileSystem::mount(&mut device).expect("mount multi-leaf image");
         mkfile(&mut device, &mut filesystem, path, None, None).expect("create multi-leaf file");
         for marker in 0..MARKERS {
             write_file(
@@ -3720,7 +3728,7 @@ fn shifted_ranges_rebuild_multiple_leaves_and_preserve_unwritten_state() {
     {
         let device = FileBlockDevice::open(image.clone());
         let mut device = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut filesystem = mount(&mut device).expect("remount multi-leaf image");
+        let mut filesystem = Ext4FileSystem::mount(&mut device).expect("remount multi-leaf image");
         assert_eq!(
             read_file(&mut device, &mut filesystem, path).expect("read remounted multi-leaf file"),
             expected

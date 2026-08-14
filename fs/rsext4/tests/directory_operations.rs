@@ -107,7 +107,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Cover one shallow path first.
         test_mkdir(&mut jbd2_dev, &mut fs, "/single").expect("mkdir failed");
@@ -131,7 +131,7 @@ mod directory_functional_tests {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         let root = fs.root_inode;
         let mut root_inode = fs
             .get_inode_by_num(&mut jbd2_dev, root)
@@ -148,7 +148,7 @@ mod directory_functional_tests {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         fs.superblock.s_feature_ro_compat &=
             !rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_DIR_NLINK;
         let root = fs.root_inode;
@@ -177,7 +177,7 @@ mod directory_functional_tests {
         let device = MockBlockDevice::new(64 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Maximum-length records force the root through Linux's one-block
         // linear-to-HTree conversion and then fill the selected leaf.
@@ -241,7 +241,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         let (dir_ino, mut dir_inode) = get_inode_with_num(&mut fs, &mut jbd2_dev, "/checksum-dir")
             .expect("lookup should succeed")
@@ -277,7 +277,7 @@ mod directory_functional_tests {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkdir(&mut jbd2_dev, &mut fs, "/victim").expect("mkdir failed");
 
         let (inode_num, mut inode) = get_inode_with_num(&mut fs, &mut jbd2_dev, "/victim")
@@ -310,7 +310,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Build a nested directory tree and one empty directory.
         test_mkdir(&mut jbd2_dev, &mut fs, "/test").expect("mkdir failed");
@@ -346,7 +346,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Build two branches and place independent files under each branch.
         test_mkdir(&mut jbd2_dev, &mut fs, "/documents").expect("mkdir failed");
@@ -393,7 +393,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         test_mkdir(&mut jbd2_dev, &mut fs, "/findtest").expect("mkdir failed");
 
@@ -437,7 +437,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // `mkfile` currently auto-creates missing parents instead of failing.
         let result = mkfile(
@@ -493,7 +493,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Create a representative multi-branch hierarchy.
         let structure = [

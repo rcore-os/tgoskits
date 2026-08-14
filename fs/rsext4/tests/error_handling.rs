@@ -138,7 +138,7 @@ mod error_handling_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         fs.bitmap_cache = rsext4::cache::BitmapCache::create_default();
         fail_on_read.set(true);
 
@@ -160,7 +160,7 @@ mod error_handling_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/error_test").expect("mkdir failed");
 
@@ -199,7 +199,7 @@ mod error_handling_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, normal_device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/boundary").expect("mkdir failed");
 
@@ -236,7 +236,7 @@ mod error_handling_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Empty paths are recorded for documentation purposes.
         let result = mkfile(&mut jbd2_dev, &mut fs, "", Some(b"test"), None);
@@ -263,7 +263,7 @@ mod error_handling_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/concurrent").expect("mkdir failed");
 
@@ -318,7 +318,7 @@ mod error_handling_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/exhaustion").expect("mkdir failed");
 
@@ -364,7 +364,7 @@ mod error_handling_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let fs = mount(&mut jbd2_dev).expect("mount failed");
+        let fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         let last_group = BGIndex::new(fs.group_count - 1);
         let last_desc = fs
@@ -394,7 +394,7 @@ mod error_handling_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/state_test").expect("mkdir failed");
 
@@ -423,7 +423,7 @@ mod error_handling_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         // Remount and record what the filesystem reports for the file afterwards.
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         let data = read_file(&mut jbd2_dev, &mut fs, "/state_test/consistent.txt");
 
@@ -441,7 +441,7 @@ mod error_handling_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/permission").expect("mkdir failed");
 

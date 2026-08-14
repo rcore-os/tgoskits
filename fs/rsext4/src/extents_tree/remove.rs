@@ -558,7 +558,7 @@ mod tests {
         cache::bitmap::CacheKey,
         config::BLOCK_SIZE,
         error::{Ext4Error, Ext4Result},
-        ext4::{mkfs, mount},
+        ext4::{Ext4FileSystem, mkfs},
         superblock::Ext4Superblock,
     };
 
@@ -657,7 +657,7 @@ mod tests {
         let dev = MemBlockDev::new(total_blocks);
         let mut jbd = Jbd2Dev::initial_jbd2dev(0, dev, false);
         mkfs(&mut jbd).unwrap();
-        let fs = mount(&mut jbd).unwrap();
+        let fs = Ext4FileSystem::mount(&mut jbd).unwrap();
         (jbd, fs)
     }
 

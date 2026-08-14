@@ -945,7 +945,6 @@ mod fault_tests {
     use super::*;
     use crate::{
         BLOCK_SIZE, DeviceCapabilities, DeviceGeometry, Ext4Timestamp, SectorId, dir, mkfile, mkfs,
-        mount,
     };
 
     struct FailingMemoryDevice {
@@ -1101,7 +1100,7 @@ mod fault_tests {
         let (device, fail_write_sector) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut journal).expect("mkfs must succeed");
-        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount must succeed");
         mkfile(&mut journal, &mut filesystem, "/victim", None, None).expect("create baseline file");
         filesystem
             .sync_filesystem(&mut journal)
@@ -1175,7 +1174,7 @@ mod fault_tests {
         let (device, _) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut journal).expect("mkfs must succeed");
-        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount must succeed");
         mkfile(&mut journal, &mut filesystem, "/victim", None, None).expect("create baseline file");
         let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/victim")
             .expect("lookup victim")
@@ -1247,7 +1246,7 @@ mod fault_tests {
         let (device, fail_write_sector) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut journal).expect("mkfs must succeed");
-        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount must succeed");
         mkfile(&mut journal, &mut filesystem, "/victim", None, None).expect("create baseline file");
         let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/victim")
             .expect("lookup victim")
@@ -1338,7 +1337,8 @@ mod fault_tests {
         drop(filesystem);
         let device = journal.into_inner();
         let mut remount_journal = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_journal).expect("remount rolled-back split store");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_journal).expect("remount rolled-back split store");
         assert_eq!(remounted.statfs().free_blocks, before_free_blocks);
         let inode = remounted
             .get_inode_by_num(&mut remount_journal, inode_number)
@@ -1374,7 +1374,7 @@ mod fault_tests {
         let (device, _) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut journal).expect("mkfs must succeed");
-        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount must succeed");
         mkfile(&mut journal, &mut filesystem, "/victim", None, None).expect("create baseline file");
         filesystem
             .sync_filesystem(&mut journal)
@@ -1434,7 +1434,8 @@ mod fault_tests {
         filesystem
             .umount(&mut journal)
             .expect("unmount rolled-back filesystem");
-        let mut remounted = mount(&mut journal).expect("remount rolled-back filesystem");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut journal).expect("remount rolled-back filesystem");
         assert_eq!(remounted.statfs().free_blocks, before_free_blocks);
         assert_eq!(
             get_inode_xattr(
@@ -1455,7 +1456,7 @@ mod fault_tests {
         let (device, _) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut journal).expect("mkfs must succeed");
-        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount must succeed");
         mkfile(&mut journal, &mut filesystem, "/victim", None, None).expect("create baseline file");
         filesystem
             .sync_filesystem(&mut journal)
@@ -1501,7 +1502,7 @@ mod fault_tests {
         filesystem
             .umount(&mut journal)
             .expect("unmount reaped filesystem");
-        let remounted = mount(&mut journal).expect("remount reaped filesystem");
+        let remounted = Ext4FileSystem::mount(&mut journal).expect("remount reaped filesystem");
         assert_eq!(remounted.statfs().free_blocks, free_blocks_before_xattr);
     }
 
@@ -1510,7 +1511,7 @@ mod fault_tests {
         let (device, _) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut journal).expect("mkfs must succeed");
-        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount must succeed");
         let (first, second, shared_block) =
             create_shared_external_xattr(&mut journal, &mut filesystem);
         let free_blocks_with_shared_xattr = filesystem.statfs().free_blocks;
@@ -1548,7 +1549,8 @@ mod fault_tests {
         filesystem
             .umount(&mut journal)
             .expect("unmount after first shared reap");
-        let mut remounted = mount(&mut journal).expect("remount after first shared reap");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut journal).expect("remount after first shared reap");
         let persisted_inode = remounted
             .get_inode_by_num(&mut journal, second)
             .expect("read persisted surviving inode");
@@ -1573,7 +1575,7 @@ mod fault_tests {
         let (device, fail_write_sector) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut journal).expect("mkfs must succeed");
-        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount must succeed");
         mkfile(&mut journal, &mut filesystem, "/victim", None, None).expect("create baseline file");
         filesystem
             .sync_filesystem(&mut journal)
@@ -1663,7 +1665,7 @@ mod fault_tests {
         let (device, _) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut journal).expect("mkfs must succeed");
-        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount must succeed");
         let (first, second, shared_block) =
             create_shared_external_xattr(&mut journal, &mut filesystem);
         let before_free_blocks = filesystem.statfs().free_blocks;
@@ -1722,7 +1724,8 @@ mod fault_tests {
         filesystem
             .umount(&mut journal)
             .expect("unmount copied xattr filesystem");
-        let mut remounted = mount(&mut journal).expect("remount copied xattr filesystem");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut journal).expect("remount copied xattr filesystem");
         assert_eq!(
             get_inode_xattr(
                 &mut journal,
@@ -1752,7 +1755,7 @@ mod fault_tests {
         let (device, fail_write_sector) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut journal).expect("mkfs must succeed");
-        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount must succeed");
         let (first, second, shared_block) =
             create_shared_external_xattr(&mut journal, &mut filesystem);
         let before_free_blocks = filesystem.statfs().free_blocks;
@@ -1829,7 +1832,7 @@ mod fault_tests {
         let (device, _) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut journal).expect("mkfs must succeed");
-        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount must succeed");
         let (first, second, shared_block) =
             create_shared_external_xattr(&mut journal, &mut filesystem);
         let before_free_blocks = filesystem.statfs().free_blocks;
@@ -1893,7 +1896,8 @@ mod fault_tests {
         filesystem
             .umount(&mut journal)
             .expect("unmount rolled-back shared xattr filesystem");
-        let mut remounted = mount(&mut journal).expect("remount rolled-back filesystem");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut journal).expect("remount rolled-back filesystem");
         for inode_number in [first, second] {
             assert_eq!(
                 get_inode_xattr(
@@ -1915,7 +1919,7 @@ mod fault_tests {
         let (device, fail_write_sector) = FailingMemoryDevice::new(32 * 1024);
         let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
         mkfs(&mut journal).expect("mkfs must succeed");
-        let mut filesystem = mount(&mut journal).expect("mount must succeed");
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount must succeed");
         let (first, second, shared_block) =
             create_shared_external_xattr(&mut journal, &mut filesystem);
         let before_free_blocks = filesystem.statfs().free_blocks;
@@ -1939,7 +1943,8 @@ mod fault_tests {
         drop(filesystem);
         let device = journal.into_inner();
         let mut remount_journal = Jbd2Dev::initial_jbd2dev(0, device, true);
-        let mut remounted = mount(&mut remount_journal).expect("remount after failed direct COW");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_journal).expect("remount after failed direct COW");
         assert_eq!(remounted.statfs().free_blocks, before_free_blocks);
         for inode_number in [first, second] {
             let inode = remounted

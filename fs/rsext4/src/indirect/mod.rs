@@ -925,7 +925,7 @@ mod tests {
         bmalloc::{AbsoluteBN, InodeNumber},
         disknode::Ext4Inode,
         endian::write_u32_le,
-        ext4::{mkfs, mount},
+        ext4::mkfs,
         loopfile::{resolve_inode_block, resolve_inode_blocks},
     };
 
@@ -1010,7 +1010,7 @@ mod tests {
         let device = MemBlockDevice::new(16 * 1024);
         let mut device = Jbd2Dev::initial_jbd2dev(0, device, false);
         mkfs(&mut device).unwrap();
-        let filesystem = mount(&mut device).unwrap();
+        let filesystem = Ext4FileSystem::mount(&mut device).unwrap();
         (device, filesystem)
     }
 

@@ -18,7 +18,7 @@ use rsext4::{
     jbd2::jbdstruct::{
         JBD2_BLOCKTYPE_COMMIT, JBD2_BLOCKTYPE_SUPERBLOCK_V1, JBD2_MAGIC, JournalSuperBlock,
     },
-    mkfile, mkfs, mount, punch_hole_inode, read_inode_data_into, reap_unlinked_inode,
+    mkfile, mkfs, punch_hole_inode, read_inode_data_into, reap_unlinked_inode,
     superblock::Ext4Superblock,
     truncate_inode, unlink,
 };
@@ -234,7 +234,8 @@ fn large_extent_truncate_recovery_resumes_after_transaction_boundary_power_cut()
     let device = journal.into_inner();
     device.power_cut.disable();
     let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
-    let mut remounted = mount(&mut remount_device).expect("mount must replay and resume truncate");
+    let mut remounted =
+        Ext4FileSystem::mount(&mut remount_device).expect("mount must replay and resume truncate");
     assert_removed_extent_state(
         &mut remount_device,
         &mut remounted,
@@ -318,7 +319,8 @@ fn large_legacy_truncate_restarts_across_allocation_groups() {
 
     let device = fixture.journal.into_inner();
     let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
-    let mut remounted = mount(&mut remount_device).expect("legacy restart remount failed");
+    let mut remounted =
+        Ext4FileSystem::mount(&mut remount_device).expect("legacy restart remount failed");
     assert_removed_legacy_state(
         &mut remounted,
         &mut remount_device,
@@ -365,7 +367,8 @@ fn large_legacy_punch_restarts_across_allocation_groups() {
         .expect("legacy punch restart unmount failed");
     let device = fixture.journal.into_inner();
     let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
-    let mut remounted = mount(&mut remount_device).expect("legacy punch remount failed");
+    let mut remounted =
+        Ext4FileSystem::mount(&mut remount_device).expect("legacy punch remount failed");
     assert_removed_legacy_state(
         &mut remounted,
         &mut remount_device,
@@ -416,7 +419,8 @@ fn large_legacy_punch_remains_consistent_after_committed_transaction_power_cut()
     let device = fixture.journal.into_inner();
     device.power_cut.disable();
     let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
-    let mut remounted = mount(&mut remount_device).expect("mount must replay committed punch work");
+    let mut remounted =
+        Ext4FileSystem::mount(&mut remount_device).expect("mount must replay committed punch work");
     let partial = remounted
         .get_inode_by_num(&mut remount_device, fixture.inode_number)
         .expect("partially punched inode must remain readable");
@@ -440,7 +444,8 @@ fn large_legacy_punch_remains_consistent_after_committed_transaction_power_cut()
 
     let device = remount_device.into_inner();
     let mut verify_device = Jbd2Dev::initial_jbd2dev(0, device, false);
-    let mut verified = mount(&mut verify_device).expect("legacy punch verification mount failed");
+    let mut verified =
+        Ext4FileSystem::mount(&mut verify_device).expect("legacy punch verification mount failed");
     assert_removed_legacy_state(
         &mut verified,
         &mut verify_device,
@@ -485,8 +490,8 @@ fn large_legacy_truncate_recovery_resumes_after_committed_transaction_power_cut(
     let device = fixture.journal.into_inner();
     device.power_cut.disable();
     let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
-    let mut remounted =
-        mount(&mut remount_device).expect("mount must replay and resume legacy truncate");
+    let mut remounted = Ext4FileSystem::mount(&mut remount_device)
+        .expect("mount must replay and resume legacy truncate");
     assert_removed_legacy_state(
         &mut remounted,
         &mut remount_device,
@@ -575,7 +580,8 @@ fn zero_link_legacy_reap_restarts_before_final_inode_transaction() {
 
     let device = fixture.journal.into_inner();
     let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
-    let mut remounted = mount(&mut remount_device).expect("legacy reap remount failed");
+    let mut remounted =
+        Ext4FileSystem::mount(&mut remount_device).expect("legacy reap remount failed");
     assert_reaped_legacy_state(
         &mut remounted,
         &mut remount_device,
@@ -622,7 +628,8 @@ fn assert_large_extent_removal_restarts(path: &str, operation: ExtentRemovalOper
         .expect("large range removal unmount failed");
     let device = fixture.journal.into_inner();
     let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
-    let mut remounted = mount(&mut remount_device).expect("large range removal remount failed");
+    let mut remounted =
+        Ext4FileSystem::mount(&mut remount_device).expect("large range removal remount failed");
     assert_removed_extent_state(
         &mut remount_device,
         &mut remounted,
@@ -646,7 +653,7 @@ fn build_large_extent_fixture(path: &str) -> LargeExtentFixture {
     let power_cut = Rc::clone(&device.power_cut);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, path, None, None).expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, path)
         .expect("lookup failed")
@@ -742,7 +749,7 @@ fn build_large_legacy_fixture(path: &str) -> LargeLegacyFixture {
     let power_cut = Rc::clone(&device.power_cut);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, path, None, None).expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, path)
         .expect("lookup failed")

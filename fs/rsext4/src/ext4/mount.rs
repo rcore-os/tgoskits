@@ -839,26 +839,6 @@ impl Ext4FileSystem {
     }
 }
 
-/// Thin compatibility wrapper around [`Ext4FileSystem::mount`].
-pub fn mount<B: BlockIo>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<Ext4FileSystem> {
-    mount_with_options(block_dev, MountOptions::read_write())
-}
-
-pub fn mount_with_options<B: BlockIo>(
-    block_dev: &mut Jbd2Dev<B>,
-    options: MountOptions,
-) -> Ext4Result<Ext4FileSystem> {
-    Ext4FileSystem::mount_with_options(block_dev, options)
-}
-
-pub fn mount_with_options_and_observer<B: BlockIo, O: crate::runtime::Observer>(
-    block_dev: &mut Jbd2Dev<B>,
-    options: MountOptions,
-    observer: &mut O,
-) -> Ext4Result<Ext4FileSystem> {
-    Ext4FileSystem::mount_with_options_and_observer(block_dev, options, observer)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

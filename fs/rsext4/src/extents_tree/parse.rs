@@ -399,7 +399,7 @@ mod tests {
         config::BLOCK_SIZE,
         disknode::Ext4Timestamp,
         error::{ErrorContext, Ext4Error, Ext4Result},
-        ext4::{mkfs, mount},
+        ext4::{Ext4FileSystem, mkfs},
         loopfile::resolve_inode_block,
         superblock::Ext4Superblock,
     };
@@ -490,7 +490,7 @@ mod tests {
         let dev = MemBlockDev::new(total_blocks);
         let mut jbd = Jbd2Dev::initial_jbd2dev(0, dev, false);
         mkfs(&mut jbd).unwrap();
-        let fs = mount(&mut jbd).unwrap();
+        let fs = Ext4FileSystem::mount(&mut jbd).unwrap();
         (jbd, fs)
     }
 
@@ -498,7 +498,7 @@ mod tests {
         let dev = MemBlockDev::new(total_blocks);
         let mut jbd = Jbd2Dev::initial_jbd2dev(0, dev, true);
         mkfs(&mut jbd).unwrap();
-        let fs = mount(&mut jbd).unwrap();
+        let fs = Ext4FileSystem::mount(&mut jbd).unwrap();
         (jbd, fs)
     }
 
@@ -509,7 +509,7 @@ mod tests {
         let fail_write_block = Rc::clone(&dev.fail_write_block);
         let mut jbd = Jbd2Dev::initial_jbd2dev(0, dev, false);
         mkfs(&mut jbd).unwrap();
-        let fs = mount(&mut jbd).unwrap();
+        let fs = Ext4FileSystem::mount(&mut jbd).unwrap();
         (jbd, fs, fail_write_block)
     }
 

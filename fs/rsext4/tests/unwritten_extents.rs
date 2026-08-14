@@ -3,11 +3,12 @@
 use std::{cell::Cell, rc::Rc};
 
 use rsext4::{
-    BLOCK_SIZE, BlockIo, Clock, DeviceCapabilities, DeviceGeometry, Ext4Error, Ext4Result,
-    Ext4Timestamp, Jbd2Dev, PreallocationOptions, RangeOperation, SectorId, ZeroRangeOptions, dir,
+    BLOCK_SIZE, BlockIo, Clock, DeviceCapabilities, DeviceGeometry, Ext4Error, Ext4FileSystem,
+    Ext4Result, Ext4Timestamp, Jbd2Dev, PreallocationOptions, RangeOperation, SectorId,
+    ZeroRangeOptions, dir,
     disknode::{Ext4Extent, Ext4ExtentHeader},
     extents_tree::{ExtentBlockMapping, ExtentNode, ExtentTree},
-    mkfile, mkfs, mount, operate_inode_range, preallocate_inode, punch_hole_inode, read_file,
+    mkfile, mkfs, operate_inode_range, preallocate_inode, punch_hole_inode, read_file,
     read_inode_data_into,
     superblock::Ext4Superblock,
     truncate_inode, write_file, zero_range_inode,
@@ -127,7 +128,7 @@ fn partial_write_converts_only_the_written_unwritten_block() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/preallocated", None, None)
         .expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/preallocated")
@@ -241,7 +242,7 @@ fn sequential_writes_merge_converted_unwritten_extents() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/sequential", None, None).expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/sequential")
         .expect("lookup failed")
@@ -290,7 +291,7 @@ fn preallocation_reserves_unwritten_blocks_and_honors_keep_size() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/reserve", None, None).expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/reserve")
         .expect("lookup failed")
@@ -361,7 +362,7 @@ fn unwritten_middle_split_grows_a_full_inline_root_before_data_io() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/root-split", None, None).expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/root-split")
         .expect("lookup failed")
@@ -456,7 +457,7 @@ fn failed_finish_restores_external_leaf_to_unwritten() {
     let (device, fail_write) = MemoryDevice::with_write_failure(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/finish-failure", None, None)
         .expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/finish-failure")
@@ -567,7 +568,7 @@ fn failed_external_leaf_remove_preserves_mapping_and_allocation() {
     let (device, fail_write) = MemoryDevice::with_write_failure(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/remove-failure", None, None)
         .expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/remove-failure")
@@ -683,7 +684,7 @@ fn assert_failed_multi_segment_extent_removal_is_atomic(
     let (device, fail_write) = MemoryDevice::with_write_failure(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, path, None, None).expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, path)
         .expect("lookup failed")
@@ -764,7 +765,8 @@ fn assert_failed_multi_segment_extent_removal_is_atomic(
         .expect("unmount after failed extent removal");
     let device = journal.into_inner();
     let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
-    let mut remounted = mount(&mut remount_device).expect("remount after failed extent removal");
+    let mut remounted =
+        Ext4FileSystem::mount(&mut remount_device).expect("remount after failed extent removal");
     assert_eq!(remounted.superblock.free_blocks_count(), free_before);
     let inode_after = remounted
         .get_inode_by_num(&mut remount_device, inode_number)
@@ -792,7 +794,7 @@ fn failed_preallocation_split_restores_unpublished_metadata_allocation() {
     let (device, fail_after_write) = MemoryDevice::with_post_write_failure(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(
         &mut journal,
         &mut filesystem,
@@ -875,7 +877,8 @@ fn failed_preallocation_split_restores_unpublished_metadata_allocation() {
         .expect("unmount after failed preallocation");
     let device = journal.into_inner();
     let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
-    let mut remounted = mount(&mut remount_device).expect("remount after failed preallocation");
+    let mut remounted =
+        Ext4FileSystem::mount(&mut remount_device).expect("remount after failed preallocation");
     assert_eq!(remounted.superblock.free_blocks_count(), free_before);
     let extents_after = rsext4::inspect_inode_extents(
         &mut remount_device,
@@ -913,7 +916,7 @@ fn assert_failed_insert_range_restores_old_tree(
 ) {
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(
         &mut journal,
         &mut filesystem,
@@ -998,7 +1001,8 @@ fn assert_failed_insert_range_restores_old_tree(
         .expect("unmount after failed insert range");
     let device = journal.into_inner();
     let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
-    let mut remounted = mount(&mut remount_device).expect("remount after failed insert range");
+    let mut remounted =
+        Ext4FileSystem::mount(&mut remount_device).expect("remount after failed insert range");
     assert_eq!(remounted.superblock.free_blocks_count(), free_before);
     let inode_after = remounted
         .get_inode_by_num(&mut remount_device, inode_number)
@@ -1257,7 +1261,7 @@ fn file_extent_inspection_merges_legacy_indirect_block_runs() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/legacy-map", None, None).expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/legacy-map")
         .expect("lookup failed")
@@ -1334,7 +1338,7 @@ fn punch_hole_zeros_partial_edges_and_releases_complete_blocks() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/punch", None, None).expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/punch")
         .expect("lookup failed")
@@ -1382,7 +1386,7 @@ fn zero_range_zeros_partial_edges_but_keeps_unwritten_allocation() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/zero", None, None).expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/zero")
         .expect("lookup failed")
@@ -1432,7 +1436,7 @@ fn punch_hole_prunes_a_finite_range_across_legacy_direct_and_indirect_blocks() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/legacy-punch", None, None)
         .expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/legacy-punch")
@@ -1494,7 +1498,7 @@ fn truncating_preallocated_unwritten_extents_releases_their_blocks() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(
         &mut journal,
         &mut filesystem,
@@ -1542,7 +1546,7 @@ fn collapse_range_removes_blocks_and_shifts_later_extents_left() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/collapse", None, None).expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/collapse")
         .expect("lookup failed")
@@ -1580,7 +1584,7 @@ fn insert_range_creates_a_hole_and_shifts_later_extents_right() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/insert", None, None).expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/insert")
         .expect("lookup failed")
@@ -1620,7 +1624,7 @@ fn collapse_range_requires_bigalloc_cluster_alignment() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(
         &mut journal,
         &mut filesystem,
@@ -1668,7 +1672,7 @@ fn insert_range_requires_bigalloc_cluster_alignment() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut journal).expect("mkfs failed");
-    let mut filesystem = mount(&mut journal).expect("mount failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
     mkfile(&mut journal, &mut filesystem, "/insert-cluster", None, None)
         .expect("file creation failed");
     let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/insert-cluster")

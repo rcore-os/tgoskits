@@ -2218,7 +2218,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
 
     let mut device = Jbd2Dev::initial_jbd2dev(0, MemoryBlockDevice::new(16 * 1024), false);
     mkfs(&mut device).unwrap();
-    let mut fs = rsext4::api::fs_mount(&mut device).unwrap();
+    let mut fs = rsext4::Ext4FileSystem::mount(&mut device).unwrap();
 
     ax_assert!(!rsext4::Ext4FileSystem::device_has_error_state(&mut device).unwrap());
     ax_assert!(fs.file_entries_exist(&mut device, "/").unwrap());
@@ -2904,7 +2904,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     delete_dir(&mut fs, &mut device, "/cov/other").unwrap();
     delete_dir(&mut fs, &mut device, "/cov").unwrap();
 
-    rsext4::api::fs_umount(fs, &mut device).unwrap();
+    rsext4::umount(fs, &mut device).unwrap();
 }
 
 #[axtest]

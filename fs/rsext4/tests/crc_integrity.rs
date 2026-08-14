@@ -167,7 +167,7 @@ fn build_filesystem_with_written_file() -> (SharedCrcDevice, Vec<u8>) {
     let mut jbd2_dev = new_jbd2_dev(device.clone());
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
-    let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+    let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
     mkfile(&mut jbd2_dev, &mut fs, "/crc.txt", Some(&payload), None).expect("mkfile failed");
     umount(fs, &mut jbd2_dev).expect("umount failed");
 
@@ -461,7 +461,8 @@ fn checksums_are_persisted_and_clean_remount_preserves_the_written_file() {
     );
 
     let mut remount_dev = new_jbd2_dev(device.clone());
-    let mut fs = mount(&mut remount_dev).expect("mount after intact checksum data failed");
+    let mut fs =
+        Ext4FileSystem::mount(&mut remount_dev).expect("mount after intact checksum data failed");
     let read_back = read_file(&mut remount_dev, &mut fs, "/crc.txt").expect("read_file failed");
     assert_eq!(read_back, payload);
     umount(fs, &mut remount_dev).expect("umount failed");
@@ -472,7 +473,7 @@ fn unclean_remount_reaps_the_persisted_classic_orphan_chain() {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut first_dev = new_jbd2_dev(device.clone());
     mkfs(&mut first_dev).expect("mkfs failed");
-    let mut first_fs = mount(&mut first_dev).expect("mount failed");
+    let mut first_fs = Ext4FileSystem::mount(&mut first_dev).expect("mount failed");
 
     mkfile(&mut first_dev, &mut first_fs, "/orphan-a", Some(b"a"), None)
         .expect("first file create failed");
@@ -507,7 +508,8 @@ fn unclean_remount_reaps_the_persisted_classic_orphan_chain() {
     drop(first_dev);
 
     let mut remount_dev = new_jbd2_dev(device);
-    let mut recovered = mount(&mut remount_dev).expect("orphan recovery mount failed");
+    let mut recovered =
+        Ext4FileSystem::mount(&mut remount_dev).expect("orphan recovery mount failed");
     assert_eq!(recovered.superblock.s_last_orphan, 0);
     assert!(
         !recovered
@@ -537,7 +539,7 @@ fn unclean_remount_finishes_linked_extent_truncate_from_classic_orphan() {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut first_dev = new_jbd2_dev(device.clone());
     mkfs(&mut first_dev).expect("mkfs failed");
-    let mut first_fs = mount(&mut first_dev).expect("mount failed");
+    let mut first_fs = Ext4FileSystem::mount(&mut first_dev).expect("mount failed");
     let block_size = first_fs.superblock.block_size() as usize;
     let payload = vec![0x5a; block_size * 3];
     mkfile(
@@ -577,7 +579,8 @@ fn unclean_remount_finishes_linked_extent_truncate_from_classic_orphan() {
     let device = first_dev.into_inner();
 
     let mut remount_dev = new_jbd2_dev(device);
-    let mut recovered = mount(&mut remount_dev).expect("linked truncate recovery mount failed");
+    let mut recovered =
+        Ext4FileSystem::mount(&mut remount_dev).expect("linked truncate recovery mount failed");
     assert_eq!(recovered.superblock.s_last_orphan, 0);
     let mut inode = recovered
         .get_inode_by_num(&mut remount_dev, inode_num)
@@ -603,7 +606,7 @@ fn cyclic_classic_orphan_chain_is_rejected_before_recovery() {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut first_dev = new_jbd2_dev(device.clone());
     mkfs(&mut first_dev).expect("mkfs failed");
-    let mut first_fs = mount(&mut first_dev).expect("mount failed");
+    let mut first_fs = Ext4FileSystem::mount(&mut first_dev).expect("mount failed");
     mkfile(
         &mut first_dev,
         &mut first_fs,
@@ -638,7 +641,7 @@ fn cyclic_classic_orphan_chain_is_rejected_before_recovery() {
     drop(first_dev);
 
     let mut remount_dev = new_jbd2_dev(device);
-    let error = match mount(&mut remount_dev) {
+    let error = match Ext4FileSystem::mount(&mut remount_dev) {
         Ok(_) => panic!("cyclic orphan chain must not mount"),
         Err(error) => error,
     };
@@ -654,7 +657,7 @@ fn mkfs_maps_ext4_metadata_checksum_and_64bit_features_to_jbd2() {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut dev = new_jbd2_dev(device.clone());
     mkfs(&mut dev).expect("mkfs failed");
-    let fs = mount(&mut dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut dev).expect("mount failed");
     let journal_block = fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
@@ -675,7 +678,7 @@ fn mount_accepts_v1_journal_without_reading_v2_extension_fields() {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut first_dev = new_jbd2_dev(device.clone());
     mkfs(&mut first_dev).expect("mkfs failed");
-    let first_fs = mount(&mut first_dev).expect("initial mount failed");
+    let first_fs = Ext4FileSystem::mount(&mut first_dev).expect("initial mount failed");
     let journal_block = first_fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
@@ -695,7 +698,8 @@ fn mount_accepts_v1_journal_without_reading_v2_extension_fields() {
     device.write_block_bytes(journal_block, &bytes);
 
     let mut remount_dev = new_jbd2_dev(device);
-    let remounted = mount(&mut remount_dev).expect("Linux-compatible v1 journal mount");
+    let remounted =
+        Ext4FileSystem::mount(&mut remount_dev).expect("Linux-compatible v1 journal mount");
     umount(remounted, &mut remount_dev).expect("v1 journal unmount");
 }
 
@@ -704,7 +708,7 @@ fn mount_accepts_internal_journal_uuid_distinct_from_filesystem_uuid() {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut first_dev = new_jbd2_dev(device.clone());
     mkfs(&mut first_dev).expect("mkfs failed");
-    let first_fs = mount(&mut first_dev).expect("initial mount failed");
+    let first_fs = Ext4FileSystem::mount(&mut first_dev).expect("initial mount failed");
     let filesystem_uuid = first_fs.superblock.s_uuid;
     let journal_block = first_fs
         .journal_sb_block_start
@@ -720,8 +724,8 @@ fn mount_accepts_internal_journal_uuid_distinct_from_filesystem_uuid() {
     device.write_block_bytes(journal_block, &bytes);
 
     let mut remount_dev = new_jbd2_dev(device);
-    let remounted =
-        mount(&mut remount_dev).expect("Linux accepts an independent UUID for an internal journal");
+    let remounted = Ext4FileSystem::mount(&mut remount_dev)
+        .expect("Linux accepts an independent UUID for an internal journal");
     umount(remounted, &mut remount_dev).expect("internal journal unmount");
 }
 
@@ -733,7 +737,7 @@ fn axfs_ng_sync_order_preserves_inode_bitmap_across_remount() {
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut first_dev = new_jbd2_dev(device.clone());
     mkfs(&mut first_dev).expect("mkfs failed");
-    let mut fs = mount(&mut first_dev).expect("mount failed");
+    let mut fs = Ext4FileSystem::mount(&mut first_dev).expect("mount failed");
 
     let mut seen = BTreeSet::new();
     for idx in 0..256 {
@@ -759,7 +763,8 @@ fn axfs_ng_sync_order_preserves_inode_bitmap_across_remount() {
     );
 
     let mut remount_dev = new_jbd2_dev(device.clone());
-    let mut fs = mount(&mut remount_dev).expect("mount after axfs-ng order sync failed");
+    let mut fs =
+        Ext4FileSystem::mount(&mut remount_dev).expect("mount after axfs-ng order sync failed");
 
     for idx in 0..256 {
         let path = format!("/after-{idx}");
@@ -812,7 +817,7 @@ fn incomplete_journal_is_not_replayed_when_recovery_flag_is_clear() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_block = fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
@@ -833,7 +838,8 @@ fn incomplete_journal_is_not_replayed_when_recovery_flag_is_clear() {
     );
 
     let mut remount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut remount_dev).expect("clean mount should not force journal replay");
+    let fs = Ext4FileSystem::mount(&mut remount_dev)
+        .expect("clean mount should not force journal replay");
     assert_ne!(
         fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
         0
@@ -859,7 +865,7 @@ fn uncommitted_journal_tail_is_discarded_during_recovery() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_block = fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
@@ -881,7 +887,8 @@ fn uncommitted_journal_tail_is_discarded_during_recovery() {
     );
 
     let mut remount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut remount_dev).expect("mount should discard uncommitted journal tail");
+    let fs = Ext4FileSystem::mount(&mut remount_dev)
+        .expect("mount should discard uncommitted journal tail");
     assert_eq!(
         fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
         0
@@ -904,7 +911,7 @@ fn uncommitted_journal_tail_does_not_read_payload_blocks() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_block = fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
@@ -924,7 +931,8 @@ fn uncommitted_journal_tail_does_not_read_payload_blocks() {
     device.blocked_read_block.set(Some(journal_block + 2));
 
     let mut remount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut remount_dev).expect("uncommitted payload should not be read");
+    let fs =
+        Ext4FileSystem::mount(&mut remount_dev).expect("uncommitted payload should not be read");
     assert_eq!(
         fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
         0
@@ -941,7 +949,7 @@ fn invalid_revoke_record_fails_recovery() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_block = fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
@@ -956,7 +964,7 @@ fn invalid_revoke_record_fails_recovery() {
     write_invalid_journal_revoke(&device, journal_block);
 
     let mut remount_dev = new_jbd2_dev(device);
-    let err = match mount(&mut remount_dev) {
+    let err = match Ext4FileSystem::mount(&mut remount_dev) {
         Ok(_) => panic!("invalid revoke block should fail recovery"),
         Err(err) => err,
     };
@@ -973,7 +981,7 @@ fn readonly_no_replay_mount_can_inspect_unrecoverable_journal() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_block = fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
@@ -988,14 +996,14 @@ fn readonly_no_replay_mount_can_inspect_unrecoverable_journal() {
     write_invalid_journal_revoke(&device, journal_block);
 
     let mut writable_dev = new_jbd2_dev(device.clone());
-    let err = match mount(&mut writable_dev) {
+    let err = match Ext4FileSystem::mount(&mut writable_dev) {
         Ok(_) => panic!("default mount should fail unrecoverable journal replay"),
         Err(err) => err,
     };
     assert_eq!(err.kind(), Ext4ErrorKind::Corrupted);
 
     let mut readonly_dev = Jbd2Dev::initial_jbd2dev(0, device.clone(), false);
-    let fs = mount_with_options(
+    let fs = Ext4FileSystem::mount_with_options(
         &mut readonly_dev,
         MountOptions::read_only_no_journal_replay(),
     )
@@ -1020,7 +1028,7 @@ fn owned_readonly_fallback_preserves_unrecoverable_journal_error() {
     mkfs(&mut format_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_block = fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
@@ -1052,7 +1060,7 @@ fn empty_descriptor_header_is_discarded_during_recovery() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_block = fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
@@ -1067,7 +1075,8 @@ fn empty_descriptor_header_is_discarded_during_recovery() {
     write_incomplete_journal_descriptor(&device, journal_block);
 
     let mut remount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut remount_dev).expect("mount should discard empty descriptor tail");
+    let fs = Ext4FileSystem::mount(&mut remount_dev)
+        .expect("mount should discard empty descriptor tail");
     assert_eq!(
         fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
         0
@@ -1084,7 +1093,7 @@ fn replay_scan_is_bounded_by_journal_ring_length() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_block = fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
@@ -1099,7 +1108,7 @@ fn replay_scan_is_bounded_by_journal_ring_length() {
     write_repeating_journal_descriptors(&device, journal_block);
 
     let mut remount_dev = new_jbd2_dev(device);
-    let err = match mount(&mut remount_dev) {
+    let err = match Ext4FileSystem::mount(&mut remount_dev) {
         Ok(_) => panic!("cyclic journal scan should fail recovery"),
         Err(err) => err,
     };
@@ -1121,7 +1130,8 @@ fn path_resolved_lost_found_rebuilds_superblock_hint() {
     write_superblock(&device, &missing_hint);
 
     let mut remount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut remount_dev).expect("mount should resolve existing lost+found");
+    let fs =
+        Ext4FileSystem::mount(&mut remount_dev).expect("mount should resolve existing lost+found");
     assert_ne!(fs.superblock.s_lpf_ino, 0);
     assert_eq!(fs.superblock.s_lpf_ino, clean_sb.s_lpf_ino);
     umount(fs, &mut remount_dev).expect("umount failed");
@@ -1137,7 +1147,7 @@ fn mount_uses_valid_lost_found_hint_without_root_path_scan() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut inspect_dev = new_jbd2_dev(device.clone());
-    let mut fs = mount(&mut inspect_dev).expect("mount failed");
+    let mut fs = Ext4FileSystem::mount(&mut inspect_dev).expect("mount failed");
     let mut root = fs.get_root(&mut inspect_dev).expect("root inode");
     let root_ino = fs.root_inode;
     let root_block = resolve_inode_block(&fs, &mut inspect_dev, root_ino, &mut root, 0)
@@ -1151,7 +1161,8 @@ fn mount_uses_valid_lost_found_hint_without_root_path_scan() {
 
     device.blocked_read_block.set(Some(root_block));
     let mut remount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut remount_dev).expect("mount should trust valid lost+found hint");
+    let fs =
+        Ext4FileSystem::mount(&mut remount_dev).expect("mount should trust valid lost+found hint");
     assert_eq!(fs.superblock.s_lpf_ino, clean_sb.s_lpf_ino);
 }
 
@@ -1164,7 +1175,7 @@ fn unclean_shutdown_mount_state_does_not_set_error_fs() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     {
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         fs.sync_superblock(&mut jbd2_dev)
             .expect("persist dirty mount state");
     }
@@ -1174,7 +1185,7 @@ fn unclean_shutdown_mount_state_does_not_set_error_fs() {
     assert_eq!(dirty_sb.s_state & Ext4Superblock::EXT4_ERROR_FS, 0);
 
     let mut remount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut remount_dev).expect("mount after unclean shutdown failed");
+    let fs = Ext4FileSystem::mount(&mut remount_dev).expect("mount after unclean shutdown failed");
     assert_eq!(fs.superblock.s_state & Ext4Superblock::EXT4_ERROR_FS, 0);
     umount(fs, &mut remount_dev).expect("umount failed");
 
@@ -1197,7 +1208,7 @@ fn clean_unmount_preserves_real_error_fs_state() {
     write_superblock(&device, &sb);
 
     let mut remount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut remount_dev).expect("mount with error state failed");
+    let fs = Ext4FileSystem::mount(&mut remount_dev).expect("mount with error state failed");
     assert_ne!(fs.superblock.s_state & Ext4Superblock::EXT4_ERROR_FS, 0);
     umount(fs, &mut remount_dev).expect("umount failed");
 
@@ -1221,7 +1232,8 @@ fn needs_recovery_enables_mount_replay_when_caller_disabled_journal() {
     write_superblock(&device, &sb);
 
     let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device.clone(), false);
-    let fs = mount(&mut remount_dev).expect("mount should replay needs_recovery journal");
+    let fs = Ext4FileSystem::mount(&mut remount_dev)
+        .expect("mount should replay needs_recovery journal");
     assert!(!remount_dev.is_use_journal());
     assert_eq!(
         fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
@@ -1246,7 +1258,7 @@ fn corrupted_superblock_checksum_is_reported_as_euclean_on_mount() {
     write_superblock(&device, &sb);
 
     let mut remount_dev = new_jbd2_dev(device);
-    let err = match mount(&mut remount_dev) {
+    let err = match Ext4FileSystem::mount(&mut remount_dev) {
         Ok(_) => panic!("mount should fail on corrupted superblock CRC"),
         Err(err) => err,
     };
@@ -1265,7 +1277,7 @@ fn corrupted_group_descriptor_checksum_is_reported_as_euclean_on_mount() {
     write_group_desc0(&device, &sb, &desc);
 
     let mut remount_dev = new_jbd2_dev(device);
-    let err = match mount(&mut remount_dev) {
+    let err = match Ext4FileSystem::mount(&mut remount_dev) {
         Ok(_) => panic!("mount should fail on corrupted GDT CRC"),
         Err(err) => err,
     };
@@ -1285,7 +1297,7 @@ fn corrupted_block_bitmap_payload_is_reported_as_euclean_on_mount() {
     device.write_block_bytes(desc.block_bitmap(), &block_bitmap);
 
     let mut remount_dev = new_jbd2_dev(device);
-    let err = match mount(&mut remount_dev) {
+    let err = match Ext4FileSystem::mount(&mut remount_dev) {
         Ok(_) => panic!("mount should fail on corrupted bitmap payload"),
         Err(err) => err,
     };
@@ -1299,7 +1311,7 @@ fn mount_returns_journal_superblock_read_failure_without_panicking() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_block = fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")
@@ -1309,7 +1321,7 @@ fn mount_returns_journal_superblock_read_failure_without_panicking() {
     device.blocked_read_block.set(Some(journal_block));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut remount_dev = new_jbd2_dev(device.clone());
-        mount(&mut remount_dev)
+        Ext4FileSystem::mount(&mut remount_dev)
     }));
 
     assert!(
@@ -1332,7 +1344,7 @@ fn mount_returns_bitmap_read_failures_without_panicking() {
         device.blocked_read_block.set(Some(bitmap_block));
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut remount_dev = new_jbd2_dev(device.clone());
-            mount(&mut remount_dev)
+            Ext4FileSystem::mount(&mut remount_dev)
         }));
 
         assert!(result.is_ok(), "bitmap I/O failure must not panic");
@@ -1350,7 +1362,7 @@ fn mount_rejects_an_empty_journal_mapping_without_panicking() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let mut fs = mount(&mut first_mount_dev).expect("mount failed");
+    let mut fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_inode = InodeNumber::new(JOURNAL_FILE_INODE as u32).expect("valid journal inode");
     fs.modify_inode(&mut first_mount_dev, journal_inode, |inode| {
         inode.i_size_lo = 0;
@@ -1361,7 +1373,7 @@ fn mount_rejects_an_empty_journal_mapping_without_panicking() {
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut remount_dev = new_jbd2_dev(device.clone());
-        mount(&mut remount_dev)
+        Ext4FileSystem::mount(&mut remount_dev)
     }));
 
     assert!(result.is_ok(), "invalid journal mapping must not panic");
@@ -1378,7 +1390,7 @@ fn mount_rejects_missing_journal_inode_without_panicking() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let mut fs = mount(&mut first_mount_dev).expect("mount failed");
+    let mut fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_inode = InodeNumber::new(JOURNAL_FILE_INODE as u32).expect("valid journal inode");
     fs.modify_inode(&mut first_mount_dev, journal_inode, |inode| {
         inode.i_mode = 0
@@ -1393,7 +1405,7 @@ fn mount_rejects_missing_journal_inode_without_panicking() {
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut remount_dev = new_jbd2_dev(device.clone());
-        mount(&mut remount_dev)
+        Ext4FileSystem::mount(&mut remount_dev)
     }));
 
     assert!(result.is_ok(), "a missing journal inode must not panic");
@@ -1410,7 +1422,7 @@ fn mount_rejects_encrypted_journal_inode_without_panicking() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
 
     let mut first_mount_dev = new_jbd2_dev(device.clone());
-    let mut fs = mount(&mut first_mount_dev).expect("mount failed");
+    let mut fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
     let journal_inode = InodeNumber::new(JOURNAL_FILE_INODE as u32).expect("valid journal inode");
     fs.modify_inode(&mut first_mount_dev, journal_inode, |inode| {
         inode.i_flags |= Ext4Inode::EXT4_ENCRYPT_FL;
@@ -1421,7 +1433,7 @@ fn mount_rejects_encrypted_journal_inode_without_panicking() {
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut remount_dev = new_jbd2_dev(device.clone());
-        mount(&mut remount_dev)
+        Ext4FileSystem::mount(&mut remount_dev)
     }));
 
     assert!(result.is_ok(), "an encrypted journal inode must not panic");
@@ -1445,7 +1457,7 @@ fn mount_rejects_unlinked_and_non_regular_journal_inodes() {
         mkfs(&mut jbd2_dev).expect("mkfs failed");
 
         let mut first_mount_dev = new_jbd2_dev(device.clone());
-        let mut fs = mount(&mut first_mount_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut first_mount_dev).expect("mount failed");
         let journal_inode =
             InodeNumber::new(JOURNAL_FILE_INODE as u32).expect("valid journal inode");
         fs.modify_inode(
@@ -1462,7 +1474,7 @@ fn mount_rejects_unlinked_and_non_regular_journal_inodes() {
             .expect("persist invalid journal inode");
 
         let mut remount_dev = new_jbd2_dev(device);
-        let error = match mount(&mut remount_dev) {
+        let error = match Ext4FileSystem::mount(&mut remount_dev) {
             Ok(_) => panic!("mount must reject a {invalid_kind} journal inode"),
             Err(error) => error,
         };
@@ -1490,7 +1502,7 @@ fn mount_rejects_both_internal_and_external_journal_declarations() {
     let image_before = device.data.borrow().clone();
 
     let mut mount_dev = new_jbd2_dev(device.clone());
-    let error = match mount(&mut mount_dev) {
+    let error = match Ext4FileSystem::mount(&mut mount_dev) {
         Ok(_) => panic!("mount must reject simultaneous journal inode and device"),
         Err(error) => error,
     };
@@ -1537,7 +1549,7 @@ fn mount_reports_external_or_missing_journal_source_without_mutation() {
         let image_before = device.data.borrow().clone();
 
         let mut mount_dev = new_jbd2_dev(device.clone());
-        let error = match mount(&mut mount_dev) {
+        let error = match Ext4FileSystem::mount(&mut mount_dev) {
             Ok(_) => panic!("mount must reject an unavailable journal source"),
             Err(error) => error,
         };
@@ -1555,7 +1567,7 @@ fn journal_start_write_failure_rolls_back_and_aborts_without_retry() {
     mkfs(&mut format_dev).expect("mkfs failed");
 
     let mut dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut dev).expect("mount failed");
     let journal_block = fs
         .journal_sb_block_start
         .expect("journal superblock should be mapped")

@@ -135,7 +135,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/testdir").expect("mkdir failed");
 
@@ -180,7 +180,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         let free_blocks_before = fs.superblock.free_blocks_count();
         let free_inodes_before = fs.superblock.s_free_inodes_count;
         let root_number = fs.root_inode;
@@ -213,7 +213,8 @@ mod file_functional_tests {
         drop(fs);
         let device = jbd2_dev.into_inner();
         let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_dev).expect("remount after failed create");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_dev).expect("remount after failed create");
         assert!(
             dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/create-fault")
                 .expect("remounted lookup failed")
@@ -231,7 +232,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         let free_blocks_before = fs.superblock.free_blocks_count();
         let free_inodes_before = fs.superblock.s_free_inodes_count;
         let used_dirs_before: u32 = fs
@@ -264,7 +265,8 @@ mod file_functional_tests {
         drop(fs);
         let device = jbd2_dev.into_inner();
         let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_dev).expect("remount after failed mkdir");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_dev).expect("remount after failed mkdir");
         assert!(
             dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/mkdir-fault")
                 .expect("remounted lookup failed")
@@ -292,7 +294,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/truncatetest").expect("mkdir failed");
 
@@ -337,7 +339,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/renametest").expect("mkdir failed");
 
@@ -378,7 +380,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         let contents = b"same dentry must survive";
         mkfile(&mut jbd2_dev, &mut fs, "/same-name", Some(contents), None)
             .expect("file creation failed");
@@ -399,7 +401,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         let original_len = 20 * 1024 * 1024;
         let overwrite_offset = 8 * 1024 * 1024;
@@ -449,7 +451,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/tmp").expect("mkdir failed");
 
@@ -490,7 +492,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/aofdir").expect("mkdir failed");
         mkfile(
@@ -524,7 +526,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkdir(&mut jbd2_dev, &mut fs, "/old-parent").expect("old parent mkdir failed");
         mkdir(&mut jbd2_dev, &mut fs, "/new-parent").expect("new parent mkdir failed");
         let payload = b"rename must publish atomically";
@@ -577,7 +579,8 @@ mod file_functional_tests {
         drop(fs);
         let device = jbd2_dev.into_inner();
         let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_dev).expect("remount after failed rename");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_dev).expect("remount after failed rename");
         let (remounted_source, _) =
             dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/old-parent/source")
                 .expect("remounted source lookup failed")
@@ -605,7 +608,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkdir(&mut jbd2_dev, &mut fs, "/exchange-old").expect("old parent mkdir failed");
         mkdir(&mut jbd2_dev, &mut fs, "/exchange-new").expect("new parent mkdir failed");
         mkfile(
@@ -668,7 +671,8 @@ mod file_functional_tests {
         drop(fs);
         let device = jbd2_dev.into_inner();
         let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_dev).expect("remount after failed exchange");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_dev).expect("remount after failed exchange");
         let (source_after, _) =
             dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/exchange-old/source")
                 .expect("remounted source lookup failed")
@@ -698,7 +702,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkdir(&mut jbd2_dev, &mut fs, "/replace-old").expect("old parent mkdir failed");
         mkdir(&mut jbd2_dev, &mut fs, "/replace-new").expect("new parent mkdir failed");
         mkfile(
@@ -749,7 +753,8 @@ mod file_functional_tests {
         drop(fs);
         let device = jbd2_dev.into_inner();
         let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_dev).expect("remount after failed replacement");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_dev).expect("remount after failed replacement");
         let (source_after, _) =
             dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/replace-old/source")
                 .expect("remounted source lookup failed")
@@ -781,7 +786,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkdir(&mut jbd2_dev, &mut fs, "/directory-old").expect("old parent mkdir failed");
         mkdir(&mut jbd2_dev, &mut fs, "/directory-new").expect("new parent mkdir failed");
         mkdir(&mut jbd2_dev, &mut fs, "/directory-old/moved")
@@ -824,7 +829,8 @@ mod file_functional_tests {
         drop(fs);
         let device = jbd2_dev.into_inner();
         let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_dev).expect("remount after failed directory move");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_dev).expect("remount after failed directory move");
         let (moved_after, _) =
             dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/directory-old/moved")
                 .expect("remounted moved-directory lookup failed")
@@ -873,7 +879,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/sourcedir").expect("mkdir failed");
         mkdir(&mut jbd2_dev, &mut fs, "/destdir").expect("mkdir failed");
@@ -917,7 +923,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/deletetest").expect("mkdir failed");
 
@@ -954,7 +960,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/linktest").expect("mkdir failed");
 
@@ -1004,7 +1010,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkdir(&mut jbd2_dev, &mut fs, "/source").expect("source mkdir failed");
         mkdir(&mut jbd2_dev, &mut fs, "/destination").expect("destination mkdir failed");
         mkfile(
@@ -1055,7 +1061,8 @@ mod file_functional_tests {
         drop(fs);
         let device = jbd2_dev.into_inner();
         let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_dev).expect("remount after failed link");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_dev).expect("remount after failed link");
         let (remounted_target, remounted_inode) =
             dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/source/original")
                 .expect("remounted target lookup failed")
@@ -1077,7 +1084,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkdir(&mut jbd2_dev, &mut fs, "/source").expect("source mkdir failed");
         mkdir(&mut jbd2_dev, &mut fs, "/destination").expect("destination mkdir failed");
         mkfile(
@@ -1126,7 +1133,8 @@ mod file_functional_tests {
         drop(fs);
         let device = jbd2_dev.into_inner();
         let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_dev).expect("remount after failed growth");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_dev).expect("remount after failed growth");
         let (remounted_target, remounted_inode) =
             dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/source/original")
                 .expect("remounted target lookup failed")
@@ -1161,7 +1169,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         let contents = b"open inode survives unlink";
         mkfile(&mut jbd2_dev, &mut fs, "/open-unlink", Some(contents), None)
             .expect("file creation failed");
@@ -1198,7 +1206,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         let contents = b"failed final unlink stays reachable";
         mkfile(
             &mut jbd2_dev,
@@ -1237,7 +1245,8 @@ mod file_functional_tests {
         drop(fs);
         let device = jbd2_dev.into_inner();
         let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_dev).expect("remount after failed unlink");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_dev).expect("remount after failed unlink");
         let (remounted_number, remounted_inode) =
             dir::get_inode_with_num(&mut remounted, &mut remount_dev, "/unlink-fault")
                 .expect("remounted target lookup failed")
@@ -1263,7 +1272,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         let free_blocks_before_file = fs.superblock.free_blocks_count();
         let contents = vec![0x5a; 2 * BLOCK_SIZE];
         mkfile(&mut jbd2_dev, &mut fs, "/reap-fault", Some(&contents), None)
@@ -1297,7 +1306,8 @@ mod file_functional_tests {
         drop(fs);
         let device = jbd2_dev.into_inner();
         let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_dev).expect("orphan recovery mount failed");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_dev).expect("orphan recovery mount failed");
         assert_eq!(remounted.superblock.s_last_orphan, 0);
         assert!(
             !remounted
@@ -1317,7 +1327,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkdir(&mut jbd2_dev, &mut fs, "/source").expect("source mkdir failed");
         mkdir(&mut jbd2_dev, &mut fs, "/destination").expect("destination mkdir failed");
         mkfile(
@@ -1360,7 +1370,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(&mut jbd2_dev, &mut fs, "/legacy-indirect", None, None)
             .expect("file creation failed");
         let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-indirect")
@@ -1435,7 +1445,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(&mut jbd2_dev, &mut fs, "/legacy-delete", None, None).expect("file creation failed");
         let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-delete")
             .unwrap()
@@ -1480,7 +1490,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(&mut jbd2_dev, &mut fs, "/legacy-corrupt", None, None)
             .expect("file creation failed");
         let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-corrupt")
@@ -1528,7 +1538,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(&mut jbd2_dev, &mut fs, "/legacy-hidden-direct", None, None)
             .expect("file creation failed");
         let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-hidden-direct")
@@ -1564,7 +1574,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(&mut jbd2_dev, &mut fs, "/legacy-sparse-grow", None, None)
             .expect("file creation failed");
         let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-sparse-grow")
@@ -1619,7 +1629,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(&mut jbd2_dev, &mut fs, "/legacy-hidden-root", None, None)
             .expect("file creation failed");
         let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-hidden-root")
@@ -1659,7 +1669,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         let pointers = BLOCK_SIZE / core::mem::size_of::<u32>();
         let cases = [
             ("/truncate-single-leaf", 12u32, 1usize, 12usize),
@@ -1755,7 +1765,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         let pointers = BLOCK_SIZE / core::mem::size_of::<u32>();
         let double = pointers * pointers;
         let cases = [
@@ -1861,7 +1871,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(&mut jbd2_dev, &mut fs, "/extent-sparse-grow", None, None)
             .expect("file creation failed");
         let free_blocks_before = fs.superblock.free_blocks_count();
@@ -1882,7 +1892,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         let target = "/abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";
         assert!(target.len() > 48 && target.len() < 60);
         mkfile(&mut jbd2_dev, &mut fs, target, None, None).expect("target creation failed");
@@ -1904,7 +1914,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(&mut jbd2_dev, &mut fs, "/legacy-sparse", None, None).expect("file creation failed");
         let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-sparse")
             .unwrap()
@@ -1943,7 +1953,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(&mut jbd2_dev, &mut fs, "/legacy-overwrite", None, None)
             .expect("file creation failed");
         let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-overwrite")
@@ -2002,7 +2012,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         let pointers = BLOCK_SIZE / core::mem::size_of::<u32>();
         let cases = [
             ("/legacy-direct", 0u32, 1u64),
@@ -2072,7 +2082,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(&mut jbd2_dev, &mut fs, "/legacy-publish", None, None)
             .expect("file creation failed");
         let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-publish")
@@ -2130,7 +2140,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(
             &mut jbd2_dev,
             &mut fs,
@@ -2202,7 +2212,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(
             &mut jbd2_dev,
             &mut fs,
@@ -2294,7 +2304,8 @@ mod file_functional_tests {
         drop(fs);
         let device = jbd2_dev.into_inner();
         let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
-        let mut remounted = mount(&mut remount_dev).expect("remount after failed truncate");
+        let mut remounted =
+            Ext4FileSystem::mount(&mut remount_dev).expect("remount after failed truncate");
         let remounted_inode = remounted
             .get_inode_by_num(&mut remount_dev, inode_number)
             .expect("remounted inode read failed");
@@ -2327,7 +2338,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(
             &mut jbd2_dev,
             &mut fs,
@@ -2405,7 +2416,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
         mkfile(&mut jbd2_dev, &mut fs, "/legacy-finalize", None, None)
             .expect("file creation failed");
         let inode_number = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/legacy-finalize")
@@ -2450,7 +2461,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         mkdir(&mut jbd2_dev, &mut fs, "/symlinktest").expect("mkdir failed");
 
@@ -2488,7 +2499,7 @@ mod file_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Missing paths should return `ENOENT`.
         let non_existent = read_file(&mut jbd2_dev, &mut fs, "/nonexistent/file")

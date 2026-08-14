@@ -103,7 +103,7 @@ fn setup_fs(total_blocks: u64) -> (Jbd2Dev<CompatBlockDevice>, Ext4FileSystem) {
     let device = CompatBlockDevice::new(total_blocks);
     let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
     mkfs(&mut jbd2_dev).expect("mkfs failed");
-    let fs = mount(&mut jbd2_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
     (jbd2_dev, fs)
 }
 
