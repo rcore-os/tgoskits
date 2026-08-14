@@ -146,10 +146,111 @@ mod capture {
     use anyhow::{Context, bail};
     use regex::Regex;
 
-    use super::{
-        AxtestCoveragePaths, COVERAGE_DONE_MARKER, MARKER_PREFIX, SUITE_OK_MARKER,
-        remove_stale_profraw,
-    };
+    use super::{AxtestCoveragePaths, COVERAGE_DONE_MARKER, MARKER_PREFIX, remove_stale_profraw};
+    use crate::support::qemu_success::QemuSuccessOutput;
+
+    struct InstallRollback {
+        saved_stdout: i32,
+        saved_stderr: i32,
+        tee_stdout: i32,
+        read_fd: i32,
+        write_fd: i32,
+        redirected: bool,
+    }
+
+    impl InstallRollback {
+        fn new() -> io::Result<Self> {
+            let saved_stdout = unsafe { libc::dup(libc::STDOUT_FILENO) };
+            if saved_stdout < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let saved_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
+            if saved_stderr < 0 {
+                let err = io::Error::last_os_error();
+                unsafe { libc::close(saved_stdout) };
+                return Err(err);
+            }
+            let tee_stdout = unsafe { libc::dup(saved_stdout) };
+            if tee_stdout < 0 {
+                let err = io::Error::last_os_error();
+                unsafe {
+                    libc::close(saved_stdout);
+                    libc::close(saved_stderr);
+                }
+                return Err(err);
+            }
+
+            let mut fds = [0i32; 2];
+            if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+                let err = io::Error::last_os_error();
+                unsafe {
+                    libc::close(saved_stdout);
+                    libc::close(saved_stderr);
+                    libc::close(tee_stdout);
+                }
+                return Err(err);
+            }
+            Ok(Self {
+                saved_stdout,
+                saved_stderr,
+                tee_stdout,
+                read_fd: fds[0],
+                write_fd: fds[1],
+                redirected: false,
+            })
+        }
+
+        fn redirect_stdio(&mut self) -> io::Result<()> {
+            self.redirected = true;
+            if unsafe { libc::dup2(self.write_fd, libc::STDOUT_FILENO) } < 0
+                || unsafe { libc::dup2(self.write_fd, libc::STDERR_FILENO) } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            unsafe { libc::close(self.write_fd) };
+            self.write_fd = -1;
+            Ok(())
+        }
+
+        fn take_read_file(&mut self) -> fs::File {
+            let read_fd = std::mem::replace(&mut self.read_fd, -1);
+            unsafe { fs::File::from_raw_fd(read_fd) }
+        }
+
+        fn take_terminal_file(&mut self) -> fs::File {
+            let tee_stdout = std::mem::replace(&mut self.tee_stdout, -1);
+            unsafe { fs::File::from_raw_fd(tee_stdout) }
+        }
+
+        fn commit(mut self) -> (i32, i32) {
+            self.redirected = false;
+            let saved_stdout = std::mem::replace(&mut self.saved_stdout, -1);
+            let saved_stderr = std::mem::replace(&mut self.saved_stderr, -1);
+            (saved_stdout, saved_stderr)
+        }
+    }
+
+    impl Drop for InstallRollback {
+        fn drop(&mut self) {
+            if self.redirected {
+                unsafe {
+                    libc::dup2(self.saved_stdout, libc::STDOUT_FILENO);
+                    libc::dup2(self.saved_stderr, libc::STDERR_FILENO);
+                }
+            }
+            for fd in [
+                self.saved_stdout,
+                self.saved_stderr,
+                self.tee_stdout,
+                self.read_fd,
+                self.write_fd,
+            ] {
+                if fd >= 0 {
+                    unsafe { libc::close(fd) };
+                }
+            }
+        }
+    }
 
     pub(crate) struct AxtestCoverageCaptureGuard {
         saved_stdout: i32,
@@ -170,30 +271,12 @@ mod capture {
     }
 
     impl AxtestCoverageCaptureGuard {
-        pub(crate) fn install(paths: &AxtestCoveragePaths) -> io::Result<Self> {
-            let saved_stdout = unsafe { libc::dup(libc::STDOUT_FILENO) };
-            let saved_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
-            if saved_stdout < 0 || saved_stderr < 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            let tee_stdout = unsafe { libc::dup(saved_stdout) };
-            if tee_stdout < 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            let mut fds = [0i32; 2];
-            if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let read_fd = fds[0];
-            let write_fd = fds[1];
-            if unsafe { libc::dup2(write_fd, libc::STDOUT_FILENO) } < 0
-                || unsafe { libc::dup2(write_fd, libc::STDERR_FILENO) } < 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            unsafe { libc::close(write_fd) };
+        pub(crate) fn install(
+            paths: &AxtestCoveragePaths,
+            success_output: QemuSuccessOutput,
+        ) -> io::Result<Self> {
+            let mut rollback = InstallRollback::new()?;
+            rollback.redirect_stdio()?;
 
             let state = Arc::new(Mutex::new(AxtestCoverageState {
                 monitor_socket: paths.monitor_socket.clone(),
@@ -219,49 +302,34 @@ mod capture {
             });
 
             let reader_state = state.clone();
-            let reader = std::thread::spawn(move || {
-                let mut pipe = unsafe { fs::File::from_raw_fd(read_fd) };
-                let mut terminal = unsafe { fs::File::from_raw_fd(tee_stdout) };
-                let mut tee_buf = String::new();
-                let mut buf = [0u8; 8192];
-                loop {
-                    match pipe.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let chunk = String::from_utf8_lossy(&buf[..n]);
-                            if let Ok(mut state) = reader_state.lock() {
-                                state.push_bytes(&buf[..n]);
-                                // If coverage was just extracted, signal completion
-                                // to ostool so it can stop waiting.
-                                if state.dumped && !state.completion_signaled {
-                                    state.completion_signaled = true;
-                                    let marker = format!("{COVERAGE_DONE_MARKER}\n");
-                                    terminal.write_all(marker.as_bytes())?;
+            let mut pipe = rollback.take_read_file();
+            let mut terminal = rollback.take_terminal_file();
+            let reader = std::thread::Builder::new()
+                .name("axtest-coverage-capture".to_string())
+                .spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    loop {
+                        match pipe.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                if let Ok(mut state) = reader_state.lock() {
+                                    state.push_bytes(&buf[..n]);
+                                    // The host-generated completion marker must reach the
+                                    // same verifier that observes the QEMU transcript.
+                                    if state.dumped && !state.completion_signaled {
+                                        state.completion_signaled = true;
+                                        signal_coverage_completion(&success_output, &mut terminal)?;
+                                    }
                                 }
+                                terminal.write_all(&buf[..n])?;
                             }
-
-                            tee_buf.push_str(&chunk);
-                            // Flush complete lines to terminal, filtering out
-                            // AXTEST_SUITE_OK so ostool doesn't kill QEMU before
-                            // coverage extraction finishes.
-                            while let Some(newline) = tee_buf.find('\n') {
-                                let line = &tee_buf[..=newline];
-                                if !line.contains(SUITE_OK_MARKER) {
-                                    terminal.write_all(line.as_bytes())?;
-                                }
-                                tee_buf.drain(..=newline);
-                            }
+                            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                            Err(err) => return Err(err),
                         }
-                        Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-                        Err(err) => return Err(err),
                     }
-                }
-                // Flush any remaining partial line
-                if !tee_buf.is_empty() && !tee_buf.contains(SUITE_OK_MARKER) {
-                    terminal.write_all(tee_buf.as_bytes())?;
-                }
-                terminal.flush()
-            });
+                    terminal.flush()
+                })?;
+            let (saved_stdout, saved_stderr) = rollback.commit();
 
             Ok(Self {
                 saved_stdout,
@@ -306,6 +374,15 @@ mod capture {
                 libc::dup2(self.saved_stderr, libc::STDERR_FILENO);
             }
         }
+    }
+
+    fn signal_coverage_completion(
+        success_output: &QemuSuccessOutput,
+        terminal: &mut impl Write,
+    ) -> io::Result<()> {
+        let marker = format!("{COVERAGE_DONE_MARKER}\n");
+        success_output.append(marker.as_bytes());
+        terminal.write_all(marker.as_bytes())
     }
 
     impl Drop for AxtestCoverageCaptureGuard {
@@ -438,6 +515,7 @@ mod capture {
         use std::{io::BufRead, sync::mpsc};
 
         use super::*;
+        use crate::support::qemu_success::{QemuSuccessOutput, verify_qemu_success_contract};
 
         #[test]
         fn parse_marker_extracts_address_and_size() {
@@ -445,6 +523,23 @@ mod capture {
                 parse_coverage_marker("AXTEST_COVERAGE status=ready addr=0x1234abcd size=4096"),
                 Ok((0x1234abcd, 4096))
             );
+        }
+
+        #[test]
+        fn completion_marker_reaches_qemu_success_contract() {
+            let success_output = QemuSuccessOutput::new(&[COVERAGE_DONE_MARKER.to_string()]);
+            let mut terminal = Vec::new();
+
+            signal_coverage_completion(&success_output, &mut terminal).unwrap();
+
+            verify_qemu_success_contract(
+                Err(anyhow::anyhow!(
+                    "QEMU stopped without matching a configured success regex"
+                )),
+                Some(&success_output),
+            )
+            .unwrap();
+            assert_eq!(terminal, b"AXTEST_COVERAGE_DONE\n");
         }
 
         #[test]
@@ -489,11 +584,15 @@ mod capture {
 #[cfg(not(unix))]
 mod capture {
     use super::AxtestCoveragePaths;
+    use crate::support::qemu_success::QemuSuccessOutput;
 
     pub(crate) struct AxtestCoverageCaptureGuard;
 
     impl AxtestCoverageCaptureGuard {
-        pub(crate) fn install(_paths: &AxtestCoveragePaths) -> std::io::Result<Self> {
+        pub(crate) fn install(
+            _paths: &AxtestCoveragePaths,
+            _success_output: QemuSuccessOutput,
+        ) -> std::io::Result<Self> {
             Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "axtest coverage capture requires Unix QEMU monitor sockets",
