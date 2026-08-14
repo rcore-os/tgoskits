@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -11,9 +12,12 @@ struct paths {
     char base[128];
     char container[160];
     char jail[192];
+    char mountpoint[224];
     char parent_secret[192];
     char grandparent_secret[192];
+    char jail_secret[224];
     char escape_link[224];
+    int mounted;
 };
 
 static int make_directory(const char *path)
@@ -50,11 +54,17 @@ static int create_secret(const char *path)
     return 0;
 }
 
-static void cleanup(const struct paths *paths)
+static void cleanup(struct paths *paths)
 {
+    if (paths->mounted) {
+        umount2(paths->mountpoint, 0);
+        paths->mounted = 0;
+    }
     unlink(paths->escape_link);
+    unlink(paths->jail_secret);
     unlink(paths->parent_secret);
     unlink(paths->grandparent_secret);
+    rmdir(paths->mountpoint);
     rmdir(paths->jail);
     rmdir(paths->container);
     rmdir(paths->base);
@@ -75,17 +85,53 @@ static int expect_hidden(const char *path)
     return 0;
 }
 
-static int child_body(const struct paths *paths)
+static int chroot_to(const char *path)
 {
-    if (chdir(paths->jail) < 0) {
-        perror("chdir jail");
+    if (chdir(path) < 0) {
+        perror("chdir chroot");
         return 1;
     }
     if (chroot(".") < 0) {
-        perror("chroot jail");
+        perror("chroot");
         return 1;
     }
+    return 0;
+}
 
+static int child_from_jail_mount(const struct paths *paths)
+{
+    if (chroot_to(paths->jail) != 0) {
+        return 1;
+    }
+    if (chdir("mountpoint") < 0) {
+        perror("chdir mountpoint");
+        return 1;
+    }
+    if (expect_hidden("../../parent-secret") < 0 ||
+        expect_hidden("../../grandparent-secret") < 0 ||
+        expect_hidden("../../../grandparent-secret") < 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static int child_from_mount_root(const struct paths *paths)
+{
+    if (chroot_to(paths->mountpoint) != 0) {
+        return 1;
+    }
+    if (expect_hidden("../jail-secret") < 0 ||
+        expect_hidden("../../parent-secret") < 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static int child_from_jail_root(const struct paths *paths)
+{
+    if (chroot_to(paths->jail) != 0) {
+        return 1;
+    }
     if (expect_hidden("../parent-secret") < 0 ||
         expect_hidden("../../grandparent-secret") < 0 ||
         expect_hidden("escape-link") < 0) {
@@ -103,6 +149,25 @@ static int child_body(const struct paths *paths)
     return 0;
 }
 
+static int run_child(const struct paths *paths, int (*body)(const struct paths *), const char *name)
+{
+    pid_t child = fork();
+    if (child < 0) {
+        perror("fork");
+        return -1;
+    }
+    if (child == 0) {
+        _exit(body(paths));
+    }
+
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "FAIL: %s chroot child status=%d errno=%d\n", name, status, errno);
+        return -1;
+    }
+    return 0;
+}
+
 int main(void)
 {
     struct paths paths = {0};
@@ -113,8 +178,10 @@ int main(void)
     }
     if (join_path(paths.container, sizeof(paths.container), paths.base, "container") < 0 ||
         join_path(paths.jail, sizeof(paths.jail), paths.container, "jail") < 0 ||
+        join_path(paths.mountpoint, sizeof(paths.mountpoint), paths.jail, "mountpoint") < 0 ||
         join_path(paths.parent_secret, sizeof(paths.parent_secret), paths.container, "parent-secret") < 0 ||
         join_path(paths.grandparent_secret, sizeof(paths.grandparent_secret), paths.base, "grandparent-secret") < 0 ||
+        join_path(paths.jail_secret, sizeof(paths.jail_secret), paths.jail, "jail-secret") < 0 ||
         join_path(paths.escape_link, sizeof(paths.escape_link), paths.jail, "escape-link") < 0) {
         return 1;
     }
@@ -122,26 +189,25 @@ int main(void)
     cleanup(&paths);
     if (make_directory("/tmp") < 0 || make_directory(paths.base) < 0 ||
         make_directory(paths.container) < 0 || make_directory(paths.jail) < 0 ||
+        make_directory(paths.mountpoint) < 0 ||
         create_secret(paths.parent_secret) < 0 || create_secret(paths.grandparent_secret) < 0 ||
+        create_secret(paths.jail_secret) < 0 ||
         symlink("../../grandparent-secret", paths.escape_link) < 0) {
         cleanup(&paths);
         return 1;
     }
 
-    pid_t child = fork();
-    if (child < 0) {
-        perror("fork");
+    if (mount("tmpfs", paths.mountpoint, "tmpfs", 0, NULL) < 0) {
+        perror("mount tmpfs");
         cleanup(&paths);
         return 1;
     }
-    if (child == 0) {
-        _exit(child_body(&paths));
-    }
+    paths.mounted = 1;
 
-    int status = 0;
     int result = 0;
-    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        fprintf(stderr, "FAIL: chroot child status=%d errno=%d\n", status, errno);
+    if (run_child(&paths, child_from_jail_root, "jail root") < 0 ||
+        run_child(&paths, child_from_jail_mount, "jail mount") < 0 ||
+        run_child(&paths, child_from_mount_root, "mount root") < 0) {
         result = 1;
     }
     cleanup(&paths);
