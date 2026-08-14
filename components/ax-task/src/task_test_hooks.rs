@@ -13,6 +13,10 @@ static PI_RELEASE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static TARGET_CHAIN_TOP: AtomicU64 = AtomicU64::new(0);
 static PI_CHAIN_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static WAKE_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
+static WAKE_ENTITY_READ_COPY_TARGET: AtomicU64 = AtomicU64::new(0);
+static WAKE_ENTITY_READ_COUNT: AtomicU64 = AtomicU64::new(0);
+static WAKE_ENTITY_READ_COPY_COUNT: AtomicU64 = AtomicU64::new(0);
+static WAKE_ENTITY_READ_COPY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static PARK_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static SWITCH_TAIL_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static DEADLINE_PUBLICATION_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
@@ -700,6 +704,63 @@ pub fn thread_is_blocked(thread: u64) -> bool {
 
 pub(crate) fn record_wake_irq_owner_scopes(thread: ThreadId, thread_sched: bool, run_queue: bool) {
     WAKE_IRQ_OWNER_PROBE.record(thread, thread_sched, run_queue, "wake");
+}
+
+/// Arms temporary scheduling-entity copy accounting for one real direct wake.
+pub fn arm_wake_entity_read_copy_probe(thread: u64) {
+    assert_ne!(thread, 0, "a wake entity probe identity must be non-zero");
+    assert_eq!(
+        WAKE_ENTITY_READ_COPY_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one wake entity probe may be armed"
+    );
+    WAKE_ENTITY_READ_COPY_TARGET.store(thread, Ordering::Relaxed);
+    WAKE_ENTITY_READ_COUNT.store(0, Ordering::Relaxed);
+    WAKE_ENTITY_READ_COPY_COUNT.store(0, Ordering::Relaxed);
+    WAKE_ENTITY_READ_COPY_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Read-only scheduling-entity accesses made by one direct wake.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WakeEntityReadEvents {
+    /// Placement and preemption reads covered by the probe.
+    pub reads: u64,
+    /// Reads that created a temporary scheduling-entity value.
+    pub copies: u64,
+}
+
+/// Takes scheduling-entity reads made by the armed direct wake.
+pub fn take_wake_entity_read_events() -> Option<WakeEntityReadEvents> {
+    if WAKE_ENTITY_READ_COPY_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let reads = WAKE_ENTITY_READ_COUNT.load(Ordering::Relaxed);
+    let copies = WAKE_ENTITY_READ_COPY_COUNT.load(Ordering::Relaxed);
+    WAKE_ENTITY_READ_COPY_TARGET.store(0, Ordering::Relaxed);
+    WAKE_ENTITY_READ_COPY_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(WakeEntityReadEvents { reads, copies })
+}
+
+pub(crate) fn record_wake_entity_read(thread: ThreadId, copies: u64) {
+    if WAKE_ENTITY_READ_COPY_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && WAKE_ENTITY_READ_COPY_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        WAKE_ENTITY_READ_COUNT.fetch_add(1, Ordering::Relaxed);
+        WAKE_ENTITY_READ_COPY_COUNT.fetch_add(copies, Ordering::Relaxed);
+    }
 }
 
 /// Arms the PI release/claim/exit interleaving for one live waiter.

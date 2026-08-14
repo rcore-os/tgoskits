@@ -357,7 +357,7 @@ impl TaskSystem {
                 task_runtime::fatal_invariant(0x444c_1105, core.id().as_u64() as usize)
             });
             let preempts_current = run_queue
-                .wakeup_preempt(core.id(), sched.policy.base, entity, 0)
+                .wakeup_preempt(core.id(), sched.policy.base, &entity, 0)
                 .requests_reschedule();
             core.set_wake_cpu_hint(cpu.owner());
             return Some(preempts_current);

@@ -88,10 +88,10 @@ impl CurrentSchedule {
     ) -> bool {
         crate::scheduler::wakeup_preempts(
             self.policy,
-            self.entity.clone(),
+            &self.entity,
             false,
             woken_policy,
-            woken_entity,
+            &woken_entity,
             fair_virtual_time,
         )
     }
@@ -253,9 +253,9 @@ impl CurrentDispatch {
 
     pub(crate) fn should_preempt(
         &self,
-        current_entity: SchedulingEntity,
+        current_entity: &SchedulingEntity,
         woken_policy: SchedulePolicy,
-        woken_entity: SchedulingEntity,
+        woken_entity: &SchedulingEntity,
         fair_virtual_time: u64,
     ) -> bool {
         crate::scheduler::wakeup_preempts(

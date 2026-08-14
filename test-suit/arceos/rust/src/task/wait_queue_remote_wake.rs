@@ -47,6 +47,7 @@ fn wake_sleep_queue_after_waiter_enqueued(sleeper: u64) {
     for _ in 0..WAITER_ENQUEUE_RETRIES {
         if task_test_hooks::thread_is_blocked(sleeper) {
             task_test_hooks::arm_wake_irq_owner_probe(sleeper);
+            task_test_hooks::arm_wake_entity_read_copy_probe(sleeper);
             GO.store(true, Ordering::Release);
             assert_eq!(api::ax_wait_queue_wake(&SLEEP_WQ, 1), 1);
             return;
@@ -132,6 +133,14 @@ pub fn run() -> crate::TestResult {
             run_queue: 0,
         }),
         "one Linux-style task-sched/rq wake transaction must own one runtime IRQ guard"
+    );
+    assert_eq!(
+        task_test_hooks::take_wake_entity_read_events(),
+        Some(task_test_hooks::WakeEntityReadEvents {
+            reads: 2,
+            copies: 0,
+        }),
+        "wake placement and preemption must borrow the task's single scheduling entity"
     );
     task_test_hooks::arm_park_deadline_publication_probe(this_cpu_id());
     task_test_hooks::request_current_owner_work()

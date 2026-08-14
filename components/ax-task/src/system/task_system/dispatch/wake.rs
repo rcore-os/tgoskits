@@ -182,7 +182,7 @@ impl TaskSystem {
         &self,
         sched: &ThreadSchedState,
         policy: SchedulePolicy,
-        entity: SchedulingEntity,
+        entity: &SchedulingEntity,
         waker: Option<CpuId>,
         previous: Option<CpuId>,
     ) -> Option<CpuId> {
@@ -311,8 +311,15 @@ impl TaskSystem {
             .assigned_cpu()
             .or_else(|| core.wake_cpu_hint());
         let policy = sched.policy.active().policy();
-        let queued_entity = sched.policy.active().entity().clone();
-        let target = self.select_wake_target(&sched, policy, queued_entity, waker, previous);
+        let target = self.select_wake_target(
+            &sched,
+            policy,
+            sched.policy.active().entity(),
+            waker,
+            previous,
+        );
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_wake_entity_read(core.id(), 0);
         let Some(target) = target else {
             core.discard_failed_wake();
             return WakeResult::Unavailable;
@@ -379,13 +386,18 @@ impl TaskSystem {
                     .assigned_cpu()
                     .or_else(|| core.wake_cpu_hint());
                 let policy = sched.policy.active().policy();
-                let queued_entity = sched.policy.active().entity().clone();
-                let Some(target) =
-                    self.select_wake_target(&sched, policy, queued_entity, waker, previous)
-                else {
+                let Some(target) = self.select_wake_target(
+                    &sched,
+                    policy,
+                    sched.policy.active().entity(),
+                    waker,
+                    previous,
+                ) else {
                     claim.cancel_selected();
                     return WaitWakeDelivery::Unavailable;
                 };
+                #[cfg(feature = "task-test-hooks")]
+                crate::task_test_hooks::record_wake_entity_read(core.id(), 0);
                 let Some(publication) = self.cpu_remotes[target.as_usize()].begin_publication()
                 else {
                     claim.cancel_selected();
@@ -523,7 +535,9 @@ impl TaskSystem {
             .fair()
             .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
         let preemption =
-            run_queue.wakeup_preempt(core.id(), policy, queued_entity.clone(), fair_virtual_time);
+            run_queue.wakeup_preempt(core.id(), policy, &queued_entity, fair_virtual_time);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_wake_entity_read(core.id(), 0);
         let preempts_current = preemption.requests_reschedule();
         core.publish_effective_schedule(policy, &queued_entity);
         sched.placement.activate(target);

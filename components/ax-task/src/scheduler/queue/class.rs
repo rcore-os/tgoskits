@@ -312,10 +312,10 @@ impl SchedulerClass {
     pub(super) fn check_preempt_curr(
         self,
         current_policy: SchedulePolicy,
-        current_entity: SchedulingEntity,
+        current_entity: &SchedulingEntity,
         current_is_idle: bool,
         wakee_policy: SchedulePolicy,
-        wakee_entity: SchedulingEntity,
+        wakee_entity: &SchedulingEntity,
         fair_virtual_time: u64,
     ) -> bool {
         if current_is_idle {
@@ -357,10 +357,10 @@ impl SchedulerClass {
 /// Linux `wakeup_preempt()` dispatch for the static class chain.
 pub(crate) fn wakeup_preempts(
     current_policy: SchedulePolicy,
-    current_entity: SchedulingEntity,
+    current_entity: &SchedulingEntity,
     current_is_idle: bool,
     wakee_policy: SchedulePolicy,
-    wakee_entity: SchedulingEntity,
+    wakee_entity: &SchedulingEntity,
     fair_virtual_time: u64,
 ) -> bool {
     SchedulerClass::for_policy(wakee_policy).check_preempt_curr(
@@ -375,9 +375,9 @@ pub(crate) fn wakeup_preempts(
 
 fn fair_wakeup_preempts(
     current_policy: SchedulePolicy,
-    current_entity: SchedulingEntity,
+    current_entity: &SchedulingEntity,
     wakee_policy: SchedulePolicy,
-    wakee_entity: SchedulingEntity,
+    wakee_entity: &SchedulingEntity,
     fair_virtual_time: u64,
 ) -> bool {
     match current_policy {
@@ -416,7 +416,7 @@ fn fair_wakeup_preempts(
     }
 }
 
-fn deadline_key(entity: SchedulingEntity) -> u64 {
+fn deadline_key(entity: &SchedulingEntity) -> u64 {
     entity
         .deadline()
         .and_then(DeadlineEntity::absolute_deadline_ns)

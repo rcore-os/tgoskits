@@ -668,7 +668,7 @@ impl CpuRunQueueState {
         &self,
         wakee: ThreadId,
         policy: SchedulePolicy,
-        entity: SchedulingEntity,
+        entity: &SchedulingEntity,
         fair_virtual_time: u64,
     ) -> WakePreemptionDecision {
         let Some(current) = self.current() else {
@@ -680,7 +680,7 @@ impl CpuRunQueueState {
         let current_entity = self
             .current_scheduling_entity()
             .expect("current dispatch must have one rq-owned scheduling entity");
-        if !current.should_preempt(current_entity, policy, entity, fair_virtual_time) {
+        if !current.should_preempt(&current_entity, policy, entity, fair_virtual_time) {
             return WakePreemptionDecision::KeepCurrent;
         }
         match policy {

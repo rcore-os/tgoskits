@@ -204,7 +204,7 @@ impl TaskSystem {
                 .or_else(|| {
                     self.select_priority_cpu(
                         current_policy,
-                        current_entity,
+                        &current_entity,
                         &sched.affinity.affinity,
                         None,
                         Some(owner),
@@ -422,7 +422,7 @@ impl TaskSystem {
     pub(super) fn select_priority_cpu(
         &self,
         policy: SchedulePolicy,
-        entity: SchedulingEntity,
+        entity: &SchedulingEntity,
         affinity: &CpuSet,
         preferred: Option<CpuId>,
         excluded: Option<CpuId>,

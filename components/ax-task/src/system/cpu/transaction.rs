@@ -259,7 +259,7 @@ impl<'a> OwnerRqTxn<'a> {
         &self,
         wakee: ThreadId,
         policy: SchedulePolicy,
-        entity: SchedulingEntity,
+        entity: &SchedulingEntity,
         fair_virtual_time: u64,
     ) -> WakePreemptionDecision {
         self.run_queue()

@@ -80,7 +80,7 @@ impl TaskSystem {
                 .fair()
                 .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
             run_queue
-                .wakeup_preempt(core.id(), policy, queued_entity.clone(), fair_virtual_time)
+                .wakeup_preempt(core.id(), policy, &queued_entity, fair_virtual_time)
                 .requests_reschedule()
         } else {
             false

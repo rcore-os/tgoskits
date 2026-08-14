@@ -3331,6 +3331,24 @@ publication batch：旧实现 LoongArch64 精确用例稳定得到 2 并失败�
 分别验证两个 logical delivery 均已交付，heartbeat 仍验证 FIFO task 能跨 period 继续运行。因此这里
 没有延长 timeout 或放宽 RT replenishment 结果，而是直接约束 Linux 对应的发布顺序与物理边数量。
 
+第八项重复 owner 是 direct wake 为只读调度决策复制完整 `SchedulingEntity`。Linux 的
+`try_to_wake_up()` 在 task/rq 锁约束内把同一个 `task_struct` 依次交给 `select_task_rq()`、
+`enqueue_task()` 和 `check_preempt_curr()`；Fair/RT/Deadline entity 始终只有 task 或 rq 一个可变
+owner。旧 Rust 边界却让 `select_priority_cpu()` 和 `wakeup_preempt()` 按值接收 entity，一次真实
+remote wake 因而在 placement 与 preemption 两处各复制一次；Deadline 分支会连 CBS runtime、absolute
+deadline 和 server 状态一起深拷贝。
+
+现在 placement、cpupri/cpudl 与 class preemption 的完整调用链都接收 `&SchedulingEntity`。wake
+transaction 仍在 task lock 下处理 Deadline activation，随后用 `take_active()` 把唯一可变状态 move
+到 owner rq；借用不会跨越 task/rq guard，也没有改成 `Arc` 或共享可变 entity。相同借用边界也覆盖
+affinity reconciliation、initial delivery、Deadline replenishment 和 owner enqueue，避免保留第二套
+只为 direct wake 特判的 API。
+
+真实 RISC-V ArceOS remote wait-queue wake 对 placement/preemption 两个只读访问计数：旧实现稳定为
+`reads=2, copies=2` 并失败，新实现为 `reads=2, copies=0` 并通过；同一用例继续验证跨 CPU wake、
+task-IPI 进度、park/switch/wake IRQ baton 与 deadline soft expiry。因此该回归约束的是单一 entity
+所有权，而不是通过缩短 workload 或放宽唤醒时限获得绿测。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

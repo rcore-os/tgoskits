@@ -209,7 +209,7 @@ impl TaskSystem {
             ) {
                 self.select_priority_cpu(
                     policy,
-                    sched.policy.active().entity().clone(),
+                    sched.policy.active().entity(),
                     affinity,
                     Some(owner),
                     None,
@@ -293,7 +293,7 @@ impl TaskSystem {
             owner
         } else {
             let (policy, entity) = self.affinity_schedule_state_locked(core, &sched)?;
-            self.select_priority_cpu(policy, entity, &sched.affinity.affinity, None, Some(owner))
+            self.select_priority_cpu(policy, &entity, &sched.affinity.affinity, None, Some(owner))
                 .ok_or(TaskError::InvalidConfiguration)?
         };
         core.set_wake_cpu_hint(target);
