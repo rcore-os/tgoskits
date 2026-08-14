@@ -15,6 +15,6 @@ args = [
 
 timeout = 60
 uefi = false
-to_bin = false
+to_bin = true
 success_regex = ["AXTEST_SUITE_OK"]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "AXTEST_SUITE_FAIL", "AXTEST_CASE status=fail"]
