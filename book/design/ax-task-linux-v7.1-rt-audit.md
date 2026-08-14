@@ -3313,6 +3313,24 @@ SoftExpiry guard 内按同一 budget 推进 task deadline 与 kernel timer。两
 85.881 秒降到 85.524 秒（-0.42%）；相对 dev 的端到端差距仍超过 20%，所以该检查点只关闭 timer
 base 重复所有权，下一步继续检查 current-handle 与 block/wake 固定事务。
 
+第七项重复 owner 是同一个 rq 事务把 preemption 与 owner-work 拆成两个 scheduler-request
+generation。此前修复 `else if` 时已经保证两个逻辑原因都不丢，但 running task 晋升 FIFO 和 direct
+wake 仍先发布 `REQUEST_PREEMPT`、完成一次 delivery，再单独发布 `REQUEST_OWNER_WORK`。这允许本地
+scheduler safe point 或远端 IPI 在两次 publication 之间消费第一代；即使 generation 状态机最终不
+丢 work，也会重复进入 owner-delivery/IRQ scope，并可能发送两次物理门铃。Linux 在 rq transaction
+完成后先让 resched 与 deferred-work state 全部可见，再以同一 IPI/irq_work edge 通知 owner。
+
+现在 `CpuRemote::request_remote_reschedule_with_scheduler_work()` 在一个 owner-delivery lease 和一个
+IRQ scope 内把 `REQUEST_PREEMPT | REQUEST_OWNER_WORK` 发布为同一 generation，随后最多发送一次物理
+doorbell。policy transaction 对四种结果显式分派；direct wake 也把 RT/DL push 与新激活 RT period
+折叠成一个 owner-work reason，且在同时要求抢占时复用同一组合入口。逻辑 bit 仍分别由 scheduler
+claim/drain 消费，没有把 reschedule 与 period/push 语义互相替代。
+
+真实 ArceOS `task-rt-policy` 为一次同时需要 reschedule 与新 RT period 的策略晋升统计 request
+publication batch：旧实现 LoongArch64 精确用例稳定得到 2 并失败，新实现为 1 并通过；原有断言仍
+分别验证两个 logical delivery 均已交付，heartbeat 仍验证 FIFO task 能跨 period 继续运行。因此这里
+没有延长 timeout 或放宽 RT replenishment 结果，而是直接约束 Linux 对应的发布顺序与物理边数量。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

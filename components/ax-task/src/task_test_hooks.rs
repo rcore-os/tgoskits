@@ -27,6 +27,7 @@ static DEADLINE_SOFT_EXPIRY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static RT_POLICY_DELIVERY_TARGET: AtomicU64 = AtomicU64::new(0);
 static RT_POLICY_DELIVERY_REQUIRED: AtomicU8 = AtomicU8::new(0);
 static RT_POLICY_DELIVERY_EVENTS: AtomicU8 = AtomicU8::new(0);
+static RT_POLICY_REQUEST_PUBLICATIONS: AtomicU64 = AtomicU64::new(0);
 static RT_POLICY_DELIVERY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static CURRENT_HANDLE_QUERY_TARGET: AtomicU64 = AtomicU64::new(0);
 static CURRENT_HANDLE_QUERY_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -522,6 +523,7 @@ pub fn arm_rt_policy_delivery_probe(thread: u64) {
     RT_POLICY_DELIVERY_TARGET.store(thread, Ordering::Relaxed);
     RT_POLICY_DELIVERY_REQUIRED.store(0, Ordering::Relaxed);
     RT_POLICY_DELIVERY_EVENTS.store(0, Ordering::Relaxed);
+    RT_POLICY_REQUEST_PUBLICATIONS.store(0, Ordering::Relaxed);
     RT_POLICY_DELIVERY_STAGE.store(STAGE_ARMED, Ordering::Release);
 }
 
@@ -536,6 +538,8 @@ pub struct RtPolicyDeliveryEvents {
     pub owner_work_required: bool,
     /// The owner was actually asked to publish newly activated scheduler work.
     pub owner_work_delivered: bool,
+    /// Scheduler-request publication batches emitted by the policy transaction.
+    pub request_publications: u64,
 }
 
 /// Takes logical delivery events for the armed RT policy transition.
@@ -553,6 +557,7 @@ pub fn take_rt_policy_delivery_events() -> Option<RtPolicyDeliveryEvents> {
     }
     let required = RT_POLICY_DELIVERY_REQUIRED.load(Ordering::Relaxed);
     let delivered = RT_POLICY_DELIVERY_EVENTS.load(Ordering::Relaxed);
+    let request_publications = RT_POLICY_REQUEST_PUBLICATIONS.load(Ordering::Relaxed);
     RT_POLICY_DELIVERY_TARGET.store(0, Ordering::Relaxed);
     RT_POLICY_DELIVERY_STAGE.store(STAGE_IDLE, Ordering::Release);
     Some(RtPolicyDeliveryEvents {
@@ -560,6 +565,7 @@ pub fn take_rt_policy_delivery_events() -> Option<RtPolicyDeliveryEvents> {
         reschedule_delivered: delivered & RT_POLICY_RESCHEDULE != 0,
         owner_work_required: required & RT_POLICY_OWNER_WORK != 0,
         owner_work_delivered: delivered & RT_POLICY_OWNER_WORK != 0,
+        request_publications,
     })
 }
 
@@ -592,6 +598,14 @@ pub(crate) fn record_rt_policy_reschedule(thread: ThreadId) {
 
 pub(crate) fn record_rt_policy_owner_work(thread: ThreadId) {
     record_rt_policy_delivery(thread, RT_POLICY_OWNER_WORK);
+}
+
+pub(crate) fn record_rt_policy_request_publication(thread: ThreadId) {
+    if RT_POLICY_DELIVERY_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && RT_POLICY_DELIVERY_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        RT_POLICY_REQUEST_PUBLICATIONS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Arms one real context-switch tail for IRQ-owner accounting.

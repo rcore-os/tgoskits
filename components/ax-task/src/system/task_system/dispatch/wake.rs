@@ -532,6 +532,11 @@ impl TaskSystem {
         run_queue.commit();
         drop(sched_guard);
         let rt_period_started = self.activate_owner_rt_period_for_policy(target, policy);
+        // Linux publishes wake preemption, RT/DL push work, and a newly active
+        // bandwidth period after the enqueue transaction. Preserve each
+        // logical reason while coalescing their shared physical delivery.
+        let owner_work_required =
+            (rt_deadline_push_pending && !preempts_current) || rt_period_started;
 
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_direct_wake_enqueue();
@@ -554,21 +559,20 @@ impl TaskSystem {
             if preempts_current {
                 remote.request_reschedule();
             }
+            // The reserved Deadline refresh is already an owner-control
+            // publication. Its scheduler-work bit covers RT/DL push and a new
+            // root-period projection, so a second generation is redundant.
             self.publish_owner_deadline_refresh_reserved(core, target, publication);
         } else {
             drop(publication);
-            if preempts_current {
-                remote.request_remote_reschedule();
+            match (preempts_current, owner_work_required) {
+                (true, true) => remote.request_remote_reschedule_with_scheduler_work(),
+                (true, false) => remote.request_remote_reschedule(),
+                (false, true) => {
+                    remote.kick_scheduler_work();
+                }
+                (false, false) => {}
             }
-        }
-        if rt_deadline_push_pending && !preempts_current {
-            // Linux queues the RT/DL push balance callback in the enqueue
-            // transaction. The target owner performs migration after dropping
-            // the wakee's rq lock and revalidates the pushable candidate.
-            remote.kick_scheduler_work();
-        }
-        if rt_period_started {
-            remote.kick_scheduler_work();
         }
         WakeResult::Notified
     }

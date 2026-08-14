@@ -129,6 +129,22 @@ impl CpuRemote {
         }
     }
 
+    /// Publishes coupled preemption and owner-work reasons before ringing one
+    /// physical scheduler doorbell.
+    ///
+    /// One rq transaction may make both facts true. They share transport but
+    /// remain separate sticky bits in one logical generation, matching Linux's
+    /// rule that scheduler state and deferred work are visible before the IPI.
+    pub(crate) fn request_remote_reschedule_with_scheduler_work(&self) {
+        let Some(_publication) = self.begin_owner_delivery() else {
+            return;
+        };
+        let _irq = IrqScope::enter();
+        let publication =
+            self.publish_scheduler_request_owned(REQUEST_PREEMPT | REQUEST_OWNER_WORK);
+        self.deliver_scheduler_work_owned(publication);
+    }
+
     pub(crate) fn request_scheduler_work(&self) {
         let Some(_publication) = self.begin_owner_delivery() else {
             return;

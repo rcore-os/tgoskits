@@ -107,6 +107,10 @@ pub fn run() -> crate::TestResult {
                 delivery.owner_work_delivered, delivery.owner_work_required,
                 "RT promotion must preserve independently activated period work"
             );
+            assert_eq!(
+                delivery.request_publications, 1,
+                "one RT policy transaction must publish one combined scheduler-request batch"
+            );
             promoted.store(true, Ordering::Release);
             while !stop.load(Ordering::Acquire) {
                 heartbeat.fetch_add(1, Ordering::Relaxed);
