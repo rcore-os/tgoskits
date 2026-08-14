@@ -95,6 +95,7 @@ pub fn run() -> crate::TestResult {
     task_test_hooks::allow_pi_release_wake();
     owner.join().unwrap();
     owner_change_after_origin_registration();
+    owner_exit_after_waiter_snapshot();
     Ok(())
 }
 
@@ -169,4 +170,61 @@ fn owner_change_after_origin_registration() {
     owner.join().unwrap();
     task_test_hooks::allow_pi_release_wake();
     waiter.join().unwrap();
+}
+
+fn owner_exit_after_waiter_snapshot() {
+    let mutex = Arc::new(Mutex::new(()));
+    let owner_locked = Arc::new(AtomicBool::new(false));
+    let release_owner = Arc::new(AtomicBool::new(false));
+    let owner = {
+        let mutex = Arc::clone(&mutex);
+        let owner_locked = Arc::clone(&owner_locked);
+        let release_owner = Arc::clone(&release_owner);
+        thread::spawn(move || {
+            pin_current_to_cpu(0);
+            let guard = mutex.lock();
+            owner_locked.store(true, Ordering::Release);
+            while !release_owner.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+            drop(guard);
+        })
+    };
+    wait_until(
+        || owner_locked.load(Ordering::Acquire),
+        "PI owner-exit test owner did not acquire the lock",
+    );
+
+    let start_waiter = Arc::new(AtomicBool::new(false));
+    let waiter_acquired = Arc::new(AtomicBool::new(false));
+    let waiter = {
+        let mutex = Arc::clone(&mutex);
+        let start_waiter = Arc::clone(&start_waiter);
+        let waiter_acquired = Arc::clone(&waiter_acquired);
+        thread::spawn(move || {
+            pin_current_to_cpu(1);
+            while !start_waiter.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+            drop(mutex.lock());
+            waiter_acquired.store(true, Ordering::Release);
+        })
+    };
+    task_test_hooks::arm_pi_owner_exit_before_waiter_registration(
+        waiter.thread().id().as_u64().get(),
+    );
+    start_waiter.store(true, Ordering::Release);
+    wait_until(
+        task_test_hooks::pi_owner_snapshot_captured,
+        "PI waiter did not capture the exiting owner",
+    );
+
+    release_owner.store(true, Ordering::Release);
+    owner.join().unwrap();
+    task_test_hooks::allow_pi_waiter_after_owner_exit();
+    waiter.join().unwrap();
+    assert!(
+        waiter_acquired.load(Ordering::Acquire),
+        "PI waiter did not acquire the mutex after retrying the exited owner"
+    );
 }

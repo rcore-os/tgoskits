@@ -121,21 +121,37 @@ impl TaskSystem {
                     PiWaitStateError::OwnerlessSelectionMissing,
                 ));
             }
-            let initial_owner = owner
-                .map(|owner| {
-                    self.pi_thread_core(owner).map_err(|_| {
-                        TaskError::InvalidPiWaitState(PiWaitStateError::ExitedParticipant)
-                    })
-                })
-                .transpose()?;
-            let _owner_activity = if let Some(owner) = initial_owner.as_ref() {
-                Some(
-                    owner
-                        .try_scheduler_activity()
-                        .ok_or(TaskError::InvalidPiWaitState(
+            // Linux rereads the futex owner after an exit-race lookup fails:
+            // an owner may release this mutex and close its scheduler lifetime
+            // after our physical snapshot but before we lease its PI state.
+            // Only an unchanged snapshot still describes an exited owner.
+            let initial_owner = if let Some(owner) = owner {
+                match self.pi_thread_core(owner) {
+                    Ok(owner) => Some(owner),
+                    Err(_) if mutex_core.owner_snapshot() != snapshot => continue,
+                    Err(_) => {
+                        return Err(TaskError::InvalidPiWaitState(
                             PiWaitStateError::ExitedParticipant,
-                        ))?,
-                )
+                        ));
+                    }
+                }
+            } else {
+                None
+            };
+            #[cfg(feature = "task-test-hooks")]
+            if initial_owner.is_some() {
+                crate::task_test_hooks::owner_snapshot_captured(waiter);
+            }
+            let _owner_activity = if let Some(owner) = initial_owner.as_ref() {
+                match owner.try_scheduler_activity() {
+                    Some(activity) => Some(activity),
+                    None if mutex_core.owner_snapshot() != snapshot => continue,
+                    None => {
+                        return Err(TaskError::InvalidPiWaitState(
+                            PiWaitStateError::ExitedParticipant,
+                        ));
+                    }
+                }
             } else {
                 None
             };

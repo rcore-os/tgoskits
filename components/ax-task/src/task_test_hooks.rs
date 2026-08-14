@@ -12,6 +12,8 @@ static TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
 static PI_RELEASE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static TARGET_CHAIN_TOP: AtomicU64 = AtomicU64::new(0);
 static PI_CHAIN_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static PI_OWNER_EXIT_TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
+static PI_OWNER_EXIT_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static WAKE_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static WAKE_ENTITY_READ_COPY_TARGET: AtomicU64 = AtomicU64::new(0);
 static WAKE_ENTITY_READ_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -56,6 +58,8 @@ const STAGE_TRANSACTION_ACTIVE: u8 = 8;
 const STAGE_CANCELLED: u8 = 9;
 const STAGE_CHAIN_DECIDED: u8 = 3;
 const STAGE_OWNER_MAY_CHANGE: u8 = 4;
+const STAGE_OWNER_CAPTURED: u8 = 3;
+const STAGE_OWNER_EXITED: u8 = 4;
 const STAGE_COMPLETE: u8 = 3;
 const RT_POLICY_RESCHEDULE: u8 = 1 << 0;
 const RT_POLICY_OWNER_WORK: u8 = 1 << 1;
@@ -1066,6 +1070,42 @@ pub fn allow_pi_chain_owner_change() {
     );
 }
 
+/// Arms a pause after one PI waiter resolves the current physical owner.
+pub fn arm_pi_owner_exit_before_waiter_registration(waiter: u64) {
+    assert_ne!(waiter, 0, "a task-test waiter identity must be non-zero");
+    assert_eq!(
+        PI_OWNER_EXIT_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one PI owner-exit interleaving may be armed"
+    );
+    PI_OWNER_EXIT_TARGET_WAITER.store(waiter, Ordering::Relaxed);
+    PI_OWNER_EXIT_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the target waiter retained the observed owner identity.
+pub fn pi_owner_snapshot_captured() -> bool {
+    PI_OWNER_EXIT_STAGE.load(Ordering::Acquire) == STAGE_OWNER_CAPTURED
+}
+
+/// Lets the waiter continue after the observed physical owner has exited.
+pub fn allow_pi_waiter_after_owner_exit() {
+    assert_eq!(
+        PI_OWNER_EXIT_STAGE.compare_exchange(
+            STAGE_OWNER_CAPTURED,
+            STAGE_OWNER_EXITED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_OWNER_CAPTURED),
+        "PI waiter continuation must follow owner exit"
+    );
+}
+
 pub(crate) fn registered_waiter(waiter: ThreadId) {
     if PI_RELEASE_STAGE.load(Ordering::Acquire) != STAGE_ARMED
         || TARGET_WAITER.load(Ordering::Relaxed) != waiter.as_u64()
@@ -1131,4 +1171,27 @@ pub(crate) fn chain_decision_committed(top: ThreadId) {
     }
     TARGET_CHAIN_TOP.store(0, Ordering::Relaxed);
     PI_CHAIN_STAGE.store(STAGE_IDLE, Ordering::Release);
+}
+
+pub(crate) fn owner_snapshot_captured(waiter: ThreadId) {
+    if PI_OWNER_EXIT_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || PI_OWNER_EXIT_TARGET_WAITER.load(Ordering::Relaxed) != waiter.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        PI_OWNER_EXIT_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_OWNER_CAPTURED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "target PI waiter captured its owner in an invalid test stage"
+    );
+    while PI_OWNER_EXIT_STAGE.load(Ordering::Acquire) != STAGE_OWNER_EXITED {
+        core::hint::spin_loop();
+    }
+    PI_OWNER_EXIT_TARGET_WAITER.store(0, Ordering::Relaxed);
+    PI_OWNER_EXIT_STAGE.store(STAGE_IDLE, Ordering::Release);
 }
