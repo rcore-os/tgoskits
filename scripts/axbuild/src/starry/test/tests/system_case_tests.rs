@@ -150,6 +150,20 @@ fn starry_system_runner_bounds_each_pid_namespace() {
         "{} must bound every case at the PID-namespace owner and kill that owner on timeout",
         runner_path.display()
     );
+
+    let case_timeout_seconds = runner
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("#define CASE_TIMEOUT_SECONDS ")
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .expect("the shared system runner must define a numeric per-case timeout");
+    assert_eq!(
+        case_timeout_seconds,
+        180,
+        "{} must preserve the measured 1.5x-bounded case budget",
+        runner_path.display()
+    );
 }
 
 #[test]

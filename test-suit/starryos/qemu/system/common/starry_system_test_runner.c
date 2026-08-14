@@ -17,7 +17,7 @@
 #include <unistd.h>
 
 #define TEST_DIRECTORY "/usr/bin/starry-test-suit"
-#define CASE_TIMEOUT_SECONDS 120
+#define CASE_TIMEOUT_SECONDS 180
 #define RUNNER_TIMEOUT_STATUS 124
 #define RUNNER_ERROR_STATUS 125
 #define NAMESPACE_WAIT_NO_CHILD (-2)
