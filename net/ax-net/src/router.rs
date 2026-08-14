@@ -66,7 +66,9 @@ use smoltcp::{
 use crate::{
     LISTEN_TABLE,
     config::{DeviceBinding, InterfaceId, RouteInfo},
-    consts::{DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
+    consts::{
+        DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STACK_MAX_MTU, STANDARD_MTU,
+    },
     device::{ArpEntry, Device},
     ip_tos::apply_egress_ip_tos,
     rx_meta::packet_meta_for_rx_packet,
@@ -224,30 +226,29 @@ struct RxPacket {
     bytes: QueuedPacket,
 }
 
-/// Fixed-size packet storage for bounded router queues.
+/// Heap-backed packet storage for bounded router queues.
 ///
-/// Keeping packets inline avoids per-packet heap allocation while preserving a
-/// predictable memory ceiling from the queue capacity constants.
+/// Each slot is sized to its actual frame length, so the queue's memory ceiling
+/// is `depth × actual-frame-size` rather than `depth × STACK_MAX_MTU`: a
+/// per-interface MTU raised up to [`STACK_MAX_MTU`] is carried without dropping,
+/// while ordinary 1500-byte traffic costs no more than before. Acceptance is
+/// bounded by [`STACK_MAX_MTU`] (Linux's TUN `MAX_MTU`).
 struct QueuedPacket {
-    bytes: [u8; STANDARD_MTU],
-    len: usize,
+    bytes: Box<[u8]>,
 }
 
 impl QueuedPacket {
     fn new(packet: &[u8]) -> Option<Self> {
-        if packet.len() > STANDARD_MTU {
+        if packet.len() > STACK_MAX_MTU {
             return None;
         }
-        let mut bytes = [0; STANDARD_MTU];
-        bytes[..packet.len()].copy_from_slice(packet);
         Some(Self {
-            bytes,
-            len: packet.len(),
+            bytes: Box::from(packet),
         })
     }
 
     fn as_slice(&self) -> &[u8] {
-        &self.bytes[..self.len]
+        &self.bytes
     }
 }
 
@@ -289,6 +290,13 @@ struct DeviceHandle {
     tx_packets: AtomicU64,
     tx_errors: AtomicU64,
     tx_dropped: AtomicU64,
+    /// Set when the interface is removed. The RX/TX workers observe it and
+    /// return, so a closed non-persistent TUN device leaves no worker running.
+    stopped: AtomicBool,
+    /// Handles of the spawned RX/TX worker tasks. `stop()` joins them so the
+    /// data path is fully quiesced before the device's router slot is freed or
+    /// reused (Linux tun_detach: napi_disable + synchronize_net).
+    workers: Mutex<Vec<ax_task::AxTaskRef>>,
 }
 
 impl DeviceHandle {
@@ -318,7 +326,32 @@ impl DeviceHandle {
             tx_packets: AtomicU64::new(0),
             tx_errors: AtomicU64::new(0),
             tx_dropped: AtomicU64::new(0),
+            stopped: AtomicBool::new(false),
+            workers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Signals the RX/TX workers to exit and wakes them so they observe it
+    /// promptly (both may be parked in their wait queues).
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.rx_ready.store(true, Ordering::Release);
+        self.rx_wake.notify_one(true);
+        self.tx_wake.notify_one(true);
+        // Quiesce the data path before the caller frees or reuses this device's
+        // router slot, mirroring Linux tun_detach (napi_disable +
+        // synchronize_net): wait for the RX/TX workers to observe `stopped` and
+        // fully exit, so no stale worker can keep touching shared state (router
+        // queues, device wakers, the smoltcp service) once the slot is recreated
+        // by a subsequent TUNSETIFF. The workers take no sleeping lock that this
+        // path holds, so the join cannot deadlock.
+        for worker in core::mem::take(&mut *self.workers.lock()) {
+            worker.join();
+        }
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
     }
 
     /// Records `len` bytes received on this interface.
@@ -604,6 +637,26 @@ impl RouteTable {
         });
     }
 
+    /// Removes the first route matching a destination prefix (and optional
+    /// gateway) on one interface, as requested by `SIOCDELRT`. Returns whether
+    /// a matching route was found.
+    pub fn remove_matching_rule(
+        &mut self,
+        filter: IpCidr,
+        via: Option<IpAddress>,
+        interface_id: InterfaceId,
+    ) -> bool {
+        let before = self.rules.len();
+        if let Some(pos) = self.rules.iter().position(|rule| {
+            rule.interface_id == interface_id
+                && rule.filter == filter
+                && (via.is_none() || rule.via == via)
+        }) {
+            self.rules.remove(pos);
+        }
+        self.rules.len() != before
+    }
+
     /// Atomically replaces IPv4 routes owned by one interface.
     pub fn replace_ipv4_rules_for_interface(
         &mut self,
@@ -627,19 +680,28 @@ pub struct Router {
     rx_buffer: RouterPacketBuffer,
     tx_buffer: RouterPacketBuffer,
     queues: Arc<RouterQueues>,
-    devices: Vec<Arc<DeviceHandle>>,
+    /// Concrete devices indexed by router device index. A slot becomes `None`
+    /// when its interface is removed; the index is never reused for a different
+    /// interface within a live route rule's lifetime, so `Rule::dev` stays valid
+    /// (a recreated interface takes a fresh slot). Tombstoning instead of
+    /// removing keeps every later slot's index stable.
+    devices: Vec<Option<Arc<DeviceHandle>>>,
     table: SharedRouteTable,
 }
 impl Router {
     /// Creates the virtual multi-device endpoint used by smoltcp.
     pub fn new(table: SharedRouteTable) -> Self {
+        // Pre-size the shared rx/tx pools to hold a full STACK_MAX_MTU frame on
+        // top of SOCKET_BUFFER_SIZE standard frames of buffering, so a jumbo
+        // datagram always fits in a single wire frame.
+        let pool_bytes = STACK_MAX_MTU + STANDARD_MTU * SOCKET_BUFFER_SIZE;
         let rx_buffer = RouterPacketBuffer::new(
             vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
-            vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
+            vec![0u8; pool_bytes],
         );
         let tx_buffer = RouterPacketBuffer::new(
             vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
-            vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
+            vec![0u8; pool_bytes],
         );
         let queues = Arc::new(RouterQueues {
             rx: Arc::new(BoundedPacketQueue::new(DEVICE_RX_QUEUE_SIZE)),
@@ -658,29 +720,66 @@ impl Router {
         self.table.write().add_rule(rule);
     }
 
+    /// Removes a route matching a destination prefix (and optional gateway) on
+    /// one interface. Returns whether a route was removed.
+    pub fn remove_rule(
+        &mut self,
+        filter: IpCidr,
+        via: Option<IpAddress>,
+        interface_id: InterfaceId,
+    ) -> bool {
+        self.table
+            .write()
+            .remove_matching_rule(filter, via, interface_id)
+    }
+
     /// Registers a concrete device and returns its router device index.
     pub fn add_device(&mut self, interface_id: InterfaceId, device: Box<dyn Device>) -> usize {
-        self.devices
-            .push(DeviceHandle::new(interface_id, device, &self.queues));
-        self.devices.len() - 1
+        let handle = DeviceHandle::new(interface_id, device, &self.queues);
+        // Reuse a tombstoned slot if one is free so the device vector does not
+        // grow without bound across close/recreate cycles; otherwise append.
+        if let Some(dev) = self.devices.iter().position(Option::is_none) {
+            self.devices[dev] = Some(handle);
+            dev
+        } else {
+            self.devices.push(Some(handle));
+            self.devices.len() - 1
+        }
+    }
+
+    /// Removes the device backing an interface: stops its RX/TX workers and
+    /// tombstones its slot. Later slot indices stay stable so live `Rule::dev`
+    /// references remain valid, matching Linux fully unregistering a closed
+    /// non-persistent tun device (`tun_detach_all`).
+    pub fn remove_device(&mut self, interface_id: InterfaceId) {
+        if let Some(dev) = self.device_index_for_interface_id(interface_id)
+            && let Some(handle) = self.devices[dev].take()
+        {
+            handle.stop();
+        }
     }
 
     /// Returns the public interface id for a router device index.
     pub fn interface_id_for_dev(&self, dev: usize) -> Option<InterfaceId> {
-        self.devices.get(dev).map(|device| device.interface_id)
+        self.devices
+            .get(dev)
+            .and_then(|slot| slot.as_ref())
+            .map(|device| device.interface_id)
     }
 
-    /// Finds the router device index for a public interface id.
+    /// Finds the router device index for a public interface id (live slots only).
     pub fn device_index_for_interface_id(&self, interface_id: InterfaceId) -> Option<usize> {
-        self.devices
-            .iter()
-            .position(|device| device.interface_id == interface_id)
+        self.devices.iter().position(|slot| {
+            slot.as_ref()
+                .is_some_and(|device| device.interface_id == interface_id)
+        })
     }
 
     /// Returns names of all registered devices.
     pub fn device_names(&self) -> Vec<String> {
         self.devices
             .iter()
+            .flatten()
             .map(|device| device.name.clone())
             .collect()
     }
@@ -706,7 +805,7 @@ impl Router {
     }
 
     fn start_device_tx_worker(&self, dev: usize) {
-        let Some(device) = self.devices.get(dev) else {
+        let Some(device) = self.devices.get(dev).and_then(|slot| slot.as_ref()) else {
             return;
         };
         // Skip loopback: it uses fast path (no worker needed)
@@ -715,11 +814,13 @@ impl Router {
         }
         let device = device.clone();
         let name = format!("{}-tx", device.name);
-        ax_task::spawn_with_name(move || device_tx_worker(device), name);
+        let owner = device.clone();
+        let handle = ax_task::spawn_with_name(move || device_tx_worker(device), name);
+        owner.workers.lock().push(handle);
     }
 
     fn start_device_rx_worker(&self, dev: usize) {
-        let Some(device) = self.devices.get(dev) else {
+        let Some(device) = self.devices.get(dev).and_then(|slot| slot.as_ref()) else {
             return;
         };
         // Skip loopback: packets injected directly in dispatch
@@ -728,12 +829,16 @@ impl Router {
         }
         let device = device.clone();
         let name = format!("{}-rx", device.name);
-        ax_task::spawn_with_name(move || device_rx_worker(device), name);
+        let owner = device.clone();
+        let handle = ax_task::spawn_with_name(move || device_rx_worker(device), name);
+        owner.workers.lock().push(handle);
     }
 
     /// Finds the index of a device by its interface name (e.g. `"wlan0"`).
     pub fn device_index(&self, name: &str) -> Option<usize> {
-        self.devices.iter().position(|device| device.name == name)
+        self.devices
+            .iter()
+            .position(|slot| slot.as_ref().is_some_and(|device| device.name == name))
     }
 
     /// Applies an IPv4 address/gateway update to one device and its routes.
@@ -760,7 +865,12 @@ impl Router {
         address: Option<Ipv4Cidr>,
         gateway: Option<IpAddress>,
     ) -> Vec<Rule> {
-        self.devices[dev].inner.lock().set_ipv4_addr(address);
+        self.devices[dev]
+            .as_ref()
+            .expect("ipv4_rules on a live device")
+            .inner
+            .lock()
+            .set_ipv4_addr(address);
 
         let mut rules = Vec::new();
         if let Some(address) = address {
@@ -811,6 +921,7 @@ impl Router {
                 if let Some(dev) = self
                     .devices
                     .iter()
+                    .flatten()
                     .find(|d| d.interface_id == packet.interface_id)
                 {
                     dev.count_rx_dropped(1);
@@ -831,7 +942,9 @@ impl Router {
         packet: &[u8],
         _timestamp: Instant,
     ) -> bool {
-        let device = &self.devices[dev];
+        let device = self.devices[dev]
+            .as_ref()
+            .expect("send_on_device on a live device");
         if device.interface_id == InterfaceId::LOOPBACK {
             // Loopback traffic is transmitted and received on the same
             // interface.  Count only after successful injection so that
@@ -857,7 +970,7 @@ impl Router {
     /// Collects ARP/neighbor entries from all devices.
     pub fn arp_entries(&self, timestamp: Instant) -> Vec<ArpEntry> {
         let mut entries = Vec::new();
-        for device in &self.devices {
+        for device in self.devices.iter().flatten() {
             entries.extend(device.inner.lock().arp_entries(timestamp));
         }
         entries
@@ -865,12 +978,16 @@ impl Router {
 
     /// Returns a per-interface snapshot of RX/TX byte and packet counters.
     pub fn net_dev_stats(&self) -> Vec<NetDevStats> {
-        self.devices.iter().map(|device| device.stats()).collect()
+        self.devices
+            .iter()
+            .flatten()
+            .map(|device| device.stats())
+            .collect()
     }
 
     /// Registers a global device-readiness waker for all devices.
     pub fn register_device_waker(&self, waker: &core::task::Waker) {
-        for device in &self.devices {
+        for device in self.devices.iter().flatten() {
             register_device_poll(device, &device.rx_waker);
             register_device_poll(device, waker);
         }
@@ -878,7 +995,7 @@ impl Router {
 
     /// Forces all device RX workers to re-check their devices.
     pub fn wake_all_devices(&self) {
-        for device in &self.devices {
+        for device in self.devices.iter().flatten() {
             wake_device_poll(device);
             device.wake_rx();
         }
@@ -886,7 +1003,7 @@ impl Router {
 
     /// Registers a waker for devices allowed by a socket's binding.
     pub fn register_waker(&self, binding: DeviceBinding, waker: &core::task::Waker) {
-        for device in &self.devices {
+        for device in self.devices.iter().flatten() {
             if binding.bound_if.is_none_or(|id| id == device.interface_id) {
                 register_device_poll(device, &device.rx_waker);
                 register_device_poll(device, waker);
@@ -954,12 +1071,12 @@ impl Router {
 }
 
 fn dispatch_link_local_fanout(
-    devices: &[Arc<DeviceHandle>],
+    devices: &[Option<Arc<DeviceHandle>>],
     dst_addr: IpAddress,
     packet: &[u8],
 ) -> bool {
     let mut poll_next = false;
-    for dev in devices {
+    for dev in devices.iter().flatten() {
         if dev.interface_id != InterfaceId::LOOPBACK {
             poll_next |= dev.enqueue_tx(dst_addr, packet);
         }
@@ -969,7 +1086,7 @@ fn dispatch_link_local_fanout(
 
 fn dispatch_unicast_packet(
     rx_buffer: &mut RouterPacketBuffer,
-    devices: &[Arc<DeviceHandle>],
+    devices: &[Option<Arc<DeviceHandle>>],
     table: &SharedRouteTable,
     src_addr: IpAddress,
     dst_addr: IpAddress,
@@ -993,7 +1110,10 @@ fn dispatch_unicast_packet(
         route
     };
 
-    let dev = &devices[route.dev];
+    let Some(dev) = devices.get(route.dev).and_then(|slot| slot.as_ref()) else {
+        warn!("Route references a removed device slot {}", route.dev);
+        return false;
+    };
     if dev.interface_id == InterfaceId::LOOPBACK {
         // Loopback packets are copied directly from the TX buffer into the RX
         // buffer, bypassing per-device workers and the shared RX queue. Count
@@ -1065,6 +1185,9 @@ fn inject_loopback_rx(
 /// Dedicated worker that drains one device's TX queue.
 fn device_tx_worker(device: Arc<DeviceHandle>) {
     loop {
+        if device.is_stopped() {
+            return;
+        }
         if let Some(packet) = device.tx_queue.pop() {
             {
                 let mut inner = device.inner.lock();
@@ -1082,7 +1205,9 @@ fn device_tx_worker(device: Arc<DeviceHandle>) {
             // pending_packets and sent later in process_arp() where their frame
             // lengths flow through deferred_tx_frame_lens → drain_deferred_tx().
         } else {
-            device.tx_wake.wait_until(|| !device.tx_queue.is_empty());
+            device
+                .tx_wake
+                .wait_until(|| !device.tx_queue.is_empty() || device.is_stopped());
         }
     }
 }
@@ -1091,7 +1216,9 @@ fn device_tx_worker(device: Arc<DeviceHandle>) {
 fn device_rx_worker(device: Arc<DeviceHandle>) {
     let mut rx_buffer = DevicePacketBuffer::new(
         vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
-        vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
+        // Hold a full STACK_MAX_MTU frame on top of a standard batch, so a jumbo
+        // frame received from the device is never truncated on ingress.
+        vec![0u8; STACK_MAX_MTU + STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
     );
     // Persistent FIFO pairing each received packet with its L2 frame length.
     // Entries that could not be pushed to the shared RX queue due to
@@ -1101,6 +1228,9 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         VecDeque::with_capacity(DEVICE_RX_WORKER_BATCH);
 
     loop {
+        if device.is_stopped() {
+            return;
+        }
         let mut received = false;
         {
             let mut device_inner = device.inner.lock();
@@ -1166,7 +1296,9 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
             if !local_batch.is_empty() {
                 panic!("drain_local_batch_step returned Ok but local_batch is not empty");
             }
-            crate::request_poll();
+            if received {
+                crate::request_poll();
+            }
         }
 
         if !received && local_batch.is_empty() {
@@ -1284,7 +1416,19 @@ impl smoltcp::phy::Device for Router {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
         caps.medium = Medium::Ip;
-        caps.max_transmission_unit = STANDARD_MTU;
+        // The shared wire is provisioned at the ceiling any interface can request
+        // (`STACK_MAX_MTU`, a header-less TUN's Linux max_mtu of 65535). smoltcp
+        // reads `capabilities()` once at `Interface::new` and caches it for the
+        // lifetime of the interface, so a per-interface `SIOCSIFMTU` cannot lower
+        // or raise it afterwards; pinning it at the ceiling means the protocol
+        // core never drops a frame that a per-interface MTU legitimately allows
+        // (an oversized packet is otherwise silently dropped, fragmentation being
+        // disabled). Each interface's own MTU is enforced as control-plane state
+        // (`SIOCGIFMTU`, the 68..MAX bounds), and every device queue still bounds
+        // acceptance to its own frame ceiling, so over-provisioning the wire is
+        // safe. Mirrors Linux, where the netdev MTU is per-`net_device` and the
+        // stack emits an skb sized to the frame rather than a fixed wire buffer.
+        caps.max_transmission_unit = STACK_MAX_MTU;
         caps.max_burst_size = Some(SOCKET_BUFFER_SIZE);
         caps
     }
@@ -1332,6 +1476,40 @@ mod tests {
 
     fn ipv4_cidr(addr: Ipv4Address, prefix_len: u8) -> IpCidr {
         Ipv4Cidr::new(addr, prefix_len).into()
+    }
+
+    #[test]
+    fn queued_packet_carries_datagram_above_standard_mtu() {
+        // A 3000-byte datagram (within a configured MTU > 1500) is accepted and
+        // round-trips byte-exact; the old fixed `[u8; STANDARD_MTU]` slot dropped
+        // it, which was the observable fake-success behind the SIOCSIFMTU review.
+        let big = vec![0xABu8; 3000];
+        let queued = QueuedPacket::new(&big).expect("datagram within STACK_MAX_MTU is accepted");
+        assert_eq!(queued.as_slice(), big.as_slice());
+
+        // The acceptance ceiling is STACK_MAX_MTU (Linux TUN `MAX_MTU`); one byte
+        // over is rejected.
+        assert!(QueuedPacket::new(&vec![0u8; STACK_MAX_MTU]).is_some());
+        assert!(QueuedPacket::new(&vec![0u8; STACK_MAX_MTU + 1]).is_none());
+    }
+
+    #[test]
+    fn shared_wire_mtu_is_provisioned_at_the_ceiling() {
+        use smoltcp::phy::Device as _;
+
+        // smoltcp caches `capabilities()` at `Interface::new` and never re-reads
+        // it, so the shared wire MTU must be pinned at the ceiling any interface
+        // could later request (`STACK_MAX_MTU`). A per-interface `SIOCSIFMTU` of,
+        // say, 9000 then emits a single 9000-byte frame through the core instead
+        // of being dropped against a stale 1500-byte wire MTU. This is the fix for
+        // the review's fake-success: reporting a raised MTU while the data path
+        // still could not carry it.
+        let router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
+        assert_eq!(
+            router.capabilities().max_transmission_unit,
+            STACK_MAX_MTU,
+            "the shared wire carries a full STACK_MAX_MTU frame"
+        );
     }
 
     #[test]
@@ -1527,7 +1705,7 @@ mod tests {
             rx: Arc::new(BoundedPacketQueue::new(1)),
         });
         let dev1 = DeviceHandle::new(IF1, Box::new(EmptyDevice), &queues1);
-        let devices = vec![dev0.clone(), dev1];
+        let devices = vec![Some(dev0.clone()), Some(dev1)];
 
         // Route table: only a subnet route for dev0, which covers the
         // source address but NOT the destination.
@@ -1552,7 +1730,7 @@ mod tests {
         let dst_addr = IpAddress::Ipv4(Ipv4Address::new(203, 0, 113, 10));
         let packet = [0u8; 64];
 
-        let before: Vec<_> = devices.iter().map(|d| d.stats()).collect();
+        let before: Vec<_> = devices.iter().flatten().map(|d| d.stats()).collect();
 
         let ok = dispatch_unicast_packet(
             &mut rx_buffer,
@@ -1566,7 +1744,7 @@ mod tests {
 
         assert!(!ok, "no-route dispatch must return false");
 
-        for (i, dev) in devices.iter().enumerate() {
+        for (i, dev) in devices.iter().flatten().enumerate() {
             let snap = dev.stats();
             assert_eq!(
                 snap.tx_dropped, before[i].tx_dropped,

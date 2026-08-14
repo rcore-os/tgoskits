@@ -502,3 +502,23 @@ pub fn net_io_constants_hold() -> bool {
 pub fn net_socket_constants_hold() -> bool {
     super::syscall::net_socket_constants_hold_for_test()
 }
+
+pub fn tun_rollback_destroys_created_device() -> bool {
+    super::pseudofs::dev::tun_rollback_destroys_created_device_for_test()
+}
+
+pub fn tun_rollback_detaches_existing_device() -> bool {
+    super::pseudofs::dev::tun_rollback_detaches_existing_device_for_test()
+}
+
+pub fn tun_rollback_on_concurrent_close() -> bool {
+    super::pseudofs::dev::tun_rollback_on_concurrent_close_for_test()
+}
+
+pub fn tun_concurrent_claim_has_single_winner() -> bool {
+    super::pseudofs::dev::tun_concurrent_claim_has_single_winner_for_test()
+}
+
+pub fn tun_close_dying_latch_blocks_attach() -> bool {
+    super::pseudofs::dev::tun_close_dying_latch_blocks_attach_for_test()
+}

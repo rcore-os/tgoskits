@@ -23,6 +23,13 @@ mod r#loop;
 mod memtrack;
 #[cfg(feature = "jpeg")]
 mod mpp_service;
+mod net;
+#[cfg(axtest)]
+pub(crate) use net::{
+    tun_close_dying_latch_blocks_attach_for_test, tun_concurrent_claim_has_single_winner_for_test,
+    tun_rollback_destroys_created_device_for_test, tun_rollback_detaches_existing_device_for_test,
+    tun_rollback_on_concurrent_close_for_test,
+};
 #[cfg(feature = "sg2002")]
 mod pinmux;
 #[cfg(any(feature = "sg2002", feature = "rk3588-pwm"))]
@@ -667,6 +674,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "mqueue",
         SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+    );
+    root.add(
+        "net",
+        SimpleDir::new_maker(fs.clone(), Arc::new(net::net_dir(fs.clone()))),
     );
     {
         let mut bus_dir = DirMapping::new();

@@ -14,6 +14,16 @@ use super::{
 };
 use crate::{fs_core::FsContext, os::sync::SleepMutex as Mutex};
 
+/// Upper bound on the per-call kernel bounce buffer for uncached (device) I/O.
+///
+/// Large enough to carry a whole jumbo frame (a header-less TUN's 65535-byte
+/// `MAX_MTU` plus a 14-byte Ethernet header for a TAP), so a packet-oriented
+/// char device delivers exactly one datagram per `read_at`/`write_at`, rather
+/// than the tail of a packet being dropped (read) or a single frame being split
+/// into several short packets (write) at a fixed small chunk boundary. Very
+/// large stream transfers stay bounded to this size and loop.
+const MAX_DIRECT_IO_CHUNK: usize = 128 * 1024;
+
 /// Low-level interface for file operations.
 #[derive(Clone)]
 pub enum FileBackend {
@@ -46,27 +56,27 @@ impl FileBackend {
     }
 
     /// Reads data from the file at `offset` into `dst`.
-    pub fn read_at(&self, mut dst: impl Write + IoBufMut, mut offset: u64) -> VfsResult<usize> {
+    pub fn read_at(&self, mut dst: impl Write + IoBufMut, offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.read_at(dst, offset),
             Self::Direct(loc) => {
-                let mut total = 0;
-                while !dst.is_full() {
-                    let read = match dst.read_from(&mut ax_io::read_fn(|buf| {
-                        loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
-                            offset += *read as u64;
-                        })
-                    })) {
-                        Ok(read) => read,
-                        Err(VfsError::WouldBlock) if total > 0 => break,
-                        Err(err) => return Err(err),
-                    };
-                    if read == 0 {
-                        break;
-                    }
-                    total += read;
-                }
-                Ok(total)
+                // Size the kernel bounce to the caller's request (capped), so a
+                // packet-oriented char device (TUN/TAP) delivers a whole datagram
+                // in a single underlying read instead of a fixed small fragment
+                // whose tail would be dropped together with the consumed packet.
+                //
+                // Issue exactly one underlying `read_at` and return its result,
+                // mirroring Linux, whose char-device `->read_iter` sees the full
+                // iov and returns one packet: the record boundary is the single
+                // device read, so a wider user buffer never concatenates a second
+                // datagram into the same `read(2)`. A regular file is unaffected -
+                // its backend already fills the whole buffer in one call (fat/ext4
+                // `read_at` loop internally to EOF), so a single read returns the
+                // same bytes the loop would have.
+                let cap = dst.remaining_mut().clamp(1, MAX_DIRECT_IO_CHUNK);
+                let mut bounce = alloc::vec![0u8; cap];
+                let read = loc.entry().as_file()?.read_at(&mut bounce, offset)?;
+                Ok(dst.write(&bounce[..read])?)
             }
         }
     }
@@ -76,8 +86,14 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached.write_at(src, offset),
             Self::Direct(loc) => {
+                // Size the kernel bounce to the caller's request (capped) so a
+                // packet-oriented char device (TUN/TAP) receives a whole datagram
+                // in one `write_at`, rather than several fixed-size slices that
+                // each become a separate short packet. Mirrors Linux, whose
+                // char-device `->write_iter` consumes the full iov as one packet.
+                let cap = src.remaining().clamp(1, MAX_DIRECT_IO_CHUNK);
                 let mut total = 0;
-                let mut buf = [0; ax_io::DEFAULT_BUF_SIZE];
+                let mut buf = alloc::vec![0u8; cap];
                 while !src.is_empty() {
                     let limit = src.remaining().min(buf.len());
                     let read = src.read(&mut buf[..limit])?;
@@ -633,5 +649,164 @@ mod tests {
 
         assert_eq!(metadata_updates.load(Ordering::Relaxed), 1);
         assert_eq!(DROP_METADATA_UPDATE_ATTEMPTS.load(Ordering::Relaxed), 1);
+    }
+
+    static PACKET_TEST_FILESYSTEM: TestFilesystem = TestFilesystem {
+        name: "packet-device-test",
+        readonly: true,
+    };
+
+    /// A packet-oriented char device: each `read_at` pops one whole datagram
+    /// from a queue, like `/dev/net/tun`. The record boundary is one device
+    /// read; a caller cannot merge two datagrams into one `read(2)`.
+    struct PacketDeviceTestFile {
+        datagrams: std::sync::Mutex<alloc::collections::VecDeque<alloc::vec::Vec<u8>>>,
+    }
+
+    impl NodeOps for PacketDeviceTestFile {
+        fn inode(&self) -> u64 {
+            1
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(Metadata {
+                device: 1,
+                inode: self.inode(),
+                nlink: 1,
+                mode: NodePermission::default(),
+                node_type: NodeType::CharacterDevice,
+                uid: 0,
+                gid: 0,
+                size: 0,
+                block_size: 1,
+                blocks: 0,
+                rdev: DeviceId::default(),
+                atime: Duration::ZERO,
+                mtime: Duration::ZERO,
+                ctime: Duration::ZERO,
+            })
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &PACKET_TEST_FILESYSTEM
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+
+        fn flags(&self) -> NodeFlags {
+            NodeFlags::empty()
+        }
+    }
+
+    impl FsPollable for PacketDeviceTestFile {
+        fn poll(&self) -> FsIoEvents {
+            FsIoEvents::IN
+        }
+
+        fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+    }
+
+    impl FileNodeOps for PacketDeviceTestFile {
+        fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+            let mut datagrams = self.datagrams.lock().unwrap();
+            let Some(packet) = datagrams.pop_front() else {
+                return Ok(0);
+            };
+            // A short user buffer truncates the datagram; the remainder is
+            // discarded with the consumed packet, as TUN does.
+            let n = packet.len().min(buf.len());
+            buf[..n].copy_from_slice(&packet[..n]);
+            Ok(n)
+        }
+
+        fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn set_len(&self, _len: u64) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn set_symlink(&self, _target: &str) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    fn packet_device_file(datagrams: alloc::vec::Vec<alloc::vec::Vec<u8>>) -> File {
+        let filesystem = Filesystem::new(Arc::new(TestFilesystem {
+            name: "packet-device-test",
+            readonly: true,
+        }));
+        let mountpoint = Mountpoint::new_root(&filesystem);
+        let location = Location::new(
+            mountpoint,
+            DirEntry::new_file(
+                FileNode::new(Arc::new(PacketDeviceTestFile {
+                    datagrams: std::sync::Mutex::new(datagrams.into_iter().collect()),
+                })),
+                NodeType::CharacterDevice,
+                Reference::root(),
+            ),
+        );
+        File::new(FileBackend::new_direct(location), FileFlags::READ)
+    }
+
+    /// A single large `read` on a packet char device must return exactly one
+    /// datagram, never two concatenated - the record boundary the TUN/TAP ABI
+    /// depends on. The old direct-read loop drained the device until the user
+    /// buffer filled, so a 4096-byte read over two queued 1500-byte packets
+    /// returned 3000 bytes; this pins one packet per read.
+    #[test]
+    fn direct_read_returns_one_packet_per_read() {
+        let first = alloc::vec![0xAAu8; 1500];
+        let second = alloc::vec![0xBBu8; 1500];
+        let file = packet_device_file(alloc::vec![first.clone(), second.clone()]);
+
+        let mut buf = [0u8; 4096];
+        let n = file.read(&mut buf[..]).unwrap();
+        assert_eq!(n, 1500, "read must stop at the first datagram boundary");
+        assert!(buf[..1500].iter().all(|&b| b == 0xAA));
+
+        let n = file.read(&mut buf[..]).unwrap();
+        assert_eq!(n, 1500, "the second read yields the second datagram");
+        assert!(buf[..1500].iter().all(|&b| b == 0xBB));
+
+        assert_eq!(file.read(&mut buf[..]).unwrap(), 0, "queue drained");
+    }
+
+    /// A short user buffer truncates the datagram and drops its tail with the
+    /// consumed packet (Linux TUN read semantics), never spilling into the next
+    /// read.
+    #[test]
+    fn direct_read_truncates_short_buffer_without_spilling() {
+        let first = alloc::vec![0xAAu8; 1500];
+        let second = alloc::vec![0xBBu8; 1500];
+        let file = packet_device_file(alloc::vec![first, second]);
+
+        let mut small = [0u8; 100];
+        let n = file.read(&mut small[..]).unwrap();
+        assert_eq!(n, 100, "short read truncates the first datagram");
+        assert!(small.iter().all(|&b| b == 0xAA));
+
+        // The truncated tail of the first datagram is gone; the next read
+        // returns the whole second datagram, not the first's remainder.
+        let mut buf = [0u8; 4096];
+        let n = file.read(&mut buf[..]).unwrap();
+        assert_eq!(n, 1500);
+        assert!(buf[..1500].iter().all(|&b| b == 0xBB));
     }
 }

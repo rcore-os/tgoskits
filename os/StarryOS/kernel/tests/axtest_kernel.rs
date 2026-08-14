@@ -45,6 +45,8 @@ use scope_local as _;
 mod axtest_fs;
 #[path = "cases/axtest_memory.rs"]
 mod axtest_memory;
+#[path = "cases/axtest_net.rs"]
+mod axtest_net;
 #[path = "cases/axtest_runtime.rs"]
 mod axtest_runtime;
 #[path = "cases/axtest_starry_vm.rs"]
