@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,13 @@ static int fail_count;
 #define CHILD_PATH CGROUP2_PATH "/limited"
 #define NESTED_PARENT_PATH CGROUP2_PATH "/nested-parent"
 #define NESTED_CHILD_PATH NESTED_PARENT_PATH "/nested-child"
+#define CLONE_STACK_SIZE (64 * 1024)
+
+static int clone_child(void *arg)
+{
+    (void)arg;
+    return 0;
+}
 
 static ssize_t read_text(const char *path, char *buf, size_t capacity)
 {
@@ -226,10 +234,30 @@ int main(void)
     CHECK(read_number(CHILD_PATH "/pids.current") == 2,
           "pids.current includes parent and held child");
 
+    void *clone_stack = malloc(CLONE_STACK_SIZE);
+    CHECK(clone_stack != NULL, "allocate clone stack");
+    if (clone_stack != NULL) {
+        pid_t parent_tid = -1;
+        errno = 0;
+        int clone_result = clone(clone_child,
+                                 (char *)clone_stack + CLONE_STACK_SIZE,
+                                 CLONE_PARENT_SETTID | SIGCHLD, NULL,
+                                 &parent_tid);
+        int clone_errno = errno;
+        CHECK(clone_result == -1 && clone_errno == EAGAIN,
+              "clone with parent TID is rejected with EAGAIN");
+        CHECK(parent_tid == -1,
+              "denied clone leaves the parent TID pointer unchanged");
+        if (clone_result > 0) {
+            (void)waitpid(clone_result, NULL, 0);
+        }
+        free(clone_stack);
+    }
+
     char event_text[128];
     nread = read_text(CHILD_PATH "/pids.events", event_text, sizeof(event_text));
-    CHECK(nread >= 0 && strstr(event_text, "max 1") != NULL,
-          "pids.events records the denied fork");
+    CHECK(nread >= 0 && strstr(event_text, "max 2") != NULL,
+          "pids.events records both denied task creations");
 
     char release = 'x';
     CHECK(write(gate[1], &release, sizeof(release)) == (ssize_t)sizeof(release),

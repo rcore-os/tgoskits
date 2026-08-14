@@ -219,7 +219,7 @@ impl CloneArgs {
             exit_signal,
             stack,
             tls,
-            parent_tid,
+            parent_tid: parent_tid_ptr,
             child_tid,
             pidfd,
         } = self;

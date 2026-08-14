@@ -44,6 +44,14 @@ pulls `axfs-ng-vfs` and `ax_errno` into the reusable domain layer. The chosen
 approach extends the current `CgroupNode` and `CgroupProvider` boundaries and
 keeps VFS text rendering and Linux errno conversion in StarryOS kernel glue.
 
+Open draft PR [#1379](https://github.com/rcore-os/tgoskits/pull/1379) has
+partial surface overlap because it also contains a pids controller among five
+controllers, manager/inotify work, and scheduler changes. It is classified as
+`conflict-risk/partial-overlap`, not as a reusable replacement: its pids
+accounting is process-based and does not provide this increment's task-level
+thread accounting, migration serialization, reservation rollback, or
+`CLONE_PARENT_SETTID` rejection regression.
+
 ## State, ownership, and synchronization
 
 Every `CgroupNode` owns a private pids state. The state retains a task count,
@@ -94,7 +102,7 @@ existing entry points:
 
 | Syscall | Impact and compatibility basis |
 | --- | --- |
-| `clone` | `CloneArgs::do_clone` reserves one pids charge before publishing the TID and returns `EAGAIN` on a hierarchical limit, matching [`clone(2)`](https://man7.org/linux/man-pages/man2/clone.2.html) and Linux [`pids_can_fork()`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/kernel/cgroup/pids.c#L273-L284). |
+| `clone` | `CloneArgs::do_clone` reserves one pids charge before publishing the TID and returns `EAGAIN` on a hierarchical limit, matching [`clone(2)`](https://man7.org/linux/man-pages/man2/clone.2.html) and Linux [`pids_can_fork()`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/kernel/cgroup/pids.c#L273-L284). A `CLONE_PARENT_SETTID` pointer is written only after the reservation succeeds, so a rejected clone has no parent-TID side effect. |
 | `clone3` | Uses the same `CloneArgs::do_clone` path after existing ABI validation, so the pids result is identical to `clone`; argument parsing is unchanged. |
 | `fork` | The architecture wrapper uses the clone path with `SIGCHLD`; the pids rejection is therefore `EAGAIN`, matching [`fork(2)`](https://man7.org/linux/man-pages/man2/fork.2.html). |
 | `vfork` | The architecture wrapper uses the clone path with `CLONE_VFORK | CLONE_VM`; the charge is committed before publication and before the parent waits, matching [`vfork(2)`](https://man7.org/linux/man-pages/man2/vfork.2.html). |
@@ -115,12 +123,18 @@ Host tests cover parse and read-back behavior, hierarchical charges, CAS limit
 races, rollback, thread accounting, idempotent exit, and migration above a
 limit. The Starry QEMU system test performs the user-visible sequence of
 enabling pids, migration, `pids.max` update, successful first fork, failed
-second fork with `EAGAIN`, hierarchical event observation, and counter recovery
-after exit. It must fail if the clone-path limit check or event propagation is
+second fork with `EAGAIN`, a rejected raw `clone(CLONE_PARENT_SETTID)`,
+hierarchical event observation, and counter recovery after exit. It must fail
+if the clone-path limit check, parent-TID ordering, or event propagation is
 removed.
 
-Validation on base `edd793e51512e8e3c1e09a8dc0f553abad09c417` completed on
-2026-08-13 (Asia/Shanghai):
+Full validation of the patch completed on base
+`106bede3070da3c44fd1cc61190aa95e96149ca6` on 2026-08-13
+(Asia/Shanghai). Before the ordering fix, the new aarch64 test produced
+56 passes and 2 failures: the rejected clone changed the parent-TID pointer,
+and the existing event expectation did not account for the additional valid
+rejection. Moving the write after the cgroup reservation commit and updating
+the event expectation produced 58 passes and 0 failures.
 
 | Gate | Result |
 | --- | --- |
@@ -135,13 +149,22 @@ Validation on base `edd793e51512e8e3c1e09a8dc0f553abad09c417` completed on
 | `cargo xtask starry build --arch riscv64` | passed on final worktree |
 | `cargo xtask starry build --arch loongarch64` | passed on final worktree |
 | `cargo xtask starry build --arch x86_64` | passed on final worktree |
-| aarch64 `qemu/system/cgroup-pids` | 55 passed, 0 failed |
-| riscv64 `qemu/system/cgroup-pids` | 55 passed, 0 failed |
+| aarch64 `qemu/system/cgroup-pids` | 58 passed, 0 failed |
+| riscv64 `qemu/system/cgroup-pids` | 58 passed, 0 failed |
 | loongarch64 `qemu/system/cgroup-pids` | passed the same focused binary |
-| x86_64 `qemu/system/cgroup-pids` | 55 passed, 0 failed |
+| x86_64 `qemu/system/cgroup-pids` | 58 passed, 0 failed |
 
 The host regression also covers rejecting migration while a pending task is
 unpublished and resolving a reservation from the process's current cgroup.
 All four supported QEMU architectures were rebuilt and rerun after the final
 API convergence. Existing Cargo artifacts, rootfs archives, and grouped-case
 assets were reused; no `cargo clean` was run.
+
+The branch was then rebased without conflicts onto
+`9063198d91d0fbf42be575c02f5e2bf9e94f2c58`, whose only change from the
+validated base adds files under `apps/starry/aka-rk3588`. It does not touch
+cgroup, clone, the focused test, Cargo metadata, or the build/test tooling.
+The committed patches were checked with `git range-diff`, and the full
+cross-build/QEMU evidence was reused rather than rebuilt for this unrelated
+baseline-only change. Fast host and kernel gates were rerun on the rebased
+worktree before the final local commit.
