@@ -273,17 +273,15 @@ where
     poll_fn(move |context| {
         match operation() {
             Ok(value) => return Poll::Ready(Ok(value)),
-            Err(crate::StarryError::WouldBlock) => {}
+            Err(error) if error.is_would_block() => {}
             Err(error) => return Poll::Ready(Err(error)),
         }
 
         pollable.register(context, events);
         match operation() {
             Ok(value) => Poll::Ready(Ok(value)),
-            Err(crate::StarryError::WouldBlock) if non_blocking => {
-                Poll::Ready(Err(crate::StarryError::WouldBlock))
-            }
-            Err(crate::StarryError::WouldBlock) => Poll::Pending,
+            Err(error) if error.is_would_block() && non_blocking => Poll::Ready(Err(error)),
+            Err(error) if error.is_would_block() => Poll::Pending,
             Err(error) => Poll::Ready(Err(error)),
         }
     })

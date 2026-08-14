@@ -174,6 +174,21 @@ impl From<StarryError> for VfsError {
 }
 
 impl StarryError {
+    /// Reports whether a readiness-driven operation must register and retry.
+    ///
+    /// Filesystem handles adapt VFS failures to `IoError` before returning,
+    /// while direct VFS operations retain `VfsError`. Readiness polling must
+    /// recognize both wrapped states without flattening unrelated failures
+    /// into kernel-owned leaf errors.
+    pub(crate) const fn is_would_block(&self) -> bool {
+        matches!(
+            self,
+            Self::WouldBlock
+                | Self::Vfs(VfsError::WouldBlock)
+                | Self::IoDomain(IoError::WouldBlock)
+        )
+    }
+
     /// Convert an internal domain failure to its Linux syscall ABI errno.
     pub fn linux_errno(&self) -> Errno {
         match self {
@@ -822,6 +837,15 @@ mod tests {
     #[test]
     fn domain_errors_map_to_stable_linux_errno() {
         assert!(domain_errno_mappings_hold());
+    }
+
+    #[test]
+    fn readiness_retry_recognizes_filesystem_would_block_without_flattening() {
+        assert!(StarryError::WouldBlock.is_would_block());
+        assert!(StarryError::from(VfsError::WouldBlock).is_would_block());
+        assert!(StarryError::from(IoError::WouldBlock).is_would_block());
+        assert!(!StarryError::from(VfsError::Io).is_would_block());
+        assert!(!StarryError::from(IoError::Io).is_would_block());
     }
 
     #[test]
