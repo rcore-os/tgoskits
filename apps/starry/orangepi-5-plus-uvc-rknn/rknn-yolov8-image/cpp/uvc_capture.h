@@ -116,9 +116,18 @@ struct UvcCaptureCounters {
     uint64_t dropped = 0;
 };
 
+struct MjpegRgbImageLayout {
+    int width;
+    int height;
+    int row_stride;
+    int size;
+};
+
 const char *uvc_error(UvcApi *api, int err);
 bool load_uvc_api(UvcApi *api);
 void close_uvc_api(UvcApi *api);
+
+bool mjpeg_rgb_image_layout(int width, int height, MjpegRgbImageLayout *layout);
 
 bool start_uvc_capture(UvcCaptureSession *session, const UvcCaptureOptions *options);
 void stop_uvc_capture(UvcCaptureSession *session);
