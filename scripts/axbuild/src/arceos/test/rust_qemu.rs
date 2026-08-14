@@ -524,7 +524,7 @@ BT 0 ip=0x1 fp=0x2
     }
 
     #[test]
-    fn arceos_rust_task_ipi_riscv_config_uses_single_threaded_tcg_and_short_timeout() {
+    fn arceos_rust_task_ipi_riscv_config_uses_single_threaded_tcg_timeout() {
         let path =
             arceos_test_suit_case_qemu_config_path(&rust_test_suite_root(), "riscv64", "task-ipi")
                 .unwrap();
@@ -535,7 +535,7 @@ BT 0 ip=0x1 fp=0x2
                 .windows(2)
                 .any(|args| args == ["-accel", "tcg,thread=single"])
         );
-        assert_eq!(qemu.timeout, Some(5));
+        assert_eq!(qemu.timeout, Some(15));
     }
 
     #[test]
