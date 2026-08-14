@@ -511,7 +511,10 @@ impl EpollInner {
         // One file readiness transition can invoke multiple registered
         // callbacks for dup aliases. Publish all matching interests before
         // waking epoll_wait callers so a re-entrant waiter cannot consume and
-        // requeue the first LT item ahead of an alias that is also ready.
+        // requeue the first LT item ahead of an alias from the same callback
+        // batch. Do not call back into the target here: poll wakeups may run
+        // while the target holds an internal lock, and readiness is rechecked
+        // when epoll_wait consumes each queued interest.
         let mut published = 0;
         let mut interests = interests;
         // Linux's non-exclusive poll callbacks are linked at the wait-queue
@@ -528,13 +531,7 @@ impl EpollInner {
             {
                 continue;
             }
-            let Some(file) = interest.key.get_file() else {
-                self.remove_invalid_interest(&interest);
-                continue;
-            };
-            if !match_ready_events(file.poll(), interest.event.events).is_empty()
-                && interest.try_mark_in_queue()
-            {
+            if interest.try_mark_in_queue() {
                 self.enqueue_marked_ready_without_wake(&interest);
                 published += 1;
                 trace!(

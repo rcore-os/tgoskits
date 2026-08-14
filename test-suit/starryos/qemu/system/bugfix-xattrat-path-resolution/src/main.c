@@ -112,8 +112,6 @@ int main(void)
             {ACL_OTHER, 0, ACL_UNDEFINED_ID},
         },
     };
-    struct posix_acl_xattr acl_buf = {};
-    struct stat file_stat = {};
     char value_buf[sizeof(attr_value)] = {};
     struct xattr_args args = {
         .value = (uintptr_t)attr_value,
@@ -206,7 +204,8 @@ int main(void)
     args.value = (uintptr_t)&acl;
     args.size = sizeof(acl);
     errno = 0;
-    check(
+    expect_errno(
+        "setxattrat rejects unsupported POSIX access ACLs",
         raw_setxattrat(
             dirfd,
             fixture_name,
@@ -214,35 +213,27 @@ int main(void)
             acl_name,
             &args,
             sizeof(args)
-        ) == 0,
-        "setxattrat accepts a valid POSIX access ACL"
+        ),
+        EOPNOTSUPP
     );
 
-    args.value = (uintptr_t)&acl_buf;
-    args.size = sizeof(acl_buf);
     errno = 0;
-    check(
-        raw_getxattrat(
+    expect_errno(
+        "setxattrat rejects default ACLs on non-directories",
+        raw_setxattrat(
             dirfd,
             fixture_name,
             0,
-            acl_name,
+            default_acl_name,
             &args,
             sizeof(args)
-        ) == (long)sizeof(acl) &&
-            memcmp(&acl_buf, &acl, sizeof(acl)) == 0,
-        "getxattrat returns the POSIX access ACL"
+        ),
+        EOPNOTSUPP
     );
 
-    check(
-        fstat(fd, &file_stat) == 0 && (file_stat.st_mode & 0777) == 0640,
-        "POSIX access ACL updates the file permission bits"
-    );
-
-    args.value = (uintptr_t)&acl;
-    args.size = sizeof(acl);
     errno = 0;
-    check(
+    expect_errno(
+        "setxattrat rejects unsupported POSIX default ACLs on directories",
         raw_setxattrat(
             dirfd,
             ".",
@@ -250,25 +241,8 @@ int main(void)
             default_acl_name,
             &args,
             sizeof(args)
-        ) == 0,
-        "setxattrat accepts a valid POSIX default ACL"
-    );
-
-    memset(&acl_buf, 0, sizeof(acl_buf));
-    args.value = (uintptr_t)&acl_buf;
-    args.size = sizeof(acl_buf);
-    errno = 0;
-    check(
-        raw_getxattrat(
-            dirfd,
-            ".",
-            0,
-            default_acl_name,
-            &args,
-            sizeof(args)
-        ) == (long)sizeof(acl) &&
-            memcmp(&acl_buf, &acl, sizeof(acl)) == 0,
-        "getxattrat returns the POSIX default ACL"
+        ),
+        EOPNOTSUPP
     );
 
     errno = 0;

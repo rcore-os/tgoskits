@@ -252,6 +252,20 @@ pub(crate) fn edge_callback_does_not_reenter_target_for_test() -> bool {
     !target.callback_reentered_file()
 }
 
+pub(crate) fn level_callback_does_not_reenter_target_for_test() -> bool {
+    let epoll = Epoll::new();
+    let target = CallbackBoundaryFile::new();
+    let target_file: Arc<dyn FileLike> = target.clone();
+
+    epoll
+        .add_file_for_test(1, target_file, 0x45, EpollFlags::empty())
+        .expect("level-triggered test interest must be added");
+
+    target.make_ready();
+
+    !target.callback_reentered_file()
+}
+
 fn collect_one_event(epoll: &Epoll) -> Result<(usize, Option<u64>), StarryError> {
     let mut user_data = None;
     let count = epoll.poll_events_with(1, |_index, event| {
@@ -314,7 +328,10 @@ pub(crate) fn epoll_requeues_readiness_observed_during_rearm_for_test() -> bool 
     }
     file.clear_ready();
 
-    if epoll.poll_events_with(1, |_, _| Ok(())).err() != Some(StarryError::WouldBlock) {
+    if !matches!(
+        epoll.poll_events_with(1, |_, _| Ok(())).err(),
+        Some(StarryError::WouldBlock)
+    ) {
         return false;
     }
 

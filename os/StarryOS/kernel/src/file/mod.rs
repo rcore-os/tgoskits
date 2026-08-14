@@ -51,6 +51,7 @@ pub(crate) use self::epoll_axtest::{
     edge_readiness_requires_a_new_notification_for_test,
     epoll_requeues_readiness_observed_during_rearm_for_test,
     level_aliases_rotate_in_linux_callback_order_for_test,
+    level_callback_does_not_reenter_target_for_test,
 };
 #[cfg(axtest)]
 pub(crate) use self::epoll_topology::epoll_arc_operations_hold_for_test;
