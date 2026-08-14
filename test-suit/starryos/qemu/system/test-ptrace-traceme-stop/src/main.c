@@ -156,6 +156,22 @@ int main(void)
         return fail("sigaction SIGCHLD");
     }
 
+    pid_t invalid_request_pid = fork();
+    if (invalid_request_pid < 0) {
+        return fail("fork invalid ptrace request child");
+    }
+    if (invalid_request_pid == 0) {
+        long ret = syscall(SYS_ptrace, 1UL << 32, 0, 0, 0);
+        _exit(ret == -1 ? 0 : 100);
+    }
+    int invalid_request_status = 0;
+    if (waitpid(invalid_request_pid, &invalid_request_status, 0) != invalid_request_pid
+        || !WIFEXITED(invalid_request_status) || WEXITSTATUS(invalid_request_status) != 0) {
+        printf("FAIL: upper-word ptrace request was accepted, status=%#x\n",
+               invalid_request_status);
+        return 1;
+    }
+
     pid_t check_pid = fork();
     if (check_pid < 0) {
         return fail("initial fork");
