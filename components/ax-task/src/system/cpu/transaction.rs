@@ -485,6 +485,10 @@ impl<'a> OwnerRqTxn<'a> {
     }
 
     pub(crate) fn take_current(&mut self) -> Option<CurrentDispatch> {
+        #[cfg(feature = "task-test-hooks")]
+        if let Some(thread) = self.current_thread() {
+            crate::task_test_hooks::record_current_dispatch_detach(thread);
+        }
         self.run_queue_mut().take_current()
     }
 

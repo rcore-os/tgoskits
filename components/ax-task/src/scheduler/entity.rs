@@ -1,17 +1,25 @@
 //! Class-specific mutable state stored with each thread.
 
+use alloc::boxed::Box;
+
 use crate::{DeadlineEntity, DeadlineServer, FairEntity, SchedulePolicy, SchedulingUrgency};
 
-/// Complete class accounting of one task with one physical owner.
+/// Stable unique owner of one task's complete class accounting.
 ///
 /// Linux embeds the Fair, RT, and Deadline entities in `task_struct`; changing
 /// effective priority never transfers the configured-policy entity to a
-/// second owner. This value provides the same ownership rule without
-/// intrusive self references: it moves as a unit between task control and the
-/// owner rq, retains the base entity across a cross-class PI boost, and owns at
-/// most one inherited-class entity used by that boost.
+/// second owner or copies it through `rq->curr`. This handle provides the same
+/// stable-record ownership rule without intrusive self references: one box
+/// moves between task control and the owner rq while the complete scheduler
+/// state stays at one address.
 #[derive(Debug)]
 pub(crate) struct ActiveSchedulingState {
+    record: Box<ActiveSchedulingRecord>,
+}
+
+/// Complete class accounting behind one stable ownership handle.
+#[derive(Debug)]
+struct ActiveSchedulingRecord {
     effective_policy: SchedulePolicy,
     base_entity: SchedulingEntity,
     inherited_entity: Option<SchedulingEntity>,
@@ -20,46 +28,52 @@ pub(crate) struct ActiveSchedulingState {
 impl ActiveSchedulingState {
     pub(crate) fn new(policy: SchedulePolicy, entity: SchedulingEntity) -> Self {
         Self {
-            effective_policy: policy,
-            base_entity: entity,
-            inherited_entity: None,
+            record: Box::new(ActiveSchedulingRecord {
+                effective_policy: policy,
+                base_entity: entity,
+                inherited_entity: None,
+            }),
         }
     }
 
-    pub(crate) const fn policy(&self) -> SchedulePolicy {
-        self.effective_policy
+    pub(crate) fn policy(&self) -> SchedulePolicy {
+        self.record.effective_policy
     }
 
     pub(crate) fn entity(&self) -> &SchedulingEntity {
-        self.inherited_entity.as_ref().unwrap_or(&self.base_entity)
+        self.record
+            .inherited_entity
+            .as_ref()
+            .unwrap_or(&self.record.base_entity)
     }
 
     pub(crate) fn entity_mut(&mut self) -> &mut SchedulingEntity {
-        self.inherited_entity
+        self.record
+            .inherited_entity
             .as_mut()
-            .unwrap_or(&mut self.base_entity)
+            .unwrap_or(&mut self.record.base_entity)
     }
 
-    pub(crate) const fn base_entity(&self) -> &SchedulingEntity {
-        &self.base_entity
+    pub(crate) fn base_entity(&self) -> &SchedulingEntity {
+        &self.record.base_entity
     }
 
-    pub(crate) const fn base_entity_mut(&mut self) -> &mut SchedulingEntity {
-        &mut self.base_entity
+    pub(crate) fn base_entity_mut(&mut self) -> &mut SchedulingEntity {
+        &mut self.record.base_entity
     }
 
     pub(crate) fn replace_base_entity(&mut self, entity: SchedulingEntity) {
-        self.base_entity = entity;
+        self.record.base_entity = entity;
     }
 
-    pub(crate) const fn uses_inherited_entity(&self) -> bool {
-        self.inherited_entity.is_some()
+    pub(crate) fn uses_inherited_entity(&self) -> bool {
+        self.record.inherited_entity.is_some()
     }
 
     /// Makes the configured-policy entity effective again after PI deboost.
     pub(crate) fn use_base_entity(&mut self, policy: SchedulePolicy) {
-        self.inherited_entity = None;
-        self.effective_policy = policy;
+        self.record.inherited_entity = None;
+        self.record.effective_policy = policy;
     }
 
     /// Changes only the effective policy/key while retaining base accounting.
@@ -67,8 +81,8 @@ impl ActiveSchedulingState {
     /// This is used for same-class PI. In particular, an RR task keeps its
     /// remaining quantum while inheriting an RT priority.
     pub(crate) fn use_base_entity_with_effective_policy(&mut self, policy: SchedulePolicy) {
-        debug_assert!(self.inherited_entity.is_none());
-        self.effective_policy = policy;
+        debug_assert!(self.record.inherited_entity.is_none());
+        self.record.effective_policy = policy;
     }
 
     /// Installs the class-specific entity used by a cross-class PI boost.
@@ -77,13 +91,13 @@ impl ActiveSchedulingState {
         policy: SchedulePolicy,
         entity: SchedulingEntity,
     ) {
-        self.inherited_entity = Some(entity);
-        self.effective_policy = policy;
+        self.record.inherited_entity = Some(entity);
+        self.record.effective_policy = policy;
     }
 
     pub(crate) fn update_inherited_effective_policy(&mut self, policy: SchedulePolicy) {
-        debug_assert!(self.inherited_entity.is_some());
-        self.effective_policy = policy;
+        debug_assert!(self.record.inherited_entity.is_some());
+        self.record.effective_policy = policy;
     }
 }
 

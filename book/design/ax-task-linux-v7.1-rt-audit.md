@@ -3510,6 +3510,35 @@ TLB 全局串行化、也不刷新已有 ARMED edge 的情况下，`qemu-ivc` �
 `arceos-test-suit` 33/33 的 targeted clippy；因此本检查点已经关闭本地四架构 QEMU、
 x86 正式性能门限和 IPI/IRQ completion 生命周期，只等待远端 CI 的 terminal 结果。
 
+### 2026-08-15 稳定调度实体与原地 current accounting
+
+Starry AArch64 的 `test-ext4-inode-unique` 在 120 秒内只能推进约 1742/2048，
+RISC-V qperf 同一 60 秒 marker 窗口也只推进到约 `file-0225`。PC+RA 采样把
+current 分支的 413 个 `memcpy` 样本中 269 个归到 ax-task；主要调用者包括
+`OwnerRqTxn::install_current`、`SchedulerClass::pick_task`、
+`commit_owner_settled_current_dispatch_in_rq` 和 owner selection。Linux v7.1 的
+`task_struct` 在 `include/linux/sched.h` 中内嵌 `se`、`rt`、`dl`，`struct rq`
+在 `kernel/sched/sched.h` 中只保存稳定的 `curr` 指针；`__schedule()` 与各 class
+的 pick/set-next/put-prev 都原地操作该实体，不把完整 class 状态复制经过 `rq->curr`。
+
+本分支因此把 `ActiveSchedulingState` 收敛为一个 move-only `Box` owner token；
+Fair、RT、Deadline 及 PI 的完整可变 record 保持唯一地址，task control、queued 与
+current 边界只移动一个指针。结构回归在旧实现稳定得到 token footprint 168 字节，
+修复后为一个指针字 8 字节。另一个真实 ArceOS QEMU 回归覆盖单 runnable task 的
+continuing-dispatch yield：旧 `commit_owner_settled_current_dispatch_in_rq` 为完成
+accounting 执行一次 `take_current -> install_current`，在没有真实 schedule-out 时仍观察到
+1 次 `rq->curr` detach；改成持 owner-rq 锁的 `current_mut()` 原地结算后，同一断言为 0，
+随后真实多任务 yield 仍通过。真实 schedule-out 继续由唯一的 take/pick/install 路径负责，
+没有增加 task mirror、兼容锁或第二套状态转换。
+
+同一 RISC-V 60 秒 qperf 窗口中，workload 进度由约 `file-0225` 提升到
+`file-0289`，`memcpy` 从 853/5935（14.37%）下降到 614/5935（10.35%）。
+该结构改进尚未关闭总体性能问题：AArch64 正式用例仍在 120.068 秒超时；其独立
+60 秒 metrics 窗口有 220549 次 context switch、1334613 次 runtime preempt guard、
+1267545 次 runtime IRQ guard、384899 次 current-handle query、264886 次 scheduler-rq
+transaction。后续必须继续沿这些固定 scheduler transaction 与 Linux rq/current 生命周期
+收敛，不能把 ext4/rootfs 加入特殊超时、轮询或唤醒兜底。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

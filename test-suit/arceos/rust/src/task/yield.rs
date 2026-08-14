@@ -84,11 +84,17 @@ pub fn run() -> crate::TestResult {
         "one generic lock-preemption scope must resolve its task owner only once"
     );
     task_test_hooks::arm_current_handle_query_probe(current.as_u64());
+    task_test_hooks::arm_current_dispatch_detach_probe(current.as_u64());
     thread::yield_now();
     assert_eq!(
         task_test_hooks::take_current_handle_query_count(),
         Some(0),
         "scheduler-owned yield must not construct an external current-thread handle"
+    );
+    assert_eq!(
+        task_test_hooks::take_current_dispatch_detach_count(),
+        Some(0),
+        "a continuing dispatch must update rq->curr accounting in place"
     );
     let mut no_switch_observed = false;
     for _ in 0..32 {

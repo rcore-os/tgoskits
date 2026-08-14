@@ -42,6 +42,9 @@ static RT_POLICY_DELIVERY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static CURRENT_HANDLE_QUERY_TARGET: AtomicU64 = AtomicU64::new(0);
 static CURRENT_HANDLE_QUERY_COUNT: AtomicU64 = AtomicU64::new(0);
 static CURRENT_HANDLE_QUERY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static CURRENT_DISPATCH_DETACH_TARGET: AtomicU64 = AtomicU64::new(0);
+static CURRENT_DISPATCH_DETACH_COUNT: AtomicU64 = AtomicU64::new(0);
+static CURRENT_DISPATCH_DETACH_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static NO_SWITCH_THREAD_LOCK_TARGET: AtomicU64 = AtomicU64::new(0);
 static NO_SWITCH_THREAD_LOCK_COUNT: AtomicU64 = AtomicU64::new(0);
 static NO_SWITCH_THREAD_LOCK_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
@@ -63,6 +66,16 @@ const STAGE_OWNER_EXITED: u8 = 4;
 const STAGE_COMPLETE: u8 = 3;
 const RT_POLICY_RESCHEDULE: u8 = 1 << 0;
 const RT_POLICY_OWNER_WORK: u8 = 1 << 1;
+
+/// Returns the footprint of the unique active scheduler-state owner token.
+///
+/// The token crosses task-control, runqueue, and current-dispatch ownership
+/// boundaries on every block and wake. Keep the mutable scheduler record at a
+/// stable address so those transitions move one pointer rather than copy the
+/// complete Fair, RT, or Deadline entity.
+pub const fn active_scheduling_state_footprint() -> usize {
+    core::mem::size_of::<crate::ActiveSchedulingState>()
+}
 
 /// Enters and exits one ordinary preemption scope through the real runtime.
 pub fn exercise_preempt_guard() {
@@ -114,6 +127,54 @@ pub(crate) fn record_current_handle_query(thread: ThreadId) {
         && CURRENT_HANDLE_QUERY_TARGET.load(Ordering::Relaxed) == thread.as_u64()
     {
         CURRENT_HANDLE_QUERY_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Arms current-dispatch detach accounting for one real scheduler thread.
+pub fn arm_current_dispatch_detach_probe(thread: u64) {
+    assert_ne!(
+        thread, 0,
+        "a current-dispatch probe identity must be non-zero"
+    );
+    assert_eq!(
+        CURRENT_DISPATCH_DETACH_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one current-dispatch detach probe may be armed"
+    );
+    CURRENT_DISPATCH_DETACH_TARGET.store(thread, Ordering::Relaxed);
+    CURRENT_DISPATCH_DETACH_COUNT.store(0, Ordering::Relaxed);
+    CURRENT_DISPATCH_DETACH_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes current-dispatch detaches observed while the probe was armed.
+pub fn take_current_dispatch_detach_count() -> Option<u64> {
+    if CURRENT_DISPATCH_DETACH_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let count = CURRENT_DISPATCH_DETACH_COUNT.load(Ordering::Relaxed);
+    CURRENT_DISPATCH_DETACH_TARGET.store(0, Ordering::Relaxed);
+    CURRENT_DISPATCH_DETACH_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(count)
+}
+
+pub(crate) fn record_current_dispatch_detach(thread: ThreadId) {
+    if CURRENT_DISPATCH_DETACH_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && CURRENT_DISPATCH_DETACH_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        CURRENT_DISPATCH_DETACH_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 }
 

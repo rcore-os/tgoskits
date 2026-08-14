@@ -49,8 +49,9 @@ impl TaskSystem {
         let current = transaction.current_thread();
         let current_core = transaction.current_core();
         let task_now_ns = transaction.clock().task().as_nanos();
-        let Some(mut dispatch) = transaction.take_current() else {
-            task_runtime::fatal_invariant(0x5251_1101, transaction.owner().as_u32() as usize);
+        let owner = transaction.owner();
+        let Some(dispatch) = transaction.current_mut() else {
+            task_runtime::fatal_invariant(0x5251_1101, owner.as_u32() as usize);
         };
         if current != Some(dispatch.thread())
             || current_core.is_none_or(|core| !Arc::ptr_eq(&core, dispatch.runtime_core_arc()))
@@ -58,8 +59,7 @@ impl TaskSystem {
             task_runtime::fatal_invariant(0x5251_1102, dispatch.thread().as_u64() as usize);
         }
         dispatch.finish_runtime_accounting(task_now_ns);
-        let overrun_work = Self::sync_runtime_dispatch_state(&mut dispatch);
-        transaction.install_current(dispatch);
+        let overrun_work = Self::sync_runtime_dispatch_state(dispatch);
         OwnerDispatchCommit { overrun_work }
     }
 
