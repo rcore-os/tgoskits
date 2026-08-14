@@ -16,7 +16,9 @@ use clap::Args;
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{Starry, apk, build};
-pub(crate) use crate::rootfs::qemu::{RootfsPatchMode, patch_rootfs};
+pub(crate) use crate::rootfs::qemu::{
+    RootfsPatchMode, RootfsPatchOptions, RootfsWritePolicy, patch_rootfs,
+};
 use crate::{
     context::{DEFAULT_STARRY_ARCH, ResolvedStarryRequest, starry_target_for_arch_checked},
     rootfs::inject,
@@ -101,7 +103,7 @@ pub(super) async fn load_patched_qemu_config(
 
     let mode = rootfs_patch_mode(cargo);
     if let Some(rootfs) = explicit_rootfs {
-        patch_qemu_rootfs_path_with_mode(&mut qemu, rootfs, mode);
+        patch_qemu_rootfs_path_with_mode(&mut qemu, rootfs, mode)?;
     } else if apply_default_args {
         patch_qemu_rootfs(&mut qemu, request, starry.app.workspace_root(), None, mode)?;
     }
@@ -250,8 +252,7 @@ pub(crate) fn patch_qemu_rootfs(
         );
     }
     let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
-    patch_qemu_rootfs_path_with_mode(qemu, &rootfs_path, mode);
-    Ok(())
+    patch_qemu_rootfs_path_with_mode(qemu, &rootfs_path, mode)
 }
 
 /// Resolves the rootfs path selected for a Starry QEMU request.
@@ -272,8 +273,15 @@ pub(crate) fn patch_qemu_rootfs_path_with_mode(
     qemu: &mut QemuConfig,
     rootfs_path: &Path,
     mode: RootfsPatchMode,
-) {
-    patch_rootfs(qemu, rootfs_path, mode);
+) -> anyhow::Result<()> {
+    patch_rootfs(
+        qemu,
+        rootfs_path,
+        RootfsPatchOptions {
+            mode,
+            write_policy: RootfsWritePolicy::Persist,
+        },
+    )
 }
 
 fn rootfs_patch_mode(cargo: &Cargo) -> RootfsPatchMode {

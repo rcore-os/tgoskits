@@ -1,8 +1,7 @@
 use super::*;
 
 // QEMU platform, firmware, CPU, and acceleration flags come from the selected TOML file. The
-// helpers retained here only apply explicit test controls such as `--smp`, snapshot persistence,
-// and timeout scaling.
+// helpers retained here only apply explicit test controls such as `--smp` and timeout scaling.
 pub(super) struct QemuArgs<'a> {
     args: &'a [String],
 }
@@ -46,48 +45,6 @@ pub(crate) fn apply_smp_qemu_arg(qemu: &mut QemuConfig, smp: Option<usize>) {
     };
 
     QemuArgsMut::new(&mut qemu.args).set_option_value("-smp", cpu_num.to_string());
-}
-
-pub(crate) fn apply_drive_snapshot_without_global_snapshot(qemu: &mut QemuConfig) {
-    let mut global_snapshot = false;
-    qemu.args.retain(|arg| {
-        let keep = arg != "-snapshot";
-        if !keep {
-            global_snapshot = true;
-        }
-        keep
-    });
-    if !global_snapshot {
-        return;
-    }
-
-    for index in 0..qemu.args.len() {
-        if qemu.args.get(index).is_some_and(|arg| arg == "-drive")
-            && let Some(drive) = qemu.args.get_mut(index + 1)
-        {
-            ensure_drive_snapshot_on(drive);
-        }
-    }
-}
-
-pub(super) fn ensure_drive_snapshot_on(drive: &mut String) {
-    let mut replaced = false;
-    let parts = drive
-        .split(',')
-        .map(|part| {
-            if part.starts_with("snapshot=") {
-                replaced = true;
-                "snapshot=on".to_string()
-            } else {
-                part.to_string()
-            }
-        })
-        .collect::<Vec<_>>();
-    if replaced {
-        *drive = parts.join(",");
-    } else {
-        drive.push_str(",snapshot=on");
-    }
 }
 
 pub(crate) fn smp_from_qemu_arg(qemu: &QemuConfig) -> Option<usize> {

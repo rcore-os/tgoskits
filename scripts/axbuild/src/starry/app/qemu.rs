@@ -29,7 +29,7 @@ struct LoadedQemuAppCaseFields {
     test_case: TestQemuCase,
     rootfs_path: Option<PathBuf>,
     rootfs_preparation: RootfsPreparation,
-    snapshot: bool,
+    write_policy: crate::rootfs::qemu::RootfsWritePolicy,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -87,7 +87,10 @@ pub(crate) async fn prepare_qemu_app_case(
         build_config_path,
         qemu_config_path,
         rootfs_path,
-        snapshot: fields.as_ref().is_none_or(|fields| fields.snapshot),
+        rootfs_write_policy: fields
+            .as_ref()
+            .map(|fields| fields.write_policy)
+            .unwrap_or_default(),
         test_commands: fields
             .as_ref()
             .map(|fields| fields.test_case.test_commands.clone())
@@ -128,7 +131,7 @@ fn load_qemu_app_case_fields(
     app: &StarryAppCase,
     qemu_config_path: &Path,
 ) -> anyhow::Result<LoadedQemuAppCaseFields> {
-    let test_case = qemu_test::load_test_qemu_case_fields(
+    let (test_case, write_policy) = qemu_test::load_qemu_case_fields_with_write_policy(
         app.name.clone(),
         app.name.clone(),
         app.case_dir.clone(),
@@ -138,15 +141,12 @@ fn load_qemu_app_case_fields(
     )?;
     let rootfs_path = qemu_app_config_rootfs_path(workspace_root, qemu_config_path)?;
     let rootfs_preparation = qemu_app_rootfs_preparation(app, qemu_config_path)?;
-    let snapshot = qemu_test::load_qemu_case_extra_config(qemu_config_path)?
-        .snapshot
-        .unwrap_or(true);
 
     Ok(LoadedQemuAppCaseFields {
         test_case,
         rootfs_path,
         rootfs_preparation,
-        snapshot,
+        write_policy,
     })
 }
 
@@ -307,3 +307,4 @@ fn arch_from_qemu_config_path(path: &Path) -> Option<&str> {
 #[cfg(test)]
 #[path = "tests/qemu.rs"]
 mod tests;
+// weave: run 'weave explain scripts/axbuild/src/starry/app/qemu.rs' for per-hunk detail, 'weave check' to verify your resolution

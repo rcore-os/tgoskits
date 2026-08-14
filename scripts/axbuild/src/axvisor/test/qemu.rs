@@ -316,14 +316,11 @@ impl Axvisor {
             asset_config.clone(),
         )
         .await?;
-        rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
-        qemu.args.extend(prepared_assets.extra_qemu_args.clone());
-        // UEFI needs a writable ESP for firmware variables. Keep the explicit
-        // snapshot isolation, but apply it per drive so QEMU does not make the
-        // `fat:rw` ESP read-only through the global `-snapshot` flag.
-        if qemu.uefi {
-            test_qemu::apply_drive_snapshot_without_global_snapshot(&mut qemu);
-        }
+        rootfs::patch_qemu_rootfs_path(
+            &mut qemu,
+            &prepared_assets.rootfs_path,
+            crate::rootfs::qemu::RootfsWritePolicy::Discard,
+        )?;
         Ok((qemu, prepared_assets))
     }
 

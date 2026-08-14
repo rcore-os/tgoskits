@@ -118,8 +118,11 @@ pub(crate) fn patch_qemu_rootfs(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
     let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
-    patch_qemu_rootfs_path(config, &rootfs_path);
-    Ok(())
+    patch_qemu_rootfs_path(
+        config,
+        &rootfs_path,
+        rootfs::qemu::RootfsWritePolicy::Persist,
+    )
 }
 
 /// Resolves the rootfs path selected for an Axvisor QEMU request.
@@ -140,12 +143,19 @@ pub(crate) fn qemu_rootfs_path(
 }
 
 /// Patches a QEMU config with a concrete Axvisor rootfs path.
-pub(crate) fn patch_qemu_rootfs_path(config: &mut QemuConfig, rootfs_path: &Path) {
+pub(crate) fn patch_qemu_rootfs_path(
+    config: &mut QemuConfig,
+    rootfs_path: &Path,
+    write_policy: rootfs::qemu::RootfsWritePolicy,
+) -> anyhow::Result<()> {
     rootfs::qemu::patch_rootfs(
         config,
         rootfs_path,
-        rootfs::qemu::RootfsPatchMode::ReplaceDriveOnly,
-    );
+        rootfs::qemu::RootfsPatchOptions {
+            mode: rootfs::qemu::RootfsPatchMode::ReplaceDriveOnly,
+            write_policy,
+        },
+    )
 }
 
 /// Returns the managed rootfs path Axvisor should prepare, if any.

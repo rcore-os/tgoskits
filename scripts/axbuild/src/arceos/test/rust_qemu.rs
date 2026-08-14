@@ -69,6 +69,7 @@ pub(super) async fn prepare_rust_qemu_cases(
 ) -> anyhow::Result<Vec<PreparedArceosRustQemuCase>> {
     let mut prepared = Vec::with_capacity(cases.len());
     for case in cases {
+        qemu_test::validate_test_qemu_rootfs_write_policy(&case.case.qemu_config_path, "ArceOS")?;
         let request = arceos.prepare_request(
             test_build_args(&case.package, target, &case.build_config_path),
             Some(case.case.qemu_config_path.clone()),
@@ -97,6 +98,7 @@ pub(super) async fn prepare_rust_qemu_cases(
         apply_rust_qemu_feature_overrides(&mut cargo, &mut qemu, case.feature.as_deref());
         qemu_test::apply_timeout_scale(&mut qemu);
         rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
+        rootfs::isolate_qemu_test_rootfs(&mut qemu)?;
         prepared.push(PreparedArceosRustQemuCase {
             host_symbolize_success_regex: rust_qemu_host_symbolize_success_regex(
                 case.feature.as_deref(),

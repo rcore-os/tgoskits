@@ -111,20 +111,23 @@ impl FrameBuffer {
 impl DeviceOps for FrameBuffer {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let slice = self.as_mut_slice();
-        let len = buf
-            .len()
-            .min((slice.len() as u64).saturating_sub(offset) as usize);
-        buf[..len].copy_from_slice(&slice[..len]);
+        let off = offset as usize;
+        if off >= slice.len() {
+            return Ok(0);
+        }
+        let len = buf.len().min(slice.len() - off);
+        buf[..len].copy_from_slice(&slice[off..off + len]);
         Ok(len)
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
         let slice = self.as_mut_slice();
-        if offset >= slice.len() as u64 {
+        let off = offset as usize;
+        if off >= slice.len() {
             return Err(VfsError::StorageFull);
         }
-        let len = buf.len().min(slice.len() - offset as usize);
-        slice[..len].copy_from_slice(&buf[..len]);
+        let len = buf.len().min(slice.len() - off);
+        slice[off..off + len].copy_from_slice(&buf[..len]);
         Ok(len)
     }
 

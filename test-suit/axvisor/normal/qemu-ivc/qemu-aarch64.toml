@@ -13,7 +13,7 @@ args = [
     "-device",
     "virtio-blk-device,drive=guestdisk",
     "-drive",
-    "id=guestdisk,if=none,format=raw,snapshot=on,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "id=guestdisk,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
     "-append",
     "root=/dev/nvme0n1 rw init=/bin/sh",
     "-m",
