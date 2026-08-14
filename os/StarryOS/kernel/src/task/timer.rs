@@ -119,6 +119,60 @@ impl ITimer {
     }
 }
 
+/// The process-wide `ITIMER_REAL` state shared by every thread.
+#[derive(Default)]
+pub(crate) struct ProcessRealTimer {
+    interval: TimeValue,
+    deadline: Option<TimeValue>,
+}
+
+impl ProcessRealTimer {
+    /// Replaces the timer and returns its previous interval and remaining time.
+    pub fn set(
+        &mut self,
+        pid: Pid,
+        interval_ns: usize,
+        remaining_ns: usize,
+    ) -> (TimeValue, TimeValue) {
+        let old = self.get();
+        self.interval = TimeValue::from_nanos(interval_ns as u64);
+        self.deadline = (remaining_ns != 0).then(|| {
+            let deadline = wall_time() + TimeValue::from_nanos(remaining_ns as u64);
+            register_alarm_for(deadline, AlarmTarget::Process(pid));
+            deadline
+        });
+        old
+    }
+
+    /// Returns the timer interval and the time remaining before expiration.
+    pub fn get(&self) -> (TimeValue, TimeValue) {
+        let remaining = self
+            .deadline
+            .map(|deadline| deadline.saturating_sub(wall_time()))
+            .unwrap_or_default();
+        (self.interval, remaining)
+    }
+
+    /// Advances an expired timer and reports whether `SIGALRM` must be emitted.
+    pub fn poll_expired(&mut self, pid: Pid) -> bool {
+        let Some(deadline) = self.deadline else {
+            return false;
+        };
+        if wall_time() < deadline {
+            return false;
+        }
+
+        if self.interval.is_zero() {
+            self.deadline = None;
+        } else {
+            let deadline = wall_time() + self.interval;
+            self.deadline = Some(deadline);
+            register_alarm_for(deadline, AlarmTarget::Process(pid));
+        }
+        true
+    }
+}
+
 /// Register an alarm at the given wall-clock deadline for the current task.
 /// Used by both ITimer and POSIX timers.
 pub fn register_alarm(deadline: Duration) {
@@ -233,7 +287,7 @@ impl TimeManager {
             }
             TimerState::None => {}
         }
-        self.update_itimer(ITimerType::Real, itimer_delta, &emitter);
+        // `ITIMER_REAL` is process state and is polled separately.
         self.last_wall_ns = now_ns;
         // Sync tick baseline with poll baseline so the next tick() starts
         // from a clean slate.

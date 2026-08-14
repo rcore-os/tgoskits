@@ -224,6 +224,9 @@ pub fn poll_timer(task: &TaskInner) {
 /// Poll the process-level POSIX timers.
 pub fn poll_process_timer(pid: Pid) {
     if let Ok(proc_data) = get_process_data(pid) {
+        if proc_data.poll_real_timer() {
+            let _ = send_signal_to_process(pid, Some(SignalInfo::new_kernel(Signo::SIGALRM)));
+        }
         proc_data.posix_timers.poll_expired(pid, |sig| {
             let _ = send_signal_to_process(pid, Some(sig));
         });

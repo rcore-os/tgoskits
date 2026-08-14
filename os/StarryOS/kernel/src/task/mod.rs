@@ -901,6 +901,9 @@ pub struct ProcessData {
     /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
     pub posix_timers: Arc<PosixTimerTable>,
 
+    /// Process-wide `ITIMER_REAL` state shared by all threads.
+    real_timer: IrqMutex<ProcessRealTimer>,
+
     /// `true` when this process shares its [`AddrSpace`] with a parent/sibling
     /// (`CLONE_VM`, e.g. vfork / posix_spawn). In that case the last thread must
     /// **not** clear the address space on exit — the co-owner may still be
@@ -1037,6 +1040,7 @@ impl ProcessData {
                 personality: AtomicUsize::new(0),
 
                 posix_timers: Arc::new(PosixTimerTable::default()),
+                real_timer: IrqMutex::new(ProcessRealTimer::default()),
 
                 vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
                 aspace_slot_released: AtomicBool::new(false),
@@ -1052,6 +1056,27 @@ impl ProcessData {
         let aspace_arc = this.aspace.lock().clone();
         crate::mm::attach_process_slot(&aspace_arc);
         this
+    }
+
+    /// Replaces this process's `ITIMER_REAL` timer.
+    pub fn set_real_timer(
+        &self,
+        interval_ns: usize,
+        remaining_ns: usize,
+    ) -> (TimeValue, TimeValue) {
+        self.real_timer
+            .lock()
+            .set(self.proc.pid(), interval_ns, remaining_ns)
+    }
+
+    /// Returns this process's `ITIMER_REAL` interval and remaining time.
+    pub fn get_real_timer(&self) -> (TimeValue, TimeValue) {
+        self.real_timer.lock().get()
+    }
+
+    /// Polls this process's `ITIMER_REAL` timer.
+    pub fn poll_real_timer(&self) -> bool {
+        self.real_timer.lock().poll_expired(self.proc.pid())
     }
 
     /// Returns this process generation's stable PID identity.
