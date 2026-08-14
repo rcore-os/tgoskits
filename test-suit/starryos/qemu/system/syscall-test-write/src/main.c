@@ -48,7 +48,8 @@ int main(void)
          * form a Rust slice, so write(2) must fail with EFAULT instead of
          * panicking while constructing the layout.
          */
-        CHECK_ERR(write(fd, msg, SIZE_MAX), EFAULT,
+        volatile size_t oversized_len = SIZE_MAX;
+        CHECK_ERR(write(fd, msg, oversized_len), EFAULT,
                   "oversized write length returns EFAULT without a kernel panic");
         CHECK_RET(close(fd), 0, "close write fixture");
 
