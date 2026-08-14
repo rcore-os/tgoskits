@@ -345,12 +345,13 @@ impl<'a> ExtentTree<'a> {
     ) -> Ext4Result<()> {
         match node {
             ExtentNode::Leaf { header, entries } => {
-                let extent = entries
+                let position = entries
                     .iter_mut()
-                    .find(|extent| extent.ee_block == start && extent.len() == len)
+                    .position(|extent| extent.ee_block == start && extent.len() == len)
                     .ok_or_else(|| {
                         Ext4Error::corrupted().with_operation("extent:prepared_range_missing")
                     })?;
+                let extent = &mut entries[position];
                 if !extent.is_unwritten() {
                     return Err(
                         Ext4Error::corrupted().with_operation("extent:prepared_range_initialized")
@@ -359,6 +360,9 @@ impl<'a> ExtentTree<'a> {
                 extent.ee_len = Ext4Extent::encode_len(len, false).ok_or_else(|| {
                     Ext4Error::corrupted().with_operation("extent:initialized_length")
                 })?;
+                Self::merge_leaf_extent_neighbors(entries, position)?;
+                header.eh_entries = u16::try_from(entries.len())
+                    .map_err(|_| Ext4Error::corrupted().with_operation("extent:entry_overflow"))?;
                 if let Some(block) = physical_node {
                     let disk_node = ExtentNode::Leaf {
                         header: *header,

@@ -235,6 +235,57 @@ fn partial_write_converts_only_the_written_unwritten_block() {
 }
 
 #[test]
+fn sequential_writes_merge_converted_unwritten_extents() {
+    const BLOCKS: u64 = 4;
+
+    let device = MemoryDevice::new(32 * 1024);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = mount(&mut journal).expect("mount failed");
+    mkfile(&mut journal, &mut filesystem, "/sequential", None, None).expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, "/sequential")
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+
+    preallocate_inode(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        0,
+        BLOCKS * BLOCK_SIZE as u64,
+        PreallocationOptions::KEEP_SIZE,
+    )
+    .expect("preallocation failed");
+
+    let payload = vec![0x5a; BLOCK_SIZE];
+    for logical in 0..BLOCKS {
+        write_file(
+            &mut journal,
+            &mut filesystem,
+            "/sequential",
+            logical * BLOCK_SIZE as u64,
+            &payload,
+        )
+        .expect("sequential write failed");
+    }
+
+    let mut inode = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("inode read failed");
+    let root = ExtentTree::with_filesystem(&mut inode, &filesystem, inode_number)
+        .load_root_from_inode()
+        .expect("extent root inspection failed");
+    let ExtentNode::Leaf { entries, .. } = root else {
+        panic!("four adjacent blocks must remain in the inline extent root");
+    };
+    assert_eq!(entries.len(), 1, "adjacent initialized extents remain");
+    assert_eq!(entries[0].ee_block, 0);
+    assert_eq!(entries[0].len(), BLOCKS as u32);
+    assert!(entries[0].is_initialized());
+}
+
+#[test]
 fn preallocation_reserves_unwritten_blocks_and_honors_keep_size() {
     let device = MemoryDevice::new(32 * 1024);
     let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);

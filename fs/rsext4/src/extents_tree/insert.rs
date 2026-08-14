@@ -184,6 +184,20 @@ impl<'a> ExtentTree<'a> {
         Ok(true)
     }
 
+    pub(super) fn merge_leaf_extent_neighbors(
+        entries: &mut Vec<Ext4Extent>,
+        extent_index: usize,
+    ) -> Ext4Result<()> {
+        let merge_index =
+            if extent_index > 0 && Self::merge_leaf_extent_right(entries, extent_index - 1)? {
+                extent_index - 1
+            } else {
+                extent_index
+            };
+        while Self::merge_leaf_extent_right(entries, merge_index)? {}
+        Ok(())
+    }
+
     fn insert_and_merge_leaf_extent(
         entries: &mut Vec<Ext4Extent>,
         inserted_index: usize,
