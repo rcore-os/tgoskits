@@ -339,6 +339,11 @@ pub fn perf_control_callback_runs_preemptible() -> bool {
     super::perf::control_callback_runs_preemptible_for_test()
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn perf_kernel_task_sample_ids_are_empty() -> bool {
+    super::perf::sampling::kernel_task_sample_ids_are_empty_for_test()
+}
+
 pub fn stop_machine_runs_action_and_sync_on_each_cpu() -> bool {
     super::stop_machine::stop_machine_runs_action_and_sync_on_each_cpu_for_test()
 }
@@ -397,6 +402,10 @@ pub fn pidfd_flags_and_signal_validation_rules_hold() -> bool {
 
 pub fn reaping_identity_is_not_publicly_resolvable() -> bool {
     super::task::reaping_identity_is_not_publicly_resolvable_for_test()
+}
+
+pub fn pid_identity_state_machine_rules_hold() -> bool {
+    super::task::pid_identity_state_machine_rules_hold_for_test()
 }
 
 pub fn timerfd_timespec_conversion_rules_hold() -> bool {

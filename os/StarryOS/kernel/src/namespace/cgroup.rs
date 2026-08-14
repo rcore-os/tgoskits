@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use ax_cgroup::{CgroupNamespace, CgroupNode};
 
-use crate::IrqMutex;
+use crate::sync::IrqMutex;
 
 /// The initial cgroup namespace rooted at the global cgroup hierarchy.
 pub static ROOT_CGROUP_NS: ax_lazyinit::LazyLock<Arc<IrqMutex<CgroupNamespace>>> =

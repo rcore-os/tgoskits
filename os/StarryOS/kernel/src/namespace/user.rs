@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::IrqMutex;
+use crate::sync::IrqMutex;
 
 /// The initial root user namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWUSER)` or `clone(CLONE_NEWUSER)`.

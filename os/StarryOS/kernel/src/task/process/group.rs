@@ -4,16 +4,21 @@ use alloc::{
 };
 use core::fmt;
 
-use ax_runtime::sync::SpinLock;
 use weak_map::WeakMap;
 
-use crate::{Pid, Process, Session};
+use super::{Process, Session};
+use crate::{
+    sync::SpinLock,
+    task::{Pgid, PgidNumber, PidIdentity, PidRoleLease, TgidNumber},
+};
 
 /// A [`ProcessGroup`] is a collection of [`Process`]es.
 pub struct ProcessGroup {
-    pgid: Pid,
+    pgid: PgidNumber,
+    identity: Weak<PidIdentity>,
+    _role: PidRoleLease<Pgid>,
     pub(crate) session: Arc<Session>,
-    pub(crate) processes: SpinLock<WeakMap<Pid, Weak<Process>>>,
+    pub(crate) processes: SpinLock<WeakMap<TgidNumber, Weak<Process>>>,
 }
 
 impl ProcessGroup {
@@ -21,27 +26,42 @@ impl ProcessGroup {
     ///
     /// The session registry serializes process-group creation so that racing
     /// parent and child `setpgid()` calls converge on one group identity.
-    pub(crate) fn get_or_create(pgid: Pid, session: &Arc<Session>) -> Arc<Self> {
+    pub(crate) fn get_or_create(identity: Arc<PidIdentity>, session: &Arc<Session>) -> Arc<Self> {
+        let pgid = PgidNumber::from(identity.root_number());
+        let mut groups = session.process_groups.lock_irqsave();
+        if let Some(existing) = groups.get(&pgid) {
+            return existing;
+        }
+        let role = identity
+            .acquire_role::<Pgid>()
+            .expect("new process group identity already owns PGID role");
         let group = Arc::new(Self {
             pgid,
+            identity: Arc::downgrade(&identity),
+            _role: role,
             session: session.clone(),
             processes: SpinLock::new(WeakMap::new()),
         });
-
-        let mut groups = session.process_groups.lock_irqsave();
-        if let Some(existing) = groups.get(&pgid) {
-            existing
-        } else {
-            groups.insert(pgid, &group);
-            group
-        }
+        identity.bind_process_group(&group);
+        groups.insert(pgid, &group);
+        group
     }
 }
 
 impl ProcessGroup {
-    /// The [`ProcessGroup`] ID.
-    pub fn pgid(&self) -> Pid {
+    /// The root-namespace process-group ID.
+    pub const fn pgid(&self) -> PgidNumber {
         self.pgid
+    }
+
+    pub(crate) const fn pgid_number(&self) -> PgidNumber {
+        self.pgid
+    }
+
+    pub(crate) fn identity(&self) -> Arc<PidIdentity> {
+        self.identity
+            .upgrade()
+            .expect("process group outlived its PID identity")
     }
 
     /// The [`Session`] that the [`ProcessGroup`] belongs to.
@@ -76,18 +96,22 @@ mod tests {
 
     #[test]
     fn duplicate_live_group_identity_reuses_the_session_group() {
-        let session = Session::new(7);
+        let namespace = crate::task::new_test_pid_namespace();
+        let (session_identity, _session_tgid) = crate::task::new_test_process_identity(&namespace);
+        let session = Session::new(session_identity);
+        let (group_identity, _group_tgid) = crate::task::new_test_process_identity(&namespace);
         let start = Arc::new(Barrier::new(2));
 
         let first_session = session.clone();
         let first_start = start.clone();
+        let first_identity = group_identity.clone();
         let first = thread::spawn(move || {
             first_start.wait();
-            ProcessGroup::get_or_create(11, &first_session)
+            ProcessGroup::get_or_create(first_identity, &first_session)
         });
         let second = thread::spawn(move || {
             start.wait();
-            ProcessGroup::get_or_create(11, &session)
+            ProcessGroup::get_or_create(group_identity, &session)
         });
 
         let first = first.join().unwrap();

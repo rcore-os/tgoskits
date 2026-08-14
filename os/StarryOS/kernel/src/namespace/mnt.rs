@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::IrqMutex;
+use crate::sync::IrqMutex;
 
 /// The initial root mount namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWNS)` or `clone(CLONE_NEWNS)`.

@@ -17,7 +17,7 @@ use crate::mm::UserPtr;
 use crate::{
     Errno, StarryError, StarryResult,
     sync::Mutex,
-    task::{AsThread, SockFilter, SockFprog, get_task, processes},
+    task::{AsThread, SockFilter, SockFprog, get_task_by_number, processes},
 };
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
@@ -678,7 +678,7 @@ pub fn sys_uname(name: *mut new_utsname) -> StarryResult<isize> {
     let uts = {
         let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
         let ns = nsproxy.uts_ns.lock();
-        axnsproxy::build_utsname(&ns)
+        crate::namespace::build_utsname(&ns)
     };
     name.vm_write(uts)?;
     Ok(0)
@@ -931,10 +931,10 @@ fn sync_seccomp_to_thread_group() {
     let thread = curr.as_thread();
     let state = thread.seccomp_state();
     for tid in thread.proc_data.proc.threads() {
-        if tid == thread.tid() {
+        if tid == thread.tid_number() {
             continue;
         }
-        if let Ok(task) = get_task(tid)
+        if let Ok(task) = get_task_by_number(tid)
             && let Some(peer) = task.try_as_thread()
         {
             peer.set_seccomp_state(state.clone());

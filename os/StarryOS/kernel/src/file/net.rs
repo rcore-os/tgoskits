@@ -34,7 +34,7 @@ use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc, get_file_like},
     syscall::in_root_net_ns,
-    task::AsThread,
+    task::{AsThread, current_pid_view},
 };
 
 pub(super) const ARPHRD_ETHER: u16 = 1;
@@ -79,8 +79,12 @@ impl Socket {
     pub(crate) fn with_current_sender_credentials(mut options: SendOptions) -> SendOptions {
         let current = current();
         let credentials = current.as_thread().cred();
+        let process_identity = current.as_thread().proc_data.identity();
         options.sender_credentials = Some(UnixCredentials {
-            pid: current.as_thread().proc_data.proc.pid(),
+            pid: current_pid_view()
+                .visible_number(&process_identity)
+                .expect("Unix sender is visible in its active PID namespace")
+                .get(),
             uid: credentials.uid,
             gid: credentials.gid,
         });

@@ -10,16 +10,19 @@ use core::{
 };
 
 use ax_lazyinit::LazyInit;
-use ax_runtime::sync::SpinLock;
 use weak_map::StrongMap;
 
-use crate::{Pid, ProcessGroup, Session};
+use super::{ProcessGroup, Session};
+use crate::{
+    sync::SpinLock,
+    task::{PidIdentity, TgidNumber, TidNumber},
+};
 
 const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
 
 #[derive(Default)]
 pub(crate) struct ThreadGroup {
-    pub(crate) threads: BTreeSet<Pid>,
+    pub(crate) threads: BTreeSet<TidNumber>,
     pub(crate) exit_code: i32,
     pub(crate) group_exited: bool,
     pub(crate) exited_cpu_time: ProcessCpuTime,
@@ -67,20 +70,31 @@ pub enum ThreadExit {
 
 /// A process.
 pub struct Process {
-    pid: Pid,
+    pid: TgidNumber,
+    identity: Weak<PidIdentity>,
     is_child_subreaper: AtomicBool,
     pub(crate) tg: SpinLock<ThreadGroup>,
 
-    children: SpinLock<StrongMap<Pid, Arc<Process>>>,
+    children: SpinLock<StrongMap<TgidNumber, Arc<Process>>>,
     parent: SpinLock<Weak<Process>>,
 
     group: SpinLock<Arc<ProcessGroup>>,
 }
 
 impl Process {
-    /// The [`Process`] ID.
-    pub fn pid(&self) -> Pid {
+    /// The root-namespace thread-group ID of this process.
+    pub const fn pid(&self) -> TgidNumber {
         self.pid
+    }
+
+    pub(crate) const fn pid_number(&self) -> TgidNumber {
+        self.pid
+    }
+
+    pub(crate) fn identity(&self) -> Arc<PidIdentity> {
+        self.identity
+            .upgrade()
+            .expect("process topology outlived its PID identity")
     }
 
     /// Returns `true` if the [`Process`] is the init process.
@@ -151,12 +165,13 @@ impl Process {
     ///
     /// Checking [`Session`] conflicts is unnecessary.
     pub fn create_session(self: &Arc<Self>) -> Option<(Arc<Session>, Arc<ProcessGroup>)> {
-        if self.group.lock_irqsave().session.sid() == self.pid {
+        if self.group.lock_irqsave().session.sid_number().pid_number() == self.pid.pid_number() {
             return None;
         }
 
-        let new_session = Session::new(self.pid);
-        let new_group = ProcessGroup::get_or_create(self.pid, &new_session);
+        let identity = self.identity();
+        let new_session = Session::new(identity.clone());
+        let new_group = ProcessGroup::get_or_create(identity, &new_session);
         self.set_group(&new_group);
 
         Some((new_session, new_group))
@@ -172,11 +187,12 @@ impl Process {
     /// The caller has to ensure that the new [`ProcessGroup`] does not conflict
     /// with any existing [`ProcessGroup`].
     pub fn create_group(self: &Arc<Self>) -> Option<Arc<ProcessGroup>> {
-        if self.group.lock_irqsave().pgid() == self.pid {
+        if self.group.lock_irqsave().pgid_number().pid_number() == self.pid.pid_number() {
             return None;
         }
 
-        let new_group = ProcessGroup::get_or_create(self.pid, &self.group.lock_irqsave().session);
+        let new_group =
+            ProcessGroup::get_or_create(self.identity(), &self.group.lock_irqsave().session);
         self.set_group(&new_group);
 
         Some(new_group)
@@ -206,7 +222,7 @@ impl Process {
 /// Threads
 impl Process {
     /// Adds a thread to this [`Process`] with the given thread ID.
-    pub fn add_thread(self: &Arc<Self>, tid: Pid) {
+    pub fn add_thread(self: &Arc<Self>, tid: TidNumber) {
         self.tg.lock_irqsave().threads.insert(tid);
     }
 
@@ -219,7 +235,7 @@ impl Process {
     /// its CPU time.
     pub fn exit_thread(
         self: &Arc<Self>,
-        tid: Pid,
+        tid: TidNumber,
         exit_code: i32,
         cpu_time: ProcessCpuTime,
     ) -> ThreadExit {
@@ -239,8 +255,8 @@ impl Process {
     }
 
     /// Get all threads in this [`Process`].
-    pub fn threads(&self) -> Vec<Pid> {
-        self.tg.lock_irqsave().threads.iter().cloned().collect()
+    pub fn threads(&self) -> Vec<TidNumber> {
+        self.tg.lock_irqsave().threads.iter().copied().collect()
     }
 
     /// Renames a thread in the thread group.
@@ -250,7 +266,7 @@ impl Process {
     /// `gettid() == getpid()` holds in the new image. We swap `old_tid` for
     /// `new_tid` atomically inside the thread-group lock so there is no
     /// instant in which the caller is unrepresented in the group.
-    pub fn rename_thread(self: &Arc<Self>, old_tid: Pid, new_tid: Pid) {
+    pub fn rename_thread(self: &Arc<Self>, old_tid: TidNumber, new_tid: TidNumber) {
         let mut tg = self.tg.lock_irqsave();
         tg.threads.remove(&old_tid);
         tg.threads.insert(new_tid);
@@ -266,14 +282,14 @@ impl Process {
     /// Returns a snapshot of the thread group at the point where the group-exit
     /// state was first published. Later exiting threads must not overwrite the
     /// recorded process exit code.
-    pub fn start_group_exit(&self, exit_code: i32) -> Option<Vec<Pid>> {
+    pub fn start_group_exit(&self, exit_code: i32) -> Option<Vec<TidNumber>> {
         let mut tg = self.tg.lock_irqsave();
         if tg.group_exited {
             return None;
         }
         tg.group_exited = true;
         tg.exit_code = exit_code;
-        Some(tg.threads.iter().cloned().collect())
+        Some(tg.threads.iter().copied().collect())
     }
 
     /// Marks the [`Process`] as group exited.
@@ -365,17 +381,19 @@ impl fmt::Debug for Process {
 
 /// Builder
 impl Process {
-    fn new_group_member(pid: Pid, parent: Option<&Arc<Process>>) -> Arc<Process> {
+    fn new_group_member(identity: Arc<PidIdentity>, parent: Option<&Arc<Process>>) -> Arc<Process> {
+        let pid = TgidNumber::from(identity.root_number());
         let group = parent.map_or_else(
             || {
-                let session = Session::new(pid);
-                ProcessGroup::get_or_create(pid, &session)
+                let session = Session::new(identity.clone());
+                ProcessGroup::get_or_create(identity.clone(), &session)
             },
             |p| p.group(),
         );
 
         let process = Arc::new(Process {
             pid,
+            identity: Arc::downgrade(&identity),
             is_child_subreaper: AtomicBool::new(false),
             tg: SpinLock::new(ThreadGroup::default()),
             children: SpinLock::new(StrongMap::new()),
@@ -387,8 +405,9 @@ impl Process {
         process
     }
 
-    fn new(pid: Pid, parent: Option<Arc<Process>>) -> Arc<Process> {
-        let process = Self::new_group_member(pid, parent.as_ref());
+    fn new(identity: Arc<PidIdentity>, parent: Option<Arc<Process>>) -> Arc<Process> {
+        let pid = TgidNumber::from(identity.root_number());
+        let process = Self::new_group_member(identity, parent.as_ref());
 
         if let Some(parent) = parent {
             parent.children.lock_irqsave().insert(pid, process.clone());
@@ -403,19 +422,19 @@ impl Process {
     ///
     /// This function can be called multiple times, but
     /// [`ProcessBuilder::build`] on the the result must be called only once.
-    pub fn new_init(pid: Pid) -> Arc<Process> {
-        Self::new(pid, None)
+    pub fn new_init(identity: Arc<PidIdentity>) -> Arc<Process> {
+        Self::new(identity, None)
     }
 
     /// Creates a child [`Process`].
-    pub fn fork(self: &Arc<Process>, pid: Pid) -> Arc<Process> {
-        Self::new(pid, Some(self.clone()))
+    pub fn fork(self: &Arc<Process>, identity: Arc<PidIdentity>) -> Arc<Process> {
+        Self::new(identity, Some(self.clone()))
     }
 
     /// Creates an isolated process for kernel axtests without replacing init.
-    #[cfg(axtest)]
-    pub fn new_for_axtest(pid: Pid) -> Arc<Process> {
-        Self::new_group_member(pid, None)
+    #[cfg(any(test, axtest))]
+    pub fn new_for_axtest(identity: Arc<PidIdentity>) -> Arc<Process> {
+        Self::new_group_member(identity, None)
     }
 }
 
@@ -444,12 +463,17 @@ mod tests {
 
     #[test]
     fn orphan_never_becomes_invisible_while_reparenting() {
-        let init = Process::new_init(1);
-        let reaper = init.fork(2);
+        let namespace = crate::task::new_test_pid_namespace();
+        let (init_identity, _init_tgid) = crate::task::new_test_process_identity(&namespace);
+        let init = Process::new_init(init_identity);
+        let (reaper_identity, _reaper_tgid) = crate::task::new_test_process_identity(&namespace);
+        let reaper = init.fork(reaper_identity);
         reaper.set_child_subreaper(true);
-        let parent = reaper.fork(3);
-        let child = parent.fork(4);
-        let child_pid = child.pid();
+        let (parent_identity, _parent_tgid) = crate::task::new_test_process_identity(&namespace);
+        let parent = reaper.fork(parent_identity);
+        let (child_identity, _child_tgid) = crate::task::new_test_process_identity(&namespace);
+        let child = parent.fork(child_identity);
+        let child_pid = child.pid_number();
 
         let reaper_children = reaper.children.lock_irqsave();
         let start_exit = StdArc::new(Barrier::new(2));

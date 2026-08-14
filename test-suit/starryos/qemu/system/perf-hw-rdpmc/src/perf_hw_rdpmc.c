@@ -7,11 +7,13 @@
  * access (`PMUSERENR_EL0`) and (2) fill the mmap page's rdpmc metadata
  * (`cap_user_rdpmc`, the 1-based `index`, `pmc_width`).
  *
- * This test opens a self counting CPU_CYCLES event (which the kernel backs with
- * the dedicated cycle counter, page index 32 ⇒ `PMCCNTR_EL0`), mmaps the page,
- * checks the rdpmc fields, then reads `PMCCNTR_EL0` from EL0 and cross-checks it
- * against `read(perf_fd)`. If EL0 access were not enabled the `mrs` would trap
- * (SIGILL) and the test would die — so reaching the comparison already proves it.
+ * This test opens a disabled self counting CPU_CYCLES event. Per-task events use
+ * a scheduler-owned programmable counter, so userspace selects the counter from
+ * the mmap page's 1-based index instead of assuming the system-wide cycle
+ * counter. After enable + sched_yield makes the scheduler publish the event, the
+ * test reads that counter from EL0 and cross-checks it against read(perf_fd).
+ * If EL0 access were not enabled the system-register access would trap (SIGILL),
+ * so reaching the comparison already proves it.
  *
  * SUCCESS == cap_user_rdpmc set AND index!=0 AND the EL0 `mrs` read and the
  * read(fd) value are both non-zero and within a small factor of each other.
@@ -22,6 +24,7 @@
 #endif
 
 #include <errno.h>
+#include <sched.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -94,6 +97,7 @@ struct perf_event_mmap_page {
 #define CAP_USER_RDPMC (1ull << 2)
 /* Page index for the dedicated cycle counter: ARM idx 31 ⇒ 1-based 32. */
 #define CYCLE_PAGE_INDEX 32u
+#define PERF_ATTR_DISABLED (1ull << 0)
 
 #ifndef SYS_perf_event_open
 #define SYS_perf_event_open 241
@@ -109,14 +113,27 @@ static int fail(const char *reason) {
     return 1;
 }
 
-/* Read the dedicated cycle counter from EL0. Traps (SIGILL) if PMUSERENR_EL0.CR
- * is not set — so a successful read is itself proof EL0 access is enabled. */
-static inline uint64_t read_pmccntr_el0(void) {
+/* Read the 1-based counter selected by perf_event_mmap_page.index. Event
+ * counters are selected through PMSELR_EL0 and read through PMXEVCNTR_EL0;
+ * index 32 names the dedicated cycle counter. PMUSERENR_EL0.ER/CR gate these
+ * accesses, so a successful read also proves that the kernel enabled EL0. */
+static inline uint64_t read_pmu_counter(uint32_t index) {
 #if defined(__aarch64__)
     uint64_t v;
-    __asm__ volatile("mrs %0, pmccntr_el0" : "=r"(v));
-    return v;
+    if (index == CYCLE_PAGE_INDEX) {
+        __asm__ volatile("mrs %0, pmccntr_el0" : "=r"(v));
+        return v;
+    }
+    uint64_t selector = (uint64_t)(index - 1u);
+    __asm__ volatile("msr pmselr_el0, %1\n\t"
+                     "isb\n\t"
+                     "mrs %0, pmxevcntr_el0"
+                     : "=r"(v)
+                     : "r"(selector)
+                     : "memory");
+    return v & UINT32_MAX;
 #else
+    (void)index;
     return 0; /* unreachable: main() skips on non-aarch64 */
 #endif
 }
@@ -133,6 +150,7 @@ int main(void) {
     attr.type = PERF_TYPE_HARDWARE;
     attr.config = PERF_COUNT_HW_CPU_CYCLES;
     attr.size = (uint32_t)sizeof(attr);
+    attr.flags = PERF_ATTR_DISABLED;
     /* counting event: no sample_period/freq. */
 
     /* Self-monitoring: pid=0 (this process), cpu=-1 (any cpu). */
@@ -143,11 +161,6 @@ int main(void) {
         return fail(msg);
     }
     int efd = (int)fd;
-
-    if (ioctl(efd, PERF_EVENT_IOC_ENABLE, 0) != 0) {
-        close(efd);
-        return fail("ioctl(ENABLE)");
-    }
 
     void *base = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, efd, 0);
     if (base == MAP_FAILED) {
@@ -174,10 +187,28 @@ int main(void) {
         close(efd);
         return fail("index is 0 (rdpmc not usable)");
     }
-    if (index != CYCLE_PAGE_INDEX) {
+    if (index > CYCLE_PAGE_INDEX) {
         munmap(base, 4096);
         close(efd);
-        return fail("cycles event not on the dedicated cycle counter");
+        return fail("counter index is outside the ARM PMUv3 range");
+    }
+    if ((index == CYCLE_PAGE_INDEX && width != 64) ||
+        (index != CYCLE_PAGE_INDEX && width != 32)) {
+        munmap(base, 4096);
+        close(efd);
+        return fail("pmc_width does not match the selected counter");
+    }
+
+    if (ioctl(efd, PERF_EVENT_IOC_ENABLE, 0) != 0) {
+        munmap(base, 4096);
+        close(efd);
+        return fail("ioctl(ENABLE)");
+    }
+    /* ENABLE records intent; the per-task PMU slot is programmed at sched-in. */
+    if (sched_yield() != 0) {
+        munmap(base, 4096);
+        close(efd);
+        return fail("sched_yield after ENABLE");
     }
 
     /* Burn some cycles so the counter advances measurably. */
@@ -188,7 +219,7 @@ int main(void) {
     (void)spin;
 
     /* EL0 read via mrs (the rdpmc path) and the syscall read, back to back. */
-    uint64_t rd = read_pmccntr_el0();
+    uint64_t rd = read_pmu_counter(index);
     uint64_t sys = 0;
     if (read(efd, &sys, sizeof(sys)) != (ssize_t)sizeof(sys)) {
         munmap(base, 4096);
@@ -206,8 +237,8 @@ int main(void) {
     } else if (sys == 0) {
         rc = fail("read(perf_fd) is zero");
     } else {
-        /* Both read the same hardware cycle counter moments apart; they must be
-         * in the same ballpark (within ~16x covers scheduling jitter under TCG). */
+        /* Both read the same live hardware counter moments apart; read(fd) may
+         * additionally include completed slices, so allow scheduler jitter. */
         uint64_t lo = rd < sys ? rd : sys;
         uint64_t hi = rd < sys ? sys : rd;
         if (hi > lo * 16 + 1000000) {

@@ -2,23 +2,26 @@ use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::time::TimeValue;
 use ax_task::current;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
-use starry_process::Pid;
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     StarryError, StarryResult,
-    task::{AsThread, Thread, get_process_data, get_task},
+    task::{AsThread, TgidNumber, Thread, get_task_by_number, get_user_process_data_by_number},
     time::TimeValueLike,
 };
 
 pub fn sys_prlimit64(
-    pid: Pid,
+    pid: u32,
     resource: u32,
     new_limit: *const rlimit64,
     old_limit: *mut rlimit64,
 ) -> StarryResult<isize> {
     // pid lookup first — match Linux error priority (ESRCH before EINVAL)
-    let proc_data = get_process_data(pid)?;
+    let proc_data = if pid == 0 {
+        current().as_thread().proc_data.clone()
+    } else {
+        get_user_process_data_by_number(TgidNumber::try_from(pid)?)?
+    };
 
     if resource >= RLIM_NLIMITS {
         return Err(StarryError::InvalidInput);
@@ -113,7 +116,7 @@ pub fn sys_getrusage(who: i32, usage: *mut rusage) -> StarryResult<isize> {
                 .threads()
                 .into_iter()
                 .fold(Rusage::default(), |acc, tid| {
-                    if let Ok(task) = get_task(tid) {
+                    if let Ok(task) = get_task_by_number(tid) {
                         acc.collate(Rusage::from_thread(task.as_thread()))
                     } else {
                         acc
@@ -126,7 +129,7 @@ pub fn sys_getrusage(who: i32, usage: *mut rusage) -> StarryResult<isize> {
                 .threads()
                 .into_iter()
                 .fold(Rusage::default(), |acc, child| {
-                    if let Ok(task) = get_task(child)
+                    if let Ok(task) = get_task_by_number(child)
                         && !curr.ptr_eq(&task)
                     {
                         acc.collate(Rusage::from_thread(task.as_thread()))

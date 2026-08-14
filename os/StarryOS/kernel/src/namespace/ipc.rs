@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicU64;
 
-use crate::IrqMutex;
+use crate::sync::IrqMutex;
 
 static NEXT_IPC_NS_ID: AtomicU64 = AtomicU64::new(0);
 

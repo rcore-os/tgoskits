@@ -39,7 +39,6 @@ use linux_raw_sys::general::{
     O_ACCMODE, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx,
     statx_timestamp,
 };
-use starry_process::Pid;
 
 #[cfg(axtest)]
 pub(crate) use self::epoll::epoll_event_matching_rules_hold_for_test;
@@ -93,7 +92,7 @@ use crate::{
     StarryError, StarryResult,
     pseudofs::DeviceMmap,
     sync::RwLock,
-    task::{AX_FILE_LIMIT, AsThread, tasks},
+    task::{AX_FILE_LIMIT, AsThread, PidIdentityId, tasks},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -296,7 +295,8 @@ pub trait FileLike: Pollable + DowncastSync {
         Ok(())
     }
 
-    /// Per-close hook, invoked with the closing task's tgid whenever a file
+    /// Per-close hook, invoked with the closing process's stable identity
+    /// generation whenever a file
     /// descriptor referring to this object is dropped from an fd table -
     /// explicit `close`, `close_range`, `dup2`/`dup3` replacement, exec
     /// CLOEXEC, or process exit. This mirrors Linux `f_op->flush`
@@ -304,7 +304,7 @@ pub trait FileLike: Pollable + DowncastSync {
     /// rather than only on the last reference. The default is a no-op; POSIX
     /// message-queue descriptors override it to drop a matching `mq_notify`
     /// registration (`mqueue_flush_file`, ipc/mqueue.c:658).
-    fn on_close(&self, _owner: Pid) {}
+    fn on_close(&self, _owner: PidIdentityId) {}
 
     fn from_fd(fd: c_int) -> StarryResult<Arc<Self>>
     where
@@ -391,14 +391,14 @@ pub(crate) fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
     !fd_table_file_refs(file).is_empty()
 }
 
-pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(Pid, usize)> {
+pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(u32, usize)> {
     let mut refs = alloc::vec::Vec::new();
     for task in tasks() {
         if task.state() == TaskState::Exited {
             continue;
         }
         let thread = task.as_thread();
-        let pid = thread.proc_data.proc.pid();
+        let pid = thread.proc_data.proc.pid().get();
         let scope = thread.scope.read();
         let scoped_fd_table = FD_TABLE.scope(&scope);
         let table = scoped_fd_table.read();
@@ -436,16 +436,15 @@ fn notify_close_write(fd: &FileDescriptor) {
 /// `Weak` still alive, and sleep forever.
 pub fn release_locks_on_close(fd: FileDescriptor) {
     let key = fd.inner.inode_key();
+    let owner = current().as_thread().proc_data.identity().id();
     // Linux `filp_flush` runs `f_op->flush` on every fd-closing path (explicit
     // close, close_range, dup2/dup3 replacement, exec CLOEXEC, process exit),
     // all of which funnel through here. This is where an mq descriptor drops a
     // matching `mq_notify` registration (`mqueue_flush_file`).
-    fd.inner
-        .on_close(current().as_thread().proc_data.proc.pid());
+    fd.inner.on_close(owner);
     notify_close_write(&fd);
     if let Some(k) = key {
-        let pid = current().as_thread().proc_data.proc.pid();
-        crate::syscall::release_inode_posix_locks(pid, k);
+        crate::syscall::release_inode_posix_locks(owner, k);
         if !fd_tables_contain_file(&fd.inner) {
             crate::syscall::release_flock_lock(k, &fd.inner);
         }

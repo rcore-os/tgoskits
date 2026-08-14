@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::IrqMutex;
+use crate::sync::IrqMutex;
 
 mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));

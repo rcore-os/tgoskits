@@ -4,33 +4,56 @@ use alloc::{
 };
 use core::{any::Any, convert::Infallible, fmt};
 
-use ax_runtime::sync::SpinLock;
 use weak_map::WeakMap;
 
-use crate::{Pid, ProcessGroup};
+use super::ProcessGroup;
+use crate::{
+    sync::SpinLock,
+    task::{PgidNumber, PidIdentity, PidRoleLease, Sid, SidNumber},
+};
 
 /// A [`Session`] is a collection of [`ProcessGroup`]s.
 pub struct Session {
-    sid: Pid,
-    pub(crate) process_groups: SpinLock<WeakMap<Pid, Weak<ProcessGroup>>>,
+    sid: SidNumber,
+    identity: Weak<PidIdentity>,
+    _role: PidRoleLease<Sid>,
+    pub(crate) process_groups: SpinLock<WeakMap<PgidNumber, Weak<ProcessGroup>>>,
     terminal: SpinLock<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 impl Session {
     /// Create a new [`Session`].
-    pub(crate) fn new(sid: Pid) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(identity: Arc<PidIdentity>) -> Arc<Self> {
+        let sid = SidNumber::from(identity.root_number());
+        let role = identity
+            .acquire_role::<Sid>()
+            .expect("new session identity already owns SID role");
+        let session = Arc::new(Self {
             sid,
+            identity: Arc::downgrade(&identity),
+            _role: role,
             process_groups: SpinLock::new(WeakMap::new()),
             terminal: SpinLock::new(None),
-        })
+        });
+        identity.bind_session(&session);
+        session
     }
 }
 
 impl Session {
-    /// The [`Session`] ID.
-    pub fn sid(&self) -> Pid {
+    /// The root-namespace session ID.
+    pub const fn sid(&self) -> SidNumber {
         self.sid
+    }
+
+    pub(crate) const fn sid_number(&self) -> SidNumber {
+        self.sid
+    }
+
+    pub(crate) fn identity(&self) -> Arc<PidIdentity> {
+        self.identity
+            .upgrade()
+            .expect("session outlived its PID identity")
     }
 
     /// The [`ProcessGroup`]s that belong to this [`Session`].

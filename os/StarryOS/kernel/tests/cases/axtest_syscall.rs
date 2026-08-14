@@ -157,6 +157,11 @@ fn reaping_identity_is_not_publicly_resolvable() {
 }
 
 #[axtest]
+fn pid_identity_state_machine_rules_hold() {
+    ax_assert!(axtest_exports::pid_identity_state_machine_rules_hold());
+}
+
+#[axtest]
 fn timerfd_timespec_conversion_rules_hold() {
     ax_assert!(axtest_exports::timerfd_timespec_conversion_rules_hold());
 }

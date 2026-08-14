@@ -1,12 +1,7 @@
-#![no_std]
-
-extern crate alloc;
-
 mod cgroup;
 mod ipc;
 mod mnt;
 mod net;
-mod pid;
 mod user;
 mod uts;
 
@@ -17,84 +12,35 @@ pub use cgroup::{ROOT_CGROUP_NS, new_cgroup_namespace};
 pub use ipc::{IpcNamespace, ROOT_IPC_NS};
 pub use mnt::{MntNamespace, ROOT_MNT_NS};
 pub use net::{NetNamespace, ROOT_NET_NS};
-pub use pid::{PidNamespace, ROOT_PID_NS};
 pub use user::{ROOT_USER_NS, UserNamespace};
 pub use uts::{ROOT_UTS_NS, UtNamespace, build_utsname};
 
-/// StarryOS IRQ-save mutex shared by namespace and kernel components.
-#[repr(transparent)]
-pub struct IrqMutex<T: ?Sized>(ax_runtime::sync::SpinLock<T>);
-
-pub type IrqMutexGuard<'a, T> = ax_runtime::sync::SpinLockIrqSaveGuard<'a, T>;
-
-impl<T> IrqMutex<T> {
-    #[track_caller]
-    pub const fn new(value: T) -> Self {
-        Self(ax_runtime::sync::SpinLock::new(value))
-    }
-
-    pub fn into_inner(self) -> T {
-        self.0.into_inner()
-    }
-
-    #[track_caller]
-    pub fn lock(&self) -> IrqMutexGuard<'_, T> {
-        self.0.lock_irqsave()
-    }
-
-    /// Acquires this IRQ-save mutex using a lockdep subclass.
-    #[track_caller]
-    pub fn lock_nested(&self, subclass: u32) -> IrqMutexGuard<'_, T> {
-        self.0.lock_irqsave_nested(subclass)
-    }
-
-    #[track_caller]
-    pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
-        self.0.try_lock_irqsave()
-    }
-
-    pub fn get_mut(&mut self) -> &mut T {
-        self.0.get_mut()
-    }
-}
-
-impl<T: Default> Default for IrqMutex<T> {
-    fn default() -> Self {
-        Self::new(T::default())
-    }
-}
-
-impl<T: core::fmt::Debug> core::fmt::Debug for IrqMutex<T> {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
+use crate::sync::IrqMutex;
+pub(crate) use crate::task::{PidNamespace, PidNamespaceRef, ROOT_PID_NS};
 
 /// Aggregates all namespace types for a process.
 ///
 /// `ProcessData` holds a single `IrqMutex<NsProxy>` field. Clone and unshare
 /// operations work through `NsProxy` methods so that syscall handlers do not
 /// manipulate namespace internals directly.
-pub struct NsProxy {
+pub(crate) struct NsProxy {
     /// The UTS namespace (hostname, domainname).
-    pub uts_ns: Arc<IrqMutex<UtNamespace>>,
+    pub(crate) uts_ns: Arc<IrqMutex<UtNamespace>>,
     /// The IPC namespace (System V IPC objects).
-    pub ipc_ns: Arc<IrqMutex<IpcNamespace>>,
+    pub(crate) ipc_ns: Arc<IrqMutex<IpcNamespace>>,
     /// The mount namespace (filesystem mount points).
-    pub mnt_ns: Arc<IrqMutex<MntNamespace>>,
-    /// The PID namespace (process ID numbering).
-    pub pid_ns: Arc<IrqMutex<PidNamespace>>,
-    /// Pending PID namespace for the next child created via
-    /// `unshare(CLONE_NEWPID)`.  Linux does not move the calling
-    /// process into a new PID namespace; instead the next fork/clone
-    /// child becomes the first process (PID 1) in the new namespace.
-    pub child_pid_ns: Option<Arc<IrqMutex<PidNamespace>>>,
+    pub(crate) mnt_ns: Arc<IrqMutex<MntNamespace>>,
+    /// PID namespace used by future children.
+    ///
+    /// Linux keeps this choice until another `unshare(CLONE_NEWPID)` or
+    /// `setns(CLONE_NEWPID)` replaces it. Forking a child never consumes it.
+    pub(crate) pid_ns_for_children: PidNamespaceRef,
     /// The network namespace (interfaces, routing, sockets).
-    pub net_ns: Arc<IrqMutex<NetNamespace>>,
+    pub(crate) net_ns: Arc<IrqMutex<NetNamespace>>,
     /// The user namespace (UID/GID mappings).
-    pub user_ns: Arc<IrqMutex<UserNamespace>>,
+    pub(crate) user_ns: Arc<IrqMutex<UserNamespace>>,
     /// The cgroup namespace (cgroup hierarchy view).
-    pub cgroup_ns: Arc<IrqMutex<CgroupNamespace>>,
+    pub(crate) cgroup_ns: Arc<IrqMutex<CgroupNamespace>>,
 }
 
 impl NsProxy {
@@ -104,8 +50,7 @@ impl NsProxy {
             uts_ns: ROOT_UTS_NS.clone(),
             ipc_ns: ROOT_IPC_NS.clone(),
             mnt_ns: ROOT_MNT_NS.clone(),
-            pid_ns: ROOT_PID_NS.clone(),
-            child_pid_ns: None,
+            pid_ns_for_children: ROOT_PID_NS.clone(),
             net_ns: ROOT_NET_NS.clone(),
             user_ns: ROOT_USER_NS.clone(),
             cgroup_ns: ROOT_CGROUP_NS.clone(),
@@ -115,15 +60,14 @@ impl NsProxy {
     /// Clone all namespace references (shallow `Arc` clone).
     ///
     /// Used by `fork` / `clone` (without `CLONE_NEW*` flags) so the child
-    /// shares the same namespaces as the parent.  `child_pid_ns` is never
-    /// inherited — it is consumed by the first child that uses it.
+    /// shares the same namespaces as the parent. The future-child PID
+    /// namespace is persistent and therefore inherited unchanged.
     pub fn clone_all(&self) -> Self {
         Self {
             uts_ns: self.uts_ns.clone(),
             ipc_ns: self.ipc_ns.clone(),
             mnt_ns: self.mnt_ns.clone(),
-            pid_ns: self.pid_ns.clone(),
-            child_pid_ns: None,
+            pid_ns_for_children: self.pid_ns_for_children.clone(),
             net_ns: self.net_ns.clone(),
             user_ns: self.user_ns.clone(),
             cgroup_ns: self.cgroup_ns.clone(),
@@ -140,8 +84,7 @@ impl NsProxy {
             uts_ns: self.uts_ns.clone(),
             ipc_ns: self.ipc_ns.clone(),
             mnt_ns: self.mnt_ns.clone(),
-            pid_ns: self.pid_ns.clone(),
-            child_pid_ns: self.child_pid_ns.clone(),
+            pid_ns_for_children: self.pid_ns_for_children.clone(),
             net_ns: self.net_ns.clone(),
             user_ns: self.user_ns.clone(),
             cgroup_ns: self.cgroup_ns.clone(),
@@ -163,20 +106,13 @@ impl NsProxy {
         self.mnt_ns = Arc::new(IrqMutex::new(new_inner));
     }
 
-    /// Directly replace the PID namespace — used in `clone(CLONE_NEWPID)`.
-    pub fn unshare_pid(&mut self) {
-        let new_inner = PidNamespace::new_child(self.pid_ns.clone());
-        self.pid_ns = Arc::new(IrqMutex::new(new_inner));
-    }
-
     /// Prepare a new PID namespace for the next child of this process.
     ///
     /// Called by `unshare(CLONE_NEWPID)`.  The calling process stays in
     /// its current PID namespace; the new namespace is consumed by the
     /// next `fork` / `clone` child, which becomes PID 1 in that namespace.
-    pub fn prepare_child_pid_ns(&mut self) {
-        let new_inner = PidNamespace::new_child(self.pid_ns.clone());
-        self.child_pid_ns = Some(Arc::new(IrqMutex::new(new_inner)));
+    pub fn prepare_pid_ns_for_children(&mut self, active: PidNamespaceRef) {
+        self.pid_ns_for_children = PidNamespace::new_child(active);
     }
 
     pub fn unshare_net(&mut self) {
@@ -213,10 +149,10 @@ impl NsProxy {
     /// Linux `setns(CLONE_NEWPID)` never moves the calling process into the
     /// target PID namespace.  Instead the next `fork` / `clone` (without
     /// `CLONE_NEWPID`) child enters it and becomes PID 1 there.  This mirrors
-    /// `unshare(CLONE_NEWPID)` — both paths write to `child_pid_ns`, which is
-    /// consumed in the clone path.  The caller must be single-threaded.
-    pub fn set_ns_pid(&mut self, ns: Arc<IrqMutex<PidNamespace>>) {
-        self.child_pid_ns = Some(ns);
+    /// `unshare(CLONE_NEWPID)` — both paths replace the persistent
+    /// `pid_ns_for_children` selection. The caller must be single-threaded.
+    pub fn set_ns_pid(&mut self, ns: PidNamespaceRef) {
+        self.pid_ns_for_children = ns;
     }
 
     /// Replace the network namespace with an existing one (used by `setns(2)`).

@@ -76,7 +76,10 @@ use super::{
     sampling::{self, SampleSlot},
     sideband::{self, Mmap2Info, SidebandTarget},
 };
-use crate::{sync::IrqMutex, task::Thread};
+use crate::{
+    sync::IrqMutex,
+    task::{PidIdentity, PidNamespaceId, TgidNumber, Thread, TidNumber},
+};
 
 // `PROT_*` / `MAP_*` values for the `prot`/`flags` fields of MMAP2 records.
 const PROT_READ: u32 = 1;
@@ -180,6 +183,8 @@ pub struct PerTaskCounter {
     /// `attr.inherit`: clone this event onto `fork`/`clone` children (writing into
     /// the same ring) so `perf record` follows them. Driven by [`on_clone_inherit`].
     inherit: bool,
+    /// PID namespace view captured when this event was opened.
+    observer: PidNamespaceId,
 
     /// Kernel virtual address of the ring's first page (`perf_event_mmap_page`),
     /// or `0` until `mmap(perf_fd)` runs ([`set_ring`](Self::set_ring)). Read by
@@ -283,6 +288,8 @@ pub struct PerTaskConfig {
     pub sample_id_all: bool,
     /// `attr.inherit`: clone this event onto `fork`/`clone` children.
     pub inherit: bool,
+    /// PID namespace view captured when the root event was opened.
+    pub observer: PidNamespaceId,
 }
 
 impl PerTaskCounter {
@@ -319,6 +326,7 @@ impl PerTaskCounter {
             want_task: cfg.want_task,
             sample_id_all: cfg.sample_id_all,
             inherit: cfg.inherit,
+            observer: cfg.observer,
             ring_vaddr: AtomicUsize::new(0),
             ring_len: AtomicUsize::new(0),
             notify_ptr: AtomicUsize::new(0),
@@ -587,6 +595,7 @@ pub fn perf_sched_in(thr: &Thread) {
                     period: ptc.sample_period,
                     sample_type: ptc.sample_type,
                     id: ptc.sample_id.load(Ordering::Relaxed),
+                    observer: ptc.observer,
                     notify: ptc.notify_ptr.load(Ordering::Acquire) as *const (),
                     // Frequency mode adapts the period within each slice; the slot
                     // starts at the initial estimate with no prior timestamp.
@@ -688,11 +697,25 @@ pub fn on_exec(thr: &Thread) {
 
 /// Build a side-band write target for `ptc` if it has a mapped ring and requested
 /// any side-band record (`attr.comm`/`mmap2`/`task`); else `None`.
-fn sideband_target(ptc: &PerTaskCounter, pid: u32, tid: u32) -> Option<SidebandTarget> {
+fn visible_tgid(ptc: &PerTaskCounter, identity: &PidIdentity) -> Option<TgidNumber> {
+    identity
+        .visible_number_in(ptc.observer)
+        .map(TgidNumber::from)
+}
+
+fn visible_tid(ptc: &PerTaskCounter, identity: &PidIdentity) -> Option<TidNumber> {
+    identity
+        .visible_number_in(ptc.observer)
+        .map(TidNumber::from)
+}
+
+fn sideband_target(ptc: &PerTaskCounter, thread: &Thread) -> Option<SidebandTarget> {
     let ring_vaddr = ptc.ring_vaddr.load(Ordering::Acquire);
     if ring_vaddr == 0 || !(ptc.want_comm || ptc.want_mmap2 || ptc.want_task) {
         return None;
     }
+    let pid = visible_tgid(ptc, &thread.proc_data.identity())?;
+    let tid = visible_tid(ptc, &thread.pid_identity())?;
     Some(SidebandTarget {
         ring_vaddr,
         ring_len: ptc.ring_len.load(Ordering::Acquire),
@@ -755,9 +778,6 @@ pub fn on_exec_sideband(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let pid = thr.proc_data.proc.pid();
-    let tid = thr.tid();
-
     /// A target plus which record kinds it wants (so the COMM/MMAP2 loops below
     /// can each skip non-subscribers without re-walking the counter list).
     struct WantTarget {
@@ -771,7 +791,7 @@ pub fn on_exec_sideband(thr: &Thread) {
         counters
             .iter()
             .filter_map(|ptc| {
-                sideband_target(ptc, pid, tid).map(|target| WantTarget {
+                sideband_target(ptc, thr).map(|target| WantTarget {
                     target,
                     comm: ptc.want_comm,
                     mmap2: ptc.want_mmap2,
@@ -822,14 +842,12 @@ pub fn on_mmap_sideband(
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let pid = thr.proc_data.proc.pid();
-    let tid = thr.tid();
     let targets: Vec<SidebandTarget> = {
         let counters = thr.perf_counters.lock();
         counters
             .iter()
             .filter(|ptc| ptc.want_mmap2)
-            .filter_map(|ptc| sideband_target(ptc, pid, tid))
+            .filter_map(|ptc| sideband_target(ptc, thr))
             .collect()
     };
     if targets.is_empty() {
@@ -858,23 +876,33 @@ pub fn on_mmap_sideband(
 /// child task is spawned. The record's body describes the child (`child_pid` /
 /// `child_tid`) with the parent as `ppid`/`ptid`; its `sample_id_all` trailer is
 /// the parent's id (the event's monitored task), so `t.pid`/`t.tid` = parent.
-pub fn on_clone_sideband(parent_thr: &Thread, child_pid: u32, child_tid: u32) {
+pub fn on_clone_sideband(
+    parent_thr: &Thread,
+    child_process: &PidIdentity,
+    child_thread: &PidIdentity,
+) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let ppid = parent_thr.proc_data.proc.pid();
-    let ptid = parent_thr.tid();
     // Snapshot want_task targets, then drop the counter lock before any ring write.
-    let targets: Vec<SidebandTarget> = {
+    let targets: Vec<(SidebandTarget, TgidNumber, TidNumber, TgidNumber, TidNumber)> = {
         let counters = parent_thr.perf_counters.lock();
         counters
             .iter()
             .filter(|ptc| ptc.want_task)
-            .filter_map(|ptc| sideband_target(ptc, ppid, ptid))
+            .filter_map(|ptc| {
+                Some((
+                    sideband_target(ptc, parent_thr)?,
+                    visible_tgid(ptc, child_process)?,
+                    visible_tid(ptc, child_thread)?,
+                    visible_tgid(ptc, &parent_thr.proc_data.identity())?,
+                    visible_tid(ptc, &parent_thr.pid_identity())?,
+                ))
+            })
             .collect()
     };
-    for t in &targets {
-        sideband::emit_fork(t, child_pid, ppid, child_tid, ptid);
+    for (target, child_pid, child_tid, parent_pid, parent_tid) in &targets {
+        sideband::emit_fork(target, *child_pid, *parent_pid, *child_tid, *parent_tid);
     }
 }
 
@@ -929,6 +957,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
                     want_task: p.want_task,
                     sample_id_all: p.sample_id_all,
                     inherit: true,
+                    observer: p.observer,
                 },
                 sample_id: p.sample_id.load(Ordering::Relaxed),
                 ring: p.inherit_ring(),
@@ -974,22 +1003,24 @@ pub fn on_task_exit(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let pid = thr.proc_data.proc.pid();
-    let tid = thr.tid();
-    let (ppid, ptid) = match thr.proc_data.proc.parent() {
-        // The parent process's tgid; its main-thread tid equals that tgid.
-        Some(p) => {
-            let ppid = p.pid();
-            (ppid, ppid)
-        }
-        None => (0, 0),
-    };
     let counters = thr.perf_counters.lock();
     for ptc in counters.iter() {
         if ptc.want_task
-            && let Some(t) = sideband_target(ptc, pid, tid)
+            && let Some(target) = sideband_target(ptc, thr)
         {
-            sideband::emit_exit(&t, pid, ppid, tid, ptid);
+            let pid = target.pid;
+            let tid = target.tid;
+            let parent = thr.proc_data.proc.parent().and_then(|parent| {
+                let number = parent.identity().visible_number_in(ptc.observer)?;
+                Some((TgidNumber::from(number), TidNumber::from(number)))
+            });
+            sideband::emit_exit(
+                &target,
+                pid,
+                parent.map(|(pid, _)| pid),
+                tid,
+                parent.map(|(_, tid)| tid),
+            );
         }
         free_hw(ptc);
     }
