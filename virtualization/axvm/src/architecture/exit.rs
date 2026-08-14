@@ -99,7 +99,7 @@ fn is_aarch64_psci_function_id(raw_code: u64, abi: crate::runtime::hvc::HyperCal
 }
 
 fn complete_hypercall_decode_error<V: VmArchVcpuOps>(
-    vcpu: &crate::vm::AxVCpuRef<V>,
+    vcpu: &crate::vcpu::AxVCpu<V>,
     raw_code: u64,
     abi: crate::runtime::hvc::HyperCallAbi,
 ) {
@@ -263,9 +263,7 @@ mod tests {
 
     #[test]
     fn hvc_unknown_aarch64_psci_id_returns_not_supported() {
-        let vcpu = crate::vm::AxVCpuRef::new(
-            crate::vcpu::AxVCpu::<UnknownPsciVcpu>::new(99, 0, None, ()).unwrap(),
-        );
+        let vcpu = crate::vcpu::AxVCpu::<UnknownPsciVcpu>::new(99, 0, None, ()).unwrap();
 
         complete_hypercall_decode_error(
             &vcpu,
@@ -278,9 +276,7 @@ mod tests {
 
     #[test]
     fn hvc_unknown_non_aarch64_psci_id_does_not_clobber_return_value() {
-        let vcpu = crate::vm::AxVCpuRef::new(
-            crate::vcpu::AxVCpu::<UnknownPsciVcpu>::new(99, 0, None, ()).unwrap(),
-        );
+        let vcpu = crate::vcpu::AxVCpu::<UnknownPsciVcpu>::new(99, 0, None, ()).unwrap();
         vcpu.set_return_value(0x8400_000c);
 
         complete_hypercall_decode_error(

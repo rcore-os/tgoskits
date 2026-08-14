@@ -16,9 +16,7 @@ const DEFAULT_REDISTRIBUTOR_STRIDE: usize = 0x2_0000;
 pub(crate) fn host_gic_profile(fdt: &Fdt) -> AxVmResult<Option<GuestGicProfile>> {
     let Some((controller, compatible)) = fdt.iter_node_ids().find_map(|node_id| {
         let node = fdt.node(node_id)?;
-        if node.get_property("interrupt-controller").is_none() {
-            return None;
-        }
+        node.get_property("interrupt-controller")?;
         node.compatibles()
             .find(|compatible| is_supported(compatible))
             .map(|compatible| (node_id, std::string::String::from(compatible)))

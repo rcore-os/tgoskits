@@ -82,6 +82,7 @@ impl HostTime for ArceOsHost {
         modules::ax_hal::time::monotonic_time()
     }
 
+    #[cfg(not(test))]
     fn request_timer_deadline(&self, deadline_ns: u64) {
         crate::arch::request_timer_deadline(deadline_ns);
     }
@@ -130,6 +131,7 @@ pub(crate) type ArceOsAxTaskRef = modules::ax_task::AxTaskRef;
 pub(crate) type ArceOsCurrentTask = modules::ax_task::CurrentTask;
 pub(crate) type ArceOsTaskInner = modules::ax_task::TaskInner;
 pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
+#[cfg(any(not(test), target_arch = "aarch64"))]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 pub(crate) use modules::ax_task::TaskExt as ArceOsTaskExt;
@@ -175,6 +177,7 @@ pub(crate) fn send_ipi(cpu_id: usize) {
     .unwrap_or_else(|err| panic!("failed to deliver AxVM IPI to CPU {cpu_id}: {err:?}"));
 }
 
+#[cfg(any(not(test), target_arch = "aarch64"))]
 pub(crate) fn run_on_cpu_sync(
     cpu_id: usize,
     f: unsafe fn(*mut ()),

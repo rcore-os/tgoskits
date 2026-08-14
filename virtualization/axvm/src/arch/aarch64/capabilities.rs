@@ -94,18 +94,20 @@ pub(super) fn patch_runtime_fdt(
         ))
     })?;
     super::fdt::core::create::patch_guest_fdt_for_runtime(
-        fdt_bytes,
-        &vm.memory_regions(),
-        &ivc_channels,
-        crate_config,
-        serial_profile,
-        serial_identity.as_ref(),
-        &additional_serials,
-        Some(&gic_profile),
-        None,
-        Some(&timer_profile),
-        initrd,
-        true,
+        super::fdt::core::create::GuestFdtRuntimePatch {
+            fdt_bytes,
+            memory_regions: &vm.memory_regions(),
+            ivc_channels: &ivc_channels,
+            crate_config,
+            serial_profile,
+            serial_identity: serial_identity.as_ref(),
+            additional_serials: &additional_serials,
+            gic_profile: Some(&gic_profile),
+            plic_profile: None,
+            timer_profile: Some(&timer_profile),
+            initrd_start_size: initrd,
+            create_chosen: true,
+        },
     )
 }
 

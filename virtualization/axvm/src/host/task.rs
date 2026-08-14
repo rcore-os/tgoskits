@@ -38,6 +38,7 @@ pub(crate) fn wait_queue_wake(queue: &WaitQueueHandle, count: u32) {
     arceos::wait_queue_wake(queue, count);
 }
 
+#[cfg(any(not(test), target_arch = "aarch64"))]
 pub(crate) fn run_on_cpu_sync(
     cpu_id: usize,
     f: unsafe fn(*mut ()),
