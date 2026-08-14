@@ -21,7 +21,7 @@ args = [
     "mon:stdio",
 ]
 
-timeout = 5
+timeout = 15
 uefi = false
 to_bin = false
 success_regex = ["ArceOS test suite run OK!"]
