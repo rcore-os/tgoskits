@@ -34,10 +34,10 @@ rootfs 由 axbuild image storage 选择；这个 app 不维护单独的 rootfs �
 干净默认运行时，路径是：
 
 ```text
-tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
+tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
 ```
 
-如果设置了 `TGOS_IMAGE_LOCAL_STORAGE`，axbuild 会使用对应的 image storage。
+如果设置了 `TGOS_IMAGE_EXTRACT_DIR`，axbuild 会使用对应的解压目录。
 `prebuild.sh` 会把本次 app runner 实际使用的 rootfs 记录到：
 
 ```text
@@ -94,7 +94,7 @@ qemu-system-aarch64 \
   -m 512M \
   -smp 1 \
   -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
-  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
   -netdev user,id=net0
 ```
@@ -144,7 +144,7 @@ qemu-system-aarch64 \
   -m 512M \
   -smp 1 \
   -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
-  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
   -netdev user,id=net0
 ```

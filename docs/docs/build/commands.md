@@ -166,16 +166,16 @@ cargo xtask backtrace symbolize --elf target/x86_64/debug/arceos-httpserver --lo
 
 ### 4.3 镜像管理
 
-TGOS rootfs/guest 镜像管理。**全局选项**（所有子命令可用）：`-S/--local-storage <PATH>`、`-R/--registry <URL>`、`-N/--no-auto-sync`、`--auto-sync-threshold <SECS>`
+TGOS rootfs/guest 镜像管理。**全局选项**（所有子命令可用）：`-R/--registry <URL>`、`-D/--download-dir <PATH>`、`-E/--extract-dir <PATH>`。
 
 | 子命令 | 用法 | 说明 |
 |--------|------|------|
 | `ls` | `image ls [-v] [PATTERN]` | 列出注册表镜像（`-v` 详情，`PATTERN` 正则过滤） |
-| `pull` | `image pull [<IMAGE>] [--arch <ARCH>] [-o <DIR>] [--no-extract]` | 拉取镜像并校验 SHA-256 |
+| `pull` | `image pull [<IMAGE>] [--arch <ARCH>] [--no-extract]` | 拉取镜像并校验 SHA-256 |
 | `resize` | `image resize <IMAGE> --size-mib <MIB> [-o <OUT>]` | 扩容 ext rootfs（不支持缩容） |
 | `check` | `image check <IMAGE> [--sha256 <HASH>]` | 输出并可选校验本地镜像 SHA-256 |
 
-`pull` 的 `<IMAGE>` 可选带 `:version`（如 `rootfs-riscv64-alpine.img:v0.0.6`）；省略时配合 `--arch` 拉取该架构默认 rootfs。
+`pull` 的 `<IMAGE>` 可选带 `:version`（如 `rootfs-riscv64-alpine.img:0.0.11`）；省略时配合 `--arch` 拉取该架构默认 rootfs。
 
 详见 [镜像管理](./image)。
 
