@@ -71,6 +71,11 @@ pub fn irq_disable() {
     crate::arch::Arch::systimer_irq_disable();
 }
 
+/// Stops the platform one-shot timer and discards its programmed event.
+pub fn stop_oneshot() {
+    crate::arch::Arch::systimer_stop_oneshot();
+}
+
 pub fn irq_enable() {
     crate::arch::Arch::systimer_irq_enable();
 }
@@ -127,6 +132,15 @@ pub(crate) mod aarch64_deadline {
                     )),
             }
         }
+
+        pub(crate) fn disarm(registers: &impl TimerRegisters, mode: ArchTimerMode) {
+            match mode {
+                ArchTimerMode::El1Virt => registers.write_virtual_compare(u64::MAX),
+                ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
+                    registers.write_physical_compare(u64::MAX);
+                }
+            }
+        }
     }
 
     #[cfg(any(feature = "hv", test))]
@@ -144,6 +158,10 @@ pub(crate) mod aarch64_deadline {
                 interval_ticks,
             ));
         }
+
+        pub(crate) fn disarm(registers: &impl TimerRegisters) {
+            registers.write_hyp_physical_compare(u64::MAX);
+        }
     }
 }
 
@@ -158,6 +176,11 @@ pub(crate) mod riscv64_interval {
         };
         current_ticks.saturating_add(interval_ticks)
     }
+
+    /// Returns the SBI comparator value used to disarm a one-shot timer.
+    pub(crate) const fn stopped_deadline() -> u64 {
+        u64::MAX
+    }
 }
 
 #[cfg(any(target_arch = "loongarch64", test))]
@@ -170,6 +193,11 @@ pub(crate) mod loongarch64_interval {
         let max_aligned = usize::MAX - usize::MAX % ALIGNMENT;
         let clamped = interval_ticks.max(MIN_TICKS).min(max_aligned);
         (clamped + (ALIGNMENT - 1)) & !(ALIGNMENT - 1)
+    }
+
+    /// Returns the largest valid one-shot interval encoded by TCFG.
+    pub(crate) const fn stopped_ticks() -> usize {
+        usize::MAX & !(ALIGNMENT - 1)
     }
 }
 
@@ -301,6 +329,7 @@ mod tests {
         );
         assert_eq!(riscv64_interval::absolute_deadline(10, 0), 11);
         assert_eq!(riscv64_interval::absolute_deadline(u64::MAX, 0), u64::MAX);
+        assert_eq!(riscv64_interval::stopped_deadline(), u64::MAX);
     }
 
     #[test]
@@ -311,6 +340,7 @@ mod tests {
             loongarch64_interval::aligned_ticks(usize::MAX),
             usize::MAX & !3
         );
+        assert_eq!(loongarch64_interval::stopped_ticks(), usize::MAX & !3);
     }
 
     #[test]
@@ -346,6 +376,32 @@ mod tests {
 
         assert_eq!(registers.hyp_physical_compare.get(), Some(4));
         assert_eq!(registers.physical_counter_reads.get(), 1);
+    }
+
+    #[test]
+    fn el1_timer_stop_discards_the_selected_comparator() {
+        let registers = RecordingEl1TimerRegisters::new(17, 19);
+
+        el1::disarm(&registers, ArchTimerMode::El1Virt);
+
+        assert_eq!(registers.virtual_compare.get(), Some(u64::MAX));
+        assert_eq!(registers.physical_compare.get(), None);
+
+        el1::disarm(&registers, ArchTimerMode::El1Phys);
+
+        assert_eq!(registers.physical_compare.get(), Some(u64::MAX));
+        assert_eq!(registers.virtual_counter_reads.get(), 0);
+        assert_eq!(registers.physical_counter_reads.get(), 0);
+    }
+
+    #[test]
+    fn el2_timer_stop_discards_the_hyp_comparator() {
+        let registers = RecordingEl2TimerRegisters::new(17);
+
+        el2::disarm(&registers);
+
+        assert_eq!(registers.hyp_physical_compare.get(), Some(u64::MAX));
+        assert_eq!(registers.physical_counter_reads.get(), 0);
     }
 
     struct RecordingEl1TimerRegisters {

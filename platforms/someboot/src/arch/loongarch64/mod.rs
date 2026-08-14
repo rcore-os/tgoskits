@@ -117,6 +117,13 @@ impl ArchTrait for Arch {
         tcfg::set_en(false);
     }
 
+    fn systimer_stop_oneshot() {
+        tcfg::set_en(false);
+        tcfg::set_periodic(false);
+        tcfg::set_init_val(crate::timer::loongarch64_interval::stopped_ticks());
+        ticlr::clear_timer_interrupt();
+    }
+
     fn systimer_irq_is_enabled() -> bool {
         tcfg::read().en()
     }

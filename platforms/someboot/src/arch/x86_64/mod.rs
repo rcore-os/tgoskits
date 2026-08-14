@@ -154,6 +154,10 @@ impl ArchTrait for Arch {
         trap::timer_irq_disable();
     }
 
+    fn systimer_stop_oneshot() {
+        trap::timer_stop_oneshot();
+    }
+
     fn systimer_irq_is_enabled() -> bool {
         trap::timer_irq_is_enabled()
     }

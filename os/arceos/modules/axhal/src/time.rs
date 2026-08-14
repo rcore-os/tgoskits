@@ -9,9 +9,7 @@ pub use ax_plat::time::{
     wall_time, wall_time_nanos,
 };
 #[cfg(feature = "irq")]
-pub use ax_plat::time::{
-    cancel_oneshot_timer, irq_num, resume_oneshot_timer, set_oneshot_timer,
-};
+pub use ax_plat::time::{cancel_oneshot_timer, irq_num, resume_oneshot_timer, set_oneshot_timer};
 
 pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
     #[cfg(any(test, feature = "host-test"))]

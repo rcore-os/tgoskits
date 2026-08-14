@@ -342,6 +342,11 @@ impl ArchTrait for Arch {
         }
     }
 
+    fn systimer_stop_oneshot() {
+        Self::systimer_irq_disable();
+        let _ = sbi::set_timer(crate::timer::riscv64_interval::stopped_deadline());
+    }
+
     fn systimer_irq_is_enabled() -> bool {
         let sie: usize;
         unsafe {

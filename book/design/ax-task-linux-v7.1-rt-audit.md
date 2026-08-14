@@ -3403,7 +3403,7 @@ index，Fair 继续由唯一的 `balance_fair()` 状态机负责。这不是用�
 115.917 秒；最新 dev 约 112 秒，差距约 3.5%，低于 20% 门限。RISC-V 与
 LoongArch64 ArceOS Rust 组均为 `21/21`，包括生产 task-IPI 与统一 ktimer 回归。
 
-## x86 clockevent 阶段检查点（尚未完成）
+## x86 clockevent 修复检查点（性能验证尚未完成）
 
 x86_64 Starry `test-ext4-inode-unique` 在本分支原实现中测试主体为
 103.322 秒，而同一最新 dev 基线约为 77 秒，慢约 34.2%，已经超过本轮的
@@ -3413,16 +3413,48 @@ x86_64 Starry `test-ext4-inode-unique` 在本分支原实现中测试主体为
 无法区分首次启动与普通 comparator 重编程的问题；确定性状态机回归在旧实现
 中不能区分两个 action，拆分后可以区分。
 
-但本阶段不能宣称修复了 x86 性能。拆分后的同一正式用例在 120 秒超时，只进行
-到约 `1891/2048`。继续对照 Linux 后发现 x86 硬件提交仍不一致：Linux
-`lapic_timer_shutdown()` 会先 mask LVT 并清零 TSC deadline，普通
-`lapic_next_deadline()` 只重编程 comparator；当前 someboot 的 Stop 只 mask，
-而 Resume 先 unmask 再写新 comparator，可能在新 deadline 提交前释放旧的
-pending/expired event。后续必须把 x86 Stop/Resume 修成明确的
-`mask + clear` / `program + unmask` 状态转换，再用 clockevent IRQ、scheduler
-deadline、IPI 与 context-switch 窗口计数确认是否存在中断放大。这个检查点只
-记录 owner/API 拆分及已知问题；按阶段要求，提交前不继续等待或运行验证，不能
-作为 CI、QEMU 或性能通过证据。
+拆分后的同一正式用例在 120 秒超时，只进行到约 `1891/2048`，因此 owner
+拆分本身仍不能作为性能修复证据。继续对照 Linux 后确认 x86 硬件提交还缺少
+两个状态转换：`lapic_timer_shutdown()` 先 mask LVT，再把 TSC deadline 或
+legacy LAPIC initial count 清零；xAPIC 的 LVT MMIO 更新在随后的 comparator
+写入前还需要完成序列化。已经启动的普通 `Program` 仍只写 comparator，不重复
+改变 LVT 状态。
+
+someboot 现在把物理停止实现为 `Mask -> Clear`，把进入 active 状态实现为
+`Unmask -> Serialize`，随后仍由 `axplat-dyn` 在同一个 local-IRQ exclusion
+事务中写入 comparator。这里不能改成 `Program -> Unmask`：minimum-delta
+事件可能在仍被 mask 时过期，从而丢失 one-shot edge。xAPIC 的序列化使用
+`mfence`，但只在 xAPIC 与 TSC-deadline 同时成立时需要；legacy LAPIC initial
+count 与 x2APIC 都不能承担这个 fence 成本。`timer_irq_disable()` 仍保持普通的
+mask-only IRQ 语义，只有 `stop_oneshot()` 同时丢弃旧 comparator。
+
+`stop_oneshot()` 是四架构强制实现的设备状态转换，不再允许默认退化成
+mask-only：AArch64 在 mask 后把所选 EL timer 的 CVAL 移到 `u64::MAX`，
+RISC-V 在清 STIE 后用 SBI `set_timer(u64::MAX)` 撤销 deadline，LoongArch 在
+清 EN 后安装最大合法单次 INITVAL 并清 pending TI。这样 Resume 在打开中断源
+之后、提交新 comparator 之前不会继承 Stop 前的到期事件；普通 IRQ disable/
+enable 仍只控制可观察性，不改变 clockevent owner 的 armed state。
+
+这里的 `Stop` 对应 Linux `CLOCK_EVT_STATE_ONESHOT_STOPPED`，不是设备卸载：
+逻辑上下一次有限 deadline 会从 `Stopped` 通过 `Resume` 回到 active；只有
+`LocalClockEvent::take_offline()` 才推进 CPU lifecycle epoch 并撤销本地 owner。
+x86 LAPIC 虽然把 `set_state_oneshot_stopped` 与 `set_state_shutdown` 都绑定到同一个
+mask+clear 回调，runtime 仍必须保留这两个生命周期层次。
+
+确定性硬件边界测试先在旧提交顺序上得到红测：停止操作只有 `[Mask]`，恢复操作
+只有 `[Unmask]`；同一测试在修复后分别得到 `[Mask, Clear]` 与
+`[Unmask, Serialize]`。fence 条件测试还逐项约束只有 xAPIC TSC-deadline 为
+true，避免 legacy initial-count 路径在每次 Resume 都支付 `mfence`。
+
+带 1009 Hz qperf plugin 的两轮诊断窗口都触发 grouped runner 的 120 秒 workload
+timeout，分别推进到 `729/2048` 与 `921/2048`。这个窗口不能与无采样的正式 guest
+时间混用：本文更早的相同 qperf 窗口在 60 秒也只推进到约 `file-0535`。正式
+`cargo xtask starry test qemu --arch x86_64 --test-case
+qemu/system/test-ext4-inode-unique` 在本分支完成 `2048/2048`，测试本体
+92.004 秒、xtask `1/1` 通过；同机最新 `origin/dev@2a1bcff354` 为 78 秒，
+本分支慢约 17.95%，低于 20% 门限。该结果关闭 x86 正式性能门限，但 qperf
+结构计数仍只作为 clockevent IRQ、scheduler deadline、IPI 与 context-switch
+放大诊断，不能替代无采样的完成时间。
 
 ## 模块化结果
 
@@ -3443,8 +3475,8 @@ deadline、IPI 与 context-switch 窗口计数确认是否存在中断放大。�
 
 ### 本轮必须继续处理
 
-- 修正 x86 clockevent Stop/Resume 的硬件提交顺序并清理旧 comparator，重新确认
-  `test-ext4-inode-unique` 不比 dev 慢 20% 以上；
+- 继续检查 clockevent IRQ、scheduler deadline、IPI 与 context-switch 的 qperf
+  窗口计数，不把带 plugin 的诊断吞吐与无采样正式完成时间混用；
 - 完成四架构 current-head build/QEMU 与 CI terminal 结果；
 - 对新 dev 合入的 AxVM CPU_ON/CPU_OFF/reset 生命周期保持 `TaskHandle` 适配；
 - 继续检查高频 wake/yield workload 的 scheduler-work amplification。

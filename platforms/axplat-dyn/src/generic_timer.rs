@@ -94,12 +94,7 @@ fn resume_oneshot(
     // unmask, permanently losing the only edge. Local IRQ exclusion keeps a
     // previously pending source from entering until the new event is installed.
     unmask_irq();
-    program_oneshot(
-        deadline_ns,
-        current_ticks,
-        frequency_hz,
-        program_interval,
-    );
+    program_oneshot(deadline_ns, current_ticks, frequency_hz, program_interval);
 }
 
 pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
@@ -204,7 +199,7 @@ impl ax_plat::time::TimeIf for GenericTimer {
 
     #[cfg(feature = "irq")]
     fn cancel_oneshot_timer() {
-        somehal::timer::irq_disable();
+        somehal::timer::stop_oneshot();
     }
 }
 

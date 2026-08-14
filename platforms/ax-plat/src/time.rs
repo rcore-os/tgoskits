@@ -93,6 +93,9 @@ pub trait TimeIf {
     fn resume_oneshot_timer(deadline_ns: u64);
 
     /// Stops the current CPU's one-shot timer until it is programmed again.
+    ///
+    /// The interrupt source must become unobservable and its comparator must
+    /// be discarded so a later resume cannot inherit a stale event.
     #[cfg(feature = "irq")]
     fn cancel_oneshot_timer();
 }

@@ -74,6 +74,10 @@ impl ArchTrait for Arch {
         elx::systick_irq_disable();
     }
 
+    fn systimer_stop_oneshot() {
+        elx::systick_stop_oneshot();
+    }
+
     fn systimer_irq_enable() {
         // debug!("Enable systick irq");
         elx::systick_irq_enable();
