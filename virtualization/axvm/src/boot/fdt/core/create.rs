@@ -331,20 +331,36 @@ fn load_patched_fdt(vm: AxVMRef, new_fdt_bytes: Vec<u8>) -> AxVmResult {
     vm.set_guest_device_tree(dest_addr, new_fdt_bytes)
 }
 
-pub(crate) fn patch_guest_fdt_for_runtime(
-    fdt_bytes: &[u8],
-    memory_regions: &[VMMemoryRegion],
-    ivc_channels: &[GuestIvcChannel],
-    crate_config: &GuestConfig,
-    serial_profile: crate::machine::GuestSerialProfile,
-    serial_identity: Option<&crate::machine::GuestSerialFdtIdentity>,
-    additional_serials: &[crate::machine::GuestSerialProfile],
-    gic_profile: Option<&crate::machine::GuestGicProfile>,
-    plic_profile: Option<&crate::machine::GuestPlicProfile>,
-    timer_profile: Option<&crate::machine::GuestTimerProfile>,
-    initrd_start_size: Option<(u64, u64)>,
-    create_chosen: bool,
-) -> AxVmResult<Vec<u8>> {
+pub(crate) struct GuestFdtRuntimePatch<'a> {
+    pub(crate) fdt_bytes: &'a [u8],
+    pub(crate) memory_regions: &'a [VMMemoryRegion],
+    pub(crate) ivc_channels: &'a [GuestIvcChannel],
+    pub(crate) crate_config: &'a GuestConfig,
+    pub(crate) serial_profile: crate::machine::GuestSerialProfile,
+    pub(crate) serial_identity: Option<&'a crate::machine::GuestSerialFdtIdentity>,
+    pub(crate) additional_serials: &'a [crate::machine::GuestSerialProfile],
+    pub(crate) gic_profile: Option<&'a crate::machine::GuestGicProfile>,
+    pub(crate) plic_profile: Option<&'a crate::machine::GuestPlicProfile>,
+    pub(crate) timer_profile: Option<&'a crate::machine::GuestTimerProfile>,
+    pub(crate) initrd_start_size: Option<(u64, u64)>,
+    pub(crate) create_chosen: bool,
+}
+
+pub(crate) fn patch_guest_fdt_for_runtime(patch: GuestFdtRuntimePatch<'_>) -> AxVmResult<Vec<u8>> {
+    let GuestFdtRuntimePatch {
+        fdt_bytes,
+        memory_regions,
+        ivc_channels,
+        crate_config,
+        serial_profile,
+        serial_identity,
+        additional_serials,
+        gic_profile,
+        plic_profile,
+        timer_profile,
+        initrd_start_size,
+        create_chosen,
+    } = patch;
     let mut tree = FdtTree::from_bytes(fdt_bytes)?;
     let memory_specs = guest_memory_specs(memory_regions, crate_config);
     tree.rebuild_memory_nodes(&memory_specs)?;
@@ -991,40 +1007,40 @@ mod tests {
         let cfg = GuestConfig::default();
 
         let serial = crate::machine::current_machine_profile(1).serial;
-        let patched = super::patch_guest_fdt_for_runtime(
-            &dtb,
-            &[],
-            &[],
-            &cfg,
-            serial,
-            None,
-            &[],
-            None,
-            None,
-            None,
-            None,
-            false,
-        )
+        let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
+            fdt_bytes: &dtb,
+            memory_regions: &[],
+            ivc_channels: &[],
+            crate_config: &cfg,
+            serial_profile: serial,
+            serial_identity: None,
+            additional_serials: &[],
+            gic_profile: None,
+            plic_profile: None,
+            timer_profile: None,
+            initrd_start_size: None,
+            create_chosen: false,
+        })
         .unwrap();
         let reparsed = Fdt::from_bytes(&patched).unwrap();
 
         assert!(reparsed.get_by_path_id("/chosen").is_none());
 
         let serial = crate::machine::current_machine_profile(1).serial;
-        let patched = super::patch_guest_fdt_for_runtime(
-            &dtb,
-            &[],
-            &[],
-            &cfg,
-            serial,
-            None,
-            &[],
-            None,
-            None,
-            None,
-            None,
-            true,
-        )
+        let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
+            fdt_bytes: &dtb,
+            memory_regions: &[],
+            ivc_channels: &[],
+            crate_config: &cfg,
+            serial_profile: serial,
+            serial_identity: None,
+            additional_serials: &[],
+            gic_profile: None,
+            plic_profile: None,
+            timer_profile: None,
+            initrd_start_size: None,
+            create_chosen: true,
+        })
         .unwrap();
         let reparsed = Fdt::from_bytes(&patched).unwrap();
 
@@ -1051,20 +1067,20 @@ mod tests {
         let serial = crate::machine::current_machine_profile(1).serial;
         let gic = gic_profile(7);
 
-        let patched = super::patch_guest_fdt_for_runtime(
-            &dtb,
-            &[],
-            &ivc_channels,
-            &cfg,
-            serial,
-            None,
-            &[],
-            Some(&gic),
-            None,
-            None,
-            None,
-            false,
-        )
+        let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
+            fdt_bytes: &dtb,
+            memory_regions: &[],
+            ivc_channels: &ivc_channels,
+            crate_config: &cfg,
+            serial_profile: serial,
+            serial_identity: None,
+            additional_serials: &[],
+            gic_profile: Some(&gic),
+            plic_profile: None,
+            timer_profile: None,
+            initrd_start_size: None,
+            create_chosen: false,
+        })
         .unwrap();
         let reparsed = Fdt::from_bytes(&patched).unwrap();
         let node_id = reparsed.get_by_path_id("/ivc-channel@bff00000").unwrap();

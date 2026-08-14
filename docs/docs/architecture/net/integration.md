@@ -279,7 +279,7 @@ Axvisor 应通过 `NetworkConfig` 描述网络意图，例如：
 示例：
 
 ```rust
-let mgmt = ax_net::interface_by_name("eth0").ok_or(AxError::NoSuchDevice)?;
+let mgmt = ax_net::interface_by_name("eth0").ok_or(NetError::NoSuchDevice)?;
 let sock = ax_net::tcp::TcpSocket::new();
 sock.bind_device(mgmt.id)?;
 ```

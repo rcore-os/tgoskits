@@ -2,8 +2,11 @@
 //!
 //! Logical pending state belongs to each subsystem. A publisher must make its
 //! state visible with Release ordering before calling [`notify_cpu`]. The IPI
-//! handler calls [`claim_current_delivery`] before checking those owners, so a
-//! publication racing with draining obtains a fresh physical edge.
+//! handler must call [`claim_current_delivery`] before it observes and drains
+//! scheduler work, hard calls, or legacy callbacks, so a publication racing
+//! with draining obtains a fresh physical edge. [`IpiNotification::Coalesced`]
+//! acknowledges only that physical edge; it does not acknowledge completion of
+//! any logical work.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -141,7 +144,8 @@ pub fn wait_until_cpu_ready(cpu_id: usize) -> bool {
 ///
 /// The caller must publish its logical pending state or payload with Release
 /// ordering before calling this function. A delivery error does not consume or
-/// clear that owner state.
+/// clear that owner state. [`IpiNotification::Coalesced`] means that a physical
+/// edge is already armed, not that the caller's logical work has been drained.
 pub fn notify_cpu(cpu: CpuId) -> Result<IpiNotification, IrqError> {
     validate_target_cpu(cpu)?;
     endpoint(cpu)?.edge.notify(|| {
@@ -163,6 +167,11 @@ pub fn claim_current_delivery() {
 }
 
 /// Executes a raw operation synchronously on one CPU without allocation.
+///
+/// A remote caller spin-waits until the target completes the operation. This is
+/// intended for bounded, one-off hard-IRQ work, not bulk delivery or sustained
+/// pressure. A subsystem with queued work should publish its own logical state
+/// and use [`notify_cpu`] to coalesce physical delivery.
 ///
 /// # Safety
 ///
@@ -200,7 +209,8 @@ pub unsafe fn call_on_cpu(
 /// Drains at most 64 caller-owned hard calls on the current CPU.
 ///
 /// Any bounded remainder obtains a self-notification unless another publisher
-/// has already armed a fresh edge.
+/// has already armed a fresh edge. This budget provides interrupt-transport
+/// fairness; it does not make [`call_on_cpu`] a batching interface.
 pub fn drain_hard_calls() -> Result<(), IrqError> {
     let outcome = endpoint(CpuId(this_cpu_id()))?
         .hard_calls

@@ -61,6 +61,7 @@ pub fn pipe_linux_io_semantics_hold() -> bool {
 pub fn interrupted_pipe_write_preserves_partial_progress() -> bool {
     super::file::interrupted_pipe_write_preserves_partial_progress_for_test()
 }
+
 pub fn fcntl_setpipe_size_returns_capacity() -> bool {
     super::syscall::fcntl_setpipe_size_returns_capacity_for_test()
 }
@@ -196,6 +197,14 @@ pub fn process_vm_stat_edge_cases_hold() -> bool {
 
 pub fn user_pointer_metadata_rules_hold() -> bool {
     super::mm::user_pointer_metadata_rules_hold_for_test()
+}
+
+pub fn vm_error_to_io_error_preserves_length() -> bool {
+    super::mm::vm_error_to_io_error_preserves_length_for_test()
+}
+
+pub fn domain_errno_mappings_hold() -> bool {
+    super::error::domain_errno_mappings_hold_for_test()
 }
 
 pub fn time_value_conversion_rules_hold() -> bool {

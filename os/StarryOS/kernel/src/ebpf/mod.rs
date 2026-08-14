@@ -17,7 +17,6 @@
 
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec};
 
-use ax_errno::{AxError, AxResult};
 use ax_io::Read;
 use ax_lazyinit::LazyInit;
 use ax_task::current;
@@ -31,6 +30,8 @@ use kbpf_basic::{
     prog::BpfProgMeta,
     raw_tracepoint::BpfRawTracePointArg,
 };
+
+use crate::{StarryError, StarryResult};
 
 pub(crate) mod error;
 pub mod map;
@@ -131,7 +132,7 @@ pub fn init_ebpf() {
     BPF_HELPER_FUN_SET.init_once(set);
 }
 
-fn read_bpf_attr(uattr: usize, size: u32) -> AxResult<bpf_attr> {
+fn read_bpf_attr(uattr: usize, size: u32) -> StarryResult<bpf_attr> {
     // Match Linux's bpf(2) ABI: `vec!` zero-initialises the buffer first,
     // so reading only the first `min(size, sizeof(bpf_attr))` bytes from
     // userland leaves any trailing bytes zero. That covers both directions
@@ -148,76 +149,78 @@ fn read_bpf_attr(uattr: usize, size: u32) -> AxResult<bpf_attr> {
     Ok(attr)
 }
 
-fn handle_map_create(attr: &bpf_attr) -> AxResult<isize> {
-    let meta = BpfMapMeta::try_from(attr).into_ax_result()?;
-    let map = create_map(meta).into_ax_result()?;
+fn handle_map_create(attr: &bpf_attr) -> StarryResult<isize> {
+    let meta = BpfMapMeta::try_from(attr).into_starry_result()?;
+    let map = create_map(meta).into_starry_result()?;
     // Linux always creates bpf object fds with `O_CLOEXEC`
     // (`anon_inode_getfd(..., O_CLOEXEC)` in `kernel/bpf/syscall.c`).
     let fd = add_file_like(Arc::new(map), true)?;
     Ok(fd as isize)
 }
 
-fn handle_prog_load(attr: &bpf_attr) -> AxResult<isize> {
-    let mut meta = BpfProgMeta::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr).into_ax_result()?;
+fn handle_prog_load(attr: &bpf_attr) -> StarryResult<isize> {
+    let mut meta =
+        BpfProgMeta::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr).into_starry_result()?;
     debug!("bpf prog load meta: {meta:#?}");
-    let prog = load_prog(&mut meta).into_ax_result()?;
+    let prog = load_prog(&mut meta).into_starry_result()?;
     // bpf prog fds are close-on-exec in Linux as well; see `handle_map_create`.
     let fd = add_file_like(Arc::new(prog), true)?;
     Ok(fd as isize)
 }
 
-fn handle_map_update(attr: &bpf_attr) -> AxResult<isize> {
+fn handle_map_update(attr: &bpf_attr) -> StarryResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_update_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
+    bpf_map_update_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_starry_result()?;
     Ok(0)
 }
 
-fn handle_map_lookup(attr: &bpf_attr) -> AxResult<isize> {
+fn handle_map_lookup(attr: &bpf_attr) -> StarryResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_lookup_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
+    bpf_lookup_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_starry_result()?;
     Ok(0)
 }
 
-fn handle_map_delete(attr: &bpf_attr) -> AxResult<isize> {
+fn handle_map_delete(attr: &bpf_attr) -> StarryResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_delete_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
+    bpf_map_delete_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_starry_result()?;
     Ok(0)
 }
 
-fn handle_map_get_next_key(attr: &bpf_attr) -> AxResult<isize> {
+fn handle_map_get_next_key(attr: &bpf_attr) -> StarryResult<isize> {
     let arg = BpfMapGetNextKeyArg::from(attr);
-    bpf_map_get_next_key::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
+    bpf_map_get_next_key::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_starry_result()?;
     Ok(0)
 }
 
-fn handle_map_freeze(attr: &bpf_attr) -> AxResult<isize> {
+fn handle_map_freeze(attr: &bpf_attr) -> StarryResult<isize> {
     let map_fd = unsafe { attr.__bindgen_anon_2.map_fd };
-    bpf_map_freeze::<EbpfKernelAuxiliary, KernelRawMutex>(map_fd).into_ax_result()?;
+    bpf_map_freeze::<EbpfKernelAuxiliary, KernelRawMutex>(map_fd).into_starry_result()?;
     Ok(0)
 }
 
-fn handle_map_lookup_and_delete(attr: &bpf_attr) -> AxResult<isize> {
+fn handle_map_lookup_and_delete(attr: &bpf_attr) -> StarryResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
+    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg)
+        .into_starry_result()?;
     Ok(0)
 }
 
-fn handle_raw_tracepoint_open(attr: &bpf_attr) -> AxResult<isize> {
+fn handle_raw_tracepoint_open(attr: &bpf_attr) -> StarryResult<isize> {
     let arg =
-        BpfRawTracePointArg::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr).into_ax_result()?;
+        BpfRawTracePointArg::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr).into_starry_result()?;
     bpf_raw_tracepoint_open(arg)
 }
 
 /// `bpf(2)` syscall entry-point. The numeric command is decoded into the
 /// canonical [`bpf_cmd`] enum from `kbpf-basic` (no locally-redefined
 /// command constants).
-pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
+pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> StarryResult<isize> {
     // Linux's bpf(2) returns -EINVAL for an unknown/unsupported command, not
     // -ENOSYS; mirror that so user-space feature probing sees the expected
-    // errno (`AxError::Unsupported` would map to -ENOSYS).
+    // errno (`StarryError::Unsupported` would map to -ENOSYS).
     let cmd = bpf_cmd::try_from(cmd as u32).map_err(|_| {
         warn!("bpf: unrecognized command {cmd}");
-        AxError::InvalidInput
+        StarryError::InvalidInput
     })?;
     let attr = read_bpf_attr(uattr, size)?;
     match cmd {
@@ -232,14 +235,14 @@ pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
         bpf_cmd::BPF_MAP_LOOKUP_AND_DELETE_ELEM => handle_map_lookup_and_delete(&attr),
         other => {
             warn!("bpf: unsupported command {other:?}");
-            Err(AxError::InvalidInput)
+            Err(StarryError::InvalidInput)
         }
     }
 }
 
 #[cfg(axtest)]
 pub(crate) fn bpf_unknown_command_is_invalid_for_test() -> bool {
-    sys_bpf(u64::MAX, 0, 0) == Err(AxError::InvalidInput)
+    matches!(sys_bpf(u64::MAX, 0, 0), Err(StarryError::InvalidInput))
 }
 
 #[cfg(axtest)]

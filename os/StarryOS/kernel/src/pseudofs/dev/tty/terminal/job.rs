@@ -1,12 +1,11 @@
 use alloc::sync::{Arc, Weak};
 use core::task::Context;
 
-use ax_errno::{AxResult, ax_bail};
 use ax_task::current;
 use axpoll::{IoEvents, PollSet, Pollable};
 use starry_process::{ProcessGroup, Session};
 
-use crate::{sync::IrqMutex, task::AsThread};
+use crate::{StarryError, StarryResult, sync::IrqMutex, task::AsThread};
 
 pub struct JobControl {
     state: IrqMutex<JobControlState>,
@@ -47,7 +46,7 @@ impl JobControl {
         self.state.lock().foreground.upgrade()
     }
 
-    pub fn set_foreground(&self, pg: &Arc<ProcessGroup>) -> AxResult<()> {
+    pub fn set_foreground(&self, pg: &Arc<ProcessGroup>) -> StarryResult<()> {
         let mut state = self.state.lock();
         let weak = Arc::downgrade(pg);
         if Weak::ptr_eq(&weak, &state.foreground) {
@@ -55,16 +54,10 @@ impl JobControl {
         }
 
         let Some(session) = state.session.upgrade() else {
-            ax_bail!(
-                OperationNotPermitted,
-                "No session associated with job control"
-            );
+            return Err(StarryError::OperationNotPermitted);
         };
         if !Arc::ptr_eq(&pg.session(), &session) {
-            ax_bail!(
-                OperationNotPermitted,
-                "Process group does not belong to the session"
-            );
+            return Err(StarryError::OperationNotPermitted);
         }
 
         state.foreground = weak;
@@ -74,16 +67,13 @@ impl JobControl {
         Ok(())
     }
 
-    pub fn set_session(&self, session: &Arc<Session>) -> AxResult<()> {
+    pub fn set_session(&self, session: &Arc<Session>) -> StarryResult<()> {
         let mut state = self.state.lock();
         if let Some(existing) = state.session.upgrade() {
             if Arc::ptr_eq(&existing, session) {
                 return Ok(());
             }
-            ax_bail!(
-                ResourceBusy,
-                "Terminal is already associated with another session"
-            );
+            return Err(StarryError::ResourceBusy);
         }
         state.session = Arc::downgrade(session);
         Ok(())

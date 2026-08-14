@@ -68,11 +68,11 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
     reap_task.join();
     REAP_CLAIM_BARRIER_PID.store(0, Ordering::Release);
 
-    matches!(lookup_result, Err(AxError::NoSuchProcess))
+    matches!(lookup_result, Err(StarryError::NoSuchProcess))
         && thread_lookup_result.is_none()
-        && matches!(process_lookup_result, Err(AxError::NoSuchProcess))
-        && matches!(getsid_result, Err(AxError::NoSuchProcess))
-        && matches!(getpgid_result, Err(AxError::NoSuchProcess))
+        && matches!(process_lookup_result, Err(StarryError::NoSuchProcess))
+        && matches!(getsid_result, Err(StarryError::NoSuchProcess))
+        && matches!(getpgid_result, Err(StarryError::NoSuchProcess))
         && *reaped_cpu_time.lock() == Some(ProcessCpuTime::default())
         && !PROCESS_TABLE.read().contains_key(&TEST_PID)
 }

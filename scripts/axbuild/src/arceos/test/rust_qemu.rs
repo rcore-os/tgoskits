@@ -95,7 +95,7 @@ pub(super) async fn prepare_rust_qemu_cases(
             &mut qemu,
             request.smp.or(build_info.max_cpu_num).or(Some(1)),
         );
-        apply_rust_qemu_feature_overrides(&mut cargo, &mut qemu, case.feature.as_deref());
+        apply_rust_qemu_feature_overrides(&mut qemu, case.feature.as_deref());
         qemu_test::apply_timeout_scale(&mut qemu);
         rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
         rootfs::isolate_qemu_test_rootfs(&mut qemu)?;
@@ -124,11 +124,7 @@ fn rust_qemu_host_symbolize_success_regex(feature: Option<&str>) -> Vec<String> 
     }
 }
 
-fn apply_rust_qemu_feature_overrides(
-    cargo: &mut Cargo,
-    qemu: &mut QemuConfig,
-    feature: Option<&str>,
-) {
+fn apply_rust_qemu_feature_overrides(qemu: &mut QemuConfig, feature: Option<&str>) {
     match feature {
         Some(ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE) => {
             qemu.success_regex = vec![r"BACKTRACE_BEGIN\b.*\bkind=panic\b".to_string()];
@@ -154,13 +150,6 @@ fn apply_rust_qemu_feature_overrides(
                 vec!["task stack guard page hit for .*stack-guard-page-overflow".to_string()];
             qemu.fail_regex = vec!["stack guard page was not hit".to_string()];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
-        }
-        Some("task-wait-queue-remote-wake")
-            if cargo.target == "riscv64gc-unknown-none-elf"
-                && !qemu.args.iter().any(|arg| arg == "-accel") =>
-        {
-            qemu.args.push("-accel".to_string());
-            qemu.args.push("tcg,thread=single".to_string());
         }
         _ => {}
     }
@@ -335,10 +324,23 @@ pub(super) fn rust_qemu_features_for_list(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::arceos::test::ARCEOS_RUST_TEST_PACKAGE;
+    use crate::{
+        arceos::test::{
+            ARCEOS_RUST_TEST_PACKAGE, discovery::arceos_test_suit_case_qemu_config_path,
+        },
+        test::case::TestQemuCase,
+    };
+
+    fn rust_test_suite_root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-suit/arceos/rust")
+    }
+
+    fn load_qemu_config(path: &Path) -> QemuConfig {
+        toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
 
     #[test]
     fn arceos_rust_default_run_selects_all_feature_only() {
@@ -392,7 +394,6 @@ BT 0 ip=0x1 fp=0x2
 
     #[test]
     fn arceos_rust_page_fault_qemu_uses_page_fault_result_regex() {
-        let mut cargo = rust_test_cargo_for_target("x86_64-unknown-none");
         let mut qemu = QemuConfig {
             success_regex: vec!["ArceOS test suite run OK!".to_string()],
             fail_regex: vec![r"(?i)\bpanic(?:ked)?\b".to_string()],
@@ -401,7 +402,6 @@ BT 0 ip=0x1 fp=0x2
         };
 
         apply_rust_qemu_feature_overrides(
-            &mut cargo,
             &mut qemu,
             Some(ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE),
         );
@@ -419,7 +419,6 @@ BT 0 ip=0x1 fp=0x2
 
     #[test]
     fn arceos_rust_stack_guard_page_qemu_uses_guard_page_result_regex() {
-        let mut cargo = rust_test_cargo_for_target("x86_64-unknown-none");
         let mut qemu = QemuConfig {
             success_regex: vec!["ArceOS test suite run OK!".to_string()],
             fail_regex: vec![
@@ -430,11 +429,7 @@ BT 0 ip=0x1 fp=0x2
             ..QemuConfig::default()
         };
 
-        apply_rust_qemu_feature_overrides(
-            &mut cargo,
-            &mut qemu,
-            Some(ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE),
-        );
+        apply_rust_qemu_feature_overrides(&mut qemu, Some(ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE));
 
         assert_eq!(
             qemu.success_regex,
@@ -446,10 +441,8 @@ BT 0 ip=0x1 fp=0x2
 
     #[test]
     fn arceos_rust_aarch64_qemu_config_uses_gicv2_smp4_for_ipi_paths() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-suit/arceos/rust");
-        let qemu_path = root.join("qemu-aarch64.toml");
-        let config: QemuConfig =
-            toml::from_str(&std::fs::read_to_string(qemu_path).unwrap()).unwrap();
+        let qemu_path = rust_test_suite_root().join("qemu-aarch64.toml");
+        let config = load_qemu_config(&qemu_path);
         let smp = qemu_test::smp_from_qemu_arg(&config).unwrap();
         assert_eq!(smp, 4, "aarch64 GICv2 IPI coverage requires SMP4");
         assert!(
@@ -463,10 +456,8 @@ BT 0 ip=0x1 fp=0x2
 
     #[test]
     fn arceos_rust_aarch64_qemu_config_converts_high_half_kernel_to_bin() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-suit/arceos/rust");
-        let qemu_path = root.join("qemu-aarch64.toml");
-        let config: QemuConfig =
-            toml::from_str(&std::fs::read_to_string(qemu_path).unwrap()).unwrap();
+        let qemu_path = rust_test_suite_root().join("qemu-aarch64.toml");
+        let config = load_qemu_config(&qemu_path);
 
         assert!(
             config.to_bin,
@@ -476,7 +467,6 @@ BT 0 ip=0x1 fp=0x2
 
     #[test]
     fn arceos_rust_panic_path_qemu_uses_panic_backtrace_result_regex() {
-        let mut cargo = rust_test_cargo_for_target("x86_64-unknown-none");
         let mut qemu = QemuConfig {
             success_regex: vec!["ArceOS test suite run OK!".to_string()],
             fail_regex: vec![r"(?i)\bpanic(?:ked)?\b".to_string()],
@@ -484,11 +474,7 @@ BT 0 ip=0x1 fp=0x2
             ..QemuConfig::default()
         };
 
-        apply_rust_qemu_feature_overrides(
-            &mut cargo,
-            &mut qemu,
-            Some(ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE),
-        );
+        apply_rust_qemu_feature_overrides(&mut qemu, Some(ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE));
 
         assert_eq!(
             qemu.success_regex,
@@ -500,7 +486,6 @@ BT 0 ip=0x1 fp=0x2
 
     #[test]
     fn arceos_rust_lockdep_detect_qemu_uses_lockdep_result_regex() {
-        let mut cargo = rust_test_cargo_for_target("x86_64-unknown-none");
         let mut qemu = QemuConfig {
             success_regex: vec!["ArceOS test suite run OK!".to_string()],
             fail_regex: vec![r"(?i)\bpanic(?:ked)?\b".to_string()],
@@ -508,11 +493,7 @@ BT 0 ip=0x1 fp=0x2
             ..QemuConfig::default()
         };
 
-        apply_rust_qemu_feature_overrides(
-            &mut cargo,
-            &mut qemu,
-            Some(ARCEOS_RUST_LOCKDEP_DETECT_FEATURE),
-        );
+        apply_rust_qemu_feature_overrides(&mut qemu, Some(ARCEOS_RUST_LOCKDEP_DETECT_FEATURE));
 
         assert_eq!(
             qemu.success_regex,
@@ -526,15 +507,14 @@ BT 0 ip=0x1 fp=0x2
     }
 
     #[test]
-    fn arceos_rust_remote_wake_riscv_uses_single_threaded_tcg() {
-        let mut cargo = rust_test_cargo_for_target("riscv64gc-unknown-none-elf");
-        let mut qemu = QemuConfig::default();
-
-        apply_rust_qemu_feature_overrides(
-            &mut cargo,
-            &mut qemu,
-            Some("task-wait-queue-remote-wake"),
-        );
+    fn arceos_rust_remote_wake_riscv_config_uses_single_threaded_tcg() {
+        let path = arceos_test_suit_case_qemu_config_path(
+            &rust_test_suite_root(),
+            "riscv64",
+            "task-wait-queue-remote-wake",
+        )
+        .unwrap();
+        let qemu = load_qemu_config(&path);
 
         assert!(
             qemu.args
@@ -544,8 +524,78 @@ BT 0 ip=0x1 fp=0x2
     }
 
     #[test]
+    fn arceos_rust_task_ipi_riscv_config_uses_single_threaded_tcg_and_short_timeout() {
+        let path =
+            arceos_test_suit_case_qemu_config_path(&rust_test_suite_root(), "riscv64", "task-ipi")
+                .unwrap();
+        let qemu = load_qemu_config(&path);
+
+        assert!(
+            qemu.args
+                .windows(2)
+                .any(|args| args == ["-accel", "tcg,thread=single"])
+        );
+        assert_eq!(qemu.timeout, Some(5));
+    }
+
+    #[test]
+    fn arceos_rust_task_ipi_non_riscv_falls_back_to_suite_config() {
+        let path =
+            arceos_test_suit_case_qemu_config_path(&rust_test_suite_root(), "x86_64", "task-ipi")
+                .unwrap();
+        let qemu = load_qemu_config(&path);
+
+        assert!(
+            !qemu
+                .args
+                .windows(2)
+                .any(|args| args == ["-accel", "tcg,thread=single"])
+        );
+        assert_eq!(qemu.timeout, Some(120));
+        assert_eq!(path, rust_test_suite_root().join("qemu-x86_64.toml"));
+    }
+
+    #[tokio::test]
+    async fn arceos_rust_case_preparation_rejects_persistent_rootfs_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let qemu_config_path = write_test_qemu_config(root.path(), Some("persist"));
+        let mut arceos = ArceOS::new().unwrap();
+
+        let error = prepare_rust_qemu_cases(
+            &mut arceos,
+            "riscv64gc-unknown-none-elf",
+            vec![rust_qemu_case(qemu_config_path)],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("cannot use `rootfs_write_policy = \"persist\"`"));
+    }
+
+    #[tokio::test]
+    async fn arceos_rust_case_preparation_isolates_its_rootfs_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let qemu_config_path = write_test_qemu_config(root.path(), None);
+        let mut arceos = ArceOS::new().unwrap();
+
+        let prepared = prepare_rust_qemu_cases(
+            &mut arceos,
+            "riscv64gc-unknown-none-elf",
+            vec![rust_qemu_case(qemu_config_path)],
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            prepared[0].qemu.args.iter().any(|argument| {
+                argument.contains("id=disk0") && argument.contains("snapshot=on")
+            })
+        );
+    }
+
+    #[test]
     fn arceos_rust_normal_qemu_keeps_suite_result_regex() {
-        let mut cargo = rust_test_cargo_for_target("x86_64-unknown-none");
         let mut qemu = QemuConfig {
             success_regex: vec!["ArceOS test suite run OK!".to_string()],
             fail_regex: vec![
@@ -556,7 +606,7 @@ BT 0 ip=0x1 fp=0x2
             ..QemuConfig::default()
         };
 
-        apply_rust_qemu_feature_overrides(&mut cargo, &mut qemu, Some("debug-backtrace"));
+        apply_rust_qemu_feature_overrides(&mut qemu, Some("debug-backtrace"));
 
         assert_eq!(qemu.success_regex, vec!["ArceOS test suite run OK!"]);
         assert_eq!(
@@ -572,22 +622,55 @@ BT 0 ip=0x1 fp=0x2
         assert!(features.is_empty());
     }
 
-    fn rust_test_cargo_for_target(target: &str) -> Cargo {
-        Cargo {
-            env: Default::default(),
-            target: target.to_string(),
+    fn rust_qemu_case(qemu_config_path: PathBuf) -> ArceosRustQemuCase {
+        ArceosRustQemuCase {
+            case: TestQemuCase {
+                name: "task-ipi".to_string(),
+                display_name: "task-ipi".to_string(),
+                case_dir: qemu_config_path.parent().unwrap().to_path_buf(),
+                qemu_config_path,
+                test_commands: Vec::new(),
+                host_symbolize_success_regex: Vec::new(),
+                host_http_server: None,
+                subcases: Vec::new(),
+                grouped_subcase_filter: None,
+            },
+            build_group: "arceos-rust".to_string(),
+            build_config_path: rust_test_suite_root().join("build-riscv64gc-unknown-none-elf.toml"),
             package: ARCEOS_RUST_TEST_PACKAGE.to_string(),
-            features: Vec::new(),
-            log: None,
-            extra_config: None,
-            profile: None,
-            disable_someboot_build_config: true,
-            args: Vec::new(),
-            pre_build_cmds: Vec::new(),
-            post_build_cmds: Vec::new(),
-            to_bin: false,
-            bin: None,
-            test: None,
+            feature: Some("task-ipi".to_string()),
         }
+    }
+
+    fn write_test_qemu_config(root: &Path, rootfs_write_policy: Option<&str>) -> PathBuf {
+        let disk_path = root.join("disk.img");
+        std::fs::write(&disk_path, []).unwrap();
+        let policy = rootfs_write_policy
+            .map(|policy| format!("rootfs_write_policy = \"{policy}\"\n"))
+            .unwrap_or_default();
+        let qemu_config_path = root.join("qemu-riscv64.toml");
+        std::fs::write(
+            &qemu_config_path,
+            format!(
+                r#"args = [
+    "-m",
+    "64M",
+    "-smp",
+    "4",
+    "-drive",
+    "id=disk0,if=none,format=raw,file={}",
+]
+
+timeout = 5
+uefi = false
+to_bin = false
+success_regex = ["OK"]
+fail_regex = ["FAIL"]
+{policy}"#,
+                disk_path.display()
+            ),
+        )
+        .unwrap();
+        qemu_config_path
     }
 }

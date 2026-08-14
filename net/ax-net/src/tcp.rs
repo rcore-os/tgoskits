@@ -32,7 +32,6 @@ use core::{
     task::{Context, Waker},
 };
 
-use ax_errno::{AxError, AxResult, LinuxError, ax_bail, ax_err_type};
 use ax_io::prelude::*;
 use ax_lazyinit::LazyLock;
 use ax_sync::Mutex;
@@ -46,8 +45,8 @@ use smoltcp::{
 };
 
 use crate::{
-    DeferPollWake, LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket,
-    SocketAddrEx, SocketOps,
+    DeferPollWake, LISTEN_TABLE, NetError, NetResult, RecvFlags, RecvOptions, SOCKET_SET,
+    SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
     addr::{allocate_ephemeral_port, listen_addrs_conflict},
     config::{DeviceBinding, InterfaceId},
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
@@ -141,9 +140,9 @@ impl TcpSocket {
     }
 
     /// Restricts this socket to one interface for route selection.
-    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult {
+    pub fn bind_device(&self, interface_id: InterfaceId) -> NetResult {
         if interface_by_id(interface_id).is_none() {
-            return Err(AxError::NoSuchDevice);
+            return Err(NetError::NoSuchDevice);
         }
         self.general.set_device_binding(DeviceBinding {
             bound_if: Some(interface_id),
@@ -283,10 +282,10 @@ impl TcpSocket {
         })
     }
 
-    fn bound_endpoint(&self) -> AxResult<IpListenEndpoint> {
+    fn bound_endpoint(&self) -> NetResult<IpListenEndpoint> {
         let endpoint = *self.bound_endpoint.lock();
         if endpoint.port == 0 {
-            ax_bail!(InvalidInput, "not bound");
+            return Err(NetError::InvalidInput);
         }
         Ok(endpoint)
     }
@@ -311,7 +310,7 @@ impl TcpSocket {
             state => {
                 *self.peer_endpoint.lock() = None;
                 self.pending_error
-                    .store(LinuxError::ECONNREFUSED.code(), Ordering::Release);
+                    .store(syscalls::Errno::ECONNREFUSED.into_raw(), Ordering::Release);
                 self.state.set(State::Closed); // connection failed
                 debug!(
                     "TCP socket {}: connect failed in state {:?}",
@@ -351,7 +350,7 @@ impl TcpSocket {
 }
 
 impl Configurable for TcpSocket {
-    fn get_option_inner(&self, option: &mut GetSocketOption) -> AxResult<bool> {
+    fn get_option_inner(&self, option: &mut GetSocketOption) -> NetResult<bool> {
         use GetSocketOption as O;
 
         if let O::Error(error) = option {
@@ -406,7 +405,7 @@ impl Configurable for TcpSocket {
         Ok(true)
     }
 
-    fn set_option_inner(&self, option: SetSocketOption) -> AxResult<bool> {
+    fn set_option_inner(&self, option: SetSocketOption) -> NetResult<bool> {
         use SetSocketOption as O;
 
         if let O::IpTos(tos) = option {
@@ -434,7 +433,7 @@ impl Configurable for TcpSocket {
             }
             O::TcpKeepIdle(keep_idle) => {
                 if *keep_idle == 0 || *keep_idle > TCP_KEEPIDLE_MAX_SECS {
-                    return Err(AxError::InvalidInput);
+                    return Err(NetError::InvalidInput);
                 }
                 self.keep_idle_secs.store(*keep_idle, Ordering::Relaxed);
                 let interval = Duration::from_secs(*keep_idle as u64);
@@ -446,14 +445,14 @@ impl Configurable for TcpSocket {
             }
             O::TcpKeepInterval(keep_interval) => {
                 if *keep_interval == 0 || *keep_interval > TCP_KEEPINTVL_MAX_SECS {
-                    return Err(AxError::InvalidInput);
+                    return Err(NetError::InvalidInput);
                 }
                 self.keep_interval_secs
                     .store(*keep_interval, Ordering::Relaxed);
             }
             O::TcpKeepCount(keep_count) => {
                 if *keep_count == 0 || *keep_count > TCP_KEEPCNT_MAX {
-                    return Err(AxError::InvalidInput);
+                    return Err(NetError::InvalidInput);
                 }
                 self.keep_count.store(*keep_count, Ordering::Relaxed);
             }
@@ -474,18 +473,18 @@ impl Configurable for TcpSocket {
     }
 }
 impl SocketOps for TcpSocket {
-    fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
+    fn bind(&self, local_addr: SocketAddrEx) -> NetResult {
         let mut local_addr = local_addr.into_ip()?;
         self.state
             .lock(State::Idle)
-            .map_err(|_| ax_err_type!(InvalidInput, "already bound"))?
+            .map_err(|_| NetError::InvalidInput)?
             .transit(State::Idle, || {
                 // TODO: check addr is available
                 if local_addr.port() == 0 {
                     local_addr.set_port(get_ephemeral_port()?);
                 }
                 if self.bound_endpoint.lock().port != 0 {
-                    return Err(AxError::InvalidInput);
+                    return Err(NetError::InvalidInput);
                 }
                 let endpoint = IpListenEndpoint {
                     addr: if local_addr.ip().is_unspecified() {
@@ -499,7 +498,7 @@ impl SocketOps for TcpSocket {
                     && !self.general.reuse_port()
                     && !LISTEN_TABLE.can_listen(endpoint)
                 {
-                    return Err(AxError::AddrInUse);
+                    return Err(NetError::AddrInUse);
                 }
                 let binding = get_control().local_binding_for(&endpoint)?;
                 self.register_bound_endpoint(endpoint)?;
@@ -512,7 +511,7 @@ impl SocketOps for TcpSocket {
             })
     }
 
-    fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
+    fn connect(&self, remote_addr: SocketAddrEx) -> NetResult {
         let remote_addr = remote_addr.into_ip()?;
         self.start_connect(remote_addr)?;
         request_poll();
@@ -522,19 +521,16 @@ impl SocketOps for TcpSocket {
             request_poll();
             let events = self.poll_connect();
             if !events.contains(IoEvents::OUT) {
-                Err(AxError::WouldBlock)
+                Err(NetError::WouldBlock)
             } else if self.state.get() == State::Connected {
                 Ok(())
             } else {
-                Err(
-                    LinuxError::try_from(self.pending_error.load(Ordering::Acquire))
-                        .map_or(AxError::ConnectionRefused, AxError::from),
-                )
+                Err(NetError::ConnectionRefused)
             }
         })
     }
 
-    fn listen(&self, backlog: usize) -> AxResult {
+    fn listen(&self, backlog: usize) -> NetResult {
         if let Ok(guard) = self.state.lock(State::Idle) {
             guard.transit(State::Listening, || {
                 let mut bound_endpoint = *self.bound_endpoint.lock();
@@ -563,9 +559,9 @@ impl SocketOps for TcpSocket {
         self.state.get() == State::Listening
     }
 
-    fn accept(&self) -> AxResult<Socket> {
+    fn accept(&self) -> NetResult<Socket> {
         if self.state.get() != State::Listening {
-            ax_bail!(InvalidInput, "not listening");
+            return Err(NetError::InvalidInput);
         }
 
         let bound_endpoint = self.bound_endpoint()?;
@@ -592,7 +588,7 @@ impl SocketOps for TcpSocket {
         })
     }
 
-    fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
+    fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize> {
         // SAFETY: `self.handle` should be initialized in a connected socket.
         let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
         // A partial send on a non-blocking socket must report the bytes already
@@ -611,9 +607,9 @@ impl SocketOps for TcpSocket {
             request_poll();
             let step = self.with_smol_socket(|socket| {
                 if !socket.is_active() {
-                    Err(AxError::NotConnected)
+                    Err(NetError::NotConnected)
                 } else if !socket.can_send() {
-                    Err(AxError::WouldBlock)
+                    Err(NetError::WouldBlock)
                 } else {
                     // connected, and the tx buffer is not full
                     let len = socket
@@ -622,7 +618,7 @@ impl SocketOps for TcpSocket {
                             let len = result.unwrap_or(0);
                             (len, result)
                         })
-                        .map_err(|_| ax_err_type!(NotConnected, "not connected?"))??;
+                        .map_err(|_| NetError::NotConnected)??;
                     Ok(len)
                 }
             });
@@ -637,12 +633,12 @@ impl SocketOps for TcpSocket {
         result
     }
 
-    fn recv(&self, mut dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
+    fn recv(&self, mut dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> NetResult<usize> {
         if self.rx_closed.load(Ordering::Acquire) {
-            return Err(AxError::NotConnected);
+            return Err(NetError::NotConnected);
         }
         if self.state.get() == State::Closed {
-            return Err(AxError::NotConnected);
+            return Err(NetError::NotConnected);
         }
         let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
         self.general.recv_poller_with(self, extra_nb, || {
@@ -653,8 +649,9 @@ impl SocketOps for TcpSocket {
                         dst.write(
                             socket
                                 .peek(dst.remaining_mut())
-                                .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?,
+                                .map_err(|_| NetError::NotConnected)?,
                         )
+                        .map_err(NetError::from)
                     } else {
                         // Drain currently available bytes from RX queue without waiting.
                         // This loop copies across smoltcp's internal buffer segments to fill
@@ -664,11 +661,11 @@ impl SocketOps for TcpSocket {
                         while socket.recv_queue() > 0 && dst.remaining_mut() > 0 {
                             let len = socket
                                 .recv(|buf| {
-                                    let result = dst.write(buf);
+                                    let result = dst.write(buf).map_err(NetError::from);
                                     let len = result.unwrap_or(0);
                                     (len, result)
                                 })
-                                .map_err(|_| ax_err_type!(NotConnected, "not connected?"))??;
+                                .map_err(|_| NetError::NotConnected)??;
                             if len == 0 {
                                 break;
                             }
@@ -679,15 +676,15 @@ impl SocketOps for TcpSocket {
                 } else if !socket.may_recv() {
                     Ok(0)
                 } else {
-                    Err(AxError::WouldBlock)
+                    Err(NetError::WouldBlock)
                 }
             })
         })
     }
 
-    fn recv_available(&self) -> AxResult<usize> {
+    fn recv_available(&self) -> NetResult<usize> {
         if self.state.get() == State::Listening {
-            return Err(AxError::InvalidInput);
+            return Err(NetError::InvalidInput);
         }
         let available = self.with_smol_socket(|socket| socket.recv_queue());
         if available > 0 {
@@ -697,7 +694,7 @@ impl SocketOps for TcpSocket {
         Ok(self.with_smol_socket(|socket| socket.recv_queue()))
     }
 
-    fn local_addr(&self) -> AxResult<SocketAddrEx> {
+    fn local_addr(&self) -> NetResult<SocketAddrEx> {
         let endpoint = self.with_smol_socket(|socket| {
             socket
                 .local_endpoint()
@@ -715,19 +712,19 @@ impl SocketOps for TcpSocket {
         )))
     }
 
-    fn peer_addr(&self) -> AxResult<SocketAddrEx> {
+    fn peer_addr(&self) -> NetResult<SocketAddrEx> {
         self.with_smol_socket(|socket| {
             Ok(SocketAddrEx::Ip(
                 socket
                     .remote_endpoint()
                     .or_else(|| *self.peer_endpoint.lock())
-                    .ok_or(AxError::NotConnected)?
+                    .ok_or(NetError::NotConnected)?
                     .into(),
             ))
         })
     }
 
-    fn shutdown(&self, how: Shutdown) -> AxResult {
+    fn shutdown(&self, how: Shutdown) -> NetResult {
         // TODO(mivik): shutdown
         if how.has_read() {
             self.rx_closed.store(true, Ordering::Release);
@@ -943,15 +940,15 @@ const fn empty_endpoint() -> IpListenEndpoint {
 
 impl TcpSocket {
     /// Starts an active open and leaves completion to the net-poll worker.
-    fn start_connect(&self, remote_addr: SocketAddr) -> AxResult {
+    fn start_connect(&self, remote_addr: SocketAddr) -> NetResult {
         self.state
             .lock(State::Idle)
             .map_err(|state| {
                 if state == State::Connecting {
-                    AxError::InProgress
+                    NetError::InProgress
                 } else {
                     // TODO(mivik): error code
-                    ax_err_type!(AlreadyConnected)
+                    NetError::AlreadyConnected
                 }
             })?
             .transit(State::Connecting, || {
@@ -991,14 +988,10 @@ impl TcpSocket {
                         socket
                             .connect(context, remote_endpoint, bound_endpoint)
                             .map_err(|e| match e {
-                                smol::ConnectError::InvalidState => {
-                                    ax_err_type!(AlreadyConnected)
-                                }
-                                smol::ConnectError::Unaddressable => {
-                                    ax_err_type!(ConnectionRefused, "unaddressable")
-                                }
+                                smol::ConnectError::InvalidState => NetError::AlreadyConnected,
+                                smol::ConnectError::Unaddressable => NetError::ConnectionRefused,
                             })?;
-                        Ok::<(), AxError>(())
+                        Ok::<(), NetError>(())
                     })
                 })?;
                 *self.bound_endpoint.lock() = bound_endpoint;
@@ -1017,7 +1010,7 @@ impl TcpSocket {
     }
 
     /// Registers the public TCP bind side table if not already registered.
-    fn register_bound_endpoint(&self, endpoint: IpListenEndpoint) -> AxResult {
+    fn register_bound_endpoint(&self, endpoint: IpListenEndpoint) -> NetResult {
         if !self.bound_registered.load(Ordering::Acquire) {
             register_tcp_bound(endpoint, self.general.reuse_port())?;
             self.bound_registered.store(true, Ordering::Release);
@@ -1028,8 +1021,8 @@ impl TcpSocket {
     fn with_bound_endpoint_registered<R>(
         &self,
         endpoint: IpListenEndpoint,
-        f: impl FnOnce() -> AxResult<R>,
-    ) -> AxResult<R> {
+        f: impl FnOnce() -> NetResult<R>,
+    ) -> NetResult<R> {
         let register_bound = !self.bound_registered.load(Ordering::Acquire);
         if register_bound {
             register_tcp_bound(endpoint, self.general.reuse_port())?;
@@ -1074,7 +1067,7 @@ static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<TcpBoundEntry>>>> =
 /// A binder joins an existing reuseport group only when it and every colliding
 /// owner requested SO_REUSEPORT on the exact same local address; any other
 /// address overlap on the port is rejected with `EADDRINUSE`.
-fn register_tcp_bound(endpoint: IpListenEndpoint, reuse_port: bool) -> AxResult {
+fn register_tcp_bound(endpoint: IpListenEndpoint, reuse_port: bool) -> NetResult {
     if endpoint.port == 0 {
         return Ok(());
     }
@@ -1085,7 +1078,7 @@ fn register_tcp_bound(endpoint: IpListenEndpoint, reuse_port: bool) -> AxResult 
         if listen_addrs_conflict(entry.addr, endpoint.addr)
             && !(reuse_port && entry.reuse_port && entry.addr == endpoint.addr)
         {
-            return Err(AxError::AddrInUse);
+            return Err(NetError::AddrInUse);
         }
     }
     entries.push(TcpBoundEntry {
@@ -1124,25 +1117,25 @@ fn finish_tcp_send_step(
     total_sent: &mut usize,
     target_len: usize,
     extra_nonblocking: bool,
-    step: AxResult<usize>,
-) -> AxResult<usize> {
+    step: NetResult<usize>,
+) -> NetResult<usize> {
     match step {
         Ok(sent) => {
             *total_sent += sent;
             if *total_sent >= target_len || extra_nonblocking {
                 Ok(*total_sent)
             } else {
-                Err(AxError::WouldBlock)
+                Err(NetError::WouldBlock)
             }
         }
-        Err(AxError::WouldBlock) if *total_sent > 0 && extra_nonblocking => Ok(*total_sent),
-        Err(AxError::WouldBlock) => Err(AxError::WouldBlock),
+        Err(NetError::WouldBlock) if *total_sent > 0 && extra_nonblocking => Ok(*total_sent),
+        Err(NetError::WouldBlock) => Err(NetError::WouldBlock),
         Err(_) if *total_sent > 0 => Ok(*total_sent),
         Err(err) => Err(err),
     }
 }
 
-fn get_ephemeral_port() -> AxResult<u16> {
+fn get_ephemeral_port() -> NetResult<u16> {
     allocate_ephemeral_port(tcp_port_available)
 }
 
@@ -1164,7 +1157,7 @@ mod tests {
 
         assert_eq!(
             finish_tcp_send_step(&mut total, 10, false, Ok(4)),
-            Err(AxError::WouldBlock),
+            Err(NetError::WouldBlock),
         );
         assert_eq!(total, 4);
         assert_eq!(finish_tcp_send_step(&mut total, 10, false, Ok(6)), Ok(10),);
@@ -1184,7 +1177,7 @@ mod tests {
         let mut total = 4;
 
         assert_eq!(
-            finish_tcp_send_step(&mut total, 10, false, Err(AxError::NotConnected)),
+            finish_tcp_send_step(&mut total, 10, false, Err(NetError::NotConnected)),
             Ok(4),
         );
         assert_eq!(total, 4);
@@ -1195,8 +1188,8 @@ mod tests {
         let mut total = 4;
 
         assert_eq!(
-            finish_tcp_send_step(&mut total, 10, false, Err(AxError::WouldBlock)),
-            Err(AxError::WouldBlock),
+            finish_tcp_send_step(&mut total, 10, false, Err(NetError::WouldBlock)),
+            Err(NetError::WouldBlock),
         );
         assert_eq!(total, 4);
     }
@@ -1354,12 +1347,12 @@ mod tests {
         register_tcp_bound(endpoint, false).unwrap();
         assert_eq!(
             register_tcp_bound(endpoint, false).unwrap_err(),
-            AxError::AddrInUse
+            NetError::AddrInUse
         );
         // SO_REUSEPORT cannot join a group started by a non-reuseport owner.
         assert_eq!(
             register_tcp_bound(endpoint, true).unwrap_err(),
-            AxError::AddrInUse
+            NetError::AddrInUse
         );
         unregister_tcp_bound(endpoint);
 
@@ -1369,7 +1362,7 @@ mod tests {
         // A plain binder still cannot steal a reuseport-owned port.
         assert_eq!(
             register_tcp_bound(endpoint, false).unwrap_err(),
-            AxError::AddrInUse
+            NetError::AddrInUse
         );
 
         // Each unregister drops exactly one group member.

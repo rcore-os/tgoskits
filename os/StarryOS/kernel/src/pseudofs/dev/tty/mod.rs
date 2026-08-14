@@ -18,9 +18,8 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_task::current;
-use axfs_ng_vfs::{Location, NodeFlags};
+use axfs_ng_vfs::{Location, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
 use starry_signal::{SignalInfo, Signo};
@@ -40,6 +39,7 @@ pub use self::{
     usb_serial::usb_serial_tty,
 };
 use crate::{
+    StarryError, StarryResult,
     pseudofs::{Device, DeviceOps},
     sync::{IrqMutex, Mutex},
     task::{AsThread, get_process_group, send_signal_to_process_group},
@@ -114,14 +114,18 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
 }
 
 impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
-    pub fn bind_to(self: &Arc<Self>, proc: &Process) -> AxResult<()> {
+    pub fn bind_to(self: &Arc<Self>, proc: &Process) -> StarryResult<()> {
         self.bind_to_at(proc, None)
     }
 
-    fn bind_to_at(self: &Arc<Self>, proc: &Process, location: Option<Location>) -> AxResult<()> {
+    fn bind_to_at(
+        self: &Arc<Self>,
+        proc: &Process,
+        location: Option<Location>,
+    ) -> StarryResult<()> {
         let pg = proc.group();
         if pg.session().sid() != proc.pid() {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         if !pg.session().try_set_terminal_with(|| {
             self.terminal.job_control.set_session(&pg.session())?;
@@ -130,9 +134,9 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
                 location,
             });
             *self.binding.lock() = Some(Arc::downgrade(&binding));
-            Ok::<_, AxError>(binding)
+            Ok::<_, StarryError>(binding)
         })? {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
 
         self.terminal.job_control.set_foreground(&pg).unwrap();
@@ -143,7 +147,7 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
         self.terminal.pty_number.load(Ordering::Acquire)
     }
 
-    fn bind_current_to_at(&self, location: Location) -> AxResult<()> {
+    fn bind_current_to_at(&self, location: Location) -> StarryResult<()> {
         self.this
             .upgrade()
             .unwrap()
@@ -151,16 +155,16 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
     }
 }
 
-pub(crate) fn bind_pty_at_location(location: Location) -> Option<AxResult<usize>> {
+pub(crate) fn bind_pty_at_location(location: Location) -> Option<StarryResult<usize>> {
     let device = location.entry().downcast::<Device>().ok()?;
     let pty = device.inner().as_any().downcast_ref::<PtyDriver>()?;
     Some(pty.bind_current_to_at(location).map(|()| 0))
 }
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
-    fn open(&self, _exclusive: bool) -> AxResult<()> {
+    fn open(&self, _exclusive: bool) -> VfsResult<()> {
         self.open_count.fetch_add(1, Ordering::AcqRel);
-        self.writer.open()
+        self.writer.open().map_err(VfsError::from)
     }
 
     fn close(&self, _exclusive: bool) {
@@ -178,15 +182,15 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
         }
     }
 
-    fn read_at(&self, buf: &mut [u8], _offset: u64) -> AxResult<usize> {
+    fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         if self.is_ptm || self.terminal.job_control.current_in_foreground() {
-            self.ldisc.lock().read(buf)
+            self.ldisc.lock().read(buf).map_err(VfsError::from)
         } else {
-            Err(AxError::WouldBlock)
+            Err(VfsError::WouldBlock)
         }
     }
 
-    fn write_at(&self, buf: &[u8], _offset: u64) -> AxResult<usize> {
+    fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         if self.is_ptm {
             self.writer.write(buf);
         } else {
@@ -203,148 +207,152 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
         Ok(buf.len())
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
-        use linux_raw_sys::ioctl::*;
-        match cmd {
-            TCGETS => {
-                let termios = *self.terminal.termios.lock().as_ref().deref();
-                (arg as *mut Termios).vm_write(termios)?;
-            }
-            TCGETS2 => {
-                let termios = *self.terminal.termios.lock().as_ref();
-                (arg as *mut Termios2).vm_write(termios)?;
-            }
-            TCSETS | TCSETSF | TCSETSW => {
-                // Note: vm_read() must complete before acquiring the terminal lock.
-                // Faultable user memory access inside an atomic context (preemption
-                // disabled) will call might_sleep() in handle_page_fault and panic.
-                let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
-                if matches!(cmd, TCSETSF | TCSETSW) {
+    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+        let operation = || -> StarryResult<usize> {
+            use linux_raw_sys::ioctl::*;
+            match cmd {
+                TCGETS => {
+                    let termios = *self.terminal.termios.lock().as_ref().deref();
+                    (arg as *mut Termios).vm_write(termios)?;
+                }
+                TCGETS2 => {
+                    let termios = *self.terminal.termios.lock().as_ref();
+                    (arg as *mut Termios2).vm_write(termios)?;
+                }
+                TCSETS | TCSETSF | TCSETSW => {
+                    // Note: vm_read() must complete before acquiring the terminal lock.
+                    // Faultable user memory access inside an atomic context (preemption
+                    // disabled) will call might_sleep() in handle_page_fault and panic.
+                    let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
+                    if matches!(cmd, TCSETSF | TCSETSW) {
+                        self.writer.drain()?;
+                    }
+                    let old = {
+                        let mut guard = self.terminal.termios.lock();
+                        let old = guard.clone();
+                        *guard = termios.clone();
+                        old
+                    };
+                    self.writer.termios_changed(old.as_ref(), termios.as_ref());
+                    if cmd == TCSETSF {
+                        self.ldisc.lock().drain_input()?;
+                    }
+                }
+                TCSETS2 | TCSETSF2 | TCSETSW2 => {
+                    let termios = Arc::new((arg as *const Termios2).vm_read()?);
+                    if matches!(cmd, TCSETSF2 | TCSETSW2) {
+                        self.writer.drain()?;
+                    }
+                    let old = {
+                        let mut guard = self.terminal.termios.lock();
+                        let old = guard.clone();
+                        *guard = termios.clone();
+                        old
+                    };
+                    self.writer.termios_changed(old.as_ref(), termios.as_ref());
+                    if cmd == TCSETSF2 {
+                        self.ldisc.lock().drain_input()?;
+                    }
+                }
+                TIOCGPGRP => {
+                    let foreground = self
+                        .terminal
+                        .job_control
+                        .foreground()
+                        .ok_or(StarryError::NoSuchProcess)?;
+                    (arg as *mut u32).vm_write(foreground.pgid())?;
+                }
+                TIOCSPGRP => {
+                    let pgid: u32 = (arg as *const u32).vm_read()?;
+                    let pg = get_process_group(pgid)?;
+                    self.terminal.job_control.set_foreground(&pg)?;
+                }
+                TIOCGWINSZ => {
+                    let window_size = *self.terminal.window_size.lock();
+                    (arg as *mut WindowSize).vm_write(window_size)?;
+                }
+                TIOCSWINSZ => {
+                    let window_size = (arg as *const WindowSize).vm_read()?;
+                    let old = {
+                        let mut guard = self.terminal.window_size.lock();
+                        let old = *guard;
+                        *guard = window_size;
+                        old
+                    };
+                    // Match Linux tty_do_resize(): notify the foreground process
+                    // group via SIGWINCH so TUI applications (e.g. ratatui) can
+                    // re-layout when the user resizes the host terminal.
+                    let changed =
+                        old.ws_row != window_size.ws_row || old.ws_col != window_size.ws_col;
+                    if changed && let Some(pg) = self.terminal.job_control.foreground() {
+                        let _ = send_signal_to_process_group(
+                            pg.pgid(),
+                            Some(SignalInfo::new_kernel(Signo::SIGWINCH)),
+                        );
+                    }
+                }
+                TCSBRK => {
                     self.writer.drain()?;
+                    if arg == 0 {
+                        return Err(StarryError::Unsupported);
+                    }
                 }
-                let old = {
-                    let mut guard = self.terminal.termios.lock();
-                    let old = guard.clone();
-                    *guard = termios.clone();
-                    old
-                };
-                self.writer.termios_changed(old.as_ref(), termios.as_ref());
-                if cmd == TCSETSF {
-                    self.ldisc.lock().drain_input()?;
-                }
-            }
-            TCSETS2 | TCSETSF2 | TCSETSW2 => {
-                let termios = Arc::new((arg as *const Termios2).vm_read()?);
-                if matches!(cmd, TCSETSF2 | TCSETSW2) {
+                TCSBRKP => {
                     self.writer.drain()?;
+                    return Err(StarryError::Unsupported);
                 }
-                let old = {
-                    let mut guard = self.terminal.termios.lock();
-                    let old = guard.clone();
-                    *guard = termios.clone();
-                    old
-                };
-                self.writer.termios_changed(old.as_ref(), termios.as_ref());
-                if cmd == TCSETSF2 {
-                    self.ldisc.lock().drain_input()?;
+                TCFLSH => match arg {
+                    TCIFLUSH => self.ldisc.lock().drain_input()?,
+                    TCOFLUSH => self.ldisc.lock().discard_output(&self.writer)?,
+                    TCIOFLUSH => {
+                        let mut ldisc = self.ldisc.lock();
+                        ldisc.discard_output(&self.writer)?;
+                        ldisc.drain_input()?;
+                    }
+                    _ => return Err(StarryError::InvalidInput),
+                },
+                TIOCSPTLCK => {}
+                TIOCGPTN => {
+                    (arg as *mut u32).vm_write(self.pty_number())?;
                 }
-            }
-            TIOCGPGRP => {
-                let foreground = self
-                    .terminal
-                    .job_control
-                    .foreground()
-                    .ok_or(AxError::NoSuchProcess)?;
-                (arg as *mut u32).vm_write(foreground.pgid())?;
-            }
-            TIOCSPGRP => {
-                let pgid: u32 = (arg as *const u32).vm_read()?;
-                let pg = get_process_group(pgid)?;
-                self.terminal.job_control.set_foreground(&pg)?;
-            }
-            TIOCGWINSZ => {
-                let window_size = *self.terminal.window_size.lock();
-                (arg as *mut WindowSize).vm_write(window_size)?;
-            }
-            TIOCSWINSZ => {
-                let window_size = (arg as *const WindowSize).vm_read()?;
-                let old = {
-                    let mut guard = self.terminal.window_size.lock();
-                    let old = *guard;
-                    *guard = window_size;
-                    old
-                };
-                // Match Linux tty_do_resize(): notify the foreground process
-                // group via SIGWINCH so TUI applications (e.g. ratatui) can
-                // re-layout when the user resizes the host terminal.
-                let changed = old.ws_row != window_size.ws_row || old.ws_col != window_size.ws_col;
-                if changed && let Some(pg) = self.terminal.job_control.foreground() {
-                    let _ = send_signal_to_process_group(
-                        pg.pgid(),
-                        Some(SignalInfo::new_kernel(Signo::SIGWINCH)),
-                    );
+                TIOCSCTTY => {
+                    self.this
+                        .upgrade()
+                        .unwrap()
+                        .bind_to(&current().as_thread().proc_data.proc)?;
                 }
-            }
-            TCSBRK => {
-                self.writer.drain()?;
-                if arg == 0 {
-                    return Err(AxError::Unsupported);
+                TIOCNOTTY => {
+                    let session = current().as_thread().proc_data.proc.group().session();
+                    let this: Arc<dyn Any + Send + Sync> = self.this.upgrade().unwrap();
+                    let binding = self
+                        .binding
+                        .lock()
+                        .as_ref()
+                        .and_then(Weak::upgrade)
+                        .unwrap_or(this);
+                    if current()
+                        .as_thread()
+                        .proc_data
+                        .proc
+                        .group()
+                        .session()
+                        .unset_terminal(&binding)
+                    {
+                        *self.binding.lock() = None;
+                        self.terminal.job_control.clear_session(&session);
+                        // TODO: If the process was session leader, send SIGHUP and
+                        // SIGCONT to the foreground process group and all processes
+                        // in the current session lose their
+                        // controlling terminal.
+                    } else {
+                        warn!("Failed to unset terminal");
+                    }
                 }
+                _ => return Err(StarryError::NotATty),
             }
-            TCSBRKP => {
-                self.writer.drain()?;
-                return Err(AxError::Unsupported);
-            }
-            TCFLSH => match arg {
-                TCIFLUSH => self.ldisc.lock().drain_input()?,
-                TCOFLUSH => self.ldisc.lock().discard_output(&self.writer)?,
-                TCIOFLUSH => {
-                    let mut ldisc = self.ldisc.lock();
-                    ldisc.discard_output(&self.writer)?;
-                    ldisc.drain_input()?;
-                }
-                _ => return Err(AxError::InvalidInput),
-            },
-            TIOCSPTLCK => {}
-            TIOCGPTN => {
-                (arg as *mut u32).vm_write(self.pty_number())?;
-            }
-            TIOCSCTTY => {
-                self.this
-                    .upgrade()
-                    .unwrap()
-                    .bind_to(&current().as_thread().proc_data.proc)?;
-            }
-            TIOCNOTTY => {
-                let session = current().as_thread().proc_data.proc.group().session();
-                let this: Arc<dyn Any + Send + Sync> = self.this.upgrade().unwrap();
-                let binding = self
-                    .binding
-                    .lock()
-                    .as_ref()
-                    .and_then(Weak::upgrade)
-                    .unwrap_or(this);
-                if current()
-                    .as_thread()
-                    .proc_data
-                    .proc
-                    .group()
-                    .session()
-                    .unset_terminal(&binding)
-                {
-                    *self.binding.lock() = None;
-                    self.terminal.job_control.clear_session(&session);
-                    // TODO: If the process was session leader, send SIGHUP and
-                    // SIGCONT to the foreground process group and all processes
-                    // in the current session lose their
-                    // controlling terminal.
-                } else {
-                    warn!("Failed to unset terminal");
-                }
-            }
-            _ => return Err(AxError::NotATty),
-        }
-        Ok(0)
+            Ok(0)
+        };
+        operation().map_err(VfsError::from)
     }
 
     fn as_pollable(&self) -> Option<&dyn Pollable> {
@@ -402,15 +410,15 @@ impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
 
 pub struct CurrentTty;
 impl DeviceOps for CurrentTty {
-    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> AxResult<usize> {
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         unreachable!()
     }
 
-    fn write_at(&self, _buf: &[u8], _offset: u64) -> AxResult<usize> {
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Ok(0)
     }
 
-    fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {
+    fn ioctl(&self, _cmd: u32, _arg: usize) -> VfsResult<usize> {
         unreachable!()
     }
 

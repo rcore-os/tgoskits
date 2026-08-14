@@ -1,4 +1,3 @@
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::time::TimeValue;
 use ax_task::current;
@@ -7,6 +6,7 @@ use starry_process::Pid;
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
+    StarryError, StarryResult,
     task::{AsThread, Thread, get_process_data, get_task},
     time::TimeValueLike,
 };
@@ -16,12 +16,12 @@ pub fn sys_prlimit64(
     resource: u32,
     new_limit: *const rlimit64,
     old_limit: *mut rlimit64,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     // pid lookup first — match Linux error priority (ESRCH before EINVAL)
     let proc_data = get_process_data(pid)?;
 
     if resource >= RLIM_NLIMITS {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     if let Some(old_limit) = old_limit.nullable() {
@@ -40,7 +40,7 @@ pub fn sys_prlimit64(
         // FIXME: AnyBitPattern
         let new_limit = unsafe { new_limit.vm_read_uninit()?.assume_init() };
         if new_limit.rlim_cur > new_limit.rlim_max {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let limit = &mut proc_data.rlim.write()[resource];
@@ -50,7 +50,7 @@ pub fn sys_prlimit64(
         if new_limit.rlim_max > limit.max {
             let cred = current().as_thread().cred();
             if !cred.has_cap_sys_resource() {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
         }
         limit.max = new_limit.rlim_max;
@@ -98,7 +98,7 @@ impl From<Rusage> for rusage {
     }
 }
 
-pub fn sys_getrusage(who: i32, usage: *mut rusage) -> AxResult<isize> {
+pub fn sys_getrusage(who: i32, usage: *mut rusage) -> StarryResult<isize> {
     const RUSAGE_SELF: i32 = linux_raw_sys::general::RUSAGE_SELF as i32;
     const RUSAGE_CHILDREN: i32 = linux_raw_sys::general::RUSAGE_CHILDREN;
     const RUSAGE_THREAD: i32 = linux_raw_sys::general::RUSAGE_THREAD as i32;
@@ -136,7 +136,7 @@ pub fn sys_getrusage(who: i32, usage: *mut rusage) -> AxResult<isize> {
                 })
         }
         RUSAGE_THREAD => Rusage::from_thread(thr),
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
     usage.vm_write(result.into())?;
 

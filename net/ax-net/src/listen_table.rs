@@ -32,7 +32,6 @@
 use alloc::{collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::task::Waker;
 
-use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
 use axpoll::{IoEvents, PollSet};
 use hashbrown::HashMap;
@@ -43,7 +42,7 @@ use smoltcp::{
 };
 
 use crate::{
-    DeferPollWake, SOCKET_SET,
+    DeferPollWake, NetError, NetResult, SOCKET_SET,
     addr::listen_addrs_conflict,
     consts::{LISTEN_QUEUE_SIZE, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
 };
@@ -150,7 +149,7 @@ impl ListenTable {
         listen_endpoint: IpListenEndpoint,
         backlog: usize,
         reuse_port: bool,
-    ) -> AxResult {
+    ) -> NetResult {
         let port = listen_endpoint.port;
         assert_ne!(port, 0);
         let entries = self.listen_entry_or_create(port);
@@ -162,7 +161,7 @@ impl ListenTable {
                     && entry.listen_endpoint.addr == listen_endpoint.addr)
         }) {
             warn!("socket already listening on {}", listen_endpoint);
-            return Err(AxError::AddrInUse);
+            return Err(NetError::AddrInUse);
         }
         entries.push(ListenTableEntryInner::new(
             listen_endpoint,
@@ -212,10 +211,10 @@ impl ListenTable {
         &self,
         listen_endpoint: IpListenEndpoint,
         sockets: &SocketSet<'_>,
-    ) -> AxResult<bool> {
+    ) -> NetResult<bool> {
         let Some(entries) = self.listen_entry(listen_endpoint.port) else {
             warn!("accept before listen");
-            return Err(AxError::InvalidInput);
+            return Err(NetError::InvalidInput);
         };
         let table = entries.lock();
         if let Some(entry) = table
@@ -228,7 +227,7 @@ impl ListenTable {
                 .any(|pending| is_acceptable(sockets, pending.handle)))
         } else {
             warn!("accept before listen");
-            Err(AxError::InvalidInput)
+            Err(NetError::InvalidInput)
         }
     }
 
@@ -237,10 +236,10 @@ impl ListenTable {
         &self,
         listen_endpoint: IpListenEndpoint,
         sockets: &mut SocketSet<'_>,
-    ) -> AxResult<AcceptedTcp> {
+    ) -> NetResult<AcceptedTcp> {
         let Some(entries) = self.listen_entry(listen_endpoint.port) else {
             warn!("accept before listen");
-            return Err(AxError::InvalidInput);
+            return Err(NetError::InvalidInput);
         };
         let mut table = entries.lock();
         let Some(entry) = table
@@ -248,7 +247,7 @@ impl ListenTable {
             .find(|entry| entry.listen_endpoint == listen_endpoint)
         else {
             warn!("accept before listen");
-            return Err(AxError::InvalidInput);
+            return Err(NetError::InvalidInput);
         };
 
         let syn_queue: &mut VecDeque<AcceptedTcp> = &mut entry.syn_queue;
@@ -272,7 +271,7 @@ impl ListenTable {
             }
             idx += 1;
         }
-        Err(AxError::WouldBlock)
+        Err(NetError::WouldBlock)
     }
 
     /// Returns the listener readiness poll set for lock-free registration.
@@ -429,7 +428,7 @@ mod tests {
         table.listen(wildcard, 16, false).unwrap();
 
         assert!(!table.can_listen(specific));
-        assert_eq!(table.listen(specific, 16, false), Err(AxError::AddrInUse));
+        assert_eq!(table.listen(specific, 16, false), Err(NetError::AddrInUse));
     }
 
     #[test]
@@ -442,11 +441,11 @@ mod tests {
         table.listen(ep, 16, true).unwrap();
 
         // A plain listener cannot join a reuseport group.
-        assert_eq!(table.listen(ep, 16, false), Err(AxError::AddrInUse));
+        assert_eq!(table.listen(ep, 16, false), Err(NetError::AddrInUse));
 
         // Each close removes one group member; the port frees on the last leave.
         table.unlisten(ep);
-        assert_eq!(table.listen(ep, 16, false), Err(AxError::AddrInUse));
+        assert_eq!(table.listen(ep, 16, false), Err(NetError::AddrInUse));
         table.unlisten(ep);
         assert!(table.can_listen(ep));
     }
@@ -458,6 +457,6 @@ mod tests {
 
         // The first owner is plain, so even a reuseport listener still conflicts.
         table.listen(ep, 16, false).unwrap();
-        assert_eq!(table.listen(ep, 16, true), Err(AxError::AddrInUse));
+        assert_eq!(table.listen(ep, 16, true), Err(NetError::AddrInUse));
     }
 }

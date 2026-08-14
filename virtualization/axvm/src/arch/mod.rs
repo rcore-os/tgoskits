@@ -94,6 +94,7 @@ pub(crate) fn register_timer_source(
     CurrentArch::register_timer_source(deadline_source, notify);
 }
 
+#[cfg(not(test))]
 pub(crate) fn request_timer_deadline(deadline_ns: u64) {
     CurrentArch::request_timer_deadline(deadline_ns);
 }

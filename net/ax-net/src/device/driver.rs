@@ -33,19 +33,25 @@ const RX_PREFETCH_TARGET: usize = 1;
 /// padding.
 pub(crate) const ETH_ZLEN: usize = 60;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum NetDeviceError {
     /// Operation should be retried later.
+    #[error("network device operation should be retried")]
     Again,
     /// Device is not in a state that can perform the operation.
+    #[error("network device is in an invalid state")]
     BadState,
     /// Caller supplied an invalid size or argument.
+    #[error("invalid network device parameter")]
     InvalidParam,
     /// Driver or transport I/O failed.
+    #[error("network device I/O failed")]
     Io,
     /// Driver could not allocate required resources.
+    #[error("network device memory allocation failed")]
     NoMemory,
     /// Operation is not supported by this device.
+    #[error("network device operation is not supported")]
     Unsupported,
 }
 
@@ -356,5 +362,18 @@ fn map_net_error(err: NetError) -> NetDeviceError {
         NetError::NoMemory => NetDeviceError::NoMemory,
         NetError::NotSupported => NetDeviceError::Unsupported,
         NetError::LinkDown | NetError::Other(_) => NetDeviceError::Io,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_device_errors_have_domain_messages() {
+        assert_eq!(
+            alloc::format!("{}", NetDeviceError::NoMemory),
+            "network device memory allocation failed"
+        );
     }
 }

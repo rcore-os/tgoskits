@@ -3,7 +3,7 @@
  * exclusion semantics across two open file descriptions of the same file.
  *
  * StarryOS bug: kernel/src/syscall/fs/fd_ops.rs:299-303 stubs out
- *     pub fn sys_flock(fd, operation) -> AxResult<isize> { Ok(0) }
+ *     pub fn sys_flock(fd, operation) -> StarryResult<isize> { Ok(0) }
  * so every flock() request silently succeeds — two competing writers both
  * believe they own the exclusive lock.
  *

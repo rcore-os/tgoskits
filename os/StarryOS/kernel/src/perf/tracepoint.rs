@@ -18,12 +18,12 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::any::Any;
 
-use ax_errno::{AxError, AxResult};
 use axpoll::Pollable;
 use kbpf_basic::perf::{PerfProbeArgs, PerfProbeConfig};
 use ktracepoint::{TraceCallbackType, TraceEventFunc};
 
 use crate::{
+    StarryError, StarryResult,
     file::FileLike,
     perf::{PerfEventOps, bpf::OwnedEbpfVm},
     tracepoint::{KernelExtTracePoint, lookup_ext_tracepoint},
@@ -73,7 +73,7 @@ impl Pollable for TracepointPerfEvent {
 }
 
 impl PerfEventOps for TracepointPerfEvent {
-    fn set_bpf_prog(&mut self, bpf_prog: Arc<dyn FileLike>) -> AxResult<()> {
+    fn set_bpf_prog(&mut self, bpf_prog: Arc<dyn FileLike>) -> StarryResult<()> {
         // `OwnedEbpfVm` bundles the rbpf interpreter with the `Arc<BpfProg>`
         // that backs its instruction slice (drop order is field-order, so
         // the borrower dies before the buffer). `execute_program` runs off
@@ -114,7 +114,7 @@ impl PerfEventOps for TracepointPerfEvent {
         Ok(())
     }
 
-    fn enable(&mut self) -> AxResult<()> {
+    fn enable(&mut self) -> StarryResult<()> {
         // ktracepoint dispatch only invokes a cooked `TraceEventFunc` when
         // its per-callback `perf_enabled` flag is set (see ktracepoint 0.6
         // `basic_macro.rs`), and `TraceEventFunc::new` starts disabled. So a
@@ -126,7 +126,7 @@ impl PerfEventOps for TracepointPerfEvent {
         Ok(())
     }
 
-    fn disable(&mut self) -> AxResult<()> {
+    fn disable(&mut self) -> StarryResult<()> {
         for cb in &self.registered {
             cb.set_perf_enable(false);
         }
@@ -150,11 +150,11 @@ impl Drop for TracepointPerfEvent {
 /// Build a tracepoint perf event from `perf_event_open` args. The config
 /// field carries the numeric tracepoint id (the same value debugfs
 /// `events/<sys>/<event>/id` reports).
-pub fn perf_event_open_tracepoint(args: PerfProbeArgs) -> AxResult<TracepointPerfEvent> {
+pub fn perf_event_open_tracepoint(args: PerfProbeArgs) -> StarryResult<TracepointPerfEvent> {
     let tp_id = match args.config {
         PerfProbeConfig::Raw(id) => id as u32,
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
-    let ext_tp = lookup_ext_tracepoint(tp_id).ok_or(AxError::NotFound)?;
+    let ext_tp = lookup_ext_tracepoint(tp_id).ok_or(StarryError::NotFound)?;
     Ok(TracepointPerfEvent::new(args, ext_tp))
 }

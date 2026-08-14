@@ -24,14 +24,19 @@ use crate::{
 };
 
 mod propagation;
+
 mod unmount;
 
 pub use unmount::*;
 
 static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 static MOUNT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 static PEER_GROUP_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 static SYNTHETIC_MOUNT_INODE_COUNTER: AtomicU64 = AtomicU64::new(1_u64 << 63);
+
 static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
 /// Serializes mount-tree and propagation-graph mutations.
 ///
@@ -886,7 +891,7 @@ impl Location {
                 return Ok(self.wrap(entry).resolve_mountpoint());
             }
             Ok(_) => {}
-            Err(err) if err.canonicalize() == VfsError::NotFound => {}
+            Err(VfsError::NotFound) => {}
             Err(err) => return Err(err),
         }
 

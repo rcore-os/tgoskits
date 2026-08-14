@@ -6,7 +6,6 @@ axaddrspace
 axbacktrace
 axdevice
 axdevice_base
-ax-errno
 axfs-ng-vfs
 axhvc
 ax-io

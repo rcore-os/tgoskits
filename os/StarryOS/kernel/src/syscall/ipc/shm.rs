@@ -4,7 +4,6 @@ use alloc::{
     vec::Vec,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time_nanos};
 use ax_task::current;
@@ -18,6 +17,7 @@ use super::{
     SHM_STAT, has_ipc_permission, next_ipc_id,
 };
 use crate::{
+    StarryError, StarryResult,
     mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
     sync::Mutex,
     task::AsThread,
@@ -207,9 +207,9 @@ impl ShmInner {
     /// `EINVAL` only when the requested size is larger than the segment.
     /// The permission bits passed in `shmflg` do not have to match those
     /// used when the segment was created.
-    pub fn try_update(&mut self, size: usize, pid: Pid) -> AxResult<isize> {
+    pub fn try_update(&mut self, size: usize, pid: Pid) -> StarryResult<isize> {
         if size as __kernel_size_t > self.shmid_ds.shm_segsz {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         self.shmid_ds.shm_lpid = pid as __kernel_pid_t;
         Ok(self.shmid as isize)
@@ -514,7 +514,7 @@ pub fn clear_proc_shm(pid: Pid, aspace: &Arc<Mutex<AddrSpace>>) {
     shm_manager.remove_pid(pid);
 }
 
-pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
+pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> StarryResult<isize> {
     let curr = current();
     let thread = curr.as_thread();
     let cur_pid = thread.proc_data.proc.pid();
@@ -528,11 +528,11 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
             // IPC_CREAT | IPC_EXCL requires the creation to fail when the
             // segment is already present. See Linux ipcget_public().
             if shmflg & IPC_CREAT as usize != 0 && shmflg & IPC_EXCL as usize != 0 {
-                return Err(AxError::AlreadyExists);
+                return Err(StarryError::AlreadyExists);
             }
             let shm_inner = shm_manager
                 .get_inner_by_shmid(shmid, ns_id)
-                .ok_or(AxError::NotFound)?;
+                .ok_or(StarryError::NotFound)?;
             let mut shm_inner = shm_inner.lock();
             return shm_inner.try_update(size, cur_pid);
         }
@@ -540,14 +540,14 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
         // No segment exists for this key: create one only when IPC_CREAT
         // is requested, otherwise the lookup fails with ENOENT.
         if shmflg & IPC_CREAT as usize == 0 {
-            return Err(AxError::NotFound);
+            return Err(StarryError::NotFound);
         }
     }
 
     // Creating a new segment: its page-rounded size must be non-zero.
     let page_num = ax_memory_addr::align_up_4k(size) / PAGE_SIZE_4K;
     if page_num == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     // Create a new shm_inner
@@ -561,7 +561,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
     Ok(shmid as isize)
 }
 
-pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
+pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> StarryResult<isize> {
     let shm_flg = ShmAtFlags::from_bits_truncate(shmflg);
 
     let curr = current();
@@ -577,7 +577,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
         let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
         shm_manager
             .get_inner_by_shmid(shmid, ns_id)
-            .ok_or(AxError::InvalidInput)?
+            .ok_or(StarryError::InvalidInput)?
     };
     info!("shmat pid={pid} shmid={shmid} lock shm_inner");
     let mut shm_inner = shm_inner_arc.lock();
@@ -611,7 +611,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
                 PAGE_SIZE_4K,
             )
         })
-        .ok_or(AxError::NoMemory)?;
+        .ok_or(StarryError::NoMemory)?;
     let end_addr = VirtAddr::from(start_addr.as_usize() + length);
     let va_range = VirtAddrRange::new(start_addr, end_addr);
 
@@ -650,7 +650,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     Ok(start_addr.as_usize() as isize)
 }
 
-pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize> {
+pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> StarryResult<isize> {
     let cmd = cmd as i32;
 
     let curr = current();
@@ -719,10 +719,10 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
                 .iter()
                 .filter(|(_, inner)| inner.lock().ns_id == ns_id)
                 .nth(shmid as usize)
-                .ok_or(AxError::InvalidInput)?;
+                .ok_or(StarryError::InvalidInput)?;
             let guard = inner.lock();
             if !has_ipc_permission(&guard.shmid_ds.shm_perm, cred.euid, cred.egid, false) {
-                return Err(AxError::PermissionDenied);
+                return Err(StarryError::PermissionDenied);
             }
             (*actual_shmid, guard.shmid_ds)
         };
@@ -738,7 +738,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
         let mut shm_manager = SHM_MANAGER.lock();
         let shm_inner_arc = shm_manager
             .get_inner_by_shmid(shmid, ns_id)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
         let mut shm_inner = shm_inner_arc.lock();
 
         shm_inner.rmid = true;
@@ -760,7 +760,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
         let shm_manager = SHM_MANAGER.lock();
         shm_manager
             .get_inner_by_shmid(shmid, ns_id)
-            .ok_or(AxError::InvalidInput)?
+            .ok_or(StarryError::InvalidInput)?
     };
     let mut shm_inner = shm_inner_arc.lock();
 
@@ -771,7 +771,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
             *shmid_ds = shm_inner.shmid_ds;
         }
     } else {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     shm_inner.shmid_ds.shm_ctime = monotonic_time_nanos() as __kernel_time_t;
@@ -792,7 +792,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
 
 // Note: all the below delete functions only delete the mapping between the
 // shm_id and the shm_inner,   but the shm_inner is not deleted or modifyed!
-pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
+pub fn sys_shmdt(shmaddr: usize) -> StarryResult<isize> {
     let shmaddr = VirtAddr::from(shmaddr);
 
     let curr = current();
@@ -807,10 +807,10 @@ pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
         let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
         let shmid = shm_manager
             .get_shmid_by_vaddr(pid, shmaddr)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
         let shm_inner_arc = shm_manager
             .get_inner_by_shmid(shmid, ns_id)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
         (shmid, shm_inner_arc)
     };
 
@@ -820,7 +820,7 @@ pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
         let shm_inner = shm_inner_arc.lock();
         shm_inner
             .get_addr_range_by_start(pid, shmaddr)
-            .ok_or(AxError::InvalidInput)?
+            .ok_or(StarryError::InvalidInput)?
     };
 
     // Unmap while only holding the aspace lock.

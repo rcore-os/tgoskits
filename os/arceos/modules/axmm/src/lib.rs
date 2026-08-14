@@ -8,8 +8,8 @@ extern crate alloc;
 
 mod aspace;
 mod backend;
+mod error;
 
-use ax_errno::{AxError, AxResult};
 use ax_hal::{
     mem::{IomapAttrs, IomapDecision, IomapError, MemRegionFlags, phys_to_virt},
     paging::{MappingFlags, PageTableRef, PagingAllocator, PagingError},
@@ -18,7 +18,11 @@ use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_sync::SpinLock;
 
-pub use self::{aspace::AddrSpace, backend::Backend};
+pub use self::{
+    aspace::AddrSpace,
+    backend::Backend,
+    error::{MmError, MmResult},
+};
 
 static KERNEL_ASPACE: LazyInit<SpinLock<AddrSpace>> = LazyInit::new();
 
@@ -44,7 +48,7 @@ fn reg_flag_to_map_flag(f: MemRegionFlags) -> MappingFlags {
 
 #[cfg(feature = "copy")]
 /// Creates a new address space for user processes.
-pub fn new_user_aspace(base: VirtAddr, size: usize) -> AxResult<AddrSpace> {
+pub fn new_user_aspace(base: VirtAddr, size: usize) -> MmResult<AddrSpace> {
     let mut aspace = AddrSpace::new_empty(base, size)?;
     if ax_hal::mem::user_aspace_needs_kernel_mappings() {
         // SAFETY: the global kernel address space outlives every user address
@@ -55,7 +59,7 @@ pub fn new_user_aspace(base: VirtAddr, size: usize) -> AxResult<AddrSpace> {
 }
 
 /// Creates a new address space for kernel itself.
-pub fn new_kernel_aspace() -> AxResult<AddrSpace> {
+pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
     let (base, size) = ax_hal::mem::kernel_aspace();
     let boot_page_table =
         PageTableRef::from_paddr(ax_hal::asm::read_kernel_page_table(), PagingAllocator);
@@ -79,8 +83,8 @@ pub fn new_kernel_aspace() -> AxResult<AddrSpace> {
         .page_table_mut()
         .clone_missing_root_entries_from(&boot_page_table, base, size)
         .map_err(|err| match err {
-            PagingError::NoMemory => AxError::NoMemory,
-            _ => AxError::BadState,
+            PagingError::NoMemory => MmError::NoMemory,
+            _ => MmError::BadState("failed to clone boot page-table entries"),
         })?;
     Ok(aspace)
 }
@@ -120,39 +124,39 @@ pub fn init_memory_management_secondary() {
 }
 
 /// Maps a physical memory region to virtual address space for device access.
-pub fn iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
+pub fn iomap(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
     if size == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(MmError::InvalidInput("mapping size is zero"));
     }
     addr.as_usize()
         .checked_add(size)
-        .ok_or(AxError::InvalidInput)?;
+        .ok_or(MmError::InvalidInput("physical address range overflows"))?;
     match ax_hal::mem::prepare_iomap(addr, size, IomapAttrs::DEVICE).map_err(map_iomap_error)? {
         IomapDecision::Mapped(vaddr) => Ok(vaddr),
         IomapDecision::UseGeneric(paddr) => iomap_generic(paddr, size),
     }
 }
 
-fn map_iomap_error(err: IomapError) -> AxError {
+fn map_iomap_error(err: IomapError) -> MmError {
     match err {
-        IomapError::InvalidInput => AxError::InvalidInput,
-        IomapError::Unsupported => AxError::Unsupported,
+        IomapError::InvalidInput => MmError::InvalidInput("platform I/O mapping request"),
+        IomapError::Unsupported => MmError::Unsupported,
     }
 }
 
-fn checked_align_up_4k(addr: usize) -> AxResult<PhysAddr> {
+fn checked_align_up_4k(addr: usize) -> MmResult<PhysAddr> {
     let aligned = addr
         .checked_add(PAGE_SIZE_4K - 1)
-        .ok_or(AxError::InvalidInput)?
+        .ok_or(MmError::InvalidInput("aligned physical address overflows"))?
         & !(PAGE_SIZE_4K - 1);
     Ok(PhysAddr::from_usize(aligned))
 }
 
-fn iomap_generic(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
+fn iomap_generic(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
     let end = addr
         .as_usize()
         .checked_add(size)
-        .ok_or(AxError::InvalidInput)?;
+        .ok_or(MmError::InvalidInput("physical address range overflows"))?;
     let virt = phys_to_virt(addr);
 
     let virt_aligned = virt.align_down_4k();
@@ -165,7 +169,7 @@ fn iomap_generic(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
 
     let mapped = if tb.contains_range(virt_aligned, size_aligned) {
         match tb.map_linear(virt_aligned, addr_aligned, size_aligned, flags) {
-            Err(AxError::AlreadyExists) => {
+            Err(MmError::AlreadyExists) => {
                 tb.map_linear_overwrite(virt_aligned, addr_aligned, size_aligned, flags)?;
             }
             Err(e) => {
@@ -181,7 +185,7 @@ fn iomap_generic(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
         let range = VirtAddrRange::new(tb.base(), tb.end());
         let mapped = tb
             .find_free_area(tb.base(), size_aligned, range)
-            .ok_or(AxError::NoMemory)?;
+            .ok_or(MmError::NoMemory)?;
         tb.map_linear(mapped, addr_aligned, size_aligned, flags)?;
         mapped
     };

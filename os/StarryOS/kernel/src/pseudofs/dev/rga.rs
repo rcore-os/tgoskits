@@ -12,7 +12,6 @@
 use alloc::{borrow::Cow, collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use core::{any::Any, ffi::c_int, task::Context};
 
-use ax_errno::AxResult;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use rockchip_rga::{
@@ -24,6 +23,7 @@ use rockchip_rga::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
+    StarryError, StarryResult,
     file::{
         File as KernelFile, FileLike, IoDst, IoSrc, Kstat,
         dmabuf::{DmaBufFile, resolve_contiguous_dmabuf},
@@ -105,7 +105,10 @@ pub(crate) fn is_rga_device(inner: &dyn Any) -> bool {
 /// Build the per-open [`RgaFile`] for an `open("/dev/rga")`. Mirrors `usbfs::open_usbfs_file`:
 /// each call allocates a fresh session; the returned `Arc<dyn FileLike>` is what `dup`/`fork`
 /// share and what is dropped (freeing the session) at last close.
-pub(crate) fn open_rga_file(file: ax_fs_ng::File, open_flags: u32) -> AxResult<Arc<dyn FileLike>> {
+pub(crate) fn open_rga_file(
+    file: ax_fs_ng::File,
+    open_flags: u32,
+) -> StarryResult<Arc<dyn FileLike>> {
     Ok(Arc::new(RgaFile::new(KernelFile::new(file, open_flags))))
 }
 
@@ -138,7 +141,7 @@ impl RgaFile {
 
     /// Allocate a unique non-zero handle for this open and insert the entry in one critical
     /// section.
-    fn alloc_handle(&self, entry: ImportedBuf) -> VfsResult<u32> {
+    fn alloc_handle(&self, entry: ImportedBuf) -> StarryResult<u32> {
         let mut table = self.handle_table.lock();
         let mut next = self.next_handle.lock();
         for _ in 0..=u32::MAX {
@@ -150,7 +153,7 @@ impl RgaFile {
             table.insert(h, entry);
             return Ok(h);
         }
-        Err(VfsError::NoMemory)
+        Err(StarryError::NoMemory)
     }
 
     /// Resolve a buffer address, returning the phys addr, its byte length (for bounds checks),
@@ -161,28 +164,29 @@ impl RgaFile {
         &self,
         raw: u64,
         handle_flag: bool,
-    ) -> VfsResult<(u64, u64, Option<Arc<DmaBufFile>>)> {
+    ) -> StarryResult<(u64, u64, Option<Arc<DmaBufFile>>)> {
         if raw == 0 {
             return Ok((0, 0, None));
         }
         if handle_flag {
             let handle = raw as u32;
             let table = self.handle_table.lock();
-            let entry = table.get(&handle).ok_or(VfsError::BadFileDescriptor)?;
+            let entry = table.get(&handle).ok_or(StarryError::BadFileDescriptor)?;
             // Clone the Arc so the dma-buf stays alive across submit+poll even if a concurrent
             // RELEASE_BUFFER removes the table entry mid-op. RGA_PHYSICAL_ADDRESS entries carry
             // None — the caller owns coherency for raw phys imports.
             Ok((entry.phys_addr, entry.len, entry.obj.clone()))
         } else {
             // Legacy path: raw value is a dma-buf fd.
-            let obj = resolve_contiguous_dmabuf(raw as c_int).ok_or(VfsError::BadFileDescriptor)?;
+            let obj =
+                resolve_contiguous_dmabuf(raw as c_int).ok_or(StarryError::BadFileDescriptor)?;
             let phys = obj.phys_base() as u64;
             let len = obj.size() as u64;
             Ok((phys, len, Some(obj)))
         }
     }
 
-    fn handle_blit_sync(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_blit_sync(&self, arg: usize) -> StarryResult<usize> {
         // SAFETY: `arg` is a userspace pointer to a `RgaReq` (#[repr(C)]);
         // `vm_read_uninit` faults safely on a bad address.
         let req: librga_abi::RgaReq = unsafe {
@@ -195,10 +199,10 @@ impl RgaFile {
 
     /// Submit one already-read `RgaReq` to the engine and block until completion.
     /// Shared by the legacy `RGA_BLIT_SYNC` path and the `RGA_IOC_REQUEST_SUBMIT` task path.
-    fn execute_blit(&self, req: &librga_abi::RgaReq) -> VfsResult<usize> {
+    fn execute_blit(&self, req: &librga_abi::RgaReq) -> StarryResult<usize> {
         let parsed = librga_abi::parse(req).map_err(|e| {
             warn!("RGA_BLIT: rejecting unsupported request: {e:?}");
-            VfsError::InvalidInput
+            StarryError::InvalidInput
         })?;
 
         let handle_flag = req.handle_flag != 0;
@@ -229,7 +233,7 @@ impl RgaFile {
             Ok(o) => o,
             Err(e) => {
                 warn!("RGA_BLIT into_operation FAIL {:?}", e);
-                return Err(VfsError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
         };
 
@@ -247,7 +251,7 @@ impl RgaFile {
         // QEMU path: no RGA2 device → ENODEV.
         let devs = rdrive::get_list::<RockchipRga>();
         if devs.is_empty() {
-            return Err(VfsError::NoSuchDevice);
+            return Err(StarryError::NoSuchDevice);
         }
 
         // The RK3588 DTB exposes three RGA cores as separate devices (rga3_core0 @ fdb60000,
@@ -284,7 +288,7 @@ impl RgaFile {
                 // Not the RGA2 device — release and keep looking.
                 drop(guard);
             }
-            return Err(VfsError::NoSuchDevice);
+            return Err(StarryError::NoSuchDevice);
         };
         let rga = &mut *guard;
 
@@ -292,7 +296,7 @@ impl RgaFile {
             .cores_mut()
             .iter_mut()
             .find(|c| c.config().version == RgaVersion::Rga2)
-            .ok_or(VfsError::NoSuchDevice)?;
+            .ok_or(StarryError::NoSuchDevice)?;
 
         // The shared `/dev/dma_heap` allocator (crate::file::dmabuf) hands out
         // DMA-COHERENT memory, so no explicit cache maintenance is needed around the
@@ -302,7 +306,7 @@ impl RgaFile {
 
         if let Err(e) = core.start(&op) {
             warn!("RGA_BLIT core.start failed: {:?}", e);
-            return Err(VfsError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         for _ in 0..500 {
@@ -318,7 +322,7 @@ impl RgaFile {
                         "RGA_BLIT poll=Error int=0x{:08x} status=0x{:08x} cmd_ctrl=0x{:08x}",
                         d.int, d.status, d.cmd_ctrl
                     );
-                    return Err(VfsError::Io);
+                    return Err(StarryError::Io);
                 }
                 RgaStatus::Busy => {
                     ax_runtime::hal::time::busy_wait(core::time::Duration::from_micros(100));
@@ -332,7 +336,7 @@ impl RgaFile {
             "RGA_BLIT poll=Timeout int=0x{:08x} status=0x{:08x} cmd_ctrl=0x{:08x}",
             d.int, d.status, d.cmd_ctrl
         );
-        Err(VfsError::TimedOut)
+        Err(StarryError::TimedOut)
     }
 
     /// Bound-check every plane an operation will touch against the imported buffer it was
@@ -345,7 +349,7 @@ impl RgaFile {
         src_uv_len: Option<u64>,
         dst: (u64, u64),
         dst_uv_len: Option<u64>,
-    ) -> VfsResult<()> {
+    ) -> StarryResult<()> {
         match op {
             RgaOperation::Fill { dst: d, .. } => Self::check_desc(d, dst, dst_uv_len),
             RgaOperation::Copy { src: s, dst: d } => {
@@ -361,16 +365,18 @@ impl RgaFile {
 
     /// Verify each plane of `desc` stays within its imported buffer. `buf` is the luma/RGB
     /// buffer `(base, len)`; `uv_sep_len` is the length of a separately imported chroma buffer.
-    fn check_desc(desc: &ImageDesc, buf: (u64, u64), uv_sep_len: Option<u64>) -> VfsResult<()> {
-        let ext = desc.plane_extents().map_err(|_| VfsError::InvalidInput)?;
+    fn check_desc(desc: &ImageDesc, buf: (u64, u64), uv_sep_len: Option<u64>) -> StarryResult<()> {
+        let ext = desc
+            .plane_extents()
+            .map_err(|_| StarryError::InvalidInput)?;
         let (base, len) = buf;
         // The luma/RGB plane starts at the imported buffer base.
         if !Self::within(desc.phys_addr, ext.y, base, len) {
             warn!("RGA_BLIT: luma/RGB plane addresses past its imported buffer");
-            return Err(VfsError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if let Some(uv_ext) = ext.uv {
-            let uv_base = desc.uv_phys_addr.ok_or(VfsError::InvalidInput)?;
+            let uv_base = desc.uv_phys_addr.ok_or(StarryError::InvalidInput)?;
             // A derived chroma plane sits right after luma in the SAME buffer
             // (uv_base == base + y_extent); a separately imported one has its own length.
             let ok = if base.checked_add(ext.y) == Some(uv_base) {
@@ -382,7 +388,7 @@ impl RgaFile {
             };
             if !ok {
                 warn!("RGA_BLIT: chroma plane addresses past its imported buffer");
-                return Err(VfsError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
         }
         Ok(())
@@ -399,7 +405,7 @@ impl RgaFile {
 
     /// Handle `RGA_IOC_IMPORT_BUFFER`: resolve dma-buf fds → physical addresses and assign
     /// handles. Processes all `pool.size` entries; writes the assigned handle back to each.
-    fn handle_import_buffer(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_import_buffer(&self, arg: usize) -> StarryResult<usize> {
         let pool: librga_abi::RgaBufferPool = unsafe {
             (arg as *const librga_abi::RgaBufferPool)
                 .vm_read_uninit()?
@@ -407,7 +413,7 @@ impl RgaFile {
         };
 
         if pool.size == 0 || pool.size > RGA_BUFFER_POOL_SIZE_MAX || pool.buffers_ptr == 0 {
-            return Err(VfsError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let elem_size = core::mem::size_of::<librga_abi::RgaExternalBuffer>(); // 288
@@ -427,7 +433,7 @@ impl RgaFile {
             let entry = match ext.r#type {
                 librga_abi::RGA_DMA_BUFFER => {
                     let obj = resolve_contiguous_dmabuf(ext.memory as c_int)
-                        .ok_or(VfsError::BadFileDescriptor)?;
+                        .ok_or(StarryError::BadFileDescriptor)?;
                     ImportedBuf {
                         phys_addr: obj.phys_base() as u64,
                         len: obj.size() as u64,
@@ -448,7 +454,7 @@ impl RgaFile {
                             "RGA_IOC_IMPORT_BUFFER: RGA_PHYSICAL_ADDRESS requires CAP_SYS_RAWIO; \
                              denied"
                         );
-                        return Err(VfsError::OperationNotPermitted);
+                        return Err(StarryError::OperationNotPermitted);
                     }
                     ImportedBuf {
                         phys_addr: ext.memory,
@@ -456,7 +462,7 @@ impl RgaFile {
                         obj: None,
                     }
                 }
-                _ => return Err(VfsError::Unsupported),
+                _ => return Err(StarryError::Unsupported),
             };
 
             let handle = self.alloc_handle(entry)?;
@@ -477,7 +483,7 @@ impl RgaFile {
     /// Handle `RGA_IOC_RELEASE_BUFFER`: remove handles from the table, freeing the backing
     /// dma-buf references. An unknown handle fails with `ENOENT` (matching the Linux driver's
     /// `rga_mm_release_buffer`).
-    fn handle_release_buffer(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_release_buffer(&self, arg: usize) -> StarryResult<usize> {
         let pool: librga_abi::RgaBufferPool = unsafe {
             (arg as *const librga_abi::RgaBufferPool)
                 .vm_read_uninit()?
@@ -485,7 +491,7 @@ impl RgaFile {
         };
 
         if pool.size == 0 || pool.size > RGA_BUFFER_POOL_SIZE_MAX || pool.buffers_ptr == 0 {
-            return Err(VfsError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let elem_size = core::mem::size_of::<librga_abi::RgaExternalBuffer>();
@@ -500,7 +506,7 @@ impl RgaFile {
                     .assume_init()
             };
             if table.remove(&ext.handle).is_none() {
-                return Err(VfsError::NotFound);
+                return Err(StarryError::NotFound);
             }
         }
         Ok(0)
@@ -508,7 +514,7 @@ impl RgaFile {
 
     /// `RGA_IOC_GET_DRVIER_VERSION` — librga reads this at init to pick the ABI. Report the
     /// MultiRGA v1.3.1 driver version we mirror, so librga uses the matching `rga_req` layout.
-    fn handle_get_driver_version(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_get_driver_version(&self, arg: usize) -> StarryResult<usize> {
         let mut v = librga_abi::RgaVersionT {
             major: 1,
             minor: 3,
@@ -525,7 +531,7 @@ impl RgaFile {
     /// `rga_get_info()` maps exactly this to `RGA_2_ENHANCE` and grants YUYV_422 input + the
     /// CSC features (`im2d_impl.cpp`). Reporting revision 0 hit librga's `default:` branch
     /// (TRY_TO_COMPATIBLE) and aborted with "rga2 get info failed", rejecting every op.
-    fn handle_get_hw_version(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_get_hw_version(&self, arg: usize) -> StarryResult<usize> {
         let mut v0 = librga_abi::RgaVersionT {
             major: 3,
             minor: 2,
@@ -544,7 +550,7 @@ impl RgaFile {
 
     /// `RGA_IOC_REQUEST_CREATE` — allocate a request id (written back to userspace). The
     /// created id must exist for CONFIG/SUBMIT/CANCEL to accept it.
-    fn handle_request_create(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_request_create(&self, arg: usize) -> StarryResult<usize> {
         let mut next = self.next_request_id.lock();
         let mut requests = self.requests.lock();
         // Pick a non-zero id not already live for this open.
@@ -569,9 +575,11 @@ impl RgaFile {
     }
 
     /// Read the `task_num` `RgaReq` array a request points at (bounded by `RGA_TASK_NUM_MAX`).
-    fn read_request_tasks(req: &librga_abi::RgaUserRequest) -> VfsResult<Vec<librga_abi::RgaReq>> {
+    fn read_request_tasks(
+        req: &librga_abi::RgaUserRequest,
+    ) -> StarryResult<Vec<librga_abi::RgaReq>> {
         if req.task_num == 0 || req.task_num > RGA_TASK_NUM_MAX || req.task_ptr == 0 {
-            return Err(VfsError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         let elem = core::mem::size_of::<librga_abi::RgaReq>();
         let base = req.task_ptr as usize;
@@ -590,7 +598,7 @@ impl RgaFile {
 
     /// `RGA_IOC_REQUEST_CONFIG` — stage a created request's tasks without running them.
     /// The request id must already exist (Linux returns `-EINVAL` otherwise).
-    fn handle_request_config(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_request_config(&self, arg: usize) -> StarryResult<usize> {
         let ureq: librga_abi::RgaUserRequest = unsafe {
             (arg as *const librga_abi::RgaUserRequest)
                 .vm_read_uninit()?
@@ -599,7 +607,9 @@ impl RgaFile {
         let tasks = Self::read_request_tasks(&ureq)?;
         let mut requests = self.requests.lock();
         // The id must have been created via REQUEST_CREATE.
-        let slot = requests.get_mut(&ureq.id).ok_or(VfsError::InvalidInput)?;
+        let slot = requests
+            .get_mut(&ureq.id)
+            .ok_or(StarryError::InvalidInput)?;
         *slot = tasks;
         Ok(0)
     }
@@ -607,7 +617,7 @@ impl RgaFile {
     /// `RGA_IOC_REQUEST_SUBMIT` — run a created request's tasks (carried inline, or previously
     /// staged via CONFIG) and block until each completes. We are always synchronous; async and
     /// fence modes are not implemented and are rejected explicitly.
-    fn handle_request_submit(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_request_submit(&self, arg: usize) -> StarryResult<usize> {
         let ureq: librga_abi::RgaUserRequest = unsafe {
             (arg as *const librga_abi::RgaUserRequest)
                 .vm_read_uninit()?
@@ -619,7 +629,7 @@ impl RgaFile {
         // inspected directly: librga leaves them at 0 or -1 ("none") on a sync request, so
         // gating on them would wrongly reject valid sync blits.
         if ureq.sync_mode == librga_abi::RGA_BLIT_ASYNC {
-            return Err(VfsError::Unsupported);
+            return Err(StarryError::Unsupported);
         }
         // Read inline tasks (if any) before claiming the request, so a faulting `task_ptr`
         // returns EFAULT without consuming the request id.
@@ -635,7 +645,7 @@ impl RgaFile {
             .requests
             .lock()
             .remove(&ureq.id)
-            .ok_or(VfsError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
         // Inline tasks (common im2d single-blit) take precedence over a prior CONFIG's tasks.
         let tasks = inline.unwrap_or(staged);
         for task in &tasks {
@@ -646,25 +656,25 @@ impl RgaFile {
 
     /// `RGA_IOC_REQUEST_CANCEL` — drop a created request. Cancelling an id that does not exist
     /// fails with `-EINVAL` (matching Linux), rather than silently succeeding.
-    fn handle_request_cancel(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_request_cancel(&self, arg: usize) -> StarryResult<usize> {
         let id: u32 = unsafe { (arg as *const u32).vm_read_uninit()?.assume_init() };
         if self.requests.lock().remove(&id).is_none() {
-            return Err(VfsError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         Ok(0)
     }
 }
 
 impl FileLike for RgaFile {
-    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         self.base.read(dst)
     }
 
-    fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
+    fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
         self.base.write(src)
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         self.base.stat()
     }
 
@@ -672,13 +682,13 @@ impl FileLike for RgaFile {
         self.base.path()
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+    fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
         if arg == 0 {
-            return Err(VfsError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         match cmd {
             librga_abi::RGA_BLIT_SYNC => self.handle_blit_sync(arg),
-            librga_abi::RGA_BLIT_ASYNC => Err(VfsError::Unsupported),
+            librga_abi::RGA_BLIT_ASYNC => Err(StarryError::Unsupported),
             librga_abi::RGA_GET_VERSION => {
                 // librga passes a 16-byte buffer (Linux writes back a char[16]).
                 let mut version = [0u8; 16];
@@ -694,7 +704,7 @@ impl FileLike for RgaFile {
             librga_abi::RGA_IOC_REQUEST_CONFIG => self.handle_request_config(arg),
             librga_abi::RGA_IOC_REQUEST_SUBMIT => self.handle_request_submit(arg),
             librga_abi::RGA_IOC_REQUEST_CANCEL => self.handle_request_cancel(arg),
-            _ => Err(VfsError::NotATty),
+            _ => Err(StarryError::NotATty),
         }
     }
 
@@ -706,7 +716,7 @@ impl FileLike for RgaFile {
         self.base.nonblocking()
     }
 
-    fn set_nonblocking(&self, nonblocking: bool) -> AxResult {
+    fn set_nonblocking(&self, nonblocking: bool) -> StarryResult {
         self.base.set_nonblocking(nonblocking)
     }
 }

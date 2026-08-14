@@ -4,7 +4,6 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
@@ -21,6 +20,7 @@ use super::memfd::{
     memfd_checks_before_write_at,
 };
 use crate::{
+    Errno, StarryError, StarryResult,
     file::{
         Directory, File, FileLike, Pipe, get_file_like,
         memfd::{F_SEAL_ANY_WRITE, F_SEAL_GROW, Memfd},
@@ -32,12 +32,15 @@ use crate::{
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
 /// Use this for syscalls that require a regular file fd and should return
 /// ESPIPE for pipes/sockets (lseek, pread, pwrite, fallocate, etc.).
-fn file_or_espipe(fd: c_int) -> AxResult<Arc<File>> {
+fn file_or_espipe(fd: c_int) -> StarryResult<Arc<File>> {
     File::from_fd(fd).map_err(|e| {
-        if e == AxError::IsADirectory || e == AxError::BadFileDescriptor {
+        if matches!(
+            e,
+            StarryError::IsADirectory | StarryError::BadFileDescriptor
+        ) {
             e
         } else {
-            AxError::from(LinuxError::ESPIPE)
+            StarryError::from(Errno::ESPIPE)
         }
     })
 }
@@ -45,10 +48,10 @@ fn file_or_espipe(fd: c_int) -> AxResult<Arc<File>> {
 /// Like `file_or_espipe`, but for write operations: converts IsADirectory
 /// to BadFileDescriptor because directories cannot be opened for writing.
 /// and verifies that the file descriptor is writable.
-fn file_or_espipe_write(fd: c_int) -> AxResult<Arc<File>> {
+fn file_or_espipe_write(fd: c_int) -> StarryResult<Arc<File>> {
     let f = file_or_espipe(fd).map_err(|e| {
-        if e == AxError::IsADirectory {
-            AxError::BadFileDescriptor
+        if matches!(e, StarryError::IsADirectory) {
+            StarryError::BadFileDescriptor
         } else {
             e
         }
@@ -71,7 +74,7 @@ fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
 }
 
 // Writes zero-filled chunks into the file over the requested byte range.
-fn write_zero_range(file: &FileBackend, mut offset: u64, len: u64) -> AxResult<()> {
+fn write_zero_range(file: &FileBackend, mut offset: u64, len: u64) -> StarryResult<()> {
     const ZERO_CHUNK_SIZE: usize = 64 * 1024;
 
     let zeroes = vec![0; ZERO_CHUNK_SIZE];
@@ -82,7 +85,7 @@ fn write_zero_range(file: &FileBackend, mut offset: u64, len: u64) -> AxResult<(
         while written < chunk {
             let n = file.write_at(&zeroes[written..chunk], offset)?;
             if n == 0 {
-                return Err(AxError::WriteZero);
+                return Err(StarryError::WriteZero);
             }
             written += n;
             offset += n as u64;
@@ -107,11 +110,11 @@ impl Pollable for DummyFd {
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
 
-pub fn sys_dummy_fd(sysno: Sysno) -> AxResult<isize> {
+pub fn sys_dummy_fd(sysno: Sysno) -> StarryResult<isize> {
     if current().name().starts_with("qemu-") {
         // We need to be honest to qemu, since it can automatically fallback to
         // other strategies.
-        return Err(AxError::Unsupported);
+        return Err(StarryError::Unsupported);
     }
     warn!("Dummy fd created: {sysno}");
     DummyFd.add_to_fd_table(false).map(|fd| fd as isize)
@@ -120,12 +123,12 @@ pub fn sys_dummy_fd(sysno: Sysno) -> AxResult<isize> {
 /// Read data from the file indicated by `fd`.
 ///
 /// Return the read size if success.
-pub fn sys_read(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
+pub fn sys_read(fd: i32, buf: *mut u8, len: usize) -> StarryResult<isize> {
     debug!("sys_read <= fd: {fd}, buf: {buf:p}, len: {len}");
     Ok(get_file_like(fd)?.read(&mut VmBytesMut::new(buf, len))? as _)
 }
 
-pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
+pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> StarryResult<isize> {
     debug!("sys_readv <= fd: {fd}, iovcnt: {iovcnt}");
     let f = get_file_like(fd)?;
     f.read(&mut IoVectorBuf::new(iov, iovcnt)?.into_io())
@@ -135,7 +138,7 @@ pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
 /// Write data to the file indicated by `fd`.
 ///
 /// Return the written size if success.
-pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
+pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> StarryResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
     let file_like = get_file_like(fd)?;
     file_like.validate_write_len(len)?;
@@ -145,7 +148,7 @@ pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     Ok(file_like.write(&mut data.as_slice())? as _)
 }
 
-pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
+pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> StarryResult<isize> {
     debug!("sys_writev <= fd: {fd}, iovcnt: {iovcnt}");
     let file_like = get_file_like(fd)?;
     // Check length invariants (e.g. eventfd count) before importing segment
@@ -158,18 +161,18 @@ pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> 
     file_like.write(&mut data.as_slice()).map(|n| n as _)
 }
 
-pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<isize> {
+pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> StarryResult<isize> {
     debug!("sys_lseek <= {fd} {offset} {whence}");
     let pos = match whence {
         0 => {
             if offset < 0 {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             SeekFrom::Start(offset as _)
         }
         1 => SeekFrom::Current(offset as _),
         2 => SeekFrom::End(offset as _),
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
     let any_file = get_file_like(fd)?;
 
@@ -190,33 +193,33 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
                 .inner()
                 .len()?
                 .checked_add_signed(delta)
-                .ok_or(AxError::InvalidInput)?,
-            SeekFrom::Current(delta) => {
-                off.checked_add_signed(delta).ok_or(AxError::InvalidInput)?
-            }
+                .ok_or(StarryError::InvalidInput)?,
+            SeekFrom::Current(delta) => off
+                .checked_add_signed(delta)
+                .ok_or(StarryError::InvalidInput)?,
         };
         *off = new_pos;
         return Ok(new_pos as _);
     }
 
-    Err(AxError::from(LinuxError::ESPIPE))
+    Err(StarryError::from(Errno::ESPIPE))
 }
 
-pub fn sys_truncate(path: *const c_char, length: __kernel_off_t) -> AxResult<isize> {
+pub fn sys_truncate(path: *const c_char, length: __kernel_off_t) -> StarryResult<isize> {
     let path = vm_load_path_string(path)?;
     debug!("sys_truncate <= {path:?} {length}");
     if path.is_empty() {
-        return Err(AxError::from(LinuxError::ENOENT));
+        return Err(StarryError::from(Errno::ENOENT));
     }
     if length < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let file = OpenOptions::new()
         .write(true)
         .open(&ax_fs_ng::vfs::current_fs_context().lock(), &path)?
         .into_file()?;
     if (length as u64) > u32::MAX as u64 * 4096 {
-        return Err(AxError::from(LinuxError::EFBIG));
+        return Err(StarryError::from(Errno::EFBIG));
     }
     // Check write permission against current credentials following the
     // same owner/group/other + root-bypass rules as faccessat2(2).
@@ -232,31 +235,31 @@ pub fn sys_truncate(path: *const c_char, length: __kernel_off_t) -> AxResult<isi
             file_mode.contains(NodePermission::OTHER_WRITE)
         };
         if !has_write {
-            return Err(AxError::from(LinuxError::EACCES));
+            return Err(StarryError::from(Errno::EACCES));
         }
     }
     file.access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
 }
 
-pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
+pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> StarryResult<isize> {
     debug!("sys_ftruncate <= {fd} {length}");
     if length < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if let Ok(memfd) = Memfd::from_fd(fd) {
         memfd.set_len_sealed(length as u64)?;
         return Ok(0);
     }
     let f = File::from_fd(fd).map_err(|e| {
-        if e == AxError::IsADirectory {
-            AxError::from(LinuxError::EINVAL)
+        if matches!(e, StarryError::IsADirectory) {
+            StarryError::from(Errno::EINVAL)
         } else {
             e
         }
     })?;
     if (length as u64) > u32::MAX as u64 * 4096 {
-        return Err(AxError::from(LinuxError::EFBIG));
+        return Err(StarryError::from(Errno::EFBIG));
     }
     f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
@@ -267,7 +270,7 @@ pub fn sys_fallocate(
     mode: u32,
     offset: __kernel_off_t,
     len: __kernel_off_t,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_fallocate <= fd: {fd}, mode: {mode}, offset: {offset}, len: {len}");
     // Validate fd first: invalid/closed/dir/read-only → EBADF, pipe → ESPIPE.
     // Linux errno priority: EBADF/ESPIPE > EOPNOTSUPP > EINVAL.
@@ -281,17 +284,17 @@ pub fn sys_fallocate(
         || operation == FALLOC_FL_ZERO_RANGE
         || operation == FALLOC_FL_PUNCH_HOLE && keep_size;
     if !supported_mode {
-        return Err(AxError::OperationNotSupported);
+        return Err(StarryError::OperationNotSupported);
     }
     if offset < 0 || len <= 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let end = (offset as u64)
         .checked_add(len as u64)
-        .ok_or(AxError::from(LinuxError::EFBIG))?;
+        .ok_or(StarryError::from(Errno::EFBIG))?;
     // Reject sizes beyond what ext4 can represent (u32 block numbers × 4 KiB blocks).
     if end > u32::MAX as u64 * 4096 {
-        return Err(AxError::from(LinuxError::EFBIG));
+        return Err(StarryError::from(Errno::EFBIG));
     }
     // For memfd fds, enforce the seal mask before changing the size.
     // `F_SEAL_WRITE`/`F_SEAL_FUTURE_WRITE` already forbid any data-mutating
@@ -301,11 +304,11 @@ pub fn sys_fallocate(
     if let Ok(memfd) = Memfd::from_fd(fd) {
         let seals = memfd.get_seals();
         if seals & F_SEAL_ANY_WRITE != 0 {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         let cur_len = f.inner().backend()?.location().len()?;
         if !keep_size && end > cur_len && seals & F_SEAL_GROW != 0 {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
     }
     let inner = f.inner();
@@ -340,7 +343,7 @@ pub fn sys_fallocate(
     Ok(0)
 }
 
-pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
+pub fn sys_fsync(fd: c_int) -> StarryResult<isize> {
     debug!("sys_fsync <= {fd}");
     let any_file = get_file_like(fd)?;
     if let Ok(memfd) = any_file.clone().downcast_arc::<Memfd>() {
@@ -358,10 +361,10 @@ pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
         d.inner().sync(false)?;
         return Ok(0);
     }
-    Err(AxError::from(LinuxError::EINVAL))
+    Err(StarryError::from(Errno::EINVAL))
 }
 
-pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
+pub fn sys_fdatasync(fd: c_int) -> StarryResult<isize> {
     debug!("sys_fdatasync <= {fd}");
     let any_file = get_file_like(fd)?;
     if let Ok(memfd) = any_file.clone().downcast_arc::<Memfd>() {
@@ -375,10 +378,10 @@ pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
         d.inner().sync(true)?;
         return Ok(0);
     }
-    Err(AxError::from(LinuxError::EINVAL))
+    Err(StarryError::from(Errno::EINVAL))
 }
 
-pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> AxResult<isize> {
+pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> StarryResult<isize> {
     debug!("sys_sync_file_range <= fd: {fd}, flags: {flags:#x}");
     const SYNC_FILE_RANGE_WAIT_BEFORE: u32 = 1;
     const SYNC_FILE_RANGE_WRITE: u32 = 2;
@@ -386,10 +389,10 @@ pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> A
     const SYNC_FILE_RANGE_ALL: u32 =
         SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER;
     if offset < 0 || nbytes < 0 {
-        return Err(AxError::from(LinuxError::EINVAL));
+        return Err(StarryError::from(Errno::EINVAL));
     }
     if (flags & !SYNC_FILE_RANGE_ALL) != 0 {
-        return Err(AxError::from(LinuxError::EINVAL));
+        return Err(StarryError::from(Errno::EINVAL));
     }
     // sync_file_range(2) is an advisory hint to initiate writeback for a
     // byte range. Until range-based writeback is implemented, keep this as
@@ -402,7 +405,7 @@ pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> A
         && any.downcast_ref::<Directory>().is_none()
         && any.downcast_ref::<Memfd>().is_none()
     {
-        return Err(AxError::from(LinuxError::ESPIPE));
+        return Err(StarryError::from(Errno::ESPIPE));
     }
     Ok(0)
 }
@@ -412,7 +415,7 @@ pub fn sys_fadvise64(
     offset: __kernel_off_t,
     len: __kernel_off_t,
     advice: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_fadvise64 <= fd: {fd}, offset: {offset}, len: {len}, advice: {advice}");
     // Validate fd first: invalid/closed → EBADF, non-file/non-dir → ESPIPE.
     // Linux fadvise64 accepts regular files, directories, and memfd fds
@@ -422,21 +425,26 @@ pub fn sys_fadvise64(
         && f.downcast_ref::<Directory>().is_none()
         && f.downcast_ref::<Memfd>().is_none()
     {
-        return Err(AxError::from(LinuxError::ESPIPE));
+        return Err(StarryError::from(Errno::ESPIPE));
     }
     if len < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if advice > 5 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(0)
 }
 
-pub fn sys_pread64(fd: c_int, buf: *mut u8, len: usize, offset: __kernel_off_t) -> AxResult<isize> {
+pub fn sys_pread64(
+    fd: c_int,
+    buf: *mut u8,
+    len: usize,
+    offset: __kernel_off_t,
+) -> StarryResult<isize> {
     let f = file_or_espipe(fd)?;
     if offset < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let read = f.inner().read_at(VmBytesMut::new(buf, len), offset as _)?;
     Ok(read as _)
@@ -447,9 +455,9 @@ pub fn sys_pwrite64(
     buf: *const u8,
     len: usize,
     offset: __kernel_off_t,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if offset < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     // Route memfd fds through the seal-aware `Memfd::write_at` so
     // `F_SEAL_WRITE`/`F_SEAL_GROW` apply to offset writes the same
@@ -482,11 +490,11 @@ pub fn sys_preadv(
     iovcnt: usize,
     pos_l: __kernel_off_t,
     pos_h: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let offset = offset_from_hilo(pos_l, pos_h);
     // preadv (unlike preadv2) does not accept offset=-1; reject negative offsets.
     if offset < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     sys_preadv2(fd, iov, iovcnt, offset, 0, 0)
 }
@@ -497,20 +505,20 @@ pub fn sys_pwritev(
     iovcnt: usize,
     pos_l: __kernel_off_t,
     pos_h: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let offset = offset_from_hilo(pos_l, pos_h);
     // pwritev (unlike pwritev2) does not accept offset=-1; reject negative offsets.
     if offset < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     sys_pwritev2(fd, iov, iovcnt, offset, 0, 0)
 }
 
 /// Validate preadv2/pwritev2 flags.
 /// Currently no RWF_* flags are supported; any non-zero value is rejected.
-fn validate_rwf_flags(flags: u32) -> AxResult<()> {
+fn validate_rwf_flags(flags: u32) -> StarryResult<()> {
     if flags != 0 {
-        return Err(AxError::OperationNotSupported);
+        return Err(StarryError::OperationNotSupported);
     }
     Ok(())
 }
@@ -522,12 +530,12 @@ pub fn sys_preadv2(
     pos_l: __kernel_off_t,
     pos_h: usize,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let offset = offset_from_hilo(pos_l, pos_h);
     debug!("sys_preadv2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {flags}");
     validate_rwf_flags(flags)?;
     if offset < -1 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let mut io_buf = IoVectorBuf::new(iov, iovcnt)?.into_io();
     if offset == -1 {
@@ -536,7 +544,7 @@ pub fn sys_preadv2(
         f.read(&mut io_buf).map(|n| n as _)
     } else {
         let f = file_or_espipe(fd)?;
-        f.inner().read_at(io_buf, offset as _).map(|n| n as _)
+        Ok(f.inner().read_at(io_buf, offset as _).map(|n| n as _)?)
     }
 }
 
@@ -547,12 +555,12 @@ pub fn sys_pwritev2(
     pos_l: __kernel_off_t,
     pos_h: usize,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let offset = offset_from_hilo(pos_l, pos_h);
     debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {flags}");
     validate_rwf_flags(flags)?;
     if offset < -1 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if offset == -1 {
         // offset == -1: use current file position (like writev)
@@ -575,13 +583,13 @@ pub fn sys_pwritev2(
         let file_like = get_file_like(fd)?;
         memfd_checks_before_write_at(&file_like, offset as u64, total as u64)?;
         let data = copy_user_iov_read_buf(iov, iovcnt)?;
-        f.inner()
+        Ok(f.inner()
             .write_at(data.as_slice(), offset as _)
-            .map(|n| n as _)
+            .map(|n| n as _)?)
     }
 }
 
-fn copy_user_read_buf(buf: *const u8, len: usize) -> AxResult<Vec<u8>> {
+fn copy_user_read_buf(buf: *const u8, len: usize) -> StarryResult<Vec<u8>> {
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -589,7 +597,7 @@ fn copy_user_read_buf(buf: *const u8, len: usize) -> AxResult<Vec<u8>> {
 }
 
 /// `access_ok`-style validation without copying payload (may surface `BadAddress` / EFAULT).
-fn validate_user_read_buf(buf: *const u8, len: usize) -> AxResult<()> {
+fn validate_user_read_buf(buf: *const u8, len: usize) -> StarryResult<()> {
     if len == 0 {
         return Ok(());
     }
@@ -601,42 +609,42 @@ fn validate_user_read_buf(buf: *const u8, len: usize) -> AxResult<()> {
 /// array pointer still yields `EFAULT`) but does not touch `iov_base`, letting
 /// callers enforce length invariants (e.g. eventfd's 8-byte count) before any
 /// segment payload is imported. Same overflow cap as [`IoVectorBuf`].
-fn iov_total_len(iov: *const IoVec, iovcnt: usize) -> AxResult<usize> {
+fn iov_total_len(iov: *const IoVec, iovcnt: usize) -> StarryResult<usize> {
     if iovcnt > 1024 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let mut total = 0usize;
     for i in 0..iovcnt {
         let entry = iov.wrapping_add(i).vm_read()?;
         if entry.iov_len < 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         total = total
             .checked_add(entry.iov_len as usize)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
     }
     Ok(total)
 }
 
 /// Validate each `iovec` segment is readable; returns total length (same cap as [`IoVectorBuf`]).
-fn validate_user_iov_buf_regions(iov: *const IoVec, iovcnt: usize) -> AxResult<usize> {
+fn validate_user_iov_buf_regions(iov: *const IoVec, iovcnt: usize) -> StarryResult<usize> {
     if iovcnt > 1024 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let mut total = 0usize;
     for i in 0..iovcnt {
         let iov = iov.wrapping_add(i).vm_read()?;
         if iov.iov_len < 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         let seg = iov.iov_len as usize;
         UserConstPtr::<u8>::from(iov.iov_base.cast_const()).get_as_slice(seg)?;
-        total = total.checked_add(seg).ok_or(AxError::InvalidInput)?;
+        total = total.checked_add(seg).ok_or(StarryError::InvalidInput)?;
     }
     Ok(total)
 }
 
-fn copy_user_iov_read_buf(iov: *const IoVec, iovcnt: usize) -> AxResult<Vec<u8>> {
+fn copy_user_iov_read_buf(iov: *const IoVec, iovcnt: usize) -> StarryResult<Vec<u8>> {
     let mut src = IoVectorBuf::new(iov, iovcnt)?.into_io();
     let len = src.remaining();
     let mut data = vec![0; len];
@@ -662,7 +670,7 @@ enum SendFile {
 /// writes through the seal-aware [`crate::file::memfd::Memfd`] wrapper
 /// instead of unwrapping it to its inner `File` (which would bypass
 /// `F_SEAL_WRITE` and `F_SEAL_GROW`).
-fn send_offset_out(fd: c_int, offset: *mut u64) -> AxResult<SendFile> {
+fn send_offset_out(fd: c_int, offset: *mut u64) -> StarryResult<SendFile> {
     let fl = get_file_like(fd)?;
     if let Ok(memfd) = fl.clone().downcast_arc::<crate::file::memfd::Memfd>() {
         return Ok(SendFile::OffsetMemfd(memfd, offset));
@@ -684,10 +692,10 @@ impl SendFile {
         .contains(IoEvents::IN)
     }
 
-    fn read(&mut self, mut buf: &mut [u8]) -> AxResult<usize> {
+    fn read(&mut self, mut buf: &mut [u8]) -> StarryResult<usize> {
         match self {
             SendFile::Direct(file) => file.read(&mut buf),
-            SendFile::Offset(file, _, pos) => file.inner().read_at(&mut buf, *pos),
+            SendFile::Offset(file, _, pos) => Ok(file.inner().read_at(&mut buf, *pos)?),
             SendFile::OffsetMemfd(memfd, offset) => {
                 let off = offset.vm_read()?;
                 let bytes_read = memfd.inner().inner().read_at(&mut buf, off)?;
@@ -697,7 +705,7 @@ impl SendFile {
         }
     }
 
-    fn write(&mut self, mut buf: &[u8]) -> AxResult<usize> {
+    fn write(&mut self, mut buf: &[u8]) -> StarryResult<usize> {
         match self {
             SendFile::Direct(file) => {
                 super::memfd::memfd_checks_before_stream_write(file, buf.len() as u64)?;
@@ -721,7 +729,12 @@ impl SendFile {
     }
 }
 
-fn do_send(mut src: SendFile, mut dst: SendFile, len: usize, nonblock: bool) -> AxResult<usize> {
+fn do_send(
+    mut src: SendFile,
+    mut dst: SendFile,
+    len: usize,
+    nonblock: bool,
+) -> StarryResult<usize> {
     let mut buf = vec![0; 0x1000];
     let mut total_written = 0;
     let mut remaining = len;
@@ -736,13 +749,13 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize, nonblock: bool) -> 
             // fail with EAGAIN instead of blocking on the read below. Without
             // this flag the read blocks, matching Linux's default splice.
             if nonblock {
-                return Err(AxError::WouldBlock);
+                return Err(StarryError::WouldBlock);
             }
         }
         let to_read = buf.len().min(remaining);
         let bytes_read = match src.read(&mut buf[..to_read]) {
             Ok(n) => n,
-            Err(AxError::WouldBlock) if total_written > 0 => break,
+            Err(StarryError::WouldBlock) if total_written > 0 => break,
             Err(e) => return Err(e),
         };
         if bytes_read == 0 {
@@ -755,7 +768,7 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize, nonblock: bool) -> 
             // managed to transfer so far rather than propagating EAGAIN.
             // Linux sendfile(2) semantics: return the count of bytes written
             // when a short write happens, NOT -EAGAIN.
-            Err(AxError::WouldBlock) if total_written > 0 => break,
+            Err(StarryError::WouldBlock) if total_written > 0 => break,
             Err(e) => return Err(e),
         };
         // Advance source offset by bytes actually transferred (partial dst.write
@@ -775,7 +788,12 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize, nonblock: bool) -> 
     Ok(total_written)
 }
 
-pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -> AxResult<isize> {
+pub fn sys_sendfile(
+    out_fd: c_int,
+    in_fd: c_int,
+    offset: *mut u64,
+    len: usize,
+) -> StarryResult<isize> {
     debug!(
         "sys_sendfile <= out_fd: {}, in_fd: {}, offset: {}, len: {}",
         out_fd,
@@ -785,14 +803,14 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
     );
     let out_file = get_file_like(out_fd)?;
     if (out_file.open_flags() & O_APPEND) != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let src: SendFile = if !offset.is_null() {
         let pos = offset.vm_read()?;
 
         if pos > u32::MAX as u64 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         SendFile::Offset(File::from_fd(in_fd)?, offset, pos)
@@ -814,7 +832,7 @@ pub fn sys_copy_file_range(
     off_out: *mut u64,
     len: usize,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!(
         "sys_copy_file_range <= fd_in: {}, off_in: {}, fd_out: {}, off_out: {}, len: {}, flags: {}",
         fd_in,
@@ -826,16 +844,16 @@ pub fn sys_copy_file_range(
     );
 
     if flags != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     if len > isize::MAX as usize {
-        return Err(AxError::from(LinuxError::EOVERFLOW));
+        return Err(StarryError::from(Errno::EOVERFLOW));
     }
 
     let remap = |e| match e {
-        AxError::BadFileDescriptor | AxError::IsADirectory => e,
-        _ => AxError::InvalidInput,
+        StarryError::BadFileDescriptor | StarryError::IsADirectory => e,
+        _ => StarryError::InvalidInput,
     };
 
     let file_in = File::from_fd(fd_in).map_err(remap)?;
@@ -845,15 +863,15 @@ pub fn sys_copy_file_range(
     let meta_out = file_out.inner().location().metadata()?;
 
     if meta_in.node_type == NodeType::Directory || meta_out.node_type == NodeType::Directory {
-        return Err(AxError::IsADirectory);
+        return Err(StarryError::IsADirectory);
     }
 
     if meta_in.node_type != NodeType::RegularFile || meta_out.node_type != NodeType::RegularFile {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     if file_out.inner().access(FileFlags::APPEND).is_ok() {
-        return Err(AxError::BadFileDescriptor);
+        return Err(StarryError::BadFileDescriptor);
     }
 
     let pos_in = if off_in.is_null() {
@@ -869,16 +887,20 @@ pub fn sys_copy_file_range(
     };
 
     if len > 0 && meta_in.device == meta_out.device && meta_in.inode == meta_out.inode {
-        let copy_last = (len as u64).checked_sub(1).ok_or(AxError::InvalidInput)?;
+        let copy_last = (len as u64)
+            .checked_sub(1)
+            .ok_or(StarryError::InvalidInput)?;
 
-        let in_end = pos_in.checked_add(copy_last).ok_or(AxError::InvalidInput)?;
+        let in_end = pos_in
+            .checked_add(copy_last)
+            .ok_or(StarryError::InvalidInput)?;
 
         let out_end = pos_out
             .checked_add(copy_last)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
 
         if in_end >= pos_out && pos_in <= out_end {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
     }
 
@@ -904,7 +926,7 @@ pub fn sys_splice(
     off_out: *mut i64,
     len: usize,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!(
         "sys_splice <= fd_in: {}, off_in: {}, fd_out: {}, off_out: {}, len: {}, flags: {}",
         fd_in,
@@ -923,17 +945,17 @@ pub fn sys_splice(
 
     // 1. 先检查明显非法 fd。
     if DummyFd::from_fd(fd_in).is_ok() || DummyFd::from_fd(fd_out).is_ok() {
-        return Err(AxError::BadFileDescriptor);
+        return Err(StarryError::BadFileDescriptor);
     }
 
     // 2. 检查 flags。未知 flag 返回 EINVAL。
     if flags & !SPLICE_F_ALL != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     // 3. 防止最终 usize -> isize 溢出。
     if len > isize::MAX as usize {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     // 4. 先识别 pipe。
@@ -943,45 +965,45 @@ pub fn sys_splice(
     // 如果不是 pipe，先确认它至少是合法 file_like。
     // 这样 bad fd 会优先返回 EBADF，而不是被下面的 no-pipe 误判成 EINVAL。
     let in_file = if in_pipe.is_none() {
-        Some(get_file_like(fd_in).map_err(|_| AxError::BadFileDescriptor)?)
+        Some(get_file_like(fd_in).map_err(|_| StarryError::BadFileDescriptor)?)
     } else {
         None
     };
 
     let out_file = if out_pipe.is_none() {
-        Some(get_file_like(fd_out).map_err(|_| AxError::BadFileDescriptor)?)
+        Some(get_file_like(fd_out).map_err(|_| StarryError::BadFileDescriptor)?)
     } else {
         None
     };
     // splice 要求至少一端是 pipe。
     if in_pipe.is_none() && out_pipe.is_none() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     // 5. pipe 对应的 offset 必须是 NULL，否则返回 ESPIPE。
     if in_pipe.is_some() && !off_in.is_null() {
-        return Err(AxError::from(LinuxError::ESPIPE));
+        return Err(StarryError::from(Errno::ESPIPE));
     }
 
     if out_pipe.is_some() && !off_out.is_null() {
-        return Err(AxError::from(LinuxError::ESPIPE));
+        return Err(StarryError::from(Errno::ESPIPE));
     }
 
     // 6. 检查 pipe 方向。
     match &in_pipe {
-        Some(pipe) if !pipe.is_read() => return Err(AxError::BadFileDescriptor),
+        Some(pipe) if !pipe.is_read() => return Err(StarryError::BadFileDescriptor),
         _ => {}
     }
 
     match &out_pipe {
-        Some(pipe) if !pipe.is_write() => return Err(AxError::BadFileDescriptor),
+        Some(pipe) if !pipe.is_write() => return Err(StarryError::BadFileDescriptor),
         _ => {}
     }
 
     // 7. 同一个 pipe 不能同时作为输入和输出。
     match (&in_pipe, &out_pipe) {
         (Some(src), Some(dst)) if alloc::sync::Arc::ptr_eq(src, dst) => {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         _ => {}
     }
@@ -990,7 +1012,7 @@ pub fn sys_splice(
     let in_pos = if !off_in.is_null() {
         let pos = off_in.vm_read()?;
         if pos < 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         Some(pos as u64)
     } else {
@@ -1002,7 +1024,7 @@ pub fn sys_splice(
     let out_pos = if !off_out.is_null() {
         let pos = off_out.vm_read()?;
         if pos < 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         Some(pos as u64)
     } else {
@@ -1012,7 +1034,7 @@ pub fn sys_splice(
     // 10. 输出目标不能是 O_APPEND。注意要覆盖 off_out 为 NULL 和非 NULL 两种情况。
     match File::from_fd(fd_out) {
         Ok(file) if file.inner().access(FileFlags::APPEND).is_ok() => {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         _ => {}
     }
@@ -1044,7 +1066,7 @@ pub fn sys_splice(
 
     let n = do_send(src, dst, len, flags & SPLICE_F_NONBLOCK != 0)?;
 
-    isize::try_from(n).map_err(|_| AxError::InvalidInput)
+    isize::try_from(n).map_err(|_| StarryError::InvalidInput)
 }
 
 #[cfg(axtest)]

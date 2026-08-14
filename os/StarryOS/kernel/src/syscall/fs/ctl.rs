@@ -10,11 +10,10 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FsContext, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use ax_task::current;
-use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
+use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, VfsError, path::Path};
 use linux_raw_sys::{
     general::*,
     ioctl::{FIOASYNC, FIONBIO},
@@ -22,6 +21,7 @@ use linux_raw_sys::{
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
+    StarryError, StarryResult,
     file::{Directory, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::{vm_load_path_string, vm_load_string},
     task::AsThread,
@@ -48,7 +48,7 @@ pub(crate) fn ctl_ioctl_constants_hold_for_test() -> bool {
     true
 }
 
-fn path_info_at(dirfd: i32, path: &str) -> AxResult<(String, bool)> {
+fn path_info_at(dirfd: i32, path: &str) -> StarryResult<(String, bool)> {
     with_fs(dirfd, |fs| {
         let loc = fs.resolve_no_follow(path)?;
         let is_dir = loc.metadata()?.node_type == NodeType::Directory;
@@ -58,7 +58,7 @@ fn path_info_at(dirfd: i32, path: &str) -> AxResult<(String, bool)> {
 
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
-pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
+pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> StarryResult<isize> {
     debug!("sys_ioctl <= fd: {fd}, cmd: {cmd}, arg: {arg}");
     let f = get_file_like(fd)?;
     if cmd == FIONBIO {
@@ -78,14 +78,14 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         crate::file::current_fd_table()
             .write()
             .get_mut(fd as _)
-            .ok_or(AxError::BadFileDescriptor)?
+            .ok_or(StarryError::BadFileDescriptor)?
             .cloexec = cmd == FIOCLEX;
         return Ok(0);
     }
     f.ioctl(cmd, arg)
         .map(|result| result as isize)
         .inspect_err(|err| {
-            if *err == AxError::NotATty {
+            if matches!(err, StarryError::NotATty) {
                 // `NotATty` is a legitimate negative answer to the isatty/termios/winsize/
                 // console probes (TCGETS, KDGKBTYPE, TIOCGPGRP, ...) that libc, ncurses and
                 // CPython fire at every fd — not an unimplemented command. Log at debug
@@ -97,7 +97,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
 }
 
 #[ddebug::named]
-pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
+pub fn sys_chdir(path: *const c_char) -> StarryResult<isize> {
     let path = vm_load_path_string(path)?;
     debug_fn!("sys_chdir <= path: {path}");
 
@@ -110,7 +110,7 @@ pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
+pub fn sys_fchdir(dirfd: i32) -> StarryResult<isize> {
     debug!("sys_fchdir <= dirfd: {dirfd}");
 
     let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
@@ -123,16 +123,16 @@ pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_mkdir(path: *const c_char, mode: u32) -> AxResult<isize> {
+pub fn sys_mkdir(path: *const c_char, mode: u32) -> StarryResult<isize> {
     sys_mkdirat(AT_FDCWD, path, mode)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_mknod(path: *const c_char, mode: u32, dev: u64) -> AxResult<isize> {
+pub fn sys_mknod(path: *const c_char, mode: u32, dev: u64) -> StarryResult<isize> {
     sys_mknodat(AT_FDCWD, path, mode, dev)
 }
 
-pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
+pub fn sys_chroot(path: *const c_char) -> StarryResult<isize> {
     let path = vm_load_path_string(path)?;
     debug!("sys_chroot <= path: {path}");
 
@@ -140,7 +140,7 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
     let mut fs = fs_context.lock();
     let loc = fs.resolve(path)?;
     if loc.node_type() != NodeType::Directory {
-        return Err(AxError::NotADirectory);
+        return Err(StarryError::NotADirectory);
     }
     *fs = FsContext::new(loc);
     let root = fs.root_dir().absolute_path()?.to_string();
@@ -184,7 +184,7 @@ ktracepoint::define_event_trace!(
     })
 );
 
-pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
+pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> StarryResult<isize> {
     let curr = current();
     let thread = curr.as_thread();
     let path = vm_load_path_string(path)?;
@@ -204,10 +204,10 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
         // mkdir on an existing path should report EEXIST.
         // Use no-follow lookup so dangling symlinks are treated as existing
         // entries, and avoid converting empty-path invalid input.
-        Err(AxError::InvalidInput) if !path.is_empty() && fs.resolve_no_follow(&path).is_ok() => {
-            Err(AxError::AlreadyExists)
+        Err(VfsError::InvalidInput) if !path.is_empty() && fs.resolve_no_follow(&path).is_ok() => {
+            Err(StarryError::AlreadyExists)
         }
-        Err(err) => Err(err),
+        Err(err) => Err(err.into()),
     });
     if result.is_ok()
         && let Ok((path, _)) = path_info_at(dirfd, &path)
@@ -217,7 +217,12 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
     result
 }
 
-pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
+pub fn sys_mknodat(
+    dirfd: i32,
+    path: *const c_char,
+    mode: u32,
+    dev: u64,
+) -> Result<isize, StarryError> {
     let curr = current();
     let thread = curr.as_thread();
     let path = vm_load_path_string(path)?;
@@ -239,8 +244,8 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
         S_IFBLK => NodeType::BlockDevice,
         S_IFIFO => NodeType::Fifo,
         S_IFSOCK => NodeType::Socket,
-        S_IFDIR => return Err(AxError::OperationNotPermitted),
-        _ => return Err(AxError::InvalidInput),
+        S_IFDIR => return Err(StarryError::OperationNotPermitted),
+        _ => return Err(StarryError::InvalidInput),
     };
 
     let cred = thread.cred();
@@ -318,7 +323,7 @@ impl DirBuffer {
     }
 }
 
-pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
+pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> StarryResult<isize> {
     debug!("sys_getdents64 <= fd: {fd}, buf: {buf:?}, len: {len}");
 
     let mut buffer = DirBuffer::new(len);
@@ -340,7 +345,7 @@ pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     drop(dir_offset);
 
     if has_remaining && buffer.offset == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     vm_write_slice(buf, &buffer.buf)?;
@@ -359,10 +364,10 @@ pub fn sys_linkat(
     new_dirfd: c_int,
     new_path: *const c_char,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     const LINKAT_VALID_FLAGS: u32 = AT_SYMLINK_FOLLOW | AT_EMPTY_PATH;
     if flags & !LINKAT_VALID_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let old_path = old_path.nullable().map(vm_load_path_string).transpose()?;
@@ -382,19 +387,20 @@ pub fn sys_linkat(
 
     let old = resolve_at(old_dirfd, old_path.as_deref(), resolve_flags)?
         .into_file()
-        .ok_or(AxError::BadFileDescriptor)?;
+        .ok_or(StarryError::BadFileDescriptor)?;
     if old.is_dir() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
-    let (new_dir, new_name) =
-        with_fs(new_dirfd, |fs| fs.resolve_nonexistent(Path::new(&new_path)))?;
+    let (new_dir, new_name) = with_fs(new_dirfd, |fs| {
+        Ok(fs.resolve_nonexistent(Path::new(&new_path))?)
+    })?;
 
     new_dir.link(new_name, &old)?;
     Ok(0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_link(old_path: *const c_char, new_path: *const c_char) -> AxResult<isize> {
+pub fn sys_link(old_path: *const c_char, new_path: *const c_char) -> StarryResult<isize> {
     sys_linkat(AT_FDCWD, old_path, AT_FDCWD, new_path, 0)
 }
 
@@ -403,7 +409,7 @@ pub fn sys_link(old_path: *const c_char, new_path: *const c_char) -> AxResult<is
 /// path: the name of link to be removed
 /// flags: can be 0 or AT_REMOVEDIR
 /// return 0 when success, else return -1
-pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<isize> {
+pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> StarryResult<isize> {
     let path = vm_load_path_string(path)?;
 
     debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
@@ -412,7 +418,7 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
     // with EINVAL. Silently ignoring unknown bits would mask caller bugs and
     // diverge from POSIX semantics (see man 2 unlinkat).
     if flags & !(AT_REMOVEDIR as usize) != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let deleted = path_info_at(dirfd, &path).ok();
@@ -434,17 +440,17 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_rmdir(path: *const c_char) -> AxResult<isize> {
+pub fn sys_rmdir(path: *const c_char) -> StarryResult<isize> {
     sys_unlinkat(AT_FDCWD, path, AT_REMOVEDIR as _)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_unlink(path: *const c_char) -> AxResult<isize> {
+pub fn sys_unlink(path: *const c_char) -> StarryResult<isize> {
     sys_unlinkat(AT_FDCWD, path, 0)
 }
 
-pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
-    let size: usize = size.try_into().map_err(|_| AxError::BadAddress)?;
+pub fn sys_getcwd(buf: *mut u8, size: isize) -> StarryResult<isize> {
+    let size: usize = size.try_into().map_err(|_| StarryError::BadAddress)?;
 
     let cwd = ax_fs_ng::vfs::current_fs_context()
         .lock()
@@ -452,19 +458,19 @@ pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
         .absolute_path()?;
     debug!("sys_getcwd => cwd: {cwd}");
 
-    let cwd = CString::new(cwd.as_str()).map_err(|_| AxError::InvalidInput)?;
+    let cwd = CString::new(cwd.as_str()).map_err(|_| StarryError::InvalidInput)?;
     let cwd = cwd.as_bytes_with_nul();
 
     if cwd.len() <= size {
         vm_write_slice(buf, cwd)?;
         Ok(cwd.len() as _)
     } else {
-        Err(AxError::OutOfRange)
+        Err(StarryError::OutOfRange)
     }
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_symlink(target: *const c_char, linkpath: *const c_char) -> AxResult<isize> {
+pub fn sys_symlink(target: *const c_char, linkpath: *const c_char) -> StarryResult<isize> {
     sys_symlinkat(target, AT_FDCWD, linkpath)
 }
 
@@ -472,7 +478,7 @@ pub fn sys_symlinkat(
     target: *const c_char,
     new_dirfd: i32,
     linkpath: *const c_char,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let target = vm_load_string(target)?;
     let linkpath = vm_load_path_string(linkpath)?;
     debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
@@ -483,9 +489,9 @@ pub fn sys_symlinkat(
     with_fs(new_dirfd, |fs| {
         let (parent, name) = fs.resolve_parent(Path::new(&linkpath))?;
         match parent.lookup_no_follow(&name) {
-            Ok(_) => return Err(AxError::AlreadyExists),
-            Err(AxError::NotFound) => {}
-            Err(err) => return Err(err),
+            Ok(_) => return Err(StarryError::AlreadyExists),
+            Err(VfsError::NotFound) => {}
+            Err(err) => return Err(err.into()),
         }
         let meta = parent.metadata()?;
         if !cred.has_cap_dac_override() {
@@ -500,7 +506,7 @@ pub fn sys_symlinkat(
                     .contains(NodePermission::OTHER_WRITE | NodePermission::OTHER_EXEC)
             };
             if !can_create {
-                return Err(AxError::PermissionDenied);
+                return Err(StarryError::PermissionDenied);
             }
         }
         fs.symlink(target, linkpath, uid, gid)?;
@@ -509,7 +515,7 @@ pub fn sys_symlinkat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_readlink(path: *const c_char, buf: *mut u8, size: usize) -> AxResult<isize> {
+pub fn sys_readlink(path: *const c_char, buf: *mut u8, size: usize) -> StarryResult<isize> {
     sys_readlinkat(AT_FDCWD, path, buf, size)
 }
 
@@ -518,9 +524,9 @@ pub fn sys_readlinkat(
     path: *const c_char,
     buf: *mut u8,
     size: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if size == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let path = vm_load_path_string(path)?;
@@ -529,7 +535,7 @@ pub fn sys_readlinkat(
 
     let link = with_fs(dirfd, |fs| {
         let entry = fs.resolve_no_follow(path)?;
-        entry.read_link()
+        Ok(entry.read_link()?)
     })?;
     let read = size.min(link.len());
     vm_write_slice(buf, &link.as_bytes()[..read])?;
@@ -537,17 +543,17 @@ pub fn sys_readlinkat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_chown(path: *const c_char, uid: i32, gid: i32) -> AxResult<isize> {
+pub fn sys_chown(path: *const c_char, uid: i32, gid: i32) -> StarryResult<isize> {
     sys_fchownat(AT_FDCWD, path, uid, gid, 0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_lchown(path: *const c_char, uid: i32, gid: i32) -> AxResult<isize> {
+pub fn sys_lchown(path: *const c_char, uid: i32, gid: i32) -> StarryResult<isize> {
     use linux_raw_sys::general::AT_SYMLINK_NOFOLLOW;
     sys_fchownat(AT_FDCWD, path, uid, gid, AT_SYMLINK_NOFOLLOW)
 }
 
-pub fn sys_fchown(fd: i32, uid: i32, gid: i32) -> AxResult<isize> {
+pub fn sys_fchown(fd: i32, uid: i32, gid: i32) -> StarryResult<isize> {
     sys_fchownat(fd, core::ptr::null(), uid, gid, AT_EMPTY_PATH)
 }
 
@@ -557,16 +563,16 @@ pub fn sys_fchownat(
     uid: i32,
     gid: i32,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     const FCHOWNAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
     if flags & !FCHOWNAT_VALID_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let path = path.nullable().map(vm_load_path_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
-        .ok_or(AxError::BadFileDescriptor)?;
+        .ok_or(StarryError::BadFileDescriptor)?;
     let meta = loc.metadata()?;
 
     let cred = current().as_thread().cred();
@@ -580,16 +586,16 @@ pub fn sys_fchownat(
     let changing_group = gid != -1 && gid as u32 != meta.gid;
 
     if changing_owner && !cred.has_cap_chown() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
 
     if changing_group && !cred.has_cap_chown() {
         // Non-root: must own the file and target group must be in our groups.
         if cred.fsuid != meta.uid {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         if !cred.in_group(gid as u32) {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
     }
 
@@ -623,18 +629,18 @@ pub fn sys_fchownat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_chmod(path: *const c_char, mode: u32) -> AxResult<isize> {
+pub fn sys_chmod(path: *const c_char, mode: u32) -> StarryResult<isize> {
     sys_fchmodat(AT_FDCWD, path, mode, 0)
 }
 
-pub fn sys_fchmod(fd: i32, mode: u32) -> AxResult<isize> {
+pub fn sys_fchmod(fd: i32, mode: u32) -> StarryResult<isize> {
     sys_fchmodat(fd, core::ptr::null(), mode, AT_EMPTY_PATH)
 }
 
-pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
+pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> StarryResult<isize> {
     const FCHMODAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
     if flags & !FCHMODAT_VALID_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let path = path.nullable().map(vm_load_path_string).transpose()?;
@@ -653,26 +659,26 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
     //   (3) (theoretical) Direct user use of /proc/self/fd/<n>.
     let path_is_empty = path.as_deref().is_none_or(|s| s.is_empty());
     if path_is_empty && flags & AT_EMPTY_PATH != 0 && fd_is_path(dirfd) {
-        return Err(AxError::BadFileDescriptor); // (1)
+        return Err(StarryError::BadFileDescriptor); // (1)
     }
     if let Some(p) = path.as_deref()
         && let Some(rest) = p.strip_prefix("/proc/self/fd/")
         && let Ok(n) = rest.parse::<i32>()
         && fd_is_path(n)
     {
-        return Err(AxError::BadFileDescriptor); // (2) and (3)
+        return Err(StarryError::BadFileDescriptor); // (2) and (3)
     }
 
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
-        .ok_or(AxError::BadFileDescriptor)?;
+        .ok_or(StarryError::BadFileDescriptor)?;
 
     // Only the file owner or a process with CAP_FOWNER may change mode bits.
     let cred = current().as_thread().cred();
     if !cred.has_cap_fowner() {
         let meta = loc.metadata()?;
         if cred.fsuid != meta.uid {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
     }
 
@@ -690,11 +696,11 @@ fn update_times(
     atime: Option<Duration>,
     mtime: Option<Duration>,
     flags: u32,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     let path = path.nullable().map(vm_load_string).transpose()?;
     resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
-        .ok_or(AxError::BadFileDescriptor)?
+        .ok_or(StarryError::BadFileDescriptor)?
         .update_metadata(MetadataUpdate {
             atime,
             mtime,
@@ -713,7 +719,7 @@ pub struct utimbuf {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_utime(path: *const c_char, times: *const utimbuf) -> AxResult<isize> {
+pub fn sys_utime(path: *const c_char, times: *const utimbuf) -> StarryResult<isize> {
     let (atime, mtime) = if let Some(times) = times.nullable() {
         // SAFETY: `utimbuf` is #[repr(C)] with only integer fields;
         // any bit pattern is a valid value.
@@ -734,7 +740,7 @@ pub fn sys_utime(path: *const c_char, times: *const utimbuf) -> AxResult<isize> 
 pub fn sys_utimes(
     path: *const c_char,
     times: *const [linux_raw_sys::general::timeval; 2],
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let (atime, mtime) = if let Some(times) = times.nullable() {
         // SAFETY: `timeval` is #[repr(C)] with only integer fields;
         // any bit pattern is a valid value.
@@ -753,15 +759,15 @@ pub fn sys_utimensat(
     path: *const c_char,
     times: *const [timespec; 2],
     mut flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     const UTIMENSAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
     if flags & !UTIMENSAT_VALID_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if path.is_null() {
         flags |= AT_EMPTY_PATH;
     }
-    fn utime_to_duration(time: &timespec) -> Option<AxResult<Duration>> {
+    fn utime_to_duration(time: &timespec) -> Option<StarryResult<Duration>> {
         match time.tv_nsec {
             val if val == UTIME_OMIT as _ => None,
             val if val == UTIME_NOW as _ => Some(Ok(wall_time())),
@@ -792,14 +798,14 @@ pub fn sys_utimensat(
     let path = path.nullable().map(vm_load_path_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
-        .ok_or(AxError::BadFileDescriptor)?;
+        .ok_or(StarryError::BadFileDescriptor)?;
 
     let cred = current().as_thread().cred();
     if !cred.has_cap_fowner() {
         let meta = loc.metadata()?;
         if cred.fsuid != meta.uid {
             if !write_permission_suffices {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             let has_write = if cred.has_cap_dac_override() {
                 true
@@ -809,7 +815,7 @@ pub fn sys_utimensat(
                 meta.mode.contains(NodePermission::OTHER_WRITE)
             };
             if !has_write {
-                return Err(AxError::PermissionDenied);
+                return Err(StarryError::PermissionDenied);
             }
         }
     }
@@ -823,7 +829,7 @@ pub fn sys_utimensat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_rename(old_path: *const c_char, new_path: *const c_char) -> AxResult<isize> {
+pub fn sys_rename(old_path: *const c_char, new_path: *const c_char) -> StarryResult<isize> {
     sys_renameat(AT_FDCWD, old_path, AT_FDCWD, new_path)
 }
 
@@ -833,7 +839,7 @@ pub fn sys_renameat(
     old_path: *const c_char,
     new_dirfd: i32,
     new_path: *const c_char,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     sys_renameat2(old_dirfd, old_path, new_dirfd, new_path, 0)
 }
 
@@ -844,10 +850,10 @@ pub fn sys_renameat2(
     new_dirfd: i32,
     new_path: *const c_char,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     const RENAMEAT2_SUPPORTED_FLAGS: u32 = RENAME_NOREPLACE;
     if flags & !RENAMEAT2_SUPPORTED_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let old_path = vm_load_path_string(old_path)?;
@@ -857,17 +863,19 @@ pub fn sys_renameat2(
          new_path: {new_path}, flags: {flags}"
     );
 
-    let (old_dir, old_name) = with_fs(old_dirfd, |fs| fs.resolve_parent(Path::new(&old_path)))?;
-    let (new_dir, new_name) = with_fs(new_dirfd, |fs| fs.resolve_parent(Path::new(&new_path)))?;
+    let (old_dir, old_name) =
+        with_fs(old_dirfd, |fs| Ok(fs.resolve_parent(Path::new(&old_path))?))?;
+    let (new_dir, new_name) =
+        with_fs(new_dirfd, |fs| Ok(fs.resolve_parent(Path::new(&new_path))?))?;
 
     if flags & RENAME_NOREPLACE != 0 {
         // Linux reports a missing source leaf before checking whether the
         // no-replace destination already exists.
         old_dir.lookup_no_follow(&old_name)?;
         match new_dir.lookup_no_follow(&new_name) {
-            Ok(_) => return Err(AxError::AlreadyExists),
-            Err(AxError::NotFound) => {}
-            Err(err) => return Err(err),
+            Ok(_) => return Err(StarryError::AlreadyExists),
+            Err(VfsError::NotFound) => {}
+            Err(err) => return Err(err.into()),
         }
     }
 
@@ -876,7 +884,7 @@ pub fn sys_renameat2(
     Ok(0)
 }
 
-pub fn sys_sync() -> AxResult<isize> {
+pub fn sys_sync() -> StarryResult<isize> {
     // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
     // Write back ax-fs-ng page cache first, then flush filesystem metadata.
     sync_all_cached_files(false)?;
@@ -887,7 +895,7 @@ pub fn sys_sync() -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_syncfs(fd: c_int) -> AxResult<isize> {
+pub fn sys_syncfs(fd: c_int) -> StarryResult<isize> {
     debug!("sys_syncfs <= fd: {fd}");
     let any = get_file_like(fd)?;
     sync_all_cached_files(false)?;

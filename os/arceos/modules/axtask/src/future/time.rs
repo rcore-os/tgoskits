@@ -1,12 +1,10 @@
 use alloc::collections::BTreeMap;
 use core::{
-    fmt,
     pin::Pin,
     task::{Context, Poll, Waker},
     time::Duration,
 };
 
-use ax_errno::AxError;
 use ax_hal::time::{TimeValue, monotonic_time, wall_time};
 use futures_util::{FutureExt, select_biased};
 
@@ -143,22 +141,9 @@ pub async fn sleep_until(deadline: TimeValue) {
 }
 
 /// Error returned by [`timeout`] and [`timeout_at`].
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("task deadline elapsed")]
 pub struct Elapsed(());
-
-impl fmt::Display for Elapsed {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "deadline elapsed")
-    }
-}
-
-impl core::error::Error for Elapsed {}
-
-impl From<Elapsed> for AxError {
-    fn from(_: Elapsed) -> Self {
-        AxError::TimedOut
-    }
-}
 
 /// Requires a `Future` to complete before the specified duration has elapsed.
 pub async fn timeout<F: IntoFuture>(

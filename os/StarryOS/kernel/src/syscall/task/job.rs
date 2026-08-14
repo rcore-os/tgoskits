@@ -1,21 +1,23 @@
-use ax_errno::{AxError, AxResult};
 use ax_task::current;
 use starry_process::Pid;
 
-use crate::task::{
-    AsThread, get_process, get_process_data, get_process_group, register_process_group,
-    register_session,
+use crate::{
+    StarryError, StarryResult,
+    task::{
+        AsThread, get_process, get_process_data, get_process_group, register_process_group,
+        register_session,
+    },
 };
 
-pub fn sys_getsid(pid: Pid) -> AxResult<isize> {
+pub fn sys_getsid(pid: Pid) -> StarryResult<isize> {
     Ok(get_process(pid)?.group().session().sid() as _)
 }
 
-pub fn sys_setsid() -> AxResult<isize> {
+pub fn sys_setsid() -> StarryResult<isize> {
     let curr = current();
     let proc = &curr.as_thread().proc_data.proc;
     if get_process_group(proc.pid()).is_ok() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
 
     if let Some((session, pg)) = proc.create_session() {
@@ -27,19 +29,19 @@ pub fn sys_setsid() -> AxResult<isize> {
     }
 }
 
-pub fn sys_getpgid(pid: Pid) -> AxResult<isize> {
+pub fn sys_getpgid(pid: Pid) -> StarryResult<isize> {
     Ok(get_process(pid)?.group().pgid() as _)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_getpgrp() -> AxResult<isize> {
+pub fn sys_getpgrp() -> StarryResult<isize> {
     let curr = current();
     Ok(curr.as_thread().proc_data.proc.group().pgid() as _)
 }
 
-pub fn sys_setpgid(pid: i32, pgid: i32) -> AxResult<isize> {
+pub fn sys_setpgid(pid: i32, pgid: i32) -> StarryResult<isize> {
     if pid < 0 || pgid < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let pid = pid as Pid;
     let pgid = pgid as Pid;
@@ -55,9 +57,9 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> AxResult<isize> {
     } else {
         // POSIX: looking up a non-existent target pgid yields EPERM,
         // not ESRCH (which is reserved for pid lookup failures).
-        let group = get_process_group(pgid).map_err(|_| AxError::OperationNotPermitted)?;
+        let group = get_process_group(pgid).map_err(|_| StarryError::OperationNotPermitted)?;
         if !proc.move_to_group(&group) {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
     }
 

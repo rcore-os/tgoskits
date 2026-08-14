@@ -6,10 +6,9 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_errno::{LinuxError, LinuxResult};
 use ax_lazyinit::LazyLock;
 
-use crate::{ctypes, sync::Mutex, utils::check_null_mut_ptr};
+use crate::{PosixError, PosixResult, ctypes, sync::Mutex, utils::check_null_mut_ptr};
 
 const STATIC_MUTEX_SENTINEL: usize = usize::MAX;
 static STATIC_MUTEX_INIT_LOCK: AtomicBool = AtomicBool::new(false);
@@ -24,21 +23,21 @@ impl PthreadMutex {
         Self(Mutex::new(()))
     }
 
-    fn lock(&self) -> LinuxResult {
+    fn lock(&self) -> PosixResult {
         mem::forget(self.0.lock());
         Ok(())
     }
 
-    fn try_lock(&self) -> LinuxResult {
+    fn try_lock(&self) -> PosixResult {
         if let Some(guard) = self.0.try_lock() {
             mem::forget(guard);
             Ok(())
         } else {
-            Err(LinuxError::EBUSY)
+            Err(PosixError::EBUSY)
         }
     }
 
-    fn unlock(&self) -> LinuxResult {
+    fn unlock(&self) -> PosixResult {
         unsafe { self.0.force_unlock() };
         Ok(())
     }
@@ -103,19 +102,19 @@ fn ensure_mutex_initialized(mutex: NonNull<ctypes::pthread_mutex_t>) -> NonNull<
     })
 }
 
-fn lock_mutex(mutex: NonNull<ctypes::pthread_mutex_t>) -> LinuxResult {
+fn lock_mutex(mutex: NonNull<ctypes::pthread_mutex_t>) -> PosixResult {
     unsafe { ensure_mutex_initialized(mutex).as_ref().lock() }
 }
 
-fn try_lock_mutex(mutex: NonNull<ctypes::pthread_mutex_t>) -> LinuxResult {
+fn try_lock_mutex(mutex: NonNull<ctypes::pthread_mutex_t>) -> PosixResult {
     unsafe { ensure_mutex_initialized(mutex).as_ref().try_lock() }
 }
 
-fn unlock_mutex(mutex: NonNull<ctypes::pthread_mutex_t>) -> LinuxResult {
+fn unlock_mutex(mutex: NonNull<ctypes::pthread_mutex_t>) -> PosixResult {
     unsafe { ensure_mutex_initialized(mutex).as_ref().unlock() }
 }
 
-fn destroy_mutex(mutex: NonNull<ctypes::pthread_mutex_t>) -> LinuxResult {
+fn destroy_mutex(mutex: NonNull<ctypes::pthread_mutex_t>) -> PosixResult {
     let handle = read_mutex_handle(mutex);
     if handle == 0 || handle == STATIC_MUTEX_SENTINEL {
         return Ok(());
@@ -126,7 +125,7 @@ fn destroy_mutex(mutex: NonNull<ctypes::pthread_mutex_t>) -> LinuxResult {
         write_mutex_handle(mutex, 0);
         Ok(())
     } else {
-        Err(LinuxError::EINVAL)
+        Err(PosixError::EINVAL)
     }
 }
 

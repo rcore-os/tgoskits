@@ -15,7 +15,7 @@ use core::{
 
 use axtest::prelude::*;
 
-use crate as axfs_ng_vfs;
+use crate::{self as axfs_ng_vfs, VfsError};
 
 #[axtest]
 fn axfs_ng_vfs_path_rules_hold() {
@@ -207,11 +207,10 @@ fn axfs_ng_vfs_type_rules_hold() {
 
 #[axtest]
 fn axfs_ng_vfs_file_node_defaults_hold() {
-    use ax_errno::AxError;
     use axfs_ng_vfs::{
         DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, FsIoEvents,
         FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
-        Reference, StatFs, VfsResult,
+        Reference, StatFs, VfsError, VfsResult,
     };
 
     #[derive(Debug)]
@@ -318,19 +317,19 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
         }
 
         fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-            Err(AxError::ReadOnlyFilesystem)
+            Err(VfsError::ReadOnlyFilesystem)
         }
 
         fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
-            Err(AxError::ReadOnlyFilesystem)
+            Err(VfsError::ReadOnlyFilesystem)
         }
 
         fn set_len(&self, _len: u64) -> VfsResult<()> {
-            Err(AxError::ReadOnlyFilesystem)
+            Err(VfsError::ReadOnlyFilesystem)
         }
 
         fn set_symlink(&self, _target: &str) -> VfsResult<()> {
-            Err(AxError::Unsupported)
+            Err(VfsError::Unsupported)
         }
     }
 
@@ -342,7 +341,7 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
     ax_assert_eq!(file_node.inode(), 99);
     ax_assert_eq!(file_node.len().unwrap(), 11);
     ax_assert!(file_node.flags().contains(NodeFlags::NON_CACHEABLE));
-    ax_assert_eq!(file_node.ioctl(0, 0), Err(AxError::NotATty));
+    ax_assert_eq!(file_node.ioctl(0, 0), Err(VfsError::NotATty));
     ax_assert_eq!(file_node.poll(), FsIoEvents::IN | FsIoEvents::OUT);
     ax_assert!(Arc::ptr_eq(
         &file_node.downcast::<TestFile>().unwrap(),
@@ -361,8 +360,8 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
     ax_assert_eq!(entry.key().1, "link");
     ax_assert_eq!(entry.metadata().unwrap().node_type, NodeType::Symlink);
     ax_assert_eq!(entry.read_link().unwrap(), "target-path");
-    ax_assert_eq!(entry.ioctl(0, 0), Err(AxError::NotATty));
-    ax_assert!(matches!(entry.as_dir(), Err(AxError::NotADirectory)));
+    ax_assert_eq!(entry.ioctl(0, 0), Err(VfsError::NotATty));
+    ax_assert!(matches!(entry.as_dir(), Err(VfsError::NotADirectory)));
     ax_assert!(entry.as_file().is_ok());
     ax_assert!(entry.downcast::<TestFile>().is_ok());
     ax_assert!(entry.is_root_of_mount());
@@ -383,11 +382,10 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
 
 #[axtest]
 fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
-    use ax_errno::AxError;
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps,
         FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mutex, NodeFlags, NodeOps,
-        NodePermission, NodeType, OpenOptions, Reference, VfsResult, WeakDirEntry,
+        NodePermission, NodeType, OpenOptions, Reference, VfsError, VfsResult, WeakDirEntry,
     };
 
     #[derive(Debug)]
@@ -403,7 +401,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
         }
 
         fn stat(&self) -> VfsResult<axfs_ng_vfs::StatFs> {
-            Err(AxError::Unsupported)
+            Err(VfsError::Unsupported)
         }
     }
 
@@ -467,19 +465,19 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
         }
 
         fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-            Err(AxError::ReadOnlyFilesystem)
+            Err(VfsError::ReadOnlyFilesystem)
         }
 
         fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
-            Err(AxError::ReadOnlyFilesystem)
+            Err(VfsError::ReadOnlyFilesystem)
         }
 
         fn set_len(&self, _len: u64) -> VfsResult<()> {
-            Err(AxError::ReadOnlyFilesystem)
+            Err(VfsError::ReadOnlyFilesystem)
         }
 
         fn set_symlink(&self, _target: &str) -> VfsResult<()> {
-            Err(AxError::Unsupported)
+            Err(VfsError::Unsupported)
         }
     }
 
@@ -576,7 +574,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
                 .lock()
                 .iter()
                 .find_map(|(child_name, entry)| (child_name == name).then(|| entry.clone()))
-                .ok_or(AxError::NotFound)
+                .ok_or(VfsError::NotFound)
         }
 
         fn create(
@@ -588,7 +586,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
             _gid: u32,
         ) -> VfsResult<DirEntry> {
             if self.lookup(name).is_ok() {
-                return Err(AxError::AlreadyExists);
+                return Err(VfsError::AlreadyExists);
             }
             let entry = self.make_file_entry(name, node_type);
             self.children.lock().push((name.into(), entry.clone()));
@@ -597,7 +595,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
 
         fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry> {
             if self.lookup(name).is_ok() {
-                return Err(AxError::AlreadyExists);
+                return Err(VfsError::AlreadyExists);
             }
             let file = node.as_file()?.clone();
             let entry = DirEntry::new_file(
@@ -615,14 +613,14 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
                 .iter()
                 .position(|(child_name, _)| child_name == name)
             else {
-                return Err(AxError::NotFound);
+                return Err(VfsError::NotFound);
             };
             children.remove(index);
             Ok(())
         }
 
         fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
-            Err(AxError::Unsupported)
+            Err(VfsError::Unsupported)
         }
     }
 
@@ -645,15 +643,18 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
     ax_assert!(root.is_root_of_mount());
     ax_assert!(root.flags().contains(NodeFlags::ALWAYS_CACHE));
     ax_assert!(!dir.has_children().unwrap());
-    ax_assert!(matches!(dir.lookup("."), Err(AxError::InvalidInput)));
-    ax_assert!(matches!(dir.lookup("bad/name"), Err(AxError::InvalidInput)));
+    ax_assert!(matches!(dir.lookup("."), Err(VfsError::InvalidInput)));
+    ax_assert!(matches!(
+        dir.lookup("bad/name"),
+        Err(VfsError::InvalidInput)
+    ));
     ax_assert!(matches!(
         dir.lookup("bad\0name"),
-        Err(AxError::InvalidInput)
+        Err(VfsError::InvalidInput)
     ));
     ax_assert!(matches!(
         dir.lookup(&"x".repeat(axfs_ng_vfs::path::MAX_NAME_LEN + 1)),
-        Err(AxError::NameTooLong)
+        Err(VfsError::NameTooLong)
     ));
 
     let child = dir
@@ -697,22 +698,21 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
     };
     ax_assert!(matches!(
         dir.open_file("created-by-open", &create_new_existing),
-        Err(AxError::AlreadyExists)
+        Err(VfsError::AlreadyExists)
     ));
 
-    ax_assert_eq!(dir.unlink("child", true), Err(AxError::NotADirectory));
+    ax_assert_eq!(dir.unlink("child", true), Err(VfsError::NotADirectory));
     dir.unlink("child", false).unwrap();
     ax_assert!(dir.lookup_cache("child").is_none());
-    ax_assert!(matches!(dir.lookup("child"), Err(AxError::NotFound)));
+    ax_assert!(matches!(dir.lookup("child"), Err(VfsError::NotFound)));
 }
 
 #[axtest]
 fn axfs_ng_vfs_mount_tree_rules_hold() {
-    use ax_errno::AxError;
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
         FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mountpoint, Mutex,
-        NodeOps, NodePermission, NodeType, Reference, StatFs, VfsResult,
+        NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult,
     };
 
     #[derive(Debug)]
@@ -730,7 +730,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
         }
 
         fn stat(&self) -> VfsResult<StatFs> {
-            Err(AxError::Unsupported)
+            Err(VfsError::Unsupported)
         }
     }
 
@@ -815,19 +815,19 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
         }
 
         fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-            Err(AxError::ReadOnlyFilesystem)
+            Err(VfsError::ReadOnlyFilesystem)
         }
 
         fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
-            Err(AxError::ReadOnlyFilesystem)
+            Err(VfsError::ReadOnlyFilesystem)
         }
 
         fn set_len(&self, _len: u64) -> VfsResult<()> {
-            Err(AxError::ReadOnlyFilesystem)
+            Err(VfsError::ReadOnlyFilesystem)
         }
 
         fn set_symlink(&self, _target: &str) -> VfsResult<()> {
-            Err(AxError::Unsupported)
+            Err(VfsError::Unsupported)
         }
     }
 
@@ -919,7 +919,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
                 .lock()
                 .iter()
                 .find_map(|(child_name, entry)| (child_name == name).then(|| entry.clone()))
-                .ok_or(AxError::NotFound)
+                .ok_or(VfsError::NotFound)
         }
 
         fn create(
@@ -931,7 +931,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
             _gid: u32,
         ) -> VfsResult<DirEntry> {
             if self.lookup(name).is_ok() {
-                return Err(AxError::AlreadyExists);
+                return Err(VfsError::AlreadyExists);
             }
             let entry = self.make_entry(name, node_type);
             self.children.lock().push((name.into(), entry.clone()));
@@ -939,7 +939,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
         }
 
         fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-            Err(AxError::Unsupported)
+            Err(VfsError::Unsupported)
         }
 
         fn unlink(&self, name: &str, _is_dir: bool) -> VfsResult<()> {
@@ -948,14 +948,14 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
                 .iter()
                 .position(|(child_name, _)| child_name == name)
             else {
-                return Err(AxError::NotFound);
+                return Err(VfsError::NotFound);
             };
             children.remove(index);
             Ok(())
         }
 
         fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
-            Err(AxError::Unsupported)
+            Err(VfsError::Unsupported)
         }
     }
 
@@ -1034,7 +1034,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
     ax_assert!(root.lookup_no_follow("created").unwrap().is_file());
     ax_assert!(matches!(
         root.create_transient_mount_dir("transient", NodePermission::default(), 1, 2),
-        Err(AxError::InvalidInput)
+        Err(VfsError::InvalidInput)
     ));
 
     root_mount.set_readonly(true);
@@ -1046,7 +1046,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
             0,
             0,
         ),
-        Err(AxError::ReadOnlyFilesystem)
+        Err(VfsError::ReadOnlyFilesystem)
     ));
     let transient = root
         .create_transient_mount_dir("transient", NodePermission::default(), 1, 2)
@@ -1064,7 +1064,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
     let child_mount = mnt.mount(&child_fs).unwrap();
     ax_assert!(mnt.is_mountpoint());
     ax_assert_eq!(root_mount.children().len(), 1);
-    ax_assert!(matches!(mnt.mount(&child_fs), Err(AxError::ResourceBusy)));
+    ax_assert!(matches!(mnt.mount(&child_fs), Err(VfsError::ResourceBusy)));
 
     let mounted_root = root.lookup_no_follow("mnt").unwrap();
     ax_assert!(mounted_root.is_root_of_mount());
@@ -1082,7 +1082,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
     ax_assert_eq!(bind_mount.device(), child_mount.device());
     ax_assert!(matches!(
         bind_target.bind_mount(&child_mount.root_location(), false),
-        Err(AxError::ResourceBusy)
+        Err(VfsError::ResourceBusy)
     ));
     ax_assert!(root.lookup_no_follow("bind").unwrap().is_root_of_mount());
 
@@ -1126,7 +1126,7 @@ impl axfs_ng_vfs::FilesystemOps for MoreNodeFilesystem {
     }
 
     fn stat(&self) -> axfs_ng_vfs::VfsResult<axfs_ng_vfs::StatFs> {
-        Err(ax_errno::AxError::Unsupported)
+        Err(VfsError::Unsupported)
     }
 }
 
@@ -1229,19 +1229,19 @@ impl axfs_ng_vfs::FileNodeOps for MoreTestFile {
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> axfs_ng_vfs::VfsResult<usize> {
-        Err(ax_errno::AxError::ReadOnlyFilesystem)
+        Err(VfsError::ReadOnlyFilesystem)
     }
 
     fn append(&self, _buf: &[u8]) -> axfs_ng_vfs::VfsResult<(usize, u64)> {
-        Err(ax_errno::AxError::ReadOnlyFilesystem)
+        Err(VfsError::ReadOnlyFilesystem)
     }
 
     fn set_len(&self, _len: u64) -> axfs_ng_vfs::VfsResult<()> {
-        Err(ax_errno::AxError::ReadOnlyFilesystem)
+        Err(VfsError::ReadOnlyFilesystem)
     }
 
     fn set_symlink(&self, _target: &str) -> axfs_ng_vfs::VfsResult<()> {
-        Err(ax_errno::AxError::Unsupported)
+        Err(VfsError::Unsupported)
     }
 }
 
@@ -1302,7 +1302,7 @@ impl MoreTestDir {
             .iter()
             .position(|(child_name, _)| child_name == name)
         else {
-            return Err(ax_errno::AxError::NotFound);
+            return Err(VfsError::NotFound);
         };
         Ok(children.remove(index).1)
     }
@@ -1366,7 +1366,7 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
             .lock()
             .iter()
             .find_map(|(child_name, entry)| (child_name == name).then(|| entry.clone()))
-            .ok_or(ax_errno::AxError::NotFound)
+            .ok_or(VfsError::NotFound)
     }
 
     fn create(
@@ -1378,7 +1378,7 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
         _gid: u32,
     ) -> axfs_ng_vfs::VfsResult<axfs_ng_vfs::DirEntry> {
         if self.lookup(name).is_ok() {
-            return Err(ax_errno::AxError::AlreadyExists);
+            return Err(VfsError::AlreadyExists);
         }
         let entry = self.make_entry(name, node_type);
         self.children.lock().push((name.into(), entry.clone()));
@@ -1391,7 +1391,7 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
         node: &axfs_ng_vfs::DirEntry,
     ) -> axfs_ng_vfs::VfsResult<axfs_ng_vfs::DirEntry> {
         if self.lookup(name).is_ok() {
-            return Err(ax_errno::AxError::AlreadyExists);
+            return Err(VfsError::AlreadyExists);
         }
         let file = node.as_file()?.clone();
         let entry = axfs_ng_vfs::DirEntry::new_file(
@@ -1417,7 +1417,7 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
         let entry = self.remove_child(src_name)?;
         if let Ok(existing) = dst_dir.lookup(dst_name) {
             if existing.node_type() == axfs_ng_vfs::NodeType::Directory {
-                return Err(ax_errno::AxError::IsADirectory);
+                return Err(VfsError::IsADirectory);
             }
             dst_dir.unlink(dst_name, false)?;
         }
@@ -1499,8 +1499,7 @@ fn new_more_fs(
 
 #[axtest]
 fn axfs_ng_vfs_shared_mount_propagation_rules_hold() {
-    use ax_errno::AxError;
-    use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType};
+    use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType, VfsError};
 
     let source_fs = new_more_fs("source-root", false, 100, &["target", "left"], &[]);
     let peer_fs = new_more_fs("peer-root", false, 200, &["target", "left"], &[]);
@@ -1584,14 +1583,13 @@ fn axfs_ng_vfs_shared_mount_propagation_rules_hold() {
             0,
             0,
         ),
-        Err(AxError::ReadOnlyFilesystem) | Ok(_)
+        Err(VfsError::ReadOnlyFilesystem) | Ok(_)
     ));
 }
 
 #[axtest]
 fn axfs_ng_vfs_bind_mount_propagation_and_unbindable_rules_hold() {
-    use ax_errno::AxError;
-    use axfs_ng_vfs::Mountpoint;
+    use axfs_ng_vfs::{Mountpoint, VfsError};
 
     let source_fs = new_more_fs("bind-source", false, 500, &["sub", "skip"], &[]);
     let target_fs = new_more_fs("bind-target", false, 600, &["bind", "recursive"], &[]);
@@ -1678,14 +1676,13 @@ fn axfs_ng_vfs_bind_mount_propagation_and_unbindable_rules_hold() {
             .lookup_no_follow("bind")
             .unwrap()
             .bind_mount(&skipped_mount.root_location(), false),
-        Err(AxError::InvalidInput)
+        Err(VfsError::InvalidInput)
     ));
 }
 
 #[axtest]
 fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
-    use ax_errno::AxError;
-    use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType};
+    use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType, VfsError};
 
     let root_fs = new_more_fs(
         "move-root",
@@ -1711,19 +1708,19 @@ fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
         root.lookup_no_follow("plain")
             .unwrap()
             .move_mount(&root.lookup_no_follow("second").unwrap()),
-        Err(AxError::InvalidInput)
+        Err(VfsError::InvalidInput)
     ));
     ax_assert!(matches!(
         child_root.move_mount(&busy_target),
-        Err(AxError::ResourceBusy)
+        Err(VfsError::ResourceBusy)
     ));
     ax_assert!(matches!(
         child_root.move_mount(&child_root.lookup_no_follow("inner").unwrap()),
-        Err(AxError::FilesystemLoop)
+        Err(VfsError::FilesystemLoop)
     ));
     ax_assert!(matches!(
         child_root.move_mount(&root.lookup_no_follow("file-target").unwrap()),
-        Err(AxError::NotADirectory)
+        Err(VfsError::NotADirectory)
     ));
 
     child_root
@@ -1747,7 +1744,7 @@ fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
     ax_assert!(readonly_root.is_readonly());
     ax_assert!(matches!(
         readonly_root.update_metadata(axfs_ng_vfs::MetadataUpdate::default()),
-        Err(AxError::ReadOnlyFilesystem)
+        Err(VfsError::ReadOnlyFilesystem)
     ));
     ax_assert!(matches!(
         readonly_root.create(
@@ -1757,26 +1754,25 @@ fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
             0,
             0,
         ),
-        Err(AxError::ReadOnlyFilesystem)
+        Err(VfsError::ReadOnlyFilesystem)
     ));
     ax_assert!(matches!(
         readonly_root.link("linked", &root.lookup_no_follow("plain").unwrap()),
-        Err(AxError::ReadOnlyFilesystem)
+        Err(VfsError::ReadOnlyFilesystem)
     ));
     ax_assert!(matches!(
         readonly_root.rename("file", &readonly_root, "renamed"),
-        Err(AxError::ReadOnlyFilesystem)
+        Err(VfsError::ReadOnlyFilesystem)
     ));
     ax_assert!(matches!(
         readonly_root.unlink("file", false),
-        Err(AxError::ReadOnlyFilesystem)
+        Err(VfsError::ReadOnlyFilesystem)
     ));
 }
 
 #[axtest]
 fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
-    use ax_errno::AxError;
-    use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType, OpenOptions};
+    use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType, OpenOptions, VfsError};
 
     let left_fs = new_more_fs(
         "left-root",
@@ -1798,24 +1794,24 @@ fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
     ax_assert!(left_root.lookup_no_follow("linked").unwrap().is_file());
     ax_assert!(matches!(
         left_root.link("cross", &right_root.lookup_no_follow("file").unwrap()),
-        Err(AxError::CrossesDevices)
+        Err(VfsError::CrossesDevices)
     ));
 
     left_root.rename("linked", &left_root, "renamed").unwrap();
     ax_assert!(matches!(
         left_root.lookup_no_follow("linked"),
-        Err(AxError::NotFound)
+        Err(VfsError::NotFound)
     ));
     ax_assert!(left_root.lookup_no_follow("renamed").unwrap().is_file());
     left_root.rename("renamed", &left_root, "replace").unwrap();
     ax_assert!(left_root.lookup_no_follow("replace").unwrap().is_file());
     ax_assert!(matches!(
         left_root.rename("dir", &left_root, "replace"),
-        Err(AxError::IsADirectory) | Err(AxError::AlreadyExists)
+        Err(VfsError::IsADirectory) | Err(VfsError::AlreadyExists)
     ));
     ax_assert!(matches!(
         left_root.rename("file", &right_root, "cross"),
-        Err(AxError::CrossesDevices)
+        Err(VfsError::CrossesDevices)
     ));
 
     let dir = left_root.lookup_no_follow("dir").unwrap();
@@ -1830,7 +1826,7 @@ fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
         .unwrap();
     ax_assert!(matches!(
         left_root.rename("dir", &subdir, "loop"),
-        Err(AxError::InvalidInput)
+        Err(VfsError::InvalidInput)
     ));
 
     let options = OpenOptions {
@@ -1881,6 +1877,6 @@ fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
     ax_assert_eq!(transient.name(), "file");
     ax_assert!(matches!(
         readonly_root.create_transient_mount_dir("bad/name", NodePermission::default(), 1, 2),
-        Err(AxError::InvalidInput)
+        Err(VfsError::InvalidInput)
     ));
 }

@@ -1,8 +1,6 @@
 //! Shared ownership boundary for the single SG2002 JPU engine.
 
-use ax_errno::AxError;
 use ax_memory_addr::PhysAddr;
-use axfs_ng_vfs::VfsResult;
 use dma_api::DmaError;
 use sg200x_bsp::soc::TOP_BASE;
 use sg200x_jpu::{
@@ -10,7 +8,7 @@ use sg200x_jpu::{
 };
 use starry_vm::vm_write_slice;
 
-use crate::sync::Mutex;
+use crate::{StarryError, StarryResult, sync::Mutex};
 
 const JPU_REG_BASE: usize = 0x0b00_0000;
 const VC_REG_BASE: usize = 0x0b03_0000;
@@ -30,11 +28,11 @@ struct JpuState {
 }
 
 impl JpuState {
-    fn decoder(&mut self) -> VfsResult<&mut JpuDecoder> {
+    fn decoder(&mut self) -> StarryResult<&mut JpuDecoder> {
         if self.decoder.is_none() {
             self.decoder = Some(create_decoder()?);
         }
-        self.decoder.as_mut().ok_or(AxError::Io)
+        self.decoder.as_mut().ok_or(StarryError::Io)
     }
 }
 
@@ -53,10 +51,10 @@ impl CviJpu {
         }
     }
 
-    pub fn acquire_vdec(&self) -> VfsResult<()> {
+    pub fn acquire_vdec(&self) -> StarryResult<()> {
         let mut state = self.state.lock();
         if state.vdec_owned {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
         state.decoder()?;
         state.vdec_owned = true;
@@ -67,11 +65,11 @@ impl CviJpu {
         self.state.lock().vdec_owned = false;
     }
 
-    pub fn decode_camera_to_user(&self, jpeg: &[u8], destination: *mut u8) -> VfsResult<usize> {
+    pub fn decode_camera_to_user(&self, jpeg: &[u8], destination: *mut u8) -> StarryResult<usize> {
         let yuv_data = {
             let mut state = self.state.lock();
             if state.vdec_owned {
-                return Err(AxError::ResourceBusy);
+                return Err(StarryError::ResourceBusy);
             }
             state
                 .decoder()?
@@ -84,10 +82,10 @@ impl CviJpu {
         Ok(yuv_data.len())
     }
 
-    pub fn decode_vdec(&self, jpeg: &[u8], scale: JpuScale) -> VfsResult<DecodedJpuFrame> {
+    pub fn decode_vdec(&self, jpeg: &[u8], scale: JpuScale) -> StarryResult<DecodedJpuFrame> {
         let mut state = self.state.lock();
         if !state.vdec_owned {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         let result = state
             .decoder()?
@@ -104,28 +102,28 @@ impl CviJpu {
         frame_len: usize,
         offset: usize,
         destination: &mut [u8],
-    ) -> VfsResult<usize> {
+    ) -> StarryResult<usize> {
         let state = self.state.lock();
         if !state.vdec_owned {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
-        let decoder = state.decoder.as_ref().ok_or(AxError::Io)?;
+        let decoder = state.decoder.as_ref().ok_or(StarryError::Io)?;
         decoder
             .copy_completed_frame(frame_len, offset, destination)
             .map_err(|error| map_decode_error(&error))
     }
 }
 
-fn map_mmio(physical: usize, size: usize) -> VfsResult<usize> {
+fn map_mmio(physical: usize, size: usize) -> StarryResult<usize> {
     ax_mm::iomap(PhysAddr::from_usize(physical), size)
         .map(|address| address.as_usize())
         .map_err(|error| {
             warn!("cvi-jpu: failed to map MMIO at {physical:#x}+{size:#x}: {error:?}");
-            AxError::Io
+            StarryError::Io
         })
 }
 
-fn create_decoder() -> VfsResult<JpuDecoder> {
+fn create_decoder() -> StarryResult<JpuDecoder> {
     let mmio = JpuMmio::new(
         map_mmio(JPU_REG_BASE, REG_MMIO_SIZE)?,
         map_mmio(TOP_BASE, TOP_MMIO_SIZE)?,
@@ -138,33 +136,33 @@ fn create_decoder() -> VfsResult<JpuDecoder> {
     unsafe { JpuDecoder::new(mmio, dma) }.map_err(map_create_error)
 }
 
-fn map_layout_error(_error: FrameLayoutError) -> AxError {
-    AxError::OperationNotSupported
+fn map_layout_error(_error: FrameLayoutError) -> StarryError {
+    StarryError::OperationNotSupported
 }
 
-fn map_create_error(error: JpuCreateError) -> AxError {
+fn map_create_error(error: JpuCreateError) -> StarryError {
     match error {
-        JpuCreateError::AlreadyOwned => AxError::ResourceBusy,
+        JpuCreateError::AlreadyOwned => StarryError::ResourceBusy,
         JpuCreateError::Initialization(message) => {
             warn!("cvi-jpu: initialization failed: {message}");
-            AxError::Io
+            StarryError::Io
         }
     }
 }
 
-fn map_decode_error(error: &JpuDecodeError) -> AxError {
+fn map_decode_error(error: &JpuDecodeError) -> StarryError {
     warn!("cvi-jpu: decode failed: {error}");
     match error {
         JpuDecodeError::Layout(error) => map_layout_error(*error),
-        JpuDecodeError::Dma(DmaError::NoMemory) => AxError::NoMemory,
-        JpuDecodeError::Dma(_) => AxError::Io,
-        JpuDecodeError::Timeout => AxError::TimedOut,
+        JpuDecodeError::Dma(DmaError::NoMemory) => StarryError::NoMemory,
+        JpuDecodeError::Dma(_) => StarryError::Io,
+        JpuDecodeError::Timeout => StarryError::TimedOut,
         JpuDecodeError::Poisoned
         | JpuDecodeError::EmptyStream
         | JpuDecodeError::InvalidJpeg(_)
         | JpuDecodeError::BufferInvariant(_)
         | JpuDecodeError::DmaAddress(_)
         | JpuDecodeError::HardwareSetup(_)
-        | JpuDecodeError::DecodeFailed => AxError::Io,
+        | JpuDecodeError::DecodeFailed => StarryError::Io,
     }
 }

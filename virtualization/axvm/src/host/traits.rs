@@ -37,6 +37,7 @@ pub trait HostTime {
     fn monotonic_time(&self) -> Duration;
 
     /// Publish an earlier deadline to the host's shared timer arbiter.
+    #[cfg(not(test))]
     fn request_timer_deadline(&self, deadline_ns: u64);
 }
 

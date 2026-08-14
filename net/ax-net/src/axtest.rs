@@ -1,7 +1,6 @@
 use alloc::{boxed::Box, string::String};
 use core::{cell::Cell, net::Ipv4Addr, time::Duration};
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use axtest::prelude::*;
 use smoltcp::{
     phy::PacketMeta,
@@ -15,7 +14,7 @@ use smoltcp::{
 
 use crate::{
     DeviceBinding, InterfaceConfig, InterfaceFlags, InterfaceId, InterfaceKind, InterfaceMatcher,
-    NetworkConfig, RouteInfo, StaticIpConfig,
+    NetError, NetResult, NetworkConfig, RouteInfo, StaticIpConfig,
     addr::{allocate_ephemeral_port, listen_addrs_conflict, mask_from_prefix},
     config::{DnsServerEntry, DnsSource, InterfaceInfo, Ipv4InterfaceConfig},
     device::{ArpEntry, Device},
@@ -133,7 +132,7 @@ fn ax_net_addr_helpers_handle_wildcards_masks_and_ephemeral_ports() {
     ax_assert!(allocated >= 0xc000);
     ax_assert!(matches!(
         allocate_ephemeral_port(|_| false),
-        Err(AxError::AddrInUse)
+        Err(NetError::AddrInUse)
     ));
 }
 
@@ -189,7 +188,7 @@ struct MockConfigurable {
 }
 
 impl Configurable for MockConfigurable {
-    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool> {
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> NetResult<bool> {
         match opt {
             GetSocketOption::ReuseAddress(value) => **value = true,
             GetSocketOption::SendTimeout(value) => **value = Duration::from_millis(7),
@@ -207,7 +206,7 @@ impl Configurable for MockConfigurable {
         Ok(self.supported)
     }
 
-    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool> {
+    fn set_option_inner(&self, opt: SetSocketOption) -> NetResult<bool> {
         if matches!(
             opt,
             SetSocketOption::NoDelay(true) | SetSocketOption::KeepAlive(true)
@@ -266,7 +265,7 @@ fn ax_net_socket_options_dispatch_supported_and_unsupported_results() {
     ax_assert!(
         matches!(
             unsupported.set_option(SetSocketOption::NoDelay(&true)),
-            Err(AxError::Unsupported)
+            Err(NetError::Unsupported)
         ) || unsupported
             .set_option(SetSocketOption::NoDelay(&true))
             .is_err()
@@ -276,7 +275,7 @@ fn ax_net_socket_options_dispatch_supported_and_unsupported_results() {
         unsupported
             .get_option(GetSocketOption::ReuseAddress(&mut reuse))
             .unwrap_err(),
-        AxError::from(LinuxError::ENOPROTOOPT)
+        NetError::ProtocolOptionUnsupported
     );
 }
 
@@ -321,7 +320,7 @@ fn ax_net_state_lock_commits_success_and_rolls_back_errors() {
     let guard = lock.lock(State::Idle).unwrap();
     ax_assert_eq!(lock.get(), State::Busy);
     let value = guard
-        .transit(State::Connected, || Ok::<_, AxError>(9))
+        .transit(State::Connected, || Ok::<_, NetError>(9))
         .unwrap();
     ax_assert_eq!(value, 9);
     ax_assert_eq!(lock.get(), State::Connected);
@@ -332,8 +331,8 @@ fn ax_net_state_lock_commits_success_and_rolls_back_errors() {
     }
     lock.set(State::Idle);
     let guard = lock.lock(State::Idle).unwrap();
-    let result = guard.transit(State::Listening, || Err::<(), _>(AxError::BadState));
-    ax_assert_eq!(result, Err(AxError::BadState));
+    let result = guard.transit(State::Listening, || Err::<(), _>(NetError::BadState));
+    ax_assert_eq!(result, Err(NetError::BadState));
     ax_assert_eq!(lock.get(), State::Idle);
 
     ax_assert_eq!(State::try_from(0), Ok(State::Idle));

@@ -15,10 +15,9 @@
 use alloc::boxed::Box;
 use core::time::Duration;
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use enum_dispatch::enum_dispatch;
 
-use crate::InterfaceId;
+use crate::{InterfaceId, NetError, NetResult};
 
 /// Linux-like TCP connection state reported by TCP_INFO.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -215,25 +214,25 @@ define_options! {
 #[enum_dispatch]
 pub trait Configurable {
     /// Get a socket option, returns `true` if the socket supports the option.
-    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool>;
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> NetResult<bool>;
     /// Set a socket option, returns `true` if the socket supports the option.
-    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool>;
+    fn set_option_inner(&self, opt: SetSocketOption) -> NetResult<bool>;
 
     /// Get a socket option. Dispatches to [`Configurable::get_option_inner`].
-    fn get_option(&self, mut opt: GetSocketOption) -> AxResult {
+    fn get_option(&self, mut opt: GetSocketOption) -> NetResult {
         self.get_option_inner(&mut opt).and_then(|supported| {
             if !supported {
-                Err(AxError::from(LinuxError::ENOPROTOOPT))
+                Err(NetError::ProtocolOptionUnsupported)
             } else {
                 Ok(())
             }
         })
     }
     /// Set a socket option. Dispatches to [`Configurable::set_option_inner`].
-    fn set_option(&self, opt: SetSocketOption) -> AxResult {
+    fn set_option(&self, opt: SetSocketOption) -> NetResult {
         self.set_option_inner(opt).and_then(|supported| {
             if !supported {
-                Err(AxError::from(LinuxError::ENOPROTOOPT))
+                Err(NetError::ProtocolOptionUnsupported)
             } else {
                 Ok(())
             }
@@ -242,11 +241,11 @@ pub trait Configurable {
 }
 
 impl<T: Configurable + ?Sized> Configurable for Box<T> {
-    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool> {
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> NetResult<bool> {
         self.as_ref().get_option_inner(opt)
     }
 
-    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool> {
+    fn set_option_inner(&self, opt: SetSocketOption) -> NetResult<bool> {
         self.as_ref().set_option_inner(opt)
     }
 }

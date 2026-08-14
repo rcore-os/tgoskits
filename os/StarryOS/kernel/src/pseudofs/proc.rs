@@ -48,9 +48,11 @@ use crate::{
 /// Global IRQ counter incremented on every timer tick.
 /// Module-level so both `/proc/interrupts` and `/proc/stat` can read it.
 static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
+
 const PROCFS_INIT_PID: Pid = 1;
 
 pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
+
 static BOOT_ID: LazyInit<String> = LazyInit::new();
 
 fn read_kallsyms() -> KallsymsMapped<'static> {
@@ -700,6 +702,7 @@ fn usb_endpoint_type_label(ty: u8) -> &'static str {
         _ => "Unk.",
     }
 }
+
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
@@ -1324,7 +1327,7 @@ impl ProcMemFile {
         let page_end = end.align_up_4k();
         let aspace = self.proc_data.aspace();
         let mut aspace = aspace.lock();
-        aspace.populate_area(page_start, page_end - page_start, flags)
+        Ok(aspace.populate_area(page_start, page_end - page_start, flags)?)
     }
 }
 
@@ -1861,6 +1864,7 @@ fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc
         }),
     )
 }
+
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
@@ -2308,14 +2312,14 @@ impl<W: core::fmt::Write> SeqWriter<W> {
 impl<W: core::fmt::Write> SeqWriter<W> {
     fn write_str(&mut self, s: &str) -> VfsResult<()> {
         self.col += s.len();
-        self.inner.write_str(s)?;
+        self.inner.write_str(s).map_err(|_| VfsError::Io)?;
         Ok(())
     }
 
     #[allow(unused)]
     fn write_char(&mut self, c: char) -> VfsResult<()> {
         self.col += c.len_utf8();
-        self.inner.write_char(c)?;
+        self.inner.write_char(c).map_err(|_| VfsError::Io)?;
         Ok(())
     }
 
@@ -2323,7 +2327,7 @@ impl<W: core::fmt::Write> SeqWriter<W> {
         if self.col < target {
             let pad = target - self.col;
             for _ in 0..pad {
-                self.inner.write_char(' ')?;
+                self.inner.write_char(' ').map_err(|_| VfsError::Io)?;
             }
             self.col = target;
         }
@@ -2331,7 +2335,7 @@ impl<W: core::fmt::Write> SeqWriter<W> {
     }
 
     fn newline(&mut self) -> VfsResult<()> {
-        self.inner.write_char('\n')?;
+        self.inner.write_char('\n').map_err(|_| VfsError::Io)?;
         self.col = 0;
         Ok(())
     }

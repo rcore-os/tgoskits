@@ -5,33 +5,25 @@
 
 use core::{mem::MaybeUninit, slice};
 
-use ax_errno::AxError;
 use extern_trait::extern_trait;
 
 /// Errors that can occur during virtual memory operations.
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum VmError {
     /// The address is invalid, e.g., not aligned to the required boundary,
     /// out of bounds (including null).
+    #[error("virtual address is invalid")]
     BadAddress,
     /// The operation is not allowed, e.g., trying to write to read-only memory.
+    #[error("virtual memory access is denied")]
     AccessDenied,
     /// The C-style string or array is too long.
     ///
     /// This error is returned by [`vm_load_until_nul`] when the null terminator
     /// is not found within a predefined search limit.
     #[cfg(feature = "alloc")]
+    #[error("virtual memory input is too long")]
     TooLong,
-}
-
-impl From<VmError> for AxError {
-    fn from(err: VmError) -> Self {
-        match err {
-            VmError::BadAddress | VmError::AccessDenied => AxError::BadAddress,
-            #[cfg(feature = "alloc")]
-            VmError::TooLong => AxError::NameTooLong,
-        }
-    }
 }
 
 /// A result type for virtual memory operations.

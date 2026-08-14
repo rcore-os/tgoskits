@@ -1,6 +1,5 @@
 use core::{future::poll_fn, task::Poll};
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{
     current,
@@ -15,6 +14,7 @@ use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
+    Errno, StarryError, StarryResult,
     task::{
         AsThread, block_next_signal, check_signals, get_process_cred, processes,
         send_signal_to_process, send_signal_to_thread,
@@ -22,17 +22,17 @@ use crate::{
     time::TimeValueLike,
 };
 
-pub(crate) fn check_sigset_size(size: usize) -> AxResult<()> {
+pub(crate) fn check_sigset_size(size: usize) -> StarryResult<()> {
     // Align with Linux raw syscall semantics (for ABI param 'sigmask'): when sigsetsize is checked,
     // it must exactly match the kernel SignalSet size (8 bytes).
     if size != size_of::<SignalSet>() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(())
 }
 
-fn parse_signo(signo: u32) -> AxResult<Signo> {
-    Signo::from_repr(signo as u8).ok_or(AxError::InvalidInput)
+fn parse_signo(signo: u32) -> StarryResult<Signo> {
+    Signo::from_repr(signo as u8).ok_or(StarryError::InvalidInput)
 }
 
 pub fn sys_rt_sigprocmask(
@@ -40,7 +40,7 @@ pub fn sys_rt_sigprocmask(
     set: *const SignalSet,
     oldset: *mut SignalSet,
     sigsetsize: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     check_sigset_size(sigsetsize)?;
 
     let curr = current();
@@ -58,7 +58,7 @@ pub fn sys_rt_sigprocmask(
             SIG_BLOCK => old | set,
             SIG_UNBLOCK => old & !set,
             SIG_SETMASK => set,
-            _ => return Err(AxError::InvalidInput),
+            _ => return Err(StarryError::InvalidInput),
         };
 
         debug!("sys_rt_sigprocmask <= {set:?}");
@@ -73,28 +73,28 @@ pub fn sys_rt_sigaction(
     act: *const kernel_sigaction,
     oldact: *mut kernel_sigaction,
     sigsetsize: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     check_sigset_size(sigsetsize)?;
 
     let signo = parse_signo(signo)?;
     if matches!(signo, Signo::SIGKILL | Signo::SIGSTOP) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
-    current()
+    Ok(current()
         .as_thread()
         .proc_data
         .signal
-        .set_action(signo, act, oldact)
+        .set_action(signo, act, oldact)?)
 }
 
-pub fn sys_rt_sigpending(set: *mut SignalSet, sigsetsize: usize) -> AxResult<isize> {
+pub fn sys_rt_sigpending(set: *mut SignalSet, sigsetsize: usize) -> StarryResult<isize> {
     check_sigset_size(sigsetsize)?;
     set.vm_write(current().as_thread().signal.pending())?;
     Ok(0)
 }
 
-pub(crate) fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>> {
+pub(crate) fn make_siginfo(signo: u32, code: i32) -> StarryResult<Option<SignalInfo>> {
     if signo == 0 {
         return Ok(None);
     }
@@ -120,7 +120,7 @@ pub(crate) fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>
 /// TODO: SIGCONT is allowed to any process in the same session (job control).
 /// Implementing this requires passing the signal number into this function
 /// and checking session membership.
-pub(crate) fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
+pub(crate) fn check_kill_permission(target_pid: Pid) -> StarryResult<()> {
     let sender = current().as_thread().cred();
     if sender.euid == 0 {
         return Ok(());
@@ -140,14 +140,14 @@ pub(crate) fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
     {
         Ok(())
     } else {
-        Err(AxError::OperationNotPermitted)
+        Err(StarryError::OperationNotPermitted)
     }
 }
 
 /// Send a signal to each member of a process group, checking
 /// per-member permission. EPERM for individual members is swallowed
 /// (matches Linux behavior).
-fn kill_process_group_checked(pgid: Pid, sig: Option<SignalInfo>) -> AxResult<()> {
+fn kill_process_group_checked(pgid: Pid, sig: Option<SignalInfo>) -> StarryResult<()> {
     let pg = crate::task::get_process_group(pgid)?;
     if let Some(sig) = sig {
         for proc in pg.processes() {
@@ -159,7 +159,7 @@ fn kill_process_group_checked(pgid: Pid, sig: Option<SignalInfo>) -> AxResult<()
     Ok(())
 }
 
-pub fn sys_kill(pid: i32, signo: u32) -> AxResult<isize> {
+pub fn sys_kill(pid: i32, signo: u32) -> StarryResult<isize> {
     debug!("sys_kill: pid = {pid}, signo = {signo}");
     let sig = make_siginfo(signo, SI_USER as _)?;
 
@@ -211,9 +211,9 @@ pub fn sys_kill(pid: i32, signo: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_tkill(tid: i32, signo: u32) -> AxResult<isize> {
+pub fn sys_tkill(tid: i32, signo: u32) -> StarryResult<isize> {
     if tid <= 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let tid = tid as Pid;
     check_kill_permission(tid)?;
@@ -222,7 +222,7 @@ pub fn sys_tkill(tid: i32, signo: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_tgkill(tgid: Pid, tid: Pid, signo: u32) -> AxResult<isize> {
+pub fn sys_tgkill(tgid: Pid, tid: Pid, signo: u32) -> StarryResult<isize> {
     check_kill_permission(tgid)?;
     let sig = make_siginfo(signo, SI_TKILL)?;
     send_signal_to_thread(Some(tgid), tid, sig)?;
@@ -233,7 +233,7 @@ pub(crate) fn make_queue_signal_info(
     tgid: Pid,
     signo: u32,
     sig: *const SignalInfo,
-) -> AxResult<Option<SignalInfo>> {
+) -> StarryResult<Option<SignalInfo>> {
     if signo == 0 {
         return Ok(None);
     }
@@ -244,7 +244,7 @@ pub(crate) fn make_queue_signal_info(
     if current().as_thread().proc_data.proc.pid() != tgid
         && (sig.code() >= 0 || sig.code() == SI_TKILL)
     {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
     Ok(Some(sig))
 }
@@ -254,7 +254,7 @@ pub fn sys_rt_sigqueueinfo(
     signo: u32,
     sig: *const SignalInfo,
     sigsetsize: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     check_sigset_size(sigsetsize)?;
 
     let sig = make_queue_signal_info(tgid, signo, sig)?;
@@ -268,7 +268,7 @@ pub fn sys_rt_tgsigqueueinfo(
     signo: u32,
     sig: *const SignalInfo,
     sigsetsize: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     check_sigset_size(sigsetsize)?;
 
     let sig = make_queue_signal_info(tgid, signo, sig)?;
@@ -276,7 +276,7 @@ pub fn sys_rt_tgsigqueueinfo(
     Ok(0)
 }
 
-pub fn sys_rt_sigreturn(uctx: &mut UserContext) -> AxResult<isize> {
+pub fn sys_rt_sigreturn(uctx: &mut UserContext) -> StarryResult<isize> {
     block_next_signal();
     current().as_thread().signal.restore(uctx)?;
     Ok(uctx.retval() as isize)
@@ -288,7 +288,7 @@ pub fn sys_rt_sigtimedwait(
     info: *mut siginfo,
     timeout: *const timespec,
     sigsetsize: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     check_sigset_size(sigsetsize)?;
 
     let set = unsafe { set.vm_read_uninit()?.assume_init() };
@@ -314,7 +314,7 @@ pub fn sys_rt_sigtimedwait(
     // discard them as default-ignore (e.g. SIGCHLD/SIGURG).
     *signal.sigwait_set.lock() = Some(set);
 
-    uctx.set_retval(-LinuxError::EINTR.code() as usize);
+    uctx.set_retval(-Errno::EINTR.into_raw() as usize);
     let fut = poll_fn(|cx| {
         if let Some(sig) = signal.dequeue_signal(&set) {
             Poll::Ready(Some(sig))
@@ -329,7 +329,7 @@ pub fn sys_rt_sigtimedwait(
     let Ok(sig) = block_on(future::timeout(timeout, fut)) else {
         // Timeout
         *signal.sigwait_set.lock() = None;
-        return Err(AxError::WouldBlock);
+        return Err(StarryError::WouldBlock);
     };
     let Some(sig) = sig else {
         // Interrupted
@@ -350,7 +350,7 @@ pub fn sys_rt_sigsuspend(
     uctx: &mut UserContext,
     set: *const SignalSet,
     sigsetsize: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     check_sigset_size(sigsetsize)?;
 
     let curr = current();
@@ -361,7 +361,7 @@ pub fn sys_rt_sigsuspend(
 
     // sigsuspend always returns -EINTR when a signal is caught
     // We set this in uctx before check_signals so it's saved in SignalFrame
-    uctx.set_retval(-LinuxError::EINTR.code() as usize);
+    uctx.set_retval(-Errno::EINTR.into_raw() as usize);
 
     block_on(poll_fn(|cx| {
         if check_signals(thr, uctx, Some(old_blocked), None) {
@@ -372,10 +372,10 @@ pub fn sys_rt_sigsuspend(
     }));
 
     // sigsuspend always returns -EINTR
-    Err(AxError::Interrupted)
+    Err(StarryError::Interrupted)
 }
 
-pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> AxResult<isize> {
+pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> StarryResult<isize> {
     let curr = current();
     let sig = &curr.as_thread().signal;
 
@@ -386,13 +386,13 @@ pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> AxRe
     if let Some(ss) = ss.nullable() {
         let ss = unsafe { ss.vm_read_uninit()?.assume_init() };
         if sig.stack_active() {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         if ss.flags & !(SS_DISABLE | SS_ONSTACK | SS_FLAG_BITS) != 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if ss.flags & SS_DISABLE == 0 && ss.size < MINSIGSTKSZ as usize {
-            return Err(AxError::NoMemory);
+            return Err(StarryError::NoMemory);
         }
         sig.set_stack(ss);
     }

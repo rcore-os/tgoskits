@@ -1,43 +1,62 @@
 //! Special devices
 
 mod card0;
+
 #[cfg(feature = "rknpu")]
 mod card1;
 // The real contiguous coherent dma-heap is shared by every accelerator that
 // exchanges buffers (JPU / NPU / RGA).
 #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 mod dmaheap;
+
 mod drm;
+
 #[cfg(feature = "input")]
 pub mod event;
+
 mod fb;
+
 #[cfg(feature = "sg2002")]
 pub mod ion;
+
 mod kmsg;
+
 #[cfg(feature = "k230-kpu")]
 mod kpu;
+
 #[cfg(feature = "dev-log")]
 mod log;
+
 mod r#loop;
+
 #[cfg(feature = "memtrack")]
 mod memtrack;
+
 #[cfg(feature = "jpeg")]
 mod mpp_service;
+
 #[cfg(feature = "sg2002")]
 mod pinmux;
+
 #[cfg(any(feature = "sg2002", feature = "rk3588-pwm"))]
 pub(super) mod pwm;
+
 #[cfg(feature = "rga")]
 pub(crate) mod rga;
+
 mod rtc;
+
 #[cfg(feature = "sg2002")]
 pub mod tpu;
+
 pub mod tty;
 
 #[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_jpu;
+
 #[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_usb_camera;
+
 #[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_vdec;
 
@@ -47,9 +66,8 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ax_errno::AxError;
 use ax_lazyinit::OnceLock;
-use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsError, VfsResult};
 
 use crate::sync::Mutex;
 
@@ -64,6 +82,7 @@ use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, Simple
 const RANDOM_SEED_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0xa076_1d64_78bd_642f);
+
 static INITIAL_PTS_INSTANCE: OnceLock<Arc<tty::PtsInstance>> = OnceLock::new();
 
 #[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
@@ -159,11 +178,11 @@ struct RootBlk;
 
 impl DeviceOps for RootBlk {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::Io)
+        Err(VfsError::Io)
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::Io)
+        Err(VfsError::Io)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -386,7 +405,7 @@ impl DeviceOps for Full {
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::StorageFull)
+        Err(VfsError::StorageFull)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -402,7 +421,7 @@ struct CpuDmaLatency;
 
 impl DeviceOps for CpuDmaLatency {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::InvalidInput)
+        Err(VfsError::InvalidInput)
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
