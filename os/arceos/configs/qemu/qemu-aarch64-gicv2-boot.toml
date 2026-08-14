@@ -1,0 +1,17 @@
+args = [
+  "-machine", "virt,gic-version=2",
+  "-cpu", "cortex-a72",
+  "-m", "512M",
+  "-smp", "4",
+  "-nographic",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/arceos-aarch64-fat32.img",
+  "-device", "virtio-net-pci,netdev=net0",
+  "-netdev", "user,id=net0",
+  "-serial", "mon:stdio",
+]
+uefi = false
+to_bin = true
+success_regex = ["(?m)^Hello, world!\\s*$"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 60

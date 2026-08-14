@@ -118,6 +118,40 @@ mod vm_mem_config_vec_serde {
     }
 }
 
+mod guest_type_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+    use super::*;
+
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum GuestTypeInput {
+        Named(GuestType),
+        LegacyVmType(u8),
+    }
+
+    pub fn serialize<S>(value: &GuestType, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        value.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<GuestType, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match GuestTypeInput::deserialize(deserializer)? {
+            GuestTypeInput::Named(guest_type) => Ok(guest_type),
+            GuestTypeInput::LegacyVmType(0 | 1) => Ok(GuestType::Passthrough),
+            GuestTypeInput::LegacyVmType(2) => Ok(GuestType::Virtualized),
+            GuestTypeInput::LegacyVmType(value) => Err(de::Error::custom(alloc::format!(
+                "unsupported legacy vm_type {value}"
+            ))),
+        }
+    }
+}
+
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum VMBootProtocolSerde {
@@ -230,6 +264,8 @@ pub struct VMBaseConfig {
     /// VM name.
     pub name: String,
     /// Guest address-space and physical-device assignment model.
+    #[serde(alias = "vm_type", with = "guest_type_serde")]
+    #[cfg_attr(all(feature = "std", any(windows, unix)), schemars(with = "GuestType"))]
     pub guest_type: GuestType,
     // Resources.
     /// The number of virtual CPUs.
@@ -532,6 +568,11 @@ impl GuestDevices {
             .map(|device| vec![device.path.clone()])
             .collect()
     }
+
+    /// Returns virtual device requests from the structured model catalog.
+    pub fn virtual_device_requests(&self) -> &[VirtualDeviceRequest] {
+        &self.virtual_devices
+    }
 }
 
 /// Open configuration boundary for one code-registered virtual-device model.
@@ -602,6 +643,8 @@ impl VirtualDeviceRequest {
             "irq_id",
             "base_gpa",
             "base_hpa",
+            "legacy_base_gpa",
+            "legacy_length",
             "mmio_base",
             "pio_base",
             "msi_device_id",

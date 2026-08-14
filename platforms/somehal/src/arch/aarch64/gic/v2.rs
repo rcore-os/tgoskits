@@ -68,13 +68,12 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
     let mut gic = unsafe { Gic::new(gicd.as_ptr().into(), gicr.as_ptr().into(), hyper) };
     gic.set_cpu_target_map(&CPU_TARGETS);
-    let cpu = gic.cpu_interface();
-    let boot_target = discover_cpu_target(&cpu).map_err(|error| {
+    gic.try_init().map_err(|error| {
         OnProbeError::other(format!(
             "failed to discover boot GICv2 CPU target: {error:?}"
         ))
     })?;
-    gic.init(boot_target);
+    let cpu = gic.cpu_interface();
     let trap = cpu.trap_operations();
     CPU_IF.init(cpu);
     TRAP.init(trap);
@@ -147,7 +146,7 @@ pub fn init_cpu(cpu_idx: usize) {
         panic!("failed to resolve hardware ID for logical CPU {cpu_idx}: {error:?}")
     });
     CPU_TARGETS
-        .record(cpu_idx, hardware_cpu_id, target)
+        .record_cpu_interface_target(cpu_idx, hardware_cpu_id, target)
         .unwrap_or_else(|error| {
             panic!(
                 "failed to record GICv2 route for logical CPU {cpu_idx}, hardware CPU \
@@ -229,11 +228,7 @@ pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) -> Result<(), crate::
         crate::irq::IpiTarget::Current => SGITarget::Current,
         crate::irq::IpiTarget::Cpu(cpu) => match cpu_target(cpu.0) {
             Some(CpuInterfaceTarget::Explicit(target)) => SGITarget::TargetList(target),
-            Some(CpuInterfaceTarget::ImplicitUniprocessor)
-                if someboot::smp::runtime_cpu_count() == 1 =>
-            {
-                SGITarget::Current
-            }
+            Some(CpuInterfaceTarget::ImplicitUniprocessor) => SGITarget::Current,
             _ => return Err(crate::irq::IrqError::InvalidCpu),
         },
     };
@@ -246,9 +241,9 @@ pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) -> Result<(), crate::
 }
 
 fn discover_cpu_target(cpu: &CpuInterface) -> Result<CpuInterfaceTarget, CpuTargetDiscoveryError> {
-    cpu.discover_target(someboot::smp::runtime_cpu_count())
+    cpu.discover_target()
 }
 
 pub(super) fn cpu_target(cpu_idx: usize) -> Option<CpuInterfaceTarget> {
-    CPU_TARGETS.for_logical_cpu(cpu_idx)
+    CPU_TARGETS.cpu_interface_target_for_logical_cpu(cpu_idx)
 }

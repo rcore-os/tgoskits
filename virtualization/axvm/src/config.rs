@@ -99,6 +99,7 @@ pub struct AxVMConfig {
     boot_policy: GuestBootPolicy,
     // Physical interrupt sources forwarded to the guest in passthrough mode.
     passthrough_irq_list: Vec<PassthroughInterrupt>,
+    excluded_passthrough_irq_sources: Vec<u32>,
     serial_profile: GuestSerialProfile,
     serial_firmware_identity: Option<GuestSerialFirmwareIdentity>,
     gic_profile: Option<GuestGicProfile>,
@@ -154,6 +155,7 @@ impl AxVMConfig {
             memory_regions: params.memory_regions,
             boot_policy: params.boot_policy,
             passthrough_irq_list: Vec::new(),
+            excluded_passthrough_irq_sources: Vec::new(),
             serial_profile,
             serial_firmware_identity: None,
             gic_profile: machine.gic,
@@ -310,6 +312,9 @@ impl AxVMConfig {
 
     /// Adds a physical interrupt source forwarded to the guest.
     pub fn add_pass_through_irq(&mut self, source: u32, trigger: InterruptTriggerMode) {
+        if self.excluded_passthrough_irq_sources.contains(&source) {
+            return;
+        }
         let route = PassthroughInterrupt { source, trigger };
         if let Some(existing) = self
             .passthrough_irq_list
@@ -325,6 +330,20 @@ impl AxVMConfig {
     /// Returns the physical interrupt sources forwarded to the guest.
     pub fn pass_through_irqs(&self) -> &[PassthroughInterrupt] {
         &self.passthrough_irq_list
+    }
+
+    /// Removes a physical interrupt source from passthrough assignment.
+    pub fn exclude_pass_through_irq_source(&mut self, source: u32) {
+        if !self.excluded_passthrough_irq_sources.contains(&source) {
+            self.excluded_passthrough_irq_sources.push(source);
+        }
+        self.passthrough_irq_list
+            .retain(|interrupt| interrupt.source != source);
+    }
+
+    /// Returns physical interrupt sources removed from passthrough assignment.
+    pub fn excluded_passthrough_irq_sources(&self) -> &[u32] {
+        &self.excluded_passthrough_irq_sources
     }
 
     /// Returns whether the guest address space starts from host identity mappings.

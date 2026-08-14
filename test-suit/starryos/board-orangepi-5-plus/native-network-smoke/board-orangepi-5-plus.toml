@@ -11,35 +11,36 @@ ok=1
 
 echo RTL8125_NET_TEST_PASSED
 
+server_ip='${boardServerIp}'
 url='${sessionFile:iperf-smoke.sh}'
 script=/tmp/iperf-smoke.sh
-network_ready=0
-for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
-  ip_addr_out="$(ip addr show dev eth0 2>&1 || true)"
-  echo "$ip_addr_out"
-  if echo "$ip_addr_out" | grep -q 'inet 192\.168\.1\.'; then
-    network_ready=1
+
+download_script() {
+  if command -v curl >/dev/null 2>&1; then
+    curl --connect-timeout 2 --max-time 5 -fsSL "$url" -o "$script"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -T 5 -O "$script" "$url"
+  else
+    return 1
+  fi
+}
+
+downloaded=0
+attempt=1
+while [ "$attempt" -le 30 ]; do
+  if download_script; then
+    downloaded=1
     break
   fi
   sleep 1
+  attempt=$((attempt + 1))
 done
-if [ "$network_ready" != "1" ]; then
+if [ "$downloaded" != "1" ]; then
   echo "${iperf_marker}_FAILED"
   ok=0
-else
-  downloaded=0
-  if command -v curl >/dev/null 2>&1; then
-    curl --connect-timeout 10 --max-time 30 -fsSL "$url" -o "$script" && downloaded=1
-  elif command -v wget >/dev/null 2>&1; then
-    wget -T 30 -O "$script" "$url" && downloaded=1
-  fi
-  if [ "$downloaded" != "1" ]; then
-    echo "${iperf_marker}_FAILED"
-    ok=0
-  elif ! chmod +x "$script" || ! "$script" '${boardServerIp}' 5201; then
-    echo "${iperf_marker}_FAILED"
-    ok=0
-  fi
+elif ! chmod +x "$script" || ! "$script" "$server_ip"; then
+  echo "${iperf_marker}_FAILED"
+  ok=0
 fi
 
 printf '\n%s_BEGIN\n' "$rtnl_marker"

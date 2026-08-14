@@ -1,23 +1,26 @@
 #!/bin/sh
 set -u
 
-fail() {
+if [ "$#" -ne 1 ] || [ -z "$1" ]; then
+    echo "iperf-smoke: usage: $0 <server-ip>"
+    echo STARRY_IPERF_SMOKE_FAILED
+    exit 1
+fi
+
+command -v iperf3 >/dev/null 2>&1 || {
+    echo "iperf-smoke: iperf3 is not installed"
     echo STARRY_IPERF_SMOKE_FAILED
     exit 1
 }
 
-[ "$#" -eq 2 ] || fail
 server_ip=$1
-server_port=$2
 
-command -v iperf3 >/dev/null 2>&1 || fail
+printf '\n=== iperf3 network smoke ===\n\n'
+printf 'iperf3 -c %s -t 3 -O 1 -P 1 -l 128K\n\n' "$server_ip"
 
-result=/tmp/iperf-smoke.json
-if ! iperf3 --client "$server_ip" --port "$server_port" --udp --bitrate 1M --time 2 --json >"$result" 2>&1; then
-    cat "$result"
-    fail
+if iperf3 -c "$server_ip" -t 3 -O 1 -P 1 -l 128K; then
+    printf '\nSTARRY_IPERF_SMOKE_PASSED\n'
+else
+    printf '\nSTARRY_IPERF_SMOKE_FAILED\n'
+    exit 1
 fi
-
-[ -s "$result" ] || fail
-cat "$result"
-echo STARRY_IPERF_SMOKE_OK

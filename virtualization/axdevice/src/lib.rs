@@ -41,7 +41,6 @@ mod model;
 #[cfg(any(target_arch = "loongarch64", test))]
 #[cfg_attr(test, allow(dead_code))]
 mod loongarch_pch_pic;
-mod range_alloc;
 mod registration;
 mod resources;
 mod runtime_resources;
@@ -77,7 +76,6 @@ pub use loongarch_pch_pic::{
     PchPicOutputPort, PchPicOutputPortKey,
 };
 pub use model::{DeviceFirmwareProperty, DeviceFirmwareSpec, DeviceModel};
-pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey, GuestRangePool};
 pub use registration::{
     DeviceBundle, DeviceLifecycle, DeviceRegistration, DmaPollableDeviceOps, PollableDeviceOps,
 };

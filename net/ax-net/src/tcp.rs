@@ -54,7 +54,10 @@ use crate::{
     general::GeneralOptions,
     get_control, get_service, interface_by_id,
     ip_tos::{EgressIpTosKey, clear_egress_ip_tos, set_egress_ip_tos},
-    options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
+    options::{
+        Configurable, GetSocketOption, SetSocketOption, TcpCongestionControl, TcpInfo,
+        TcpInfoOptions, TcpState,
+    },
     request_poll,
     state::*,
 };
@@ -392,6 +395,12 @@ impl Configurable for TcpSocket {
             O::TcpInfo(info) => {
                 **info = self.tcp_info_snapshot();
             }
+            O::TcpCongestionControl(congestion_control) => {
+                **congestion_control =
+                    self.with_smol_socket(|socket| match socket.congestion_control() {
+                        smol::CongestionControl::None => TcpCongestionControl::None,
+                    });
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -451,6 +460,13 @@ impl Configurable for TcpSocket {
             O::TcpUserTimeout(user_timeout) => {
                 self.user_timeout_millis
                     .store(*user_timeout, Ordering::Relaxed);
+            }
+            O::TcpCongestionControl(congestion_control) => {
+                self.with_smol_socket(|socket| match congestion_control {
+                    TcpCongestionControl::None => {
+                        socket.set_congestion_control(smol::CongestionControl::None);
+                    }
+                });
             }
             _ => return Ok(false),
         }
@@ -1206,6 +1222,25 @@ mod tests {
         assert_eq!(info.snd_cwnd, 0);
         assert_eq!(info.rcv_space, 0);
         assert_eq!(info.rcv_wnd, 0);
+    }
+
+    #[test]
+    fn tcp_congestion_control_reports_and_accepts_active_algorithm() {
+        let _guard = network_test_guard();
+        init_split_route_network();
+
+        let socket = TcpSocket::new();
+        let mut congestion_control = TcpCongestionControl::default();
+        socket
+            .get_option(GetSocketOption::TcpCongestionControl(
+                &mut congestion_control,
+            ))
+            .unwrap();
+        assert_eq!(congestion_control, TcpCongestionControl::None);
+
+        socket
+            .set_option(SetSocketOption::TcpCongestionControl(&congestion_control))
+            .unwrap();
     }
 
     #[test]

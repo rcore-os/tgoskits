@@ -185,6 +185,7 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
     let serial_profile = machine.serial;
     let mut passthrough_devices = cfg.devices.unresolved_host_devices();
     if cfg.base.guest_type == GuestType::Passthrough
+        && passthrough_devices.is_empty()
         && let Some(path) = machine.default_passthrough_device_path
     {
         passthrough_devices.insert(
@@ -234,7 +235,7 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
         boot_policy: GuestBootPolicy::KeepConfigured,
         serial_profile: Some(serial_profile),
         serial_backend_factory: Some(crate::guest_console::serial_backend_factory(cfg.base.id)),
-        virtual_device_requests: cfg.devices.virtual_devices.clone(),
+        virtual_device_requests: cfg.devices.virtual_device_requests().to_vec(),
         virtual_device_catalog: Some(alloc::sync::Arc::new(virtual_device_catalog)),
     })
 }
@@ -350,15 +351,5 @@ mod tests {
         assert_eq!(regions[1].gpa, 0x110000);
         assert_eq!(regions[1].size, 0x10000);
         assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
-    }
-
-    #[test]
-    fn build_axvm_config_copies_explicit_passthrough_irqs() {
-        let mut crate_config = AxVMCrateConfig::default();
-        crate_config.devices.passthrough_irqs = vec![4, 4, 17];
-
-        let vm_config = build_axvm_config(&crate_config);
-
-        assert_eq!(vm_config.pass_through_irqs(), &vec![4, 17]);
     }
 }

@@ -7,7 +7,7 @@ use std::{
         api::task::{AxCpuMask, ax_set_current_affinity},
         modules::{
             ax_hal::{self, irq::CpuId, percpu::this_cpu_id},
-            ax_ipi,
+            ax_ipi::{self, IpiNotification},
         },
         task::WaitQueue,
     },
@@ -23,6 +23,8 @@ const CALLBACKS_PER_SENDER: usize = 16;
 const TEST_ROUNDS: usize = 2;
 const IDLE_WAKE_POLLS: usize = 100_000;
 const POST_IPI_WAITER_COUNT: usize = 16;
+const STALL_POLLS: usize = 200;
+const POLL_INTERVAL_MS: u64 = 1;
 
 static TARGET_CPU: AtomicUsize = AtomicUsize::new(0);
 static SENT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
@@ -202,6 +204,56 @@ fn verify_wait_queue_deadlines_during_ipi(target_cpu: usize) {
     }
 }
 
+fn wait_for_callbacks_or_stall(expected: usize) -> bool {
+    let mut last_executed = EXECUTED_CALLBACKS.load(Ordering::Acquire);
+    let mut stalled_polls = 0;
+
+    loop {
+        let executed = EXECUTED_CALLBACKS.load(Ordering::Acquire);
+        if executed == expected {
+            return true;
+        }
+
+        if executed == last_executed {
+            stalled_polls += 1;
+            if stalled_polls >= STALL_POLLS {
+                return false;
+            }
+        } else {
+            last_executed = executed;
+            stalled_polls = 0;
+        }
+
+        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+    }
+}
+
+fn wait_for_fresh_self_ipi(cpu_id: usize) -> bool {
+    for _ in 0..STALL_POLLS {
+        match ax_ipi::notify_cpu(CpuId(cpu_id)).expect("failed to send self IPI") {
+            IpiNotification::Sent => return true,
+            IpiNotification::Coalesced => {
+                thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+            }
+        }
+    }
+    false
+}
+
+fn verify_self_ipi_delivery(cpu_id: usize) {
+    pin_current_to_cpu(cpu_id);
+    // A second fresh send is possible only after the handler claims the first
+    // physical self-SGI; an undelivered edge remains coalesced indefinitely.
+    assert!(
+        wait_for_fresh_self_ipi(cpu_id),
+        "could not send a fresh self IPI to CPU {cpu_id}"
+    );
+    assert!(
+        wait_for_fresh_self_ipi(cpu_id),
+        "self IPI was not claimed on CPU {cpu_id}"
+    );
+}
+
 pub fn run() -> crate::TestResult {
     let cpu_num = thread::available_parallelism().unwrap().get();
     if cpu_num < 2 {
@@ -217,6 +269,7 @@ pub fn run() -> crate::TestResult {
 
     TARGET_CPU.store(target_cpu, Ordering::Relaxed);
     exercise_irq_masked_idle_wake(target_cpu, sender_cpus[0]);
+    verify_self_ipi_delivery(sender_cpus[0]);
 
     for round in 0..TEST_ROUNDS {
         TARGET_CPU.store(target_cpu, Ordering::Relaxed);
@@ -272,13 +325,11 @@ pub fn run() -> crate::TestResult {
 
         let expected = sender_cpus.len() * CALLBACKS_PER_SENDER;
         assert_eq!(SENT_CALLBACKS.load(Ordering::Relaxed), expected);
-        while EXECUTED_CALLBACKS.load(Ordering::Acquire) != expected {
-            thread::yield_now();
-        }
-        assert_eq!(
-            EXECUTED_CALLBACKS.load(Ordering::Acquire),
-            expected,
-            "all asynchronous callbacks must complete in round {round}"
+        assert!(
+            wait_for_callbacks_or_stall(expected),
+            "IPI callbacks stalled at {}/{} in round {round}",
+            EXECUTED_CALLBACKS.load(Ordering::Relaxed),
+            expected
         );
         assert_eq!(
             EXECUTED_HARD_CALLS.load(Ordering::Relaxed),
@@ -301,6 +352,11 @@ pub fn run() -> crate::TestResult {
     .expect("failed to execute IPI hard call");
     assert_eq!(EXECUTED_HARD_CALLS.load(Ordering::Relaxed), 1);
     verify_wait_queue_deadlines_during_ipi(target_cpu);
+
+    println!(
+        "task_ipi: verified self delivery on CPU {} and remote delivery on CPU {target_cpu}",
+        sender_cpus[0]
+    );
 
     Ok(())
 }

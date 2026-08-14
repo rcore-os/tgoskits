@@ -1,0 +1,26 @@
+[package]
+name = "arceos-ivc-publisher"
+version = "0.1.0"
+edition.workspace = true
+authors = ["AxVisor Team"]
+publish = false
+
+[features]
+default = []
+arceos = [
+  "dep:ax-mm",
+  "dep:ax-std",
+  "ax-std/irq",
+  "ax-std/paging",
+  "ax-std/alloc",
+  "ax-std/multitask",
+]
+
+[dependencies]
+ax-mm = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true }
+axhvc = { workspace = true }
+axivc = { workspace = true }
+
+[package.metadata.axstd]
+features = ["log-level-info"]

@@ -379,7 +379,7 @@ fn physical_spi_target(
             })?;
             let target = try_with_gic("target assigned physical interrupt", |intc| {
                 intc.typed_mut::<arm_gic_driver::v2::Gic>()
-                    .and_then(|gic| gic.target_for_hardware_cpu(hardware_cpu_id))
+                    .and_then(|gic| gic.cpu_interface_target_for_hardware_cpu(hardware_cpu_id))
             })?
             .ok_or_else(|| {
                 GicV3BackendError::new(

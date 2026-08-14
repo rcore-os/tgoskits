@@ -1,0 +1,37 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-blk-device,drive=guestdisk",
+    "-drive",
+    "id=guestdisk,if=none,format=raw,snapshot=on,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-append",
+    "root=/dev/nvme0n1 rw init=/bin/sh",
+    "-m",
+    "8g",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)unhandled page fault",
+    "(?i)page fault",
+    "ivc publish failed",
+    "(?m)^linux ivc demo failed\\s*$",
+]
+# Concurrent console streams may prepend ANSI SGR resets to a completion line.
+success_regex = [
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?linux ivc recv 5/5: hello from arceos publisher\\s*$",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?linux ivc demo pass\\s*$",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?ivc ack seq=5 msg=ack from linux subscriber\\s*$",
+]
+to_bin = true
+uefi = false

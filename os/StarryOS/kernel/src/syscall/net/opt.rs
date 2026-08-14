@@ -3,13 +3,16 @@ use alloc::vec;
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_net::{
     InterfaceId, SocketOps,
-    options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
+    options::{
+        Configurable, GetSocketOption, SetSocketOption, TcpCongestionControl, TcpInfo,
+        TcpInfoOptions, TcpState,
+    },
 };
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::net::{
-    AF_INET6, IP_TOS, IPPROTO_IPV6, IPV6_RECVTCLASS, IPV6_TCLASS, IPV6_V6ONLY, TCP_INFO,
-    TCPI_OPT_ECN, TCPI_OPT_ECN_SEEN, TCPI_OPT_SACK, TCPI_OPT_SYN_DATA, TCPI_OPT_TIMESTAMPS,
-    TCPI_OPT_WSCALE, socklen_t, tcp_info,
+    AF_INET6, IP_TOS, IPPROTO_IPV6, IPV6_RECVTCLASS, IPV6_TCLASS, IPV6_V6ONLY, TCP_CONGESTION,
+    TCP_INFO, TCPI_OPT_ECN, TCPI_OPT_ECN_SEEN, TCPI_OPT_SACK, TCPI_OPT_SYN_DATA,
+    TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE, socklen_t, tcp_info,
 };
 
 use crate::{
@@ -23,6 +26,9 @@ const PROTO_IP: u32 = linux_raw_sys::net::IPPROTO_IP as u32;
 
 const IP_TOS_ECN_MASK: u8 = 0x03;
 const IFNAMSIZ: usize = 16;
+
+// Linux stores congestion-control names in a fixed 16-byte field.
+const TCP_CA_NAME_MAX: usize = 16;
 
 fn read_int_sockopt(
     current: &crate::task::UserTaskRef,
@@ -189,6 +195,61 @@ fn write_tcp_info(
         optval.as_ptr(),
         &raw_bytes[..write_len],
     )?)
+}
+
+fn tcp_congestion_name(congestion_control: TcpCongestionControl) -> &'static [u8] {
+    match congestion_control {
+        TcpCongestionControl::None => b"none",
+    }
+}
+
+fn write_tcp_congestion(
+    current: &crate::task::UserTaskRef,
+    socket: &Socket,
+    optval: UserPtr<u8>,
+    optlen: &mut socklen_t,
+) -> AxResult<()> {
+    let mut congestion_control = TcpCongestionControl::default();
+    socket.get_option(GetSocketOption::TcpCongestionControl(
+        &mut congestion_control,
+    ))?;
+
+    let mut value = [0u8; TCP_CA_NAME_MAX];
+    let name = tcp_congestion_name(congestion_control);
+    value[..name.len()].copy_from_slice(name);
+
+    let write_len = (*optlen as usize).min(value.len());
+    *optlen = write_len as socklen_t;
+    if write_len != 0 {
+        vm_write_slice(current, optval.as_ptr(), &value[..write_len])?;
+    }
+    Ok(())
+}
+
+fn read_tcp_congestion(
+    current: &crate::task::UserTaskRef,
+    socket: &Socket,
+    optval: UserConstPtr<u8>,
+    optlen: socklen_t,
+) -> AxResult<TcpCongestionControl> {
+    if optlen == 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    // Linux reads at most TCP_CA_NAME_MAX - 1 bytes and appends a private
+    // terminator before looking up the requested algorithm.
+    let read_len = (optlen as usize).min(TCP_CA_NAME_MAX - 1);
+    let value = optval.read_slice(current, read_len)?;
+    let name_len = value.iter().position(|byte| *byte == 0).unwrap_or(read_len);
+    let requested_name = &value[..name_len];
+
+    let mut active = TcpCongestionControl::default();
+    socket.get_option(GetSocketOption::TcpCongestionControl(&mut active))?;
+    if requested_name == tcp_congestion_name(active) {
+        Ok(active)
+    } else {
+        Err(AxError::from(LinuxError::ENOENT))
+    }
 }
 
 fn ensure_ipv6_socket(socket: &Socket) -> AxResult<()> {
@@ -502,6 +563,12 @@ pub fn sys_getsockopt(
         return Ok(0);
     }
 
+    if level == PROTO_TCP && optname == TCP_CONGESTION {
+        write_tcp_congestion(current, &socket, optval, &mut optlen)?;
+        optlen_ptr.write(current, optlen)?;
+        return Ok(0);
+    }
+
     macro_rules! dispatch {
         ($which:ident) => {
             let mut val = Default::default();
@@ -626,6 +693,12 @@ pub fn sys_setsockopt(
     let socket = Socket::from_fd(fd)?;
     if level == PROTO_TCP && optname == TCP_INFO {
         return Err(AxError::from(LinuxError::ENOPROTOOPT));
+    }
+
+    if level == PROTO_TCP && optname == TCP_CONGESTION {
+        let congestion_control = read_tcp_congestion(current, &socket, optval, optlen)?;
+        socket.set_option(SetSocketOption::TcpCongestionControl(&congestion_control))?;
+        return Ok(0);
     }
 
     if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {

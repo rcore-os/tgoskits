@@ -112,18 +112,17 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     }
 
     let fdt = live_fdt()?;
-    let resources = collect_resources(info, &fdt)?;
+    let resources = collect_resources(info, fdt)?;
 
     enable_clocks(&resources.clocks)?;
 
     let ctrl = map_reg(resources.ctrl)?;
     let phy = map_reg(resources.usbdp.reg)?;
-    let u2phy_grf = map_phandle_reg(&fdt, resources.usbdp.u2phy_grf, "rockchip,u2phy-grf")?;
-    let usb_grf = map_phandle_reg(&fdt, resources.usbdp.usb_grf, "rockchip,usb-grf")?;
-    let usbdpphy_grf =
-        map_phandle_reg(&fdt, resources.usbdp.usbdpphy_grf, "rockchip,usbdpphy-grf")?;
-    let vo_grf = map_phandle_reg(&fdt, resources.usbdp.vo_grf, "rockchip,vo-grf")?;
-    let usb2phy_grf = map_phandle_reg(&fdt, resources.usb2.grf, "usb2phy-grf")?;
+    let u2phy_grf = map_phandle_reg(fdt, resources.usbdp.u2phy_grf, "rockchip,u2phy-grf")?;
+    let usb_grf = map_phandle_reg(fdt, resources.usbdp.usb_grf, "rockchip,usb-grf")?;
+    let usbdpphy_grf = map_phandle_reg(fdt, resources.usbdp.usbdpphy_grf, "rockchip,usbdpphy-grf")?;
+    let vo_grf = map_phandle_reg(fdt, resources.usbdp.vo_grf, "rockchip,vo-grf")?;
+    let usb2phy_grf = map_phandle_reg(fdt, resources.usb2.grf, "usb2phy-grf")?;
 
     let usb2_port = Usb2PhyPortId::from_node_name(&resources.usb2.port_name).ok_or_else(|| {
         OnProbeError::other(format!(
@@ -426,8 +425,8 @@ fn has_prop(node: &Node, names: &[&str]) -> bool {
     names.iter().any(|name| node.get_property(name).is_some())
 }
 
-fn live_fdt() -> Result<Fdt, OnProbeError> {
-    rdrive::with_fdt(Clone::clone).ok_or_else(|| OnProbeError::other("live FDT not found"))
+fn live_fdt() -> Result<&'static Fdt, OnProbeError> {
+    rdrive::fdt_ref().ok_or_else(|| OnProbeError::other("live FDT not found"))
 }
 
 fn map_phandle_reg(

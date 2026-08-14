@@ -507,6 +507,15 @@ jobs:
             limit_to_owner: ""
             main_pr_only: false
             download_xtask_bin_artifact: true
+          - name: Test axvisor qemu ivc
+            use_container: false
+            runs_on: '["self-hosted","linux","qcs"]'
+            self_hosted_owner: rcore-os
+            command: cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
+            cache_key: ""
+            container_image: base
+            limit_to_owner: ""
+            main_pr_only: false
           - name: Test starry riscv64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
@@ -520,7 +529,12 @@ jobs:
           - name: Test starry aarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: target/debug/tg-xtask starry test qemu --arch aarch64
+            command: |
+              echo "==> starry aarch64 GICv2 SMP4 boot"
+              target/debug/tg-xtask starry qemu --arch aarch64 --smp 4 \
+                --qemu-config os/StarryOS/configs/qemu/qemu-aarch64-gicv2-boot.toml
+              echo "==> starry aarch64 test suites"
+              target/debug/tg-xtask starry test qemu --arch aarch64
             cache_key: test-starry-aarch64
             container_image: base
             apk_region: us
@@ -565,11 +579,16 @@ jobs:
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
-          - name: Test arceos aarch64 qemu
+          - name: Test arceos aarch64 qemu (app + suites)
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: cargo xtask arceos test qemu --arch aarch64
+            command: |
+              echo "==> arceos aarch64 GICv2 SMP4 default app boot"
+              cargo xtask arceos qemu --arch aarch64 --smp 4 \
+                --qemu-config os/arceos/configs/qemu/qemu-aarch64-gicv2-boot.toml
+              echo "==> arceos aarch64 test suites (Rust GICv2 SMP4 IPI + C GICv3 SMP4)"
+              cargo xtask arceos test qemu --arch aarch64
             cache_key: ""
             container_image: base
             limit_to_owner: ""

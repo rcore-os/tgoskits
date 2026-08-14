@@ -61,9 +61,40 @@ fn planning_is_fixed_first_deterministic_and_reports_exhaustion() {
     ));
 }
 
+#[test]
+fn fixed_mmio_still_conflicts_with_reserved_guest_memory() {
+    let mut pools = ResourcePools::new();
+    pools.allow_fixed_mmio(0x8000_0000..0x8000_1000).unwrap();
+    pools
+        .reserve_mmio("guest-memory", 0x8000_0000..0x8000_1000)
+        .unwrap();
+
+    assert!(matches!(
+        VmResourcePlanner::new(pools)
+            .plan([mmio_request("bad-mmio", ResourceRequest::Fixed(0x8000_0000))])
+            .unwrap_err(),
+        ResourcePlanningError::Conflict {
+            namespace: ResourceNamespace::Mmio,
+            existing_owner,
+            requester,
+            ..
+        } if existing_owner == "guest-memory" && requester == "bad-mmio"
+    ));
+}
+
 fn irq_request(
     id: &str,
     controller: InterruptControllerId,
+    trigger: InterruptTrigger,
+    sharing: InterruptSharing,
+) -> DevicePlanRequest {
+    fixed_irq_request(id, controller, ControllerInputId::new(40), trigger, sharing)
+}
+
+fn fixed_irq_request(
+    id: &str,
+    controller: InterruptControllerId,
+    input: ControllerInputId,
     trigger: InterruptTrigger,
     sharing: InterruptSharing,
 ) -> DevicePlanRequest {
@@ -75,7 +106,7 @@ fn irq_request(
                 controller,
                 trigger,
                 sharing,
-                ResourceRequest::Fixed(ControllerInputId::new(40)),
+                ResourceRequest::Fixed(input),
             )
             .unwrap(),
     )
@@ -156,6 +187,29 @@ fn wired_irq_namespaces_and_sharing_are_checked() {
             ])
             .is_err()
     );
+}
+
+#[test]
+fn fixed_wired_irq_outside_controller_domain_is_rejected() {
+    let controller = InterruptControllerId::new(0);
+    let error = VmResourcePlanner::new(irq_pools(&[controller]))
+        .plan([fixed_irq_request(
+            "ivc0",
+            controller,
+            ControllerInputId::new(160),
+            InterruptTrigger::EdgeTriggered,
+            InterruptSharing::Exclusive,
+        )])
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ResourcePlanningError::FixedNotAllowed {
+            namespace: ResourceNamespace::ControllerInput(found),
+            requester,
+            ..
+        } if found == controller && requester == "ivc0"
+    ));
 }
 
 #[test]
