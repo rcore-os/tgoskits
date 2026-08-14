@@ -20,13 +20,11 @@
 
 static int fail(const char *operation)
 {
-    fprintf(
-        stderr,
-        "FAIL: %s errno=%d (%s)\n",
-        operation,
-        errno,
-        strerror(errno)
-    );
+    fputs("FAIL: ", stderr);
+    fputs(operation, stderr);
+    fputs(" errno=", stderr);
+    fputs(strerror(errno), stderr);
+    fputc('\n', stderr);
     puts("STARRY_GROUPED_TEST_FAILED: bugfix-alarm-syscall");
     return EXIT_FAILURE;
 }

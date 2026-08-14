@@ -8,6 +8,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 add_executable(bugfix-alarm-syscall src/main.c)
 target_compile_options(bugfix-alarm-syscall PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(bugfix-alarm-syscall PRIVATE pthread)
+target_link_options(bugfix-alarm-syscall PRIVATE -static)
 
 install(
     TARGETS bugfix-alarm-syscall
