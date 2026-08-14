@@ -314,6 +314,7 @@ device-specific drivers.
 - TLB refill entry and general exception entry use different registers and may require different address forms. Do not reuse a high-half virtual symbol where a physical TLB refill vector is required.
 - Relocated symbols must be resolved relative to the running image. In the LoongArch SMP path, the secondary exception vector had to use a runtime symbol helper such as `sym_running_addr!(__exception_vectors)`, while the TLB refill entry needed the corresponding physical address.
 - A secondary CPU can fault before it has a working serial path. Put markers before and after DMW setup, stack switch, page table register setup, trap-vector setup, and jump to the common secondary entry.
+- Coverage instrumentation also applies to low-level dependency crates. A pre-MMU secondary path must not call Rust helpers that can update final-address coverage counters; `#[coverage(off)]` is not transitive into callees. Keep page-table and exception-vector CSR writes in a shared, explicitly non-instrumented helper with no calls into instrumented register crates, then verify the final ELF has no profile-counter access in that path and run a real SMP QEMU regression.
 - Initialize trap vectors on every CPU, not only the boot CPU.
 - Flush or barrier boot arguments before the architecture CPU-on transport; otherwise secondaries can observe stale stack, page table, or per-CPU data.
 - Keep logical CPU ID mapping separate from firmware CPU IDs. LoongArch CPU IDs in firmware data are not guaranteed to be dense array indices.

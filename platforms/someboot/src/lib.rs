@@ -1,5 +1,6 @@
 #![no_std]
 #![cfg_attr(not(test), no_main)]
+#![cfg_attr(axtest_coverage, feature(coverage_attribute))]
 #![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
 #[allow(unused_imports)]

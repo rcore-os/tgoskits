@@ -1,7 +1,7 @@
 features = [
 ]
 log = "Info"
-max_cpu_num = 1
+max_cpu_num = 4
 
 [env]
 AXTEST_COVERAGE = "y"

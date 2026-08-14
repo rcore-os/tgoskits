@@ -1,8 +1,8 @@
 args = [
     "-m",
-    "256M",
+    "2G",
     "-smp",
-    "1",
+    "4",
     "-display",
     "none",
     "-serial",

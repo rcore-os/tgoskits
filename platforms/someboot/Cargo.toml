@@ -19,7 +19,7 @@ tls = []
 uspace = ["mmu"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(axtest_coverage)'] }
 
 [dependencies]
 acpi = "6.0.1"
