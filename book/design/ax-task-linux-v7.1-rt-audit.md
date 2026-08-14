@@ -1140,9 +1140,11 @@ tail，最终由 ax-task 正确拒绝在 `preempt_depth=1` 下阻塞。新路径
 
 GIC maintenance/physical IRQ 已经由硬件入口完成 claim，不能再次进入普通
 `handle_irq(vector)` 重复 ACK。四架构共用入口因此区分 raw vector 和 move-only
-`IrqId`：`handle_acknowledged_irq()` 只复用 IRQ entry、preemption guard 与 IRQ-return
-baton，控制器 claim/ACK/EOI 仍由原 owner 完成。调度工作只能在 guest ownership 释放后
-或统一 IRQ tail 消费。
+`IrqId`：`handle_acknowledged_irq()` 复用 IRQ entry、preemption guard 与 IRQ-return
+baton，并接收原 controller owner 的 completion closure。控制器 claim/ACK 仍由原 owner
+完成，但匹配 token 的 deactivate/EOI 必须在 hardirq exit 后、IRQ-return 调度前完成，
+不能跨越可能挂起当前栈的 preempt guard 释放。调度工作只能在 guest ownership 释放后或
+统一 IRQ tail 消费。
 
 Axvisor console 同样拆成三类独立生命周期：任务态 `ConsoleState` 管理 attach/running 与
 backend generation；vCPU callback 只向固定容量 `GuestOutputFrame` 队列执行一次有界
