@@ -86,7 +86,7 @@ pub(super) fn load_arceos_test_suit_qemu_case(
     feature: &str,
 ) -> anyhow::Result<ArceosRustQemuCase> {
     let build_config_path = arceos_test_suit_build_config_path(root, target)?;
-    let qemu_config_path = arceos_test_suit_qemu_config_path(root, arch)?;
+    let qemu_config_path = arceos_test_suit_case_qemu_config_path(root, arch, feature)?;
     let host_http_server = qemu_test::load_qemu_case_host_http_server(&qemu_config_path)?;
     Ok(ArceosRustQemuCase {
         case: TestQemuCase {
@@ -119,6 +119,22 @@ pub(super) fn arceos_test_suit_qemu_config_path(
     arch: &str,
 ) -> anyhow::Result<PathBuf> {
     qemu_config_path(root, arch, "ArceOS rust test suite")
+}
+
+pub(super) fn arceos_test_suit_case_qemu_config_path(
+    root: &Path,
+    arch: &str,
+    case: &str,
+) -> anyhow::Result<PathBuf> {
+    let case_path = root
+        .join("cases")
+        .join(case)
+        .join(qemu_test::qemu_config_name(arch));
+    if case_path.is_file() {
+        Ok(case_path)
+    } else {
+        arceos_test_suit_qemu_config_path(root, arch)
+    }
 }
 
 pub(super) fn selected_qemu_test_groups(
@@ -167,6 +183,8 @@ pub(super) fn selected_qemu_test_groups(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::tempdir;
 
     use super::*;
@@ -223,5 +241,33 @@ mod tests {
         .unwrap();
 
         assert_eq!(flows, &[QemuTestFlow::Rust, QemuTestFlow::C]);
+    }
+
+    #[test]
+    fn arceos_rust_case_prefers_its_qemu_config() {
+        let root = tempdir().unwrap();
+        let suite_config = root.path().join("qemu-riscv64.toml");
+        fs::write(&suite_config, "timeout = 120\n").unwrap();
+        let case_dir = root.path().join("cases/task-ipi");
+        fs::create_dir_all(&case_dir).unwrap();
+        let case_config = case_dir.join("qemu-riscv64.toml");
+        fs::write(&case_config, "timeout = 5\n").unwrap();
+
+        let selected =
+            arceos_test_suit_case_qemu_config_path(root.path(), "riscv64", "task-ipi").unwrap();
+
+        assert_eq!(selected, case_config);
+    }
+
+    #[test]
+    fn arceos_rust_case_falls_back_to_suite_qemu_config() {
+        let root = tempdir().unwrap();
+        let suite_config = root.path().join("qemu-riscv64.toml");
+        fs::write(&suite_config, "timeout = 120\n").unwrap();
+
+        let selected =
+            arceos_test_suit_case_qemu_config_path(root.path(), "riscv64", "task-yield").unwrap();
+
+        assert_eq!(selected, suite_config);
     }
 }

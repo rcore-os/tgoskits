@@ -53,7 +53,7 @@ fn counting_callback() {
         target_cpu,
         "IPI callback ran on the wrong CPU"
     );
-    EXECUTED_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+    EXECUTED_CALLBACKS.fetch_add(1, Ordering::Release);
 }
 
 unsafe fn counting_hard_call(argument: *mut ()) {
@@ -63,15 +63,15 @@ unsafe fn counting_hard_call(argument: *mut ()) {
         expected_cpu,
         "IPI hard call ran on the wrong CPU"
     );
-    EXECUTED_HARD_CALLS.fetch_add(1, Ordering::Relaxed);
+    EXECUTED_HARD_CALLS.fetch_add(1, Ordering::Release);
 }
 
-fn wait_for_callbacks_or_stall(expected: usize) -> bool {
-    let mut last_executed = EXECUTED_CALLBACKS.load(Ordering::Relaxed);
+fn wait_for_counter_or_stall(counter: &AtomicUsize, expected: usize) -> bool {
+    let mut last_executed = counter.load(Ordering::Acquire);
     let mut stalled_polls = 0;
 
     loop {
-        let executed = EXECUTED_CALLBACKS.load(Ordering::Relaxed);
+        let executed = counter.load(Ordering::Acquire);
         if executed == expected {
             return true;
         }
@@ -116,6 +116,100 @@ fn verify_self_ipi_delivery(cpu_id: usize) {
     );
 }
 
+fn run_async_callback_batch(target_cpu: usize, sender_cpus: &[usize], round: usize) {
+    SENT_CALLBACKS.store(0, Ordering::Relaxed);
+    EXECUTED_CALLBACKS.store(0, Ordering::Relaxed);
+
+    let ready = Arc::new(AtomicUsize::new(0));
+    let start = Arc::new(AtomicBool::new(false));
+    let mut senders = Vec::with_capacity(sender_cpus.len());
+
+    for &sender_cpu in sender_cpus {
+        let ready = ready.clone();
+        let start = start.clone();
+        senders.push(thread::spawn(move || {
+            pin_current_to_cpu(sender_cpu);
+            ready.fetch_add(1, Ordering::Release);
+
+            while !start.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+
+            for _ in 0..CALLBACKS_PER_SENDER {
+                SENT_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+                ax_ipi::legacy::run_on_cpu(target_cpu, counting_callback)
+                    .expect("failed to send callback IPI");
+            }
+        }));
+    }
+
+    while ready.load(Ordering::Acquire) != sender_cpus.len() {
+        thread::yield_now();
+    }
+    start.store(true, Ordering::Release);
+
+    for sender in senders {
+        sender.join().unwrap();
+    }
+
+    let expected = sender_cpus.len() * CALLBACKS_PER_SENDER;
+    assert_eq!(SENT_CALLBACKS.load(Ordering::Relaxed), expected);
+    assert!(
+        wait_for_counter_or_stall(&EXECUTED_CALLBACKS, expected),
+        "IPI callbacks stalled at {}/{} in round {round}",
+        EXECUTED_CALLBACKS.load(Ordering::Acquire),
+        expected
+    );
+}
+
+fn run_concurrent_hard_calls(target_cpu: usize, sender_cpus: &[usize]) {
+    EXECUTED_HARD_CALLS.store(0, Ordering::Relaxed);
+
+    let ready = Arc::new(AtomicUsize::new(0));
+    let start = Arc::new(AtomicBool::new(false));
+    let mut senders = Vec::with_capacity(sender_cpus.len());
+
+    for &sender_cpu in sender_cpus {
+        let ready = ready.clone();
+        let start = start.clone();
+        senders.push(thread::spawn(move || {
+            pin_current_to_cpu(sender_cpu);
+            ready.fetch_add(1, Ordering::Release);
+
+            while !start.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+
+            // SAFETY: call_on_cpu is synchronous, so this stack-local target
+            // remains borrowed until the bounded hard-IRQ-safe thunk returns.
+            unsafe {
+                ax_ipi::call_on_cpu(
+                    CpuId(target_cpu),
+                    counting_hard_call,
+                    core::ptr::from_ref(&target_cpu).cast_mut().cast(),
+                )
+            }
+            .expect("failed to execute IPI hard call");
+        }));
+    }
+
+    while ready.load(Ordering::Acquire) != sender_cpus.len() {
+        thread::yield_now();
+    }
+    start.store(true, Ordering::Release);
+
+    assert!(
+        wait_for_counter_or_stall(&EXECUTED_HARD_CALLS, sender_cpus.len()),
+        "IPI hard calls stalled at {}/{}",
+        EXECUTED_HARD_CALLS.load(Ordering::Acquire),
+        sender_cpus.len()
+    );
+
+    for sender in senders {
+        sender.join().unwrap();
+    }
+}
+
 pub fn run() -> crate::TestResult {
     let cpu_num = thread::available_parallelism().unwrap().get();
     if cpu_num < 2 {
@@ -129,73 +223,21 @@ pub fn run() -> crate::TestResult {
         .collect::<Vec<_>>();
     assert!(!sender_cpus.is_empty(), "need at least one sender CPU");
 
+    TARGET_CPU.store(target_cpu, Ordering::Relaxed);
     verify_self_ipi_delivery(sender_cpus[0]);
 
     for round in 0..TEST_ROUNDS {
-        TARGET_CPU.store(target_cpu, Ordering::Relaxed);
-        SENT_CALLBACKS.store(0, Ordering::Relaxed);
-        EXECUTED_CALLBACKS.store(0, Ordering::Relaxed);
-
-        let ready = Arc::new(AtomicUsize::new(0));
-        let start = Arc::new(AtomicBool::new(false));
-        let mut senders = Vec::with_capacity(sender_cpus.len());
-
-        for &sender_cpu in &sender_cpus {
-            let ready = ready.clone();
-            let start = start.clone();
-            senders.push(thread::spawn(move || {
-                pin_current_to_cpu(sender_cpu);
-                ready.fetch_add(1, Ordering::Release);
-
-                while !start.load(Ordering::Acquire) {
-                    thread::yield_now();
-                }
-
-                for _ in 0..CALLBACKS_PER_SENDER {
-                    SENT_CALLBACKS.fetch_add(1, Ordering::Relaxed);
-                    ax_ipi::legacy::run_on_cpu(target_cpu, counting_callback)
-                        .expect("failed to send callback IPI");
-                }
-            }));
-        }
-
-        while ready.load(Ordering::Acquire) != sender_cpus.len() {
-            thread::yield_now();
-        }
-        start.store(true, Ordering::Release);
-
-        for sender in senders {
-            sender.join().unwrap();
-        }
-
-        let expected = sender_cpus.len() * CALLBACKS_PER_SENDER;
-        assert_eq!(SENT_CALLBACKS.load(Ordering::Relaxed), expected);
-
-        assert!(
-            wait_for_callbacks_or_stall(expected),
-            "IPI callbacks stalled at {}/{} in round {round}",
-            EXECUTED_CALLBACKS.load(Ordering::Relaxed),
-            expected
-        );
+        run_async_callback_batch(target_cpu, &sender_cpus, round);
     }
 
-    pin_current_to_cpu(sender_cpus[0]);
-    EXECUTED_HARD_CALLS.store(0, Ordering::Relaxed);
-    // SAFETY: call_on_cpu is synchronous, so target_cpu remains borrowed until
-    // the hard-IRQ-safe counting thunk completes on the target.
-    unsafe {
-        ax_ipi::call_on_cpu(
-            CpuId(target_cpu),
-            counting_hard_call,
-            core::ptr::from_ref(&target_cpu).cast_mut().cast(),
-        )
-    }
-    .expect("failed to execute IPI hard call");
-    assert_eq!(EXECUTED_HARD_CALLS.load(Ordering::Relaxed), 1);
+    run_concurrent_hard_calls(target_cpu, &sender_cpus);
 
     println!(
-        "task_ipi: verified self delivery on CPU {} and remote delivery on CPU {target_cpu}",
-        sender_cpus[0]
+        "task_ipi: passed self-claim on CPU {}, {} async callbacks, and {} concurrent hard calls \
+         on CPU {target_cpu}",
+        sender_cpus[0],
+        TEST_ROUNDS * sender_cpus.len() * CALLBACKS_PER_SENDER,
+        sender_cpus.len()
     );
 
     Ok(())

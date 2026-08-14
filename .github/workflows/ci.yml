@@ -574,7 +574,10 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: cargo xtask arceos test qemu --arch riscv64
+            command: |
+              cargo xtask arceos test qemu --arch riscv64
+              taskset -c 0 cargo xtask arceos test qemu --arch riscv64 \
+                --test-group rust --test-case task-ipi
             cache_key: ""
             container_image: base
             limit_to_owner: ""
