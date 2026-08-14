@@ -134,6 +134,11 @@ static void test_getcwd_success_and_erange(void)
     CHECK(getcwd(cwd, sizeof(cwd)) != NULL, "getcwd: read cwd");
     CHECK(strcmp(cwd, BASE) == 0, "getcwd: cwd equals BASE");
 
+    errno = 0;
+    long raw_len = syscall(SYS_getcwd, cwd, SIZE_MAX);
+    CHECK(raw_len == (long)strlen(BASE) + 1 && strcmp(cwd, BASE) == 0,
+          "getcwd: raw SIZE_MAX buffer size succeeds");
+
     char small[2];
     errno = 0;
     CHECK(getcwd(small, sizeof(small)) == NULL && errno == ERANGE, "getcwd: small buffer -> ERANGE");

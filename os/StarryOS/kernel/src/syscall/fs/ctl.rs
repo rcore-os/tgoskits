@@ -449,9 +449,7 @@ pub fn sys_unlink(path: *const c_char) -> StarryResult<isize> {
     sys_unlinkat(AT_FDCWD, path, 0)
 }
 
-pub fn sys_getcwd(buf: *mut u8, size: isize) -> StarryResult<isize> {
-    let size: usize = size.try_into().map_err(|_| StarryError::BadAddress)?;
-
+pub fn sys_getcwd(buf: *mut u8, size: usize) -> StarryResult<isize> {
     let cwd = ax_fs_ng::vfs::current_fs_context()
         .lock()
         .current_dir()
