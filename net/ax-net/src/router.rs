@@ -1481,7 +1481,8 @@ mod tests {
 
         let mut ipv4_tcp = [0u8; 40];
         ipv4_tcp[0] = 0x45;
-        ipv4_tcp[2..4].copy_from_slice(&(ipv4_tcp.len() as u16).to_be_bytes());
+        let ipv4_tcp_len = ipv4_tcp.len() as u16;
+        ipv4_tcp[2..4].copy_from_slice(&ipv4_tcp_len.to_be_bytes());
         ipv4_tcp[9] = IpProtocol::Tcp.into();
         for len in 0..ipv4_tcp.len() {
             snoop_tcp_packet(&ipv4_tcp[..len], &mut sockets);
