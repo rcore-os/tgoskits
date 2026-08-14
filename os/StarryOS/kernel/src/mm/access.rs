@@ -81,6 +81,15 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     Ok(())
 }
 
+/// Build metadata for a user-memory slice without allowing an oversized
+/// user-controlled length to panic the kernel.
+fn user_slice_layout<T>(len: usize) -> StarryResult<Layout> {
+    if len > isize::MAX as usize {
+        return Err(StarryError::BadAddress);
+    }
+    Layout::array::<T>(len).map_err(|_| StarryError::BadAddress)
+}
+
 /// A pointer to user space memory.
 #[repr(transparent)]
 #[derive(PartialEq, Clone, Copy)]
@@ -134,7 +143,7 @@ impl<T> UserPtr<T> {
         }
         check_region(
             self.address(),
-            Layout::array::<T>(len).unwrap(),
+            user_slice_layout::<T>(len)?,
             Self::ACCESS_FLAGS,
         )?;
         Ok(unsafe { slice::from_raw_parts_mut(self.0, len) })
@@ -220,7 +229,7 @@ impl<T> UserConstPtr<T> {
         }
         check_region(
             self.address(),
-            Layout::array::<T>(len).unwrap(),
+            user_slice_layout::<T>(len)?,
             Self::ACCESS_FLAGS,
         )?;
         Ok(unsafe { slice::from_raw_parts(self.0, len) })
