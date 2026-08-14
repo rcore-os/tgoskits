@@ -6,7 +6,7 @@ args = [
     "-cpu",
     "cortex-a72",
     "-smp",
-    "1",
+    "4",
     "-display",
     "none",
     "-serial",

@@ -2,7 +2,7 @@ args = [
     "-m",
     "256M",
     "-smp",
-    "1",
+    "4",
     "-display",
     "none",
     "-serial",

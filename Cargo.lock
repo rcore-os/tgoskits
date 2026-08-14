@@ -340,6 +340,7 @@ dependencies = [
  "ax-hal",
  "ax-std",
  "axtest",
+ "scope-local",
 ]
 
 [[package]]
@@ -2592,18 +2593,8 @@ version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec09e802f5081de6157da9a75701d6c713d8dc3ba52571fd4bd25f412644e8a6"
 dependencies = [
- "ctor-proc-macro 0.0.6",
- "dtor 0.0.6",
-]
-
-[[package]]
-name = "ctor"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "424e0138278faeb2b401f174ad17e715c829512d74f3d1e81eb43365c2e0590e"
-dependencies = [
- "ctor-proc-macro 0.0.7",
- "dtor 0.1.1",
+ "ctor-proc-macro",
+ "dtor",
 ]
 
 [[package]]
@@ -2611,12 +2602,6 @@ name = "ctor-proc-macro"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
-
-[[package]]
-name = "ctor-proc-macro"
-version = "0.0.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
 name = "cursive"
@@ -3056,16 +3041,7 @@ version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97cbdf2ad6846025e8e25df05171abfb30e3ababa12ee0a0e44b9bbe570633a8"
 dependencies = [
- "dtor-proc-macro 0.0.5",
-]
-
-[[package]]
-name = "dtor"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "404d02eeb088a82cfd873006cb713fe411306c7d182c344905e101fb1167d301"
-dependencies = [
- "dtor-proc-macro 0.0.6",
+ "dtor-proc-macro",
 ]
 
 [[package]]
@@ -3073,12 +3049,6 @@ name = "dtor-proc-macro"
 version = "0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7454e41ff9012c00d53cf7f475c5e3afa3b91b7c90568495495e8d9bf47a1055"
-
-[[package]]
-name = "dtor-proc-macro"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f678cf4a922c215c63e0de95eb1ff08a958a81d47e485cf9da1e27bf6305cfa5"
 
 [[package]]
 name = "dunce"
@@ -7343,8 +7313,6 @@ dependencies = [
  "ax-percpu",
  "ax-sync",
  "axtest",
- "cpu-local",
- "ctor 0.6.3",
 ]
 
 [[package]]
@@ -8061,7 +8029,7 @@ dependencies = [
  "ax-lazyinit",
  "ax-runtime",
  "axnsproxy",
- "ctor 0.4.3",
+ "ctor",
  "weak-map",
 ]
 

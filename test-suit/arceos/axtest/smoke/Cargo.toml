@@ -7,7 +7,8 @@ publish = false
 [features]
 default = []
 std = []
-ax-std = ["dep:ax-hal", "dep:ax-std"]
+ax-std = ["dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
+runtime = ["ax-std", "ax-std/multitask"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
@@ -16,3 +17,4 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 ax-hal = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }
 axtest.workspace = true
+scope-local = { workspace = true, features = ["axtest"] }

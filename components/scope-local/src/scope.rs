@@ -728,21 +728,43 @@ impl ItemSlot {
 static GLOBAL_SCOPE: OnceLock<Scope> = OnceLock::new();
 static GLOBAL_SCOPE_STATE: AtomicUsize = AtomicUsize::new(GlobalScopeState::Uninitialized as usize);
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(usize)]
 enum GlobalScopeState {
     Uninitialized,
     Ready,
 }
 
-struct GlobalInitialization {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GlobalScopeAction {
+    Ready,
+    Recursive,
+    Claim,
+    Wait,
+}
+
+fn global_scope_action(state: usize, owner_context: usize) -> GlobalScopeAction {
+    if state == GlobalScopeState::Ready as usize {
+        GlobalScopeAction::Ready
+    } else if state == owner_context {
+        GlobalScopeAction::Recursive
+    } else if state == GlobalScopeState::Uninitialized as usize {
+        GlobalScopeAction::Claim
+    } else {
+        GlobalScopeAction::Wait
+    }
+}
+
+struct GlobalInitialization<'state> {
+    state: &'state AtomicUsize,
     owner_context: usize,
     published: bool,
 }
 
-impl GlobalInitialization {
-    fn begin(owner_context: usize) -> Self {
+impl<'state> GlobalInitialization<'state> {
+    fn begin(state: &'state AtomicUsize, owner_context: usize) -> Self {
         Self {
+            state,
             owner_context,
             published: false,
         }
@@ -750,15 +772,16 @@ impl GlobalInitialization {
 
     fn publish(mut self, scope: Scope) {
         GLOBAL_SCOPE.call_once(|| scope);
-        GLOBAL_SCOPE_STATE.store(GlobalScopeState::Ready as usize, Ordering::Release);
+        self.state
+            .store(GlobalScopeState::Ready as usize, Ordering::Release);
         self.published = true;
     }
 }
 
-impl Drop for GlobalInitialization {
+impl Drop for GlobalInitialization<'_> {
     fn drop(&mut self) {
         if !self.published {
-            let _ = GLOBAL_SCOPE_STATE.compare_exchange(
+            let _ = self.state.compare_exchange(
                 self.owner_context,
                 GlobalScopeState::Uninitialized as usize,
                 Ordering::Release,
@@ -899,12 +922,12 @@ impl ActiveScope {
     pub(crate) fn initialize_global() {
         let owner_context = current_context_identity();
         loop {
-            match GLOBAL_SCOPE_STATE.load(Ordering::Acquire) {
-                state if state == GlobalScopeState::Ready as usize => return,
-                state if state == owner_context => {
+            match global_scope_action(GLOBAL_SCOPE_STATE.load(Ordering::Acquire), owner_context) {
+                GlobalScopeAction::Ready => return,
+                GlobalScopeAction::Recursive => {
                     panic!("scope-local global scope initialization is already in progress")
                 }
-                state if state == GlobalScopeState::Uninitialized as usize => {
+                GlobalScopeAction::Claim => {
                     if GLOBAL_SCOPE_STATE
                         .compare_exchange(
                             GlobalScopeState::Uninitialized as usize,
@@ -914,18 +937,90 @@ impl ActiveScope {
                         )
                         .is_ok()
                     {
-                        let initialization = GlobalInitialization::begin(owner_context);
+                        let initialization =
+                            GlobalInitialization::begin(&GLOBAL_SCOPE_STATE, owner_context);
                         initialization.publish(Scope::new());
                         return;
                     }
                 }
-                _ => core::hint::spin_loop(),
+                GlobalScopeAction::Wait => core::hint::spin_loop(),
             }
         }
     }
 
     fn current_scope_ptr_pinned(pin: &CpuPin<'_>) -> usize {
         ACTIVE_SCOPE_PTR.read_current(pin)
+    }
+}
+
+#[cfg(test)]
+mod global_scope_state_tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{GlobalInitialization, GlobalScopeAction, GlobalScopeState, global_scope_action};
+
+    #[test]
+    fn initialization_action_distinguishes_owner_and_competing_contexts() {
+        let owner = 17;
+
+        assert_eq!(
+            global_scope_action(GlobalScopeState::Uninitialized as usize, owner),
+            GlobalScopeAction::Claim
+        );
+        assert_eq!(
+            global_scope_action(owner, owner),
+            GlobalScopeAction::Recursive
+        );
+        assert_eq!(global_scope_action(29, owner), GlobalScopeAction::Wait);
+        assert_eq!(
+            global_scope_action(GlobalScopeState::Ready as usize, owner),
+            GlobalScopeAction::Ready
+        );
+    }
+
+    #[test]
+    fn abandoned_initialization_restores_the_retryable_state() {
+        let owner = 17;
+        let state = AtomicUsize::new(owner);
+
+        drop(GlobalInitialization::begin(&state, owner));
+
+        assert_eq!(
+            state.load(Ordering::Acquire),
+            GlobalScopeState::Uninitialized as usize
+        );
+        assert_eq!(
+            global_scope_action(state.load(Ordering::Acquire), owner),
+            GlobalScopeAction::Claim
+        );
+    }
+
+    #[test]
+    fn recursive_owner_unwind_restores_a_retryable_initialization() {
+        let owner = 17;
+        let state = AtomicUsize::new(GlobalScopeState::Uninitialized as usize);
+        assert!(
+            state
+                .compare_exchange(
+                    GlobalScopeState::Uninitialized as usize,
+                    owner,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+        );
+
+        let initialization = GlobalInitialization::begin(&state, owner);
+        assert_eq!(
+            global_scope_action(state.load(Ordering::Acquire), owner),
+            GlobalScopeAction::Recursive
+        );
+        drop(initialization);
+
+        assert_eq!(
+            global_scope_action(state.load(Ordering::Acquire), owner),
+            GlobalScopeAction::Claim
+        );
     }
 }
 

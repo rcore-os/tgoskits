@@ -1,5 +1,4 @@
-features = [
-]
+features = ["runtime"]
 log = "Info"
 max_cpu_num = 4
 

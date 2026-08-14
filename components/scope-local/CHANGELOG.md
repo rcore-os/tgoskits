@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Run execution-context and CPU-pinned coverage through the real ArceOS axtest
+  runtime instead of a crate-local host context model.
 - Replace blocking `ScopeCell` lease operations with bounded `try_*` APIs and
   typed `ScopeCellBusy` contention.
 - Restrict each `ScopeCell` to one published scheduler activation; a competing

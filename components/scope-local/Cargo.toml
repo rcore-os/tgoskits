@@ -10,19 +10,12 @@ license = "Apache-2.0"
 
 [features]
 axtest = ["dep:axtest"]
-host-test = ["ax-sync/host-test"]
 
 [dependencies]
 ax-lazyinit.workspace = true
 ax-percpu.workspace = true
 ax-sync.workspace = true
 axtest = { workspace = true, optional = true }
-
-[dev-dependencies]
-ax-sync.workspace = true
-ctor = "0.6"
-cpu-local = { workspace = true, features = ["host-test"] }
-ax-percpu = { workspace = true, features = ["host-test"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
