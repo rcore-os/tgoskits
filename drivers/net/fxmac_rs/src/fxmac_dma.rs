@@ -1052,7 +1052,10 @@ pub fn FXmacRecvHandler(instance_p: &mut FXmac) -> Option<Vec<Vec<u8>>> {
 
             let status = fxmac_bd_read(curbdptr as u64, FXMAC_BD_STAT_OFFSET);
             let Some(rx_bytes) = fxmac_rx_frame_len(instance_p.lwipport.feature, status) else {
-                warn!("Dropping RX descriptor with out-of-range status {:#x}", status);
+                warn!(
+                    "Dropping RX descriptor with out-of-range status {:#x}",
+                    status
+                );
                 curbdptr = FXMAC_BD_RING_NEXT(rxring, curbdptr);
                 continue;
             };
@@ -1516,24 +1519,15 @@ mod tests {
         assert_eq!(fxmac_rx_frame_len(0, FXMAC_RXBUF_LEN_MASK), None);
 
         assert_eq!(
-            fxmac_rx_frame_len(
-                FXMAC_LWIP_PORT_CONFIG_JUMBO,
-                FXMAC_MAX_FRAME_SIZE_JUMBO,
-            ),
+            fxmac_rx_frame_len(FXMAC_LWIP_PORT_CONFIG_JUMBO, FXMAC_MAX_FRAME_SIZE_JUMBO,),
             Some(FXMAC_MAX_FRAME_SIZE_JUMBO as usize)
         );
         assert_eq!(
-            fxmac_rx_frame_len(
-                FXMAC_LWIP_PORT_CONFIG_JUMBO,
-                FXMAC_MAX_FRAME_SIZE_JUMBO + 1,
-            ),
+            fxmac_rx_frame_len(FXMAC_LWIP_PORT_CONFIG_JUMBO, FXMAC_MAX_FRAME_SIZE_JUMBO + 1,),
             None
         );
         assert_eq!(
-            fxmac_rx_frame_len(
-                FXMAC_LWIP_PORT_CONFIG_JUMBO,
-                FXMAC_RXBUF_LEN_JUMBO_MASK,
-            ),
+            fxmac_rx_frame_len(FXMAC_LWIP_PORT_CONFIG_JUMBO, FXMAC_RXBUF_LEN_JUMBO_MASK,),
             None
         );
     }
