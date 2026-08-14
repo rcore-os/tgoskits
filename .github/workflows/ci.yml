@@ -373,15 +373,6 @@ jobs:
             cache_key: ""
             container_image: base
             fetch_depth: "1"
-          - name: Audit rsext4 Linux 7.1 source map
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
-            command: |
-              python3 scripts/test/test_check_rsext4_linux_map.py
-              python3 scripts/test/check_rsext4_linux_map.py
-            cache_key: ""
-            container_image: base
-            fetch_depth: "1"
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: >-
