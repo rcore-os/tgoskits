@@ -13,7 +13,6 @@ use core::{
 };
 
 use ax_alloc::GlobalPage;
-use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
@@ -51,7 +50,7 @@ impl core::fmt::Debug for PerfRdpmcPage {
 }
 
 impl PerfRdpmcPage {
-    fn allocate(counter: Counter, initial: RdpmcSnapshot) -> AxResult<Arc<Self>> {
+    fn allocate(counter: Counter, initial: RdpmcSnapshot) -> crate::StarryResult<Arc<Self>> {
         let mut pages = GlobalPage::alloc_contiguous(1, PAGE_SIZE_4K)?;
         pages.zero();
         let kernel_address = pages.start_vaddr().as_usize();
@@ -140,16 +139,16 @@ impl RdpmcMapping {
         len: usize,
         counter: Counter,
         initial: RdpmcSnapshot,
-    ) -> AxResult<Arc<PerfRdpmcPage>> {
+    ) -> crate::StarryResult<Arc<PerfRdpmcPage>> {
         // Mapping more than the allocated metadata page would expose unrelated
         // adjacent physical memory through `DeviceMmap::Physical`.
         if len != PAGE_SIZE_4K {
-            return Err(AxError::InvalidInput);
+            return Err(crate::StarryError::InvalidInput);
         }
         let page = PerfRdpmcPage::allocate(counter, initial)?;
         let mut published = self.page.lock();
         if published.as_ref().and_then(Weak::upgrade).is_some() {
-            return Err(AxError::ResourceBusy);
+            return Err(crate::StarryError::ResourceBusy);
         }
         *published = Some(Arc::downgrade(&page));
         Ok(page)

@@ -1,10 +1,10 @@
 use core::ffi::c_int;
 
-use ax_errno::{AxError, AxResult};
 use bitflags::bitflags;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
 
 use crate::{
+    StarryError,
     file::{FileLike, Pipe, close_file_like},
     mm::VmMutPtr,
 };
@@ -24,10 +24,10 @@ pub fn sys_pipe2(
     current: &crate::task::UserTaskRef,
     fds: *mut [c_int; 2],
     flags: u32,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let flags = PipeFlags::from_bits(flags).ok_or_else(|| {
         warn!("sys_pipe2 <= unrecognized flags: {flags}");
-        AxError::InvalidInput
+        StarryError::InvalidInput
     })?;
 
     let cloexec = flags.contains(PipeFlags::CLOEXEC);

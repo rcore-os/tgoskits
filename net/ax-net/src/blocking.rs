@@ -11,9 +11,10 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_task::{ThreadWakeHandle, WaitQueue};
 use axpoll::{IoEvents, Pollable};
+
+use crate::{NetError, NetResult};
 
 /// Repeatedly runs a non-blocking I/O operation and parks on readiness.
 ///
@@ -26,10 +27,10 @@ pub(crate) fn poll_io<P, F, T>(
     nonblocking: bool,
     timeout: Option<Duration>,
     mut operation: F,
-) -> AxResult<T>
+) -> NetResult<T>
 where
     P: Pollable,
-    F: FnMut() -> AxResult<T>,
+    F: FnMut() -> NetResult<T>,
 {
     let waiter = BlockingWaiter::new()?;
     let waker = Waker::from(Arc::clone(&waiter));
@@ -39,21 +40,21 @@ where
     loop {
         match operation() {
             Ok(value) => return Ok(value),
-            Err(AxError::WouldBlock) => {}
+            Err(NetError::WouldBlock) => {}
             Err(error) => return Err(error),
         }
 
         pollable.register(&mut context, events);
         match operation() {
             Ok(value) => return Ok(value),
-            Err(AxError::WouldBlock) if nonblocking => return Err(AxError::WouldBlock),
-            Err(AxError::WouldBlock) => {}
+            Err(NetError::WouldBlock) if nonblocking => return Err(NetError::WouldBlock),
+            Err(NetError::WouldBlock) => {}
             Err(error) => return Err(error),
         }
 
         if waiter.wait(deadline_ns) {
             return match operation() {
-                Err(AxError::WouldBlock) => Err(AxError::TimedOut),
+                Err(NetError::WouldBlock) => Err(NetError::TimedOut),
                 result => result,
             };
         }
@@ -67,8 +68,8 @@ struct BlockingWaiter {
 }
 
 impl BlockingWaiter {
-    fn new() -> AxResult<Arc<Self>> {
-        let thread = ax_task::current_thread_handle().map_err(|_| AxError::BadState)?;
+    fn new() -> NetResult<Arc<Self>> {
+        let thread = ax_task::current_thread_handle().map_err(|_| NetError::BadState)?;
         Ok(Arc::new(Self {
             notified: AtomicBool::new(false),
             wait_queue: WaitQueue::new(),

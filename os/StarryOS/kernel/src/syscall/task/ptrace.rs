@@ -8,7 +8,6 @@ use core::mem::{MaybeUninit, size_of};
 ))]
 use core::slice;
 
-use ax_errno::{AxError, AxResult, LinuxError};
 #[cfg(target_arch = "x86_64")]
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
@@ -25,6 +24,7 @@ use crate::task::PtraceStopFpData;
 #[cfg(target_arch = "x86_64")]
 use crate::task::PtraceStopFpData;
 use crate::{
+    Errno, StarryError, StarryResult,
     mm::{AddrSpace, IoVec, VmMutPtr, VmPtr, vm_read_slice, vm_write_slice},
     task::{
         Cred, ProcessData, get_process_cred, get_process_data, get_task, resolve_user_pid,
@@ -249,7 +249,7 @@ pub fn sys_ptrace(
     pid: usize,
     addr: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     info!("sys_ptrace <= request: {request}, pid: {pid}, addr: {addr:#x}, data: {data:#x}");
 
     let pid = if request == PTRACE_TRACEME {
@@ -284,11 +284,11 @@ pub fn sys_ptrace(
         PTRACE_SETREGSET => ptrace_setregset(current, pid, addr, data),
         PTRACE_SEIZE => ptrace_seize(current, pid, addr, data),
         PTRACE_INTERRUPT => ptrace_interrupt(current, pid),
-        _ => Err(AxError::Unsupported),
+        _ => Err(crate::StarryError::Unsupported),
     }
 }
 
-fn ptrace_traceme(current: &crate::task::UserTaskRef) -> AxResult<isize> {
+fn ptrace_traceme(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
     let curr = current;
     let proc_data = &curr.as_thread().proc_data;
     if proc_data.proc.parent().is_none()
@@ -296,22 +296,26 @@ fn ptrace_traceme(current: &crate::task::UserTaskRef) -> AxResult<isize> {
         || proc_data.is_ptrace_attached()
         || proc_data.ptrace_tracer_pid().is_some()
     {
-        return Err(AxError::from(LinuxError::EPERM));
+        return Err(StarryError::from(Errno::EPERM));
     }
     proc_data.set_ptrace_traceme();
     Ok(0)
 }
 
-fn ptrace_resume_signo(data: usize) -> AxResult<u32> {
+fn ptrace_resume_signo(data: usize) -> StarryResult<u32> {
     if data == 0 {
         return Ok(0);
     }
-    let signo = u8::try_from(data).map_err(|_| AxError::from(LinuxError::EIO))?;
-    Signo::from_repr(signo).ok_or_else(|| AxError::from(LinuxError::EIO))?;
+    let signo = u8::try_from(data).map_err(|_| StarryError::from(Errno::EIO))?;
+    Signo::from_repr(signo).ok_or_else(|| StarryError::from(Errno::EIO))?;
     Ok(signo as u32)
 }
 
-fn ptrace_cont(current: &crate::task::UserTaskRef, pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_cont(
+    current: &crate::task::UserTaskRef,
+    pid: usize,
+    data: usize,
+) -> crate::StarryResult<isize> {
     let signo = ptrace_resume_signo(data)?;
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     tracee.set_ptrace_singlestep_for(tid, false);
@@ -321,9 +325,11 @@ fn ptrace_cont(current: &crate::task::UserTaskRef, pid: usize, data: usize) -> A
     Ok(0)
 }
 
-fn ptrace_kill(pid: usize) -> AxResult<isize> {
-    let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
-    let tracee = get_process_data(tracee_pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+fn ptrace_kill(pid: usize) -> crate::StarryResult<isize> {
+    let tracee_pid =
+        Pid::try_from(pid).map_err(|_| crate::StarryError::from(crate::Errno::ESRCH))?;
+    let tracee =
+        get_process_data(tracee_pid).map_err(|_| crate::StarryError::from(crate::Errno::ESRCH))?;
     let was_ptraced = tracee.is_ptrace_traceme() || tracee.is_ptrace_attached();
     use starry_signal::SignalInfo;
 
@@ -344,7 +350,7 @@ fn ptrace_singlestep(
     current: &crate::task::UserTaskRef,
     pid: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let signo = ptrace_resume_signo(data)?;
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     tracee.set_ptrace_singlestep_for(tid, true);
@@ -353,18 +359,19 @@ fn ptrace_singlestep(
     Ok(0)
 }
 
-fn ptrace_attach(current: &crate::task::UserTaskRef, pid: usize) -> AxResult<isize> {
+fn ptrace_attach(current: &crate::task::UserTaskRef, pid: usize) -> crate::StarryResult<isize> {
     let tracer_pid = current.as_thread().proc_data.proc.pid();
-    let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+    let tracee_pid =
+        Pid::try_from(pid).map_err(|_| crate::StarryError::from(crate::Errno::ESRCH))?;
     if tracee_pid == tracer_pid {
-        return Err(AxError::from(LinuxError::EPERM));
+        return Err(StarryError::from(Errno::EPERM));
     }
-    let tracee = get_process_data(tracee_pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+    let tracee = get_process_data(tracee_pid).map_err(|_| StarryError::from(Errno::ESRCH))?;
     if tracee.is_ptrace_traceme() || tracee.is_ptrace_attached() {
-        return Err(AxError::from(LinuxError::EPERM));
+        return Err(StarryError::from(Errno::EPERM));
     }
     if !ptrace_may_attach(tracer_pid, tracee_pid, &tracee)? {
-        return Err(AxError::from(LinuxError::EPERM));
+        return Err(StarryError::from(Errno::EPERM));
     }
     tracee.set_ptrace_tracer_pid(tracer_pid);
     tracee.set_ptrace_attach_mode(crate::task::PtraceAttachMode::Attach);
@@ -376,7 +383,11 @@ fn ptrace_attach(current: &crate::task::UserTaskRef, pid: usize) -> AxResult<isi
     Ok(0)
 }
 
-fn ptrace_detach(current: &crate::task::UserTaskRef, pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_detach(
+    current: &crate::task::UserTaskRef,
+    pid: usize,
+    data: usize,
+) -> crate::StarryResult<isize> {
     let signo = ptrace_resume_signo(data)?;
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     tracee.clear_ptrace_traceme();
@@ -389,7 +400,11 @@ fn ptrace_detach(current: &crate::task::UserTaskRef, pid: usize, data: usize) ->
     Ok(0)
 }
 
-fn ptrace_syscall(current: &crate::task::UserTaskRef, pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_syscall(
+    current: &crate::task::UserTaskRef,
+    pid: usize,
+    data: usize,
+) -> crate::StarryResult<isize> {
     let signo = ptrace_resume_signo(data)?;
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     tracee.set_ptrace_singlestep_for(tid, false);
@@ -406,7 +421,7 @@ fn ptrace_setoptions(
     current: &crate::task::UserTaskRef,
     pid: usize,
     options: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let tracee = ptrace_stopped_tracee(current, pid)?;
     ptrace_validate_options(options)?;
     tracee.set_ptrace_options(options);
@@ -417,7 +432,7 @@ fn ptrace_geteventmsg(
     current: &crate::task::UserTaskRef,
     pid: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     let msg = tracee.ptrace_event_msg_for(tid);
     (data as *mut usize).vm_write(current, msg)?;
@@ -428,11 +443,11 @@ fn ptrace_getsiginfo(
     current: &crate::task::UserTaskRef,
     pid: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     let siginfo = tracee
         .ptrace_stop_siginfo_for(tid)
-        .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
+        .ok_or_else(|| StarryError::from(Errno::ESRCH))?;
 
     #[cfg(any(
         target_arch = "riscv64",
@@ -453,7 +468,7 @@ fn ptrace_getsiginfo(
     )))]
     {
         let _ = (data, siginfo);
-        Err(AxError::Unsupported)
+        Err(StarryError::Unsupported)
     }
 }
 
@@ -467,15 +482,15 @@ fn ptrace_setsiginfo(
     current: &crate::task::UserTaskRef,
     pid: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if data == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     let siginfo = ptrace_read_user_siginfo(current, data)?;
     let signo = ptrace_siginfo_signo(&siginfo)?;
     if !tracee.set_ptrace_stop_siginfo_for(tid, signo, siginfo) {
-        return Err(AxError::from(LinuxError::ESRCH));
+        return Err(crate::StarryError::from(crate::Errno::ESRCH));
     }
     Ok(0)
 }
@@ -486,9 +501,9 @@ fn ptrace_setsiginfo(
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_setsiginfo(pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_setsiginfo(pid: usize, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
-    Err(AxError::Unsupported)
+    Err(StarryError::Unsupported)
 }
 
 fn ptrace_getregset(
@@ -496,7 +511,7 @@ fn ptrace_getregset(
     pid: usize,
     addr: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     match addr {
         NT_PRSTATUS => ptrace_getregset_prstatus(current, pid, data),
         #[cfg(any(
@@ -506,7 +521,7 @@ fn ptrace_getregset(
             target_arch = "x86_64"
         ))]
         NT_FPREGSET => ptrace_getregset_fpregset(current, pid, data),
-        _ => Err(AxError::Unsupported),
+        _ => Err(crate::StarryError::Unsupported),
     }
 }
 
@@ -515,7 +530,7 @@ fn ptrace_setregset(
     pid: usize,
     addr: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     match addr {
         NT_PRSTATUS => ptrace_setregset_prstatus(current, pid, data),
         #[cfg(any(
@@ -525,7 +540,7 @@ fn ptrace_setregset(
             target_arch = "x86_64"
         ))]
         NT_FPREGSET => ptrace_setregset_fpregset(current, pid, data),
-        _ => Err(AxError::Unsupported),
+        _ => Err(crate::StarryError::Unsupported),
     }
 }
 
@@ -535,9 +550,13 @@ fn ptrace_setregset(
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_getregs(current: &crate::task::UserTaskRef, pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_getregs(
+    current: &crate::task::UserTaskRef,
+    pid: usize,
+    data: usize,
+) -> crate::StarryResult<isize> {
     if data == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let regs = ptrace_read_stopped_user_regs(current, pid)?;
     let bytes = unsafe {
@@ -556,9 +575,9 @@ fn ptrace_getregs(current: &crate::task::UserTaskRef, pid: usize, data: usize) -
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_getregs(pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_getregs(pid: usize, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
-    Err(AxError::Unsupported)
+    Err(StarryError::Unsupported)
 }
 
 #[cfg(any(
@@ -567,9 +586,13 @@ fn ptrace_getregs(pid: usize, data: usize) -> AxResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_setregs(current: &crate::task::UserTaskRef, pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_setregs(
+    current: &crate::task::UserTaskRef,
+    pid: usize,
+    data: usize,
+) -> crate::StarryResult<isize> {
     if data == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let regs = ptrace_read_user_regs(current, data)?;
     ptrace_write_stopped_user_regs(current, pid, regs)
@@ -581,9 +604,9 @@ fn ptrace_setregs(current: &crate::task::UserTaskRef, pid: usize, data: usize) -
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_setregs(pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_setregs(pid: usize, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
-    Err(AxError::Unsupported)
+    Err(StarryError::Unsupported)
 }
 
 #[cfg(any(
@@ -596,9 +619,9 @@ fn ptrace_getfpregs(
     current: &crate::task::UserTaskRef,
     pid: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if data == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let regs = ptrace_read_stopped_fp_regs(current, pid)?;
     let bytes = unsafe {
@@ -617,9 +640,9 @@ fn ptrace_getfpregs(
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_getfpregs(pid: usize, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
-    Err(AxError::Unsupported)
+    Err(StarryError::Unsupported)
 }
 
 #[cfg(any(
@@ -632,9 +655,9 @@ fn ptrace_setfpregs(
     current: &crate::task::UserTaskRef,
     pid: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if data == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let regs = ptrace_read_user_fpregs(current, data)?;
     ptrace_write_stopped_fp_regs(current, pid, regs)
@@ -646,9 +669,9 @@ fn ptrace_setfpregs(
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_setfpregs(pid: usize, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
-    Err(AxError::Unsupported)
+    Err(StarryError::Unsupported)
 }
 
 fn ptrace_seize(
@@ -656,24 +679,25 @@ fn ptrace_seize(
     pid: usize,
     addr: usize,
     options: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if addr != 0 {
-        return Err(AxError::from(LinuxError::EIO));
+        return Err(StarryError::from(Errno::EIO));
     }
     ptrace_validate_options(options)?;
 
     let tracer_pid = current.as_thread().proc_data.proc.pid();
-    let tracee_tid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+    let tracee_tid =
+        Pid::try_from(pid).map_err(|_| crate::StarryError::from(crate::Errno::ESRCH))?;
     let tracee = ptrace_tracee_by_pid_or_tid(tracee_tid)?;
     let tracee_pid = tracee.proc.pid();
     if tracee_pid == tracer_pid {
-        return Err(AxError::from(LinuxError::EPERM));
+        return Err(StarryError::from(Errno::EPERM));
     }
     if tracee.is_ptrace_traceme() || tracee.is_ptrace_attached() {
-        return Err(AxError::from(LinuxError::EPERM));
+        return Err(StarryError::from(Errno::EPERM));
     }
     if !ptrace_may_attach(tracer_pid, tracee_pid, &tracee)? {
-        return Err(AxError::from(LinuxError::EPERM));
+        return Err(StarryError::from(Errno::EPERM));
     }
     tracee.set_ptrace_tracer_pid(tracer_pid);
     tracee.set_ptrace_options(options);
@@ -681,14 +705,14 @@ fn ptrace_seize(
     Ok(0)
 }
 
-fn ptrace_validate_options(options: usize) -> AxResult {
+fn ptrace_validate_options(options: usize) -> StarryResult {
     if options & !PTRACE_OPTION_MASK != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(())
 }
 
-fn ptrace_may_attach(tracer_pid: Pid, tracee_pid: Pid, tracee: &ProcessData) -> AxResult<bool> {
+fn ptrace_may_attach(tracer_pid: Pid, tracee_pid: Pid, tracee: &ProcessData) -> StarryResult<bool> {
     if tracee.proc.parent().is_some_and(|p| p.pid() == tracer_pid) {
         return Ok(true);
     }
@@ -716,15 +740,16 @@ fn ptrace_creds_match_for_attach(tracer: &Cred, tracee: &Cred) -> bool {
         && tracer.uid == tracer.fsuid
 }
 
-fn ptrace_interrupt(current: &crate::task::UserTaskRef, pid: usize) -> AxResult<isize> {
-    let tracee_tid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+fn ptrace_interrupt(current: &crate::task::UserTaskRef, pid: usize) -> crate::StarryResult<isize> {
+    let tracee_tid =
+        Pid::try_from(pid).map_err(|_| crate::StarryError::from(crate::Errno::ESRCH))?;
     let tracee = ptrace_tracee_by_pid_or_tid(tracee_tid)?;
     let tracer_pid = current.as_thread().proc_data.proc.pid();
     if tracee.ptrace_tracer_pid() != Some(tracer_pid) {
-        return Err(AxError::from(LinuxError::ESRCH));
+        return Err(StarryError::from(Errno::ESRCH));
     }
     if !tracee.is_ptrace_seized() {
-        return Err(AxError::from(LinuxError::EIO));
+        return Err(StarryError::from(Errno::EIO));
     }
     if tracee.ptrace_stop_signo_for(tracee_tid).is_some() {
         return Ok(0);
@@ -756,9 +781,9 @@ fn ptrace_getregset_prstatus(
     current: &crate::task::UserTaskRef,
     pid: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if data == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let regs = ptrace_read_stopped_user_regs(current, pid)?;
     let reg_bytes = unsafe {
@@ -770,7 +795,7 @@ fn ptrace_getregset_prstatus(
 
     let mut iov = (data as *const IoVec).vm_read(current)?;
     if iov.iov_len < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let copy_len = (iov.iov_len as usize).min(reg_bytes.len());
@@ -786,9 +811,9 @@ fn ptrace_getregset_prstatus(
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_getregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_getregset_prstatus(pid: usize, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
-    Err(AxError::Unsupported)
+    Err(StarryError::Unsupported)
 }
 
 #[cfg(any(
@@ -801,16 +826,16 @@ fn ptrace_setregset_prstatus(
     current: &crate::task::UserTaskRef,
     pid: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if data == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let reg_size = size_of::<ArchUserRegs>() as isize;
 
     let iov = (data as *const IoVec).vm_read(current)?;
     if iov.iov_len < reg_size {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let regs = ptrace_read_user_regs(current, iov.iov_base as usize)?;
@@ -823,9 +848,9 @@ fn ptrace_setregset_prstatus(
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_setregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
+fn ptrace_setregset_prstatus(pid: usize, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
-    Err(AxError::Unsupported)
+    Err(StarryError::Unsupported)
 }
 
 #[cfg(any(
@@ -837,11 +862,11 @@ fn ptrace_setregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
 fn ptrace_read_stopped_user_regs(
     current: &crate::task::UserTaskRef,
     pid: usize,
-) -> AxResult<ArchUserRegs> {
+) -> crate::StarryResult<ArchUserRegs> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     let uctx = tracee
         .ptrace_stop_user_context_for(tid)
-        .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
+        .ok_or_else(|| StarryError::from(Errno::ESRCH))?;
     let regs = ArchUserRegs::from(&uctx);
     #[cfg(target_arch = "x86_64")]
     let regs = {
@@ -849,15 +874,14 @@ fn ptrace_read_stopped_user_regs(
         if tracee.ptrace_stop_is_syscall_for(tid) {
             regs.orig_rax = tracee
                 .ptrace_stop_syscall_number_for(tid)
-                .ok_or_else(|| AxError::from(LinuxError::ESRCH))?
-                as u64;
+                .ok_or_else(|| StarryError::from(Errno::ESRCH))? as u64;
             if matches!(
                 tracee.ptrace_syscall_trace_state_for(tid),
                 crate::task::SyscallTraceState::Entry
             ) {
                 // Linux exposes the incoming syscall number through `orig_rax` while
                 // presenting `-ENOSYS` in `rax` at a syscall-entry stop.
-                regs.rax = -(LinuxError::ENOSYS.code() as i64) as u64;
+                regs.rax = -(Errno::ENOSYS.into_raw() as i64) as u64;
             }
         }
         regs
@@ -874,7 +898,7 @@ fn ptrace_read_stopped_user_regs(
 fn ptrace_read_user_regs(
     current: &crate::task::UserTaskRef,
     data: usize,
-) -> AxResult<ArchUserRegs> {
+) -> crate::StarryResult<ArchUserRegs> {
     let mut regs = MaybeUninit::<ArchUserRegs>::uninit();
     let bytes = unsafe {
         slice::from_raw_parts_mut(
@@ -896,16 +920,16 @@ fn ptrace_write_stopped_user_regs(
     current: &crate::task::UserTaskRef,
     pid: usize,
     regs: ArchUserRegs,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     let mut uctx = tracee
         .ptrace_stop_user_context_for(tid)
-        .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
+        .ok_or_else(|| StarryError::from(Errno::ESRCH))?;
     regs.write_to(&mut uctx)?;
     #[cfg(target_arch = "x86_64")]
     if tracee.ptrace_stop_is_syscall_for(tid) {
         if !tracee.set_ptrace_stop_syscall_number_for(tid, regs.orig_rax as usize) {
-            return Err(AxError::from(LinuxError::ESRCH));
+            return Err(StarryError::from(Errno::ESRCH));
         }
         if matches!(
             tracee.ptrace_syscall_trace_state_for(tid),
@@ -917,7 +941,7 @@ fn ptrace_write_stopped_user_regs(
         }
     }
     if !tracee.set_ptrace_stop_user_context_for(tid, uctx) {
-        return Err(AxError::from(LinuxError::ESRCH));
+        return Err(StarryError::from(Errno::ESRCH));
     }
     Ok(0)
 }
@@ -932,14 +956,14 @@ fn ptrace_getregset_fpregset(
     current: &crate::task::UserTaskRef,
     pid: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if data == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let regs = ptrace_read_stopped_fp_regs(current, pid)?;
     let mut iov = (data as *const IoVec).vm_read(current)?;
     if iov.iov_len < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let bytes = unsafe {
         slice::from_raw_parts(
@@ -964,13 +988,13 @@ fn ptrace_setregset_fpregset(
     current: &crate::task::UserTaskRef,
     pid: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if data == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let iov = (data as *const IoVec).vm_read(current)?;
     if iov.iov_len < size_of::<ArchFpRegs>() as isize {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let regs = ptrace_read_user_fpregs(current, iov.iov_base as usize)?;
     ptrace_write_stopped_fp_regs(current, pid, regs)
@@ -985,11 +1009,11 @@ fn ptrace_setregset_fpregset(
 fn ptrace_read_stopped_fp_regs(
     current: &crate::task::UserTaskRef,
     pid: usize,
-) -> AxResult<ArchFpRegs> {
+) -> crate::StarryResult<ArchFpRegs> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     let fp_data = tracee
         .ptrace_stop_fp_data_for(tid)
-        .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
+        .ok_or_else(|| StarryError::from(Errno::ESRCH))?;
     Ok(ArchFpRegs::from(fp_data))
 }
 
@@ -1002,7 +1026,7 @@ fn ptrace_read_stopped_fp_regs(
 fn ptrace_read_user_fpregs(
     current: &crate::task::UserTaskRef,
     data: usize,
-) -> AxResult<ArchFpRegs> {
+) -> crate::StarryResult<ArchFpRegs> {
     let mut regs = MaybeUninit::<ArchFpRegs>::uninit();
     let bytes = unsafe {
         slice::from_raw_parts_mut(
@@ -1023,7 +1047,7 @@ fn ptrace_read_user_fpregs(
 fn ptrace_read_user_siginfo(
     current: &crate::task::UserTaskRef,
     data: usize,
-) -> AxResult<SignalInfo> {
+) -> crate::StarryResult<SignalInfo> {
     let mut siginfo = MaybeUninit::<SignalInfo>::uninit();
     let bytes = unsafe {
         slice::from_raw_parts_mut(
@@ -1041,8 +1065,8 @@ fn ptrace_read_user_siginfo(
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_siginfo_signo(siginfo: &SignalInfo) -> AxResult<Signo> {
-    Signo::from_repr(siginfo.raw_signo() as u8).ok_or(AxError::InvalidInput)
+fn ptrace_siginfo_signo(siginfo: &SignalInfo) -> crate::StarryResult<Signo> {
+    Signo::from_repr(siginfo.raw_signo() as u8).ok_or(crate::StarryError::InvalidInput)
 }
 
 #[cfg(any(
@@ -1055,13 +1079,13 @@ fn ptrace_write_stopped_fp_regs(
     current: &crate::task::UserTaskRef,
     pid: usize,
     regs: ArchFpRegs,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     #[cfg(target_arch = "loongarch64")]
     let fp_data = {
         let mut fp_data = tracee
             .ptrace_stop_fp_data_for(tid)
-            .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
+            .ok_or_else(|| StarryError::from(Errno::ESRCH))?;
         fp_data.regs = regs.fpr;
         fp_data.fcc = loongarch_unpack_fcc(regs.fcc);
         fp_data.fcsr = regs.fcsr;
@@ -1071,7 +1095,7 @@ fn ptrace_write_stopped_fp_regs(
     let fp_data = PtraceStopFpData::from(regs);
 
     if !tracee.set_ptrace_stop_fp_data_for(tid, fp_data) {
-        return Err(AxError::from(LinuxError::ESRCH));
+        return Err(StarryError::from(Errno::ESRCH));
     }
     Ok(0)
 }
@@ -1081,9 +1105,9 @@ fn ptrace_peekdata(
     pid: usize,
     addr: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if data == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let tracee = ptrace_stopped_tracee(current, pid)?;
     (data as *mut usize).vm_write(current, ptrace_read_word(&tracee, addr)?)?;
@@ -1095,13 +1119,13 @@ fn ptrace_pokedata(
     pid: usize,
     addr: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let tracee = ptrace_stopped_tracee(current, pid)?;
     ptrace_write_word(&tracee, addr, data)?;
     Ok(0)
 }
 
-fn ptrace_read_word(tracee: &ProcessData, addr: usize) -> AxResult<usize> {
+fn ptrace_read_word(tracee: &ProcessData, addr: usize) -> StarryResult<usize> {
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
     ptrace_populate_remote_range(&mut aspace, addr, size_of::<usize>(), MappingFlags::READ)?;
@@ -1110,7 +1134,7 @@ fn ptrace_read_word(tracee: &ProcessData, addr: usize) -> AxResult<usize> {
     Ok(usize::from_ne_bytes(bytes))
 }
 
-fn ptrace_write_word(tracee: &ProcessData, addr: usize, data: usize) -> AxResult {
+fn ptrace_write_word(tracee: &ProcessData, addr: usize, data: usize) -> StarryResult {
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
     ptrace_populate_remote_range(&mut aspace, addr, size_of::<usize>(), MappingFlags::WRITE)?;
@@ -1124,9 +1148,9 @@ fn ptrace_populate_remote_range(
     addr: usize,
     len: usize,
     access_flags: MappingFlags,
-) -> AxResult {
+) -> StarryResult {
     let start = VirtAddr::from_usize(addr);
-    let end = VirtAddr::from_usize(addr.checked_add(len).ok_or(AxError::BadAddress)?);
+    let end = VirtAddr::from_usize(addr.checked_add(len).ok_or(StarryError::BadAddress)?);
     let page_start = start.align_down_4k();
     let page_end = end.align_up_4k();
     aspace.populate_area(page_start, page_end - page_start, access_flags)
@@ -1140,9 +1164,9 @@ pub fn sys_process_vm_readv(
     remote_iov: *const IoVec,
     riovcnt: usize,
     flags: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if flags != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     process_vm_copy(current, pid, local_iov, liovcnt, remote_iov, riovcnt, false)
@@ -1156,9 +1180,9 @@ pub fn sys_process_vm_writev(
     remote_iov: *const IoVec,
     riovcnt: usize,
     flags: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if flags != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     process_vm_copy(current, pid, local_iov, liovcnt, remote_iov, riovcnt, true)
@@ -1172,7 +1196,7 @@ fn process_vm_copy(
     remote_iov: *const IoVec,
     riovcnt: usize,
     write_remote: bool,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let tracee = process_vm_tracee(current, pid)?;
     let local = read_iovecs(current, local_iov, liovcnt)?;
     let remote = read_iovecs(current, remote_iov, riovcnt)?;
@@ -1200,8 +1224,8 @@ fn process_vm_copy(
         let local_addr = local[local_idx].iov_base.wrapping_add(local_off);
         let remote_addr = (remote[remote_idx].iov_base as usize)
             .checked_add(remote_off)
-            .ok_or(AxError::BadAddress)?;
-        let result: AxResult<()> = if write_remote {
+            .ok_or(StarryError::BadAddress)?;
+        let result: StarryResult<()> = if write_remote {
             let mut data = vec![0; chunk_len];
             let bytes = unsafe {
                 core::slice::from_raw_parts_mut(
@@ -1225,7 +1249,9 @@ fn process_vm_copy(
             };
         }
 
-        copied = copied.checked_add(chunk_len).ok_or(AxError::InvalidInput)?;
+        copied = copied
+            .checked_add(chunk_len)
+            .ok_or(StarryError::InvalidInput)?;
         local_off += chunk_len;
         remote_off += chunk_len;
     }
@@ -1233,34 +1259,41 @@ fn process_vm_copy(
     Ok(copied as isize)
 }
 
-fn process_vm_tracee(current: &crate::task::UserTaskRef, pid: usize) -> AxResult<Arc<ProcessData>> {
+fn process_vm_tracee(
+    current: &crate::task::UserTaskRef,
+    pid: usize,
+) -> crate::StarryResult<Arc<ProcessData>> {
     let tracee_pid = resolve_ptrace_target_pid(current, pid)?;
     let current_pid = current.as_thread().proc_data.proc.pid();
     if tracee_pid == current_pid {
-        get_process_data(tracee_pid).map_err(|_| AxError::from(LinuxError::ESRCH))
+        get_process_data(tracee_pid).map_err(|_| StarryError::from(Errno::ESRCH))
     } else {
         ptrace_stopped_tracee(current, tracee_pid as usize)
     }
 }
 
-fn resolve_ptrace_target_pid(current: &crate::task::UserTaskRef, pid: usize) -> AxResult<Pid> {
-    let local_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
-    resolve_user_pid(current, local_pid).map_err(|_| AxError::from(LinuxError::ESRCH))
+fn resolve_ptrace_target_pid(
+    current: &crate::task::UserTaskRef,
+    pid: usize,
+) -> crate::StarryResult<Pid> {
+    let local_pid =
+        Pid::try_from(pid).map_err(|_| crate::StarryError::from(crate::Errno::ESRCH))?;
+    resolve_user_pid(current, local_pid).map_err(|_| crate::StarryError::from(crate::Errno::ESRCH))
 }
 
-fn ptrace_tracee_by_pid_or_tid(pid: Pid) -> AxResult<Arc<ProcessData>> {
+fn ptrace_tracee_by_pid_or_tid(pid: Pid) -> crate::StarryResult<Arc<ProcessData>> {
     get_process_data(pid)
         .or_else(|_| get_task(pid).map(|task| task.as_thread().proc_data.clone()))
-        .map_err(|_| AxError::from(LinuxError::ESRCH))
+        .map_err(|_| StarryError::from(Errno::ESRCH))
 }
 
 fn read_iovecs(
     current: &crate::task::UserTaskRef,
     iov: *const IoVec,
     iovcnt: usize,
-) -> AxResult<Vec<IoVec>> {
+) -> crate::StarryResult<Vec<IoVec>> {
     if iovcnt > 1024 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let mut iovecs = Vec::with_capacity(iovcnt);
@@ -1268,12 +1301,12 @@ fn read_iovecs(
     for idx in 0..iovcnt {
         let iov = iov.wrapping_add(idx).vm_read(current)?;
         if iov.iov_len < 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         total = total
             .checked_add(iov.iov_len as usize)
             .filter(|len| *len <= isize::MAX as usize)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
         iovecs.push(iov);
     }
     Ok(iovecs)
@@ -1286,7 +1319,7 @@ fn skip_empty_iovecs(iovecs: &[IoVec], idx: &mut usize, offset: &mut usize) {
     }
 }
 
-fn remote_read(tracee: &ProcessData, addr: usize, len: usize) -> AxResult<Vec<u8>> {
+fn remote_read(tracee: &ProcessData, addr: usize, len: usize) -> StarryResult<Vec<u8>> {
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
     ptrace_populate_remote_range(&mut aspace, addr, len, MappingFlags::READ)?;
@@ -1295,7 +1328,7 @@ fn remote_read(tracee: &ProcessData, addr: usize, len: usize) -> AxResult<Vec<u8
     Ok(data)
 }
 
-fn remote_write(tracee: &ProcessData, addr: usize, data: &[u8]) -> AxResult {
+fn remote_write(tracee: &ProcessData, addr: usize, data: &[u8]) -> StarryResult {
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
     ptrace_populate_remote_range(&mut aspace, addr, data.len(), MappingFlags::WRITE)?;
@@ -1307,15 +1340,15 @@ fn remote_write(tracee: &ProcessData, addr: usize, data: &[u8]) -> AxResult {
 fn ptrace_stopped_tracee(
     current: &crate::task::UserTaskRef,
     pid: usize,
-) -> AxResult<Arc<ProcessData>> {
+) -> crate::StarryResult<Arc<ProcessData>> {
     ptrace_stopped_tracee_with_tid(current, pid).map(|(tracee, _tid)| tracee)
 }
 
 fn ptrace_stopped_tracee_with_tid(
     current: &crate::task::UserTaskRef,
     pid: usize,
-) -> AxResult<(Arc<ProcessData>, u32)> {
-    let pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+) -> crate::StarryResult<(Arc<ProcessData>, u32)> {
+    let pid = Pid::try_from(pid).map_err(|_| crate::StarryError::from(crate::Errno::ESRCH))?;
     let tracer_pid = current.as_thread().proc_data.proc.pid();
     let tracee = ptrace_tracee_by_pid_or_tid(pid)?;
     let is_tracer = (tracee.is_ptrace_traceme() || tracee.is_ptrace_attached())
@@ -1323,18 +1356,18 @@ fn ptrace_stopped_tracee_with_tid(
             .ptrace_tracer_pid()
             .is_some_and(|pid| pid == tracer_pid);
     if !is_tracer || tracee.ptrace_stop_signo().is_none() {
-        return Err(AxError::from(LinuxError::ESRCH));
+        return Err(StarryError::from(Errno::ESRCH));
     }
     if pid == tracee.proc.pid() {
         if tracee.ptrace_stop_signo_for(pid).is_some() {
             tracee.select_ptrace_stop(pid);
         }
     } else if !tracee.select_ptrace_stop(pid) {
-        return Err(AxError::from(LinuxError::ESRCH));
+        return Err(StarryError::from(Errno::ESRCH));
     }
     let tid = tracee
         .selected_ptrace_stop_tid()
-        .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
+        .ok_or_else(|| StarryError::from(Errno::ESRCH))?;
     Ok((tracee, tid))
 }
 
@@ -1956,7 +1989,7 @@ fn loongarch_reg(uctx: &ax_runtime::hal::cpu::uspace::UserContext, index: usize)
 }
 
 #[cfg(target_arch = "riscv64")]
-fn ptrace_read_u16_unlocked(aspace: &mut AddrSpace, addr: usize) -> AxResult<u16> {
+fn ptrace_read_u16_unlocked(aspace: &mut AddrSpace, addr: usize) -> StarryResult<u16> {
     ptrace_populate_remote_range(aspace, addr, size_of::<u16>(), MappingFlags::READ)?;
     let mut bytes = [0u8; size_of::<u16>()];
     aspace.read(VirtAddr::from_usize(addr), &mut bytes)?;
@@ -1968,7 +2001,7 @@ fn ptrace_read_u16_unlocked(aspace: &mut AddrSpace, addr: usize) -> AxResult<u16
     target_arch = "aarch64",
     target_arch = "loongarch64"
 ))]
-fn ptrace_read_u32_unlocked(aspace: &mut AddrSpace, addr: usize) -> AxResult<u32> {
+fn ptrace_read_u32_unlocked(aspace: &mut AddrSpace, addr: usize) -> StarryResult<u32> {
     ptrace_populate_remote_range(aspace, addr, size_of::<u32>(), MappingFlags::READ)?;
     let mut bytes = [0u8; size_of::<u32>()];
     aspace.read(VirtAddr::from_usize(addr), &mut bytes)?;
@@ -1976,14 +2009,14 @@ fn ptrace_read_u32_unlocked(aspace: &mut AddrSpace, addr: usize) -> AxResult<u32
 }
 
 #[cfg(target_arch = "riscv64")]
-fn ptrace_write_u16_unlocked(aspace: &mut AddrSpace, addr: usize, data: u16) -> AxResult {
+fn ptrace_write_u16_unlocked(aspace: &mut AddrSpace, addr: usize, data: u16) -> StarryResult {
     ptrace_populate_remote_range(aspace, addr, size_of::<u16>(), MappingFlags::WRITE)?;
     aspace.write(VirtAddr::from_usize(addr), &data.to_ne_bytes())?;
     Ok(())
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
-fn ptrace_write_u32_unlocked(aspace: &mut AddrSpace, addr: usize, data: u32) -> AxResult {
+fn ptrace_write_u32_unlocked(aspace: &mut AddrSpace, addr: usize, data: u32) -> StarryResult {
     ptrace_populate_remote_range(aspace, addr, size_of::<u32>(), MappingFlags::WRITE)?;
     aspace.write(VirtAddr::from_usize(addr), &data.to_ne_bytes())?;
     Ok(())
@@ -2143,7 +2176,7 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for RiscvUserRegs {
 
 #[cfg(target_arch = "riscv64")]
 impl RiscvUserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> StarryResult<()> {
         uctx.sepc = self.pc;
         let r = &mut uctx.regs;
         r.ra = self.ra;
@@ -2215,7 +2248,7 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for Aarch64UserRegs {
 
 #[cfg(target_arch = "aarch64")]
 impl Aarch64UserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> StarryResult<()> {
         uctx.x = self.regs;
         uctx.sp = self.sp;
         uctx.elr = self.pc;
@@ -2296,7 +2329,7 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for LoongarchUserRegs {
 
 #[cfg(target_arch = "loongarch64")]
 impl LoongarchUserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> StarryResult<()> {
         let r = &mut uctx.regs;
         r.zero = 0;
         r.ra = self.regs[1] as usize;
@@ -2435,13 +2468,13 @@ const X86_64_USER_COMM_OFFSET: usize = 816;
 const X86_64_USER_COMM_SIZE: usize = 32;
 
 #[cfg(target_arch = "x86_64")]
-fn ptrace_user_word_range_x86_64(offset: usize) -> AxResult<core::ops::Range<usize>> {
+fn ptrace_user_word_range_x86_64(offset: usize) -> StarryResult<core::ops::Range<usize>> {
     let word_size = size_of::<u64>();
     let end = offset
         .checked_add(word_size)
-        .ok_or_else(|| AxError::from(LinuxError::EIO))?;
+        .ok_or_else(|| StarryError::from(Errno::EIO))?;
     if !offset.is_multiple_of(word_size) || end > X86_64_USER_AREA_SIZE {
-        return Err(AxError::from(LinuxError::EIO));
+        return Err(StarryError::from(Errno::EIO));
     }
     Ok(offset..end)
 }
@@ -2452,9 +2485,9 @@ fn ptrace_peekuser(
     pid: usize,
     addr: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if data == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let range = ptrace_user_word_range_x86_64(addr)?;
     let user = ptrace_read_stopped_user_area_x86_64(current, pid)?;
@@ -2469,14 +2502,14 @@ fn ptrace_pokeuser(
     pid: usize,
     addr: usize,
     data: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let range = ptrace_user_word_range_x86_64(addr)?;
     if range.start >= X86_64_USER_DEBUGREG_OFFSET && range.end <= X86_64_USER_DEBUGREG_END {
         let _ = (pid, data);
-        return Err(AxError::from(LinuxError::EIO));
+        return Err(StarryError::from(Errno::EIO));
     }
     if range.end > size_of::<X8664UserRegs>() {
-        return Err(AxError::from(LinuxError::EIO));
+        return Err(StarryError::from(Errno::EIO));
     }
     let mut regs = ptrace_read_stopped_user_regs(current, pid)?;
     let bytes = unsafe {
@@ -2493,7 +2526,7 @@ fn ptrace_pokeuser(
 fn ptrace_read_stopped_user_area_x86_64(
     current: &crate::task::UserTaskRef,
     pid: usize,
-) -> AxResult<[u8; X86_64_USER_AREA_SIZE]> {
+) -> crate::StarryResult<[u8; X86_64_USER_AREA_SIZE]> {
     let regs = ptrace_read_stopped_user_regs(current, pid)?;
     let (tracee, _tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
     let mut user = [0u8; X86_64_USER_AREA_SIZE];
@@ -2603,8 +2636,8 @@ fn ptrace_peekuser(
     _pid: usize,
     _addr: usize,
     _data: usize,
-) -> AxResult<isize> {
-    Err(AxError::Unsupported)
+) -> crate::StarryResult<isize> {
+    Err(crate::StarryError::Unsupported)
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -2613,8 +2646,8 @@ fn ptrace_pokeuser(
     _pid: usize,
     _addr: usize,
     _data: usize,
-) -> AxResult<isize> {
-    Err(AxError::Unsupported)
+) -> crate::StarryResult<isize> {
+    Err(crate::StarryError::Unsupported)
 }
 
 // ---------------------------------------------------------------------------
@@ -2677,9 +2710,9 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for X8664UserRegs {
 
 #[cfg(target_arch = "x86_64")]
 impl X8664UserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> StarryResult<()> {
         if self.cs != uctx.cs || self.ss != uctx.ss {
-            return Err(AxError::from(LinuxError::EINVAL));
+            return Err(StarryError::from(Errno::EINVAL));
         }
 
         uctx.r15 = self.r15;

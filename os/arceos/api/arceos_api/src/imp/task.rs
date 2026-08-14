@@ -101,13 +101,13 @@ cfg_task! {
             .unwrap_or_else(|error| panic!("failed to join task: {error}"))
     }
 
-    pub fn ax_set_current_priority(prio: isize) -> crate::AxResult {
+    pub fn ax_set_current_priority(prio: isize) -> crate::ApiResult {
         use ax_runtime::task::{Nice, SchedulePolicy};
 
         let nice = i8::try_from(prio)
             .ok()
             .and_then(|value| Nice::new(value).ok())
-            .ok_or(crate::AxError::InvalidInput)?;
+            .ok_or(crate::ApiError::InvalidInput)?;
         let thread = task_result(
             ax_runtime::task::current_thread_id(),
             "read current task identity",
@@ -117,7 +117,7 @@ cfg_task! {
             "read current scheduling policy",
         )?;
         let SchedulePolicy::Fair { mode, .. } = policy else {
-            return Err(crate::AxError::OperationNotSupported);
+            return Err(crate::ApiError::OperationNotSupported);
         };
         task_result(
             ax_runtime::task::set_thread_policy(thread, SchedulePolicy::fair(nice, mode)),
@@ -126,7 +126,7 @@ cfg_task! {
     }
 
     #[track_caller]
-    pub fn ax_set_current_affinity(cpumask: AxCpuMask) -> crate::AxResult {
+    pub fn ax_set_current_affinity(cpumask: AxCpuMask) -> crate::ApiResult {
         let topology_len = task_result(
             ax_runtime::task::cpu_topology_len(),
             "read task CPU topology",
@@ -220,65 +220,23 @@ cfg_task! {
     fn task_result<T>(
         result: Result<T, ax_runtime::task::TaskError>,
         operation: &'static str,
-    ) -> crate::AxResult<T> {
+    ) -> crate::ApiResult<T> {
         result.map_err(|error| {
             ax_log::warn!("{operation} failed: {error}");
-            map_task_error(error)
+            error.into()
         })
     }
 
-    fn map_task_error(error: ax_runtime::task::TaskError) -> crate::AxError {
-        use ax_runtime::task::TaskError;
-
-        match error {
-            TaskError::InvalidConfiguration
-            | TaskError::InvalidCpuCount(_)
-            | TaskError::InvalidCpu(_)
-            | TaskError::InvalidNice(_)
-            | TaskError::InvalidRtPriority(_)
-            | TaskError::InvalidRoundRobinQuantum
-            | TaskError::InvalidDeadline { .. }
-            | TaskError::UnsupportedDeadlineFlags(_) => crate::AxError::InvalidInput,
-            TaskError::DeadlineAdmission
-            | TaskError::DeadlineAffinity
-            | TaskError::ActiveTimerAffinity
-            | TaskError::ThreadBusy => crate::AxError::ResourceBusy,
-            // Linux copy_process() reports the global thread limit as EAGAIN.
-            TaskError::ThreadCapacity => crate::AxError::WouldBlock,
-            TaskError::TimerCapacity => crate::AxError::NoMemory,
-            TaskError::UnsafeContext => crate::AxError::OperationNotPermitted,
-            TaskError::StaleThreadId => crate::AxError::NotFound,
-            TaskError::NotInitialized
-            | TaskError::InvalidRuntimeHandle
-            | TaskError::CpuOwnerBorrowed
-            | TaskError::CpuOwnerMismatch { .. }
-            | TaskError::ExecutorOwnerMismatch { .. }
-            | TaskError::CpuAlreadyOnline(_)
-            | TaskError::CpuOffline(_)
-            | TaskError::CpuNotQuiescent(_)
-            | TaskError::LastOnlineCpu(_)
-            | TaskError::InvalidTransition { .. }
-            | TaskError::AlreadyQueued
-            | TaskError::NotReady
-            | TaskError::NotExited
-            | TaskError::NoRunnableThread
-            | TaskError::InvalidPiState
-            | TaskError::InvalidPiWaitState(_)
-            | TaskError::PiCycle
-            | TaskError::PiChainLimit { .. }
-            | TaskError::RuntimeFailure(_) => crate::AxError::BadState,
-        }
-    }
-
-    fn cpu_set_from_mask(cpumask: AxCpuMask, topology_len: usize) -> crate::AxResult<CpuSet> {
+    fn cpu_set_from_mask(cpumask: AxCpuMask, topology_len: usize) -> crate::ApiResult<CpuSet> {
         if cpumask.is_empty() {
-            return Err(crate::AxError::InvalidInput);
+            return Err(crate::ApiError::InvalidInput);
         }
         let mut affinity = CpuSet::empty(topology_len);
         for cpu_index in &cpumask {
-            let cpu_index = u32::try_from(cpu_index).map_err(|_| crate::AxError::InvalidInput)?;
+            let cpu_index =
+                u32::try_from(cpu_index).map_err(|_| crate::ApiError::InvalidInput)?;
             if !affinity.insert(CpuId::new(cpu_index)) {
-                return Err(crate::AxError::InvalidInput);
+                return Err(crate::ApiError::InvalidInput);
             }
         }
         Ok(affinity)
@@ -299,7 +257,7 @@ cfg_task! {
         fn cpu_mask_conversion_rejects_empty_mask() {
             assert_eq!(
                 cpu_set_from_mask(AxCpuMask::new(), 1),
-                Err(crate::AxError::InvalidInput)
+                Err(crate::ApiError::InvalidInput)
             );
         }
 
@@ -307,23 +265,27 @@ cfg_task! {
         fn cpu_mask_conversion_rejects_cpu_outside_topology() {
             assert_eq!(
                 cpu_set_from_mask(AxCpuMask::one_shot(0), 0),
-                Err(crate::AxError::InvalidInput)
+                Err(crate::ApiError::InvalidInput)
             );
         }
 
         #[test]
         fn pi_chain_limit_maps_to_bad_state() {
             assert_eq!(
-                map_task_error(ax_runtime::task::TaskError::PiChainLimit { limit: 8 }),
-                crate::AxError::BadState
+                ax_io::IoError::from(crate::ApiError::from(
+                    ax_runtime::task::TaskError::PiChainLimit { limit: 8 }
+                )),
+                ax_io::IoError::BadState
             );
         }
 
         #[test]
         fn thread_capacity_maps_to_linux_eagain() {
             assert_eq!(
-                map_task_error(ax_runtime::task::TaskError::ThreadCapacity),
-                crate::AxError::WouldBlock
+                ax_io::IoError::from(crate::ApiError::from(
+                    ax_runtime::task::TaskError::ThreadCapacity
+                )),
+                ax_io::IoError::WouldBlock
             );
         }
     }

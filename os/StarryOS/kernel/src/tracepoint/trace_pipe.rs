@@ -1,6 +1,6 @@
 use core::{future::poll_fn, task::Poll};
 
-use axfs_ng_vfs::VfsResult;
+use axfs_ng_vfs::{VfsError, VfsResult};
 use ktracepoint::TracePipeOps;
 
 use crate::{
@@ -70,7 +70,8 @@ impl DirectRwFsFileOps for TracePipeFile {
                     }
                 }),
             )
-            .into_result()?;
+            .into_result()
+            .map_err(|error| VfsError::from(crate::StarryError::from(error)))?;
         };
         Ok(read_len)
     }

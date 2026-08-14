@@ -1,6 +1,5 @@
 use alloc::vec;
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use ax_net::{
     InterfaceId, SocketOps,
     options::{
@@ -16,6 +15,7 @@ use linux_raw_sys::net::{
 };
 
 use crate::{
+    Errno, StarryError, StarryResult,
     file::{FileLike, Socket, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr, vm_write_slice},
 };
@@ -34,9 +34,9 @@ fn read_int_sockopt(
     current: &crate::task::UserTaskRef,
     optval: UserConstPtr<u8>,
     optlen: socklen_t,
-) -> AxResult<i32> {
+) -> crate::StarryResult<i32> {
     if (optlen as usize) < size_of::<i32>() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     optval.cast::<i32>().read(current)
 }
@@ -45,12 +45,12 @@ fn normalize_ip_tos(value: i32) -> u8 {
     (value as u8) & !IP_TOS_ECN_MASK
 }
 
-fn normalize_ipv6_tclass(value: i32) -> AxResult<u8> {
+fn normalize_ipv6_tclass(value: i32) -> StarryResult<u8> {
     if value == -1 {
         return Ok(0);
     }
     if !(0..=u8::MAX as i32).contains(&value) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(normalize_ip_tos(value))
 }
@@ -59,7 +59,7 @@ fn read_bind_to_device(
     current: &crate::task::UserTaskRef,
     optval: UserConstPtr<u8>,
     optlen: socklen_t,
-) -> AxResult<Option<InterfaceId>> {
+) -> StarryResult<Option<InterfaceId>> {
     if optlen == 0 {
         return Ok(None);
     }
@@ -71,10 +71,10 @@ fn read_bind_to_device(
     if end == 0 {
         return Ok(None);
     }
-    let name = core::str::from_utf8(&buf[..end]).map_err(|_| AxError::InvalidInput)?;
+    let name = core::str::from_utf8(&buf[..end]).map_err(|_| StarryError::InvalidInput)?;
     ax_net::interface_by_name(name)
         .map(|info| Some(info.id))
-        .ok_or(AxError::NoSuchDevice)
+        .ok_or(StarryError::NoSuchDevice)
 }
 
 fn write_bind_to_device(
@@ -82,7 +82,7 @@ fn write_bind_to_device(
     socket: &Socket,
     optval: UserPtr<u8>,
     optlen: &mut socklen_t,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     let mut binding = None;
     socket.get_option(GetSocketOption::BindToDevice(&mut binding))?;
     let name = binding
@@ -172,7 +172,7 @@ fn write_tcp_info(
     socket: &Socket,
     optval: UserPtr<u8>,
     optlen: &mut socklen_t,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     let mut info = TcpInfo::default();
     socket.get_option(GetSocketOption::TcpInfo(&mut info))?;
 
@@ -208,7 +208,7 @@ fn write_tcp_congestion(
     socket: &Socket,
     optval: UserPtr<u8>,
     optlen: &mut socklen_t,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     let mut congestion_control = TcpCongestionControl::default();
     socket.get_option(GetSocketOption::TcpCongestionControl(
         &mut congestion_control,
@@ -231,9 +231,9 @@ fn read_tcp_congestion(
     socket: &Socket,
     optval: UserConstPtr<u8>,
     optlen: socklen_t,
-) -> AxResult<TcpCongestionControl> {
+) -> StarryResult<TcpCongestionControl> {
     if optlen == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     // Linux reads at most TCP_CA_NAME_MAX - 1 bytes and appends a private
@@ -248,26 +248,25 @@ fn read_tcp_congestion(
     if requested_name == tcp_congestion_name(active) {
         Ok(active)
     } else {
-        Err(AxError::from(LinuxError::ENOENT))
+        Err(StarryError::from(Errno::ENOENT))
     }
 }
 
-fn ensure_ipv6_socket(socket: &Socket) -> AxResult<()> {
+fn ensure_ipv6_socket(socket: &Socket) -> StarryResult<()> {
     if socket.ip_domain() == AF_INET6 {
         Ok(())
     } else {
-        Err(AxError::from(LinuxError::ENOPROTOOPT))
+        Err(StarryError::from(Errno::ENOPROTOOPT))
     }
 }
 
 mod conv {
     use core::mem::{align_of, size_of};
 
-    use ax_errno::{AxError, AxResult};
     use ax_net::options::UnixCredentials;
     use linux_raw_sys::{general::timeval, net::ucred};
 
-    use crate::time::TimeValueLike;
+    use crate::{StarryError, StarryResult, time::TimeValueLike};
 
     #[repr(C)]
     #[derive(Clone, Copy, bytemuck::NoUninit)]
@@ -294,23 +293,23 @@ mod conv {
     pub struct Int<T>(T);
 
     impl<T: TryFrom<i32> + TryInto<i32>> Int<T> {
-        pub fn sys_to_rust(val: i32) -> AxResult<T> {
-            T::try_from(val).map_err(|_| AxError::InvalidInput)
+        pub fn sys_to_rust(val: i32) -> StarryResult<T> {
+            T::try_from(val).map_err(|_| StarryError::InvalidInput)
         }
 
-        pub fn rust_to_sys(val: T) -> AxResult<i32> {
-            val.try_into().map_err(|_| AxError::InvalidInput)
+        pub fn rust_to_sys(val: T) -> StarryResult<i32> {
+            val.try_into().map_err(|_| StarryError::InvalidInput)
         }
     }
 
     pub struct IntBool;
 
     impl IntBool {
-        pub fn sys_to_rust(val: i32) -> AxResult<bool> {
+        pub fn sys_to_rust(val: i32) -> StarryResult<bool> {
             Ok(val != 0)
         }
 
-        pub fn rust_to_sys(val: bool) -> AxResult<i32> {
+        pub fn rust_to_sys(val: bool) -> StarryResult<i32> {
             Ok(val as _)
         }
     }
@@ -318,11 +317,11 @@ mod conv {
     pub struct Duration;
 
     impl Duration {
-        pub fn sys_to_rust(val: timeval) -> AxResult<core::time::Duration> {
+        pub fn sys_to_rust(val: timeval) -> StarryResult<core::time::Duration> {
             val.try_into_time_value()
         }
 
-        pub fn rust_to_sys(val: core::time::Duration) -> AxResult<TimevalOutput> {
+        pub fn rust_to_sys(val: core::time::Duration) -> crate::StarryResult<TimevalOutput> {
             let value = timeval::from_time_value(val);
             Ok(TimevalOutput {
                 tv_sec: value.tv_sec,
@@ -334,11 +333,11 @@ mod conv {
     pub struct Ucred;
 
     impl Ucred {
-        pub fn sys_to_rust(val: ucred) -> AxResult<UnixCredentials> {
+        pub fn sys_to_rust(val: ucred) -> crate::StarryResult<UnixCredentials> {
             Ok(UnixCredentials::from_parts(val.pid, val.uid, val.gid))
         }
 
-        pub fn rust_to_sys(val: UnixCredentials) -> AxResult<UcredOutput> {
+        pub fn rust_to_sys(val: UnixCredentials) -> crate::StarryResult<UcredOutput> {
             let val = crate::file::Socket::project_unix_credentials(&val);
             Ok(UcredOutput {
                 pid: val.pid,
@@ -411,7 +410,7 @@ macro_rules! call_dispatch {
             )*
             unsupported => {
                 debug!("unsupported sockopt (level, optname) = {:?}", unsupported);
-                return Err(AxError::from(LinuxError::ENOPROTOOPT));
+                return Err(StarryError::from(Errno::ENOPROTOOPT));
             }
         }
     }
@@ -424,7 +423,7 @@ pub fn sys_getsockopt(
     optname: u32,
     optval: UserPtr<u8>,
     optlen: UserPtr<socklen_t>,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let optlen_ptr = optlen;
     let initial_optlen = optlen_ptr.read(current)?;
     let mut optlen = initial_optlen;
@@ -443,9 +442,9 @@ pub fn sys_getsockopt(
         len_ptr: UserPtr<socklen_t>,
         len: socklen_t,
         value: T,
-    ) -> AxResult<()> {
+    ) -> StarryResult<()> {
         if (len as usize) < size_of::<T>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         val.cast().write(current, value)?;
         len_ptr.write(current, size_of::<T>() as socklen_t)
@@ -599,7 +598,7 @@ pub fn sys_setsockopt(
     optname: u32,
     optval: UserConstPtr<u8>,
     optlen: socklen_t,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!(
         "sys_setsockopt <= fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
         fd,
@@ -644,7 +643,7 @@ pub fn sys_setsockopt(
                 socket.set_reuse_address(read_int_sockopt(current, optval, optlen)? != 0);
                 return Ok(0);
             }
-            _ => return Err(AxError::from(LinuxError::ENOPROTOOPT)),
+            _ => return Err(StarryError::from(Errno::ENOPROTOOPT)),
         }
     }
 
@@ -666,9 +665,9 @@ pub fn sys_setsockopt(
         current: &crate::task::UserTaskRef,
         val: UserConstPtr<u8>,
         len: socklen_t,
-    ) -> AxResult<T> {
+    ) -> crate::StarryResult<T> {
         if len as usize != size_of::<T>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         val.cast().read(current)
     }
@@ -682,9 +681,9 @@ pub fn sys_setsockopt(
         current: &crate::task::UserTaskRef,
         val: UserConstPtr<u8>,
         len: socklen_t,
-    ) -> AxResult<T> {
+    ) -> crate::StarryResult<T> {
         if len as usize != size_of::<T>() {
-            return Err(AxError::InvalidInput);
+            return Err(crate::StarryError::InvalidInput);
         }
         // SAFETY: the caller supplies the validity contract for T.
         unsafe { val.cast().read_abi(current) }
@@ -692,7 +691,7 @@ pub fn sys_setsockopt(
 
     let socket = Socket::from_fd(fd)?;
     if level == PROTO_TCP && optname == TCP_INFO {
-        return Err(AxError::from(LinuxError::ENOPROTOOPT));
+        return Err(StarryError::from(Errno::ENOPROTOOPT));
     }
 
     if level == PROTO_TCP && optname == TCP_CONGESTION {

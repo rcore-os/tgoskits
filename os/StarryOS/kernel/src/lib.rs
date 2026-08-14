@@ -27,6 +27,7 @@ pub mod axtest_exports;
 mod cgroup;
 mod config;
 mod ebpf;
+mod error;
 mod file;
 mod ipc;
 mod kmod;
@@ -42,3 +43,6 @@ mod time;
 mod tracepoint;
 mod trap;
 mod uprobe;
+
+pub use error::{DmaOperation, StarryError, StarryResult};
+pub use syscalls::Errno;

@@ -3,10 +3,10 @@
 
 use core::time::Duration;
 
-use ax_errno::{AxError, AxResult};
 use linux_raw_sys::general::{__kernel_itimerspec, __kernel_timespec, O_CLOEXEC, O_NONBLOCK};
 
 use crate::{
+    StarryError, StarryResult,
     file::{
         FileLike, add_file_like,
         timerfd::{TFD_TIMER_ABSTIME, TFD_TIMER_CANCEL_ON_SET, Timerfd},
@@ -19,9 +19,9 @@ use crate::{
 const TFD_CLOEXEC: u32 = O_CLOEXEC;
 const TFD_NONBLOCK: u32 = O_NONBLOCK;
 
-fn timespec_to_duration(ts: &__kernel_timespec) -> AxResult<Duration> {
+fn timespec_to_duration(ts: &__kernel_timespec) -> StarryResult<Duration> {
     if ts.tv_sec < 0 || !(0..1_000_000_000).contains(&ts.tv_nsec) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32))
 }
@@ -34,13 +34,13 @@ fn duration_to_timespec(d: Duration) -> __kernel_timespec {
 }
 
 /// `timerfd_create(clockid, flags)`.
-pub fn sys_timerfd_create(clockid: i32, flags: i32) -> AxResult<isize> {
+pub fn sys_timerfd_create(clockid: i32, flags: i32) -> StarryResult<isize> {
     if clockid < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let flags = flags as u32;
     if flags & !(TFD_CLOEXEC | TFD_NONBLOCK) != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let tfd = Timerfd::new(clockid as u32)?;
@@ -61,10 +61,10 @@ pub fn sys_timerfd_settime(
     flags: i32,
     new_value: *const __kernel_itimerspec,
     old_value: *mut __kernel_itimerspec,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let flags = flags as u32;
     if flags & !(TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET) != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let tfd = Timerfd::from_fd(fd)?;
@@ -97,7 +97,7 @@ pub fn sys_timerfd_gettime(
     current: &crate::task::UserTaskRef,
     fd: i32,
     curr_value: *mut __kernel_itimerspec,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let tfd = Timerfd::from_fd(fd)?;
     let (ival, rem) = tfd.gettime();
     let out = __kernel_itimerspec {

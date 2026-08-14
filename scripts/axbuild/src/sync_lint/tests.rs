@@ -267,7 +267,7 @@ fn reports_relaxed_publish_before_signal_wake_entrypoint() {
         r#"
 use core::sync::atomic::{AtomicBool, Ordering};
 
-fn demo(flag: &AtomicBool, tid: Pid, sig: SignalInfo) -> AxResult<()> {
+fn demo(flag: &AtomicBool, tid: Pid, sig: SignalInfo) -> Result<(), SignalError> {
     flag.store(true, Ordering::Relaxed);
     send_signal_to_thread(None, tid, Some(sig))
 }

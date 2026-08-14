@@ -3,7 +3,6 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
-use ax_errno::AxResult;
 use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin};
 use axpoll::PollSet;
 use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWriteGuard};
@@ -326,7 +325,10 @@ impl Thread {
     }
 
     /// Binds the scheduler identity exactly once.
-    pub(crate) fn bind_scheduler_id(&self, id: ax_std::os::arceos::task::ThreadId) -> AxResult<()> {
+    pub(crate) fn bind_scheduler_id(
+        &self,
+        id: ax_std::os::arceos::task::ThreadId,
+    ) -> crate::StarryResult<()> {
         self.identity.scheduler.bind(id)
     }
 
@@ -603,12 +605,12 @@ impl Thread {
     }
 
     /// Enables strict seccomp mode.
-    pub fn install_seccomp_strict(&self) -> AxResult<()> {
+    pub fn install_seccomp_strict(&self) -> crate::StarryResult<()> {
         self.security.seccomp.update(SeccompState::install_strict)
     }
 
     /// Appends one seccomp filter program.
-    pub fn append_seccomp_filter(&self, insns: Vec<SockFilter>) -> AxResult<()> {
+    pub fn append_seccomp_filter(&self, insns: Vec<SockFilter>) -> crate::StarryResult<()> {
         self.security
             .seccomp
             .update(move |state| state.append_filter(insns))

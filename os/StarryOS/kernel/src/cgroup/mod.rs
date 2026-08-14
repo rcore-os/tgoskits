@@ -5,7 +5,6 @@ use core::fmt::Write;
 
 use ax_cgroup::{CgroupError, CgroupNode};
 pub use ax_cgroup::{attach_initial_process, begin_fork, relative_path, root};
-use ax_errno::{AxError, LinuxError};
 
 use crate::task::{ProcessData, UserTaskRef, get_process_data, resolve_user_pid, visible_user_pid};
 
@@ -58,32 +57,21 @@ pub fn write_procs(
     current: &UserTaskRef,
     node: Arc<CgroupNode>,
     data: &[u8],
-) -> Result<(), AxError> {
+) -> Result<(), crate::StarryError> {
     let local_pid = core::str::from_utf8(data)
-        .map_err(|_| AxError::InvalidInput)?
+        .map_err(|_| crate::StarryError::InvalidInput)?
         .trim()
         .parse::<u32>()
-        .map_err(|_| AxError::InvalidInput)?;
+        .map_err(|_| crate::StarryError::InvalidInput)?;
     let global_pid = if local_pid == 0 {
         current.as_thread().proc_data.proc.pid()
     } else {
         resolve_user_pid(current, local_pid)?
     };
-    migrate_process(global_pid, node).map_err(cgroup_error)
+    migrate_process(global_pid, node)?;
+    Ok(())
 }
 
-pub fn write_subtree_control(_node: &CgroupNode, _data: &[u8]) -> Result<(), AxError> {
-    Err(LinuxError::EINVAL.into())
-}
-
-pub fn cgroup_error(error: CgroupError) -> AxError {
-    let error: AxError = match error {
-        CgroupError::NotInitialized | CgroupError::InvalidInput => LinuxError::EINVAL.into(),
-        CgroupError::NotFound => LinuxError::ENOENT.into(),
-        CgroupError::AlreadyExists => LinuxError::EEXIST.into(),
-        CgroupError::ResourceBusy => LinuxError::EBUSY.into(),
-        CgroupError::NoSuchProcess => LinuxError::ESRCH.into(),
-        CgroupError::DirectoryNotEmpty => LinuxError::ENOTEMPTY.into(),
-    };
-    error.canonicalize()
+pub fn write_subtree_control(_node: &CgroupNode, _data: &[u8]) -> Result<(), crate::StarryError> {
+    Err(crate::Errno::EINVAL.into())
 }

@@ -2,7 +2,6 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_errno::{AxError, AxResult};
 use ax_std::os::arceos::task::ThreadId;
 
 /// A scheduler identity that may be published exactly once.
@@ -31,7 +30,7 @@ impl SchedulerIdentity {
     ///
     /// Repeating the same publication is harmless. A different identity means
     /// one Starry thread object was attached to two scheduler records.
-    pub(super) fn bind(&self, id: ThreadId) -> AxResult<()> {
+    pub(super) fn bind(&self, id: ThreadId) -> crate::StarryResult<()> {
         let raw = id.as_u64();
         debug_assert_ne!(raw, 0, "a published scheduler identity cannot be zero");
         match self
@@ -40,7 +39,7 @@ impl SchedulerIdentity {
         {
             Ok(_) => Ok(()),
             Err(current) if current == raw => Ok(()),
-            Err(_) => Err(AxError::BadState),
+            Err(_) => Err(crate::StarryError::BadState),
         }
     }
 }
@@ -74,7 +73,7 @@ mod tests {
 
         let result = identity.bind(ThreadId::from_parts(7, 4));
 
-        assert_eq!(result, Err(AxError::BadState));
+        assert_eq!(result, Err(crate::StarryError::BadState));
         assert_eq!(identity.get(), Some(ThreadId::from_parts(7, 3)));
     }
 }

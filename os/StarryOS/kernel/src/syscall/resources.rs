@@ -1,12 +1,12 @@
 use core::mem::offset_of;
 
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::time::TimeValue;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
 use starry_process::Pid;
 
 use crate::{
+    StarryError,
     mm::{UserPtr, VmPtr},
     task::{ProcessData, Thread, get_process_data, resolve_user_pid},
     time::TimeValueLike,
@@ -18,7 +18,7 @@ pub fn sys_prlimit64(
     resource: u32,
     new_limit: *const rlimit64,
     old_limit: *mut rlimit64,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     // Linux resolves explicit PIDs in the caller's active PID namespace.
     // Keep lookup first to preserve ESRCH-before-EINVAL error priority.
     let pid = if pid == 0 {
@@ -29,7 +29,7 @@ pub fn sys_prlimit64(
     let proc_data = get_process_data(pid)?;
 
     if resource >= RLIM_NLIMITS {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     if let Some(old_limit) = old_limit.nullable() {
@@ -43,7 +43,7 @@ pub fn sys_prlimit64(
         // FIXME: AnyBitPattern
         let new_limit = unsafe { new_limit.vm_read_uninit(current)?.assume_init() };
         if new_limit.rlim_cur > new_limit.rlim_max {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let limit = &mut proc_data.rlimits_mut()[resource];
@@ -53,7 +53,7 @@ pub fn sys_prlimit64(
         if new_limit.rlim_max > limit.max {
             let cred = current.as_thread().cred();
             if !cred.has_cap_sys_resource() {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
         }
         limit.max = new_limit.rlim_max;
@@ -118,7 +118,7 @@ fn write_rusage(
     current: &crate::task::UserTaskRef,
     user: *mut rusage,
     usage: rusage,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     let user = UserPtr::from(user);
     let utime = offset_of!(rusage, ru_utime);
     user.write_field(
@@ -162,7 +162,7 @@ pub fn sys_getrusage(
     current: &crate::task::UserTaskRef,
     who: i32,
     usage: *mut rusage,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     const RUSAGE_SELF: i32 = linux_raw_sys::general::RUSAGE_SELF as i32;
     const RUSAGE_CHILDREN: i32 = linux_raw_sys::general::RUSAGE_CHILDREN;
     const RUSAGE_THREAD: i32 = linux_raw_sys::general::RUSAGE_THREAD as i32;
@@ -174,7 +174,7 @@ pub fn sys_getrusage(
         RUSAGE_SELF => Rusage::from_process(&thr.proc_data),
         RUSAGE_CHILDREN => Rusage::from_waited_children(&thr.proc_data),
         RUSAGE_THREAD => Rusage::from_thread(thr),
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
     write_rusage(current, usage, result.into())?;
 

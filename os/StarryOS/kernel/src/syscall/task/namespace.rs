@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 use core::ops::DerefMut;
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::{FS_CONTEXT, FsContext};
 use axnsproxy::NsProxy;
 use flatten_objects::FlattenObjects;
@@ -11,6 +10,7 @@ use linux_raw_sys::general::{
 };
 
 use crate::{
+    StarryError,
     file::{FD_TABLE, FileDescriptor, NsFd, PidFd, get_file_like},
     sync::{FsMutex, RwLock},
     task::{AX_FILE_LIMIT, ProcessNamespaceUpdate, Thread, get_task},
@@ -41,7 +41,7 @@ impl PreparedUnshare {
         flags: u32,
         thread: &Thread,
         namespace_update: Option<&ProcessNamespaceUpdate<'_>>,
-    ) -> AxResult<Self> {
+    ) -> crate::StarryResult<Self> {
         let file_table = (flags & CLONE_FILES != 0)
             .then(|| Arc::new(RwLock::new(crate::file::current_fd_table().read().clone())));
 
@@ -116,10 +116,10 @@ impl PreparedUnshare {
 }
 
 /// unshare(2) — disassociate parts of the process execution context.
-pub fn sys_unshare(current: &crate::task::UserTaskRef, flags: u32) -> AxResult<isize> {
+pub fn sys_unshare(current: &crate::task::UserTaskRef, flags: u32) -> crate::StarryResult<isize> {
     if flags & !SUPPORTED_NS_FLAGS != 0 {
         warn!("sys_unshare: unsupported flags {:#x}", flags);
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let curr = current;
@@ -127,7 +127,7 @@ pub fn sys_unshare(current: &crate::task::UserTaskRef, flags: u32) -> AxResult<i
     let want_privileged_ns = flags & (CLONE_NEWNS | CLONE_NEWCGROUP) != 0;
 
     if want_privileged_ns && !thread.cred().has_cap_sys_admin() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
 
     // Starry currently stores namespaces per process rather than per Linux
@@ -153,10 +153,14 @@ pub fn sys_unshare(current: &crate::task::UserTaskRef, flags: u32) -> AxResult<i
 /// * `EINVAL` — `nstype` does not match the namespace type, or multi-threaded
 ///   process attempts to change PID namespace
 /// * `EPERM` — insufficient privileges (e.g. user namespace restrictions)
-pub fn sys_setns(current: &crate::task::UserTaskRef, fd: u32, nstype: u32) -> AxResult<isize> {
+pub fn sys_setns(
+    current: &crate::task::UserTaskRef,
+    fd: u32,
+    nstype: u32,
+) -> crate::StarryResult<isize> {
     if nstype != 0 && nstype & !SUPPORTED_SETNS_FLAGS != 0 {
         warn!("sys_setns: unsupported nstype {:#x}", nstype);
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let file_like = get_file_like(fd as i32)?;
@@ -171,14 +175,18 @@ pub fn sys_setns(current: &crate::task::UserTaskRef, fd: u32, nstype: u32) -> Ax
         return setns_via_pidfd(current, pidfd, nstype);
     }
 
-    Err(AxError::BadFileDescriptor)
+    Err(StarryError::BadFileDescriptor)
 }
 
 /// setns via an NsFd (from `/proc/<pid>/ns/<type>`).
 ///
 /// An NsFd always references exactly one namespace type, so `nstype`
 /// must either be `0` or match the fd's type.
-fn setns_via_nsfd(current: &crate::task::UserTaskRef, nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
+fn setns_via_nsfd(
+    current: &crate::task::UserTaskRef,
+    nsfd: &NsFd,
+    nstype: u32,
+) -> crate::StarryResult<isize> {
     let fd_type = nsfd.ns_type();
 
     if nstype != 0 && nstype != fd_type {
@@ -186,14 +194,14 @@ fn setns_via_nsfd(current: &crate::task::UserTaskRef, nsfd: &NsFd, nstype: u32) 
             "sys_setns: nstype {:#x} does not match fd type {:#x}",
             nstype, fd_type
         );
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let curr = current;
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
     if fd_type == CLONE_NEWCGROUP && !thread.cred().has_cap_sys_admin() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
 
     // PID namespace: calling process stays in its current PID ns;
@@ -206,7 +214,7 @@ fn setns_via_nsfd(current: &crate::task::UserTaskRef, nsfd: &NsFd, nstype: u32) 
                 "sys_setns: cannot change PID namespace in multi-threaded process ({} threads)",
                 thread_count
             );
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
     }
     if matches!(nsfd, NsFd::User(_)) {
@@ -216,7 +224,7 @@ fn setns_via_nsfd(current: &crate::task::UserTaskRef, nsfd: &NsFd, nstype: u32) 
                 "sys_setns: cannot change user namespace in multi-threaded process ({} threads)",
                 thread_count
             );
-            return Err(AxError::OperationNotPermitted);
+            return Err(crate::StarryError::OperationNotPermitted);
         }
     }
 
@@ -255,14 +263,14 @@ fn setns_via_pidfd(
     current: &crate::task::UserTaskRef,
     pidfd: &PidFd,
     nstype: u32,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if nstype == 0 {
         warn!("sys_setns: nstype must be non-zero for pidfd");
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if nstype & !SUPPORTED_SETNS_FLAGS != 0 {
         warn!("sys_setns: unsupported nstype flags {:#x}", nstype);
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let target_proc = pidfd.process_data()?;
@@ -279,7 +287,7 @@ fn setns_via_pidfd(
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
     if nstype & CLONE_NEWCGROUP != 0 && !thread.cred().has_cap_sys_admin() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
 
     // Check multi-threaded restrictions before making any changes.
@@ -289,14 +297,14 @@ fn setns_via_pidfd(
             "sys_setns: cannot change PID namespace in multi-threaded process ({} threads)",
             thread_count
         );
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if nstype & CLONE_NEWUSER != 0 && thread_count > 1 {
         warn!(
             "sys_setns: cannot change user namespace in multi-threaded process ({} threads)",
             thread_count
         );
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
 
     let update = proc_data.namespace_update();

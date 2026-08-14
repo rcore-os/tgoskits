@@ -882,7 +882,7 @@ impl Location {
                 return Ok(self.wrap(entry).resolve_mountpoint());
             }
             Ok(_) => {}
-            Err(err) if err.canonicalize() == VfsError::NotFound => {}
+            Err(VfsError::NotFound) => {}
             Err(err) => return Err(err),
         }
 

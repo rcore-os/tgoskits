@@ -244,7 +244,7 @@ fn send_backpressure_performs_one_device_attempt_without_internal_waiting() {
 
     assert_eq!(
         crate::device::vsock_send(conn_id, &[1]),
-        Err(ax_errno::AxError::WouldBlock)
+        Err(crate::NetError::WouldBlock)
     );
     assert_eq!(
         send_count.load(Ordering::Acquire),

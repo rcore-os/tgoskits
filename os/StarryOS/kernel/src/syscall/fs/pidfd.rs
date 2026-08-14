@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
 
-use ax_errno::{AxError, AxResult};
 use bitflags::bitflags;
 use linux_raw_sys::general::{SI_TKILL, SI_USER};
 use starry_signal::{SignalInfo, Signo};
 
 use crate::{
+    StarryError, StarryResult,
     file::{FD_TABLE, FileLike, PidFd, add_file_like, current_fd_table},
     mm::VmPtr,
     syscall::signal::check_kill_permission,
@@ -40,8 +40,8 @@ enum PidFdSignalScope {
     ProcessGroup,
 }
 
-fn parse_signo(signo: u32) -> AxResult<Signo> {
-    Signo::from_repr(signo as u8).ok_or(AxError::InvalidInput)
+fn parse_signo(signo: u32) -> StarryResult<Signo> {
+    Signo::from_repr(signo as u8).ok_or(StarryError::InvalidInput)
 }
 
 fn make_pidfd_siginfo(
@@ -64,14 +64,18 @@ fn make_pidfd_siginfo(
     )
 }
 
-pub fn sys_pidfd_open(current: &crate::task::UserTaskRef, pid: u32, flags: u32) -> AxResult<isize> {
+pub fn sys_pidfd_open(
+    current: &crate::task::UserTaskRef,
+    pid: u32,
+    flags: u32,
+) -> crate::StarryResult<isize> {
     debug!("sys_pidfd_open <= pid: {pid}, flags: {flags}");
 
-    let flags = PidFdFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
+    let flags = PidFdFlags::from_bits(flags).ok_or(StarryError::InvalidInput)?;
 
     // Linux pidfd_open(2): EINVAL if pid is not valid (includes pid <= 0).
     if (pid as i32) <= 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let pid = resolve_user_pid(current, pid)?;
 
@@ -79,13 +83,13 @@ pub fn sys_pidfd_open(current: &crate::task::UserTaskRef, pid: u32, flags: u32) 
         match get_task(pid) {
             Ok(task) => {
                 let identity = pidfd_thread_identity(&task.as_thread().proc_data.proc)
-                    .ok_or(AxError::NoSuchProcess)?;
+                    .ok_or(StarryError::NoSuchProcess)?;
                 PidFd::new_thread(identity, task.as_thread(), pid)
             }
-            Err(AxError::NoSuchProcess) => {
+            Err(StarryError::NoSuchProcess) => {
                 let identity = pidfd_process_identity(pid)?;
                 if !identity.is_zombie() {
-                    return Err(AxError::NoSuchProcess);
+                    return Err(StarryError::NoSuchProcess);
                 }
                 PidFd::new_exited_thread(identity)
             }
@@ -96,7 +100,7 @@ pub fn sys_pidfd_open(current: &crate::task::UserTaskRef, pid: u32, flags: u32) 
         if let Ok(task) = get_task(pid)
             && task.as_thread().proc_data.proc.pid() != pid
         {
-            return Err(AxError::NotFound);
+            return Err(StarryError::NotFound);
         }
         PidFd::new_process(pidfd_process_identity(pid)?)
     };
@@ -112,11 +116,11 @@ pub fn sys_pidfd_getfd(
     pidfd: i32,
     target_fd: i32,
     flags: u32,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     debug!("sys_pidfd_getfd <= pidfd: {pidfd}, target_fd: {target_fd}, flags: {flags}");
 
     if flags != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let pidfd = PidFd::from_fd(pidfd)?;
@@ -137,10 +141,12 @@ pub fn sys_pidfd_getfd(
         let fd_table = task.as_thread().clone_scope_item(&FD_TABLE);
         fd_table.read().get(target_fd as usize).cloned()
     };
-    fd_entry.ok_or(AxError::BadFileDescriptor).and_then(|fd| {
-        let fd = add_file_like(fd.inner.clone(), true)?;
-        Ok(fd as isize)
-    })
+    fd_entry
+        .ok_or(StarryError::BadFileDescriptor)
+        .and_then(|fd| {
+            let fd = add_file_like(fd.inner.clone(), true)?;
+            Ok(fd as isize)
+        })
 }
 
 pub fn sys_pidfd_send_signal(
@@ -149,10 +155,10 @@ pub fn sys_pidfd_send_signal(
     signo: u32,
     sig: *mut SignalInfo,
     flags: u32,
-) -> AxResult<isize> {
-    let flags = PidFdSignalFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
+) -> StarryResult<isize> {
+    let flags = PidFdSignalFlags::from_bits(flags).ok_or(StarryError::InvalidInput)?;
     if flags.bits().count_ones() > 1 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let pidfd_obj = PidFd::from_fd(pidfd)?;
@@ -177,12 +183,12 @@ pub fn sys_pidfd_send_signal(
         let signo_parsed = parse_signo(signo)?;
         let info = unsafe { sig.vm_read_uninit(current)?.assume_init() };
         if info.signo() != signo_parsed {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if current.as_thread().proc_data.proc.pid() != target_pid
             && (info.code() >= 0 || info.code() == SI_TKILL)
         {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         Some(info)
     };

@@ -5,7 +5,6 @@ use alloc::{
 };
 use core::ffi::c_long;
 
-use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::TimeValue;
 use ax_std::os::arceos::task::yield_current_cpu;
 use axpoll::IoEvents;
@@ -26,6 +25,7 @@ use super::{
     visible_user_pid, wait_for_victims,
 };
 use crate::{
+    StarryError, StarryResult,
     mm::{VmMutPtr, VmPtr},
     sync::PiMutex,
 };
@@ -82,7 +82,7 @@ where
 /// This function is intended to be used during memory leak analysis to remove
 /// possible noise caused by expired entries in the [`WeakMap`].
 #[cfg(feature = "memtrack")]
-pub fn cleanup_task_tables() -> AxResult<()> {
+pub fn cleanup_task_tables() -> crate::StarryResult<()> {
     let mut invalid_extension = false;
     TASK_TABLE.lock().retain(|_, task| match task.upgrade() {
         Ok(Some(_)) => true,
@@ -95,7 +95,7 @@ pub fn cleanup_task_tables() -> AxResult<()> {
     PROCESS_GROUP_TABLE.lock().cleanup();
     SESSION_TABLE.lock().cleanup();
     if invalid_extension {
-        Err(AxError::BadState)
+        Err(crate::StarryError::BadState)
     } else {
         Ok(())
     }
@@ -182,12 +182,12 @@ impl Drop for PreparedTaskRegistration {
 pub fn register_prepared_task(
     task: &UserTaskRef,
     new_process: bool,
-) -> AxResult<PreparedTaskRegistration> {
+) -> crate::StarryResult<PreparedTaskRegistration> {
     let tid = task.as_thread().tid() as Pid;
     let scheduler_id = task.id();
     let mut task_table = TASK_TABLE.lock();
     if task_table.contains_key(&tid) {
-        return Err(AxError::BadState);
+        return Err(crate::StarryError::BadState);
     }
     task_table.insert(tid, task.downgrade());
     drop(task_table);
@@ -220,11 +220,11 @@ pub fn remove_task_from_table(tid: Pid) {
 }
 
 /// Lists all tasks.
-pub fn tasks() -> AxResult<Vec<UserTaskRef>> {
+pub fn tasks() -> crate::StarryResult<Vec<UserTaskRef>> {
     let table = TASK_TABLE.lock();
     let mut tasks = Vec::with_capacity(table.len());
     for task in table.values() {
-        if let Some(task) = task.upgrade().map_err(|_| AxError::BadState)? {
+        if let Some(task) = task.upgrade().map_err(|_| crate::StarryError::BadState)? {
             tasks.push(task);
         }
     }
@@ -232,7 +232,7 @@ pub fn tasks() -> AxResult<Vec<UserTaskRef>> {
 }
 
 /// Finds the task with the given TID.
-pub fn get_task(tid: Pid) -> AxResult<UserTaskRef> {
+pub fn get_task(tid: Pid) -> crate::StarryResult<UserTaskRef> {
     if tid == 0 {
         return Ok(current_user_task());
     }
@@ -240,10 +240,10 @@ pub fn get_task(tid: Pid) -> AxResult<UserTaskRef> {
         .lock()
         .get(&tid)
         .copied()
-        .ok_or(AxError::NoSuchProcess)?;
+        .ok_or(crate::StarryError::NoSuchProcess)?;
     weak.upgrade()
-        .map_err(|_| AxError::BadState)?
-        .ok_or(AxError::NoSuchProcess)
+        .map_err(|_| crate::StarryError::BadState)?
+        .ok_or(crate::StarryError::NoSuchProcess)
 }
 
 /// Detach every live tracee that still points at `tracer_pid`.
@@ -268,18 +268,18 @@ pub fn detach_live_tracees_of(tracer_pid: Pid) {
 }
 
 /// Finds the credentials for a process that may already be a zombie.
-pub fn get_process_cred(pid: Pid) -> AxResult<Arc<Cred>> {
+pub fn get_process_cred(pid: Pid) -> StarryResult<Arc<Cred>> {
     if pid == 0 {
         return Ok(current_user_task().as_thread().cred());
     }
     if let Ok(task) = get_task(pid) {
         return Ok(task.as_thread().cred());
     }
-    get_zombie_cred(pid).ok_or(AxError::NoSuchProcess)
+    get_zombie_cred(pid).ok_or(StarryError::NoSuchProcess)
 }
 
 /// Finds the process group with the given PGID.
-pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
+pub fn get_process_group(pgid: Pid) -> crate::StarryResult<Arc<ProcessGroup>> {
     if let Some(pg) = PROCESS_GROUP_TABLE.lock().get(&pgid) {
         return Ok(pg);
     }
@@ -289,7 +289,7 @@ pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
         return Ok(pg);
     }
 
-    Err(AxError::NoSuchProcess)
+    Err(StarryError::NoSuchProcess)
 }
 
 /// Registers a process group in the global table.
@@ -389,13 +389,13 @@ pub struct RobustListHead {
     pub list_op_pending: *mut RobustList,
 }
 
-fn robust_futex_address(entry: *mut RobustList, offset: i64) -> AxResult<usize> {
+fn robust_futex_address(entry: *mut RobustList, offset: i64) -> StarryResult<usize> {
     let address = (entry as u64)
         .checked_add_signed(offset)
-        .ok_or(AxError::InvalidInput)?;
-    let address = usize::try_from(address).map_err(|_| AxError::InvalidInput)?;
+        .ok_or(StarryError::InvalidInput)?;
+    let address = usize::try_from(address).map_err(|_| StarryError::InvalidInput)?;
     if address % size_of::<u32>() != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(address)
 }
@@ -410,7 +410,7 @@ fn handle_futex_death(
     entry: *mut RobustList,
     offset: i64,
     pending: bool,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     let address = robust_futex_address(entry, offset)?;
     let futex_word = address as *mut u32;
     // Linux compares the robust-futex owner field against task_pid_vnr(curr),
@@ -442,7 +442,7 @@ pub fn exit_robust_list(
     current: &UserTaskRef,
     thr: &Thread,
     head: *const RobustListHead,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     // Reference: https://elixir.bootlin.com/linux/v6.13.6/source/kernel/futex/core.c#L777
 
     let mut limit = ROBUST_LIST_LIMIT;
@@ -818,7 +818,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 /// lock is the Starry equivalent of the Linux `tasklist_lock` section around
 /// `exchange_tids()`: lookup cannot observe the new key before `Thread::tid`
 /// changes or the old key after it changes.
-pub fn rebind_task_tid(task: &UserTaskRef, old_tid: Pid, new_tid: Pid) -> AxResult<()> {
+pub fn rebind_task_tid(task: &UserTaskRef, old_tid: Pid, new_tid: Pid) -> crate::StarryResult<()> {
     if old_tid == new_tid {
         return Ok(());
     }
@@ -828,9 +828,9 @@ pub fn rebind_task_tid(task: &UserTaskRef, old_tid: Pid, new_tid: Pid) -> AxResu
         .get(&old_tid)
         .copied()
         .filter(|registered| registered.scheduler_id() == scheduler_id)
-        .ok_or(AxError::BadState)?;
+        .ok_or(crate::StarryError::BadState)?;
     if table.contains_key(&new_tid) {
-        return Err(AxError::BadState);
+        return Err(crate::StarryError::BadState);
     }
 
     // Insertion performs any allocation before the user-visible identity is
@@ -862,7 +862,7 @@ pub fn rebind_task_tid(task: &UserTaskRef, old_tid: Pid, new_tid: Pid) -> AxResu
 ///
 /// Best-effort: returns `Err` if the target tid is already gone or no
 /// longer a user thread; callers should treat that as "already reaped".
-pub fn zap_thread(tid: Pid) -> AxResult<()> {
+pub fn zap_thread(tid: Pid) -> StarryResult<()> {
     let task = get_task(tid)?;
     let thr = task.as_thread();
     thr.set_exit_request();

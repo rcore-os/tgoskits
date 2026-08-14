@@ -14,9 +14,9 @@ const TPU: &str = include_str!("../src/pseudofs/dev/tpu/device.rs");
 const NET_IO: &str = include_str!("../src/syscall/net/io.rs");
 const NET_OPT: &str = include_str!("../src/syscall/net/opt.rs");
 const NET_CMSG: &str = include_str!("../src/syscall/net/cmsg.rs");
-const STARRY_VM_LIB: &str = include_str!("../../../../components/starry-vm/src/lib.rs");
-const STARRY_VM_THIN: &str = include_str!("../../../../components/starry-vm/src/thin.rs");
-const STARRY_SIGNAL_TYPES: &str = include_str!("../../../../components/starry-signal/src/types.rs");
+const STARRY_VM_LIB: &str = include_str!("../../vm/src/lib.rs");
+const STARRY_VM_THIN: &str = include_str!("../../vm/src/thin.rs");
+const STARRY_SIGNAL_TYPES: &str = include_str!("../../signal/src/types.rs");
 const PROCFS: &str = include_str!("../src/pseudofs/proc.rs");
 const SERIAL_TTY: &str = include_str!("../src/pseudofs/dev/tty/serial.rs");
 const SCHEDULER_TASK: &str = include_str!("../src/task/scheduler_task.rs");
@@ -290,7 +290,7 @@ fn starry_source_has_no_escaping_user_memory_reference_api() {
     // the forbidden method names would reintroduce a safe API that returns a
     // borrowed reference after the faultable access scope has ended.
     assert!(
-        !MM_ACCESS.contains("AxResult<&'static"),
+        !MM_ACCESS.contains("StarryResult<&'static") && !MM_ACCESS.contains("VmResult<&'static"),
         "the user-memory boundary must not return a static reference"
     );
 
@@ -355,26 +355,34 @@ fn safe_vm_copyout_requires_initialized_object_bytes() {
         STARRY_VM_THIN.contains("Self::Target: NoUninit"),
         "VmMutPtr::vm_write must require an initialized object representation"
     );
-    assert!(MM_ACCESS.contains(
-        "pub fn write(self, task: &UserTaskRef, value: T) -> AxResult<()>\n    where\n        T: \
-         NoUninit"
-    ));
     assert!(
         MM_ACCESS.contains(
-            "pub fn write_slice(self, task: &UserTaskRef, values: &[T]) -> AxResult<()>\n    \
+            "pub fn write(self, task: &UserTaskRef, value: T) -> crate::StarryResult<()>\n    \
              where\n        T: NoUninit"
         )
     );
-    assert!(MM_ACCESS.contains(
-        "pub fn write_field<U>(self, task: &UserTaskRef, offset: usize, value: U) -> \
-         AxResult<()>\n    where\n        U: NoUninit"
-    ));
+    assert!(
+        MM_ACCESS.contains(
+            "pub fn write_slice(self, task: &UserTaskRef, values: &[T]) -> \
+             crate::StarryResult<()>\n    where\n        T: NoUninit"
+        )
+    );
+    let write_field = MM_ACCESS
+        .split_once("pub fn write_field<U>(")
+        .expect("UserPtr::write_field must exist")
+        .1;
+    let write_field_declaration = write_field
+        .split_once('{')
+        .expect("UserPtr::write_field must have a body")
+        .0;
+    assert!(write_field_declaration.contains(") -> crate::StarryResult<()>"));
+    assert!(write_field_declaration.contains("U: NoUninit"));
     assert!(
         STARRY_SIGNAL_TYPES.contains("pub struct SignalInfo(siginfo_t);"),
         "SignalInfo must control construction before promising that every byte is initialized"
     );
-    let user_field = function_body(MM_ACCESS, "pub fn write_field<U>(");
-    assert!(user_field.contains("checked_add"));
+    let write_field_body = function_body(MM_ACCESS, "pub fn write_field<U>(");
+    assert!(write_field_body.contains("checked_add"));
 }
 
 #[test]
@@ -428,9 +436,9 @@ fn kernel_user_page_fault_requires_an_active_user_access_scope() {
 #[test]
 fn weak_user_task_errors_are_not_treated_as_normal_exit() {
     assert!(!TASK_OPS.contains("upgrade().ok().flatten()"));
-    assert!(TASK_OPS.contains("pub fn tasks() -> AxResult<Vec<UserTaskRef>>"));
+    assert!(TASK_OPS.contains("pub fn tasks() -> crate::StarryResult<Vec<UserTaskRef>>"));
     let get_task = function_body(TASK_OPS, "pub fn get_task(");
-    assert!(get_task.contains("AxError::BadState"));
+    assert!(get_task.contains("StarryError::BadState"));
     assert!(!TASK_TIMER.contains("weak_task.upgrade().ok().flatten()"));
 }
 

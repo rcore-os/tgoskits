@@ -32,7 +32,6 @@ use core::any::Any;
 #[cfg(target_arch = "aarch64")]
 use core::sync::atomic::Ordering;
 
-use ax_errno::{AxError, AxResult};
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
 use axpoll::{IoEvents, Pollable};
@@ -159,8 +158,8 @@ impl HwPerfEventState {
     fn device_mmap_system_rdpmc(
         &self,
         len: usize,
-    ) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
-        let owner = self.system_owner.ok_or(AxError::BadState)?;
+    ) -> crate::StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let hardware = cpu_worker::read_system(
             owner,
             SystemPmuRead {
@@ -183,14 +182,14 @@ impl HwPerfEventState {
 #[cfg(target_arch = "aarch64")]
 impl HwPerfEventState {
     /// Releases owner-visible PMU state before output anchors are dropped.
-    fn close(&mut self) -> AxResult<()> {
+    fn close(&mut self) -> crate::StarryResult<()> {
         // Per-task events do not own a system-wide counter or sampling state:
         // release the HW counter through the per-task path (idempotent — the
         // task-exit hook may have freed it already) and stop here.
         if let Some(family) = &self.per_task {
             return family.close();
         }
-        let owner = self.system_owner.ok_or(AxError::BadState)?;
+        let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let stopped = cpu_worker::disable_system(
             owner,
             SystemPmuDisable {
@@ -273,7 +272,7 @@ impl HwPerfEventState {
 
 #[cfg(target_arch = "aarch64")]
 impl HwPerfEventState {
-    fn enable(&mut self) -> AxResult<()> {
+    fn enable(&mut self) -> crate::StarryResult<()> {
         // Per-task: just record userspace intent. The target task's next
         // `perf_sched_in` programs the counter onto HW (or an immediate one if
         // it is the running task at the next switch).
@@ -283,10 +282,10 @@ impl HwPerfEventState {
         if self.enabled_since.is_some() {
             return Ok(());
         }
-        let owner = self.system_owner.ok_or(AxError::BadState)?;
+        let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let sampling = if let Some(sampling) = &self.sampling {
             let Counter::Programmable(_) = self.counter else {
-                return Err(AxError::BadState);
+                return Err(crate::StarryError::BadState);
             };
             let period = sampling.period;
             let (ring, redirected) = sampling
@@ -325,14 +324,14 @@ impl HwPerfEventState {
         Ok(())
     }
 
-    fn disable(&mut self) -> AxResult<()> {
+    fn disable(&mut self) -> crate::StarryResult<()> {
         if let Some(family) = &self.per_task {
             return family.disable();
         }
         let Some(since) = self.enabled_since else {
             return Ok(());
         };
-        let owner = self.system_owner.ok_or(AxError::BadState)?;
+        let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let stopped = cpu_worker::disable_system(
             owner,
             SystemPmuDisable {
@@ -350,11 +349,11 @@ impl HwPerfEventState {
         Ok(())
     }
 
-    fn reset(&mut self) -> AxResult<()> {
+    fn reset(&mut self) -> crate::StarryResult<()> {
         if let Some(family) = &self.per_task {
             return family.reset();
         }
-        let owner = self.system_owner.ok_or(AxError::BadState)?;
+        let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         cpu_worker::reset_system(
             owner,
             SystemPmuReset {
@@ -371,7 +370,7 @@ impl HwPerfEventState {
         Ok(())
     }
 
-    fn read_values(&mut self) -> AxResult<PerfReadValues> {
+    fn read_values(&mut self) -> crate::StarryResult<PerfReadValues> {
         if let Some(family) = &self.per_task {
             let (value, time_enabled, time_running) = family.read()?;
             let root = family.root();
@@ -382,7 +381,7 @@ impl HwPerfEventState {
                 read_format: root.read_format(),
             });
         }
-        let owner = self.system_owner.ok_or(AxError::BadState)?;
+        let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let snapshot = cpu_worker::read_system(
             owner,
             SystemPmuRead {
@@ -419,9 +418,9 @@ impl HwPerfEventState {
         self.sampling.as_ref()?.output.owned()
     }
 
-    fn redirect_output(&mut self, output: PerfRingOutput) -> AxResult<()> {
+    fn redirect_output(&mut self, output: PerfRingOutput) -> crate::StarryResult<()> {
         if self.output_ring().is_some() {
-            return Err(AxError::InvalidInput);
+            return Err(crate::StarryError::InvalidInput);
         }
         if let Some(family) = &self.per_task {
             return family.redirect_output(output);
@@ -439,9 +438,9 @@ impl HwPerfEventState {
         Ok(())
     }
 
-    fn detach_output(&mut self) -> AxResult<()> {
+    fn detach_output(&mut self) -> crate::StarryResult<()> {
         if self.output_ring().is_some() {
-            return Err(AxError::InvalidInput);
+            return Err(crate::StarryError::InvalidInput);
         }
         if let Some(family) = &self.per_task {
             return family.detach_output();
@@ -459,7 +458,10 @@ impl HwPerfEventState {
         Ok(())
     }
 
-    fn device_mmap(&mut self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+    fn device_mmap(
+        &mut self,
+        len: usize,
+    ) -> crate::StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         // Per-task sampling: the ring + notify/poll machinery live on the shared
         // `PerTaskCounter` (the scheduler hook builds the IRQ slot from there).
         // Allocate the ring, spawn the notify worker, and hand both to the ptc.
@@ -482,7 +484,7 @@ impl HwPerfEventState {
         // abandoned/munmap'd previous attempt does not count (its pages are
         // already freed), so the fd stays mmap-able. Mirrors `bpf.rs`.
         if sampling.output.owned().is_some() {
-            return Err(AxError::ResourceBusy);
+            return Err(crate::StarryError::ResourceBusy);
         }
 
         // Allocate + zero + header-init the ring (shared with the per-task path).
@@ -547,28 +549,28 @@ impl Pollable for HwPerfControl {
 
 #[cfg(target_arch = "aarch64")]
 impl PerfControl for HwPerfControl {
-    fn enable(&self) -> AxResult<()> {
+    fn enable(&self) -> crate::StarryResult<()> {
         if let Some(family) = self.task_family() {
             return family.enable();
         }
         self.state.lock().enable()
     }
 
-    fn disable(&self) -> AxResult<()> {
+    fn disable(&self) -> crate::StarryResult<()> {
         if let Some(family) = self.task_family() {
             return family.disable();
         }
         self.state.lock().disable()
     }
 
-    fn reset(&self) -> AxResult<()> {
+    fn reset(&self) -> crate::StarryResult<()> {
         if let Some(family) = self.task_family() {
             return family.reset();
         }
         self.state.lock().reset()
     }
 
-    fn read_values(&self) -> AxResult<PerfReadValues> {
+    fn read_values(&self) -> crate::StarryResult<PerfReadValues> {
         if let Some(family) = self.task_family() {
             let (value, time_enabled, time_running) = family.read()?;
             return Ok(PerfReadValues {
@@ -581,7 +583,10 @@ impl PerfControl for HwPerfControl {
         self.state.lock().read_values()
     }
 
-    fn device_mmap(&self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+    fn device_mmap(
+        &self,
+        len: usize,
+    ) -> crate::StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         self.state.lock().device_mmap(len)
     }
 
@@ -596,14 +601,14 @@ impl PerfControl for HwPerfControl {
         Some(self.state.lock().output_scope)
     }
 
-    fn redirect_output(&self, output: PerfRingOutput) -> AxResult<()> {
+    fn redirect_output(&self, output: PerfRingOutput) -> crate::StarryResult<()> {
         if let Some(family) = self.task_family() {
             return family.redirect_output(output);
         }
         self.state.lock().redirect_output(output)
     }
 
-    fn detach_output(&self) -> AxResult<()> {
+    fn detach_output(&self) -> crate::StarryResult<()> {
         if let Some(family) = self.task_family() {
             return family.detach_output();
         }
@@ -712,7 +717,7 @@ impl Pollable for HwPerfEvent {
 
 #[cfg(target_arch = "aarch64")]
 impl PerfEventOps for HwPerfEvent {
-    fn finish_open(&mut self) -> AxResult<()> {
+    fn finish_open(&mut self) -> crate::StarryResult<()> {
         if core::mem::take(&mut self.enable_at_open) {
             self.control.enable()
         } else {
@@ -720,19 +725,19 @@ impl PerfEventOps for HwPerfEvent {
         }
     }
 
-    fn enable(&mut self) -> AxResult<()> {
+    fn enable(&mut self) -> crate::StarryResult<()> {
         self.control.enable()
     }
 
-    fn disable(&mut self) -> AxResult<()> {
+    fn disable(&mut self) -> crate::StarryResult<()> {
         self.control.disable()
     }
 
-    fn reset(&mut self) -> AxResult<()> {
+    fn reset(&mut self) -> crate::StarryResult<()> {
         self.control.reset()
     }
 
-    fn read_values(&mut self) -> AxResult<PerfReadValues> {
+    fn read_values(&mut self) -> crate::StarryResult<PerfReadValues> {
         self.control.read_values()
     }
 
@@ -744,7 +749,10 @@ impl PerfEventOps for HwPerfEvent {
         self.control.state.lock().set_sample_id(id);
     }
 
-    fn device_mmap(&mut self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+    fn device_mmap(
+        &mut self,
+        len: usize,
+    ) -> crate::StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         self.control.device_mmap(len)
     }
 }
@@ -769,12 +777,12 @@ impl Pollable for HwPerfEvent {
 
 #[cfg(not(target_arch = "aarch64"))]
 impl PerfEventOps for HwPerfEvent {
-    fn enable(&mut self) -> AxResult<()> {
-        Err(AxError::Unsupported)
+    fn enable(&mut self) -> crate::StarryResult<()> {
+        Err(crate::StarryError::Unsupported)
     }
 
-    fn disable(&mut self) -> AxResult<()> {
-        Err(AxError::Unsupported)
+    fn disable(&mut self) -> crate::StarryResult<()> {
+        Err(crate::StarryError::Unsupported)
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
@@ -788,7 +796,7 @@ pub(super) fn perf_event_open_hw(
     _attr: &perf_event_attr,
     target: AuthorizedPerfTarget,
     validated: ValidatedHwOpen,
-) -> AxResult<HwPerfEvent> {
+) -> crate::StarryResult<HwPerfEvent> {
     let _ = validated;
     match target {
         AuthorizedPerfTarget::Task { task, cpu } => {
@@ -798,5 +806,5 @@ pub(super) fn perf_event_open_hw(
             let _ = cpu;
         }
     }
-    Err(AxError::Unsupported)
+    Err(crate::StarryError::Unsupported)
 }

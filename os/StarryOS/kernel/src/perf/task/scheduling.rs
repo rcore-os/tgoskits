@@ -151,19 +151,19 @@ fn perf_sched_out_counters(counters: &[Arc<PerTaskCounter>]) {
 /// The sampling order is mask → stop → clear pending overflow → generation
 /// unregister. Local IRQ exclusion in the registry removal is the grace period
 /// before its owned ring/notification references can be released.
-fn stop_hardware_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> AxResult<()> {
+fn stop_hardware_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> crate::StarryResult<()> {
     if lease.owner().as_usize() != ax_hal::percpu::this_cpu_id() {
-        return Err(AxError::BadState);
+        return Err(crate::StarryError::BadState);
     }
     if let Some(registration) = lease.registration() {
         let n = ptc.programmable_index();
         if registration.counter() != n {
-            return Err(AxError::BadState);
+            return Err(crate::StarryError::BadState);
         }
         ax_cpu::pmu::overflow::disable_irq(n);
         ax_cpu::pmu::counter::disable(n);
         ax_cpu::pmu::overflow::clear(1 << n);
-        sampling::unregister(registration).map_err(|_| AxError::BadState)?;
+        sampling::unregister(registration).map_err(|_| crate::StarryError::BadState)?;
     } else {
         // Freeze the physical slice before sampling its terminal value. Reading
         // first would lose the events retired between the read and disable.
@@ -184,7 +184,10 @@ fn stop_hardware_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> AxResult<
 /// The scheduler switch-out path may have won the same generation before the
 /// affine worker gets CPU time. Generation state makes that case a successful
 /// fence instead of a duplicate hardware unregister.
-pub(crate) fn stop_requested_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> AxResult<()> {
+pub(crate) fn stop_requested_on_owner(
+    ptc: &PerTaskCounter,
+    lease: PmuRunLease,
+) -> crate::StarryResult<()> {
     // The run-state guard must end before the hardware transaction and before
     // the completion path takes it again. A lock expression used directly as a
     // `match` scrutinee lives through the whole match and self-deadlocks in the
@@ -200,7 +203,7 @@ pub(crate) fn stop_requested_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) 
             Ok(())
         }
         PmuStopClaim::AlreadyComplete => Ok(()),
-        PmuStopClaim::InProgress => Err(AxError::ResourceBusy),
-        PmuStopClaim::Stale => Err(AxError::BadState),
+        PmuStopClaim::InProgress => Err(crate::StarryError::ResourceBusy),
+        PmuStopClaim::Stale => Err(crate::StarryError::BadState),
     }
 }

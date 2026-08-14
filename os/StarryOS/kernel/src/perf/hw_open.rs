@@ -3,7 +3,6 @@
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicBool;
 
-use ax_errno::{AxError, AxResult};
 use axpoll::PollSet;
 use kbpf_basic::linux_bpf::{perf_event_attr, perf_hw_id, perf_type_id};
 
@@ -32,9 +31,9 @@ const PERF_SAMPLE_IP: u64 = 1;
 pub(super) fn validate_perf_event_open_hw(
     attr: &perf_event_attr,
     target_kind: PerfTargetKind,
-) -> AxResult<ValidatedHwOpen> {
+) -> crate::StarryResult<ValidatedHwOpen> {
     let Some(info) = ax_hal::pmu::info() else {
-        return Err(AxError::Unsupported);
+        return Err(crate::StarryError::Unsupported);
     };
 
     // SAFETY: both union arms are `u64` in the copied `repr(C)` attribute.
@@ -49,17 +48,17 @@ pub(super) fn validate_perf_event_open_hw(
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
     let event = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
-        ax_cpu::pmu::hw_event_to_arm(attr.config as u32).ok_or(AxError::Unsupported)?
+        ax_cpu::pmu::hw_event_to_arm(attr.config as u32).ok_or(crate::StarryError::Unsupported)?
     } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
         || attr.type_ == ARMV8_PMUV3_PERF_TYPE
     {
         (attr.config & 0xFFFF) as u16
     } else {
-        return Err(AxError::Unsupported);
+        return Err(crate::StarryError::Unsupported);
     };
 
     let cycle_event = ax_cpu::pmu::hw_event_to_arm(perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u32)
-        .ok_or(AxError::Unsupported)?;
+        .ok_or(crate::StarryError::Unsupported)?;
     let prefer_cycle = !is_sampling && event == cycle_event;
     let counter = match (target_kind, prefer_cycle) {
         (PerfTargetKind::Cpu, true) => ValidatedHwCounter::SystemPreferredCycle(event),
@@ -68,7 +67,7 @@ pub(super) fn validate_perf_event_open_hw(
         (PerfTargetKind::Task, false) if ax_cpu::pmu::event_supported(event) => {
             ValidatedHwCounter::TaskProgrammable(event)
         }
-        (PerfTargetKind::Task, false) => return Err(AxError::Unsupported),
+        (PerfTargetKind::Task, false) => return Err(crate::StarryError::Unsupported),
     };
 
     Ok(ValidatedHwOpen {
@@ -91,7 +90,7 @@ pub(super) fn perf_event_open_hw(
     attr: &perf_event_attr,
     target: AuthorizedPerfTarget,
     validated: ValidatedHwOpen,
-) -> AxResult<HwPerfEvent> {
+) -> crate::StarryResult<HwPerfEvent> {
     set_programmable_counter_count(validated.num_counters);
 
     let owner_cpu = match target {
@@ -104,7 +103,7 @@ pub(super) fn perf_event_open_hw(
     let exclude_kernel = attr.exclude_kernel() != 0;
 
     if validated.is_sampling {
-        sampling::ensure_pmu_irq_registered().map_err(|_| AxError::NoSuchDevice)?;
+        sampling::ensure_pmu_irq_registered().map_err(|_| crate::StarryError::NoSuchDevice)?;
     }
 
     let (counter, event) = match validated.counter {
@@ -115,7 +114,7 @@ pub(super) fn perf_event_open_hw(
         }
         ValidatedHwCounter::SystemProgrammable(event) => (alloc_programmable(event)?, Some(event)),
         ValidatedHwCounter::TaskPreferredCycle(_) | ValidatedHwCounter::TaskProgrammable(_) => {
-            return Err(AxError::BadState);
+            return Err(crate::StarryError::BadState);
         }
     };
     if let Err(error) = cpu_worker::configure_system(
@@ -167,22 +166,22 @@ fn perf_event_open_hw_per_task(
     task: crate::task::UserTaskRef,
     cpu_filter: Option<PerfCpuId>,
     validated: ValidatedHwOpen,
-) -> AxResult<HwPerfEvent> {
+) -> crate::StarryResult<HwPerfEvent> {
     let thread = task.as_thread();
-    let scheduler_id = thread.scheduler_id().ok_or(AxError::BadState)?;
+    let scheduler_id = thread.scheduler_id().ok_or(crate::StarryError::BadState)?;
 
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;
 
     if validated.is_sampling {
-        sampling::ensure_pmu_irq_registered().map_err(|_| AxError::NoSuchDevice)?;
+        sampling::ensure_pmu_irq_registered().map_err(|_| crate::StarryError::NoSuchDevice)?;
     }
 
     let (counter, event) = match validated.counter {
         ValidatedHwCounter::TaskPreferredCycle(event) => (alloc_preferred_cycle(event)?, event),
         ValidatedHwCounter::TaskProgrammable(event) => (alloc_programmable(event)?, event),
         ValidatedHwCounter::SystemPreferredCycle(_) | ValidatedHwCounter::SystemProgrammable(_) => {
-            return Err(AxError::BadState);
+            return Err(crate::StarryError::BadState);
         }
     };
 
@@ -240,7 +239,12 @@ fn perf_event_open_hw_per_task(
     }))
 }
 
-fn validate_sampling(attr: &perf_event_attr, raw: u64, is_freq: bool, kind: &str) -> AxResult<()> {
+fn validate_sampling(
+    attr: &perf_event_attr,
+    raw: u64,
+    is_freq: bool,
+    kind: &str,
+) -> crate::StarryResult<()> {
     if raw == 0 {
         return Ok(());
     }
@@ -252,11 +256,11 @@ fn validate_sampling(attr: &perf_event_attr, raw: u64, is_freq: bool, kind: &str
              scalar fields)",
             attr.sample_type
         );
-        return Err(AxError::Unsupported);
+        return Err(crate::StarryError::Unsupported);
     }
     if !is_freq && raw > u32::MAX as u64 {
         warn!("perf_event_open: {kind} period {raw} exceeds 32-bit counter");
-        return Err(AxError::InvalidInput);
+        return Err(crate::StarryError::InvalidInput);
     }
     Ok(())
 }

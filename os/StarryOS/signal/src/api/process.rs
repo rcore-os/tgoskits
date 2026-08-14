@@ -9,12 +9,14 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_errno::AxResult;
 use ax_runtime::sync::SpinLock;
 use linux_raw_sys::general::kernel_sigaction;
 use starry_vm::{VmIo, VmPtr, vm_write_slice};
 
-use crate::{PendingSignals, SignalAction, SignalInfo, SignalSet, Signo, api::ThreadSignalManager};
+use crate::{
+    PendingSignals, SignalAction, SignalInfo, SignalResult, SignalSet, Signo,
+    api::ThreadSignalManager,
+};
 
 /// Signal actions for a process.
 #[derive(Clone)]
@@ -306,7 +308,7 @@ impl ProcessSignalManager {
         signo: Signo,
         act: *const kernel_sigaction,
         oldact: *mut kernel_sigaction,
-    ) -> AxResult<isize> {
+    ) -> SignalResult<isize> {
         let new_action = if let Some(act) = act.nullable() {
             let act = unsafe { act.vm_read_uninit(vm)?.assume_init() }.into();
             debug!("sys_rt_sigaction <= signo: {signo:?}, act: {act:?}");
@@ -336,7 +338,7 @@ fn write_kernel_sigaction<I: VmIo>(
     vm: &mut I,
     oldact: *mut kernel_sigaction,
     action: SignalAction,
-) -> AxResult<()> {
+) -> SignalResult<()> {
     let action: kernel_sigaction = action.into();
     vm_write_slice(vm, oldact.cast::<usize>(), &kernel_sigaction_words(action))?;
     Ok(())

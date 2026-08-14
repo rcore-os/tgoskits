@@ -3,7 +3,10 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use super::*;
-use crate::task::{join_kernel_thread, spawn_kernel_thread, yield_now};
+use crate::{
+    StarryError,
+    task::{join_kernel_thread, spawn_kernel_thread, yield_now},
+};
 
 const TEST_PID: Pid = Pid::MAX;
 
@@ -73,11 +76,11 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
     join_kernel_thread(reap_task);
     REAP_CLAIM_BARRIER_PID.store(0, Ordering::Release);
 
-    matches!(lookup_result, Err(AxError::NoSuchProcess))
+    matches!(lookup_result, Err(StarryError::NoSuchProcess))
         && thread_lookup_result.is_none()
-        && matches!(process_lookup_result, Err(AxError::NoSuchProcess))
-        && matches!(getsid_result, Err(AxError::NoSuchProcess))
-        && matches!(getpgid_result, Err(AxError::NoSuchProcess))
+        && matches!(process_lookup_result, Err(StarryError::NoSuchProcess))
+        && matches!(getsid_result, Err(StarryError::NoSuchProcess))
+        && matches!(getpgid_result, Err(StarryError::NoSuchProcess))
         && *reaped_cpu_time.lock() == Some(ProcessCpuTime::default())
         && !PROCESS_TABLE.lock().contains_key(&TEST_PID)
 }

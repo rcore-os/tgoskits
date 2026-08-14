@@ -19,11 +19,11 @@
 
 use alloc::sync::Arc;
 
-use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
 
 use super::connection_manager::Connection;
 use crate::{
+    NetError, NetResult,
     general::GeneralOptions,
     options::{Configurable, GetSocketOption, SetSocketOption},
     state::{State, StateLock},
@@ -57,8 +57,8 @@ impl VsockStreamTransport {
     }
 
     /// Returns the manager connection associated with this stream.
-    fn get_connection(&self) -> AxResult<Arc<Connection>> {
-        self.connection.lock().clone().ok_or(AxError::NotConnected)
+    fn get_connection(&self) -> NetResult<Arc<Connection>> {
+        self.connection.lock().clone().ok_or(NetError::NotConnected)
     }
 }
 
@@ -69,11 +69,11 @@ impl Default for VsockStreamTransport {
 }
 
 impl Configurable for VsockStreamTransport {
-    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool> {
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> NetResult<bool> {
         self.general.get_option_inner(opt)
     }
 
-    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool> {
+    fn set_option_inner(&self, opt: SetSocketOption) -> NetResult<bool> {
         self.general.set_option_inner(opt)
     }
 }

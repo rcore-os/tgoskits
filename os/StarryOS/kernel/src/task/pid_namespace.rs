@@ -2,7 +2,6 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_errno::{AxError, AxResult};
 use ax_std::os::arceos::task::WaitQueue;
 use starry_process::Pid;
 
@@ -21,7 +20,7 @@ pub(crate) fn lock_publication() -> PiMutexGuard<'static, ()> {
 }
 
 /// Resolves a userspace PID in the calling task's active PID namespace.
-pub(crate) fn resolve_user_pid(current: &UserTaskRef, local_pid: Pid) -> AxResult<Pid> {
+pub(crate) fn resolve_user_pid(current: &UserTaskRef, local_pid: Pid) -> crate::StarryResult<Pid> {
     let namespace = current
         .as_thread()
         .proc_data
@@ -31,7 +30,7 @@ pub(crate) fn resolve_user_pid(current: &UserTaskRef, local_pid: Pid) -> AxResul
     namespace
         .global_pid(local_pid)
         .and_then(|pid| Pid::try_from(pid).ok())
-        .ok_or(AxError::NoSuchProcess)
+        .ok_or(crate::StarryError::NoSuchProcess)
 }
 
 /// Returns a global task identity as seen from the caller's PID namespace.

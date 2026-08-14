@@ -7,7 +7,6 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_io::prelude::*;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
@@ -22,9 +21,10 @@ use ax_runtime::hal::{
 use bytemuck::{AnyBitPattern, NoUninit};
 use starry_vm::{VmError, VmIo, VmResult};
 
+use super::io::vm_error_to_io_error;
 use crate::{
+    StarryError, StarryResult,
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
-    mm::paging_error_to_ax_error,
     task::{UserTaskRef, might_sleep, try_current_user_task},
 };
 
@@ -177,7 +177,7 @@ impl<T> UserPtr<T> {
     }
 
     /// Copies one initialized value from user memory.
-    pub fn read(self, task: &UserTaskRef) -> AxResult<T>
+    pub fn read(self, task: &UserTaskRef) -> crate::StarryResult<T>
     where
         T: AnyBitPattern,
     {
@@ -189,7 +189,7 @@ impl<T> UserPtr<T> {
     /// # Safety
     ///
     /// Every possible byte pattern supplied by userspace must be a valid `T`.
-    pub unsafe fn read_abi(self, task: &UserTaskRef) -> AxResult<T> {
+    pub unsafe fn read_abi(self, task: &UserTaskRef) -> crate::StarryResult<T> {
         let value = self.0.vm_read_uninit(task)?;
         // SAFETY: guaranteed by the caller after the copy initialized every byte.
         Ok(unsafe { value.assume_init() })
@@ -200,13 +200,17 @@ impl<T> UserPtr<T> {
     /// # Safety
     ///
     /// Every possible byte pattern supplied by userspace must be a valid `T`.
-    pub unsafe fn read_abi_slice(self, task: &UserTaskRef, len: usize) -> AxResult<Vec<T>> {
+    pub unsafe fn read_abi_slice(
+        self,
+        task: &UserTaskRef,
+        len: usize,
+    ) -> crate::StarryResult<Vec<T>> {
         // SAFETY: the caller supplies the element validity contract.
         unsafe { vm_load_any(task, self.0.cast_const(), len) }.map_err(Into::into)
     }
 
     /// Copies one kernel-owned value to user memory.
-    pub fn write(self, task: &UserTaskRef, value: T) -> AxResult<()>
+    pub fn write(self, task: &UserTaskRef, value: T) -> crate::StarryResult<()>
     where
         T: NoUninit,
     {
@@ -215,20 +219,25 @@ impl<T> UserPtr<T> {
 
     /// Copies one initialized field without exposing or copying the containing
     /// ABI object's padding bytes.
-    pub fn write_field<U>(self, task: &UserTaskRef, offset: usize, value: U) -> AxResult<()>
+    pub fn write_field<U>(
+        self,
+        task: &UserTaskRef,
+        offset: usize,
+        value: U,
+    ) -> crate::StarryResult<()>
     where
         U: NoUninit,
     {
         let field_end = offset
             .checked_add(size_of::<U>())
             .filter(|end| *end <= size_of::<T>())
-            .ok_or(AxError::BadAddress)?;
+            .ok_or(crate::StarryError::BadAddress)?;
         debug_assert!(field_end <= size_of::<T>());
         let field_address = self
             .0
             .addr()
             .checked_add(offset)
-            .ok_or(AxError::BadAddress)?;
+            .ok_or(crate::StarryError::BadAddress)?;
         UserPtr::<U>::from(field_address).write(task, value)
     }
 
@@ -239,27 +248,27 @@ impl<T> UserPtr<T> {
         task: &UserTaskRef,
         offset: usize,
         values: &[U],
-    ) -> AxResult<()>
+    ) -> crate::StarryResult<()>
     where
         U: NoUninit,
     {
         let byte_len = size_of::<U>()
             .checked_mul(values.len())
-            .ok_or(AxError::BadAddress)?;
+            .ok_or(crate::StarryError::BadAddress)?;
         offset
             .checked_add(byte_len)
             .filter(|end| *end <= size_of::<T>())
-            .ok_or(AxError::BadAddress)?;
+            .ok_or(crate::StarryError::BadAddress)?;
         let field_address = self
             .0
             .addr()
             .checked_add(offset)
-            .ok_or(AxError::BadAddress)?;
+            .ok_or(crate::StarryError::BadAddress)?;
         UserPtr::<U>::from(field_address).write_slice(task, values)
     }
 
     /// Copies kernel-owned values to user memory.
-    pub fn write_slice(self, task: &UserTaskRef, values: &[T]) -> AxResult<()>
+    pub fn write_slice(self, task: &UserTaskRef, values: &[T]) -> crate::StarryResult<()>
     where
         T: NoUninit,
     {
@@ -300,12 +309,12 @@ pub fn read_user_u32_nofault(ptr: *const u32) -> Result<u32, UserAccessError> {
 }
 
 /// Resolves and validates a readable futex word outside futex bucket locks.
-pub fn fault_in_user_u32_read(task: &UserTaskRef, ptr: *const u32) -> AxResult<()> {
+pub fn fault_in_user_u32_read(task: &UserTaskRef, ptr: *const u32) -> crate::StarryResult<()> {
     fault_in_user_u32(task, ptr.addr(), MappingFlags::READ)
 }
 
 /// Resolves and validates a writable futex word outside futex bucket locks.
-pub fn fault_in_user_u32_write(task: &UserTaskRef, ptr: *mut u32) -> AxResult<()> {
+pub fn fault_in_user_u32_write(task: &UserTaskRef, ptr: *mut u32) -> crate::StarryResult<()> {
     fault_in_user_u32(
         task,
         ptr.addr(),
@@ -313,9 +322,13 @@ pub fn fault_in_user_u32_write(task: &UserTaskRef, ptr: *mut u32) -> AxResult<()
     )
 }
 
-fn fault_in_user_u32(task: &UserTaskRef, address: usize, access: MappingFlags) -> AxResult<()> {
+fn fault_in_user_u32(
+    task: &UserTaskRef,
+    address: usize,
+    access: MappingFlags,
+) -> crate::StarryResult<()> {
     if !address.is_multiple_of(size_of::<u32>()) {
-        return Err(AxError::BadAddress);
+        return Err(crate::StarryError::BadAddress);
     }
     prepare_user_memory(
         task,
@@ -383,7 +396,7 @@ impl<T> UserConstPtr<T> {
     }
 
     /// Copies one initialized value from user memory.
-    pub fn read(self, task: &UserTaskRef) -> AxResult<T>
+    pub fn read(self, task: &UserTaskRef) -> crate::StarryResult<T>
     where
         T: AnyBitPattern,
     {
@@ -395,7 +408,7 @@ impl<T> UserConstPtr<T> {
     /// # Safety
     ///
     /// Every possible byte pattern supplied by userspace must be a valid `T`.
-    pub unsafe fn read_abi(self, task: &UserTaskRef) -> AxResult<T> {
+    pub unsafe fn read_abi(self, task: &UserTaskRef) -> crate::StarryResult<T> {
         let value = self.0.vm_read_uninit(task)?;
         // SAFETY: guaranteed by the caller after the copy initialized every byte.
         Ok(unsafe { value.assume_init() })
@@ -407,13 +420,17 @@ impl<T> UserConstPtr<T> {
     ///
     /// Every possible byte pattern supplied by userspace must be a valid `T`.
     #[cfg(feature = "jpeg")]
-    pub unsafe fn read_abi_slice(self, task: &UserTaskRef, len: usize) -> AxResult<Vec<T>> {
+    pub unsafe fn read_abi_slice(
+        self,
+        task: &UserTaskRef,
+        len: usize,
+    ) -> crate::StarryResult<Vec<T>> {
         // SAFETY: the caller supplies the element validity contract.
         unsafe { vm_load_any(task, self.0, len) }.map_err(Into::into)
     }
 
     /// Copies initialized values from user memory into kernel-owned storage.
-    pub fn read_slice(self, task: &UserTaskRef, len: usize) -> AxResult<Vec<T>>
+    pub fn read_slice(self, task: &UserTaskRef, len: usize) -> crate::StarryResult<Vec<T>>
     where
         T: AnyBitPattern,
     {
@@ -421,13 +438,13 @@ impl<T> UserConstPtr<T> {
     }
 
     /// Validates and prefaults a readable user range without exposing it as a reference.
-    pub fn validate_slice(self, task: &UserTaskRef, len: usize) -> AxResult<()> {
+    pub fn validate_slice(self, task: &UserTaskRef, len: usize) -> crate::StarryResult<()> {
         if len == 0 {
             return Ok(());
         }
         let byte_len = size_of::<T>()
             .checked_mul(len)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(crate::StarryError::InvalidInput)?;
         prepare_user_memory(
             task,
             "validate read",
@@ -455,7 +472,6 @@ const _: fn(&UserTaskRef, &str, usize, usize, MappingFlags) -> VmResult = prepar
 
 #[page_fault_handler]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
-    debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
     #[cfg(feature = "stack-guard-page")]
     if ax_runtime::task::diagnose_current_stack_guard_page_fault(vaddr) {
         return false;
@@ -516,16 +532,16 @@ fn resolve_page_fault_user_task(
 
 pub const PATH_MAX: usize = 4096;
 
-pub fn vm_load_string(task: &UserTaskRef, ptr: *const c_char) -> AxResult<String> {
+pub fn vm_load_string(task: &UserTaskRef, ptr: *const c_char) -> crate::StarryResult<String> {
     #[allow(clippy::unnecessary_cast)]
     let bytes = vm_load_until_nul(task, ptr as *const u8)?;
-    String::from_utf8(bytes).map_err(|_| AxError::IllegalBytes)
+    String::from_utf8(bytes).map_err(|_| crate::StarryError::IllegalBytes)
 }
 
-pub fn vm_load_path_string(task: &UserTaskRef, ptr: *const c_char) -> AxResult<String> {
+pub fn vm_load_path_string(task: &UserTaskRef, ptr: *const c_char) -> crate::StarryResult<String> {
     let path = vm_load_string(task, ptr)?;
     if path.len() >= PATH_MAX {
-        return Err(AxError::NameTooLong);
+        return Err(StarryError::NameTooLong);
     }
     Ok(path)
 }
@@ -647,7 +663,8 @@ impl Read for VmBytes<'_> {
         let len = self.len.min(buf.len());
         vm_read_slice(self.task, self.ptr, unsafe {
             transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(&mut buf[..len])
-        })?;
+        })
+        .map_err(vm_error_to_io_error)?;
         self.ptr = self.ptr.wrapping_add(len);
         self.len -= len;
         Ok(len)
@@ -683,7 +700,7 @@ impl Write for VmBytesMut<'_> {
     /// Writes bytes from the provided buffer into the VM's memory.
     fn write(&mut self, buf: &[u8]) -> ax_io::Result<usize> {
         let len = self.len.min(buf.len());
-        vm_write_slice(self.task, self.ptr, &buf[..len])?;
+        vm_write_slice(self.task, self.ptr, &buf[..len]).map_err(vm_error_to_io_error)?;
         self.ptr = self.ptr.wrapping_add(len);
         self.len -= len;
         Ok(len)
@@ -703,7 +720,7 @@ impl IoBufMut for VmBytesMut<'_> {
 
 /// Patches kernel text, ensuring page permissions and instruction-cache
 /// synchronization are handled consistently.
-pub fn patch_kernel_text<F>(addr: VirtAddr, len: usize, action: F) -> AxResult<()>
+pub fn patch_kernel_text<F>(addr: VirtAddr, len: usize, action: F) -> StarryResult<()>
 where
     F: FnOnce(*mut u8),
 {
@@ -720,13 +737,10 @@ where
     // is therefore the only IRQ-saving lock nested inside the stopped region.
     // Keeping that order avoids restoring saved IRQ state out of order.
     crate::stop_machine::stop_machine(
-        move || -> AxResult<()> {
+        move || -> StarryResult<()> {
             let mut guard = ax_mm::kernel_aspace().lock();
             if guard.contains_range(aligned_addr, aligned_length) {
-                let (_, original_flags, _) = guard
-                    .page_table()
-                    .query(aligned_addr)
-                    .map_err(paging_error_to_ax_error)?;
+                let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
 
                 guard.protect(
                     aligned_addr,
@@ -756,7 +770,7 @@ where
 
             #[cfg(not(target_arch = "loongarch64"))]
             {
-                Err(AxError::BadAddress)
+                Err(StarryError::BadAddress)
             }
         },
         move || sync_modified_kernel_text(aligned_addr, aligned_length),
@@ -764,7 +778,7 @@ where
 }
 
 /// Writes data to kernel text, ensuring the page permissions are properly handled.
-pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
+pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> StarryResult<()> {
     patch_kernel_text(addr, data.len(), |dst| unsafe {
         core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
     })
@@ -778,13 +792,15 @@ pub(crate) fn flush_tlb_range_on_cpus_sync(
     cpu_mask: usize,
     start: VirtAddr,
     size: usize,
-) -> AxResult {
+) -> crate::StarryResult {
     ax_runtime::hal::cache::flush_tlb_range_on_cpus(cpu_mask, start, size).map_err(
         |err| match err {
             ax_runtime::hal::cache::TlbShootdownError::CpuOffline
-            | ax_runtime::hal::cache::TlbShootdownError::Unsupported => AxError::Unsupported,
-            ax_runtime::hal::cache::TlbShootdownError::Timeout => AxError::TimedOut,
-            ax_runtime::hal::cache::TlbShootdownError::Platform => AxError::Io,
+            | ax_runtime::hal::cache::TlbShootdownError::Unsupported => {
+                crate::StarryError::Unsupported
+            }
+            ax_runtime::hal::cache::TlbShootdownError::Timeout => crate::StarryError::TimedOut,
+            ax_runtime::hal::cache::TlbShootdownError::Platform => crate::StarryError::Io,
         },
     )
 }

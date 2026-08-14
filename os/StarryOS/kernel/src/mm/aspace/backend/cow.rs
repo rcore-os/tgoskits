@@ -5,7 +5,6 @@ use alloc::{
 };
 use core::{cell::Cell, slice};
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FileBackend;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
 use ax_runtime::hal::{
@@ -18,7 +17,7 @@ use super::{
     PopulateCallback, RssKind, alloc_frame, dealloc_frame, pages_in,
 };
 use crate::{
-    mm::paging_error_to_ax_error,
+    StarryError, StarryResult,
     sync::{IrqMutex, PiMutex},
 };
 
@@ -108,12 +107,12 @@ fn cow_file_max_read_len(
     file_end: Option<u64>,
     file_read_offset: u64,
     available: usize,
-) -> AxResult<usize> {
+) -> StarryResult<usize> {
     let effective_end = match file_end {
         Some(end) => end,
         None => {
             if file_read_offset >= file_len {
-                return Err(AxError::BadAddress);
+                return Err(StarryError::BadAddress);
             }
             file_len
         }
@@ -128,7 +127,7 @@ fn cow_file_max_read(
     file_end: Option<u64>,
     file_read_offset: u64,
     available: usize,
-) -> AxResult<usize> {
+) -> StarryResult<usize> {
     let file_len = if file_end.is_none() { file.len()? } else { 0 };
     cow_file_max_read_len(file_len, file_end, file_read_offset, available)
 }
@@ -137,7 +136,7 @@ fn cow_file_max_read(
 pub(crate) fn private_mmap_eof_check_for_test() -> bool {
     matches!(
         cow_file_max_read_len(4096, None, 4096, 4096),
-        Err(AxError::BadAddress)
+        Err(StarryError::BadAddress)
     ) && matches!(cow_file_max_read_len(4096, None, 2048, 4096), Ok(2048))
         && matches!(
             cow_file_max_read_len(4096, Some(8192), 4096, 4096),
@@ -262,7 +261,7 @@ impl CowBackend {
         );
     }
 
-    fn alloc_new_frame(&self, zeroed: bool) -> AxResult<PhysAddr> {
+    fn alloc_new_frame(&self, zeroed: bool) -> StarryResult<PhysAddr> {
         let frame = alloc_frame(zeroed, self.size)?;
         FRAME_TABLE.lock().init_frame(frame);
         Ok(frame)
@@ -275,7 +274,7 @@ impl CowBackend {
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult {
+    ) -> StarryResult {
         let kind = self.rss_kind_for_fault(access_flags);
         let frame = self.alloc_new_frame(true)?;
 
@@ -312,13 +311,13 @@ impl CowBackend {
             if let Err(err) = file.read_at(&mut &mut buf[start..start + max_read], file_read_offset)
             {
                 self.deinit_frame(frame);
-                return Err(err);
+                return Err(err.into());
             }
         }
         let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
         if let Err(err) = pt.map_page(vaddr, frame, self.size, pte_flags) {
             self.deinit_frame(frame);
-            return Err(paging_error_to_ax_error(err));
+            return Err(err.into());
         }
         if let Some(acct) = acct {
             acct.record_charge(vaddr, kind)?;
@@ -335,7 +334,7 @@ impl CowBackend {
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult<usize> {
+    ) -> StarryResult<usize> {
         let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
             for &addr in run {
                 self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
@@ -366,7 +365,7 @@ impl CowBackend {
             let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
             if let Err(err) = pt.map_page(addr, frame, self.size, pte_flags) {
                 self.deinit_frame(frame);
-                return Err(paging_error_to_ax_error(err));
+                return Err(err.into());
             }
             if let Some(acct) = acct {
                 acct.record_charge(addr, kind)?;
@@ -383,12 +382,12 @@ impl CowBackend {
         pte_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult {
+    ) -> crate::StarryResult {
         let shootdown_range = super::super::tlb::checked_range(vaddr, self.size)?;
         let mut frame_table = FRAME_TABLE.lock();
         let frame_ref = frame_table
             .get_frame_ref(paddr)
-            .ok_or(AxError::BadAddress)?;
+            .ok_or(StarryError::BadAddress)?;
         drop(frame_table);
         let frame_count = frame_ref.lock();
         assert!(frame_count.count > 0, "invalid frame reference count");
@@ -398,8 +397,7 @@ impl CowBackend {
         );
         match frame_count.count {
             1 => {
-                pt.protect_page(vaddr, vma_flags)
-                    .map_err(paging_error_to_ax_error)?;
+                pt.protect_page(vaddr, vma_flags)?;
                 super::super::tlb::record_range_for_shootdown(shootdown_range);
                 let defer_write =
                     self.cow_deferred_file_write(vma_flags, pte_flags) && self.write_upgraded.get();
@@ -419,7 +417,7 @@ impl CowBackend {
                 }
                 if let Err(err) = pt.remap_page(vaddr, new_frame, vma_flags) {
                     self.deinit_frame(new_frame);
-                    return Err(paging_error_to_ax_error(err));
+                    return Err(err.into());
                 }
                 super::super::tlb::record_range_for_shootdown(shootdown_range);
                 if self.file.is_some()
@@ -446,7 +444,7 @@ impl CowBackend {
         addr: VirtAddr,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult {
+    ) -> StarryResult {
         if let Ok((frame, _flags, page_size)) = pt.unmap_page(addr) {
             assert_eq!(page_size, self.size);
             if let Some(acct) = acct {
@@ -455,7 +453,7 @@ impl CowBackend {
             let frame_ref = FRAME_TABLE
                 .lock()
                 .get_frame_ref(frame)
-                .ok_or(AxError::BadAddress)?;
+                .ok_or(crate::StarryError::BadAddress)?;
             super::super::tlb::defer_frame_until_shootdown(DeferredFrameRelease::new(
                 frame, self.size, frame_ref,
             ));
@@ -463,7 +461,7 @@ impl CowBackend {
         Ok(())
     }
 
-    pub fn file_info(&self) -> AxResult<BackendFileInfo> {
+    pub fn file_info(&self) -> StarryResult<BackendFileInfo> {
         let loc = self
             .file
             .as_ref()
@@ -500,7 +498,7 @@ impl CowBackend {
                 shared: self.shared,
             });
         }
-        Err(AxError::InvalidInput)
+        Err(StarryError::InvalidInput)
     }
 }
 
@@ -515,7 +513,7 @@ impl BackendOps for CowBackend {
         flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
         _pt: &mut PageTable,
-    ) -> AxResult {
+    ) -> StarryResult {
         debug!("Cow::map: {range:?} {flags:?}",);
         if self.file.is_some() && flags.contains(MappingFlags::WRITE) {
             self.write_upgraded.set(true);
@@ -528,7 +526,7 @@ impl BackendOps for CowBackend {
         _range: VirtAddrRange,
         new_flags: MappingFlags,
         _pt: &mut PageTable,
-    ) -> AxResult {
+    ) -> StarryResult {
         if self.file.is_some() && new_flags.contains(MappingFlags::WRITE) {
             self.write_upgraded.set(true);
         }
@@ -540,7 +538,7 @@ impl BackendOps for CowBackend {
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult {
+    ) -> StarryResult {
         debug!("Cow::unmap: {range:?}");
         for addr in pages_in(range, self.size)? {
             self.unmap_page(addr, acct, pt)?;
@@ -555,7 +553,7 @@ impl BackendOps for CowBackend {
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult<(usize, Option<PopulateCallback>)> {
+    ) -> StarryResult<(usize, Option<PopulateCallback>)> {
         let mut pages = 0;
         // Batch consecutive not-mapped FILE-backed pages into one readahead read.
         let addrs: alloc::vec::Vec<VirtAddr> = pages_in(range, self.size)?.collect();
@@ -596,7 +594,7 @@ impl BackendOps for CowBackend {
                         i += 1;
                     }
                 }
-                Err(_) => return Err(AxError::BadAddress),
+                Err(_) => return Err(StarryError::BadAddress),
             }
         }
         Ok((pages, None))
@@ -610,7 +608,7 @@ impl BackendOps for CowBackend {
         new_pt: &mut PageTable,
         _new_aspace: &Arc<PiMutex<AddrSpace>>,
         acct: CloneMapAccounting<'_>,
-    ) -> AxResult<Backend> {
+    ) -> StarryResult<Backend> {
         let cow_flags = flags - MappingFlags::WRITE;
 
         for vaddr in pages_in(range, self.size)? {
@@ -621,7 +619,7 @@ impl BackendOps for CowBackend {
                     let frame = FRAME_TABLE
                         .lock()
                         .get_frame_ref(paddr)
-                        .ok_or(AxError::BadAddress)?;
+                        .ok_or(StarryError::BadAddress)?;
                     let mut frame = frame.lock();
                     assert!(frame.count > 0, "referencing unreferenced frame");
                     // Overflow is effectively unreachable with a u32 refcount, but
@@ -632,16 +630,12 @@ impl BackendOps for CowBackend {
                         Some(c) => c,
                         None => {
                             warn!("frame reference count overflow");
-                            return Err(AxError::NoMemory);
+                            return Err(StarryError::NoMemory);
                         }
                     };
-                    old_pt
-                        .protect_page(vaddr, cow_flags)
-                        .map_err(paging_error_to_ax_error)?;
+                    old_pt.protect_page(vaddr, cow_flags)?;
                     super::super::tlb::record_range_for_shootdown(shootdown_range);
-                    new_pt
-                        .map_page(vaddr, paddr, self.size, cow_flags)
-                        .map_err(paging_error_to_ax_error)?;
+                    new_pt.map_page(vaddr, paddr, self.size, cow_flags)?;
                     if let (Some(parent), Some(child)) = (acct.parent, acct.child)
                         && let Some(_kind) = parent.charge_kind(vaddr)
                     {
@@ -649,7 +643,7 @@ impl BackendOps for CowBackend {
                     }
                 }
                 Err(PagingError::NotMapped) => {}
-                Err(_) => return Err(AxError::BadAddress),
+                Err(_) => return Err(StarryError::BadAddress),
             };
         }
         Ok(Backend::Cow(self.clone()))
@@ -708,16 +702,16 @@ impl Backend {
 pub(crate) fn cow_file_max_read_len_boundary_rules_hold_for_test() -> bool {
     // Zero-length file without an explicit end rejects any offset (offset 0 is
     // already >= file_len 0).
-    matches!(cow_file_max_read_len(0, None, 0, 4096), Err(AxError::BadAddress))
+    matches!(cow_file_max_read_len(0, None, 0, 4096), Err(StarryError::BadAddress))
         // Offset past the file end without an explicit end is BadAddress.
         && matches!(
             cow_file_max_read_len(4096, None, 8192, 4096),
-            Err(AxError::BadAddress)
+            Err(StarryError::BadAddress)
         )
         // Offset at exactly file_len without an explicit end is also BadAddress.
         && matches!(
             cow_file_max_read_len(4096, None, 4096, 4096),
-            Err(AxError::BadAddress)
+            Err(StarryError::BadAddress)
         )
         // Explicit end below the file length caps the returned size.
         && matches!(cow_file_max_read_len(8192, Some(4096), 0, 8192), Ok(4096))

@@ -16,3 +16,4 @@ bytemuck = { version = "1.24", default-features = false, features = [
 ] }
 dma-api.workspace = true
 rdif-base.workspace = true
+thiserror.workspace = true

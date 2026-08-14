@@ -1,7 +1,6 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::{net::Ipv4Addr, time::Duration};
 
-use ax_errno::{AxError, AxResult};
 use ax_io::prelude::*;
 use ax_net::{
     CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketCmsg,
@@ -20,6 +19,7 @@ use super::addr::{
     SocketAddrExt, normalize_socket_addr_ex_for_ip_stack, socket_addr_ex_for_user_name,
 };
 use crate::{
+    StarryError, StarryResult,
     file::{FileLike, PacketSocket, Socket, add_file_like, get_file_like, netlink::NetlinkSocket},
     mm::{IoVec, IoVectorBuf, UserConstPtr, UserPtr, VmBytes, VmBytesMut},
     syscall::net::{CMsg, CMsgBuilder, cmsg_space},
@@ -36,7 +36,7 @@ const PROTO_IP: u32 = linux_raw_sys::net::IPPROTO_IP as u32;
 fn parse_recvmmsg_timeout(
     current: &crate::task::UserTaskRef,
     timeout: UserConstPtr<timespec>,
-) -> AxResult<Option<Duration>> {
+) -> crate::StarryResult<Option<Duration>> {
     if timeout.is_null() {
         return Ok(None);
     }
@@ -47,12 +47,16 @@ fn parse_recvmmsg_timeout(
     Ok(Some(Duration::new(tv.as_secs(), tv.subsec_nanos())))
 }
 
-fn decode_msg_namelen(value: i32) -> AxResult<socklen_t> {
-    value.try_into().map_err(|_| AxError::InvalidInput)
+fn decode_msg_namelen(value: i32) -> crate::StarryResult<socklen_t> {
+    value
+        .try_into()
+        .map_err(|_| crate::StarryError::InvalidInput)
 }
 
-fn encode_msg_namelen(value: socklen_t) -> AxResult<i32> {
-    value.try_into().map_err(|_| AxError::InvalidInput)
+fn encode_msg_namelen(value: socklen_t) -> crate::StarryResult<i32> {
+    value
+        .try_into()
+        .map_err(|_| crate::StarryError::InvalidInput)
 }
 
 fn write_msghdr_outputs(
@@ -61,7 +65,7 @@ fn write_msghdr_outputs(
     namelen: i32,
     controllen: usize,
     flags: u32,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     let base = msg.address().as_usize();
     UserPtr::<i32>::from(base + core::mem::offset_of!(msghdr, msg_namelen))
         .write(current, namelen)?;
@@ -70,11 +74,11 @@ fn write_msghdr_outputs(
     UserPtr::<u32>::from(base + core::mem::offset_of!(msghdr, msg_flags)).write(current, flags)
 }
 
-fn mmsghdr_address(msgvec: UserPtr<mmsghdr>, index: usize) -> AxResult<usize> {
+fn mmsghdr_address(msgvec: UserPtr<mmsghdr>, index: usize) -> crate::StarryResult<usize> {
     index
         .checked_mul(size_of::<mmsghdr>())
         .and_then(|offset| msgvec.address().as_usize().checked_add(offset))
-        .ok_or(AxError::InvalidInput)
+        .ok_or(crate::StarryError::InvalidInput)
 }
 
 fn write_mmsghdr_len(
@@ -82,7 +86,7 @@ fn write_mmsghdr_len(
     msgvec: UserPtr<mmsghdr>,
     index: usize,
     len: u32,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     let base = mmsghdr_address(msgvec, index)?;
     UserPtr::<u32>::from(base + core::mem::offset_of!(mmsghdr, msg_len)).write(current, len)
 }
@@ -91,14 +95,16 @@ fn parse_send_cmsgs(
     current: &crate::task::UserTaskRef,
     control_ptr: usize,
     control_len: usize,
-) -> AxResult<Vec<CMsgData>> {
+) -> crate::StarryResult<Vec<CMsgData>> {
     let mut cmsg = Vec::new();
     if control_ptr == 0 || control_len == 0 {
         return Ok(cmsg);
     }
 
     let mut ptr = control_ptr;
-    let ptr_end = ptr.checked_add(control_len).ok_or(AxError::InvalidInput)?;
+    let ptr_end = ptr
+        .checked_add(control_len)
+        .ok_or(StarryError::InvalidInput)?;
 
     while let Some(next) = ptr.checked_add(size_of::<cmsghdr>()) {
         if next > ptr_end {
@@ -109,13 +115,13 @@ fn parse_send_cmsgs(
         // pattern is valid; length and level/type semantics are checked below.
         let hdr = unsafe { UserConstPtr::<cmsghdr>::from(ptr).read_abi(current)? };
         if hdr.cmsg_len < size_of::<cmsghdr>() || ptr_end - ptr < hdr.cmsg_len {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let Some(next_ptr) = cmsg_space(hdr.cmsg_len - size_of::<cmsghdr>())
             .and_then(|space| ptr.checked_add(space))
         else {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         };
 
         cmsg.push(Box::new(CMsg::parse(current, ptr, &hdr)?) as CMsgData);
@@ -133,7 +139,7 @@ fn send_impl(
     addr: UserConstPtr<sockaddr>,
     addrlen: socklen_t,
     cmsg: Vec<CMsgData>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if let Ok(packet) = PacketSocket::from_fd(fd) {
         return Ok(packet.send_packet(&mut src)? as isize);
     }
@@ -145,7 +151,7 @@ fn send_impl(
             // returns EDESTADDRREQ on unconnected socket, never EINVAL.
             None
         } else if addrlen == 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         } else {
             let mut addr = SocketAddrEx::read_from_user(current, addr, addrlen)?;
             if socket.ip_domain() == linux_raw_sys::net::AF_INET6 {
@@ -177,7 +183,7 @@ fn send_impl(
     }
 
     get_file_like(fd)?;
-    Err(AxError::NotASocket)
+    Err(StarryError::NotASocket)
 }
 
 pub fn sys_sendto(
@@ -188,7 +194,7 @@ pub fn sys_sendto(
     flags: u32,
     addr: UserConstPtr<sockaddr>,
     addrlen: socklen_t,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     send_impl(
         current,
         fd,
@@ -205,7 +211,7 @@ pub fn sys_sendmsg(
     fd: i32,
     msg: UserConstPtr<msghdr>,
     flags: u32,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     // SAFETY: msghdr consists of raw addresses and integer lengths/flags.
     // Every bit pattern is valid before the syscall validates each field.
     let msg = unsafe { msg.read_abi(current)? };
@@ -235,7 +241,7 @@ fn recv_impl(
     mut cmsg_builder: Option<CMsgBuilder<'_, '_>>,
     truncated_out: &mut bool,
     control_truncated_out: &mut bool,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_recv <= fd: {fd}, flags: {flags}");
 
     if let Ok(packet) = PacketSocket::from_fd(fd) {
@@ -275,7 +281,7 @@ fn recv_impl(
         }
 
         get_file_like(fd)?;
-        return Err(AxError::NotASocket);
+        return Err(StarryError::NotASocket);
     };
     let mut recv_flags = RecvFlags::empty();
     if flags & MSG_PEEK != 0 {
@@ -445,7 +451,7 @@ pub fn sys_recvfrom(
     flags: u32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let mut addrlen_value = if addr.is_null() {
         0
     } else {
@@ -473,7 +479,7 @@ pub fn sys_recvmsg(
     fd: i32,
     msg: UserPtr<msghdr>,
     flags: u32,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     // SAFETY: msghdr consists of raw addresses and integer lengths/flags.
     // Every bit pattern is valid before the syscall validates each field.
     let mut msg_value = unsafe { msg.read_abi(current)? };
@@ -532,7 +538,7 @@ pub fn sys_sendmmsg(
     msgvec: UserPtr<mmsghdr>,
     vlen: u32,
     flags: u32,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if vlen == 0 {
         return Ok(0);
     }
@@ -589,7 +595,7 @@ pub fn sys_recvmmsg(
     vlen: u32,
     flags: u32,
     timeout: UserConstPtr<timespec>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if vlen == 0 {
         return Ok(0);
     }
@@ -617,7 +623,7 @@ pub fn sys_recvmmsg(
             && wall_time() >= deadline
         {
             if received == 0 {
-                return Err(AxError::WouldBlock);
+                return Err(StarryError::WouldBlock);
             }
             break;
         }

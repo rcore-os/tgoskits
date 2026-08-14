@@ -49,9 +49,8 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ax_errno::AxError;
 use ax_lazyinit::OnceLock;
-use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsError, VfsResult};
 
 use crate::sync::PiMutex;
 
@@ -161,11 +160,11 @@ struct RootBlk;
 
 impl DeviceOps for RootBlk {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::Io)
+        Err(VfsError::Io)
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::Io)
+        Err(VfsError::Io)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -387,7 +386,7 @@ impl DeviceOps for Full {
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::StorageFull)
+        Err(VfsError::StorageFull)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -403,7 +402,7 @@ struct CpuDmaLatency;
 
 impl DeviceOps for CpuDmaLatency {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::InvalidInput)
+        Err(VfsError::InvalidInput)
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {

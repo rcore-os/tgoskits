@@ -11,7 +11,6 @@ use core::{
     task::Poll,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use axfs_ng_vfs::Location;
@@ -20,6 +19,7 @@ use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
 use starry_process::Pid;
 
 use crate::{
+    StarryError, StarryResult,
     config::USER_HEAP_BASE,
     file::{ResolveAtResult, memfd::Memfd, resolve_at},
     mm::{
@@ -45,7 +45,7 @@ pub fn sys_execve(
     path: *const c_char,
     argv: *const *const c_char,
     envp: *const *const c_char,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let path = vm_load_string(current, path)?;
     let loc = current_fs_context().lock().resolve(&path)?;
     do_execve(current, uctx, loc, path, argv, envp)
@@ -62,9 +62,9 @@ pub fn sys_execveat(
     argv: *const *const c_char,
     envp: *const *const c_char,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if flags & !(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let path = vm_load_string(current, path)?;
@@ -82,7 +82,7 @@ pub fn sys_execveat(
         ResolveAtResult::Other(f) => {
             let memfd = f.downcast_ref::<Memfd>().ok_or_else(|| {
                 warn!("sys_execveat: exec from non-memfd anonymous fd is not supported");
-                AxError::PermissionDenied
+                StarryError::PermissionDenied
             })?;
             let loc = memfd.inner().inner().location().clone();
             let disp = format!("/memfd:{} (deleted)", memfd.name());
@@ -105,7 +105,7 @@ fn do_execve(
     path: String,
     argv: *const *const c_char,
     envp: *const *const c_char,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     // ----------------------------------------------------------------
     // Phase 1: all fallible work — nothing is committed yet.
     // If any of these fail we return an error and the process is intact.
@@ -115,7 +115,7 @@ fn do_execve(
     // `execl(path, NULL)` passes NULL to mean "no arguments", and Linux's
     // `count_strings_kernel` short-circuits NULL to an empty list rather
     // than returning EFAULT.
-    let load_vec = |ptr: *const *const c_char| -> AxResult<Vec<String>> {
+    let load_vec = |ptr: *const *const c_char| -> StarryResult<Vec<String>> {
         if ptr.is_null() {
             Ok(Vec::new())
         } else {
@@ -164,7 +164,7 @@ fn do_execve(
     let _exec_guard = proc_data
         .exec_lock()
         .lock_interruptible(|| thr.has_exit_request())
-        .map_err(|_| AxError::Interrupted)?;
+        .map_err(|_| crate::StarryError::Interrupted)?;
 
     // Collect metadata from the already-resolved location before touching
     // anything. An anonymous memfd has no filesystem path, so fall back to the
@@ -188,7 +188,7 @@ fn do_execve(
     let (entry_point, user_stack_base, auxv) =
         match load_user_app(&mut new_aspace, loc, &path, &args, &envs) {
             Ok(result) => result,
-            Err(AxError::InvalidExecutable) => {
+            Err(StarryError::InvalidExecutable) => {
                 // ENOEXEC fallback: retry via /bin/sh.
                 // In Linux this retry is done by user-space (execvp / busybox),
                 // not by the kernel. This is a pragmatic workaround until

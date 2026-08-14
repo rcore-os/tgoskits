@@ -1,8 +1,9 @@
 use core::mem::size_of;
 
-use ax_errno::{AxError, LinuxError};
-
-use crate::mm::{VmMutPtr, VmPtr};
+use crate::{
+    Errno, StarryError,
+    mm::{VmMutPtr, VmPtr},
+};
 
 /// Linux rseq area layout used for ABI validation.
 #[repr(C)]
@@ -20,17 +21,17 @@ const RSEQ_AREA_ALIGN: usize = 32;
 const RSEQ_FLAG_UNREGISTER: u32 = 1;
 const RSEQ_CPU_ID_UNINITIALIZED: u32 = u32::MAX;
 
-fn validate_rseq_args(addr: *mut u8, len: usize, flags: u32) -> Result<usize, AxError> {
+fn validate_rseq_args(addr: *mut u8, len: usize, flags: u32) -> Result<usize, StarryError> {
     if addr.is_null() || len != RSEQ_AREA_SIZE {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if flags & !RSEQ_FLAG_UNREGISTER != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let addr = addr.addr();
     if !addr.is_multiple_of(RSEQ_AREA_ALIGN) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     Ok(addr)
@@ -39,11 +40,11 @@ fn validate_rseq_args(addr: *mut u8, len: usize, flags: u32) -> Result<usize, Ax
 fn ensure_rseq_area_accessible(
     current: &crate::task::UserTaskRef,
     addr: usize,
-) -> Result<(), AxError> {
+) -> Result<(), crate::StarryError> {
     let area = addr as *mut RseqArea;
     let _ = area
         .vm_read_uninit(current)
-        .map_err(|_| AxError::BadAddress)?;
+        .map_err(|_| crate::StarryError::BadAddress)?;
     area.vm_write(
         current,
         RseqArea {
@@ -54,7 +55,7 @@ fn ensure_rseq_area_accessible(
             padding: [0; 3],
         },
     )
-    .map_err(|_| AxError::BadAddress)?;
+    .map_err(|_| crate::StarryError::BadAddress)?;
     Ok(())
 }
 
@@ -73,7 +74,7 @@ pub fn sys_rseq(
     len: usize,
     flags: u32,
     sig: u32,
-) -> Result<isize, AxError> {
+) -> Result<isize, crate::StarryError> {
     debug!(
         "sys_rseq <= addr: {:?}, len: {}, flags: {}, sig: {}",
         addr, len, flags, sig
@@ -87,14 +88,14 @@ pub fn sys_rseq(
 
     if unregister {
         if registered_addr == 0 || registered_addr != addr || thr.rseq_signature() != sig {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         thr.clear_rseq_state();
         return Ok(0);
     }
 
     if registered_addr != 0 {
-        return Err(AxError::from(LinuxError::EBUSY));
+        return Err(StarryError::from(Errno::EBUSY));
     }
 
     ensure_rseq_area_accessible(current, addr)?;
@@ -104,13 +105,22 @@ pub fn sys_rseq(
 
 #[cfg(axtest)]
 pub(crate) fn rseq_validation_rejects_invalid_arguments_for_test() -> bool {
-    validate_rseq_args(core::ptr::null_mut(), RSEQ_AREA_SIZE, 0) == Err(AxError::InvalidInput)
-        && validate_rseq_args(0x1000 as *mut u8, RSEQ_AREA_SIZE - 1, 0)
-            == Err(AxError::InvalidInput)
-        && validate_rseq_args(0x1000 as *mut u8, RSEQ_AREA_SIZE, RSEQ_FLAG_UNREGISTER << 1)
-            == Err(AxError::InvalidInput)
-        && validate_rseq_args(0x1001 as *mut u8, RSEQ_AREA_SIZE, 0) == Err(AxError::InvalidInput)
-        && validate_rseq_args(0x1000 as *mut u8, RSEQ_AREA_SIZE, 0) == Ok(0x1000)
+    matches!(
+        validate_rseq_args(core::ptr::null_mut(), RSEQ_AREA_SIZE, 0),
+        Err(StarryError::InvalidInput)
+    ) && matches!(
+        validate_rseq_args(0x1000 as *mut u8, RSEQ_AREA_SIZE - 1, 0),
+        Err(StarryError::InvalidInput)
+    ) && matches!(
+        validate_rseq_args(0x1000 as *mut u8, RSEQ_AREA_SIZE, RSEQ_FLAG_UNREGISTER << 1),
+        Err(StarryError::InvalidInput)
+    ) && matches!(
+        validate_rseq_args(0x1001 as *mut u8, RSEQ_AREA_SIZE, 0),
+        Err(StarryError::InvalidInput)
+    ) && matches!(
+        validate_rseq_args(0x1000 as *mut u8, RSEQ_AREA_SIZE, 0),
+        Ok(0x1000)
+    )
 }
 
 #[cfg(axtest)]
@@ -146,43 +156,42 @@ pub(crate) fn rseq_validation_rules_hold_for_test() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use ax_errno::AxError;
-
     use super::{RSEQ_AREA_SIZE, RSEQ_FLAG_UNREGISTER, validate_rseq_args};
+    use crate::StarryError;
 
     #[test]
     fn validate_rseq_args_rejects_null_addr() {
-        assert_eq!(
-            validate_rseq_args(core::ptr::null_mut(), RSEQ_AREA_SIZE, 0).unwrap_err(),
-            AxError::InvalidInput
-        );
+        assert!(matches!(
+            validate_rseq_args(core::ptr::null_mut(), RSEQ_AREA_SIZE, 0),
+            Err(StarryError::InvalidInput)
+        ));
     }
 
     #[test]
     fn validate_rseq_args_rejects_bad_len() {
         let ptr = 0x1000 as *mut u8;
-        assert_eq!(
-            validate_rseq_args(ptr, RSEQ_AREA_SIZE - 1, 0).unwrap_err(),
-            AxError::InvalidInput
-        );
+        assert!(matches!(
+            validate_rseq_args(ptr, RSEQ_AREA_SIZE - 1, 0),
+            Err(StarryError::InvalidInput)
+        ));
     }
 
     #[test]
     fn validate_rseq_args_rejects_bad_flags() {
         let ptr = 0x1000 as *mut u8;
-        assert_eq!(
-            validate_rseq_args(ptr, RSEQ_AREA_SIZE, RSEQ_FLAG_UNREGISTER << 1).unwrap_err(),
-            AxError::InvalidInput
-        );
+        assert!(matches!(
+            validate_rseq_args(ptr, RSEQ_AREA_SIZE, RSEQ_FLAG_UNREGISTER << 1),
+            Err(StarryError::InvalidInput)
+        ));
     }
 
     #[test]
     fn validate_rseq_args_rejects_misaligned_addr() {
         let ptr = 0x1001 as *mut u8;
-        assert_eq!(
-            validate_rseq_args(ptr, RSEQ_AREA_SIZE, 0).unwrap_err(),
-            AxError::InvalidInput
-        );
+        assert!(matches!(
+            validate_rseq_args(ptr, RSEQ_AREA_SIZE, 0),
+            Err(StarryError::InvalidInput)
+        ));
     }
 
     #[test]

@@ -19,7 +19,7 @@ cfg_display! {
 mod stdio {
     use core::fmt;
 
-    pub fn ax_console_read_bytes(buf: &mut [u8]) -> crate::AxResult<usize> {
+    pub fn ax_console_read_bytes(buf: &mut [u8]) -> crate::ApiResult<usize> {
         let len = ax_hal::console::read_bytes(buf);
         for c in &mut buf[..len] {
             if *c == b'\r' {
@@ -29,10 +29,10 @@ mod stdio {
         Ok(len)
     }
 
-    pub fn ax_console_write_bytes(buf: &[u8]) -> crate::AxResult<usize> {
+    pub fn ax_console_write_bytes(buf: &[u8]) -> crate::ApiResult<usize> {
         #[cfg(feature = "serial")]
         if let Some(tx) = ax_runtime::serial::active_console_tx() {
-            return tx.write_text_all(buf);
+            return Ok(tx.write_text_all(buf)?);
         }
         ax_hal::console::write_text_bytes(buf);
         Ok(buf.len())

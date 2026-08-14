@@ -8,7 +8,6 @@
 use alloc::sync::Arc;
 use core::{any::Any, fmt::Debug};
 
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PhysAddr;
 use axpoll::Pollable;
 
@@ -19,20 +18,23 @@ use super::output::{PerfOutputScope, PerfRingOutput};
 /// Sleepable, task-context operations for one perf fd.
 pub(super) trait PerfControl: Pollable + Send + Sync + Debug {
     /// Starts the event and waits until its owner context has committed it.
-    fn enable(&self) -> AxResult<()>;
+    fn enable(&self) -> crate::StarryResult<()>;
 
     /// Stops the event and waits for owner-context quiescence.
-    fn disable(&self) -> AxResult<()>;
+    fn disable(&self) -> crate::StarryResult<()>;
 
     /// Resets the event count in owner-context order.
-    fn reset(&self) -> AxResult<()>;
+    fn reset(&self) -> crate::StarryResult<()>;
 
     /// Takes an owner-consistent counter and timing snapshot.
-    fn read_values(&self) -> AxResult<PerfReadValues>;
+    fn read_values(&self) -> crate::StarryResult<PerfReadValues>;
 
     /// Allocates and publishes the user-visible mmap backing.
-    fn device_mmap(&self, _len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
-        Err(AxError::Unsupported)
+    fn device_mmap(
+        &self,
+        _len: usize,
+    ) -> crate::StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        Err(crate::StarryError::Unsupported)
     }
 
     /// Returns a pinned output ring for `PERF_EVENT_IOC_SET_OUTPUT`.
@@ -49,13 +51,13 @@ pub(super) trait PerfControl: Pollable + Send + Sync + Debug {
 
     /// Redirects records into a separately pinned output ring.
     #[cfg(target_arch = "aarch64")]
-    fn redirect_output(&self, _output: PerfRingOutput) -> AxResult<()> {
+    fn redirect_output(&self, _output: PerfRingOutput) -> crate::StarryResult<()> {
         Ok(())
     }
 
     /// Detaches a previous redirect and restores this event's own mmap ring.
     #[cfg(target_arch = "aarch64")]
-    fn detach_output(&self) -> AxResult<()> {
+    fn detach_output(&self) -> crate::StarryResult<()> {
         Ok(())
     }
 }

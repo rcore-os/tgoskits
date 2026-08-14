@@ -10,8 +10,6 @@
 use alloc::sync::{Arc, Weak};
 use core::sync::atomic::Ordering;
 
-use ax_errno::{AxError, AxResult};
-
 use super::{
     hw,
     hw_owner::Counter,
@@ -127,7 +125,10 @@ impl PerfInheritanceFamily {
     /// The child is fully configured before it is appended. A concurrent close
     /// either observes the member or rejects it; no half-published descendant is
     /// reachable from the family.
-    pub(crate) fn register_child(self: &Arc<Self>, child: &Arc<PerTaskCounter>) -> AxResult<()> {
+    pub(crate) fn register_child(
+        self: &Arc<Self>,
+        child: &Arc<PerTaskCounter>,
+    ) -> crate::StarryResult<()> {
         // Match Linux's child_mutex boundary: inheritance cannot enter midway
         // through a family ENABLE/DISABLE/RESET/output transaction.
         let _control = self.control.lock();
@@ -138,9 +139,9 @@ impl PerfInheritanceFamily {
             .register_member(MAX_FAMILY_MEMBERS)
             .ok_or_else(|| {
                 if state.lifecycle.is_closed() {
-                    AxError::BadState
+                    crate::StarryError::BadState
                 } else {
-                    AxError::NoMemory
+                    crate::StarryError::NoMemory
                 }
             })?;
         child.set_enabled_state(join.enabled);
@@ -188,11 +189,11 @@ impl PerfInheritanceFamily {
         &self,
         output: &PerfRingOutput,
         anchors: SamplingAnchors,
-    ) -> AxResult<()> {
+    ) -> crate::StarryResult<()> {
         let _control = self.control.lock();
         let mut state = self.state.lock();
         if state.lifecycle.publish_output().is_none() {
-            return Err(AxError::BadState);
+            return Err(crate::StarryError::BadState);
         }
         let root = Arc::clone(
             state
@@ -218,11 +219,14 @@ impl PerfInheritanceFamily {
     }
 
     /// Applies root-fd ENABLE to every existing descendant and to future joins.
-    pub(crate) fn enable(&self) -> AxResult<()> {
+    pub(crate) fn enable(&self) -> crate::StarryResult<()> {
         let _control = self.control.lock();
         let members = {
             let mut state = self.state.lock();
-            state.lifecycle.set_enabled(true).ok_or(AxError::BadState)?;
+            state
+                .lifecycle
+                .set_enabled(true)
+                .ok_or(crate::StarryError::BadState)?;
             state.members.clone()
         };
         for member in &members {
@@ -240,7 +244,7 @@ impl PerfInheritanceFamily {
     }
 
     /// Applies root-fd DISABLE to every existing descendant.
-    pub(crate) fn disable(&self) -> AxResult<()> {
+    pub(crate) fn disable(&self) -> crate::StarryResult<()> {
         let _control = self.control.lock();
         let members = {
             let mut state = self.state.lock();
@@ -265,12 +269,12 @@ impl PerfInheritanceFamily {
     }
 
     /// Resets all descendants that existed at the ioctl linearization point.
-    pub(crate) fn reset(&self) -> AxResult<()> {
+    pub(crate) fn reset(&self) -> crate::StarryResult<()> {
         let _control = self.control.lock();
         let members = {
             let state = self.state.lock();
             if state.lifecycle.is_closed() {
-                return Err(AxError::BadState);
+                return Err(crate::StarryError::BadState);
             }
             state.members.clone()
         };
@@ -287,7 +291,7 @@ impl PerfInheritanceFamily {
 
     /// Aggregates root and descendant values like Linux
     /// `__perf_event_read_value()`.
-    pub(crate) fn read(&self) -> AxResult<(u64, u64, u64)> {
+    pub(crate) fn read(&self) -> crate::StarryResult<(u64, u64, u64)> {
         let _control = self.control.lock();
         let (members, retired) = {
             let state = self.state.lock();
@@ -311,21 +315,21 @@ impl PerfInheritanceFamily {
     }
 
     /// Redirects all current and future family members to another event output.
-    pub(crate) fn redirect_output(&self, output: PerfRingOutput) -> AxResult<()> {
+    pub(crate) fn redirect_output(&self, output: PerfRingOutput) -> crate::StarryResult<()> {
         self.replace_redirect(Some(output))
     }
 
     /// Removes an explicit redirect and restores the root mmap output.
-    pub(crate) fn detach_output(&self) -> AxResult<()> {
+    pub(crate) fn detach_output(&self) -> crate::StarryResult<()> {
         self.replace_redirect(None)
     }
 
-    fn replace_redirect(&self, output: Option<PerfRingOutput>) -> AxResult<()> {
+    fn replace_redirect(&self, output: Option<PerfRingOutput>) -> crate::StarryResult<()> {
         let _control = self.control.lock();
         let (restore_enabled, members) = {
             let mut state = self.state.lock();
             if state.lifecycle.is_closed() {
-                return Err(AxError::BadState);
+                return Err(crate::StarryError::BadState);
             }
             let restore_enabled = state.lifecycle.enabled();
             state
@@ -378,7 +382,7 @@ impl PerfInheritanceFamily {
     }
 
     /// Permanently quiesces every member before releasing the shared output.
-    pub(crate) fn close(&self) -> AxResult<()> {
+    pub(crate) fn close(&self) -> crate::StarryResult<()> {
         let _control = self.control.lock();
         let members = {
             let mut state = self.state.lock();
@@ -452,7 +456,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
         // scheduler-list reservation before family close can observe it.
         if let Err(error) = attach(child_thr, Arc::clone(&child)) {
             free_hw(&child).expect("an unpublished inherited event must roll back locally");
-            if error != AxError::NoSuchProcess {
+            if !matches!(error, crate::StarryError::NoSuchProcess) {
                 warn!(
                     "perf: attr.inherit skipped for child tid {}: {error}",
                     child_thr.tid()
@@ -463,7 +467,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
         if let Err(error) = family.register_child(&child) {
             detach_unpublished(child_thr, &child);
             free_hw(&child).expect("unpublished inherited counter must roll back locally");
-            if error != AxError::BadState {
+            if !matches!(error, crate::StarryError::BadState) {
                 warn!(
                     "perf: attr.inherit skipped for child tid {}: {error}",
                     child_thr.tid()

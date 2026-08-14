@@ -1,15 +1,16 @@
 use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::LazyLock;
 use ax_runtime::{
+    RuntimeError,
     hal::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
     serial::{
         Config, DataBits, Parity, RxItem, SerialRuntimeHandle, SerialRxSubscription,
         SerialTxSender, StopBits,
     },
 };
+use axfs_ng_vfs::{VfsError, VfsResult};
 use rdrive::DeviceId as RDriveDeviceId;
 use starry_process::Process;
 
@@ -21,7 +22,7 @@ use super::{
         termios::{Termios2, TermiosParity},
     },
 };
-use crate::{pseudofs::DeviceOps, sync::PiMutex};
+use crate::{StarryError, StarryResult, pseudofs::DeviceOps, sync::PiMutex};
 
 pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 
@@ -66,12 +67,12 @@ struct SerialBackend {
 struct NoConsole;
 
 impl DeviceOps for NoConsole {
-    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> AxResult<usize> {
-        Err(AxError::NoSuchDevice)
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        Err(VfsError::NoSuchDevice)
     }
 
-    fn write_at(&self, _buf: &[u8], _offset: u64) -> AxResult<usize> {
-        Err(AxError::NoSuchDevice)
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        Err(VfsError::NoSuchDevice)
     }
 
     fn ioctl(
@@ -79,12 +80,12 @@ impl DeviceOps for NoConsole {
         _current: &crate::task::UserTaskRef,
         _cmd: u32,
         _arg: usize,
-    ) -> AxResult<usize> {
-        Err(AxError::NoSuchDevice)
+    ) -> VfsResult<usize> {
+        Err(VfsError::NoSuchDevice)
     }
 
-    fn open(&self, _exclusive: bool) -> AxResult<()> {
-        Err(AxError::NoSuchDevice)
+    fn open(&self, _exclusive: bool) -> VfsResult<()> {
+        Err(VfsError::NoSuchDevice)
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -142,7 +143,7 @@ pub fn console_device() -> Arc<dyn DeviceOps> {
         .unwrap_or_else(|| Arc::new(NoConsole))
 }
 
-pub fn bind_console_to(proc: &Process) -> AxResult<()> {
+pub fn bind_console_to(proc: &Process) -> StarryResult<()> {
     if let Some(index) = SERIAL_REGISTRY.console_index
         && let Some(entry) = SERIAL_REGISTRY.entries.get(index)
     {
@@ -152,7 +153,7 @@ pub fn bind_console_to(proc: &Process) -> AxResult<()> {
         ax_runtime::hal::console::claim_runtime_output();
         return Ok(());
     }
-    Err(AxError::NoSuchDevice)
+    Err(StarryError::NoSuchDevice)
 }
 
 pub fn arm_console_irq() {
@@ -223,13 +224,15 @@ impl SerialRegistry {
     }
 }
 
-fn new_serial_tty(number: usize, runtime: SerialRuntimeHandle) -> AxResult<SerialTtyEntry> {
+fn new_serial_tty(number: usize, runtime: SerialRuntimeHandle) -> StarryResult<SerialTtyEntry> {
     let tty_name = format!("ttyS{number}");
     let info = runtime.info().clone();
     let name = info.name.clone();
     let rdrive_device_id = info.device_id;
     let tx = runtime.tx_sender();
-    let rx = runtime.take_rx_subscription().ok_or(AxError::BadState)?;
+    let rx = runtime
+        .take_rx_subscription()
+        .ok_or(StarryError::BadState)?;
     let input_source = rx.poll_source();
     let output_source = tx.poll_source();
     let backend = Arc::new(SerialBackend {
@@ -272,7 +275,7 @@ fn new_serial_tty(number: usize, runtime: SerialRuntimeHandle) -> AxResult<Seria
 }
 
 impl SerialBackend {
-    fn ensure_started(&self) -> AxResult<()> {
+    fn ensure_started(&self) -> StarryResult<()> {
         if self.started.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -288,16 +291,16 @@ impl SerialBackend {
                 "{} failed to start serial port {}: {:?}",
                 self.tty_name, self.name, err
             );
-            return Err(err);
+            return Err(err.into());
         }
         self.started.store(true, Ordering::Release);
         Ok(())
     }
 
-    fn drain_tx(&self) -> AxResult<()> {
+    fn drain_tx(&self) -> StarryResult<()> {
         self.ensure_started()?;
         let _guard = self.output_lock.lock();
-        self.tx.wait_idle()
+        Ok(self.tx.wait_idle()?)
     }
 
     fn drain_rx(&self, out: &mut [RxItem]) -> usize {
@@ -368,13 +371,13 @@ impl TtyRead for SerialReader {
         total
     }
 
-    fn discard_input(&mut self) -> AxResult<()> {
-        self.backend.rx.discard_pending()
+    fn discard_input(&mut self) -> StarryResult<()> {
+        Ok(self.backend.rx.discard_pending()?)
     }
 }
 
 impl TtyWrite for SerialWriter {
-    fn open(&self) -> AxResult<()> {
+    fn open(&self) -> StarryResult<()> {
         self.backend.ensure_started()
     }
 
@@ -390,7 +393,7 @@ impl TtyWrite for SerialWriter {
         while written < buf.len() {
             match self.backend.tx.try_write(&buf[written..]) {
                 Ok(count) => written += count,
-                Err(AxError::WouldBlock) => {
+                Err(RuntimeError::WouldBlock) => {
                     if self.backend.tx.wait_writable().is_err() {
                         return;
                     }
@@ -421,14 +424,14 @@ impl TtyWrite for SerialWriter {
         SERIAL_SYNC_ECHO_LIMIT
     }
 
-    fn drain(&self) -> AxResult<()> {
+    fn drain(&self) -> StarryResult<()> {
         self.backend.drain_tx()
     }
 
-    fn discard_output(&self) -> AxResult<()> {
+    fn discard_output(&self) -> StarryResult<()> {
         self.backend.ensure_started()?;
         let _guard = self.backend.output_lock.lock();
-        self.backend.tx.discard_pending()
+        Ok(self.backend.tx.discard_pending()?)
     }
 
     fn termios_changed(&self, old: &Termios2, new: &Termios2) {

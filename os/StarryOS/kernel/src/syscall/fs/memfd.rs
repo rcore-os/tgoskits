@@ -1,7 +1,6 @@
 use alloc::{string::String, sync::Arc};
 use core::ffi::c_char;
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{OpenOptions, current_fs_context};
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 
@@ -15,6 +14,7 @@ pub(crate) use crate::file::memfd::{
     resync_shared_writable_counts_after_mprotect as memfd_resync_shared_writable_counts_after_mprotect,
 };
 use crate::{
+    StarryError, StarryResult,
     file::{
         File, FileLike, add_file_like,
         memfd::{Memfd, MemfdRef},
@@ -44,10 +44,10 @@ pub fn sys_memfd_create(
     current: &crate::task::UserTaskRef,
     name: *const c_char,
     flags: u32,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let valid_flags = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC;
     if flags & !valid_flags != 0 || flags & MFD_HUGETLB != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let cloexec = flags & MFD_CLOEXEC != 0;
@@ -56,7 +56,7 @@ pub fn sys_memfd_create(
     // Load the name argument. Linux rejects overlong names.
     let name_str: String = vm_load_string(current, name)?;
     if name_str.len() > MEMFD_NAME_MAX {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let (mount_path, tmpfs) = if fs_has_dir("/dev/shm") {
@@ -64,7 +64,7 @@ pub fn sys_memfd_create(
     } else {
         ("/tmp", pseudofs::tmp_tmpfs())
     };
-    let tmpfs = tmpfs.ok_or(AxError::NotFound)?;
+    let tmpfs = tmpfs.ok_or(StarryError::NotFound)?;
 
     let fs_context = current_fs_context();
     let fs = fs_context.lock();
@@ -108,7 +108,7 @@ fn memfd_from_file_like(file_like: &Arc<dyn FileLike>) -> Option<Arc<Memfd>> {
         .map(|memfd| memfd.0.clone())
 }
 
-pub fn memfd_check_write_seal(file_like: &Arc<dyn FileLike>) -> AxResult<()> {
+pub fn memfd_check_write_seal(file_like: &Arc<dyn FileLike>) -> StarryResult<()> {
     let Some(memfd) = memfd_from_file_like(file_like) else {
         return Ok(());
     };
@@ -119,16 +119,16 @@ pub fn memfd_check_resize_seals(
     file_like: &Arc<dyn FileLike>,
     old_len: u64,
     new_len: u64,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     let Some(memfd) = memfd_from_file_like(file_like) else {
         return Ok(());
     };
     let seals = memfd.get_seals();
     if new_len < old_len && seals & crate::file::memfd::F_SEAL_SHRINK != 0 {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
     if new_len > old_len && seals & crate::file::memfd::F_SEAL_GROW != 0 {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
     Ok(())
 }
@@ -136,7 +136,7 @@ pub fn memfd_check_resize_seals(
 pub fn memfd_checks_before_stream_write(
     file_like: &Arc<dyn FileLike>,
     write_len: u64,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     if write_len == 0 {
         return Ok(());
     }
@@ -147,7 +147,7 @@ pub fn memfd_checks_before_write_at(
     file_like: &Arc<dyn FileLike>,
     _offset: u64,
     write_len: u64,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     if write_len == 0 {
         return Ok(());
     }

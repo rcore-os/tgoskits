@@ -12,7 +12,6 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_io::{Cursor, IoBuf, IoBufMut, Read, Write};
 use ax_net::{
     InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind, RecvOptions, SendOptions,
@@ -32,6 +31,7 @@ use linux_raw_sys::{
 
 use super::{FileLike, Kstat};
 use crate::{
+    StarryError, StarryResult,
     file::{IoDst, IoSrc, get_file_like},
     mm::{VmMutPtr, vm_read_slice, vm_write_slice},
     task::current_user_task,
@@ -78,13 +78,13 @@ impl Socket {
     /// Some transports invoke `Read` callbacks while holding IRQ-safe spin
     /// locks. User-memory access may fault and therefore must finish before
     /// crossing that lock boundary.
-    pub(crate) fn send_from_user<S>(&self, src: &mut S, options: SendOptions) -> AxResult<usize>
+    pub(crate) fn send_from_user<S>(&self, src: &mut S, options: SendOptions) -> StarryResult<usize>
     where
         S: Read + IoBuf + ?Sized,
     {
         let mut staging = allocate_socket_staging(src.remaining())?;
         src.read_exact(&mut staging)?;
-        self.inner.send(staging.as_slice(), options)
+        Ok(self.inner.send(staging.as_slice(), options)?)
     }
 
     /// Receives into kernel memory and copies to the task only after ax-net
@@ -94,7 +94,11 @@ impl Socket {
     /// length. Returning a short stream read is valid, while 64 KiB still
     /// covers the maximum IP datagram. Datagram `MSG_TRUNC` keeps the transport
     /// return length even when only the staged prefix is copied.
-    pub(crate) fn recv_to_user<D>(&self, dst: &mut D, options: RecvOptions<'_>) -> AxResult<usize>
+    pub(crate) fn recv_to_user<D>(
+        &self,
+        dst: &mut D,
+        options: RecvOptions<'_>,
+    ) -> StarryResult<usize>
     where
         D: Write + IoBufMut + ?Sized,
     {
@@ -146,11 +150,11 @@ impl Socket {
     }
 }
 
-fn allocate_socket_staging(len: usize) -> AxResult<Vec<u8>> {
+fn allocate_socket_staging(len: usize) -> StarryResult<Vec<u8>> {
     let mut buffer = Vec::new();
     buffer
         .try_reserve_exact(len)
-        .map_err(|_| AxError::NoMemory)?;
+        .map_err(|_| StarryError::NoMemory)?;
     buffer.resize(len, 0);
     Ok(buffer)
 }
@@ -173,22 +177,22 @@ pub(super) fn visible_interfaces() -> impl Iterator<Item = InterfaceInfo> {
         .filter(|info| in_root_net_ns() || info.kind == InterfaceKind::Loopback)
 }
 
-pub(super) fn visible_interface_by_id(id: InterfaceId) -> AxResult<InterfaceInfo> {
+pub(super) fn visible_interface_by_id(id: InterfaceId) -> StarryResult<InterfaceInfo> {
     ax_net::interface_by_id(id)
         .filter(|info| in_root_net_ns() || info.kind == InterfaceKind::Loopback)
-        .ok_or(AxError::NoSuchDevice)
+        .ok_or(StarryError::NoSuchDevice)
 }
 
-pub(super) fn first_visible_ethernet() -> AxResult<InterfaceInfo> {
+pub(super) fn first_visible_ethernet() -> StarryResult<InterfaceInfo> {
     visible_interfaces()
         .find(|info| info.kind == InterfaceKind::Ethernet)
-        .ok_or(AxError::NoSuchDevice)
+        .ok_or(StarryError::NoSuchDevice)
 }
 
 fn read_user_bytes<const N: usize>(
     current: &crate::task::UserTaskRef,
     ptr: *const u8,
-) -> AxResult<[u8; N]> {
+) -> StarryResult<[u8; N]> {
     let mut buf = [core::mem::MaybeUninit::<u8>::uninit(); N];
     vm_read_slice(current, ptr, &mut buf)?;
     Ok(buf.map(|v| unsafe { v.assume_init() }))
@@ -197,22 +201,29 @@ fn read_user_bytes<const N: usize>(
 fn read_ifreq_name(
     current: &crate::task::UserTaskRef,
     arg: usize,
-) -> AxResult<alloc::string::String> {
+) -> StarryResult<alloc::string::String> {
     let name = read_user_bytes::<IFREQ_NAME_LEN>(current, arg as *const u8)?;
     let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
     core::str::from_utf8(&name[..end])
         .map(str::to_owned)
-        .map_err(|_| AxError::InvalidInput)
+        .map_err(|_| StarryError::InvalidInput)
 }
 
-fn read_ifreq_interface(current: &crate::task::UserTaskRef, arg: usize) -> AxResult<InterfaceInfo> {
+fn read_ifreq_interface(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+) -> StarryResult<InterfaceInfo> {
     let name = read_ifreq_name(current, arg)?;
     ax_net::interface_by_name(&name)
         .filter(|info| in_root_net_ns() || info.kind == InterfaceKind::Loopback)
-        .ok_or(AxError::NoSuchDevice)
+        .ok_or(StarryError::NoSuchDevice)
 }
 
-fn write_ifreq_data(current: &crate::task::UserTaskRef, arg: usize, data: &[u8]) -> AxResult<()> {
+fn write_ifreq_data(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+    data: &[u8],
+) -> StarryResult<()> {
     Ok(vm_write_slice(
         current,
         (arg + IFREQ_DATA_OFFSET) as *mut u8,
@@ -220,7 +231,7 @@ fn write_ifreq_data(current: &crate::task::UserTaskRef, arg: usize, data: &[u8])
     )?)
 }
 
-fn read_ifreq_flags(current: &crate::task::UserTaskRef, arg: usize) -> AxResult<i16> {
+fn read_ifreq_flags(current: &crate::task::UserTaskRef, arg: usize) -> StarryResult<i16> {
     Ok(i16::from_ne_bytes(read_user_bytes::<2>(
         current,
         (arg + IFREQ_DATA_OFFSET) as *const u8,
@@ -228,7 +239,11 @@ fn read_ifreq_flags(current: &crate::task::UserTaskRef, arg: usize) -> AxResult<
 }
 
 // Writes an interface name into `ifr_name` (offset 0), NUL-padded to IFNAMSIZ.
-fn write_ifreq_name(current: &crate::task::UserTaskRef, arg: usize, name: &str) -> AxResult<()> {
+fn write_ifreq_name(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+    name: &str,
+) -> StarryResult<()> {
     let mut buf = [0u8; IFREQ_NAME_LEN];
     let bytes = name.as_bytes();
     let n = bytes.len().min(IFREQ_NAME_LEN - 1);
@@ -248,8 +263,8 @@ pub(super) fn device_ioctl(
     current: &crate::task::UserTaskRef,
     cmd: u32,
     arg: usize,
-) -> Option<AxResult<usize>> {
-    let result = (|| -> AxResult<usize> {
+) -> Option<StarryResult<usize>> {
+    let result = (|| -> StarryResult<usize> {
         match cmd {
             SIOCGIFCONF => write_ifconf(current, arg)?,
             SIOCGIFNAME => {
@@ -269,10 +284,10 @@ pub(super) fn device_ioctl(
             SIOCSIFFLAGS => {
                 let info = read_ifreq_interface(current, arg)?;
                 if !current.as_thread().cred().has_cap(CAP_NET_ADMIN) {
-                    return Err(AxError::OperationNotPermitted);
+                    return Err(StarryError::OperationNotPermitted);
                 }
                 if read_ifreq_flags(current, arg)? != linux_flags(&info) {
-                    return Err(AxError::OperationNotSupported);
+                    return Err(StarryError::OperationNotSupported);
                 }
             }
             SIOCGIFADDR => {
@@ -313,7 +328,7 @@ pub(super) fn device_ioctl(
                 let info = read_ifreq_interface(current, arg)?;
                 match info.kind {
                     InterfaceKind::Ethernet => {
-                        let mac = info.mac.ok_or(AxError::NoSuchDevice)?;
+                        let mac = info.mac.ok_or(StarryError::NoSuchDevice)?;
                         write_ifreq_hwaddr(current, arg, ARPHRD_ETHER, &mac.0)?
                     }
                     InterfaceKind::Loopback => {
@@ -339,7 +354,7 @@ pub(super) fn device_ioctl(
             // interface is EINVAL (Linux net/core/dev_ioctl.c dev_ifsioc_locked).
             SIOCGIFSLAVE => {
                 read_ifreq_interface(current, arg)?;
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             SIOCGIFTXQLEN => {
                 read_ifreq_interface(current, arg)?;
@@ -363,14 +378,14 @@ pub(super) fn device_ioctl(
                     (arg + IFREQ_DATA_OFFSET) as *const u8,
                 )?);
                 read_user_bytes::<4>(current, data_ptr as *const u8)?;
-                return Err(AxError::OperationNotSupported);
+                return Err(StarryError::OperationNotSupported);
             }
-            _ => return Err(AxError::NotATty),
+            _ => return Err(StarryError::NotATty),
         }
         Ok(0)
     })();
     match result {
-        Err(AxError::NotATty) => None,
+        Err(StarryError::NotATty) => None,
         other => Some(other),
     }
 }
@@ -386,7 +401,7 @@ fn write_ifreq_sockaddr(
     current: &crate::task::UserTaskRef,
     arg: usize,
     ip: [u8; 4],
-) -> AxResult<()> {
+) -> StarryResult<()> {
     write_ifreq_data(current, arg, &sockaddr_in_bytes(ip))
 }
 
@@ -395,7 +410,7 @@ fn write_ifreq_hwaddr(
     arg: usize,
     hw_type: u16,
     hwaddr: &[u8],
-) -> AxResult<()> {
+) -> StarryResult<()> {
     let mut addr = [0; 16];
     addr[..2].copy_from_slice(&hw_type.to_ne_bytes());
     addr[2..2 + hwaddr.len()].copy_from_slice(hwaddr);
@@ -408,7 +423,7 @@ fn write_ifconf_entry(
     offset: usize,
     name: &str,
     ip: [u8; 4],
-) -> AxResult<()> {
+) -> StarryResult<()> {
     let mut ifreq = [0; IFREQ_COMPAT_LEN];
     let name = name.as_bytes();
     let name_len = name.len().min(IFREQ_NAME_LEN - 1);
@@ -417,8 +432,8 @@ fn write_ifconf_entry(
     Ok(vm_write_slice(current, (buf + offset) as *mut u8, &ifreq)?)
 }
 
-fn interface_ipv4(info: &InterfaceInfo) -> AxResult<ax_net::Ipv4InterfaceConfig> {
-    info.ipv4.ok_or(AxError::NoSuchDeviceOrAddress)
+fn interface_ipv4(info: &InterfaceInfo) -> StarryResult<ax_net::Ipv4InterfaceConfig> {
+    info.ipv4.ok_or(StarryError::NoSuchDeviceOrAddress)
 }
 
 fn ipv4_netmask(prefix_len: u8) -> [u8; 4] {
@@ -454,7 +469,7 @@ fn linux_flags(info: &InterfaceInfo) -> i16 {
     flags
 }
 
-fn write_ifconf(current: &crate::task::UserTaskRef, arg: usize) -> AxResult<()> {
+fn write_ifconf(current: &crate::task::UserTaskRef, arg: usize) -> StarryResult<()> {
     let mut len = read_user_bytes::<4>(current, (arg + IFCONF_LEN_OFFSET) as *const u8)?;
     let ifc_len = i32::from_ne_bytes(len);
     let buf = usize::from_ne_bytes(read_user_bytes::<{ core::mem::size_of::<usize>() }>(
@@ -494,18 +509,18 @@ impl Deref for Socket {
 }
 
 impl FileLike for Socket {
-    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         self.recv_to_user(dst, RecvOptions::default())
     }
 
-    fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
+    fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
         self.send_from_user(
             src,
             Self::with_current_sender_credentials(SendOptions::default()),
         )
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(Kstat {
             mode: S_IFSOCK | 0o777u32,
             blksize: 4096,
@@ -520,9 +535,10 @@ impl FileLike for Socket {
         result
     }
 
-    fn set_nonblocking(&self, nonblocking: bool) -> AxResult<()> {
-        self.inner
-            .set_option(SetSocketOption::NonBlocking(&nonblocking))
+    fn set_nonblocking(&self, nonblocking: bool) -> StarryResult<()> {
+        Ok(self
+            .inner
+            .set_option(SetSocketOption::NonBlocking(&nonblocking))?)
     }
 
     fn async_mode(&self) -> bool {
@@ -533,16 +549,16 @@ impl FileLike for Socket {
         true
     }
 
-    fn set_async_mode(&self, async_mode: bool) -> AxResult {
+    fn set_async_mode(&self, async_mode: bool) -> StarryResult {
         self.async_mode.store(async_mode, Ordering::Release);
         Ok(())
     }
 
-    fn owner(&self) -> AxResult<i32> {
+    fn owner(&self) -> StarryResult<i32> {
         Ok(self.owner.load(Ordering::Acquire))
     }
 
-    fn set_owner(&self, owner: i32) -> AxResult {
+    fn set_owner(&self, owner: i32) -> StarryResult {
         self.owner.store(owner, Ordering::Release);
         Ok(())
     }
@@ -555,7 +571,12 @@ impl FileLike for Socket {
         O_RDWR
     }
 
-    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> AxResult<usize> {
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> StarryResult<usize> {
         // Socket-specific query first, then the family-agnostic device ioctls
         // (SIOCGIF*), mirroring Linux sock_ioctl dispatching to dev_ioctl.
         if cmd == FIONREAD {
@@ -569,16 +590,16 @@ impl FileLike for Socket {
         if super::wext::is_wext_ioctl(cmd) {
             return super::wext::handle(current, cmd, arg);
         }
-        Err(AxError::NotATty)
+        Err(StarryError::NotATty)
     }
 
-    fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
+    fn from_fd(fd: c_int) -> StarryResult<Arc<Self>>
     where
         Self: Sized + 'static,
     {
         get_file_like(fd)?
             .downcast_arc()
-            .map_err(|_| AxError::NotASocket)
+            .map_err(|_| StarryError::NotASocket)
     }
 }
 

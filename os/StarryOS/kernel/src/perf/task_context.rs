@@ -8,8 +8,6 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_errno::{AxError, AxResult};
-
 use super::{
     task::PerTaskCounter,
     task_context_state::{PerfAttachError, PerfTaskContextState},
@@ -35,7 +33,7 @@ impl ThreadPerfContext {
     }
 
     /// Commits one scheduler-visible counter or rejects a tombstoned task.
-    pub(crate) fn attach(&self, counter: Arc<PerTaskCounter>) -> AxResult<()> {
+    pub(crate) fn attach(&self, counter: Arc<PerTaskCounter>) -> crate::StarryResult<()> {
         let mut state = self.state.lock();
         // Closed events may remain family-owned for aggregate reads. Reclaim
         // their list slots in task context before admitting a new live event.
@@ -43,8 +41,8 @@ impl ThreadPerfContext {
         state
             .attach(Arc::clone(&counter))
             .map_err(|error| match error {
-                PerfAttachError::Closed => AxError::NoSuchProcess,
-                PerfAttachError::Full => AxError::NoMemory,
+                PerfAttachError::Closed => crate::StarryError::NoSuchProcess,
+                PerfAttachError::Full => crate::StarryError::NoMemory,
             })?;
         assert!(
             counter.publish_scheduler_registration(),

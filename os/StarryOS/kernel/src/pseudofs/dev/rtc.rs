@@ -42,20 +42,22 @@ impl DeviceOps for Rtc {
                 let wall = chrono::DateTime::from_timestamp_nanos(
                     ax_runtime::hal::time::wall_time_nanos() as _,
                 );
-                (arg as *mut rtc_time).vm_write(
-                    current,
-                    rtc_time {
-                        tm_sec: wall.second() as _,
-                        tm_min: wall.minute() as _,
-                        tm_hour: wall.hour() as _,
-                        tm_mday: wall.day() as _,
-                        tm_mon: wall.month0() as _,
-                        tm_year: (wall.year() - 1900) as _,
-                        tm_wday: 0,
-                        tm_yday: 0,
-                        tm_isdst: 0,
-                    },
-                )?;
+                (arg as *mut rtc_time)
+                    .vm_write(
+                        current,
+                        rtc_time {
+                            tm_sec: wall.second() as _,
+                            tm_min: wall.minute() as _,
+                            tm_hour: wall.hour() as _,
+                            tm_mday: wall.day() as _,
+                            tm_mon: wall.month0() as _,
+                            tm_year: (wall.year() - 1900) as _,
+                            tm_wday: 0,
+                            tm_yday: 0,
+                            tm_isdst: 0,
+                        },
+                    )
+                    .map_err(|error| VfsError::from(crate::StarryError::from(error)))?;
             }
             _ => return Err(VfsError::NotATty),
         }

@@ -2,7 +2,6 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use ax_errno::{AxError, AxResult};
 use starry_process::Pid;
 
 /// Allocates Linux-visible TIDs without coupling them to scheduler slots.
@@ -23,11 +22,11 @@ impl UserTidAllocator {
         }
     }
 
-    fn allocate(&self) -> AxResult<Pid> {
+    fn allocate(&self) -> crate::StarryResult<Pid> {
         let mut current = self.next.load(Ordering::Acquire);
         loop {
             if current == Self::EXHAUSTED {
-                return Err(AxError::WouldBlock);
+                return Err(crate::StarryError::WouldBlock);
             }
             let next = current.checked_add(1).unwrap_or(Self::EXHAUSTED);
             match self.next.compare_exchange_weak(
@@ -48,7 +47,7 @@ impl UserTidAllocator {
 static USER_TID_ALLOCATOR: UserTidAllocator = UserTidAllocator::new(2);
 
 /// Allocates a Linux-visible TID independently from `ax-task::ThreadId`.
-pub fn allocate_user_tid() -> AxResult<Pid> {
+pub fn allocate_user_tid() -> crate::StarryResult<Pid> {
     USER_TID_ALLOCATOR.allocate()
 }
 
@@ -71,7 +70,7 @@ mod tests {
         let allocator = UserTidAllocator::new(u32::MAX);
 
         assert_eq!(allocator.allocate(), Ok(u32::MAX));
-        assert_eq!(allocator.allocate(), Err(AxError::WouldBlock));
+        assert_eq!(allocator.allocate(), Err(crate::StarryError::WouldBlock));
     }
 
     #[test]

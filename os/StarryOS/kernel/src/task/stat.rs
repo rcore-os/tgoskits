@@ -1,6 +1,5 @@
 use alloc::{borrow::ToOwned, fmt, string::String};
 
-use ax_errno::{AxError, AxResult};
 use ax_std::os::arceos::task::ThreadState;
 use starry_signal::Signo;
 
@@ -71,7 +70,7 @@ pub struct TaskStat {
 
 impl TaskStat {
     /// Creates a task-stat snapshot from a Starry scheduler handle.
-    pub fn from_thread(task: &UserTaskRef) -> AxResult<Self> {
+    pub fn from_thread(task: &UserTaskRef) -> crate::StarryResult<Self> {
         let thread = task.as_thread();
         let proc_data = &thread.proc_data;
         let proc = &proc_data.proc;
@@ -119,7 +118,7 @@ impl TaskStat {
             start_stack: mem.start_stack,
             start_brk: proc_data.get_heap_top() as u64,
             exit_signal: proc_data.exit_signal().unwrap_or(Signo::SIGCHLD) as u8,
-            processor: task.assigned_cpu().ok_or(AxError::BadState)? as u32,
+            processor: task.assigned_cpu().ok_or(crate::StarryError::BadState)? as u32,
             exit_code: proc.exit_code(),
             ..Default::default()
         })

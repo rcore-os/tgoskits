@@ -1,6 +1,5 @@
 use core::mem::offset_of;
 
-use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{
     NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time,
 };
@@ -12,6 +11,7 @@ use linux_raw_sys::general::{
 };
 
 use crate::{
+    StarryError,
     mm::{UserPtr, VmMutPtr, VmPtr},
     task::{ITimerType, posix_timer::TimerSpec},
     time::TimeValueLike,
@@ -21,7 +21,7 @@ pub(crate) fn write_timespec(
     current: &crate::task::UserTaskRef,
     user: *mut timespec,
     value: timespec,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     let user = UserPtr::from(user);
     user.write_field(current, offset_of!(timespec, tv_sec), value.tv_sec)?;
     user.write_field(current, offset_of!(timespec, tv_nsec), value.tv_nsec)
@@ -31,7 +31,7 @@ fn write_timeval(
     current: &crate::task::UserTaskRef,
     user: *mut timeval,
     value: timeval,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     let user = UserPtr::from(user);
     user.write_field(current, offset_of!(timeval, tv_sec), value.tv_sec)?;
     user.write_field(current, offset_of!(timeval, tv_usec), value.tv_usec)
@@ -41,7 +41,7 @@ fn write_itimerval(
     current: &crate::task::UserTaskRef,
     user: *mut itimerval,
     value: itimerval,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     let user = UserPtr::from(user);
     let interval = offset_of!(itimerval, it_interval);
     user.write_field(
@@ -72,7 +72,7 @@ pub(crate) fn write_kernel_timespec(
     current: &crate::task::UserTaskRef,
     user: *mut __kernel_timespec,
     value: __kernel_timespec,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     let user = UserPtr::from(user);
     user.write_field(current, offset_of!(__kernel_timespec, tv_sec), value.tv_sec)?;
     user.write_field(
@@ -86,7 +86,7 @@ pub(crate) fn write_kernel_itimerspec(
     current: &crate::task::UserTaskRef,
     user: *mut __kernel_itimerspec,
     value: __kernel_itimerspec,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     let user = UserPtr::from(user);
     let interval = offset_of!(__kernel_itimerspec, it_interval);
     user.write_field(
@@ -116,7 +116,7 @@ pub fn sys_clock_gettime(
     current: &crate::task::UserTaskRef,
     clock_id: __kernel_clockid_t,
     ts: *mut timespec,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let now = match clock_id as u32 {
         CLOCK_REALTIME | CLOCK_REALTIME_COARSE => wall_time(),
         CLOCK_MONOTONIC | CLOCK_MONOTONIC_RAW | CLOCK_MONOTONIC_COARSE | CLOCK_BOOTTIME => {
@@ -131,7 +131,7 @@ pub fn sys_clock_gettime(
             utime + stime
         }
         _ => {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
     };
     write_timespec(current, ts, timespec::from_time_value(now))?;
@@ -149,7 +149,7 @@ pub fn sys_gettimeofday(
     current: &crate::task::UserTaskRef,
     ts: *mut timeval,
     tz: *mut Timezone,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     if let Some(ts) = ts.nullable() {
         write_timeval(current, ts, timeval::from_time_value(wall_time()))?;
     }
@@ -160,7 +160,10 @@ pub fn sys_gettimeofday(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_time(current: &crate::task::UserTaskRef, tloc: *mut usize) -> AxResult<isize> {
+pub fn sys_time(
+    current: &crate::task::UserTaskRef,
+    tloc: *mut usize,
+) -> crate::StarryResult<isize> {
     let secs = wall_time().as_secs() as isize;
     if let Some(tloc) = tloc.nullable() {
         tloc.vm_write(current, secs as usize)?;
@@ -172,7 +175,7 @@ pub fn sys_clock_getres(
     current: &crate::task::UserTaskRef,
     clock_id: __kernel_clockid_t,
     res: *mut timespec,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let resolution = match clock_id as u32 {
         CLOCK_REALTIME
         | CLOCK_MONOTONIC
@@ -181,7 +184,7 @@ pub fn sys_clock_getres(
         | CLOCK_PROCESS_CPUTIME_ID
         | CLOCK_THREAD_CPUTIME_ID => TimeValue::from_nanos(1),
         CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => TimeValue::from_millis(4),
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
     if let Some(res) = res.nullable() {
         write_timespec(current, res, timespec::from_time_value(resolution))?;
@@ -202,7 +205,7 @@ pub struct Tms {
     tms_cstime: usize,
 }
 
-pub fn sys_times(current: &crate::task::UserTaskRef, tms: *mut Tms) -> AxResult<isize> {
+pub fn sys_times(current: &crate::task::UserTaskRef, tms: *mut Tms) -> crate::StarryResult<isize> {
     let curr = current;
     let proc_data = &curr.as_thread().proc_data;
     let (utime, stime) = proc_data.cpu_time();
@@ -223,8 +226,8 @@ pub fn sys_getitimer(
     current: &crate::task::UserTaskRef,
     which: i32,
     value: *mut itimerval,
-) -> AxResult<isize> {
-    let ty = ITimerType::from_repr(which).ok_or(AxError::InvalidInput)?;
+) -> crate::StarryResult<isize> {
+    let ty = ITimerType::from_repr(which).ok_or(crate::StarryError::InvalidInput)?;
     let curr = current;
     let (it_interval, it_value) = curr.as_thread().proc_data.get_interval_timer(ty);
 
@@ -244,8 +247,8 @@ pub fn sys_setitimer(
     which: i32,
     new_value: *const itimerval,
     old_value: *mut itimerval,
-) -> AxResult<isize> {
-    let ty = ITimerType::from_repr(which).ok_or(AxError::InvalidInput)?;
+) -> crate::StarryResult<isize> {
+    let ty = ITimerType::from_repr(which).ok_or(crate::StarryError::InvalidInput)?;
     let curr = current;
 
     let (interval, remained) = match new_value.nullable() {
@@ -287,7 +290,7 @@ pub fn sys_timer_create(
     clock_id: u32,
     sevp: *const sigevent,
     timerid: *mut __kernel_timer_t,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let curr = current;
     let thr = curr.as_thread();
 
@@ -321,7 +324,7 @@ pub fn sys_timer_settime(
     flags: i32,
     new_value: *const __kernel_itimerspec,
     old_value: *mut __kernel_itimerspec,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let curr = current;
     let thr = curr.as_thread();
 
@@ -341,7 +344,7 @@ pub fn sys_timer_settime(
                 interval_nsec: new.it_interval.tv_nsec,
             },
         )
-        .map_err(|_| AxError::InvalidInput)?;
+        .map_err(|_| StarryError::InvalidInput)?;
 
     if let Some(old_value) = old_value.nullable() {
         let old_iv_sec = (old_interval / NANOS_PER_SEC) as i64;
@@ -371,7 +374,7 @@ pub fn sys_timer_gettime(
     current: &crate::task::UserTaskRef,
     timerid: __kernel_timer_t,
     curr_value: *mut __kernel_itimerspec,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let curr = current;
     let thr = curr.as_thread();
 
@@ -379,7 +382,7 @@ pub fn sys_timer_gettime(
         .proc_data
         .posix_timers()
         .gettime(timerid)
-        .map_err(|_| AxError::InvalidInput)?;
+        .map_err(|_| StarryError::InvalidInput)?;
 
     let iv_sec = (interval / NANOS_PER_SEC) as i64;
     let iv_nsec = (interval % NANOS_PER_SEC) as i64;
@@ -407,14 +410,14 @@ pub fn sys_timer_gettime(
 pub fn sys_timer_delete(
     current: &crate::task::UserTaskRef,
     timerid: __kernel_timer_t,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let curr = current;
     let thr = curr.as_thread();
 
     if thr.proc_data.posix_timers().delete(timerid) {
         Ok(0)
     } else {
-        Err(AxError::InvalidInput)
+        Err(StarryError::InvalidInput)
     }
 }
 

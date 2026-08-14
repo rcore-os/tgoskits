@@ -1,12 +1,11 @@
 //! Vsock stream lifecycle and I/O operations.
 
-use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
 use ax_io::prelude::*;
 use ax_sync::Mutex;
 
 use super::VsockStreamTransport;
 use crate::{
-    RecvFlags, RecvOptions, SendOptions, Shutdown,
+    NetError, NetResult, RecvFlags, RecvOptions, SendOptions, Shutdown,
     device::*,
     general::GeneralOptions,
     state::*,
@@ -21,10 +20,10 @@ fn retire_listener(port: u32) {
 }
 
 impl VsockStreamTransport {
-    pub(in crate::vsock) fn bind(&self, mut local_addr: VsockAddr) -> AxResult<()> {
+    pub(in crate::vsock) fn bind(&self, mut local_addr: VsockAddr) -> NetResult<()> {
         self.state
             .lock(State::Idle)
-            .map_err(|_| ax_err_type!(InvalidInput, "already bound"))?
+            .map_err(|_| NetError::InvalidInput)?
             .transit(State::Idle, || {
                 let poll_lease = start_vsock_poll()?;
                 let conn = {
@@ -51,11 +50,11 @@ impl VsockStreamTransport {
         Ok(())
     }
 
-    pub(in crate::vsock) fn listen(&self) -> AxResult<()> {
+    pub(in crate::vsock) fn listen(&self) -> NetResult<()> {
         let guard = self
             .state
             .lock(State::Idle)
-            .map_err(|_| ax_err_type!(InvalidInput, "invalid state for listen"))?;
+            .map_err(|_| NetError::InvalidInput)?;
 
         guard.transit(State::Listening, || {
             let conn = self.get_connection()?;
@@ -75,9 +74,9 @@ impl VsockStreamTransport {
         })
     }
 
-    pub(in crate::vsock) fn accept(&self) -> AxResult<(VsockStreamTransport, VsockAddr)> {
+    pub(in crate::vsock) fn accept(&self) -> NetResult<(VsockStreamTransport, VsockAddr)> {
         if self.state.get() != State::Listening {
-            ax_bail!(InvalidInput, "not listening");
+            return Err(NetError::InvalidInput);
         }
 
         let conn = self.get_connection()?;
@@ -88,11 +87,11 @@ impl VsockStreamTransport {
             let mut manager = VSOCK_CONN_MANAGER.lock();
 
             if !manager.can_accept(local_port) {
-                return Err(AxError::WouldBlock);
+                return Err(NetError::WouldBlock);
             }
 
             let (conn_id, peer_addr) = manager.accept(local_port)?;
-            let conn = manager.get_connection(conn_id).ok_or(AxError::NotFound)?;
+            let conn = manager.get_connection(conn_id).ok_or(NetError::NotFound)?;
             drop(manager);
 
             // create new VsockStreamTransport
@@ -107,13 +106,13 @@ impl VsockStreamTransport {
         })
     }
 
-    pub(in crate::vsock) fn connect(&self, peer_addr: VsockAddr) -> AxResult<()> {
+    pub(in crate::vsock) fn connect(&self, peer_addr: VsockAddr) -> NetResult<()> {
         let guard = self.state.lock(State::Idle).map_err(|state| match state {
             State::Idle => unreachable!(),
-            State::Listening => ax_err_type!(InvalidInput, "already listening"),
-            State::Connecting => ax_err_type!(InProgress),
-            State::Connected => ax_err_type!(AlreadyConnected),
-            _ => ax_err_type!(AlreadyConnected),
+            State::Listening => NetError::InvalidInput,
+            State::Connecting => NetError::InProgress,
+            State::Connected => NetError::AlreadyConnected,
+            _ => NetError::AlreadyConnected,
         })?;
 
         guard.transit(State::Connecting, || {
@@ -124,7 +123,7 @@ impl VsockStreamTransport {
                 match state.state() {
                     ConnectionState::Idle => state.local_addr().port,
                     _ => {
-                        ax_bail!(InvalidInput, "already connected or listening");
+                        return Err(NetError::InvalidInput);
                     }
                 }
             } else {
@@ -174,8 +173,8 @@ impl VsockStreamTransport {
             let state = conn.lock().state();
             match state {
                 ConnectionState::Connected => Ok(()),
-                ConnectionState::Connecting => Err(AxError::WouldBlock),
-                _ => Err(ax_err_type!(ConnectionRefused)),
+                ConnectionState::Connecting => Err(NetError::WouldBlock),
+                _ => Err(NetError::ConnectionRefused),
             }
         })
     }
@@ -184,32 +183,32 @@ impl VsockStreamTransport {
         &self,
         mut src: impl Read + IoBuf,
         options: SendOptions,
-    ) -> AxResult<usize> {
+    ) -> NetResult<usize> {
         let conn = self.get_connection()?;
         let extra_nonblocking = options.flags.contains(crate::SendFlags::DONTWAIT);
         self.general.send_poller_with(self, extra_nonblocking, || {
             let state = conn.lock();
             if state.state() != ConnectionState::Connected || state.tx_closed() {
-                return Err(AxError::NotConnected);
+                return Err(NetError::NotConnected);
             }
             drop(state);
             if src.remaining() == 0 {
                 return Ok(0);
             }
 
-            let conn_id = self.conn_id.lock().ok_or(AxError::NotConnected)?;
+            let conn_id = self.conn_id.lock().ok_or(NetError::NotConnected)?;
             let capacity = vsock_send_capacity(conn_id)?;
             if capacity == 0 {
-                return Err(AxError::WouldBlock);
+                return Err(NetError::WouldBlock);
             }
 
             let result = src.write_to(&mut ax_io::write_fn(|buffer| {
                 let send_length = buffer.len().min(capacity);
-                vsock_send(conn_id, &buffer[..send_length])
+                vsock_send(conn_id, &buffer[..send_length]).map_err(ax_io::IoError::from)
             }));
             conn.lock()
                 .add_tx_bytes(result.as_ref().copied().unwrap_or(0));
-            result
+            Ok(result?)
         })
     }
 
@@ -217,7 +216,7 @@ impl VsockStreamTransport {
         &self,
         mut dst: impl Write,
         options: RecvOptions,
-    ) -> AxResult<usize> {
+    ) -> NetResult<usize> {
         let conn = self.get_connection()?;
         let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
 
@@ -233,11 +232,11 @@ impl VsockStreamTransport {
                 conn_guard.state(),
                 ConnectionState::Connected | ConnectionState::Closed
             ) {
-                return Err(AxError::NotConnected);
+                return Err(NetError::NotConnected);
             }
 
             if conn_guard.rx_buffer_used() == 0 {
-                return Err(AxError::WouldBlock);
+                return Err(NetError::WouldBlock);
             }
 
             let (left, right) = conn_guard.rx_slices();
@@ -259,12 +258,12 @@ impl VsockStreamTransport {
                 );
                 Ok(count)
             } else {
-                Err(AxError::WouldBlock)
+                Err(NetError::WouldBlock)
             }
         })
     }
 
-    pub(in crate::vsock) fn shutdown(&self, how: Shutdown) -> AxResult<()> {
+    pub(in crate::vsock) fn shutdown(&self, how: Shutdown) -> NetResult<()> {
         let conn = self.get_connection()?;
         let previous_state = {
             let mut state = conn.lock();
@@ -291,14 +290,14 @@ impl VsockStreamTransport {
         Ok(())
     }
 
-    pub(in crate::vsock) fn local_addr(&self) -> AxResult<Option<VsockAddr>> {
+    pub(in crate::vsock) fn local_addr(&self) -> NetResult<Option<VsockAddr>> {
         Ok(self
             .get_connection()
             .ok()
             .map(|conn| conn.lock().local_addr()))
     }
 
-    pub(in crate::vsock) fn peer_addr(&self) -> AxResult<Option<VsockAddr>> {
+    pub(in crate::vsock) fn peer_addr(&self) -> NetResult<Option<VsockAddr>> {
         Ok(self
             .get_connection()
             .ok()

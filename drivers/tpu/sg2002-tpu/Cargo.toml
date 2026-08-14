@@ -10,7 +10,6 @@ categories = ["embedded", "hardware-support", "no-std"]
 keywords = ["sg2002", "cvitek", "tpu", "ion"]
 
 [dependencies]
-ax-errno = { workspace = true }
 ax-sync.workspace = true
 ax-memory-addr = { workspace = true }
 axklib.workspace = true
@@ -20,3 +19,4 @@ bytemuck = { version = "1.24", default-features = false, features = [
     "min_const_generics",
 ] }
 log = "0.4"
+thiserror.workspace = true

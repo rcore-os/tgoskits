@@ -7,6 +7,9 @@ extern crate alloc;
 pub mod api;
 pub mod arch;
 
+mod error;
+pub use error::{SignalError, SignalResult};
+
 mod action;
 pub use action::*;
 

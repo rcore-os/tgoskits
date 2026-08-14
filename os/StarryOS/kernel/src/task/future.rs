@@ -15,7 +15,6 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::OnceLock;
 use ax_runtime::hal::time::{TimeValue, epochoffset_nanos, monotonic_time};
 use ax_std::os::arceos::task::{
@@ -266,23 +265,25 @@ pub async fn poll_io<P, F, T>(
     events: IoEvents,
     non_blocking: bool,
     mut operation: F,
-) -> AxResult<T>
+) -> crate::StarryResult<T>
 where
     P: Pollable,
-    F: FnMut() -> AxResult<T>,
+    F: FnMut() -> crate::StarryResult<T>,
 {
     poll_fn(move |context| {
         match operation() {
             Ok(value) => return Poll::Ready(Ok(value)),
-            Err(AxError::WouldBlock) => {}
+            Err(crate::StarryError::WouldBlock) => {}
             Err(error) => return Poll::Ready(Err(error)),
         }
 
         pollable.register(context, events);
         match operation() {
             Ok(value) => Poll::Ready(Ok(value)),
-            Err(AxError::WouldBlock) if non_blocking => Poll::Ready(Err(AxError::WouldBlock)),
-            Err(AxError::WouldBlock) => Poll::Pending,
+            Err(crate::StarryError::WouldBlock) if non_blocking => {
+                Poll::Ready(Err(crate::StarryError::WouldBlock))
+            }
+            Err(crate::StarryError::WouldBlock) => Poll::Pending,
             Err(error) => Poll::Ready(Err(error)),
         }
     })
@@ -327,7 +328,7 @@ pub async fn timeout_at_wall<F: IntoFuture>(
     timeout_at(deadline.map(wall_deadline_to_monotonic), future).await
 }
 
-impl From<UserWaitError> for AxError {
+impl From<UserWaitError> for crate::StarryError {
     fn from(error: UserWaitError) -> Self {
         match error {
             UserWaitError::Interrupted => Self::Interrupted,
@@ -348,9 +349,9 @@ impl fmt::Display for Elapsed {
 
 impl core::error::Error for Elapsed {}
 
-impl From<Elapsed> for AxError {
+impl From<Elapsed> for crate::StarryError {
     fn from(_: Elapsed) -> Self {
-        AxError::TimedOut
+        crate::StarryError::TimedOut
     }
 }
 
@@ -572,6 +573,9 @@ mod tests {
 
     #[test]
     fn elapsed_maps_to_linux_timeout_error() {
-        assert_eq!(AxError::from(Elapsed), AxError::TimedOut);
+        assert_eq!(
+            crate::StarryError::from(Elapsed),
+            crate::StarryError::TimedOut
+        );
     }
 }

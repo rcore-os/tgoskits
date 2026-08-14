@@ -70,7 +70,6 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_io::{Read, Write};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
@@ -91,6 +90,7 @@ use self::{
     target::{PerfOpenFlags, PerfTarget, PerfTargetError},
 };
 use crate::{
+    StarryError, StarryResult,
     ebpf::{error::BpfResultExt, transform::EbpfKernelAuxiliary},
     file::{FileLike, Kstat, add_file_like, get_file_like},
     mm::{VmBytes, VmBytesMut},
@@ -130,23 +130,23 @@ const PERF_IOC_NR_ID: u32 = 7;
 /// layer (`ioctl`, `mmap`, `read`, etc.).
 pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     /// Completes post-id initialization before the fd is published.
-    fn finish_open(&mut self) -> AxResult<()> {
+    fn finish_open(&mut self) -> crate::StarryResult<()> {
         Ok(())
     }
 
     /// Begin firing into the registered BPF program / ringbuf.
-    fn enable(&mut self) -> AxResult<()>;
+    fn enable(&mut self) -> StarryResult<()>;
 
     /// Stop firing without tearing down the event.
-    fn disable(&mut self) -> AxResult<()>;
+    fn disable(&mut self) -> StarryResult<()>;
 
     /// `Any` upcast (mutable). Used while constructing [`PerfEvent`] to recover
     /// capabilities exposed by concrete implementations.
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
     /// Attach a BPF program to this event (`PERF_EVENT_IOC_SET_BPF`).
-    fn set_bpf_prog(&mut self, _bpf_prog: Arc<dyn FileLike>) -> AxResult<()> {
-        Err(AxError::Unsupported)
+    fn set_bpf_prog(&mut self, _bpf_prog: Arc<dyn FileLike>) -> StarryResult<()> {
+        Err(StarryError::Unsupported)
     }
 
     /// Allocate the user-visible ringbuf and return its physical start
@@ -157,8 +157,8 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     /// after `close(perf_fd)`. Only `bpf::BpfPerfEventWrapper` overrides
     /// this; the other variants (kprobe/tracepoint/raw-tp/uprobe wrappers)
     /// reject `mmap(perf_fd)`.
-    fn device_mmap(&mut self, _len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
-        Err(AxError::Unsupported)
+    fn device_mmap(&mut self, _len: usize) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        Err(StarryError::Unsupported)
     }
 
     /// Read the current counter value plus timing, for `read(perf_fd)`.
@@ -169,16 +169,16 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     /// [`PerfReadValues`] carries the raw counter value, the enabled/running
     /// times, and the `read_format` that [`PerfEvent::read`] uses to decide
     /// which of those fields to serialize.
-    fn read_values(&mut self) -> AxResult<PerfReadValues> {
-        Err(AxError::Unsupported)
+    fn read_values(&mut self) -> StarryResult<PerfReadValues> {
+        Err(StarryError::Unsupported)
     }
 
     /// Reset the counter to zero (`PERF_EVENT_IOC_RESET`).
     ///
     /// Only the hardware-PMU variant ([`hw::HwPerfEvent`]) overrides this;
     /// the tracing variants keep the default and reject the ioctl.
-    fn reset(&mut self) -> AxResult<()> {
-        Err(AxError::Unsupported)
+    fn reset(&mut self) -> StarryResult<()> {
+        Err(StarryError::Unsupported)
     }
 
     /// Record the unique event id this event emits in its `PERF_SAMPLE_ID` /
@@ -244,7 +244,7 @@ impl Debug for PerfEvent {
 impl PerfEvent {
     /// Wrap a per-type perf event impl, assigning it a fresh unique id and
     /// threading that id into the inner event so its samples carry it.
-    pub fn new(mut event: Box<dyn PerfEventOps>) -> AxResult<Self> {
+    pub fn new(mut event: Box<dyn PerfEventOps>) -> crate::StarryResult<Self> {
         let id = NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed);
         event.set_sample_id(id);
         event.finish_open()?;
@@ -277,7 +277,7 @@ impl PerfEvent {
     /// its overflow `PERF_RECORD_SAMPLE`s into the target's ring (so `perf record
     /// -e a,b` captures both events). Sources that produce no ring records (the
     /// `PERF_COUNT_SW_DUMMY` tracking event, tracing variants) accept as a no-op.
-    fn set_output(&self, arg: usize) -> AxResult<usize> {
+    fn set_output(&self, arg: usize) -> crate::StarryResult<usize> {
         // `arg == -1` detaches the output and returns to the event's own ring.
         if arg as i32 == -1 {
             #[cfg(target_arch = "aarch64")]
@@ -292,26 +292,35 @@ impl PerfEvent {
         let target = target
             .into_any_arc()
             .downcast::<PerfEvent>()
-            .map_err(|_| AxError::InvalidInput)?;
+            .map_err(|_| crate::StarryError::InvalidInput)?;
         if target.id == self.id {
-            return Err(AxError::InvalidInput);
+            return Err(crate::StarryError::InvalidInput);
         }
         #[cfg(not(target_arch = "aarch64"))]
-        return Err(AxError::InvalidInput);
+        return Err(crate::StarryError::InvalidInput);
 
         #[cfg(target_arch = "aarch64")]
         {
-            let target_control = target.control.as_ref().ok_or(AxError::InvalidInput)?;
-            let target_scope = target_control.output_scope().ok_or(AxError::InvalidInput)?;
-            let output = target_control.output_ring().ok_or(AxError::InvalidInput)?;
+            let target_control = target
+                .control
+                .as_ref()
+                .ok_or(crate::StarryError::InvalidInput)?;
+            let target_scope = target_control
+                .output_scope()
+                .ok_or(crate::StarryError::InvalidInput)?;
+            let output = target_control
+                .output_ring()
+                .ok_or(crate::StarryError::InvalidInput)?;
 
             // Events without a hardware output producer (for example the software
             // dummy tracking event) accept the Linux ioctl as a no-op after the
             // target fd/ring has been validated.
             if let Some(control) = &self.control {
-                let source_scope = control.output_scope().ok_or(AxError::InvalidInput)?;
+                let source_scope = control
+                    .output_scope()
+                    .ok_or(crate::StarryError::InvalidInput)?;
                 validate_output_redirect(self.id, target.id, source_scope, target_scope)
-                    .map_err(|_| AxError::InvalidInput)?;
+                    .map_err(|_| crate::StarryError::InvalidInput)?;
                 control.redirect_output(output)?;
             }
             Ok(0)
@@ -338,7 +347,7 @@ impl Pollable for PerfEvent {
 }
 
 impl FileLike for PerfEvent {
-    fn read(&self, dst: &mut crate::file::IoDst) -> AxResult<usize> {
+    fn read(&self, dst: &mut crate::file::IoDst) -> StarryResult<usize> {
         // A hardware-PMU event reads as a sequence of native-endian `u64`s in
         // Linux's strict `read_format` order: always `value`; then
         // `time_enabled` if `PERF_FORMAT_TOTAL_TIME_ENABLED`; then
@@ -375,7 +384,7 @@ impl FileLike for PerfEvent {
 
         let total = n * core::mem::size_of::<u64>();
         if dst.remaining_mut() < total {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         for value in &fields[..n] {
             dst.write(&value.to_ne_bytes())?;
@@ -383,11 +392,11 @@ impl FileLike for PerfEvent {
         Ok(total)
     }
 
-    fn write(&self, _src: &mut crate::file::IoSrc) -> AxResult<usize> {
-        Err(AxError::Unsupported)
+    fn write(&self, _src: &mut crate::file::IoSrc) -> StarryResult<usize> {
+        Err(StarryError::Unsupported)
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(Kstat::default())
     }
 
@@ -395,7 +404,12 @@ impl FileLike for PerfEvent {
         "anon_inode:[perf_event]".into()
     }
 
-    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> AxResult<usize> {
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> crate::StarryResult<usize> {
         // Several perf ioctls carry a `_IOC` direction/size in the high bits
         // (`PERF_EVENT_IOC_ID` is `_IOR`, `SET_OUTPUT` is `_IO`), so match on the
         // `('$', nr)` pair rather than the full encoded value. These are absent
@@ -435,7 +449,7 @@ impl FileLike for PerfEvent {
             }
             return Ok(0);
         }
-        let req = PerfEventIoc::try_from(cmd).map_err(|_| AxError::InvalidInput)?;
+        let req = PerfEventIoc::try_from(cmd).map_err(|_| StarryError::InvalidInput)?;
         match req {
             PerfEventIoc::Enable => {
                 if let Some(control) = &self.control {
@@ -460,12 +474,12 @@ impl FileLike for PerfEvent {
         Ok(0)
     }
 
-    fn device_mmap(&self, offset: u64, length: u64) -> AxResult<DeviceMmap> {
+    fn device_mmap(&self, offset: u64, length: u64) -> StarryResult<DeviceMmap> {
         // libbpf calls mmap with offset == 0; non-zero offsets address into
         // the ringbuf, which has no meaningful sub-region exposed as a fd
         // offset (data_offset lives inside the header page).
         if offset != 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         let len = length as usize;
         let (paddr, anchor) = if let Some(control) = &self.control {
@@ -486,7 +500,7 @@ impl FileLike for PerfEvent {
         self.nonblocking.load(Ordering::Acquire)
     }
 
-    fn set_nonblocking(&self, on: bool) -> AxResult {
+    fn set_nonblocking(&self, on: bool) -> StarryResult {
         self.nonblocking.store(on, Ordering::Release);
         Ok(())
     }
@@ -502,7 +516,7 @@ pub fn sys_perf_event_open(
     cpu: i32,
     group_fd: i32,
     flags: u64,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let mut buf = vec![0u8; core::mem::size_of::<perf_event_attr>()];
     VmBytes::new(current, attr_uptr as *mut u8, buf.len()).read(&mut buf)?;
     // SAFETY: perf_event_attr is a `repr(C)` POD; the user buffer is copied
@@ -521,14 +535,14 @@ pub fn perf_event_open(
     cpu: i32,
     group_fd: i32,
     flags: u64,
-) -> AxResult<isize> {
-    let flags = PerfOpenFlags::parse(flags).map_err(|_| AxError::InvalidInput)?;
+) -> crate::StarryResult<isize> {
+    let flags = PerfOpenFlags::parse(flags).map_err(|_| crate::StarryError::InvalidInput)?;
     if flags.contains(PerfOpenFlags::PID_CGROUP) {
-        return Err(AxError::Unsupported);
+        return Err(crate::StarryError::Unsupported);
     }
     let target = PerfTarget::parse(pid, cpu).map_err(|error| match error {
-        PerfTargetError::InvalidTuple => AxError::InvalidInput,
-        PerfTargetError::NoSuchProcess => AxError::NoSuchProcess,
+        PerfTargetError::InvalidTuple => crate::StarryError::InvalidInput,
+        PerfTargetError::NoSuchProcess => crate::StarryError::NoSuchProcess,
     })?;
     let target = ResolvedPerfTarget::resolve(target, ax_runtime::hal::cpu_num())?;
 
@@ -537,7 +551,7 @@ pub fn perf_event_open(
     // signal side effect would be silently missing. The access policy still
     // models Linux's CAP_KILL rule so enabling the feature cannot bypass it.
     if attr.sigtrap() != 0 {
-        return Err(AxError::Unsupported);
+        return Err(crate::StarryError::Unsupported);
     }
 
     let is_hardware = attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32
@@ -557,7 +571,7 @@ pub fn perf_event_open(
                 group_fd,
                 flags.bits(),
             )
-            .into_ax_result()?,
+            .into_starry_result()?,
         )
     };
 
@@ -582,7 +596,7 @@ pub fn perf_event_open(
                 PerfTypeId::PERF_TYPE_UPROBE => Box::new(uprobe::perf_event_open_uprobe(args)?),
                 _ => {
                     warn!("perf_event_open: unsupported type {:?}", args.type_);
-                    return Err(AxError::Unsupported);
+                    return Err(crate::StarryError::Unsupported);
                 }
             }
         };
@@ -618,24 +632,29 @@ pub fn perf_event_init() {
 /// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,
 /// downcast the strong upgrade to `PerfEvent`, and have the bpf-software
 /// variant write a record into the ringbuf.
-pub fn perf_event_output(_ctx: *mut c_void, fd: usize, _flags: u32, data: &[u8]) -> AxResult<()> {
-    let table = PERF_FILE.get().ok_or(AxError::NotFound)?;
+pub fn perf_event_output(
+    _ctx: *mut c_void,
+    fd: usize,
+    _flags: u32,
+    data: &[u8],
+) -> StarryResult<()> {
+    let table = PERF_FILE.get().ok_or(StarryError::NotFound)?;
     let mut map = table.lock();
-    let weak = map.get(&fd).ok_or(AxError::NotFound)?;
+    let weak = map.get(&fd).ok_or(StarryError::NotFound)?;
     let Some(file) = weak.upgrade() else {
         map.remove(&fd);
-        return Err(AxError::NotFound);
+        return Err(StarryError::NotFound);
     };
     drop(map);
 
     let perf_event = file
         .into_any_arc()
         .downcast::<PerfEvent>()
-        .map_err(|_| AxError::InvalidInput)?;
+        .map_err(|_| StarryError::InvalidInput)?;
     perf_event
         .irq_output
         .as_ref()
-        .ok_or(AxError::InvalidInput)?
+        .ok_or(StarryError::InvalidInput)?
         .write_event(data)
 }
 
@@ -655,7 +674,7 @@ pub(crate) fn control_callback_runs_preemptible_for_test() -> bool {
     }
 
     impl PerfEventOps for YieldingControl {
-        fn enable(&mut self) -> AxResult<()> {
+        fn enable(&mut self) -> crate::StarryResult<()> {
             self.preemptible.store(
                 ax_runtime::task::yield_current_cpu().is_ok(),
                 Ordering::Release,
@@ -663,7 +682,7 @@ pub(crate) fn control_callback_runs_preemptible_for_test() -> bool {
             Ok(())
         }
 
-        fn disable(&mut self) -> AxResult<()> {
+        fn disable(&mut self) -> StarryResult<()> {
             Ok(())
         }
 
@@ -694,7 +713,7 @@ struct BPFJitMemory {
 
 #[allow(unused)]
 impl BPFJitMemory {
-    fn new(num_pages: usize) -> AxResult<Self> {
+    fn new(num_pages: usize) -> StarryResult<Self> {
         let kspace = ax_mm::kernel_aspace();
         let mut guard = kspace.lock();
         let virt_start = guard
@@ -703,7 +722,7 @@ impl BPFJitMemory {
                 num_pages * PAGE_SIZE_4K,
                 VirtAddrRange::new(guard.base(), guard.end()),
             )
-            .ok_or(AxError::NoMemory)?;
+            .ok_or(StarryError::NoMemory)?;
         guard.map_alloc(
             virt_start,
             num_pages * PAGE_SIZE_4K,

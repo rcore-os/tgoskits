@@ -2,8 +2,6 @@
 
 use alloc::sync::Arc;
 
-use ax_errno::{AxError, AxResult};
-
 use super::{
     access_policy::{
         PerfAccessCapabilities, PerfCredentialIds, PerfCredentialSnapshot, perf_task_access_allowed,
@@ -44,7 +42,7 @@ impl ResolvedPerfTarget {
     }
 
     /// Resolves task identity before validating its CPU filter.
-    pub(super) fn resolve(target: PerfTarget, cpu_count: usize) -> AxResult<Self> {
+    pub(super) fn resolve(target: PerfTarget, cpu_count: usize) -> crate::StarryResult<Self> {
         match target {
             PerfTarget::Task { task, cpu } => {
                 let task = match task {
@@ -71,8 +69,8 @@ impl ResolvedPerfTarget {
     pub(super) fn with_authorized<R>(
         self,
         signal_delivery: bool,
-        install: impl FnOnce(AuthorizedPerfTarget) -> AxResult<R>,
-    ) -> AxResult<R> {
+        install: impl FnOnce(AuthorizedPerfTarget) -> crate::StarryResult<R>,
+    ) -> crate::StarryResult<R> {
         let (task, cpu) = match self {
             Self::Task { task, cpu } => (task, cpu),
             Self::Cpu(cpu) => return install(AuthorizedPerfTarget::Cpu(cpu)),
@@ -94,17 +92,17 @@ impl ResolvedPerfTarget {
             signal_delivery,
         );
         if !allowed {
-            return Err(AxError::PermissionDenied);
+            return Err(crate::StarryError::PermissionDenied);
         }
 
         install(AuthorizedPerfTarget::Task { task, cpu })
     }
 }
 
-fn target_error_to_ax(error: PerfTargetError) -> AxError {
+fn target_error_to_ax(error: PerfTargetError) -> crate::StarryError {
     match error {
-        PerfTargetError::InvalidTuple => AxError::InvalidInput,
-        PerfTargetError::NoSuchProcess => AxError::NoSuchProcess,
+        PerfTargetError::InvalidTuple => crate::StarryError::InvalidInput,
+        PerfTargetError::NoSuchProcess => crate::StarryError::NoSuchProcess,
     }
 }
 

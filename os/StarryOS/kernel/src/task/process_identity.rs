@@ -10,13 +10,15 @@ use alloc::{
     vec::Vec,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::OnceLock;
 use axpoll::{IoEvents, PollSet};
 use starry_process::{Pid, Process, ProcessCpuTime, init_proc};
 
 use super::{Cred, ProcessData, current_user_task};
-use crate::sync::{IrqMutex, PiMutex};
+use crate::{
+    StarryError, StarryResult,
+    sync::{IrqMutex, PiMutex},
+};
 
 /// Generation-specific identity retained by the PID registry and pidfds.
 pub(crate) struct ProcessIdentity {
@@ -88,7 +90,7 @@ impl ProcessIdentity {
     }
 
     /// Captures the immutable namespace PID numbers after publication.
-    fn publish_pid_identity(&self) -> AxResult<()> {
+    fn publish_pid_identity(&self) -> crate::StarryResult<()> {
         if self.pid_identity.is_initialized() {
             return Ok(());
         }
@@ -155,12 +157,12 @@ impl ProcessIdentity {
     }
 
     /// Resolves the process while this generation remains publicly visible.
-    pub(crate) fn public_process(&self) -> AxResult<Arc<Process>> {
+    pub(crate) fn public_process(&self) -> StarryResult<Arc<Process>> {
         let state = self.state.lock();
         if state.is_publicly_resolvable() {
             Ok(self.process.clone())
         } else {
-            Err(AxError::NoSuchProcess)
+            Err(StarryError::NoSuchProcess)
         }
     }
 
@@ -267,13 +269,15 @@ pub(crate) fn register_process_identity(proc_data: &Arc<ProcessData>) {
 ///
 /// Unlike [`register_process_identity`], this reports a collision so clone can
 /// roll back all resources before the scheduler thread becomes runnable.
-pub(crate) fn register_prepared_process_identity(proc_data: &Arc<ProcessData>) -> AxResult<()> {
+pub(crate) fn register_prepared_process_identity(
+    proc_data: &Arc<ProcessData>,
+) -> crate::StarryResult<()> {
     let pid = proc_data.proc.pid();
     let identity = proc_data.identity();
     identity.publish_pid_identity()?;
     let mut process_table = PROCESS_TABLE.lock();
     if process_table.contains_key(&pid) {
-        return Err(AxError::BadState);
+        return Err(crate::StarryError::BadState);
     }
     process_table.insert(pid, identity);
     Ok(())
@@ -302,7 +306,7 @@ pub fn processes() -> Vec<Arc<ProcessData>> {
 }
 
 /// Finds live process runtime resources by PID.
-pub fn get_process_data(pid: Pid) -> AxResult<Arc<ProcessData>> {
+pub fn get_process_data(pid: Pid) -> StarryResult<Arc<ProcessData>> {
     if pid == 0 {
         return Ok(current_user_task().as_thread().proc_data.clone());
     }
@@ -310,11 +314,11 @@ pub fn get_process_data(pid: Pid) -> AxResult<Arc<ProcessData>> {
         .lock()
         .get(&pid)
         .and_then(|identity| identity.live_data())
-        .ok_or(AxError::NoSuchProcess)
+        .ok_or(StarryError::NoSuchProcess)
 }
 
 /// Resolves one stable generation for `pidfd_open()`.
-pub(crate) fn pidfd_process_identity(pid: Pid) -> AxResult<Arc<ProcessIdentity>> {
+pub(crate) fn pidfd_process_identity(pid: Pid) -> crate::StarryResult<Arc<ProcessIdentity>> {
     // Holding the registry lock through the state check linearizes this lookup
     // against the registry-locked Zombie -> Reaping claim.
     let process_table = PROCESS_TABLE.lock();
@@ -322,7 +326,7 @@ pub(crate) fn pidfd_process_identity(pid: Pid) -> AxResult<Arc<ProcessIdentity>>
         .get(&pid)
         .filter(|identity| identity.is_publicly_resolvable())
         .cloned()
-        .ok_or(AxError::NoSuchProcess)
+        .ok_or(StarryError::NoSuchProcess)
 }
 
 /// Resolves the exact openable identity for a process object.
@@ -345,14 +349,17 @@ fn process_identity(process: &Arc<Process>) -> Option<Arc<ProcessIdentity>> {
 }
 
 /// Atomically replaces live runtime resources with an immutable zombie.
-pub(crate) fn publish_zombie(proc_data: &Arc<ProcessData>, zombie: ZombieSnapshot) -> AxResult<()> {
+pub(crate) fn publish_zombie(
+    proc_data: &Arc<ProcessData>,
+    zombie: ZombieSnapshot,
+) -> crate::StarryResult<()> {
     let process_table = PROCESS_TABLE.lock();
     let Some(identity) = process_table.get(&proc_data.proc.pid()) else {
-        return Err(AxError::BadState);
+        return Err(StarryError::BadState);
     };
     identity
         .publish_zombie(proc_data, zombie)
-        .map_err(|_| AxError::BadState)
+        .map_err(|_| StarryError::BadState)
 }
 
 /// Reaps exactly one matching zombie and returns its frozen CPU time.
@@ -505,7 +512,7 @@ pub(crate) fn orphan_reaper_for(proc_data: &Arc<ProcessData>) -> OrphanReaper {
 }
 
 /// Finds the stable process object for a publicly visible live or zombie PID.
-pub fn get_process(pid: Pid) -> AxResult<Arc<Process>> {
+pub fn get_process(pid: Pid) -> StarryResult<Arc<Process>> {
     if pid == 0 {
         return Ok(current_user_task().as_thread().proc_data.proc.clone());
     }
@@ -514,7 +521,7 @@ pub fn get_process(pid: Pid) -> AxResult<Arc<Process>> {
     let process_table = PROCESS_TABLE.lock();
     process_table
         .get(&pid)
-        .ok_or(AxError::NoSuchProcess)?
+        .ok_or(StarryError::NoSuchProcess)?
         .public_process()
 }
 

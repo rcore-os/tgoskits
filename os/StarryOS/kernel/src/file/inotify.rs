@@ -11,7 +11,6 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::LazyLock;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
@@ -23,6 +22,7 @@ use linux_raw_sys::{
 };
 
 use crate::{
+    StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc},
     mm::VmMutPtr,
     sync::PiMutex,
@@ -71,9 +71,9 @@ impl Inotify {
         inotify
     }
 
-    pub fn add_watch(&self, path: String, mask: u32) -> AxResult<i32> {
+    pub fn add_watch(&self, path: String, mask: u32) -> StarryResult<i32> {
         if mask == 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let mut state = self.state.lock();
@@ -87,15 +87,15 @@ impl Inotify {
         }
 
         let wd = state.next_wd;
-        state.next_wd = state.next_wd.checked_add(1).ok_or(AxError::NoMemory)?;
+        state.next_wd = state.next_wd.checked_add(1).ok_or(StarryError::NoMemory)?;
         state.watches.insert(wd, Watch { path, mask });
         Ok(wd)
     }
 
-    pub fn rm_watch(&self, wd: i32) -> AxResult {
+    pub fn rm_watch(&self, wd: i32) -> StarryResult {
         let mut state = self.state.lock();
         if state.watches.remove(&wd).is_none() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         Self::push_event(&mut state.queue, wd, IN_IGNORED, None);
         drop(state);
@@ -193,9 +193,9 @@ impl Inotify {
 }
 
 impl FileLike for Inotify {
-    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if dst.remaining_mut() < INOTIFY_EVENT_SIZE {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let task = current_user_task();
@@ -212,7 +212,7 @@ impl FileLike for Inotify {
                     state.queue.pop_front();
                 }
                 if written == 0 {
-                    Err(AxError::WouldBlock)
+                    Err(crate::StarryError::WouldBlock)
                 } else {
                     Ok(written)
                 }
@@ -221,15 +221,15 @@ impl FileLike for Inotify {
         .into_result()?
     }
 
-    fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
-        Err(AxError::BadFileDescriptor)
+    fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
+        Err(StarryError::BadFileDescriptor)
     }
 
     fn nonblocking(&self) -> bool {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn set_nonblocking(&self, non_blocking: bool) -> AxResult {
+    fn set_nonblocking(&self, non_blocking: bool) -> StarryResult {
         self.non_blocking.store(non_blocking, Ordering::Release);
         Ok(())
     }
@@ -238,7 +238,12 @@ impl FileLike for Inotify {
         "anon_inode:[inotify]".into()
     }
 
-    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> AxResult<usize> {
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> crate::StarryResult<usize> {
         match cmd {
             FIONREAD => {
                 let pending = self
@@ -252,7 +257,7 @@ impl FileLike for Inotify {
                 (arg as *mut u32).vm_write(current, pending)?;
                 Ok(0)
             }
-            _ => Err(AxError::NotATty),
+            _ => Err(StarryError::NotATty),
         }
     }
 }

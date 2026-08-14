@@ -1,6 +1,5 @@
 //! Typed conversion between Linux scheduling attributes and scheduler policies.
 
-use ax_errno::{AxError, AxResult};
 use ax_std::os::arceos::task::{
     DeadlineFlags, DeadlinePolicy, FairMode, Nice, RtPriority, SchedulePolicy,
 };
@@ -60,7 +59,7 @@ enum LinuxScheduleClass {
 pub(crate) fn parse_sched_attr(
     attr: SchedAttr,
     current_policy: SchedulePolicy,
-) -> AxResult<ScheduleUpdate> {
+) -> crate::StarryResult<ScheduleUpdate> {
     validate_sched_attr_size(attr.size)?;
     validate_sched_attr_flags(attr.sched_flags)?;
 
@@ -93,10 +92,10 @@ fn policy_from_kept_params(
     requested_class: LinuxScheduleClass,
     current_policy: SchedulePolicy,
     mut attr: SchedAttr,
-) -> AxResult<SchedulePolicy> {
+) -> crate::StarryResult<SchedulePolicy> {
     let deadline_flag_mask = (SCHED_FLAG_RECLAIM | SCHED_FLAG_DL_OVERRUN) as u64;
     match current_policy {
-        SchedulePolicy::KernelStop => return Err(AxError::InvalidInput),
+        SchedulePolicy::KernelStop => return Err(crate::StarryError::InvalidInput),
         SchedulePolicy::Fair { nice, .. } => {
             attr.sched_nice = i32::from(nice.get());
             // Linux get_params() also replaces sched_runtime with the current
@@ -122,17 +121,17 @@ fn policy_from_kept_params(
     match requested_class {
         LinuxScheduleClass::Fair(mode) => {
             if attr.sched_priority != 0 {
-                return Err(AxError::InvalidInput);
+                return Err(crate::StarryError::InvalidInput);
             }
             let nice = Nice::new(attr.sched_nice.clamp(-20, 19) as i8)
-                .map_err(|_| AxError::InvalidInput)?;
+                .map_err(|_| crate::StarryError::InvalidInput)?;
             Ok(SchedulePolicy::fair(nice, mode))
         }
         LinuxScheduleClass::Fifo => Ok(SchedulePolicy::fifo(parse_rt_priority(attr)?)),
         LinuxScheduleClass::RoundRobin => Ok(SchedulePolicy::round_robin(parse_rt_priority(attr)?)),
         LinuxScheduleClass::Deadline => {
             if attr.sched_priority != 0 {
-                return Err(AxError::InvalidInput);
+                return Err(crate::StarryError::InvalidInput);
             }
             let deadline = DeadlinePolicy::new(
                 attr.sched_runtime,
@@ -140,7 +139,7 @@ fn policy_from_kept_params(
                 attr.sched_period,
                 deadline_flags(attr.sched_flags),
             )
-            .map_err(|_| AxError::InvalidInput)?;
+            .map_err(|_| crate::StarryError::InvalidInput)?;
             Ok(SchedulePolicy::deadline(deadline))
         }
     }
@@ -207,16 +206,16 @@ pub(crate) const fn linux_sched_priority(policy: SchedulePolicy) -> i32 {
 pub(crate) fn fork_schedule_policy(
     parent: SchedulePolicy,
     reset_on_fork: bool,
-) -> AxResult<(SchedulePolicy, bool)> {
+) -> crate::StarryResult<(SchedulePolicy, bool)> {
     if !reset_on_fork {
         if matches!(parent, SchedulePolicy::Deadline(_)) {
-            return Err(AxError::WouldBlock);
+            return Err(crate::StarryError::WouldBlock);
         }
         return Ok((parent, false));
     }
 
     let child = match parent {
-        SchedulePolicy::KernelStop => return Err(AxError::InvalidInput),
+        SchedulePolicy::KernelStop => return Err(crate::StarryError::InvalidInput),
         SchedulePolicy::Fifo { .. }
         | SchedulePolicy::RoundRobin { .. }
         | SchedulePolicy::Deadline(_) => SchedulePolicy::fair(Nice::ZERO, FairMode::Normal),
@@ -234,26 +233,26 @@ pub(crate) fn parse_setscheduler(
     priority: i32,
     current_policy: SchedulePolicy,
     stored_nice: Nice,
-) -> AxResult<ScheduleUpdate> {
-    let raw_policy = u32::try_from(raw_policy).map_err(|_| AxError::InvalidInput)?;
+) -> crate::StarryResult<ScheduleUpdate> {
+    let raw_policy = u32::try_from(raw_policy).map_err(|_| crate::StarryError::InvalidInput)?;
     let reset_on_fork = raw_policy & SCHED_RESET_ON_FORK != 0;
     let policy = raw_policy & !SCHED_RESET_ON_FORK;
     if policy == SCHED_DEADLINE {
-        return Err(AxError::InvalidInput);
+        return Err(crate::StarryError::InvalidInput);
     }
 
     let attr = match linux_schedule_class(policy)? {
         LinuxScheduleClass::Fair(_) => {
             if priority != 0 {
-                return Err(AxError::InvalidInput);
+                return Err(crate::StarryError::InvalidInput);
             }
             SchedAttr::fair(policy, i32::from(stored_nice.get()))
         }
         LinuxScheduleClass::Fifo | LinuxScheduleClass::RoundRobin => {
-            let priority = u32::try_from(priority).map_err(|_| AxError::InvalidInput)?;
+            let priority = u32::try_from(priority).map_err(|_| crate::StarryError::InvalidInput)?;
             SchedAttr::realtime(policy, priority)
         }
-        LinuxScheduleClass::Deadline => return Err(AxError::InvalidInput),
+        LinuxScheduleClass::Deadline => return Err(crate::StarryError::InvalidInput),
     };
     let mut attr = attr;
     if reset_on_fork {
@@ -263,7 +262,7 @@ pub(crate) fn parse_setscheduler(
 }
 
 /// Returns Linux's minimum priority for a supported policy number.
-pub(crate) fn scheduler_priority_min(policy: u32) -> AxResult<i32> {
+pub(crate) fn scheduler_priority_min(policy: u32) -> crate::StarryResult<i32> {
     match linux_schedule_class(policy)? {
         LinuxScheduleClass::Fifo | LinuxScheduleClass::RoundRobin => Ok(1),
         LinuxScheduleClass::Fair(_) | LinuxScheduleClass::Deadline => Ok(0),
@@ -271,7 +270,7 @@ pub(crate) fn scheduler_priority_min(policy: u32) -> AxResult<i32> {
 }
 
 /// Returns Linux's maximum priority for a supported policy number.
-pub(crate) fn scheduler_priority_max(policy: u32) -> AxResult<i32> {
+pub(crate) fn scheduler_priority_max(policy: u32) -> crate::StarryResult<i32> {
     match linux_schedule_class(policy)? {
         LinuxScheduleClass::Fifo | LinuxScheduleClass::RoundRobin => Ok(99),
         LinuxScheduleClass::Fair(_) | LinuxScheduleClass::Deadline => Ok(0),
@@ -283,9 +282,9 @@ pub(crate) fn check_policy_permission(
     permission: SchedulerPermission,
     current: SchedulePolicy,
     requested: SchedulePolicy,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     if !permission.owns_target && !permission.has_cap_sys_nice {
-        return Err(AxError::OperationNotPermitted);
+        return Err(crate::StarryError::OperationNotPermitted);
     }
     if permission.has_cap_sys_nice {
         return Ok(());
@@ -293,7 +292,7 @@ pub(crate) fn check_policy_permission(
 
     match requested {
         SchedulePolicy::KernelStop | SchedulePolicy::Deadline(_) => {
-            Err(AxError::OperationNotPermitted)
+            Err(crate::StarryError::OperationNotPermitted)
         }
         SchedulePolicy::Fifo { priority } | SchedulePolicy::RoundRobin { priority, .. } => {
             let same_rt_class = matches!(
@@ -305,7 +304,7 @@ pub(crate) fn check_policy_permission(
                     )
             );
             if !same_rt_class && permission.rlimit_rtprio == 0 {
-                return Err(AxError::OperationNotPermitted);
+                return Err(crate::StarryError::OperationNotPermitted);
             }
             let current_priority = match current {
                 SchedulePolicy::Fifo { priority } | SchedulePolicy::RoundRobin { priority, .. } => {
@@ -320,7 +319,7 @@ pub(crate) fn check_policy_permission(
             if u64::from(priority.get()) <= ceiling {
                 Ok(())
             } else {
-                Err(AxError::OperationNotPermitted)
+                Err(crate::StarryError::OperationNotPermitted)
             }
         }
         SchedulePolicy::Fair {
@@ -342,12 +341,12 @@ pub(crate) fn check_policy_permission(
             ) && requested_mode != FairMode::Idle
                 && i64::from(current_nice) < lowest_allowed
             {
-                return Err(AxError::OperationNotPermitted);
+                return Err(crate::StarryError::OperationNotPermitted);
             }
             if nice.get() >= current_nice || i64::from(nice.get()) >= lowest_allowed {
                 Ok(())
             } else {
-                Err(AxError::OperationNotPermitted)
+                Err(crate::StarryError::OperationNotPermitted)
             }
         }
     }
@@ -358,26 +357,26 @@ pub(crate) fn check_reset_on_fork_permission(
     has_cap_sys_nice: bool,
     current: bool,
     requested: bool,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     if current && !requested && !has_cap_sys_nice {
-        Err(AxError::OperationNotPermitted)
+        Err(crate::StarryError::OperationNotPermitted)
     } else {
         Ok(())
     }
 }
 
-fn validate_sched_attr_size(size: u32) -> AxResult<()> {
+fn validate_sched_attr_size(size: u32) -> crate::StarryResult<()> {
     const SCHED_ATTR_V0_SIZE: u32 = 48;
     const SCHED_ATTR_V1_SIZE: u32 = core::mem::size_of::<SchedAttr>() as u32;
 
     if size == 0 || (SCHED_ATTR_V0_SIZE..=SCHED_ATTR_V1_SIZE).contains(&size) {
         Ok(())
     } else {
-        Err(AxError::ArgumentListTooLong)
+        Err(crate::StarryError::ArgumentListTooLong)
     }
 }
 
-fn validate_sched_attr_flags(flags: u64) -> AxResult<()> {
+fn validate_sched_attr_flags(flags: u64) -> crate::StarryResult<()> {
     const SUPPORTED: u64 = (SCHED_FLAG_RESET_ON_FORK
         | SCHED_FLAG_RECLAIM
         | SCHED_FLAG_DL_OVERRUN
@@ -386,15 +385,18 @@ fn validate_sched_attr_flags(flags: u64) -> AxResult<()> {
     const UTIL_CLAMP: u64 = (SCHED_FLAG_UTIL_CLAMP_MIN | SCHED_FLAG_UTIL_CLAMP_MAX) as u64;
 
     if flags & !(SUPPORTED | UTIL_CLAMP) != 0 {
-        Err(AxError::InvalidInput)
+        Err(crate::StarryError::InvalidInput)
     } else if flags & UTIL_CLAMP != 0 {
-        Err(AxError::OperationNotSupported)
+        Err(crate::StarryError::OperationNotSupported)
     } else {
         Ok(())
     }
 }
 
-fn policy_from_sched_attr(class: LinuxScheduleClass, attr: SchedAttr) -> AxResult<SchedulePolicy> {
+fn policy_from_sched_attr(
+    class: LinuxScheduleClass,
+    attr: SchedAttr,
+) -> crate::StarryResult<SchedulePolicy> {
     match class {
         LinuxScheduleClass::Fair(mode) => {
             ensure_zero_realtime_and_deadline_fields(attr)?;
@@ -402,7 +404,7 @@ fn policy_from_sched_attr(class: LinuxScheduleClass, attr: SchedAttr) -> AxResul
             // the requested policy.
             let nice = attr.sched_nice.clamp(-20, 19) as i8;
             Ok(SchedulePolicy::fair(
-                Nice::new(nice).map_err(|_| AxError::InvalidInput)?,
+                Nice::new(nice).map_err(|_| crate::StarryError::InvalidInput)?,
                 mode,
             ))
         }
@@ -416,7 +418,7 @@ fn policy_from_sched_attr(class: LinuxScheduleClass, attr: SchedAttr) -> AxResul
         }
         LinuxScheduleClass::Deadline => {
             if attr.sched_priority != 0 {
-                return Err(AxError::InvalidInput);
+                return Err(crate::StarryError::InvalidInput);
             }
             let flags = deadline_flags(attr.sched_flags);
             let deadline = DeadlinePolicy::new(
@@ -425,36 +427,37 @@ fn policy_from_sched_attr(class: LinuxScheduleClass, attr: SchedAttr) -> AxResul
                 attr.sched_period,
                 flags,
             )
-            .map_err(|_| AxError::InvalidInput)?;
+            .map_err(|_| crate::StarryError::InvalidInput)?;
             Ok(SchedulePolicy::deadline(deadline))
         }
     }
 }
 
-fn ensure_zero_realtime_and_deadline_fields(attr: SchedAttr) -> AxResult<()> {
+fn ensure_zero_realtime_and_deadline_fields(attr: SchedAttr) -> crate::StarryResult<()> {
     if attr.sched_priority == 0 {
         ensure_zero_deadline_fields(attr)
     } else {
-        Err(AxError::InvalidInput)
+        Err(crate::StarryError::InvalidInput)
     }
 }
 
-fn ensure_zero_deadline_fields(attr: SchedAttr) -> AxResult<()> {
+fn ensure_zero_deadline_fields(attr: SchedAttr) -> crate::StarryResult<()> {
     let deadline_flags = (SCHED_FLAG_RECLAIM | SCHED_FLAG_DL_OVERRUN) as u64;
     if attr.sched_runtime != 0
         || attr.sched_deadline != 0
         || attr.sched_period != 0
         || attr.sched_flags & deadline_flags != 0
     {
-        Err(AxError::InvalidInput)
+        Err(crate::StarryError::InvalidInput)
     } else {
         Ok(())
     }
 }
 
-fn parse_rt_priority(attr: SchedAttr) -> AxResult<RtPriority> {
-    let priority = u8::try_from(attr.sched_priority).map_err(|_| AxError::InvalidInput)?;
-    RtPriority::new(priority).map_err(|_| AxError::InvalidInput)
+fn parse_rt_priority(attr: SchedAttr) -> crate::StarryResult<RtPriority> {
+    let priority =
+        u8::try_from(attr.sched_priority).map_err(|_| crate::StarryError::InvalidInput)?;
+    RtPriority::new(priority).map_err(|_| crate::StarryError::InvalidInput)
 }
 
 fn deadline_flags(raw: u64) -> DeadlineFlags {
@@ -479,7 +482,7 @@ fn linux_deadline_flags(flags: DeadlineFlags) -> u64 {
     raw
 }
 
-fn linux_schedule_class(policy: u32) -> AxResult<LinuxScheduleClass> {
+fn linux_schedule_class(policy: u32) -> crate::StarryResult<LinuxScheduleClass> {
     match policy {
         SCHED_NORMAL => Ok(LinuxScheduleClass::Fair(FairMode::Normal)),
         SCHED_BATCH => Ok(LinuxScheduleClass::Fair(FairMode::Batch)),
@@ -487,7 +490,7 @@ fn linux_schedule_class(policy: u32) -> AxResult<LinuxScheduleClass> {
         SCHED_FIFO => Ok(LinuxScheduleClass::Fifo),
         SCHED_RR => Ok(LinuxScheduleClass::RoundRobin),
         SCHED_DEADLINE => Ok(LinuxScheduleClass::Deadline),
-        _ => Err(AxError::InvalidInput),
+        _ => Err(crate::StarryError::InvalidInput),
     }
 }
 
@@ -613,19 +616,19 @@ mod tests {
         attr.sched_flags = 1 << 63;
         assert_eq!(
             parse_sched_attr(attr, SchedulePolicy::default()),
-            Err(AxError::InvalidInput)
+            Err(crate::StarryError::InvalidInput)
         );
 
         attr.sched_flags = SCHED_FLAG_UTIL_CLAMP_MIN as u64;
         assert_eq!(
             parse_sched_attr(attr, SchedulePolicy::default()),
-            Err(AxError::OperationNotSupported)
+            Err(crate::StarryError::OperationNotSupported)
         );
 
         attr.sched_flags = SCHED_FLAG_UTIL_CLAMP_MIN as u64 | 1 << 63;
         assert_eq!(
             parse_sched_attr(attr, SchedulePolicy::default()),
-            Err(AxError::InvalidInput)
+            Err(crate::StarryError::InvalidInput)
         );
     }
 
@@ -647,7 +650,7 @@ mod tests {
         normal.sched_flags = SCHED_FLAG_RECLAIM as u64;
         assert_eq!(
             parse_sched_attr(normal, SchedulePolicy::default()),
-            Err(AxError::InvalidInput)
+            Err(crate::StarryError::InvalidInput)
         );
     }
 
@@ -698,7 +701,7 @@ mod tests {
         };
         assert_eq!(
             check_policy_permission(unprivileged, current, update.permission_policy,),
-            Err(AxError::OperationNotPermitted),
+            Err(crate::StarryError::OperationNotPermitted),
         );
         assert_eq!(
             check_policy_permission(
@@ -731,28 +734,28 @@ mod tests {
     fn validates_deadline_and_realtime_parameters() {
         assert_eq!(
             parse_sched_attr(SchedAttr::deadline(20, 10, 30), SchedulePolicy::default()),
-            Err(AxError::InvalidInput)
+            Err(crate::StarryError::InvalidInput)
         );
         assert_eq!(
             parse_sched_attr(
                 SchedAttr::realtime(SCHED_FIFO, 0),
                 SchedulePolicy::default()
             ),
-            Err(AxError::InvalidInput)
+            Err(crate::StarryError::InvalidInput)
         );
         assert_eq!(
             parse_sched_attr(
                 SchedAttr::realtime(SCHED_RR, 100),
                 SchedulePolicy::default()
             ),
-            Err(AxError::InvalidInput)
+            Err(crate::StarryError::InvalidInput)
         );
         assert_eq!(
             parse_sched_attr(
                 SchedAttr::realtime(SCHED_DEADLINE, 1),
                 SchedulePolicy::default()
             ),
-            Err(AxError::InvalidInput)
+            Err(crate::StarryError::InvalidInput)
         );
     }
 
@@ -770,7 +773,7 @@ mod tests {
         assert!(update.reset_on_fork);
         assert_eq!(
             parse_setscheduler(SCHED_DEADLINE as i32, 0, current, Nice::ZERO),
-            Err(AxError::InvalidInput)
+            Err(crate::StarryError::InvalidInput)
         );
     }
 
@@ -805,7 +808,7 @@ mod tests {
             SchedulePolicy::deadline(DeadlinePolicy::new(1, 2, 3, DeadlineFlags::NONE).unwrap());
         assert_eq!(
             fork_schedule_policy(deadline, false),
-            Err(AxError::WouldBlock)
+            Err(crate::StarryError::WouldBlock)
         );
         assert_eq!(
             fork_schedule_policy(deadline, true),
@@ -819,12 +822,12 @@ mod tests {
         attr.size = 47;
         assert_eq!(
             parse_sched_attr(attr, SchedulePolicy::default()),
-            Err(AxError::ArgumentListTooLong)
+            Err(crate::StarryError::ArgumentListTooLong)
         );
         attr.size = core::mem::size_of::<SchedAttr>() as u32 + 1;
         assert_eq!(
             parse_sched_attr(attr, SchedulePolicy::default()),
-            Err(AxError::ArgumentListTooLong)
+            Err(crate::StarryError::ArgumentListTooLong)
         );
     }
 
@@ -841,7 +844,7 @@ mod tests {
         };
         assert_eq!(
             check_policy_permission(permission, fair, fifo_20),
-            Err(AxError::OperationNotPermitted)
+            Err(crate::StarryError::OperationNotPermitted)
         );
 
         let allowed_nice = SchedulePolicy::fair(Nice::new(-5).unwrap(), FairMode::Normal);
@@ -852,7 +855,7 @@ mod tests {
         let denied_nice = SchedulePolicy::fair(Nice::new(-6).unwrap(), FairMode::Normal);
         assert_eq!(
             check_policy_permission(permission, fair, denied_nice),
-            Err(AxError::OperationNotPermitted)
+            Err(crate::StarryError::OperationNotPermitted)
         );
 
         let fifo_10 = SchedulePolicy::fifo(RtPriority::new(10).unwrap());
@@ -863,7 +866,7 @@ mod tests {
         };
         assert_eq!(
             check_policy_permission(no_rt_limit, fifo_10, rr_10),
-            Err(AxError::OperationNotPermitted)
+            Err(crate::StarryError::OperationNotPermitted)
         );
 
         let idle = SchedulePolicy::fair(Nice::ZERO, FairMode::Idle);
@@ -874,7 +877,7 @@ mod tests {
         };
         assert_eq!(
             check_policy_permission(no_nice_limit, idle, normal),
-            Err(AxError::OperationNotPermitted)
+            Err(crate::StarryError::OperationNotPermitted)
         );
 
         let non_owner = SchedulerPermission {
@@ -883,14 +886,14 @@ mod tests {
         };
         assert_eq!(
             check_policy_permission(non_owner, fair, fair),
-            Err(AxError::OperationNotPermitted)
+            Err(crate::StarryError::OperationNotPermitted)
         );
 
         let deadline =
             SchedulePolicy::deadline(DeadlinePolicy::new(1, 2, 3, DeadlineFlags::NONE).unwrap());
         assert_eq!(
             check_policy_permission(permission, fair, deadline),
-            Err(AxError::OperationNotPermitted)
+            Err(crate::StarryError::OperationNotPermitted)
         );
         let privileged = SchedulerPermission {
             has_cap_sys_nice: true,
@@ -944,7 +947,7 @@ mod tests {
     fn only_privileged_callers_may_clear_reset_on_fork() {
         assert_eq!(
             check_reset_on_fork_permission(false, true, false),
-            Err(AxError::OperationNotPermitted)
+            Err(crate::StarryError::OperationNotPermitted)
         );
         assert_eq!(check_reset_on_fork_permission(true, true, false), Ok(()));
         assert_eq!(check_reset_on_fork_permission(false, true, true), Ok(()));
@@ -957,7 +960,10 @@ mod tests {
         assert_eq!(scheduler_priority_max(SCHED_RR), Ok(99));
         assert_eq!(scheduler_priority_min(SCHED_NORMAL), Ok(0));
         assert_eq!(scheduler_priority_max(SCHED_DEADLINE), Ok(0));
-        assert_eq!(scheduler_priority_min(42), Err(AxError::InvalidInput));
+        assert_eq!(
+            scheduler_priority_min(42),
+            Err(crate::StarryError::InvalidInput)
+        );
         let SchedulePolicy::RoundRobin { quantum_ns, .. } =
             SchedulePolicy::round_robin(RtPriority::new(1).unwrap())
         else {

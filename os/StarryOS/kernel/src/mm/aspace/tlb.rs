@@ -6,7 +6,6 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{VirtAddr, VirtAddrRange};
 use scope_local::scope_local;
 
@@ -87,7 +86,7 @@ impl TlbGather {
         self.deferred_frames.push(frame);
     }
 
-    pub(super) fn finish(mut self, cpu_mask: usize) -> AxResult {
+    pub(super) fn finish(mut self, cpu_mask: usize) -> crate::StarryResult {
         for range in self.ranges.iter() {
             if let Err(error) =
                 crate::mm::flush_tlb_range_on_cpus_sync(cpu_mask, range.start, range.size())
@@ -112,8 +111,8 @@ impl TlbGather {
 }
 
 /// Validates a range before any page-table mutation begins.
-pub(super) fn checked_range(start: VirtAddr, size: usize) -> AxResult<VirtAddrRange> {
-    VirtAddrRange::try_from_start_size(start, size).ok_or(AxError::InvalidInput)
+pub(super) fn checked_range(start: VirtAddr, size: usize) -> crate::StarryResult<VirtAddrRange> {
+    VirtAddrRange::try_from_start_size(start, size).ok_or(crate::StarryError::InvalidInput)
 }
 
 /// Publishes one gather to backend calls made through `ax-memory-set`.

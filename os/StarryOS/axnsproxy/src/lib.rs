@@ -3,6 +3,7 @@
 extern crate alloc;
 
 mod cgroup;
+mod error;
 mod ipc;
 mod mnt;
 mod net;
@@ -14,6 +15,7 @@ use alloc::sync::Arc;
 
 pub use ax_cgroup::{CgroupNamespace, CgroupNode};
 pub use cgroup::{ROOT_CGROUP_NS, new_cgroup_namespace};
+pub use error::{PidError, PidResult};
 pub use ipc::{IpcNamespace, ROOT_IPC_NS};
 pub use mnt::{MntNamespace, ROOT_MNT_NS};
 pub use net::{NetNamespace, ROOT_NET_NS};

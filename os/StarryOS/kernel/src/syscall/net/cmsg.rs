@@ -1,10 +1,10 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::mem::{offset_of, size_of};
 
-use ax_errno::{AxError, AxResult};
 use linux_raw_sys::net::{SCM_RIGHTS, SOL_SOCKET, cmsghdr};
 
 use crate::{
+    StarryError, StarryResult,
     file::{FileLike, get_file_like},
     mm::{UserConstPtr, UserPtr},
 };
@@ -35,9 +35,9 @@ impl CMsg {
         current: &crate::task::UserTaskRef,
         hdr_addr: usize,
         hdr: &cmsghdr,
-    ) -> AxResult<Self> {
+    ) -> crate::StarryResult<Self> {
         if hdr.cmsg_len < size_of::<cmsghdr>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let data_len = hdr.cmsg_len - size_of::<cmsghdr>();
@@ -46,7 +46,7 @@ impl CMsg {
                 if !data_len.is_multiple_of(size_of::<i32>())
                     || data_len / size_of::<i32>() > SCM_MAX_FD
                 {
-                    return Err(AxError::InvalidInput);
+                    return Err(crate::StarryError::InvalidInput);
                 }
                 let data = UserConstPtr::<u8>::from(hdr_addr + size_of::<cmsghdr>())
                     .read_slice(current, data_len)?;
@@ -54,7 +54,7 @@ impl CMsg {
                 for fd in data.as_chunks::<{ size_of::<i32>() }>().0 {
                     let fd = i32::from_ne_bytes(*fd);
                     if fd < 0 {
-                        return Err(AxError::BadFileDescriptor);
+                        return Err(StarryError::BadFileDescriptor);
                     }
                     let f = get_file_like(fd)?;
                     fds.push(f);
@@ -62,7 +62,7 @@ impl CMsg {
                 Self::Rights { fds }
             }
             _ => {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
         })
     }
@@ -110,8 +110,8 @@ impl<'task, 'len> CMsgBuilder<'task, 'len> {
         level: u32,
         ty: u32,
         body_len: usize,
-        body: impl FnOnce(&mut [u8]) -> AxResult<usize>,
-    ) -> AxResult<bool> {
+        body: impl FnOnce(&mut [u8]) -> StarryResult<usize>,
+    ) -> StarryResult<bool> {
         let Some(body_capacity) = self
             .capacity
             .checked_sub(self.written)
@@ -129,7 +129,7 @@ impl<'task, 'len> CMsgBuilder<'task, 'len> {
         debug_assert_eq!(written, body_len);
 
         let Some(cmsg_len) = size_of::<cmsghdr>().checked_add(body_len) else {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         };
         self.hdr
             .write_field(self.current, offset_of!(cmsghdr, cmsg_len), cmsg_len)?;

@@ -10,7 +10,6 @@ authors.workspace = true
 
 [dependencies]
 ax-cgroup = { workspace = true }
-ax-errno = { workspace = true }
 ax-lazyinit.workspace = true
 ax-runtime.workspace = true
 linux-raw-sys = { version = "0.12", default-features = false, features = [
@@ -19,6 +18,7 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
     "system",
 ] }
 log = "0.4"
+thiserror.workspace = true
 
 [build-dependencies]
 quote = { workspace = true }

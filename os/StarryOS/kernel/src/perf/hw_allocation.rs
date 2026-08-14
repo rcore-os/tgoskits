@@ -4,8 +4,6 @@
 //! prevents two owners from reserving the same logical slot until per-CPU
 //! allocation and multiplexing are modeled.
 
-use ax_errno::{AxError, AxResult};
-
 use super::hw_owner::Counter;
 use crate::sync::SpinLock;
 
@@ -66,7 +64,7 @@ pub(super) fn alloc_cycle_counter() -> Option<Counter> {
 
 /// Prefers the architectural cycle counter and falls back to a programmable
 /// counter carrying the same ARM event, matching `armv8pmu_get_event_idx()`.
-pub(super) fn alloc_preferred_cycle(event: u16) -> AxResult<Counter> {
+pub(super) fn alloc_preferred_cycle(event: u16) -> crate::StarryResult<Counter> {
     if let Some(counter) = alloc_cycle_counter() {
         return Ok(counter);
     }
@@ -78,16 +76,16 @@ pub(super) fn free_counter(counter: Counter) {
 }
 
 /// Reserves a validated programmable counter for a system event.
-pub(super) fn alloc_programmable(event: u16) -> AxResult<Counter> {
+pub(super) fn alloc_programmable(event: u16) -> crate::StarryResult<Counter> {
     if !ax_cpu::pmu::event_supported(event) {
         warn!(
             "perf_event_open: ARM event {:#x} not implemented on this CPU",
             event
         );
-        return Err(AxError::Unsupported);
+        return Err(crate::StarryError::Unsupported);
     }
     let Some(Counter::Programmable(n)) = ALLOC.lock().alloc_counter() else {
-        return Err(AxError::NoMemory);
+        return Err(crate::StarryError::NoMemory);
     };
     Ok(Counter::Programmable(n))
 }

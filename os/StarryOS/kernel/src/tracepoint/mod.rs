@@ -15,7 +15,6 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::LazyInit;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
 use axfs_ng_vfs::NodePermission;
@@ -25,6 +24,7 @@ pub use registry::KernelExtTracePoint;
 use registry::TracepointReclaimer;
 
 use crate::{
+    StarryError, StarryResult,
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
     sync::PiMutex,
     task::{future::IrqNotify, try_current_user_irq_view},
@@ -499,9 +499,9 @@ fn common_trace_pipe_read(
 }
 
 /// Initialize registered tracepoints. This should be called after static keys are initialized, and before any tracepoint is hit.
-pub fn tracepoint_init() -> AxResult<()> {
+pub fn tracepoint_init() -> StarryResult<()> {
     let (tp_map, ext_tps) =
-        global_init_events::<KernelTraceAux>().map_err(|_| AxError::InvalidInput)?;
+        global_init_events::<KernelTraceAux>().map_err(|_| StarryError::InvalidInput)?;
 
     let ext_tps = ext_tps
         .into_iter()

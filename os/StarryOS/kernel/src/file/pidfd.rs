@@ -4,11 +4,11 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use starry_process::{Pid, Process};
 
 use crate::{
+    StarryError, StarryResult,
     file::FileLike,
     task::{ProcessData, ProcessIdentity, Thread},
 };
@@ -76,38 +76,38 @@ impl PidFd {
         self.identity.is_zombie()
     }
 
-    fn public_process(&self) -> AxResult<Arc<Process>> {
+    fn public_process(&self) -> StarryResult<Arc<Process>> {
         self.identity.public_process()
     }
 
     /// Resolves a process-scoped pidfd without requiring live runtime resources.
-    pub fn signal_process(&self) -> AxResult<Arc<Process>> {
+    pub fn signal_process(&self) -> StarryResult<Arc<Process>> {
         self.public_process()
     }
 
     /// Resolves a thread-scoped pidfd target.
-    pub fn signal_thread(&self) -> AxResult<(Arc<Process>, Pid)> {
-        let tid = self.tid.ok_or(AxError::InvalidInput)?;
+    pub fn signal_thread(&self) -> StarryResult<(Arc<Process>, Pid)> {
+        let tid = self.tid.ok_or(StarryError::InvalidInput)?;
         if self
             .thread_exit
             .as_ref()
             .is_some_and(|exited| exited.load(Ordering::Acquire))
             && !(tid == self.identity.pid() && self.identity.is_zombie())
         {
-            return Err(AxError::NoSuchProcess);
+            return Err(StarryError::NoSuchProcess);
         }
         Ok((self.public_process()?, tid))
     }
 
-    pub fn process_data(&self) -> AxResult<Arc<ProcessData>> {
+    pub fn process_data(&self) -> StarryResult<Arc<ProcessData>> {
         // For threads, the pidfd is invalid once the thread exits, even if its
         // process is still alive.
         if let Some(thread_exit) = &self.thread_exit
             && thread_exit.load(Ordering::Acquire)
         {
-            return Err(AxError::NoSuchProcess);
+            return Err(StarryError::NoSuchProcess);
         }
-        self.identity.live_data().ok_or(AxError::NoSuchProcess)
+        self.identity.live_data().ok_or(StarryError::NoSuchProcess)
     }
 }
 impl FileLike for PidFd {
@@ -115,7 +115,7 @@ impl FileLike for PidFd {
         "anon_inode:[pidfd]".into()
     }
 
-    fn set_nonblocking(&self, nonblocking: bool) -> AxResult {
+    fn set_nonblocking(&self, nonblocking: bool) -> StarryResult {
         self.non_blocking.store(nonblocking, Ordering::Release);
         Ok(())
     }

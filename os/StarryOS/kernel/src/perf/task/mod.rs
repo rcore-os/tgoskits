@@ -67,7 +67,6 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PhysAddr;
 
 pub use super::inheritance::on_clone_inherit;

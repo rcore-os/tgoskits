@@ -15,7 +15,6 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::OnceLock;
 use controller::{ControllerPort, run_controller};
 use device::CpuSubmissionChannel;
@@ -39,9 +38,12 @@ use super::{
     },
     waiters::TaskWaiters,
 };
-use crate::os::{
-    BlockIrqRegistration, BlockNotification, BlockThread, register_block_irq, runtime_ops,
-    sync::Mutex, wall_time,
+use crate::{
+    BlockError, BlockResult,
+    os::{
+        BlockIrqRegistration, BlockNotification, BlockThread, register_block_irq, runtime_ops,
+        sync::Mutex, wall_time,
+    },
 };
 
 const CONTROLLER_CHANNEL_DEPTH: usize = 64;
@@ -793,17 +795,17 @@ impl BlockDeviceHandle {
         Ok(group)
     }
 
-    pub(crate) fn read_blocks(&self, block_id: u64, buf: &mut [u8]) -> AxResult {
+    pub(crate) fn read_blocks(&self, block_id: u64, buf: &mut [u8]) -> BlockResult {
         io::read_blocks(self, block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    pub(crate) fn write_blocks(&self, block_id: u64, buf: &[u8]) -> AxResult {
+    pub(crate) fn write_blocks(&self, block_id: u64, buf: &[u8]) -> BlockResult {
         io::write_blocks(self, block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    pub(crate) fn flush_blocks(&self) -> AxResult {
+    pub(crate) fn flush_blocks(&self) -> BlockResult {
         let request = OwnedRequest {
             op: RequestOp::Flush,
             lba: 0,
@@ -813,10 +815,10 @@ impl BlockDeviceHandle {
         };
         let completion = self
             .submit_owned(request)
-            .map_err(|error| map_blk_err_to_ax_err(error.error))?
+            .map_err(|error| BlockError::from(error.error))?
             .recv()
-            .map_err(map_blk_err_to_ax_err)?;
-        completion.result.map_err(map_blk_err_to_ax_err)
+            .map_err(BlockError::from)?;
+        completion.result.map_err(BlockError::from)
     }
 
     fn online_smp(&self) -> Result<(), BlkError> {
@@ -832,6 +834,21 @@ fn request_cannot_block() -> bool {
     match runtime_ops() {
         Ok(ops) => !ops.can_block(),
         Err(_) => true,
+    }
+}
+
+fn block_io_error(
+    stage: &'static str,
+    operation: RequestOp,
+    lba: u64,
+    source: BlkError,
+) -> BlockError {
+    warn!("block {operation:?} at LBA {lba} failed during {stage}: {source:?}");
+    BlockError::Device {
+        stage,
+        operation,
+        lba,
+        source,
     }
 }
 
@@ -863,23 +880,6 @@ fn disable_installed_sources(sources: &[InstalledIrqSource]) {
     for source in sources {
         let _ = source.registration.disable_and_synchronize();
     }
-}
-
-/// Maps a portable block error at the filesystem integration boundary.
-pub fn map_blk_err_to_ax_err(error: BlkError) -> AxError {
-    match error {
-        BlkError::NotSupported => AxError::Unsupported,
-        BlkError::Retry => AxError::WouldBlock,
-        BlkError::NoMemory => AxError::NoMemory,
-        BlkError::InvalidBlockIndex(_) | BlkError::InvalidRequest => AxError::InvalidInput,
-        BlkError::TimedOut => AxError::TimedOut,
-        BlkError::Io | BlkError::Other(_) => AxError::Io,
-    }
-}
-
-fn block_io_error(stage: &str, op: RequestOp, lba: u64, error: BlkError) -> AxError {
-    warn!("block {op:?} at LBA {lba} failed during {stage}: {error:?}");
-    map_blk_err_to_ax_err(error)
 }
 
 #[cfg(test)]

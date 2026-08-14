@@ -1,12 +1,14 @@
-use ax_errno::{AxError, AxResult};
 use starry_process::Pid;
 
-use crate::task::{
-    get_process, get_process_data, get_process_group, register_process_group, register_session,
-    resolve_user_pid, visible_user_pid,
+use crate::{
+    StarryError,
+    task::{
+        get_process, get_process_data, get_process_group, register_process_group, register_session,
+        resolve_user_pid, visible_user_pid,
+    },
 };
 
-fn process_pid(current: &crate::task::UserTaskRef, pid: Pid) -> AxResult<Pid> {
+fn process_pid(current: &crate::task::UserTaskRef, pid: Pid) -> crate::StarryResult<Pid> {
     if pid == 0 {
         Ok(current.as_thread().proc_data.proc.pid())
     } else {
@@ -14,7 +16,7 @@ fn process_pid(current: &crate::task::UserTaskRef, pid: Pid) -> AxResult<Pid> {
     }
 }
 
-pub fn sys_getsid(current: &crate::task::UserTaskRef, pid: Pid) -> AxResult<isize> {
+pub fn sys_getsid(current: &crate::task::UserTaskRef, pid: Pid) -> crate::StarryResult<isize> {
     let sid = get_process(process_pid(current, pid)?)?
         .group()
         .session()
@@ -22,11 +24,11 @@ pub fn sys_getsid(current: &crate::task::UserTaskRef, pid: Pid) -> AxResult<isiz
     Ok(visible_user_pid(current, sid as u64) as _)
 }
 
-pub fn sys_setsid(current: &crate::task::UserTaskRef) -> AxResult<isize> {
+pub fn sys_setsid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
     let proc_data = &current.as_thread().proc_data;
     let proc = &proc_data.proc;
     if get_process_group(proc.pid()).is_ok() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
 
     let identity = axnsproxy::JobControlId::retain(proc_data.identity().pid_identity())?;
@@ -39,20 +41,24 @@ pub fn sys_setsid(current: &crate::task::UserTaskRef) -> AxResult<isize> {
     }
 }
 
-pub fn sys_getpgid(current: &crate::task::UserTaskRef, pid: Pid) -> AxResult<isize> {
+pub fn sys_getpgid(current: &crate::task::UserTaskRef, pid: Pid) -> crate::StarryResult<isize> {
     let pgid = get_process(process_pid(current, pid)?)?.group().pgid();
     Ok(visible_user_pid(current, pgid as u64) as _)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_getpgrp(current: &crate::task::UserTaskRef) -> AxResult<isize> {
+pub fn sys_getpgrp(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
     let pgid = current.as_thread().proc_data.proc.group().pgid();
     Ok(visible_user_pid(current, pgid as u64) as _)
 }
 
-pub fn sys_setpgid(current: &crate::task::UserTaskRef, pid: i32, pgid: i32) -> AxResult<isize> {
+pub fn sys_setpgid(
+    current: &crate::task::UserTaskRef,
+    pid: i32,
+    pgid: i32,
+) -> crate::StarryResult<isize> {
     if pid < 0 || pgid < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let local_pid = if pid == 0 {
         visible_user_pid(current, current.as_thread().proc_data.proc.pid() as u64)
@@ -64,7 +70,8 @@ pub fn sys_setpgid(current: &crate::task::UserTaskRef, pid: i32, pgid: i32) -> A
     let pgid = if local_pgid == local_pid {
         pid
     } else {
-        resolve_user_pid(current, local_pgid).map_err(|_| AxError::OperationNotPermitted)?
+        resolve_user_pid(current, local_pgid)
+            .map_err(|_| crate::StarryError::OperationNotPermitted)?
     };
 
     let proc_data = get_process_data(pid)?;
@@ -80,9 +87,9 @@ pub fn sys_setpgid(current: &crate::task::UserTaskRef, pid: i32, pgid: i32) -> A
     } else {
         // POSIX: looking up a non-existent target pgid yields EPERM,
         // not ESRCH (which is reserved for pid lookup failures).
-        let group = get_process_group(pgid).map_err(|_| AxError::OperationNotPermitted)?;
+        let group = get_process_group(pgid).map_err(|_| StarryError::OperationNotPermitted)?;
         if !proc.move_to_group(&group) {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
     }
 

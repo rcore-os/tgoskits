@@ -1,6 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use axnsproxy::PidReservationKind;
@@ -17,6 +16,7 @@ use crate::task::prepare_user_thread_with_fp_state_and_policy;
 #[cfg(not(target_arch = "riscv64"))]
 use crate::task::prepare_user_thread_with_policy;
 use crate::{
+    StarryError, StarryResult,
     file::{FD_TABLE, FileLike, PidFd, add_file_like, close_file_like_if},
     mm::{VmMutPtr, VmPtr, copy_from_kernel},
     sync::SpinLock,
@@ -211,7 +211,7 @@ impl LocalPidReservations {
         global_tid: u64,
         kind: PidReservationKind,
         namespace_init: bool,
-    ) -> AxResult<Option<Self>> {
+    ) -> crate::StarryResult<Option<Self>> {
         if namespace.level() == 0 {
             return Ok(None);
         }
@@ -237,7 +237,10 @@ impl LocalPidReservations {
         Ok(Some(reservations))
     }
 
-    fn publish(&self, _publication: &crate::sync::PiMutexGuard<'static, ()>) -> AxResult<()> {
+    fn publish(
+        &self,
+        _publication: &crate::sync::PiMutexGuard<'static, ()>,
+    ) -> crate::StarryResult<()> {
         for entry in &self.entries {
             entry
                 .namespace
@@ -293,7 +296,7 @@ where
         current: &'task crate::task::UserTaskRef,
         pointer: *mut T,
         installed: T,
-    ) -> AxResult<Self> {
+    ) -> crate::StarryResult<Self> {
         let previous = pointer.vm_read(current)?;
         pointer.vm_write(current, installed)?;
         Ok(Self {
@@ -331,7 +334,7 @@ struct InstalledPidFd {
 }
 
 impl InstalledPidFd {
-    fn install(file: Arc<dyn FileLike>) -> AxResult<Self> {
+    fn install(file: Arc<dyn FileLike>) -> crate::StarryResult<Self> {
         let fd = add_file_like(file.clone(), true)?;
         Ok(Self {
             fd,
@@ -392,37 +395,37 @@ impl Drop for UnpublishedPtraceStop {
 }
 
 impl CloneArgs {
-    fn validate(&self) -> AxResult<()> {
+    fn validate(&self) -> StarryResult<()> {
         let Self {
             flags, exit_signal, ..
         } = self;
 
         if *exit_signal > 0 && flags.contains(CloneFlags::THREAD) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::THREAD)
             && !flags.contains(CloneFlags::VM | CloneFlags::SIGHAND)
         {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::SIGHAND) && !flags.contains(CloneFlags::VM) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::VFORK | CloneFlags::THREAD) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::PIDFD | CloneFlags::DETACHED) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::NEWNS | CloneFlags::FS) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         // A thread must remain in the PID namespace of its thread group.
         // CLONE_PARENT only changes parentage, so Linux permits it with
         // CLONE_NEWPID. clone3 separately requires a zero exit signal when
         // CLONE_PARENT is present.
         if flags.contains(CloneFlags::NEWPID | CloneFlags::THREAD) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         Ok(())
@@ -432,7 +435,7 @@ impl CloneArgs {
         self,
         current: &crate::task::UserTaskRef,
         uctx: &UserContext,
-    ) -> AxResult<isize> {
+    ) -> crate::StarryResult<isize> {
         self.validate()?;
 
         let Self {
@@ -451,7 +454,7 @@ impl CloneArgs {
         );
 
         let exit_signal = if exit_signal > 0 {
-            Some(Signo::from_repr(exit_signal as u8).ok_or(AxError::InvalidInput)?)
+            Some(Signo::from_repr(exit_signal as u8).ok_or(StarryError::InvalidInput)?)
         } else {
             None
         };
@@ -490,7 +493,7 @@ impl CloneArgs {
         let old_proc_data = &curr_thread.proc_data;
         let parent_pid_namespace = old_proc_data.namespace_snapshot().pid_ns.clone();
         if flags.contains(CloneFlags::NEWCGROUP) && !curr_thread.cred().has_cap_sys_admin() {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         let (child_policy, child_reset_on_fork) =
             fork_schedule_policy(curr.policy(), curr.reset_on_fork())?;
@@ -543,7 +546,10 @@ impl CloneArgs {
             (old_proc_data.clone(), false)
         } else {
             let parent_process = if flags.contains(CloneFlags::PARENT) {
-                old_proc_data.proc.parent().ok_or(AxError::InvalidInput)?
+                old_proc_data
+                    .proc
+                    .parent()
+                    .ok_or(crate::StarryError::InvalidInput)?
             } else {
                 old_proc_data.proc.clone()
             };
@@ -653,14 +659,14 @@ impl CloneArgs {
             pid_kind,
             namespace_init,
         )?;
-        let namespace_pid = |namespace: &axnsproxy::PidNamespaceRef| -> AxResult<Pid> {
+        let namespace_pid = |namespace: &axnsproxy::PidNamespaceRef| -> crate::StarryResult<Pid> {
             if namespace.level() == 0 {
                 return Ok(tid);
             }
             local_pid_reservation
                 .as_ref()
                 .and_then(|reservation| reservation.local_pid(namespace))
-                .ok_or(AxError::BadState)
+                .ok_or(crate::StarryError::BadState)
         };
         let parent_visible_tid = namespace_pid(&parent_pid_namespace)?;
         let child_visible_tid = namespace_pid(&pid_namespace)?;
@@ -789,10 +795,7 @@ impl CloneArgs {
         let mut cgroup_guard = if flags.contains(CloneFlags::THREAD) {
             None
         } else {
-            Some(
-                crate::cgroup::begin_fork(new_proc_data.cgroup_node(), tid)
-                    .map_err(crate::cgroup::cgroup_error)?,
-            )
+            Some(crate::cgroup::begin_fork(new_proc_data.cgroup_node(), tid)?)
         };
         // Linux completes every fallible scheduler preparation before the task
         // becomes visible, then uses infallible `wake_up_new_task` after
@@ -810,10 +813,10 @@ impl CloneArgs {
             reservation.publish(&publication)?;
         }
         if let Some(guard) = &mut cgroup_guard {
-            guard.publish().map_err(crate::cgroup::cgroup_error)?;
+            guard.publish()?;
         }
         let published_process = prepared_process
-            .map(|process| process.publish().ok_or(AxError::BadState))
+            .map(|process| process.publish().ok_or(crate::StarryError::BadState))
             .transpose()?;
         let task_registration = staged_task
             .with_task(|task| register_prepared_task(task, !flags.contains(CloneFlags::THREAD)))?;
@@ -887,13 +890,13 @@ impl CloneArgs {
     }
 }
 
-fn map_task_creation_error(error: ax_std::os::arceos::task::TaskError) -> AxError {
+fn map_task_creation_error(error: ax_std::os::arceos::task::TaskError) -> crate::StarryError {
     use ax_std::os::arceos::task::TaskError;
 
     match error {
-        TaskError::TimerCapacity | TaskError::RuntimeFailure(_) => AxError::NoMemory,
-        TaskError::DeadlineAdmission | TaskError::ThreadBusy => AxError::ResourceBusy,
-        _ => AxError::BadState,
+        TaskError::TimerCapacity | TaskError::RuntimeFailure(_) => crate::StarryError::NoMemory,
+        TaskError::DeadlineAdmission | TaskError::ThreadBusy => crate::StarryError::ResourceBusy,
+        _ => crate::StarryError::BadState,
     }
 }
 
@@ -930,7 +933,7 @@ pub fn sys_clone(
     #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))] child_tid: usize,
     tls: usize,
     #[cfg(not(any(target_arch = "x86_64", target_arch = "loongarch64")))] child_tid: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     const FLAG_MASK: u32 = 0xff;
     let clone_flags = CloneFlags::from_bits_truncate((flags & !FLAG_MASK) as u64);
     let exit_signal = (flags & FLAG_MASK) as u64;
@@ -938,7 +941,7 @@ pub fn sys_clone(
     trace_sys_clone(clone_flags.bits() as _, stack, parent_tid);
 
     if clone_flags.contains(CloneFlags::PIDFD | CloneFlags::PARENT_SETTID) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let args = CloneArgs {
@@ -960,12 +963,18 @@ pub fn sys_clone(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_fork(current: &crate::task::UserTaskRef, uctx: &UserContext) -> AxResult<isize> {
+pub fn sys_fork(
+    current: &crate::task::UserTaskRef,
+    uctx: &UserContext,
+) -> crate::StarryResult<isize> {
     sys_clone(current, uctx, SIGCHLD, 0, 0, 0, 0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_vfork(current: &crate::task::UserTaskRef, uctx: &UserContext) -> AxResult<isize> {
+pub fn sys_vfork(
+    current: &crate::task::UserTaskRef,
+    uctx: &UserContext,
+) -> crate::StarryResult<isize> {
     let flags = (CloneFlags::VFORK | CloneFlags::VM).bits() as u32 | SIGCHLD;
     sys_clone(current, uctx, flags, 0, 0, 0, 0)
 }

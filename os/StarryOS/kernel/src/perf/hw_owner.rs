@@ -1,7 +1,5 @@
 //! CPU-local ARM PMUv3 operations and value-only rendezvous requests.
 
-use ax_errno::{AxError, AxResult};
-
 use super::{
     sampling::{self, SampleSlot},
     sampling_lifecycle::SampleRegistration,
@@ -20,7 +18,7 @@ impl Counter {
         event: Option<u16>,
         exclude_user: bool,
         exclude_kernel: bool,
-    ) -> AxResult<()> {
+    ) -> crate::StarryResult<()> {
         match (self, event) {
             (Self::Cycle, None) => {
                 ax_cpu::pmu::cycles::configure(exclude_user, exclude_kernel);
@@ -28,7 +26,7 @@ impl Counter {
             (Self::Programmable(n), Some(event)) => {
                 ax_cpu::pmu::counter::configure(n, event, exclude_user, exclude_kernel);
             }
-            _ => return Err(AxError::BadState),
+            _ => return Err(crate::StarryError::BadState),
         }
         Ok(())
     }
@@ -128,7 +126,7 @@ pub(super) struct SystemPmuReset {
 }
 
 /// Configures one reserved counter on the current owner CPU.
-pub(super) fn configure_system_on_owner(request: SystemPmuConfigure) -> AxResult<()> {
+pub(super) fn configure_system_on_owner(request: SystemPmuConfigure) -> crate::StarryResult<()> {
     ax_cpu::pmu::init_cpu();
     request
         .counter
@@ -136,14 +134,17 @@ pub(super) fn configure_system_on_owner(request: SystemPmuConfigure) -> AxResult
 }
 
 /// Commits enable on the current owner CPU and returns its publication state.
-pub(super) fn enable_system_on_owner(request: SystemPmuEnable) -> AxResult<SystemPmuEnableResult> {
+pub(super) fn enable_system_on_owner(
+    request: SystemPmuEnable,
+) -> crate::StarryResult<SystemPmuEnableResult> {
     let registration = if let Some((period, slot)) = request.sampling {
         let Counter::Programmable(n) = request.counter else {
-            return Err(AxError::BadState);
+            return Err(crate::StarryError::BadState);
         };
-        sampling::enable_local_pmu_irq().map_err(|_| AxError::NoSuchDevice)?;
+        sampling::enable_local_pmu_irq().map_err(|_| crate::StarryError::NoSuchDevice)?;
         ax_cpu::pmu::counter::preload(n, period);
-        let registration = sampling::register(n, slot).map_err(|_| AxError::ResourceBusy)?;
+        let registration =
+            sampling::register(n, slot).map_err(|_| crate::StarryError::ResourceBusy)?;
         ax_cpu::pmu::overflow::enable_irq(n);
         ax_cpu::pmu::counter::enable(n);
         Some(registration)
@@ -160,18 +161,18 @@ pub(super) fn enable_system_on_owner(request: SystemPmuEnable) -> AxResult<Syste
 /// Quiesces one system-wide event on the current owner CPU.
 pub(super) fn disable_system_on_owner(
     request: SystemPmuDisable,
-) -> AxResult<SystemPmuDisableResult> {
+) -> crate::StarryResult<SystemPmuDisableResult> {
     if let Some(registration) = request.registration {
         let Counter::Programmable(n) = request.counter else {
-            return Err(AxError::BadState);
+            return Err(crate::StarryError::BadState);
         };
         if registration.counter() != n {
-            return Err(AxError::BadState);
+            return Err(crate::StarryError::BadState);
         }
         ax_cpu::pmu::overflow::disable_irq(n);
         ax_cpu::pmu::counter::disable(n);
         ax_cpu::pmu::overflow::clear(1 << n);
-        sampling::unregister(registration).map_err(|_| AxError::BadState)?;
+        sampling::unregister(registration).map_err(|_| crate::StarryError::BadState)?;
     } else {
         request.counter.disable();
     }
@@ -182,7 +183,9 @@ pub(super) fn disable_system_on_owner(
 }
 
 /// Reads one system-wide event on the current owner CPU.
-pub(super) fn read_system_on_owner(request: SystemPmuRead) -> AxResult<SystemPmuReadResult> {
+pub(super) fn read_system_on_owner(
+    request: SystemPmuRead,
+) -> crate::StarryResult<SystemPmuReadResult> {
     Ok(SystemPmuReadResult {
         value: request.counter.read(),
         observed_at: ax_runtime::hal::time::monotonic_time_nanos(),
@@ -190,13 +193,13 @@ pub(super) fn read_system_on_owner(request: SystemPmuRead) -> AxResult<SystemPmu
 }
 
 /// Resets one system-wide event on the current owner CPU.
-pub(super) fn reset_system_on_owner(request: SystemPmuReset) -> AxResult<()> {
+pub(super) fn reset_system_on_owner(request: SystemPmuReset) -> crate::StarryResult<()> {
     match (request.counter, request.sampling_period) {
         (Counter::Programmable(n), Some(period)) => {
             ax_cpu::pmu::counter::preload(n, period);
         }
         (counter, None) => counter.reset(),
-        (Counter::Cycle, Some(_)) => return Err(AxError::BadState),
+        (Counter::Cycle, Some(_)) => return Err(crate::StarryError::BadState),
     }
     Ok(())
 }

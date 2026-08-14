@@ -435,7 +435,9 @@ impl FsContext {
     pub fn read(&self, path: impl AsRef<Path>) -> VfsResult<Vec<u8>> {
         let mut buf = Vec::new();
         let file = File::open(self, path.as_ref())?;
-        (&file).read_to_end(&mut buf)?;
+        (&file)
+            .read_to_end(&mut buf)
+            .map_err(crate::io_error_to_vfs_error)?;
         Ok(buf)
     }
 
@@ -450,7 +452,9 @@ impl FsContext {
     /// replace its contents if it does.
     pub fn write(&self, path: impl AsRef<Path>, buf: impl AsRef<[u8]>) -> VfsResult<()> {
         let file = File::create(self, path.as_ref())?;
-        (&file).write_all(buf.as_ref())?;
+        (&file)
+            .write_all(buf.as_ref())
+            .map_err(crate::io_error_to_vfs_error)?;
         Ok(())
     }
 

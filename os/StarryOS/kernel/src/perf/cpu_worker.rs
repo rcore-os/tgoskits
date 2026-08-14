@@ -2,7 +2,6 @@
 
 use alloc::{collections::VecDeque, format, sync::Arc, vec::Vec};
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::LazyInit;
 use ax_runtime::task::{CpuId, CpuSet, WaitQueue};
 
@@ -22,7 +21,7 @@ const COMMAND_CAPACITY: usize = 64;
 static CPU_WORKERS: LazyInit<Vec<Arc<PerfCpuWorker>>> = LazyInit::new();
 
 struct PerfCompletion<T> {
-    result: IrqMutex<Option<AxResult<T>>>,
+    result: IrqMutex<Option<crate::StarryResult<T>>>,
     waiters: WaitQueue,
 }
 
@@ -34,13 +33,13 @@ impl<T> PerfCompletion<T> {
         }
     }
 
-    fn finish(&self, result: AxResult<T>) {
+    fn finish(&self, result: crate::StarryResult<T>) {
         let old = self.result.lock().replace(result);
         assert!(old.is_none(), "perf CPU command completed twice");
         self.waiters.notify_all();
     }
 
-    fn wait(&self) -> AxResult<T> {
+    fn wait(&self) -> crate::StarryResult<T> {
         self.waiters.wait_until(|| self.result.lock().is_some());
         self.result
             .lock()
@@ -149,12 +148,17 @@ impl PerfCpuCommand {
     }
 }
 
-fn with_local_pmu_exclusion<T>(operation: impl FnOnce() -> AxResult<T>) -> AxResult<T> {
+fn with_local_pmu_exclusion<T>(
+    operation: impl FnOnce() -> crate::StarryResult<T>,
+) -> crate::StarryResult<T> {
     let _guard = NoPreemptIrqSave::new();
     operation()
 }
 
-fn try_local<T>(owner: PerfCpuId, operation: impl FnOnce() -> AxResult<T>) -> Option<AxResult<T>> {
+fn try_local<T>(
+    owner: PerfCpuId,
+    operation: impl FnOnce() -> crate::StarryResult<T>,
+) -> Option<crate::StarryResult<T>> {
     let _guard = NoPreemptIrqSave::new();
     if owner.as_usize() != ax_runtime::hal::percpu::this_cpu_id() {
         return None;
@@ -204,11 +208,11 @@ impl PerfCpuWorker {
     }
 }
 
-fn owner_worker(owner: PerfCpuId) -> AxResult<&'static Arc<PerfCpuWorker>> {
+fn owner_worker(owner: PerfCpuId) -> crate::StarryResult<&'static Arc<PerfCpuWorker>> {
     CPU_WORKERS
         .get()
         .and_then(|workers| workers.get(owner.as_usize()))
-        .ok_or(AxError::BadState)
+        .ok_or(crate::StarryError::BadState)
 }
 
 /// Starts one fixed worker per online logical CPU.
@@ -237,7 +241,7 @@ pub(super) fn init() {
 /// Unlike register operations, this must not take the local fast path: when the
 /// caller is the target task, sleeping until the fixed worker executes is what
 /// guarantees the newly attached/enabled event receives a matching sched-in.
-pub(super) fn synchronize_task_context(owner: PerfCpuId) -> AxResult<()> {
+pub(super) fn synchronize_task_context(owner: PerfCpuId) -> crate::StarryResult<()> {
     let completion = Arc::new(PerfCompletion::new());
     owner_worker(owner)?.submit(PerfCpuCommand::SyncTaskContext {
         completion: Arc::clone(&completion),
@@ -246,7 +250,10 @@ pub(super) fn synchronize_task_context(owner: PerfCpuId) -> AxResult<()> {
 }
 
 /// Stops one task-bound counter on the CPU that owns its running generation.
-pub(super) fn stop_task_counter(counter: Arc<PerTaskCounter>, lease: PmuRunLease) -> AxResult<()> {
+pub(super) fn stop_task_counter(
+    counter: Arc<PerTaskCounter>,
+    lease: PmuRunLease,
+) -> crate::StarryResult<()> {
     let owner = lease.owner();
     if let Some(result) = try_local(owner, || task::stop_requested_on_owner(&counter, lease)) {
         return result;
@@ -264,7 +271,7 @@ pub(super) fn stop_task_counter(counter: Arc<PerTaskCounter>, lease: PmuRunLease
 pub(super) fn read_task_counter(
     counter: Arc<PerTaskCounter>,
     owner: PerfCpuId,
-) -> AxResult<(u64, u64, u64)> {
+) -> crate::StarryResult<(u64, u64, u64)> {
     if let Some(result) = try_local(owner, || task::read_task_on_owner(&counter)) {
         return result;
     }
@@ -277,7 +284,10 @@ pub(super) fn read_task_counter(
 }
 
 /// Configures one system-wide event on its target CPU.
-pub(super) fn configure_system(owner: PerfCpuId, request: SystemPmuConfigure) -> AxResult<()> {
+pub(super) fn configure_system(
+    owner: PerfCpuId,
+    request: SystemPmuConfigure,
+) -> crate::StarryResult<()> {
     let mut request = Some(request);
     if let Some(result) = try_local(owner, || {
         hw::configure_system_on_owner(request.take().expect("single local PMU configure"))
@@ -296,7 +306,7 @@ pub(super) fn configure_system(owner: PerfCpuId, request: SystemPmuConfigure) ->
 pub(super) fn enable_system(
     owner: PerfCpuId,
     request: SystemPmuEnable,
-) -> AxResult<SystemPmuEnableResult> {
+) -> crate::StarryResult<SystemPmuEnableResult> {
     let mut request = Some(request);
     if let Some(result) = try_local(owner, || {
         hw::enable_system_on_owner(request.take().expect("single local PMU enable"))
@@ -315,7 +325,7 @@ pub(super) fn enable_system(
 pub(super) fn disable_system(
     owner: PerfCpuId,
     request: SystemPmuDisable,
-) -> AxResult<SystemPmuDisableResult> {
+) -> crate::StarryResult<SystemPmuDisableResult> {
     let mut request = Some(request);
     if let Some(result) = try_local(owner, || {
         hw::disable_system_on_owner(request.take().expect("single local PMU disable"))
@@ -334,7 +344,7 @@ pub(super) fn disable_system(
 pub(super) fn read_system(
     owner: PerfCpuId,
     request: SystemPmuRead,
-) -> AxResult<SystemPmuReadResult> {
+) -> crate::StarryResult<SystemPmuReadResult> {
     let mut request = Some(request);
     if let Some(result) = try_local(owner, || {
         hw::read_system_on_owner(request.take().expect("single local PMU read"))
@@ -350,7 +360,7 @@ pub(super) fn read_system(
 }
 
 /// Resets one system-wide event on its target CPU.
-pub(super) fn reset_system(owner: PerfCpuId, request: SystemPmuReset) -> AxResult<()> {
+pub(super) fn reset_system(owner: PerfCpuId, request: SystemPmuReset) -> crate::StarryResult<()> {
     let mut request = Some(request);
     if let Some(result) = try_local(owner, || {
         hw::reset_system_on_owner(request.take().expect("single local PMU reset"))

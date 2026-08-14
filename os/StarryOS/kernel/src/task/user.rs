@@ -336,7 +336,7 @@ pub fn new_user_task(
                 // POSIX timers are also driven by the alarm task, but polling
                 // here closes the window where an expired timer is only noticed
                 // after the current syscall returns to userspace.
-                let eintr_code = -(ax_errno::LinuxError::EINTR.code() as isize);
+                let eintr_code = -(crate::Errno::EINTR.into_raw() as isize);
                 let restart = if is_syscall
                     && (uctx.retval() as isize) == eintr_code
                     && syscall_allows_signal_restart(saved_sysno)

@@ -19,9 +19,8 @@
 use alloc::{string::String, vec::Vec};
 use core::mem::MaybeUninit;
 
-use ax_errno::{AxError, AxResult};
-
 use crate::{
+    StarryError, StarryResult,
     mm::{vm_read_slice, vm_write_slice},
     sync::PiMutex as Mutex,
 };
@@ -123,38 +122,45 @@ fn take_pending(ifname: &str) -> Option<Pending> {
 fn read_user_array<const N: usize>(
     current: &crate::task::UserTaskRef,
     ptr: *const u8,
-) -> AxResult<[u8; N]> {
+) -> crate::StarryResult<[u8; N]> {
     let mut buf = [MaybeUninit::<u8>::uninit(); N];
     vm_read_slice(current, ptr, &mut buf)?;
     Ok(buf.map(|v| unsafe { v.assume_init() }))
 }
 
-fn read_ifname(current: &crate::task::UserTaskRef, arg: usize) -> AxResult<String> {
+fn read_ifname(current: &crate::task::UserTaskRef, arg: usize) -> crate::StarryResult<String> {
     let buf = read_user_array::<IWREQ_NAME_LEN>(current, arg as *const u8)?;
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    String::from_utf8(buf[..end].to_vec()).map_err(|_| AxError::InvalidInput)
+    String::from_utf8(buf[..end].to_vec()).map_err(|_| StarryError::InvalidInput)
 }
 
 /// Reads the 16-byte `union iwreq_data` payload following the name.
-fn read_iwreq_data(current: &crate::task::UserTaskRef, arg: usize) -> AxResult<[u8; 16]> {
+fn read_iwreq_data(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+) -> crate::StarryResult<[u8; 16]> {
     read_user_array::<16>(current, (arg + IWREQ_DATA_OFFSET) as *const u8)
 }
 
 /// Reads a length-prefixed userspace buffer described by an `iw_point`
 /// (`{ void* pointer; u16 length; u16 flags; }`) embedded in `iwreq_data`.
-fn read_iw_point(current: &crate::task::UserTaskRef, arg: usize, max: usize) -> AxResult<Vec<u8>> {
+fn read_iw_point(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+    max: usize,
+) -> crate::StarryResult<Vec<u8>> {
     let data = read_iwreq_data(current, arg)?;
     let ptr = usize::from_ne_bytes(
         data[..core::mem::size_of::<usize>()]
             .try_into()
-            .map_err(|_| AxError::InvalidInput)?,
+            .map_err(|_| StarryError::InvalidInput)?,
     );
     let len = u16::from_ne_bytes([data[8], data[9]]) as usize;
     if ptr == 0 || len == 0 {
         return Ok(Vec::new());
     }
     if len > max {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let mut buf = alloc::vec![MaybeUninit::<u8>::uninit(); len];
     vm_read_slice(current, ptr as *const u8, &mut buf)?;
@@ -178,7 +184,11 @@ pub fn is_wext_ioctl(cmd: u32) -> bool {
 
 /// Handles a wireless-extensions `ioctl`. Setters stage config; `SIOCSIWCOMMIT`
 /// applies it. Returns `Ok(0)` on success.
-pub fn handle(current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> AxResult<usize> {
+pub fn handle(
+    current: &crate::task::UserTaskRef,
+    cmd: u32,
+    arg: usize,
+) -> crate::StarryResult<usize> {
     let ifname = read_ifname(current, arg)?;
 
     match cmd {
@@ -188,7 +198,7 @@ pub fn handle(current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> AxRes
             let staged = match mode {
                 IW_MODE_INFRA => StagedMode::Station,
                 IW_MODE_MASTER => StagedMode::AccessPoint,
-                _ => return Err(AxError::InvalidInput),
+                _ => return Err(StarryError::InvalidInput),
             };
             with_pending(&ifname, |p| p.mode = Some(staged));
         }
@@ -202,7 +212,7 @@ pub fn handle(current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> AxRes
             // but userspace tools also place the key via the iw_point buffer.
             // Accept the iw_point buffer as the raw passphrase for simplicity.
             let key = read_iw_point(current, arg, MAX_PASSPHRASE)?;
-            let pass = String::from_utf8(key).map_err(|_| AxError::InvalidInput)?;
+            let pass = String::from_utf8(key).map_err(|_| crate::StarryError::InvalidInput)?;
             with_pending(&ifname, |p| p.passphrase = Some(pass));
         }
         SIOCSIWFREQ => {
@@ -210,25 +220,25 @@ pub fn handle(current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> AxRes
             let data = read_iwreq_data(current, arg)?;
             let chan = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
             if chan == 0 || chan > 14 {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             with_pending(&ifname, |p| p.channel = Some(chan as u8));
         }
         SIOCSIWCOMMIT => return commit(&ifname),
-        _ => return Err(AxError::Unsupported),
+        _ => return Err(StarryError::Unsupported),
     }
     Ok(0)
 }
 
 /// Applies the staged config for `ifname` atomically via the network stack.
-fn commit(ifname: &str) -> AxResult<usize> {
-    let pending = take_pending(ifname).ok_or(AxError::InvalidInput)?;
-    let mode = pending.mode.ok_or(AxError::InvalidInput)?;
+fn commit(ifname: &str) -> StarryResult<usize> {
+    let pending = take_pending(ifname).ok_or(StarryError::InvalidInput)?;
+    let mode = pending.mode.ok_or(StarryError::InvalidInput)?;
 
     match mode {
         StagedMode::Station => {
-            let ssid = pending.ssid.ok_or(AxError::InvalidInput)?;
-            let ssid = core::str::from_utf8(&ssid).map_err(|_| AxError::InvalidInput)?;
+            let ssid = pending.ssid.ok_or(StarryError::InvalidInput)?;
+            let ssid = core::str::from_utf8(&ssid).map_err(|_| StarryError::InvalidInput)?;
             let password = pending.passphrase.unwrap_or_default();
             ax_net::reconfigure_wifi(
                 ifname,
@@ -239,7 +249,7 @@ fn commit(ifname: &str) -> AxResult<usize> {
             )?;
         }
         StagedMode::AccessPoint => {
-            let ssid = pending.ssid.ok_or(AxError::InvalidInput)?;
+            let ssid = pending.ssid.ok_or(StarryError::InvalidInput)?;
             let channel = pending.channel.unwrap_or(AP_CHANNEL_DEFAULT);
             ax_net::reconfigure_wifi(
                 ifname,
@@ -260,7 +270,11 @@ fn commit(ifname: &str) -> AxResult<usize> {
 /// Silences unused-write-helper warnings if a setter that echoes data back is
 /// added later. Currently all WE setters here only stage, so no write-back.
 #[allow(dead_code)]
-fn _write_iwreq_data(current: &crate::task::UserTaskRef, arg: usize, data: &[u8]) -> AxResult<()> {
+fn _write_iwreq_data(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+    data: &[u8],
+) -> crate::StarryResult<()> {
     Ok(vm_write_slice(
         current,
         (arg + IWREQ_DATA_OFFSET) as *mut u8,

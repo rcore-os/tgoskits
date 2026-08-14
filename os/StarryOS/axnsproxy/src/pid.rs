@@ -1,9 +1,10 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::LazyLock;
 use ax_runtime::sync::IrqMutex;
+
+use crate::{PidError, PidResult};
 
 /// Shared ownership handle for one PID namespace generation.
 pub type PidNamespaceRef = Arc<PidNamespace>;
@@ -100,20 +101,22 @@ pub struct PidIdentity {
 
 impl PidIdentity {
     /// Captures every published namespace PID for one task generation.
-    pub fn capture(global_pid: u64, namespaces: &[PidNamespaceRef]) -> AxResult<PidIdentityRef> {
+    pub fn capture(global_pid: u64, namespaces: &[PidNamespaceRef]) -> PidResult<PidIdentityRef> {
         let mut mappings = Vec::new();
         mappings
             .try_reserve_exact(namespaces.len())
-            .map_err(|_| AxError::NoMemory)?;
+            .map_err(|_| PidError::AllocationFailed)?;
         for namespace in namespaces {
-            let local_pid = namespace.local_pid(global_pid).ok_or(AxError::BadState)?;
+            let local_pid = namespace
+                .local_pid(global_pid)
+                .ok_or(PidError::InvalidState)?;
             mappings.push(PidNamespaceIdentity {
                 namespace: namespace.clone(),
                 local_pid,
             });
         }
         if mappings.is_empty() {
-            return Err(AxError::BadState);
+            return Err(PidError::InvalidState);
         }
         Ok(Arc::new(Self {
             global_pid,
@@ -171,7 +174,7 @@ impl JobControlId {
     }
 
     /// Retains an already-published process PID as a PGID or SID.
-    pub fn retain(identity: PidIdentityRef) -> AxResult<JobControlIdRef> {
+    pub fn retain(identity: PidIdentityRef) -> PidResult<JobControlIdRef> {
         let mut retained: Vec<PidNamespaceRef> = Vec::new();
         for mapping in identity
             .mappings
@@ -260,14 +263,14 @@ impl PidNamespace {
         global_tid: u64,
         kind: PidReservationKind,
         namespace_init: bool,
-    ) -> AxResult<u32> {
+    ) -> PidResult<u32> {
         self.state
             .lock()
             .reserve_local_pid(global_tid, kind, namespace_init)
     }
 
     /// Commits a reservation to Linux-visible task publication.
-    pub fn publish_reserved_pid(&self, global_tid: u64, local_pid: u32) -> AxResult<()> {
+    pub fn publish_reserved_pid(&self, global_tid: u64, local_pid: u32) -> PidResult<()> {
         self.state
             .lock()
             .publish_reserved_pid(global_tid, local_pid)
@@ -369,7 +372,7 @@ impl PidNamespace {
         self.state.lock().release_process_pid(global_pid)
     }
 
-    fn retain_job_control_pid(&self, global_pid: u64) -> AxResult<()> {
+    fn retain_job_control_pid(&self, global_pid: u64) -> PidResult<()> {
         self.state.lock().retain_job_control_pid(global_pid)
     }
 
@@ -397,29 +400,34 @@ impl PidNamespaceState {
         global_tid: u64,
         kind: PidReservationKind,
         namespace_init: bool,
-    ) -> AxResult<u32> {
+    ) -> PidResult<u32> {
         if self.pid_map.contains_key(&global_tid) {
-            return Err(AxError::AlreadyExists);
+            return Err(PidError::AlreadyExists);
         }
         match (self.lifecycle, namespace_init) {
             (PidNamespaceLifecycle::AwaitingInit, true) => {
                 if kind != PidReservationKind::Process {
-                    return Err(AxError::InvalidInput);
+                    return Err(PidError::InvalidInput);
                 }
             }
             (PidNamespaceLifecycle::Active { .. }, false) => {}
-            (PidNamespaceLifecycle::Root, _) => return Err(AxError::InvalidInput),
+            (PidNamespaceLifecycle::Root, _) => return Err(PidError::InvalidInput),
             (
                 PidNamespaceLifecycle::AwaitingInit
                 | PidNamespaceLifecycle::ShuttingDown { .. }
                 | PidNamespaceLifecycle::Dead { .. },
                 _,
             )
-            | (PidNamespaceLifecycle::Active { .. }, true) => return Err(AxError::NoMemory),
+            | (PidNamespaceLifecycle::Active { .. }, true) => {
+                return Err(PidError::NamespaceUnavailable);
+            }
         }
 
         let local = self.next_pid;
-        self.next_pid = self.next_pid.checked_add(1).ok_or(AxError::NoMemory)?;
+        self.next_pid = self
+            .next_pid
+            .checked_add(1)
+            .ok_or(PidError::AllocationFailed)?;
         self.pid_map.insert(
             global_tid,
             PidEntry {
@@ -443,20 +451,20 @@ impl PidNamespaceState {
     ///
     /// This is the post-registry shutdown check corresponding to Linux's
     /// `copy_process()` check of `PIDNS_ADDING`.
-    fn publish_reserved_pid(&mut self, global_tid: u64, local_pid: u32) -> AxResult<()> {
+    fn publish_reserved_pid(&mut self, global_tid: u64, local_pid: u32) -> PidResult<()> {
         if !matches!(self.lifecycle, PidNamespaceLifecycle::Active { .. }) {
-            return Err(AxError::NoMemory);
+            return Err(PidError::NamespaceUnavailable);
         }
         if self.global_pid_map.contains_key(&local_pid) {
-            return Err(AxError::BadState);
+            return Err(PidError::InvalidState);
         }
         let entry = self
             .pid_map
             .get_mut(&global_tid)
             .filter(|entry| entry.local_pid == local_pid)
-            .ok_or(AxError::BadState)?;
+            .ok_or(PidError::InvalidState)?;
         if entry.publication != PidPublication::Reserved {
-            return Err(AxError::BadState);
+            return Err(PidError::InvalidState);
         }
         entry.publication = PidPublication::Published;
         let previous = self.global_pid_map.insert(local_pid, global_tid);
@@ -633,7 +641,7 @@ impl PidNamespaceState {
         matches
     }
 
-    fn retain_job_control_pid(&mut self, global_pid: u64) -> AxResult<()> {
+    fn retain_job_control_pid(&mut self, global_pid: u64) -> PidResult<()> {
         let entry = self
             .pid_map
             .get_mut(&global_pid)
@@ -642,11 +650,11 @@ impl PidNamespaceState {
                     && entry.publication == PidPublication::Published
                     && !entry.task_retired
             })
-            .ok_or(AxError::NoSuchProcess)?;
+            .ok_or(PidError::NoSuchProcess)?;
         entry.job_control_refs = entry
             .job_control_refs
             .checked_add(1)
-            .ok_or(AxError::NoMemory)?;
+            .ok_or(PidError::AllocationFailed)?;
         Ok(())
     }
 
@@ -699,10 +707,8 @@ pub fn pid_namespace_lineage(innermost: &PidNamespaceRef) -> Vec<PidNamespaceRef
 mod tests {
     use alloc::sync::Arc;
 
-    use ax_errno::AxError;
-
     use super::{
-        PidNamespace, PidNamespaceLifecycle, PidNamespaceRef, PidNamespaceState,
+        PidError, PidNamespace, PidNamespaceLifecycle, PidNamespaceRef, PidNamespaceState,
         PidReservationKind, pid_namespace_lineage,
     };
 
@@ -815,7 +821,7 @@ mod tests {
         assert_eq!(init_pid, 1);
         assert_eq!(
             namespace.reserve_local_pid(43, PidReservationKind::Process, true),
-            Err(AxError::NoMemory)
+            Err(PidError::NamespaceUnavailable)
         );
         assert_eq!(namespace.init_global_tid(), Some(42));
     }
@@ -831,7 +837,7 @@ mod tests {
         assert!(namespace.begin_shutdown(42));
         assert_eq!(
             namespace.reserve_local_pid(44, PidReservationKind::Process, false),
-            Err(AxError::NoMemory)
+            Err(PidError::NamespaceUnavailable)
         );
         assert_eq!(namespace.published_members_excluding(42), [43]);
         assert!(namespace.has_members_excluding(42));
@@ -873,7 +879,7 @@ mod tests {
         assert!(namespace.begin_shutdown(42));
         assert_eq!(
             namespace.publish_reserved_pid(43, pending),
-            Err(AxError::NoMemory)
+            Err(PidError::NamespaceUnavailable)
         );
         assert!(namespace.has_members_excluding(42));
         assert!(namespace.rollback_pid_reservation(43, pending));

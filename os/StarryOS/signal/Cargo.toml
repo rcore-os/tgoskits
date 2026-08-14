@@ -10,7 +10,6 @@ license = "Apache-2.0"
 
 [dependencies]
 ax-cpu = { workspace = true, features = ["uspace"] }
-ax-errno = { workspace = true }
 bitflags = "2.6"
 bytemuck = "1.24"
 cfg-if = "1"
@@ -24,6 +23,7 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
 log = "0.4"
 starry-vm = { workspace = true }
 strum = { version = "0.27", default-features = false, features = ["derive"] }
+thiserror.workspace = true
 
 [dev-dependencies]
 ax-runtime = { workspace = true, features = ["host-test", "smp", "lockdep", "multitask"] }

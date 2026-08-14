@@ -64,6 +64,7 @@ mod clock_event;
 #[cfg(any(feature = "irq", feature = "multitask", test))]
 mod clock_event_runtime;
 mod devices;
+mod error;
 mod fs;
 #[cfg(feature = "irq")]
 mod interrupt_bootstrap;
@@ -89,6 +90,7 @@ mod unix_ns;
 mod wifi_glue;
 
 pub use ax_hal as hal;
+pub use error::{RuntimeError, RuntimeResult};
 
 pub(crate) mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));

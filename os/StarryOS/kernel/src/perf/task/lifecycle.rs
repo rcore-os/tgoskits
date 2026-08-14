@@ -118,7 +118,7 @@ fn release_task_counters(thr: &Thread, counters: &[Arc<PerTaskCounter>]) {
 /// handler can no longer reach the ring or notification anchor. An inherited
 /// member then drops its redirect; the root output remains fd-owned until the
 /// complete family has quiesced.
-pub(crate) fn free_hw(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
+pub(crate) fn free_hw(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<()> {
     if ptc.resources_released() {
         return Ok(());
     }

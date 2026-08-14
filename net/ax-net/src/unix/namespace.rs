@@ -13,10 +13,10 @@
 
 use alloc::{boxed::Box, sync::Arc};
 
-use ax_errno::{AxResult, ax_err_type};
 use ax_lazyinit::OnceLock;
 
 use super::BindSlot;
+use crate::{NetError, NetResult};
 
 /// Path-based Unix socket namespace provider.
 ///
@@ -24,13 +24,13 @@ use super::BindSlot;
 /// Abstract namespace sockets are handled separately within ax-net.
 pub trait UnixNamespace: Send + Sync {
     /// Resolve an existing socket path binding.
-    fn resolve(&self, path: &str) -> AxResult<Arc<BindSlot>>;
+    fn resolve(&self, path: &str) -> NetResult<Arc<BindSlot>>;
 
     /// Create or get a socket path binding.
-    fn bind(&self, path: &str) -> AxResult<Arc<BindSlot>>;
+    fn bind(&self, path: &str) -> NetResult<Arc<BindSlot>>;
 
     /// Remove a socket path binding.
-    fn unbind(&self, path: &str) -> AxResult<()>;
+    fn unbind(&self, path: &str) -> NetResult<()>;
 }
 
 static UNIX_NS: OnceLock<Box<dyn UnixNamespace>> = OnceLock::new();
@@ -44,13 +44,12 @@ pub fn register_unix_namespace(ns: impl UnixNamespace + 'static) {
 
 /// Access the registered Unix namespace.
 ///
-/// Returns `AxError::Unsupported` if no filesystem-backed namespace is available.
-pub(crate) fn with_namespace<R>(f: impl FnOnce(&dyn UnixNamespace) -> AxResult<R>) -> AxResult<R> {
+/// Returns `NetError::Unsupported` if no filesystem-backed namespace is available.
+pub(crate) fn with_namespace<R>(
+    f: impl FnOnce(&dyn UnixNamespace) -> NetResult<R>,
+) -> NetResult<R> {
     match UNIX_NS.get() {
         Some(ns) => f(&**ns),
-        None => Err(ax_err_type!(
-            Unsupported,
-            "Unix socket path operations require filesystem support (enable 'fs-ng' feature)"
-        )),
+        None => Err(NetError::Unsupported),
     }
 }

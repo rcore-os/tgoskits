@@ -11,7 +11,7 @@ pub fn sys_sched_yield() -> c_int {
         syscall_body!(sys_sched_yield, {
             ax_runtime::task::yield_current_cpu().map_err(|error| {
                 warn!("failed to yield current task: {error}");
-                ax_errno::LinuxError::EAGAIN
+                crate::PosixError::EAGAIN
             })?;
             Ok(0)
         })
@@ -34,7 +34,7 @@ pub fn sys_getpid() -> c_int {
         {
             let id = ax_runtime::task::current_thread_id().map_err(|error| {
                 warn!("failed to read current task identity: {error}");
-                ax_errno::LinuxError::EAGAIN
+                crate::PosixError::EAGAIN
             })?;
             Ok(id.as_u64() as c_int)
         }

@@ -1,9 +1,8 @@
 use alloc::{collections::VecDeque, sync::Arc};
 
-use ax_errno::{AxError, AxResult};
 use rdif_serial::Config;
 
-use crate::{sync::PiMutex, task::WaitQueue};
+use crate::{RuntimeError, RuntimeResult, sync::PiMutex, task::WaitQueue};
 
 pub(super) const CONTROL_QUEUE_CAPACITY: usize = 32;
 
@@ -21,7 +20,7 @@ pub(super) struct ControlCommand {
 }
 
 impl ControlCommand {
-    pub(super) fn complete(self, result: AxResult) {
+    pub(super) fn complete(self, result: RuntimeResult) {
         self.completion.complete(result);
     }
 }
@@ -37,12 +36,12 @@ impl ControlQueue {
         }
     }
 
-    pub(super) fn submit(&self, op: ControlOp, notify: impl FnOnce()) -> AxResult {
+    pub(super) fn submit(&self, op: ControlOp, notify: impl FnOnce()) -> RuntimeResult {
         let completion = Arc::new(CommandCompletion::new());
         {
             let mut commands = self.commands.lock();
             if commands.len() == CONTROL_QUEUE_CAPACITY {
-                return Err(AxError::ResourceBusy);
+                return Err(RuntimeError::SerialControlBusy);
             }
             commands.push_back(ControlCommand {
                 op,
@@ -63,7 +62,7 @@ impl ControlQueue {
 }
 
 struct CommandCompletion {
-    result: PiMutex<Option<AxResult>>,
+    result: PiMutex<Option<RuntimeResult>>,
     wait: WaitQueue,
 }
 
@@ -75,12 +74,12 @@ impl CommandCompletion {
         }
     }
 
-    fn complete(&self, result: AxResult) {
+    fn complete(&self, result: RuntimeResult) {
         *self.result.lock() = Some(result);
         self.wait.notify_all();
     }
 
-    fn wait(&self) -> AxResult {
+    fn wait(&self) -> RuntimeResult {
         self.wait.wait_until(|| self.result.lock().is_some());
         self.result
             .lock()

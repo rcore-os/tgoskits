@@ -6,14 +6,16 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
 use ax_task::WaitQueue;
 use rdif_vsock::{VsockConnId, VsockError, VsockEvent};
 
 use super::VSOCK_DEVICE;
-use crate::vsock::connection_manager::{
-    Connection, ConnectionState, VSOCK_CONN_MANAGER, VSOCK_RX_BUFFER_SIZE,
+use crate::{
+    NetError, NetResult,
+    vsock::connection_manager::{
+        Connection, ConnectionState, VSOCK_CONN_MANAGER, VSOCK_RX_BUFFER_SIZE,
+    },
 };
 
 const VSOCK_RX_TMPBUF_SIZE: usize = 0x1000; // 4KiB buffer for vsock receive
@@ -105,7 +107,7 @@ impl Drop for VsockPollLease {
     }
 }
 
-pub(crate) fn start_vsock_poll() -> AxResult<VsockPollLease> {
+pub(crate) fn start_vsock_poll() -> NetResult<VsockPollLease> {
     loop {
         let mut state = POLL_TASK_STATE.lock();
         match state.phase {
@@ -114,7 +116,7 @@ pub(crate) fn start_vsock_poll() -> AxResult<VsockPollLease> {
                     .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                         current.checked_add(1)
                     })
-                    .map_err(|_| AxError::ResourceBusy)?
+                    .map_err(|_| NetError::ResourceBusy)?
                     + 1;
                 drop(state);
                 POLL_TASK_WAIT.notify_all();
@@ -144,7 +146,7 @@ pub(crate) fn start_vsock_poll() -> AxResult<VsockPollLease> {
         drop(state);
         POLL_TASK_WAIT.notify_all();
         warn!("Failed to start vsock poll task: {error}");
-        return Err(AxError::BadState);
+        return Err(NetError::BadState);
     }
     state.phase = PollTaskPhase::Running;
     drop(state);
@@ -158,10 +160,10 @@ pub(crate) fn start_vsock_poll() -> AxResult<VsockPollLease> {
 /// Because the event is already being handled by the poll worker, any state
 /// other than an active `Running` worker means the listener lifetime ended and
 /// the request must not become visible.
-fn retain_running_vsock_poll() -> AxResult<VsockPollLease> {
+fn retain_running_vsock_poll() -> NetResult<VsockPollLease> {
     let state = POLL_TASK_STATE.lock();
     if state.phase != PollTaskPhase::Running {
-        return Err(AxError::BadState);
+        return Err(NetError::BadState);
     }
     let active_users = POLL_ACTIVE_USERS
         .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
@@ -171,7 +173,7 @@ fn retain_running_vsock_poll() -> AxResult<VsockPollLease> {
                 current.checked_add(1)
             }
         })
-        .map_err(|_| AxError::BadState)?
+        .map_err(|_| NetError::BadState)?
         + 1;
     drop(state);
     debug!("retain_running_vsock_poll: ref_count -> {active_users}");
@@ -211,7 +213,7 @@ impl VsockPollWorker {
         }
     }
 
-    fn poll_interfaces_adaptive(&mut self) -> AxResult<()> {
+    fn poll_interfaces_adaptive(&mut self) -> NetResult<()> {
         let has_events = self.poll_vsock_interfaces()?;
 
         if has_events {
@@ -252,7 +254,7 @@ fn lookup_connection(connection_id: VsockConnId) -> Option<Arc<Connection>> {
 }
 
 impl VsockPollWorker {
-    fn poll_vsock_interfaces(&mut self) -> AxResult<bool> {
+    fn poll_vsock_interfaces(&mut self) -> NetResult<bool> {
         let mut made_progress = false;
         let retry_count = self.pending_events.len().min(VSOCK_PENDING_RETRY_BUDGET);
         for _ in 0..retry_count {
@@ -276,7 +278,7 @@ impl VsockPollWorker {
         {
             let event = {
                 let mut device = VSOCK_DEVICE.lock();
-                let device = device.as_mut().ok_or(AxError::NotFound)?;
+                let device = device.as_mut().ok_or(NetError::NotFound)?;
                 match device.poll_event() {
                     Ok(event) => event,
                     Err(error) => {
@@ -301,7 +303,7 @@ impl VsockPollWorker {
         Ok(made_progress || polled_events != 0)
     }
 
-    fn handle_vsock_event(&mut self, event: VsockEvent) -> AxResult<EventDisposition> {
+    fn handle_vsock_event(&mut self, event: VsockEvent) -> NetResult<EventDisposition> {
         debug!("Handling vsock event: {event:?}");
         match event {
             VsockEvent::ConnectionRequest(conn_id) => {
@@ -328,7 +330,7 @@ impl VsockPollWorker {
                 }
                 let read_len = {
                     let mut device = VSOCK_DEVICE.lock();
-                    let device = device.as_mut().ok_or(AxError::NotFound)?;
+                    let device = device.as_mut().ok_or(NetError::NotFound)?;
                     match device.recv(conn_id, &mut self.rx_buffer[..max_read]) {
                         Ok(read_len) => read_len,
                         Err(VsockError::Retry) => return Ok(EventDisposition::Retry),

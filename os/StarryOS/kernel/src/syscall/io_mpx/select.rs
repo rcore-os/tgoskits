@@ -1,7 +1,6 @@
 use alloc::vec::Vec;
 use core::{fmt, mem::offset_of, time::Duration};
 
-use ax_errno::{AxError, AxResult};
 use axpoll::IoEvents;
 use bitmaps::Bitmap;
 use linux_raw_sys::{
@@ -12,6 +11,7 @@ use starry_signal::SignalSet;
 
 use super::FdPollSet;
 use crate::{
+    StarryError, StarryResult,
     file::current_fd_table,
     mm::{UserConstPtr, UserPtr},
     syscall::signal::check_sigset_size,
@@ -61,9 +61,9 @@ fn do_select(
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: Option<Duration>,
     sigmask: UserConstPtr<SignalSetWithSize>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if nfds > __FD_SETSIZE {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let sigmask = if sigmask.is_null() {
         None
@@ -118,7 +118,7 @@ fn do_select(
     for fd in fd_bitmap.into_iter() {
         let f = fd_table
             .get(fd)
-            .ok_or(AxError::BadFileDescriptor)?
+            .ok_or(StarryError::BadFileDescriptor)?
             .inner
             .clone();
         let mut events = IoEvents::empty();
@@ -175,7 +175,7 @@ fn do_select(
                     return Ok(res as _);
                 }
 
-                Err(AxError::WouldBlock)
+                Err(StarryError::WouldBlock)
             }),
         );
         match result {
@@ -187,7 +187,7 @@ fn do_select(
                 write_fd_set(exceptfds_value.as_mut(), &empty, nfds as _);
                 Ok(0)
             }
-            UserWaitOutcome::Interrupted => Err(AxError::Interrupted),
+            UserWaitOutcome::Interrupted => Err(crate::StarryError::Interrupted),
         }
     });
     if let Some(value) = readfds_value {
@@ -222,7 +222,7 @@ pub fn sys_select(
     writefds: UserPtr<__kernel_fd_set>,
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: UserConstPtr<timeval>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     do_select(
         current,
         nfds,
@@ -257,7 +257,7 @@ pub fn sys_pselect6(
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: UserConstPtr<timespec>,
     sigmask: UserConstPtr<SignalSetWithSize>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     do_select(
         current,
         nfds,

@@ -1,8 +1,7 @@
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec::Vec};
 use core::{any::Any, task::Context};
 
-use ax_errno::AxError;
-use axfs_ng_vfs::{NodeFlags, NodeType, VfsResult};
+use axfs_ng_vfs::{NodeFlags, NodeType, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 
 use super::{
@@ -41,10 +40,10 @@ impl SimpleDirOps for UsbRootDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let Some(bus_num) = parse_numeric_component(name) else {
-            return Err(AxError::NotFound);
+            return Err(VfsError::NotFound);
         };
         if !self.manager.bus_numbers().contains(&bus_num) {
-            return Err(AxError::NotFound);
+            return Err(VfsError::NotFound);
         }
 
         let fs = self.fs.clone();
@@ -84,14 +83,14 @@ impl SimpleDirOps for UsbBusDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let Some(device_num) = parse_numeric_component(name) else {
-            return Err(AxError::NotFound);
+            return Err(VfsError::NotFound);
         };
         if self
             .manager
             .device_snapshot(self.bus_num, device_num)
             .is_none()
         {
-            return Err(AxError::NotFound);
+            return Err(VfsError::NotFound);
         }
 
         Ok(NodeOpsMux::File(Device::new(
@@ -118,7 +117,7 @@ impl DeviceOps for UsbDeviceOps {
         let snapshot = self
             .manager
             .device_snapshot(self.bus_num, self.device_num)
-            .ok_or(AxError::NotFound)?;
+            .ok_or(VfsError::NotFound)?;
         let offset = offset as usize;
         if offset >= snapshot.descriptor_blob.len() {
             return Ok(0);
@@ -130,35 +129,39 @@ impl DeviceOps for UsbDeviceOps {
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::InvalidInput)
+        Err(VfsError::InvalidInput)
     }
 
     fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         let snapshot = self
             .manager
             .device_snapshot(self.bus_num, self.device_num)
-            .ok_or(AxError::NotFound)?;
+            .ok_or(VfsError::NotFound)?;
         match cmd {
             USBDEVFS_CONNECTINFO => {
-                (arg as *mut UsbdevfsConnectInfo).vm_write(
-                    current,
-                    UsbdevfsConnectInfo {
-                        devnum: snapshot.device_num as u32,
-                        slow: 0,
-                        _padding: [0; 3],
-                    },
-                )?;
+                (arg as *mut UsbdevfsConnectInfo)
+                    .vm_write(
+                        current,
+                        UsbdevfsConnectInfo {
+                            devnum: snapshot.device_num as u32,
+                            slow: 0,
+                            _padding: [0; 3],
+                        },
+                    )
+                    .map_err(|error| VfsError::from(crate::StarryError::from(error)))?;
                 Ok(0)
             }
             USBDEVFS_GET_CAPABILITIES => {
-                (arg as *mut u32).vm_write(current, USBDEVFS_CAP_BULK_CONTINUATION)?;
+                (arg as *mut u32)
+                    .vm_write(current, USBDEVFS_CAP_BULK_CONTINUATION)
+                    .map_err(|error| VfsError::from(crate::StarryError::from(error)))?;
                 Ok(0)
             }
-            USBDEVFS_CONTROL => {
-                self.manager
-                    .snapshot_device_ioctl(current, self.bus_num, self.device_num, cmd, arg)
-            }
-            _ => Err(AxError::Unsupported),
+            USBDEVFS_CONTROL => self
+                .manager
+                .snapshot_device_ioctl(current, self.bus_num, self.device_num, cmd, arg)
+                .map_err(Into::into),
+            _ => Err(VfsError::Unsupported),
         }
     }
 

@@ -1,16 +1,14 @@
 #[cfg(target_arch = "x86_64")]
-use ax_errno::AxError;
-use ax_errno::AxResult;
-
+use crate::StarryError;
 use crate::task::visible_user_pid;
 
 #[inline(never)]
-pub fn sys_getpid(current: &crate::task::UserTaskRef) -> AxResult<isize> {
+pub fn sys_getpid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
     let global_pid = current.as_thread().proc_data.proc.pid() as u64;
     Ok(visible_user_pid(current, global_pid) as isize)
 }
 
-pub fn sys_getppid(current: &crate::task::UserTaskRef) -> AxResult<isize> {
+pub fn sys_getppid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
     let parent_pid = current
         .as_thread()
         .proc_data
@@ -20,7 +18,7 @@ pub fn sys_getppid(current: &crate::task::UserTaskRef) -> AxResult<isize> {
     Ok(parent_pid.map_or(0, |pid| visible_user_pid(current, pid) as isize))
 }
 
-pub fn sys_gettid(current: &crate::task::UserTaskRef) -> AxResult<isize> {
+pub fn sys_gettid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
     // `Thread::tid` rather than the scheduler ID: after a non-leader
     // `execve` they differ (the calling thread inherits the leader's TID
     // so that `gettid() == getpid()` holds in the new image).
@@ -37,7 +35,7 @@ pub fn sys_getcpu(
     cpu: *mut u32,
     node: *mut u32,
     _tcache: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     use ax_runtime::hal::percpu::this_cpu_id;
 
     use crate::mm::VmMutPtr;
@@ -80,7 +78,7 @@ enum ArchPrctlCode {
 pub fn sys_set_tid_address(
     current: &crate::task::UserTaskRef,
     clear_child_tid: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let curr = current;
     let thr = curr.as_thread();
     thr.set_clear_child_tid(clear_child_tid);
@@ -93,10 +91,10 @@ pub fn sys_arch_prctl(
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
     code: i32,
     addr: usize,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     use crate::mm::VmMutPtr;
 
-    let code = ArchPrctlCode::try_from(code).map_err(|_| AxError::InvalidInput)?;
+    let code = ArchPrctlCode::try_from(code).map_err(|_| StarryError::InvalidInput)?;
     debug!("sys_arch_prctl: code = {code:?}, addr = {addr:#x}");
 
     match code {
@@ -119,7 +117,7 @@ pub fn sys_arch_prctl(
             Ok(0)
         }
         ArchPrctlCode::GetCpuid => Ok(0),
-        ArchPrctlCode::SetCpuid => Err(ax_errno::AxError::NoSuchDevice),
+        ArchPrctlCode::SetCpuid => Err(crate::StarryError::NoSuchDevice),
     }
 }
 

@@ -1,4 +1,3 @@
-use ax_errno::AxResult;
 use ax_net::SocketOps;
 use linux_raw_sys::net::{sockaddr, socklen_t};
 
@@ -13,7 +12,7 @@ pub fn sys_getsockname(
     fd: i32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let mut addrlen_value = addrlen.read(current)?;
     if let Ok(packet) = PacketSocket::from_fd(fd) {
         let local_addr = packet.local_addr();
@@ -44,7 +43,7 @@ pub fn sys_getpeername(
     fd: i32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let mut addrlen_value = addrlen.read(current)?;
     let socket = Socket::from_fd(fd)?;
     let peer_addr = socket_addr_ex_for_user_name(socket.ip_domain(), socket.peer_addr()?);

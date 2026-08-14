@@ -19,11 +19,10 @@
 
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use ax_errno::{AxError, AxResult, ax_bail};
 use ax_sync::Mutex;
 
 use super::{VsockAddr, VsockConnId};
-use crate::device::VsockPollLease;
+use crate::{NetError, NetResult, device::VsockPollLease};
 
 mod connection;
 mod queue;
@@ -96,7 +95,7 @@ impl VsockConnectionManager {
     }
 
     /// allocate an ephemeral port
-    pub fn allocate_port(&mut self) -> AxResult<u32> {
+    pub fn allocate_port(&mut self) -> NetResult<u32> {
         let start = self.next_ephemeral_port;
         loop {
             let port = self.next_ephemeral_port;
@@ -116,15 +115,15 @@ impl VsockConnectionManager {
             }
 
             if self.next_ephemeral_port == start {
-                ax_bail!(AddrInUse, "no available ports");
+                return Err(NetError::AddrInUse);
             }
         }
     }
 
     /// create a listen queue
-    pub fn listen(&mut self, local_addr: VsockAddr) -> AxResult<()> {
+    pub fn listen(&mut self, local_addr: VsockAddr) -> NetResult<()> {
         if self.listen_queues.contains_key(&local_addr.port) {
-            ax_bail!(AddrInUse, "port already in use");
+            return Err(NetError::AddrInUse);
         }
 
         let queue = Arc::new(Mutex::new(ListenQueue::new(local_addr)));
@@ -161,14 +160,21 @@ impl VsockConnectionManager {
     }
 
     /// accept a connection
-    pub fn accept(&mut self, port: u32) -> AxResult<(VsockConnId, VsockAddr)> {
-        let queue = self.listen_queues.get(&port).ok_or(AxError::InvalidInput)?;
+    pub fn accept(&mut self, port: u32) -> NetResult<(VsockConnId, VsockAddr)> {
+        let queue = self
+            .listen_queues
+            .get(&port)
+            .ok_or(NetError::InvalidInput)?;
 
-        let conn_id = queue.lock().accept_queue.pop().ok_or(AxError::WouldBlock)?;
+        let conn_id = queue
+            .lock()
+            .accept_queue
+            .pop()
+            .ok_or(NetError::WouldBlock)?;
 
-        let conn = self.connections.get(&conn_id).ok_or(AxError::NotFound)?;
+        let conn = self.connections.get(&conn_id).ok_or(NetError::NotFound)?;
 
-        let peer_addr = conn.lock().peer_addr().ok_or(AxError::NotFound)?;
+        let peer_addr = conn.lock().peer_addr().ok_or(NetError::NotFound)?;
 
         debug!("Accepted connection: {:?} from {:?}", conn_id, peer_addr);
         Ok((conn_id, peer_addr))
@@ -182,12 +188,9 @@ impl VsockConnectionManager {
         peer_addr: Option<VsockAddr>,
         state: ConnectionState,
         poll_lease: VsockPollLease,
-    ) -> AxResult<Arc<Connection>> {
+    ) -> NetResult<Arc<Connection>> {
         if self.connections.contains_key(&conn_id) {
-            ax_bail!(
-                AlreadyExists,
-                "vsock connection identity already registered"
-            );
+            return Err(NetError::AlreadyExists);
         }
         let conn = Connection::new_shared(local_addr, peer_addr, state, poll_lease);
         self.connections.insert(conn_id, conn.clone());
@@ -221,11 +224,11 @@ impl VsockConnectionManager {
         &mut self,
         conn_id: VsockConnId,
         poll_lease: VsockPollLease,
-    ) -> AxResult<Option<IncomingConnection>> {
+    ) -> NetResult<Option<IncomingConnection>> {
         let queue = self
             .listen_queues
             .get(&conn_id.local_port)
-            .ok_or(AxError::NotFound)?
+            .ok_or(NetError::NotFound)?
             .clone();
 
         let local_addr = queue.lock().local_addr;
@@ -255,7 +258,7 @@ impl VsockConnectionManager {
             // full -- remove the connection
             drop(queue_guard);
             self.remove_connection_if(conn_id, &connection);
-            return Err(AxError::ResourceBusy);
+            return Err(NetError::ResourceBusy);
         }
 
         drop(queue_guard);
@@ -350,7 +353,7 @@ mod tests {
                 ConnectionState::Connecting,
                 test_poll_lease(),
             ),
-            Err(AxError::AlreadyExists)
+            Err(NetError::AlreadyExists)
         ));
         assert!(Arc::ptr_eq(
             &original,

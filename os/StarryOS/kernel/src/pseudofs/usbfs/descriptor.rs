@@ -173,7 +173,7 @@ pub(super) fn read_usbdevfs_ctrltransfer(
 ) -> VfsResult<UsbdevfsCtrlTransfer> {
     (arg as *const UsbdevfsCtrlTransfer)
         .vm_read(current)
-        .map_err(Into::into)
+        .map_err(|error| crate::StarryError::from(error).into())
 }
 
 pub(super) fn read_usbdevfs_bulktransfer(
@@ -182,7 +182,7 @@ pub(super) fn read_usbdevfs_bulktransfer(
 ) -> VfsResult<UsbdevfsBulkTransfer> {
     (arg as *const UsbdevfsBulkTransfer)
         .vm_read(current)
-        .map_err(Into::into)
+        .map_err(|error| crate::StarryError::from(error).into())
 }
 
 pub(super) fn read_usbdevfs_setinterface(
@@ -191,7 +191,7 @@ pub(super) fn read_usbdevfs_setinterface(
 ) -> VfsResult<UsbdevfsSetInterface> {
     (arg as *const UsbdevfsSetInterface)
         .vm_read(current)
-        .map_err(Into::into)
+        .map_err(|error| crate::StarryError::from(error).into())
 }
 
 pub(super) fn read_usbdevfs_ioctl(
@@ -200,7 +200,7 @@ pub(super) fn read_usbdevfs_ioctl(
 ) -> VfsResult<UsbdevfsIoctl> {
     (arg as *const UsbdevfsIoctl)
         .vm_read(current)
-        .map_err(Into::into)
+        .map_err(|error| crate::StarryError::from(error).into())
 }
 
 pub(super) fn read_usbdevfs_disconnect_claim(
@@ -209,11 +209,13 @@ pub(super) fn read_usbdevfs_disconnect_claim(
 ) -> VfsResult<UsbdevfsDisconnectClaim> {
     (arg as *const UsbdevfsDisconnectClaim)
         .vm_read(current)
-        .map_err(Into::into)
+        .map_err(|error| crate::StarryError::from(error).into())
 }
 
 pub(super) fn read_usbdevfs_u32(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<u32> {
-    (arg as *const u32).vm_read(current).map_err(Into::into)
+    (arg as *const u32)
+        .vm_read(current)
+        .map_err(|error| crate::StarryError::from(error).into())
 }
 
 pub(super) fn snapshot_probed_device(

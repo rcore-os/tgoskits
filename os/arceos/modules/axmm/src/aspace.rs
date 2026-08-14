@@ -1,6 +1,5 @@
 use core::fmt;
 
-use ax_errno::{AxError, AxResult, ax_err};
 use ax_hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageTable, PagingAllocator},
@@ -11,7 +10,7 @@ use ax_memory_addr::{
 };
 use ax_memory_set::{MemoryArea, MemorySet};
 
-use crate::backend::Backend;
+use crate::{MmError, MmResult, backend::Backend};
 
 /// The virtual memory address space.
 pub struct AddrSpace {
@@ -57,11 +56,11 @@ impl AddrSpace {
     }
 
     /// Creates a new empty address space.
-    pub(crate) fn new_empty(base: VirtAddr, size: usize) -> AxResult<Self> {
+    pub(crate) fn new_empty(base: VirtAddr, size: usize) -> MmResult<Self> {
         Ok(Self {
             va_range: VirtAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
-            pt: PageTable::new(PagingAllocator).map_err(|_| AxError::NoMemory)?,
+            pt: PageTable::new(PagingAllocator).map_err(|_| MmError::NoMemory)?,
         })
     }
 
@@ -77,15 +76,15 @@ impl AddrSpace {
     ///
     /// `other` must outlive `self`, and `self` must not modify or unmap the
     /// shared virtual-address range.
-    pub unsafe fn share_mappings_from(&mut self, other: &AddrSpace) -> AxResult {
+    pub unsafe fn share_mappings_from(&mut self, other: &AddrSpace) -> MmResult {
         if self.va_range.overlaps(other.va_range) {
-            return ax_err!(InvalidInput, "address space overlap");
+            return Err(MmError::InvalidInput("address spaces overlap"));
         }
         unsafe {
             self.pt
                 .share_root_entries_from(&other.pt, other.base(), other.size())
         }
-        .map_err(|_| AxError::BadState)?;
+        .map_err(|_| MmError::BadState("failed to share page-table root entries"))?;
         Ok(())
     }
 
@@ -118,12 +117,14 @@ impl AddrSpace {
         size: usize,
         flags: MappingFlags,
         unmap_overlap: bool,
-    ) -> AxResult {
+    ) -> MmResult {
         if !self.contains_range(start_vaddr, size) {
-            return ax_err!(InvalidInput, "address out of range");
+            return Err(MmError::InvalidInput(
+                "mapping range is outside address space",
+            ));
         }
         if !start_vaddr.is_aligned_4k() || !start_paddr.is_aligned_4k() || !is_aligned_4k(size) {
-            return ax_err!(InvalidInput, "address not aligned");
+            return Err(MmError::InvalidInput("mapping range is not page aligned"));
         }
 
         let offset = start_vaddr.as_usize() - start_paddr.as_usize();
@@ -138,7 +139,7 @@ impl AddrSpace {
         start_paddr: PhysAddr,
         size: usize,
         flags: MappingFlags,
-    ) -> AxResult {
+    ) -> MmResult {
         self.map_linear_with_overlap(start_vaddr, start_paddr, size, flags, false)
     }
 
@@ -152,7 +153,7 @@ impl AddrSpace {
         start_paddr: PhysAddr,
         size: usize,
         flags: MappingFlags,
-    ) -> AxResult {
+    ) -> MmResult {
         self.map_linear_with_overlap(start_vaddr, start_paddr, size, flags, true)
     }
 
@@ -170,12 +171,14 @@ impl AddrSpace {
         size: usize,
         flags: MappingFlags,
         populate: bool,
-    ) -> AxResult {
+    ) -> MmResult {
         if !self.contains_range(start, size) {
-            return ax_err!(InvalidInput, "address out of range");
+            return Err(MmError::InvalidInput(
+                "mapping range is outside address space",
+            ));
         }
         if !start.is_aligned_4k() || !is_aligned_4k(size) {
-            return ax_err!(InvalidInput, "address not aligned");
+            return Err(MmError::InvalidInput("mapping range is not page aligned"));
         }
 
         let area = MemoryArea::new(start, size, flags, Backend::new_alloc(populate));
@@ -187,12 +190,14 @@ impl AddrSpace {
     ///
     /// Returns an error if the address range is out of the address space or not
     /// aligned.
-    pub fn unmap(&mut self, start: VirtAddr, size: usize) -> AxResult {
+    pub fn unmap(&mut self, start: VirtAddr, size: usize) -> MmResult {
         if !self.contains_range(start, size) {
-            return ax_err!(InvalidInput, "address out of range");
+            return Err(MmError::InvalidInput(
+                "unmap range is outside address space",
+            ));
         }
         if !start.is_aligned_4k() || !is_aligned_4k(size) {
-            return ax_err!(InvalidInput, "address not aligned");
+            return Err(MmError::InvalidInput("unmap range is not page aligned"));
         }
 
         self.areas.unmap(start, size, &mut self.pt)?;
@@ -202,12 +207,14 @@ impl AddrSpace {
     /// To process data in this area with the given function.
     ///
     /// Now it supports reading and writing data in the given interval.
-    fn process_area_data<F>(&self, start: VirtAddr, size: usize, mut f: F) -> AxResult
+    fn process_area_data<F>(&self, start: VirtAddr, size: usize, mut f: F) -> MmResult
     where
         F: FnMut(VirtAddr, usize, usize),
     {
         if !self.contains_range(start, size) {
-            return ax_err!(InvalidInput, "address out of range");
+            return Err(MmError::InvalidInput(
+                "access range is outside address space",
+            ));
         }
         let mut cnt = 0;
         // If start is aligned to 4K, start_align_down will be equal to start_align_up.
@@ -215,7 +222,7 @@ impl AddrSpace {
         for vaddr in PageIter4K::new(start.align_down_4k(), end_align_up)
             .expect("Failed to create page iterator")
         {
-            let (mut paddr, ..) = self.pt.query(vaddr).map_err(|_| AxError::BadAddress)?;
+            let (mut paddr, ..) = self.pt.query(vaddr).map_err(|_| MmError::BadAddress)?;
 
             let mut copy_size = (size - cnt).min(PAGE_SIZE_4K);
 
@@ -239,7 +246,7 @@ impl AddrSpace {
     ///
     /// * `start` - The start virtual address to read.
     /// * `buf` - The buffer to store the data.
-    pub fn read(&self, start: VirtAddr, buf: &mut [u8]) -> AxResult {
+    pub fn read(&self, start: VirtAddr, buf: &mut [u8]) -> MmResult {
         self.process_area_data(start, buf.len(), |src, offset, read_size| unsafe {
             core::ptr::copy_nonoverlapping(src.as_ptr(), buf.as_mut_ptr().add(offset), read_size);
         })
@@ -251,7 +258,7 @@ impl AddrSpace {
     ///
     /// * `start_vaddr` - The start virtual address to write.
     /// * `buf` - The buffer to write to the address space.
-    pub fn write(&self, start: VirtAddr, buf: &[u8]) -> AxResult {
+    pub fn write(&self, start: VirtAddr, buf: &[u8]) -> MmResult {
         self.process_area_data(start, buf.len(), |dst, offset, write_size| unsafe {
             core::ptr::copy_nonoverlapping(buf.as_ptr().add(offset), dst.as_mut_ptr(), write_size);
         })
@@ -261,18 +268,20 @@ impl AddrSpace {
     ///
     /// Returns an error if the address range is out of the address space or not
     /// aligned.
-    pub fn protect(&mut self, start: VirtAddr, size: usize, flags: MappingFlags) -> AxResult {
+    pub fn protect(&mut self, start: VirtAddr, size: usize, flags: MappingFlags) -> MmResult {
         if !self.contains_range(start, size) {
-            return ax_err!(InvalidInput, "address out of range");
+            return Err(MmError::InvalidInput(
+                "protect range is outside address space",
+            ));
         }
         if !start.is_aligned_4k() || !is_aligned_4k(size) {
-            return ax_err!(InvalidInput, "address not aligned");
+            return Err(MmError::InvalidInput("protect range is not page aligned"));
         }
 
         // TODO
         self.pt
             .protect_region(start, size, flags)
-            .map_err(|_| AxError::BadState)?;
+            .map_err(|_| MmError::BadState("failed to update page-table permissions"))?;
         Ok(())
     }
 

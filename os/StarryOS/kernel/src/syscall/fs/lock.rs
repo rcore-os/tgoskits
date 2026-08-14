@@ -31,7 +31,6 @@ use alloc::{
 };
 use core::ffi::c_int;
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use linux_raw_sys::general::{
     F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_RDLCK, F_SETLK, F_SETLKW, F_UNLCK, F_WRLCK,
     LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY, SEEK_CUR, SEEK_END,
@@ -40,6 +39,7 @@ use linux_raw_sys::general::{
 use starry_process::Pid;
 
 use crate::{
+    Errno, StarryError, StarryResult,
     file::{File, FileLike, get_file_like},
     mm::UserPtr,
     sync::RwLock,
@@ -156,7 +156,7 @@ struct PosixLockWaitGuard {
 }
 
 impl PosixLockWaitGuard {
-    fn try_new(pid: Pid, request: WaitingLock, owner: &FOwner) -> Result<Option<Self>, LinuxError> {
+    fn try_new(pid: Pid, request: WaitingLock, owner: &FOwner) -> Result<Option<Self>, Errno> {
         let mut table = FCNTL_LOCKS.write();
         let Some(entries) = table.get_mut(&request.key) else {
             return Ok(None);
@@ -173,7 +173,7 @@ impl PosixLockWaitGuard {
 
         let mut waits = POSIX_LOCK_WAITS.write();
         if posix_lock_deadlock_would_occur(&table, &waits, pid, request) {
-            return Err(LinuxError::EDEADLK);
+            return Err(Errno::EDEADLK);
         }
         waits.entry(pid).or_default().push(request);
         Ok(Some(Self { pid, request }))
@@ -229,9 +229,9 @@ fn current_pid(current: &crate::task::UserTaskRef) -> Pid {
 /// Resolve `fd` to an inode-keyed lockable file. Returns `EBADF` for fds
 /// that have no inode (pipes, sockets, epoll, ...), matching Linux's
 /// behavior of rejecting flock/fcntl-locks on non-files.
-fn lockable(fd: c_int) -> AxResult<(InodeKey, Arc<dyn FileLike>)> {
+fn lockable(fd: c_int) -> StarryResult<(InodeKey, Arc<dyn FileLike>)> {
     let f = get_file_like(fd)?;
-    let key = f.inode_key().ok_or(AxError::BadFileDescriptor)?;
+    let key = f.inode_key().ok_or(StarryError::BadFileDescriptor)?;
     Ok((key, f))
 }
 
@@ -244,28 +244,35 @@ fn lockable(fd: c_int) -> AxResult<(InodeKey, Arc<dyn FileLike>)> {
 /// `SEEK_CUR` / `SEEK_END` are only meaningful for regular files; on a
 /// directory fd (no cursor / size in the byte-offset sense) they return
 /// `EINVAL`. Overflow returns `EINVAL`.
-fn resolve_l_start(file: &Arc<dyn FileLike>, l_whence: i16, l_start: i64) -> AxResult<i64> {
+fn resolve_l_start(file: &Arc<dyn FileLike>, l_whence: i16, l_start: i64) -> StarryResult<i64> {
     let whence = l_whence as u32;
     if whence == SEEK_SET {
         return Ok(l_start);
     }
     if whence != SEEK_CUR && whence != SEEK_END {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
-    let regular = file.downcast_ref::<File>().ok_or(AxError::InvalidInput)?;
+    let regular = file
+        .downcast_ref::<File>()
+        .ok_or(StarryError::InvalidInput)?;
     let base = if whence == SEEK_CUR {
-        regular.inner().position().ok_or(AxError::InvalidInput)?
+        regular
+            .inner()
+            .position()
+            .ok_or(StarryError::InvalidInput)?
     } else {
         regular
             .inner()
             .location()
             .len()
-            .map_err(|_| AxError::InvalidInput)?
+            .map_err(|_| StarryError::InvalidInput)?
     };
     // Linux uses i_size / cursor as i64-relative arithmetic; reject anything
     // that does not fit in i64.
-    let base_i64 = i64::try_from(base).map_err(|_| AxError::InvalidInput)?;
-    base_i64.checked_add(l_start).ok_or(AxError::InvalidInput)
+    let base_i64 = i64::try_from(base).map_err(|_| StarryError::InvalidInput)?;
+    base_i64
+        .checked_add(l_start)
+        .ok_or(StarryError::InvalidInput)
 }
 
 /// Translate a half-open `[l_start, l_start + l_len)` description (where
@@ -278,22 +285,26 @@ fn resolve_l_start(file: &Arc<dyn FileLike>, l_whence: i16, l_start: i64) -> AxR
 ///     resolved start must be non-negative).
 ///
 /// Any overflow or a resolved start < 0 returns `EINVAL`.
-fn flock_range(l_start: i64, l_len: i64) -> AxResult<(i64, i64)> {
+fn flock_range(l_start: i64, l_len: i64) -> StarryResult<(i64, i64)> {
     if l_len == 0 {
         if l_start < 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         return Ok((l_start, i64::MAX));
     }
     let (start, end) = if l_len > 0 {
-        let end = l_start.checked_add(l_len).ok_or(AxError::InvalidInput)?;
+        let end = l_start
+            .checked_add(l_len)
+            .ok_or(StarryError::InvalidInput)?;
         (l_start, end)
     } else {
-        let start = l_start.checked_add(l_len).ok_or(AxError::InvalidInput)?;
+        let start = l_start
+            .checked_add(l_len)
+            .ok_or(StarryError::InvalidInput)?;
         (start, l_start)
     };
     if start < 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok((start, end))
 }
@@ -593,13 +604,13 @@ pub fn fcntl_setlk(
     arg: usize,
     ofd: bool,
     wait: bool,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     // SAFETY: `flock64` contains only integer ABI fields, so every copied bit
     // pattern is a valid Rust value before semantic validation below.
     let fl = unsafe { UserPtr::<flock64>::from(arg).read_abi(current)? };
     // POSIX.1-2024 / Linux: F_OFD_SETLK{,W} require l_pid to be 0.
     if ofd && fl.l_pid != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let (key, file) = lockable(fd)?;
     let abs_start = resolve_l_start(&file, fl.l_whence, fl.l_start)?;
@@ -609,7 +620,7 @@ pub fn fcntl_setlk(
         F_UNLCK => None,
         F_RDLCK => Some(LockKind::Read),
         F_WRLCK => Some(LockKind::Write),
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
 
     // Linux: installing a record lock requires the fd to be open for the
@@ -617,7 +628,7 @@ pub fn fcntl_setlk(
     if let Some(k) = kind
         && !fd_supports_kind(&file, k)
     {
-        return Err(AxError::BadFileDescriptor);
+        return Err(StarryError::BadFileDescriptor);
     }
 
     loop {
@@ -631,7 +642,7 @@ pub fn fcntl_setlk(
             }
             SetlkAttempt::Conflict => {
                 if !wait {
-                    return Err(AxError::WouldBlock);
+                    return Err(StarryError::WouldBlock);
                 }
                 let want = kind.unwrap();
                 let waiting = WaitingLock {
@@ -658,7 +669,7 @@ pub fn fcntl_setlk(
                         match PosixLockWaitGuard::try_new(pid, waiting, &owner) {
                             Ok(Some(guard)) => wait_guard = Some(guard),
                             Ok(None) => return false,
-                            Err(LinuxError::EDEADLK) => {
+                            Err(Errno::EDEADLK) => {
                                 deadlock = true;
                                 return false;
                             }
@@ -683,7 +694,7 @@ pub fn fcntl_setlk(
                 })?;
                 drop(wait_guard);
                 if deadlock {
-                    return Err(AxError::from(LinuxError::EDEADLK));
+                    return Err(StarryError::from(Errno::EDEADLK));
                 }
                 // Loop and retry.
             }
@@ -699,19 +710,19 @@ pub fn fcntl_getlk(
     fd: c_int,
     arg: usize,
     ofd: bool,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let user_fl = UserPtr::<flock64>::from(arg);
     // SAFETY: `flock64` contains only integer ABI fields, so every copied bit
     // pattern is a valid Rust value before semantic validation below.
     let mut fl = unsafe { user_fl.read_abi(current)? };
     // POSIX.1-2024 / Linux: F_OFD_GETLK requires l_pid to be 0.
     if ofd && fl.l_pid != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let req_kind = match fl.l_type as u32 {
         F_RDLCK => LockKind::Read,
         F_WRLCK => LockKind::Write,
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
     let (key, file) = lockable(fd)?;
     let abs_start = resolve_l_start(&file, fl.l_whence, fl.l_start)?;
@@ -771,7 +782,7 @@ fn write_flock64_outputs(
     current: &crate::task::UserTaskRef,
     user_fl: UserPtr<flock64>,
     fl: &flock64,
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     let base = user_fl.address().as_usize();
     UserPtr::<i16>::from(base + core::mem::offset_of!(flock64, l_type))
         .write(current, fl.l_type)?;
@@ -791,7 +802,7 @@ pub fn dispatch_fcntl(
     fd: c_int,
     cmd: c_int,
     arg: usize,
-) -> Option<AxResult<isize>> {
+) -> Option<crate::StarryResult<isize>> {
     let cmd = cmd as u32;
     Some(match cmd {
         F_SETLK => fcntl_setlk(current, fd, arg, false, false),
@@ -995,14 +1006,14 @@ pub fn flock_op(
     current: &crate::task::UserTaskRef,
     fd: c_int,
     operation: c_int,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let op = operation as u32;
     let nonblock = op & LOCK_NB != 0;
     let kind = match op & !LOCK_NB {
         LOCK_SH => Some(LockKind::Read),
         LOCK_EX => Some(LockKind::Write),
         LOCK_UN => None,
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
 
     let (key, file) = lockable(fd)?;
@@ -1017,7 +1028,7 @@ pub fn flock_op(
             FlockAttempt::Done => return Ok(0),
             FlockAttempt::Conflict => {
                 if nonblock {
-                    return Err(AxError::WouldBlock);
+                    return Err(StarryError::WouldBlock);
                 }
                 // Park on the inode's flock wait queue. Condition re-checks
                 // conflict from inside the wq mutex (which itself takes

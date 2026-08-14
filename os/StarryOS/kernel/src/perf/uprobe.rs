@@ -11,18 +11,17 @@
 //! in [`crate::kprobe`]; this module only does the address resolution and
 //! per-process registration.
 
-use ax_errno::{AxError, AxResult};
 use kbpf_basic::perf::{PerfProbeArgs, PerfProbeConfig};
 use kprobe::ProbeBuilder;
 
 use super::kprobe::{PROBE_CONFIG_ENTRY, PROBE_CONFIG_RETURN, ProbePerfEvent, ProbeTy};
-use crate::{kprobe::KprobeAuxiliary, task::get_task};
+use crate::{StarryError, StarryResult, kprobe::KprobeAuxiliary, task::get_task};
 
 /// Resolve the target ELF's mapped base in the target process and build a
 /// uprobe `ProbeBuilder` for `base + offset`.
 fn perf_probe_arg_to_uprobe_builder(
     args: &PerfProbeArgs,
-) -> AxResult<ProbeBuilder<KprobeAuxiliary>> {
+) -> StarryResult<ProbeBuilder<KprobeAuxiliary>> {
     let elf = &args.name;
     let offset = args.offset as usize;
     let pid = args.pid;
@@ -31,7 +30,7 @@ fn perf_probe_arg_to_uprobe_builder(
         // pid == -1 means "all processes" (e.g. a shared-library uprobe). That
         // needs a global file→address registry we do not maintain.
         warn!("uprobe: pid == -1 (all-process / shared-lib uprobe) is unsupported");
-        return Err(AxError::Unsupported);
+        return Err(StarryError::Unsupported);
     }
 
     let task = get_task(pid as _)?;
@@ -51,7 +50,7 @@ fn perf_probe_arg_to_uprobe_builder(
 
     let Some(virt_base) = virt_base else {
         warn!("uprobe: ELF {elf} is not mapped in pid {pid}");
-        return Err(AxError::NotFound);
+        return Err(StarryError::NotFound);
     };
 
     let virt_addr = virt_base.as_usize() + offset;
@@ -69,7 +68,7 @@ fn perf_probe_arg_to_uprobe_builder(
 }
 
 /// Build a uprobe perf event from `perf_event_open` args.
-pub fn perf_event_open_uprobe(args: PerfProbeArgs) -> AxResult<ProbePerfEvent> {
+pub fn perf_event_open_uprobe(args: PerfProbeArgs) -> StarryResult<ProbePerfEvent> {
     let probe = match args.config {
         PerfProbeConfig::Raw(PROBE_CONFIG_ENTRY) => {
             let builder = perf_probe_arg_to_uprobe_builder(&args)?;
@@ -78,11 +77,11 @@ pub fn perf_event_open_uprobe(args: PerfProbeArgs) -> AxResult<ProbePerfEvent> {
         PerfProbeConfig::Raw(PROBE_CONFIG_RETURN) => {
             // uretprobe — not implemented for user space yet.
             warn!("uprobe: uretprobe is not yet supported");
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         }
         other => {
             warn!("uprobe: unsupported perf probe config {other:?}");
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         }
     };
     Ok(ProbePerfEvent::new(args, probe))

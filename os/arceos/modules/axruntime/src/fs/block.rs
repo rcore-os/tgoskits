@@ -6,6 +6,7 @@ use core::{
 
 use ax_alloc::UsageKind;
 use ax_fs_ng::{
+    BlockError, BlockResult,
     block::runtime::{BlockIrqAction, BlockIrqSource, RdifBlockDevice, RdifBlockGroup},
     os::{
         BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, BlockNotification,
@@ -31,10 +32,10 @@ impl BlockTimeProvider for RuntimeTimeProvider {
 struct RuntimePageProvider;
 
 impl FsPageProvider for RuntimePageProvider {
-    fn alloc_page(&self) -> ax_errno::AxResult<FsPage> {
+    fn alloc_page(&self) -> axfs_ng_vfs::VfsResult<FsPage> {
         let addr = ax_alloc::global_allocator()
             .alloc_pages(1, ax_fs_ng::os::memory::PAGE_SIZE, UsageKind::PageCache)
-            .map_err(|_| ax_errno::AxError::NoMemory)?;
+            .map_err(|_| axfs_ng_vfs::VfsError::NoMemory)?;
         Ok(unsafe { FsPage::from_raw(addr) })
     }
 
@@ -166,14 +167,14 @@ impl BlockRuntimeOps for RuntimeTaskOps {
         name: String,
         cpu: usize,
         entry: Box<dyn FnOnce() + Send + 'static>,
-    ) -> ax_errno::AxResult<Box<dyn BlockThread>> {
+    ) -> BlockResult<Box<dyn BlockThread>> {
         if cpu >= ax_hal::cpu_num() {
-            return Err(ax_errno::AxError::InvalidInput);
+            return Err(BlockError::InvalidRequest);
         }
-        let cpu = u32::try_from(cpu).map_err(|_| ax_errno::AxError::InvalidInput)?;
+        let cpu = u32::try_from(cpu).map_err(|_| BlockError::InvalidRequest)?;
         let mut affinity = CpuSet::empty(ax_hal::cpu_num());
         if !affinity.insert(CpuId::new(cpu)) {
-            return Err(ax_errno::AxError::InvalidInput);
+            return Err(BlockError::InvalidRequest);
         }
         let task = crate::task::spawn_raw_with_affinity(
             entry,
@@ -181,14 +182,14 @@ impl BlockRuntimeOps for RuntimeTaskOps {
             crate::runtime_default_task_stack_size(),
             affinity,
         )
-        .map_err(map_task_error)?;
+        .map_err(task_error_to_block_error)?;
         Ok(Box::new(RuntimeBlockThread {
             task: SpinLock::new(Some(task)),
         }))
     }
 }
 
-fn map_task_error(error: TaskError) -> ax_errno::AxError {
+fn task_error_to_block_error(error: TaskError) -> BlockError {
     match error {
         TaskError::InvalidConfiguration
         | TaskError::InvalidCpuCount(_)
@@ -197,12 +198,12 @@ fn map_task_error(error: TaskError) -> ax_errno::AxError {
         | TaskError::InvalidRtPriority(_)
         | TaskError::InvalidRoundRobinQuantum
         | TaskError::InvalidDeadline { .. }
-        | TaskError::UnsupportedDeadlineFlags(_) => ax_errno::AxError::InvalidInput,
+        | TaskError::UnsupportedDeadlineFlags(_) => BlockError::InvalidRequest,
         // Linux kthread_create_on_node() reports task-object allocation and
         // kernel-thread capacity failures as ENOMEM to kernel worker callers.
-        TaskError::TimerCapacity | TaskError::ThreadCapacity => ax_errno::AxError::NoMemory,
+        TaskError::TimerCapacity | TaskError::ThreadCapacity => BlockError::NoMemory,
         TaskError::RuntimeFailure(status) if status == RuntimeStatus::NoMemory as u32 => {
-            ax_errno::AxError::NoMemory
+            BlockError::NoMemory
         }
         TaskError::CpuOffline(_)
         | TaskError::CpuNotQuiescent(_)
@@ -210,10 +211,10 @@ fn map_task_error(error: TaskError) -> ax_errno::AxError {
         | TaskError::DeadlineAdmission
         | TaskError::DeadlineAffinity
         | TaskError::ActiveTimerAffinity
-        | TaskError::ThreadBusy => ax_errno::AxError::ResourceBusy,
-        TaskError::UnsafeContext => ax_errno::AxError::OperationNotPermitted,
-        TaskError::StaleThreadId => ax_errno::AxError::NotFound,
-        TaskError::NotInitialized
+        | TaskError::ThreadBusy => BlockError::ResourceBusy,
+        TaskError::StaleThreadId => BlockError::NotFound,
+        TaskError::UnsafeContext
+        | TaskError::NotInitialized
         | TaskError::InvalidRuntimeHandle
         | TaskError::CpuOwnerBorrowed
         | TaskError::CpuOwnerMismatch { .. }
@@ -228,7 +229,7 @@ fn map_task_error(error: TaskError) -> ax_errno::AxError {
         | TaskError::InvalidPiWaitState(_)
         | TaskError::PiCycle
         | TaskError::PiChainLimit { .. }
-        | TaskError::RuntimeFailure(_) => ax_errno::AxError::BadState,
+        | TaskError::RuntimeFailure(_) => BlockError::InvalidState,
     }
 }
 
@@ -243,18 +244,19 @@ struct RuntimeBlockIrqRegistration {
 
 #[cfg(feature = "irq")]
 impl BlockIrqRegistration for RuntimeBlockIrqRegistration {
-    fn enable(&self) -> ax_errno::AxResult {
-        ax_hal::irq::enable_irq(self.handle).map_err(map_block_irq_error)
+    fn enable(&self) -> BlockResult {
+        ax_hal::irq::enable_irq(self.handle)?;
+        Ok(())
     }
 
-    fn disable_and_synchronize(&self) -> ax_errno::AxResult {
+    fn disable_and_synchronize(&self) -> BlockResult {
         match ax_hal::irq::disable_irq(self.handle) {
             Ok(()) | Err(ax_hal::irq::IrqError::NotFound) => {}
-            Err(error) => return Err(map_block_irq_error(error)),
+            Err(error) => return Err(error.into()),
         }
         match ax_hal::irq::synchronize_irq(self.handle) {
             Ok(()) | Err(ax_hal::irq::IrqError::NotFound) => Ok(()),
-            Err(error) => Err(map_block_irq_error(error)),
+            Err(error) => Err(error.into()),
         }
     }
 }
@@ -271,24 +273,6 @@ impl Drop for RuntimeBlockIrqRegistration {
     }
 }
 
-fn map_block_irq_error(err: ax_hal::irq::IrqError) -> ax_errno::AxError {
-    match err {
-        ax_hal::irq::IrqError::InvalidIrq | ax_hal::irq::IrqError::InvalidCpu => {
-            ax_errno::AxError::InvalidInput
-        }
-        ax_hal::irq::IrqError::CpuOffline | ax_hal::irq::IrqError::Unsupported => {
-            ax_errno::AxError::Unsupported
-        }
-        ax_hal::irq::IrqError::Busy | ax_hal::irq::IrqError::InIrqContext => {
-            ax_errno::AxError::ResourceBusy
-        }
-        ax_hal::irq::IrqError::Timeout => ax_errno::AxError::TimedOut,
-        ax_hal::irq::IrqError::NoMemory => ax_errno::AxError::NoMemory,
-        ax_hal::irq::IrqError::NotFound => ax_errno::AxError::NotFound,
-        ax_hal::irq::IrqError::Controller => ax_errno::AxError::Io,
-    }
-}
-
 #[cfg(feature = "irq")]
 impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
     fn register(
@@ -297,7 +281,7 @@ impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
         irq: irq_framework::IrqId,
         cpu: usize,
         mut action: BlockIrqAction,
-    ) -> ax_errno::AxResult<Box<dyn BlockIrqRegistration>> {
+    ) -> BlockResult<Box<dyn BlockIrqRegistration>> {
         let request = ax_hal::irq::IrqRequest::new(move |_context| match action.run() {
             BlockIrqOutcome::Unhandled => ax_hal::irq::IrqReturn::Unhandled,
             BlockIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
@@ -307,7 +291,7 @@ impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
         .share_mode(ax_hal::irq::ShareMode::Shared)
         .auto_enable(ax_hal::irq::AutoEnable::No)
         .affinity(ax_hal::irq::IrqAffinity::Fixed(ax_hal::irq::CpuId(cpu)));
-        let handle = ax_hal::irq::request_irq(irq, request).map_err(map_block_irq_error)?;
+        let handle = ax_hal::irq::request_irq(irq, request)?;
         Ok(Box::new(RuntimeBlockIrqRegistration { name, handle }))
     }
 }
@@ -415,8 +399,8 @@ mod tests {
     #[test]
     fn block_worker_thread_capacity_matches_linux_kthread_enomem() {
         assert_eq!(
-            map_task_error(TaskError::ThreadCapacity),
-            ax_errno::AxError::NoMemory
+            task_error_to_block_error(TaskError::ThreadCapacity),
+            BlockError::NoMemory
         );
     }
 }

@@ -9,7 +9,7 @@ pub(super) fn now_ns() -> u64 {
 /// Attaches `ptc` to `thr` and arms the scheduler hooks.
 ///
 /// The thread context serializes this commit against task-exit tombstoning.
-pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) -> AxResult<()> {
+pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) -> crate::StarryResult<()> {
     thr.perf_context().attach(ptc)
 }
 

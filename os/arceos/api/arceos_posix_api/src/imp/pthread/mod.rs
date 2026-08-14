@@ -5,11 +5,10 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
-use ax_errno::{LinuxError, LinuxResult};
 use ax_lazyinit::LazyLock;
 use ax_runtime::task::ThreadHandle;
 
-use crate::{ctypes, sync::Mutex};
+use crate::{PosixError, PosixResult, ctypes, sync::Mutex};
 
 pub mod mutex;
 
@@ -87,7 +86,7 @@ impl Pthread {
         attr: *const ctypes::pthread_attr_t,
         start_routine: extern "C" fn(arg: *mut c_void) -> *mut c_void,
         arg: *mut c_void,
-    ) -> LinuxResult<ctypes::pthread_t> {
+    ) -> PosixResult<ctypes::pthread_t> {
         // SAFETY: inherited from this function's contract.
         let options = unsafe { PthreadCreateOptions::from_attr(attr) };
         let arg_wrapper = ForceSendSync(arg);
@@ -119,7 +118,7 @@ impl Pthread {
         let task_inner =
             spawn_pthread_with(options, main, ax_runtime::task::spawn_raw).map_err(|error| {
                 warn!("failed to spawn pthread scheduler task: {error}");
-                LinuxError::EAGAIN
+                PosixError::EAGAIN
             })?;
         let tid = task_inner.id().as_u64();
         let thread = Pthread {
@@ -159,9 +158,9 @@ impl Pthread {
     }
 
     #[track_caller]
-    fn join(ptr: ctypes::pthread_t) -> LinuxResult<*mut c_void> {
+    fn join(ptr: ctypes::pthread_t) -> PosixResult<*mut c_void> {
         if core::ptr::eq(ptr, Self::current_ptr() as _) {
-            return Err(LinuxError::EDEADLK);
+            return Err(PosixError::EDEADLK);
         }
 
         let thread = Self::claim_join(ptr)?;
@@ -170,7 +169,7 @@ impl Pthread {
             Err(error) => {
                 thread.join_state.release_join();
                 warn!("failed to join pthread scheduler task: {error}");
-                return Err(LinuxError::EAGAIN);
+                return Err(PosixError::EAGAIN);
             }
         };
 
@@ -190,7 +189,7 @@ impl Pthread {
         };
         if !removed {
             thread.join_state.release_join();
-            return Err(LinuxError::ESRCH);
+            return Err(PosixError::ESRCH);
         }
 
         // SAFETY: `claim_join` proved this exact allocation was registered and
@@ -208,13 +207,13 @@ impl Pthread {
         Ok(retval)
     }
 
-    fn detach(ptr: ctypes::pthread_t) -> LinuxResult {
+    fn detach(ptr: ctypes::pthread_t) -> PosixResult {
         let (tid, reap_completed) = {
             let threads = TID_TO_PTHREAD.lock();
             let registered = threads
                 .values()
                 .find(|registered| core::ptr::eq(registered.0, ptr))
-                .ok_or(LinuxError::ESRCH)?;
+                .ok_or(PosixError::ESRCH)?;
             // SAFETY: the map read guard prevents removal of this allocation
             // while the detach state transition and ID read are in progress.
             let thread = unsafe { &*(registered.0 as *const Pthread) };
@@ -223,23 +222,23 @@ impl Pthread {
         };
 
         if reap_completed {
-            let thread = Self::remove_registered(tid, ptr).ok_or(LinuxError::ESRCH)?;
+            let thread = Self::remove_registered(tid, ptr).ok_or(PosixError::ESRCH)?;
             drop(thread);
         }
         Ok(())
     }
 
-    fn claim_join(ptr: ctypes::pthread_t) -> LinuxResult<&'static Pthread> {
+    fn claim_join(ptr: ctypes::pthread_t) -> PosixResult<&'static Pthread> {
         let threads = TID_TO_PTHREAD.lock();
         let registered = threads
             .values()
             .find(|registered| core::ptr::eq(registered.0, ptr))
-            .ok_or(LinuxError::ESRCH)?;
+            .ok_or(PosixError::ESRCH)?;
         // SAFETY: the read guard prevents a successful joiner from removing
         // and freeing this registered allocation until after the atomic claim.
         let thread = unsafe { &*(registered.0 as *const Pthread) };
         if !thread.join_state.claim_join() {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
         Ok(thread)
     }
@@ -354,14 +353,14 @@ impl PthreadJoinState {
     ///
     /// Returns `true` when the start routine already completed, making the
     /// detaching caller responsible for reclaiming the registration.
-    fn detach(&self) -> LinuxResult<bool> {
+    fn detach(&self) -> PosixResult<bool> {
         let mut state = self.0.load(Ordering::Acquire);
         loop {
             let reap_completed = match state {
                 PTHREAD_JOINABLE => false,
                 PTHREAD_COMPLETED => true,
                 PTHREAD_JOINING | PTHREAD_JOINING_COMPLETED | PTHREAD_DETACHED => {
-                    return Err(LinuxError::EINVAL);
+                    return Err(PosixError::EINVAL);
                 }
                 _ => panic!("invalid pthread join state {state}"),
             };
@@ -443,9 +442,7 @@ unsafe impl<T> Sync for ForceSendSync<T> {}
 
 #[cfg(test)]
 mod tests {
-    use ax_errno::LinuxError;
-
-    use super::{PthreadCreateOptions, PthreadJoinState, spawn_pthread_with};
+    use super::{PosixError, PthreadCreateOptions, PthreadJoinState, spawn_pthread_with};
 
     #[test]
     fn pthread_create_forwards_the_attribute_stack_size_to_the_runtime() {
@@ -491,7 +488,7 @@ mod tests {
         let state = PthreadJoinState::new();
         assert_eq!(state.detach(), Ok(false));
         assert!(state.complete());
-        assert_eq!(state.detach(), Err(LinuxError::EINVAL));
+        assert_eq!(state.detach(), Err(PosixError::EINVAL));
         assert!(!state.claim_join());
     }
 

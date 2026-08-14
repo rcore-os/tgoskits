@@ -1,8 +1,8 @@
 use alloc::{boxed::Box, sync::Arc};
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
-use ax_errno::AxError;
-use ax_errno::AxResult;
+use crate::BlockError;
+use crate::BlockResult;
 
 pub mod runtime;
 
@@ -38,11 +38,11 @@ pub(crate) trait FsBlockDevice: Send {
     fn name(&self) -> &str;
     fn num_blocks(&self) -> u64;
     fn block_size(&self) -> usize;
-    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult;
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult;
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult;
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult;
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    fn flush(&mut self) -> AxResult;
+    fn flush(&mut self) -> BlockResult;
 }
 
 impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
@@ -58,17 +58,17 @@ impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
         (**self).block_size()
     }
 
-    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
         (**self).read_block(block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult {
         (**self).write_block(block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    fn flush(&mut self) -> AxResult {
+    fn flush(&mut self) -> BlockResult {
         (**self).flush()
     }
 }
@@ -95,16 +95,18 @@ impl<T: FsBlockDevice> RegionBlockDevice<T> {
         Self { inner, region }
     }
 
-    fn check_io_bounds(&self, block_id: u64, buf_len: usize) -> AxResult {
+    fn check_io_bounds(&self, block_id: u64, buf_len: usize) -> BlockResult {
         let block_size = self.inner.block_size();
         if block_size == 0 || !buf_len.is_multiple_of(block_size) {
-            return Err(AxError::InvalidInput);
+            return Err(BlockError::InvalidRequest);
         }
 
-        let blocks = u64::try_from(buf_len / block_size).map_err(|_| AxError::BadState)?;
-        let end_block = block_id.checked_add(blocks).ok_or(AxError::BadState)?;
+        let blocks = u64::try_from(buf_len / block_size).map_err(|_| BlockError::InvalidState)?;
+        let end_block = block_id
+            .checked_add(blocks)
+            .ok_or(BlockError::InvalidState)?;
         if end_block > self.num_blocks() {
-            return Err(AxError::InvalidInput);
+            return Err(BlockError::InvalidRequest);
         }
 
         Ok(())
@@ -125,29 +127,29 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
         self.inner.block_size()
     }
 
-    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
         self.check_io_bounds(block_id, buf.len())?;
         let physical = self
             .region
             .start_lba
             .checked_add(block_id)
-            .ok_or(AxError::BadState)?;
+            .ok_or(BlockError::InvalidState)?;
         self.inner.read_block(physical, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult {
         self.check_io_bounds(block_id, buf.len())?;
         let physical = self
             .region
             .start_lba
             .checked_add(block_id)
-            .ok_or(AxError::BadState)?;
+            .ok_or(BlockError::InvalidState)?;
         self.inner.write_block(physical, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    fn flush(&mut self) -> AxResult {
+    fn flush(&mut self) -> BlockResult {
         self.inner.flush()
     }
 }
@@ -165,17 +167,17 @@ impl FsBlockDevice for NativeHandleBlockDevice {
         self.handle.device_info().logical_block_size
     }
 
-    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
         self.handle.read_blocks(block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult {
         self.handle.write_blocks(block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    fn flush(&mut self) -> AxResult {
+    fn flush(&mut self) -> BlockResult {
         self.handle.flush_blocks()
     }
 }

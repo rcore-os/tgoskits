@@ -1,10 +1,10 @@
 //! Bounded listener and accept queues.
 
-use ax_errno::{AxResult, ax_bail};
 use axpoll::{IoEvents, PollSet};
 use ringbuf::{HeapRb, traits::*};
 
 use super::{VsockAddr, VsockConnId};
+use crate::{NetError, NetResult};
 
 pub(super) const VSOCK_ACCEPT_QUEUE_SIZE: usize = 128; // accept queue size
 
@@ -25,10 +25,10 @@ impl AcceptQueue {
         self.consumer.is_empty()
     }
 
-    pub fn push(&mut self, conn_id: VsockConnId) -> AxResult<()> {
+    pub fn push(&mut self, conn_id: VsockConnId) -> NetResult<()> {
         match self.producer.try_push(conn_id) {
             Ok(_) => Ok(()),
-            Err(_) => ax_bail!(ResourceBusy, "accept queue full"),
+            Err(_) => Err(NetError::ResourceBusy),
         }
     }
 

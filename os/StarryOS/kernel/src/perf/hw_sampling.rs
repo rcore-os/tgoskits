@@ -7,7 +7,6 @@ use core::{
 };
 
 use ax_alloc::GlobalPage;
-use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::PhysAddr;
 use axpoll::{IoEvents, PollSet};
@@ -72,13 +71,15 @@ pub(super) fn start_sampling_notify_worker(
 }
 
 /// Allocates and initializes one Linux perf mmap ring.
-pub(super) fn alloc_sampling_ring(len: usize) -> AxResult<(Arc<GlobalPage>, usize, PhysAddr)> {
+pub(super) fn alloc_sampling_ring(
+    len: usize,
+) -> crate::StarryResult<(Arc<GlobalPage>, usize, PhysAddr)> {
     if len == 0 || !len.is_multiple_of(ax_memory_addr::PAGE_SIZE_4K) {
-        return Err(AxError::InvalidInput);
+        return Err(crate::StarryError::InvalidInput);
     }
     let num_pages = len / ax_memory_addr::PAGE_SIZE_4K;
     if num_pages < 2 || !(num_pages - 1).is_power_of_two() {
-        return Err(AxError::InvalidInput);
+        return Err(crate::StarryError::InvalidInput);
     }
 
     let mut pages = GlobalPage::alloc_contiguous(num_pages, ax_memory_addr::PAGE_SIZE_4K)?;
@@ -117,13 +118,13 @@ pub(super) fn ring_has_data(ring: &PerfRingOutput) -> bool {
 pub(super) fn device_mmap_per_task(
     family: &Arc<PerfInheritanceFamily>,
     len: usize,
-) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+) -> crate::StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
     let root = family.root();
     if !root.is_sampling() {
-        return Err(AxError::Unsupported);
+        return Err(crate::StarryError::Unsupported);
     }
     if root.ring_mapped() {
-        return Err(AxError::ResourceBusy);
+        return Err(crate::StarryError::ResourceBusy);
     }
 
     let (pages, ring_vaddr, physical_address) = alloc_sampling_ring(len)?;

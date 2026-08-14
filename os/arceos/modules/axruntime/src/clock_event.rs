@@ -359,6 +359,58 @@ impl LocalClockEvent {
     }
 }
 
+#[cfg(all(test, not(feature = "multitask")))]
+mod single_task_tests {
+    use ax_task::runtime::MonotonicInstant;
+
+    use super::{
+        ClockDeadline, ClockEventAction, ClockEventIrqClaim, ClockEventPhase, LocalClockEvent,
+    };
+
+    fn deadline(nanos: u64) -> ClockDeadline {
+        ClockDeadline::from_nanos(nanos).unwrap()
+    }
+
+    fn instant(nanos: u64) -> MonotonicInstant {
+        MonotonicInstant::from_nanos(nanos).unwrap()
+    }
+
+    #[test]
+    fn host_clockevent_exercises_the_single_task_lifecycle() {
+        let mut event = LocalClockEvent::offline();
+        assert_eq!(event.phase(), ClockEventPhase::Offline);
+        assert_eq!(event.cpu_epoch(), 0);
+        assert_eq!(event.armed_deadline(), None);
+        assert_eq!(event.claim_irq(instant(0)), ClockEventIrqClaim::Ignored);
+
+        assert_eq!(
+            event.online(deadline(100)),
+            ClockEventAction::Resume(deadline(100))
+        );
+        assert_eq!(event.phase(), ClockEventPhase::Armed);
+        assert_eq!(event.cpu_epoch(), 1);
+        assert_eq!(event.armed_deadline(), Some(deadline(100)));
+        assert!(event.advance_periodic(instant(100), 25));
+
+        let firing = match event.claim_irq(instant(100)) {
+            ClockEventIrqClaim::Firing(firing) => firing,
+            claim => panic!("armed clockevent was not claimed: {claim:?}"),
+        };
+        assert_eq!(event.phase(), ClockEventPhase::Firing);
+        assert_eq!(
+            event.finish_firing(firing, instant(100), false),
+            ClockEventAction::Program(deadline(125))
+        );
+        assert_eq!(event.phase(), ClockEventPhase::Armed);
+        assert_eq!(event.armed_deadline(), Some(deadline(125)));
+
+        assert_eq!(event.take_offline(), ClockEventAction::Stop);
+        assert_eq!(event.take_offline(), ClockEventAction::None);
+        assert_eq!(event.phase(), ClockEventPhase::Offline);
+        assert_eq!(event.armed_deadline(), None);
+    }
+}
+
 #[cfg(all(test, feature = "multitask"))]
 mod tests {
     use ax_task::runtime::{MonotonicDeadline, MonotonicInstant};

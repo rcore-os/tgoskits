@@ -306,14 +306,14 @@ impl PerTaskCounter {
     /// target was already running when this event was attached or enabled, the
     /// worker wake makes it cross sched-out/sched-in; if it was not running,
     /// its first future sched-in observes the published counter directly.
-    pub(in crate::perf) fn synchronize_context(&self) -> AxResult<()> {
+    pub(in crate::perf) fn synchronize_context(&self) -> crate::StarryResult<()> {
         let handle = match ax_runtime::task::thread_handle(self.scheduler_id) {
             Ok(handle) => handle,
             // Linux treats a tombstoned perf task context as already detached:
             // no owner CPU remains to synchronize, and fd-side aggregate
             // control remains a successful no-op.
             Err(ax_runtime::task::TaskError::StaleThreadId) => return Ok(()),
-            Err(_) => return Err(AxError::BadState),
+            Err(_) => return Err(crate::StarryError::BadState),
         };
         if handle.state() == ax_runtime::task::ThreadState::Exited {
             return Ok(());
@@ -348,9 +348,9 @@ impl PerTaskCounter {
     pub(in crate::perf) fn device_mmap_rdpmc(
         &self,
         len: usize,
-    ) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+    ) -> crate::StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         if self.is_sampling {
-            return Err(AxError::InvalidInput);
+            return Err(crate::StarryError::InvalidInput);
         }
         let page = self
             .rdpmc

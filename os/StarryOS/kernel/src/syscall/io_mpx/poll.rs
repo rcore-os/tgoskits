@@ -5,7 +5,6 @@ use core::{
     task::Poll,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::TimeValue;
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{POLLNVAL, RLIMIT_NOFILE, pollfd, timespec};
@@ -13,6 +12,7 @@ use starry_signal::SignalSet;
 
 use super::FdPollSet;
 use crate::{
+    StarryError, StarryResult,
     file::get_file_like,
     mm::{UserConstPtr, UserPtr, vm_read_slice, vm_write_slice},
     syscall::signal::check_sigset_size,
@@ -23,10 +23,10 @@ use crate::{
     time::TimeValueLike,
 };
 
-fn check_nfds_limit(current: &crate::task::UserTaskRef, nfds: usize) -> AxResult<()> {
+fn check_nfds_limit(current: &crate::task::UserTaskRef, nfds: usize) -> crate::StarryResult<()> {
     let nofile = current.as_thread().proc_data.rlimits()[RLIMIT_NOFILE].current;
     if nfds as u64 > nofile {
-        Err(AxError::InvalidInput)
+        Err(StarryError::InvalidInput)
     } else {
         Ok(())
     }
@@ -36,7 +36,7 @@ fn read_poll_fds(
     current: &crate::task::UserTaskRef,
     fds: UserPtr<pollfd>,
     nfds: usize,
-) -> AxResult<Vec<pollfd>> {
+) -> crate::StarryResult<Vec<pollfd>> {
     check_nfds_limit(current, nfds)?;
     if nfds == 0 {
         return Ok(Vec::new());
@@ -55,7 +55,7 @@ fn write_poll_revents(
     current: &crate::task::UserTaskRef,
     fds: UserPtr<pollfd>,
     poll_fds: &[pollfd],
-) -> AxResult<()> {
+) -> crate::StarryResult<()> {
     let revents_offset = offset_of!(pollfd, revents);
 
     for (index, poll_fd) in poll_fds.iter().enumerate() {
@@ -101,7 +101,7 @@ fn do_poll(
     poll_fds: &mut [pollfd],
     timeout: Option<TimeValue>,
     sigmask: Option<SignalSet>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!("do_poll fds={poll_fds:?} timeout={timeout:?}");
 
     let mut res = 0isize;
@@ -154,7 +154,7 @@ fn do_poll(
         match block_on_user_timeout(task, timeout, wait) {
             UserWaitOutcome::Ready(result) => result,
             UserWaitOutcome::TimedOut => Ok(0),
-            UserWaitOutcome::Interrupted => Err(AxError::Interrupted),
+            UserWaitOutcome::Interrupted => Err(crate::StarryError::Interrupted),
         }
     })
 }
@@ -165,7 +165,7 @@ pub fn sys_poll(
     fds: UserPtr<pollfd>,
     nfds: u32,
     timeout: i32,
-) -> AxResult<isize> {
+) -> crate::StarryResult<isize> {
     let nfds = nfds as usize;
     let mut poll_fds = read_poll_fds(current, fds, nfds)?;
     let timeout = if timeout < 0 {
@@ -189,11 +189,13 @@ pub fn sys_ppoll(
     timeout: UserConstPtr<timespec>,
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if !sigmask.is_null() {
         check_sigset_size(sigsetsize)?;
     }
-    let nfds = nfds.try_into().map_err(|_| AxError::InvalidInput)?;
+    let nfds = nfds
+        .try_into()
+        .map_err(|_| crate::StarryError::InvalidInput)?;
     let mut poll_fds = read_poll_fds(current, fds, nfds)?;
     let timeout = (if timeout.is_null() {
         None

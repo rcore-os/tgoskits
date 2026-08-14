@@ -6,7 +6,7 @@ use core::fmt;
 use ax_api::fs as api;
 
 use super::FileType;
-use crate::io::Result;
+use crate::{StdError, StdResult};
 
 /// Iterator over the entries in a directory.
 pub struct ReadDir<'a> {
@@ -32,7 +32,7 @@ pub struct DirBuilder {
 }
 
 impl<'a> ReadDir<'a> {
-    pub(super) fn new(path: &'a str) -> Result<Self> {
+    pub(super) fn new(path: &'a str) -> StdResult<Self> {
         let mut opts = api::AxOpenOptions::new();
         opts.read(true);
         let inner = api::ax_open_dir(path, &opts)?;
@@ -51,9 +51,9 @@ impl<'a> ReadDir<'a> {
 }
 
 impl<'a> Iterator for ReadDir<'a> {
-    type Item = Result<DirEntry<'a>>;
+    type Item = StdResult<DirEntry<'a>>;
 
-    fn next(&mut self) -> Option<Result<DirEntry<'a>>> {
+    fn next(&mut self) -> Option<StdResult<DirEntry<'a>>> {
         if self.end_of_stream {
             return None;
         }
@@ -71,7 +71,7 @@ impl<'a> Iterator for ReadDir<'a> {
                     }
                     Err(e) => {
                         self.end_of_stream = true;
-                        return Some(Err(e));
+                        return Some(Err(e.into()));
                     }
                 }
             }
@@ -137,18 +137,16 @@ impl DirBuilder {
 
     /// Creates the specified directory with the options configured in this
     /// builder.
-    pub fn create(&self, path: &str) -> Result<()> {
+    pub fn create(&self, path: &str) -> StdResult {
         if self.recursive {
             self.create_dir_all(path)
         } else {
-            api::ax_create_dir(path)
+            api::ax_create_dir(path)?;
+            Ok(())
         }
     }
 
-    fn create_dir_all(&self, _path: &str) -> Result<()> {
-        ax_errno::ax_err!(
-            Unsupported,
-            "Recursive directory creation is not supported yet"
-        )
+    fn create_dir_all(&self, _path: &str) -> StdResult {
+        Err(StdError::RecursiveDirectoryCreationUnsupported)
     }
 }

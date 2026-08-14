@@ -2,7 +2,6 @@
 use core::mem::{MaybeUninit, align_of, size_of};
 use core::{future::poll_fn, task::Poll};
 
-use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::cpu::uspace::UserContext;
 use linux_raw_sys::general::{CLD_CONTINUED, CLD_STOPPED, CLD_TRAPPED, RLIMIT_RTTIME};
 use starry_process::Pid;
@@ -16,6 +15,7 @@ use super::{
 #[cfg(target_arch = "riscv64")]
 use crate::mm::vm_read_slice;
 use crate::{
+    StarryError, StarryResult,
     mm::UserMemoryProvider,
     task::future::{UserWaitOutcome, block_on, block_on_user},
 };
@@ -343,7 +343,7 @@ pub fn check_signals(
             // later iterations pass `None`, so the restart adjustment remains
             // single-shot.
             if let Some(info) = restart_info
-                && (uctx.retval() as isize) == -(ax_errno::LinuxError::EINTR.code() as isize)
+                && (uctx.retval() as isize) == -(crate::Errno::EINTR.into_raw() as isize)
                 && restartable
             {
                 let new_ip = uctx.ip() - uctx.syscall_insn_len();
@@ -557,8 +557,8 @@ pub fn block_next_signal() {
 
 pub fn with_blocked_signals<R>(
     blocked: Option<SignalSet>,
-    f: impl FnOnce() -> AxResult<R>,
-) -> AxResult<R> {
+    f: impl FnOnce() -> crate::StarryResult<R>,
+) -> crate::StarryResult<R> {
     let curr = current_user_task();
     let sig = curr.as_thread().signal();
 
@@ -571,11 +571,15 @@ pub fn with_blocked_signals<R>(
 }
 
 /// Sends a signal to a thread.
-pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo>) -> AxResult<()> {
+pub fn send_signal_to_thread(
+    tgid: Option<Pid>,
+    tid: Pid,
+    sig: Option<SignalInfo>,
+) -> StarryResult<()> {
     let task = get_task(tid)?;
     let thread = task.as_thread();
     if tgid.is_some_and(|tgid| thread.proc_data.proc.pid() != tgid) {
-        return Err(AxError::NoSuchProcess);
+        return Err(StarryError::NoSuchProcess);
     }
 
     if let Some(sig) = sig {
@@ -597,7 +601,7 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
 }
 
 /// Sends a signal to a process.
-pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()> {
+pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> StarryResult<()> {
     let proc_data = match get_process_data(pid) {
         Ok(proc_data) => proc_data,
         Err(_) => {
@@ -607,7 +611,7 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
             if is_zombie_pid(pid) {
                 return Ok(());
             }
-            return Err(AxError::NoSuchProcess);
+            return Err(StarryError::NoSuchProcess);
         }
     };
 
@@ -681,7 +685,7 @@ fn publish_process_signal(
 }
 
 /// Sends a signal to a process group.
-pub fn send_signal_to_process_group(pgid: Pid, sig: Option<SignalInfo>) -> AxResult<()> {
+pub fn send_signal_to_process_group(pgid: Pid, sig: Option<SignalInfo>) -> StarryResult<()> {
     let pg = get_process_group(pgid)?;
 
     if let Some(sig) = sig {
@@ -713,7 +717,7 @@ pub fn send_signal_to_process_group(pgid: Pid, sig: Option<SignalInfo>) -> AxRes
 /// Process-wide fatal signals (signals raised on someone else's
 /// behalf) still go through [`send_signal_to_process`] and can land
 /// on any unmasked thread.
-pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
+pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> crate::StarryResult<()> {
     let curr = current_user_task();
     let thread = curr.as_thread();
     let signo = sig.signo();

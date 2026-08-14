@@ -1,7 +1,7 @@
 use super::*;
 
 /// Applies userspace disable intent and fences any live owner-CPU generation.
-pub(crate) fn disable_counter(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
+pub(crate) fn disable_counter(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<()> {
     ptc.enabled.store(false, Ordering::Release);
     // Never retain the non-sleeping run-state lock across an owner-CPU worker
     // rendezvous. See `stop_requested_on_owner` for the temporary-lifetime trap.
@@ -17,7 +17,7 @@ pub(crate) fn disable_counter(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
 }
 
 /// Resets a task-bound count between two complete scheduling generations.
-pub(crate) fn reset_counter(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
+pub(crate) fn reset_counter(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<()> {
     // A one-shot owner snapshot is insufficient: the target can migrate before
     // the fixed worker runs and start a new slice on another CPU. Quiescing the
     // exact generation first gives RESET one Linux-style context boundary.
