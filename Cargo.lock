@@ -935,6 +935,7 @@ dependencies = [
  "axtest",
  "cfg-if",
  "cpu-local",
+ "fdt-edit",
  "fdt-parser",
  "heapless",
  "log",
