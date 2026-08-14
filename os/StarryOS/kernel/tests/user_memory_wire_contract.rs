@@ -4,6 +4,7 @@ const ACCESS: &str = include_str!("../src/mm/access.rs");
 const NET_FILE: &str = include_str!("../src/file/net.rs");
 const NET_IO: &str = include_str!("../src/syscall/net/io.rs");
 const RGA: &str = include_str!("../src/pseudofs/dev/rga.rs");
+const STAT: &str = include_str!("../src/syscall/fs/stat.rs");
 const SYS: &str = include_str!("../src/syscall/sys.rs");
 
 #[test]
@@ -80,6 +81,17 @@ fn rga_release_copies_user_handles_before_locking_the_table() {
     assert!(
         !release[table_lock..].contains(".vm_read_uninit()"),
         "faultable RGA user-memory reads must finish before the non-sleeping handle-table lock"
+    );
+}
+
+#[test]
+fn stat_abi_fields_share_one_faultable_user_memory_transfer() {
+    let write_stat = section(STAT, "fn write_stat(", "\n}\n\nfn write_statx_timestamp");
+
+    assert!(write_stat.contains("write_abi_fields"));
+    assert!(
+        !write_stat.contains("write_field("),
+        "stat must not repeat address-space preparation for every ABI field"
     );
 }
 

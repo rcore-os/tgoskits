@@ -2,6 +2,7 @@ use alloc::{string::String, vec::Vec};
 use core::{
     ffi::c_char,
     hint::unlikely,
+    marker::PhantomData,
     mem::{MaybeUninit, size_of, transmute},
     ptr,
     sync::atomic::{AtomicU64, Ordering},
@@ -125,6 +126,33 @@ pub fn vm_load_until_nul<T: bytemuck::Pod>(task: &UserTaskRef, ptr: *const T) ->
 #[repr(transparent)]
 pub struct UserPtr<T>(*mut T);
 
+/// Encodes initialized fields into a zero-filled userspace ABI object.
+pub(crate) struct AbiFieldWriter<'bytes, T> {
+    bytes: &'bytes mut [u8],
+    _object: PhantomData<fn() -> T>,
+}
+
+impl<T> AbiFieldWriter<'_, T> {
+    /// Encodes one initialized field without reading the containing object's
+    /// padding bytes.
+    pub(crate) fn put_field<U: NoUninit>(
+        &mut self,
+        offset: usize,
+        value: &U,
+    ) -> crate::StarryResult<()> {
+        let value = bytemuck::bytes_of(value);
+        let end = offset
+            .checked_add(value.len())
+            .ok_or(crate::StarryError::BadAddress)?;
+        let field = self
+            .bytes
+            .get_mut(offset..end)
+            .ok_or(crate::StarryError::BadAddress)?;
+        field.copy_from_slice(value);
+        Ok(())
+    }
+}
+
 impl<T> Copy for UserPtr<T> {}
 
 impl<T> Clone for UserPtr<T> {
@@ -215,6 +243,25 @@ impl<T> UserPtr<T> {
         T: NoUninit,
     {
         self.0.vm_write(task, value).map_err(Into::into)
+    }
+
+    /// Encodes a userspace ABI object and copies it with one faultable memory
+    /// transfer. Bytes not covered by a field remain zero, including padding.
+    pub(crate) fn write_abi_fields<const N: usize>(
+        self,
+        task: &UserTaskRef,
+        bytes: &mut [u8; N],
+        encode: impl FnOnce(&mut AbiFieldWriter<'_, T>) -> crate::StarryResult<()>,
+    ) -> crate::StarryResult<()> {
+        if N != size_of::<T>() {
+            return Err(crate::StarryError::BadAddress);
+        }
+        bytes.fill(0);
+        encode(&mut AbiFieldWriter {
+            bytes,
+            _object: PhantomData,
+        })?;
+        UserPtr::<u8>::from(self.0.cast()).write_slice(task, bytes)
     }
 
     /// Copies one initialized field without exposing or copying the containing

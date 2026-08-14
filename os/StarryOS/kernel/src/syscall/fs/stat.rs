@@ -325,49 +325,39 @@ fn write_stat(
     user: *mut stat,
     value: stat,
 ) -> crate::StarryResult<()> {
-    let user = UserPtr::from(user);
-    user.write_field(current, offset_of!(stat, st_dev), value.st_dev)?;
-    user.write_field(current, offset_of!(stat, st_ino), value.st_ino)?;
-    user.write_field(current, offset_of!(stat, st_nlink), value.st_nlink)?;
-    user.write_field(current, offset_of!(stat, st_mode), value.st_mode)?;
-    user.write_field(current, offset_of!(stat, st_uid), value.st_uid)?;
-    user.write_field(current, offset_of!(stat, st_gid), value.st_gid)?;
-    #[cfg(target_arch = "x86_64")]
-    user.write_field(current, offset_of!(stat, __pad0), value.__pad0)?;
-    user.write_field(current, offset_of!(stat, st_rdev), value.st_rdev)?;
-    #[cfg(not(target_arch = "x86_64"))]
-    user.write_field(current, offset_of!(stat, __pad1), value.__pad1)?;
-    user.write_field(current, offset_of!(stat, st_size), value.st_size)?;
-    user.write_field(current, offset_of!(stat, st_blksize), value.st_blksize)?;
-    #[cfg(not(target_arch = "x86_64"))]
-    user.write_field(current, offset_of!(stat, __pad2), value.__pad2)?;
-    user.write_field(current, offset_of!(stat, st_blocks), value.st_blocks)?;
-    user.write_field(current, offset_of!(stat, st_atime), value.st_atime)?;
-    user.write_field(
-        current,
-        offset_of!(stat, st_atime_nsec),
-        value.st_atime_nsec,
-    )?;
-    user.write_field(current, offset_of!(stat, st_mtime), value.st_mtime)?;
-    user.write_field(
-        current,
-        offset_of!(stat, st_mtime_nsec),
-        value.st_mtime_nsec,
-    )?;
-    user.write_field(current, offset_of!(stat, st_ctime), value.st_ctime)?;
-    user.write_field(
-        current,
-        offset_of!(stat, st_ctime_nsec),
-        value.st_ctime_nsec,
-    )?;
-    #[cfg(target_arch = "x86_64")]
-    user.write_field(current, offset_of!(stat, __unused), value.__unused)?;
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        user.write_field(current, offset_of!(stat, __unused4), value.__unused4)?;
-        user.write_field(current, offset_of!(stat, __unused5), value.__unused5)?;
-    }
-    Ok(())
+    let mut bytes = [0_u8; size_of::<stat>()];
+    UserPtr::from(user).write_abi_fields(current, &mut bytes, |fields| {
+        fields.put_field(offset_of!(stat, st_dev), &value.st_dev)?;
+        fields.put_field(offset_of!(stat, st_ino), &value.st_ino)?;
+        fields.put_field(offset_of!(stat, st_nlink), &value.st_nlink)?;
+        fields.put_field(offset_of!(stat, st_mode), &value.st_mode)?;
+        fields.put_field(offset_of!(stat, st_uid), &value.st_uid)?;
+        fields.put_field(offset_of!(stat, st_gid), &value.st_gid)?;
+        #[cfg(target_arch = "x86_64")]
+        fields.put_field(offset_of!(stat, __pad0), &value.__pad0)?;
+        fields.put_field(offset_of!(stat, st_rdev), &value.st_rdev)?;
+        #[cfg(not(target_arch = "x86_64"))]
+        fields.put_field(offset_of!(stat, __pad1), &value.__pad1)?;
+        fields.put_field(offset_of!(stat, st_size), &value.st_size)?;
+        fields.put_field(offset_of!(stat, st_blksize), &value.st_blksize)?;
+        #[cfg(not(target_arch = "x86_64"))]
+        fields.put_field(offset_of!(stat, __pad2), &value.__pad2)?;
+        fields.put_field(offset_of!(stat, st_blocks), &value.st_blocks)?;
+        fields.put_field(offset_of!(stat, st_atime), &value.st_atime)?;
+        fields.put_field(offset_of!(stat, st_atime_nsec), &value.st_atime_nsec)?;
+        fields.put_field(offset_of!(stat, st_mtime), &value.st_mtime)?;
+        fields.put_field(offset_of!(stat, st_mtime_nsec), &value.st_mtime_nsec)?;
+        fields.put_field(offset_of!(stat, st_ctime), &value.st_ctime)?;
+        fields.put_field(offset_of!(stat, st_ctime_nsec), &value.st_ctime_nsec)?;
+        #[cfg(target_arch = "x86_64")]
+        fields.put_field(offset_of!(stat, __unused), &value.__unused)?;
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            fields.put_field(offset_of!(stat, __unused4), &value.__unused4)?;
+            fields.put_field(offset_of!(stat, __unused5), &value.__unused5)?;
+        }
+        Ok(())
+    })
 }
 
 fn write_statx_timestamp(
