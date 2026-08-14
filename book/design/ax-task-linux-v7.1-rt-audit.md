@@ -3403,7 +3403,7 @@ index，Fair 继续由唯一的 `balance_fair()` 状态机负责。这不是用�
 115.917 秒；最新 dev 约 112 秒，差距约 3.5%，低于 20% 门限。RISC-V 与
 LoongArch64 ArceOS Rust 组均为 `21/21`，包括生产 task-IPI 与统一 ktimer 回归。
 
-## x86 clockevent 修复检查点（性能验证尚未完成）
+## x86 clockevent、rootfs 与 IPI 生命周期关闭检查点
 
 x86_64 Starry `test-ext4-inode-unique` 在本分支原实现中测试主体为
 103.322 秒，而同一最新 dev 基线约为 77 秒，慢约 34.2%，已经超过本轮的
@@ -3458,9 +3458,13 @@ qemu/system/test-ext4-inode-unique` 在合并 rootfs ownership 重构前完成 `
 随后在独立 detached worktree 中立即复测同一 `origin/dev@2a1bcff354`，测试本体为
 97 秒；本分支慢约 3.9%，低于 20% 门限。两边都使用最新 rootfs patcher，只给选中的
 rootfs drive 添加 `snapshot=on`，不再使用会改变 ESP、额外磁盘和 pflash 语义的全局
-`-snapshot`。该同机连续对照关闭 x86 正式性能门限；更早的 78 秒快样本仅保留为历史
-观测，不能替代当前环境的成对基线。qperf 结构计数仍只用于 clockevent IRQ、scheduler
-deadline、IPI 与 context-switch 放大诊断，不能替代无采样的完成时间。
+`-snapshot`。本分支已经删除 qperf runner 旧的
+`apply_drive_snapshot_without_global_snapshot()` 和 `extra_qemu_args` 特殊处理，统一通过
+`RootfsPatchOptions { write_policy: Discard, .. }` 表达写隔离。grouped case 的显式调度与
+Axvisor ELF artifact 隔离仍保留，因为它们分别属于测试选择和 guest artifact ownership，
+不是 rootfs 写策略。该同机连续对照关闭 x86 正式性能门限；更早的 78 秒快样本仅保留为
+历史观测，不能替代当前环境的成对基线。qperf 结构计数仍只用于 clockevent IRQ、
+scheduler deadline、IPI 与 context-switch 放大诊断，不能替代无采样的完成时间。
 
 继续合并 `origin/dev@f9e8b9dd79` 的 seccomp syscall fast-path 时，没有移植其
 `AtomicBool + IrqMutex<SeccompState>` 镜像。该实现把 active flag 与实际 policy
@@ -3474,6 +3478,35 @@ dev 的性能目标与回归范围，保留本分支更强的单一 publication 
 `cargo xtask clippy --package starry-kernel` 为 26/26，x86_64
 `qemu/system/syscall-test-seccomp` 在真实 guest 中完成全部 strict/filter、fork inheritance、
 TSYNC、KILL_THREAD/KILL_PROCESS 与 action precedence 检查，xtask 为 1/1。
+
+四架构 current-head 的 `task-ipi` 与 `task-kernel-timer` 已经逐项串行验证，x86_64、
+AArch64、RISC-V 与 LoongArch64 共 8/8 通过，均得到正式的
+`ArceOS test suite run OK!`。该矩阵还暴露并关闭了一个 scheduler owner delivery 缺口：
+`request_scheduler_work()` 原来只完成 `begin_owner_delivery()` 和逻辑 publication，随后
+丢弃 publication，没有调用 `deliver_scheduler_work_owned()` 完成物理 doorbell transaction。
+确定性真实 QEMU 红测在旧路径上得到
+`remote owner work must complete its scheduler doorbell transaction`，修复后同一测试通过。
+现在该路径先在 owner transaction 中发布 work，再由同一个 `IrqScope` 内的 delivery edge
+决定是否发物理 IPI；这保持 Linux 式的“逻辑状态是事实源、doorbell 只负责促成观察”边界，
+不会因为已有 pending edge 而制造第二个 scheduler 状态源。
+
+AArch64 `qemu-ivc` 的 shutdown hang 不是 TLB shootdown 算法或 IPI edge 代际缺陷。GDB 与
+GIC redistributor 状态共同显示：CPU1 正在等待 CPU0 的 hard-call，CPU0 队列已经有请求，
+而 CPU0 的 SGI0 同时为 active 和 pending。AxVM 已经 acknowledge 的 host IRQ 路径先 EOIR，
+调用 `handle_acknowledged_irq()`，却在其返回后才 DIR；该 handler 在 hardirq exit 后可能因
+preempt guard 释放直接调度，使物理 IRQ token 跨越被挂起的 IRQ-return 栈保持 active，后续
+同一 SGI 只能 pending 而不能再次进入。修复后，controller completion closure 在 hardirq
+exit 之后、preempt guard 释放和 IRQ-return scheduling 之前执行，且仍保持本地 IRQ 关闭。
+最低层顺序测试在旧次序稳定得到
+`[preempt-release, controller-complete]`，修复后同一测试得到
+`[controller-complete, preempt-release]`。完整 ax-hal host test 为 9/9；最终代码在不带临时
+TLB 全局串行化、也不刷新已有 ARMED edge 的情况下，`qemu-ivc` 连续三次通过，分别为
+29.27、33.03 和 30.17 秒。这些无效实验已经全部撤销，避免把根因修复扩张成不必要的
+调度或 IPI 语义变化。
+
+上述 current-head 还通过 `ax-task` 6/6、`ax-hal` 14/14、`axvm` 6/6 与
+`arceos-test-suit` 33/33 的 targeted clippy；因此本检查点已经关闭本地四架构 QEMU、
+x86 正式性能门限和 IPI/IRQ completion 生命周期，只等待远端 CI 的 terminal 结果。
 
 ## 模块化结果
 
@@ -3496,7 +3529,7 @@ TSYNC、KILL_THREAD/KILL_PROCESS 与 action precedence 检查，xtask 为 1/1。
 
 - 继续检查 clockevent IRQ、scheduler deadline、IPI 与 context-switch 的 qperf
   窗口计数，不把带 plugin 的诊断吞吐与无采样正式完成时间混用；
-- 完成四架构 current-head build/QEMU 与 CI terminal 结果；
+- 等待并核对 GitHub CI terminal 结果；
 - 对新 dev 合入的 AxVM CPU_ON/CPU_OFF/reset 生命周期保持 `TaskHandle` 适配；
 - 继续检查高频 wake/yield workload 的 scheduler-work amplification。
 

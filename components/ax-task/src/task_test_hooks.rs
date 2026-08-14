@@ -139,6 +139,18 @@ pub fn request_current_owner_work() -> Result<(), crate::TaskError> {
     Ok(())
 }
 
+/// Publishes owner work for one online CPU and reports whether its scheduler
+/// delivery contract was completed.
+pub fn request_cpu_owner_work(cpu: u32) -> Result<bool, crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let cpu = crate::CpuId::new(cpu);
+    let system = crate::facade::runtime_task_system()?;
+    let remote = system
+        .cpu_remote(cpu)
+        .ok_or(crate::TaskError::CpuOffline(cpu.as_u32()))?;
+    Ok(remote.request_scheduler_work_for_test())
+}
+
 /// Takes task-lock entries from the armed no-switch scheduler pass.
 pub fn take_no_switch_thread_lock_count() -> Option<u64> {
     if NO_SWITCH_THREAD_LOCK_STAGE

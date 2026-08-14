@@ -8,6 +8,7 @@ use std::{
         modules::{
             ax_hal::{self, irq::CpuId, percpu::this_cpu_id},
             ax_ipi::{self, IpiNotification},
+            ax_task::task_test_hooks,
         },
         task::WaitQueue,
     },
@@ -254,6 +255,16 @@ fn verify_self_ipi_delivery(cpu_id: usize) {
     );
 }
 
+fn verify_remote_owner_work_delivery(sender_cpu: usize, target_cpu: usize) {
+    pin_current_to_cpu(sender_cpu);
+    let target_cpu = u32::try_from(target_cpu).expect("test CPU id must fit in u32");
+    assert!(
+        task_test_hooks::request_cpu_owner_work(target_cpu)
+            .expect("failed to publish remote scheduler owner work"),
+        "remote owner work must complete its scheduler doorbell transaction",
+    );
+}
+
 pub fn run() -> crate::TestResult {
     let cpu_num = thread::available_parallelism().unwrap().get();
     if cpu_num < 2 {
@@ -268,6 +279,7 @@ pub fn run() -> crate::TestResult {
     assert!(!sender_cpus.is_empty(), "need at least one sender CPU");
 
     TARGET_CPU.store(target_cpu, Ordering::Relaxed);
+    verify_remote_owner_work_delivery(sender_cpus[0], target_cpu);
     exercise_irq_masked_idle_wake(target_cpu, sender_cpus[0]);
     verify_self_ipi_delivery(sender_cpus[0]);
 

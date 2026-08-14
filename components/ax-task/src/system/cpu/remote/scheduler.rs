@@ -146,10 +146,21 @@ impl CpuRemote {
     }
 
     pub(crate) fn request_scheduler_work(&self) {
+        let _delivered = self.request_scheduler_work_delivery();
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn request_scheduler_work_for_test(&self) -> bool {
+        self.request_scheduler_work_delivery()
+    }
+
+    fn request_scheduler_work_delivery(&self) -> bool {
         let Some(_publication) = self.begin_owner_delivery() else {
-            return;
+            return false;
         };
-        self.request_scheduler_work_owned();
+        let _irq = IrqScope::enter();
+        let publication = self.request_scheduler_work_owned();
+        self.deliver_scheduler_work_owned(publication)
     }
 
     pub(super) fn request_scheduler_work_owned(&self) -> SchedulerRequestPublication {

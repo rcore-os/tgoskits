@@ -41,23 +41,35 @@ pub fn handle_irq(vector: usize) -> bool {
     )
 }
 
-/// Dispatches an IRQ that was acknowledged by an architecture backend.
+/// Dispatches an IRQ that was acknowledged by an architecture backend and
+/// completes its controller token before IRQ-return scheduling.
 ///
 /// Hypervisors may consume the physical interrupt token while the guest is
 /// running and dispatch the already-resolved action only after dropping guest
 /// CPU ownership. This entry retains the same IRQ/preemption contract as a
 /// hardware trap without acknowledging the controller a second time.
-pub fn handle_acknowledged_irq(irq: IrqId) -> IrqOutcome {
-    with_irq_entry(|| {}, || dispatch_irq(irq))
+/// `complete` must finish the matching controller transaction without sleeping
+/// or enabling local IRQs.
+pub fn handle_acknowledged_irq(irq: IrqId, complete: impl FnOnce()) -> IrqOutcome {
+    with_irq_entry_and_completion(|| {}, || dispatch_irq(irq), complete)
 }
 
 fn with_irq_entry<T>(prepare: impl FnOnce(), dispatch: impl FnOnce() -> T) -> T {
-    with_observed_irq_entry(prepare, dispatch, || {})
+    with_irq_entry_and_completion(prepare, dispatch, || {})
+}
+
+fn with_irq_entry_and_completion<T>(
+    prepare: impl FnOnce(),
+    dispatch: impl FnOnce() -> T,
+    complete: impl FnOnce(),
+) -> T {
+    with_observed_irq_entry(prepare, dispatch, complete, || {})
 }
 
 fn with_observed_irq_entry<T>(
     prepare: impl FnOnce(),
     dispatch: impl FnOnce() -> T,
+    complete: impl FnOnce(),
     after_preempt_release: impl FnOnce(),
 ) -> T {
     let mut irq_guard = ax_sync::IrqSaveGuard::new();
@@ -67,10 +79,15 @@ fn with_observed_irq_entry<T>(
     let result = dispatch();
     ax_sync::hardirq_exit();
 
-    drop(preempt_guard); // Explicit IRQ-return scheduling keeps local IRQs disabled.
+    finish_irq_entry(|| drop(preempt_guard), complete);
     after_preempt_release();
     drop(irq_guard);
     result
+}
+
+fn finish_irq_entry(release_preempt: impl FnOnce(), complete: impl FnOnce()) {
+    complete();
+    release_preempt(); // Explicit IRQ-return scheduling keeps local IRQs disabled.
 }
 
 /// Tests IRQ-action context while the caller already pins the current CPU.
@@ -108,6 +125,7 @@ pub(crate) fn observe_irq_entry_state_for_test() -> IrqEntryStateObservation {
     let dispatch_irqs_enabled = with_observed_irq_entry(
         || {},
         crate::asm::irqs_enabled,
+        || {},
         || after_preempt_release_irqs_enabled = crate::asm::irqs_enabled(),
     );
 
@@ -115,5 +133,30 @@ pub(crate) fn observe_irq_entry_state_for_test() -> IrqEntryStateObservation {
         dispatch_irqs_enabled,
         after_preempt_release_irqs_enabled,
         return_irqs_enabled: crate::asm::irqs_enabled(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use std::{cell::RefCell, vec::Vec};
+
+    use super::finish_irq_entry;
+
+    #[test]
+    fn acknowledged_irq_completion_precedes_preempt_release() {
+        let events = RefCell::new(Vec::new());
+
+        finish_irq_entry(
+            || events.borrow_mut().push("preempt-release"),
+            || events.borrow_mut().push("controller-complete"),
+        );
+
+        assert_eq!(
+            *events.borrow(),
+            ["controller-complete", "preempt-release"],
+            "an acknowledged controller token must not remain active across IRQ-return scheduling",
+        );
     }
 }

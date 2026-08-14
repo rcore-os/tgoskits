@@ -23,7 +23,13 @@ task-wait-queue-remote-wake = [
     "ax-std/ipi",
     "ax-std/task-test-hooks",
 ]
-task-ipi = ["task-runtime", "ax-std/alloc", "ax-std/irq", "ax-std/ipi"]
+task-ipi = [
+    "task-runtime",
+    "ax-std/alloc",
+    "ax-std/irq",
+    "ax-std/ipi",
+    "ax-std/task-test-hooks",
+]
 task-irq = ["task-runtime", "ax-std/irq"]
 task-kernel-timer = ["task-runtime", "ax-std/irq", "ax-std/task-test-hooks"]
 task-tls = ["task-runtime", "ax-std/tls", "ax-std/alloc"]
