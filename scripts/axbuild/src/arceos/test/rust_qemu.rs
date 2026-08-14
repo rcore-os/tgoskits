@@ -324,10 +324,15 @@ pub(super) fn rust_qemu_features_for_list(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::arceos::test::discovery::arceos_test_suit_case_qemu_config_path;
+    use crate::{
+        arceos::test::{
+            ARCEOS_RUST_TEST_PACKAGE, discovery::arceos_test_suit_case_qemu_config_path,
+        },
+        test::case::TestQemuCase,
+    };
 
     fn rust_test_suite_root() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-suit/arceos/rust")
@@ -550,6 +555,45 @@ BT 0 ip=0x1 fp=0x2
         assert_eq!(path, rust_test_suite_root().join("qemu-x86_64.toml"));
     }
 
+    #[tokio::test]
+    async fn arceos_rust_case_preparation_rejects_persistent_rootfs_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let qemu_config_path = write_test_qemu_config(root.path(), Some("persist"));
+        let mut arceos = ArceOS::new().unwrap();
+
+        let error = prepare_rust_qemu_cases(
+            &mut arceos,
+            "riscv64gc-unknown-none-elf",
+            vec![rust_qemu_case(qemu_config_path)],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("cannot use `rootfs_write_policy = \"persist\"`"));
+    }
+
+    #[tokio::test]
+    async fn arceos_rust_case_preparation_isolates_its_rootfs_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let qemu_config_path = write_test_qemu_config(root.path(), None);
+        let mut arceos = ArceOS::new().unwrap();
+
+        let prepared = prepare_rust_qemu_cases(
+            &mut arceos,
+            "riscv64gc-unknown-none-elf",
+            vec![rust_qemu_case(qemu_config_path)],
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            prepared[0].qemu.args.iter().any(|argument| {
+                argument.contains("id=disk0") && argument.contains("snapshot=on")
+            })
+        );
+    }
+
     #[test]
     fn arceos_rust_normal_qemu_keeps_suite_result_regex() {
         let mut qemu = QemuConfig {
@@ -576,5 +620,57 @@ BT 0 ip=0x1 fp=0x2
     fn arceos_rust_selected_case_can_miss_in_default_group_search() {
         let features = rust_qemu_features_for_list(Some("c/helloworld"), true).unwrap();
         assert!(features.is_empty());
+    }
+
+    fn rust_qemu_case(qemu_config_path: PathBuf) -> ArceosRustQemuCase {
+        ArceosRustQemuCase {
+            case: TestQemuCase {
+                name: "task-ipi".to_string(),
+                display_name: "task-ipi".to_string(),
+                case_dir: qemu_config_path.parent().unwrap().to_path_buf(),
+                qemu_config_path,
+                test_commands: Vec::new(),
+                host_symbolize_success_regex: Vec::new(),
+                host_http_server: None,
+                subcases: Vec::new(),
+                grouped_subcase_filter: None,
+            },
+            build_group: "arceos-rust".to_string(),
+            build_config_path: rust_test_suite_root().join("build-riscv64gc-unknown-none-elf.toml"),
+            package: ARCEOS_RUST_TEST_PACKAGE.to_string(),
+            feature: Some("task-ipi".to_string()),
+        }
+    }
+
+    fn write_test_qemu_config(root: &Path, rootfs_write_policy: Option<&str>) -> PathBuf {
+        let disk_path = root.join("disk.img");
+        std::fs::write(&disk_path, []).unwrap();
+        let policy = rootfs_write_policy
+            .map(|policy| format!("rootfs_write_policy = \"{policy}\"\n"))
+            .unwrap_or_default();
+        let qemu_config_path = root.join("qemu-riscv64.toml");
+        std::fs::write(
+            &qemu_config_path,
+            format!(
+                r#"args = [
+    "-m",
+    "64M",
+    "-smp",
+    "4",
+    "-drive",
+    "id=disk0,if=none,format=raw,file={}",
+]
+
+timeout = 5
+uefi = false
+to_bin = false
+success_regex = ["OK"]
+fail_regex = ["FAIL"]
+{policy}"#,
+                disk_path.display()
+            ),
+        )
+        .unwrap();
+        qemu_config_path
     }
 }
