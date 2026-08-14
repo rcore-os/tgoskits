@@ -448,8 +448,14 @@ mod capture {
             stream
                 .write_all(command.as_bytes())
                 .context("failed to send QEMU memsave command")?;
-            stream.flush().ok();
-            wait_for_profraw(&self.profraw_path, size)
+            stream
+                .flush()
+                .context("failed to flush QEMU memsave command")?;
+            wait_for_profraw(&self.profraw_path, size)?;
+            stream
+                .write_all(b"quit\n")
+                .context("failed to request QEMU exit after coverage capture")?;
+            stream.flush().context("failed to flush QEMU exit request")
         }
     }
 
@@ -558,6 +564,9 @@ mod capture {
                 assert!(command.starts_with("memsave 0x1234 4 "));
                 std::thread::sleep(Duration::from_millis(100));
                 fs::write(writer_path, b"new!").unwrap();
+                let mut quit = String::new();
+                reader.read_line(&mut quit).unwrap();
+                assert_eq!(quit, "quit\n");
                 written_tx.send(()).unwrap();
             });
 
@@ -577,6 +586,39 @@ mod capture {
             writer.join().unwrap();
 
             assert_eq!(profile_after_dump, b"new!");
+        }
+
+        #[test]
+        fn exits_qemu_after_memsave_completes() {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let profraw_path = temp_dir.path().join("coverage.profraw");
+
+            let (client, mut server) = UnixStream::pair().unwrap();
+            let writer_path = profraw_path.clone();
+            let monitor = std::thread::spawn(move || {
+                let mut reader = io::BufReader::new(&mut server);
+                let mut memsave = String::new();
+                reader.read_line(&mut memsave).unwrap();
+                assert!(memsave.starts_with("memsave 0x1234 4 "));
+                fs::write(writer_path, b"new!").unwrap();
+
+                let mut quit = String::new();
+                reader.read_line(&mut quit).unwrap();
+                assert_eq!(quit, "quit\n");
+            });
+
+            let mut state = AxtestCoverageState {
+                monitor_socket: temp_dir.path().join("monitor.sock"),
+                profraw_path,
+                line_buf: String::new(),
+                dumped: false,
+                completion_signaled: false,
+                error: None,
+                monitor_conn: Some(client),
+            };
+
+            state.dump_coverage(0x1234, 4).unwrap();
+            monitor.join().unwrap();
         }
     }
 }
