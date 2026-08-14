@@ -320,6 +320,39 @@ mod tests {
     }
 
     #[test]
+    fn parses_pull_with_extract_dir_after_image() {
+        let cli = Cli::try_parse_from([
+            "image",
+            "pull",
+            "qemu-x86_64",
+            "--extract-dir",
+            "tmp/axbuild/images",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.overrides.extract_dir,
+            Some(PathBuf::from("tmp/axbuild/images"))
+        );
+        assert!(matches!(cli.command, Command::Pull(_)));
+    }
+
+    #[test]
+    fn ci_image_pull_commands_do_not_use_removed_output_dir() {
+        let workflow = include_str!("../../../.github/workflows/ci.yml");
+
+        for command in workflow
+            .lines()
+            .filter(|line| line.contains("cargo xtask image pull"))
+        {
+            assert!(
+                !command.contains("--output-dir"),
+                "CI still uses removed image option: {command}"
+            );
+        }
+    }
+
+    #[test]
     fn parses_check_with_expected_sha256() {
         let cli = Cli::try_parse_from([
             "image",
