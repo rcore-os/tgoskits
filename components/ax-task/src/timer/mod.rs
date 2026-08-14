@@ -8,9 +8,7 @@ pub use kernel::{
     KernelTimerAction, KernelTimerCallback, KernelTimerCancelOutcome, KernelTimerHandle,
     RestartableKernelTimerCallback,
 };
-pub(crate) use kernel::{
-    KernelTimerEntry, KernelTimerExecution, KernelTimerExpireBatch, KernelTimerQueue,
-};
+pub(crate) use kernel::{KernelTimerEntry, KernelTimerExecution, KernelTimerQueue};
 pub use node::{
     ExpiredTaskDeadline, TaskDeadlineKind, TaskDeadlineNode, TaskDeadlineRegistration,
     TaskDeadlineToken,
@@ -60,15 +58,6 @@ pub struct TaskDeadlineExpireBatch {
 }
 
 impl TaskDeadlineExpireBatch {
-    pub(crate) const fn empty() -> Self {
-        Self {
-            processed: 0,
-            expired: 0,
-            pending: false,
-            next_deadline: None,
-        }
-    }
-
     /// Returns heap nodes removed during this pass.
     pub const fn processed(self) -> usize {
         self.processed

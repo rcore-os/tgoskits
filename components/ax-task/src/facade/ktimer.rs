@@ -79,7 +79,7 @@ fn ktimer_service_loop(owner: CpuId) -> Result<(), TaskError> {
 
 fn service_current_ktimer_pass(owner: CpuId) -> Result<bool, TaskError> {
     let system = runtime_task_system()?;
-    let (pending, mut kernel_timer) = {
+    let (pending, mut kernel_timer, mut task_timer) = {
         let mut irq = RuntimeIrqGuard::enter();
         let mut cpu = runtime_current_cpu_mut(&mut irq)?;
         if cpu.owner() != owner {
@@ -92,20 +92,62 @@ fn service_current_ktimer_pass(owner: CpuId) -> Result<bool, TaskError> {
         if let Some(update) = batch.update() {
             task_runtime::publish_scheduler_deadline(update);
         }
-        (batch.pending(), batch.take_kernel_timer())
+        (
+            batch.pending(),
+            batch.take_kernel_timer(),
+            batch.take_task_timer(),
+        )
     };
+    if let Some(event) = task_timer.take() {
+        let handle = match event.thread().map(|thread| system.thread_handle(thread)) {
+            Some(Ok(handle)) => Some(handle),
+            Some(Err(TaskError::StaleThreadId)) | None => None,
+            Some(Err(_)) => task_runtime::fatal_invariant(
+                0x4b54_0031,
+                event.thread().map_or(0, ThreadId::as_u64) as usize,
+            ),
+        };
+        let (wake, update) = {
+            let mut irq = RuntimeIrqGuard::enter();
+            // Once an expiration leaves the deadline base, this worker owns
+            // its only completion token. Losing the pinned CPU or returning a
+            // recoverable error would orphan that token.
+            let mut cpu = runtime_current_cpu_mut(&mut irq).unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x4b54_0032, owner.as_u32() as usize)
+            });
+            if cpu.owner() != owner {
+                task_runtime::fatal_invariant(0x4b54_0033, cpu.owner().as_u32() as usize);
+            }
+            system
+                .complete_task_timer_execution(cpu.as_mut(), event, handle.as_ref())
+                .unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x4b54_0034, owner.as_u32() as usize)
+                })
+        };
+        if let Some(update) = update {
+            task_runtime::publish_scheduler_deadline(update);
+        }
+        if let Some(wake) = wake {
+            let _wake_result = wake.wake();
+        }
+    }
     if let Some(mut timer) = kernel_timer.take() {
         let action = timer.invoke();
         let mut completion = {
             let mut irq = RuntimeIrqGuard::enter();
-            let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+            // The callback entry and its queue tombstone must complete as one
+            // ownership transaction after arbitrary callback code returns.
+            let mut cpu = runtime_current_cpu_mut(&mut irq).unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x4b54_0035, owner.as_u32() as usize)
+            });
             if cpu.owner() != owner {
-                return Err(TaskError::CpuOwnerMismatch {
-                    expected: owner.as_u32(),
-                    actual: cpu.owner().as_u32(),
-                });
+                task_runtime::fatal_invariant(0x4b54_0036, cpu.owner().as_u32() as usize);
             }
-            system.complete_kernel_timer_execution(cpu.as_mut(), timer, action)?
+            system
+                .complete_kernel_timer_execution(cpu.as_mut(), timer, action)
+                .unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x4b54_0037, owner.as_u32() as usize)
+                })
         };
         if let Some(update) = completion.update() {
             task_runtime::publish_scheduler_deadline(update);

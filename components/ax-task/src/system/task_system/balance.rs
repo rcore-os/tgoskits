@@ -490,7 +490,9 @@ impl TaskSystem {
         if task_runtime::in_hard_irq() {
             return false;
         }
-        if cpu.remote().idle_thread() == Some(next) || cpu.fair_balance_pending() {
+        if (cpu.remote().idle_thread() == Some(next) && cpu.idle_pull_pending())
+            || cpu.fair_balance_pending()
+        {
             return true;
         }
         self.root_domain.cpu_has_rt_deadline_overload(cpu.owner())
@@ -504,10 +506,18 @@ impl TaskSystem {
     ) -> Result<OwnerBalanceOutcome, TaskError> {
         #[cfg(test)]
         OWNER_BALANCE_PASSES.set(OWNER_BALANCE_PASSES.get().saturating_add(1));
+        let idle = cpu.remote().idle_thread() == Some(next);
+        let class_pull_required = idle
+            && (self.root_domain.cpu_has_rt_deadline_overload(cpu.owner())
+                || self.root_domain.push_target_pending(cpu.owner()));
+        let idle_pull_required =
+            idle && (cpu.as_mut().take_idle_pull_pending() || class_pull_required);
         let push_claim = self.root_domain.claim_rt_deadline_push(cpu.owner());
         let balance = (|| -> Result<(Option<ThreadId>, Option<ThreadId>), TaskError> {
-            if cpu.remote().idle_thread() == Some(next) {
-                let _requested = self.request_idle_pull(cpu.as_mut())?;
+            if idle {
+                if idle_pull_required {
+                    let _requested = self.request_idle_pull(cpu.as_mut())?;
+                }
                 let fair = self.balance_fair(cpu.as_mut())?;
                 Ok((None, fair))
             } else {

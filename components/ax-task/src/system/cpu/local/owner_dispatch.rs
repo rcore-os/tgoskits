@@ -41,6 +41,7 @@ impl CpuLocal {
             && run_queue.deadline_members_are_empty()
             && deadlines.queue.is_empty()
             && deadlines.expired_count == 0
+            && !deadlines.has_claimed_task_expiration()
             && !deadlines.softirq_activated
             && self.dispatch.switch_handoff.is_none()
             && self.remote.is_quiescent_for_offline()
@@ -53,6 +54,18 @@ impl CpuLocal {
 
     pub(crate) fn request_scheduler_work(&self) {
         self.remote.request_scheduler_work();
+    }
+
+    pub(crate) fn arm_idle_pull(self: Pin<&mut Self>) {
+        self.dispatch_state_mut().arm_idle_pull();
+    }
+
+    pub(crate) const fn idle_pull_pending(&self) -> bool {
+        self.dispatch.idle_pull_pending()
+    }
+
+    pub(crate) fn take_idle_pull_pending(self: Pin<&mut Self>) -> bool {
+        self.dispatch_state_mut().take_idle_pull_pending()
     }
 
     pub(crate) fn defer_scheduler_work(&self) {

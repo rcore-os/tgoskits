@@ -118,6 +118,11 @@ impl TaskSystem {
             decision.previous_urgency,
             decision.next_urgency,
         );
+        if cpu.remote().idle_thread() == Some(decision.next())
+            && decision.previous() != Some(decision.next())
+        {
+            cpu.as_mut().arm_idle_pull();
+        }
         let run_queue_changed = if self
             .owner_balance_work_pending(cpu.as_ref().get_ref(), decision.next())
         {

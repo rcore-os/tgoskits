@@ -27,12 +27,15 @@ pub(crate) use dispatch::{
 use load::SUMMARY_FAIR_PUSHABLE;
 pub use load::{CpuLoadSummary, DeadlineBandwidthSnapshot, SchedulingClass};
 pub use local::CpuLocal;
-pub(crate) use local::{SchedulerDeadlineDerivationSource, SchedulerDeadlineRqObservation};
+pub(crate) use local::{
+    KtimerServiceClaim, SchedulerDeadlineDerivationSource, SchedulerDeadlineRqObservation,
+};
 use remote::RqCurrentTick;
 pub use remote::{CpuLifecycleState, CpuLocalOwnerBorrow, CpuRemote};
 pub(crate) use remote::{
     CpuRemotePublication, CpuRunQueueState, DeadlineBaseGuardSource, IdlePullReservation,
-    PreparedMigrationDelivery, RunQueueGuardSource, SchedulerRequestClaim, WakePreemptionDecision,
+    KtimerClaimClass, PreparedMigrationDelivery, RunQueueGuardSource, SchedulerRequestClaim,
+    WakePreemptionDecision,
 };
 #[cfg(test)]
 pub(crate) use remote::{reset_rt_bandwidth_lock_acquisitions, rt_bandwidth_lock_acquisitions};
@@ -51,7 +54,7 @@ use crate::{
     },
     thread::ThreadCore,
     timer::{
-        ExpiredTaskDeadline, KernelTimerExpireBatch, KernelTimerQueue, TaskDeadlineExpireBatch,
+        ExpiredTaskDeadline, KernelTimerExecution, KernelTimerQueue, TaskDeadlineExpireBatch,
         TaskDeadlineExpireRequest, TaskDeadlineQueue, TaskDeadlineRegistration,
     },
 };

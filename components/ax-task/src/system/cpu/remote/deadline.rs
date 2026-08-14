@@ -279,6 +279,8 @@ pub(crate) struct CpuDeadlineState {
     pub(crate) kernel_timers: KernelTimerQueue,
     pub(crate) expired_buffer: Vec<ExpiredTaskDeadline>,
     pub(crate) expired_count: usize,
+    claimed_task_expiration: Option<ClaimedTaskExpiration>,
+    last_service_claim_was_kernel: bool,
     /// Mirrors Linux `hrtimer_cpu_base::softirq_activated`.
     ///
     /// A due queue head does not set this bit. Only the hard clockevent path
@@ -291,6 +293,12 @@ pub(crate) struct CpuDeadlineState {
     pub(crate) expire_passes: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KtimerClaimClass {
+    Kernel,
+    Task,
+}
+
 impl CpuDeadlineState {
     pub(crate) fn new(config: TaskSystemConfig) -> Self {
         Self {
@@ -298,6 +306,8 @@ impl CpuDeadlineState {
             kernel_timers: KernelTimerQueue::new(config.thread_capacity()),
             expired_buffer: vec![ExpiredTaskDeadline::EMPTY; config.batch_limit()],
             expired_count: 0,
+            claimed_task_expiration: None,
+            last_service_claim_was_kernel: false,
             softirq_activated: false,
             generation: 0,
             publication: None,
@@ -310,6 +320,7 @@ impl CpuDeadlineState {
         !self.queue.is_empty()
             || self.kernel_timers.has_active_work()
             || self.expired_count != 0
+            || self.claimed_task_expiration.is_some()
             || self.softirq_activated
     }
 
@@ -329,8 +340,73 @@ impl CpuDeadlineState {
         }
     }
 
-    pub(crate) fn peek_buffered_expiration(&self) -> Option<ExpiredTaskDeadline> {
-        self.expired_buffer[..self.expired_count].first().copied()
+    pub(crate) fn claim_next_buffered_expiration(&mut self) -> Option<ExpiredTaskDeadline> {
+        assert!(
+            self.claimed_task_expiration.is_none(),
+            "one ktimer worker may own only one task expiration"
+        );
+        let event = self.expired_buffer[..self.expired_count].first().copied()?;
+        let event = self
+            .take_buffered_event(event)
+            .expect("the selected task expiration must remain buffered");
+        self.claimed_task_expiration = Some(ClaimedTaskExpiration {
+            event,
+            cancel_requested: false,
+        });
+        Some(event)
+    }
+
+    pub(crate) fn complete_claimed_task_expiration(
+        &mut self,
+        event: ExpiredTaskDeadline,
+    ) -> Option<bool> {
+        let claimed = self.claimed_task_expiration.take()?;
+        if claimed.event != event {
+            self.claimed_task_expiration = Some(claimed);
+            return None;
+        }
+        Some(claimed.cancel_requested)
+    }
+
+    pub(crate) fn cancel_expired_task_deadline(
+        &mut self,
+        registration: &TaskDeadlineRegistration,
+    ) -> bool {
+        if self.take_buffered_expiration(registration).is_some() {
+            return true;
+        }
+        let Some(claimed) = self.claimed_task_expiration.as_mut() else {
+            return false;
+        };
+        if !expiration_matches_registration(claimed.event, registration) {
+            return false;
+        }
+        claimed.cancel_requested = true;
+        true
+    }
+
+    pub(crate) const fn has_claimed_task_expiration(&self) -> bool {
+        self.claimed_task_expiration.is_some()
+    }
+
+    pub(crate) fn select_service_claim_class(
+        &mut self,
+        kernel_pending: bool,
+        task_pending: bool,
+    ) -> Option<KtimerClaimClass> {
+        let claim_class = if kernel_pending {
+            if !task_pending || !self.last_service_claim_was_kernel {
+                KtimerClaimClass::Kernel
+            } else {
+                KtimerClaimClass::Task
+            }
+        } else if task_pending {
+            KtimerClaimClass::Task
+        } else {
+            return None;
+        };
+        self.last_service_claim_was_kernel = claim_class == KtimerClaimClass::Kernel;
+        Some(claim_class)
     }
 
     pub(crate) fn take_buffered_expiration(
@@ -338,10 +414,7 @@ impl CpuDeadlineState {
         registration: &TaskDeadlineRegistration,
     ) -> Option<ExpiredTaskDeadline> {
         self.take_buffered_expiration_if(|event| {
-            event.thread() == Some(registration.thread())
-                && event.token() == registration.token()
-                && event.deadline() == Some(registration.deadline())
-                && event.kind() == Some(registration.kind())
+            expiration_matches_registration(event, registration)
         })
     }
 
@@ -369,9 +442,74 @@ impl CpuDeadlineState {
     }
 }
 
+#[derive(Debug)]
+struct ClaimedTaskExpiration {
+    event: ExpiredTaskDeadline,
+    cancel_requested: bool,
+}
+
+fn expiration_matches_registration(
+    event: ExpiredTaskDeadline,
+    registration: &TaskDeadlineRegistration,
+) -> bool {
+    event.thread() == Some(registration.thread())
+        && event.token() == registration.token()
+        && event.deadline() == Some(registration.deadline())
+        && event.kind() == Some(registration.kind())
+}
+
 impl CpuRemote {
     pub(in crate::system::cpu) fn deadline_is_quiescent_for_offline(&self) -> bool {
         self.read_active_deadline_base(DeadlineBaseGuardSource::Lifecycle)
             .is_none_or(|deadlines| !deadlines.has_active_work())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::timer::{TaskDeadlineKind, TaskDeadlineNode};
+
+    #[test]
+    fn claimed_task_expiration_remains_cancel_visible_until_completion() {
+        let mut state = CpuDeadlineState::new(TaskSystemConfig::new(1).with_batch_limit(1));
+        let node = TaskDeadlineNode::for_thread(ThreadId::from_parts(1, 1));
+        let registration = state
+            .queue
+            .arm(
+                &node,
+                MonotonicDeadline::from_nanos(10).unwrap(),
+                TaskDeadlineKind::park_timeout(1),
+            )
+            .unwrap();
+        let batch = state.queue.expire_soft(
+            TaskDeadlineExpireRequest::new(MonotonicInstant::from_nanos(10).unwrap(), 1),
+            &mut state.expired_buffer,
+        );
+        state.expired_count = batch.expired();
+
+        let event = state.claim_next_buffered_expiration().unwrap();
+
+        assert!(state.cancel_expired_task_deadline(&registration));
+        assert_eq!(state.complete_claimed_task_expiration(event), Some(true));
+        assert!(!state.has_claimed_task_expiration());
+    }
+
+    #[test]
+    fn task_and_kernel_claims_alternate_when_both_remain_pending() {
+        let mut state = CpuDeadlineState::new(TaskSystemConfig::new(1));
+
+        assert_eq!(
+            state.select_service_claim_class(true, true),
+            Some(KtimerClaimClass::Kernel)
+        );
+        assert_eq!(
+            state.select_service_claim_class(true, true),
+            Some(KtimerClaimClass::Task)
+        );
+        assert_eq!(
+            state.select_service_claim_class(true, true),
+            Some(KtimerClaimClass::Kernel)
+        );
     }
 }

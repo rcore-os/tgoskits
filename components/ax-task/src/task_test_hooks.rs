@@ -28,6 +28,10 @@ static DEADLINE_PUBLICATION_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static DEADLINE_SOFT_EXPIRY_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_SOFT_EXPIRY_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_SOFT_EXPIRY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static KTIMER_SELECTION_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
+static KTIMER_SELECTION_TARGET_TIMER: AtomicU64 = AtomicU64::new(0);
+static KTIMER_SELECTION_BASE_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static KTIMER_SELECTION_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static RT_POLICY_DELIVERY_TARGET: AtomicU64 = AtomicU64::new(0);
 static RT_POLICY_DELIVERY_REQUIRED: AtomicU8 = AtomicU8::new(0);
 static RT_POLICY_DELIVERY_EVENTS: AtomicU8 = AtomicU8::new(0);
@@ -48,6 +52,8 @@ const STAGE_RELEASE_BEFORE_WAKE: u8 = 4;
 const STAGE_WAITER_MAY_CLAIM: u8 = 5;
 const STAGE_RELEASE_MAY_WAKE: u8 = 6;
 const STAGE_WAITING_FOR_TRANSACTION: u8 = 7;
+const STAGE_TRANSACTION_ACTIVE: u8 = 8;
+const STAGE_CANCELLED: u8 = 9;
 const STAGE_CHAIN_DECIDED: u8 = 3;
 const STAGE_OWNER_MAY_CHANGE: u8 = 4;
 const STAGE_COMPLETE: u8 = 3;
@@ -509,6 +515,200 @@ pub(crate) fn complete_deadline_soft_expiry_pass(cpu: crate::CpuId) {
         Ok(STAGE_ARMED),
         "deadline soft-expiry accounting completed in an invalid stage"
     );
+}
+
+/// Owns one deadline-base accounting probe until it is collected or abandoned.
+#[must_use = "dropping the probe restores its global test state"]
+pub struct ArmedKtimerSelectionProbe {
+    active: bool,
+}
+
+impl ArmedKtimerSelectionProbe {
+    /// Takes the selected worker pass's deadline-base mutation count.
+    pub fn take_base_entries(mut self) -> Option<u64> {
+        let entries = take_ktimer_selection_base_entries();
+        if entries.is_some() {
+            self.active = false;
+        }
+        entries
+    }
+}
+
+impl Drop for ArmedKtimerSelectionProbe {
+    fn drop(&mut self) {
+        if self.active {
+            cancel_ktimer_selection_probe();
+        }
+    }
+}
+
+/// Arms deadline-base accounting for the worker pass that claims `timer`.
+pub fn arm_ktimer_selection_probe(timer: crate::KernelTimerHandle) -> ArmedKtimerSelectionProbe {
+    while KTIMER_SELECTION_STAGE.load(Ordering::Acquire) == STAGE_CANCELLED {
+        core::hint::spin_loop();
+    }
+    assert_eq!(
+        KTIMER_SELECTION_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one ktimer selection probe may be armed"
+    );
+    KTIMER_SELECTION_TARGET_CPU.store(u64::from(timer.owner().as_u32()) + 1, Ordering::Relaxed);
+    KTIMER_SELECTION_TARGET_TIMER.store(timer.identity().get(), Ordering::Relaxed);
+    KTIMER_SELECTION_BASE_ENTRIES.store(0, Ordering::Relaxed);
+    KTIMER_SELECTION_STAGE.store(STAGE_ARMED, Ordering::Release);
+    ArmedKtimerSelectionProbe { active: true }
+}
+
+/// Takes deadline-base mutation entries from the targeted worker selection.
+fn take_ktimer_selection_base_entries() -> Option<u64> {
+    if KTIMER_SELECTION_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let entries = KTIMER_SELECTION_BASE_ENTRIES.load(Ordering::Relaxed);
+    KTIMER_SELECTION_TARGET_CPU.store(0, Ordering::Relaxed);
+    KTIMER_SELECTION_TARGET_TIMER.store(0, Ordering::Relaxed);
+    KTIMER_SELECTION_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(entries)
+}
+
+fn cancel_ktimer_selection_probe() {
+    loop {
+        let stage = KTIMER_SELECTION_STAGE.load(Ordering::Acquire);
+        match stage {
+            STAGE_IDLE | STAGE_CANCELLED => return,
+            STAGE_ARMED | STAGE_COMPLETE => {
+                if KTIMER_SELECTION_STAGE
+                    .compare_exchange(
+                        stage,
+                        STAGE_CONFIGURING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
+                clear_ktimer_selection_probe();
+                return;
+            }
+            STAGE_TRANSACTION_ACTIVE => {
+                if KTIMER_SELECTION_STAGE
+                    .compare_exchange(
+                        STAGE_TRANSACTION_ACTIVE,
+                        STAGE_CANCELLED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    return;
+                }
+            }
+            STAGE_CONFIGURING => core::hint::spin_loop(),
+            _ => panic!("ktimer selection cancellation observed an invalid stage"),
+        }
+    }
+}
+
+fn clear_ktimer_selection_probe() {
+    KTIMER_SELECTION_BASE_ENTRIES.store(0, Ordering::Relaxed);
+    KTIMER_SELECTION_TARGET_CPU.store(0, Ordering::Relaxed);
+    KTIMER_SELECTION_TARGET_TIMER.store(0, Ordering::Relaxed);
+    KTIMER_SELECTION_STAGE.store(STAGE_IDLE, Ordering::Release);
+}
+
+pub(crate) struct KtimerSelectionProbe {
+    cpu: crate::CpuId,
+    active: bool,
+}
+
+impl KtimerSelectionProbe {
+    pub(crate) fn complete(mut self, claimed: Option<crate::KernelTimerHandle>) {
+        if !self.active {
+            return;
+        }
+        let targeted = claimed.is_some_and(|timer| {
+            timer.owner() == self.cpu
+                && timer.identity().get() == KTIMER_SELECTION_TARGET_TIMER.load(Ordering::Relaxed)
+        });
+        let next = if targeted {
+            STAGE_COMPLETE
+        } else {
+            KTIMER_SELECTION_BASE_ENTRIES.store(0, Ordering::Relaxed);
+            STAGE_ARMED
+        };
+        match KTIMER_SELECTION_STAGE.compare_exchange(
+            STAGE_TRANSACTION_ACTIVE,
+            next,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(STAGE_TRANSACTION_ACTIVE) => {}
+            Err(STAGE_CANCELLED) => clear_ktimer_selection_probe(),
+            _ => panic!("ktimer selection completed in an invalid stage"),
+        }
+        self.active = false;
+    }
+}
+
+impl Drop for KtimerSelectionProbe {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        KTIMER_SELECTION_BASE_ENTRIES.store(0, Ordering::Relaxed);
+        match KTIMER_SELECTION_STAGE.compare_exchange(
+            STAGE_TRANSACTION_ACTIVE,
+            STAGE_ARMED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(STAGE_TRANSACTION_ACTIVE) => {}
+            Err(STAGE_CANCELLED) => clear_ktimer_selection_probe(),
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn begin_ktimer_selection_probe(cpu: crate::CpuId) -> KtimerSelectionProbe {
+    if KTIMER_SELECTION_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || KTIMER_SELECTION_TARGET_CPU.load(Ordering::Relaxed) != u64::from(cpu.as_u32()) + 1
+    {
+        return KtimerSelectionProbe { cpu, active: false };
+    }
+    let active = KTIMER_SELECTION_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_TRANSACTION_ACTIVE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok();
+    if active {
+        KTIMER_SELECTION_BASE_ENTRIES.store(0, Ordering::Relaxed);
+    }
+    KtimerSelectionProbe { cpu, active }
+}
+
+pub(crate) fn record_ktimer_selection_base_entry(cpu: crate::CpuId) {
+    if KTIMER_SELECTION_STAGE.load(Ordering::Acquire) == STAGE_TRANSACTION_ACTIVE
+        && KTIMER_SELECTION_TARGET_CPU.load(Ordering::Relaxed) == u64::from(cpu.as_u32()) + 1
+    {
+        KTIMER_SELECTION_BASE_ENTRIES.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Arms one real policy transition for owner-delivery accounting.

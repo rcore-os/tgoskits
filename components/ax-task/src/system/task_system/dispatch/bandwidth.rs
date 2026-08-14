@@ -102,16 +102,13 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         reason: EnqueueReason,
         preempts_current: bool,
+        effective_policy: Option<SchedulePolicy>,
     ) {
         if reason.checks_preemption_after_enqueue() && preempts_current {
             cpu.request_reschedule();
         }
-        if cpu
-            .lock_run_queue(RunQueueGuardSource::RtAccounting)
-            .has_runnable_rt()
-        {
-            self.root_domain
-                .activate_rt_period(cpu.owner(), task_runtime::monotonic_now());
+        if let Some(policy) = effective_policy {
+            let _started = self.activate_owner_rt_period_for_policy(cpu.owner(), policy);
         }
         if !preempts_current && self.rt_deadline_push_pending(cpu.remote()) {
             cpu.remote().kick_scheduler_work();

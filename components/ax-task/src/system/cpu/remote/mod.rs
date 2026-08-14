@@ -14,7 +14,7 @@ mod scheduler;
 
 pub(crate) use deadline::{
     CpuDeadlineActivityGuard, CpuDeadlineBase, CpuDeadlinePublicationGuard, CpuDeadlineReadGuard,
-    CpuDeadlineState, DeadlineBaseGuardSource, SchedulerDeadlinePublicationState,
+    CpuDeadlineState, DeadlineBaseGuardSource, KtimerClaimClass, SchedulerDeadlinePublicationState,
 };
 pub(crate) use delivery::PreparedMigrationDelivery;
 pub(crate) use idle_pull::IdlePullReservation;
@@ -244,8 +244,14 @@ impl CpuRemote {
     ) -> CpuDeadlineActivityGuard<'_> {
         let activity = self.deadline.lock_activity(source);
         #[cfg(feature = "task-test-hooks")]
-        if source == DeadlineBaseGuardSource::Registration {
-            crate::task_test_hooks::record_deadline_registration_entry(self.owner());
+        match source {
+            DeadlineBaseGuardSource::Registration => {
+                crate::task_test_hooks::record_deadline_registration_entry(self.owner());
+            }
+            DeadlineBaseGuardSource::SoftExpiry => {
+                crate::task_test_hooks::record_ktimer_selection_base_entry(self.owner());
+            }
+            _ => {}
         }
         activity
     }
@@ -259,6 +265,7 @@ impl CpuRemote {
         #[cfg(feature = "task-test-hooks")]
         if activity.is_some() && source == DeadlineBaseGuardSource::SoftExpiry {
             crate::task_test_hooks::record_deadline_soft_expiry_entry(self.owner());
+            crate::task_test_hooks::record_ktimer_selection_base_entry(self.owner());
         }
         activity
     }

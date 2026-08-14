@@ -80,7 +80,7 @@ use crate::{
     },
     system::cpu::{
         CpuRunQueueState, CurrentClassState, CurrentDispatch, CurrentDispatchState,
-        DeadlineBaseGuardSource, IdlePullReservation, OwnerRqEntry, OwnerRqTxn,
+        DeadlineBaseGuardSource, IdlePullReservation, KtimerServiceClaim, OwnerRqEntry, OwnerRqTxn,
         PreparedMigrationDelivery, RqTaskTime, RunQueueClockSnapshot, RunQueueGuardSource,
         SchedulerDeadlineRqObservation,
     },

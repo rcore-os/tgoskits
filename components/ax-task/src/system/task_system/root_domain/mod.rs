@@ -190,6 +190,11 @@ impl RootDomain {
         self.overload.contains_any(cpu)
     }
 
+    pub(super) fn has_idle_pull_source(&self) -> bool {
+        self.overload.any_class(RootDomainPushClass::Deadline)
+            || self.overload.any_class(RootDomainPushClass::Realtime)
+    }
+
     /// Selects an overloaded rq for an idle target from the class-specific
     /// root-domain masks. Deadline is considered before fixed-priority RT,
     /// matching Linux's class order; Fair load balancing remains a separate

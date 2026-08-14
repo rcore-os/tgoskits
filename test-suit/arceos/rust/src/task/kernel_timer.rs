@@ -2,6 +2,7 @@ use std::{
     boxed::Box,
     os::arceos::{
         api::time::ax_monotonic_time,
+        modules::ax_task::task_test_hooks,
         task::{
             KernelTimerAction, KernelTimerCancelOutcome, MonotonicDeadline, cancel_kernel_timer,
             register_kernel_timer, register_restartable_kernel_timer,
@@ -50,6 +51,8 @@ pub fn run() -> crate::TestResult {
         cancel_kernel_timer(cancelled).map_err(|_| "failed to cancel kernel timer")?,
         KernelTimerCancelOutcome::Cancelled
     );
+    let abandoned_probe = task_test_hooks::arm_ktimer_selection_probe(cancelled);
+    drop(abandoned_probe);
     let restartable_deadline = MonotonicDeadline::from_duration(now + Duration::from_millis(20));
     let restartable = register_restartable_kernel_timer(
         restartable_deadline,
@@ -63,6 +66,7 @@ pub fn run() -> crate::TestResult {
         }),
     )
     .map_err(|_| "failed to register restartable kernel timer")?;
+    let selection_probe = task_test_hooks::arm_ktimer_selection_probe(restartable);
 
     let started = std::time::Instant::now();
     while CALLBACK_ORDER.load(Ordering::Acquire) != 2
@@ -75,6 +79,11 @@ pub fn run() -> crate::TestResult {
     }
     thread::sleep(Duration::from_millis(40));
     assert!(!CANCELLED_CALLBACK_RAN.load(Ordering::Acquire));
+    assert_eq!(
+        selection_probe.take_base_entries(),
+        Some(1),
+        "one ktimer selection must promote and claim under one base transaction"
+    );
     assert_eq!(
         cancel_kernel_timer(restartable)
             .map_err(|_| "failed to inspect completed restartable kernel timer")?,

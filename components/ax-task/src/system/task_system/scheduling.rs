@@ -86,6 +86,10 @@ impl TaskSystem {
             return Ok(false);
         }
         self.ensure_owner_cpu_online(&cpu)?;
+        if !self.root_domain.has_idle_pull_source() {
+            cpu.as_mut().reset_idle_pull_scan();
+            return Ok(false);
+        }
         if !cpu.idle_pull_eligible() || cpu.has_remote_work() {
             cpu.as_mut().reset_idle_pull_scan();
             return Ok(false);
@@ -104,27 +108,7 @@ impl TaskSystem {
         let target = cpu.owner();
         let source = self
             .root_domain
-            .find_idle_pull_source(target, cpu.idle_pull_visited())
-            .or_else(|| {
-                self.cpu_remotes
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, remote)| {
-                        let source = CpuId::new(*index as u32);
-                        remote.accepts_placement()
-                            && source != target
-                            && !cpu.idle_pull_visited().contains(source)
-                    })
-                    .filter_map(|(index, local)| {
-                        let source = CpuId::new(index as u32);
-                        let summary = local.load_summary();
-                        summary
-                            .has_pushable_fair()
-                            .then_some((summary.fair_demand(), source))
-                    })
-                    .max_by_key(|(demand, source)| (*demand, core::cmp::Reverse(source.as_u32())))
-                    .map(|(_, source)| (source, SchedulingClass::Fair))
-            });
+            .find_idle_pull_source(target, cpu.idle_pull_visited());
         let Some((source, class)) = source else {
             target_remote.cancel_idle_pull(reservation);
             cpu.as_mut().reset_idle_pull_scan();

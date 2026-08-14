@@ -622,7 +622,8 @@ fn deadline_preemption_does_not_reapply_the_cbs_wake_rule() {
         .enqueue_test(thread, policy, entity, 4, EnqueueReason::Preempted)
         .unwrap();
 
-    let entity = queue.dequeue(thread).unwrap().entity();
+    let dequeued = queue.dequeue(thread).unwrap();
+    let entity = dequeued.entity();
     let deadline = entity.deadline().unwrap();
     assert_eq!(deadline.absolute_deadline_ns(), Some(8));
     assert_eq!(deadline.remaining_runtime_ns(), 3);

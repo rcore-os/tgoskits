@@ -8,7 +8,7 @@ mod owner_deadline;
 mod owner_dispatch;
 mod owner_idle;
 
-pub(crate) use owner_deadline::SchedulerDeadlineRqObservation;
+pub(crate) use owner_deadline::{KtimerServiceClaim, SchedulerDeadlineRqObservation};
 
 use crate::system::cpu::remote::SchedulerDeadlinePublicationState;
 

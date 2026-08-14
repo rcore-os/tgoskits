@@ -370,9 +370,7 @@ pub(crate) fn cancel_current_park_deadline(
                 remote.lock_deadline_activity(DeadlineBaseGuardSource::Registration);
             let cancellation = deadline_base.queue.begin_cancel(registration);
             let expired = if cancellation.is_none() {
-                deadline_base
-                    .take_buffered_expiration(registration)
-                    .is_some()
+                deadline_base.cancel_expired_task_deadline(registration)
             } else {
                 false
             };
@@ -425,9 +423,7 @@ pub(crate) fn cancel_current_park_deadline(
             .lock_deadline_activity(DeadlineBaseGuardSource::Registration);
         let cancellation = deadline_base.queue.begin_cancel(registration);
         let expired = if cancellation.is_none() {
-            deadline_base
-                .take_buffered_expiration(registration)
-                .is_some()
+            deadline_base.cancel_expired_task_deadline(registration)
         } else {
             false
         };

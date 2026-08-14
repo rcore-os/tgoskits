@@ -34,6 +34,7 @@ pub(crate) struct KtimerServiceBatch {
     pending: bool,
     update: Option<SchedulerDeadlineUpdate>,
     kernel_timer: Option<KernelTimerExecution>,
+    task_timer: Option<ExpiredTaskDeadline>,
 }
 
 pub(crate) struct KernelTimerCompletionBatch {
@@ -67,6 +68,10 @@ impl KtimerServiceBatch {
 
     pub(crate) fn take_kernel_timer(&mut self) -> Option<KernelTimerExecution> {
         self.kernel_timer.take()
+    }
+
+    pub(crate) fn take_task_timer(&mut self) -> Option<ExpiredTaskDeadline> {
+        self.task_timer.take()
     }
 }
 
@@ -175,7 +180,7 @@ impl TaskSystem {
         );
         transaction.commit();
         if let Some(preempts_current) = enqueue {
-            self.finish_owner_enqueue(cpu, EnqueueReason::Replenished, preempts_current);
+            self.finish_owner_enqueue(cpu, EnqueueReason::Replenished, preempts_current, None);
         }
     }
 
@@ -594,52 +599,24 @@ impl TaskSystem {
         if task_runtime::in_hard_irq() {
             return Err(TaskError::UnsafeContext);
         }
+        #[cfg(feature = "task-test-hooks")]
+        let selection_probe = crate::task_test_hooks::begin_ktimer_selection_probe(cpu.owner());
         let monotonic_now = task_runtime::monotonic_now();
         let budget = cpu.batch_limit();
-        if !cpu.has_expired_kernel_timer() && cpu.has_due_kernel_timer(monotonic_now) {
-            cpu.as_mut().promote_due_kernel_timers(monotonic_now, 1);
-        }
-        // A claimed kernel callback has already crossed the hard-IRQ expiry
-        // boundary and is the direct analogue of pending PREEMPT_RT hrtimer
-        // work. Return it to the worker before unrelated task timeout wakeups;
-        // the sticky work generation preserves those task expirations for the
-        // next pass. Claim at most one callback so task timers cannot starve.
-        let kernel_timer = cpu
-            .remote()
-            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
-            .kernel_timers
-            .claim_expired();
-        let mut processed = 0;
-        while kernel_timer.is_none() && processed < budget {
-            if !cpu.has_expired_task_deadlines() && cpu.has_due_task_deadline(monotonic_now) {
-                let remaining = budget - processed;
-                cpu.as_mut()
-                    .promote_due_task_deadlines(monotonic_now, remaining);
+        let mut kernel_timer = None;
+        let mut task_timer = None;
+        let (claim, pending) = cpu
+            .as_mut()
+            .claim_ktimer_service_step(monotonic_now, budget);
+        match claim {
+            Some(KtimerServiceClaim::Kernel(execution)) => {
+                kernel_timer = Some(execution);
             }
-            let Some(event) = cpu
-                .remote()
-                .read_active_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
-                .and_then(|deadlines| deadlines.peek_buffered_expiration())
-            else {
-                break;
-            };
-            let claimed = match self.service_buffered_expired_deadline(cpu.as_mut(), event) {
-                Ok(claimed) => claimed,
-                Err(error) => {
-                    cpu.remote().publish_ktimer_work();
-                    return Err(error);
-                }
-            };
-            if !claimed {
-                continue;
+            Some(KtimerServiceClaim::Task(event)) => {
+                task_timer = Some(event);
             }
-            processed += 1;
+            None => {}
         }
-        let pending = cpu.has_expired_task_deadlines()
-            || cpu.has_due_task_deadline(monotonic_now)
-            || cpu.has_expired_kernel_timer()
-            || cpu.has_due_kernel_timer(monotonic_now);
-        cpu.as_mut().finish_task_deadline_softirq(pending);
         if pending {
             cpu.remote().publish_ktimer_work();
         }
@@ -648,7 +625,7 @@ impl TaskSystem {
         // callback completes, then publish one combined complete/rearm update.
         // This matches hrtimer restart semantics and avoids a cancel/arm pair
         // for every periodic callback.
-        let update = if kernel_timer.is_some() {
+        let update = if kernel_timer.is_some() || task_timer.is_some() {
             None
         } else {
             cpu.as_mut().next_scheduler_deadline_update_if_changed(
@@ -656,13 +633,58 @@ impl TaskSystem {
                 SchedulerDeadlineDerivationSource::KtimerService,
             )?
         };
+        #[cfg(feature = "task-test-hooks")]
+        selection_probe.complete(
+            kernel_timer
+                .as_ref()
+                .map(|execution| execution.handle(cpu.owner())),
+        );
         Ok(KtimerServiceBatch {
             #[cfg(test)]
-            processed: processed + usize::from(kernel_timer.is_some()),
+            processed: usize::from(kernel_timer.is_some() || task_timer.is_some()),
             pending,
             update,
             kernel_timer,
+            task_timer,
         })
+    }
+
+    pub(crate) fn complete_task_timer_execution(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        event: ExpiredTaskDeadline,
+        handle: Option<&ThreadHandle>,
+    ) -> Result<(Option<ThreadWakeHandle>, Option<SchedulerDeadlineUpdate>), TaskError> {
+        let non_timer = cpu
+            .as_mut()
+            .prepare_scheduler_deadline_registration_publication(
+                task_runtime::monotonic_now(),
+                SchedulerDeadlineDerivationSource::KtimerService,
+            );
+        let mut deadline_base = cpu
+            .remote()
+            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry);
+        let cancel_requested = deadline_base
+            .complete_claimed_task_expiration(event)
+            .unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5444_0007, event.token().generation() as usize)
+            });
+        let completed = !cancel_requested
+            && handle
+                .is_some_and(|handle| handle.core.complete_sleep_timer(event.token().generation()));
+        let update = CpuLocal::update_scheduler_deadline_registration_publication_if_changed(
+            &mut deadline_base,
+            non_timer,
+        )?;
+        let wake = completed
+            .then(|| handle.expect("a completed task timer retains its handle"))
+            .filter(|handle| {
+                event.kind().is_some_and(|kind| {
+                    kind.park_generation() == Some(handle.core.park_generation())
+                })
+            })
+            .map(ThreadHandle::wake_handle);
+        Ok((wake, update))
     }
 
     pub(crate) fn complete_kernel_timer_execution(
@@ -674,68 +696,23 @@ impl TaskSystem {
         if task_runtime::in_hard_irq() {
             return Err(TaskError::UnsafeContext);
         }
-        let completed = cpu
+        let non_timer = cpu
+            .as_mut()
+            .prepare_scheduler_deadline_registration_publication(
+                task_runtime::monotonic_now(),
+                SchedulerDeadlineDerivationSource::KtimerService,
+            );
+        let mut deadline_base = cpu
             .remote()
-            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
+            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry);
+        let completed = deadline_base
             .kernel_timers
             .complete_execution(execution, action);
-        let update = cpu.as_mut().next_scheduler_deadline_update_if_changed(
-            task_runtime::monotonic_now(),
-            SchedulerDeadlineDerivationSource::KtimerService,
+        let update = CpuLocal::update_scheduler_deadline_registration_publication_if_changed(
+            &mut deadline_base,
+            non_timer,
         )?;
         Ok(KernelTimerCompletionBatch { completed, update })
-    }
-
-    fn service_buffered_expired_deadline(
-        &self,
-        cpu: Pin<&mut CpuLocal>,
-        event: ExpiredTaskDeadline,
-    ) -> Result<bool, TaskError> {
-        match event.kind() {
-            Some(TaskDeadlineKind::ParkTimeout { .. }) => {
-                self.service_buffered_expired_park_deadline(cpu, event)
-            }
-            Some(TaskDeadlineKind::DeadlineCbs | TaskDeadlineKind::DeadlineZeroLag) => {
-                task_runtime::fatal_invariant(0x444c_0011, event.token().generation() as usize)
-            }
-            None => Ok(false),
-        }
-    }
-
-    fn service_buffered_expired_park_deadline(
-        &self,
-        cpu: Pin<&mut CpuLocal>,
-        event: ExpiredTaskDeadline,
-    ) -> Result<bool, TaskError> {
-        let Some(thread) = event.thread() else {
-            return Ok(false);
-        };
-        let handle = match self.thread_handle(thread) {
-            Ok(handle) => Some(handle),
-            Err(TaskError::StaleThreadId) => None,
-            Err(error) => return Err(error),
-        };
-        let completed = {
-            let mut deadline_base = cpu
-                .remote()
-                .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry);
-            if deadline_base.take_buffered_event(event).is_none() {
-                return Ok(false);
-            }
-            handle
-                .as_ref()
-                .is_some_and(|handle| handle.core.complete_sleep_timer(event.token().generation()))
-        };
-        let Some(handle) = handle else {
-            return Ok(true);
-        };
-        let park_matches = event
-            .kind()
-            .is_some_and(|kind| kind.park_generation() == Some(handle.core.park_generation()));
-        if completed && park_matches {
-            let _wake_result = handle.wake_handle().wake();
-        }
-        Ok(true)
     }
 
     pub(super) fn service_expired_park_deadline(

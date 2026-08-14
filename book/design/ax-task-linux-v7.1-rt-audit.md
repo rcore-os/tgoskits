@@ -3366,6 +3366,43 @@ occupier 与 sleeper 的 handle 都在 readiness 检查前进入 RAII owner，re
 显式 stop/wake/join，断言失败或 panic 路径由析构执行同样的释放。因此该回归不会把线程、wait queue 或
 rq 状态泄漏给分组后续测例，也不会用无界等待掩盖调度失败。
 
+第十项重复 owner 位于 `ktimers/%u` 的 soft-expiry selection。旧 `service_ktimer_work()` 为一次 kernel
+timer callback 依次执行 due/expired observation、promotion activity、claim activity、四次 pending
+observation 和 `softirq_activated` finish activity；即使目标 callback 已由 hard clockevent 移入 expired
+queue，selection 仍至少两次打开同一 deadline base。Linux `hrtimer_run_softirq()` 在一个
+`cpu_base->lock` pass 中更新 base、扫描 soft queue、更新 `softirq_activated` 与下一事件；只有
+`__run_hrtimer()` 调用任意 callback 时才释放 base lock，并在 callback 后重新取得它完成 restart。
+
+现在 `claim_ktimer_service_step()` 在一个 `CpuDeadlineActivityGuard` 内完成 task/kernel due promotion、
+公平 class selection、claim、pending 判定和 softirq owner 更新，删除只服务旧链的四组 `has_*`、两组
+`promote_*` 与独立 `finish_task_deadline_softirq()` API。kernel callback 继续通过 `executing` token 在锁外
+运行；task park timeout 同样进入显式 `claimed_task_expiration`，并发 cancel 在 base 内标记 claim，worker
+completion 与 `sleep_timer_generation` 清除在同一 guard 内决胜，wake 在 guard 与 runtime IRQ owner 外
+执行。kernel/task 同时持续积压时交替 selection，避免 restartable callback 或 timeout 流量饿死另一类。
+
+真实 ArceOS `task-kernel-timer` 将 probe 绑定到 generation-bearing `KernelTimerHandle`；无关 worker pass
+只回滚采样。旧实现 RISC-V QEMU 稳定得到 selection base entries `2` 并失败，新实现为 `1`；同一用例仍
+覆盖两个同 deadline callback 的顺序、cancelled callback 不执行和 restartable callback 三次执行。
+
+第十一项重复 owner 是 enqueue 提交后为判断 RT period 是否需要激活，再次以
+`RtAccounting` 打开 rq 并扫描 runnable RT task。Linux 在 enqueue 所在 rq transaction 中已经确定
+effective class，`start_rt_bandwidth()` 消费该状态转换的结果，不会为同一次 enqueue 重新扫描 rq。
+现在 `OwnerEnqueueCommit` 把 `preempts_current` 与事务内已确定的 `effective_policy`
+一同交给 `finish_owner_enqueue()`；后者只在该 policy 需要 RT bandwidth 时启动 period，不再建立
+第二个 rq 事实源。
+
+性能红测还暴露了另一套不完整的 Fair idle-pull：root-domain source mask 只表示
+`has_pushable_fair`，却绕过已有 `balance_fair()` 拥有的 affinity、imbalance、target readiness 与
+backoff 状态机。它不能证明存在对当前 idle CPU 有效的迁移，反而每次 non-idle -> idle 都制造
+一次重复扫描。该 Fair 分支已删除：root-domain idle pull 只保留 RT/Deadline 的 pushable owner
+index，Fair 继续由唯一的 `balance_fair()` 状态机负责。这不是用超时或负载门限屏蔽问题，
+而是清理语义不完整的第二实现。
+
+两项修复组合前，RISC-V Starry `test-ext4-inode-unique` 在 120 秒内只进行到
+`1837/2048`，投影耗时约 133.8 秒。组合后同一正式用例完成 `2048/2048`，测试主体
+115.917 秒；最新 dev 约 112 秒，差距约 3.5%，低于 20% 门限。RISC-V 与
+LoongArch64 ArceOS Rust 组均为 `21/21`，包括生产 task-IPI 与统一 ktimer 回归。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

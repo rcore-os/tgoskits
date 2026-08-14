@@ -599,24 +599,28 @@ impl TaskSystem {
     ) -> Result<(), TaskError> {
         self.ensure_owner_cpu_online(&cpu)?;
         let mut sched = core.sched().lock();
-        let preempts_current =
-            self.enqueue_owner_thread_locked(cpu.as_mut(), &core, &mut sched, reason)?;
+        let commit = self.enqueue_owner_thread_locked(cpu.as_mut(), &core, &mut sched, reason)?;
         let affinity_completed = Self::complete_affinity_if_satisfied_locked(&core, &sched);
         drop(sched);
         if affinity_completed {
             core.notify_affinity_waiters();
         }
-        self.finish_owner_enqueue(cpu, reason, preempts_current);
+        self.finish_owner_enqueue(
+            cpu,
+            reason,
+            commit.preempts_current,
+            Some(commit.effective_policy),
+        );
         Ok(())
     }
 
-    pub(in crate::system::task_system) fn enqueue_owner_thread_locked(
+    fn enqueue_owner_thread_locked(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         core: &Arc<ThreadCore>,
         sched: &mut ThreadSchedState,
         reason: EnqueueReason,
-    ) -> Result<bool, TaskError> {
+    ) -> Result<OwnerEnqueueCommit, TaskError> {
         let owner = cpu.owner();
         if sched.lifecycle.state() != ThreadState::Ready {
             return Err(TaskError::NotReady);
@@ -655,7 +659,10 @@ impl TaskSystem {
                 )
                 .unwrap_or(false);
             transaction.commit();
-            return Ok(preempts_current);
+            return Ok(OwnerEnqueueCommit {
+                preempts_current,
+                effective_policy: policy,
+            });
         }
         let preempts_current =
             self.link_owner_ready_thread_locked(owner, &mut transaction, core, sched, reason);
@@ -663,6 +670,9 @@ impl TaskSystem {
             .refresh_owner_deadline_timers_in_rq(core, sched, cpu, now_ns, &mut transaction)
             .unwrap_or(false);
         transaction.commit();
-        Ok(preempts_current || timer_preempts)
+        Ok(OwnerEnqueueCommit {
+            preempts_current: preempts_current || timer_preempts,
+            effective_policy: policy,
+        })
     }
 }

@@ -8,6 +8,11 @@ pub(crate) struct SoftTimerExpireBatch {
     pending: bool,
 }
 
+pub(crate) enum KtimerServiceClaim {
+    Kernel(KernelTimerExecution),
+    Task(ExpiredTaskDeadline),
+}
+
 impl SoftTimerExpireBatch {
     pub(crate) const fn expired(self) -> usize {
         self.expired
@@ -327,24 +332,6 @@ impl CpuLocal {
         self.remote.finish_hard_timer_work(pending);
     }
 
-    pub(crate) fn has_due_task_deadline(&self, now: MonotonicInstant) -> bool {
-        self.remote
-            .read_active_deadline_base(DeadlineBaseGuardSource::Observation)
-            .is_some_and(|deadlines| deadlines.queue.has_immediately_actionable_soft_entry(now))
-    }
-
-    pub(crate) fn has_due_kernel_timer(&self, now: MonotonicInstant) -> bool {
-        self.remote
-            .read_active_deadline_base(DeadlineBaseGuardSource::Observation)
-            .is_some_and(|deadlines| deadlines.kernel_timers.has_due(now))
-    }
-
-    pub(crate) fn has_expired_kernel_timer(&self) -> bool {
-        self.remote
-            .read_active_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
-            .is_some_and(|deadlines| deadlines.kernel_timers.has_expired())
-    }
-
     pub(crate) fn has_due_scheduler_deadline(&self, now: MonotonicInstant) -> bool {
         self.remote
             .read_active_deadline_base(DeadlineBaseGuardSource::Observation)
@@ -546,45 +533,56 @@ impl CpuLocal {
         batch
     }
 
-    pub(crate) fn promote_due_kernel_timers(
+    /// Selects one task-context timer under one Linux hrtimer-style base lock.
+    ///
+    /// The returned callback identity has already left the base. Its callback
+    /// must run without this guard, then a restartable kernel timer completes
+    /// through a separate base transaction, matching `__run_hrtimer()`.
+    pub(crate) fn claim_ktimer_service_step(
         self: Pin<&mut Self>,
         now: MonotonicInstant,
-        budget: usize,
-    ) -> KernelTimerExpireBatch {
+        task_budget: usize,
+    ) -> (Option<KtimerServiceClaim>, bool) {
+        let batch_limit = self.drain.batch_limit();
         let Some(mut deadlines) = self
             .remote
             .lock_active_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
         else {
-            return KernelTimerExpireBatch::empty();
+            return (None, false);
         };
-        let batch = deadlines.kernel_timers.expire_due(now, budget);
-        if batch.expired() != 0 || batch.pending() {
-            deadlines.softirq_activated = true;
+        if !deadlines.kernel_timers.has_expired() && deadlines.kernel_timers.has_due(now) {
+            deadlines.kernel_timers.expire_due(now, 1);
         }
-        batch
-    }
-
-    /// Moves one bounded batch into task-context storage without publishing a
-    /// second scheduler request. The soft-timer worker owns publication for
-    /// the complete begin/drain/finish transaction.
-    pub(crate) fn promote_due_task_deadlines(
-        self: Pin<&mut Self>,
-        now: MonotonicInstant,
-        budget: usize,
-    ) -> TaskDeadlineExpireBatch {
-        let batch_limit = self.drain.batch_limit();
-        let Some(mut task_deadlines) = self
-            .remote
-            .lock_active_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
-        else {
-            return TaskDeadlineExpireBatch::empty();
+        if deadlines.expired_count == 0
+            && deadlines.queue.has_immediately_actionable_soft_entry(now)
+        {
+            Self::promote_due_task_deadlines_in_base(&mut deadlines, batch_limit, now, task_budget);
+        }
+        let has_kernel = deadlines.kernel_timers.has_expired();
+        let has_task = deadlines.expired_count != 0;
+        let claim_class = deadlines.select_service_claim_class(has_kernel, has_task);
+        let claim = match claim_class {
+            Some(KtimerClaimClass::Kernel) => {
+                let execution = deadlines
+                    .kernel_timers
+                    .claim_expired()
+                    .expect("an expired kernel timer must remain claimable");
+                Some(KtimerServiceClaim::Kernel(execution))
+            }
+            Some(KtimerClaimClass::Task) => {
+                let event = deadlines
+                    .claim_next_buffered_expiration()
+                    .expect("a buffered task expiration must remain claimable");
+                Some(KtimerServiceClaim::Task(event))
+            }
+            None => None,
         };
-        let batch =
-            Self::promote_due_task_deadlines_in_base(&mut task_deadlines, batch_limit, now, budget);
-        if batch.expired() != 0 || batch.pending() {
-            task_deadlines.softirq_activated = true;
-        }
-        batch
+        let pending = deadlines.expired_count != 0
+            || deadlines.queue.has_immediately_actionable_soft_entry(now)
+            || deadlines.kernel_timers.has_expired()
+            || deadlines.kernel_timers.has_due(now);
+        deadlines.softirq_activated = pending;
+        (claim, pending)
     }
 
     fn promote_due_task_deadlines_in_base(
@@ -673,21 +671,5 @@ impl CpuLocal {
         self.remote
             .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
             .take_buffered_expiration(registration)
-    }
-
-    pub(crate) fn has_expired_task_deadlines(&self) -> bool {
-        self.remote
-            .read_active_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
-            .is_some_and(|deadlines| deadlines.expired_count != 0)
-    }
-
-    /// Completes one Linux-style soft hrtimer drain transaction.
-    ///
-    /// `pending` retains ownership in `ktimers/%u`; otherwise the queue once
-    /// again owns its earliest physical clockevent deadline.
-    pub(crate) fn finish_task_deadline_softirq(self: Pin<&mut Self>, pending: bool) {
-        self.remote
-            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
-            .softirq_activated = pending;
     }
 }

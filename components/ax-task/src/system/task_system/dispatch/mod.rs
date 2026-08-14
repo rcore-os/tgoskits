@@ -54,6 +54,12 @@ impl OwnerDispatchCommit {
     const NONE: Self = Self { overrun_work: None };
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OwnerEnqueueCommit {
+    preempts_current: bool,
+    effective_policy: SchedulePolicy,
+}
+
 mod bandwidth;
 mod current;
 mod policy;

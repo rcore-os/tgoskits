@@ -146,6 +146,11 @@ pub(crate) struct KernelTimerExecution {
 }
 
 impl KernelTimerExecution {
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) const fn handle(&self, owner: CpuId) -> KernelTimerHandle {
+        KernelTimerHandle::new(owner, self.entry.identity())
+    }
+
     pub(crate) fn invoke(&mut self) -> KernelTimerAction {
         let expired_at = self
             .entry
@@ -179,13 +184,6 @@ pub(crate) struct KernelTimerExpireBatch {
 }
 
 impl KernelTimerExpireBatch {
-    pub(crate) const fn empty() -> Self {
-        Self {
-            expired: 0,
-            pending: false,
-        }
-    }
-
     pub(crate) const fn expired(self) -> usize {
         self.expired
     }
