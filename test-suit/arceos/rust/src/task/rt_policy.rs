@@ -2,7 +2,10 @@ use std::{
     hint,
     os::arceos::{
         api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::{ax_hal::percpu::this_cpu_id, ax_task::task_test_hooks},
+        modules::{
+            ax_hal::percpu::this_cpu_id,
+            ax_task::{DEFAULT_RT_PERIOD_NS, task_test_hooks},
+        },
         task::{
             FairMode, Nice, RtPriority, SchedulePolicy, ThreadId, current_thread_id,
             set_thread_policy,
@@ -19,7 +22,7 @@ use std::{
 const BOOT_RT_QUIESCE: Duration = Duration::from_millis(1_500);
 const PROMOTION_TIMEOUT: Duration = Duration::from_millis(1_000);
 const FIRST_CROSS_PERIOD_SAMPLE: Duration = Duration::from_millis(1_400);
-const SECOND_CROSS_PERIOD_SAMPLE: Duration = Duration::from_millis(1_800);
+const SECOND_CROSS_PERIOD_SAMPLE: Duration = Duration::from_millis(2_450);
 
 fn spin_until(deadline: Duration, started: Instant) {
     while started.elapsed() < deadline {
@@ -52,6 +55,12 @@ fn stop_worker(
 }
 
 pub fn run() -> crate::TestResult {
+    assert!(
+        SECOND_CROSS_PERIOD_SAMPLE
+            .checked_sub(FIRST_CROSS_PERIOD_SAMPLE)
+            .is_some_and(|gap| gap > Duration::from_nanos(DEFAULT_RT_PERIOD_NS)),
+        "RT-policy progress samples must span one complete root RT period"
+    );
     let cpu_count = thread::available_parallelism().unwrap().get();
     assert!(cpu_count >= 2, "task-rt-policy requires at least two CPUs");
     assert!(ax_set_current_affinity(AxCpuMask::one_shot(0)).is_ok());
