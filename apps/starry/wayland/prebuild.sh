@@ -63,7 +63,7 @@ prefetch_wayland_apks() {
         return 0
     fi
 
-    python3 - "$apk_arch" "$branch" "$cache_dir" "$guest_cache_dir" <<'PY'
+    PYTHONPATH="$app_dir${PYTHONPATH:+:$PYTHONPATH}" python3 - "$apk_arch" "$branch" "$cache_dir" "$guest_cache_dir" <<'PY'
 import io
 import os
 import re
@@ -71,6 +71,8 @@ import shutil
 import sys
 import tarfile
 import urllib.request
+
+from wayland_apk_paths import cache_path, package_filename
 
 apk_arch, branch, cache_dir, guest_cache_dir = sys.argv[1:]
 mirrors = [
@@ -111,12 +113,12 @@ def fetch_bytes(path):
     raise RuntimeError(f"all mirrors failed for {path}: {last_error}")
 
 
-def fetch_file(path, target_path):
+def fetch_file(path, cache_dir, filename):
     last_error = None
-    filename = os.path.basename(target_path)
+    target_path = cache_path(cache_dir, filename)
+    tmp = cache_path(cache_dir, filename + ".tmp")
     for mirror in mirrors:
         url = f"{mirror}/{branch}/{path}"
-        tmp = target_path + ".tmp"
         try:
             with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as out:
                 total_header = resp.headers.get("Content-Length")
@@ -205,22 +207,22 @@ os.makedirs(cache_dir, exist_ok=True)
 os.makedirs(guest_cache_dir, exist_ok=True)
 log(f"WAYLAND_PREFETCH resolved {len(resolved)} apk(s) for {apk_arch}")
 for pkg in resolved:
-    filename = f"{pkg['name']}-{pkg['version']}.apk"
+    filename = package_filename(pkg["name"], pkg["version"])
     rel = f"{pkg['repo']}/{apk_arch}/{filename}"
-    cached = os.path.join(cache_dir, filename)
+    cached = cache_path(cache_dir, filename)
     if not os.path.exists(cached) or os.path.getsize(cached) == 0:
-        mirror = fetch_file(rel, cached)
+        mirror = fetch_file(rel, cache_dir, filename)
         log(f"WAYLAND_PREFETCH downloaded {filename} from {mirror}")
     else:
         log(f"WAYLAND_PREFETCH cached {filename}")
-    shutil.copy2(cached, os.path.join(guest_cache_dir, filename))
+    shutil.copy2(cached, cache_path(guest_cache_dir, filename))
 
 if write_install_list:
     install_list = os.path.join(guest_cache_dir, "install.list")
     with open(install_list, "w", encoding="utf-8") as out:
         for pkg in resolved:
             if pkg["name"] not in installed_names:
-                filename = f"{pkg['name']}-{pkg['version']}.apk"
+                filename = package_filename(pkg["name"], pkg["version"])
                 out.write(f"/usr/local/wayland-apks/{filename}\n")
 
 log(f"WAYLAND_PREFETCH prepared {len(resolved)} apk(s) for {apk_arch}")
