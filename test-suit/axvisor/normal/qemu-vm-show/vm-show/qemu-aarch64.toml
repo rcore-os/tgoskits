@@ -1,0 +1,29 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3,its=on",
+  "-smp",
+  "4",
+  "-append",
+  "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7 axvisor.timer_case=gicv3-its",
+  "-m",
+  "8g",
+]
+timeout = 600
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)login incorrect",
+  "(?i)permission denied",
+  "ESR_EL2:",
+]
+success_regex = [
+  "(?m)^Use 'vm show 1 --full' for detailed information\\s*$",
+  "(?m)^    VCpu 0: Physical CPU mask 0x1, PCpu ID 0\\s*$",
+]
+shell_prefix = "Run /init as init process"
+shell_init_cmd = "\u0018h\nvm show 1 --config\nvm show 1 --full"
+to_bin = true
+uefi = false

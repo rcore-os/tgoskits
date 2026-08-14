@@ -1,0 +1,7 @@
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["test-suit/axvisor/normal/qemu-vm-show/aarch64-linux-vm-show.toml"]
+
+[env]
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-vm-show/initramfs-aarch64.cpio.gz"
