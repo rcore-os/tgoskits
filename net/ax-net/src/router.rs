@@ -1197,9 +1197,11 @@ impl smoltcp::phy::TxToken for TxToken<'_> {
 
 /// Detects passive TCP opens before smoltcp consumes the incoming packet.
 fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
-    let (src_addr, dst_addr, payload) = match IpVersion::of_packet(buf).unwrap() {
-        IpVersion::Ipv4 => {
-            let packet = Ipv4Packet::new_unchecked(buf);
+    let (src_addr, dst_addr, payload) = match IpVersion::of_packet(buf) {
+        Ok(IpVersion::Ipv4) => {
+            let Ok(packet) = Ipv4Packet::new_checked(buf) else {
+                return;
+            };
             if packet.next_header() != IpProtocol::Tcp {
                 return;
             }
@@ -1209,8 +1211,10 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
                 packet.payload(),
             )
         }
-        IpVersion::Ipv6 => {
-            let packet = Ipv6Packet::new_unchecked(buf);
+        Ok(IpVersion::Ipv6) => {
+            let Ok(packet) = Ipv6Packet::new_checked(buf) else {
+                return;
+            };
             if packet.next_header() != IpProtocol::Tcp {
                 return;
             }
@@ -1220,8 +1224,11 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
                 packet.payload(),
             )
         }
+        Err(_) => return,
     };
-    let tcp_packet = TcpPacket::new_unchecked(payload);
+    let Ok(tcp_packet) = TcpPacket::new_checked(payload) else {
+        return;
+    };
     let src_addr = (src_addr, tcp_packet.src_port()).into();
     let dst_addr = (dst_addr, tcp_packet.dst_port()).into();
     let is_first = tcp_packet.syn() && !tcp_packet.ack();
@@ -1466,6 +1473,27 @@ mod tests {
             .select_route_if(&dst, |interface_id| interface_id != IF0)
             .unwrap();
         assert_eq!(route.interface_id, IF1);
+    }
+
+    #[test]
+    fn snoop_tcp_packet_drops_every_truncated_ipv4_and_ipv6_header() {
+        let mut sockets = SocketSet::new(vec![]);
+
+        let mut ipv4_tcp = [0u8; 40];
+        ipv4_tcp[0] = 0x45;
+        ipv4_tcp[2..4].copy_from_slice(&(ipv4_tcp.len() as u16).to_be_bytes());
+        ipv4_tcp[9] = IpProtocol::Tcp.into();
+        for len in 0..ipv4_tcp.len() {
+            snoop_tcp_packet(&ipv4_tcp[..len], &mut sockets);
+        }
+
+        let mut ipv6_tcp = [0u8; 60];
+        ipv6_tcp[0] = 0x60;
+        ipv6_tcp[4..6].copy_from_slice(&20u16.to_be_bytes());
+        ipv6_tcp[6] = IpProtocol::Tcp.into();
+        for len in 0..ipv6_tcp.len() {
+            snoop_tcp_packet(&ipv6_tcp[..len], &mut sockets);
+        }
     }
 
     #[test]
