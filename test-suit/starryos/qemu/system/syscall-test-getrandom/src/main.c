@@ -27,6 +27,7 @@
 #endif
 
 #define UNKNOWN_GETRANDOM_FLAG 0x80000000U
+#define MULTI_CHUNK_GETRANDOM_LEN 1025
 
 /* 通过 syscall() 直接调用 getrandom，避免 glibc 封装差异 */
 static ssize_t my_getrandom(void *buf, size_t len, unsigned int flags) {
@@ -121,14 +122,14 @@ int main(void) {
                   "mutually-exclusive flags take precedence over NULL address");
     }
 
-    /* 8. 较大但仍合理的请求长度，避免只实现了小 buffer 的假阳性 */
+    /* 8. 跨多个内核临时缓冲区的请求必须完整返回，不可只处理首块。 */
     {
-        unsigned char buf[4096];
+        unsigned char buf[MULTI_CHUNK_GETRANDOM_LEN];
         memset(buf, 0, sizeof(buf));
         CHECK_RET(my_getrandom(buf, sizeof(buf), 0), (ssize_t)sizeof(buf),
-                  "large 4096-byte request returns full length");
+                  "multi-chunk request returns full length");
         CHECK(!all_bytes_equal(buf, sizeof(buf), 0),
-              "large request fills buffer");
+              "multi-chunk request fills buffer");
     }
 
     TEST_DONE();

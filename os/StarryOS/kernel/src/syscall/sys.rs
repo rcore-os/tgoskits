@@ -1,6 +1,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
+use ax_hal::mem::PAGE_SIZE_4K;
 use ax_task::current;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
@@ -40,6 +41,13 @@ const SYSLOG_ACTION_SIZE_UNREAD: i32 = 9;
 const SYSLOG_ACTION_SIZE_BUFFER: i32 = 10;
 const SYSLOG_BUFFER_CAPACITY: usize = 4096;
 const SYSLOG_SEED_MESSAGE: &[u8] = b"StarryOS kernel log buffer initialized\n";
+/// Linux caps `getrandom` through `import_ubuf()` at `MAX_RW_COUNT`.
+/// `MAX_RW_COUNT` is `INT_MAX` rounded down to the page size on the 64-bit
+/// targets supported by StarryOS.
+const GETRANDOM_MAX_LEN: usize = (i32::MAX as usize) & !(PAGE_SIZE_4K - 1);
+/// Keep the syscall's temporary random-data buffer bounded by a small stack
+/// allocation, irrespective of the user-requested length.
+const GETRANDOM_CHUNK_SIZE: usize = 256;
 const SECCOMP_SET_MODE_STRICT: u32 = 0;
 const SECCOMP_SET_MODE_FILTER: u32 = 1;
 const SECCOMP_GET_ACTION_AVAIL: u32 = 2;
@@ -876,13 +884,34 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> StarryResult<isize
         "/dev/urandom"
     };
 
+    // Linux `import_ubuf()` limits the iterator before feeding it to the
+    // random source. Bound the request equivalently, and reject an address
+    // range that wraps before touching the random device.
+    let len = len.min(GETRANDOM_MAX_LEN);
+    (buf as usize).checked_add(len).ok_or(Errno::EFAULT)?;
+
     let f = ax_fs_ng::vfs::current_fs_context().lock().resolve(path)?;
-    let mut kbuf = vec![0; len];
-    let len = f.entry().as_file()?.read_at(&mut kbuf, 0)?;
+    let file = f.entry().as_file()?;
+    let mut kbuf = [0u8; GETRANDOM_CHUNK_SIZE];
+    let mut written = 0;
+    while written < len {
+        let chunk_len = (len - written).min(kbuf.len());
+        let read = file.read_at(&mut kbuf[..chunk_len], 0)?;
+        if read == 0 {
+            break;
+        }
+        let dst = (buf as usize).checked_add(written).ok_or(Errno::EFAULT)? as *mut u8;
+        vm_write_slice(dst, &kbuf[..read])?;
+        written += read;
+        // Preserve a short device read as the syscall result. Retrying after
+        // having copied a partial result could turn Linux's partial success
+        // into a later EAGAIN for a nonblocking random source.
+        if read < chunk_len {
+            break;
+        }
+    }
 
-    vm_write_slice(buf, &kbuf)?;
-
-    Ok(len as _)
+    Ok(written as _)
 }
 
 fn check_seccomp_install_permission() -> StarryResult<()> {
