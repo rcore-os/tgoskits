@@ -496,6 +496,17 @@ impl MessageQueue {
         }
     }
 
+    /// Reject a send larger than this queue's fixed `mq_msgsize` before its
+    /// caller copies the user payload. Linux performs this check before
+    /// `load_msg()` in `do_mq_timedsend` so an oversize send is `EMSGSIZE`, even
+    /// when its user pointer is otherwise invalid.
+    pub fn check_send_len(&self, msg_len: usize) -> StarryResult<()> {
+        if msg_len > self.inner.lock().msg_size {
+            return Err(Errno::EMSGSIZE.into());
+        }
+        Ok(())
+    }
+
     /// Send a message. Blocks while full unless `O_NONBLOCK`, honoring the
     /// optional absolute `CLOCK_REALTIME` deadline.
     ///
@@ -511,12 +522,7 @@ impl MessageQueue {
         if priority >= MQ_PRIO_MAX {
             return Err(Errno::EINVAL.into());
         }
-        {
-            let inner = self.inner.lock();
-            if data.len() > inner.msg_size {
-                return Err(Errno::EMSGSIZE.into());
-            }
-        }
+        self.check_send_len(data.len())?;
 
         let op = || {
             let mut inner = self.inner.lock();
