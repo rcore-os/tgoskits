@@ -443,16 +443,19 @@ BT 0 ip=0x1 fp=0x2
     }
 
     #[test]
-    fn arceos_rust_aarch64_qemu_config_enables_smp_for_ipi_paths() {
+    fn arceos_rust_aarch64_qemu_config_uses_gicv2_smp4_for_ipi_paths() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-suit/arceos/rust");
         let qemu_path = root.join("qemu-aarch64.toml");
         let config: QemuConfig =
             toml::from_str(&std::fs::read_to_string(qemu_path).unwrap()).unwrap();
         let smp = qemu_test::smp_from_qemu_arg(&config).unwrap();
+        assert_eq!(smp, 4, "aarch64 GICv2 IPI coverage requires SMP4");
         assert!(
-            smp >= 2,
-            "aarch64 task-ipi, task-smp-online, and task-stack-guard-page require SMP >= 2, got \
-             {smp}"
+            config
+                .args
+                .windows(2)
+                .any(|args| args == ["-machine", "virt,gic-version=2"]),
+            "aarch64 IPI coverage must exercise the GICv2 target-list path"
         );
     }
 

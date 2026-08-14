@@ -167,7 +167,7 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 1. Discover enabled CPUs from firmware data and keep firmware IDs separate from logical CPU IDs.
 2. Bound-check CPU indices and avoid assuming hart/apic/mpidr/cpuid values are dense.
 3. Prepare one boot argument block per secondary CPU with stack, page table, kernel entry, typed per-CPU area, and logical ID.
-4. Flush boot arguments and page tables before `cpu_on`.
+4. Flush boot arguments and page tables before the architecture CPU-on transport.
 5. In the secondary path, initialize arch address windows, stack, page table state, the
    architecture CPU-local register contract, trap vectors, timer, and interrupt state before
    entering generic secondary code. Install the final `CpuAreaRef` while the CPU is offline, then
@@ -175,6 +175,23 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
    fallible state afterward.
 6. Before the OS per-CPU register is initialized on a secondary CPU, use cached controller fast paths for interrupt and timer setup through `somehal::irq::init_secondary_boot_irqs(cpu_id)`; do not take `rdrive`, IRQ-domain, or generic route locks from that window.
 7. Debug secondary failure with physical-address markers first; serial logging may not work until the secondary has its own mapping and trap state.
+8. Keep architecture wake transport separate from generic CPU bring-up synchronization. The
+   architecture hook only delivers PSCI/SBI/mailbox or INIT/SIPI; a shutdown-lifetime per-CPU
+   state owned by someboot publishes `DEAD -> KICKED -> ALIVE -> SHOULD_ONLINE`. The secondary
+   reports `ALIVE` after reaching the common someboot entry, then waits for the control CPU
+   release before entering the OS. Keep this mutable state outside the copyable trampoline
+   metadata and separate from the later scheduler-online publication. Do not replace it with a
+   global last-CPU ID, an architecture-only completion, timeout retry, or scheduler-online flag.
+   Expose this lifecycle through the non-blocking, non-copyable
+   `start_secondary_cpu`/`status`/`release` handle: status observation must not release the CPU,
+   and only a matching alive handle may release it. Claim the single in-flight transport with a
+   non-blocking CAS. A dropped handle, upper-layer timeout, cancellation, or possibly partial
+   transport error must keep the owner claimed because a late x86 AP may still consume the shared
+   trampoline. Do not add cancellation, retry, fallback, or a someboot `Future`; a future upper
+   layer needs a real waker and terminal cancellation semantics. Keep the 10-second synchronous
+   polling policy in `axplat-dyn::PowerIf`, not in the someboot mechanism.
+   On x86, encode SIPI as Linux `APIC_DM_STARTUP` (`0x600`); INIT level bits do not belong to SIPI.
+   Keep this contract synchronized with `book/design/someboot-secondary-cpu-startup.md`.
 
 ## Validation Ladder
 

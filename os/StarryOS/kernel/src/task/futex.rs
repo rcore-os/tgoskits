@@ -400,12 +400,16 @@ impl WaitQueue {
     }
 
     /// Checks if the wait queue is empty.
+    ///
+    /// O(1): reads the queue length only. This is called from `FutexGuard::Drop`
+    /// while holding the (per-process) futex-table lock on EVERY futex op, so it must
+    /// not scan — a prior `queue.retain(cancelled)` here made it O(n) under the table
+    /// lock, i.e. an O(N²) collapse of contended futex throughput (schbench's tail).
+    /// Cancelled waiters are already pruned by `wake` (its retain) and by each waiter's
+    /// own `WaitIfFuture::Drop`, so dropping the scan here only delays a benign
+    /// table-entry cleanup (also swept by the periodic `FutexTables` GC), never leaks.
     pub fn is_empty(&self) -> bool {
-        let mut inner = self.inner.lock();
-        inner
-            .queue
-            .retain(|waiter| !waiter.state.cancelled.load(AtomicOrdering::SeqCst));
-        inner.queue.is_empty()
+        self.inner.lock().queue.is_empty()
     }
 }
 
@@ -511,24 +515,43 @@ impl FutexEntry {
 }
 
 /// A table mapping memory addresses to futex wait queues.
-pub struct FutexTable(Mutex<HashMap<usize, Arc<FutexEntry>>>);
+/// Number of lock shards in a per-process futex table. Mirrors Linux's
+/// `futex_hash_bucket` array: futex ops on distinct addresses fall into distinct
+/// buckets, so contended-futex throughput scales toward `ncpu` instead of
+/// serializing all threads on one process-wide table lock.
+const FUTEX_SHARDS: usize = 64;
+
+pub struct FutexTable {
+    buckets: [Mutex<HashMap<usize, Arc<FutexEntry>>>; FUTEX_SHARDS],
+}
 
 impl FutexTable {
     /// Creates a new `FutexTable`.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self(Mutex::new(HashMap::new()))
+        Self {
+            buckets: core::array::from_fn(|_| Mutex::new(HashMap::new())),
+        }
     }
 
-    /// Checks if the futex table is empty.
+    /// Selects the shard for a futex key via a Fibonacci hash (top bits after a
+    /// multiplicative mix) so 4-byte-aligned user addresses spread evenly.
+    #[inline]
+    fn bucket(&self, key: usize) -> &Mutex<HashMap<usize, Arc<FutexEntry>>> {
+        let h = (key as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        &self.buckets[(h >> (64 - 6)) as usize % FUTEX_SHARDS]
+    }
+
+    /// Checks if the futex table is empty (all shards). Only called by the
+    /// periodic table GC, not the hot path.
     pub fn is_empty(&self) -> bool {
-        self.0.lock().is_empty()
+        self.buckets.iter().all(|b| b.lock().is_empty())
     }
 
     /// Gets the wait queue associated with the given address.
     pub fn get(&self, key: &FutexKey) -> Option<FutexGuard<'_>> {
         let key = key.as_usize();
-        let entry = self.0.lock().get(&key).cloned()?;
+        let entry = self.bucket(key).lock().get(&key).cloned()?;
         Some(FutexGuard {
             table: self,
             key,
@@ -540,8 +563,8 @@ impl FutexTable {
     /// new one if it doesn't exist.
     pub fn get_or_insert(&self, key: &FutexKey) -> FutexGuard<'_> {
         let key = key.as_usize();
-        let mut table = self.0.lock();
-        let entry = table
+        let mut bucket = self.bucket(key).lock();
+        let entry = bucket
             .entry(key)
             .or_insert_with(|| Arc::new(FutexEntry::new()));
         FutexGuard {
@@ -560,14 +583,14 @@ impl FutexTable {
     }
 
     fn remove_waiter(&self, key: usize, state: &Arc<WaiterState>) {
-        let mut table = self.0.lock();
-        let should_remove = if let Some(entry) = table.get(&key) {
+        let mut bucket = self.bucket(key).lock();
+        let should_remove = if let Some(entry) = bucket.get(&key) {
             entry.wq.remove_waiter(state) && Arc::strong_count(entry) == 1
         } else {
             false
         };
         if should_remove {
-            table.remove(&key);
+            bucket.remove(&key);
         }
     }
 }
@@ -594,14 +617,14 @@ impl Drop for FutexGuard<'_> {
         // key between the count check and the remove() call, creating a new
         // reference that would be invalidated when we remove the entry.
         // Checking inside the lock makes check-and-remove atomic.
-        let mut table = self.table.0.lock();
+        let mut bucket = self.table.bucket(self.key).lock();
         // Re-check strong_count under lock — a concurrent get_or_insert may
         // have cloned the Arc in the meantime. The <= 2 threshold accounts
         // for the strong refs held by the table entry and this guard
         // (self.inner). If there are more refs, someone else is using the
         // entry, so we must not remove it from the table.
         if Arc::strong_count(&self.inner) <= 2 && self.inner.wq.is_empty() {
-            table.remove(&self.key);
+            bucket.remove(&self.key);
         }
     }
 }

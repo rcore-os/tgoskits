@@ -33,6 +33,19 @@ Example:
 cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
+## iperf3
+
+The `iperf3` board app provides a repeatable Orange Pi 5 Plus TCP performance
+matrix. Run the app through xtask; the board session supplies the address of the
+persistent iperf3 server. The app prints three samples plus a median for each
+scenario:
+
+```bash
+cargo xtask starry app board -t iperf3 -b OrangePi-5-Plus
+```
+
+See `iperf3/README.md` for the fixed T01--T07 profile.
+
 ## Resource Monitor
 
 The `resource-monitor` case provides an offline user-space collector and a static

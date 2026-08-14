@@ -322,7 +322,7 @@ impl ArchTrait for Arch {
         crmd::read().pg()
     }
 
-    fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
+    fn kick_secondary_cpu(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
         power::cpu_on(hartid, entry, arg)
     }
 

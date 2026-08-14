@@ -288,6 +288,9 @@ fn run_hctx(
             &mut fatal_error,
             &mut irq_events,
         );
+        if fatal_error.is_some() {
+            break;
+        }
         if irq_progress {
             // An acknowledged device event supersedes a timer selected from
             // the prior queue state. Reconcile with the state produced by the
@@ -314,6 +317,9 @@ fn run_hctx(
                 fatal_error: &mut fatal_error,
             },
         );
+        if fatal_error.is_some() {
+            break;
+        }
         if irq_progress || register_progress {
             submission_blocked = false;
         }
@@ -478,6 +484,9 @@ fn advance_register_retry_if_due(
     now: Duration,
     context: &mut RegisterRetryContext<'_>,
 ) -> bool {
+    if context.fatal_error.is_some() {
+        return false;
+    }
     if context.deadline.is_some_and(|deadline| deadline <= now) {
         set_hctx_fatal(context.state, context.fatal_error, BlkError::TimedOut);
         return true;
@@ -564,6 +573,12 @@ fn drain_latched_irqs(
         // Queue-owned state must observe the acknowledged hardware event
         // before the controller reacts to the same IRQ. Initialization uses
         // this ordering to publish discovered geometry before Ready.
+        // A terminal queue result owns teardown from this point onward. Do not
+        // let the failed IRQ race its Watchdog by advancing or rearming the
+        // controller after queue state has already declared the device dead.
+        if fatal_error.is_some() {
+            continue;
+        }
         if !event.control.is_empty() {
             controller.post(ControllerEvent::Irq(event.control));
             progressed = true;

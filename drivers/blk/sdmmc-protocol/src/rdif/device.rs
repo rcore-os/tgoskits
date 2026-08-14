@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, sync::Arc, vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use rdif_block::{
@@ -84,6 +84,7 @@ where
     irq_handler: Option<Box<dyn HardIrqHandler>>,
     init_preference: Option<CardInitPreference>,
     init_status: Arc<BlockInitStatus>,
+    diagnostic_identity: Option<String>,
     started: bool,
     stopped: bool,
 }
@@ -95,6 +96,7 @@ where
     H::BusRequest: Send,
 {
     pub fn new(mut card: SdioSdmmc<H>, config: BlockConfig) -> Self {
+        let diagnostic_identity = card.diagnostic_identity().map(String::from);
         let init_status = Arc::new(BlockInitStatus::initialized(config.capacity_blocks()));
         let irq_handler = Box::new(BlockIrqHandler::<H> {
             irq: SdioIrqHost::irq_handle(card.host_mut()),
@@ -106,6 +108,7 @@ where
             irq_handler: Some(irq_handler),
             init_preference: None,
             init_status,
+            diagnostic_identity,
             started: false,
             stopped: false,
         }
@@ -118,6 +121,7 @@ where
         config: BlockConfig,
         preference: CardInitPreference,
     ) -> Self {
+        let diagnostic_identity = card.diagnostic_identity().map(String::from);
         let init_status = Arc::new(BlockInitStatus::initializing());
         let irq_handler = Box::new(BlockIrqHandler::<H> {
             irq: SdioIrqHost::irq_handle(card.host_mut()),
@@ -129,6 +133,7 @@ where
             irq_handler: Some(irq_handler),
             init_preference: Some(preference),
             init_status,
+            diagnostic_identity,
             started: false,
             stopped: false,
         }
@@ -185,7 +190,9 @@ where
     H::BusRequest: Send,
 {
     fn name(&self) -> &str {
-        self.config.name()
+        self.diagnostic_identity
+            .as_deref()
+            .unwrap_or_else(|| self.config.name())
     }
 }
 

@@ -27,6 +27,7 @@ const DEFAULT_CAPACITY_BYTES: u64 = 2 * 1024 * 1024;
 pub const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
     model: "virtio-blk",
     create: create_device_node,
+    default_fixed_resources: None,
 };
 
 fn create_device_node(

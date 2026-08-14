@@ -7,7 +7,7 @@ use std::{
         api::task::{AxCpuMask, ax_set_current_affinity},
         modules::{
             ax_hal::{irq::CpuId, percpu::this_cpu_id},
-            ax_ipi,
+            ax_ipi::{self, IpiNotification},
         },
     },
     println,
@@ -56,15 +56,6 @@ fn counting_callback() {
     EXECUTED_CALLBACKS.fetch_add(1, Ordering::Relaxed);
 }
 
-fn noop_callback() {
-    let target_cpu = TARGET_CPU.load(Ordering::Relaxed);
-    assert_eq!(
-        this_cpu_id(),
-        target_cpu,
-        "IPI callback ran on the wrong CPU"
-    );
-}
-
 unsafe fn counting_hard_call(argument: *mut ()) {
     let expected_cpu = unsafe { *(argument as *const usize) };
     assert_eq!(
@@ -99,13 +90,30 @@ fn wait_for_callbacks_or_stall(expected: usize) -> bool {
     }
 }
 
-fn send_recovery_ipi(target_cpu: usize, sender_cpu: usize) {
-    thread::spawn(move || {
-        pin_current_to_cpu(sender_cpu);
-        ax_ipi::legacy::run_on_cpu(target_cpu, noop_callback).expect("failed to send recovery IPI");
-    })
-    .join()
-    .unwrap();
+fn wait_for_fresh_self_ipi(cpu_id: usize) -> bool {
+    for _ in 0..STALL_POLLS {
+        match ax_ipi::notify_cpu(CpuId(cpu_id)).expect("failed to send self IPI") {
+            IpiNotification::Sent => return true,
+            IpiNotification::Coalesced => {
+                thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+            }
+        }
+    }
+    false
+}
+
+fn verify_self_ipi_delivery(cpu_id: usize) {
+    pin_current_to_cpu(cpu_id);
+    // A second fresh send is possible only after the handler claims the first
+    // physical self-SGI; an undelivered edge remains coalesced indefinitely.
+    assert!(
+        wait_for_fresh_self_ipi(cpu_id),
+        "could not send a fresh self IPI to CPU {cpu_id}"
+    );
+    assert!(
+        wait_for_fresh_self_ipi(cpu_id),
+        "self IPI was not claimed on CPU {cpu_id}"
+    );
 }
 
 pub fn run() -> crate::TestResult {
@@ -120,6 +128,8 @@ pub fn run() -> crate::TestResult {
         .take(min(MAX_SENDER_CPUS, cpu_num - 1))
         .collect::<Vec<_>>();
     assert!(!sender_cpus.is_empty(), "need at least one sender CPU");
+
+    verify_self_ipi_delivery(sender_cpus[0]);
 
     for round in 0..TEST_ROUNDS {
         TARGET_CPU.store(target_cpu, Ordering::Relaxed);
@@ -161,19 +171,12 @@ pub fn run() -> crate::TestResult {
         let expected = sender_cpus.len() * CALLBACKS_PER_SENDER;
         assert_eq!(SENT_CALLBACKS.load(Ordering::Relaxed), expected);
 
-        if !wait_for_callbacks_or_stall(expected) {
-            send_recovery_ipi(target_cpu, sender_cpus[0]);
-            let _ = wait_for_callbacks_or_stall(expected);
-            let executed_after_recovery = EXECUTED_CALLBACKS.load(Ordering::Relaxed);
-            if executed_after_recovery == expected {
-                panic!("IPI callbacks only drained after an extra recovery IPI in round {round}");
-            } else {
-                panic!(
-                    "IPI callbacks stalled at {executed_after_recovery}/{expected} in round \
-                     {round}"
-                );
-            }
-        }
+        assert!(
+            wait_for_callbacks_or_stall(expected),
+            "IPI callbacks stalled at {}/{} in round {round}",
+            EXECUTED_CALLBACKS.load(Ordering::Relaxed),
+            expected
+        );
     }
 
     pin_current_to_cpu(sender_cpus[0]);
@@ -189,6 +192,11 @@ pub fn run() -> crate::TestResult {
     }
     .expect("failed to execute IPI hard call");
     assert_eq!(EXECUTED_HARD_CALLS.load(Ordering::Relaxed), 1);
+
+    println!(
+        "task_ipi: verified self delivery on CPU {} and remote delivery on CPU {target_cpu}",
+        sender_cpus[0]
+    );
 
     Ok(())
 }

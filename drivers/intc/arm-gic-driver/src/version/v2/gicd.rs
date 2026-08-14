@@ -186,6 +186,10 @@ impl DistributorReg {
         (it_lines_number + 1) * 32
     }
 
+    pub(crate) fn cpu_interface_count(&self) -> usize {
+        self.TYPER.read(TYPER::CPUNumber) as usize + 1
+    }
+
     pub fn set_cfg(&self, id: IntId, cfg: Trigger) {
         let int_num = id.to_u32();
         let reg_index = (int_num / 16) as usize;

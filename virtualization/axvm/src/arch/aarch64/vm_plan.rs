@@ -74,6 +74,10 @@ impl Aarch64VmPlan {
         self.firmware.serials()
     }
 
+    pub(crate) fn ivc_channels(&self) -> &[GuestIvcChannel] {
+        self.firmware.ivc_channels()
+    }
+
     pub(crate) const fn timer_profile(&self) -> &GuestTimerProfile {
         self.firmware.timer()
     }

@@ -9,6 +9,7 @@ pub(super) struct Aarch64FirmwarePlan {
     console: GuestSerialProfile,
     serials: std::vec::Vec<ResolvedSerialDevice>,
     serial_identity: Option<GuestSerialFdtIdentity>,
+    ivc_channels: std::vec::Vec<GuestIvcChannel>,
     timer: GuestTimerProfile,
 }
 
@@ -26,6 +27,7 @@ impl Aarch64FirmwarePlan {
             AxVmError::invalid_config("AArch64 machine profile has no architectural timer")
         })?;
         let serials = resolved_serial_devices(graph)?;
+        let ivc_channels = resolved_ivc_channels(graph)?;
         let console = serials
             .iter()
             .find(|serial| serial.id() == "console0")
@@ -44,6 +46,7 @@ impl Aarch64FirmwarePlan {
             console: console_profile,
             serials,
             serial_identity,
+            ivc_channels,
             timer,
         })
     }
@@ -66,6 +69,10 @@ impl Aarch64FirmwarePlan {
 
     pub(super) fn serials(&self) -> &[ResolvedSerialDevice] {
         &self.serials
+    }
+
+    pub(super) fn ivc_channels(&self) -> &[GuestIvcChannel] {
+        &self.ivc_channels
     }
 }
 

@@ -112,6 +112,14 @@ pub struct TcpInfo {
     pub rcv_wnd: u32,
 }
 
+/// TCP congestion-control algorithms exposed by the transport backend.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TcpCongestionControl {
+    /// The transport does not apply congestion-window control.
+    #[default]
+    None,
+}
+
 macro_rules! define_options {
     ($($name:ident($value:ty),)*) => {
         /// Operation to get a socket option.
@@ -188,6 +196,7 @@ define_options! {
     TcpKeepCount(u32),
     TcpUserTimeout(u32),
     TcpInfo(TcpInfo),
+    TcpCongestionControl(TcpCongestionControl),
 
     // ---- IP level options (IP_*) ----
     Ttl(u8),

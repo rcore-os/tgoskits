@@ -228,9 +228,18 @@ impl DescriptorTable {
         Some(self.base_addr + offset)
     }
 
+    /// Size in bytes of the descriptor table for a queue of `size` descriptors.
+    ///
+    /// Owns the `size * sizeof(VirtQueueDesc)` math so ring-region derivation
+    /// (`VirtioQueue::ring_regions`) cannot drift from the per-descriptor
+    /// address computation.
+    pub(crate) const fn layout_size(size: u16) -> usize {
+        size as usize * core::mem::size_of::<VirtQueueDesc>()
+    }
+
     /// Calculate the total size of the descriptor table
     pub fn total_size(&self) -> usize {
-        self.size as usize * core::mem::size_of::<VirtQueueDesc>()
+        Self::layout_size(self.size)
     }
 
     /// Check if the descriptor table is valid
@@ -368,7 +377,7 @@ impl DescriptorTable {
             current = desc.next;
             // A chain referencing more than `size` descriptors is a cycle or
             // corruption. Bounding the walk also guarantees termination.
-            if descriptors.len() >= self.size as usize {
+            if descriptors.len() > self.size as usize {
                 return Err(VirtioError::InvalidDescriptor);
             }
         }
@@ -515,5 +524,13 @@ mod tests {
         table.write_desc(1, &d1_ok, &mut memory).unwrap();
         let ok_addr = table.get_status_addr(0, &mut memory).unwrap();
         assert_eq!(ok_addr.as_usize(), 0x200);
+    }
+
+    #[test]
+    fn layout_size_counts_descriptors() {
+        // 4 descriptors * 16 bytes (VirtQueueDesc) = 64.
+        assert_eq!(DescriptorTable::layout_size(4), 64);
+        // Boundary: the largest queue size still counts every descriptor.
+        assert_eq!(DescriptorTable::layout_size(256), 4096);
     }
 }

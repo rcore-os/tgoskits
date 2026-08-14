@@ -16,14 +16,17 @@ pub(crate) const SERIAL_REGISTRATIONS: &[ConfiguredModelRegistration] = &[
     ConfiguredModelRegistration {
         model: "pl011-mmio",
         create: create_serial,
+        default_fixed_resources: None,
     },
     ConfiguredModelRegistration {
         model: "uart16550-mmio",
         create: create_serial,
+        default_fixed_resources: None,
     },
     ConfiguredModelRegistration {
         model: "uart16550-pio",
         create: create_serial,
+        default_fixed_resources: None,
     },
 ];
 
