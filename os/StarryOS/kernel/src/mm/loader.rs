@@ -202,7 +202,14 @@ fn map_elf<'a>(
             ph.flags
         );
         let seg_pad = vaddr.align_offset_4k();
-        assert_eq!(seg_pad, ph.offset as usize % PAGE_SIZE_4K);
+        // ELF requires each loadable segment's virtual address and file
+        // offset to have the same page offset. This is untrusted executable
+        // metadata, so reject a mismatch instead of panicking in the kernel.
+        // Use a distinct error from InvalidExecutable: execve uses that error
+        // to opt into its legacy shell fallback for a non-ELF file.
+        if seg_pad != ph.offset as usize % PAGE_SIZE_4K {
+            return Err(StarryError::MalformedExecutable);
+        }
 
         let seg_align_size =
             (ph.mem_size as usize + seg_pad + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
