@@ -222,7 +222,12 @@ pub fn sys_tkill(tid: i32, signo: u32) -> StarryResult<isize> {
     Ok(0)
 }
 
-pub fn sys_tgkill(tgid: Pid, tid: Pid, signo: u32) -> StarryResult<isize> {
+pub fn sys_tgkill(tgid: i32, tid: i32, signo: u32) -> StarryResult<isize> {
+    if tgid <= 0 || tid <= 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    let tgid = tgid as Pid;
+    let tid = tid as Pid;
     check_kill_permission(tgid)?;
     let sig = make_siginfo(signo, SI_TKILL)?;
     send_signal_to_thread(Some(tgid), tid, sig)?;
