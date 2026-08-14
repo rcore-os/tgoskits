@@ -21,6 +21,8 @@ static WAKE_ENTITY_READ_COPY_COUNT: AtomicU64 = AtomicU64::new(0);
 static WAKE_ENTITY_READ_COPY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static PARK_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static SWITCH_TAIL_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
+static POLICY_SWITCH_HANDOFF_TARGET: AtomicU64 = AtomicU64::new(0);
+static POLICY_SWITCH_HANDOFF_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static DEADLINE_PUBLICATION_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_RT_PERIOD_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
@@ -64,6 +66,8 @@ const STAGE_OWNER_MAY_CHANGE: u8 = 4;
 const STAGE_OWNER_CAPTURED: u8 = 3;
 const STAGE_OWNER_EXITED: u8 = 4;
 const STAGE_COMPLETE: u8 = 3;
+const STAGE_SWITCH_HANDOFF_PAUSED: u8 = 3;
+const STAGE_SWITCH_HANDOFF_RELEASED: u8 = 4;
 const RT_POLICY_RESCHEDULE: u8 = 1 << 0;
 const RT_POLICY_OWNER_WORK: u8 = 1 << 1;
 
@@ -919,6 +923,67 @@ pub(crate) fn record_switch_tail_irq_owner_scopes(
     run_queue: bool,
 ) {
     SWITCH_TAIL_IRQ_OWNER_PROBE.record(previous, thread_sched, run_queue, "switch-tail");
+}
+
+/// Arms a pause after one yielding task has left `rq->curr` but before its
+/// architecture context switch releases the outgoing stack.
+pub fn arm_policy_switch_handoff_probe(previous: u64) {
+    assert_ne!(previous, 0, "a policy handoff identity must be non-zero");
+    assert_eq!(
+        POLICY_SWITCH_HANDOFF_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one policy switch-handoff probe may be armed"
+    );
+    POLICY_SWITCH_HANDOFF_TARGET.store(previous, Ordering::Relaxed);
+    POLICY_SWITCH_HANDOFF_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the target has committed its next `rq->curr` and paused
+/// before the architecture context switch.
+pub fn policy_switch_handoff_paused() -> bool {
+    POLICY_SWITCH_HANDOFF_STAGE.load(Ordering::Acquire) == STAGE_SWITCH_HANDOFF_PAUSED
+}
+
+/// Releases the target after a concurrent policy update has completed.
+pub fn release_policy_switch_handoff() {
+    assert_eq!(
+        POLICY_SWITCH_HANDOFF_STAGE.compare_exchange(
+            STAGE_SWITCH_HANDOFF_PAUSED,
+            STAGE_SWITCH_HANDOFF_RELEASED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_SWITCH_HANDOFF_PAUSED),
+        "policy handoff release must follow the paused switch"
+    );
+}
+
+pub(crate) fn pause_policy_switch_handoff(previous: ThreadId) {
+    if POLICY_SWITCH_HANDOFF_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || POLICY_SWITCH_HANDOFF_TARGET.load(Ordering::Relaxed) != previous.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        POLICY_SWITCH_HANDOFF_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_SWITCH_HANDOFF_PAUSED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "target policy handoff reached an invalid test stage"
+    );
+    while POLICY_SWITCH_HANDOFF_STAGE.load(Ordering::Acquire) < STAGE_SWITCH_HANDOFF_RELEASED {
+        core::hint::spin_loop();
+    }
+    POLICY_SWITCH_HANDOFF_TARGET.store(0, Ordering::Relaxed);
+    POLICY_SWITCH_HANDOFF_STAGE.store(STAGE_IDLE, Ordering::Release);
 }
 
 /// Arms one real running-to-blocked park for IRQ-owner accounting.

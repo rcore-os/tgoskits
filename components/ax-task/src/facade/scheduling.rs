@@ -168,6 +168,8 @@ pub(super) fn execute_switch_plan(
         timestamp_ns: decision.timestamp_ns(),
         reason: decision.switch_reason() as u32,
     });
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::pause_policy_switch_handoff(previous.thread());
     if let Some(extension) = previous.extension() {
         // SAFETY: ThreadExtension construction guarantees callback validity;
         // TaskSystem released every internal lock and the scheduler baton

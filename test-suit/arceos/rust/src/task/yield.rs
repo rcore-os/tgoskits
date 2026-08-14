@@ -10,7 +10,10 @@ use std::{
                     take_preempt_guard_owner_resolution_count, this_cpu_id,
                 },
             },
-            ax_task::{schedule_current_cpu, task_test_hooks},
+            ax_task::{
+                FairMode, Nice, SchedulePolicy, ThreadId, schedule_current_cpu, set_thread_policy,
+                task_test_hooks,
+            },
         },
         task::current_thread_id,
     },
@@ -20,10 +23,96 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
+    time::{Duration, Instant},
 };
 
 const NUM_TASKS: usize = 10;
+const SWITCH_HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
 static FINISHED_TASKS: AtomicUsize = AtomicUsize::new(0);
+
+fn thread_id_from_raw(raw: u64) -> ThreadId {
+    ThreadId::from_parts(raw as u32, (raw >> 32) as u32)
+}
+
+fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
+    let peer_ready = Arc::new(AtomicBool::new(false));
+    let stop_peer = Arc::new(AtomicBool::new(false));
+    let peer = {
+        let peer_ready = Arc::clone(&peer_ready);
+        let stop_peer = Arc::clone(&stop_peer);
+        thread::spawn(move || {
+            assert!(ax_set_current_affinity(AxCpuMask::one_shot(target_cpu)).is_ok());
+            assert_eq!(this_cpu_id(), target_cpu);
+            peer_ready.store(true, Ordering::Release);
+            while !stop_peer.load(Ordering::Acquire) {
+                hint::spin_loop();
+            }
+        })
+    };
+    while !peer_ready.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+
+    let yield_ready = Arc::new(AtomicBool::new(false));
+    let may_yield = Arc::new(AtomicBool::new(false));
+    let yielding = {
+        let yield_ready = Arc::clone(&yield_ready);
+        let may_yield = Arc::clone(&may_yield);
+        thread::spawn(move || {
+            assert!(ax_set_current_affinity(AxCpuMask::one_shot(target_cpu)).is_ok());
+            assert_eq!(this_cpu_id(), target_cpu);
+            yield_ready.store(true, Ordering::Release);
+            while !may_yield.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            thread::yield_now();
+        })
+    };
+    while !yield_ready.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+
+    let yielding_raw = yielding.thread().id().as_u64().get();
+    task_test_hooks::arm_policy_switch_handoff_probe(yielding_raw);
+    may_yield.store(true, Ordering::Release);
+    let pause_started = Instant::now();
+    while !task_test_hooks::policy_switch_handoff_paused() {
+        assert!(
+            pause_started.elapsed() < SWITCH_HANDOFF_TIMEOUT,
+            "yielding task did not reach the committed switch-handoff window"
+        );
+        thread::yield_now();
+    }
+
+    let policy_updated = Arc::new(AtomicBool::new(false));
+    let updater = {
+        let policy_updated = Arc::clone(&policy_updated);
+        thread::spawn(move || {
+            set_thread_policy(
+                thread_id_from_raw(yielding_raw),
+                SchedulePolicy::fair(Nice::new(1).unwrap(), FairMode::Normal),
+            )
+            .expect("a queued outgoing task must accept a policy update");
+            policy_updated.store(true, Ordering::Release);
+        })
+    };
+    let update_started = Instant::now();
+    while !policy_updated.load(Ordering::Acquire)
+        && update_started.elapsed() < SWITCH_HANDOFF_TIMEOUT
+    {
+        thread::yield_now();
+    }
+    let updated_before_release = policy_updated.load(Ordering::Acquire);
+    stop_peer.store(true, Ordering::Release);
+    task_test_hooks::release_policy_switch_handoff();
+    assert!(
+        updated_before_release,
+        "policy update waited for the outgoing task to leave on_cpu"
+    );
+    updater.join().unwrap();
+    yielding.join().unwrap();
+    peer.join().unwrap();
+}
 
 pub fn run() -> crate::TestResult {
     let cpu_count = thread::available_parallelism().unwrap().get();
@@ -129,6 +218,8 @@ pub fn run() -> crate::TestResult {
         no_switch_observed,
         "task-yield must observe one scheduler no-switch pass"
     );
+
+    exercise_policy_update_during_switch_handoff(noise_cpu);
 
     FINISHED_TASKS.store(0, Ordering::Release);
     for i in 0..NUM_TASKS {

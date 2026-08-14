@@ -20,17 +20,21 @@ impl TaskSystem {
         let owner = remote.owner();
         let donor = sched.pi.donors.first_entry();
         Self::validate_owner_policy_generation(sched, generation)?;
-        let queued = sched.placement.queued_cpu() == Some(owner)
-            && sched.placement.execution_cpu().is_none();
-        let running = sched.placement.execution_cpu() == Some(owner)
-            && sched.placement.on_cpu() == Some(owner);
+        let queued = sched.placement.queued_cpu() == Some(owner);
+        let execution_cpu = sched.placement.execution_cpu();
+        let on_cpu = sched.placement.on_cpu();
 
         let mut transaction = OwnerRqTxn::begin(self, remote);
         let owner_now_ns = transaction.clock().wall().as_nanos();
         if transaction.current().is_some() {
             let _settled = transaction.settle_current(0);
         }
-        if running && transaction.current_thread() != Some(core.id()) {
+        // Linux snapshots these as separate rq facts in sched_change_begin():
+        // task_on_rq_queued() remains true for an outgoing task until switch
+        // tail, while task_current() becomes false as soon as rq->curr changes.
+        // p->on_cpu is only the old stack's lifetime pin in that interval.
+        let running = transaction.current_thread() == Some(core.id());
+        if running && (execution_cpu != Some(owner) || on_cpu != Some(owner)) {
             task_runtime::fatal_invariant(0x5251_1201, core.id().as_u64() as usize);
         }
         let destination_mode = match sched.policy.requested_policy() {
@@ -58,7 +62,9 @@ impl TaskSystem {
             transaction.detach_current_schedule(core.id())
         } else if queued {
             let detached = transaction.reclassify_task(core.id());
-            sched.placement.deactivate(owner);
+            if on_cpu.is_none() {
+                sched.placement.deactivate(owner);
+            }
             detached.into_active()
         } else {
             sched.policy.take_active()
