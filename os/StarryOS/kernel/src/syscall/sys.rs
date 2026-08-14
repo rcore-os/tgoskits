@@ -760,15 +760,15 @@ fn require_syslog_privilege() -> StarryResult<()> {
     }
 }
 
-fn validate_syslog_read_args(buf: *mut c_char, len: usize) -> StarryResult<()> {
-    if buf.is_null() || len > i32::MAX as usize {
+fn validate_syslog_read_args(buf: *mut c_char, len: i32) -> StarryResult<()> {
+    if buf.is_null() || len < 0 {
         Err(StarryError::InvalidInput)
     } else {
         Ok(())
     }
 }
 
-pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> StarryResult<isize> {
+pub fn sys_syslog(ty: i32, buf: *mut c_char, len: i32) -> StarryResult<isize> {
     match ty {
         SYSLOG_ACTION_CLOSE | SYSLOG_ACTION_OPEN => Ok(0),
         SYSLOG_ACTION_READ => {
@@ -776,7 +776,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> StarryResult<isize> 
             validate_syslog_read_args(buf, len)?;
             let data = {
                 let mut state = SYSLOG_STATE.lock();
-                state.read(len)
+                state.read(len as usize)
             };
             if !data.is_empty() {
                 vm_write_slice(buf.cast::<u8>(), &data)?;
@@ -788,7 +788,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> StarryResult<isize> 
             validate_syslog_read_args(buf, len)?;
             let data = {
                 let state = SYSLOG_STATE.lock();
-                state.read_all(len)
+                state.read_all(len as usize)
             };
             if !data.is_empty() {
                 vm_write_slice(buf.cast::<u8>(), &data)?;
@@ -800,7 +800,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> StarryResult<isize> 
             validate_syslog_read_args(buf, len)?;
             let data = {
                 let mut state = SYSLOG_STATE.lock();
-                let data = state.read_all(len);
+                let data = state.read_all(len as usize);
                 state.clear();
                 data
             };
@@ -834,7 +834,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> StarryResult<isize> 
             }
             let mut state = SYSLOG_STATE.lock();
             let old_level = state.console_level;
-            state.console_level = len;
+            state.console_level = len as usize;
             Ok(old_level as isize)
         }
         SYSLOG_ACTION_SIZE_UNREAD => {
@@ -1044,15 +1044,15 @@ pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
         && uid_valid(u32::MAX - 1)
         && !uid_valid(u32::MAX)  // NOCHG is invalid
 
-    // validate_syslog_read_args: null buf or len > i32::MAX is invalid.
+    // validate_syslog_read_args: null buf or negative len is invalid.
     && validate_syslog_read_args(core::ptr::null_mut(), 0).is_err()
     && validate_syslog_read_args(core::ptr::null_mut::<c_char>(), 100).is_err()
     && validate_syslog_read_args(0x1 as *mut c_char, 0).is_ok()  // non-null, len=0 is ok
     && {
         let mut dummy: c_char = 0;
         let ptr: *mut c_char = &mut dummy;
-        validate_syslog_read_args(ptr, i32::MAX as usize).is_ok()
-        && validate_syslog_read_args(ptr, (i32::MAX as usize) + 1).is_err()
+        validate_syslog_read_args(ptr, i32::MAX).is_ok()
+        && validate_syslog_read_args(ptr, -1).is_err()
     }
 }
 
