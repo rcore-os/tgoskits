@@ -3462,6 +3462,19 @@ rootfs drive 添加 `snapshot=on`，不再使用会改变 ESP、额外磁盘和 
 观测，不能替代当前环境的成对基线。qperf 结构计数仍只用于 clockevent IRQ、scheduler
 deadline、IPI 与 context-switch 放大诊断，不能替代无采样的完成时间。
 
+继续合并 `origin/dev@f9e8b9dd79` 的 seccomp syscall fast-path 时，没有移植其
+`AtomicBool + IrqMutex<SeccompState>` 镜像。该实现把 active flag 与实际 policy
+拆成两个状态源；尤其 clone inheritance 先以 Release 发布 active，再在锁内替换
+policy，Acquire reader 仍可能观察到 active=true 与旧 Disabled policy 的组合。本分支
+已经用一个 `AtomicPtr<SeccompState>` 发布 append-only immutable snapshot：syscall 热路径
+只做一次 Acquire load 和 mode match，不取得锁、不 clone state，也不增加 `Arc` 引用计数；
+writer 先把完整 snapshot 放入生命周期 owner，再以 Release 发布同一指针。因此本轮吸收
+dev 的性能目标与回归范围，保留本分支更强的单一 publication owner，不新增第二状态源，
+也继续沿用 syscall entry 传入的 `UserTaskRef`，不重新读取 `ax_task::current()`。合并后的
+`cargo xtask clippy --package starry-kernel` 为 26/26，x86_64
+`qemu/system/syscall-test-seccomp` 在真实 guest 中完成全部 strict/filter、fork inheritance、
+TSYNC、KILL_THREAD/KILL_PROCESS 与 action precedence 检查，xtask 为 1/1。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
