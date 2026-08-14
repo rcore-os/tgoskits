@@ -4,7 +4,6 @@ ax-arm-pl031
 axaddrspace
 axbacktrace
 axdevice_base
-ax-errno
 axhvc
 ax-io
 axklib
