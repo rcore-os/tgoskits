@@ -151,12 +151,31 @@ static void test_invalid_pending_pointer(void)
           "rt_sigpending invalid sigset pointer returns EFAULT");
 }
 
+static void test_short_sigset_sizes(void)
+{
+    unsigned char pending[LTP_SIGSET_SIZE];
+
+    CHECK_RET(raw_rt_sigpending(NULL, 0), 0,
+              "rt_sigpending accepts a null pointer for a zero-length set");
+
+    memset(pending, 0xa5, sizeof(pending));
+    CHECK_RET(raw_rt_sigpending((sigset_t *)pending, LTP_SIGSET_SIZE - 1), 0,
+              "rt_sigpending accepts a short signal set");
+    CHECK(pending[LTP_SIGSET_SIZE - 1] == 0xa5,
+          "rt_sigpending writes only the requested signal-set prefix");
+
+    CHECK(raw_rt_sigpending((sigset_t *)pending, LTP_SIGSET_SIZE + 1) == -1 &&
+              errno == EINVAL,
+          "rt_sigpending rejects a signal set larger than the kernel size");
+}
+
 int main(void)
 {
     TEST_START("rt_sigpending syscall semantics");
 
     test_pending_masked_usr_signals();
     test_invalid_pending_pointer();
+    test_short_sigset_sizes();
 
     TEST_DONE();
 }
