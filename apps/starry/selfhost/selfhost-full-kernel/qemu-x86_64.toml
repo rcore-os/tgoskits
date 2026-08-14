@@ -12,8 +12,8 @@ args = [
 uefi = false
 to_bin = true
 # The guest writes both its provisioned toolchain and /opt/starryos-selfbuilt to
-# this app-specific rootfs, so the runner must not discard writes on exit.
-snapshot = false
+# this app-specific rootfs, so the runner must preserve writes on exit.
+rootfs_write_policy = "persist"
 shell_prefix = "root@starry:"
 shell_init_cmd = "/bin/sh /opt/starry-selfhost-run.sh"
 success_regex = ["(?m)^SELF_COMPILE_SUCCESS\\s*$"]

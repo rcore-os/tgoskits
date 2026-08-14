@@ -3450,11 +3450,17 @@ true，避免 legacy initial-count 路径在每次 Resume 都支付 `mfence`。
 timeout，分别推进到 `729/2048` 与 `921/2048`。这个窗口不能与无采样的正式 guest
 时间混用：本文更早的相同 qperf 窗口在 60 秒也只推进到约 `file-0535`。正式
 `cargo xtask starry test qemu --arch x86_64 --test-case
-qemu/system/test-ext4-inode-unique` 在本分支完成 `2048/2048`，测试本体
-92.004 秒、xtask `1/1` 通过；同机最新 `origin/dev@2a1bcff354` 为 78 秒，
-本分支慢约 17.95%，低于 20% 门限。该结果关闭 x86 正式性能门限，但 qperf
-结构计数仍只作为 clockevent IRQ、scheduler deadline、IPI 与 context-switch
-放大诊断，不能替代无采样的完成时间。
+qemu/system/test-ext4-inode-unique` 在合并 rootfs ownership 重构前完成 `2048/2048`，
+测试本体 92.004 秒、xtask `1/1` 通过。合并 `origin/dev@2a1bcff354` 后，第一次复测
+与其他工作树的 x86_64/AArch64 QEMU 及全仓 rustfmt 并发，主机 load average 超过 10，
+在 120.229 秒只推进到 `1317/2048`；这个样本明确受主机竞争污染，不用于回退判断。
+等待其他 QEMU 与 rustfmt 全部结束后，本分支完成 `2048/2048`，测试本体 100.769 秒。
+随后在独立 detached worktree 中立即复测同一 `origin/dev@2a1bcff354`，测试本体为
+97 秒；本分支慢约 3.9%，低于 20% 门限。两边都使用最新 rootfs patcher，只给选中的
+rootfs drive 添加 `snapshot=on`，不再使用会改变 ESP、额外磁盘和 pflash 语义的全局
+`-snapshot`。该同机连续对照关闭 x86 正式性能门限；更早的 78 秒快样本仅保留为历史
+观测，不能替代当前环境的成对基线。qperf 结构计数仍只用于 clockevent IRQ、scheduler
+deadline、IPI 与 context-switch 放大诊断，不能替代无采样的完成时间。
 
 ## 模块化结果
 

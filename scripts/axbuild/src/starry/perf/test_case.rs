@@ -8,7 +8,7 @@ use ostool::run::qemu::QemuConfig;
 use crate::{
     context::ResolvedStarryRequest,
     starry::{Starry, rootfs, test as starry_test},
-    test::{case, qemu as qemu_test},
+    test::case,
 };
 
 pub(super) struct PerfTestCase {
@@ -98,12 +98,11 @@ pub(super) async fn prepare(
     rootfs::patch_rootfs(
         qemu,
         &assets.rootfs_path,
-        rootfs::RootfsPatchMode::EnsureDiskBootNet,
-    );
-    qemu.args.extend(assets.extra_qemu_args);
-    if qemu.uefi {
-        qemu_test::apply_drive_snapshot_without_global_snapshot(qemu);
-    }
+        rootfs::RootfsPatchOptions {
+            mode: rootfs::RootfsPatchMode::EnsureDiskBootNet,
+            write_policy: rootfs::RootfsWritePolicy::Discard,
+        },
+    )?;
 
     Ok(Some(PreparedPerfTestCase {
         rootfs_copy_to_remove: assets.rootfs_copy_to_remove,

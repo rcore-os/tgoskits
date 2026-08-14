@@ -49,9 +49,11 @@ The app runner injects the self-build overlay into this selected rootfs through
 the existing internal `rootfs::inject::inject_overlay()` path. This app does
 not expose or depend on a new public injection command.
 
-Because guest-built artifacts must be written back to the rootfs,
-`qemu-aarch64.toml` sets `snapshot = false`, which prevents the Starry app
-runner from appending the global `-snapshot` option. The standalone verification
+Because guest-built artifacts must be written back to this dedicated writable
+rootfs, `qemu-aarch64.toml` sets `rootfs_write_policy = "persist"`. The rootfs
+patcher therefore leaves the selected rootfs drive writable and rejects any
+global or rootfs-drive snapshot option that would conflict with persistence.
+Do not share this rootfs with concurrent test runs. The standalone verification
 command below still uses `-snapshot`; it only checks that the extracted `.bin`
 boots and does not need to persist shell writes back to the rootfs.
 
