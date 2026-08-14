@@ -150,6 +150,7 @@ static int corrupt_interpreter(const char *path, int oversized)
 {
     Elf64_Ehdr header;
     struct stat stat_buffer;
+    const uint32_t target_types[] = {PT_INTERP, PT_LOAD};
     int fd = open(path, O_RDWR);
     int result = -1;
 
@@ -170,34 +171,40 @@ static int corrupt_interpreter(const char *path, int oversized)
         goto out;
     }
 
-    for (size_t index = 0; index < header.e_phnum; index++) {
-        const off_t offset = (off_t)(header.e_phoff + index * sizeof(Elf64_Phdr));
-        Elf64_Phdr program_header;
-        if (read_exact_at(fd, &program_header, sizeof(program_header), offset) != 0) {
-            perror("read program header");
-            goto out;
-        }
-        if (program_header.p_type != PT_LOAD) {
-            continue;
-        }
+    for (size_t target = 0;
+         target < sizeof(target_types) / sizeof(target_types[0]) && result != 0;
+         target++) {
+        for (size_t index = 0; index < header.e_phnum; index++) {
+            const off_t offset = (off_t)(header.e_phoff + index * sizeof(Elf64_Phdr));
+            Elf64_Phdr program_header;
+            if (read_exact_at(fd, &program_header, sizeof(program_header), offset) != 0) {
+                perror("read program header");
+                goto out;
+            }
+            if (program_header.p_type != target_types[target]) {
+                continue;
+            }
 
-        // Reuse a loadable header so the test works for either static or
-        // dynamic test-suite binaries. The loader reaches PT_INTERP before
-        // mapping this segment.
-        program_header.p_type = PT_INTERP;
-        if (oversized) {
-            program_header.p_filesz = MAX_INTERPRETER_PATH_LEN + 1;
-        } else {
-            program_header.p_offset = (Elf64_Off)stat_buffer.st_size - 1;
-            program_header.p_filesz = 2;
+            // Exercise the interpreter the loader actually consumes. Static
+            // test binaries have no PT_INTERP, so repurpose a PT_LOAD only as
+            // a fallback for that case.
+            if (target_types[target] == PT_LOAD) {
+                program_header.p_type = PT_INTERP;
+            }
+            if (oversized) {
+                program_header.p_filesz = MAX_INTERPRETER_PATH_LEN + 1;
+            } else {
+                program_header.p_offset = (Elf64_Off)stat_buffer.st_size - 1;
+                program_header.p_filesz = 2;
+            }
+            if (pwrite(fd, &program_header, sizeof(program_header), offset) !=
+                (ssize_t)sizeof(program_header)) {
+                perror("write program header");
+                goto out;
+            }
+            result = 0;
+            break;
         }
-        if (pwrite(fd, &program_header, sizeof(program_header), offset) !=
-            (ssize_t)sizeof(program_header)) {
-            perror("write program header");
-            goto out;
-        }
-        result = 0;
-        break;
     }
 
     if (result != 0) {
