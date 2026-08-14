@@ -123,6 +123,7 @@ impl HostCpu for ArceOsHost {
 pub(crate) type ArceOsThreadHandle = runtime_task::ThreadHandle;
 pub(crate) type ArceOsWaitQueue = runtime_task::WaitQueue;
 pub(crate) type ArceOsKernelTimerHandle = runtime_task::KernelTimerHandle;
+#[cfg(target_arch = "x86_64")]
 pub(crate) type ArceOsKernelTimerAction = runtime_task::KernelTimerAction;
 #[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
@@ -222,6 +223,7 @@ pub(crate) fn register_kernel_timer(
     )
 }
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn register_restartable_kernel_timer(
     deadline: ArceOsMonotonicDeadline,
     mut callback: Box<dyn FnMut(Duration) -> ArceOsKernelTimerAction + Send + 'static>,

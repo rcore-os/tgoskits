@@ -6,6 +6,7 @@ pub(crate) type ThreadHandle = arceos::ArceOsThreadHandle;
 pub(crate) type IrqNotification = arceos::ArceOsIrqNotification;
 pub(crate) type MonotonicDeadline = arceos::ArceOsMonotonicDeadline;
 pub(crate) type KernelTimerHandle = arceos::ArceOsKernelTimerHandle;
+#[cfg(target_arch = "x86_64")]
 pub(crate) type KernelTimerAction = arceos::ArceOsKernelTimerAction;
 pub(crate) type ThreadExtensionBorrow<'thread> =
     ax_std::os::arceos::task::ThreadOsExtensionBorrow<'thread>;
@@ -29,6 +30,7 @@ pub(crate) fn register_kernel_timer(
     arceos::register_kernel_timer(deadline, callback)
 }
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn register_restartable_kernel_timer(
     deadline: MonotonicDeadline,
     callback: std::boxed::Box<dyn FnMut(std::time::Duration) -> KernelTimerAction + Send + 'static>,
