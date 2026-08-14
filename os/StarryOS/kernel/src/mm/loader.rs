@@ -584,9 +584,7 @@ impl ElfLoader {
                 .offset
                 .checked_add(interp_len)
                 .ok_or(StarryError::MalformedExecutable)?;
-            if !(2..=MAX_INTERPRETER_PATH_LEN).contains(&interp_len)
-                || interp_end > cache.len()
-            {
+            if !(2..=MAX_INTERPRETER_PATH_LEN).contains(&interp_len) || interp_end > cache.len() {
                 return Err(StarryError::MalformedExecutable);
             }
 
