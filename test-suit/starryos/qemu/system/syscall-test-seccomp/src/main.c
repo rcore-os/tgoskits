@@ -257,6 +257,53 @@ static void check_invalid_seccomp_args(void)
                        EINVAL, "strict mode rejects non-NULL args");
 }
 
+static void check_filter_validation_before_permission(void)
+{
+    struct sock_filter allow = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    struct sock_fprog empty = {
+        .len = 0,
+        .filter = NULL,
+    };
+    struct sock_fprog valid = {
+        .len = 1,
+        .filter = &allow,
+    };
+
+    if (setresuid(1000, 1000, 1000) != 0) {
+        note_fail("drop privileges for seccomp error ordering", strerror(errno));
+        return;
+    }
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, NULL), -1,
+                       EFAULT, "filter mode reads a NULL program header before permission");
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &empty), -1,
+                       EINVAL, "filter mode validates an empty program before permission");
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &valid), -1,
+                       EACCES, "filter mode reports EACCES for an unauthorized valid program");
+}
+
+static void check_filter_pointer_after_permission(void)
+{
+    struct sock_fprog invalid = {
+        .len = 1,
+        .filter = NULL,
+    };
+
+    if (set_no_new_privs() != 0) {
+        failed++;
+        return;
+    }
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &invalid), -1,
+                       EFAULT, "filter mode reads instructions after permission succeeds");
+}
+
 static void check_errno_filter(void)
 {
     struct sock_filter filter[] = {
@@ -682,6 +729,10 @@ int main(void)
 
     check_action_availability();
     check_invalid_seccomp_args();
+    run_isolated(check_filter_validation_before_permission,
+                 "filter validation before permission isolated test");
+    run_isolated(check_filter_pointer_after_permission,
+                 "filter pointer after permission isolated test");
     run_isolated(check_errno_filter, "ERRNO filter isolated test");
     run_isolated(check_errno_zero_returns_zero, "ERRNO zero isolated test");
     run_isolated(check_arch_and_arg_filter, "arch and arg filter isolated test");
