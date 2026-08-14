@@ -68,15 +68,6 @@ offset、长度和已经校验过的 mutation context。
 | `fs/jbd2/transaction.c`, `commit.c` | handles/credits、ordered data、commit record ordering | journal transaction owner | core | multi-transaction restart + phase fault injection |
 | `fs/jbd2/recovery.c`, `revoke.c`, `checkpoint.c` | scan/revoke/replay、tail/checkpoint reclamation | journal recovery owner | core | Linux-created journal 与 restart power-cut replay |
 
-`scripts/test/data/rsext4-linux-7.1-map.json` 将该表扩展为固定 commit 的源码区间
-清单。每个区间必须记录符号、状态机、不变量、Rust owner、差异理由和测试 ID。
-`scripts/test/check_rsext4_linux_map.py` 的普通 CI 模式检查冻结 inventory、blob、
-区间连续性和字段完整性；`--linux-src <path>` 进一步对照真实 Linux checkout 的
-HEAD、完整文件集合、blob 和行数。最终门禁必须增加 `--require-reviewed`，拒绝
-任何仍用 `coarse` 整文件占位的条目。当前清单覆盖 61 个 tracked 文件、77,895
-行，其中 9 个 Linux 文件已完成区间审阅，其余文件仍必须按顶层
-符号和预处理分支拆分，因此 `linux-map-complete` 继续保持红项。
-
 Linux v7.1 `fs/ext4/super.c:5504-5510,5886-5960` 在 root inode 之前装载
 internal journal，并拒绝不存在、`i_nlink == 0`、非 regular 或加密的 journal
 inode。`rsext4` 的普通 mount 同样只校验并装载既有 inode；创建默认 inode 8
@@ -158,7 +149,7 @@ cookie 并清空 continuation。VFS directory sink 接收 raw `&[u8]` 名称，�
 
 | ID | 基线失败 | 最终要求 | Owner phase | 当前状态 |
 | --- | --- | --- | --- | --- |
-| `boundary-no-os-deps` | `ax-kspin`、`log` direct dependencies | boundary script passes | portable core skeleton | 绿：`RSEXT4_BOUNDARY_PASSED` |
+| `boundary-no-os-deps` | `ax-kspin`、`log` direct dependencies | `no_std` core only uses portable capability traits | portable core skeleton | 绿：OS runtime、errno、block adapter 和日志依赖均位于 ax-fs-ng 边界 |
 | `domain-error-no-errno` | core 公开并按 Linux `Errno` 分支 | typed domain error，errno 仅由 adapter 映射 | portable core skeleton | 绿：core 已无 `Errno`；`ax-fs-ng` 集中映射 |
 | `blockio-adapter-capabilities` | ax-fs-ng 丢弃 read-only、flush/barrier、FUA 与 physical block geometry | adapter 只传递底层真实能力；只读写入在设备 I/O 前返回 typed read-only；缺少 durability 返回 unsupported capability；native FUA 标记每个拆分请求且不增加 post-write flush；physical 与 logical geometry 不混淆 | OS glue/capability boundary | 进行中：只读/flush/FUA 红测现验证零底层只读写、unsupported、真实 flush-as-barrier、一次 native FUA/零普通 write/零 flush，以及 4 个拆分 request 全部带 FUA。512 logical/4096 physical 红测证明旧 adapter 把 physical 错报成 512；同一测试现从 rdif `DeviceInfo` 经 native/region adapter 保留 4096，core 拒绝无效 physical geometry 但允许 filesystem block 小于 physical block。discard 仍为红项；alignment offset/io_min/io_opt 将作为独立 block geometry 能力继续追踪 |
 | `readonly-adapter-lifecycle` | ax-fs-ng 在取得 mount owner 前对 readonly sync/shutdown 直接返回成功，丢失 core 的 device flush boundary，且 mounted 状态永不结束 | RO/RW 一律在同一 sleepable mutex 下调用 owned core typed sync/unmount；adapter 不复制 journal/cache/lifecycle/read-only 状态 | OS glue/lock/lifecycle boundary | 绿：共享只读镜像 fixture 先固定旧 sync 的 flush 计数不变，以及 shutdown 后仍可原地 remount；同一测试现验证真实 device flush 与 `Busy(op=remount:unmounted)`。adapter 已删除 mount-time readonly 副本，`FilesystemOps::is_readonly()` 直接查询 owned core，确定性 remount 回归证明状态不会漂移。完整 ax-fs-ng ext4 92+3 tests 和 6/6 clippy 通过 |
@@ -179,7 +170,6 @@ cookie 并清空 continuation。VFS directory sink 接收 raw `&[u8]` 名称，�
 | `filesystem-block-dynamic` | core 算法仍大量引用 4 KiB 常量 | 1/2/4 KiB geometry、cache、JBD2 与 codec 全部按 mount 派生 | codec/geometry | 绿：Linux 与 rsext4 各自创建的 1/2/4 KiB 镜像均在 512-byte sector 上完成跨块写入、rename、remount 与 `e2fsck -fn`；cache、extent 与 JBD2 buffer 均按 mount geometry 分配 |
 | `htree-hash-checked-lookup` | legacy/half-MD4/TEA 是占位算法，未知版本静默返回 0；root parser 用 Rust `size_of` 和目录 inode 号推导磁盘偏移，合法 Linux root 也无法读取；count/limit、depth、entry order、logical block range、cycle 与 checksum 未形成统一 checked path | hash version/depth 只来自 root block；signed/unsigned hash 与 Linux 7.1 一致并返回 major/minor typed result；root/internal block 按固定 wire offset、动态 block size和 dx tail 校验；坏 index 只能走 Linux 的 `ERR_BAD_DX_DIR` linear fallback，I/O/checksum 错误必须保留 typed cause | directory mapping/codec | 进行中：`debugfs dx_hash` 的 default seed、UUID seed、UTF-8 signed/unsigned 六版本向量固定了旧算法红测；同一测试现全部通过。SIPHASH wire version 可被 checked parser 识别，但 fscrypt/casefold prepared-name 与 key hash 尚未实现，相关 incompat feature 在可写 mount negotiation 即被拒绝，不能把格式识别误报为算法支持。合法 4 KiB root 红测证明旧 parser 返回 corruption；当前 root/internal parser 校验 dot/dotdot、reserved/info/version/flags/depth、metadata-csum tail limit、count、排序、Linux 28-bit block 与重复 path，并解码 64 KiB index fake-dirent 的 compact `rec_len`。lookup 采用 root version 和 superblock signedness policy，index/leaf checksum failure 不再降级；mount negotiation 拒绝 default hash 6 或更大值，RW indexed mount 在 policy flags 均为空时持久化 reference architecture 的 signed policy，避免 core 语义依赖 OS/compiler plain-char signedness。collision continuation 按 low-bit 边界推进 frame，覆盖同一 index leaf、跨 parent index、真实 I/O 传播与准确 dirent byte offset；完整 probe 未找到不再触发全目录 linear scan。写侧已完成单块 linear→HTree conversion、existing-leaf insert、按 Linux 记录长度平衡的 leaf split、collision continuation separator、root promotion 和通用多级 internal growth/split planner；planner 从 leaf parent 向 root 寻找首个有容量的祖先，全部满时提升 root，separator 只保留在 parent。Linux `e2fsck -D` fixture 经 9000 项长名称增长后报告 `Indirect levels: 1`，重挂载与 `e2fsck -fn` clean。post-write fault 分别证明 conversion 与 split 的 inode/data/bitmap/index 更新整体回滚。indexed delete/rename 只压缩 leaf dirent 并保持 index 高度与分配，符合 Linux 不做 deletion rebalance 的状态机。HTree readdir 现只遍历 checked leaf，按完整 hash 排序并以 typed cursor 保存 collision ordinal；64-bit Linux cookie/EOF 与外部 seek reset 已贯通 VFS、Starry 和 ArceOS。目录 `i_size_high` 现按 Linux 仅在 `LARGEDIR` 启用时参与解码；当前 writable feature mask 仍拒绝 `LARGEDIR`，因此 feature-enabled 的二级 internal split、真实多级 image differential 与 rollback/credit matrix 仍为红项。casefold/fscrypt name preparation 仍为红项。Linux v7.1 依据为 `fs/ext4/dir.c:346-410,526-637`、`fs/ext4/hash.c:1-322`、`fs/ext4/namei.c:537-540,771-1030,1280-1359,1843-2032,2209-2343,2473-2746`、`fs/ext4/super.c:5230-5271`、`fs/ext4/ext4.h:2483-2525,2635-2650,3413-3429` |
 | `linux-default-rocompat-rw` | Linux mkfs 默认设置 `HUGE_FILE`、`DIR_NLINK` | 完整读写语义后纳入 writable mask | inode/namespace lifecycle | 绿：`HUGE_FILE` 统一按 Linux 的 32-bit sector、48-bit sector、filesystem-block 三级 codec 读写，所有 block accounting mutation 使用 checked 状态转换；`DIR_NLINK` 覆盖 65000 到 sentinel 1、连续 mutation 保持 sentinel、无 feature 时分配前返回 `EMLINK`；Linux 默认 feature 的 1/2/4 KiB round-trip、extent/JBD2 replay 与 `e2fsck -fn` 全部通过 |
-| `linux-map-complete` | 仅有 subsystem mapping，缺少逐区间清单 | every source line classified | design/traceability | 进行中：冻结 inventory 已覆盖 Linux v7.1 的 61 个 tracked 文件、77,895 行，并由普通 CI 与本地源码双模式检查 gap、overlap、blob、行数和文件集合；8 个 build/KUnit 文件与 `fs/ext4/mmp.c` 已审阅，其余 52 个 `coarse` 条目使 `--require-reviewed` 确定性失败，必须按符号/预处理区间完成语义审阅后才能转绿 |
 | `journal-no-direct-fallback` | uninitialized JBD2 performs home write | typed journal-aborted error | JBD2 rewrite | 绿：确定性红绿回归已覆盖 write/umount |
 | `jbd2-handle-credits` | metadata queue 满时会在 bulk mutation 中间自动提交，失败后 pending image 无法恢复 | operation handle 预留 credits，禁止 operation 内切 transaction，并在 operation error 时恢复 running queue | JBD2 rewrite | 进行中：私有 handle 按 distinct metadata block 计 credit，handle 内禁止 auto-commit，credit overrun/error 恢复 queue snapshot；journal-disabled handle 也保存并逆序恢复 physical preimage。单 transaction 上限现按 Linux 的 `j_total_len / 3` 再扣 descriptor/commit bookkeeping，首次 dirty 前必须先回收出完整 `j_max_transaction_buffers` 空间；best-effort extend 只检查 running transaction 上限，不等待 log space，失败保持原 reservation 并显式返回 restart-required。descriptor continuation、running/committed/checkpoint owner、durable tail 与环绕写入已有确定性覆盖。nested same-owner start 已按 Linux `h_ref` 语义复用 outer handle 与既有 credit budget；nested error 只恢复该 scope 的 queue/revoke/touched snapshot，outer owner 继续有效。revoke record 已拆为 requested/remaining 独立预算，handle start/extend 仅按 revoke-block ceil 与跨 descriptor 边界的差额占用 buffer credits；未申请或超额 revoke 会在发布前返回 typed `NoSpace`，nested rollback 同时恢复 revoke table 与 remaining credits。reserved handle 由 journal-owned ledger 与 non-copy typed ID 表达，单项和全局 reservation 受半 transaction 上限约束；ordinary start/raw metadata 会保留 detached credits，`start_reserved` 消费 token 后不 commit/checkpoint。首个真实 owner已迁移 unwritten extent 的 prepare→data I/O→conversion。通用 scope-boundary `restart_transaction` 现先提交旧 transaction，再将下一 filesystem step 附着到新 transaction，并保持 detached reserved owner；extent 与 legacy truncate/reap/punch 已作为真实调用方迁移。commit owner 现显式执行受检 `Running → Locked → Switch`，active scoped handle 在进入 Locked 前返回 typed `Busy`，旧 owner 到达 Switch 后才转移给 committing transaction，新 running owner 再回到 Running。metadata mutation 已从可泄漏的 `read_block → buffer_mut → write_block` 三段式迁移为 closure-owned `update_block`；closure/write failure 丢弃未发布 image，commit/checkpoint 在 phase 变化或 home write 前拒绝任何遗留 dirty edit，cache refresh 只 discard clean derived image。已迁移 xattr、namespace、rename、preallocation、shift、range removal。大 shift、其他 extent split/merge、`journal_lock_updates` 特殊操作 barrier 与跨执行流并发 handle 仍是红项。Linux v7.1 依据为 `fs/jbd2/transaction.c:184-907,1883-2025`、`fs/jbd2/journal.c:1397-1452`、`fs/jbd2/commit.c:466-605,631-738`、`fs/jbd2/checkpoint.c:126-353,559-729`、`fs/jbd2/revoke.c:300-721`、`fs/jbd2/recovery.c:198-761` |
 | `inode-allocator-reserved-range` | `s_first_ino - 1` 被当成每个 block group 的 bitmap 起点，非首组前若干合法 inode 永远不会被分配 | 仅 group 0 跳过全局 reserved inode；其余组从 relative index 0 扫描 | allocator service | 绿：全空 group 1、16 inodes/group、`s_first_ino=11` 的确定性红测证明旧实现返回 relative index 10/global inode 27；同一测试现返回 relative index 0/global inode 17。bitmap publication、group/super free counter、`itable_unused` 与 rollback owner 未改变。Linux v7.1 依据为 `fs/ext4/ialloc.c:725-735,1073-1083` |
@@ -1075,7 +1065,7 @@ RSEXT4_BENCH_SUMMARY commit=a95663e96-repeat arch=x86_64 backend=memory feature=
 `EXT4_VALID_FS`/`RECOVER`，因此本阶段消除的 clean-sync write amplification 不会被该
 字段直接体现。该语义差异继续作为后续独立 sync/unmount workload 的前置理由；完整
 all-features、no-default-features、Linux image/e2fsck differential、三配置 clippy、
-format、dependency boundary 与 Linux map audit 已通过。
+format 与 dependency boundary 已通过。
 
 ### 7.34 JBD2 committing transaction owner 检查点
 
@@ -1878,7 +1868,7 @@ sync-cycle unmount p95 仍从 6,125 ns 增至 7,270 ns（+18.69%）。最终采�
 truncate/punch/reap，因此该结果只证明共享 write/read/sync 热路径没有回退，不能伪装成 restart
 冷路径自身的因果性能数据。完整 `cargo test -p rsext4 --all-features` 在最终代码形状上为 277 个
 unit 加全部 integration/Linux image/e2fsck 绿；`--no-default-features`、三组目标 clippy、格式、
-portable-core boundary 与 Linux source-map audit 同步通过。
+portable-core boundary 同步通过。
 
 ### 7.53 JBD2 running/locked/switch phase 检查点
 
@@ -1928,7 +1918,7 @@ dirty-sync 已为 median +0.40%、p95 +5.97%。没有删除该首轮或单独重
 commit start 执行；clean-sync 不进入该路径，其扩样用于量化主机 timer/scheduler noise，不作为
 实现收益。完整 `cargo test -p rsext4 --all-features` 在最终代码形状上为 279 个 unit 加全部
 integration/Linux image/e2fsck 绿；`--no-default-features` 为 278 个 unit 加全部 integration/Linux
-image/e2fsck 绿，三组目标 clippy、格式、portable-core boundary 与 Linux source-map audit 同步通过。
+image/e2fsck 绿，三组目标 clippy、格式与 portable-core boundary 同步通过。
 
 ### 7.54 JBD2 unused buffer access 与 cache publication 检查点
 
@@ -1983,7 +1973,7 @@ Linux 内存/cache mechanics，checkpoint、replay 与 durable tail 的磁盘语
 
 最终代码形状下，`cargo test -p rsext4 --all-features` 为 282 个 unit 加全部
 integration/Linux image/e2fsck 绿，`--no-default-features` 为 281 个 unit 加全部 integration/Linux
-image/e2fsck 绿；三组目标 clippy、格式、portable-core boundary 与 Linux source-map audit 同步通过。
+image/e2fsck 绿；三组目标 clippy、格式与 portable-core boundary 同步通过。
 
 ### 7.55 ax-fs-ng native FUA capability 检查点
 
@@ -2114,9 +2104,8 @@ Linux 精确扩展 2 个 metadata credit 和 1 个 revoke credit。无 scoped ha
 普通 insert 扩大为跨 leaf 重平衡；Linux 的 right-merge 本来就不跨 leaf。
 
 回归矩阵覆盖 bridge 同时合并左右邻、状态不同时只合并合法一侧、initialized 超限时不做 partial merge、
-unwritten 恰好到上限与超过上限、以及 external leaf reload。Linux source map 因而只把
-`extents.c:1786-1932` 标为 reviewed；`1-1785` 与 `1933-6308` 仍保持 coarse，本检查点不宣称整个
-`extents.c` 已完成。
+unwritten 恰好到上限与超过上限、以及 external leaf reload。本检查点只对齐 Linux
+`extents.c:1786-1932`，不宣称整个 `extents.c` 已完成。
 
 首个正确性实现 `dae8d9499` 相对 `4cf9505a3` 的 500+500 交错 A/B 发现 dirty-sync median +7.51%、
 clean-sync p95 +10.76%、unmount median +5.15%，因此保留为性能红证据
@@ -2242,8 +2231,8 @@ constant 处理 60-byte header，以固定小块增量喂入零 tail，不分配
 任意损坏 transaction。
 
 这一冷恢复分支不改变 writer、正常完整 commit replay、sync 或 unmount 热路径，本检查点不单独声明
-性能收益；最终 PR 仍以冻结 dev/head workload 做整体性能验收。source map 仅把
-`recovery.c:431-468,820-878` 拆为 reviewed segment，其余 recovery 区间继续保持 coarse。
+性能收益；最终 PR 仍以冻结 dev/head workload 做整体性能验收。本检查点只对齐
+`recovery.c:431-468,820-878`，不宣称其余 recovery 路径已经完成。
 
 ### 7.63 JBD2 stale checksum tail 与 commit time 检查点
 
@@ -2323,6 +2312,6 @@ raw inode、inline sibling 与 free-block accounting 在当前 mount 和重挂�
 1/2/4 KiB Linux image 用例按 `block_size - 80` 构造 large value：该值单独能装入 external
 block，但与 Linux/debugfs 预置的 inline sibling 合装必然超过 block。三个几何均完成
 inline→external→inline、free-block accounting、FIEMAP inode-body-first、unmount/remount、
-`debugfs ea_list` 和 `e2fsck -fn`。source map 将 `xattr.c:1629-1853,2337-2498` 拆为具名
-segment；EA-inode value、ACL/security/trusted policy 与 external deletion power-cut replay 仍保持
+`debugfs ea_list` 和 `e2fsck -fn`。本检查点只对齐 `xattr.c:1629-1853,2337-2498`；
+EA-inode value、ACL/security/trusted policy 与 external deletion power-cut replay 仍保持
 红项。本检查点不声称性能提升；最终 PR 继续按冻结的 dev/head workload 做整体性能验收。
