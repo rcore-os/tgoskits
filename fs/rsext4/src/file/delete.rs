@@ -161,7 +161,7 @@ fn flush_reap_metadata<B: BlockIo>(
     fs.sync_superblock(block_dev)
 }
 
-pub fn free_inode<B: BlockIo>(
+fn free_inode<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
@@ -725,7 +725,7 @@ pub(crate) fn replace_named_entry_at<B: BlockIo>(
     }
 }
 
-pub fn remove_inodeentry_from_parentdir<B: BlockIo>(
+fn remove_inodeentry_from_parentdir<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     parent_path: &str,

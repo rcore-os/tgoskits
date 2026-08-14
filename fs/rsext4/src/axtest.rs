@@ -2123,7 +2123,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         entries::Ext4DirEntry2,
         extents_tree::{ExtentNode, ExtentTree},
         file::build_file_block_mapping_with_inode_num,
-        find_file, link,
+        link,
         loopfile::{resolve_inode_block, resolve_inode_blocks},
         metadata::{chmod, chown},
         mkdir, mkdir_with_owner, mkfile, mkfile_with_owner, mkfs, read_file, read_inode_data_into,
@@ -2221,7 +2221,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     let mut fs = rsext4::Ext4FileSystem::mount(&mut device).unwrap();
 
     ax_assert!(!rsext4::Ext4FileSystem::device_has_error_state(&mut device).unwrap());
-    ax_assert!(fs.file_entries_exist(&mut device, "/").unwrap());
+    ax_assert!(fs.path_exists(&mut device, "/").unwrap());
     fs.make_base_dir();
     let stats = fs.statfs();
     ax_assert_eq!(stats.block_size, BLOCK_SIZE as u64);
@@ -2278,11 +2278,9 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         )
         .is_err()
     );
-    ax_assert!(find_file(&mut fs, &mut device, "/").unwrap().is_dir());
+    ax_assert!(fs.find_file(&mut device, "/").unwrap().is_dir());
     ax_assert_eq!(
-        find_file(&mut fs, &mut device, "/missing")
-            .unwrap_err()
-            .kind(),
+        fs.find_file(&mut device, "/missing").unwrap_err().kind(),
         Ext4ErrorKind::NotFound
     );
 
@@ -2860,7 +2858,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     );
     ax_assert_eq!(api_file.offset, 5);
     ax_assert_eq!(
-        rsext4::api::read(&mut device, &mut fs, "/cov/sub/api").unwrap(),
+        rsext4::read_file(&mut device, &mut fs, "/cov/sub/api").unwrap(),
         b"abcdef"
     );
     rsext4::api::lseek(&mut api_file, 99).unwrap();

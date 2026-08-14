@@ -102,7 +102,7 @@ fn lookup_inode(
     fs: &mut Ext4FileSystem,
     path: &str,
 ) -> Ext4Inode {
-    find_file(fs, dev, path).expect("inode not found")
+    fs.find_file(dev, path).expect("inode not found")
 }
 
 fn inode_version(inode: &Ext4Inode) -> u64 {

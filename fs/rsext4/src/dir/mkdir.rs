@@ -409,7 +409,7 @@ fn mkdir_internal<B: BlockIo>(
 
     if parent == "/" && child == "lost+found" {
         create_lost_found_directory(fs, device)?;
-        return find_file(fs, device, "/lost+found");
+        return fs.find_file(device, "/lost+found");
     }
     create_directory_at(
         device,

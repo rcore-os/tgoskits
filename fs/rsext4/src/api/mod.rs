@@ -8,4 +8,4 @@ mod file_handle;
 mod io;
 
 pub use file_handle::OpenFile;
-pub use io::{lseek, open, read, read_at, write_at};
+pub use io::{lseek, open, read_at, write_at};

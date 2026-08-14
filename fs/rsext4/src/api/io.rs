@@ -64,10 +64,6 @@ pub fn write_at<B: BlockIo>(
     file: &mut OpenFile,
     data: &[u8],
 ) -> Ext4Result<()> {
-    if false {
-        return Err(Ext4Error::unsupported());
-    }
-
     if data.is_empty() {
         return Ok(());
     }
@@ -77,15 +73,6 @@ pub fn write_at<B: BlockIo>(
     file.offset = file.offset.saturating_add(data.len() as u64);
     refresh_open_file_inode(dev, fs, file)?;
     Ok(())
-}
-
-/// Read a whole file into memory.
-pub fn read<B: BlockIo>(
-    dev: &mut Jbd2Dev<B>,
-    fs: &mut Ext4FileSystem,
-    path: &str,
-) -> Ext4Result<Vec<u8>> {
-    read_file(dev, fs, path)
 }
 
 /// Reads data from the current file offset.

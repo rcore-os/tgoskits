@@ -34,7 +34,6 @@ mod system_zone;
 
 pub(crate) use fs::GroupCounters;
 pub use fs::{Ext4FileSystem, FileSystemStats};
-pub use lookup::{file_entry_exist, find_file};
 pub use mkfs::{
     BlockGroupLayout, FsLayoutInfo, MkfsOptions, compute_fs_layout, mkfs, mkfs_with_options,
 };

@@ -14,16 +14,10 @@ use alloc::vec;
 use super::{FilesystemBlockIo, buffer::BlockBuffer};
 use crate::{
     bmalloc::AbsoluteBN,
+    config::BLOCKDEV_CACHE_MAX,
     error::{Ext4Error, Ext4Result},
     io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, WriteFlags},
 };
-
-/// Number of cached filesystem blocks.
-///
-/// Limited to 4 entries: larger caches (≥5) cause stale metadata blocks to
-/// persist across journal replay and mount operations, triggering EUCLEAN
-/// checksum failures and subtract-overflow panics in CRC integrity tests.
-const CACHE_ENTRIES: usize = 4;
 
 /// One cache line: a 4 KiB data buffer plus housekeeping.
 struct CacheLine {
@@ -59,7 +53,7 @@ pub(super) struct BlockDev<B: BlockIo> {
     capabilities: DeviceCapabilities,
     filesystem_block_size: usize,
     /// The cache lines.
-    entries: [CacheLine; CACHE_ENTRIES],
+    entries: [CacheLine; BLOCKDEV_CACHE_MAX],
     /// Index of the most recently accessed (active) entry.
     active: usize,
     /// Clock hand for the second-chance eviction policy.
@@ -507,9 +501,9 @@ impl<B: BlockIo> BlockDev<B> {
     /// the index of the newly-allocated slot (which is also set as the
     /// active entry).  The caller must fill the buffer.
     fn clock_evict(&mut self) -> Ext4Result<usize> {
-        for _ in 0..(CACHE_ENTRIES * 2) {
+        for _ in 0..(BLOCKDEV_CACHE_MAX * 2) {
             let idx = self.clock;
-            self.clock = (self.clock + 1) % CACHE_ENTRIES;
+            self.clock = (self.clock + 1) % BLOCKDEV_CACHE_MAX;
 
             // Borrow entries[idx] via index to avoid holding a ref across
             // the potential write below.
@@ -543,7 +537,7 @@ impl<B: BlockIo> BlockDev<B> {
 
         // All entries referenced — fall back to the current clock slot.
         let idx = self.clock;
-        self.clock = (self.clock + 1) % CACHE_ENTRIES;
+        self.clock = (self.clock + 1) % BLOCKDEV_CACHE_MAX;
         if self.entries[idx].dirty {
             let bid = self.entries[idx].block_id.unwrap();
             let (sector, sector_count, byte_count) = self.filesystem_io(bid, 1)?;
@@ -600,6 +594,7 @@ mod tests {
     struct StrictSectorDevice {
         data: Vec<u8>,
         physical_block_size: u32,
+        reads: usize,
     }
 
     struct DurabilityDevice {
@@ -622,6 +617,7 @@ mod tests {
         }
 
         fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()> {
+            self.reads += 1;
             let required = SECTOR_SIZE * count as usize;
             if buffer.len() != required {
                 return Err(Ext4Error::invalid_block_size(buffer.len(), required));
@@ -710,6 +706,7 @@ mod tests {
         let mut dev = BlockDev::new(StrictSectorDevice {
             data,
             physical_block_size: SECTOR_SIZE as u32,
+            reads: 0,
         });
         dev.read_block(block).expect("read a full filesystem block");
         assert_eq!(dev.buffer()[0], 0);
@@ -730,6 +727,7 @@ mod tests {
         let mut dev = BlockDev::new(StrictSectorDevice {
             data,
             physical_block_size: 4096,
+            reads: 0,
         });
 
         dev.set_filesystem_block_size(1024)
@@ -742,6 +740,7 @@ mod tests {
         let mut dev = BlockDev::new(StrictSectorDevice {
             data,
             physical_block_size: 1536,
+            reads: 0,
         });
 
         assert_eq!(
@@ -758,6 +757,7 @@ mod tests {
         let mut dev = BlockDev::new(StrictSectorDevice {
             data,
             physical_block_size: 0,
+            reads: 0,
         });
 
         dev.set_filesystem_block_size(1024)
@@ -774,6 +774,7 @@ mod tests {
         let mut dev = BlockDev::new(StrictSectorDevice {
             data,
             physical_block_size: SECTOR_SIZE as u32,
+            reads: 0,
         });
         let mut superblock = [0; 1024];
 
@@ -784,12 +785,32 @@ mod tests {
     }
 
     #[test]
+    fn cache_reuses_a_five_block_working_set() {
+        let data = vec![0; 16 * crate::config::BLOCK_SIZE];
+        let mut dev = BlockDev::new(StrictSectorDevice {
+            data,
+            physical_block_size: SECTOR_SIZE as u32,
+            reads: 0,
+        });
+
+        for block in 1..=5 {
+            dev.read_block(AbsoluteBN::new(block))
+                .expect("populate the cache working set");
+        }
+        dev.read_block(AbsoluteBN::new(1))
+            .expect("reuse the first cached block");
+
+        assert_eq!(dev._device().reads, 5);
+    }
+
+    #[test]
     fn write_to_cached_target_invalidates_older_alias() {
         let data = vec![0; 16 * crate::config::BLOCK_SIZE];
         let target = AbsoluteBN::new(2);
         let mut dev = BlockDev::new(StrictSectorDevice {
             data,
             physical_block_size: SECTOR_SIZE as u32,
+            reads: 0,
         });
 
         dev.read_block(target).unwrap();
@@ -810,6 +831,7 @@ mod tests {
         let mut dev = BlockDev::new(StrictSectorDevice {
             data,
             physical_block_size: SECTOR_SIZE as u32,
+            reads: 0,
         });
 
         dev.read_block(target).expect("cache detached metadata");

@@ -40,8 +40,7 @@ pub(crate) use delete::{
     remove_named_entry_at, replace_named_entry_at, unlink_empty_directory_at, unlink_inode_at,
 };
 pub use delete::{
-    UnlinkOutcome, delete_dir, delete_file, free_inode, is_dir_empty, reap_unlinked_inode,
-    remove_inodeentry_from_parentdir, unlink,
+    UnlinkOutcome, delete_dir, delete_file, is_dir_empty, reap_unlinked_inode, unlink,
 };
 pub use extent_map::{
     FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, inspect_inode_extents,

@@ -8,7 +8,6 @@ use rsext4::{
     dir::normalize_path,
     disknode::{Ext4Extent, Ext4Inode},
     error::{Ext4Error, Ext4Result},
-    ext4::file_entry_exist,
     extents_tree::{ExtentNode, ExtentTree},
     loopfile::resolve_inode_blocks,
     tool::calc_group_layout,
@@ -227,13 +226,19 @@ fn flush_persists_cached_block_device_writes() {
 }
 
 #[test]
-fn file_entry_exist_resolves_existing_and_missing_paths() {
+fn path_exists_resolves_existing_and_missing_paths() {
     let (mut dev, mut fs) = setup_fs(16 * 1024);
     mkfile(&mut dev, &mut fs, "/compat/file", Some(b"hello"), None).expect("create file");
 
-    assert!(file_entry_exist(&mut fs, &mut dev, "/").expect("resolve root"));
-    assert!(file_entry_exist(&mut fs, &mut dev, "/compat/file").expect("resolve file"));
-    assert!(!file_entry_exist(&mut fs, &mut dev, "/compat/missing").expect("resolve missing path"));
+    assert!(fs.path_exists(&mut dev, "/").expect("resolve root"));
+    assert!(
+        fs.path_exists(&mut dev, "/compat/file")
+            .expect("resolve file")
+    );
+    assert!(
+        !fs.path_exists(&mut dev, "/compat/missing")
+            .expect("resolve missing path")
+    );
 }
 
 #[test]

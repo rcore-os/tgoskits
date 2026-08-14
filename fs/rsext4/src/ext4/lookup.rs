@@ -2,7 +2,7 @@ use super::*;
 
 impl Ext4FileSystem {
     /// Return whether a path resolves to an inode.
-    pub fn file_entries_exist<B: BlockIo>(
+    pub fn path_exists<B: BlockIo>(
         &mut self,
         device: &mut Jbd2Dev<B>,
         path: &str,
@@ -41,22 +41,4 @@ impl Ext4FileSystem {
 
         Ok(result.inode)
     }
-}
-
-/// Return whether a path resolves to an inode.
-pub fn file_entry_exist<B: BlockIo>(
-    fs: &mut Ext4FileSystem,
-    device: &mut Jbd2Dev<B>,
-    path: &str,
-) -> Ext4Result<bool> {
-    fs.file_entries_exist(device, path)
-}
-
-/// Look up an inode by path.
-pub fn find_file<B: BlockIo>(
-    fs: &mut Ext4FileSystem,
-    device: &mut Jbd2Dev<B>,
-    path: &str,
-) -> Ext4Result<Ext4Inode> {
-    fs.find_file(device, path)
 }
