@@ -34,6 +34,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -72,6 +73,51 @@ static void test_comm_read_format(void)
     check_comm_read("abcdefghijklmno", "abcdefghijklmno");
     /* A longer name is truncated to 15 characters by the read path. */
     check_comm_read("abcdefghijklmnopqrst", "abcdefghijklmno");
+}
+
+/* Linux reads at most TASK_COMM_LEN - 1 bytes for PR_SET_NAME. Put exactly
+ * that many non-NUL bytes at a page boundary to ensure the next byte is not
+ * accessed. */
+static void test_pr_set_name_bounded_user_read(void)
+{
+    long page_size = sysconf(_SC_PAGESIZE);
+    CHECK(page_size > 0, "get page size for PR_SET_NAME boundary test");
+    if (page_size <= 0)
+        return;
+
+    size_t page = (size_t)page_size;
+    char *mapping = mmap(NULL, page * 2, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(mapping != MAP_FAILED, "map pages for PR_SET_NAME boundary test");
+    if (mapping == MAP_FAILED)
+        return;
+
+    char *name = mapping + page - 15;
+    memset(name, 'x', 15);
+    if (mprotect(mapping + page, page, PROT_NONE) != 0) {
+        CHECK(0, "protect byte after PR_SET_NAME input");
+        munmap(mapping, page * 2);
+        return;
+    }
+    CHECK(1, "protect byte after PR_SET_NAME input");
+
+    int set_name_ret = prctl(PR_SET_NAME, (unsigned long)name, 0, 0, 0);
+    CHECK_RET(set_name_ret, 0, "PR_SET_NAME accepts 15 non-NUL bytes at page boundary");
+
+    char got[16];
+    char expected[16];
+    memset(expected, 'x', 15);
+    expected[15] = '\0';
+    if (set_name_ret == 0) {
+        int get_name_ret = prctl(PR_GET_NAME, (unsigned long)got, 0, 0, 0);
+        CHECK_RET(get_name_ret, 0, "PR_GET_NAME returns bounded name");
+        if (get_name_ret == 0) {
+            CHECK(memcmp(got, expected, sizeof(expected)) == 0,
+                  "PR_SET_NAME appends a NUL without reading the next page");
+        }
+    }
+
+    CHECK_RET(munmap(mapping, page * 2), 0, "unmap PR_SET_NAME boundary test pages");
 }
 
 /* 1b. Envoy's real path: pthread_setname_np then pthread_getname_np must
@@ -211,6 +257,7 @@ int main(void)
     TEST_START("/proc/comm format + non-blocking TCP partial send");
 
     test_comm_read_format();
+    test_pr_set_name_bounded_user_read();
     test_pthread_setname_roundtrip();
     test_nonblocking_partial_send();
 

@@ -5,15 +5,14 @@
 //! translate between userspace's split `u32` capability arrays and StarryOS's
 //! internal `Cred` bitmap fields.
 
-use core::ffi::c_char;
-
+use ax_io::Read;
 use ax_task::current;
 use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct, CAP_LAST_CAP};
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
     StarryError, StarryResult,
-    mm::vm_load_string,
+    mm::VmBytes,
     task::{AsThread, Cred, get_process_data, get_task},
 };
 
@@ -367,8 +366,14 @@ pub fn sys_prctl(
 
     match option {
         PR_SET_NAME => {
-            let s = vm_load_string(arg2 as *const c_char)?;
-            current().set_name(&s);
+            let mut name = [0u8; 15];
+            VmBytes::new(arg2 as *const u8, name.len()).read_exact(&mut name)?;
+            let len = name
+                .iter()
+                .position(|&byte| byte == 0)
+                .unwrap_or(name.len());
+            let name = core::str::from_utf8(&name[..len]).map_err(|_| StarryError::IllegalBytes)?;
+            current().set_name(name);
         }
         PR_GET_NAME => {
             let name = current().name();
