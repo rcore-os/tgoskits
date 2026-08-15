@@ -73,6 +73,42 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
     }
 
     let yielding_raw = yielding.thread().id().as_u64().get();
+    let updater_cpu = this_cpu_id();
+    assert_ne!(
+        updater_cpu, target_cpu,
+        "policy updater must run independently of the paused switch CPU"
+    );
+    let updater_ready = Arc::new(AtomicBool::new(false));
+    let may_update = Arc::new(AtomicBool::new(false));
+    let policy_updated = Arc::new(AtomicBool::new(false));
+    let updater = {
+        let updater_ready = Arc::clone(&updater_ready);
+        let may_update = Arc::clone(&may_update);
+        let policy_updated = Arc::clone(&policy_updated);
+        thread::spawn(move || {
+            assert!(ax_set_current_affinity(AxCpuMask::one_shot(updater_cpu)).is_ok());
+            assert_eq!(this_cpu_id(), updater_cpu);
+            updater_ready.store(true, Ordering::Release);
+            while !may_update.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            set_thread_policy(
+                thread_id_from_raw(yielding_raw),
+                SchedulePolicy::fair(Nice::new(1).unwrap(), FairMode::Normal),
+            )
+            .expect("a queued outgoing task must accept a policy update");
+            policy_updated.store(true, Ordering::Release);
+        })
+    };
+    let updater_started = Instant::now();
+    while !updater_ready.load(Ordering::Acquire) {
+        assert!(
+            updater_started.elapsed() < SWITCH_HANDOFF_TIMEOUT,
+            "policy updater did not become runnable on its independent CPU"
+        );
+        thread::yield_now();
+    }
+
     task_test_hooks::arm_policy_switch_handoff_probe(yielding_raw);
     may_yield.store(true, Ordering::Release);
     let pause_started = Instant::now();
@@ -84,18 +120,7 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
         thread::yield_now();
     }
 
-    let policy_updated = Arc::new(AtomicBool::new(false));
-    let updater = {
-        let policy_updated = Arc::clone(&policy_updated);
-        thread::spawn(move || {
-            set_thread_policy(
-                thread_id_from_raw(yielding_raw),
-                SchedulePolicy::fair(Nice::new(1).unwrap(), FairMode::Normal),
-            )
-            .expect("a queued outgoing task must accept a policy update");
-            policy_updated.store(true, Ordering::Release);
-        })
-    };
+    may_update.store(true, Ordering::Release);
     let update_started = Instant::now();
     while !policy_updated.load(Ordering::Acquire)
         && update_started.elapsed() < SWITCH_HANDOFF_TIMEOUT
