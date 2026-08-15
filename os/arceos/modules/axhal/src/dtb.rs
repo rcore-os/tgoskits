@@ -6,14 +6,14 @@ use fdt_parser::{Fdt, Node};
 
 static BOOTARG: OnceLock<usize> = OnceLock::new();
 
-/// Returns the physical address to probe for DTB.
+/// Returns the physical address to probe for DTB, or `None` if no boot argument was
+/// installed (e.g. host unit tests, or any path that never called [`init`]). The FDT
+/// probe (and thus [`cpu_capacities`]) must degrade to "no device tree" rather than
+/// panic in that case, so this reads the boot arg as an `Option` instead of via the
+/// strict [`get_bootarg`].
 fn dtb_paddr_from_boot_context() -> Option<usize> {
-    let arg = get_bootarg();
-    if arg != 0 {
-        return Some(arg);
-    }
-
-    None
+    let arg = BOOTARG.get().copied()?;
+    if arg != 0 { Some(arg) } else { None }
 }
 
 /// Initializes the boot argument.

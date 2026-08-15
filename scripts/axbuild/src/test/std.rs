@@ -14,6 +14,7 @@ use crate::support::process::run_cargo_status;
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 const MIGHT_SLEEP_FILTER: &str = "might_sleep";
 const TASK_INITIALIZATION_FILTER: &str = "task_initialization_precedes_scheduling";
+const PLACEMENT_FILTER: &str = "placement_tests";
 
 #[derive(Clone, Copy, Debug)]
 struct PackageFeatureProfile {
@@ -43,6 +44,23 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         expected_tests: &[
             "tests::might_sleep_reports_held_lock_stack",
             "tests::might_sleep_reports_preempt_disabled_reason",
+        ],
+    },
+    // The capacity-aware placement math (`pick_least_loaded`) is pure and compiles
+    // under `cfg(test)` without the SMP scheduler, so it runs here with the plain
+    // host-test feature set — no `smp`/`sched-loadbalance` needed.
+    PackageFeatureProfile {
+        name: "host-test+placement",
+        features: &["host-test", "multitask"],
+        name_filter: Some(PLACEMENT_FILTER),
+        expected_tests: &[
+            "run_queue::placement_tests::a_busy_big_core_spills_to_an_idle_little_core",
+            "run_queue::placement_tests::a_lone_task_on_an_all_idle_machine_lands_on_a_big_core",
+            "run_queue::placement_tests::affinity_mask_is_respected",
+            "run_queue::placement_tests::empty_mask_returns_none",
+            "run_queue::placement_tests::equal_raw_load_favors_the_big_core",
+            "run_queue::placement_tests::homogeneous_machine_degrades_to_lowest_index",
+            "run_queue::placement_tests::idle_big_cores_are_preferred_over_idle_little_cores",
         ],
     },
 ];
@@ -676,6 +694,24 @@ mod tests {
                     "host-test,multitask,preempt,lockdep",
                     "might_sleep",
                 ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test,multitask",
+                    "placement_tests",
+                    "--",
+                    "--list",
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test,multitask",
+                    "placement_tests",
+                ],
             ]
         );
         assert!(!args.contains(&vec!["test".into(), "-p".into(), "ax-task".into()]));
@@ -817,6 +853,6 @@ mod tests {
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert_eq!(failed, vec!["ax-task", "ax-api"]);
-        assert_eq!(runner.invocations.len(), 7);
+        assert_eq!(runner.invocations.len(), 9);
     }
 }
