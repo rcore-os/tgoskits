@@ -450,8 +450,7 @@ impl Thread {
     }
 
     pub(crate) fn set_cpu_time_state(&self, state: TimerState) {
-        self.proc_data
-            .record_cpu_time_transition(|| self.accounting.cpu_time.set_state(state));
+        self.accounting.cpu_time.set_state(state);
     }
 
     pub(crate) fn apply_cpu_time_policy(&self, realtime_policy: bool, observed_ns: u64) {

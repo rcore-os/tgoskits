@@ -8,12 +8,12 @@ mod process_tests {
         let first = CpuTimeAccounting::new();
         let second = CpuTimeAccounting::new();
 
-        process.record_transition(|| first.set_state_at(TimerState::User, 0));
+        first.set_state_at(TimerState::User, 0);
         process.record_transition(|| {
             first.scheduler_switch_in_at(false, 0);
             CpuTimeDelta::ZERO
         });
-        process.record_transition(|| second.set_state_at(TimerState::Kernel, 0));
+        second.set_state_at(TimerState::Kernel, 0);
         process.record_transition(|| {
             second.scheduler_switch_in_at(false, 0);
             CpuTimeDelta::ZERO
@@ -21,8 +21,8 @@ mod process_tests {
 
         let mut live = |now| {
             first
-                .running_residual_at(now)
-                .add(second.running_residual_at(now))
+                .unpublished_delta_at(now)
+                .add(second.unpublished_delta_at(now))
         };
         assert_eq!(
             process.snapshot_at_with_live(10, &mut live),
@@ -64,12 +64,12 @@ mod process_tests {
 
         let process = Arc::new(ProcessCpuTimeAccounting::new());
         let task = Arc::new(CpuTimeAccounting::new());
-        process.record_transition(|| task.set_state_at(TimerState::User, 0));
+        task.set_state_at(TimerState::User, 0);
         process.record_transition(|| {
             task.scheduler_switch_in_at(false, 0);
             CpuTimeDelta::ZERO
         });
-        let mut live = |now| task.running_residual_at(now);
+        let mut live = |now| task.unpublished_delta_at(now);
         assert_eq!(
             process.snapshot_at_with_live(10, &mut live),
             ProcessCpuTimeSnapshot {
@@ -99,7 +99,7 @@ mod process_tests {
         let reader_task = Arc::clone(&task);
         let reader = thread::spawn(move || {
             let snapshot = reader_process
-                .snapshot_at_with_live(10, &mut |now| reader_task.running_residual_at(now));
+                .snapshot_at_with_live(10, &mut |now| reader_task.unpublished_delta_at(now));
             snapshot_done_tx.send(snapshot).unwrap();
         });
         let snapshot_while_writer_is_preempted =
@@ -135,12 +135,12 @@ mod process_tests {
         let first = CpuTimeAccounting::new();
         let second = CpuTimeAccounting::new();
 
-        process.record_transition(|| first.set_state_at(TimerState::User, 0));
+        first.set_state_at(TimerState::User, 0);
         process.record_transition(|| {
             first.scheduler_switch_in_at(false, 0);
             CpuTimeDelta::ZERO
         });
-        process.record_transition(|| second.set_state_at(TimerState::Kernel, 0));
+        second.set_state_at(TimerState::Kernel, 0);
         process.record_transition(|| {
             second.scheduler_switch_in_at(false, 0);
             CpuTimeDelta::ZERO

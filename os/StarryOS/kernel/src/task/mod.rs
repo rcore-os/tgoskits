@@ -74,6 +74,7 @@ pub(crate) use self::{
         itimer_type_signo_and_time_conversion_rules_hold_for_test,
         scheduler_tick_group_accounting_is_aggregate_for_test,
         scheduler_tick_sampling_avoids_owner_writer_for_test,
+        user_kernel_transitions_remain_task_local_for_test,
     },
 };
 use self::{

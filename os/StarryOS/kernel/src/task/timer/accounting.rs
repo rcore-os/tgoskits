@@ -79,13 +79,13 @@ impl CpuTimeAccounting {
         )
     }
 
-    /// Publishes the current user/kernel execution state.
-    pub(crate) fn set_state(&self, state: TimerState) -> CpuTimeDelta {
-        {
-            let _writer = self.begin_write();
-            self.set_state_locked(state, monotonic_time_nanos() as u64);
-        }
-        self.publish_committed_delta()
+    /// Accounts and updates the current task's user/kernel execution state.
+    ///
+    /// The task-owned syscall path keeps this transition local. Process-wide
+    /// publication is batched at scheduler tick and switch boundaries.
+    pub(crate) fn set_state(&self, state: TimerState) {
+        let _writer = self.begin_write();
+        self.set_state_locked(state, monotonic_time_nanos() as u64);
     }
 
     pub(crate) fn scheduler_switch_in(&self, realtime_policy: bool) {
@@ -175,12 +175,9 @@ impl CpuTimeAccounting {
     }
 
     #[cfg(any(test, axtest))]
-    fn set_state_at(&self, state: TimerState, now_ns: u64) -> CpuTimeDelta {
-        {
-            let _writer = self.begin_write();
-            self.set_state_locked(state, now_ns);
-        }
-        self.publish_committed_delta()
+    fn set_state_at(&self, state: TimerState, now_ns: u64) {
+        let _writer = self.begin_write();
+        self.set_state_locked(state, now_ns);
     }
 
     fn set_state_locked(&self, state: TimerState, now_ns: u64) -> CpuTimeDelta {
@@ -242,28 +239,16 @@ impl CpuTimeAccounting {
         }
     }
 
-    pub(crate) fn running_residual_at(&self, now_ns: u64) -> CpuTimeDelta {
-        loop {
-            let sequence = self.read_sequence_begin();
-            let residual = if self.running.load(Ordering::Relaxed) {
-                let elapsed = now_ns.saturating_sub(self.last_account_ns.load(Ordering::Relaxed));
-                match TimerState::from_raw(self.state.load(Ordering::Relaxed)) {
-                    TimerState::User => CpuTimeDelta {
-                        user_ns: elapsed,
-                        system_ns: 0,
-                    },
-                    TimerState::Kernel => CpuTimeDelta {
-                        user_ns: 0,
-                        system_ns: elapsed,
-                    },
-                    TimerState::None => CpuTimeDelta::ZERO,
-                }
-            } else {
-                CpuTimeDelta::ZERO
-            };
-            if !self.read_sequence_retry(sequence) {
-                return residual;
-            }
+    /// Returns task CPU time not yet published into the process aggregate.
+    pub(crate) fn unpublished_delta_at(&self, now_ns: u64) -> CpuTimeDelta {
+        let snapshot = self.snapshot_at(now_ns);
+        CpuTimeDelta {
+            user_ns: snapshot
+                .user_ns
+                .saturating_sub(self.published_user_ns.load(Ordering::Acquire)),
+            system_ns: snapshot
+                .system_ns
+                .saturating_sub(self.published_system_ns.load(Ordering::Acquire)),
         }
     }
 
@@ -404,12 +389,11 @@ impl CpuTimeDelta {
 
 /// Monotonic process-wide CPU accounting.
 ///
-/// Scheduler and user/kernel boundary transitions publish deltas directly into
-/// the group counters. Readers sample those counters before running-thread
-/// residuals, so a concurrent transition can only make a sample temporarily
-/// low: it moves a residual into the group counters before publishing its
-/// release increment. A monotonic high-water mark closes that handoff window
-/// without waiting for a task that was switched out.
+/// Scheduler tick, switch, and explicit policy/accounting boundaries publish
+/// task deltas into the group counters. User/kernel transitions remain local to
+/// the running task; full readers combine the committed group counters with
+/// every live task's unpublished totals. A monotonic high-water mark closes the
+/// publication handoff window without waiting for a task that was switched out.
 pub struct ProcessCpuTimeAccounting {
     user_ns: AtomicU64,
     system_ns: AtomicU64,
@@ -503,12 +487,12 @@ pub(super) fn scheduler_tick_group_accounting_is_aggregate_for_test() -> bool {
     let first = CpuTimeAccounting::new();
     let second = CpuTimeAccounting::new();
 
-    process.record_transition(|| first.set_state_at(TimerState::User, 0));
+    first.set_state_at(TimerState::User, 0);
     process.record_transition(|| {
         first.scheduler_switch_in_at(false, 0);
         CpuTimeDelta::ZERO
     });
-    process.record_transition(|| second.set_state_at(TimerState::Kernel, 0));
+    second.set_state_at(TimerState::Kernel, 0);
     process.record_transition(|| {
         second.scheduler_switch_in_at(false, 0);
         CpuTimeDelta::ZERO
@@ -558,6 +542,22 @@ pub(super) fn scheduler_tick_sampling_avoids_owner_writer_for_test() -> bool {
         })
         && accounting.sequence.load(Ordering::Acquire) == sequence
         && accounting.user_ns.load(Ordering::Acquire) == 0
+}
+
+#[cfg(axtest)]
+pub(super) fn user_kernel_transitions_remain_task_local_for_test() -> bool {
+    let accounting = CpuTimeAccounting::new();
+    accounting.set_state_at(TimerState::User, 0);
+    accounting.scheduler_switch_in_at(false, 0);
+    accounting.set_state_at(TimerState::Kernel, 10);
+
+    accounting.published_user_ns.load(Ordering::Acquire) == 0
+        && accounting.published_system_ns.load(Ordering::Acquire) == 0
+        && accounting.unpublished_delta_at(15)
+            == (CpuTimeDelta {
+                user_ns: 10,
+                system_ns: 5,
+            })
 }
 
 include!("accounting/tests.rs");
