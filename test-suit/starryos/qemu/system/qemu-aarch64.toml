@@ -36,10 +36,7 @@ args = [
 uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
-test_commands = [
-    "/usr/bin/starry-run-system-tests",
-]
-grouped_command_selection = "preserve_all"
+test_commands = ["exec /usr/bin/starry-run-system-tests"]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
 timeout = 1800

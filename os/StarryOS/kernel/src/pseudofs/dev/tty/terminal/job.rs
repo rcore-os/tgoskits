@@ -2,10 +2,12 @@ use alloc::sync::{Arc, Weak};
 use core::task::Context;
 
 use axpoll::{IoEvents, PollSet, Pollable};
-use starry_process::{ProcessGroup, Session};
 
 use super::TerminalStateLock;
-use crate::{StarryError, StarryResult, task::current_user_task};
+use crate::{
+    StarryError, StarryResult,
+    task::{ProcessGroup, Session, current_user_task},
+};
 
 pub struct JobControl {
     state: TerminalStateLock<JobControlState>,

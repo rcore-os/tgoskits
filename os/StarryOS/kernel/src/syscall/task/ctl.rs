@@ -15,7 +15,7 @@ use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct, C
 use crate::{
     StarryError, StarryResult,
     mm::{UserPtr, VmMutPtr, VmPtr, vm_load_string, vm_write_slice},
-    task::{Cred, get_task, resolve_user_pid},
+    task::{Cred, TidNumber, get_user_task_by_number},
 };
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
@@ -87,11 +87,17 @@ fn validate_mbind_request(
     Ok(policy)
 }
 
-/// Validate the cap header and return the namespace-visible target PID.
+#[derive(Clone, Copy)]
+enum CapabilityTarget {
+    Current,
+    Thread(TidNumber),
+}
+
+/// Validate the cap header and return a typed thread selector.
 fn validate_cap_header(
     current: &crate::task::UserTaskRef,
     header_ptr: *mut __user_cap_header_struct,
-) -> crate::StarryResult<u32> {
+) -> StarryResult<CapabilityTarget> {
     // FIXME: AnyBitPattern
     let mut header = unsafe { header_ptr.vm_read_uninit(current)?.assume_init() };
     if header.version != CAPABILITY_VERSION_3 {
@@ -103,8 +109,16 @@ fn validate_cap_header(
         )?;
         return Err(crate::StarryError::InvalidInput);
     }
-    let pid = header.pid as u32;
-    Ok(pid)
+    if header.pid < 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    if header.pid == 0 {
+        Ok(CapabilityTarget::Current)
+    } else {
+        let tid = TidNumber::try_from(header.pid as u32)?;
+        let _ = get_user_task_by_number(tid)?;
+        Ok(CapabilityTarget::Thread(tid))
+    }
 }
 
 /// Read the credential set for the thread identified by TID (0 = self).
@@ -112,15 +126,14 @@ fn validate_cap_header(
 /// capget(2) operates on the thread identified by `header.pid`; on Linux
 /// threads in the same thread group share the same `struct cred` by default,
 /// so reading any thread's cred gives the same answer.
-fn cred_for_pid(
+fn cred_for_target(
     current: &crate::task::UserTaskRef,
-    pid: u32,
-) -> crate::StarryResult<alloc::sync::Arc<Cred>> {
-    if pid == 0 {
+    target: CapabilityTarget,
+) -> StarryResult<alloc::sync::Arc<Cred>> {
+    let CapabilityTarget::Thread(tid) = target else {
         return Ok(current.as_thread().cred());
-    }
-    let pid = resolve_user_pid(current, pid)?;
-    let task = get_task(pid).map_err(|_| crate::StarryError::NoSuchProcess)?;
+    };
+    let task = get_user_task_by_number(tid).map_err(|_| StarryError::NoSuchProcess)?;
     Ok(task.as_thread().cred())
 }
 
@@ -188,14 +201,14 @@ pub fn sys_capget(
     current: &crate::task::UserTaskRef,
     header: *mut __user_cap_header_struct,
     data: *mut __user_cap_data_struct,
-) -> crate::StarryResult<isize> {
-    let pid = validate_cap_header(current, header)?;
+) -> StarryResult<isize> {
+    let target = validate_cap_header(current, header)?;
 
     if data.is_null() {
         return Ok(0);
     }
 
-    let cred = cred_for_pid(current, pid)?;
+    let cred = cred_for_target(current, target)?;
     let cap_data = cap_data_from_cred(&cred);
     let first = UserPtr::from(data);
     let second_address = data
@@ -217,21 +230,16 @@ pub fn sys_capset(
     current: &crate::task::UserTaskRef,
     header: *mut __user_cap_header_struct,
     data: *mut __user_cap_data_struct,
-) -> crate::StarryResult<isize> {
-    let pid = validate_cap_header(current, header)?;
+) -> StarryResult<isize> {
+    let target = validate_cap_header(current, header)?;
     if data.is_null() {
         return Err(StarryError::BadAddress);
     }
 
     let thread_ref = current;
     let thread = thread_ref.as_thread();
-    let target = if pid == 0 {
-        thread.tid()
-    } else {
-        resolve_user_pid(current, pid)?
-    };
-    if target != thread.tid() {
-        return Err(crate::StarryError::OperationNotPermitted);
+    if matches!(target, CapabilityTarget::Thread(tid) if tid != thread.tid_number()) {
+        return Err(StarryError::OperationNotPermitted);
     }
 
     let requested = unsafe {
@@ -683,17 +691,26 @@ pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
         && !nodemask_requires_access(core::ptr::null(), 64)
         && !nodemask_requires_access(core::ptr::dangling(), 0)
         // set_mbind / set_mempolicy rejection of negative modes is exercised above.
-        && validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, 0) == Ok(MPOL_DEFAULT)
+        && matches!(
+            validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, 0),
+            Ok(MPOL_DEFAULT)
+        )
         && validate_mbind_request(0x1001, 4096, MPOL_DEFAULT, 0).is_err()
         && validate_mbind_request(0x1000, 0, MPOL_DEFAULT, 0).is_err()
         && validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, !MPOL_MF_VALID).is_err()
         // mbind accepts each individual MPOL_MF flag bit in isolation.
-        && validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, MPOL_MF_STRICT)
-            == Ok(MPOL_DEFAULT)
-        && validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, MPOL_MF_MOVE)
-            == Ok(MPOL_DEFAULT)
-        && validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, MPOL_MF_MOVE_ALL)
-            == Ok(MPOL_DEFAULT)
+        && matches!(
+            validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, MPOL_MF_STRICT),
+            Ok(MPOL_DEFAULT)
+        )
+        && matches!(
+            validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, MPOL_MF_MOVE),
+            Ok(MPOL_DEFAULT)
+        )
+        && matches!(
+            validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, MPOL_MF_MOVE_ALL),
+            Ok(MPOL_DEFAULT)
+        )
         // mbind rejects out-of-range mode.
         && validate_mbind_request(0x1000, 4096, 99, 0).is_err()
 }

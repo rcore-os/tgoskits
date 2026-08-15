@@ -3,10 +3,9 @@
 use alloc::sync::Arc;
 
 use axpoll::{IoEvents, PollSet};
-use starry_process::Pid;
 use starry_signal::Signo;
 
-use super::ProcessData;
+use super::{ProcessData, TidNumber};
 use crate::sync::IrqMutex;
 
 /// A pending job-control status change for `waitpid`.
@@ -26,7 +25,7 @@ struct JobControl {
     status: Option<JobStatus>,
     continue_generation: u64,
     /// The thread physically parked by the process-directed stop.
-    waiter_tid: Option<Pid>,
+    waiter_tid: Option<TidNumber>,
 }
 
 pub(super) struct ProcessJobControl {
@@ -52,7 +51,7 @@ impl ProcessData {
         &self,
         signo: Signo,
         continue_gen_snapshot: u64,
-        waiter_tid: Pid,
+        waiter_tid: TidNumber,
     ) -> bool {
         let mut state = self.job_control.state.lock();
         if state.continue_generation != continue_gen_snapshot {
@@ -65,7 +64,7 @@ impl ProcessData {
     }
 
     /// Returns whether `tid` is the thread physically parked for this stop.
-    pub fn is_job_stop_waiter(&self, tid: Pid) -> bool {
+    pub fn is_job_stop_waiter(&self, tid: TidNumber) -> bool {
         let state = self.job_control.state.lock();
         state.stopped.is_some() && state.waiter_tid == Some(tid)
     }

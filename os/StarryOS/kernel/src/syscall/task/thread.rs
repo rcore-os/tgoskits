@@ -1,28 +1,34 @@
-#[cfg(target_arch = "x86_64")]
-use crate::StarryError;
-use crate::task::visible_user_pid;
+use crate::{
+    StarryError, StarryResult,
+    task::{PidView, UserTaskRef},
+};
 
 #[inline(never)]
-pub fn sys_getpid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
-    let global_pid = current.as_thread().proc_data.proc.pid() as u64;
-    Ok(visible_user_pid(current, global_pid) as isize)
+pub fn sys_getpid(current: &UserTaskRef) -> StarryResult<isize> {
+    let thr = current.as_thread();
+    PidView::new(thr.active_pid_namespace())
+        .visible_process_number(&thr.proc_data.identity())
+        .map(|pid| pid.get() as isize)
+        .ok_or(StarryError::NoSuchProcess)
 }
 
 pub fn sys_getppid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
-    let parent_pid = current
+    let parent = current
         .as_thread()
         .proc_data
         .proc
         .parent()
-        .map(|parent| parent.pid() as u64);
-    Ok(parent_pid.map_or(0, |pid| visible_user_pid(current, pid) as isize))
+        .ok_or(StarryError::NoSuchProcess)?;
+    Ok(PidView::new(current.as_thread().active_pid_namespace())
+        .visible_process_number(&parent.identity())
+        .map_or(0, |pid| pid.get() as isize))
 }
 
 pub fn sys_gettid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
     // `Thread::tid` rather than the scheduler ID: after a non-leader
     // `execve` they differ (the calling thread inherits the leader's TID
     // so that `gettid() == getpid()` holds in the new image).
-    Ok(visible_user_pid(current, current.as_thread().tid() as u64) as isize)
+    Ok(current.as_thread().user_tid().get() as _)
 }
 
 /// `getcpu(2)`: report the CPU and NUMA node the caller is running on.
@@ -82,7 +88,7 @@ pub fn sys_set_tid_address(
     let curr = current;
     let thr = curr.as_thread();
     thr.set_clear_child_tid(clear_child_tid);
-    Ok(visible_user_pid(current, thr.tid() as u64) as isize)
+    Ok(thr.user_tid().get() as isize)
 }
 
 #[cfg(target_arch = "x86_64")]

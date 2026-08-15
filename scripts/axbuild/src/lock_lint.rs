@@ -1055,15 +1055,15 @@ impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {}
         }));
     }
     #[test]
-    fn rejects_starry_domain_crate_ax_sync_dependency() {
+    fn rejects_starry_signal_domain_crate_ax_sync_dependency() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
             root.path(),
-            "os/StarryOS/process/Cargo.toml",
+            "os/StarryOS/signal/Cargo.toml",
             r#"
 [package]
-name = "starry-process"
+name = "starry-signal"
 version = "0.1.0"
 edition = "2024"
 [dependencies]

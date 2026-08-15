@@ -23,7 +23,9 @@ use crate::{
         Directory, File, FileLike, Pipe, get_file_like,
         memfd::{F_SEAL_ANY_WRITE, F_SEAL_GROW, Memfd},
     },
+    ipc::mqueue::MqDescriptor,
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, VmMutPtr, VmPtr, vm_load_path_string},
+    task::AsThread,
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
@@ -203,6 +205,10 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> StarryResu
     if let Ok(f) = File::from_fd(fd) {
         let off = f.inner().seek(pos)?;
         return Ok(off as _);
+    }
+
+    if let Ok(mq) = any_file.clone().downcast_arc::<MqDescriptor>() {
+        return Ok(mq.seek_status(pos)? as _);
     }
 
     if let Ok(d) = any_file.downcast_arc::<Directory>() {

@@ -3,16 +3,15 @@ use ax_runtime::hal::cpu::{
     trap::PageFaultFlags,
     uspace::{ExceptionKind, ReturnReason, UserContext},
 };
-use starry_process::Pid;
 use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
 use syscalls::Sysno;
 
 #[cfg(target_arch = "loongarch64")]
 use super::unaligned::{UnalignedEmulationResult, emulate_user_unaligned};
 use super::{
-    SyscallRestartInfo, SyscallTraceState, Thread, TimerState, check_signals, current_user_task,
-    poll_process_timers, ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal,
-    set_timer_state, wait_existing_ptrace_stop_current,
+    SyscallRestartInfo, SyscallTraceState, Thread, TidNumber, TimerState, check_signals,
+    current_user_task, poll_process_timers, ptrace_stop_current, ptrace_syscall_stop_current,
+    raise_signal_fatal, set_timer_state, wait_existing_ptrace_stop_current,
 };
 use crate::{
     mm::{VmMutPtr, VmPtr},
@@ -62,13 +61,13 @@ fn handle_user_page_fault(
 pub fn new_user_task(
     mut uctx: UserContext,
     set_child_tid: usize,
-    child_tid: Pid,
+    child_tid: TidNumber,
 ) -> impl FnOnce() + Send + 'static {
     move || {
         let curr = current_user_task();
 
-        if let Some(tid) = (set_child_tid as *mut Pid).nullable() {
-            tid.vm_write(&curr, child_tid).ok();
+        if let Some(tid) = (set_child_tid as *mut u32).nullable() {
+            tid.vm_write(&curr, child_tid.get()).ok();
         }
 
         info!("Enter user space: ip={:#x}, sp={:#x}", uctx.ip(), uctx.sp());
@@ -78,7 +77,7 @@ pub fn new_user_task(
             if thr.proc_data.ptrace_stop_signo_for(thr.tid()).is_some() {
                 wait_existing_ptrace_stop_current(thr, &mut uctx);
                 true
-            } else if thr.tid() == thr.proc_data.proc.pid()
+            } else if thr.tid().pid_number() == thr.proc_data.proc.pid().pid_number()
                 && thr.proc_data.ptrace_stop_signo().is_some()
             {
                 let _ = ptrace_stop_current(thr, Signo::SIGSTOP, &mut uctx);
@@ -148,7 +147,7 @@ pub fn new_user_task(
                     let syscall_arg0 = uctx.arg0();
                     if ptrace_trace.is_some()
                         && let Some(exit_code) = ptrace_exit_event_code(syscall_no, syscall_arg0)
-                        && crate::syscall::ptrace_notify_exit(thr.proc_data.proc.pid(), exit_code)
+                        && crate::syscall::ptrace_notify_exit(thr.tid(), exit_code)
                     {
                         let _ = ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx);
                     }
@@ -158,9 +157,9 @@ pub fn new_user_task(
                         if stop_for_pending_ptrace_event(thr, &mut uctx) {
                             continue;
                         }
-                        if thr.proc_data.take_ptrace_exec_stop_pending() {
+                        if let Some(former_tid) = thr.proc_data.take_ptrace_exec_stop_pending() {
                             let _is_event =
-                                crate::syscall::ptrace_notify_exec(thr.proc_data.proc.pid());
+                                crate::syscall::ptrace_notify_exec(thr.tid(), former_tid);
                             if let Some(_resume_sig) =
                                 ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
                             {

@@ -15,6 +15,10 @@ ax-lazyinit
 ax-linked-list-r4l
 riscv-h
 ax-riscv-plic
+riscv_vplic
+rsext4
+scope-local
+starry-signal
 starry-vm
 ax-timer-list
 ax-alloc

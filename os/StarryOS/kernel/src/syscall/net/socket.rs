@@ -149,7 +149,11 @@ pub fn sys_bind(
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
         let mut addr = super::addr::read_netlink_addr(current, addr, addrlen as _)?;
         if addr.nl_pid == 0 {
-            addr.nl_pid = current.as_thread().proc_data.proc.pid();
+            let thread = current.as_thread();
+            addr.nl_pid = crate::task::PidView::new(thread.active_pid_namespace())
+                .visible_number(&thread.proc_data.identity())
+                .expect("current process is visible in its active PID namespace")
+                .get();
         }
         debug!("sys_bind <= fd: {fd}, netlink_addr: {addr:?}");
         socket.bind(addr)?;

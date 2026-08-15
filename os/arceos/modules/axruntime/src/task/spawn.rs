@@ -2,8 +2,6 @@ use alloc::sync::Arc;
 
 use super::*;
 
-const LINUX_IRQ_THREAD_PRIORITY: u8 = 50;
-
 /// Creates a scheduler-owned kernel thread and enqueues it on the current CPU.
 pub fn spawn_raw<F>(entry: F, name: String, stack_size: usize) -> Result<ThreadHandle, TaskError>
 where
@@ -79,27 +77,6 @@ where
             InitialContextState::kernel(),
         )
     }
-}
-
-/// Creates a CPU-affine task-context IRQ service thread.
-///
-/// Linux forced IRQ threads use `sched_set_fifo()`, whose fixed priority is
-/// `MAX_RT_PRIO / 2`. Keeping that policy inside the runtime spawn boundary
-/// prevents device adapters from inventing independent anti-starvation rules.
-pub fn spawn_irq_service_with_affinity<F>(
-    entry: F,
-    name: String,
-    stack_size: usize,
-    affinity: CpuSet,
-) -> Result<ThreadHandle, TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    let policy = SchedulePolicy::fifo(
-        RtPriority::new(LINUX_IRQ_THREAD_PRIORITY)
-            .expect("Linux IRQ thread priority must remain representable"),
-    );
-    spawn_raw_with_policy_and_affinity(entry, name, stack_size, policy, affinity)
 }
 
 /// Creates a kernel thread while retaining one OS-specific extension.

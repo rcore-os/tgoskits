@@ -34,7 +34,13 @@ fn output_snapshot_pins_ring_until_the_writer_finishes() {
     assert_eq!(output.ring_vaddr(), 0x1000);
     assert_eq!(output.ring_len(), 0x2000);
 
+    let mapping_anchor = output.mapping_anchor();
     drop(output);
+    assert!(
+        !dropped.load(Ordering::Acquire),
+        "the VMA anchor must retain the complete output snapshot"
+    );
+    drop(mapping_anchor);
     assert!(dropped.load(Ordering::Acquire));
 }
 
@@ -76,6 +82,9 @@ fn detach_restores_the_events_own_ring() {
     let (selected, is_redirected) = route.effective().unwrap();
     assert!(!is_redirected);
     assert_eq!(selected.ring_vaddr(), own.ring_vaddr());
+
+    route.clear();
+    assert!(route.effective().is_none());
 }
 
 #[test]

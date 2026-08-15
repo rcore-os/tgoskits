@@ -196,8 +196,8 @@ int main(void)
         CHECK_RET(syscall(SYS_SCHED_SETSCHEDULER, 0, policy, &sp), 0, "sched_setscheduler with SCHED_RESET_ON_FORK should succeed");
 
         // The console's bounded software queue is smaller than this write. A
-        // PREEMPT_RT-style serial service thread must drain it even while the
-        // writer is a FIFO task on the same CPU.
+        // serial service task must become runnable and drain it after the FIFO
+        // writer blocks on backpressure on the same CPU.
         char serial_progress[8192];
         memset(serial_progress, '.', sizeof(serial_progress));
         serial_progress[sizeof(serial_progress) - 1] = '\n';

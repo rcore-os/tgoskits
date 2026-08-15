@@ -1,13 +1,11 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
+use core::mem::size_of;
 
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use axnsproxy::PidReservationKind;
 use bitflags::bitflags;
-use bytemuck::{AnyBitPattern, NoUninit};
 use linux_raw_sys::general::*;
 use scope_local::Scope;
-use starry_process::{Pid, Process};
 use starry_signal::Signo;
 
 use super::schedule_abi::fork_schedule_policy;
@@ -17,14 +15,45 @@ use crate::task::prepare_user_thread_with_fp_state_and_policy;
 use crate::task::prepare_user_thread_with_policy;
 use crate::{
     StarryError, StarryResult,
-    file::{FD_TABLE, FileLike, PidFd, add_file_like, close_file_like_if},
-    mm::{VmMutPtr, VmPtr, copy_from_kernel},
+    file::{FD_TABLE, PidFd, PreparedFileDescriptor, prepare_file_like},
+    mm::{VmMutPtr, copy_from_kernel},
     sync::SpinLock,
     task::{
-        ProcessData, ProcessDataInit, ProcessImage, Thread, allocate_user_tid, new_user_task,
-        notify_members_changed, register_prepared_task,
+        PidIdentity, PidReservation, PidReservationKind, ProcessData, ProcessDataInit,
+        ProcessImage, Tgid, Thread, Tid, TidNumber, new_user_task,
     },
 };
+
+/// Aborts PID identity publication if clone fails before spawn.
+///
+/// Prepared topology and scoped resources are owned by their own rollback
+/// tokens; the PID reservation remains unpublished until the final commit.
+struct CloneTransaction {
+    identity: Arc<PidIdentity>,
+    committed: bool,
+}
+
+impl CloneTransaction {
+    fn new(identity: Arc<PidIdentity>) -> Self {
+        Self {
+            identity,
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for CloneTransaction {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        self.identity.abort_failed_task_publication();
+    }
+}
 
 bitflags! {
     /// Options for use with [`sys_clone`] and [`sys_clone3`].
@@ -117,6 +146,10 @@ ktracepoint::define_event_trace!(
     })
 );
 
+fn emit_sched_process_fork(parent_tid: TidNumber, child_tid: TidNumber) {
+    trace_sched_process_fork(parent_tid.get() as u64, child_tid.get() as u64);
+}
+
 /// Unified arguments for clone/clone3/fork/vfork.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CloneArgs {
@@ -127,271 +160,6 @@ pub struct CloneArgs {
     pub parent_tid: usize,
     pub child_tid: usize,
     pub pidfd: usize,
-}
-
-struct UnpublishedThread {
-    process: Arc<Process>,
-    tid: Pid,
-    committed: bool,
-}
-
-impl UnpublishedThread {
-    fn register(process: Arc<Process>, tid: Pid) -> Self {
-        process.add_thread(tid);
-        Self {
-            process,
-            tid,
-            committed: false,
-        }
-    }
-
-    fn commit(mut self) {
-        self.committed = true;
-    }
-}
-
-impl Drop for UnpublishedThread {
-    fn drop(&mut self) {
-        if !self.committed {
-            assert!(
-                self.process.remove_unpublished_thread(self.tid),
-                "prepared thread disappeared before clone rollback"
-            );
-        }
-    }
-}
-
-struct PendingChildPidNamespace {
-    owner: Arc<ProcessData>,
-    namespace: axnsproxy::PidNamespaceRef,
-    committed: bool,
-}
-
-impl PendingChildPidNamespace {
-    fn new(owner: &Arc<ProcessData>, namespace: axnsproxy::PidNamespaceRef) -> Self {
-        Self {
-            owner: owner.clone(),
-            namespace,
-            committed: false,
-        }
-    }
-
-    fn commit(mut self) {
-        self.committed = true;
-    }
-}
-
-impl Drop for PendingChildPidNamespace {
-    fn drop(&mut self) {
-        if self.committed {
-            return;
-        }
-        let update = self.owner.namespace_update();
-        let mut replacement = update.snapshot().clone_for_unshare();
-        if replacement.restore_child_pid_ns_if_empty(self.namespace.clone()) {
-            update.publish(replacement);
-        }
-    }
-}
-
-struct NamespacePidReservation {
-    namespace: axnsproxy::PidNamespaceRef,
-    local_pid: u32,
-}
-
-struct LocalPidReservations {
-    entries: Vec<NamespacePidReservation>,
-    global_tid: u64,
-    committed: bool,
-}
-
-impl LocalPidReservations {
-    fn reserve(
-        namespace: axnsproxy::PidNamespaceRef,
-        global_tid: u64,
-        kind: PidReservationKind,
-        namespace_init: bool,
-    ) -> crate::StarryResult<Option<Self>> {
-        if namespace.level() == 0 {
-            return Ok(None);
-        }
-
-        let mut reservations = Self {
-            entries: Vec::new(),
-            global_tid,
-            committed: false,
-        };
-        for (index, namespace) in axnsproxy::pid_namespace_lineage(&namespace)
-            .into_iter()
-            .filter(|namespace| namespace.level() > 0)
-            .enumerate()
-        {
-            let local_pid =
-                namespace.reserve_local_pid(global_tid, kind, namespace_init && index == 0)?;
-            debug_assert!(!namespace_init || index != 0 || local_pid == 1);
-            reservations.entries.push(NamespacePidReservation {
-                namespace,
-                local_pid,
-            });
-        }
-        Ok(Some(reservations))
-    }
-
-    fn publish(
-        &self,
-        _publication: &crate::sync::PiMutexGuard<'static, ()>,
-    ) -> crate::StarryResult<()> {
-        for entry in &self.entries {
-            entry
-                .namespace
-                .publish_reserved_pid(self.global_tid, entry.local_pid)?;
-        }
-        Ok(())
-    }
-
-    fn local_pid(&self, namespace: &axnsproxy::PidNamespaceRef) -> Option<Pid> {
-        self.entries
-            .iter()
-            .find(|entry| Arc::ptr_eq(&entry.namespace, namespace))
-            .map(|entry| entry.local_pid)
-    }
-
-    fn commit(mut self) {
-        self.committed = true;
-    }
-}
-
-impl Drop for LocalPidReservations {
-    fn drop(&mut self) {
-        if !self.committed {
-            for entry in self.entries.iter().rev() {
-                assert!(
-                    entry
-                        .namespace
-                        .rollback_pid_reservation(self.global_tid, entry.local_pid),
-                    "PID namespace reservation changed before clone rollback"
-                );
-            }
-            notify_members_changed();
-        }
-    }
-}
-
-struct UserWriteRollback<'task, T>
-where
-    T: AnyBitPattern + NoUninit + Copy + PartialEq,
-{
-    task: &'task crate::task::UserTaskRef,
-    pointer: *mut T,
-    previous: T,
-    installed: T,
-    committed: bool,
-}
-
-impl<'task, T> UserWriteRollback<'task, T>
-where
-    T: AnyBitPattern + NoUninit + Copy + PartialEq,
-{
-    fn install(
-        current: &'task crate::task::UserTaskRef,
-        pointer: *mut T,
-        installed: T,
-    ) -> crate::StarryResult<Self> {
-        let previous = pointer.vm_read(current)?;
-        pointer.vm_write(current, installed)?;
-        Ok(Self {
-            task: current,
-            pointer,
-            previous,
-            installed,
-            committed: false,
-        })
-    }
-
-    fn commit(mut self) {
-        self.committed = true;
-    }
-}
-
-impl<T> Drop for UserWriteRollback<'_, T>
-where
-    T: AnyBitPattern + NoUninit + Copy + PartialEq,
-{
-    fn drop(&mut self) {
-        if self.committed || self.pointer.vm_read(self.task) != Ok(self.installed) {
-            return;
-        }
-        if self.pointer.vm_write(self.task, self.previous).is_err() {
-            warn!("clone rollback could not restore a parent-visible word");
-        }
-    }
-}
-
-struct InstalledPidFd {
-    fd: i32,
-    file: Arc<dyn FileLike>,
-    committed: bool,
-}
-
-impl InstalledPidFd {
-    fn install(file: Arc<dyn FileLike>) -> crate::StarryResult<Self> {
-        let fd = add_file_like(file.clone(), true)?;
-        Ok(Self {
-            fd,
-            file,
-            committed: false,
-        })
-    }
-
-    fn fd(&self) -> i32 {
-        self.fd
-    }
-
-    fn commit(mut self) {
-        self.committed = true;
-    }
-}
-
-impl Drop for InstalledPidFd {
-    fn drop(&mut self) {
-        if !self.committed && !close_file_like_if(self.fd, &self.file) {
-            warn!("clone rollback found a replaced PIDFD slot");
-        }
-    }
-}
-
-struct UnpublishedPtraceStop {
-    process: Arc<ProcessData>,
-    tid: Pid,
-    committed: bool,
-}
-
-impl UnpublishedPtraceStop {
-    fn register(process: Arc<ProcessData>, tid: Pid, context: &UserContext) -> Self {
-        process.set_ptrace_stop(tid, Signo::SIGSTOP, context);
-        Self {
-            process,
-            tid,
-            committed: false,
-        }
-    }
-
-    fn commit(mut self) {
-        self.committed = true;
-    }
-}
-
-impl Drop for UnpublishedPtraceStop {
-    fn drop(&mut self) {
-        if !self.committed {
-            assert!(
-                self.process
-                    .take_ptrace_stop_user_context_for(self.tid)
-                    .is_some(),
-                "prepared ptrace stop disappeared before clone rollback"
-            );
-        }
-    }
 }
 
 impl CloneArgs {
@@ -488,10 +256,16 @@ impl CloneArgs {
             0
         };
 
+        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0 {
+            crate::mm::prepare_user_write(current, parent_tid_ptr, size_of::<u32>())?;
+        }
+        if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
+            crate::mm::prepare_user_write(current, pidfd, size_of::<i32>())?;
+        }
+
         let curr = current;
         let curr_thread = curr.as_thread();
         let old_proc_data = &curr_thread.proc_data;
-        let parent_pid_namespace = old_proc_data.namespace_snapshot().pid_ns.clone();
         if flags.contains(CloneFlags::NEWCGROUP) && !curr_thread.cred().has_cap_sys_admin() {
             return Err(StarryError::OperationNotPermitted);
         }
@@ -502,13 +276,154 @@ impl CloneArgs {
             _ => curr_thread.nice(),
         };
 
-        let tid = allocate_user_tid()?;
         #[cfg(target_arch = "riscv64")]
         let child_fp_state = {
             let mut fp_state = ax_cpu::FpState::default();
             fp_state.save();
             fp_state.fs = child_fp_fs;
             fp_state
+        };
+
+        let parent_pid_ns = curr_thread.active_pid_namespace();
+        let inherited_cgroup = old_proc_data.cgroup_node();
+        let target_pid_ns = if flags.contains(CloneFlags::THREAD) {
+            parent_pid_ns.clone()
+        } else if flags.contains(CloneFlags::NEWPID) {
+            crate::namespace::PidNamespace::new_child(parent_pid_ns.clone())
+        } else {
+            old_proc_data.nsproxy.lock().pid_ns_for_children.clone()
+        };
+        let mut prepared_nsproxy = (!flags.contains(CloneFlags::THREAD)).then(|| {
+            let mut nsproxy = old_proc_data.nsproxy.lock().clone_all();
+            if flags.contains(CloneFlags::NEWUTS) {
+                nsproxy.unshare_uts();
+            }
+            if flags.contains(CloneFlags::NEWIPC) {
+                nsproxy.unshare_ipc();
+            }
+            if flags.contains(CloneFlags::NEWNS) {
+                nsproxy.unshare_mnt();
+            }
+            if flags.contains(CloneFlags::NEWNET) {
+                nsproxy.unshare_net();
+            }
+            if flags.contains(CloneFlags::NEWUSER) {
+                nsproxy.unshare_user();
+            }
+            if flags.contains(CloneFlags::NEWCGROUP) {
+                nsproxy.unshare_cgroup(inherited_cgroup.clone());
+            }
+            if flags.contains(CloneFlags::NEWPID) {
+                nsproxy.pid_ns_for_children = target_pid_ns.clone();
+            }
+            nsproxy
+        });
+        let reservation_kind = if flags.contains(CloneFlags::THREAD) {
+            PidReservationKind::Thread
+        } else {
+            PidReservationKind::ProcessLeader
+        };
+        let reservation = PidReservation::reserve(&target_pid_ns, reservation_kind)?;
+        let root_tid = TidNumber::from(
+            reservation
+                .number_in(&crate::task::ROOT_PID_NS)
+                .ok_or(StarryError::BadState)?,
+        );
+        let parent_visible_tid = TidNumber::from(
+            reservation
+                .number_in(&parent_pid_ns)
+                .ok_or(StarryError::BadState)?,
+        );
+        let child_visible_tid = TidNumber::from(
+            reservation
+                .number_in(&target_pid_ns)
+                .ok_or(StarryError::BadState)?,
+        );
+        let identity = reservation.identity();
+        let tid_lease = identity.acquire_role::<Tid>()?;
+        let mut tgid_lease = (!flags.contains(CloneFlags::THREAD))
+            .then(|| identity.acquire_role::<Tgid>())
+            .transpose()?;
+        let mut clone_transaction = CloneTransaction::new(identity.clone());
+        let mut prepared_fork = None;
+
+        let new_proc_data = if flags.contains(CloneFlags::THREAD) {
+            old_proc_data.clone()
+        } else {
+            let prepared = if flags.contains(CloneFlags::PARENT) {
+                old_proc_data
+                    .proc
+                    .parent()
+                    .ok_or(StarryError::InvalidInput)?
+            } else {
+                old_proc_data.proc.clone()
+            }
+            .prepare_fork(identity.clone());
+            let proc = prepared.process().clone();
+            prepared_fork = Some(prepared);
+
+            let aspace = if flags.contains(CloneFlags::VM) {
+                old_proc_data.aspace()
+            } else {
+                let aspace_arc = old_proc_data.aspace();
+                let aspace = aspace_arc.lock().try_clone()?;
+                copy_from_kernel(&mut aspace.lock())?;
+                aspace
+            };
+
+            let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
+                old_proc_data.signal.actions()
+            } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
+                Arc::new(SpinLock::new(Default::default()))
+            } else {
+                Arc::new(SpinLock::new(
+                    old_proc_data.signal.actions().lock_irqsave().clone(),
+                ))
+            };
+
+            let process_image = ProcessImage::new(
+                old_proc_data.exe_path().as_ref().clone(),
+                old_proc_data.cmdline(),
+                old_proc_data.envp(),
+                old_proc_data.auxv().as_ref().clone(),
+                old_proc_data.root_path().as_ref().clone(),
+                old_proc_data.cwd_path().as_ref().clone(),
+            );
+            let mut process_init = ProcessDataInit::new(
+                process_image,
+                aspace,
+                signal_actions,
+                prepared_nsproxy
+                    .take()
+                    .expect("process clone must prepare one namespace proxy"),
+                exit_signal,
+                curr_thread.tid_number(),
+            )
+            .with_cgroup(inherited_cgroup.clone());
+            if flags.contains(CloneFlags::VM) {
+                process_init = process_init.with_shared_memory(old_proc_data);
+            }
+            let proc_data = ProcessData::new(
+                proc,
+                identity.clone(),
+                tgid_lease
+                    .take()
+                    .expect("process clone must own one TGID lease"),
+                process_init,
+            );
+            proc_data.set_umask(old_proc_data.umask());
+            proc_data.set_heap_top(old_proc_data.get_heap_top());
+            proc_data.replace_personality(old_proc_data.personality());
+            // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
+            // fork/clone copies mm->dumpable from parent; without this, a
+            // child of `prctl(PR_SET_DUMPABLE, 0) -> fork()` would reset to
+            // SUID_DUMP_USER (1), breaking the safety semantics this PR is
+            // supposed to enforce. Verified via Linux host: parent sets 0,
+            // fork child PR_GET_DUMPABLE returns 0.
+            proc_data.set_dumpable(old_proc_data.dumpable());
+            proc_data.set_thp_disable(old_proc_data.thp_disable());
+
+            proc_data
         };
 
         let mut scope = Scope::new();
@@ -539,141 +454,10 @@ impl CloneArgs {
             *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
         }
 
-        let mut pending_pid_namespace = None;
-        let mut prepared_process = None;
-
-        let (new_proc_data, namespace_init) = if flags.contains(CloneFlags::THREAD) {
-            (old_proc_data.clone(), false)
-        } else {
-            let parent_process = if flags.contains(CloneFlags::PARENT) {
-                old_proc_data
-                    .proc
-                    .parent()
-                    .ok_or(crate::StarryError::InvalidInput)?
-            } else {
-                old_proc_data.proc.clone()
-            };
-
-            let aspace = if flags.contains(CloneFlags::VM) {
-                old_proc_data.aspace()
-            } else {
-                let aspace_arc = old_proc_data.aspace();
-                let aspace = aspace_arc.lock().try_clone()?;
-                copy_from_kernel(&mut aspace.lock())?;
-                aspace
-            };
-            let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
-                old_proc_data.signal.actions()
-            } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
-                Arc::new(SpinLock::new(Default::default()))
-            } else {
-                let actions = old_proc_data.signal.actions();
-                Arc::new(SpinLock::new(actions.lock_irqsave().clone()))
-            };
-
-            let inherited_cgroup = old_proc_data.cgroup_node();
-            let (mut new_nsproxy, pending_child_pid_ns) = if flags.contains(CloneFlags::NEWPID) {
-                (old_proc_data.namespace_snapshot().clone_all(), None)
-            } else {
-                old_proc_data.prepare_child_namespaces()
-            };
-            if let Some(namespace) = pending_child_pid_ns {
-                new_nsproxy.pid_ns = namespace.clone();
-                pending_pid_namespace =
-                    Some(PendingChildPidNamespace::new(old_proc_data, namespace));
-            }
-            if flags.contains(CloneFlags::NEWUTS) {
-                new_nsproxy.unshare_uts();
-            }
-            if flags.contains(CloneFlags::NEWIPC) {
-                new_nsproxy.unshare_ipc();
-            }
-            if flags.contains(CloneFlags::NEWNS) {
-                new_nsproxy.unshare_mnt();
-            }
-            let mut namespace_init = false;
-            if flags.contains(CloneFlags::NEWPID) {
-                new_nsproxy.unshare_pid();
-                namespace_init = true;
-            } else if pending_pid_namespace.is_some() {
-                namespace_init = true;
-            }
-            if flags.contains(CloneFlags::NEWNET) {
-                new_nsproxy.unshare_net();
-            }
-            if flags.contains(CloneFlags::NEWUSER) {
-                new_nsproxy.unshare_user();
-            }
-            if flags.contains(CloneFlags::NEWCGROUP) {
-                new_nsproxy.unshare_cgroup(inherited_cgroup.clone());
-            }
-
-            let fork = parent_process.prepare_fork(tid);
-            let proc = fork.process().clone();
-            prepared_process = Some(fork);
-            let mut process_init = ProcessDataInit::new(
-                ProcessImage::new(
-                    old_proc_data.exe_path().as_ref().clone(),
-                    old_proc_data.cmdline(),
-                    old_proc_data.envp(),
-                    old_proc_data.auxv().to_vec(),
-                    old_proc_data.root_path().as_ref().clone(),
-                    old_proc_data.cwd_path().as_ref().clone(),
-                ),
-                aspace,
-                signal_actions,
-                new_nsproxy,
-                exit_signal,
-                curr_thread.tid(),
-            )
-            .with_cgroup(inherited_cgroup);
-            if flags.contains(CloneFlags::VM) {
-                process_init = process_init.with_shared_memory(old_proc_data);
-            }
-            let proc_data = ProcessData::new(proc, process_init);
-            proc_data.set_umask(old_proc_data.umask());
-            proc_data.set_heap_top(old_proc_data.get_heap_top());
-            proc_data.replace_personality(old_proc_data.personality());
-            // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
-            // fork/clone copies mm->dumpable from parent; without this, a
-            // child of `prctl(PR_SET_DUMPABLE, 0) -> fork()` would reset to
-            // SUID_DUMP_USER (1), breaking the safety semantics this PR is
-            // supposed to enforce. Verified via Linux host: parent sets 0,
-            // fork child PR_GET_DUMPABLE returns 0.
-            proc_data.set_dumpable(old_proc_data.dumpable());
-            proc_data.set_thp_disable(old_proc_data.thp_disable());
-
-            (proc_data, namespace_init)
-        };
-
-        let unpublished_thread = UnpublishedThread::register(new_proc_data.proc.clone(), tid);
-        let pid_namespace = new_proc_data.namespace_snapshot().pid_ns.clone();
-        let pid_kind = if flags.contains(CloneFlags::THREAD) {
-            PidReservationKind::Thread
-        } else {
-            PidReservationKind::Process
-        };
-        let local_pid_reservation = LocalPidReservations::reserve(
-            pid_namespace.clone(),
-            tid as u64,
-            pid_kind,
-            namespace_init,
-        )?;
-        let namespace_pid = |namespace: &axnsproxy::PidNamespaceRef| -> crate::StarryResult<Pid> {
-            if namespace.level() == 0 {
-                return Ok(tid);
-            }
-            local_pid_reservation
-                .as_ref()
-                .and_then(|reservation| reservation.local_pid(namespace))
-                .ok_or(crate::StarryError::BadState)
-        };
-        let parent_visible_tid = namespace_pid(&parent_pid_namespace)?;
-        let child_visible_tid = namespace_pid(&pid_namespace)?;
-
         let parent_cred = Some(curr_thread.cred());
         let thr = Thread::new(
-            tid,
+            identity.clone(),
+            tid_lease,
             new_proc_data.clone(),
             parent_cred,
             curr_thread.signal().blocked(),
@@ -687,20 +471,22 @@ impl CloneArgs {
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);
         }
-        let pidfd_file = if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
-            // The pidfd and the later registry publication share the identity
-            // embedded in ProcessData. A failed clone therefore cannot leave a
-            // prematurely registered PID behind.
-            let identity = new_proc_data.identity();
+        let mut prepared_pidfd: Option<PreparedFileDescriptor> = None;
+        let mut pidfd_copyout = None;
+        if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
+            // The pidfd and later namespace publication share the prepared
+            // identity. Until the final commit, PID-number lookup cannot see it.
             let pidfd_obj = if flags.contains(CloneFlags::THREAD) {
-                PidFd::new_thread(identity, &thr, tid)
+                PidFd::new_thread(identity.clone(), &thr, root_tid)
             } else {
-                PidFd::new_process(identity)
+                PidFd::new_process(identity.clone())
             };
-            Some(Arc::new(pidfd_obj) as Arc<dyn FileLike>)
-        } else {
-            None
-        };
+            let prepared = prepare_file_like(Arc::new(pidfd_obj), true)?;
+            let fd = prepared.fd();
+            prepared_pidfd = Some(prepared);
+            pidfd_copyout = Some((pidfd as *mut i32, fd));
+        }
+
         // vfork(2) and clone(CLONE_VFORK) must sleep the parent until the child
         // execs or exits. Use PollSet so the parent's wait remains
         // interruptible by task.interrupt().
@@ -709,45 +495,13 @@ impl CloneArgs {
             new_proc_data.set_vfork_done(poll);
         }
 
-        let parent_pid = curr.as_thread().proc_data.proc.pid();
-        // The user-visible tid, not the scheduler id: they diverge for the init
-        // process (pid/tid pinned to 1, scheduler id higher). Signal delivery
-        // and ptrace below look this up in the tid-keyed task table.
-        let parent_tid = curr.as_thread().tid() as Pid;
-        let ptrace_event = if flags.contains(CloneFlags::THREAD) {
-            super::ptrace::PTRACE_EVENT_CLONE
-        } else if flags.contains(CloneFlags::VFORK) {
-            super::ptrace::PTRACE_EVENT_VFORK
-        } else {
-            super::ptrace::PTRACE_EVENT_FORK
-        };
-        let ptrace_clone_event = super::ptrace::prepare_ptrace_clone_event(
-            parent_pid,
-            parent_tid,
-            tid as Pid,
-            ptrace_event,
-        );
-        let trace_clone = ptrace_clone_event.is_some();
-        let unpublished_ptrace_stop = if let Some(tracer_pid) = ptrace_clone_event
-            .as_ref()
-            .and_then(|event| event.tracer_pid())
-        {
-            if !flags.contains(CloneFlags::THREAD) {
-                new_proc_data.set_ptrace_tracer_pid(tracer_pid);
-                let attach_mode = if curr.as_thread().proc_data.is_ptrace_seized() {
-                    crate::task::PtraceAttachMode::Seize
-                } else {
-                    crate::task::PtraceAttachMode::Attach
-                };
-                new_proc_data.set_ptrace_attach_mode(attach_mode);
-            }
-            Some(UnpublishedPtraceStop::register(
-                new_proc_data.clone(),
-                tid,
-                &new_uctx,
-            ))
-        } else {
+        let mut cgroup_guard = if flags.contains(CloneFlags::THREAD) {
             None
+        } else {
+            Some(crate::cgroup::begin_fork(
+                new_proc_data.cgroup_node(),
+                &identity,
+            )?)
         };
 
         #[cfg(target_arch = "riscv64")]
@@ -772,89 +526,77 @@ impl CloneArgs {
         )
         .map_err(map_task_creation_error)?;
 
-        // The prepared scheduler record now owns a generation-bearing
-        // ThreadId, but cannot run yet. Install inherited perf events at this
-        // boundary so their identity is complete before the first sched-in.
-        // A later publication failure reaches the extension exit callback,
-        // which rolls these unpublished reservations back in task context.
         #[cfg(target_arch = "aarch64")]
         prepared_task
             .with_task(|task| crate::perf::task::on_clone_inherit(curr_thread, task.as_thread()));
 
-        let installed_pidfd = pidfd_file.map(InstalledPidFd::install).transpose()?;
-        let pidfd_write = installed_pidfd
-            .as_ref()
-            .map(|installed| UserWriteRollback::install(current, pidfd as *mut i32, installed.fd()))
-            .transpose()?;
-        let parent_tid_write = (flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0)
-            .then(|| {
-                UserWriteRollback::install(current, parent_tid_ptr as *mut Pid, parent_visible_tid)
-            })
-            .transpose()?;
-
-        let mut cgroup_guard = if flags.contains(CloneFlags::THREAD) {
-            None
-        } else {
-            Some(crate::cgroup::begin_fork(new_proc_data.cgroup_node(), tid)?)
-        };
-        // Linux completes every fallible scheduler preparation before the task
-        // becomes visible, then uses infallible `wake_up_new_task` after
-        // publishing PID and relationship state. Scheduler stage mirrors that
-        // split: the new context may be selected, but the runtime start gate
-        // prevents it from entering Starry until the transaction commits.
         let staged_task = prepared_task.stage().map_err(map_task_creation_error)?;
-        // Linux performs the final PIDNS_ADDING check while holding
-        // tasklist_lock and permits no failure after task visibility. The
-        // sleeping publication gate is the Starry task-context equivalent:
-        // namespace shutdown takes the same gate before disabling allocation
-        // and closing child publication.
-        let publication = crate::task::lock_publication();
-        if let Some(reservation) = &local_pid_reservation {
-            reservation.publish(&publication)?;
+
+        if let Some((pidfd_ptr, fd)) = pidfd_copyout {
+            pidfd_ptr.vm_write(current, fd)?;
         }
         if let Some(guard) = &mut cgroup_guard {
             guard.publish()?;
         }
-        let published_process = prepared_process
-            .map(|process| process.publish().ok_or(crate::StarryError::BadState))
+
+        // All resource preparation is complete. Publish topology while the
+        // PID reservation and scheduler start gate still make the child
+        // unreachable; the token rolls topology back if PID publication fails.
+        let published_fork = prepared_fork
+            .take()
+            .map(|prepared| prepared.publish().ok_or(StarryError::WouldBlock))
             .transpose()?;
-        let task_registration = staged_task
-            .with_task(|task| register_prepared_task(task, !flags.contains(CloneFlags::THREAD)))?;
+
+        // PID publication is the final fallible visibility edge.
+        let published_identity = reservation.publish()?;
+        debug_assert!(Arc::ptr_eq(&published_identity, &identity));
+        if let Some(published) = published_fork {
+            let process = published.commit();
+            debug_assert!(Arc::ptr_eq(&process, &new_proc_data.proc));
+        }
+        staged_task.with_task(|task| task.as_thread().attach_pid_task(task));
+        new_proc_data.proc.add_thread(root_tid);
+        if let Some(pidfd) = prepared_pidfd.take() {
+            pidfd.install();
+        }
+        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0 {
+            // Linux performs this copyout after the child is visible and does
+            // not roll the child back if a concurrent unmap makes it fail.
+            let _ = (parent_tid_ptr as *mut u32).vm_write(current, parent_visible_tid.get());
+        }
+
+        let parent_pid = curr.as_thread().proc_data.proc.pid_number();
+        // The user-visible tid, not the scheduler id: they diverge for the init
+        // process (pid/tid pinned to 1, scheduler id higher). Signal delivery
+        // and ptrace below look this up in the tid-keyed task table.
+        let parent_tid = curr.as_thread().tid_number();
+        let ptrace_event = if flags.contains(CloneFlags::THREAD) {
+            super::ptrace::PTRACE_EVENT_CLONE
+        } else if flags.contains(CloneFlags::VFORK) {
+            super::ptrace::PTRACE_EVENT_VFORK
+        } else {
+            super::ptrace::PTRACE_EVENT_FORK
+        };
+        let trace_clone =
+            super::ptrace::ptrace_notify_clone(parent_pid, parent_tid, &identity, ptrace_event);
+        if trace_clone && let Some(tracer) = curr.as_thread().proc_data.ptrace_tracer_identity() {
+            if !flags.contains(CloneFlags::THREAD) {
+                new_proc_data.set_ptrace_tracer(&tracer);
+                let attach_mode = if curr.as_thread().proc_data.is_ptrace_seized() {
+                    crate::task::PtraceAttachMode::Seize
+                } else {
+                    crate::task::PtraceAttachMode::Attach
+                };
+                new_proc_data.set_ptrace_attach_mode(attach_mode);
+            }
+            new_proc_data.set_ptrace_stop(root_tid, starry_signal::Signo::SIGSTOP, &new_uctx);
+        }
+
         if let Some(guard) = cgroup_guard {
             guard.commit();
         }
-
-        if let Some(write) = parent_tid_write {
-            write.commit();
-        }
-        if let Some(write) = pidfd_write {
-            write.commit();
-        }
-        if let Some(installed) = installed_pidfd {
-            installed.commit();
-        }
-        task_registration.commit();
-        if let Some(stop) = unpublished_ptrace_stop {
-            stop.commit();
-        }
-        if let Some(reservation) = local_pid_reservation {
-            reservation.commit();
-        }
-        unpublished_thread.commit();
-        if let Some(process) = published_process {
-            process.commit();
-        }
-        if let Some(namespace) = pending_pid_namespace {
-            namespace.commit();
-        }
-        drop(publication);
-        // No recoverable operation remains after Linux-visible publication.
-        // Opening this gate cannot fail and is the Starry equivalent of
-        // `wake_up_new_task`.
+        clone_transaction.commit();
         let _task = staged_task.activate();
-        if let Some(event) = ptrace_clone_event {
-            event.publish();
-        }
 
         if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(
@@ -868,7 +610,7 @@ impl CloneArgs {
 
         // Fire before any potential vfork-wait so observers see the fork edge
         // even when the parent blocks below.
-        trace_sched_process_fork(curr.id().as_u64(), tid as u64);
+        emit_sched_process_fork(curr_thread.tid(), root_tid);
 
         // perf side-band: tell any `attr.task` event watching the parent that it
         // forked a child (PERF_RECORD_FORK), so `perf record` can account it.
@@ -876,27 +618,27 @@ impl CloneArgs {
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::on_clone_sideband(
             curr.as_thread(),
-            new_proc_data.proc.pid(),
-            tid as u32,
+            &new_proc_data.identity(),
+            &identity,
         );
 
         // Block the parent until the child exec's or exits.
         if needs_vfork_block {
             new_proc_data.wait_vfork_done();
-            let _ = super::ptrace::ptrace_notify_vfork_done(parent_pid, parent_tid, tid as Pid);
+            let _ = super::ptrace::ptrace_notify_vfork_done(parent_pid, parent_tid, &identity);
         }
 
-        Ok(parent_visible_tid as _)
+        Ok(parent_visible_tid.get() as _)
     }
 }
 
-fn map_task_creation_error(error: ax_std::os::arceos::task::TaskError) -> crate::StarryError {
+fn map_task_creation_error(error: ax_std::os::arceos::task::TaskError) -> StarryError {
     use ax_std::os::arceos::task::TaskError;
 
     match error {
-        TaskError::TimerCapacity | TaskError::RuntimeFailure(_) => crate::StarryError::NoMemory,
-        TaskError::DeadlineAdmission | TaskError::ThreadBusy => crate::StarryError::ResourceBusy,
-        _ => crate::StarryError::BadState,
+        TaskError::TimerCapacity | TaskError::RuntimeFailure(_) => StarryError::NoMemory,
+        TaskError::DeadlineAdmission | TaskError::ThreadBusy => StarryError::ResourceBusy,
+        _ => StarryError::BadState,
     }
 }
 

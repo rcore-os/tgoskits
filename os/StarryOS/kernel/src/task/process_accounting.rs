@@ -8,7 +8,7 @@ use ax_runtime::{hal::time::TimeValue, task::SchedulerTickGate};
 use super::{
     AlarmChange, AlarmToken, CpuTimeDelta, ITimerSetting, ITimerType, PendingTimerActions,
     PosixTimerTable, ProcessCpuTimeAccounting, ProcessCpuTimeSnapshot, ProcessData,
-    ProcessTimerManager, SetITimerOutcome, get_task,
+    ProcessTimerManager, SetITimerOutcome, get_task_by_number,
 };
 use crate::sync::{IrqMutex, PiMutex};
 
@@ -77,7 +77,7 @@ impl ProcessData {
                 self.proc
                     .threads()
                     .into_iter()
-                    .filter_map(|tid| get_task(tid).ok())
+                    .filter_map(|tid| get_task_by_number(tid).ok())
                     .fold(CpuTimeDelta::ZERO, |total, task| {
                         total.add(task.as_thread().cpu_time().running_residual_at(now_ns))
                     })

@@ -17,7 +17,7 @@ use super::{
     output::{PerfOutputRoute, PerfRingOutput},
     sampling,
 };
-use crate::task::future::IrqNotify;
+use crate::task::{PidNamespaceId, future::IrqNotify};
 
 const RING_DATA_OFFSET: usize = ax_memory_addr::PAGE_SIZE_4K;
 
@@ -27,6 +27,7 @@ pub(super) struct SamplingState {
     pub(super) freq: bool,
     pub(super) target_freq: u32,
     pub(super) sample_type: u64,
+    pub(super) observer: PidNamespaceId,
     pub(super) poll_ready: Arc<PollSet>,
     pub(super) notify: Arc<IrqNotify>,
     pub(super) poll_alive: Arc<AtomicBool>,

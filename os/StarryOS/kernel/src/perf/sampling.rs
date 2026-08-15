@@ -46,7 +46,7 @@ use super::{
 };
 use crate::{
     sync::NoPreemptIrqSave,
-    task::{future::IrqNotify, try_current_user_irq_view},
+    task::{PidNamespaceId, TgidNumber, TidNumber, future::IrqNotify, try_current_user_irq_view},
 };
 
 fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
@@ -197,6 +197,8 @@ pub struct SampleSlot {
     /// fields. `0` when the event was opened without per-event ids (the common
     /// case in this single-group implementation).
     pub id: u64,
+    /// PID namespace view captured by the event owner.
+    pub observer: PidNamespaceId,
     /// Frequency mode (`attr.freq`): after each sample re-derive [`period`](Self::period)
     /// to converge on [`target_freq`](Self::target_freq) samples/sec. Fixed
     /// `-c` period when false.
@@ -214,6 +216,7 @@ pub struct SampleSlotConfig {
     pub period: u32,
     pub sample_type: u64,
     pub id: u64,
+    pub observer: PidNamespaceId,
     pub freq: bool,
     pub target_freq: u32,
     pub last_time: u64,
@@ -227,6 +230,7 @@ impl SampleSlot {
             period: config.period,
             sample_type: config.sample_type,
             id: config.id,
+            observer: config.observer,
             freq: config.freq,
             target_freq: config.target_freq,
             last_time: config.last_time,
@@ -362,9 +366,6 @@ fn service_overflowed_slots(
     ip: u64,
 ) -> u32 {
     let current = try_current_user_irq_view();
-    let (pid, tid) = current
-        .as_ref()
-        .map_or((0, 0), |task| (task.tgid(), task.tid()));
 
     // Bits we have serviced; cleared (write-1-to-clear) only after every slot
     // has been inspected, so re-arming one counter cannot drop another event.
@@ -388,6 +389,12 @@ fn service_overflowed_slots(
 
         let time = ax_runtime::hal::time::monotonic_time_nanos();
         let cpu = ax_hal::percpu::this_cpu_id() as u32;
+        let (pid, tid) = current.as_ref().map_or((None, None), |task| {
+            (
+                task.visible_tgid(slot.observer),
+                task.visible_tid(slot.observer),
+            )
+        });
         let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
         let data = SampleData {
             ip,
@@ -467,14 +474,19 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         PERF_RECORD_MISC_KERNEL
     };
 
-    // SAFETY: hard-IRQ entry already masks local IRQs and prevents migration;
-    // the scoped helper validates the current CPU area.
+    // SAFETY: the handler runs with local IRQs masked on its current CPU, so
+    // the registry cannot be re-entered or observed after migration.
     let handled =
         unsafe { with_registry_mut(|registry| service_overflowed_slots(registry, ovf, misc, ip)) };
 
     // Clear exactly the overflow bits we serviced.
     ax_cpu::pmu::overflow::clear(handled);
     IrqReturn::Handled
+}
+
+#[cfg(axtest)]
+pub(crate) fn kernel_task_sample_ids_are_empty_for_test() -> bool {
+    try_current_user_irq_view().is_none()
 }
 
 /// Lays out one `PERF_RECORD_SAMPLE` into `buf` per `sample_type`, returning its
@@ -502,8 +514,8 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
 /// `sample_type` alone). Gathered by the overflow handler at interrupt time.
 struct SampleData {
     ip: u64,
-    pid: u32,
-    tid: u32,
+    pid: Option<TgidNumber>,
+    tid: Option<TidNumber>,
     time: u64,
     addr: u64,
     id: u64,
@@ -541,8 +553,8 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
     }
     if sample_type & PERF_SAMPLE_TID != 0 {
         // pid and tid are a packed `u32` pair in one 8-byte slot.
-        put!(d.pid);
-        put!(d.tid);
+        put!(d.pid.map_or(0, TgidNumber::get));
+        put!(d.tid.map_or(0, TidNumber::get));
     }
     if sample_type & PERF_SAMPLE_TIME != 0 {
         put!(d.time);

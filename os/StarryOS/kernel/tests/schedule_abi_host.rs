@@ -15,5 +15,19 @@ static STACK_SIZE: u8 = 0;
 #[unsafe(no_mangle)]
 static PAGE_SIZE: u8 = 0;
 
+// The included production module resolves errors through `crate::...`. Keep a
+// narrow host facade here so this pure conversion test does not link the
+// platform-bearing kernel crate or duplicate any scheduling logic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StarryError {
+    ArgumentListTooLong,
+    InvalidInput,
+    OperationNotPermitted,
+    OperationNotSupported,
+    WouldBlock,
+}
+
+type StarryResult<T = ()> = Result<T, StarryError>;
+
 #[path = "../src/syscall/task/schedule_abi.rs"]
 mod schedule_abi;

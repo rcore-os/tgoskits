@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use axfs_ng_vfs::VfsResult;
-use ktracepoint::{TraceCmdLineCacheSnapshot, TracePipeSnapshot};
+use ktracepoint::TraceCmdLineCacheSnapshot;
 
 use crate::{pseudofs::DirectRwFsFileOps, sync::PiMutex};
 
@@ -9,7 +9,7 @@ use crate::{pseudofs::DirectRwFsFileOps, sync::PiMutex};
 pub struct TraceFile(PiMutex<TraceFileState>);
 
 struct TraceFileState {
-    snapshot: Option<TracePipeSnapshot>,
+    snapshot: Option<super::IdentityTraceSnapshot>,
     drain: super::TextDrain,
 }
 
@@ -21,7 +21,7 @@ impl TraceFileState {
         }
     }
 
-    fn reset(&mut self, snapshot: TracePipeSnapshot) {
+    fn reset(&mut self, snapshot: super::IdentityTraceSnapshot) {
         self.snapshot = Some(snapshot);
         self.drain.reset();
     }

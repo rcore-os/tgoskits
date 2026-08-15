@@ -17,7 +17,10 @@
 #include <unistd.h>
 
 #define TEST_DIRECTORY "/usr/bin/starry-test-suit"
-#define CASE_TIMEOUT_SECONDS 180
+#define DEFAULT_CASE_TIMEOUT_SECONDS 120
+#define EXT4_INODE_UNIQUE_TIMEOUT_SECONDS 240
+#define PAGECACHE_CAP_TIMEOUT_SECONDS 240
+#define NAMESPACE_CLEANUP_TIMEOUT_SECONDS 30
 #define RUNNER_TIMEOUT_STATUS 124
 #define RUNNER_ERROR_STATUS 125
 #define NAMESPACE_WAIT_NO_CHILD (-2)
@@ -37,14 +40,26 @@ static int timespec_reached(struct timespec now, struct timespec deadline)
            (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec);
 }
 
-static int wait_for_namespace_init(pid_t namespace_init, int *status)
+static unsigned case_timeout_seconds(const char *name)
+{
+    if (strcmp(name, "test-ext4-inode-unique") == 0) {
+        return EXT4_INODE_UNIQUE_TIMEOUT_SECONDS;
+    }
+    if (strcmp(name, "test-pagecache-cap") == 0) {
+        return PAGECACHE_CAP_TIMEOUT_SECONDS;
+    }
+    return DEFAULT_CASE_TIMEOUT_SECONDS;
+}
+
+static int wait_for_namespace_init(pid_t namespace_init, int *status,
+                                   unsigned timeout_seconds)
 {
     struct timespec deadline;
     if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
         perror("read system test timeout clock");
         return -1;
     }
-    deadline.tv_sec += CASE_TIMEOUT_SECONDS;
+    deadline.tv_sec += (time_t)timeout_seconds;
 
     for (;;) {
         pid_t reaped = waitpid(namespace_init, status, WNOHANG);
@@ -90,17 +105,18 @@ static int kill_and_reap_namespace_init(pid_t namespace_init)
     }
 
     int status;
-    for (;;) {
-        pid_t reaped = waitpid(namespace_init, &status, 0);
-        if (reaped == namespace_init || (reaped < 0 && errno == ECHILD)) {
-            return 0;
-        }
-        if (reaped < 0 && errno == EINTR) {
-            continue;
-        }
-        perror("reap timed out system test PID namespace");
-        return -1;
+    int wait_result =
+        wait_for_namespace_init(namespace_init, &status,
+                                NAMESPACE_CLEANUP_TIMEOUT_SECONDS);
+    if (wait_result == 1 || wait_result == NAMESPACE_WAIT_NO_CHILD) {
+        return 0;
     }
+    if (wait_result == 0) {
+        fprintf(stderr,
+                "STARRY_SYSTEM_TEST_CLEANUP_TIMEOUT: namespace_pid=%d timeout_s=%u\n",
+                namespace_init, NAMESPACE_CLEANUP_TIMEOUT_SECONDS);
+    }
+    return -1;
 }
 
 static void redirect_output(const char *output_path)
@@ -178,7 +194,8 @@ static int exit_status_from_wait_status(int status)
     return RUNNER_ERROR_STATUS;
 }
 
-static int run_isolated_case(const char *path, const char *output_path)
+static int run_isolated_case(const char *path, const char *output_path,
+                             unsigned timeout_seconds)
 {
     void *case_stack = malloc(SUPERVISOR_STACK_SIZE);
     if (case_stack == NULL) {
@@ -199,7 +216,8 @@ static int run_isolated_case(const char *path, const char *output_path)
     }
 
     int status;
-    int wait_result = wait_for_namespace_init(namespace_init, &status);
+    int wait_result =
+        wait_for_namespace_init(namespace_init, &status, timeout_seconds);
     if (wait_result == NAMESPACE_WAIT_NO_CHILD) {
         free(case_stack);
         return RUNNER_ERROR_STATUS;
@@ -210,8 +228,8 @@ static int run_isolated_case(const char *path, const char *output_path)
         return RUNNER_ERROR_STATUS;
     }
     if (wait_result == 0) {
-        fprintf(stderr, "STARRY_SYSTEM_TEST_TIMEOUT: %s timeout_s=%d\n", path,
-                CASE_TIMEOUT_SECONDS);
+        fprintf(stderr, "STARRY_SYSTEM_TEST_TIMEOUT: %s timeout_s=%u\n", path,
+                timeout_seconds);
         int cleanup_result = kill_and_reap_namespace_init(namespace_init);
         free(case_stack);
         return cleanup_result == 0 ? RUNNER_TIMEOUT_STATUS : RUNNER_ERROR_STATUS;
@@ -397,8 +415,9 @@ int main(int argc, char **argv)
         struct timespec start = monotonic_now();
         printf("STARRY_SYSTEM_TEST_BEGIN: %s\n", path);
         fflush(stdout);
+        unsigned timeout_seconds = case_timeout_seconds(names[index]);
         int exit_status = run_isolated_case(
-            path, capture_failures != 0 ? output_path : NULL);
+            path, capture_failures != 0 ? output_path : NULL, timeout_seconds);
         double elapsed = elapsed_seconds(start);
 
         if (capture_failures != 0 && exit_status != 0) {
@@ -415,6 +434,13 @@ int main(int argc, char **argv)
         }
         fflush(stdout);
         free(names[index]);
+        if (exit_status == RUNNER_ERROR_STATUS) {
+            for (size_t remaining = index + 1; remaining < name_count;
+                 ++remaining) {
+                free(names[remaining]);
+            }
+            break;
+        }
     }
     free(names);
     if (capture_failures != 0) {

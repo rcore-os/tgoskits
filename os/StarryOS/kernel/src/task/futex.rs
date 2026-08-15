@@ -1375,5 +1375,8 @@ pub(crate) fn park_notification_rechecks_condition_for_test() -> bool {
         == Err(FutexAccessError::Operation(crate::Errno::EINTR))
         && classify_park_notification(false, true)
             == Err(FutexAccessError::Operation(crate::Errno::ETIMEDOUT))
-        && finish_infallible_wait(Err(FutexWaitError::SchedulerNotification)) == Ok(false)
+        && matches!(
+            finish_infallible_wait(Err(FutexWaitError::SchedulerNotification)),
+            Ok(false)
+        )
 }

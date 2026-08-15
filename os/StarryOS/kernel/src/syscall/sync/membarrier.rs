@@ -99,9 +99,17 @@ pub fn sys_membarrier(
 
 #[cfg(axtest)]
 pub(crate) fn membarrier_query_and_global_rules_hold_for_test() -> bool {
-    decode_membarrier_action(MEMBARRIER_CMD_QUERY, 0) == Ok(MembarrierAction::Query)
-        && decode_membarrier_action(MEMBARRIER_CMD_QUERY, 1)
-            == Err(crate::StarryError::InvalidInput)
-        && decode_membarrier_action(-1, 0) == Err(crate::StarryError::InvalidInput)
-        && decode_membarrier_action(MEMBARRIER_CMD_GLOBAL, 0) == Ok(MembarrierAction::Global)
+    matches!(
+        decode_membarrier_action(MEMBARRIER_CMD_QUERY, 0),
+        Ok(MembarrierAction::Query)
+    ) && matches!(
+        decode_membarrier_action(MEMBARRIER_CMD_QUERY, 1),
+        Err(crate::StarryError::InvalidInput)
+    ) && matches!(
+        decode_membarrier_action(-1, 0),
+        Err(crate::StarryError::InvalidInput)
+    ) && matches!(
+        decode_membarrier_action(MEMBARRIER_CMD_GLOBAL, 0),
+        Ok(MembarrierAction::Global)
+    )
 }

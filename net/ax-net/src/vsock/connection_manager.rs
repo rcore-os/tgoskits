@@ -278,15 +278,16 @@ impl VsockConnectionManager {
 pub static VSOCK_CONN_MANAGER: Mutex<VsockConnectionManager> =
     Mutex::new(VsockConnectionManager::new());
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
-    use alloc::{boxed::Box, sync::Arc, task::Wake};
+    use alloc::{sync::Arc, task::Wake};
     use core::{
         sync::atomic::{AtomicBool, Ordering},
         task::{Context, Waker},
     };
 
-    use ax_task::{CpuId, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec};
+    #[cfg(all(axtest, feature = "axtest"))]
+    use axtest::prelude::*;
 
     use super::*;
 
@@ -302,15 +303,9 @@ mod tests {
         }
     }
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn tx_poll_capability_is_owned_outside_connection_state() {
-        let system = Box::new(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
-        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-        system
-            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
-            .unwrap();
-        system.bring_cpu_online(cpu.as_mut()).unwrap();
-        let _runtime = crate::test_runtime::install(&system, cpu.as_mut());
         let connection = Connection::new_shared(
             VsockAddr { cid: 3, port: 4 },
             Some(VsockAddr { cid: 5, port: 6 }),
@@ -391,16 +386,9 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn unlisten_retires_connections_waiting_in_accept_queue() {
-        let system = Box::new(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
-        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-        system
-            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
-            .unwrap();
-        system.bring_cpu_online(cpu.as_mut()).unwrap();
-        let _runtime = crate::test_runtime::install(&system, cpu.as_mut());
-
         let mut manager = VsockConnectionManager::new();
         let local_addr = VsockAddr { cid: 3, port: 13 };
         let conn_id = VsockConnId {

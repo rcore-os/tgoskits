@@ -42,6 +42,10 @@ pub fn pipe_resize_rejects_oversized_pipe() -> bool {
     super::file::resize_rejects_oversized_pipe_for_test()
 }
 
+pub fn prepared_descriptor_stays_hidden_until_install() -> bool {
+    super::file::prepared_descriptor_stays_hidden_until_install_for_test()
+}
+
 pub fn fcntl_setpipe_size_returns_capacity() -> bool {
     super::syscall::fcntl_setpipe_size_returns_capacity_for_test()
 }
@@ -331,6 +335,10 @@ pub fn task_clone_validation_rules_hold() -> bool {
     super::syscall::task_clone_validation_rules_hold_for_test()
 }
 
+pub fn duplicate_live_session_identity_is_rejected() -> bool {
+    super::task::duplicate_live_session_identity_is_rejected_for_test()
+}
+
 pub fn proc_formatting_contracts_hold() -> bool {
     super::pseudofs::proc::formatting_contracts_hold_for_test()
 }
@@ -419,6 +427,11 @@ pub fn perf_control_callback_runs_preemptible() -> bool {
     super::perf::control_callback_runs_preemptible_for_test()
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn perf_kernel_task_sample_ids_are_empty() -> bool {
+    super::perf::sampling::kernel_task_sample_ids_are_empty_for_test()
+}
+
 pub fn stop_machine_runs_action_and_sync_on_each_cpu() -> bool {
     super::stop_machine::stop_machine_runs_action_and_sync_on_each_cpu_for_test()
 }
@@ -481,6 +494,10 @@ pub fn pidfd_flags_and_signal_validation_rules_hold() -> bool {
 
 pub fn reaping_identity_is_not_publicly_resolvable() -> bool {
     super::task::reaping_identity_is_not_publicly_resolvable_for_test()
+}
+
+pub fn pid_identity_state_machine_rules_hold() -> bool {
+    super::task::pid_identity_state_machine_rules_hold_for_test()
 }
 
 pub fn timerfd_timespec_conversion_rules_hold() -> bool {

@@ -106,7 +106,7 @@ pub fn mount_all() -> StarryResult<()> {
     mount_at(
         &fs,
         "/proc",
-        proc::new_procfs(axnsproxy::ROOT_PID_NS.clone()),
+        proc::new_procfs(crate::task::ROOT_PID_NS.clone()),
     )?;
 
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;

@@ -149,10 +149,11 @@ fn udp_binds_conflict(entry: &UdpBoundEntry, addr: Option<IpAddress>, reuse_port
         && !(reuse_port && entry.reuse_port && entry.addr == addr)
 }
 
-#[cfg(test)]
+#[cfg(all(axtest, feature = "axtest"))]
 mod tests {
     use alloc::{vec, vec::Vec};
 
+    use axtest::prelude::*;
     use smoltcp::{
         iface::SocketSet,
         socket::udp,
@@ -182,9 +183,8 @@ mod tests {
             .collect()
     }
 
-    #[test]
+    #[axtest]
     fn udp_bind_rules_allow_distinct_specific_addresses() {
-        let _runtime = crate::test_runtime::install_default();
         let w = SocketSetWrapper::new();
         let h = handles(4);
         w.udp_bind(h[0], addr(192, 0, 2, 10), 5353, false).unwrap();
@@ -204,9 +204,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[axtest]
     fn udp_bind_rejects_specific_after_wildcard() {
-        let _runtime = crate::test_runtime::install_default();
         let w = SocketSetWrapper::new();
         let h = handles(2);
         w.udp_bind(h[0], wildcard(), 5354, false).unwrap();
@@ -217,9 +216,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[axtest]
     fn udp_reuseport_group_shares_a_port_while_plain_binders_conflict() {
-        let _runtime = crate::test_runtime::install_default();
         let w = SocketSetWrapper::new();
         let h = handles(4);
         let local = addr(127, 0, 0, 1);
@@ -257,9 +255,8 @@ mod tests {
         w.udp_bind(h[3], local, 18101, false).unwrap();
     }
 
-    #[test]
+    #[axtest]
     fn udp_port_available_avoids_any_active_bind() {
-        let _runtime = crate::test_runtime::install_default();
         let w = SocketSetWrapper::new();
         let h = handles(1);
         assert!(w.udp_port_available(wildcard(), 5355));

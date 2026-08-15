@@ -22,7 +22,7 @@ use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
-use crate::sync::{IrqMutex, PiMutex};
+use crate::sync::{IrqMutex, LockdepMutexExt, PiMutex};
 
 const TMPFS_MAGIC: u32 = 0x0102_1994;
 const RAMFS_MAGIC: u32 = 0x8584_58f6;
@@ -262,17 +262,16 @@ struct FileContent {
 }
 
 struct DirContent {
-    // VFS dentry-cache operations call tmpfs directory ops while holding
-    // IrqMutex guards, so this per-directory map must not use a blocking
-    // mutex.
-    entries: IrqMutex<HashMap<FileName, InodeRef>>,
+    // Directory operations can nest while resolving `..`; use a distinct
+    // lockdep subclass while keeping one PI-backed task-context lock path.
+    entries: PiMutex<HashMap<FileName, InodeRef>>,
     next_cookie: AtomicU64,
 }
 
 impl Default for DirContent {
     fn default() -> Self {
         Self {
-            entries: IrqMutex::new(HashMap::new()),
+            entries: PiMutex::new(HashMap::new()),
             next_cookie: AtomicU64::new(3),
         }
     }

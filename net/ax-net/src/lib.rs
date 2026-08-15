@@ -60,8 +60,6 @@ mod socket;
 pub(crate) mod state;
 /// TCP socket implementation.
 pub mod tcp;
-#[cfg(test)]
-mod test_runtime;
 /// UDP socket implementation.
 pub mod udp;
 /// Unix domain socket implementation.
@@ -315,6 +313,13 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         service.enable_dhcp(id, dev, name, mac, metric);
     }
     let dhcp_enabled = service.dhcp_enabled();
+    publish_and_start_service(service, control);
+    if dhcp_enabled {
+        wait_for_dhcp_bootstrap();
+    }
+}
+
+fn publish_and_start_service(service: Service, control: Arc<NetControl>) {
     let workers = service.prepare_device_workers();
     workers.register_device_waker(net_poll_device_waker());
     NET_CONTROL.call_once(|| control);
@@ -322,9 +327,6 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
     workers.start();
     spawn_permanent_worker("net-poll".to_owned(), net_poll_worker)
         .unwrap_or_else(|error| panic!("failed to start net poll worker: {error}"));
-    if dhcp_enabled {
-        wait_for_dhcp_bootstrap();
-    }
 }
 
 fn validate_config(config: &NetworkConfig) {
@@ -965,8 +967,11 @@ fn wait_for_dhcp_bootstrap() {
     warn!("DHCP bootstrap timed out");
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod initialization_contract_tests {
+    #[cfg(all(axtest, feature = "axtest"))]
+    use axtest::prelude::*;
+
     #[test]
     fn device_pollsets_are_initialized_before_service_publication_and_worker_start() {
         let source = include_str!("lib.rs");
@@ -994,36 +999,37 @@ mod initialization_contract_tests {
         );
     }
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn protocol_service_lock_keeps_scheduler_ticks_enabled_while_held() {
         let _network = crate::test_support::network_test_guard();
         crate::test_support::init_split_route_network();
-        crate::test_runtime::reset_preempt_guards();
+        let depth_before = ax_hal::percpu::scheduler_preempt_guard_depth().unwrap();
 
         let service = super::get_service();
 
         assert_eq!(
-            crate::test_runtime::active_preempt_guards(),
-            0,
+            ax_hal::percpu::scheduler_preempt_guard_depth().unwrap(),
+            depth_before,
             "the task-context protocol core must remain preemptible while its sleep mutex is held"
         );
         drop(service);
     }
 }
 
-#[cfg(test)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) mod test_support {
     use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
-    use std::sync::{Mutex as StdMutex, MutexGuard, Once, PoisonError};
 
-    use ax_sync::Mutex;
+    use ax_lazyinit::OnceLock;
+    use ax_sync::{Mutex, MutexGuard};
     use smoltcp::wire::{IpAddress, Ipv4Address, Ipv4Cidr};
 
     use crate::{
-        NET_CONTROL, SERVICE,
         config::{InterfaceFlags, InterfaceId, InterfaceKind},
         consts::STANDARD_MTU,
         device::LoopbackDevice,
+        publish_and_start_service,
         router::{RouteTable, Router, Rule, SharedRouteTable},
         service::{NetControl, NetInterface, Service},
     };
@@ -1033,26 +1039,14 @@ pub(crate) mod test_support {
     pub(crate) const LOCAL_ADDR: Ipv4Address = Ipv4Address::new(192, 0, 2, 10);
     pub(crate) const PEER_ADDR: Ipv4Address = Ipv4Address::new(198, 51, 100, 20);
 
-    static NETWORK_TEST_LOCK: StdMutex<()> = StdMutex::new(());
+    static NETWORK_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    pub(crate) struct NetworkTestGuard {
-        _runtime: crate::test_runtime::OwnedTestRuntime,
-        _network: MutexGuard<'static, ()>,
-    }
-
-    pub(crate) fn network_test_guard() -> NetworkTestGuard {
-        let network = NETWORK_TEST_LOCK
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let runtime = crate::test_runtime::install_default();
-        NetworkTestGuard {
-            _runtime: runtime,
-            _network: network,
-        }
+    pub(crate) fn network_test_guard() -> MutexGuard<'static, ()> {
+        NETWORK_TEST_LOCK.lock()
     }
 
     pub(crate) fn init_split_route_network() {
-        static INIT: Once = Once::new();
+        static INIT: OnceLock<()> = OnceLock::new();
 
         INIT.call_once(|| {
             let routes: SharedRouteTable = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
@@ -1111,8 +1105,8 @@ pub(crate) mod test_support {
                 ip_addrs.push(peer_cidr.into()).unwrap();
             });
 
-            NET_CONTROL.call_once(|| control);
-            SERVICE.call_once(|| Mutex::new(service));
+            publish_and_start_service(service, control);
+            ()
         });
     }
 }

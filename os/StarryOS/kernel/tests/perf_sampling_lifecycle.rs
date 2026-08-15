@@ -1,12 +1,23 @@
 //! Deterministic close-vs-arm contract for Starry PMU sampling.
 
+#[path = "../src/perf/cpu_id.rs"]
+mod cpu_id;
 #[path = "../src/perf/sampling_lifecycle.rs"]
 mod sampling_lifecycle;
-#[path = "../src/perf/target.rs"]
-mod target;
 
+use cpu_id::PerfCpuId;
 use sampling_lifecycle::{PmuCloseAction, PmuRunState, PmuStopClaim, SampleRegistration};
-use target::PerfCpuId;
+
+#[test]
+fn cancelled_arm_returns_to_the_detached_state() {
+    let cpu = PerfCpuId::new(0);
+    let mut state = PmuRunState::new();
+    let arm = state.begin_arm(cpu).unwrap();
+
+    state.cancel_arm(arm);
+
+    assert!(state.begin_arm(cpu).is_some());
+}
 
 #[test]
 fn close_after_registry_publish_must_disarm_before_reclaim() {

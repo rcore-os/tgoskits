@@ -33,6 +33,7 @@ mod ipc;
 mod kmod;
 pub mod kprobe;
 mod mm;
+mod namespace;
 mod perf;
 mod pseudofs;
 mod stop_machine;

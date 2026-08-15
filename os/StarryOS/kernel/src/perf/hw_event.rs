@@ -301,6 +301,7 @@ impl HwPerfEventState {
                         period,
                         sample_type: sampling.sample_type,
                         id: self.sample_id,
+                        observer: sampling.observer,
                         freq: sampling.freq,
                         target_freq: sampling.target_freq,
                         last_time: 0,

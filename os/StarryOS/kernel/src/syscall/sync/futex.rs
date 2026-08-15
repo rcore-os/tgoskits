@@ -18,8 +18,8 @@ use crate::{
         fault_in_user_u32_write, read_user_u32_nofault,
     },
     task::{
-        FutexAccessError, FutexContext, FutexKeyMode, FutexWaitError, UserTaskRef, get_task,
-        resolve_user_pid,
+        FutexAccessError, FutexContext, FutexKeyMode, FutexWaitError, TidNumber, UserTaskRef,
+        get_user_task_by_number,
     },
     time::TimeValueLike,
 };
@@ -418,13 +418,12 @@ pub fn sys_get_robust_list(
     tid: u32,
     head: *mut *const robust_list_head,
     size: *mut usize,
-) -> crate::StarryResult<isize> {
-    let global_tid = if tid == 0 {
-        0
+) -> StarryResult<isize> {
+    let task = if tid == 0 {
+        current.clone()
     } else {
-        resolve_user_pid(current, tid)?
+        get_user_task_by_number(TidNumber::try_from(tid)?)?
     };
-    let task = get_task(global_tid)?;
     head.vm_write(current, task.as_thread().robust_list_head() as _)?;
     size.vm_write(current, size_of::<robust_list_head>())?;
 
@@ -486,5 +485,5 @@ pub(crate) fn futex_op_and_compare_rules_hold_for_test() -> bool {
 pub(crate) fn futex_wake_completion_is_scheduler_driven_for_test() -> bool {
     crate::task::reset_yield_now_calls_for_test();
     let result = complete_futex_wake(1);
-    result == Ok(1) && crate::task::yield_now_calls_for_test() == 0
+    matches!(result, Ok(1)) && crate::task::yield_now_calls_for_test() == 0
 }

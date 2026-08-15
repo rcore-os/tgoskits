@@ -3,30 +3,27 @@ use core::mem::offset_of;
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::time::TimeValue;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
-use starry_process::Pid;
 
 use crate::{
-    StarryError,
+    StarryError, StarryResult,
     mm::{UserPtr, VmPtr},
-    task::{ProcessData, Thread, get_process_data, resolve_user_pid},
+    task::{ProcessData, TgidNumber, Thread, UserTaskRef, get_user_process_data_by_number},
     time::TimeValueLike,
 };
 
 pub fn sys_prlimit64(
-    current: &crate::task::UserTaskRef,
-    pid: Pid,
+    current: &UserTaskRef,
+    pid: u32,
     resource: u32,
     new_limit: *const rlimit64,
     old_limit: *mut rlimit64,
-) -> crate::StarryResult<isize> {
-    // Linux resolves explicit PIDs in the caller's active PID namespace.
-    // Keep lookup first to preserve ESRCH-before-EINVAL error priority.
-    let pid = if pid == 0 {
-        current.as_thread().proc_data.proc.pid()
+) -> StarryResult<isize> {
+    // pid lookup first — match Linux error priority (ESRCH before EINVAL)
+    let proc_data = if pid == 0 {
+        current.as_thread().proc_data.clone()
     } else {
-        resolve_user_pid(current, pid)?
+        get_user_process_data_by_number(TgidNumber::try_from(pid)?)?
     };
-    let proc_data = get_process_data(pid)?;
 
     if resource >= RLIM_NLIMITS {
         return Err(StarryError::InvalidInput);
@@ -167,8 +164,7 @@ pub fn sys_getrusage(
     const RUSAGE_CHILDREN: i32 = linux_raw_sys::general::RUSAGE_CHILDREN;
     const RUSAGE_THREAD: i32 = linux_raw_sys::general::RUSAGE_THREAD as i32;
 
-    let curr = current;
-    let thr = curr.as_thread();
+    let thr = current.as_thread();
 
     let result = match who {
         RUSAGE_SELF => Rusage::from_process(&thr.proc_data),

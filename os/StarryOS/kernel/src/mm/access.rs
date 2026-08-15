@@ -641,7 +641,18 @@ fn prepare_user_memory(
     Ok(())
 }
 
-/// Task-bound provider passed to capability-oriented VM helper crates.
+/// Faults in and validates a userspace output range without modifying it.
+///
+/// Transactions use this before their publication point so copyout is the
+/// only remaining userspace operation after kernel resources are prepared.
+pub(crate) fn prepare_user_write(task: &UserTaskRef, start: usize, len: usize) -> VmResult {
+    if len == 0 {
+        return Ok(());
+    }
+    prepare_user_memory(task, "write", start, len, MappingFlags::WRITE)
+}
+
+/// User-memory capability bound to one live Starry task generation.
 pub(crate) struct UserMemoryProvider<'task> {
     task: &'task UserTaskRef,
 }

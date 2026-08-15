@@ -78,12 +78,36 @@ numeric PID 只用于查表。`Arc<ProcessIdentity>` 才是 generation identity�
 
 parent、children、process-group、session-group 的写操作进入统一 `ProcessRelationTxn`：
 
-1. 进入锁前预留可能增长的容器容量；
-2. parent child-set 按稳定 PID 排序加锁；
-3. process-group member-set 按稳定 PGID 排序加锁；
-4. 临界区内不分配、不执行 callback；
-5. 同一事务关闭 child publication、选择 reaper、移动 child 和更新 group；
-6. 被移除的 `Arc/Weak` 在释放锁后 drop。
+- removes lifecycle flags from `starry-kernel::task::Process` and introduces the
+  typed kernel-owned
+  `Live -> Zombie -> Reaping -> Reaped` identity state machine;
+- constructs the stable identity together with `ProcessData`, so clone-created
+  pidfds and later registry publication cannot diverge or publish a failed
+  clone early;
+- makes final thread exit a one-shot operation and atomically accumulates each
+  exiting thread's CPU time under the thread-group lock;
+- freezes credentials, wait metadata, and process CPU time in the zombie
+  snapshot;
+- makes reap a unique claim, credits child CPU time only to the winning waiter,
+  and removes only exact parent/group identities;
+- retains the identity in `Reaping` until topology retirement finishes, so the
+  numeric PID cannot be reused in the middle of cleanup;
+- treats that `Reaping` registry entry only as an internal PID reservation:
+  ordinary numeric-PID lookup, process/thread `pidfd_open`, and pidfd signal
+  target resolution accept only `Live | Zombie`;
+- holds the PID-registry read lock through the public-visibility state check,
+  which linearizes lookup against the write-locked `Zombie -> Reaping` claim;
+- replaces the separate live and zombie registries with one typed PID registry;
+- resolves `pidfd_open` from one registry lock and retains
+  `Arc<ProcessIdentity>`;
+- shares the original process exit event with pidfds opened after exit;
+- reports `IN | RDNORM` for zombies and `IN | RDNORM | HUP` after reap;
+- wakes `RDNORM` on exit and `HUP` on the unique reap path;
+- copies wait status to userspace before attempting the consuming transition;
+- keeps `WNOWAIT` observational and makes pidfd waits match an exact PID
+  generation rather than a reused numeric PID;
+- covers leader-before-worker exit, frozen CPU accounting, and concurrent
+  waiter ownership in the QEMU regression.
 
 这样避免 reparent/retire 锁序反转，也避免“先从 source 删除，再等 destination lock”期间对象在两个 group 都不可见。
 
@@ -185,13 +209,20 @@ cargo xtask starry test qemu --arch x86_64 \
 
 历史修复里程碑包括：
 
-- `cargo test -p starry-process`：27 项通过；
-- `cargo xtask clippy --package starry-process`：1/1；
-- `cargo xtask clippy --package starry-kernel`：当时 22/22 feature checks；
-- `reaping_identity_is_not_publicly_resolvable` 在 Starry kernel axtest 中通过；
-- host Linux waitid/pidfd：66/66；
-- x86_64 `syscall-test-waitid-pidfd`：66/66，正式 marker 通过；
-- x86_64 `syscall-test-pidfd-send-signal`：78/78，覆盖 zombie readiness 与 post-reap HUP。
+- the former `starry-process` topology tests are now kernel task tests; the
+  standalone package and its old validation commands no longer exist;
+- `cargo xtask clippy --package starry-kernel`: 22/22 feature checks passed;
+- `reaping_identity_is_not_publicly_resolvable` now reports `ok` under
+  `cargo xtask ktest qemu -p starry-kernel --arch x86_64`; the complete local
+  axtest run reports 398 passes and one unrelated pre-existing
+  `task_clone_validation_rules_hold` failure;
+- the waitid/pidfd userspace test passed on host Linux with 66/66 assertions;
+- `cargo xtask starry test qemu --arch x86_64
+  -c qemu/system/syscall-test-waitid-pidfd`: 66/66 assertions passed and the
+  formal runner emitted `STARRY_GROUPED_TESTS_PASSED`.
+- `cargo xtask starry test qemu --arch x86_64
+  -c qemu/system/syscall-test-pidfd-send-signal`: 78/78 assertions passed,
+  including zombie readiness and post-reap `EPOLLHUP`.
 
 这些是对应历史提交的证据。每次 rebase 或生命周期冲突后，必须重新运行当前 head 的定向 test/clippy；CI pending、cancelled 或旧 head 的结果都不能作为当前通过。
 

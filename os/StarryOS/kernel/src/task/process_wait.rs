@@ -4,10 +4,9 @@ use alloc::sync::Arc;
 use core::{future::poll_fn, task::Poll};
 
 use axpoll::{IoEvents, PollSet};
-use starry_process::Pid;
 use starry_signal::Signo;
 
-use super::{ProcessData, current_user_task, future};
+use super::{ProcessData, TidNumber, current_user_task, future};
 use crate::sync::{IrqMutex, PiMutex};
 
 struct VforkDone {
@@ -28,13 +27,13 @@ pub(super) struct ProcessWaitState {
     thread_exit_event: Arc<PollSet>,
     exec_lock: PiMutex<()>,
     exit_signal: Option<Signo>,
-    wait_parent_tid: Pid,
+    wait_parent_tid: TidNumber,
     retired_leader_nice: IrqMutex<Option<i32>>,
     vfork_done: IrqMutex<Option<VforkDone>>,
 }
 
 impl ProcessWaitState {
-    pub(super) fn new(exit_signal: Option<Signo>, wait_parent_tid: Pid) -> Self {
+    pub(super) fn new(exit_signal: Option<Signo>, wait_parent_tid: TidNumber) -> Self {
         Self {
             child_exit_event: Arc::default(),
             exit_event: Arc::default(),
@@ -92,7 +91,7 @@ impl ProcessData {
         self.wait.exit_signal
     }
 
-    pub fn wait_parent_tid(&self) -> Pid {
+    pub fn wait_parent_tid(&self) -> TidNumber {
         self.wait.wait_parent_tid
     }
 

@@ -10,7 +10,7 @@ use crate::{
     CurrentParkStart, TaskError, ThreadId, ThreadWakeHandle, WaitWakeClaim, WaitWakeClaimState,
     WaitWakeDelivery,
     facade::{acquire_blocking_permit, begin_current_park_with_permit},
-    lock::PreemptTicketLock,
+    lock::{PreemptScope, PreemptTicketLock},
     runtime::{MonotonicDeadline, task_runtime},
 };
 
@@ -165,6 +165,11 @@ impl WaitQueue {
     /// [`crate::IrqWaitCell`] to wake one fixed service thread.
     pub fn notify_one(&self) -> bool {
         assert_task_context_notification();
+        let _preempt = PreemptScope::enter();
+        self.notify_one_preempt_disabled()
+    }
+
+    fn notify_one_preempt_disabled(&self) -> bool {
         let (notification_generation, mut selected) = {
             let mut waiters = self.waiters.lock();
             let previous_generation = self
@@ -220,7 +225,9 @@ impl WaitQueue {
     /// publication lock. A generation-bearing selection token serializes wake
     /// completion against timeout cleanup.
     pub fn notify_all(&self) {
-        while self.notify_one() {}
+        assert_task_context_notification();
+        let _preempt = PreemptScope::enter();
+        while self.notify_one_preempt_disabled() {}
     }
 
     fn wait_once(&self, deadline: Option<MonotonicDeadline>) -> Result<WaitOutcome, TaskError> {

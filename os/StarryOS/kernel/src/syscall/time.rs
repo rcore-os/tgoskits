@@ -266,9 +266,10 @@ pub fn sys_setitimer(
     debug!("sys_setitimer <= type: {ty:?}, interval: {interval:?}, remained: {remained:?}");
 
     let proc_data = &curr.as_thread().proc_data;
-    let pid = proc_data.proc.pid();
     let outcome = proc_data.set_interval_timer(ty, interval, remained);
-    let old = outcome.apply(crate::task::AlarmTarget::Process(pid));
+    let old = outcome.apply(crate::task::AlarmTarget::Process(
+        alloc::sync::Arc::downgrade(&proc_data.identity()),
+    ));
 
     if let Some(old_value) = old_value.nullable() {
         write_itimerval(
@@ -334,7 +335,9 @@ pub fn sys_timer_settime(
         .proc_data
         .posix_timers()
         .settime(
-            thr.proc_data.proc.pid(),
+            crate::task::AlarmTarget::Process(alloc::sync::Arc::downgrade(
+                &thr.proc_data.identity(),
+            )),
             timerid,
             flags,
             TimerSpec {

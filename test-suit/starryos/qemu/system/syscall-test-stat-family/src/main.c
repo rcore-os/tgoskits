@@ -117,21 +117,45 @@ static char DANG[128];     /* dangling symlink */
 static char LOOPA[128];    /* loop_a -> loop_b */
 static char LOOPB[128];    /* loop_b -> loop_a */
 
-static void setup(void)
+static void init_fixture_paths(void)
 {
-    /* Start fresh */
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", BASE);
-    system(cmd);
-
-    mkdir(BASE, 0755);
-
     snprintf(REG,    sizeof(REG),    "%s/regfile.txt",    BASE);
     snprintf(SUBDIR, sizeof(SUBDIR), "%s/subdir",         BASE);
     snprintf(LINK,   sizeof(LINK),   "%s/link_to_reg",    BASE);
     snprintf(DANG,   sizeof(DANG),   "%s/dangling_link",  BASE);
     snprintf(LOOPA,  sizeof(LOOPA),  "%s/loop_a",         BASE);
     snprintf(LOOPB,  sizeof(LOOPB),  "%s/loop_b",         BASE);
+}
+
+static int unlink_if_present(const char *path)
+{
+    return unlink(path) == 0 || errno == ENOENT ? 0 : -1;
+}
+
+static int rmdir_if_present(const char *path)
+{
+    return rmdir(path) == 0 || errno == ENOENT ? 0 : -1;
+}
+
+static int cleanup_fixture(void)
+{
+    int result = 0;
+    result |= unlink_if_present(REG);
+    result |= unlink_if_present(LINK);
+    result |= unlink_if_present(DANG);
+    result |= unlink_if_present(LOOPA);
+    result |= unlink_if_present(LOOPB);
+    result |= rmdir_if_present(SUBDIR);
+    result |= rmdir_if_present(BASE);
+    return result;
+}
+
+static void setup(void)
+{
+    init_fixture_paths();
+    CHECK(cleanup_fixture() == 0, "remove stale stat fixture");
+
+    mkdir(BASE, 0755);
 
     int fd = open(REG, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd >= 0) {
@@ -149,9 +173,7 @@ static void setup(void)
 
 static void teardown(void)
 {
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", BASE);
-    system(cmd);
+    CHECK(cleanup_fixture() == 0, "remove stat fixture");
 }
 
 /* ---------------------------------------------------------------- */

@@ -19,16 +19,16 @@ use ax_runtime::hal::{paging::MappingFlags, time::wall_time};
 use ax_std::os::arceos::task::WaitQueue;
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::timespec;
-use starry_process::Pid;
 use starry_signal::SignalSet;
 
 use crate::{
     Errno, StarryError, StarryResult,
     file::{Directory, File, FileLike, event::EventFd, get_file_like, memfd::Memfd},
     mm::{AddrSpace, Backend, IoVec, VmMutPtr, VmPtr},
-    sync::{PiMutex, RwLock},
+    sync::{Mutex, PiMutex, RwLock},
     syscall::signal::check_sigset_size,
     task::{
+        PidIdentityId,
         future::{UserWaitOutcome, block_on, block_on_user_until_wall},
         with_blocked_signals,
     },
@@ -172,8 +172,8 @@ struct AioContextInner {
 
 struct AioContext {
     id: AioContextId,
-    owner: Pid,
-    aspace: Arc<PiMutex<AddrSpace>>,
+    owner: PidIdentityId,
+    aspace: Arc<Mutex<AddrSpace>>,
     ring_vaddr: VirtAddr,
     ring_size: usize,
     ring_events: u32,
@@ -192,8 +192,8 @@ impl AioContext {
     // Build a process-owned AIO context around a mapped user ring.
     fn new(
         id: AioContextId,
-        owner: Pid,
-        aspace: Arc<PiMutex<AddrSpace>>,
+        owner: PidIdentityId,
+        aspace: Arc<Mutex<AddrSpace>>,
         ring_vaddr: VirtAddr,
         ring_size: usize,
         ring_events: u32,
@@ -233,8 +233,8 @@ static NEXT_AIO_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 static AIO_CONTEXTS: RwLock<BTreeMap<AioContextId, Arc<AioContext>>> = RwLock::new(BTreeMap::new());
 
 // Return the process id that owns newly created or looked-up contexts.
-fn current_pid(current: &crate::task::UserTaskRef) -> Pid {
-    current.as_thread().proc_data.proc.pid()
+fn current_process_identity_id(current: &crate::task::UserTaskRef) -> PidIdentityId {
+    current.as_thread().proc_data.identity().id()
 }
 
 // Use Linux EINVAL for all invalid AIO context handles.
@@ -383,8 +383,8 @@ fn write_event_context(context: &AioContext, index: u32, event: &IoEvent) -> Sta
 fn lookup_context(
     current: &crate::task::UserTaskRef,
     ctx: AioContextId,
-) -> crate::StarryResult<Arc<AioContext>> {
-    let owner = current_pid(current);
+) -> StarryResult<Arc<AioContext>> {
+    let owner = current_process_identity_id(current);
     let ring = read_ring_user(current, ctx)?;
     let contexts = AIO_CONTEXTS.read();
     let ctx_id = ring.id as usize;
@@ -1285,7 +1285,7 @@ pub fn sys_io_setup(
 
     let context = Arc::new(AioContext::new(
         ctx_id,
-        current_pid(current),
+        current_process_identity_id(current),
         aspace.clone(),
         ring_vaddr,
         ring_size,
@@ -1346,12 +1346,12 @@ fn destroy_context(context: Arc<AioContext>) {
 }
 
 // Destroy all AIO contexts owned by a process during last-thread exit.
-pub fn cleanup_aio_contexts_for_pid(pid: Pid) {
+pub fn cleanup_aio_contexts_for_process(owner: PidIdentityId) {
     let contexts = {
         let mut table = AIO_CONTEXTS.write();
         let ids: Vec<_> = table
             .iter()
-            .filter_map(|(&id, context)| (context.owner == pid).then_some(id))
+            .filter_map(|(&id, context)| (context.owner == owner).then_some(id))
             .collect();
         ids.into_iter()
             .filter_map(|id| table.remove(&id))

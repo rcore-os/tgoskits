@@ -8,7 +8,7 @@ use super::{
     },
     target::{PerfCpuId, PerfTarget, PerfTargetError, PerfTargetKind, PerfTaskTarget},
 };
-use crate::task::{Cred, UserTaskRef, current_user_task, get_task, resolve_user_pid};
+use crate::task::{Cred, TidNumber, UserTaskRef, current_user_task, get_user_task_by_number};
 
 /// Strong target identity with its CPU selector validated in Linux order.
 pub(super) enum ResolvedPerfTarget {
@@ -48,7 +48,7 @@ impl ResolvedPerfTarget {
                 let current = current_user_task();
                 let task = match task {
                     PerfTaskTarget::Current => current,
-                    PerfTaskTarget::Tid(tid) => get_task(resolve_user_pid(&current, tid)?)?,
+                    PerfTaskTarget::Tid(tid) => get_user_task_by_number(TidNumber::try_from(tid)?)?,
                 };
                 let cpu = cpu
                     .resolve_optional(cpu_count)

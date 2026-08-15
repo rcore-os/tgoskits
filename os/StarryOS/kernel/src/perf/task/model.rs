@@ -85,6 +85,8 @@ pub struct PerTaskCounter {
     /// `attr.inherit`: clone this event onto `fork`/`clone` children (writing into
     /// the same ring) so `perf record` follows them. Driven by [`on_clone_inherit`].
     inherit: bool,
+    /// PID namespace view captured when the root event was opened.
+    pub(super) observer: PidNamespaceId,
     /// Weak fd-owned family identity. The family owns members strongly, so a
     /// weak back-reference avoids a root/member cycle.
     family: IrqMutex<Option<FamilyBinding>>,
@@ -205,6 +207,8 @@ pub(in crate::perf) struct PerTaskConfig {
     pub(in crate::perf) sample_id_all: bool,
     /// `attr.inherit`: clone this event onto `fork`/`clone` children.
     pub(in crate::perf) inherit: bool,
+    /// PID namespace view captured when the root event was opened.
+    pub(in crate::perf) observer: PidNamespaceId,
 }
 
 impl PerTaskCounter {
@@ -241,6 +245,7 @@ impl PerTaskCounter {
             want_task: cfg.want_task,
             sample_id_all: cfg.sample_id_all,
             inherit: cfg.inherit,
+            observer: cfg.observer,
             family: IrqMutex::new(None),
             resources: PmuResourceRelease::new(),
             rdpmc: RdpmcMapping::new(),
@@ -287,6 +292,7 @@ impl PerTaskCounter {
             want_task: self.want_task,
             sample_id_all: self.sample_id_all,
             inherit: true,
+            observer: self.observer,
         }
     }
 

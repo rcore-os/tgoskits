@@ -86,7 +86,7 @@ impl AlarmToken {
 
 #[derive(Clone, Debug)]
 pub enum AlarmTarget {
-    Process(Pid),
+    Process(Weak<PidIdentity>),
 }
 
 struct Entry<T> {

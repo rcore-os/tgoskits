@@ -141,6 +141,12 @@ fn perf_control_callback_runs_preemptible() {
     ax_assert!(axtest_exports::perf_control_callback_runs_preemptible());
 }
 
+#[cfg(target_arch = "aarch64")]
+#[axtest]
+fn perf_kernel_task_sample_ids_are_empty() {
+    ax_assert!(axtest_exports::perf_kernel_task_sample_ids_are_empty());
+}
+
 #[axtest]
 fn tracepoint_callbacks_run_without_raw_guard() {
     ax_assert!(axtest_exports::tracepoint_callbacks_run_without_raw_guard());

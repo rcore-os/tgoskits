@@ -614,22 +614,22 @@ mod tests {
     fn rejects_unknown_and_util_clamp_flags_explicitly() {
         let mut attr = SchedAttr::fair(SCHED_NORMAL, 0);
         attr.sched_flags = 1 << 63;
-        assert_eq!(
+        assert!(matches!(
             parse_sched_attr(attr, SchedulePolicy::default()),
             Err(crate::StarryError::InvalidInput)
-        );
+        ));
 
         attr.sched_flags = SCHED_FLAG_UTIL_CLAMP_MIN as u64;
-        assert_eq!(
+        assert!(matches!(
             parse_sched_attr(attr, SchedulePolicy::default()),
             Err(crate::StarryError::OperationNotSupported)
-        );
+        ));
 
         attr.sched_flags = SCHED_FLAG_UTIL_CLAMP_MIN as u64 | 1 << 63;
-        assert_eq!(
+        assert!(matches!(
             parse_sched_attr(attr, SchedulePolicy::default()),
             Err(crate::StarryError::InvalidInput)
-        );
+        ));
     }
 
     #[test]
@@ -648,10 +648,10 @@ mod tests {
 
         let mut normal = SchedAttr::fair(SCHED_NORMAL, 0);
         normal.sched_flags = SCHED_FLAG_RECLAIM as u64;
-        assert_eq!(
+        assert!(matches!(
             parse_sched_attr(normal, SchedulePolicy::default()),
             Err(crate::StarryError::InvalidInput)
-        );
+        ));
     }
 
     #[test]
@@ -699,11 +699,11 @@ mod tests {
             rlimit_nice: 0,
             stored_nice: Nice::ZERO,
         };
-        assert_eq!(
+        assert!(matches!(
             check_policy_permission(unprivileged, current, update.permission_policy,),
             Err(crate::StarryError::OperationNotPermitted),
-        );
-        assert_eq!(
+        ));
+        assert!(
             check_policy_permission(
                 SchedulerPermission {
                     has_cap_sys_nice: true,
@@ -711,8 +711,8 @@ mod tests {
                 },
                 current,
                 update.permission_policy,
-            ),
-            Ok(()),
+            )
+            .is_ok()
         );
 
         let current =
@@ -732,31 +732,31 @@ mod tests {
 
     #[test]
     fn validates_deadline_and_realtime_parameters() {
-        assert_eq!(
+        assert!(matches!(
             parse_sched_attr(SchedAttr::deadline(20, 10, 30), SchedulePolicy::default()),
             Err(crate::StarryError::InvalidInput)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             parse_sched_attr(
                 SchedAttr::realtime(SCHED_FIFO, 0),
                 SchedulePolicy::default()
             ),
             Err(crate::StarryError::InvalidInput)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             parse_sched_attr(
                 SchedAttr::realtime(SCHED_RR, 100),
                 SchedulePolicy::default()
             ),
             Err(crate::StarryError::InvalidInput)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             parse_sched_attr(
                 SchedAttr::realtime(SCHED_DEADLINE, 1),
                 SchedulePolicy::default()
             ),
             Err(crate::StarryError::InvalidInput)
-        );
+        ));
     }
 
     #[test]
@@ -771,10 +771,10 @@ mod tests {
         .unwrap();
         assert!(matches!(update.policy, SchedulePolicy::Fifo { .. }));
         assert!(update.reset_on_fork);
-        assert_eq!(
+        assert!(matches!(
             parse_setscheduler(SCHED_DEADLINE as i32, 0, current, Nice::ZERO),
             Err(crate::StarryError::InvalidInput)
-        );
+        ));
     }
 
     #[test]
@@ -792,27 +792,27 @@ mod tests {
     #[test]
     fn fork_inherits_or_resets_policy_before_child_publication() {
         let fifo = SchedulePolicy::fifo(RtPriority::new(42).unwrap());
-        assert_eq!(fork_schedule_policy(fifo, false), Ok((fifo, false)));
+        assert_eq!(fork_schedule_policy(fifo, false).unwrap(), (fifo, false));
         assert_eq!(
-            fork_schedule_policy(fifo, true),
-            Ok((SchedulePolicy::fair(Nice::ZERO, FairMode::Normal), false,))
+            fork_schedule_policy(fifo, true).unwrap(),
+            (SchedulePolicy::fair(Nice::ZERO, FairMode::Normal), false,)
         );
 
         let negative_batch = SchedulePolicy::fair(Nice::new(-7).unwrap(), FairMode::Batch);
         assert_eq!(
-            fork_schedule_policy(negative_batch, true),
-            Ok((SchedulePolicy::fair(Nice::ZERO, FairMode::Batch), false,))
+            fork_schedule_policy(negative_batch, true).unwrap(),
+            (SchedulePolicy::fair(Nice::ZERO, FairMode::Batch), false,)
         );
 
         let deadline =
             SchedulePolicy::deadline(DeadlinePolicy::new(1, 2, 3, DeadlineFlags::NONE).unwrap());
-        assert_eq!(
+        assert!(matches!(
             fork_schedule_policy(deadline, false),
             Err(crate::StarryError::WouldBlock)
-        );
+        ));
         assert_eq!(
-            fork_schedule_policy(deadline, true),
-            Ok((SchedulePolicy::fair(Nice::ZERO, FairMode::Normal), false,))
+            fork_schedule_policy(deadline, true).unwrap(),
+            (SchedulePolicy::fair(Nice::ZERO, FairMode::Normal), false,)
         );
     }
 
@@ -820,15 +820,15 @@ mod tests {
     fn rejects_sched_attr_sizes_outside_supported_versions() {
         let mut attr = SchedAttr::fair(SCHED_NORMAL, 0);
         attr.size = 47;
-        assert_eq!(
+        assert!(matches!(
             parse_sched_attr(attr, SchedulePolicy::default()),
             Err(crate::StarryError::ArgumentListTooLong)
-        );
+        ));
         attr.size = core::mem::size_of::<SchedAttr>() as u32 + 1;
-        assert_eq!(
+        assert!(matches!(
             parse_sched_attr(attr, SchedulePolicy::default()),
             Err(crate::StarryError::ArgumentListTooLong)
-        );
+        ));
     }
 
     #[test]
@@ -842,21 +842,18 @@ mod tests {
             rlimit_nice: 25,
             stored_nice: Nice::ZERO,
         };
-        assert_eq!(
+        assert!(matches!(
             check_policy_permission(permission, fair, fifo_20),
             Err(crate::StarryError::OperationNotPermitted)
-        );
+        ));
 
         let allowed_nice = SchedulePolicy::fair(Nice::new(-5).unwrap(), FairMode::Normal);
-        assert_eq!(
-            check_policy_permission(permission, fair, allowed_nice),
-            Ok(())
-        );
+        assert!(check_policy_permission(permission, fair, allowed_nice).is_ok());
         let denied_nice = SchedulePolicy::fair(Nice::new(-6).unwrap(), FairMode::Normal);
-        assert_eq!(
+        assert!(matches!(
             check_policy_permission(permission, fair, denied_nice),
             Err(crate::StarryError::OperationNotPermitted)
-        );
+        ));
 
         let fifo_10 = SchedulePolicy::fifo(RtPriority::new(10).unwrap());
         let rr_10 = SchedulePolicy::round_robin(RtPriority::new(10).unwrap());
@@ -864,10 +861,10 @@ mod tests {
             rlimit_rtprio: 0,
             ..permission
         };
-        assert_eq!(
+        assert!(matches!(
             check_policy_permission(no_rt_limit, fifo_10, rr_10),
             Err(crate::StarryError::OperationNotPermitted)
-        );
+        ));
 
         let idle = SchedulePolicy::fair(Nice::ZERO, FairMode::Idle);
         let normal = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
@@ -875,31 +872,31 @@ mod tests {
             rlimit_nice: 0,
             ..permission
         };
-        assert_eq!(
+        assert!(matches!(
             check_policy_permission(no_nice_limit, idle, normal),
             Err(crate::StarryError::OperationNotPermitted)
-        );
+        ));
 
         let non_owner = SchedulerPermission {
             owns_target: false,
             ..permission
         };
-        assert_eq!(
+        assert!(matches!(
             check_policy_permission(non_owner, fair, fair),
             Err(crate::StarryError::OperationNotPermitted)
-        );
+        ));
 
         let deadline =
             SchedulePolicy::deadline(DeadlinePolicy::new(1, 2, 3, DeadlineFlags::NONE).unwrap());
-        assert_eq!(
+        assert!(matches!(
             check_policy_permission(permission, fair, deadline),
             Err(crate::StarryError::OperationNotPermitted)
-        );
+        ));
         let privileged = SchedulerPermission {
             has_cap_sys_nice: true,
             ..permission
         };
-        assert_eq!(check_policy_permission(privileged, fair, deadline), Ok(()));
+        assert!(check_policy_permission(privileged, fair, deadline).is_ok());
     }
 
     #[test]
@@ -914,10 +911,7 @@ mod tests {
             stored_nice: Nice::new(-7).unwrap(),
         };
 
-        assert_eq!(
-            check_policy_permission(permission, current, requested),
-            Ok(())
-        );
+        assert!(check_policy_permission(permission, current, requested).is_ok());
     }
 
     #[test]
@@ -945,25 +939,25 @@ mod tests {
 
     #[test]
     fn only_privileged_callers_may_clear_reset_on_fork() {
-        assert_eq!(
+        assert!(matches!(
             check_reset_on_fork_permission(false, true, false),
             Err(crate::StarryError::OperationNotPermitted)
-        );
-        assert_eq!(check_reset_on_fork_permission(true, true, false), Ok(()));
-        assert_eq!(check_reset_on_fork_permission(false, true, true), Ok(()));
-        assert_eq!(check_reset_on_fork_permission(false, false, false), Ok(()));
+        ));
+        assert!(check_reset_on_fork_permission(true, true, false).is_ok());
+        assert!(check_reset_on_fork_permission(false, true, true).is_ok());
+        assert!(check_reset_on_fork_permission(false, false, false).is_ok());
     }
 
     #[test]
     fn exposes_linux_priority_ranges_and_default_rr_interval() {
-        assert_eq!(scheduler_priority_min(SCHED_FIFO), Ok(1));
-        assert_eq!(scheduler_priority_max(SCHED_RR), Ok(99));
-        assert_eq!(scheduler_priority_min(SCHED_NORMAL), Ok(0));
-        assert_eq!(scheduler_priority_max(SCHED_DEADLINE), Ok(0));
-        assert_eq!(
+        assert_eq!(scheduler_priority_min(SCHED_FIFO).unwrap(), 1);
+        assert_eq!(scheduler_priority_max(SCHED_RR).unwrap(), 99);
+        assert_eq!(scheduler_priority_min(SCHED_NORMAL).unwrap(), 0);
+        assert_eq!(scheduler_priority_max(SCHED_DEADLINE).unwrap(), 0);
+        assert!(matches!(
             scheduler_priority_min(42),
             Err(crate::StarryError::InvalidInput)
-        );
+        ));
         let SchedulePolicy::RoundRobin { quantum_ns, .. } =
             SchedulePolicy::round_robin(RtPriority::new(1).unwrap())
         else {
