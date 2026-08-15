@@ -42,6 +42,11 @@ fn inactive_task_and_posix_timers_keep_the_fast_gate_closed() {
 }
 
 #[axtest]
+fn inactive_interval_timer_poll_skips_cpu_time_sample() {
+    ax_assert!(axtest_exports::inactive_interval_timer_poll_skips_cpu_time_sample());
+}
+
+#[axtest]
 fn posix_timer_clock_sampling_stays_outside_metadata_lock() {
     ax_assert!(axtest_exports::posix_timer_clock_sampling_rules_hold());
 }
