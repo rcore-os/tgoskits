@@ -404,20 +404,28 @@ impl HwPerfEvent {
     ///
     /// No ring buffer — the page only carries the metadata a userspace reader
     /// needs to read this event's hardware counter directly: `cap_user_rdpmc`,
-    /// the 1-based `index` selecting the counter, and its `pmc_width`. `offset`
-    /// stays 0: a system-wide event has no multiplexing, while a per-task event
-    /// exposes the live hardware slice selected by its scheduler-owned counter.
-    /// In both cases userspace reads `rdpmc(index - 1)` masked to `pmc_width`
-    /// bits. The page is never updated after this, so `lock` stays 0 (the
-    /// userspace seqlock reads once).
+    /// the 1-based `index` selecting the counter, its `pmc_width`, and the count
+    /// already accumulated in `offset`. System-wide metadata is static;
+    /// per-task metadata starts inactive and scheduler hooks update its
+    /// seqlock/index/offset at every slice boundary.
     /// EL0 read access to the counters is enabled globally in
     /// [`ax_cpu::pmu::init_cpu`] via `PMUSERENR_EL0`.
     fn device_mmap_rdpmc(
         &self,
         len: usize,
     ) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
-        if len < ax_memory_addr::PAGE_SIZE_4K {
+        // Exactly one metadata page is allocated below. Accepting a larger VMA
+        // would make the physical mapping continue into unrelated adjacent
+        // memory after that page.
+        if len != ax_memory_addr::PAGE_SIZE_4K {
             return Err(StarryError::InvalidInput);
+        }
+        if self
+            .per_task
+            .as_ref()
+            .is_some_and(|ptc| ptc.rdpmc_page_mapped())
+        {
+            return Err(StarryError::ResourceBusy);
         }
         let mut pages = GlobalPage::alloc_contiguous(1, ax_memory_addr::PAGE_SIZE_4K)
             .map_err(|_| StarryError::NoMemory)?;
@@ -429,9 +437,11 @@ impl HwPerfEvent {
         // is 1-based (0 ⇒ rdpmc unusable); `index - 1` is the ARM counter the
         // reader accesses — `PMEVCNTR(index-1)_EL0`, or `PMCCNTR_EL0` for the
         // dedicated cycle counter (ARM index 31 ⇒ page index 32).
-        let (index, pmc_width): (u32, u16) = match self.counter {
-            Counter::Cycle => (32, 64),
-            Counter::Programmable(n) => (n as u32 + 1, 32),
+        let (index, pmc_width): (u32, u16) = match (&self.per_task, self.counter) {
+            (Some(_), Counter::Programmable(_)) => (0, 32),
+            (None, Counter::Cycle) => (32, 64),
+            (None, Counter::Programmable(n)) => (n as u32 + 1, 32),
+            (Some(_), Counter::Cycle) => return Err(StarryError::Unsupported),
         };
 
         let header = kvirt.as_usize() as *mut perf_event_mmap_page;
@@ -443,12 +453,19 @@ impl HwPerfEvent {
             core::ptr::addr_of_mut!((*header).index).write(index);
             core::ptr::addr_of_mut!((*header).offset).write(0);
             core::ptr::addr_of_mut!((*header).pmc_width).write(pmc_width);
-            // `capabilities` is a union over a bitfield; `cap_user_rdpmc` is bit 2
-            // (after `cap_bit0` and `cap_bit0_is_deprecated`). Write the `u64` arm.
-            core::ptr::addr_of_mut!((*header).__bindgen_anon_1.capabilities).write(1u64 << 2);
+            // `cap_bit0_is_deprecated` (bit 1) tells userspace the capability
+            // bits have their post-3.12 meanings; `cap_user_rdpmc` is bit 2.
+            core::ptr::addr_of_mut!((*header).__bindgen_anon_1.capabilities)
+                .write((1u64 << 1) | (1u64 << 2));
         }
 
-        let anchor: Arc<dyn Any + Send + Sync> = Arc::new(pages);
+        let pages = Arc::new(pages);
+        if let Some(ptc) = &self.per_task
+            && !ptc.install_rdpmc_page(pages.clone())
+        {
+            return Err(StarryError::ResourceBusy);
+        }
+        let anchor: Arc<dyn Any + Send + Sync> = pages;
         Ok((paddr, anchor))
     }
 }

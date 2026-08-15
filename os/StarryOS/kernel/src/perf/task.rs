@@ -61,15 +61,20 @@
 //! `attr.inherit` (following `fork`/`clone` children) is deferred: the counter
 //! follows the single attached task only.
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{
+    string::String,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     any::Any,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence},
 };
 
 use ax_alloc::GlobalPage;
 use ax_runtime::hal::paging::MappingFlags;
 use ax_task::IrqNotify;
+use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 use super::{
     hw,
@@ -185,6 +190,13 @@ pub struct PerTaskCounter {
     inherit: bool,
     /// PID namespace view captured when this event was opened.
     observer: PidNamespaceId,
+
+    // --- Per-task counting mmap (`rdpmc`) ---
+    /// Weak event-side reference to the VMA-owned metadata page. Scheduler
+    /// hooks upgrade it only for a bounded publication; after `munmap`, a stale
+    /// weak reference no longer blocks a replacement mapping. The IRQ-safe lock
+    /// also serializes scheduler and fd-teardown writers.
+    rdpmc_page: IrqMutex<Option<Weak<GlobalPage>>>,
 
     /// Kernel virtual address of the ring's first page (`perf_event_mmap_page`),
     /// or `0` until `mmap(perf_fd)` runs ([`set_ring`](Self::set_ring)). Read by
@@ -327,6 +339,7 @@ impl PerTaskCounter {
             sample_id_all: cfg.sample_id_all,
             inherit: cfg.inherit,
             observer: cfg.observer,
+            rdpmc_page: IrqMutex::new(None),
             ring_vaddr: AtomicUsize::new(0),
             ring_len: AtomicUsize::new(0),
             notify_ptr: AtomicUsize::new(0),
@@ -365,6 +378,83 @@ impl PerTaskCounter {
     /// Mirrors Linux's `PERF_EVENT_IOC_RESET`, which resets the count only.
     pub fn reset(&self) {
         self.accumulated.store(0, Ordering::Release);
+        let active = self.running.load(Ordering::Acquire);
+        if active {
+            if self.is_sampling {
+                ax_cpu::pmu::counter::preload(self.n, self.sample_period);
+            } else {
+                ax_cpu::pmu::counter::reset(self.n);
+            }
+        }
+        if !self.is_sampling {
+            self.publish_rdpmc_page(active);
+        }
+    }
+
+    /// Whether a counting event already owns an mmap metadata page.
+    pub fn rdpmc_page_mapped(&self) -> bool {
+        self.rdpmc_page
+            .lock()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some()
+    }
+
+    /// Install and publish a counting event's mmap metadata page.
+    ///
+    /// The strong page anchor is installed before the address becomes visible
+    /// to scheduler hooks. Returns `false` if this event already has a page.
+    pub fn install_rdpmc_page(&self, pages: Arc<GlobalPage>) -> bool {
+        let mut slot = self.rdpmc_page.lock();
+        if slot.as_ref().and_then(Weak::upgrade).is_some() {
+            return false;
+        }
+        self.write_rdpmc_snapshot(&pages, self.running.load(Ordering::Acquire));
+        *slot = Some(Arc::downgrade(&pages));
+        true
+    }
+
+    /// Publish one Linux `perf_event_mmap_page` snapshot.
+    ///
+    /// Active snapshots expose the reserved 1-based hardware index and put the
+    /// completed-slice total in `offset`; inactive snapshots expose `index=0`
+    /// and retain the full count in `offset`. The odd/even `lock` sequence lets
+    /// userspace retry rather than combining fields from different slices.
+    fn publish_rdpmc_page(&self, active: bool) {
+        let page = self.rdpmc_page.lock();
+        let Some(page) = page.as_ref().and_then(Weak::upgrade) else {
+            return;
+        };
+        self.write_rdpmc_snapshot(&page, active);
+    }
+
+    fn write_rdpmc_snapshot(&self, page: &GlobalPage, active: bool) {
+        let header = page.start_vaddr().as_usize() as *mut perf_event_mmap_page;
+        let index = if active { self.n as u32 + 1 } else { 0 };
+        let offset = self.accumulated.load(Ordering::Acquire) as i64;
+        let time_enabled = self.time_enabled_ns.load(Ordering::Acquire);
+        let time_running = self.time_running_ns.load(Ordering::Acquire);
+
+        // SAFETY: `page` pins a zeroed, page-sized allocation and `lock` is a
+        // naturally aligned u32 in `perf_event_mmap_page`. The `rdpmc_page`
+        // lock serializes writers. Atomic odd/even publication plus volatile
+        // metadata stores implement the userspace seqlock contract.
+        unsafe {
+            let sequence = AtomicU32::from_ptr(core::ptr::addr_of_mut!((*header).lock));
+            let odd = sequence.load(Ordering::Relaxed).wrapping_add(1) | 1;
+            sequence.store(odd, Ordering::SeqCst);
+            core::ptr::addr_of_mut!((*header).index).write_volatile(index);
+            core::ptr::addr_of_mut!((*header).offset).write_volatile(offset);
+            core::ptr::addr_of_mut!((*header).time_enabled).write_volatile(time_enabled);
+            core::ptr::addr_of_mut!((*header).time_running).write_volatile(time_running);
+            fence(Ordering::Release);
+            sequence.store(odd.wrapping_add(1), Ordering::Release);
+        }
+    }
+
+    /// Stop scheduler updates after publishing the final inactive snapshot.
+    fn release_rdpmc_page(&self) {
+        *self.rdpmc_page.lock() = None;
     }
 
     /// Whether this is a sampling event (`sample_period > 0`).
@@ -614,6 +704,9 @@ pub fn perf_sched_in(thr: &Thread) {
         }
         ptc.last_in_ns.store(now, Ordering::Release);
         ptc.running.store(true, Ordering::Release);
+        if !ptc.is_sampling {
+            ptc.publish_rdpmc_page(true);
+        }
     }
 }
 
@@ -665,6 +758,9 @@ pub fn perf_sched_out(thr: &Thread) {
         let dt = now.saturating_sub(last_in);
         ptc.time_enabled_ns.fetch_add(dt, Ordering::AcqRel);
         ptc.time_running_ns.fetch_add(dt, Ordering::AcqRel);
+        if !ptc.is_sampling {
+            ptc.publish_rdpmc_page(false);
+        }
     }
 }
 
@@ -1079,8 +1175,17 @@ pub fn free_hw(ptc: &PerTaskCounter) {
         // Zero the published geometry so no later hook can re-arm a stale ring.
         ptc.ring_vaddr.store(0, Ordering::Release);
         ptc.notify_ptr.store(0, Ordering::Release);
-    } else if was_running {
-        ax_cpu::pmu::counter::disable(ptc.n);
+    } else {
+        if was_running {
+            let delta = ax_cpu::pmu::counter::read(ptc.n);
+            ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
+            ax_cpu::pmu::counter::disable(ptc.n);
+            let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
+            ptc.time_enabled_ns.fetch_add(dt, Ordering::AcqRel);
+            ptc.time_running_ns.fetch_add(dt, Ordering::AcqRel);
+        }
+        ptc.publish_rdpmc_page(false);
+        ptc.release_rdpmc_page();
     }
     hw::free_programmable_counter(ptc.n);
     PERF_TASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);

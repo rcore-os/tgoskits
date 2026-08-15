@@ -442,6 +442,28 @@ programmable counter 生成单页 `perf_event_mmap_page`，测试按 metadata �
 disabled 状态 mmap，`ioctl(ENABLE)` 后通过 `sched_yield` 触发明确的 sched-in 发布，再比较
 EL0 直读与 `read(perf_fd)`。
 
+继续回看 PR #1775 的开发链后，`e747f9d72`（`fix(starry-perf): publish dynamic rdpmc
+metadata`）与本分支新进入的 per-task counting 路径直接重叠。Linux
+[`perf_event_open(2)`](https://man7.org/linux/man-pages/man2/perf_event_open.2.html) 与固定提交
+[`dac3e89a2c90c2feeb471e1f22a2512ad424b792`](https://github.com/torvalds/linux/blob/dac3e89a2c90c2feeb471e1f22a2512ad424b792/kernel/events/core.c#L6825-L6865)
+中的 `perf_event_update_userpage()` 在每个调度片边界用 sequence、`index` 和 `offset` 发布
+`count = offset + rdpmc(index - 1)`；inactive 时必须把 `index` 清零并把完整计数保留在
+`offset`。本分支旧页始终固定为 `index=1, offset=0, lock=0`，CI 中 `rdpmc` 与
+`read(fd)` 相差约 33 倍；确定性红测进一步得到 inactive `index=1, offset=0`。修复让
+scheduler hooks 发布原子奇偶 sequence，active 页暴露稳定 programmable index，inactive
+页只暴露累计 offset；测试用 `usleep(10000)` 必然形成 sched-out/in，并断言 active
+offset 已保留上一切片，得到 `index: 0 -> 1 -> 0`，最终 mmap count 与 `read(fd)`
+精确相等，直接覆盖跨调度片累计。
+
+同一历史提交还提供了 metadata VMA 的安全与生命周期红测。旧实现错误接受 8192-byte
+mmap（实际只分配一页）；收紧为 4096 后，`sys_mmap` 又把设备返回的 `EINVAL` 吞掉并落入
+普通文件 fallback；透传错误后，旧强引用仍使 `munmap` 后重映射返回 `EBUSY`；最后
+`RESET` 只清 accumulator、不更新 mmap offset。最终实现仅把 VMA 的强引用作为页所有者，
+event/scheduler 侧保存可升级的弱引用，第二个 live mmap 保持 `EBUSY`，`munmap` 后可重新
+mmap；`DeviceMmap::None` 成为唯一 file fallback 标记，设备错误原样返回；disabled
+`RESET` 同步把 mmap 和 fd 计数清零。上述阶段均用同一
+`cargo xtask starry test qemu --arch aarch64 -c qemu/system/perf-hw-rdpmc` 取得红/绿证据。
+
 同一轮 `test-pagecache-cap` 已完成 1400 个磁盘文件的创建、映射、触页以及 `<100MB` 内存
 增量断言，但在逐个 `munmap`/`unlink` 的清理阶段超过默认 120 秒。覆盖规模和阈值保持不变；
 共享 runner 继续默认 120 秒，只为该精确 binary 名称增加 240 秒预算，并由 axbuild 静态

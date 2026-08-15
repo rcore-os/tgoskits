@@ -237,7 +237,10 @@ pub trait FileLike: Pollable + DowncastSync {
     }
 
     fn device_mmap(&self, _offset: u64, _length: u64) -> StarryResult<DeviceMmap> {
-        Err(StarryError::BadFileDescriptor)
+        // `None` is the typed probe result for an ordinary file: `sys_mmap`
+        // must continue through `file_mmap`. An error from an implementation
+        // that owns a device mapping is committed and must reach userspace.
+        Ok(DeviceMmap::None)
     }
 
     fn ioctl(&self, _cmd: u32, _arg: usize) -> StarryResult<usize> {
