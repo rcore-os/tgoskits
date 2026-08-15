@@ -92,6 +92,11 @@ fn scheduler_tick_sampling_is_read_only() {
 }
 
 #[axtest]
+fn user_kernel_cpu_time_transitions_stay_task_local() {
+    ax_assert!(axtest_exports::user_kernel_transitions_remain_task_local());
+}
+
+#[axtest]
 fn untraced_syscall_boundary_skips_ptrace_maps() {
     ax_assert!(axtest_exports::inactive_ptrace_syscall_gate_is_lock_free());
 }

@@ -282,6 +282,10 @@ pub fn scheduler_tick_sampling_avoids_owner_writer() -> bool {
     super::task::scheduler_tick_sampling_avoids_owner_writer_for_test()
 }
 
+pub fn user_kernel_transitions_remain_task_local() -> bool {
+    super::task::user_kernel_transitions_remain_task_local_for_test()
+}
+
 pub fn inactive_ptrace_syscall_gate_is_lock_free() -> bool {
     super::task::inactive_ptrace_syscall_gate_is_lock_free_for_test()
 }

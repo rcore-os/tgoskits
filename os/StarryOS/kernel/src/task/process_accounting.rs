@@ -79,7 +79,7 @@ impl ProcessData {
                     .into_iter()
                     .filter_map(|tid| get_task_by_number(tid).ok())
                     .fold(CpuTimeDelta::ZERO, |total, task| {
-                        total.add(task.as_thread().cpu_time().running_residual_at(now_ns))
+                        total.add(task.as_thread().cpu_time().unpublished_delta_at(now_ns))
                     })
             })
     }
