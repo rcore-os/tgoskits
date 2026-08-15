@@ -3,6 +3,7 @@
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <sched.h>
 #include <stdint.h>
@@ -156,22 +157,6 @@ int main(void)
         return fail("sigaction SIGCHLD");
     }
 
-    pid_t invalid_request_pid = fork();
-    if (invalid_request_pid < 0) {
-        return fail("fork invalid ptrace request child");
-    }
-    if (invalid_request_pid == 0) {
-        long ret = syscall(SYS_ptrace, 1UL << 32, 0, 0, 0);
-        _exit(ret == -1 ? 0 : 100);
-    }
-    int invalid_request_status = 0;
-    if (waitpid(invalid_request_pid, &invalid_request_status, 0) != invalid_request_pid
-        || !WIFEXITED(invalid_request_status) || WEXITSTATUS(invalid_request_status) != 0) {
-        printf("FAIL: upper-word ptrace request was accepted, status=%#x\n",
-               invalid_request_status);
-        return 1;
-    }
-
     pid_t check_pid = fork();
     if (check_pid < 0) {
         return fail("initial fork");
@@ -285,6 +270,16 @@ int main(void)
         printf("FAIL: expected initial SIGSTOP, status=%#x\n", status);
         return 1;
     }
+
+#if ULONG_MAX > 0xffffffffUL
+    errno = 0;
+    long invalid_request = syscall(SYS_ptrace, 1UL << 32, pid, NULL, NULL);
+    if (invalid_request != -1 || errno != EIO) {
+        printf("FAIL: upper-word ptrace request result=%ld errno=%d (%s), expected EIO\n",
+               invalid_request, errno, strerror(errno));
+        return 1;
+    }
+#endif
 
     struct riscv_user_regs regs = {0};
     struct iovec iov = {.iov_base = &regs, .iov_len = sizeof(regs)};

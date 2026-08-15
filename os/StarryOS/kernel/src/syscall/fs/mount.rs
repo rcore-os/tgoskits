@@ -676,7 +676,17 @@ pub fn sys_mount(
     }
 
     match fs_type.as_str() {
-        "proc" | "sysfs" | "devtmpfs" | "tmpfs" => {
+        "proc" => {
+            let fs =
+                crate::pseudofs::proc::new_procfs(current().as_thread().active_pid_namespace());
+            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            if (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
+            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
+        }
+        "sysfs" | "devtmpfs" | "tmpfs" => {
             let fs = MemoryFs::new();
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
             let mp = target.mount_with_source(&fs, mount_source(&source))?;

@@ -7,12 +7,12 @@ use starry_signal::{SignalInfo, Signo};
 use starry_vm::VmPtr;
 
 use crate::{
-    StarryError, StarryResult,
+    Errno, StarryError, StarryResult,
     file::{FD_TABLE, FileLike, PidFd, add_file_like},
-    syscall::signal::check_kill_permission,
+    syscall::signal::check_kill_permission_identity,
     task::{
-        AsThread, get_task, pidfd_process_identity, pidfd_thread_identity, send_signal_to_process,
-        send_signal_to_process_group, send_signal_to_thread,
+        AsThread, Tgid, TgidNumber, TidNumber, current_pid_view, get_user_task_by_number,
+        send_signal_to_process_data, send_signal_to_process_group_ref, send_signal_to_task,
     },
 };
 
@@ -40,6 +40,24 @@ enum PidFdSignalScope {
     ProcessGroup,
 }
 
+enum PidFdOpenTarget {
+    Process(TgidNumber),
+    Thread(TidNumber),
+}
+
+impl PidFdOpenTarget {
+    fn parse(pid: u32, flags: PidFdFlags) -> StarryResult<Self> {
+        if (pid as i32) <= 0 {
+            return Err(StarryError::InvalidInput);
+        }
+        if flags.contains(PidFdFlags::THREAD) {
+            Ok(Self::Thread(TidNumber::try_from(pid)?))
+        } else {
+            Ok(Self::Process(TgidNumber::try_from(pid)?))
+        }
+    }
+}
+
 fn parse_signo(signo: u32) -> StarryResult<Signo> {
     Signo::from_repr(signo as u8).ok_or(StarryError::InvalidInput)
 }
@@ -52,7 +70,11 @@ fn make_pidfd_siginfo(signo: Signo, scope: PidFdSignalScope) -> SignalInfo {
     };
     let curr = current();
     let thread = curr.as_thread();
-    SignalInfo::new_user(signo, code, thread.proc_data.proc.pid(), thread.cred().uid)
+    let sender = current_pid_view()
+        .visible_number(&thread.proc_data.identity())
+        .expect("current process is visible in its active PID namespace")
+        .get();
+    SignalInfo::new_user(signo, code, sender, thread.cred().uid)
 }
 
 pub fn sys_pidfd_open(pid: u32, flags: u32) -> StarryResult<isize> {
@@ -60,35 +82,32 @@ pub fn sys_pidfd_open(pid: u32, flags: u32) -> StarryResult<isize> {
 
     let flags = PidFdFlags::from_bits(flags).ok_or(StarryError::InvalidInput)?;
 
-    // Linux pidfd_open(2): EINVAL if pid is not valid (includes pid <= 0).
-    if (pid as i32) <= 0 {
-        return Err(StarryError::InvalidInput);
-    }
-
-    let fd = if flags.contains(PidFdFlags::THREAD) {
-        match get_task(pid) {
+    let fd = match PidFdOpenTarget::parse(pid, flags)? {
+        PidFdOpenTarget::Thread(tid) => match get_user_task_by_number(tid) {
             Ok(task) => {
-                let identity = pidfd_thread_identity(&task.as_thread().proc_data.proc)
-                    .ok_or(StarryError::NoSuchProcess)?;
-                PidFd::new_thread(identity, task.as_thread(), pid)
+                let identity = task.as_thread().pid_identity();
+                PidFd::new_thread(identity, task.as_thread(), tid)
             }
             Err(StarryError::NoSuchProcess) => {
-                let identity = pidfd_process_identity(pid)?;
+                let identity =
+                    current_pid_view().resolve_process(TgidNumber::from(tid.pid_number()))?;
                 if !identity.is_zombie() {
                     return Err(StarryError::NoSuchProcess);
                 }
                 PidFd::new_exited_thread(identity)
             }
             Err(error) => return Err(error),
+        },
+        PidFdOpenTarget::Process(tgid) => {
+            // Without PIDFD_THREAD the target must be a thread-group leader.
+            let view = current_pid_view();
+            let identity = view.resolve_identity(tgid.pid_number())?;
+            if !identity.has_role::<Tgid>() {
+                return Err(Errno::ENOENT.into());
+            }
+            identity.public_process()?;
+            PidFd::new_process(identity)
         }
-    } else {
-        // Without PIDFD_THREAD the target must be a thread-group leader.
-        if let Ok(task) = get_task(pid)
-            && task.as_thread().proc_data.proc.pid() != pid
-        {
-            return Err(StarryError::NotFound);
-        }
-        PidFd::new_process(pidfd_process_identity(pid)?)
     };
     if flags.contains(PidFdFlags::NONBLOCK) {
         fd.set_nonblocking(true)?;
@@ -111,7 +130,7 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> StarryResult<i
     if !is_current {
         // Linux __pidfd_fget() uses ptrace_may_access(PTRACE_MODE_ATTACH_REALCREDS).
         // Until Starry has that, require at least kill-style credentials on the target.
-        check_kill_permission(proc_data.proc.pid())?;
+        check_kill_permission_identity(&proc_data.identity())?;
     }
     let fd_entry = if is_current {
         // Use the calling thread's live fd table, including any table installed
@@ -121,7 +140,10 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> StarryResult<i
             .get(target_fd as usize)
             .cloned()
     } else {
-        let task = get_task(proc_data.proc.pid())?;
+        let task = pidfd
+            .process_identity()
+            .live_task()
+            .ok_or(StarryError::NoSuchProcess)?;
         FD_TABLE
             .scope(&task.as_thread().scope.read())
             .read()
@@ -148,7 +170,7 @@ pub fn sys_pidfd_send_signal(
     }
 
     let pidfd_obj = PidFd::from_fd(pidfd)?;
-    let target_pid = pidfd_obj.process_pid();
+    let target_process = pidfd_obj.process_identity();
 
     let scope = if flags.contains(PidFdSignalFlags::THREAD)
         || (flags.is_empty() && pidfd_obj.is_thread())
@@ -171,7 +193,7 @@ pub fn sys_pidfd_send_signal(
         if info.signo() != signo_parsed {
             return Err(StarryError::InvalidInput);
         }
-        if current().as_thread().proc_data.proc.pid() != target_pid
+        if !Arc::ptr_eq(&current().as_thread().proc_data.identity(), &target_process)
             && (info.code() >= 0 || info.code() == SI_TKILL)
         {
             return Err(StarryError::OperationNotPermitted);
@@ -181,24 +203,25 @@ pub fn sys_pidfd_send_signal(
 
     match scope {
         PidFdSignalScope::Thread => {
-            let (process, tid) = pidfd_obj.signal_thread()?;
-            check_kill_permission(process.pid())?;
+            check_kill_permission_identity(&target_process)?;
             if pidfd_obj.is_zombie() {
                 return Ok(0);
             }
-            send_signal_to_thread(Some(target_pid), tid, kinfo)?;
+            let task = pidfd_obj.signal_thread()?;
+            send_signal_to_task(&task, Some(target_process), kinfo)?;
         }
         PidFdSignalScope::ThreadGroup => {
-            let process = pidfd_obj.signal_process()?;
-            debug_assert_eq!(process.pid(), target_pid);
-            check_kill_permission(target_pid)?;
-            send_signal_to_process(target_pid, kinfo)?;
+            check_kill_permission_identity(&target_process)?;
+            if let Some(proc_data) = target_process.live_data() {
+                send_signal_to_process_data(&proc_data, kinfo)?;
+            } else if !target_process.is_zombie() {
+                return Err(StarryError::NoSuchProcess);
+            }
         }
         PidFdSignalScope::ProcessGroup => {
             let process = pidfd_obj.signal_process()?;
-            let pgid = process.group().pgid();
-            check_kill_permission(pgid)?;
-            send_signal_to_process_group(pgid, kinfo)?;
+            check_kill_permission_identity(&target_process)?;
+            send_signal_to_process_group_ref(&process.group(), kinfo)?;
         }
     }
 

@@ -19,7 +19,7 @@ StarryOS 并非从零构建一个全新的内核，而是在 ArceOS 的模块化
 | --- | --- | --- |
 | Linux 兼容语义 | 提供更接近 Linux 的用户态程序运行环境 | `kernel/src/syscall/*`、`kernel/src/task/*`、`kernel/src/file/*` |
 | 复用 ArceOS 基础能力 | 不重复实现 HAL、调度、部分文件与网络基础设施 | `os/arceos/modules/*` |
-| 组件化宏内核 | 在一个内核映像中组织多种子系统，但继续按 crate 边界拆分职责 | `os/StarryOS/{process,signal,vm}`、`kernel/*` |
+| 组件化宏内核 | 在一个内核映像中组织多种子系统，按所有权边界决定内核模块或独立 crate | `kernel/src/{task,namespace}`、`os/StarryOS/{signal,vm}` |
 | 用户态验证闭环 | 通过 rootfs 和 init shell 验证系统行为 | `os/StarryOS/starryos`、rootfs 镜像、`test-suit/starryos` |
 
 ## 架构概览
@@ -31,7 +31,7 @@ flowchart LR
     rootfsUsers["RootfsUserspace: /bin/sh busybox test programs"]
     starryPackage["StarryPackage: os/StarryOS/starryos"]
     kernelCore["KernelCore: entry syscall task mm file pseudofs time trap"]
-    starryComponents["StarryComponents: starry-process starry-signal starry-vm"]
+    starryComponents["StarryComponents: starry-signal starry-vm"]
     arceosModules["ArceosModules: ax-hal ax-task ax-mm ax-fs ax-net ax-sync"]
     sharedCrates["SharedCrates: components/*"]
     platformLayer["PlatformLayer: axplat-* + platforms/*"]
@@ -60,7 +60,7 @@ flowchart LR
 | 用户态层 | rootfs 中的 shell、busybox、测试程序 | 触发 syscall、文件系统、进程管理等行为 |
 | 启动包层 | `os/StarryOS/starryos` | 构造命令行与环境变量，进入内核入口 |
 | 内核核心层 | `os/StarryOS/kernel` | `entry`、`syscall`、`task`、`mm`、`file`、`pseudofs`、`time`、`trap` |
-| StarryOS 领域 crate 层 | `os/StarryOS/{process,signal,vm}` | 可独立发布的进程、信号、虚拟内存抽象 |
+| StarryOS 领域 crate 层 | `os/StarryOS/{signal,vm}` | 可独立发布的信号和虚拟内存抽象 |
 | ArceOS 基础模块层 | `os/arceos/modules/*` | HAL、任务调度、同步、基础 I/O、文件与网络能力 |
 | 平台层 | `platforms/*`、`axplat-*` | 架构与板级支持 |
 
@@ -73,7 +73,7 @@ StarryOS 内核按职责划分为 10 个子系统，覆盖从启动入口到 sys
 | 启动入口 | `kernel/src/entry.rs` | 挂载伪文件系统、创建 init 进程与线程、绑定 TTY、安装 stdio、等待系统退出 | `mm`、`task`、`pseudofs`、`file` |
 | crate 根 | `kernel/src/lib.rs` | 定义 kernel crate 的公共模块导出与依赖声明 | 全局 |
 | syscall | `kernel/src/syscall/*` | 按 Linux syscall 语义分发系统调用（12 个功能域） | `task`、`mm`、`file`、`ipc`、`net` |
-| task | `kernel/src/task/*` | 进程/线程创建与回收（clone、fork、execve、exit、wait4）、futex、资源限制、信号 | `starry-process`、`starry-signal`、`ax-task` |
+| task | `kernel/src/task/*` | PID 身份、进程/线程拓扑及创建回收（clone、fork、execve、exit、wait4）、futex、资源限制、信号 | `task/process`、`task/pid`、`starry-signal`、`ax-task` |
 | mm | `kernel/src/mm/*` | 地址空间管理、ELF 装载、brk/mmap/mprotect、COW 后端 | `starry-vm`、`ax-mm` |
 | file | `kernel/src/file/*` | FD 表、文件/目录/管道/epoll/eventfd/signalfd/pidfd 操作 | `ax-fs`、`pseudofs` |
 | pseudofs | `kernel/src/pseudofs/*` | `/dev`、`/proc`、`/tmp`、`/dev/shm`、`/sys` 等伪文件系统 | `file` |
@@ -83,9 +83,8 @@ StarryOS 内核按职责划分为 10 个子系统，覆盖从启动入口到 sys
 
 ## StarryOS 领域 crate
 
-StarryOS 的 Linux 兼容语义中，有一部分抽象足够稳定，被拆为 `os/StarryOS/` 下的独立 crate。这些 crate 与 `kernel/` 同属 StarryOS，但仍保留各自的 Cargo 包名、版本和独立发布能力，便于后续替换、扩展或复用。
+StarryOS 的 Linux 兼容语义中，有一部分抽象足够稳定，被拆为 `os/StarryOS/` 下的独立 crate。这些 crate 与 `kernel/` 同属 StarryOS，但仍保留各自的 Cargo 包名、版本和独立发布能力。进程拓扑、PID namespace 和稳定 PID identity 需要共享同一生命周期与 publication transaction，因此归入 `starry-kernel`，不再作为独立 crate。
 
-- **starry-process**（`os/StarryOS/process`）— 进程抽象（`Process` 结构体），管理 PID 分配、进程组、会话、退出事件等。
 - **starry-signal**（`os/StarryOS/signal`）— 信号处理框架，提供 `ProcessSignalManager` 和 `ThreadSignalManager`。
 - **starry-vm**（`os/StarryOS/vm`）— 虚拟地址空间抽象（`AddrSpace`），通过 `ax-hal` 使用 `page-table-generic`，并由 `ax-cpu` 提供当前架构的 stage-1 页表格式。
 
