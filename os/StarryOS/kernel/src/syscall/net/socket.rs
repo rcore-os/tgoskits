@@ -58,7 +58,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> StarryResult<isize> {
         return socket.add_to_fd_table(cloexec).map(|fd| fd as isize);
     }
 
-    let pid = current().as_thread().proc_data.proc.pid();
+    let unix_credentials = Socket::current_unix_credentials();
     let ip_domain = if domain == AF_INET || domain == AF_INET6 {
         domain
     } else {
@@ -87,9 +87,11 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> StarryResult<isize> {
             }
             UdpSocket::new().into()
         }
-        (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(pid)).into(),
-        (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(pid)).into(),
-        (AF_UNIX, SOCK_SEQPACKET) => UnixSocket::new(DgramTransport::new_seqpacket(pid)).into(),
+        (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(unix_credentials)).into(),
+        (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(unix_credentials)).into(),
+        (AF_UNIX, SOCK_SEQPACKET) => {
+            UnixSocket::new(DgramTransport::new_seqpacket(unix_credentials)).into()
+        }
         (AF_NETLINK, SOCK_RAW) | (AF_NETLINK, SOCK_DGRAM) => {
             match proto {
                 NETLINK_KOBJECT_UEVENT | NETLINK_ROUTE | NETLINK_GENERIC => {}
@@ -138,7 +140,12 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryRe
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
         let mut addr = super::addr::read_netlink_addr(addr, addrlen as _)?;
         if addr.nl_pid == 0 {
-            addr.nl_pid = current().as_thread().proc_data.proc.pid();
+            let thread = current();
+            let thread = thread.as_thread();
+            addr.nl_pid = crate::task::current_pid_view()
+                .visible_number(&thread.proc_data.identity())
+                .expect("current process is visible in its active PID namespace")
+                .get();
         }
         debug!("sys_bind <= fd: {fd}, netlink_addr: {addr:?}");
         socket.bind(addr)?;
@@ -285,18 +292,18 @@ pub fn sys_socketpair(
         return Err(StarryError::from(Errno::EAFNOSUPPORT));
     }
 
-    let pid = current().as_thread().proc_data.proc.pid();
+    let credentials = Socket::current_unix_credentials();
     let (sock1, sock2) = match ty {
         SOCK_STREAM => {
-            let (sock1, sock2) = StreamTransport::new_pair(pid);
+            let (sock1, sock2) = StreamTransport::new_pair(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         SOCK_DGRAM => {
-            let (sock1, sock2) = DgramTransport::new_pair(pid);
+            let (sock1, sock2) = DgramTransport::new_pair(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         SOCK_SEQPACKET => {
-            let (sock1, sock2) = DgramTransport::new_pair_seqpacket(pid);
+            let (sock1, sock2) = DgramTransport::new_pair_seqpacket(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         _ => {

@@ -1,6 +1,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
+use ax_hal::mem::PAGE_SIZE_4K;
 use ax_task::current;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
@@ -17,7 +18,9 @@ use crate::mm::UserPtr;
 use crate::{
     Errno, StarryError, StarryResult,
     sync::Mutex,
-    task::{AsThread, SECCOMP_BPF_MAX_INSNS, SockFilter, SockFprog, get_task, processes},
+    task::{
+        AsThread, SECCOMP_BPF_MAX_INSNS, SockFilter, SockFprog, get_task_by_number, processes,
+    },
 };
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
@@ -40,6 +43,13 @@ const SYSLOG_ACTION_SIZE_UNREAD: i32 = 9;
 const SYSLOG_ACTION_SIZE_BUFFER: i32 = 10;
 const SYSLOG_BUFFER_CAPACITY: usize = 4096;
 const SYSLOG_SEED_MESSAGE: &[u8] = b"StarryOS kernel log buffer initialized\n";
+/// Linux caps `getrandom` through `import_ubuf()` at `MAX_RW_COUNT`.
+/// `MAX_RW_COUNT` is `INT_MAX` rounded down to the page size on the 64-bit
+/// targets supported by StarryOS.
+const GETRANDOM_MAX_LEN: usize = (i32::MAX as usize) & !(PAGE_SIZE_4K - 1);
+/// Keep the syscall's temporary random-data buffer bounded by a small stack
+/// allocation, irrespective of the user-requested length.
+const GETRANDOM_CHUNK_SIZE: usize = 256;
 const SECCOMP_SET_MODE_STRICT: u32 = 0;
 const SECCOMP_SET_MODE_FILTER: u32 = 1;
 const SECCOMP_GET_ACTION_AVAIL: u32 = 2;
@@ -678,7 +688,7 @@ pub fn sys_uname(name: *mut new_utsname) -> StarryResult<isize> {
     let uts = {
         let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
         let ns = nsproxy.uts_ns.lock();
-        axnsproxy::build_utsname(&ns)
+        crate::namespace::build_utsname(&ns)
     };
     name.vm_write(uts)?;
     Ok(0)
@@ -760,15 +770,15 @@ fn require_syslog_privilege() -> StarryResult<()> {
     }
 }
 
-fn validate_syslog_read_args(buf: *mut c_char, len: usize) -> StarryResult<()> {
-    if buf.is_null() || len > i32::MAX as usize {
+fn validate_syslog_read_args(buf: *mut c_char, len: i32) -> StarryResult<()> {
+    if buf.is_null() || len < 0 {
         Err(StarryError::InvalidInput)
     } else {
         Ok(())
     }
 }
 
-pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> StarryResult<isize> {
+pub fn sys_syslog(ty: i32, buf: *mut c_char, len: i32) -> StarryResult<isize> {
     match ty {
         SYSLOG_ACTION_CLOSE | SYSLOG_ACTION_OPEN => Ok(0),
         SYSLOG_ACTION_READ => {
@@ -776,7 +786,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> StarryResult<isize> 
             validate_syslog_read_args(buf, len)?;
             let data = {
                 let mut state = SYSLOG_STATE.lock();
-                state.read(len)
+                state.read(len as usize)
             };
             if !data.is_empty() {
                 vm_write_slice(buf.cast::<u8>(), &data)?;
@@ -788,7 +798,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> StarryResult<isize> 
             validate_syslog_read_args(buf, len)?;
             let data = {
                 let state = SYSLOG_STATE.lock();
-                state.read_all(len)
+                state.read_all(len as usize)
             };
             if !data.is_empty() {
                 vm_write_slice(buf.cast::<u8>(), &data)?;
@@ -800,7 +810,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> StarryResult<isize> 
             validate_syslog_read_args(buf, len)?;
             let data = {
                 let mut state = SYSLOG_STATE.lock();
-                let data = state.read_all(len);
+                let data = state.read_all(len as usize);
                 state.clear();
                 data
             };
@@ -834,7 +844,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> StarryResult<isize> 
             }
             let mut state = SYSLOG_STATE.lock();
             let old_level = state.console_level;
-            state.console_level = len;
+            state.console_level = len as usize;
             Ok(old_level as isize)
         }
         SYSLOG_ACTION_SIZE_UNREAD => {
@@ -876,13 +886,34 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> StarryResult<isize
         "/dev/urandom"
     };
 
+    // Linux `import_ubuf()` limits the iterator before feeding it to the
+    // random source. Bound the request equivalently, and reject an address
+    // range that wraps before touching the random device.
+    let len = len.min(GETRANDOM_MAX_LEN);
+    (buf as usize).checked_add(len).ok_or(Errno::EFAULT)?;
+
     let f = ax_fs_ng::vfs::current_fs_context().lock().resolve(path)?;
-    let mut kbuf = vec![0; len];
-    let len = f.entry().as_file()?.read_at(&mut kbuf, 0)?;
+    let file = f.entry().as_file()?;
+    let mut kbuf = [0u8; GETRANDOM_CHUNK_SIZE];
+    let mut written = 0;
+    while written < len {
+        let chunk_len = (len - written).min(kbuf.len());
+        let read = file.read_at(&mut kbuf[..chunk_len], 0)?;
+        if read == 0 {
+            break;
+        }
+        let dst = (buf as usize).checked_add(written).ok_or(Errno::EFAULT)? as *mut u8;
+        vm_write_slice(dst, &kbuf[..read])?;
+        written += read;
+        // Preserve a short device read as the syscall result. Retrying after
+        // having copied a partial result could turn Linux's partial success
+        // into a later EAGAIN for a nonblocking random source.
+        if read < chunk_len {
+            break;
+        }
+    }
 
-    vm_write_slice(buf, &kbuf)?;
-
-    Ok(len as _)
+    Ok(written as _)
 }
 
 fn check_seccomp_install_permission() -> StarryResult<()> {
@@ -903,7 +934,7 @@ fn read_seccomp_filter_header(args: *const ()) -> StarryResult<SockFprog> {
 }
 
 fn validate_seccomp_filter_len(prog: SockFprog) -> StarryResult<()> {
-    if prog.len == 0 || usize::from(prog.len) > SECCOMP_BPF_MAX_INSNS {
+    if prog.len == 0 || prog.filter.is_null() || usize::from(prog.len) > SECCOMP_BPF_MAX_INSNS {
         return Err(StarryError::InvalidInput);
     }
     Ok(())
@@ -938,10 +969,10 @@ fn sync_seccomp_to_thread_group() {
     let thread = curr.as_thread();
     let state = thread.seccomp_state();
     for tid in thread.proc_data.proc.threads() {
-        if tid == thread.tid() {
+        if tid == thread.tid_number() {
             continue;
         }
-        if let Ok(task) = get_task(tid)
+        if let Ok(task) = get_task_by_number(tid)
             && let Some(peer) = task.try_as_thread()
         {
             peer.set_seccomp_state(state.clone());
@@ -1056,15 +1087,15 @@ pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
         && uid_valid(u32::MAX - 1)
         && !uid_valid(u32::MAX)  // NOCHG is invalid
 
-    // validate_syslog_read_args: null buf or len > i32::MAX is invalid.
+    // validate_syslog_read_args: null buf or negative len is invalid.
     && validate_syslog_read_args(core::ptr::null_mut(), 0).is_err()
     && validate_syslog_read_args(core::ptr::null_mut::<c_char>(), 100).is_err()
     && validate_syslog_read_args(0x1 as *mut c_char, 0).is_ok()  // non-null, len=0 is ok
     && {
         let mut dummy: c_char = 0;
         let ptr: *mut c_char = &mut dummy;
-        validate_syslog_read_args(ptr, i32::MAX as usize).is_ok()
-        && validate_syslog_read_args(ptr, (i32::MAX as usize) + 1).is_err()
+        validate_syslog_read_args(ptr, i32::MAX).is_ok()
+        && validate_syslog_read_args(ptr, -1).is_err()
     }
 }
 

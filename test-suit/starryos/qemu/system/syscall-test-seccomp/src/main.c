@@ -268,6 +268,10 @@ static void check_filter_validation_before_permission(void)
         .len = 1,
         .filter = &allow,
     };
+    struct sock_fprog null_filter = {
+        .len = 1,
+        .filter = NULL,
+    };
 
     if (setresuid(1000, 1000, 1000) != 0) {
         note_fail("drop privileges for seccomp error ordering", strerror(errno));
@@ -283,6 +287,10 @@ static void check_filter_validation_before_permission(void)
                        EINVAL, "filter mode validates an empty program before permission");
 
     errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &null_filter), -1,
+                       EINVAL, "filter mode rejects a NULL instruction pointer before permission");
+
+    errno = 0;
     expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &valid), -1,
                        EACCES, "filter mode reports EACCES for an unauthorized valid program");
 }
@@ -291,7 +299,7 @@ static void check_filter_pointer_after_permission(void)
 {
     struct sock_fprog invalid = {
         .len = 1,
-        .filter = NULL,
+        .filter = (struct sock_filter *)1,
     };
 
     if (set_no_new_privs() != 0) {
@@ -301,7 +309,7 @@ static void check_filter_pointer_after_permission(void)
 
     errno = 0;
     expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &invalid), -1,
-                       EFAULT, "filter mode reads instructions after permission succeeds");
+                       EFAULT, "filter mode faults on a non-NULL unreadable instruction pointer");
 }
 
 static void check_errno_filter(void)
