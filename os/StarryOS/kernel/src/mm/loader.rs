@@ -29,6 +29,9 @@ const R_RISCV_64: u32 = 2;
 #[cfg(target_arch = "riscv64")]
 const R_RISCV_COPY: u32 = 4;
 
+// Linux rejects PT_INTERP paths outside PATH_MAX before allocation.
+const MAX_INTERPRETER_PATH_LEN: u64 = 4096;
+
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> StarryResult<AddrSpace> {
     AddrSpace::new_empty(VirtAddr::from_usize(USER_SPACE_BASE), USER_SPACE_SIZE)
@@ -202,7 +205,14 @@ fn map_elf<'a>(
             ph.flags
         );
         let seg_pad = vaddr.align_offset_4k();
-        assert_eq!(seg_pad, ph.offset as usize % PAGE_SIZE_4K);
+        // ELF requires each loadable segment's virtual address and file
+        // offset to have the same page offset. This is untrusted executable
+        // metadata, so reject a mismatch instead of panicking in the kernel.
+        // Use a distinct error from InvalidExecutable: execve uses that error
+        // to opt into its legacy shell fallback for a non-ELF file.
+        if seg_pad != ph.offset as usize % PAGE_SIZE_4K {
+            return Err(StarryError::MalformedExecutable);
+        }
 
         let seg_align_size =
             (ph.mem_size as usize + seg_pad + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
@@ -569,14 +579,25 @@ impl ElfLoader {
             .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
         {
             let cache = entry.borrow_cache();
-            let mut data = vec![0; header.file_size as usize];
+            let interp_len = header.file_size;
+            let interp_end = header
+                .offset
+                .checked_add(interp_len)
+                .ok_or(StarryError::MalformedExecutable)?;
+            if !(2..=MAX_INTERPRETER_PATH_LEN).contains(&interp_len) || interp_end > cache.len() {
+                return Err(StarryError::MalformedExecutable);
+            }
+
+            let mut data = vec![0; interp_len as usize];
             let read = cache.read_at(&mut data[..], header.offset)?;
-            assert_eq!(data.len(), read);
+            if read != data.len() {
+                return Err(StarryError::MalformedExecutable);
+            }
 
             let ldso = CStr::from_bytes_with_nul(&data)
                 .ok()
                 .and_then(|cstr| cstr.to_str().ok())
-                .ok_or(StarryError::InvalidInput)?;
+                .ok_or(StarryError::MalformedExecutable)?;
             debug!("Loading dynamic linker: {ldso}");
             Some(ldso.to_owned())
         } else {
