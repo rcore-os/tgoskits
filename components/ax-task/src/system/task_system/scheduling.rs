@@ -605,7 +605,11 @@ impl TaskSystem {
         let now_ns = clock.wall().as_nanos();
         transaction.adopt_scheduler_request(initial_request);
         transaction.merge_scheduler_request();
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::begin_current_dispatch_accounting_probe(current.id());
         let dispatch_commit = self.commit_owner_current_dispatch_in_rq(&mut transaction);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::complete_current_dispatch_accounting_probe(current.id());
         // A forced yield consumes a slice-expiration request discovered while
         // accounting the outgoing task in this same scheduling pass.
         transaction.merge_scheduler_request();

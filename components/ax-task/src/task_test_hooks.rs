@@ -137,8 +137,8 @@ pub(crate) fn record_current_handle_query(thread: ThreadId) {
     }
 }
 
-/// Arms current-dispatch detach accounting for one real scheduler thread.
-pub fn arm_current_dispatch_detach_probe(thread: u64) {
+/// Arms current-dispatch accounting for one real scheduler thread.
+pub fn arm_current_dispatch_accounting_probe(thread: u64) {
     assert_ne!(
         thread, 0,
         "a current-dispatch probe identity must be non-zero"
@@ -158,11 +158,11 @@ pub fn arm_current_dispatch_detach_probe(thread: u64) {
     CURRENT_DISPATCH_DETACH_STAGE.store(STAGE_ARMED, Ordering::Release);
 }
 
-/// Takes current-dispatch detaches observed while the probe was armed.
-pub fn take_current_dispatch_detach_count() -> Option<u64> {
+/// Takes current-dispatch detaches observed during the accounting transaction.
+pub fn take_current_dispatch_accounting_detach_count() -> Option<u64> {
     if CURRENT_DISPATCH_DETACH_STAGE
         .compare_exchange(
-            STAGE_ARMED,
+            STAGE_COMPLETE,
             STAGE_CONFIGURING,
             Ordering::AcqRel,
             Ordering::Acquire,
@@ -177,8 +177,30 @@ pub fn take_current_dispatch_detach_count() -> Option<u64> {
     Some(count)
 }
 
+pub(crate) fn begin_current_dispatch_accounting_probe(thread: ThreadId) {
+    if CURRENT_DISPATCH_DETACH_TARGET.load(Ordering::Acquire) == thread.as_u64() {
+        let _ = CURRENT_DISPATCH_DETACH_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_TRANSACTION_ACTIVE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
+pub(crate) fn complete_current_dispatch_accounting_probe(thread: ThreadId) {
+    if CURRENT_DISPATCH_DETACH_TARGET.load(Ordering::Acquire) == thread.as_u64() {
+        let _ = CURRENT_DISPATCH_DETACH_STAGE.compare_exchange(
+            STAGE_TRANSACTION_ACTIVE,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
 pub(crate) fn record_current_dispatch_detach(thread: ThreadId) {
-    if CURRENT_DISPATCH_DETACH_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+    if CURRENT_DISPATCH_DETACH_STAGE.load(Ordering::Acquire) == STAGE_TRANSACTION_ACTIVE
         && CURRENT_DISPATCH_DETACH_TARGET.load(Ordering::Relaxed) == thread.as_u64()
     {
         CURRENT_DISPATCH_DETACH_COUNT.fetch_add(1, Ordering::Relaxed);
