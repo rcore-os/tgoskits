@@ -420,12 +420,21 @@ impl PidNamespace {
         }
     }
 
-    pub fn begin_shutdown(&self, init: PidIdentityId) -> Option<PidNamespaceShutdown<'_>> {
+    /// Starts the namespace-init exit transaction from its last live thread.
+    ///
+    /// `executor` is the TID identity that must finish the transaction before
+    /// its normal task-exit path can retire that identity.
+    pub fn begin_shutdown(
+        &self,
+        init: PidIdentityId,
+        executor: PidIdentityId,
+    ) -> Option<PidNamespaceShutdown<'_>> {
         let _publication = PUBLICATION_GATE.lock();
         let mut state = self.state.lock();
         if self.level == 0
             || state.lifecycle != PidNamespaceLifecycle::Active
             || state.init_identity != Some(init)
+            || !state.by_identity.contains_key(&executor)
         {
             return None;
         }
@@ -433,6 +442,7 @@ impl PidNamespace {
         Some(PidNamespaceShutdown {
             namespace: self,
             init,
+            executor,
         })
     }
 
@@ -463,6 +473,7 @@ impl PidNamespace {
 pub struct PidNamespaceShutdown<'a> {
     namespace: &'a PidNamespace,
     init: PidIdentityId,
+    executor: PidIdentityId,
 }
 
 impl PidNamespaceShutdown<'_> {
@@ -472,7 +483,16 @@ impl PidNamespaceShutdown<'_> {
                 self.namespace
                     .published_members()
                     .into_iter()
-                    .any(|identity| identity.id() != self.init && identity.has_unexited_task())
+                    .any(|identity| {
+                        // Linux's zap_pid_ns_processes waits for one retained
+                        // PID when the leader executes teardown and two when a
+                        // non-leader does: the namespace init identity plus
+                        // the current teardown task. Waiting for the executor
+                        // here would deadlock before its later retire_pid().
+                        identity.id() != self.init
+                            && identity.id() != self.executor
+                            && identity.has_unexited_task()
+                    })
             };
             if !has_unexited_descendants() {
                 return Poll::Ready(());
@@ -1341,6 +1361,11 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     group_only.mark_task_exited();
     group_only_pgid.release();
 
+    let shutdown_executor = PidReservation::reserve(&child, PidReservationKind::Thread)
+        .unwrap()
+        .publish()
+        .unwrap();
+    let shutdown_executor_tid = shutdown_executor.acquire_role::<Tid>().unwrap();
     let descendant = PidReservation::reserve(&child, PidReservationKind::Thread)
         .unwrap()
         .publish()
@@ -1360,7 +1385,9 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
         "pid-namespace-descendant".into(),
     );
 
-    let shutdown = child.begin_shutdown(child_init.id()).unwrap();
+    let shutdown = child
+        .begin_shutdown(child_init.id(), shutdown_executor.id())
+        .unwrap();
     if !matches!(
         PidReservation::reserve(&child, PidReservationKind::Thread),
         Err(StarryError::NoMemory)
@@ -1370,6 +1397,8 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     release_descendant.store(true, Ordering::Release);
     shutdown.wait_for_descendants_exit();
     crate::task::join_kernel_thread(descendant_task);
+    shutdown_executor.mark_task_exited();
+    shutdown_executor_tid.release();
     if view.visible_number(&child_init).is_some() || view.nspid_chain(&child_init).is_some() {
         return false;
     }
@@ -1616,7 +1645,7 @@ mod tests {
         );
         assert_eq!(child_view.nspid_chain(&identity), Some(vec![child_number]));
 
-        let shutdown = child.begin_shutdown(identity.id()).unwrap();
+        let shutdown = child.begin_shutdown(identity.id(), identity.id()).unwrap();
         shutdown.wait_for_descendants_exit();
         assert_eq!(child.lifecycle(), PidNamespaceLifecycle::Dead);
         assert_eq!(child_view.visible_number(&identity), None);
@@ -1653,7 +1682,7 @@ mod tests {
             .unwrap();
         let tid = init.acquire_role::<Tid>().unwrap();
         let tgid = init.acquire_role::<Tgid>().unwrap();
-        let shutdown = child.begin_shutdown(init.id()).unwrap();
+        let shutdown = child.begin_shutdown(init.id(), init.id()).unwrap();
         assert!(matches!(
             PidReservation::reserve(&child, PidReservationKind::ProcessLeader),
             Err(StarryError::NoMemory)
@@ -1664,5 +1693,33 @@ mod tests {
         tgid.release();
         drop(shutdown);
         assert_eq!(child.lifecycle(), PidNamespaceLifecycle::Dead);
+    }
+
+    #[test]
+    fn namespace_shutdown_does_not_wait_for_nonleader_executor() {
+        let (root, _root_init, _root_tid, _root_tgid) = root_process();
+        let child = PidNamespace::new_child(root);
+        let init = PidReservation::reserve(&child, PidReservationKind::ProcessLeader)
+            .unwrap()
+            .publish()
+            .unwrap();
+        let init_tid = init.acquire_role::<Tid>().unwrap();
+        let init_tgid = init.acquire_role::<Tgid>().unwrap();
+        let executor = PidReservation::reserve(&child, PidReservationKind::Thread)
+            .unwrap()
+            .publish()
+            .unwrap();
+        let executor_tid = executor.acquire_role::<Tid>().unwrap();
+
+        let shutdown = child.begin_shutdown(init.id(), executor.id()).unwrap();
+        shutdown.wait_for_descendants_exit();
+
+        assert_eq!(child.lifecycle(), PidNamespaceLifecycle::Dead);
+        executor.mark_task_exited();
+        executor_tid.release();
+        init.mark_task_exited();
+        init_tid.release();
+        init_tgid.release();
+        drop(shutdown);
     }
 }
