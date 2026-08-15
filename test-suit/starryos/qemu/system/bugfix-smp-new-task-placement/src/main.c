@@ -3,10 +3,12 @@
 #include <errno.h>
 #include <sched.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -14,6 +16,11 @@ enum {
     WORKER_COUNT = 8,
     SAMPLE_COUNT = 20000,
     TARGET_CPU_COUNT = 4,
+};
+
+struct placement_barrier {
+    _Atomic int ready;
+    _Atomic int start;
 };
 
 static void fail_errno(const char *message)
@@ -76,10 +83,16 @@ static cpu_set_t select_test_cpus(void)
     return selected;
 }
 
-static void run_worker(int start_fd, int result_fd)
+static void run_worker(struct placement_barrier *barrier, int result_fd)
 {
-    unsigned char start_token;
-    read_exact(start_fd, &start_token, sizeof(start_token));
+    /*
+     * Keep every child runnable until all initial placements are observable.
+     * A blocking pipe barrier would test wakeup placement instead.
+     */
+    atomic_fetch_add_explicit(&barrier->ready, 1, memory_order_release);
+    while (!atomic_load_explicit(&barrier->start, memory_order_acquire)) {
+        sched_yield();
+    }
 
     cpu_set_t observed;
     CPU_ZERO(&observed);
@@ -110,9 +123,15 @@ int main(void)
         fail_errno("sched_setaffinity");
     }
 
-    int start_pipe[2];
+    struct placement_barrier *barrier =
+        mmap(NULL, sizeof(*barrier), PROT_READ | PROT_WRITE,
+             MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (barrier == MAP_FAILED) {
+        fail_errno("mmap placement barrier");
+    }
+
     int result_pipe[2];
-    if (pipe(start_pipe) != 0 || pipe(result_pipe) != 0) {
+    if (pipe(result_pipe) != 0) {
         fail_errno("pipe");
     }
 
@@ -123,19 +142,19 @@ int main(void)
             fail_errno("fork");
         }
         if (pid == 0) {
-            close(start_pipe[1]);
             close(result_pipe[0]);
-            run_worker(start_pipe[0], result_pipe[1]);
+            run_worker(barrier, result_pipe[1]);
         }
         workers[worker] = pid;
     }
 
-    close(start_pipe[0]);
     close(result_pipe[1]);
 
-    unsigned char start_tokens[WORKER_COUNT] = {0};
-    write_exact(start_pipe[1], start_tokens, sizeof(start_tokens));
-    close(start_pipe[1]);
+    while (atomic_load_explicit(&barrier->ready, memory_order_acquire) <
+           WORKER_COUNT) {
+        sched_yield();
+    }
+    atomic_store_explicit(&barrier->start, 1, memory_order_release);
 
     cpu_set_t observed;
     CPU_ZERO(&observed);
@@ -155,6 +174,10 @@ int main(void)
             printf("FAIL: worker %d exited with status %#x\n", worker, status);
             return 1;
         }
+    }
+
+    if (munmap(barrier, sizeof(*barrier)) != 0) {
+        fail_errno("munmap placement barrier");
     }
 
     int observed_count = CPU_COUNT(&observed);
