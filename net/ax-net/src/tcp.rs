@@ -1151,9 +1151,7 @@ mod tests {
     #[cfg(all(axtest, feature = "axtest"))]
     use crate::{
         options::{Configurable, GetSocketOption, SetSocketOption, TcpState},
-        test_support::{
-            LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, network_test_guard,
-        },
+        test_support::{LOCAL_ADDR, PEER_ADDR, init_split_route_network, network_test_guard},
     };
 
     #[test]
@@ -1247,7 +1245,7 @@ mod tests {
     #[axtest]
     fn connect_preserves_bound_interface() {
         let _guard = network_test_guard();
-        init_split_route_network();
+        let topology = init_split_route_network();
 
         let socket = TcpSocket::new();
         let nonblocking = true;
@@ -1260,7 +1258,7 @@ mod tests {
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(LOCAL_IF)
+                bound_if: Some(topology.local_if)
             }
         );
 
@@ -1270,11 +1268,11 @@ mod tests {
             .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
             .unwrap();
 
-        // Interface binding should remain LOCAL_IF (not changed to PEER_IF)
+        // Binding to the local test interface must survive a peer-route lookup.
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(LOCAL_IF)
+                bound_if: Some(topology.local_if)
             }
         );
     }
@@ -1283,7 +1281,7 @@ mod tests {
     #[axtest]
     fn connect_uses_peer_route_when_unbound() {
         let _guard = network_test_guard();
-        init_split_route_network();
+        let topology = init_split_route_network();
 
         let socket = TcpSocket::new();
         let nonblocking = true;
@@ -1303,11 +1301,11 @@ mod tests {
             .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
             .unwrap();
 
-        // Interface binding should use route decision (PEER_IF)
+        // The unbound socket must adopt the peer-route interface.
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(PEER_IF)
+                bound_if: Some(topology.peer_if)
             }
         );
     }
@@ -1316,14 +1314,14 @@ mod tests {
     #[axtest]
     fn connect_rejects_unroutable_bound_device() {
         let _guard = network_test_guard();
-        init_split_route_network();
+        let topology = init_split_route_network();
 
         let socket = TcpSocket::new();
         let nonblocking = true;
         socket
             .set_option(SetSocketOption::NonBlocking(&nonblocking))
             .unwrap();
-        socket.bind_device(LOCAL_IF).unwrap();
+        socket.bind_device(topology.local_if).unwrap();
         socket
             .bind(SocketAddrEx::Ip(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -1339,7 +1337,7 @@ mod tests {
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(LOCAL_IF)
+                bound_if: Some(topology.local_if)
             }
         );
     }

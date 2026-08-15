@@ -72,6 +72,8 @@ use smoltcp::{
     },
 };
 
+#[cfg(all(axtest, feature = "axtest"))]
+use crate::device::LoopbackDevice;
 use crate::{
     NetError, NetResult, SOCKET_SET,
     addr::mask_from_prefix,
@@ -575,6 +577,43 @@ impl Service {
             routes,
         );
         dev
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn register_test_loopback(
+        &mut self,
+        name: String,
+        cidr: Ipv4Cidr,
+    ) -> (InterfaceId, PreparedDeviceWorkers) {
+        if self.control.contains_interface_name(&name) {
+            panic!("interface name conflict: {name}");
+        }
+
+        let interface_id = self.control.allocate_interface_id();
+        let metric = 100;
+        let dev = self
+            .router
+            .add_device(interface_id, Box::new(LoopbackDevice::new()));
+        let routes = self
+            .router
+            .ipv4_rules(dev, interface_id, metric, Some(cidr), None);
+        Self::set_interface_ipv4(&mut self.iface, None, Some(cidr));
+        self.control.add_interface(
+            NetInterface {
+                id: interface_id,
+                name,
+                kind: InterfaceKind::Ethernet,
+                mac: None,
+                ipv4: Some(cidr),
+                gateway: None,
+                mtu: STANDARD_MTU,
+                metric,
+                flags: InterfaceFlags::UP | InterfaceFlags::RUNNING,
+            },
+            routes,
+        );
+
+        (interface_id, self.router.prepare_device_workers_for(dev))
     }
 
     pub fn enable_dhcp(
