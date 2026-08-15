@@ -4,7 +4,7 @@
  * Scenarios exercised:
  *   1. unshare(CLONE_NEWUTS) + sethostname does not affect the parent.
  *   2. clone(CLONE_NEWPID)  -> child getpid() returns the local PID.
- *   3. PID namespace shutdown drains a newly reparented WNOWAIT zombie.
+ *   3. pid_ns_for_children persists across multiple child forks.
  *   4. unshare(CLONE_NEWUSER) -> getuid() returns 65534 (nobody).
  *   5. clone3(CLONE_THREAD | CLONE_NEWPID) is rejected with EINVAL.
  */
@@ -35,9 +35,6 @@
 #error "unknown architecture: define __NR_clone3"
 #endif
 #endif
-
-#define NAMESPACE_SHUTDOWN_TIMEOUT_MS 5000
-#define WAIT_POLL_INTERVAL_US 10000
 
 struct clone3_args
 {
@@ -92,25 +89,6 @@ static void read_exact(int fd, void *buffer, size_t length)
         }
         cursor += (size_t)received;
         length -= (size_t)received;
-    }
-}
-
-static pid_t waitpid_with_timeout(pid_t child, int *status, int timeout_ms)
-{
-    int waited_ms = 0;
-    for (;;)
-    {
-        pid_t waited = waitpid(child, status, WNOHANG);
-        if (waited != 0)
-        {
-            return waited;
-        }
-        if (waited_ms >= timeout_ms)
-        {
-            return 0;
-        }
-        usleep(WAIT_POLL_INTERVAL_US);
-        waited_ms += WAIT_POLL_INTERVAL_US / 1000;
     }
 }
 
