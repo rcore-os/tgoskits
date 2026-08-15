@@ -41,6 +41,12 @@ fn perf_control_callback_runs_preemptible() {
     ax_assert!(axtest_exports::perf_control_callback_runs_preemptible());
 }
 
+#[cfg(target_arch = "aarch64")]
+#[axtest]
+fn perf_kernel_task_sample_ids_are_empty() {
+    ax_assert!(axtest_exports::perf_kernel_task_sample_ids_are_empty());
+}
+
 #[axtest]
 fn stop_machine_runs_action_and_sync_on_each_cpu() {
     ax_assert!(axtest_exports::stop_machine_runs_action_and_sync_on_each_cpu());

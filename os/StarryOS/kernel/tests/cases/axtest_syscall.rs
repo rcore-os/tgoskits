@@ -92,6 +92,16 @@ fn task_clone_validation_rules_hold() {
 }
 
 #[axtest]
+fn duplicate_live_session_identity_is_rejected() {
+    ax_assert!(axtest_exports::duplicate_live_session_identity_is_rejected());
+}
+
+#[axtest]
+fn prepared_descriptor_stays_hidden_until_install() {
+    ax_assert!(axtest_exports::prepared_descriptor_stays_hidden_until_install());
+}
+
+#[axtest]
 fn capability_data_conversion_rules_hold() {
     ax_assert!(axtest_exports::capability_data_conversion_rules_hold());
 }
@@ -154,6 +164,11 @@ fn pidfd_flags_and_signal_validation_rules_hold() {
 #[axtest]
 fn reaping_identity_is_not_publicly_resolvable() {
     ax_assert!(axtest_exports::reaping_identity_is_not_publicly_resolvable());
+}
+
+#[axtest]
+fn pid_identity_state_machine_rules_hold() {
+    ax_assert!(axtest_exports::pid_identity_state_machine_rules_hold());
 }
 
 #[axtest]

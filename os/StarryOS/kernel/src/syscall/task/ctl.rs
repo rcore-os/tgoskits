@@ -13,7 +13,7 @@ use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 use crate::{
     StarryError, StarryResult,
     mm::VmBytes,
-    task::{AsThread, Cred, get_process_data, get_task},
+    task::{AsThread, Cred, TidNumber, get_user_task_by_number},
 };
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
@@ -64,8 +64,16 @@ fn check_nodemask(nodemask: *const usize, maxnode: usize) -> StarryResult<()> {
     Ok(())
 }
 
-/// Validate the cap header and return the target pid (0 means self).
-fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> StarryResult<u32> {
+#[derive(Clone, Copy)]
+enum CapabilityTarget {
+    Current,
+    Thread(TidNumber),
+}
+
+/// Validate the cap header and return a typed thread selector.
+fn validate_cap_header(
+    header_ptr: *mut __user_cap_header_struct,
+) -> StarryResult<CapabilityTarget> {
     // FIXME: AnyBitPattern
     let mut header = unsafe { header_ptr.vm_read_uninit()?.assume_init() };
     if header.version != CAPABILITY_VERSION_3 {
@@ -73,9 +81,16 @@ fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> StarryResul
         header_ptr.vm_write(header)?;
         return Err(StarryError::InvalidInput);
     }
-    let pid = header.pid as u32;
-    let _ = get_process_data(pid)?;
-    Ok(pid)
+    if header.pid < 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    if header.pid == 0 {
+        Ok(CapabilityTarget::Current)
+    } else {
+        let tid = TidNumber::try_from(header.pid as u32)?;
+        let _ = get_user_task_by_number(tid)?;
+        Ok(CapabilityTarget::Thread(tid))
+    }
 }
 
 /// Read the credential set for the thread identified by TID (0 = self).
@@ -83,11 +98,11 @@ fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> StarryResul
 /// capget(2) operates on the thread identified by `header.pid`; on Linux
 /// threads in the same thread group share the same `struct cred` by default,
 /// so reading any thread's cred gives the same answer.
-fn cred_for_pid(pid: u32) -> StarryResult<alloc::sync::Arc<Cred>> {
-    if pid == 0 {
+fn cred_for_target(target: CapabilityTarget) -> StarryResult<alloc::sync::Arc<Cred>> {
+    let CapabilityTarget::Thread(tid) = target else {
         return Ok(current().as_thread().cred());
-    }
-    let task = get_task(pid).map_err(|_| StarryError::NoSuchProcess)?;
+    };
+    let task = get_user_task_by_number(tid).map_err(|_| StarryError::NoSuchProcess)?;
     task.try_as_thread()
         .map(|t| t.cred())
         .ok_or(StarryError::NoSuchProcess)
@@ -135,13 +150,13 @@ pub fn sys_capget(
     header: *mut __user_cap_header_struct,
     data: *mut __user_cap_data_struct,
 ) -> StarryResult<isize> {
-    let pid = validate_cap_header(header)?;
+    let target = validate_cap_header(header)?;
 
     if data.is_null() {
         return Ok(0);
     }
 
-    let cred = cred_for_pid(pid)?;
+    let cred = cred_for_target(target)?;
     let cap_data = cap_data_from_cred(&cred);
     unsafe {
         data.vm_write(cap_data[0])?;
@@ -160,14 +175,14 @@ pub fn sys_capset(
     header: *mut __user_cap_header_struct,
     data: *mut __user_cap_data_struct,
 ) -> StarryResult<isize> {
-    let pid = validate_cap_header(header)?;
+    let target = validate_cap_header(header)?;
     if data.is_null() {
         return Err(StarryError::BadAddress);
     }
 
     let thread_ref = current();
     let thread = thread_ref.as_thread();
-    if pid != 0 && pid != thread.tid() {
+    if matches!(target, CapabilityTarget::Thread(tid) if tid != thread.tid_number()) {
         return Err(StarryError::OperationNotPermitted);
     }
 
@@ -367,11 +382,15 @@ pub fn sys_prctl(
     match option {
         PR_SET_NAME => {
             let mut name = [0u8; 15];
-            VmBytes::new(arg2 as *const u8, name.len()).read_exact(&mut name)?;
-            let len = name
-                .iter()
-                .position(|&byte| byte == 0)
-                .unwrap_or(name.len());
+            let mut user_name = VmBytes::new(arg2 as *const u8, name.len());
+            let mut len = 0;
+            while len < name.len() {
+                user_name.read_exact(&mut name[len..=len])?;
+                if name[len] == 0 {
+                    break;
+                }
+                len += 1;
+            }
             let name = core::str::from_utf8(&name[..len]).map_err(|_| StarryError::IllegalBytes)?;
             current().set_name(name);
         }

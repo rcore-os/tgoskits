@@ -40,6 +40,19 @@ pub const FXMAC_PHY_FULL_DUPLEX: u32 = 1;
 
 pub const FXMAC_RECV_MAX_COUNT: u32 = 10;
 
+fn fxmac_rx_frame_len(feature: u32, status: u32) -> Option<usize> {
+    let (rx_bytes, max_frame_size) = if (feature & FXMAC_LWIP_PORT_CONFIG_JUMBO) != 0 {
+        (
+            status & FXMAC_RXBUF_LEN_JUMBO_MASK,
+            FXMAC_MAX_FRAME_SIZE_JUMBO,
+        )
+    } else {
+        (status & FXMAC_RXBUF_LEN_MASK, FXMAC_MAX_FRAME_SIZE)
+    };
+
+    (rx_bytes <= max_frame_size).then_some(rx_bytes as usize)
+}
+
 // frame queue
 pub const PQ_QUEUE_SIZE: u32 = 4096;
 
@@ -1037,15 +1050,14 @@ pub fn FXmacRecvHandler(instance_p: &mut FXmac) -> Option<Vec<Vec<u8>>> {
         for k in 0..bd_processed {
             let rxring: &mut FXmacBdRing = &mut instance_p.rx_bd_queue.bdring;
 
-            // Adjust the buffer size to the actual number of bytes received.
-            let rx_bytes: u32 = if (instance_p.lwipport.feature & FXMAC_LWIP_PORT_CONFIG_JUMBO) != 0
-            {
-                // FXMAC_GET_RX_FRAME_SIZE(curbdptr)
-                fxmac_bd_read(curbdptr as u64, FXMAC_BD_STAT_OFFSET) & 0x00003FFF
-            } else {
-                debug!("FXMAC_RXBUF_LEN_MASK={:#x}", FXMAC_RXBUF_LEN_MASK);
-                // FXMAC_BD_GET_LENGTH(curbdptr)
-                fxmac_bd_read(curbdptr as u64, FXMAC_BD_STAT_OFFSET) & FXMAC_RXBUF_LEN_MASK
+            let status = fxmac_bd_read(curbdptr as u64, FXMAC_BD_STAT_OFFSET);
+            let Some(rx_bytes) = fxmac_rx_frame_len(instance_p.lwipport.feature, status) else {
+                warn!(
+                    "Dropping RX descriptor with out-of-range status {:#x}",
+                    status
+                );
+                curbdptr = FXMAC_BD_RING_NEXT(rxring, curbdptr);
+                continue;
             };
 
             let bdindex: u32 = FXMAC_BD_TO_INDEX(rxring, curbdptr as u64);
@@ -1054,7 +1066,7 @@ pub fn FXmacRecvHandler(instance_p: &mut FXmac) -> Option<Vec<Vec<u8>>> {
                 "RX PKT {} @{:#x} <<<<<<<<< - {}",
                 rx_bytes, pbufs_virt, bdindex
             );
-            let mbuf = unsafe { from_raw_parts_mut(pbufs_virt as *mut u8, rx_bytes as usize) };
+            let mbuf = unsafe { from_raw_parts_mut(pbufs_virt as *mut u8, rx_bytes) };
 
             debug!("pbuf: {:x?}", mbuf);
 
@@ -1086,7 +1098,7 @@ pub fn FXmacRecvHandler(instance_p: &mut FXmac) -> Option<Vec<Vec<u8>>> {
             // instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize] = 0;
 
             // Just clear 64 bits header
-            mbuf[..min(64, rx_bytes as usize)].fill(0);
+            mbuf[..min(64, rx_bytes)].fill(0);
 
             curbdptr = FXMAC_BD_RING_NEXT(rxring, curbdptr);
         }
@@ -1490,5 +1502,33 @@ pub fn ethernetif_input_to_recv_packets(instance_p: &mut FXmac) {
         // p = low_level_input(netif);
         // IP or ARP packet
         // full packet send to tcpip thread to process
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rx_frame_len_rejects_lengths_larger_than_configured_buffers() {
+        assert_eq!(
+            fxmac_rx_frame_len(0, FXMAC_MAX_FRAME_SIZE),
+            Some(FXMAC_MAX_FRAME_SIZE as usize)
+        );
+        assert_eq!(fxmac_rx_frame_len(0, FXMAC_MAX_FRAME_SIZE + 1), None);
+        assert_eq!(fxmac_rx_frame_len(0, FXMAC_RXBUF_LEN_MASK), None);
+
+        assert_eq!(
+            fxmac_rx_frame_len(FXMAC_LWIP_PORT_CONFIG_JUMBO, FXMAC_MAX_FRAME_SIZE_JUMBO,),
+            Some(FXMAC_MAX_FRAME_SIZE_JUMBO as usize)
+        );
+        assert_eq!(
+            fxmac_rx_frame_len(FXMAC_LWIP_PORT_CONFIG_JUMBO, FXMAC_MAX_FRAME_SIZE_JUMBO + 1,),
+            None
+        );
+        assert_eq!(
+            fxmac_rx_frame_len(FXMAC_LWIP_PORT_CONFIG_JUMBO, FXMAC_RXBUF_LEN_JUMBO_MASK,),
+            None
+        );
     }
 }
