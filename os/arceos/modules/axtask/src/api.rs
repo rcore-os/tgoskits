@@ -54,6 +54,9 @@ cfg_if::cfg_if! {
     } else if #[cfg(feature = "sched-cfs")] {
         pub(crate) type AxTask = ax_sched::CFSTask<TaskInner>;
         pub(crate) type Scheduler = ax_sched::CFScheduler<TaskInner>;
+    } else if #[cfg(feature = "sched-rt")] {
+        pub(crate) type AxTask = ax_sched::RTTask<TaskInner>;
+        pub(crate) type Scheduler = ax_sched::RTScheduler<TaskInner>;
     } else {
         // If no scheduler features are set, use FIFO as the default.
         pub(crate) type AxTask = ax_sched::FifoTask<TaskInner>;
@@ -349,13 +352,11 @@ where
 
 /// Set the priority for current task.
 ///
-/// The range of the priority is dependent on the underlying scheduler. For
-/// example, in the [CFS] scheduler, the priority is the nice value, ranging from
-/// -20 to 19.
+/// The semantics of the priority value depend on the underlying scheduler:
+/// - **CFS**: nice value ranging from -20 to 19 (lower = higher priority).
+/// - **RT**: priority where higher numbers mean higher priority (FreeRTOS convention).
 ///
 /// Returns `true` if the priority is set successfully.
-///
-/// [CFS]: https://en.wikipedia.org/wiki/Completely_Fair_Scheduler
 pub fn set_priority(prio: isize) -> bool {
     current_run_queue::<PreemptIrqSaveState>().set_current_priority(prio)
 }
