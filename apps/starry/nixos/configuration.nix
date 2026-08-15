@@ -12,6 +12,7 @@
   boot.kernel.enable = false;
   networking.hostName = "starrynixos";
   networking.useDHCP = false;
+  networking.resolvconf.enable = false;
   networking.firewall.enable = false;
 
   nix.enable = false;
@@ -44,13 +45,16 @@
     "vm.max_map_count" = lib.mkForce null;
   };
 
-  # StarryOS does not yet provide every mount/UTS isolation operation used by
-  # systemd-udevd's upstream sandbox. Keep this exception unit-local so the
-  # remaining Stage-2 system still exercises its declared service graph.
-  systemd.services.systemd-udevd.serviceConfig = {
-    PrivateMounts = lib.mkForce false;
-    ProtectHostname = lib.mkForce false;
-  };
+  # StarryOS provides the mounted device tree and does not expose Linux uevents.
+  # Running udevd cannot discover additional devices and leaves sysinit waiting
+  # for a readiness notification from an unsupported device-management path.
+  services.udev.enable = false;
+  systemd.suppressedSystemUnits = [
+    "systemd-udevd-control.socket"
+    "systemd-udevd-kernel.socket"
+    "systemd-udevd.service"
+    "systemd-udev-trigger.service"
+  ];
 
   # The reusable image intentionally keeps a transient per-boot machine ID.
   # Committing it requires the mount-namespace transition used to replace the

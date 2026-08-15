@@ -22,16 +22,17 @@ validate_request() {
     [ "$target" = x86_64-unknown-none ] || fail "target '$target' does not match x86_64-unknown-none"
 }
 
-inspect_disabled_multi_user_want() {
+inspect_disabled_want() {
     local image="$1"
     local toplevel="$2"
-    local service="$3"
+    local target="$3"
+    local service="$4"
     local want_path inspection
 
-    want_path="$toplevel/etc/systemd/system/multi-user.target.wants/$service"
+    want_path="$toplevel/etc/systemd/system/$target.wants/$service"
     inspection="$(debugfs -R "stat $want_path" "$image" 2>&1)"
     if ! printf '%s\n' "$inspection" | grep -q 'File not found'; then
-        fail "artifact unexpectedly enables '$service' through multi-user.target"
+        fail "artifact unexpectedly enables '$service' through $target"
     fi
 }
 
@@ -58,9 +59,14 @@ inspect_artifact() {
     activation_stat="$(debugfs -R "stat $expected_toplevel/activate" "$image" 2>&1)"
     ! printf '%s\n' "$activation_stat" | grep -q 'File not found' \
         || fail "artifact is missing NixOS activation data for '$expected_toplevel'"
-    inspect_disabled_multi_user_want "$image" "$expected_toplevel" systemd-logind.service
-    inspect_disabled_multi_user_want "$image" "$expected_toplevel" linger-users.service
-    inspect_disabled_multi_user_want "$image" "$expected_toplevel" systemd-user-sessions.service
+    inspect_disabled_want "$image" "$expected_toplevel" multi-user.target systemd-logind.service
+    inspect_disabled_want "$image" "$expected_toplevel" multi-user.target linger-users.service
+    inspect_disabled_want "$image" "$expected_toplevel" multi-user.target systemd-user-sessions.service
+    inspect_disabled_want "$image" "$expected_toplevel" multi-user.target resolvconf.service
+    inspect_disabled_want "$image" "$expected_toplevel" sysinit.target systemd-udevd.service
+    inspect_disabled_want "$image" "$expected_toplevel" sysinit.target systemd-udev-trigger.service
+    inspect_disabled_want "$image" "$expected_toplevel" sockets.target systemd-udevd-control.socket
+    inspect_disabled_want "$image" "$expected_toplevel" sockets.target systemd-udevd-kernel.socket
     debugfs -R "stat /etc/alpine-release" "$image" 2>&1 \
         | grep -q 'File not found' \
         || fail "artifact unexpectedly contains Alpine runtime identity"
