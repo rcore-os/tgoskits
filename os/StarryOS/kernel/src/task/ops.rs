@@ -419,11 +419,12 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // the process topology transaction instead.
         let pid_ns = thr.active_pid_namespace();
         let identity = thr.proc_data.identity();
+        let shutdown_executor = thr.pid_identity();
         let namespace_shutdown =
             if pid_ns.level() > 0 && pid_ns.init_identity() == Some(identity.id()) {
                 Some(
                     pid_ns
-                        .begin_shutdown(identity.id())
+                        .begin_shutdown(identity.id(), shutdown_executor.id())
                         .expect("PID namespace init failed to enter shutdown"),
                 )
             } else {
