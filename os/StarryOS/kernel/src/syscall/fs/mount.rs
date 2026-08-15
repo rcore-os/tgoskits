@@ -486,6 +486,12 @@ pub fn sys_move_mount(
     if !source.is_detached_mount_handle() {
         return Err(StarryError::InvalidInput);
     }
+
+    // Serialise mount-tree mutations across CPUs (see `MOUNT_OP_LOCK`): the
+    // target resolution + `attach_detached` is a read-modify-write of the mount
+    // tree that must not race the locked mount/umount/pivot_root paths.
+    let _mount_op = MOUNT_OP_LOCK.lock();
+
     let path = vm_load_string(to_path)?;
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let mount_namespace = fs_context.lock().mount_namespace().clone();
@@ -528,6 +534,11 @@ pub fn sys_mount_setattr(
 
     let attributes = attributes.vm_read()?;
     validate_mount_attributes(&attributes)?;
+
+    // Serialise mount-tree mutations across CPUs (see `MOUNT_OP_LOCK`): the
+    // visibility walk + `apply_mount_attributes` must not race the locked
+    // mount/umount/pivot_root paths.
+    let _mount_op = MOUNT_OP_LOCK.lock();
 
     let directory = Directory::from_fd(dirfd)?;
     if !directory.inner().is_root_of_mount() {
