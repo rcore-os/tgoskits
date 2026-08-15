@@ -51,7 +51,7 @@ impl TaskSystem {
         core: &Arc<ThreadCore>,
         sched: &mut ThreadSchedState,
         reason: EnqueueReason,
-    ) -> bool {
+    ) -> OwnerReadyEnqueue {
         let policy = sched.policy.active().policy();
         let current_fair = run_queue
             .current_scheduling_entity()
@@ -61,7 +61,7 @@ impl TaskSystem {
             task_runtime::fatal_invariant(0x574b_1102, core.id().as_u64() as usize)
         });
         let active = sched.policy.take_active();
-        let queued_entity = run_queue.enqueue_task(
+        let enqueue = run_queue.enqueue_task(
             QueuedThread::new(
                 core.id(),
                 active,
@@ -76,16 +76,17 @@ impl TaskSystem {
         Self::activate_deadline_bandwidth_locked(core, sched, run_queue, owner);
         run_queue.update_fair_virtual_time(current_fair);
         let preempts_current = if reason.checks_preemption_after_enqueue() {
-            let fair_virtual_time = queued_entity
+            let fair_virtual_time = enqueue
+                .entity()
                 .fair()
                 .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
             run_queue
-                .wakeup_preempt(core.id(), policy, &queued_entity, fair_virtual_time)
+                .wakeup_preempt(core.id(), policy, enqueue.entity(), fair_virtual_time)
                 .requests_reschedule()
         } else {
             false
         };
-        core.publish_effective_schedule(policy, &queued_entity);
+        core.publish_effective_schedule(policy, enqueue.entity());
         if sched.placement.on_cpu() == Some(owner) {
             // Fair removes current from its class tree while Linux keeps the
             // task logically on_rq. Re-linking it is put_prev, not activation.
@@ -94,7 +95,10 @@ impl TaskSystem {
             sched.placement.activate(owner);
         }
         core.set_wake_cpu_hint(owner);
-        preempts_current
+        OwnerReadyEnqueue {
+            preempts_current,
+            scheduler_deadline_refresh_required: enqueue.scheduler_deadline_refresh_required(),
+        }
     }
 
     pub(in crate::system::task_system) fn finish_owner_enqueue(
@@ -102,6 +106,7 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         reason: EnqueueReason,
         preempts_current: bool,
+        scheduler_deadline_refresh_required: bool,
         effective_policy: Option<SchedulePolicy>,
     ) {
         if reason.checks_preemption_after_enqueue() && preempts_current {
@@ -110,7 +115,9 @@ impl TaskSystem {
         if let Some(policy) = effective_policy {
             let _started = self.activate_owner_rt_period_for_policy(cpu.owner(), policy);
         }
-        if !preempts_current && self.rt_deadline_push_pending(cpu.remote()) {
+        if !preempts_current
+            && (scheduler_deadline_refresh_required || self.rt_deadline_push_pending(cpu.remote()))
+        {
             cpu.remote().kick_scheduler_work();
         }
     }

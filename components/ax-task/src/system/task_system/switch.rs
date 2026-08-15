@@ -362,7 +362,7 @@ impl TaskSystem {
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5343_110c, core.id().as_u64() as usize)
             });
-        let preempts_current = if retained_current {
+        let enqueue = if retained_current {
             let queued_entity = transaction.put_prev_task(core.id(), reason);
             let dispatch = transaction.take_current().unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5343_1105, core.id().as_u64() as usize)
@@ -376,13 +376,20 @@ impl TaskSystem {
                 &queued_entity,
             );
             core.set_wake_cpu_hint(owner);
-            false
+            dispatch::OwnerReadyEnqueue {
+                preempts_current: false,
+                scheduler_deadline_refresh_required: false,
+            }
         } else {
             self.link_owner_ready_thread_locked(owner, transaction, &core, sched, reason)
         };
-        if preempts_current {
+        if enqueue.preempts_current {
             cpu.request_reschedule();
         }
+        // This transaction is already inside the owner scheduling decision;
+        // its final deadline derivation consumes any enqueue refresh edge.
+        let _scheduler_deadline_refresh_consumed_by_owner =
+            enqueue.scheduler_deadline_refresh_required;
         OwnerScheduleOut { migration: None }
     }
 

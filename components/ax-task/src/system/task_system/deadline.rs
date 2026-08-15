@@ -180,7 +180,13 @@ impl TaskSystem {
         );
         transaction.commit();
         if let Some(preempts_current) = enqueue {
-            self.finish_owner_enqueue(cpu, EnqueueReason::Replenished, preempts_current, None);
+            self.finish_owner_enqueue(
+                cpu,
+                EnqueueReason::Replenished,
+                preempts_current,
+                false,
+                None,
+            );
         }
     }
 

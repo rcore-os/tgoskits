@@ -22,7 +22,9 @@ pub use lifecycle::CpuLifecycleState;
 pub(crate) use lifecycle::{CpuRemotePublication, OwnedCpuRemotePublication};
 pub use owner::CpuLocalOwnerBorrow;
 pub(in crate::system::cpu) use run_queue::RqCurrentTick;
-pub(crate) use run_queue::{CpuRunQueueState, RunQueueGuardSource, WakePreemptionDecision};
+pub(crate) use run_queue::{
+    CpuRunQueueState, OwnerRqEnqueue, RunQueueGuardSource, WakePreemptionDecision,
+};
 pub(crate) use scheduler::SchedulerRequestClaim;
 
 #[cfg(test)]

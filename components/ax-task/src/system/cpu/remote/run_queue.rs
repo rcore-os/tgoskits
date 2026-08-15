@@ -1,9 +1,7 @@
 use core::ops::Deref;
 
 use super::*;
-#[cfg(test)]
-use crate::FairEntity;
-use crate::{EnqueueReason, SchedulerClass};
+use crate::{EnqueueReason, FairEntity, SchedulerClass};
 
 /// Typed reason for entering the per-CPU runqueue with irqsave semantics.
 ///
@@ -58,6 +56,28 @@ pub(crate) enum WakePreemptionDecision {
     DedicatedIdlePreempted,
     WakeeSelected,
     QueuedCandidateSelected,
+}
+
+/// Owner-rq facts committed by one runnable-task insertion.
+///
+/// Preemption remains a complete-rq decision made after insertion. This
+/// outcome separately preserves whether the insertion made the current
+/// entity's runtime deadline newly relevant, so a `KeepCurrent` decision can
+/// still ask the owner CPU to rederive its physical clockevent.
+#[must_use = "owner enqueue facts must be consumed before publishing scheduler work"]
+pub(crate) struct OwnerRqEnqueue {
+    entity: SchedulingEntity,
+    scheduler_deadline_refresh_required: bool,
+}
+
+impl OwnerRqEnqueue {
+    pub(crate) const fn entity(&self) -> &SchedulingEntity {
+        &self.entity
+    }
+
+    pub(crate) const fn scheduler_deadline_refresh_required(&self) -> bool {
+        self.scheduler_deadline_refresh_required
+    }
 }
 
 /// Runtime-accounting outcome for the task currently installed in `rq`.
@@ -147,6 +167,21 @@ impl CpuRunQueueState {
     /// `OwnerRqTxn` rather than a raw runqueue guard.
     pub(in crate::system::cpu) fn owner_transaction_queue_mut(&mut self) -> &mut RunQueue {
         &mut self.queue
+    }
+
+    pub(in crate::system::cpu) fn enqueue_task(
+        &mut self,
+        thread: QueuedThread,
+        reason: EnqueueReason,
+        current_fair: Option<FairEntity>,
+    ) -> Result<OwnerRqEnqueue, TaskError> {
+        let runtime_timer_required_before = self.current_runtime_timer_required();
+        let entity = self.queue.enqueue_task(thread, reason, current_fair)?;
+        Ok(OwnerRqEnqueue {
+            entity,
+            scheduler_deadline_refresh_required: !runtime_timer_required_before
+                && self.current_runtime_timer_required(),
+        })
     }
 
     #[cfg(test)]
@@ -343,6 +378,35 @@ impl CpuRunQueueState {
             .or_else(|| current.owned_scheduling_entity_ref())
             .expect("current dispatch must have one rq-owned scheduling entity");
         CurrentDispatch::runtime_timer_delta_for(entity)
+    }
+
+    /// Returns whether the current entity contributes a runtime clockevent.
+    ///
+    /// Entities without a class runtime deadline do not need this clockevent.
+    /// Like Linux EEVDF, a Fair current needs its slice timer only while a
+    /// same-mode contender is queued. A first contender can therefore make
+    /// this fact transition from false to true without requesting immediate
+    /// wakeup preemption.
+    pub(crate) fn current_runtime_timer_required(&self) -> bool {
+        let Some(current) = self.current() else {
+            return false;
+        };
+        if current.is_dedicated_idle() {
+            return false;
+        }
+        let current_entity = self
+            .current_scheduling_entity()
+            .expect("current dispatch must have one rq-owned scheduling entity");
+        if CurrentDispatch::runtime_timer_delta_for(current_entity).is_none() {
+            return false;
+        }
+        current_entity.fair().is_none_or(|fair| {
+            if fair.mode() == FairMode::Idle {
+                self.has_idle_fair()
+            } else {
+                self.has_fair()
+            }
+        })
     }
 
     pub(crate) fn current_thread(&self) -> Option<ThreadId> {

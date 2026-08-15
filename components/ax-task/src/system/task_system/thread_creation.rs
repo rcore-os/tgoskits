@@ -272,13 +272,14 @@ impl TaskSystem {
             // SAFETY: the CPU is still offline under the boot owner's raw IRQ
             // exclusion and cannot enter the runtime IRQ-exit service.
             let mut transaction = unsafe { OwnerRqTxn::begin_bootstrap(self, &remote) };
-            self.link_owner_ready_thread_locked(
-                cpu.owner(),
-                &mut transaction,
-                &core,
-                &mut sched,
-                EnqueueReason::Wake,
-            );
+            let _enqueue_consumed_by_immediate_bootstrap_pick = self
+                .link_owner_ready_thread_locked(
+                    cpu.owner(),
+                    &mut transaction,
+                    &core,
+                    &mut sched,
+                    EnqueueReason::Wake,
+                );
             let next = self.pick_owner_bootstrap_in_rq(cpu.as_mut(), &mut transaction);
             if !Arc::ptr_eq(&next.core, &core) {
                 task_runtime::fatal_invariant(0x4254_0001, core.id().as_u64() as usize);

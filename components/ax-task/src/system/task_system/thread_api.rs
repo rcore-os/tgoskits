@@ -253,13 +253,15 @@ impl TaskSystem {
             applied.preempts_current,
             applied.rt_period_started,
         );
-        if applied.preempts_current || applied.rt_period_started {
+        let owner_work_required =
+            applied.scheduler_deadline_refresh_required || applied.rt_period_started;
+        if applied.preempts_current || owner_work_required {
             #[cfg(feature = "task-test-hooks")]
             crate::task_test_hooks::record_rt_policy_request_publication(core.id());
         }
-        match (applied.preempts_current, applied.rt_period_started) {
+        match (applied.preempts_current, owner_work_required) {
             (true, true) => {
-                // The policy and root-period facts belong to one rq transaction.
+                // Preemption and owner-deadline facts belong to one rq transaction.
                 // Publish both logical reasons before a single physical edge.
                 remote.request_remote_reschedule_with_scheduler_work();
                 #[cfg(feature = "task-test-hooks")]
@@ -274,9 +276,9 @@ impl TaskSystem {
                 crate::task_test_hooks::record_rt_policy_reschedule(core.id());
             }
             (false, true) => {
-                // The RT period deadline is pinned to the rq owner. Ask that
-                // owner to derive its physical timer; a remote setter must not
-                // program another CPU's comparator directly.
+                // Scheduler deadlines are pinned to the rq owner. Ask that
+                // owner to derive its physical timer; a remote setter must
+                // not program another CPU's comparator directly.
                 remote.kick_scheduler_work();
                 #[cfg(feature = "task-test-hooks")]
                 crate::task_test_hooks::record_rt_policy_owner_work(core.id());

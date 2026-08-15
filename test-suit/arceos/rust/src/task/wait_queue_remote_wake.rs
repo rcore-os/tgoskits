@@ -159,8 +159,14 @@ fn wake_sleep_queue_after_waiter_enqueued(sleeper: u64) {
         if task_test_hooks::thread_is_blocked(sleeper) {
             task_test_hooks::arm_wake_irq_owner_probe(sleeper);
             task_test_hooks::arm_wake_entity_read_copy_probe(sleeper);
+            task_test_hooks::arm_wake_owner_deadline_refresh_probe(sleeper);
             GO.store(true, Ordering::Release);
             assert_eq!(api::ax_wait_queue_wake(&SLEEP_WQ, 1), 1);
+            assert_eq!(
+                task_test_hooks::take_wake_owner_deadline_refresh_required(),
+                Some(true),
+                "the first Fair contender must publish owner deadline refresh work",
+            );
             return;
         }
         thread::yield_now();

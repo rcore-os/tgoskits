@@ -133,7 +133,7 @@ impl TaskSystem {
             let metadata = sched.rq_task_metadata().unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5049_120a, core.id().as_u64() as usize)
             });
-            transaction.enqueue_task(
+            let _enqueue_consumed_by_remote_reschedule = transaction.enqueue_task(
                 QueuedThread::new(
                     core.id(),
                     active,

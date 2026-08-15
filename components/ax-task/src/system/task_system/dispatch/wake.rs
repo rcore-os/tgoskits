@@ -518,7 +518,7 @@ impl TaskSystem {
         let active = sched.policy.take_active();
         debug_assert_eq!(active.policy(), policy);
         debug_assert_eq!(active.entity(), &queued_entity);
-        let queued_entity = run_queue.enqueue_task(
+        let enqueue = run_queue.enqueue_task(
             QueuedThread::new(
                 core.id(),
                 active,
@@ -530,16 +530,22 @@ impl TaskSystem {
             EnqueueReason::Wake,
             current_fair,
         );
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_wake_owner_deadline_refresh(
+            core.id(),
+            enqueue.scheduler_deadline_refresh_required(),
+        );
         run_queue.update_fair_virtual_time(current_fair);
-        let fair_virtual_time = queued_entity
+        let fair_virtual_time = enqueue
+            .entity()
             .fair()
             .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
         let preemption =
-            run_queue.wakeup_preempt(core.id(), policy, &queued_entity, fair_virtual_time);
+            run_queue.wakeup_preempt(core.id(), policy, enqueue.entity(), fair_virtual_time);
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_wake_entity_read(core.id(), 0);
         let preempts_current = preemption.requests_reschedule();
-        core.publish_effective_schedule(policy, &queued_entity);
+        core.publish_effective_schedule(policy, enqueue.entity());
         sched.placement.activate(target);
         core.set_wake_cpu_hint(target);
         let rt_deadline_push_pending = self.rt_deadline_push_pending(remote);
@@ -549,8 +555,9 @@ impl TaskSystem {
         // Linux publishes wake preemption, RT/DL push work, and a newly active
         // bandwidth period after the enqueue transaction. Preserve each
         // logical reason while coalescing their shared physical delivery.
-        let owner_work_required =
-            (rt_deadline_push_pending && !preempts_current) || rt_period_started;
+        let owner_work_required = enqueue.scheduler_deadline_refresh_required()
+            || (rt_deadline_push_pending && !preempts_current)
+            || rt_period_started;
 
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_direct_wake_enqueue();
@@ -609,6 +616,7 @@ impl TaskSystem {
             cpu,
             reason,
             commit.preempts_current,
+            commit.scheduler_deadline_refresh_required,
             Some(commit.effective_policy),
         );
         Ok(())
@@ -661,17 +669,19 @@ impl TaskSystem {
             transaction.commit();
             return Ok(OwnerEnqueueCommit {
                 preempts_current,
+                scheduler_deadline_refresh_required: false,
                 effective_policy: policy,
             });
         }
-        let preempts_current =
+        let enqueue =
             self.link_owner_ready_thread_locked(owner, &mut transaction, core, sched, reason);
         let timer_preempts = self
             .refresh_owner_deadline_timers_in_rq(core, sched, cpu, now_ns, &mut transaction)
             .unwrap_or(false);
         transaction.commit();
         Ok(OwnerEnqueueCommit {
-            preempts_current: preempts_current || timer_preempts,
+            preempts_current: enqueue.preempts_current || timer_preempts,
+            scheduler_deadline_refresh_required: enqueue.scheduler_deadline_refresh_required,
             effective_policy: policy,
         })
     }

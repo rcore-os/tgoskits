@@ -368,17 +368,7 @@ impl CpuLocal {
         let idle = run_queue.idle();
         let current_is_idle = current_thread.is_some() && current_thread == idle;
         if !current_is_idle && let Some(dispatch) = run_queue.current() {
-            let current_entity = run_queue
-                .current_scheduling_entity()
-                .expect("current dispatch must have one rq-owned scheduling entity");
-            let fair_slice_required = current_entity.fair().is_none_or(|fair| {
-                if fair.mode() == FairMode::Idle {
-                    run_queue.has_idle_fair()
-                } else {
-                    run_queue.has_fair()
-                }
-            });
-            if fair_slice_required
+            if run_queue.current_runtime_timer_required()
                 && let Some(delta_ns) = run_queue.current_runtime_timer_delta_ns()
             {
                 if delta_ns == 0 {

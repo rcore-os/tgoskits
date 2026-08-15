@@ -19,6 +19,9 @@ static WAKE_ENTITY_READ_COPY_TARGET: AtomicU64 = AtomicU64::new(0);
 static WAKE_ENTITY_READ_COUNT: AtomicU64 = AtomicU64::new(0);
 static WAKE_ENTITY_READ_COPY_COUNT: AtomicU64 = AtomicU64::new(0);
 static WAKE_ENTITY_READ_COPY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static WAKE_OWNER_DEADLINE_REFRESH_TARGET: AtomicU64 = AtomicU64::new(0);
+static WAKE_OWNER_DEADLINE_REFRESH_REQUIRED: AtomicU8 = AtomicU8::new(0);
+static WAKE_OWNER_DEADLINE_REFRESH_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static PARK_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static SWITCH_TAIL_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static POLICY_SWITCH_HANDOFF_TARGET: AtomicU64 = AtomicU64::new(0);
@@ -1102,6 +1105,52 @@ pub(crate) fn record_wake_entity_read(thread: ThreadId, copies: u64) {
     {
         WAKE_ENTITY_READ_COUNT.fetch_add(1, Ordering::Relaxed);
         WAKE_ENTITY_READ_COPY_COUNT.fetch_add(copies, Ordering::Relaxed);
+    }
+}
+
+/// Arms owner-deadline refresh accounting for one real direct wake.
+pub fn arm_wake_owner_deadline_refresh_probe(thread: u64) {
+    assert_ne!(thread, 0, "a wake deadline probe identity must be non-zero");
+    assert_eq!(
+        WAKE_OWNER_DEADLINE_REFRESH_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one wake deadline probe may be armed"
+    );
+    WAKE_OWNER_DEADLINE_REFRESH_TARGET.store(thread, Ordering::Relaxed);
+    WAKE_OWNER_DEADLINE_REFRESH_REQUIRED.store(0, Ordering::Relaxed);
+    WAKE_OWNER_DEADLINE_REFRESH_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes whether the armed wake made an owner scheduler deadline newly relevant.
+pub fn take_wake_owner_deadline_refresh_required() -> Option<bool> {
+    if WAKE_OWNER_DEADLINE_REFRESH_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let required = WAKE_OWNER_DEADLINE_REFRESH_REQUIRED.load(Ordering::Relaxed) != 0;
+    WAKE_OWNER_DEADLINE_REFRESH_TARGET.store(0, Ordering::Relaxed);
+    WAKE_OWNER_DEADLINE_REFRESH_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(required)
+}
+
+pub(crate) fn record_wake_owner_deadline_refresh(thread: ThreadId, required: bool) {
+    if WAKE_OWNER_DEADLINE_REFRESH_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && WAKE_OWNER_DEADLINE_REFRESH_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        WAKE_OWNER_DEADLINE_REFRESH_REQUIRED.store(u8::from(required), Ordering::Relaxed);
+        WAKE_OWNER_DEADLINE_REFRESH_STAGE.store(STAGE_COMPLETE, Ordering::Release);
     }
 }
 

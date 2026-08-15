@@ -354,9 +354,9 @@ impl<'a> OwnerRqTxn<'a> {
         thread: QueuedThread,
         reason: EnqueueReason,
         current_fair: Option<FairEntity>,
-    ) -> SchedulingEntity {
+    ) -> OwnerRqEnqueue {
         let id = thread.id;
-        self.scheduler_queue_mut()
+        self.run_queue_mut()
             .enqueue_task(thread, reason, current_fair)
             .unwrap_or_else(|_| task_runtime::fatal_invariant(0x5251_1006, id.as_u64() as usize))
     }

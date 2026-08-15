@@ -34,8 +34,8 @@ use remote::RqCurrentTick;
 pub use remote::{CpuLifecycleState, CpuLocalOwnerBorrow, CpuRemote};
 pub(crate) use remote::{
     CpuRemotePublication, CpuRunQueueState, DeadlineBaseGuardSource, IdlePullReservation,
-    KtimerClaimClass, PreparedMigrationDelivery, RunQueueGuardSource, SchedulerRequestClaim,
-    WakePreemptionDecision,
+    KtimerClaimClass, OwnerRqEnqueue, PreparedMigrationDelivery, RunQueueGuardSource,
+    SchedulerRequestClaim, WakePreemptionDecision,
 };
 #[cfg(test)]
 pub(crate) use remote::{reset_rt_bandwidth_lock_acquisitions, rt_bandwidth_lock_acquisitions};

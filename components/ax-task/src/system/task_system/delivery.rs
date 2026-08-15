@@ -4,6 +4,7 @@ pub(super) struct OwnerPolicyApply {
     pub(super) commit: PolicyGenerationCommit,
     pub(super) owner_now_ns: u64,
     pub(super) preempts_current: bool,
+    pub(super) scheduler_deadline_refresh_required: bool,
     pub(super) rt_period_started: bool,
     pub(super) effective_policy: SchedulePolicy,
     pub(super) effective_entity: SchedulingEntity,
@@ -102,7 +103,7 @@ impl TaskSystem {
             });
         let effective_policy = active.policy();
         let effective_entity = active.entity().clone();
-        let preempts_current = if running {
+        let enqueue = if running {
             Self::activate_deadline_bandwidth_locked(core, sched, &mut transaction, owner);
             let rt_quota_exempt = sched.is_pi_boosted_rt_owner_for(active.policy());
             let migration_capable = sched.affinity.affinity.is_migration_capable();
@@ -118,7 +119,10 @@ impl TaskSystem {
                 metadata.clone(),
             );
             transaction.refresh_current_scheduler_metadata(core.id(), metadata, rt_quota_exempt);
-            true
+            dispatch::OwnerReadyEnqueue {
+                preempts_current: true,
+                scheduler_deadline_refresh_required: false,
+            }
         } else if queued {
             sched.policy.install_active(active);
             self.link_owner_ready_thread_locked(
@@ -130,7 +134,10 @@ impl TaskSystem {
             )
         } else {
             sched.policy.install_active(active);
-            false
+            dispatch::OwnerReadyEnqueue {
+                preempts_current: false,
+                scheduler_deadline_refresh_required: false,
+            }
         };
         transaction.commit();
         // Linux starts rt_bandwidth when sched_setscheduler() re-enqueues an
@@ -142,7 +149,8 @@ impl TaskSystem {
         Ok(OwnerPolicyApply {
             commit,
             owner_now_ns,
-            preempts_current,
+            preempts_current: enqueue.preempts_current,
+            scheduler_deadline_refresh_required: enqueue.scheduler_deadline_refresh_required,
             rt_period_started,
             effective_policy,
             effective_entity,
