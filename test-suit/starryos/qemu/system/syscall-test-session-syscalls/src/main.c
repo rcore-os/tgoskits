@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 
@@ -247,6 +248,73 @@ static void test_setsid(void)
     }
 }
 
+#define SETSID_RACERS 8
+
+struct setsid_race_result {
+    pthread_barrier_t *start;
+    pid_t result;
+    int error;
+};
+
+static void *setsid_racer(void *opaque)
+{
+    struct setsid_race_result *race = opaque;
+    int barrier_result = pthread_barrier_wait(race->start);
+    if (barrier_result != 0 && barrier_result != PTHREAD_BARRIER_SERIAL_THREAD) {
+        race->result = -1;
+        race->error = barrier_result;
+        return NULL;
+    }
+
+    errno = 0;
+    race->result = setsid();
+    race->error = errno;
+    return NULL;
+}
+
+static void test_concurrent_setsid(void)
+{
+    printf("--- concurrent setsid ---\n");
+
+    pid_t child = fork();
+    CHECK(child >= 0, "fork concurrent setsid worker");
+    if (child < 0)
+        return;
+    if (child == 0) {
+        pthread_barrier_t start;
+        pthread_t threads[SETSID_RACERS];
+        struct setsid_race_result results[SETSID_RACERS] = {0};
+
+        if (pthread_barrier_init(&start, NULL, SETSID_RACERS) != 0)
+            _exit(1);
+        for (size_t i = 0; i < SETSID_RACERS; ++i) {
+            results[i].start = &start;
+            if (pthread_create(&threads[i], NULL, setsid_racer, &results[i]) != 0)
+                _exit(1);
+        }
+        for (size_t i = 0; i < SETSID_RACERS; ++i) {
+            if (pthread_join(threads[i], NULL) != 0)
+                _exit(1);
+        }
+        pthread_barrier_destroy(&start);
+
+        size_t successes = 0;
+        size_t permission_denied = 0;
+        for (size_t i = 0; i < SETSID_RACERS; ++i) {
+            if (results[i].result == getpid())
+                ++successes;
+            else if (results[i].result == -1 && results[i].error == EPERM)
+                ++permission_denied;
+        }
+        _exit(successes == 1 && permission_denied == SETSID_RACERS - 1 ? 0 : 1);
+    }
+
+    int status = 0;
+    pid_t waited = waitpid(child, &status, 0);
+    CHECK(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "并发 setsid 恰好一个成功，其余返回 EPERM");
+}
+
 static void test_cross_session(void)
 {
     printf("--- 跨 session 操作 ---\n");
@@ -282,6 +350,7 @@ int main(void)
     test_getsid_getpgid_basic();
     test_setpgid();
     test_setsid();
+    test_concurrent_setsid();
     test_cross_session();
 
     TEST_DONE();

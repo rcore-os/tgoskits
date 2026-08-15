@@ -78,6 +78,11 @@ pub struct Process {
     children: SpinLock<StrongMap<TgidNumber, Arc<Process>>>,
     parent: SpinLock<Weak<Process>>,
 
+    /// Serializes job-control topology transitions for this process.
+    ///
+    /// Process-group membership locks are ordered by PGID, and the `group`
+    /// pointer is changed only after both registries contain the new state.
+    job_control: SpinLock<()>,
     group: SpinLock<Arc<ProcessGroup>>,
 }
 
@@ -141,14 +146,29 @@ impl Process {
         self.group.lock_irqsave().clone()
     }
 
-    fn set_group(self: &Arc<Self>, group: &Arc<ProcessGroup>) {
-        let mut self_group = self.group.lock_irqsave();
+    /// Moves this process after the caller has acquired `job_control`.
+    fn set_group_locked(
+        self: &Arc<Self>,
+        old_group: &Arc<ProcessGroup>,
+        group: &Arc<ProcessGroup>,
+    ) {
+        if Arc::ptr_eq(old_group, group) {
+            return;
+        }
 
-        self_group.processes.lock_irqsave().remove(&self.pid);
+        if old_group.pgid_number() < group.pgid_number() {
+            let mut old_members = old_group.processes.lock_irqsave();
+            let mut new_members = group.processes.lock_irqsave();
+            old_members.remove(&self.pid);
+            new_members.insert(self.pid, self);
+        } else {
+            let mut new_members = group.processes.lock_irqsave();
+            let mut old_members = old_group.processes.lock_irqsave();
+            old_members.remove(&self.pid);
+            new_members.insert(self.pid, self);
+        }
 
-        group.processes.lock_irqsave().insert(self.pid, self);
-
-        *self_group = group.clone();
+        *self.group.lock_irqsave() = group.clone();
     }
 
     /// Creates a new [`Session`] and new [`ProcessGroup`] and moves the
@@ -165,14 +185,18 @@ impl Process {
     ///
     /// Checking [`Session`] conflicts is unnecessary.
     pub fn create_session(self: &Arc<Self>) -> Option<(Arc<Session>, Arc<ProcessGroup>)> {
-        if self.group.lock_irqsave().session.sid_number().pid_number() == self.pid.pid_number() {
+        let _job_control = self.job_control.lock_irqsave();
+        let old_group = self.group();
+        if old_group.session.sid_number().pid_number() == self.pid.pid_number()
+            || old_group.pgid_number().pid_number() == self.pid.pid_number()
+        {
             return None;
         }
 
         let identity = self.identity();
-        let new_session = Session::new(identity.clone());
-        let new_group = ProcessGroup::get_or_create(identity, &new_session);
-        self.set_group(&new_group);
+        let new_session = Session::new(identity.clone()).ok()?;
+        let new_group = ProcessGroup::get_or_create(identity, &new_session).ok()?;
+        self.set_group_locked(&old_group, &new_group);
 
         Some((new_session, new_group))
     }
@@ -187,13 +211,14 @@ impl Process {
     /// The caller has to ensure that the new [`ProcessGroup`] does not conflict
     /// with any existing [`ProcessGroup`].
     pub fn create_group(self: &Arc<Self>) -> Option<Arc<ProcessGroup>> {
-        if self.group.lock_irqsave().pgid_number().pid_number() == self.pid.pid_number() {
+        let _job_control = self.job_control.lock_irqsave();
+        let old_group = self.group();
+        if old_group.pgid_number().pid_number() == self.pid.pid_number() {
             return None;
         }
 
-        let new_group =
-            ProcessGroup::get_or_create(self.identity(), &self.group.lock_irqsave().session);
-        self.set_group(&new_group);
+        let new_group = ProcessGroup::get_or_create(self.identity(), &old_group.session).ok()?;
+        self.set_group_locked(&old_group, &new_group);
 
         Some(new_group)
     }
@@ -206,15 +231,17 @@ impl Process {
     /// If the [`Process`] is already in the specified [`ProcessGroup`], this
     /// method does nothing and returns `true`.
     pub fn move_to_group(self: &Arc<Self>, group: &Arc<ProcessGroup>) -> bool {
-        if Arc::ptr_eq(&self.group.lock_irqsave(), group) {
+        let _job_control = self.job_control.lock_irqsave();
+        let old_group = self.group();
+        if Arc::ptr_eq(&old_group, group) {
             return true;
         }
 
-        if !Arc::ptr_eq(&self.group.lock_irqsave().session, &group.session) {
+        if !Arc::ptr_eq(&old_group.session, &group.session) {
             return false;
         }
 
-        self.set_group(group);
+        self.set_group_locked(&old_group, group);
         true
     }
 }
@@ -336,6 +363,7 @@ impl Process {
     /// The PID-identity state machine guarantees that exactly one consuming
     /// waiter calls this method.
     pub fn retire(self: &Arc<Self>) {
+        let _job_control = self.job_control.lock_irqsave();
         let parent = self.parent();
         let group = self.group();
         let mut parent_children = parent.as_ref().map(|parent| parent.children.lock_irqsave());
@@ -385,8 +413,10 @@ impl Process {
         let pid = TgidNumber::from(identity.root_number());
         let group = parent.map_or_else(
             || {
-                let session = Session::new(identity.clone());
+                let session = Session::new(identity.clone())
+                    .expect("init identity must acquire its unique SID role");
                 ProcessGroup::get_or_create(identity.clone(), &session)
+                    .expect("init identity must acquire its unique PGID role")
             },
             |p| p.group(),
         );
@@ -398,6 +428,7 @@ impl Process {
             tg: SpinLock::new(ThreadGroup::default()),
             children: SpinLock::new(StrongMap::new()),
             parent: SpinLock::new(parent.map(Arc::downgrade).unwrap_or_default()),
+            job_control: SpinLock::new(()),
             group: SpinLock::new(group.clone()),
         });
 

@@ -9,7 +9,7 @@ use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time_nanos};
 use ax_task::current;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
-use starry_vm::VmMutPtr;
+use starry_vm::{VmMutPtr, VmPtr};
 
 use super::{
     IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, SHM_INFO,
@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     StarryError, StarryResult,
-    mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
+    mm::{AddrSpace, Backend, SharedPages, UserPtr},
     sync::Mutex,
     task::{AsThread, PidIdentityId, PidNamespaceId, PidSnapshot},
 };
@@ -37,7 +37,7 @@ bitflags::bitflags! {
 
 /// Data structure describing a shared memory segment.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AnyBitPattern)]
 pub struct ShmidDs {
     /// operation permission struct
     shm_perm: IpcPerm,
@@ -141,7 +141,7 @@ pub struct ShmInner {
     /// c type struct, used in shm_ctl
     pub shmid_ds: ShmidDs,
     creator: PidSnapshot,
-    last_operator: PidSnapshot,
+    last_operator: Option<PidSnapshot>,
     /// IPC namespace ID that owns this segment
     pub ns_id: u64,
 }
@@ -183,7 +183,7 @@ impl ShmInner {
             rmid: false,
             mapping_flags,
             shmid_ds: ShmidDs::new(key, size, ipc_mode as __kernel_mode_t, uid, gid),
-            last_operator: creator.clone(),
+            last_operator: None,
             creator,
             ns_id,
         }
@@ -197,23 +197,22 @@ impl ShmInner {
             .map_or(0, |number| number.get() as __kernel_pid_t);
         status.shm_lpid = self
             .last_operator
-            .visible_number(observer)
+            .as_ref()
+            .and_then(|operator| operator.visible_number(observer))
             .map_or(0, |number| number.get() as __kernel_pid_t);
         status
     }
 
-    /// Validates a `shmget` against an existing segment and records the
-    /// pid of the last operation.
+    /// Validates a `shmget` against an existing segment.
     ///
     /// Mirrors Linux `shm_more_checks()`: the call is rejected with
     /// `EINVAL` only when the requested size is larger than the segment.
     /// The permission bits passed in `shmflg` do not have to match those
     /// used when the segment was created.
-    pub fn try_update(&mut self, size: usize, operator: PidSnapshot) -> StarryResult<isize> {
+    pub fn try_update(&self, size: usize) -> StarryResult<isize> {
         if size as __kernel_size_t > self.shmid_ds.shm_segsz {
             return Err(StarryError::InvalidInput);
         }
-        self.last_operator = operator;
         Ok(self.shmid as isize)
     }
 
@@ -254,7 +253,7 @@ impl ShmInner {
     ) {
         self.va_range.entry(owner).or_default().push(va_range);
         self.shmid_ds.shm_nattch = self.shmid_ds.shm_nattch.saturating_add(1);
-        self.last_operator = operator;
+        self.last_operator = Some(operator);
         self.shmid_ds.shm_atime = monotonic_time_nanos() as __kernel_time_t;
     }
 
@@ -278,7 +277,7 @@ impl ShmInner {
             self.va_range.remove(&owner);
         }
         self.shmid_ds.shm_nattch = self.shmid_ds.shm_nattch.saturating_sub(1);
-        self.last_operator = operator;
+        self.last_operator = Some(operator);
         self.shmid_ds.shm_dtime = monotonic_time_nanos() as __kernel_time_t;
         true
     }
@@ -293,7 +292,7 @@ impl ShmInner {
             .shmid_ds
             .shm_nattch
             .saturating_sub(attach_count as __kernel_ulong_t);
-        self.last_operator = operator;
+        self.last_operator = Some(operator);
         self.shmid_ds.shm_dtime = monotonic_time_nanos() as __kernel_time_t;
         attach_count
     }
@@ -549,8 +548,8 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> StarryResult<isize> {
             let shm_inner = shm_manager
                 .get_inner_by_shmid(shmid, ns_id)
                 .ok_or(StarryError::NotFound)?;
-            let mut shm_inner = shm_inner.lock();
-            return shm_inner.try_update(size, operator);
+            let shm_inner = shm_inner.lock();
+            return shm_inner.try_update(size);
         }
 
         // No segment exists for this key: create one only when IPC_CREAT
@@ -774,6 +773,14 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> StarryResult<i
         return Ok(0);
     }
 
+    // Copy IPC_SET input before taking shared-memory metadata locks. User
+    // memory access can fault and sleep, so it must not retain these locks.
+    let requested = if cmd == IPC_SET {
+        Some((buf.as_ptr() as *const ShmidDs).vm_read()?)
+    } else {
+        None
+    };
+
     // IPC_SET and IPC_STAT only need shm_inner.
     let shm_inner_arc = {
         let shm_manager = SHM_MANAGER.lock();
@@ -783,17 +790,23 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> StarryResult<i
     };
     let mut shm_inner = shm_inner_arc.lock();
 
-    if cmd == IPC_SET {
-        shm_inner.shmid_ds = *buf.get_as_mut()?;
-    } else if cmd == IPC_STAT {
-        if let Some(shmid_ds) = nullable!(buf.get_as_mut())? {
-            *shmid_ds = shm_inner.status(pid_observer);
-        }
-    } else {
+    if let Some(requested) = requested {
+        shm_inner
+            .shmid_ds
+            .shm_perm
+            .update_from_user(&requested.shm_perm);
+        shm_inner.shmid_ds.shm_ctime = monotonic_time_nanos() as __kernel_time_t;
+        return Ok(0);
+    }
+    if cmd != IPC_STAT {
         return Err(StarryError::InvalidInput);
     }
 
-    shm_inner.shmid_ds.shm_ctime = monotonic_time_nanos() as __kernel_time_t;
+    let output = (!buf.is_null()).then(|| shm_inner.status(pid_observer));
+    drop(shm_inner);
+    if let Some(output) = output {
+        buf.as_ptr().vm_write(output)?;
+    }
     Ok(0)
 }
 

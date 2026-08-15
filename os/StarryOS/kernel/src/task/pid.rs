@@ -1300,8 +1300,8 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     }
 
     let child_tgid = child_init.acquire_role::<Tgid>().unwrap();
-    let session = Session::new(child_init.clone());
-    let group = ProcessGroup::get_or_create(child_init.clone(), &session);
+    let session = Session::new(child_init.clone()).unwrap();
+    let group = ProcessGroup::get_or_create(child_init.clone(), &session).unwrap();
     let view = PidView::new(child.clone());
     let root_view = PidView::new(root.clone());
     if !Arc::ptr_eq(
@@ -1429,12 +1429,12 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     generation_is_stable && failed_publication_was_removed
 }
 
-#[cfg(test)]
+#[cfg(any(test, axtest))]
 pub(crate) fn new_test_pid_namespace() -> PidNamespaceRef {
     Arc::new(PidNamespace::new_root())
 }
 
-#[cfg(test)]
+#[cfg(any(test, axtest))]
 pub(crate) fn new_test_process_identity(
     namespace: &PidNamespaceRef,
 ) -> (Arc<PidIdentity>, PidRoleLease<Tgid>) {

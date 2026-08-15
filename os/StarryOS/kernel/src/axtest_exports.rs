@@ -46,6 +46,10 @@ pub fn pipe_linux_io_semantics_hold() -> bool {
     super::file::pipe_linux_io_semantics_hold_for_test()
 }
 
+pub fn prepared_descriptor_stays_hidden_until_install() -> bool {
+    super::file::prepared_descriptor_stays_hidden_until_install_for_test()
+}
+
 pub fn interrupted_pipe_write_preserves_partial_progress() -> bool {
     super::file::interrupted_pipe_write_preserves_partial_progress_for_test()
 }
@@ -249,6 +253,10 @@ pub fn mempolicy_validation_rules_hold() -> bool {
 
 pub fn task_clone_validation_rules_hold() -> bool {
     super::syscall::task_clone_validation_rules_hold_for_test()
+}
+
+pub fn duplicate_live_session_identity_is_rejected() -> bool {
+    super::task::duplicate_live_session_identity_is_rejected_for_test()
 }
 
 pub fn proc_formatting_contracts_hold() -> bool {

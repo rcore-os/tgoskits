@@ -28,7 +28,7 @@ use crate::{
     Errno, StarryError, StarryResult,
     file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
-    task::{AsThread, current_pid_view},
+    task::AsThread,
 };
 
 const SOCK_TYPE_MASK: u32 = 0xf;
@@ -58,11 +58,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> StarryResult<isize> {
         return socket.add_to_fd_table(cloexec).map(|fd| fd as isize);
     }
 
-    let process_identity = current().as_thread().proc_data.identity();
-    let pid = current_pid_view()
-        .visible_number(&process_identity)
-        .expect("socket creator is visible in its active PID namespace")
-        .get();
+    let unix_credentials = Socket::current_unix_credentials();
     let ip_domain = if domain == AF_INET || domain == AF_INET6 {
         domain
     } else {
@@ -91,9 +87,11 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> StarryResult<isize> {
             }
             UdpSocket::new().into()
         }
-        (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(pid)).into(),
-        (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(pid)).into(),
-        (AF_UNIX, SOCK_SEQPACKET) => UnixSocket::new(DgramTransport::new_seqpacket(pid)).into(),
+        (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(unix_credentials)).into(),
+        (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(unix_credentials)).into(),
+        (AF_UNIX, SOCK_SEQPACKET) => {
+            UnixSocket::new(DgramTransport::new_seqpacket(unix_credentials)).into()
+        }
         (AF_NETLINK, SOCK_RAW) | (AF_NETLINK, SOCK_DGRAM) => {
             match proto {
                 NETLINK_KOBJECT_UEVENT | NETLINK_ROUTE | NETLINK_GENERIC => {}
@@ -294,22 +292,18 @@ pub fn sys_socketpair(
         return Err(StarryError::from(Errno::EAFNOSUPPORT));
     }
 
-    let process_identity = current().as_thread().proc_data.identity();
-    let pid = current_pid_view()
-        .visible_number(&process_identity)
-        .expect("socketpair creator is visible in its active PID namespace")
-        .get();
+    let credentials = Socket::current_unix_credentials();
     let (sock1, sock2) = match ty {
         SOCK_STREAM => {
-            let (sock1, sock2) = StreamTransport::new_pair(pid);
+            let (sock1, sock2) = StreamTransport::new_pair(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         SOCK_DGRAM => {
-            let (sock1, sock2) = DgramTransport::new_pair(pid);
+            let (sock1, sock2) = DgramTransport::new_pair(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         SOCK_SEQPACKET => {
-            let (sock1, sock2) = DgramTransport::new_pair_seqpacket(pid);
+            let (sock1, sock2) = DgramTransport::new_pair_seqpacket(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         _ => {

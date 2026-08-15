@@ -12,7 +12,7 @@ use starry_vm::VmMutPtr;
 
 use crate::{
     StarryError, StarryResult,
-    file::{FD_TABLE, FileLike, PidFd, close_file_like},
+    file::{FD_TABLE, PidFd, PreparedFileDescriptor, prepare_file_like},
     mm::copy_from_kernel,
     sync::SpinLock,
     task::{
@@ -30,7 +30,6 @@ use crate::{
 struct CloneTransaction {
     identity: Arc<PidIdentity>,
     process: Option<Arc<Process>>,
-    pidfd: Option<i32>,
     committed: bool,
 }
 
@@ -39,13 +38,11 @@ impl CloneTransaction {
         Self {
             identity,
             process: None,
-            pidfd: None,
             committed: false,
         }
     }
 
     fn commit(&mut self) {
-        self.pidfd = None;
         self.committed = true;
     }
 }
@@ -54,9 +51,6 @@ impl Drop for CloneTransaction {
     fn drop(&mut self) {
         if self.committed {
             return;
-        }
-        if let Some(fd) = self.pidfd.take() {
-            let _ = close_file_like(fd);
         }
         if let Some(process) = self.process.take() {
             process.retire();
@@ -475,6 +469,7 @@ impl CloneArgs {
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);
         }
+        let mut prepared_pidfd: Option<PreparedFileDescriptor> = None;
         let mut pidfd_copyout = None;
         if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
             // The pidfd and later namespace publication share the prepared
@@ -484,8 +479,9 @@ impl CloneArgs {
             } else {
                 PidFd::new_process(identity.clone())
             };
-            let fd = pidfd_obj.add_to_fd_table(true)?;
-            clone_transaction.pidfd = Some(fd);
+            let prepared = prepare_file_like(Arc::new(pidfd_obj), true)?;
+            let fd = prepared.fd();
+            prepared_pidfd = Some(prepared);
             pidfd_copyout = Some((pidfd as *mut i32, fd));
         }
         // perf: clone any `attr.inherit` event from the parent onto the child so
@@ -515,16 +511,20 @@ impl CloneArgs {
         if let Some((pidfd_ptr, fd)) = pidfd_copyout {
             pidfd_ptr.vm_write(fd)?;
         }
-        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid != 0 {
-            (parent_tid as *mut u32).vm_write(parent_visible_tid.get())?;
-        }
-
-        // All fallible resource setup and user-memory writes are complete.
-        // Commit the complete namespace binding chain before any ptrace,
-        // cgroup, or scheduler publication; everything below is deliberately
-        // infallible.
+        // All fallible resource setup and aborting user-memory writes are
+        // complete. Commit the namespace binding chain before installing the
+        // reserved pidfd or exposing parent_tid; everything below is
+        // deliberately infallible.
         let published_identity = reservation.publish()?;
         debug_assert!(Arc::ptr_eq(&published_identity, &identity));
+        if let Some(pidfd) = prepared_pidfd.take() {
+            pidfd.install();
+        }
+        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid != 0 {
+            // Linux performs this copyout after the child is visible and does
+            // not roll the child back if a concurrent unmap makes it fail.
+            let _ = (parent_tid as *mut u32).vm_write(parent_visible_tid.get());
+        }
 
         let parent_pid = curr.as_thread().proc_data.proc.pid_number();
         // The user-visible tid, not the scheduler id: they diverge for the init

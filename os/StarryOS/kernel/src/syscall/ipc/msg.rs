@@ -82,8 +82,8 @@ pub struct Message {
 pub struct MessageQueue {
     /// Message queue data structure
     pub msqid_ds: msqid_ds,
-    last_sender: PidSnapshot,
-    last_receiver: PidSnapshot,
+    last_sender: Option<PidSnapshot>,
+    last_receiver: Option<PidSnapshot>,
     /// Queue of messages
     pub messages: BTreeMap<i64, Vec<Message>>, // mtype -> messages of that type
     /// Total bytes in queue
@@ -103,18 +103,11 @@ pub struct MessageQueue {
 impl MessageQueue {
     /// Creates a new [`MessageQueue`].
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        key: i32,
-        mode: __kernel_mode_t,
-        creator: PidSnapshot,
-        uid: u32,
-        gid: u32,
-        ns_id: u64,
-    ) -> Self {
+    pub fn new(key: i32, mode: __kernel_mode_t, uid: u32, gid: u32, ns_id: u64) -> Self {
         MessageQueue {
             msqid_ds: msqid_ds::new(key, mode, uid, gid),
-            last_sender: creator.clone(),
-            last_receiver: creator,
+            last_sender: None,
+            last_receiver: None,
             messages: BTreeMap::new(),
             total_bytes: 0,
             next_seq: 0,
@@ -129,11 +122,13 @@ impl MessageQueue {
         let mut status = self.msqid_ds;
         status.msg_lspid = self
             .last_sender
-            .visible_number(observer)
+            .as_ref()
+            .and_then(|sender| sender.visible_number(observer))
             .map_or(0, |number| number.get() as __kernel_pid_t);
         status.msg_lrpid = self
             .last_receiver
-            .visible_number(observer)
+            .as_ref()
+            .and_then(|receiver| receiver.visible_number(observer))
             .map_or(0, |number| number.get() as __kernel_pid_t);
         status
     }
@@ -419,7 +414,6 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> StarryResult<isize> {
     let cred = thread.cred();
     let current_uid = cred.euid;
     let current_gid = cred.egid;
-    let creator = proc_data.identity().snapshot();
     let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
 
     let mut msg_manager = MSG_MANAGER.lock();
@@ -435,7 +429,6 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> StarryResult<isize> {
         let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
             key,
             (msgflg & 0o777) as _,
-            creator.clone(),
             current_uid,
             current_gid,
             ns_id,
@@ -485,7 +478,6 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> StarryResult<isize> {
     let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
         key,
         (msgflg & 0o777) as _,
-        creator,
         current_uid,
         current_gid,
         ns_id,
@@ -560,7 +552,7 @@ pub fn sys_msgsnd(
 
         if !queue_would_exceed(&msg_queue, data_len) {
             msg_queue.enqueue_message(mtype, data_vec)?;
-            msg_queue.last_sender = sender;
+            msg_queue.last_sender = Some(sender);
             msg_queue.msqid_ds.msg_stime = monotonic_time_nanos() as _;
 
             let recv_wait_queue = msg_queue.recv_wait_queue.clone();
@@ -725,11 +717,11 @@ pub fn sys_msgrcv(
 
     // Update queue statistics (normal mode only)
     if should_remove {
-        msg_queue.last_receiver = receiver.clone();
+        msg_queue.last_receiver = Some(receiver.clone());
         msg_queue.msqid_ds.msg_rtime = monotonic_time_nanos() as _;
     } else {
         // MSG_COPY mode: only update last receiver info, do not update queue statistics
-        msg_queue.last_receiver = receiver;
+        msg_queue.last_receiver = Some(receiver);
         msg_queue.msqid_ds.msg_rtime = monotonic_time_nanos() as _;
     }
 
@@ -915,9 +907,10 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> StarryResult<isize> {
         let user_buf = ptr.vm_read()?;
 
         // Update permission information (fields allowed by man-page)
-        msg_queue.msqid_ds.msg_perm.uid = user_buf.msg_perm.uid;
-        msg_queue.msqid_ds.msg_perm.gid = user_buf.msg_perm.gid;
-        msg_queue.msqid_ds.msg_perm.mode = user_buf.msg_perm.mode & 0o777; // Only take permission bits
+        msg_queue
+            .msqid_ds
+            .msg_perm
+            .update_from_user(&user_buf.msg_perm);
 
         // Update queue size limit (requires privilege check)
         let old_qbytes = msg_queue.msqid_ds.msg_qbytes;

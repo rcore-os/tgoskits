@@ -8,6 +8,7 @@ use weak_map::WeakMap;
 
 use super::{Process, Session};
 use crate::{
+    StarryResult,
     sync::SpinLock,
     task::{Pgid, PgidNumber, PidIdentity, PidRoleLease, TgidNumber},
 };
@@ -26,15 +27,16 @@ impl ProcessGroup {
     ///
     /// The session registry serializes process-group creation so that racing
     /// parent and child `setpgid()` calls converge on one group identity.
-    pub(crate) fn get_or_create(identity: Arc<PidIdentity>, session: &Arc<Session>) -> Arc<Self> {
+    pub(crate) fn get_or_create(
+        identity: Arc<PidIdentity>,
+        session: &Arc<Session>,
+    ) -> StarryResult<Arc<Self>> {
         let pgid = PgidNumber::from(identity.root_number());
         let mut groups = session.process_groups.lock_irqsave();
         if let Some(existing) = groups.get(&pgid) {
-            return existing;
+            return Ok(existing);
         }
-        let role = identity
-            .acquire_role::<Pgid>()
-            .expect("new process group identity already owns PGID role");
+        let role = identity.acquire_role::<Pgid>()?;
         let group = Arc::new(Self {
             pgid,
             identity: Arc::downgrade(&identity),
@@ -44,7 +46,7 @@ impl ProcessGroup {
         });
         identity.bind_process_group(&group);
         groups.insert(pgid, &group);
-        group
+        Ok(group)
     }
 }
 
@@ -98,7 +100,7 @@ mod tests {
     fn duplicate_live_group_identity_reuses_the_session_group() {
         let namespace = crate::task::new_test_pid_namespace();
         let (session_identity, _session_tgid) = crate::task::new_test_process_identity(&namespace);
-        let session = Session::new(session_identity);
+        let session = Session::new(session_identity).unwrap();
         let (group_identity, _group_tgid) = crate::task::new_test_process_identity(&namespace);
         let start = Arc::new(Barrier::new(2));
 
@@ -107,11 +109,11 @@ mod tests {
         let first_identity = group_identity.clone();
         let first = thread::spawn(move || {
             first_start.wait();
-            ProcessGroup::get_or_create(first_identity, &first_session)
+            ProcessGroup::get_or_create(first_identity, &first_session).unwrap()
         });
         let second = thread::spawn(move || {
             start.wait();
-            ProcessGroup::get_or_create(group_identity, &session)
+            ProcessGroup::get_or_create(group_identity, &session).unwrap()
         });
 
         let first = first.join().unwrap();

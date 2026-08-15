@@ -25,7 +25,7 @@ pub mod signalfd;
 pub mod timerfd;
 mod wext;
 
-use alloc::{borrow::Cow, sync::Arc};
+use alloc::{borrow::Cow, collections::BTreeSet, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
@@ -330,17 +330,200 @@ pub struct FileDescriptor {
     pub cloexec: bool,
 }
 
+/// Installed file descriptors owned by one shared file table.
+pub struct FileTable {
+    entries: FlattenObjects<FileDescriptor, AX_FILE_LIMIT>,
+    reserved: BTreeSet<usize>,
+}
+
+impl FileTable {
+    pub const fn new() -> Self {
+        Self {
+            entries: FlattenObjects::new(),
+            reserved: BTreeSet::new(),
+        }
+    }
+
+    pub fn count(&self) -> usize {
+        self.entries.count() + self.reserved.len()
+    }
+
+    pub fn get(&self, fd: usize) -> Option<&FileDescriptor> {
+        self.entries.get(fd)
+    }
+
+    pub fn get_mut(&mut self, fd: usize) -> Option<&mut FileDescriptor> {
+        self.entries.get_mut(fd)
+    }
+
+    pub fn add(&mut self, descriptor: FileDescriptor) -> Result<usize, FileDescriptor> {
+        let Some(fd) = (0..AX_FILE_LIMIT)
+            .find(|fd| !self.entries.is_assigned(*fd) && !self.reserved.contains(fd))
+        else {
+            return Err(descriptor);
+        };
+        self.entries.add_at(fd, descriptor)
+    }
+
+    pub fn add_at(
+        &mut self,
+        fd: usize,
+        descriptor: FileDescriptor,
+    ) -> Result<usize, FileDescriptor> {
+        if self.reserved.contains(&fd) {
+            return Err(descriptor);
+        }
+        self.entries.add_at(fd, descriptor)
+    }
+
+    pub fn remove(&mut self, fd: usize) -> Option<FileDescriptor> {
+        self.entries.remove(fd)
+    }
+
+    pub fn ids(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        self.entries.ids()
+    }
+
+    pub fn last_id(&self) -> Option<usize> {
+        self.entries.ids().next_back()
+    }
+
+    pub(crate) fn is_reserved(&self, fd: usize) -> bool {
+        self.reserved.contains(&fd)
+    }
+
+    fn reserve(&mut self) -> Option<usize> {
+        let fd = (0..AX_FILE_LIMIT)
+            .find(|fd| !self.entries.is_assigned(*fd) && !self.reserved.contains(fd))?;
+        let inserted = self.reserved.insert(fd);
+        debug_assert!(inserted);
+        Some(fd)
+    }
+
+    fn install_reserved(
+        &mut self,
+        fd: usize,
+        descriptor: FileDescriptor,
+    ) -> Result<(), FileDescriptor> {
+        if !self.reserved.remove(&fd) {
+            return Err(descriptor);
+        }
+        self.entries.add_at(fd, descriptor).map(|_| ())
+    }
+
+    fn release_reserved(&mut self, fd: usize) {
+        assert!(
+            self.reserved.remove(&fd),
+            "releasing an unreserved file descriptor"
+        );
+    }
+}
+
+impl Clone for FileTable {
+    fn clone(&self) -> Self {
+        Self {
+            entries: self.entries.clone(),
+            // An in-flight syscall owns each reservation. A copied fd table
+            // inherits only descriptors that have reached install.
+            reserved: BTreeSet::new(),
+        }
+    }
+}
+
+impl Default for FileTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 scope_local::scope_local! {
     /// The current file descriptor table.
-    pub static FD_TABLE: Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> = Arc::default();
+    pub static FD_TABLE: Arc<RwLock<FileTable>> = Arc::default();
 }
 
 /// Returns an owned reference to the file table of the active scope.
 ///
 /// The CPU pin is released after cloning the `Arc`, before callers acquire the
 /// table lock or run descriptor destructors.
-pub fn current_fd_table() -> Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> {
+pub fn current_fd_table() -> Arc<RwLock<FileTable>> {
     FD_TABLE.clone_current()
+}
+
+/// A file descriptor number prepared by a fallible syscall transaction.
+///
+/// Dropping it before [`PreparedFileDescriptor::install`] rolls the descriptor
+/// back from its originating table.
+pub struct PreparedFileDescriptor {
+    table: Arc<RwLock<FileTable>>,
+    fd: usize,
+    descriptor: Option<FileDescriptor>,
+}
+
+impl PreparedFileDescriptor {
+    fn prepare_in(
+        table: Arc<RwLock<FileTable>>,
+        descriptor: FileDescriptor,
+        max_entries: usize,
+    ) -> StarryResult<Self> {
+        let fd = {
+            let mut table = table.write();
+            if table.count() >= max_entries {
+                return Err(StarryError::TooManyOpenFiles);
+            }
+            table.reserve().ok_or(StarryError::TooManyOpenFiles)?
+        };
+        Ok(Self {
+            table,
+            fd,
+            descriptor: Some(descriptor),
+        })
+    }
+
+    pub const fn fd(&self) -> c_int {
+        self.fd as c_int
+    }
+
+    pub fn install(mut self) {
+        let descriptor = self
+            .descriptor
+            .take()
+            .expect("prepared descriptor installed twice");
+        let install = self.table.write().install_reserved(self.fd, descriptor);
+        if let Err(descriptor) = install {
+            // Keep descriptor destruction outside the preemption-disabling
+            // table lock even when an internal reservation invariant fails.
+            drop(descriptor);
+            panic!("prepared file descriptor lost its reservation before install");
+        }
+    }
+}
+
+impl Drop for PreparedFileDescriptor {
+    fn drop(&mut self) {
+        if let Some(descriptor) = self.descriptor.take() {
+            self.table.write().release_reserved(self.fd);
+            // File destructors may wake waiters, so the descriptor must drop
+            // after the preemption-disabling table guard is gone.
+            drop(descriptor);
+        }
+    }
+}
+
+/// Prepares a descriptor for a later transaction commit.
+pub fn prepare_file_like(
+    file: Arc<dyn FileLike>,
+    cloexec: bool,
+) -> StarryResult<PreparedFileDescriptor> {
+    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
+    let table = current_fd_table();
+    PreparedFileDescriptor::prepare_in(
+        table,
+        FileDescriptor {
+            inner: file,
+            cloexec,
+        },
+        max_nofile as usize,
+    )
 }
 
 /// Get a file-like object by `fd`.
@@ -496,7 +679,7 @@ pub fn close_all_fds() {
     }
 }
 
-pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> StarryResult<()> {
+pub fn add_stdio(fd_table: &mut FileTable) -> StarryResult<()> {
     assert_eq!(fd_table.count(), 0);
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let cx = fs_context.lock();
@@ -529,4 +712,53 @@ pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -
         .map_err(|_| StarryError::TooManyOpenFiles)?;
 
     Ok(())
+}
+
+#[cfg(axtest)]
+pub(crate) fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
+    fn descriptor() -> FileDescriptor {
+        let (read_end, _write_end) = Pipe::new();
+        FileDescriptor {
+            inner: Arc::new(read_end),
+            cloexec: true,
+        }
+    }
+
+    let table = Arc::new(RwLock::new(FileTable::new()));
+    let prepared =
+        PreparedFileDescriptor::prepare_in(table.clone(), descriptor(), AX_FILE_LIMIT).unwrap();
+    let reserved_fd = prepared.fd as usize;
+    let hidden = table.read().get(reserved_fd).is_none();
+    let counted_against_limit =
+        PreparedFileDescriptor::prepare_in(table.clone(), descriptor(), 1).is_err();
+    let installed_descriptor = descriptor();
+    let Ok(installed_fd) = table.write().add(installed_descriptor) else {
+        return false;
+    };
+    let allocation_skipped_reservation = installed_fd != reserved_fd;
+    let cloned = table.read().clone();
+    let clone_excluded_reservation = cloned.get(reserved_fd).is_none()
+        && cloned.get(installed_fd).is_some()
+        && cloned.count() == 1;
+    drop(prepared);
+    let reused_descriptor = descriptor();
+    let Ok(reused_fd) = table.write().add(reused_descriptor) else {
+        return false;
+    };
+    let rollback_released_number = reused_fd == reserved_fd;
+
+    let install_table = Arc::new(RwLock::new(FileTable::new()));
+    let prepared =
+        PreparedFileDescriptor::prepare_in(install_table.clone(), descriptor(), AX_FILE_LIMIT)
+            .unwrap();
+    let installed_fd = prepared.fd as usize;
+    prepared.install();
+    let install_made_visible = install_table.read().get(installed_fd).is_some();
+
+    hidden
+        && counted_against_limit
+        && allocation_skipped_reservation
+        && clone_excluded_reservation
+        && rollback_released_number
+        && install_made_visible
 }

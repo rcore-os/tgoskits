@@ -3,7 +3,6 @@ use core::ops::DerefMut;
 
 use ax_fs_ng::{FS_CONTEXT, FsContext};
 use ax_task::current;
-use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
     CLONE_FILES, CLONE_FS, CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID,
     CLONE_NEWUSER, CLONE_NEWUTS,
@@ -11,10 +10,10 @@ use linux_raw_sys::general::{
 
 use crate::{
     StarryError, StarryResult,
-    file::{FD_TABLE, FileDescriptor, NsFd, PidFd, get_file_like},
+    file::{FD_TABLE, FileTable, NsFd, PidFd, get_file_like},
     namespace::NsProxy,
     sync::{FsMutex, RwLock},
-    task::{AX_FILE_LIMIT, AsThread, Thread},
+    task::{AsThread, Thread},
 };
 
 const UNSHARE_NAMESPACE_FLAGS: u32 = CLONE_NEWUTS
@@ -29,7 +28,7 @@ const SUPPORTED_NS_FLAGS: u32 = UNSHARE_NAMESPACE_FLAGS | CLONE_FS | CLONE_FILES
 
 const SUPPORTED_SETNS_FLAGS: u32 = SUPPORTED_NS_FLAGS & !CLONE_FILES;
 
-type SharedFileTable = Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>>;
+type SharedFileTable = Arc<RwLock<FileTable>>;
 
 struct PreparedUnshare {
     file_table: Option<SharedFileTable>,

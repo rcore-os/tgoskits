@@ -8,6 +8,7 @@ use weak_map::WeakMap;
 
 use super::ProcessGroup;
 use crate::{
+    StarryResult,
     sync::SpinLock,
     task::{PgidNumber, PidIdentity, PidRoleLease, Sid, SidNumber},
 };
@@ -23,11 +24,9 @@ pub struct Session {
 
 impl Session {
     /// Create a new [`Session`].
-    pub(crate) fn new(identity: Arc<PidIdentity>) -> Arc<Self> {
+    pub(crate) fn new(identity: Arc<PidIdentity>) -> StarryResult<Arc<Self>> {
         let sid = SidNumber::from(identity.root_number());
-        let role = identity
-            .acquire_role::<Sid>()
-            .expect("new session identity already owns SID role");
+        let role = identity.acquire_role::<Sid>()?;
         let session = Arc::new(Self {
             sid,
             identity: Arc::downgrade(&identity),
@@ -36,7 +35,7 @@ impl Session {
             terminal: SpinLock::new(None),
         });
         identity.bind_session(&session);
-        session
+        Ok(session)
     }
 }
 
@@ -100,5 +99,40 @@ impl Session {
 impl fmt::Debug for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Session({})", self.sid)
+    }
+}
+
+#[cfg(axtest)]
+pub(crate) fn duplicate_live_session_identity_is_rejected_for_test() -> bool {
+    let namespace = crate::task::new_test_pid_namespace();
+    let (identity, _tgid) = crate::task::new_test_process_identity(&namespace);
+    let _session = Session::new(identity.clone()).unwrap();
+    matches!(
+        Session::new(identity),
+        Err(crate::StarryError::AlreadyExists)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use super::*;
+    use crate::StarryError;
+
+    #[test]
+    fn duplicate_live_session_identity_is_rejected_without_panicking() {
+        let namespace = crate::task::new_test_pid_namespace();
+        let (identity, _tgid) = crate::task::new_test_process_identity(&namespace);
+        let _session = Session::new(identity.clone()).unwrap();
+
+        let duplicate = catch_unwind(AssertUnwindSafe(|| Session::new(identity)));
+
+        assert!(
+            matches!(duplicate, Ok(Err(StarryError::AlreadyExists))),
+            "a competing setsid must return the role conflict without panicking the kernel"
+        );
     }
 }

@@ -614,7 +614,7 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> StarryResult<isize>
     // fd — every `dup2()`/`dup3()` that replaces an open fd (shell pipeline
     // setup) hangs. Mirrors the `close_all_fds` / execve CLOEXEC pattern.
     let mut closing = alloc::vec::Vec::new();
-    if let Some(max_index) = fd_table.ids().next_back() {
+    if let Some(max_index) = fd_table.last_id() {
         for fd in first..=last.min(max_index as u32) {
             if cloexec {
                 if let Some(f) = fd_table.get_mut(fd as _) {
@@ -695,6 +695,12 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> StarryResult<isiz
         .cloned()
         .ok_or(StarryError::BadFileDescriptor)?;
     f.cloexec = flags.contains(Dup3Flags::O_CLOEXEC);
+
+    // Linux returns EBUSY when dup2/dup3 races an fd allocation that has
+    // reserved this number but has not installed its file yet.
+    if fd_table.is_reserved(new_fd as _) {
+        return Err(StarryError::ResourceBusy);
+    }
 
     let prev = fd_table.remove(new_fd as _);
     fd_table

@@ -5,10 +5,9 @@ use alloc::{
 
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{AxTaskExt, spawn_task_with};
-use flatten_objects::FlattenObjects;
 
 use crate::{
-    file::FD_TABLE,
+    file::{FD_TABLE, FileTable},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty},
     sync::{Mutex, PreemptIrqSaveGuard, RwLock},
@@ -125,7 +124,7 @@ pub fn init(args: &[String], envs: &[String]) {
         .expect("Failed to attach init process to cgroup root");
 
     let mut scope = scope_local::Scope::new();
-    let mut fd_table = FlattenObjects::new();
+    let mut fd_table = FileTable::new();
     crate::file::add_stdio(&mut fd_table).expect("Failed to add stdio");
     *FD_TABLE.scope_mut(&mut scope) = Arc::new(RwLock::new(fd_table));
 

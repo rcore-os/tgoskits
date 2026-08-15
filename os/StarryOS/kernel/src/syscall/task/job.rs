@@ -52,17 +52,13 @@ pub fn sys_setsid() -> StarryResult<isize> {
         return Err(StarryError::OperationNotPermitted);
     }
 
-    if let Some((session, _group)) = proc.create_session() {
-        Ok(current_pid_view()
-            .visible_session_number(&session.identity())
-            .expect("new session is visible to its creator")
-            .get() as _)
-    } else {
-        Ok(current_pid_view()
-            .visible_process_number(&proc.identity())
-            .expect("current process is visible in its active PID namespace")
-            .get() as _)
-    }
+    let (session, _group) = proc
+        .create_session()
+        .ok_or(StarryError::OperationNotPermitted)?;
+    Ok(current_pid_view()
+        .visible_session_number(&session.identity())
+        .expect("new session is visible to its creator")
+        .get() as _)
 }
 
 pub fn sys_getpgid(pid: u32) -> StarryResult<isize> {
