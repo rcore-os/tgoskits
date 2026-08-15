@@ -409,7 +409,7 @@ pub fn sys_link(old_path: *const c_char, new_path: *const c_char) -> StarryResul
 /// path: the name of link to be removed
 /// flags: can be 0 or AT_REMOVEDIR
 /// return 0 when success, else return -1
-pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> StarryResult<isize> {
+pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: i32) -> StarryResult<isize> {
     let path = vm_load_path_string(path)?;
 
     debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
@@ -417,13 +417,13 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> StarryResu
     // Linux kernel (fs/namei.c) rejects any flag bit other than AT_REMOVEDIR
     // with EINVAL. Silently ignoring unknown bits would mask caller bugs and
     // diverge from POSIX semantics (see man 2 unlinkat).
-    if flags & !(AT_REMOVEDIR as usize) != 0 {
+    if flags & !(AT_REMOVEDIR as i32) != 0 {
         return Err(StarryError::InvalidInput);
     }
 
     let deleted = path_info_at(dirfd, &path).ok();
     let result = with_fs(dirfd, |fs| {
-        if flags & AT_REMOVEDIR as usize != 0 {
+        if flags & AT_REMOVEDIR as i32 != 0 {
             fs.remove_dir(&path)?;
         } else {
             fs.remove_file(&path)?;

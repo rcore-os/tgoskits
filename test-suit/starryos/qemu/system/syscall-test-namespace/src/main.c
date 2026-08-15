@@ -187,6 +187,105 @@ static void run_pid_namespace_test(void)
     CHECK(now == parent_pid, "parent getpid() unchanged after child clone");
 }
 
+static void run_persistent_pid_namespace_for_children_test(void)
+{
+    pid_t verifier = fork();
+    CHECK(verifier >= 0, "fork persistent PID namespace verifier");
+
+    if (verifier == 0)
+    {
+        int init_ready[2];
+        int init_release[2];
+        int second_pid_pipe[2];
+        if (pipe(init_ready) != 0 || pipe(init_release) != 0 ||
+            pipe(second_pid_pipe) != 0)
+            _exit(2);
+
+        if (unshare(CLONE_NEWPID) != 0)
+            _exit(3);
+
+        pid_t namespace_init = fork();
+        if (namespace_init < 0)
+            _exit(4);
+        if (namespace_init == 0)
+        {
+            close(init_ready[0]);
+            close(init_release[1]);
+            close(second_pid_pipe[0]);
+            close(second_pid_pipe[1]);
+
+            pid_t visible_pid = getpid();
+            if (write(init_ready[1], &visible_pid, sizeof(visible_pid)) !=
+                (ssize_t)sizeof(visible_pid))
+                _exit(5);
+            close(init_ready[1]);
+
+            char release;
+            if (read(init_release[0], &release, sizeof(release)) !=
+                (ssize_t)sizeof(release))
+                _exit(6);
+            close(init_release[0]);
+            _exit(visible_pid == 1 ? 0 : 7);
+        }
+
+        close(init_ready[1]);
+        close(init_release[0]);
+        pid_t first_visible_pid = 0;
+        if (read(init_ready[0], &first_visible_pid, sizeof(first_visible_pid)) !=
+            (ssize_t)sizeof(first_visible_pid) ||
+            first_visible_pid != 1)
+            _exit(8);
+        close(init_ready[0]);
+
+        pid_t second = fork();
+        if (second < 0)
+            _exit(9);
+        if (second == 0)
+        {
+            close(init_release[1]);
+            close(second_pid_pipe[0]);
+            pid_t visible_pid = getpid();
+            if (write(second_pid_pipe[1], &visible_pid, sizeof(visible_pid)) !=
+                (ssize_t)sizeof(visible_pid))
+                _exit(10);
+            close(second_pid_pipe[1]);
+            _exit(0);
+        }
+
+        close(second_pid_pipe[1]);
+        pid_t second_visible_pid = 0;
+        if (read(second_pid_pipe[0], &second_visible_pid,
+                 sizeof(second_visible_pid)) !=
+            (ssize_t)sizeof(second_visible_pid))
+            _exit(11);
+        close(second_pid_pipe[0]);
+
+        int second_status;
+        if (waitpid(second, &second_status, 0) != second ||
+            !WIFEXITED(second_status) || WEXITSTATUS(second_status) != 0)
+            _exit(12);
+
+        char release = 'R';
+        if (write(init_release[1], &release, sizeof(release)) !=
+            (ssize_t)sizeof(release))
+            _exit(13);
+        close(init_release[1]);
+
+        int init_status;
+        if (waitpid(namespace_init, &init_status, 0) != namespace_init ||
+            !WIFEXITED(init_status) || WEXITSTATUS(init_status) != 0)
+            _exit(14);
+
+        _exit(second_visible_pid == 2 ? 0 : 15);
+    }
+
+    int status;
+    CHECK(waitpid(verifier, &status, 0) == verifier,
+          "wait persistent PID namespace verifier");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "pid_ns_for_children persists across multiple forks");
+}
+
 static void run_user_namespace_test(void)
 {
     /* Save pre-unshare uid for later comparison. */
@@ -219,6 +318,7 @@ int main(void)
     run_uts_namespace_test();
     run_pid_namespace_flag_validation_test();
     run_pid_namespace_test();
+    run_persistent_pid_namespace_for_children_test();
     run_user_namespace_test();
 
     TEST_DONE();

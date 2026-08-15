@@ -14,30 +14,36 @@
 use kbpf_basic::perf::{PerfProbeArgs, PerfProbeConfig};
 use kprobe::ProbeBuilder;
 
-use super::kprobe::{PROBE_CONFIG_ENTRY, PROBE_CONFIG_RETURN, ProbePerfEvent, ProbeTy};
+use super::{
+    PerfEventTarget,
+    kprobe::{PROBE_CONFIG_ENTRY, PROBE_CONFIG_RETURN, ProbePerfEvent, ProbeTy},
+};
 use crate::{
     StarryError, StarryResult,
-    kprobe::KprobeAuxiliary,
-    task::{AsThread, get_task},
+    kprobe::{KprobeAuxiliary, UprobeTargetLease},
+    task::{AsThread, get_user_task_by_number},
 };
 
 /// Resolve the target ELF's mapped base in the target process and build a
 /// uprobe `ProbeBuilder` for `base + offset`.
 fn perf_probe_arg_to_uprobe_builder(
     args: &PerfProbeArgs,
-) -> StarryResult<ProbeBuilder<KprobeAuxiliary>> {
+    target: PerfEventTarget,
+) -> StarryResult<(ProbeBuilder<KprobeAuxiliary>, UprobeTargetLease)> {
     let elf = &args.name;
     let offset = args.offset as usize;
-    let pid = args.pid;
 
-    if pid < 0 {
-        // pid == -1 means "all processes" (e.g. a shared-library uprobe). That
-        // needs a global file→address registry we do not maintain.
-        warn!("uprobe: pid == -1 (all-process / shared-lib uprobe) is unsupported");
-        return Err(StarryError::Unsupported);
-    }
-
-    let task = get_task(pid as _)?;
+    let task = match target {
+        PerfEventTarget::AllTasks => {
+            // An all-process shared-library uprobe needs a global
+            // file-to-address registry that Starry does not maintain.
+            warn!("uprobe: all-process / shared-lib target is unsupported");
+            return Err(StarryError::Unsupported);
+        }
+        PerfEventTarget::Current => ax_task::current().clone(),
+        PerfEventTarget::Thread(tid) => get_user_task_by_number(tid)?,
+    };
+    let target = UprobeTargetLease::register(task.as_thread().pid_identity())?;
     let aspace = task.as_thread().proc_data.aspace();
     let mm = aspace.lock();
 
@@ -53,30 +59,39 @@ fn perf_probe_arg_to_uprobe_builder(
     drop(mm);
 
     let Some(virt_base) = virt_base else {
-        warn!("uprobe: ELF {elf} is not mapped in pid {pid}");
+        warn!("uprobe: ELF {elf} is not mapped in target {target:?}");
         return Err(StarryError::NotFound);
     };
 
     let virt_addr = virt_base.as_usize() + offset;
     debug!(
-        "uprobe: pid {pid} ELF {elf} base {:#x} + offset {:#x} = {virt_addr:#x}",
+        "uprobe: target {target:?} ELF {elf} base {:#x} + offset {:#x} = {virt_addr:#x}",
         virt_base.as_usize(),
         offset
     );
 
-    Ok(ProbeBuilder::new()
-        .with_symbol(elf.clone())
-        .with_symbol_addr(virt_addr)
-        .with_offset(0)
-        .with_user_mode(pid))
+    Ok((
+        ProbeBuilder::new()
+            .with_symbol(elf.clone())
+            .with_symbol_addr(virt_addr)
+            .with_offset(0)
+            .with_user_mode(target.opaque_id()),
+        target,
+    ))
 }
 
 /// Build a uprobe perf event from `perf_event_open` args.
-pub fn perf_event_open_uprobe(args: PerfProbeArgs) -> StarryResult<ProbePerfEvent> {
-    let probe = match args.config {
+pub fn perf_event_open_uprobe(
+    args: PerfProbeArgs,
+    target: PerfEventTarget,
+) -> StarryResult<ProbePerfEvent> {
+    let (probe, target) = match args.config {
         PerfProbeConfig::Raw(PROBE_CONFIG_ENTRY) => {
-            let builder = perf_probe_arg_to_uprobe_builder(&args)?;
-            ProbeTy::Uprobe(crate::uprobe::register_uprobe(builder))
+            let (builder, target) = perf_probe_arg_to_uprobe_builder(&args, target)?;
+            (
+                ProbeTy::Uprobe(crate::uprobe::register_uprobe(builder)),
+                target,
+            )
         }
         PerfProbeConfig::Raw(PROBE_CONFIG_RETURN) => {
             // uretprobe — not implemented for user space yet.
@@ -88,5 +103,5 @@ pub fn perf_event_open_uprobe(args: PerfProbeArgs) -> StarryResult<ProbePerfEven
             return Err(StarryError::Unsupported);
         }
     };
-    Ok(ProbePerfEvent::new(args, probe))
+    Ok(ProbePerfEvent::new_uprobe(args, probe, target))
 }

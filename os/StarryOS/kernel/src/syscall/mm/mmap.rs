@@ -214,11 +214,18 @@ pub fn sys_mmap(
     // side effects (e.g. a perf-event ringbuf allocation) it would leave the
     // fd in a half-initialized state that rejects the later real MAP_SHARED
     // mapping. Probe lazily here, then commit it in the MAP_SHARED arm.
-    let mut device_mmap_top = if matches!(map_type, MmapFlags::SHARED) {
+    let device_mmap_top = if matches!(map_type, MmapFlags::SHARED) {
         file.as_ref()
             .map(|fl| fl.device_mmap(offset as u64, length as u64))
     } else {
         None
+    };
+    // A device implementation has committed to this mapping contract once it
+    // returns an error. Reject it before MAP_FIXED can tear down an existing
+    // mapping; only `DeviceMmap::None` selects the file-backed fallback.
+    let mut device_mmap_top = match device_mmap_top {
+        Some(Err(error)) => return Err(error),
+        result => result,
     };
 
     // Validate file_mmap permissions and memfd seals before any destructive
@@ -229,8 +236,9 @@ pub fn sys_mmap(
         let needs_file_mmap_checks = match map_type {
             MmapFlags::PRIVATE => true,
             MmapFlags::SHARED => {
-                // Ok(None) and Err(_) both mean "fall back to file_mmap"
-                // (memfd, regular files). Direct device mappings do not.
+                // `DeviceMmap::None` means "fall back to file_mmap" (memfd,
+                // regular files). A device implementation's error is already
+                // committed and must survive to userspace.
                 match device_mmap_top
                     .as_ref()
                     .expect("file-backed mmap has cached device_mmap")
@@ -241,7 +249,8 @@ pub fn sys_mmap(
                     | Ok(DeviceMmap::PhysicalResolved(..))
                     | Ok(DeviceMmap::PhysicalPages(..))
                     | Ok(DeviceMmap::Cache(_)) => false,
-                    Ok(DeviceMmap::None) | Err(_) => true,
+                    Ok(DeviceMmap::None) => true,
+                    Err(_) => false,
                 }
             }
             _ => false,
@@ -408,10 +417,7 @@ pub fn sys_mmap(
                             Arc::new(SharedPages::borrowed(pages, PAGE_SIZE_4K, retain)?),
                         )
                     }
-                    Ok(DeviceMmap::None) => return Err(StarryError::NoSuchDevice),
-                    Ok(_) => return Err(StarryError::InvalidInput),
-                    Err(_) => {
-                        // Fall through to file-backed mmap
+                    Ok(DeviceMmap::None) => {
                         let (backend, flags) = file.file_mmap()?;
                         // man 2 mmap EACCES: a file mapping requires the fd to be
                         // open for reading, and MAP_SHARED+PROT_WRITE additionally
@@ -526,6 +532,8 @@ pub fn sys_mmap(
                             }
                         }
                     }
+                    Ok(_) => return Err(StarryError::InvalidInput),
+                    Err(error) => return Err(error),
                 }
             } else {
                 Backend::new_shared(start, Arc::new(SharedPages::new(length, PAGE_SIZE_4K)?))

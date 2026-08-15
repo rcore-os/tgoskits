@@ -103,7 +103,11 @@ pub fn mount_all() -> StarryResult<()> {
 
     mount_at(&fs, "/dev/mqueue", mqueue::new_mqueuefs())?;
 
-    mount_at(&fs, "/proc", proc::new_procfs())?;
+    mount_at(
+        &fs,
+        "/proc",
+        proc::new_procfs(crate::task::ROOT_PID_NS.clone()),
+    )?;
 
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;
     if usbfs::has_manager() {
