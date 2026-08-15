@@ -314,27 +314,30 @@ fn recv_impl(
                     },
                     Err(cmsg) => match cmsg.downcast::<SocketCmsg>() {
                         Ok(cmsg) => match *cmsg {
-                            SocketCmsg::Credentials(credentials) => builder.push_sized(
-                                SOL_SOCKET,
-                                SCM_CREDENTIALS,
-                                size_of::<ucred>(),
-                                |data| {
-                                    let credentials = ucred {
-                                        pid: credentials.pid as _,
-                                        uid: credentials.uid,
-                                        gid: credentials.gid,
-                                    };
-                                    // SAFETY: `credentials` lives through the
-                                    // copy, and `ucred` is a plain C ABI record.
-                                    data.copy_from_slice(unsafe {
-                                        core::slice::from_raw_parts(
-                                            (&credentials as *const ucred).cast::<u8>(),
-                                            size_of::<ucred>(),
-                                        )
-                                    });
-                                    Ok(size_of::<ucred>())
-                                },
-                            )?,
+                            SocketCmsg::Credentials(credentials) => {
+                                let credentials = Socket::project_unix_credentials(&credentials);
+                                builder.push_sized(
+                                    SOL_SOCKET,
+                                    SCM_CREDENTIALS,
+                                    size_of::<ucred>(),
+                                    |data| {
+                                        let credentials = ucred {
+                                            pid: credentials.pid as _,
+                                            uid: credentials.uid,
+                                            gid: credentials.gid,
+                                        };
+                                        // SAFETY: `credentials` lives through the
+                                        // copy, and `ucred` is a plain C ABI record.
+                                        data.copy_from_slice(unsafe {
+                                            core::slice::from_raw_parts(
+                                                (&credentials as *const ucred).cast::<u8>(),
+                                                size_of::<ucred>(),
+                                            )
+                                        });
+                                        Ok(size_of::<ucred>())
+                                    },
+                                )?
+                            }
                             SocketCmsg::Timestamp(timestamp) => builder.push_sized(
                                 SOL_SOCKET,
                                 SCM_TIMESTAMP,

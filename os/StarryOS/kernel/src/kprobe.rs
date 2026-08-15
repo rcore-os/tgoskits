@@ -17,7 +17,16 @@
 //! - [`handle_breakpoint`]: Entry point for breakpoint exceptions (INT3/EBREAK/BRK)
 //! - [`handle_debug`]: Entry point for debug exceptions (x86_64 single-step only)
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{
+    collections::BTreeMap,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
+use core::{
+    fmt,
+    num::NonZeroI32,
+    sync::atomic::{AtomicI32, Ordering},
+};
 
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{
@@ -33,9 +42,80 @@ use kprobe::{
 };
 
 use crate::{
+    StarryError, StarryResult,
     sync::{IrqMutex, RawSpinNoIrq},
-    task::AsThread,
+    task::{AsThread, PidIdentity},
 };
+
+static NEXT_UPROBE_TARGET_ID: AtomicI32 = AtomicI32::new(1);
+static UPROBE_TARGETS: IrqMutex<BTreeMap<UprobeTargetId, Weak<PidIdentity>>> =
+    IrqMutex::new(BTreeMap::new());
+
+/// Opaque handle passed through `kprobe`; it is never interpreted as a Linux PID.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+struct UprobeTargetId(NonZeroI32);
+
+impl UprobeTargetId {
+    fn allocate() -> StarryResult<Self> {
+        let id = NEXT_UPROBE_TARGET_ID.fetch_add(1, Ordering::Relaxed);
+        (id > 0)
+            .then(|| NonZeroI32::new(id).map(Self))
+            .flatten()
+            .ok_or(StarryError::NoMemory)
+    }
+
+    const fn get(self) -> i32 {
+        self.0.get()
+    }
+}
+
+/// Keeps the exact uprobe target generation registered for auxiliary callbacks.
+pub(crate) struct UprobeTargetLease {
+    id: UprobeTargetId,
+    identity: Arc<PidIdentity>,
+}
+
+impl UprobeTargetLease {
+    pub(crate) fn register(identity: Arc<PidIdentity>) -> StarryResult<Self> {
+        let id = UprobeTargetId::allocate()?;
+        UPROBE_TARGETS.lock().insert(id, Arc::downgrade(&identity));
+        Ok(Self { id, identity })
+    }
+
+    pub(crate) const fn opaque_id(&self) -> i32 {
+        self.id.get()
+    }
+}
+
+impl fmt::Debug for UprobeTargetLease {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UprobeTargetLease")
+            .field("id", &self.id)
+            .field("identity_id", &self.identity.id())
+            .finish()
+    }
+}
+
+impl Drop for UprobeTargetLease {
+    fn drop(&mut self) {
+        UPROBE_TARGETS.lock().remove(&self.id);
+    }
+}
+
+fn uprobe_target_task(opaque_id: i32) -> ax_task::AxTaskRef {
+    let id = NonZeroI32::new(opaque_id)
+        .map(UprobeTargetId)
+        .expect("uprobe target handle must be non-zero");
+    let identity = UPROBE_TARGETS
+        .lock()
+        .get(&id)
+        .and_then(Weak::upgrade)
+        .expect("uprobe target generation is no longer registered");
+    identity
+        .live_task()
+        .expect("uprobe target task exited while probe remained armed")
+}
 
 /// Raw mutex used as the `L` type parameter for the `kprobe` crate's
 /// `ProbeManager` / `Kprobe` / `Kretprobe` (the perf subsystem refers to the
@@ -64,7 +144,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             // instead — the same aliasing `set_writeable_for_address` uses to
             // write. The text page is already resident (the loader executes the
             // probed function before arming).
-            let task = crate::task::get_task(pid as _).expect("Failed to get task for uprobe");
+            let task = uprobe_target_task(pid);
             let aspace = task.as_thread().proc_data.aspace();
             let mm = aspace.lock();
             let pt = mm.page_table();
@@ -108,7 +188,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             // arm/disarm time (syscall context), so taking the sleeping aspace
             // lock is fine. The instruction patch (≤ a few bytes) stays within
             // the resolved page.
-            let task = crate::task::get_task(pid as _).expect("uprobe: target task gone");
+            let task = uprobe_target_task(pid);
             let aspace = task.as_thread().proc_data.aspace();
             let mm = aspace.lock();
             let vaddr = VirtAddr::from(address);
@@ -157,7 +237,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
         // copied here so the planted `int3` can stay armed). `action` writes
         // that instruction through the kernel alias of the freshly-mapped frame.
         let pid = pid.expect("uprobe: alloc_user_exec_memory needs a pid");
-        let task = crate::task::get_task(pid as _).expect("uprobe: target task gone");
+        let task = uprobe_target_task(pid);
         let aspace = task.as_thread().proc_data.aspace();
         let mut mm = aspace.lock();
         let range = VirtAddrRange::new(mm.base(), mm.end());
@@ -185,7 +265,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
 
     fn free_user_exec_memory(pid: Option<i32>, ptr: *mut u8) {
         let pid = pid.expect("uprobe: free_user_exec_memory needs a pid");
-        let task = crate::task::get_task(pid as _).expect("uprobe: target task gone");
+        let task = uprobe_target_task(pid);
         let aspace = task.as_thread().proc_data.aspace();
         let mut mm = aspace.lock();
         mm.unmap(VirtAddr::from(ptr as usize), PAGE_SIZE_4K)
