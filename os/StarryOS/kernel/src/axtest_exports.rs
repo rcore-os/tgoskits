@@ -291,6 +291,10 @@ pub fn timer_active_gate_rules_hold() -> bool {
         && super::task::posix_timer_active_gate_rules_hold_for_test()
 }
 
+pub fn inactive_interval_timer_poll_skips_cpu_time_sample() -> bool {
+    super::task::inactive_interval_timer_poll_skips_cpu_time_sample_for_test()
+}
+
 pub fn itimer_type_signo_and_time_conversion_rules_hold() -> bool {
     super::task::itimer_type_signo_and_time_conversion_rules_hold_for_test()
 }

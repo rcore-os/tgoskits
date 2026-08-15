@@ -115,8 +115,31 @@ fn apply_process_timer_actions(proc_data: &ProcessData, pending: PendingTimerAct
     pending.apply_alarms(AlarmTarget::Process(Arc::downgrade(&proc_data.identity())));
 }
 
+fn sample_interval_timer_cpu_time_if_active<T>(
+    active: bool,
+    sample: impl FnOnce() -> T,
+) -> Option<T> {
+    active.then(sample)
+}
+
+#[cfg(axtest)]
+pub(crate) fn inactive_interval_timer_poll_skips_cpu_time_sample_for_test() -> bool {
+    let samples = core::cell::Cell::new(0);
+    let snapshot = sample_interval_timer_cpu_time_if_active(false, || {
+        samples.set(samples.get() + 1);
+        ()
+    });
+    snapshot.is_none() && samples.get() == 0
+}
+
 fn poll_interval_timers(proc_data: &ProcessData, token: Option<&AlarmToken>) {
-    let snapshot = proc_data.cpu_time_snapshot();
+    let Some(snapshot) =
+        sample_interval_timer_cpu_time_if_active(proc_data.has_active_interval_timers(), || {
+            proc_data.cpu_time_snapshot()
+        })
+    else {
+        return;
+    };
     if let Some(pending) = proc_data.poll_interval_timers(snapshot, token) {
         apply_process_timer_actions(proc_data, pending);
     }
