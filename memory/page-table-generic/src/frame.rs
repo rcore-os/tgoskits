@@ -242,6 +242,12 @@ where
         level: usize,
         mut reserved: Frame<T, A>,
     ) -> PagingResult<usize> {
+        // A child table is one frame; `ReservedTable` enforces this at the type level,
+        // and the fill/install below address only the first frame.
+        debug_assert_eq!(
+            reserved.frames, 1,
+            "split reserves exactly one child-table frame"
+        );
         let index = Self::virt_to_index(vaddr, level);
         let entry = self.as_slice()[index];
         if entry.unused() {

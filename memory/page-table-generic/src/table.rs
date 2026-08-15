@@ -12,6 +12,20 @@ use crate::{
 
 const TARGETED_FLUSH_LIMIT: usize = 32;
 
+/// A single reserved child-table frame from [`PageTableRef::alloc_intermediate_table`],
+/// consumed by [`PageTableRef::split_huge_page_with`].
+///
+/// An intermediate (child) page table is always exactly one frame. Keeping the
+/// reservation a distinct, move-only single-frame type — rather than the general,
+/// possibly multi-frame [`Frame`] (a root spans [`Frame::new_root`]'s several
+/// frames) — makes it impossible to hand the split a multi-frame reservation, whose
+/// extra frames it would neither install nor reclaim (leaking them and building a
+/// malformed table). The wrapped frame is always single-frame: the only constructor
+/// allocates it via the single-frame [`Frame::new`].
+pub struct ReservedTable<T: TableMeta, A: FrameAllocator> {
+    frame: Frame<T, A>,
+}
+
 pub struct PageTable<T: TableMeta, A: FrameAllocator> {
     inner: PageTableRef<T, A>,
     #[cfg(feature = "copy-from")]
@@ -339,13 +353,17 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         Ok(page_size)
     }
 
-    /// Reserve a pre-zeroed child table for an upcoming [`Self::split_huge_page_with`].
+    /// Reserve a pre-zeroed, single-frame child table for an upcoming
+    /// [`Self::split_huge_page_with`].
     ///
     /// Reserving the frame up front (before, say, an address-space lock is taken)
     /// lets the split itself commit infallibly — it never allocates in the
-    /// break-before-make window.
-    pub fn alloc_intermediate_table(&self) -> PagingResult<Frame<T, A>> {
-        Frame::<T, A>::new(self.root.allocator.clone())
+    /// break-before-make window. The [`ReservedTable`] is a single frame, the size
+    /// of every intermediate page table.
+    pub fn alloc_intermediate_table(&self) -> PagingResult<ReservedTable<T, A>> {
+        Ok(ReservedTable {
+            frame: Frame::<T, A>::new(self.root.allocator.clone())?,
+        })
     }
 
     /// Return a reserved table that a split did not consume (the rollback path).
@@ -353,8 +371,8 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     /// Freeing an *uninstalled* reserved frame needs no TLB flush: it was never
     /// reachable by any page-table walk (contrast reclaiming a live table in
     /// `unmap`, which must flush before freeing).
-    pub fn dealloc_intermediate_table(&self, table: Frame<T, A>) {
-        self.root.allocator.dealloc_frame(table.paddr);
+    pub fn dealloc_intermediate_table(&self, table: ReservedTable<T, A>) {
+        self.root.allocator.dealloc_frame(table.frame.paddr);
     }
 
     /// Peek the huge block (present or not-present) covering `vaddr`: its frame,
@@ -391,8 +409,11 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     pub fn split_huge_page_with(
         &mut self,
         vaddr: VirtAddr,
-        reserved: Frame<T, A>,
+        reserved: ReservedTable<T, A>,
     ) -> PagingResult<usize> {
+        // `ReservedTable` guarantees exactly one frame — the size of a child table —
+        // so the split installs and (on error) reclaims the whole reservation.
+        let reserved = reserved.frame;
         let reserved_paddr = reserved.paddr;
         match self
             .root
@@ -418,7 +439,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     /// on a nested/second-stage format (EPT/NPT) that zeroes such an entry the
     /// block reads as unmapped and this returns `NotMapped`.
     pub fn split_huge_page(&mut self, vaddr: VirtAddr) -> PagingResult<usize> {
-        let reserved = Frame::<T, A>::new(self.root.allocator.clone())?;
+        let reserved = self.alloc_intermediate_table()?;
         self.split_huge_page_with(vaddr, reserved)
     }
 
