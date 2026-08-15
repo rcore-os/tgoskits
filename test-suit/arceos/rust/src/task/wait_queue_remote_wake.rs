@@ -4,7 +4,10 @@ use std::{
         api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
         modules::{
             ax_hal::percpu::this_cpu_id,
-            ax_task::{schedule_current_cpu, task_test_hooks},
+            ax_task::{
+                FairMode, Nice, SchedulePolicy, current_thread_id, schedule_current_cpu,
+                set_thread_policy, task_test_hooks,
+            },
         },
     },
     sync::atomic::{AtomicBool, Ordering},
@@ -39,6 +42,7 @@ impl RemoteSleeper {
     fn spawn(cpu: usize) -> Self {
         let worker = thread::spawn(move || {
             pin_current_to_cpu(cpu);
+            set_current_fair_idle_policy();
             SLEEPER_CPU.store(this_cpu_id(), Ordering::Release);
             READY.store(true, Ordering::Release);
             api::ax_wait_queue_wake(&READY_WQ, 1);
@@ -97,6 +101,7 @@ impl TargetOccupier {
     fn spawn(cpu: usize) -> Self {
         let worker = thread::spawn(move || {
             pin_current_to_cpu(cpu);
+            set_current_fair_idle_policy();
             OCCUPIER_READY.store(true, Ordering::Release);
             api::ax_wait_queue_wake(&OCCUPIER_READY_WQ, 1);
             let started = Instant::now();
@@ -154,6 +159,12 @@ fn pin_current_to_cpu(cpu_id: usize) {
     );
 }
 
+fn set_current_fair_idle_policy() {
+    let current = current_thread_id().expect("test worker must have a task identity");
+    set_thread_policy(current, SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+        .expect("test worker must accept the isolated Fair policy");
+}
+
 fn wake_sleep_queue_after_waiter_enqueued(sleeper: u64) {
     let started = Instant::now();
     while started.elapsed() < WAITER_BLOCK_TIMEOUT {
@@ -197,9 +208,11 @@ pub fn run() -> crate::TestResult {
     let sleeper_id = sleeper.thread_id();
     assert_eq!(SLEEPER_CPU.load(Ordering::Acquire), sleeper_cpu);
     assert_eq!(this_cpu_id(), waker_cpu);
-    // Keep a normal task runnable on the target rq so wakeup preemption must
-    // inspect the authoritative current entity instead of taking the
-    // dedicated-idle shortcut.
+    // Keep a user SCHED_IDLE-equivalent task runnable on the target rq so
+    // wakeup preemption must inspect the authoritative current entity instead
+    // of taking the dedicated-idle shortcut. Using the separate Fair mode
+    // prevents unrelated normal background work in the all-features image
+    // from becoming an earlier same-mode contender.
     let occupier = TargetOccupier::spawn(sleeper_cpu);
     task_test_hooks::arm_park_irq_owner_probe(sleeper_id);
     task_test_hooks::arm_switch_tail_irq_owner_probe(sleeper_id);
