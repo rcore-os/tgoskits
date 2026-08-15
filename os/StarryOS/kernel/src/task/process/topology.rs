@@ -9,8 +9,6 @@ use core::{
     time::Duration,
 };
 
-use ax_lazyinit::LazyInit;
-
 use super::{
     ChildRelations, GroupMoveScope, ProcessGroup, ProcessRelationTxn, RelationLock, Session,
 };
@@ -228,8 +226,7 @@ impl Process {
     ///
     /// This is an advisory snapshot. A caller that reparents children must use
     /// [`Self::try_begin_exit_relations`] to commit against the same state.
-    #[cfg(test)]
-    pub fn accepts_child_publication(&self) -> bool {
+    pub(crate) fn accepts_child_publication(&self) -> bool {
         self.children.lock().is_open()
     }
 
@@ -425,20 +422,6 @@ impl Process {
         })
     }
 
-    /// Closes child publication and reparents all existing children to
-    /// `reaper`.
-    ///
-    /// This is the relationship half of the process exit transaction. Once it
-    /// returns, every prepared fork that has not yet published is rejected.
-    /// The returned snapshot is exactly the set moved to `reaper`, so callers
-    /// can deliver parent-death notifications without a snapshot/reparent race.
-    pub fn begin_exit_relations(self: &Arc<Self>, reaper: &Arc<Process>) -> ProcessExitRelations {
-        self.try_begin_exit_relations(reaper).unwrap_or_else(|| {
-            self.try_begin_exit_relations(&init_proc())
-                .expect("init process must remain available as orphan reaper")
-        })
-    }
-
     /// Closes new child publication while retaining existing descendants.
     ///
     /// PID namespace shutdown uses this transaction before it terminates the
@@ -460,7 +443,10 @@ impl Process {
     /// also the lock order for their same-class `children` locks.
     #[cfg(test)]
     pub fn reparent_children_to(self: &Arc<Self>, reaper: &Arc<Process>) {
-        drop(self.begin_exit_relations(reaper));
+        drop(
+            self.try_begin_exit_relations(reaper)
+                .expect("test reaper must accept reparented children"),
+        );
     }
 
     /// Retires this process's parent and process-group links.
@@ -528,7 +514,6 @@ impl Process {
             );
         } else {
             ProcessRelationTxn::attach_group(&process);
-            INIT_PROC.init_once(process.clone());
         }
         process
     }
@@ -563,15 +548,6 @@ impl Process {
         ProcessRelationTxn::attach_group(&process);
         process
     }
-}
-
-static INIT_PROC: LazyInit<Arc<Process>> = LazyInit::new();
-
-/// Gets the init process.
-///
-/// This function panics if the init process has not been initialized yet.
-pub fn init_proc() -> Arc<Process> {
-    INIT_PROC.get().unwrap().clone()
 }
 
 #[cfg(test)]

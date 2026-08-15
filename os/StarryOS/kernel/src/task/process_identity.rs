@@ -4,7 +4,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use super::{
     Cred, PidIdentity, PidIdentityId, PidView, Process, ProcessCpuTime, ProcessData, Tgid,
-    TgidNumber, TidNumber, ZombieSnapshot, current_user_task, init_proc,
+    TgidNumber, TidNumber, ZombieSnapshot, current_user_task,
 };
 use crate::{StarryError, StarryResult, task::ROOT_PID_NS};
 
@@ -101,18 +101,32 @@ fn is_live_process(process: &Arc<Process>) -> bool {
 }
 
 pub(crate) fn orphan_reaper_for(process: &Arc<Process>) -> Arc<Process> {
-    let init = init_proc();
+    let namespace = process.identity().active_namespace();
+    let namespace_init_identity = namespace
+        .init_identity()
+        .expect("active PID namespace must retain its init identity");
+    let namespace_init = namespace
+        .lookup_identity(namespace_init_identity)
+        .expect("active PID namespace must retain its published init identity")
+        .process();
     let mut cursor = process.parent();
     while let Some(candidate) = cursor {
-        if Arc::ptr_eq(&candidate, &init) {
+        if Arc::ptr_eq(&candidate, &namespace_init) {
             break;
         }
-        if candidate.is_child_subreaper() && is_live_process(&candidate) {
+        let candidate_identity = candidate.identity();
+        if !Arc::ptr_eq(&candidate_identity.active_namespace(), &namespace) {
+            break;
+        }
+        if candidate.is_child_subreaper()
+            && candidate.accepts_child_publication()
+            && is_live_process(&candidate)
+        {
             return candidate;
         }
         cursor = candidate.parent();
     }
-    init
+    namespace_init
 }
 
 pub fn get_zombie_cred(tgid: TgidNumber) -> Option<Arc<Cred>> {

@@ -16,8 +16,8 @@ use crate::{
     StarryError, StarryResult,
     mm::{VmMutPtr, VmPtr},
     task::{
-        PgidNumber, PidIdentity, PidView, ProcessCpuTime, ProcessGroup, ROOT_PID_NS, Tgid,
-        ThreadExit, Tid, TidNumber,
+        PgidNumber, PidIdentity, PidNamespaceLifecycle, PidNamespaceRef, PidView, Process,
+        ProcessCpuTime, ProcessGroup, ROOT_PID_NS, Tgid, ThreadExit, Tid, TidNumber,
     },
 };
 
@@ -307,6 +307,24 @@ fn emit_sched_process_exit(tid: TidNumber, exit_code: i32) {
     trace_sched_process_exit(tid.get() as u64, exit_code);
 }
 
+fn close_process_relations_for_exit(
+    process: &Arc<Process>,
+    pid_namespace: &PidNamespaceRef,
+) -> Vec<Arc<Process>> {
+    loop {
+        if pid_namespace.lifecycle() == PidNamespaceLifecycle::ShuttingDown {
+            return process
+                .begin_namespace_shutdown_relations()
+                .into_retained_children();
+        }
+
+        let orphan_reaper = super::orphan_reaper_for(process);
+        if let Some(relations) = process.try_begin_exit_relations(&orphan_reaper) {
+            return relations.into_reparented_children();
+        }
+    }
+}
+
 pub fn do_exit(exit_code: i32, group_exit: bool) {
     let curr = current_user_task();
     let thr = curr.as_thread();
@@ -435,10 +453,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 .begin_namespace_shutdown_relations()
                 .into_retained_children()
         } else {
-            let orphan_reaper = super::orphan_reaper_for(process);
-            process
-                .begin_exit_relations(&orphan_reaper)
-                .into_reparented_children()
+            close_process_relations_for_exit(process, &pid_ns)
         };
 
         if let Some(shutdown) = namespace_shutdown.as_ref() {
