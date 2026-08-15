@@ -1148,6 +1148,86 @@ static void test_pidfd_send_signal_paths(void)
     CHECK_RET(close(pfd), 0, "close pidfd");
 }
 
+static void test_pidfd_generation_survives_numeric_pid_reuse(void)
+{
+    printf("--- pidfd generation survives numeric PID reuse ---\n");
+
+    int first_release[2];
+    int rc = pipe(first_release);
+    CHECK_RET(rc, 0, "first child release pipe");
+    if (rc != 0)
+        return;
+    pid_t first = fork();
+    CHECK(first >= 0, "fork first PID generation");
+    if (first < 0) {
+        close(first_release[0]);
+        close(first_release[1]);
+        return;
+    }
+    if (first == 0) {
+        close(first_release[1]);
+        char release;
+        if (read(first_release[0], &release, 1) != 1)
+            _exit(41);
+        _exit(0);
+    }
+    close(first_release[0]);
+
+    int stale_pidfd = x_pidfd_open(first, 0);
+    CHECK(stale_pidfd >= 0, "open pidfd for first generation");
+    char release = 'R';
+    CHECK_RET(write(first_release[1], &release, 1), 1, "release first generation");
+    close(first_release[1]);
+    int first_status = 0;
+    CHECK_RET(waitpid(first, &first_status, 0), first, "reap first generation");
+    CHECK(WIFEXITED(first_status) && WEXITSTATUS(first_status) == 0,
+          "first generation exited normally");
+
+    int second_release[2];
+    rc = pipe(second_release);
+    CHECK_RET(rc, 0, "second child release pipe");
+    if (rc != 0) {
+        if (stale_pidfd >= 0)
+            close(stale_pidfd);
+        return;
+    }
+    pid_t second = fork();
+    CHECK(second >= 0, "fork replacement PID generation");
+    if (second < 0) {
+        close(second_release[0]);
+        close(second_release[1]);
+        if (stale_pidfd >= 0)
+            close(stale_pidfd);
+        return;
+    }
+    if (second == 0) {
+        close(second_release[1]);
+        char second_go;
+        if (read(second_release[0], &second_go, 1) != 1)
+            _exit(42);
+        _exit(0);
+    }
+    close(second_release[0]);
+
+    CHECK(second == first, "numeric PID slot is deterministically reused");
+    if (stale_pidfd >= 0) {
+        CHECK_ERR(x_pidfd_send_signal(stale_pidfd, 0, NULL, 0), ESRCH,
+                  "old pidfd does not retarget the replacement generation");
+    }
+    CHECK_RET(kill(second, 0), 0, "replacement generation remains alive");
+
+    CHECK_RET(write(second_release[1], &release, 1), 1,
+              "release replacement generation");
+    close(second_release[1]);
+    int second_status = 0;
+    CHECK_RET(waitpid(second, &second_status, 0), second,
+              "reap replacement generation");
+    CHECK(WIFEXITED(second_status) && WEXITSTATUS(second_status) == 0,
+          "replacement generation exited normally");
+    if (stale_pidfd >= 0)
+        CHECK_RET(close(stale_pidfd), 0, "close stale pidfd");
+}
+
 /* ---- pidfd_getfd ---- */
 
 static void test_pidfd_getfd_flags(void)
@@ -1286,6 +1366,7 @@ int main(void)
     test_pidfd_open_pid_zero_linux();
 
     test_pidfd_send_signal_paths();
+    test_pidfd_generation_survives_numeric_pid_reuse();
 
     test_pidfd_getfd_flags();
     test_pidfd_getfd_cross_process();
