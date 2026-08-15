@@ -64,13 +64,22 @@ impl WifiRuntime for ArceosWifiRuntime {
 
 /// PIO 中断驱动唤醒的 WaitQueue。
 /// SDHCI ISR 调用 `sdhci_pio_wake_callback` 通知此队列，
-/// 唤醒阻塞在 `ArceosDelay::block_timeout` 中的任务。
+/// 唤醒阻塞在 `ArceosDelay::block_timeout_until` 中的任务。
+///
+/// # 丢唤醒防护
+///
+/// 阻塞走 [`WaitQueue::wait_timeout_until`]：条件的最终检查与任务入队在
+/// WQ 自旋锁（关中断）的同一临界区内衔接。ISR 若在 unmask 与锁内检查
+/// 之间触发，其 notify 虽落空（队列为空），XFER_COMPLETE sticky 位仍被
+/// 锁内条件检查观察到；检查后入队前 ISR 不可能触发（临界区关中断）；
+/// ISR 若在入队后触发，notify 命中队列中的任务。
 ///
 /// # 单 waiter 不变量
 ///
 /// 至多一个任务同时阻塞在此队列上——SDIO 总线锁（`SdioTransport`）
 /// 序列化所有传输，因此仅 TX 或 RX 线程（不会两者同时）可处于
-/// `block_timeout` 中。此不变量是 `SdhciDelay::block_timeout` 契约的一部分。
+/// `block_timeout_until` 中。此不变量是 `SdhciDelay::block_timeout_until`
+/// 契约的一部分。
 static SDHCI_PIO_WQ: WaitQueue = WaitQueue::new();
 
 fn sdhci_pio_wake_callback() {
@@ -85,8 +94,8 @@ impl SdhciDelay for ArceosDelay {
         ax_task::sleep(Duration::from_millis(ms));
     }
 
-    fn block_timeout(&self, timeout_ms: u64) -> bool {
-        SDHCI_PIO_WQ.wait_timeout(Duration::from_millis(timeout_ms))
+    fn block_timeout_until(&self, timeout_ms: u64, condition: &dyn Fn() -> bool) -> bool {
+        SDHCI_PIO_WQ.wait_timeout_until(Duration::from_millis(timeout_ms), condition)
     }
 }
 

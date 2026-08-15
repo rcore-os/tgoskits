@@ -54,12 +54,17 @@ pub const ERR_INT_DAT_CRC: u16 = 1 << 5;
 pub const ERR_INT_DAT_END_BIT: u16 = 1 << 6;
 
 /// 组合掩码
-/// Status Enable: 使能所有需要的状态位
+/// Status Enable: 使能所有需要的状态位。
+/// 含 NORM_INT_ERROR：按 SDHCI 规范，INT_STATUS 位仅在对应 STS_EN 置位时
+/// 锁存——缺 bit15 时错误检测路径（poll_status_once 错误分支与 Phase 2
+/// 条件中的错误项）恒假。错误位不进入 SIG_EN（见 NORM_INT_SIG_MASK），
+/// 不产生中断，仅由轮询/条件检查消费。
 pub const NORM_INT_ENABLE_MASK: u16 = NORM_INT_CMD_COMPLETE
     | NORM_INT_XFER_COMPLETE
     | NORM_INT_BUF_WR_READY
     | NORM_INT_BUF_RD_READY
-    | NORM_INT_CARD_INT;
+    | NORM_INT_CARD_INT
+    | NORM_INT_ERROR;
 
 pub const ERR_INT_ENABLE_MASK: u16 = ERR_INT_CMD_TIMEOUT
     | ERR_INT_CMD_CRC

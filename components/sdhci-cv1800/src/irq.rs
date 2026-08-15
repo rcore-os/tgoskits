@@ -5,15 +5,21 @@
 //!     - CARD_INT: mask 信号 + 调用回调（通知 WiFi 驱动有数据可读）
 //!     - XFER_COMPLETE: mask 信号 + 调用 PIO 唤醒回调（唤醒阻塞的任务）
 //!   - PIO: CviSdhci 的 wait_* 方法在 Phase 1 直接轮询 INT_STATUS 寄存器，
-//!     Phase 2 通过中断驱动等待（block_timeout）
+//!     Phase 2 通过中断驱动等待（block_timeout_until）
 //!
 //! # Single-core assumption
 //!
 //! SIG_EN 的 RMW（task 侧 unmask 与 ISR 侧 mask）在单 hart 上仍可能被中断
-//! 抢占：ISR 可能在 task 的 `mmio_read` 和 `mmio_write` 之间触发。此竞态
-//! 由 XFER_COMPLETE sticky bit 自愈——即使 SIG_EN 被错误重写，电平触发的中断线
-//! 会在 task 阻塞后重新断言、ISR 重新触发。最坏情况退化为一次 10ms 超时。
-//! SMP 平台需额外围栏和 per-hart INT_STATUS 分离。
+//! 抢占：ISR 可能在 task 的 `mmio_read` 和 `mmio_write` 之间触发，task 的
+//! 过期值可能重写 SIG_EN。此竞态不会丢事件：XFER_COMPLETE sticky 位由等待
+//! 任务独占消费（ISR 从不 W1C），且 `block_timeout_until` 的条件检查与任务
+//! 入队在同一关中断临界区内衔接——ISR 无论发生在锁内条件检查前（notify
+//! 落空，sticky 位被条件观察到）、检查后入队前（不可能，同一关中断临界区）
+//! 还是入队后（notify 命中队列），事件都不会错过。SIG_EN 被过期值重写
+//! 最多产生一次多余 ISR（读状态无 XFER 位则空转）。SMP 平台下跨 hart 的
+//! ISR 可在检查与入队之间触发（notify 落空、退化为有界 10ms 超时），需
+//! 额外围栏和 per-hart INT_STATUS 分离；wifi_glue 的单核 debug_assert
+//! 在 release 构建中被编译掉，不构成运行时防护。
 
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
@@ -65,7 +71,7 @@ struct SdhciIrqState {
     base: AtomicUsize,
     /// CARD_INT 回调（通知上层驱动有数据可读）
     card_irq_callback: CallbackSlot,
-    /// XFER_COMPLETE PIO 唤醒回调（唤醒阻塞在 block_timeout 的任务）
+    /// XFER_COMPLETE PIO 唤醒回调（唤醒阻塞在 block_timeout_until 的任务）
     pio_wake_callback: CallbackSlot,
 }
 
@@ -101,7 +107,7 @@ pub fn register_card_irq_callback(cb: fn()) {
 /// 注册 PIO 唤醒回调函数
 ///
 /// OS 胶水层在初始化时调用，注册一个函数用于在 ISR 中唤醒阻塞在
-/// `block_timeout` 上的任务。回调在硬中断上下文执行，禁止：持锁、分配堆、
+/// `block_timeout_until` 上的任务。回调在硬中断上下文执行，禁止：持锁、分配堆、
 /// 调度、调用 log。
 pub fn register_pio_wake_callback(cb: fn()) {
     SDHCI_IRQ_STATE.pio_wake_callback.register(cb);
@@ -199,7 +205,7 @@ pub fn sdhci_irq_handler(_irq: usize) {
     // 若在此清除会破坏唤醒条件并导致必然的 200ms 超时。
     // XFER_COMPLETE 通常仅在任务阻塞于 poll_int_status 时才在 SIG_EN 中
     // 使能（见 unmask_xfer_complete_signal），因此此路径在稳态时空闲。
-    // 在 race-guard 胜出或超时后 SIG_EN 位可能短暂保持置位；
+    // 在 pre-check 快路径命中或超时退出后 SIG_EN 位可能短暂保持置位；
     // 由此产生的多余 ISR 重新 mask 并通知，无害。
     if norm & NORM_INT_XFER_COMPLETE != 0 {
         // Mask XFER_COMPLETE 信号以防重复触发

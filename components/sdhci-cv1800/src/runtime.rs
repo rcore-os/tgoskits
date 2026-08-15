@@ -11,16 +11,36 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 pub trait SdhciDelay: Send + Sync + 'static {
     /// 阻塞延迟指定毫秒数。
     fn delay_ms(&self, ms: u64);
-    /// 阻塞当前任务直至硬件中断唤醒或超时。
-    /// 超时返回 `true`，被中断唤醒返回 `false`。
+    /// 阻塞当前任务直至 `condition` 满足或超时。
+    /// 条件满足返回 `false`，超时返回 `true`。
+    ///
+    /// # 丢唤醒协议（实现必须满足）
+    ///
+    /// `condition` 的最终检查与任务入队必须发生在同一关中断临界区内，
+    /// 使“检查后、入队前 ISR 已发布完成事件”的情况不可能出现：
+    ///
+    /// - ISR 在锁内检查前触发：其 latch 的硬件状态位（XFER_COMPLETE sticky）
+    ///   由 `condition` 观察到，任务不进入睡眠直接返回；
+    /// - ISR 在入队后触发：notify 命中已入队的任务。
+    ///
+    /// 调用方在调用前负责重新打开中断信号（unmask）；开信号与入队之间的
+    /// ISR 不会丢事件——它 latch 的硬件状态位由锁内 `condition` 检查看到。
+    ///
+    /// 本方法在中断开启的 task 上下文被调用（禁止在 ISR 上下文调用）；
+    /// 上文的关中断临界区由实现自行建立（如 `SpinNoIrq` 锁），
+    /// 调用方不负责关中断。
     ///
     /// # 单 waiter 契约
     ///
     /// 调用方保证至多一个任务同时阻塞于此方法（由 SDIO 总线锁序列化）。
-    /// OS 胶水层可依赖此保证使用单一共享唤醒队列；丢失唤醒由超时兜底。
+    /// OS 胶水层可依赖此保证使用单一共享唤醒队列。
     ///
-    /// 默认实现使用基于 sleep 的回退，兼容尚未更新为中断驱动唤醒的 OS 胶水层。
-    fn block_timeout(&self, timeout_ms: u64) -> bool {
+    /// 默认实现退化为“检查一次 + 睡满超时”，事件即时性由调用方重检兜底，
+    /// 兼容未实现条件等待的 OS 胶水层。
+    fn block_timeout_until(&self, timeout_ms: u64, condition: &dyn Fn() -> bool) -> bool {
+        if condition() {
+            return false;
+        }
         self.delay_ms(timeout_ms);
         true
     }

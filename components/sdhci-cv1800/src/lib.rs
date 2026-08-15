@@ -9,8 +9,13 @@
 //! 设计:
 //!   - ISR: 处理 CARD_INT (通知 WiFi 驱动) + XFER_COMPLETE (唤醒阻塞任务)
 //!   - PIO: wait_* 方法 Phase 1 轮询 INT_STATUS, Phase 2 中断驱动等待
-//!   - 单核串行化: ISR 与任务在单 hart 上执行。SIG_EN RMW 仍可被 ISR 抢占，
-//!     但依赖 XFER_COMPLETE sticky bit 自愈（详见 irq.rs 模块文档）。
+//!   - 丢唤醒防护: Phase 2 阻塞走 `SdhciDelay::block_timeout_until`，
+//!     条件检查与任务入队在同一关中断临界区内衔接，配合 ISR 不消费的
+//!     XFER_COMPLETE sticky 位——ISR 无论在锁内检查前触发（notify 落空、
+//!     sticky 位被观察到）、检查后入队前（不可能，临界区关中断）还是
+//!     入队后（notify 命中队列），事件都不会错过。
+//!   - 单核串行化: ISR 与任务在单 hart 上执行。SIG_EN RMW 仍可被 ISR
+//!     抢占，但事件由 sticky 位锁存（详见 irq.rs 模块文档）。
 
 #![no_std]
 
@@ -183,9 +188,11 @@ impl CviSdhci {
         }
         let mut timeout_count: u32 = 0;
         for i in 0..PHASE2_MAX_ITERS {
-            // Race guard: 阻塞前先检查状态寄存器。
-            // 注意：pre-check 不能关闭 unmask→block 之间的丢唤醒窗口，
-            // 真正的防护是 XFER_COMPLETE sticky bit + post-wake recheck。
+            // 阻塞前先检查状态寄存器（快路径）。此 pre-check 不能单独关闭
+            // 丢唤醒窗口——真正的防护是下方的 block_timeout_until 协议：
+            // 条件检查与任务入队在同一关中断临界区内衔接，unmask 与入队
+            // 之间的 ISR 事件由 XFER_COMPLETE sticky 位保留并被锁内条件
+            // 检查观察到（见 SdhciDelay 契约）。
             if let Some(result) = self.poll_status_once(bit) {
                 return result;
             }
@@ -205,7 +212,25 @@ impl CviSdhci {
 
             if use_irq {
                 irq::unmask_xfer_complete_signal();
-                let _timed_out = crate::runtime::delay().block_timeout(PHASE2_STEP_MS);
+                // 条件等待：ISR 若在 unmask 后、锁内检查前触发，其 notify
+                // 落空（队列为空），但它 latch 的 sticky 位会被胶水层锁内
+                // 条件检查立即观察到，任务无需等满超时。错误位也纳入条件：
+                // 错误不产生中断（SIG_EN 不含 error 位），锁内检查前已锁存
+                // 的错误可即时返回；睡期中段到达的错误仍由 10ms 超时后的
+                // post-wake 重检查出，与旧实现时延一致。
+                let timed_out =
+                    crate::runtime::delay().block_timeout_until(PHASE2_STEP_MS, &|| {
+                        let norm = self.read::<u16>(SDHCI_INT_STATUS_NORM);
+                        norm & (bit | NORM_INT_ERROR) != 0
+                    });
+                // 返回值无需驱动分支——post-wake 重检无条件执行，覆盖两种
+                // 返回路径。仅在超时（10ms 退化路径）时留观测信号。
+                if timed_out {
+                    log::trace!(
+                        "[SDHCI] poll_int Phase-2 IRQ wait timed out: bit=0x{:04x}",
+                        bit
+                    );
+                }
             } else {
                 // 非 XFER 位：直接 sleep，不经过 WaitQueue——
                 // ISR 只对 XFER_COMPLETE 发 notify，经过 WQ 是无效开销。
@@ -876,5 +901,160 @@ impl SdioHost for CviSdhci {
 
     fn card_irq_ctrl(&self) -> Option<Arc<dyn SdioCardIrq>> {
         Some(Arc::new(CviCardIrqCtrl::new(self.base)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 丢唤醒协议回归验证。
+    //!
+    //! 全局状态注意：`set_delay` 与 `irq_state_init` 安装的是进程级全局
+    //! provider/基地址，不同测试会相互覆盖，因此新增场景必须并入下面的
+    //! 单一测试函数内顺序执行。
+    //!
+    //! 建模局限（记录在案）：
+    //! - W1C 未建模：对 INT_STATUS 的写是直接覆写而非"写 1 清位"。
+    //!   当前断言（返回结果、零睡眠、SIG_EN 状态）不受影响；
+    //!   场景切换时由测试显式清零寄存器区。
+
+    use alloc::boxed::Box;
+    use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::runtime::{SdhciDelay, set_delay};
+
+    /// 泄漏一块寄存器缓冲区，仅以裸指针访问（避免与 `&mut` 别名）。
+    /// 32 × u64 = 256 字节，8 字节对齐保证 u16/u32 访问满足对齐要求。
+    fn fake_regs() -> usize {
+        Box::leak(Box::new([0u64; 0x20])) as *mut [u64; 0x20] as usize
+    }
+
+    /// 重放模式：窗口内 XFER ISR（mask + notify 落空）。
+    const MODE_XFER_ISR: u8 = 0;
+    /// 重放模式：错误位锁存（错误不产生 ISR，SIG_EN 不变）。
+    const MODE_ERROR_LATCH: u8 = 1;
+
+    /// 确定性重放 Phase 2 窗口内的硬件/ISR 事件的 fake 延时提供者。
+    ///
+    /// `block_timeout_until` 被调用时，重放事件已经发生（对应真实时序中
+    /// "unmask 之后、锁内条件检查之前"的窗口），随后按胶水层语义
+    /// （关中断临界区内）检查条件：
+    ///
+    /// - MODE_XFER_ISR：硬件置位 XFER_COMPLETE sticky 位，ISR mask 信号
+    ///   并 notify——此时任务尚未入队，notify 落空丢失。
+    /// - MODE_ERROR_LATCH：硬件锁存错误位（NORM_ERROR + DAT_TIMEOUT），
+    ///   错误不产生中断，无 ISR、无 mask。
+    struct FakeIrqDelay {
+        base: AtomicUsize,
+        slept_ms: AtomicU64,
+        mode: AtomicU8,
+    }
+
+    impl FakeIrqDelay {
+        fn replay_event_in_window(&self) {
+            let base = self.base.load(Ordering::Acquire);
+            let sig_en_addr = base + SDHCI_NORM_INT_SIG_EN as usize;
+            // 前置断言：unmask 必须先于阻塞发生（SIG_EN 已含 XFER 位），
+            // 拦截"block 先于 unmask"的顺序回归。
+            let sig_en = mmio_read::<u16>(sig_en_addr);
+            assert!(
+                sig_en & NORM_INT_XFER_COMPLETE != 0,
+                "unmask_xfer_complete_signal 必须先于 block_timeout_until 执行"
+            );
+
+            let norm_addr = base + SDHCI_INT_STATUS_NORM as usize;
+            let norm = mmio_read::<u16>(norm_addr);
+            match self.mode.load(Ordering::Acquire) {
+                MODE_ERROR_LATCH => {
+                    // 硬件锁存错误位；错误不产生中断，SIG_EN 不变。
+                    mmio_write::<u16>(norm_addr, norm | NORM_INT_ERROR);
+                    let err_addr = base + SDHCI_INT_STATUS_ERR as usize;
+                    let err = mmio_read::<u16>(err_addr);
+                    mmio_write::<u16>(err_addr, err | ERR_INT_DAT_TIMEOUT);
+                }
+                _ => {
+                    // 硬件在 unmask 后立即置位 XFER_COMPLETE sticky 位。
+                    mmio_write::<u16>(norm_addr, norm | NORM_INT_XFER_COMPLETE);
+                    // ISR mask XFER 信号（RMW 清除 XFER 位）。
+                    mmio_write::<u16>(sig_en_addr, sig_en & !NORM_INT_XFER_COMPLETE);
+                    // notify：队列为空，通知丢失（无动作）。
+                }
+            }
+        }
+    }
+
+    impl SdhciDelay for FakeIrqDelay {
+        fn delay_ms(&self, ms: u64) {
+            self.slept_ms.fetch_add(ms, Ordering::Relaxed);
+        }
+
+        fn block_timeout_until(&self, timeout_ms: u64, condition: &dyn Fn() -> bool) -> bool {
+            self.replay_event_in_window();
+            if condition() {
+                return false;
+            }
+            // 条件未观察到事件 → 协议失效路径：按真实语义睡满超时。
+            self.delay_ms(timeout_ms);
+            true
+        }
+    }
+
+    /// Phase 2 IRQ 等待的两个确定性回归场景：
+    ///
+    /// - 场景 A：ISR 在 unmask 之后、锁内检查之前触发（notify 落空），
+    ///   XFER_COMPLETE 等待必须即时返回，不得退化为睡满 10ms 超时兜底。
+    /// - 场景 B：错误位在锁内检查前锁存时，条件立即返回错误路径，
+    ///   且错误不产生 ISR。
+    #[test]
+    fn phase2_wait_lost_wakeup_and_error_latch_regressions() {
+        static FAKE_DELAY: FakeIrqDelay = FakeIrqDelay {
+            base: AtomicUsize::new(0),
+            slept_ms: AtomicU64::new(0),
+            mode: AtomicU8::new(MODE_XFER_ISR),
+        };
+
+        let base = fake_regs();
+        FAKE_DELAY.base.store(base, Ordering::Release);
+        FAKE_DELAY.slept_ms.store(0, Ordering::Relaxed);
+        set_delay(&FAKE_DELAY);
+        irq::irq_state_init(base);
+
+        let sdhci = CviSdhci::new(base);
+
+        // ── 场景 A：ISR 先于入队（notify 落空）──
+        FAKE_DELAY.mode.store(MODE_XFER_ISR, Ordering::Release);
+        let result = sdhci.poll_int_status(NORM_INT_XFER_COMPLETE);
+
+        assert_eq!(result, Ok(()));
+        // 关键断言：等待未落入 10ms 超时兜底——ISR 丢失的 notify 由
+        // 锁内条件检查对 sticky 位的观察补偿，事件即时消费。
+        assert_eq!(FAKE_DELAY.slept_ms.load(Ordering::Relaxed), 0);
+        // 锁定等待后 SIG_EN 的 XFER 位保持 mask 稳态——配合 replay 入口
+        // 断言（unmask 已置位）证明 unmask→ISR mask 序列完整执行。
+        let sig_en = mmio_read::<u16>(base + SDHCI_NORM_INT_SIG_EN as usize);
+        assert_eq!(sig_en & NORM_INT_XFER_COMPLETE, 0);
+
+        // ── 场景 B：错误位锁存（错误路径即时返回）──
+        // 先锁定 STS_EN 门控：enable_interrupts_irq 后 STS_EN 必须含
+        // NORM_INT_ERROR，否则错误场景在真实硬件上无意义（错误位不锁存）。
+        sdhci.enable_interrupts_irq().unwrap();
+        let sts_en = mmio_read::<u16>(base + SDHCI_NORM_INT_STS_EN as usize);
+        assert_ne!(
+            sts_en & NORM_INT_ERROR,
+            0,
+            "NORM_INT_ERROR 必须已加入 STS_EN 掩码，否则错误检测路径恒假"
+        );
+        // 清掉场景 A 的覆写残留（fake 不建模 W1C，见模块文档）。
+        mmio_write::<u16>(base + SDHCI_INT_STATUS_NORM as usize, 0);
+        FAKE_DELAY.mode.store(MODE_ERROR_LATCH, Ordering::Release);
+        FAKE_DELAY.slept_ms.store(0, Ordering::Relaxed);
+
+        let result = sdhci.poll_int_status(NORM_INT_XFER_COMPLETE);
+
+        assert_eq!(result, Err(SdioError::Timeout));
+        assert_eq!(FAKE_DELAY.slept_ms.load(Ordering::Relaxed), 0);
+        // 错误不产生 ISR：SIG_EN 的 XFER 位未被 mask。
+        let sig_en = mmio_read::<u16>(base + SDHCI_NORM_INT_SIG_EN as usize);
+        assert_ne!(sig_en & NORM_INT_XFER_COMPLETE, 0);
     }
 }
