@@ -12,3 +12,4 @@ version = "0.1.8"
 [dependencies]
 dma-api.workspace = true
 rdif-base.workspace = true
+thiserror.workspace = true

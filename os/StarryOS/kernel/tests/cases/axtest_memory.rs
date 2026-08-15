@@ -32,6 +32,16 @@ fn user_pointer_metadata_rules_hold() {
 }
 
 #[axtest]
+fn vm_error_to_io_error_preserves_length() {
+    ax_assert!(axtest_exports::vm_error_to_io_error_preserves_length());
+}
+
+#[axtest]
+fn domain_errno_mappings_hold() {
+    ax_assert!(axtest_exports::domain_errno_mappings_hold());
+}
+
+#[axtest]
 fn cow_file_max_read_len_boundary_rules_hold() {
     ax_assert!(axtest_exports::cow_file_max_read_len_boundary_rules_hold());
 }

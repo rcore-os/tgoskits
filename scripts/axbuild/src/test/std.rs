@@ -400,11 +400,7 @@ mod tests {
     use super::*;
 
     fn known_packages() -> HashSet<String> {
-        HashSet::from([
-            "ax-api".to_string(),
-            "ax-hal".to_string(),
-            "starry-process".to_string(),
-        ])
+        HashSet::from(["ax-api".to_string(), "ax-hal".to_string()])
     }
 
     struct FakeCargoRunner {
@@ -541,21 +537,13 @@ mod tests {
     #[test]
     fn std_test_runner_collects_all_failures() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec![
-            "ax-api".to_string(),
-            "ax-hal".to_string(),
-            "starry-process".to_string(),
-        ];
+        let packages = vec!["ax-api".to_string(), "ax-hal".to_string()];
         let mut runner = FakeCargoRunner::succeeding()
-            .with_status(CargoTestInvocation::default_for("ax-hal"), false)
-            .with_status(CargoTestInvocation::default_for("starry-process"), false);
+            .with_status(CargoTestInvocation::default_for("ax-hal"), false);
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
-        assert_eq!(
-            failed,
-            vec!["ax-hal".to_string(), "starry-process".to_string()]
-        );
+        assert_eq!(failed, vec!["ax-hal".to_string()]);
         assert_eq!(
             runner.invocations,
             vec![
@@ -567,8 +555,7 @@ mod tests {
                         CargoTestAction::Run,
                     ),
                 ),
-                (root.clone(), CargoTestInvocation::default_for("ax-hal")),
-                (root, CargoTestInvocation::default_for("starry-process")),
+                (root, CargoTestInvocation::default_for("ax-hal")),
             ]
         );
     }
@@ -587,17 +574,14 @@ mod tests {
     #[test]
     fn ordinary_package_keeps_default_cargo_test_command() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["starry-process".to_string()];
+        let packages = vec!["ax-hal".to_string()];
         let mut runner = FakeCargoRunner::succeeding();
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert!(failed.is_empty());
         assert_eq!(runner.invocations.len(), 1);
-        assert_eq!(
-            runner.invocations[0].1.args(),
-            vec!["test", "-p", "starry-process"]
-        );
+        assert_eq!(runner.invocations[0].1.args(), vec!["test", "-p", "ax-hal"]);
     }
 
     #[test]

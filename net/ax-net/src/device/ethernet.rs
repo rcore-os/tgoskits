@@ -84,15 +84,19 @@ pub trait EthernetIrqRegistrar: Send + Sync {
     ) -> Result<Box<dyn EthernetIrqRegistration>, EthernetIrqRegistrationError>;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum EthernetIrqRegistrationError {
     /// The IRQ number is invalid for this platform.
+    #[error("invalid Ethernet IRQ")]
     InvalidIrq,
     /// The IRQ line cannot be shared or is already occupied.
+    #[error("Ethernet IRQ is busy")]
     Busy,
     /// IRQ registration is not supported on this platform.
+    #[error("Ethernet IRQ registration is not supported")]
     Unsupported,
     /// Other platform-specific registration failure.
+    #[error("Ethernet IRQ registration failed")]
     Other,
 }
 
@@ -802,6 +806,14 @@ mod ethernet_counter_tests {
 
     use super::*;
     use crate::device::{NetDeviceResult, NetRxBuffer, NetTxBuffer};
+
+    #[test]
+    fn ethernet_irq_registration_errors_have_domain_messages() {
+        assert_eq!(
+            alloc::format!("{}", EthernetIrqRegistrationError::Busy),
+            "Ethernet IRQ is busy"
+        );
+    }
 
     // ── Mock driver infrastructure ─────────────────────────────────────
 

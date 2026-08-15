@@ -12,13 +12,12 @@
 //! conservatively in the socket implementation, with defaults documented near
 //! the protocol that reports them.
 
-use alloc::boxed::Box;
-use core::time::Duration;
+use alloc::{boxed::Box, sync::Arc};
+use core::{any::Any, fmt, time::Duration};
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use enum_dispatch::enum_dispatch;
 
-use crate::InterfaceId;
+use crate::{InterfaceId, NetError, NetResult};
 
 /// Linux-like TCP connection state reported by TCP_INFO.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +111,14 @@ pub struct TcpInfo {
     pub rcv_wnd: u32,
 }
 
+/// TCP congestion-control algorithms exposed by the transport backend.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TcpCongestionControl {
+    /// The transport does not apply congestion-window control.
+    #[default]
+    None,
+}
+
 macro_rules! define_options {
     ($($name:ident($value:ty),)*) => {
         /// Operation to get a socket option.
@@ -137,9 +144,12 @@ macro_rules! define_options {
     };
 }
 
-/// Corresponds to `struct ucred` in Linux.
-#[repr(C)]
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+/// Transport-owned Unix credentials plus an optional OS identity generation.
+///
+/// `pid`, `uid`, and `gid` are ABI-compatible fallback values. OS layers with
+/// PID namespaces can attach their generation object opaquely so queued
+/// messages and peer sockets do not depend on a reusable numeric PID.
+#[derive(Default, Clone)]
 pub struct UnixCredentials {
     /// Process ID.
     pub pid: u32,
@@ -147,6 +157,7 @@ pub struct UnixCredentials {
     pub uid: u32,
     /// Group ID.
     pub gid: u32,
+    identity: Option<Arc<dyn Any + Send + Sync>>,
 }
 impl UnixCredentials {
     /// Create a new `UnixCredentials` with the given PID and default UID/GID.
@@ -155,7 +166,58 @@ impl UnixCredentials {
             pid,
             uid: 0,
             gid: 0,
+            identity: None,
         }
+    }
+
+    /// Creates credentials with explicit numeric fallback values.
+    pub fn from_parts(pid: u32, uid: u32, gid: u32) -> Self {
+        Self {
+            pid,
+            uid,
+            gid,
+            identity: None,
+        }
+    }
+
+    /// Attaches an OS-specific stable process generation.
+    pub fn with_identity<T>(mut self, identity: Arc<T>) -> Self
+    where
+        T: Any + Send + Sync,
+    {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// Borrows the attached process generation when it has the requested type.
+    pub fn identity<T: Any + Send + Sync>(&self) -> Option<&T> {
+        self.identity.as_deref()?.downcast_ref()
+    }
+}
+
+impl fmt::Debug for UnixCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UnixCredentials")
+            .field("pid", &self.pid)
+            .field("uid", &self.uid)
+            .field("gid", &self.gid)
+            .field("has_identity", &self.identity.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for UnixCredentials {
+    fn eq(&self, other: &Self) -> bool {
+        self.pid == other.pid && self.uid == other.uid && self.gid == other.gid
+    }
+}
+
+impl Eq for UnixCredentials {}
+
+impl From<u32> for UnixCredentials {
+    fn from(pid: u32) -> Self {
+        Self::new(pid)
     }
 }
 
@@ -188,6 +250,7 @@ define_options! {
     TcpKeepCount(u32),
     TcpUserTimeout(u32),
     TcpInfo(TcpInfo),
+    TcpCongestionControl(TcpCongestionControl),
 
     // ---- IP level options (IP_*) ----
     Ttl(u8),
@@ -206,25 +269,25 @@ define_options! {
 #[enum_dispatch]
 pub trait Configurable {
     /// Get a socket option, returns `true` if the socket supports the option.
-    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool>;
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> NetResult<bool>;
     /// Set a socket option, returns `true` if the socket supports the option.
-    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool>;
+    fn set_option_inner(&self, opt: SetSocketOption) -> NetResult<bool>;
 
     /// Get a socket option. Dispatches to [`Configurable::get_option_inner`].
-    fn get_option(&self, mut opt: GetSocketOption) -> AxResult {
+    fn get_option(&self, mut opt: GetSocketOption) -> NetResult {
         self.get_option_inner(&mut opt).and_then(|supported| {
             if !supported {
-                Err(AxError::from(LinuxError::ENOPROTOOPT))
+                Err(NetError::ProtocolOptionUnsupported)
             } else {
                 Ok(())
             }
         })
     }
     /// Set a socket option. Dispatches to [`Configurable::set_option_inner`].
-    fn set_option(&self, opt: SetSocketOption) -> AxResult {
+    fn set_option(&self, opt: SetSocketOption) -> NetResult {
         self.set_option_inner(opt).and_then(|supported| {
             if !supported {
-                Err(AxError::from(LinuxError::ENOPROTOOPT))
+                Err(NetError::ProtocolOptionUnsupported)
             } else {
                 Ok(())
             }
@@ -233,11 +296,11 @@ pub trait Configurable {
 }
 
 impl<T: Configurable + ?Sized> Configurable for Box<T> {
-    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool> {
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> NetResult<bool> {
         self.as_ref().get_option_inner(opt)
     }
 
-    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool> {
+    fn set_option_inner(&self, opt: SetSocketOption) -> NetResult<bool> {
         self.as_ref().set_option_inner(opt)
     }
 }

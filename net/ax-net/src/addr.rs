@@ -1,8 +1,9 @@
 //! Shared address and ephemeral-port helpers.
 
-use ax_errno::{AxResult, ax_bail};
 use ax_sync::Mutex;
 use smoltcp::wire::{IpAddress, Ipv4Address};
+
+use crate::{NetError, NetResult};
 
 const EPHEMERAL_PORT_START: u16 = 0xc000;
 const EPHEMERAL_PORT_END: u16 = 0xffff;
@@ -13,7 +14,7 @@ pub(crate) fn listen_addrs_conflict(a: Option<IpAddress>, b: Option<IpAddress>) 
 }
 
 /// Allocates an ephemeral port accepted by `check_available`.
-pub(crate) fn allocate_ephemeral_port(check_available: impl Fn(u16) -> bool) -> AxResult<u16> {
+pub(crate) fn allocate_ephemeral_port(check_available: impl Fn(u16) -> bool) -> NetResult<u16> {
     static CURR: Mutex<u16> = Mutex::new(EPHEMERAL_PORT_START);
 
     let mut curr = CURR.lock();
@@ -30,7 +31,7 @@ pub(crate) fn allocate_ephemeral_port(check_available: impl Fn(u16) -> bool) -> 
         }
         tries += 1;
     }
-    ax_bail!(AddrInUse, "no available ports");
+    Err(NetError::AddrInUse)
 }
 
 /// Builds an IPv4 netmask from a CIDR prefix length.

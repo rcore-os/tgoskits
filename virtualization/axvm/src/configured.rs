@@ -10,6 +10,7 @@ use axvmconfig::VirtualDeviceRequest;
 use crate::{machine::GuestSerialFirmwareIdentity, *};
 
 mod append;
+mod ivc;
 
 pub use append::DefaultVirtualDeviceIntent;
 pub(crate) use append::append_configured_devices;
@@ -21,12 +22,16 @@ pub type ConfiguredModelConstructor = for<'a> fn(
     &'a DeviceInstantiationContext,
 ) -> Result<DeviceNodeSpec, ConfiguredDeviceError>;
 
+pub type ConfiguredDefaultFixedResources =
+    fn(&DeviceInstantiationContext) -> Result<FixedDeviceBindings, ConfiguredDeviceError>;
+
 /// One explicit catalog entry. Adding a device changes its module and the
 /// catalog assembly site, not a framework-wide device enum.
 #[derive(Clone, Copy)]
 pub struct ConfiguredModelRegistration {
     pub model: &'static str,
     pub create: ConfiguredModelConstructor,
+    pub default_fixed_resources: Option<ConfiguredDefaultFixedResources>,
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +137,11 @@ impl DeviceInstantiationContext {
         &self.fixed
     }
 
+    pub(crate) fn with_fixed_bindings(mut self, fixed: FixedDeviceBindings) -> Self {
+        self.fixed = fixed;
+        self
+    }
+
     pub fn firmware_binding(&self) -> &DeviceFirmwareBinding {
         &self.firmware_binding
     }
@@ -186,6 +196,12 @@ impl ConfiguredDeviceCatalog {
                 .insert(registration.model.into(), *registration);
             debug_assert!(previous.is_none());
         }
+        for registration in ivc::IVC_REGISTRATIONS {
+            let previous = catalog
+                .registrations
+                .insert(registration.model.into(), *registration);
+            debug_assert!(previous.is_none());
+        }
         catalog
     }
 
@@ -219,6 +235,18 @@ impl ConfiguredDeviceCatalog {
             }
         })?;
         (registration.create)(id, request, context)
+    }
+
+    pub fn default_fixed_resources(
+        &self,
+        model: &str,
+        context: &DeviceInstantiationContext,
+    ) -> Result<Option<FixedDeviceBindings>, ConfiguredDeviceError> {
+        self.registrations
+            .get(model)
+            .and_then(|registration| registration.default_fixed_resources)
+            .map(|fixed| fixed(context))
+            .transpose()
     }
 }
 

@@ -72,32 +72,42 @@ pub(super) fn patch_runtime_fdt(
     let initrd = vm.with_config(|config| {
         super::fdt::initrd_start_size_from_image_config(config.image_config.ramdisk.as_ref())
     });
-    let (serial_profile, serial_identity, additional_serials, gic_profile, timer_profile) = vm
-        .with_architecture_plan(|plan| {
-            Ok((
-                plan.serial_profile(),
-                plan.serial_fdt_identity().cloned(),
-                plan.serial_devices()
-                    .iter()
-                    .filter(|serial| serial.id() != "console0")
-                    .map(crate::machine::ResolvedSerialDevice::profile)
-                    .collect::<std::vec::Vec<_>>(),
-                plan.gic_profile().clone(),
-                plan.timer_profile().clone(),
-            ))
-        })?;
-    super::fdt::core::create::patch_guest_fdt_for_runtime(
-        fdt_bytes,
-        &vm.memory_regions(),
-        crate_config,
+    let (
         serial_profile,
-        serial_identity.as_ref(),
-        &additional_serials,
-        Some(&gic_profile),
-        None,
-        Some(&timer_profile),
-        initrd,
-        true,
+        serial_identity,
+        additional_serials,
+        ivc_channels,
+        gic_profile,
+        timer_profile,
+    ) = vm.with_architecture_plan(|plan| {
+        Ok((
+            plan.serial_profile(),
+            plan.serial_fdt_identity().cloned(),
+            plan.serial_devices()
+                .iter()
+                .filter(|serial| serial.id() != "console0")
+                .map(crate::machine::ResolvedSerialDevice::profile)
+                .collect::<std::vec::Vec<_>>(),
+            plan.ivc_channels().to_vec(),
+            plan.gic_profile().clone(),
+            plan.timer_profile().clone(),
+        ))
+    })?;
+    super::fdt::core::create::patch_guest_fdt_for_runtime(
+        super::fdt::core::create::GuestFdtRuntimePatch {
+            fdt_bytes,
+            memory_regions: &vm.memory_regions(),
+            ivc_channels: &ivc_channels,
+            crate_config,
+            serial_profile,
+            serial_identity: serial_identity.as_ref(),
+            additional_serials: &additional_serials,
+            gic_profile: Some(&gic_profile),
+            plic_profile: None,
+            timer_profile: Some(&timer_profile),
+            initrd_start_size: initrd,
+            create_chosen: true,
+        },
     )
 }
 

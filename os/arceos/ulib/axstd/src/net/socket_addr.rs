@@ -4,7 +4,7 @@ use alloc::string::String;
 pub use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use core::{iter, option, slice};
 
-use crate::io;
+use crate::StdResult;
 
 /// A trait for objects which can be converted or resolved to one or more
 /// [`SocketAddr`] values.
@@ -33,13 +33,13 @@ pub trait ToSocketAddrs {
     type Iter: Iterator<Item = SocketAddr>;
 
     /// Converts this object to an iterator of resolved [`SocketAddr`]s.
-    fn to_socket_addrs(&self) -> io::Result<Self::Iter>;
+    fn to_socket_addrs(&self) -> StdResult<Self::Iter>;
 }
 
 impl ToSocketAddrs for SocketAddr {
     type Iter = option::IntoIter<SocketAddr>;
 
-    fn to_socket_addrs(&self) -> io::Result<option::IntoIter<SocketAddr>> {
+    fn to_socket_addrs(&self) -> StdResult<option::IntoIter<SocketAddr>> {
         Ok(Some(*self).into_iter())
     }
 }
@@ -47,7 +47,7 @@ impl ToSocketAddrs for SocketAddr {
 impl ToSocketAddrs for SocketAddrV4 {
     type Iter = option::IntoIter<SocketAddr>;
 
-    fn to_socket_addrs(&self) -> io::Result<option::IntoIter<SocketAddr>> {
+    fn to_socket_addrs(&self) -> StdResult<option::IntoIter<SocketAddr>> {
         SocketAddr::V4(*self).to_socket_addrs()
     }
 }
@@ -55,7 +55,7 @@ impl ToSocketAddrs for SocketAddrV4 {
 impl ToSocketAddrs for (IpAddr, u16) {
     type Iter = option::IntoIter<SocketAddr>;
 
-    fn to_socket_addrs(&self) -> io::Result<option::IntoIter<SocketAddr>> {
+    fn to_socket_addrs(&self) -> StdResult<option::IntoIter<SocketAddr>> {
         let (ip, port) = *self;
         SocketAddr::new(ip, port).to_socket_addrs()
     }
@@ -64,7 +64,7 @@ impl ToSocketAddrs for (IpAddr, u16) {
 impl ToSocketAddrs for (Ipv4Addr, u16) {
     type Iter = option::IntoIter<SocketAddr>;
 
-    fn to_socket_addrs(&self) -> io::Result<option::IntoIter<SocketAddr>> {
+    fn to_socket_addrs(&self) -> StdResult<option::IntoIter<SocketAddr>> {
         let (ip, port) = *self;
         SocketAddrV4::new(ip, port).to_socket_addrs()
     }
@@ -73,7 +73,7 @@ impl ToSocketAddrs for (Ipv4Addr, u16) {
 impl<'a> ToSocketAddrs for &'a [SocketAddr] {
     type Iter = iter::Cloned<slice::Iter<'a, SocketAddr>>;
 
-    fn to_socket_addrs(&self) -> io::Result<Self::Iter> {
+    fn to_socket_addrs(&self) -> StdResult<Self::Iter> {
         Ok(self.iter().cloned())
     }
 }
@@ -81,7 +81,7 @@ impl<'a> ToSocketAddrs for &'a [SocketAddr] {
 impl<T: ToSocketAddrs + ?Sized> ToSocketAddrs for &T {
     type Iter = T::Iter;
 
-    fn to_socket_addrs(&self) -> io::Result<T::Iter> {
+    fn to_socket_addrs(&self) -> StdResult<T::Iter> {
         (**self).to_socket_addrs()
     }
 }
@@ -94,7 +94,7 @@ mod no_dns {
     impl ToSocketAddrs for (&str, u16) {
         type Iter = option::IntoIter<SocketAddr>;
 
-        fn to_socket_addrs(&self) -> io::Result<option::IntoIter<SocketAddr>> {
+        fn to_socket_addrs(&self) -> StdResult<option::IntoIter<SocketAddr>> {
             let (host, port) = *self;
             Ok(host
                 .parse::<Ipv4Addr>()
@@ -110,7 +110,7 @@ mod no_dns {
     impl ToSocketAddrs for str {
         type Iter = option::IntoIter<SocketAddr>;
 
-        fn to_socket_addrs(&self) -> io::Result<option::IntoIter<SocketAddr>> {
+        fn to_socket_addrs(&self) -> StdResult<option::IntoIter<SocketAddr>> {
             // parse as a regular SocketAddr first
             Ok(self.parse().ok().into_iter())
         }
@@ -119,7 +119,7 @@ mod no_dns {
     impl ToSocketAddrs for (String, u16) {
         type Iter = option::IntoIter<SocketAddr>;
 
-        fn to_socket_addrs(&self) -> io::Result<option::IntoIter<SocketAddr>> {
+        fn to_socket_addrs(&self) -> StdResult<option::IntoIter<SocketAddr>> {
             (&*self.0, self.1).to_socket_addrs()
         }
     }
@@ -127,7 +127,7 @@ mod no_dns {
     impl ToSocketAddrs for String {
         type Iter = option::IntoIter<SocketAddr>;
 
-        fn to_socket_addrs(&self) -> io::Result<option::IntoIter<SocketAddr>> {
+        fn to_socket_addrs(&self) -> StdResult<option::IntoIter<SocketAddr>> {
             (**self).to_socket_addrs()
         }
     }
@@ -139,11 +139,12 @@ mod dns {
     use alloc::{vec, vec::Vec};
 
     use super::*;
+    use crate::StdError;
 
     impl ToSocketAddrs for (&str, u16) {
         type Iter = vec::IntoIter<SocketAddr>;
 
-        fn to_socket_addrs(&self) -> io::Result<vec::IntoIter<SocketAddr>> {
+        fn to_socket_addrs(&self) -> StdResult<vec::IntoIter<SocketAddr>> {
             let (host, port) = *self;
 
             // try to parse the host as a regular IP address first
@@ -163,7 +164,7 @@ mod dns {
     impl ToSocketAddrs for str {
         type Iter = vec::IntoIter<SocketAddr>;
 
-        fn to_socket_addrs(&self) -> io::Result<vec::IntoIter<SocketAddr>> {
+        fn to_socket_addrs(&self) -> StdResult<vec::IntoIter<SocketAddr>> {
             // try to parse as a regular SocketAddr first
             if let Ok(addr) = self.parse() {
                 return Ok(vec![addr].into_iter());
@@ -172,10 +173,8 @@ mod dns {
             // split the string by ':' and convert the second part to u16
             let (host, port_str) = self
                 .rsplit_once(':')
-                .ok_or_else(|| ax_errno::ax_err_type!(InvalidInput, "invalid socket address"))?;
-            let port: u16 = port_str
-                .parse()
-                .map_err(|_| ax_errno::ax_err_type!(InvalidInput, "invalid port value"))?;
+                .ok_or(StdError::InvalidSocketAddress)?;
+            let port: u16 = port_str.parse().map_err(|_| StdError::InvalidSocketPort)?;
 
             Ok(ax_api::net::ax_dns_query(host)?
                 .into_iter()
@@ -188,7 +187,7 @@ mod dns {
     impl ToSocketAddrs for (String, u16) {
         type Iter = vec::IntoIter<SocketAddr>;
 
-        fn to_socket_addrs(&self) -> io::Result<vec::IntoIter<SocketAddr>> {
+        fn to_socket_addrs(&self) -> StdResult<vec::IntoIter<SocketAddr>> {
             (&*self.0, self.1).to_socket_addrs()
         }
     }
@@ -196,7 +195,7 @@ mod dns {
     impl ToSocketAddrs for String {
         type Iter = vec::IntoIter<SocketAddr>;
 
-        fn to_socket_addrs(&self) -> io::Result<vec::IntoIter<SocketAddr>> {
+        fn to_socket_addrs(&self) -> StdResult<vec::IntoIter<SocketAddr>> {
             (**self).to_socket_addrs()
         }
     }

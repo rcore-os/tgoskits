@@ -15,7 +15,6 @@ host-test = ["ax-sync/host-test"]
 lockdep = []
 
 [dependencies]
-ax-errno = { workspace = true }
 ax-sync = { workspace = true, features = ["sleep"] }
 axtest = { workspace = true, optional = true }
 bitflags = "2.10"
@@ -24,6 +23,7 @@ hashbrown = "0.16"
 inherit-methods-macro = "0.1"
 log = "0.4"
 smallvec = "1.15"
+thiserror.workspace = true
 
 [dev-dependencies]
 ax-sync.workspace = true

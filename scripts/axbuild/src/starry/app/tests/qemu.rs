@@ -12,6 +12,7 @@ use super::{
     app_qemu_test_case, load_qemu_app_case_fields, prepare_qemu_app_case, resolve_qemu_config,
 };
 use crate::{
+    rootfs::qemu::RootfsWritePolicy,
     starry::app::{
         StarryAppQemuCase, discover_apps,
         test_support::{write_case_file, write_test_image_config},
@@ -189,11 +190,11 @@ fail_regex = []
         load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
 
     assert_eq!(fields.rootfs_path, Some(rootfs_path));
-    assert!(fields.snapshot);
+    assert_eq!(fields.write_policy, RootfsWritePolicy::Discard);
 }
 
 #[test]
-fn qemu_case_fields_load_snapshot_disable() {
+fn qemu_case_fields_load_persistent_rootfs_policy() {
     let root = tempdir().unwrap();
     write_case_file(
         root.path(),
@@ -202,7 +203,7 @@ fn qemu_case_fields_load_snapshot_disable() {
         r#"args = []
 uefi = false
 to_bin = true
-snapshot = false
+rootfs_write_policy = "persist"
 success_regex = []
 fail_regex = []
 "#,
@@ -217,7 +218,7 @@ fail_regex = []
     let fields =
         load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
 
-    assert!(!fields.snapshot);
+    assert_eq!(fields.write_policy, RootfsWritePolicy::Persist);
 }
 
 #[test]
@@ -232,8 +233,10 @@ fn selfhost_x86_app_preserves_the_persistent_build_contract() {
     let config: toml::Value = toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
 
     assert_eq!(
-        config.get("snapshot").and_then(toml::Value::as_bool),
-        Some(false),
+        config
+            .get("rootfs_write_policy")
+            .and_then(toml::Value::as_str),
+        Some("persist"),
         "{} must persist the guest-built kernel",
         config_path.display()
     );
@@ -381,7 +384,7 @@ fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
         build_config_path: None,
         qemu_config_path: Some(qemu_config_path.clone()),
         rootfs_path: PathBuf::from("/tmp/rootfs.img"),
-        snapshot: true,
+        rootfs_write_policy: RootfsWritePolicy::Discard,
         test_commands: Vec::new(),
         host_symbolize_success_regex: vec!["symbolized".to_string()],
         host_http_server: Some(HostHttpServerConfig {

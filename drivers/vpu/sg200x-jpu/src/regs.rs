@@ -9,6 +9,8 @@ use tock_registers::{
     registers::{ReadOnly, ReadWrite},
 };
 
+use super::error::JpuRegisterError;
+
 const TOP_DDR_ADDR_MODE_OFF: usize = 0x64;
 const TOP_CLK_JPEG_OFF: usize = 0x2008;
 const TOP_RST_JPEG_OFF: usize = 0x3000;
@@ -186,7 +188,7 @@ pub fn hardware_init_at(
     jpu_base: usize,
     top_base: usize,
     vc_base: usize,
-) -> Result<(), &'static str> {
+) -> Result<(), JpuRegisterError> {
     mmio_modify32(top_base + TOP_CLK_JPEG_OFF, |v| v | TOP_CLK_JPEG_ENABLE);
     mmio_modify32(top_base + TOP_RST_JPEG_OFF, |v| {
         v | TOP_RST_JPEG_RELEASE_BIT
@@ -211,7 +213,7 @@ pub fn clear_pic_status_at(jpu_base: usize, status: u32) {
     jpu_regs_at(jpu_base).pic_status.set(status);
 }
 
-pub fn wait_sw_reset_done_at(jpu_base: usize) -> Result<(), &'static str> {
+pub fn wait_sw_reset_done_at(jpu_base: usize) -> Result<(), JpuRegisterError> {
     let regs = jpu_regs_at(jpu_base);
     regs.pic_start.write(MJPEG_PIC_START::START_INIT::SET);
     if poll_until(REGISTER_WAIT_POLLS, || {
@@ -219,7 +221,7 @@ pub fn wait_sw_reset_done_at(jpu_base: usize) -> Result<(), &'static str> {
     }) {
         Ok(())
     } else {
-        Err("JPU software reset timed out")
+        Err(JpuRegisterError::SoftwareResetTimeout)
     }
 }
 
@@ -251,14 +253,14 @@ pub(crate) fn scl_info_value(
     }
 }
 
-pub fn wait_bbc_idle_at(jpu_base: usize) -> Result<(), &'static str> {
+pub fn wait_bbc_idle_at(jpu_base: usize) -> Result<(), JpuRegisterError> {
     let regs = jpu_regs_at(jpu_base);
     if poll_until(REGISTER_WAIT_POLLS, || {
         !regs.bbc_busy.is_set(MJPEG_BBC_BUSY::BUSY)
     }) {
         Ok(())
     } else {
-        Err("JPU BBC did not become idle")
+        Err(JpuRegisterError::BbcIdleTimeout)
     }
 }
 

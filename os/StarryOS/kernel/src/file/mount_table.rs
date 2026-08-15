@@ -8,13 +8,12 @@ use core::{
     task::Context,
 };
 
-use ax_errno::AxResult;
 use ax_fs_ng::vfs::{FileBackend, FileFlags, MountNamespace};
 use ax_lazyinit::OnceLock;
 use axpoll::{IoEvents, PollSet, Pollable};
 
 use super::{File, FileLike, IoDst, IoSrc, Kstat};
-use crate::sync::IrqMutex;
+use crate::{StarryResult, sync::IrqMutex};
 
 const MOUNT_CHANGE_EVENTS: IoEvents = IoEvents::PRI.union(IoEvents::ERR);
 
@@ -111,15 +110,15 @@ impl MountTableFile {
 }
 
 impl FileLike for MountTableFile {
-    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         self.file.read(dst)
     }
 
-    fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
+    fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
         self.file.write(src)
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         self.file.stat()
     }
 
@@ -127,11 +126,11 @@ impl FileLike for MountTableFile {
         self.file.inode_key()
     }
 
-    fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
+    fn file_mmap(&self) -> StarryResult<(FileBackend, FileFlags)> {
         self.file.file_mmap()
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+    fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
         self.file.ioctl(cmd, arg)
     }
 
@@ -143,7 +142,7 @@ impl FileLike for MountTableFile {
         self.file.nonblocking()
     }
 
-    fn set_nonblocking(&self, nonblocking: bool) -> AxResult {
+    fn set_nonblocking(&self, nonblocking: bool) -> StarryResult {
         self.file.set_nonblocking(nonblocking)
     }
 
@@ -151,7 +150,7 @@ impl FileLike for MountTableFile {
         self.file.append()
     }
 
-    fn set_append(&self, append: bool) -> AxResult {
+    fn set_append(&self, append: bool) -> StarryResult {
         self.file.set_append(append)
     }
 

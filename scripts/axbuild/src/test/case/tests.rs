@@ -103,7 +103,7 @@ fn resolve_target_dir_uses_workspace_target_directory() {
 }
 
 #[tokio::test]
-async fn prepare_case_assets_plain_case_uses_shared_rootfs_with_snapshot() {
+async fn prepare_case_assets_plain_case_uses_shared_rootfs() {
     let root = tempdir().unwrap();
     let target_dir = root.path().join("target/x86_64-unknown-none");
     let rootfs_dir = root.path().join("tmp/axbuild/rootfs");
@@ -128,9 +128,6 @@ async fn prepare_case_assets_plain_case_uses_shared_rootfs_with_snapshot() {
     // directly -- no per-case copy is created.
     assert_eq!(assets.rootfs_path, shared_img);
     assert!(assets.rootfs_copy_to_remove.is_none());
-    // -snapshot must always be present so QEMU guest writes never dirty the
-    // shared image.
-    assert!(assets.extra_qemu_args.contains(&"-snapshot".to_string()));
     // The shared image must be unmodified.
     assert_eq!(fs::read(&shared_img).unwrap(), b"rootfs");
 }

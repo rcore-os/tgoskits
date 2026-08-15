@@ -59,9 +59,9 @@ epoll = ["ax-posix-api/epoll", "fd"]
 ax-driver.workspace = true
 ax-hal.workspace = true
 ax-posix-api.workspace = true
-ax-errno.workspace = true
 ax-io.workspace = true
 ax-runtime.workspace = true
+syscalls.workspace = true
 
 [build-dependencies]
 bindgen.workspace = true

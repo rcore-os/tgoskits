@@ -1,7 +1,7 @@
 use core::ffi::c_int;
 
-use ax_errno::LinuxError;
 use ax_posix_api::{sys_close, sys_dup, sys_dup2, sys_fcntl};
+use syscalls::Errno;
 
 use crate::{ctypes, utils::e};
 
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn dup2(old_fd: c_int, new_fd: c_int) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> c_int {
     if old_fd == new_fd {
-        return e((LinuxError::EINVAL as c_int).wrapping_neg());
+        return e(Errno::EINVAL.into_raw().wrapping_neg());
     }
     let r = e(sys_dup2(old_fd, new_fd));
     if r < 0 {

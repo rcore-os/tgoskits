@@ -17,7 +17,7 @@ flowchart TD
         C4["文件系统组件<br/>axfs_crates axfs-ng-vfs rsext4"]
         C5["平台契约<br/>ax-plat percpu ..."]
         C6["虚拟化组件<br/>axvm axvm-types axvmconfig arch_vcpu axvisor_api"]
-        C7["基础工具<br/>axerrno axio ax-sync ax-lazyinit ..."]
+        C7["基础工具<br/>ax-io ax-sync ax-lazyinit ..."]
     end
 
     subgraph ArceOS["ArceOS"]

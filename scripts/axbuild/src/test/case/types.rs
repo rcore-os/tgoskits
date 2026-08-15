@@ -23,9 +23,6 @@ pub(super) const GROUPED_RUNNER_SCRIPT_FORMAT_VERSION: &str =
     "grouped-runner-safe-command-label-v2";
 pub(super) const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-apk-lib-closure-v2";
 pub(super) const RUST_PIPELINE_CACHE_VERSION: &str = "rust-cross-v1";
-/// QEMU global snapshot flag -- all disk writes go to a temporary file and are
-/// never committed back to the image, keeping the source image pristine.
-pub(super) const QEMU_SNAPSHOT_ARG: &str = "-snapshot";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TestQemuCase {
@@ -132,7 +129,6 @@ pub(crate) struct PreparedCaseAssets {
     /// pipeline injection this points directly to the shared source image; for
     /// cases that need injection it points to the per-case temporary copy.
     pub(crate) rootfs_path: PathBuf,
-    pub(crate) extra_qemu_args: Vec<String>,
     /// Path of the temporary per-case rootfs copy to remove after the QEMU run,
     /// or `None` when the shared image was used directly (no injection needed).
     pub(crate) rootfs_copy_to_remove: Option<PathBuf>,
@@ -149,7 +145,6 @@ pub(crate) struct RunPreparedQemuCaseOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreparedCaseAssetParts {
-    pub(crate) extra_qemu_args: Vec<String>,
     pub(crate) rootfs_path: PathBuf,
     pub(crate) rootfs_copy_to_remove: Option<PathBuf>,
     pub(crate) run_dir_to_remove: Option<PathBuf>,
@@ -196,6 +191,7 @@ pub(crate) struct CaseAssetLayout {
     pub(crate) apk_cache_dir: PathBuf,
     /// Per-case copy of the shared rootfs image, used only when the case needs
     /// pipeline injection (C / shell / Python / grouped). For plain cases no
-    /// copy is created and QEMU's `-snapshot` flag keeps the shared image clean.
+    /// copy is created and the rootfs patcher's discard policy keeps the shared
+    /// image clean.
     pub(crate) case_rootfs_copy: PathBuf,
 }

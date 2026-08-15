@@ -14,8 +14,9 @@ extern crate alloc;
 /// Coverage tests for I/O traits and adapters.
 pub mod axtest;
 
-#[doc(no_inline)]
-pub use ax_errno::{AxError as Error, AxErrorKind as ErrorKind, AxResult as Result};
+mod error;
+
+pub use error::{Error, ErrorKind, IoError, IoResult, Result};
 
 /// Default buffer size for I/O operations.
 pub const DEFAULT_BUF_SIZE: usize = 1024 * 2;

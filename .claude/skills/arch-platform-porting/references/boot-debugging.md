@@ -213,9 +213,21 @@ work even when the kernel image and CPU topology are correct.
   from dense logical CPU indices. Both the maintained single-core board test
   and an eight-core boot have been validated.
 - GICv2 CPU target bits are firmware/controller interface IDs, not dense
-  logical CPU indices. Record each CPU's banked `GICD_ITARGETSR0` mask during
-  per-CPU initialization and reuse that mask for SPI affinity, AxVM-assigned
-  physical SPIs, and SGIs.
+  logical CPU indices. Scan all 32 banked private `GICD_ITARGETSR` bytes during
+  per-CPU initialization and record the unique one-hot mask in the shared route table
+  used by SPI affinity, AxVM-assigned physical SPIs, and SGIs. A zero mask is
+  valid only when `GICD_TYPER.CPUNumber` reports a uniprocessor controller whose
+  target registers are RAZ/WI; the OS runtime CPU limit alone is not sufficient.
+  For that implicit route, leave SPI targets untouched and use the SGI
+  self-filter instead of inventing a CPU bit. SMP must fail discovery when no
+  unique target bit exists.
+- Keep the AArch64 QEMU multiprocessor regression on
+  `virt,gic-version=2` with SMP4 and run
+  `cargo xtask arceos test qemu --arch aarch64 --test-group rust --test-case task-ipi`.
+  The case must verify a
+  self-SGI is claimed and that callbacks sent from other CPUs execute only on
+  the selected remote CPU. This explicit-target test complements, but does not
+  replace, the driver unit regression for the GICv2 uniprocessor RAZ/WI route.
 - The RK3576 CRU node must be `rockchip,rk3576-cru` at `0x2720_0000`, size
   `0x50000`. Early driver evidence should include
   `RK3576 CRU reg: addr=0x27200000, size=0x50000` followed by

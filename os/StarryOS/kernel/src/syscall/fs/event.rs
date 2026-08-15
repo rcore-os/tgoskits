@@ -1,8 +1,10 @@
-use ax_errno::{AxError, AxResult};
 use bitflags::bitflags;
 use linux_raw_sys::general::{EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE};
 
-use crate::file::{FileLike, add_file_like, event::EventFd};
+use crate::{
+    StarryError, StarryResult,
+    file::{FileLike, add_file_like, event::EventFd},
+};
 
 bitflags! {
     /// Flags for the `eventfd2` syscall.
@@ -18,18 +20,18 @@ bitflags! {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_eventfd(initval: u32) -> AxResult<isize> {
+pub fn sys_eventfd(initval: u32) -> StarryResult<isize> {
     sys_eventfd2(initval, 0)
 }
 
 // Create an eventfd and install it into the current file descriptor table.
-pub fn sys_eventfd2(initval: u32, flags: u32) -> AxResult<isize> {
+pub fn sys_eventfd2(initval: u32, flags: u32) -> StarryResult<isize> {
     debug!(
         "sys_eventfd2 called: initval={}, flags={:#x}",
         initval, flags
     );
 
-    let flags = EventFdFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
+    let flags = EventFdFlags::from_bits(flags).ok_or(StarryError::InvalidInput)?;
 
     let event_fd = EventFd::new(initval as _, flags.contains(EventFdFlags::SEMAPHORE));
     event_fd.set_nonblocking(flags.contains(EventFdFlags::NONBLOCK))?;

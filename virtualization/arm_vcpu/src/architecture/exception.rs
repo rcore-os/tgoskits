@@ -168,6 +168,8 @@ fn handle_hvc_psci_version(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExi
 }
 
 fn handle_hvc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
+    // The low-level AArch64 trap entry already saves the guest return PC for
+    // HVC exits. Advancing it here would skip the instruction after `hvc`.
     // Is this a psci call?
     //
     // By convention, a psci call can use either the `hvc` or the `smc` instruction.

@@ -62,6 +62,7 @@ ax-percpu.workspace = true
 axplat-dyn = { workspace = true, default-features = false }
 page-table-generic = { workspace = true, optional = true }
 rdrive.workspace = true
+thiserror.workspace = true
 
 [build-dependencies]
 quote = { workspace = true }

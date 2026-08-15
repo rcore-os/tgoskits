@@ -1,0 +1,21 @@
+board_type = "OrangePi-5-Plus"
+session_files = [
+  "iperf-bench.sh",
+]
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = """
+export STARRY_IPERF3_SERVER='${boardServerIp}'
+export STARRY_IPERF3_SCRIPT_URL='${sessionFile:iperf-bench.sh}'
+"""
+success_regex = [
+  '(?m)^STARRY_IPERF3_BENCH_PASSED$',
+]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  '(?m)^STARRY_IPERF3_BENCH_FAILED$',
+  '(?i)(iperf3|sh): .*not found',
+]
+# The fixed matrix opens 21 connections and cools down after every round.
+timeout = 900

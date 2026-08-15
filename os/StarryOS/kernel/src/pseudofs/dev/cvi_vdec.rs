@@ -9,8 +9,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, mem::size_of};
 
-use ax_errno::AxError;
-use axfs_ng_vfs::{NodeFlags, VfsResult};
+use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use cvi_vdec_uapi::{
     COLOR_GAMUT_BT601, COMPRESS_MODE_NONE, CVI_VC_VDEC_CREATE_CHN, CVI_VC_VDEC_DESTROY_CHN,
     CVI_VC_VDEC_GET_CHN_ATTR, CVI_VC_VDEC_GET_CHN_PARAM, CVI_VC_VDEC_GET_FRAME,
@@ -29,7 +28,7 @@ use sg200x_jpu::{
 use starry_vm::{VmMutPtr, VmPtr, vm_read_slice};
 
 use super::cvi_jpu::{CviJpu, DecodedJpuFrame};
-use crate::{pseudofs::DeviceOps, sync::Mutex};
+use crate::{StarryError, StarryResult, pseudofs::DeviceOps, sync::Mutex};
 
 const MAX_STREAM_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -74,9 +73,9 @@ impl Default for VdecState {
 }
 
 impl VdecState {
-    fn create(&mut self, jpu: &CviJpu, attr: VdecChnAttr) -> VfsResult<()> {
+    fn create(&mut self, jpu: &CviJpu, attr: VdecChnAttr) -> StarryResult<()> {
         if self.phase != ChannelPhase::Uncreated {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
         validate_attr(&attr)?;
         jpu.acquire_vdec()?;
@@ -93,9 +92,9 @@ impl VdecState {
         Ok(())
     }
 
-    fn destroy(&mut self, jpu: &CviJpu) -> VfsResult<()> {
+    fn destroy(&mut self, jpu: &CviJpu) -> StarryResult<()> {
         if self.phase == ChannelPhase::Uncreated {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         self.phase = ChannelPhase::Uncreated;
         self.pending = None;
@@ -104,28 +103,28 @@ impl VdecState {
         Ok(())
     }
 
-    fn start(&mut self) -> VfsResult<()> {
+    fn start(&mut self) -> StarryResult<()> {
         if self.phase != ChannelPhase::Created {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         self.phase = ChannelPhase::Receiving;
         Ok(())
     }
 
-    fn stop(&mut self) -> VfsResult<()> {
+    fn stop(&mut self) -> StarryResult<()> {
         if self.phase != ChannelPhase::Receiving {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if self.pending.is_some() {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
         self.phase = ChannelPhase::Created;
         Ok(())
     }
 
-    fn reset(&mut self) -> VfsResult<()> {
+    fn reset(&mut self) -> StarryResult<()> {
         if self.phase == ChannelPhase::Uncreated {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         self.phase = ChannelPhase::Created;
         self.pending = None;
@@ -134,9 +133,9 @@ impl VdecState {
         Ok(())
     }
 
-    fn set_attr(&mut self, attr: VdecChnAttr) -> VfsResult<()> {
+    fn set_attr(&mut self, attr: VdecChnAttr) -> StarryResult<()> {
         if self.phase != ChannelPhase::Created || self.pending.is_some() {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
         validate_attr(&attr)?;
         self.attr = attr;
@@ -144,29 +143,29 @@ impl VdecState {
         Ok(())
     }
 
-    fn set_param(&mut self, param: VdecChnParam) -> VfsResult<()> {
+    fn set_param(&mut self, param: VdecChnParam) -> StarryResult<()> {
         if self.phase != ChannelPhase::Created || self.pending.is_some() {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
         validate_param(&param, self.attr.payload_type)?;
         self.param = param;
         Ok(())
     }
 
-    fn set_scale(&mut self, raw_scale: u32) -> VfsResult<()> {
+    fn set_scale(&mut self, raw_scale: u32) -> StarryResult<()> {
         if self.phase != ChannelPhase::Created || self.pending.is_some() {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
         self.scale = scale_from_uapi(raw_scale)?;
         Ok(())
     }
 
-    fn send_stream(&mut self, jpu: &CviJpu, argument: usize) -> VfsResult<()> {
+    fn send_stream(&mut self, jpu: &CviJpu, argument: usize) -> StarryResult<()> {
         if self.phase != ChannelPhase::Receiving {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if self.pending.is_some() {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
 
         let stream_ex = (argument as *const VdecStreamEx).vm_read()?;
@@ -176,7 +175,7 @@ impl VdecState {
         read_user_bytes_into(
             &mut self.stream_scratch,
             stream.address,
-            usize::try_from(stream.length).map_err(|_| AxError::InvalidInput)?,
+            usize::try_from(stream.length).map_err(|_| StarryError::InvalidInput)?,
         )?;
 
         let inspected =
@@ -188,7 +187,7 @@ impl VdecState {
                 "cvi-vdec: inspected/decode layout mismatch inspected={inspected:?} decoded={:?}",
                 decoded.layout
             );
-            return Err(AxError::Io);
+            return Err(StarryError::Io);
         }
 
         self.received_frames = self.received_frames.wrapping_add(1);
@@ -201,8 +200,8 @@ impl VdecState {
         Ok(())
     }
 
-    fn get_frame(&self, argument: usize) -> VfsResult<()> {
-        let pending = self.pending.ok_or(AxError::ResourceBusy)?;
+    fn get_frame(&self, argument: usize) -> StarryResult<()> {
+        let pending = self.pending.ok_or(StarryError::ResourceBusy)?;
         let wrapper_pointer = argument as *mut VideoFrameInfoEx;
         let wrapper = wrapper_pointer.vm_read()?;
         let frame_pointer = checked_user_mut_pointer::<VideoFrameInfo>(wrapper.frame_info)?;
@@ -211,11 +210,11 @@ impl VdecState {
         Ok(())
     }
 
-    fn release_frame(&mut self, argument: usize) -> VfsResult<()> {
+    fn release_frame(&mut self, argument: usize) -> StarryResult<()> {
         let supplied = (argument as *const VideoFrameInfo).vm_read()?;
-        let pending = self.pending.ok_or(AxError::InvalidInput)?;
+        let pending = self.pending.ok_or(StarryError::InvalidInput)?;
         if !same_frame(&supplied, &pending.info) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         self.pending = None;
         Ok(())
@@ -253,22 +252,16 @@ impl CviVdec {
             jpu,
         }
     }
-}
 
-impl DeviceOps for CviVdec {
-    fn read_at(&self, destination: &mut [u8], offset: u64) -> VfsResult<usize> {
+    fn read_frame(&self, destination: &mut [u8], offset: u64) -> StarryResult<usize> {
         let state = self.state.lock();
-        let pending = state.pending.ok_or(AxError::InvalidInput)?;
-        let offset = usize::try_from(offset).map_err(|_| AxError::InvalidInput)?;
+        let pending = state.pending.ok_or(StarryError::InvalidInput)?;
+        let offset = usize::try_from(offset).map_err(|_| StarryError::InvalidInput)?;
         self.jpu
             .read_vdec_frame(pending.total_len, offset, destination)
     }
 
-    fn write_at(&self, _buffer: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::OperationNotSupported)
-    }
-
-    fn ioctl(&self, command: u32, argument: usize) -> VfsResult<usize> {
+    fn ioctl_inner(&self, command: u32, argument: usize) -> StarryResult<usize> {
         let mut state = self.state.lock();
         match command {
             CVI_VC_VDEC_CREATE_CHN => {
@@ -308,9 +301,23 @@ impl DeviceOps for CviVdec {
                 let scale = (argument as *const u32).vm_read()?;
                 state.set_scale(scale)?;
             }
-            _ => return Err(AxError::NotATty),
+            _ => return Err(StarryError::NotATty),
         }
         Ok(0)
+    }
+}
+
+impl DeviceOps for CviVdec {
+    fn read_at(&self, destination: &mut [u8], offset: u64) -> VfsResult<usize> {
+        self.read_frame(destination, offset).map_err(VfsError::from)
+    }
+
+    fn write_at(&self, _buffer: &[u8], _offset: u64) -> VfsResult<usize> {
+        Err(VfsError::OperationNotSupported)
+    }
+
+    fn ioctl(&self, command: u32, argument: usize) -> VfsResult<usize> {
+        self.ioctl_inner(command, argument).map_err(VfsError::from)
     }
 
     fn close(&self, _exclusive: bool) {
@@ -329,20 +336,20 @@ impl DeviceOps for CviVdec {
     }
 }
 
-fn ensure_created(phase: ChannelPhase) -> VfsResult<()> {
+fn ensure_created(phase: ChannelPhase) -> StarryResult<()> {
     if phase == ChannelPhase::Uncreated {
-        Err(AxError::InvalidInput)
+        Err(StarryError::InvalidInput)
     } else {
         Ok(())
     }
 }
 
-fn validate_attr(attr: &VdecChnAttr) -> VfsResult<()> {
+fn validate_attr(attr: &VdecChnAttr) -> StarryResult<()> {
     if !matches!(attr.payload_type, PT_JPEG | PT_MJPEG) {
-        return Err(AxError::OperationNotSupported);
+        return Err(StarryError::OperationNotSupported);
     }
     if attr.video_mode != VIDEO_MODE_FRAME {
-        return Err(AxError::OperationNotSupported);
+        return Err(StarryError::OperationNotSupported);
     }
     if attr.picture_width == 0
         || attr.picture_height == 0
@@ -350,35 +357,36 @@ fn validate_attr(attr: &VdecChnAttr) -> VfsResult<()> {
         || attr.picture_height > u16::MAX as u32
         || attr.frame_buffer_count == 0
     {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let stream_size =
-        usize::try_from(attr.stream_buffer_size).map_err(|_| AxError::InvalidInput)?;
-    let frame_size = usize::try_from(attr.frame_buffer_size).map_err(|_| AxError::InvalidInput)?;
+        usize::try_from(attr.stream_buffer_size).map_err(|_| StarryError::InvalidInput)?;
+    let frame_size =
+        usize::try_from(attr.frame_buffer_size).map_err(|_| StarryError::InvalidInput)?;
     if stream_size == 0
         || stream_size > MAX_STREAM_BYTES
         || frame_size == 0
         || frame_size > MAX_FRAME_BYTES
     {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(())
 }
 
-fn validate_param(param: &VdecChnParam, payload_type: i32) -> VfsResult<()> {
+fn validate_param(param: &VdecChnParam, payload_type: i32) -> StarryResult<()> {
     if param.payload_type != payload_type {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if param.pixel_format != PIXEL_FORMAT_YUV_PLANAR_420 {
-        return Err(AxError::OperationNotSupported);
+        return Err(StarryError::OperationNotSupported);
     }
     if param.display_frame_count > 16 || param.codec_param[0] > 255 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(())
 }
 
-fn validate_stream(stream: &VdecStream, attr: &VdecChnAttr) -> VfsResult<()> {
+fn validate_stream(stream: &VdecStream, attr: &VdecChnAttr) -> StarryResult<()> {
     if stream.length == 0
         || stream.length > attr.stream_buffer_size
         || stream.address == 0
@@ -386,7 +394,7 @@ fn validate_stream(stream: &VdecStream, attr: &VdecChnAttr) -> VfsResult<()> {
         || stream.end_of_stream > 1
         || stream.display > 1
     {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(())
 }
@@ -395,73 +403,73 @@ fn validate_layout(
     layout: &FrameLayout,
     attr: &VdecChnAttr,
     param: &VdecChnParam,
-) -> VfsResult<()> {
+) -> StarryResult<()> {
     if layout.source.width > attr.picture_width || layout.source.height > attr.picture_height {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if layout.total_len > attr.frame_buffer_size as usize {
-        return Err(AxError::StorageFull);
+        return Err(StarryError::StorageFull);
     }
     if layout.format != JpuPixelFormat::Yuv420 || param.pixel_format != PIXEL_FORMAT_YUV_PLANAR_420
     {
-        return Err(AxError::OperationNotSupported);
+        return Err(StarryError::OperationNotSupported);
     }
     Ok(())
 }
 
-fn scale_from_uapi(scale: u32) -> VfsResult<JpuScale> {
+fn scale_from_uapi(scale: u32) -> StarryResult<JpuScale> {
     match scale {
         CVI_VDEC_JPEG_SCALE_FULL => Ok(JpuScale::Full),
         CVI_VDEC_JPEG_SCALE_HALF => Ok(JpuScale::Half),
         CVI_VDEC_JPEG_SCALE_QUARTER => Ok(JpuScale::Quarter),
         CVI_VDEC_JPEG_SCALE_EIGHTH => Ok(JpuScale::Eighth),
-        _ => Err(AxError::InvalidInput),
+        _ => Err(StarryError::InvalidInput),
     }
 }
 
-fn checked_user_pointer<T>(address: u64) -> VfsResult<*const T> {
-    let address = usize::try_from(address).map_err(|_| AxError::InvalidInput)?;
+fn checked_user_pointer<T>(address: u64) -> StarryResult<*const T> {
+    let address = usize::try_from(address).map_err(|_| StarryError::InvalidInput)?;
     address
         .checked_add(size_of::<T>())
-        .ok_or(AxError::InvalidInput)?;
+        .ok_or(StarryError::InvalidInput)?;
     Ok(address as *const T)
 }
 
-fn checked_user_mut_pointer<T>(address: u64) -> VfsResult<*mut T> {
+fn checked_user_mut_pointer<T>(address: u64) -> StarryResult<*mut T> {
     Ok(checked_user_pointer::<T>(address)? as *mut T)
 }
 
-fn read_user_bytes_into(bytes: &mut Vec<u8>, address: u64, length: usize) -> VfsResult<()> {
+fn read_user_bytes_into(bytes: &mut Vec<u8>, address: u64, length: usize) -> StarryResult<()> {
     let pointer = checked_user_pointer::<u8>(address)?;
     pointer
         .addr()
         .checked_add(length)
-        .ok_or(AxError::InvalidInput)?;
+        .ok_or(StarryError::InvalidInput)?;
     bytes.clear();
     bytes
         .try_reserve_exact(length)
-        .map_err(|_| AxError::NoMemory)?;
+        .map_err(|_| StarryError::NoMemory)?;
     vm_read_slice(pointer, &mut bytes.spare_capacity_mut()[..length])?;
     // SAFETY: `vm_read_slice` initialized every byte in the reserved range.
     unsafe { bytes.set_len(length) };
     Ok(())
 }
 
-fn map_inspect_error(error: JpuInspectError) -> AxError {
+fn map_inspect_error(error: JpuInspectError) -> StarryError {
     match error {
         JpuInspectError::Layout(error) => map_layout_error(error),
-        JpuInspectError::EmptyStream | JpuInspectError::InvalidJpeg(_) => AxError::InvalidInput,
+        JpuInspectError::EmptyStream | JpuInspectError::InvalidJpeg(_) => StarryError::InvalidInput,
     }
 }
 
-fn map_layout_error(_error: FrameLayoutError) -> AxError {
-    AxError::OperationNotSupported
+fn map_layout_error(_error: FrameLayoutError) -> StarryError {
+    StarryError::OperationNotSupported
 }
 
-fn frame_info(decoded: DecodedJpuFrame, pts: u64, time_ref: u32) -> VfsResult<VideoFrameInfo> {
+fn frame_info(decoded: DecodedJpuFrame, pts: u64, time_ref: u32) -> StarryResult<VideoFrameInfo> {
     let layout = decoded.layout;
-    let cb = layout.cb.ok_or(AxError::OperationNotSupported)?;
-    let cr = layout.cr.ok_or(AxError::OperationNotSupported)?;
+    let cb = layout.cb.ok_or(StarryError::OperationNotSupported)?;
+    let cr = layout.cr.ok_or(StarryError::OperationNotSupported)?;
     Ok(VideoFrameInfo {
         frame: VideoFrame {
             width: layout.visible.width,
@@ -496,13 +504,13 @@ fn frame_info(decoded: DecodedJpuFrame, pts: u64, time_ref: u32) -> VfsResult<Vi
     })
 }
 
-fn plane_address(base: u64, plane: PlaneLayout) -> VfsResult<u64> {
-    base.checked_add(u64::try_from(plane.offset).map_err(|_| AxError::Io)?)
-        .ok_or(AxError::Io)
+fn plane_address(base: u64, plane: PlaneLayout) -> StarryResult<u64> {
+    base.checked_add(u64::try_from(plane.offset).map_err(|_| StarryError::Io)?)
+        .ok_or(StarryError::Io)
 }
 
-fn plane_len(plane: PlaneLayout) -> VfsResult<u32> {
-    u32::try_from(plane.len).map_err(|_| AxError::Io)
+fn plane_len(plane: PlaneLayout) -> StarryResult<u32> {
+    u32::try_from(plane.len).map_err(|_| StarryError::Io)
 }
 
 fn same_frame(left: &VideoFrameInfo, right: &VideoFrameInfo) -> bool {
@@ -519,27 +527,30 @@ mod tests {
     #[test]
     fn accepts_only_bounded_frame_mode_jpeg_channels() {
         let valid = VdecChnAttr::jpeg_frame(1920, 1080, 2 * 1024 * 1024, 8 * 1024 * 1024);
-        assert_eq!(validate_attr(&valid), Ok(()));
+        assert!(validate_attr(&valid).is_ok());
 
         let mut stream_mode = valid;
         stream_mode.video_mode = 0;
-        assert_eq!(
+        assert!(matches!(
             validate_attr(&stream_mode),
-            Err(AxError::OperationNotSupported)
-        );
+            Err(StarryError::OperationNotSupported)
+        ));
 
         let mut oversized = valid;
         oversized.frame_buffer_size = (MAX_FRAME_BYTES + 1) as u32;
-        assert_eq!(validate_attr(&oversized), Err(AxError::InvalidInput));
+        assert!(matches!(
+            validate_attr(&oversized),
+            Err(StarryError::InvalidInput)
+        ));
     }
 
     #[test]
     fn scale_extension_maps_the_four_hardware_modes() {
-        assert_eq!(scale_from_uapi(0), Ok(JpuScale::Full));
-        assert_eq!(scale_from_uapi(1), Ok(JpuScale::Half));
-        assert_eq!(scale_from_uapi(2), Ok(JpuScale::Quarter));
-        assert_eq!(scale_from_uapi(3), Ok(JpuScale::Eighth));
-        assert_eq!(scale_from_uapi(4), Err(AxError::InvalidInput));
+        assert!(matches!(scale_from_uapi(0), Ok(JpuScale::Full)));
+        assert!(matches!(scale_from_uapi(1), Ok(JpuScale::Half)));
+        assert!(matches!(scale_from_uapi(2), Ok(JpuScale::Quarter)));
+        assert!(matches!(scale_from_uapi(3), Ok(JpuScale::Eighth)));
+        assert!(matches!(scale_from_uapi(4), Err(StarryError::InvalidInput)));
     }
 
     #[test]

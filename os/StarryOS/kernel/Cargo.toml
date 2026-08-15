@@ -150,8 +150,6 @@ rdrive.workspace = true
 
 axbacktrace = { workspace = true }
 ax-cgroup = { workspace = true }
-ax-errno = { workspace = true }
-axnsproxy = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 rdif-block = { workspace = true }
 rdif-pinctrl = { workspace = true, optional = true }
@@ -193,11 +191,11 @@ rand = { version = "0.10", default-features = false, features = ["alloc", "chach
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local = { workspace = true }
 slab = { version = "0.4.9", default-features = false }
-starry-process = { workspace = true }
 starry-signal = { workspace = true }
 starry-vm = { workspace = true }
 strum = { version = "0.28", default-features = false, features = ["derive"] }
-syscalls = { version = "0.8", default-features = false }
+syscalls.workspace = true
+thiserror.workspace = true
 uluru = "3.1.0"
 weak-map = "0.1.1"
 xmas-elf = "0.9"
@@ -236,7 +234,6 @@ ax-std = { workspace = true, default-features = false, features = [
     "multitask",
     "irq",
 ] }
-ax-errno = { workspace = true, features = ["axtest"] }
 ax-memory-addr = { workspace = true, features = ["axtest"] }
 ax-memory-set = { workspace = true, features = ["axtest"] }
 axfs-ng-vfs = { workspace = true, features = ["axtest"] }

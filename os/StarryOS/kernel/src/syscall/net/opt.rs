@@ -1,18 +1,21 @@
 use alloc::vec;
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use ax_net::{
     InterfaceId, SocketOps,
-    options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
+    options::{
+        Configurable, GetSocketOption, SetSocketOption, TcpCongestionControl, TcpInfo,
+        TcpInfoOptions, TcpState,
+    },
 };
 use linux_raw_sys::net::{
-    AF_INET6, IP_TOS, IPPROTO_IPV6, IPV6_RECVTCLASS, IPV6_TCLASS, IPV6_V6ONLY, TCP_INFO,
-    TCPI_OPT_ECN, TCPI_OPT_ECN_SEEN, TCPI_OPT_SACK, TCPI_OPT_SYN_DATA, TCPI_OPT_TIMESTAMPS,
-    TCPI_OPT_WSCALE, socklen_t, tcp_info,
+    AF_INET6, IP_TOS, IPPROTO_IPV6, IPV6_RECVTCLASS, IPV6_TCLASS, IPV6_V6ONLY, TCP_CONGESTION,
+    TCP_INFO, TCPI_OPT_ECN, TCPI_OPT_ECN_SEEN, TCPI_OPT_SACK, TCPI_OPT_SYN_DATA,
+    TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE, socklen_t, tcp_info,
 };
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
+    Errno, StarryError, StarryResult,
     file::{FileLike, Socket, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
 };
@@ -23,9 +26,12 @@ const PROTO_IP: u32 = linux_raw_sys::net::IPPROTO_IP as u32;
 
 const IP_TOS_ECN_MASK: u8 = 0x03;
 
-fn read_int_sockopt(optval: UserConstPtr<u8>, optlen: socklen_t) -> AxResult<i32> {
+// Linux stores congestion-control names in a fixed 16-byte field.
+const TCP_CA_NAME_MAX: usize = 16;
+
+fn read_int_sockopt(optval: UserConstPtr<u8>, optlen: socklen_t) -> StarryResult<i32> {
     if (optlen as usize) < size_of::<i32>() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(*optval.cast::<i32>().get_as_ref()?)
 }
@@ -34,12 +40,12 @@ fn normalize_ip_tos(value: i32) -> u8 {
     (value as u8) & !IP_TOS_ECN_MASK
 }
 
-fn normalize_ipv6_tclass(value: i32) -> AxResult<u8> {
+fn normalize_ipv6_tclass(value: i32) -> StarryResult<u8> {
     if value == -1 {
         return Ok(0);
     }
     if !(0..=u8::MAX as i32).contains(&value) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(normalize_ip_tos(value))
 }
@@ -47,7 +53,7 @@ fn normalize_ipv6_tclass(value: i32) -> AxResult<u8> {
 fn read_bind_to_device(
     optval: UserConstPtr<u8>,
     optlen: socklen_t,
-) -> AxResult<Option<InterfaceId>> {
+) -> StarryResult<Option<InterfaceId>> {
     if optlen == 0 {
         return Ok(None);
     }
@@ -56,17 +62,17 @@ fn read_bind_to_device(
     if end == 0 {
         return Ok(None);
     }
-    let name = core::str::from_utf8(&buf[..end]).map_err(|_| AxError::InvalidInput)?;
+    let name = core::str::from_utf8(&buf[..end]).map_err(|_| StarryError::InvalidInput)?;
     ax_net::interface_by_name(name)
         .map(|info| Some(info.id))
-        .ok_or(AxError::NoSuchDevice)
+        .ok_or(StarryError::NoSuchDevice)
 }
 
 fn write_bind_to_device(
     socket: &Socket,
     optval: UserPtr<u8>,
     optlen: &mut socklen_t,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     let mut binding = None;
     socket.get_option(GetSocketOption::BindToDevice(&mut binding))?;
     let name = binding
@@ -151,7 +157,11 @@ fn to_linux_tcp_info(info: TcpInfo) -> tcp_info {
     raw
 }
 
-fn write_tcp_info(socket: &Socket, optval: UserPtr<u8>, optlen: &mut socklen_t) -> AxResult<()> {
+fn write_tcp_info(
+    socket: &Socket,
+    optval: UserPtr<u8>,
+    optlen: &mut socklen_t,
+) -> StarryResult<()> {
     let mut info = TcpInfo::default();
     socket.get_option(GetSocketOption::TcpInfo(&mut info))?;
 
@@ -172,41 +182,93 @@ fn write_tcp_info(socket: &Socket, optval: UserPtr<u8>, optlen: &mut socklen_t) 
     Ok(vm_write_slice(optval.as_ptr(), &raw_bytes[..write_len])?)
 }
 
-fn ensure_ipv6_socket(socket: &Socket) -> AxResult<()> {
+fn tcp_congestion_name(congestion_control: TcpCongestionControl) -> &'static [u8] {
+    match congestion_control {
+        TcpCongestionControl::None => b"none",
+    }
+}
+
+fn write_tcp_congestion(
+    socket: &Socket,
+    optval: UserPtr<u8>,
+    optlen: &mut socklen_t,
+) -> StarryResult<()> {
+    let mut congestion_control = TcpCongestionControl::default();
+    socket.get_option(GetSocketOption::TcpCongestionControl(
+        &mut congestion_control,
+    ))?;
+
+    let mut value = [0u8; TCP_CA_NAME_MAX];
+    let name = tcp_congestion_name(congestion_control);
+    value[..name.len()].copy_from_slice(name);
+
+    let write_len = (*optlen as usize).min(value.len());
+    *optlen = write_len as socklen_t;
+    if write_len != 0 {
+        vm_write_slice(optval.as_ptr(), &value[..write_len])?;
+    }
+    Ok(())
+}
+
+fn read_tcp_congestion(
+    socket: &Socket,
+    optval: UserConstPtr<u8>,
+    optlen: socklen_t,
+) -> StarryResult<TcpCongestionControl> {
+    if optlen == 0 {
+        return Err(StarryError::InvalidInput);
+    }
+
+    // Linux reads at most TCP_CA_NAME_MAX - 1 bytes and appends a private
+    // terminator before looking up the requested algorithm.
+    let read_len = (optlen as usize).min(TCP_CA_NAME_MAX - 1);
+    let value = optval.get_as_slice(read_len)?;
+    let name_len = value.iter().position(|byte| *byte == 0).unwrap_or(read_len);
+    let requested_name = &value[..name_len];
+
+    let mut active = TcpCongestionControl::default();
+    socket.get_option(GetSocketOption::TcpCongestionControl(&mut active))?;
+    if requested_name == tcp_congestion_name(active) {
+        Ok(active)
+    } else {
+        Err(StarryError::from(Errno::ENOENT))
+    }
+}
+
+fn ensure_ipv6_socket(socket: &Socket) -> StarryResult<()> {
     if socket.ip_domain() == AF_INET6 {
         Ok(())
     } else {
-        Err(AxError::from(LinuxError::ENOPROTOOPT))
+        Err(StarryError::from(Errno::ENOPROTOOPT))
     }
 }
 
 mod conv {
-    use ax_errno::{AxError, AxResult};
     use ax_net::options::UnixCredentials;
     use linux_raw_sys::{general::timeval, net::ucred};
 
-    use crate::time::TimeValueLike;
+    use crate::{StarryError, StarryResult, time::TimeValueLike};
 
     pub struct Int<T>(T);
 
     impl<T: TryFrom<i32> + TryInto<i32>> Int<T> {
-        pub fn sys_to_rust(val: i32) -> AxResult<T> {
-            T::try_from(val).map_err(|_| AxError::InvalidInput)
+        pub fn sys_to_rust(val: i32) -> StarryResult<T> {
+            T::try_from(val).map_err(|_| StarryError::InvalidInput)
         }
 
-        pub fn rust_to_sys(val: T) -> AxResult<i32> {
-            val.try_into().map_err(|_| AxError::InvalidInput)
+        pub fn rust_to_sys(val: T) -> StarryResult<i32> {
+            val.try_into().map_err(|_| StarryError::InvalidInput)
         }
     }
 
     pub struct IntBool;
 
     impl IntBool {
-        pub fn sys_to_rust(val: i32) -> AxResult<bool> {
+        pub fn sys_to_rust(val: i32) -> StarryResult<bool> {
             Ok(val != 0)
         }
 
-        pub fn rust_to_sys(val: bool) -> AxResult<i32> {
+        pub fn rust_to_sys(val: bool) -> StarryResult<i32> {
             Ok(val as _)
         }
     }
@@ -214,11 +276,11 @@ mod conv {
     pub struct Duration;
 
     impl Duration {
-        pub fn sys_to_rust(val: timeval) -> AxResult<core::time::Duration> {
+        pub fn sys_to_rust(val: timeval) -> StarryResult<core::time::Duration> {
             val.try_into_time_value()
         }
 
-        pub fn rust_to_sys(val: core::time::Duration) -> AxResult<timeval> {
+        pub fn rust_to_sys(val: core::time::Duration) -> StarryResult<timeval> {
             Ok(timeval::from_time_value(val))
         }
     }
@@ -226,15 +288,12 @@ mod conv {
     pub struct Ucred;
 
     impl Ucred {
-        pub fn sys_to_rust(val: ucred) -> AxResult<UnixCredentials> {
-            Ok(UnixCredentials {
-                pid: val.pid,
-                uid: val.uid,
-                gid: val.gid,
-            })
+        pub fn sys_to_rust(val: ucred) -> StarryResult<UnixCredentials> {
+            Ok(UnixCredentials::from_parts(val.pid, val.uid, val.gid))
         }
 
-        pub fn rust_to_sys(val: UnixCredentials) -> AxResult<ucred> {
+        pub fn rust_to_sys(val: UnixCredentials) -> StarryResult<ucred> {
+            let val = crate::file::Socket::project_unix_credentials(&val);
             Ok(ucred {
                 pid: val.pid,
                 uid: val.uid,
@@ -306,7 +365,7 @@ macro_rules! call_dispatch {
             )*
             unsupported => {
                 debug!("unsupported sockopt (level, optname) = {:?}", unsupported);
-                return Err(AxError::from(LinuxError::ENOPROTOOPT));
+                return Err(StarryError::from(Errno::ENOPROTOOPT));
             }
         }
     }
@@ -318,7 +377,7 @@ pub fn sys_getsockopt(
     optname: u32,
     optval: UserPtr<u8>,
     optlen: UserPtr<socklen_t>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let optlen_ptr = optlen.as_ptr();
     let initial_optlen = optlen_ptr.vm_read()?;
     debug!(
@@ -335,9 +394,9 @@ pub fn sys_getsockopt(
         len_ptr: *mut socklen_t,
         len: socklen_t,
         value: T,
-    ) -> AxResult<()> {
+    ) -> StarryResult<()> {
         if (len as usize) < size_of::<T>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         val.as_ptr().cast::<T>().vm_write(value)?;
         len_ptr.vm_write(size_of::<T>() as socklen_t)?;
@@ -360,9 +419,9 @@ pub fn sys_getsockopt(
 
     let optlen = optlen.get_as_mut()?;
 
-    fn get<'a, T: 'static>(val: UserPtr<u8>, len: &mut socklen_t) -> AxResult<&'a mut T> {
+    fn get<'a, T: 'static>(val: UserPtr<u8>, len: &mut socklen_t) -> StarryResult<&'a mut T> {
         if (*len as usize) < size_of::<T>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         *len = size_of::<T>() as socklen_t;
         val.cast().get_as_mut()
@@ -458,6 +517,11 @@ pub fn sys_getsockopt(
         return Ok(0);
     }
 
+    if level == PROTO_TCP && optname == TCP_CONGESTION {
+        write_tcp_congestion(&socket, optval, optlen)?;
+        return Ok(0);
+    }
+
     macro_rules! dispatch {
         ($which:ident) => {
             socket.get_option(GetSocketOption::$which(get(optval, optlen)?))?;
@@ -479,7 +543,7 @@ pub fn sys_setsockopt(
     optname: u32,
     optval: UserConstPtr<u8>,
     optlen: socklen_t,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!(
         "sys_setsockopt <= fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
         fd,
@@ -524,7 +588,7 @@ pub fn sys_setsockopt(
                 socket.set_reuse_address(read_int_sockopt(optval, optlen)? != 0);
                 return Ok(0);
             }
-            _ => return Err(AxError::from(LinuxError::ENOPROTOOPT)),
+            _ => return Err(StarryError::from(Errno::ENOPROTOOPT)),
         }
     }
 
@@ -542,16 +606,22 @@ pub fn sys_setsockopt(
         }
     }
 
-    fn get<'a, T: 'static>(val: UserConstPtr<u8>, len: socklen_t) -> AxResult<&'a T> {
+    fn get<'a, T: 'static>(val: UserConstPtr<u8>, len: socklen_t) -> StarryResult<&'a T> {
         if len as usize != size_of::<T>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         val.cast().get_as_ref()
     }
 
     let socket = Socket::from_fd(fd)?;
     if level == PROTO_TCP && optname == TCP_INFO {
-        return Err(AxError::from(LinuxError::ENOPROTOOPT));
+        return Err(StarryError::from(Errno::ENOPROTOOPT));
+    }
+
+    if level == PROTO_TCP && optname == TCP_CONGESTION {
+        let congestion_control = read_tcp_congestion(&socket, optval, optlen)?;
+        socket.set_option(SetSocketOption::TcpCongestionControl(&congestion_control))?;
+        return Ok(0);
     }
 
     if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {

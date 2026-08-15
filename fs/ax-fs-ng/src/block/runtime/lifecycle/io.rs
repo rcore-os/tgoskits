@@ -1,7 +1,6 @@
 use alloc::{collections::VecDeque, vec::Vec};
 use core::iter::Peekable;
 
-use ax_errno::{AxError, AxResult};
 use log::warn;
 use rdif_block::{
     BlkError, CompletedRequest, OwnedRequest, OwnedRequestBatch, QueueInfo, RequestFlags,
@@ -11,6 +10,7 @@ use rdif_block::{
 #[cfg(any(feature = "ext4", feature = "fat"))]
 use super::super::dma::prepare_write;
 use super::{super::dma::prepare_read, BlockDeviceHandle, block_io_error, request_cannot_block};
+use crate::{BlockError, BlockResult};
 
 const MAX_RUNTIME_TRANSFER_BYTES: usize = 4 * 1024 * 1024;
 const SOFTWARE_PIPELINE_WINDOWS: usize = 2;
@@ -30,12 +30,12 @@ pub(super) fn read_blocks(
     device: &BlockDeviceHandle,
     block_id: u64,
     buffer: &mut [u8],
-) -> AxResult {
+) -> BlockResult {
     if buffer.is_empty() {
         return Ok(());
     }
     ensure_sleepable()?;
-    let info = device.inner.selected_queue_info().ok_or(AxError::Io)?;
+    let info = device.inner.selected_queue_info().ok_or(BlockError::Io)?;
     let mut plan = transfer_plan(info, block_id, buffer.len(), RequestOp::Read)?.peekable();
     let window_limit = submission_window_limit(info);
     let mut pending = VecDeque::with_capacity(SOFTWARE_PIPELINE_WINDOWS);
@@ -48,7 +48,7 @@ pub(super) fn read_blocks(
                 take_window(&mut plan, window_limit)?,
             )?);
         }
-        let window = pending.pop_front().ok_or(AxError::BadState)?;
+        let window = pending.pop_front().ok_or(BlockError::InvalidState)?;
         let first_lba = window.chunks[0].lba;
         let completions = window
             .completions
@@ -60,12 +60,16 @@ pub(super) fn read_blocks(
 }
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
-pub(super) fn write_blocks(device: &BlockDeviceHandle, block_id: u64, buffer: &[u8]) -> AxResult {
+pub(super) fn write_blocks(
+    device: &BlockDeviceHandle,
+    block_id: u64,
+    buffer: &[u8],
+) -> BlockResult {
     if buffer.is_empty() {
         return Ok(());
     }
     ensure_sleepable()?;
-    let info = device.inner.selected_queue_info().ok_or(AxError::Io)?;
+    let info = device.inner.selected_queue_info().ok_or(BlockError::Io)?;
     let mut plan = transfer_plan(info, block_id, buffer.len(), RequestOp::Write)?.peekable();
     let window_limit = submission_window_limit(info);
     let mut pending = VecDeque::with_capacity(SOFTWARE_PIPELINE_WINDOWS);
@@ -79,7 +83,7 @@ pub(super) fn write_blocks(device: &BlockDeviceHandle, block_id: u64, buffer: &[
                 buffer,
             )?);
         }
-        let window = pending.pop_front().ok_or(AxError::BadState)?;
+        let window = pending.pop_front().ok_or(BlockError::InvalidState)?;
         let first_lba = window.chunks[0].lba;
         let completions = window.completions.recv().map_err(|error| {
             block_io_error("receive window", RequestOp::Write, first_lba, error)
@@ -93,7 +97,7 @@ fn submit_read_window(
     device: &BlockDeviceHandle,
     info: QueueInfo,
     chunks: Vec<TransferChunk>,
-) -> Result<ReadWindow, AxError> {
+) -> Result<ReadWindow, BlockError> {
     let first_lba = chunks[0].lba;
     let requests = prepare_read_requests(info, &chunks)?;
     let completions = device.submit_batch_owned(requests).map_err(|error| {
@@ -111,7 +115,7 @@ fn submit_write_window(
     info: QueueInfo,
     chunks: Vec<TransferChunk>,
     buffer: &[u8],
-) -> Result<WriteWindow, AxError> {
+) -> Result<WriteWindow, BlockError> {
     let first_lba = chunks[0].lba;
     let requests = prepare_write_requests(info, &chunks, buffer)?;
     let completions = device.submit_batch_owned(requests).map_err(|error| {
@@ -128,7 +132,7 @@ fn transfer_plan(
     block_id: u64,
     byte_len: usize,
     op: RequestOp,
-) -> Result<TransferPlan, AxError> {
+) -> Result<TransferPlan, BlockError> {
     let boundary_cap = info
         .limits
         .segment_boundary
@@ -154,14 +158,14 @@ fn submission_window_limit(info: QueueInfo) -> usize {
 fn take_window(
     plan: &mut Peekable<TransferPlan>,
     limit: usize,
-) -> Result<Vec<TransferChunk>, AxError> {
+) -> Result<Vec<TransferChunk>, BlockError> {
     let mut chunks = Vec::new();
     chunks
         .try_reserve_exact(limit)
-        .map_err(|_| AxError::NoMemory)?;
+        .map_err(|_| BlockError::NoMemory)?;
     chunks.extend(plan.by_ref().take(limit));
     if chunks.is_empty() {
-        return Err(AxError::InvalidInput);
+        return Err(BlockError::InvalidRequest);
     }
     Ok(chunks)
 }
@@ -169,7 +173,7 @@ fn take_window(
 fn prepare_read_requests(
     info: QueueInfo,
     chunks: &[TransferChunk],
-) -> Result<OwnedRequestBatch, AxError> {
+) -> Result<OwnedRequestBatch, BlockError> {
     let mut requests = OwnedRequestBatch::with_capacity(chunks.len());
     for chunk in chunks {
         let data = prepare_read(info.limits, chunk.byte_len)
@@ -190,7 +194,7 @@ fn prepare_write_requests(
     info: QueueInfo,
     chunks: &[TransferChunk],
     buffer: &[u8],
-) -> Result<OwnedRequestBatch, AxError> {
+) -> Result<OwnedRequestBatch, BlockError> {
     let mut requests = OwnedRequestBatch::with_capacity(chunks.len());
     for chunk in chunks {
         let range = chunk.byte_offset..chunk.byte_offset + chunk.byte_len;
@@ -211,7 +215,7 @@ fn complete_read_window(
     chunks: &[TransferChunk],
     completions: Vec<CompletedRequest>,
     buffer: &mut [u8],
-) -> AxResult {
+) -> BlockResult {
     if completions.len() != chunks.len() {
         return Err(block_io_error(
             "match completion window",
@@ -266,7 +270,10 @@ fn complete_read_window(
 }
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
-fn complete_write_window(chunks: &[TransferChunk], completions: Vec<CompletedRequest>) -> AxResult {
+fn complete_write_window(
+    chunks: &[TransferChunk],
+    completions: Vec<CompletedRequest>,
+) -> BlockResult {
     if completions.len() != chunks.len() {
         return Err(block_io_error(
             "match completion window",
@@ -294,9 +301,9 @@ fn complete_write_window(chunks: &[TransferChunk], completions: Vec<CompletedReq
     }
 }
 
-fn ensure_sleepable() -> AxResult {
+fn ensure_sleepable() -> BlockResult {
     if request_cannot_block() {
-        Err(AxError::WouldBlock)
+        Err(BlockError::WouldBlock)
     } else {
         Ok(())
     }

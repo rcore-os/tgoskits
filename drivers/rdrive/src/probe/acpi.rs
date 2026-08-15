@@ -295,6 +295,10 @@ mod tests {
     };
     use crate::register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority};
 
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "acpi::Interpreter requires Arc even for this single-threaded test handler"
+    )]
     fn test_fixed_registers(handler: &AcpiHandler) -> Arc<FixedRegisters<AcpiHandler>> {
         let event_gas = GenericAddress {
             address_space: AddressSpace::SystemIo,

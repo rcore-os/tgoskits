@@ -1,6 +1,9 @@
 //! JPEG 头解析（SOF / DHT / DQT / SOS）。
 
-use super::regs::{FORMAT_224, FORMAT_400, FORMAT_420, FORMAT_422, FORMAT_444};
+use super::{
+    error::JpegHeaderError,
+    regs::{FORMAT_224, FORMAT_400, FORMAT_420, FORMAT_422, FORMAT_444},
+};
 
 pub struct JpegHeaderInfo {
     pub width: u32,
@@ -116,7 +119,7 @@ impl JpegHeaderInfo {
     }
 }
 
-pub fn parse_jpeg_header(data: &[u8]) -> Result<JpegHeaderInfo, &'static str> {
+pub fn parse_jpeg_header(data: &[u8]) -> Result<JpegHeaderInfo, JpegHeaderError> {
     let mut i = 0;
     let mut header_info = JpegHeaderInfo::new();
 
@@ -135,30 +138,30 @@ pub fn parse_jpeg_header(data: &[u8]) -> Result<JpegHeaderInfo, &'static str> {
 
             match marker {
                 0xC0 => {
-                    let end = segment_end(data, i, "SOF")?;
+                    let end = segment_end(data, i, SegmentKind::Marker)?;
                     let length = end - (i + 2);
                     if length < 8 {
-                        return Err("SOF too short");
+                        return Err(JpegHeaderError::SofTooShort);
                     }
                     if data[i + 4] != 8 {
-                        return Err("only 8-bit baseline JPEG is supported");
+                        return Err(JpegHeaderError::BaselinePrecisionUnsupported);
                     }
 
                     header_info.height = ((data[i + 5] as u32) << 8) | (data[i + 6] as u32);
                     header_info.width = ((data[i + 7] as u32) << 8) | (data[i + 8] as u32);
                     let num_components = data[i + 9] as usize;
                     if !matches!(num_components, 1 | 3) {
-                        return Err("only grayscale and three-component JPEG are supported");
+                        return Err(JpegHeaderError::ComponentCountUnsupported);
                     }
                     let expected_length = 8usize
                         .checked_add(
                             num_components
                                 .checked_mul(3)
-                                .ok_or("SOF component length overflow")?,
+                                .ok_or(JpegHeaderError::SofComponentLengthOverflow)?,
                         )
-                        .ok_or("SOF component length overflow")?;
+                        .ok_or(JpegHeaderError::SofComponentLengthOverflow)?;
                     if length != expected_length {
-                        return Err("SOF component payload has an invalid length");
+                        return Err(JpegHeaderError::SofComponentPayloadInvalid);
                     }
                     header_info.num_components = num_components as u32;
 
@@ -166,7 +169,7 @@ pub fn parse_jpeg_header(data: &[u8]) -> Result<JpegHeaderInfo, &'static str> {
                     for component in 0..num_components {
                         let quant_idx = data[comp_start + component * 3 + 2] as usize;
                         if quant_idx >= header_info.quant_tables.len() {
-                            return Err("SOF quantization table index is out of range");
+                            return Err(JpegHeaderError::SofQuantizationTableOutOfRange);
                         }
                         header_info.quant_tbl[component] = quant_idx;
                     }
@@ -180,19 +183,19 @@ pub fn parse_jpeg_header(data: &[u8]) -> Result<JpegHeaderInfo, &'static str> {
                         let cb = sampling(1);
                         let cr = sampling(2);
                         if cb != (1, 1) || cr != (1, 1) {
-                            return Err("unsupported JPEG chroma sampling factors");
+                            return Err(JpegHeaderError::ChromaSamplingUnsupported);
                         }
                         header_info.format = match y {
                             (2, 2) => FORMAT_420,
                             (2, 1) => FORMAT_422,
                             (1, 2) => FORMAT_224,
                             (1, 1) => FORMAT_444,
-                            _ => return Err("unsupported JPEG luma sampling factors"),
+                            _ => return Err(JpegHeaderError::LumaSamplingUnsupported),
                         };
                     } else {
                         let sampling = data[comp_start + 1];
                         if sampling != 0x11 {
-                            return Err("unsupported grayscale sampling factors");
+                            return Err(JpegHeaderError::GrayscaleSamplingUnsupported);
                         }
                         header_info.format = FORMAT_400;
                     }
@@ -200,37 +203,37 @@ pub fn parse_jpeg_header(data: &[u8]) -> Result<JpegHeaderInfo, &'static str> {
                     i = end;
                     continue;
                 }
-                0xC2 => return Err("progressive JPEG is unsupported"),
+                0xC2 => return Err(JpegHeaderError::ProgressiveUnsupported),
                 0xC4 => {
-                    let end = segment_end(data, i, "DHT")?;
+                    let end = segment_end(data, i, SegmentKind::Marker)?;
                     parse_dht(data, i + 4, end, &mut header_info)?;
                     i = end;
                     continue;
                 }
                 0xDA => {
-                    let end = segment_end(data, i, "SOS")?;
+                    let end = segment_end(data, i, SegmentKind::StartOfScan)?;
                     if end == data.len() {
-                        return Err("SOS has no entropy-coded data");
+                        return Err(JpegHeaderError::SosHasNoEntropyData);
                     }
                     let sos_length = end - (i + 2);
                     if sos_length < 6 {
-                        return Err("SOS too short");
+                        return Err(JpegHeaderError::SosTooShort);
                     }
                     let num_scan_components = data[i + 4] as usize;
                     if num_scan_components != header_info.num_components as usize
                         || !matches!(num_scan_components, 1 | 3)
                     {
-                        return Err("SOS components do not match SOF");
+                        return Err(JpegHeaderError::SosComponentsMismatch);
                     }
                     let expected_length = 6usize
                         .checked_add(
                             num_scan_components
                                 .checked_mul(2)
-                                .ok_or("SOS component length overflow")?,
+                                .ok_or(JpegHeaderError::SosComponentLengthOverflow)?,
                         )
-                        .ok_or("SOS component length overflow")?;
+                        .ok_or(JpegHeaderError::SosComponentLengthOverflow)?;
                     if sos_length != expected_length {
-                        return Err("SOS component payload has an invalid length");
+                        return Err(JpegHeaderError::SosComponentPayloadInvalid);
                     }
 
                     let mut comp_offset = i + 5;
@@ -239,7 +242,7 @@ pub fn parse_jpeg_header(data: &[u8]) -> Result<JpegHeaderInfo, &'static str> {
                         let dc = ((tables >> 4) & 0x0f) as usize;
                         let ac = (tables & 0x0f) as usize;
                         if dc > 1 || ac > 1 {
-                            return Err("SOS Huffman table index is out of range");
+                            return Err(JpegHeaderError::SosHuffmanTableOutOfRange);
                         }
                         header_info.dc_huff_tbl[comp_idx] = dc;
                         header_info.ac_huff_tbl[comp_idx] = ac;
@@ -250,21 +253,21 @@ pub fn parse_jpeg_header(data: &[u8]) -> Result<JpegHeaderInfo, &'static str> {
                         || data[comp_offset + 1] != 63
                         || data[comp_offset + 2] != 0
                     {
-                        return Err("non-baseline SOS parameters are unsupported");
+                        return Err(JpegHeaderError::SosParametersUnsupported);
                     }
                     header_info.ecs_offset = end;
                     return Ok(header_info);
                 }
                 0xDB => {
-                    let end = segment_end(data, i, "DQT")?;
+                    let end = segment_end(data, i, SegmentKind::Marker)?;
                     parse_dqt(data, i + 4, end, &mut header_info)?;
                     i = end;
                     continue;
                 }
                 0xDD => {
-                    let end = segment_end(data, i, "DRI")?;
+                    let end = segment_end(data, i, SegmentKind::Marker)?;
                     if end - (i + 2) != 4 {
-                        return Err("DRI has an invalid length");
+                        return Err(JpegHeaderError::DriLengthInvalid);
                     }
                     header_info.restart_interval =
                         ((data[i + 4] as u32) << 8) | (data[i + 5] as u32);
@@ -278,7 +281,7 @@ pub fn parse_jpeg_header(data: &[u8]) -> Result<JpegHeaderInfo, &'static str> {
                 0xD9 => break,
                 _ => {
                     if marker >= 0xC0 && i + 3 < data.len() {
-                        i = segment_end(data, i, "JPEG marker")?;
+                        i = segment_end(data, i, SegmentKind::Marker)?;
                         continue;
                     }
                     i += 2;
@@ -289,34 +292,40 @@ pub fn parse_jpeg_header(data: &[u8]) -> Result<JpegHeaderInfo, &'static str> {
         i += 1;
     }
 
-    Err("SOS not found")
+    Err(JpegHeaderError::SosNotFound)
+}
+
+#[derive(Clone, Copy)]
+enum SegmentKind {
+    Marker,
+    StartOfScan,
 }
 
 fn segment_end(
     data: &[u8],
     marker_offset: usize,
-    marker_name: &'static str,
-) -> Result<usize, &'static str> {
+    kind: SegmentKind,
+) -> Result<usize, JpegHeaderError> {
     let length_offset = marker_offset
         .checked_add(2)
-        .ok_or("JPEG marker offset overflow")?;
+        .ok_or(JpegHeaderError::MarkerOffsetOverflow)?;
     let length_bytes = data
         .get(length_offset..length_offset + 2)
-        .ok_or(match marker_name {
-            "SOS" => "SOS payload exceeds JPEG stream",
-            _ => "JPEG marker length is truncated",
+        .ok_or(match kind {
+            SegmentKind::StartOfScan => JpegHeaderError::SosPayloadExceedsStream,
+            SegmentKind::Marker => JpegHeaderError::MarkerLengthTruncated,
         })?;
     let length = ((length_bytes[0] as usize) << 8) | length_bytes[1] as usize;
     if length < 2 {
-        return Err("JPEG marker length is invalid");
+        return Err(JpegHeaderError::MarkerLengthInvalid);
     }
     let end = length_offset
         .checked_add(length)
-        .ok_or("JPEG marker length overflow")?;
+        .ok_or(JpegHeaderError::MarkerLengthOverflow)?;
     if end > data.len() {
-        return Err(match marker_name {
-            "SOS" => "SOS payload exceeds JPEG stream",
-            _ => "JPEG marker payload exceeds stream",
+        return Err(match kind {
+            SegmentKind::StartOfScan => JpegHeaderError::SosPayloadExceedsStream,
+            SegmentKind::Marker => JpegHeaderError::MarkerPayloadExceedsStream,
         });
     }
     Ok(end)
@@ -327,42 +336,44 @@ fn parse_dht(
     start: usize,
     end: usize,
     header_info: &mut JpegHeaderInfo,
-) -> Result<(), &'static str> {
+) -> Result<(), JpegHeaderError> {
     if start > end || end > data.len() {
-        return Err("DHT payload exceeds JPEG stream");
+        return Err(JpegHeaderError::DhtPayloadExceedsStream);
     }
     let mut offset = start;
 
     while offset < end {
-        let counts_end = offset.checked_add(17).ok_or("DHT table length overflow")?;
+        let counts_end = offset
+            .checked_add(17)
+            .ok_or(JpegHeaderError::DhtTableLengthOverflow)?;
         if counts_end > end {
-            return Err("DHT table counts are truncated");
+            return Err(JpegHeaderError::DhtCountsTruncated);
         }
         let tc_th = data[offset];
         let tc = (tc_th >> 4) & 0x0F;
         let th = tc_th & 0x0F;
         if tc > 1 || th > 1 {
-            return Err("DHT table class or index is out of range");
+            return Err(JpegHeaderError::DhtClassOrIndexOutOfRange);
         }
         let table_idx = ((th << 1) | tc) as usize;
 
         let bits = &data[offset + 1..counts_end];
         if tc == 0 && bits[12..].iter().any(|&count| count != 0) {
-            return Err("DC Huffman code length exceeds the hardware table");
+            return Err(JpegHeaderError::DcHuffmanCodeTooLong);
         }
         let num_values = bits.iter().map(|&count| count as usize).sum::<usize>();
         let hardware_limit = if tc == 0 { 12 } else { 162 };
         if num_values > hardware_limit {
-            return Err("DHT symbol count exceeds the baseline hardware table");
+            return Err(JpegHeaderError::DhtSymbolCountTooLarge);
         }
         if num_values > header_info.huff_tables[table_idx].values.len() {
-            return Err("DHT defines more than 256 values");
+            return Err(JpegHeaderError::DhtTooManyValues);
         }
         let values_end = counts_end
             .checked_add(num_values)
-            .ok_or("DHT values length overflow")?;
+            .ok_or(JpegHeaderError::DhtValuesLengthOverflow)?;
         if values_end > end {
-            return Err("DHT values are truncated");
+            return Err(JpegHeaderError::DhtValuesTruncated);
         }
 
         let table = &mut header_info.huff_tables[table_idx];
@@ -386,9 +397,9 @@ fn parse_dqt(
     start: usize,
     end: usize,
     header_info: &mut JpegHeaderInfo,
-) -> Result<(), &'static str> {
+) -> Result<(), JpegHeaderError> {
     if start > end || end > data.len() {
-        return Err("DQT payload exceeds JPEG stream");
+        return Err(JpegHeaderError::DqtPayloadExceedsStream);
     }
     let mut offset = start;
 
@@ -397,22 +408,22 @@ fn parse_dqt(
         let precision = pq_tq >> 4;
         let tq: usize = (pq_tq & 0x0F) as usize;
         if tq >= header_info.quant_tables.len() {
-            return Err("DQT table index is out of range");
+            return Err(JpegHeaderError::DqtTableIndexOutOfRange);
         }
         let element_bytes = match precision {
             0 => 1,
             1 => 2,
-            _ => return Err("DQT precision is unsupported"),
+            _ => return Err(JpegHeaderError::DqtPrecisionUnsupported),
         };
         let values_len = 64usize
             .checked_mul(element_bytes)
-            .ok_or("DQT values length overflow")?;
+            .ok_or(JpegHeaderError::DqtValuesLengthOverflow)?;
         let next = offset
             .checked_add(1)
             .and_then(|value| value.checked_add(values_len))
-            .ok_or("DQT table length overflow")?;
+            .ok_or(JpegHeaderError::DqtTableLengthOverflow)?;
         if next > end {
-            return Err("DQT values are truncated");
+            return Err(JpegHeaderError::DqtValuesTruncated);
         }
 
         if precision == 0 {
@@ -437,7 +448,7 @@ fn parse_dqt(
 
 #[cfg(test)]
 mod tests {
-    use super::{JpegHeaderInfo, parse_dht, parse_jpeg_header};
+    use super::{JpegHeaderError, JpegHeaderInfo, parse_dht, parse_jpeg_header};
 
     #[test]
     fn parses_baseline_yuv420_frame_and_scan_headers() {
@@ -510,7 +521,7 @@ mod tests {
 
         assert_eq!(
             parse_jpeg_header(&malformed).err(),
-            Some("SOS payload exceeds JPEG stream")
+            Some(JpegHeaderError::SosPayloadExceedsStream)
         );
     }
 
@@ -520,7 +531,7 @@ mod tests {
 
         assert_eq!(
             parse_jpeg_header(&no_entropy_data).err(),
-            Some("SOS has no entropy-coded data")
+            Some(JpegHeaderError::SosHasNoEntropyData)
         );
     }
 }

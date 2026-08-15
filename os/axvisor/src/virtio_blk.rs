@@ -27,6 +27,7 @@ const DEFAULT_CAPACITY_BYTES: u64 = 2 * 1024 * 1024;
 pub const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
     model: "virtio-blk",
     create: create_device_node,
+    default_fixed_resources: None,
 };
 
 fn create_device_node(
@@ -493,17 +494,24 @@ impl FileBackend {
                         .expect("virtio-blk file queue mutex poisoned")
                         .pop_front()
                     {
-                        let result =
-                            ax_api::fs::ax_write_file_at(&file, write.offset, &write.bytes)
-                                .and_then(|written| {
-                                    (written == write.bytes.len())
-                                        .then_some(())
-                                        .ok_or(ax_api::AxError::Io)
-                                })
-                                .and_then(|()| ax_api::fs::ax_flush_file(&file));
-                        if let Err(error) = result {
-                            error!("virtio-blk file write-back failed: {error}");
-                            worker_failed.store(true, Ordering::Release);
+                        match ax_api::fs::ax_write_file_at(&file, write.offset, &write.bytes) {
+                            Ok(written) if written == write.bytes.len() => {
+                                if let Err(error) = ax_api::fs::ax_flush_file(&file) {
+                                    error!("virtio-blk file write-back flush failed: {error}");
+                                    worker_failed.store(true, Ordering::Release);
+                                }
+                            }
+                            Ok(written) => {
+                                error!(
+                                    "virtio-blk file write-back was short: wrote {written} of {} bytes",
+                                    write.bytes.len()
+                                );
+                                worker_failed.store(true, Ordering::Release);
+                            }
+                            Err(error) => {
+                                error!("virtio-blk file write-back failed: {error}");
+                                worker_failed.store(true, Ordering::Release);
+                            }
                         }
                         worker_pending.fetch_sub(1, Ordering::AcqRel);
                     } else if worker_stop.load(Ordering::Acquire) {

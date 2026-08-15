@@ -4,8 +4,9 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_sync::SpinRwLock as RwLock;
+
+use crate::{BlockError, BlockResult};
 
 /// Wait/notify object created and owned by the block runtime.
 pub trait BlockNotification: Send + Sync + 'static {
@@ -58,7 +59,7 @@ pub trait BlockRuntimeOps: Send + Sync {
         name: String,
         cpu: usize,
         entry: Box<dyn FnOnce() + Send + 'static>,
-    ) -> AxResult<Box<dyn BlockThread>>;
+    ) -> BlockResult<Box<dyn BlockThread>>;
 }
 
 static RUNTIME_OPS: RwLock<Option<&'static dyn BlockRuntimeOps>> = RwLock::new(None);
@@ -74,13 +75,13 @@ pub fn set_runtime_ops(ops: &'static dyn BlockRuntimeOps) {
 ///
 /// # Errors
 ///
-/// Returns [`AxError::BadState`] before `axruntime` installs the adapter.
-pub fn runtime_ops() -> AxResult<&'static dyn BlockRuntimeOps> {
+/// Returns [`BlockError::RuntimeUnavailable`] before `axruntime` installs the adapter.
+pub fn runtime_ops() -> BlockResult<&'static dyn BlockRuntimeOps> {
     RUNTIME_OPS
         .read()
         .as_ref()
         .copied()
-        .ok_or(AxError::BadState)
+        .ok_or(BlockError::RuntimeUnavailable)
 }
 
 /// Returns whether the runtime adapter has been installed.
@@ -117,10 +118,8 @@ mod tests {
         time::Instant,
     };
 
-    use ax_errno::AxResult;
-
     use super::{BlockNotification, BlockRuntimeOps, BlockThread};
-    use crate::os::time::BlockTimeProvider;
+    use crate::{BlockResult, os::time::BlockTimeProvider};
 
     pub(super) static TEST_RUNTIME_OPS: TestRuntimeOps = TestRuntimeOps;
     pub(super) static TEST_TIME_PROVIDER: TestTimeProvider = TestTimeProvider;
@@ -217,7 +216,7 @@ mod tests {
             name: String,
             _cpu: usize,
             entry: Box<dyn FnOnce() + Send + 'static>,
-        ) -> AxResult<Box<dyn BlockThread>> {
+        ) -> BlockResult<Box<dyn BlockThread>> {
             let join = thread::Builder::new().name(name).spawn(entry).unwrap();
             Ok(Box::new(TestThread {
                 join: Mutex::new(Some(join)),

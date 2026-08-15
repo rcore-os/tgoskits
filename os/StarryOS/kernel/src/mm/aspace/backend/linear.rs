@@ -1,11 +1,10 @@
 use alloc::sync::Arc;
 
-use ax_errno::AxResult;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 
 use super::{AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, pages_in};
-use crate::{mm::paging_error_to_ax_error, sync::Mutex};
+use crate::{StarryResult, sync::Mutex};
 
 /// Linear mapping backend.
 ///
@@ -58,12 +57,11 @@ impl BackendOps for LinearBackend {
         flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult {
+    ) -> StarryResult {
         let pa_range =
             ax_memory_addr::PhysAddrRange::from_start_size(self.pa(range.start), range.size());
         debug!("Linear::map: {range:?} -> {pa_range:?} {flags:?}");
-        pt.map_region(range.start, |va| self.pa(va), range.size(), flags, false)
-            .map_err(paging_error_to_ax_error)?;
+        pt.map_region(range.start, |va| self.pa(va), range.size(), flags, false)?;
         Ok(())
     }
 
@@ -72,7 +70,7 @@ impl BackendOps for LinearBackend {
         range: VirtAddrRange,
         _acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult {
+    ) -> StarryResult {
         let pa_range =
             ax_memory_addr::PhysAddrRange::from_start_size(self.pa(range.start), range.size());
         debug!("Linear::unmap: {range:?} -> {pa_range:?}");
@@ -80,7 +78,7 @@ impl BackendOps for LinearBackend {
             match pt.unmap_page(vaddr) {
                 Ok((_, _, page_size)) => debug_assert_eq!(page_size, PAGE_SIZE_4K),
                 Err(PagingError::NotMapped) => {}
-                Err(err) => return Err(paging_error_to_ax_error(err)),
+                Err(err) => return Err(err.into()),
             }
         }
         Ok(())
@@ -94,7 +92,7 @@ impl BackendOps for LinearBackend {
         _new_pt: &mut PageTable,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
         _acct: CloneMapAccounting<'_>,
-    ) -> AxResult<Backend> {
+    ) -> StarryResult<Backend> {
         Ok(Backend::Linear(self.clone()))
     }
 

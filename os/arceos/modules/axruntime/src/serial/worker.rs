@@ -1,9 +1,10 @@
 use alloc::sync::Arc;
 use core::time::Duration;
 
-use ax_errno::{AxError, AxResult};
 use axpoll::IoEvents;
-use rdif_serial::{Config, ConfigError, RxErrorFlags, RxFlag, RxSample, SerialEventSet};
+#[cfg(test)]
+use rdif_serial::ConfigError;
+use rdif_serial::{Config, RxErrorFlags, RxFlag, RxSample, SerialEventSet};
 
 use super::{
     RuntimeIrqBridge, RuntimeShared, RxItem,
@@ -11,6 +12,7 @@ use super::{
     ingress::TxFrameCursor,
     spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
 };
+use crate::{RuntimeError, RuntimeResult};
 
 const RX_BUDGET: usize = 256;
 const TX_BUDGET: usize = 64;
@@ -173,13 +175,13 @@ impl SerialWorker {
         force_service
     }
 
-    fn start_port(&mut self, config: &Config) -> AxResult {
+    fn start_port(&mut self, config: &Config) -> RuntimeResult {
         if self.shared.started() {
             return Ok(());
         }
         {
             let mut port = self.shared.port.lock_irqsave();
-            port.startup(config).map_err(map_config_error)?;
+            port.startup(config)?;
             port.mask_all();
         }
         if let Err(err) = self.shared.enable_irq() {
@@ -212,14 +214,14 @@ impl SerialWorker {
         self.pending_rx = None;
     }
 
-    fn set_config(&mut self, config: &Config) -> AxResult {
+    fn set_config(&mut self, config: &Config) -> RuntimeResult {
         if !self.shared.started() {
-            return Err(AxError::BadState);
+            return Err(RuntimeError::SerialNotStarted);
         }
         let result = {
             let mut port = self.shared.port.lock_irqsave();
             port.mask_all();
-            port.set_config(config).map_err(map_config_error)
+            port.set_config(config).map_err(RuntimeError::from)
         };
         self.pending_rearm |= SerialEventSet::RX;
         if self.pending_frame.is_some() || self.shared.ingress.has_pending() {
@@ -239,11 +241,11 @@ impl SerialWorker {
         self.shared.tx_progress.notify_all(true);
     }
 
-    fn discard_tx(&mut self) -> AxResult {
+    fn discard_tx(&mut self) -> RuntimeResult {
         let hardware_idle = {
             let mut port = self.shared.port.lock_irqsave();
             if !port.discard_tx() {
-                return Err(AxError::OperationNotSupported);
+                return Err(RuntimeError::OperationNotSupported);
             }
             port.tx_idle()
         };
@@ -534,17 +536,6 @@ struct RxServiceOutcome {
 struct TxServiceOutcome {
     blocked: bool,
     budget_exhausted: bool,
-}
-
-fn map_config_error(error: ConfigError) -> AxError {
-    match error {
-        ConfigError::InvalidBaudrate
-        | ConfigError::UnsupportedDataBits
-        | ConfigError::UnsupportedStopBits
-        | ConfigError::UnsupportedParity => AxError::InvalidInput,
-        ConfigError::Timeout => AxError::TimedOut,
-        ConfigError::RegisterError => AxError::Io,
-    }
 }
 
 fn rearm_drained_rx(

@@ -6,7 +6,6 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext};
 use ax_io::{Seek, SeekFrom};
 use ax_task::future::{block_on, poll_io};
@@ -20,6 +19,7 @@ use starry_vm::VmPtr;
 
 use super::{FileLike, Kstat, get_file_like};
 use crate::{
+    StarryError, StarryResult,
     file::{IoDst, IoSrc},
     pseudofs::Device,
     sync::Mutex,
@@ -28,7 +28,10 @@ use crate::{
 // FusionIO/directFS atomic-write toggle used by MySQL.
 const DFS_IOCTL_ATOMIC_WRITE_SET: u32 = 0x4004_9502;
 
-pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&mut FsContext) -> AxResult<R>) -> AxResult<R> {
+pub fn with_fs<R>(
+    dirfd: c_int,
+    f: impl FnOnce(&mut FsContext) -> StarryResult<R>,
+) -> StarryResult<R> {
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let mut fs = fs_context.lock();
     if dirfd == AT_FDCWD {
@@ -52,19 +55,19 @@ impl ResolveAtResult {
         }
     }
 
-    pub fn stat(&self) -> AxResult<Kstat> {
+    pub fn stat(&self) -> StarryResult<Kstat> {
         match self {
-            Self::File(file) => file.metadata().map(|it| metadata_to_kstat(&it)),
+            Self::File(file) => Ok(metadata_to_kstat(&file.metadata()?)),
             Self::Other(file_like) => file_like.stat(),
         }
     }
 }
 
-pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<ResolveAtResult> {
+pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
     match path {
         Some("") | None => {
             if flags & AT_EMPTY_PATH == 0 {
-                return Err(AxError::NotFound);
+                return Err(StarryError::NotFound);
             }
             let file_like = get_file_like(dirfd)?;
             let f = file_like.clone();
@@ -87,12 +90,12 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<Reso
                 dirfd
             };
             with_fs(dirfd, |fs| {
-                if flags & AT_SYMLINK_NOFOLLOW != 0 {
+                Ok(if flags & AT_SYMLINK_NOFOLLOW != 0 {
                     fs.resolve_no_follow(path)
                 } else {
                     fs.resolve(path)
                 }
-                .map(ResolveAtResult::File)
+                .map(ResolveAtResult::File)?)
             })
         }
     }
@@ -170,27 +173,27 @@ fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
 }
 
 impl FileLike for File {
-    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         let inner = self.inner();
         if likely(self.is_blocking()) {
-            inner.read(dst)
+            Ok(inner.read(dst)?)
         } else {
             block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-                inner.read(&mut *dst)
+                Ok(inner.read(&mut *dst)?)
             }))
         }
     }
 
-    fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
+    fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
         let mut inner = self.inner();
         if self.append() {
             inner.seek(SeekFrom::End(0))?;
         }
-        let result = if likely(self.is_blocking()) {
-            inner.write(src)
+        let result: StarryResult<usize> = if likely(self.is_blocking()) {
+            Ok(inner.write(src)?)
         } else {
             block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
-                inner.write(&mut *src)
+                Ok(inner.write(&mut *src)?)
             }))
         };
         if let Ok(bytes) = result
@@ -202,7 +205,7 @@ impl FileLike for File {
         result
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(metadata_to_kstat(&self.inner().location().metadata()?))
     }
 
@@ -211,7 +214,7 @@ impl FileLike for File {
         Some((m.device, m.inode))
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+    fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
         let loc = self.inner().backend()?.location();
         if cmd == TIOCSCTTY
             && let Some(result) = crate::pseudofs::dev::tty::bind_pty_at_location(loc.clone())
@@ -223,15 +226,15 @@ impl FileLike for File {
                 let _enabled: u32 = (arg as *const u32).vm_read()?;
                 Ok(0)
             }
-            _ => loc.ioctl(cmd, arg),
+            _ => Ok(loc.ioctl(cmd, arg)?),
         }
     }
 
-    fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
+    fn file_mmap(&self) -> StarryResult<(FileBackend, FileFlags)> {
         Ok((self.inner().backend()?.clone(), self.inner().flags()))
     }
 
-    fn set_nonblocking(&self, flag: bool) -> AxResult {
+    fn set_nonblocking(&self, flag: bool) -> StarryResult {
         self.nonblock.store(flag, Ordering::Release);
         Ok(())
     }
@@ -244,7 +247,7 @@ impl FileLike for File {
         self.append.load(Ordering::Acquire)
     }
 
-    fn set_append(&self, flag: bool) -> AxResult {
+    fn set_append(&self, flag: bool) -> StarryResult {
         self.append.store(flag, Ordering::Release);
         self.inner().set_flag(FileFlags::APPEND, flag);
         Ok(())
@@ -258,7 +261,7 @@ impl FileLike for File {
         path_for(self.inner.location())
     }
 
-    fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
+    fn from_fd(fd: c_int) -> StarryResult<Arc<Self>>
     where
         Self: Sized + 'static,
     {
@@ -278,9 +281,9 @@ impl FileLike for File {
             return Ok(mount_table.inner().clone());
         }
         Err(if any.is::<Directory>() {
-            AxError::IsADirectory
+            StarryError::IsADirectory
         } else {
-            AxError::InvalidInput
+            StarryError::InvalidInput
         })
     }
 }
@@ -339,18 +342,18 @@ impl Directory {
 }
 
 impl FileLike for Directory {
-    fn read(&self, _dst: &mut IoDst) -> AxResult<usize> {
-        Err(AxError::IsADirectory)
+    fn read(&self, _dst: &mut IoDst) -> StarryResult<usize> {
+        Err(StarryError::IsADirectory)
     }
 
-    fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
+    fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
         // Directories cannot be opened for writing, so any write attempt
         // means the fd is not open for writing → EBADF.
         // Linux VFS checks FMODE_WRITE before reaching the filesystem layer.
-        Err(AxError::BadFileDescriptor)
+        Err(StarryError::BadFileDescriptor)
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(metadata_to_kstat(&self.inner.metadata()?))
     }
 
@@ -367,10 +370,10 @@ impl FileLike for Directory {
         path_for(&self.inner)
     }
 
-    fn from_fd(fd: c_int) -> AxResult<Arc<Self>> {
+    fn from_fd(fd: c_int) -> StarryResult<Arc<Self>> {
         get_file_like(fd)?
             .downcast_arc()
-            .map_err(|_| AxError::NotADirectory)
+            .map_err(|_| StarryError::NotADirectory)
     }
 }
 impl Pollable for Directory {

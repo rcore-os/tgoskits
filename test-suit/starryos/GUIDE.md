@@ -80,6 +80,15 @@ test-suit/starryos/
 `qemu/system` 是统一的 SMP4 聚合 QEMU case。`qemu/` 根目录只放四架构 build
 config，不放 `qemu-*.toml`。
 
+### AArch64 CI 启动 smoke
+
+AArch64 CI 在运行 `cargo xtask starry test qemu --arch aarch64` 前，会先执行一次
+带 `--smp 4` 的普通 `starry qemu` 启动，并通过
+`os/StarryOS/configs/qemu/qemu-aarch64-gicv2-boot.toml` 显式选择 GICv2 和 SMP4。
+这个 smoke 等待四个 CPU 完成启动并进入 shell 后输出唯一成功标记，用来
+覆盖 test-suit 的 GICv3/SMP4 配置没有覆盖到的普通 GICv2 启动路径；它不是
+`test-suit/starryos/` 下的可发现 case。
+
 ## qemu/system 聚合
 
 `qemu/system/qemu-*.toml` 共用一次 StarryOS 启动，在 SMP4 配置下运行所有系统类
@@ -99,6 +108,12 @@ qemu/system/<subcase>/
 ```text
 STARRY_GROUPED_TESTS_PASSED
 ```
+
+system runner 会为每个 binary 单独创建 PID namespace 和 mount namespace。namespace
+中的 PID 1 先把挂载传播设为 private，重新挂载该 namespace 独有的 procfs，再 fork
+普通测试进程；这样测试不会受到 PID 1 特殊信号语义影响。测试进程结束或超时后，退出
+namespace init 会统一终止并回收该 namespace 中的全部后代，包括调用 `setsid()` 逃离
+原进程组的进程。不得把跨 binary 的清理建立在 process group 或 session 上。
 
 日志为每个 binary 保留一条开始标记和一条带耗时的完成结果，失败结果还包含退出码；
 suite 结束时只打印一条总数、成功数、失败数和总耗时汇总，不再重复输出一份逐项
@@ -144,7 +159,7 @@ install(TARGETS mytest RUNTIME DESTINATION usr/bin/starry-test-suit)
 
 | Pipeline | 触发条件 | 行为 |
 | --- | --- | --- |
-| `plain` | 无 `test_commands`，且无 `c/`、`sh/`、`python/` | 直接启动共享 rootfs，并追加 QEMU `-snapshot` |
+| `plain` | 无 `test_commands`，且无 `c/`、`sh/`、`python/` | 直接启动共享 rootfs，由 rootfs patcher 仅对主 rootfs drive 设置 `snapshot=on` |
 | `c` | case 目录下存在 `c/` | 使用 CMake 交叉编译，安装产物到 rootfs overlay |
 | `sh` | case 目录下存在 `sh/` | 将 shell 脚本注入 `/usr/bin/` |
 | `python` | case 目录下存在 `python/` | 在 staging rootfs 中安装 `python3`，并注入 `.py` 文件 |
@@ -156,7 +171,10 @@ Pipeline case 会创建每个 case 独立的 rootfs 副本，并把注入后的 
 target/<target>/qemu-cases/<build_group>/<case>/cache/rootfs/
 ```
 
-plain case 不复制 rootfs，依赖 QEMU `-snapshot` 保证 guest 写入不落回共享镜像。
+plain case 不复制 rootfs。所有 test-suit pipeline 都由 rootfs patcher 对实际主 rootfs
+drive 应用 `snapshot=on`，保证正常退出、panic 或强制终止时 guest 写入不落回源镜像；
+不会使用会同时改变 VVFAT ESP、额外数据盘或 pflash 语义的全局 `-snapshot`。
+Pipeline 创建的副本只负责资产注入，不承担 QEMU 运行期写隔离。
 
 需要 staging rootfs 的 pipeline 依赖 `debugfs` 和 `fakeroot`。xtask 会在启动
 `debugfs rdump` 前检查 EUID；Linux 上还会检查 UID/GID identity mapping 和有效
@@ -173,6 +191,7 @@ plain case 不复制 rootfs，依赖 QEMU `-snapshot` 保证 guest 写入不落�
 | `args` | QEMU 参数，`${workspace}` / `${workspaceFolder}` 会解析为仓库根目录 |
 | `uefi` | 是否使用 UEFI |
 | `to_bin` | 是否把 ELF 转为裸二进制 |
+| `rootfs_write_policy` | test-suit 只能省略或设为 `"discard"`；`"persist"` 会被拒绝 |
 | `shell_prefix` | 等待 guest shell 的提示符 |
 | `shell_init_cmd` | plain/C/sh/python case 的 guest 命令 |
 | `test_commands` | grouped case 的 guest 命令列表；不能与 `shell_init_cmd` 同时使用 |
@@ -300,6 +319,17 @@ STARRY_GROUPED_TEST_PASSED: step=1/2 epoch=... status=0 command=/usr/bin/test-a
 ```
 
 如果 grouped case 超时，CI 日志中最后一个 `STARRY_GROUPED_TEST_BEGIN` 通常就是卡住的子命令。
+`qemu/system` 使用独立的 `starry-run-system-tests`，日志标记为
+`STARRY_SYSTEM_TEST_BEGIN/PASSED/FAILED`，但仍只在全部 binary 通过后打印既有的
+`STARRY_GROUPED_TESTS_PASSED`，失败时仍打印 `STARRY_GROUPED_TEST_FAILED`。
+共享 runner 默认限制每个 binary 最多运行 120 秒；同步写入密集型的
+`test-ext4-inode-unique` 和完成 1400 个磁盘文件清理的 `test-pagecache-cap` 通过显式名称表
+取得 240 秒预算。慢用例例外必须保留在共享 runner 中并由静态契约测试覆盖，不能放宽所有
+binary 的默认预算。TOML `timeout` 约束整个 QEMU case，不替代上述单 binary 超时。
+单 binary 超时后的 PID namespace 清理另有 30 秒硬上限；清理失败必须打印
+`STARRY_SYSTEM_TEST_CLEANUP_TIMEOUT` 并立即中止 suite，不能继续运行下一个 binary，也不能
+阻塞到外层 QEMU timeout。隔离回归会让持锁后代停在 raw pipe wait，确保 namespace SIGKILL
+路径确实强制唤醒并回收这类任务。
 目前 grouped Rust subcase 还不支持。
 
 ## Shell 和 Python 用例
@@ -349,7 +379,7 @@ os/StarryOS/configs/board/<board>.toml
 
 ```toml
 session_files = [
-  "iperf-smoke.sh",
+  "iperf-bench.sh",
   "tools/network/probe.sh",
 ]
 ```
@@ -415,14 +445,46 @@ App 的 `board-<name>.toml` 默认复用
 ```bash
 cargo xtask starry test board --board orangepi-5-plus
 cargo xtask starry test board -c native-hardware-smoke --board orangepi-5-plus
-cargo xtask starry test board -c native-network-smoke --board orangepi-5-plus --server 10.3.10.194 --port 2999
+cargo xtask starry app board -t iperf3 -b OrangePi-5-Plus
 ```
 
 `native-hardware-smoke` 在一次启动中依次验证启动、PCIe、USB2、PWM 和 NPU。
-`native-network-smoke` 会等待 OrangePi 的 `eth0` 通过 DHCP 获得板测网段地址，再从
-session HTTP 端点下载 iperf 脚本，连接 `${boardServerIp}:5201` 执行 2 秒、1 Mbit/s
-的 iperf3 UDP JSON 测试，随后在 `eth1` 上验证 rtnetlink 地址增删。iperf 只验证
-下载、执行和网络连通性，不设置吞吐门槛；服务端需预先运行 iperf3 server。
+`native-network-smoke` 只执行一条短 TCP TX 命令，随后在 `eth1` 上验证 rtnetlink
+地址增删，适合作为 CI 连通性检查。完整吞吐测试位于 `apps/starry/iperf3`，直接通过
+上面的 `cargo xtask starry app board` 命令启动板测；ostool server 持续提供 iperf3
+服务，board 配置的 `shell_init_cmd` 通过活动 session 的 `${boardServerIp}` 和
+`${sessionFile:iperf-bench.sh}` 获取实际地址；app 的 `init.sh` 会按现有 xtask 流程合并
+到该命令中，下载并启动测试脚本，不依赖固定网卡、固定 IP、固定网段或额外的板测
+启动脚本。
+
+完整 benchmark 固定执行 T01--T07：单流 TX、单流 RX、单流双向、2/4/8 流 TX 和
+4 流 RX。每个场景使用 `-t 10 -O 2 -l 128K` 运行 3 次，每个连接结束后固定冷却
+15 秒，避免上一轮 TCP teardown 干扰下一轮；脚本直接打印原始输出、中位数和最终
+汇总表：
+
+```text
+T01  Single-stream DUT TX
+Command: iperf3 -c <session-host> -t 10 -O 2 -P 1 -l 128K
+
+Run 1/3
+<native iperf3 output>
+Result  DUT TX: ... Mbps
+
+Run 2/3
+<native iperf3 output>
+Result  DUT TX: ... Mbps
+
+Run 3/3
+<native iperf3 output>
+Result  DUT TX: ... Mbps
+
+Median DUT TX: ... Mbps
+STARRY_IPERF3_BENCH_PASSED
+```
+
+每轮 iperf3 原始文本和机器可读汇总保存在板端 `/tmp/starry-iperf3-bench/`。
+benchmark 只要求所有场景完成并产生有效速率，不设置与机器绑定的吞吐门槛；端口和
+测试档位固定，避免不同运行使用不同参数。
 
 ROCK 4D 使用板卡服务名称 `Rock-4D`、仓库内的 RK3576 DTB 和 1,500,000 baud
 串口。维护的单核启动回归命令为：

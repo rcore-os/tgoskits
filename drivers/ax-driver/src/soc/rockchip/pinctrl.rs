@@ -95,7 +95,7 @@ impl RockchipPinCtrl {
         let node_name = node.name().to_string();
         FdtPinctrl::apply_fixed_regulator(
             self,
-            &fdt,
+            fdt,
             node.as_node(),
             &RockchipFdtPinctrlParser,
             "rockchip-fixed-regulator",
@@ -251,7 +251,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .ok_or_else(|| {
             OnProbeError::other(format!("[{}] has no rockchip,grf", info.node.name()))
         })?;
-    let ioc = map_phandle_reg(&fdt, grf_phandle, "pinctrl rockchip,grf")?;
+    let ioc = map_phandle_reg(fdt, grf_phandle, "pinctrl rockchip,grf")?;
 
     let mut gpio_banks = [None; GPIO_BANK_COUNT];
     for node in fdt.find_compatible(&["rockchip,gpio-bank"]) {
@@ -288,7 +288,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
                 .get_property("rockchip,sys-grf")
                 .and_then(|prop| prop.get_u32())
                 .map(Phandle::from)
-                .map(|phandle| map_phandle_reg(&fdt, phandle, "pinctrl rockchip,sys-grf"))
+                .map(|phandle| map_phandle_reg(fdt, phandle, "pinctrl rockchip,sys-grf"))
                 .transpose()?;
             PinCtrl::new_rk3576(ioc, sys_grf, &gpio_banks)
         }
@@ -305,8 +305,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn live_fdt() -> Result<Fdt, OnProbeError> {
-    rdrive::with_fdt(Clone::clone).ok_or_else(|| OnProbeError::other("live FDT not found"))
+fn live_fdt() -> Result<&'static Fdt, OnProbeError> {
+    rdrive::fdt_ref().ok_or_else(|| OnProbeError::other("live FDT not found"))
 }
 
 fn map_phandle_reg(
@@ -467,7 +467,7 @@ mod tests {
 
         FdtPinctrl::apply_state_from_consumer(
             &mut controller,
-            &fdt,
+            fdt,
             fdt.node(consumer).unwrap(),
             0,
             &RockchipFdtPinctrlParser,
@@ -541,7 +541,7 @@ mod tests {
 
         FdtPinctrl::apply_fixed_regulator(
             &mut controller,
-            &fdt,
+            fdt,
             fdt.node(regulator).unwrap(),
             &RockchipFdtPinctrlParser,
             "test-sd-regulator",

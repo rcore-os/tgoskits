@@ -93,7 +93,7 @@ impl ArchOps for Riscv64Arch {
     }
 
     fn inject_vcpu_interrupt(
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        vcpu: &crate::vcpu::AxVCpu<Self::VCpu>,
         interrupt: crate::irq::model::PendingVcpuInterrupt,
     ) -> AxVmResult {
         const SCAUSE_INTERRUPT_BIT: usize = 1 << (usize::BITS - 1);

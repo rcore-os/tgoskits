@@ -10,12 +10,14 @@
 
 mod decoder;
 mod engine;
+mod error;
 mod header;
 mod layout;
 mod regs;
 
-pub use decoder::{
-    DecodeResult, JpuCreateError, JpuDecodeError, JpuDecoder, JpuInspectError, JpuMmio,
-    inspect_jpeg_layout,
+pub use decoder::{DecodeResult, JpuDecoder, JpuMmio, inspect_jpeg_layout};
+pub use error::{
+    JpegHeaderError, JpuBufferError, JpuCreateError, JpuDecodeError, JpuDmaAddressError,
+    JpuHardwareSetupError, JpuInspectError, JpuRegisterError,
 };
 pub use layout::{Extent, FrameLayout, FrameLayoutError, JpuPixelFormat, JpuScale, PlaneLayout};
