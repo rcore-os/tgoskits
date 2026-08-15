@@ -55,9 +55,11 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
 
     let yield_ready = Arc::new(AtomicBool::new(false));
     let may_yield = Arc::new(AtomicBool::new(false));
+    let may_exit = Arc::new(AtomicBool::new(false));
     let yielding = {
         let yield_ready = Arc::clone(&yield_ready);
         let may_yield = Arc::clone(&may_yield);
+        let may_exit = Arc::clone(&may_exit);
         thread::spawn(move || {
             assert!(ax_set_current_affinity(AxCpuMask::one_shot(target_cpu)).is_ok());
             assert_eq!(this_cpu_id(), target_cpu);
@@ -66,6 +68,9 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
                 thread::yield_now();
             }
             thread::yield_now();
+            while !may_exit.load(Ordering::Acquire) {
+                hint::spin_loop();
+            }
         })
     };
     while !yield_ready.load(Ordering::Acquire) {
@@ -129,6 +134,7 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
     }
     let updated_before_release = policy_updated.load(Ordering::Acquire);
     stop_peer.store(true, Ordering::Release);
+    may_exit.store(true, Ordering::Release);
     task_test_hooks::release_policy_switch_handoff();
     assert!(
         updated_before_release,
