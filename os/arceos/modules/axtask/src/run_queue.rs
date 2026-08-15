@@ -595,6 +595,9 @@ mod online_bitmap_tests {
     // that CPU comes online.
     #[test]
     fn offline_affinity_target_falls_back_then_honors_when_online() {
+        // Install this host-test thread's per-CPU area before any `this_cpu_id()`
+        // (mirrors `rr_tests`); otherwise the percpu read panics `AreaNotInstalled`.
+        ax_hal::percpu::initialize_host_test_cpu();
         reset_online_bitmap();
         let this = super::this_cpu_id();
         super::mark_cpu_online(this);
