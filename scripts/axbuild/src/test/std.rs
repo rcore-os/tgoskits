@@ -61,6 +61,7 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
             "run_queue::placement_tests::equal_raw_load_favors_the_big_core",
             "run_queue::placement_tests::homogeneous_machine_degrades_to_lowest_index",
             "run_queue::placement_tests::idle_big_cores_are_preferred_over_idle_little_cores",
+            "run_queue::placement_tests::online_mask_tracks_cpus_beyond_one_word",
         ],
     },
 ];

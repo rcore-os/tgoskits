@@ -75,14 +75,64 @@ const ARRAY_REPEAT_VALUE: MaybeUninit<NonNull<AxRunQueue>> = MaybeUninit::uninit
 pub(crate) static BUSY_TICKS: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
     [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
 
-/// Bitmask (bit `cpu_id`) of CPUs whose per-CPU run queue in [`RUN_QUEUES`] has been
+/// A word-width-safe atomic bitmap of run queues that have finished coming online.
+/// [`AxCpuMask`] (and thus [`build_info::CPU_CAPACITY`], up to 1024) may exceed a
+/// machine word, so a single `usize` cannot address every CPU's bit; this spans as
+/// many `usize` words as the configured capacity needs. Publication is `Release` on
+/// [`set`](Self::set) / `Acquire` on [`contains`](Self::contains), so a CPU's online
+/// bit is observed strictly after the `RUN_QUEUES` slot write that precedes it.
+///
+/// [`build_info::CPU_CAPACITY`]: crate::build_info::CPU_CAPACITY
+#[cfg(any(all(feature = "smp", feature = "sched-loadbalance"), test))]
+struct OnlineCpus<const WORDS: usize> {
+    words: [core::sync::atomic::AtomicUsize; WORDS],
+}
+
+#[cfg(any(all(feature = "smp", feature = "sched-loadbalance"), test))]
+impl<const WORDS: usize> OnlineCpus<WORDS> {
+    const BITS: usize = usize::BITS as usize;
+
+    const fn new() -> Self {
+        Self {
+            words: [const { core::sync::atomic::AtomicUsize::new(0) }; WORDS],
+        }
+    }
+
+    /// Publishes `cpu` as online. `cpu` must be `< WORDS * usize::BITS`, which every
+    /// real CPU id satisfies (a CPU id is `< CPU_CAPACITY`, and `WORDS` is sized to
+    /// cover it).
+    #[inline]
+    fn set(&self, cpu: usize) {
+        self.words[cpu / Self::BITS].fetch_or(
+            1 << (cpu % Self::BITS),
+            core::sync::atomic::Ordering::Release,
+        );
+    }
+
+    /// Whether `cpu`'s run queue is online. An out-of-range `cpu` reads as offline
+    /// rather than indexing past the bitmap.
+    #[inline]
+    fn contains(&self, cpu: usize) -> bool {
+        let word = cpu / Self::BITS;
+        word < WORDS
+            && (self.words[word].load(core::sync::atomic::Ordering::Acquire)
+                & (1 << (cpu % Self::BITS)))
+                != 0
+    }
+}
+
+/// `usize` words needed to hold one online bit per configurable CPU.
+#[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+const ONLINE_WORDS: usize = crate::build_info::CPU_CAPACITY.div_ceil(usize::BITS as usize);
+
+/// Bitmap (bit `cpu_id`) of CPUs whose per-CPU run queue in [`RUN_QUEUES`] has been
 /// initialized. Capacity-aware placement ([`select_least_loaded`]) must only target
 /// online queues: during early boot the secondaries have not yet written their
 /// `RUN_QUEUES` slot, and `get_run_queue` on an uninitialized slot is a use of
 /// uninitialized memory. Set by each CPU as it initializes (see `init` /
 /// `init_secondary`).
 #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
-static RUN_QUEUE_ONLINE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static RUN_QUEUE_ONLINE: OnlineCpus<ONLINE_WORDS> = OnlineCpus::new();
 
 /// Bumps a target CPU's occupancy without holding a run-queue reference — lets the
 /// deferred cross-core wake path (`clear_prev_task_on_cpu`) count a task it enqueues
@@ -206,12 +256,10 @@ fn pick_least_loaded(
 /// no current-CPU cache-warmth bias, since a brand-new task has never run anywhere.
 #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
 fn select_least_loaded(cpumask: AxCpuMask) -> usize {
-    use core::sync::atomic::Ordering;
     assert!(!cpumask.is_empty(), "No available CPU for task execution");
-    let online = RUN_QUEUE_ONLINE.load(Ordering::Acquire);
     pick_least_loaded(
         ax_hal::cpu_num(),
-        |c| cpumask.get(c) && (online & (1usize << c)) != 0,
+        |c| cpumask.get(c) && RUN_QUEUE_ONLINE.contains(c),
         // Occupancy = ready tasks PLUS the currently-running non-idle task, read as a
         // single atom, so a core that just started running a task is immediately seen
         // as load 1 — a burst of siblings spreads across big cores, then spills onto
@@ -285,6 +333,39 @@ mod placement_tests {
         // Uniform capacity (e.g. QEMU, where `cpu_capacities()` is all-1024) + all
         // idle: every candidate ties, so placement falls back to the lowest index.
         assert_eq!(pick_least_loaded(4, |_| true, |_| 0, |_| 1024), Some(0));
+    }
+
+    /// The online set must address CPUs beyond a single machine word. `CPU_CAPACITY`
+    /// (and `AxCpuMask`) can be built past 64, so a `usize` bitmap would alias high
+    /// CPUs onto low bits (`1 << 70` wraps to `1 << 6`). Uses 3 words (192 CPUs).
+    #[test]
+    fn online_mask_tracks_cpus_beyond_one_word() {
+        use super::OnlineCpus;
+
+        let online = OnlineCpus::<3>::new();
+        // Empty on construction, including high indices.
+        assert!(!online.contains(0));
+        assert!(!online.contains(70));
+        assert!(!online.contains(191));
+
+        // A CPU in the second word is tracked without aliasing a low bit: the
+        // single-`usize` bug set bit `70 % 64 == 6`, so `contains(6)` would wrongly
+        // read online here.
+        online.set(70);
+        assert!(online.contains(70));
+        assert!(!online.contains(6));
+        assert!(!online.contains(134)); // same intra-word offset, third word
+
+        // Independent low, high, and mid CPUs coexist.
+        online.set(1);
+        online.set(191);
+        assert!(online.contains(1));
+        assert!(online.contains(70));
+        assert!(online.contains(191));
+
+        // Out-of-range CPUs read offline instead of indexing past the bitmap.
+        assert!(!online.contains(192));
+        assert!(!online.contains(10_000));
     }
 }
 
@@ -1731,9 +1812,9 @@ pub(crate) fn init() {
     #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
     get_run_queue(cpu_id).occ_inc();
     // Publish this CPU's run queue as online so capacity-aware placement may target
-    // it; `Release` orders the online bit strictly after the slot write above.
+    // it; the `set` orders the online bit strictly after the slot write above.
     #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
-    RUN_QUEUE_ONLINE.fetch_or(1 << cpu_id, core::sync::atomic::Ordering::Release);
+    RUN_QUEUE_ONLINE.set(cpu_id);
 }
 
 pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
@@ -1782,7 +1863,7 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     // it. A secondary runs `idle` as its current task (not counted), and its gc task
     // is the queue's seed=1, so no `occ_inc` for `main` here (unlike the boot CPU).
     #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
-    RUN_QUEUE_ONLINE.fetch_or(1 << cpu_id, core::sync::atomic::Ordering::Release);
+    RUN_QUEUE_ONLINE.set(cpu_id);
 }
 
 #[cfg(axtest)]
