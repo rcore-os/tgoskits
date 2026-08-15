@@ -65,6 +65,13 @@ caches are developer-local accelerators and must not contain required inputs.
 Build output remains in the repository's normal `target` and `tmp/axbuild`
 locations.
 
+Do not wrap the app command in an external timeout shorter than the 600-second
+guest budget in `qemu-x86_64.toml`. That guest budget begins only after rootfs
+preparation and the StarryOS build; a cold Nix closure build adds host time
+before QEMU starts. Stage-2 activation also performs many synchronous
+filesystem operations, so a 300-second process-wide timeout can terminate a
+healthy run shortly before the success marker and is not acceptance evidence.
+
 Axbuild invokes the same builder automatically through the explicit
 `AppOwned` rootfs contract. Builder failure, a target mismatch, a missing or
 invalid image, or a provenance mismatch is terminal; there is no Alpine copy,
