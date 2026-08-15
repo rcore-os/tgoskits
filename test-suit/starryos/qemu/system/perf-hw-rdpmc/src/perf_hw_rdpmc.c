@@ -217,19 +217,6 @@ int main(void) {
         return fail("oversized metadata mmap did not return EINVAL");
     }
 
-    errno = 0;
-    void *oversized =
-        mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, efd, 0);
-    if (oversized != MAP_FAILED) {
-        munmap(oversized, 8192);
-        close(efd);
-        return fail("oversized metadata mmap unexpectedly succeeded");
-    }
-    if (errno != EINVAL) {
-        close(efd);
-        return fail("oversized metadata mmap did not return EINVAL");
-    }
-
     void *base = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, efd, 0);
     if (base == MAP_FAILED) {
         char msg[96];
