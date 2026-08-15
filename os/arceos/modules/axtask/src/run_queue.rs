@@ -1252,8 +1252,8 @@ impl AxRunQueue {
         #[cfg(feature = "tracepoint-hooks")]
         ax_crate_interface::call_interface!(
             crate::sched_tracepoint::SchedTracepoint::on_sched_switch(
-                prev_task.id().as_u64(),
-                next_task.id().as_u64(),
+                prev_task.id(),
+                next_task.id(),
                 prev_task.state() as u32,
             )
         );
@@ -1453,6 +1453,7 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
         }
     }
 }
+
 pub(crate) fn init() {
     let cpu_id = this_cpu_id();
 

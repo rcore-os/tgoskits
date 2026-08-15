@@ -95,8 +95,8 @@ struct SeqConnRequest {
     connected: Channel,
     /// Client address reported to `accept`.
     addr: UnixSocketAddr,
-    /// Client pid used for peer credentials.
-    pid: u32,
+    /// Client identity used for peer credentials.
+    credentials: UnixCredentials,
     /// Timestamp state owned by the accepted server socket.
     receive_timestamp: Arc<AtomicBool>,
     /// Passcred state owned by the accepted server socket.
@@ -122,7 +122,7 @@ impl SeqBind {
     fn connect(
         &self,
         addr: UnixSocketAddr,
-        pid: u32,
+        credentials: UnixCredentials,
         client_receive_timestamp: Arc<AtomicBool>,
         client_receive_credentials: Arc<AtomicBool>,
     ) -> NetResult<(PacketRx, Channel, Arc<PollSet>)> {
@@ -147,7 +147,7 @@ impl SeqBind {
                     receive_credentials: client_receive_credentials,
                 },
                 addr,
-                pid,
+                credentials,
                 receive_timestamp: server_receive_timestamp.clone(),
                 receive_credentials: server_receive_credentials.clone(),
             })
@@ -198,13 +198,13 @@ pub struct DgramTransport {
     /// Per-receiver `SO_PASSCRED` state shared with channels targeting this
     /// socket.
     receive_credentials: Arc<AtomicBool>,
-    /// Creator pid used for SO_PEERCRED-style reporting.
-    pid: u32,
+    /// Creator identity used for SO_PEERCRED-style reporting.
+    credentials: UnixCredentials,
 }
 impl DgramTransport {
     /// Create a new unconnected `SOCK_DGRAM` transport.
-    pub fn new(pid: u32) -> Self {
-        Self::new_typed(pid, 2) // SOCK_DGRAM
+    pub fn new(credentials: impl Into<UnixCredentials>) -> Self {
+        Self::new_typed(credentials.into(), 2) // SOCK_DGRAM
     }
 
     pub(super) fn wake_connected(&self) {
@@ -217,11 +217,11 @@ impl DgramTransport {
     /// SEQPACKET reuses the datagram delivery path (message boundaries), but
     /// reports its own `SO_TYPE` and is connection-oriented at the syscall
     /// layer, matching `net/unix/af_unix.c` `unix_seqpacket_ops`.
-    pub fn new_seqpacket(pid: u32) -> Self {
-        Self::new_typed(pid, 5) // SOCK_SEQPACKET
+    pub fn new_seqpacket(credentials: impl Into<UnixCredentials>) -> Self {
+        Self::new_typed(credentials.into(), 5) // SOCK_SEQPACKET
     }
 
-    fn new_typed(pid: u32, socket_type: i32) -> Self {
+    fn new_typed(credentials: UnixCredentials, socket_type: i32) -> Self {
         DgramTransport {
             data_rx: Mutex::new(None),
             connected: RwLock::new(None),
@@ -234,14 +234,14 @@ impl DgramTransport {
             general: GeneralOptions::new(socket_type, 1, 0),
             receive_timestamp: Arc::new(AtomicBool::new(false)),
             receive_credentials: Arc::new(AtomicBool::new(false)),
-            pid,
+            credentials,
         }
     }
 
     fn new_connected(
         data_rx: (async_channel::Receiver<Packet>, Arc<PollSet>),
         connected: Channel,
-        pid: u32,
+        credentials: UnixCredentials,
         socket_type: i32,
         receive_timestamp: Arc<AtomicBool>,
         receive_credentials: Arc<AtomicBool>,
@@ -258,21 +258,21 @@ impl DgramTransport {
             general: GeneralOptions::new(socket_type, 1, 0),
             receive_timestamp,
             receive_credentials,
-            pid,
+            credentials,
         }
     }
 
     /// Create a connected pair of `SOCK_DGRAM` transports.
-    pub fn new_pair(pid: u32) -> (Self, Self) {
-        Self::new_pair_typed(pid, 2) // SOCK_DGRAM
+    pub fn new_pair(credentials: impl Into<UnixCredentials>) -> (Self, Self) {
+        Self::new_pair_typed(credentials.into(), 2) // SOCK_DGRAM
     }
 
     /// Create a connected pair of `SOCK_SEQPACKET` transports.
-    pub fn new_pair_seqpacket(pid: u32) -> (Self, Self) {
-        Self::new_pair_typed(pid, 5) // SOCK_SEQPACKET
+    pub fn new_pair_seqpacket(credentials: impl Into<UnixCredentials>) -> (Self, Self) {
+        Self::new_pair_typed(credentials.into(), 5) // SOCK_SEQPACKET
     }
 
-    fn new_pair_typed(pid: u32, socket_type: i32) -> (Self, Self) {
+    fn new_pair_typed(credentials: UnixCredentials, socket_type: i32) -> (Self, Self) {
         let (tx1, rx1) = async_channel::unbounded();
         let (tx2, rx2) = async_channel::unbounded();
         let poll1 = Arc::new(PollSet::new());
@@ -289,7 +289,7 @@ impl DgramTransport {
                 receive_timestamp: timestamp2.clone(),
                 receive_credentials: credentials2.clone(),
             },
-            pid,
+            credentials.clone(),
             socket_type,
             timestamp1.clone(),
             credentials1.clone(),
@@ -302,7 +302,7 @@ impl DgramTransport {
                 receive_timestamp: timestamp1,
                 receive_credentials: credentials1,
             },
-            pid,
+            credentials,
             socket_type,
             timestamp2,
             credentials2,
@@ -330,7 +330,7 @@ impl Configurable for DgramTransport {
                 // Datagram sockets are stateless and do not have a peer, so we
                 // return the credentials of the process that created the
                 // socket.
-                **cred = UnixCredentials::new(self.pid);
+                **cred = self.credentials.clone();
             }
             _ => return Ok(false),
         }
@@ -440,7 +440,7 @@ impl TransportOps for DgramTransport {
                 let slot = slot.seqpacket.lock();
                 slot.as_ref().ok_or(NetError::ConnectionRefused)?.connect(
                     client_addr,
-                    self.pid,
+                    self.credentials.clone(),
                     self.receive_timestamp.clone(),
                     self.receive_credentials.clone(),
                 )?
@@ -485,7 +485,7 @@ impl TransportOps for DgramTransport {
         let transport = DgramTransport::new_connected(
             req.data_rx,
             req.connected,
-            req.pid,
+            req.credentials,
             5,
             req.receive_timestamp,
             req.receive_credentials,
@@ -513,7 +513,7 @@ impl TransportOps for DgramTransport {
                 let transport = DgramTransport::new_connected(
                     req.data_rx,
                     req.connected,
-                    req.pid,
+                    req.credentials,
                     5,
                     req.receive_timestamp,
                     req.receive_credentials,
@@ -550,7 +550,7 @@ impl TransportOps for DgramTransport {
             with_slot(&addr, |slot| {
                 if let Some(bind) = slot.dgram.lock().as_ref() {
                     if bind.receive_credentials.load(Ordering::Acquire)
-                        && let Some(credentials) = sender_credentials
+                        && let Some(credentials) = sender_credentials.clone()
                     {
                         cmsg.push(Box::new(SocketCmsg::Credentials(credentials)));
                     }
@@ -573,7 +573,7 @@ impl TransportOps for DgramTransport {
             })?
         } else if let Some(chan) = self.connected.read().as_ref() {
             if chan.receive_credentials.load(Ordering::Acquire)
-                && let Some(credentials) = sender_credentials
+                && let Some(credentials) = sender_credentials.clone()
             {
                 cmsg.push(Box::new(SocketCmsg::Credentials(credentials)));
             }

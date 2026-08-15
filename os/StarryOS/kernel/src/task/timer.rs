@@ -1,6 +1,10 @@
 //! Time management module.
 
-use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap, sync::Arc};
+use alloc::{
+    borrow::ToOwned,
+    collections::binary_heap::BinaryHeap,
+    sync::{Arc, Weak},
+};
 use core::{mem, time::Duration};
 
 use ax_lazyinit::LazyLock;
@@ -10,13 +14,12 @@ use ax_task::{
     future::{block_on, timeout_at_wall},
 };
 use event_listener::{Event, listener};
-use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
 
 use crate::{
     sync::IrqMutex as Mutex,
-    task::{poll_process_timer, poll_timer},
+    task::{PidIdentity, poll_process_timer, poll_timer},
 };
 
 fn time_value_from_nanos(nanos: usize) -> TimeValue {
@@ -28,7 +31,7 @@ fn time_value_from_nanos(nanos: usize) -> TimeValue {
 #[derive(Debug, Clone)]
 pub enum AlarmTarget {
     Thread(WeakAxTaskRef),
-    Process(Pid),
+    Process(Weak<PidIdentity>),
 }
 
 struct Entry {
@@ -41,12 +44,15 @@ impl PartialEq for Entry {
         self.deadline == other.deadline
     }
 }
+
 impl Eq for Entry {}
+
 impl PartialOrd for Entry {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
+
 impl Ord for Entry {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         other.deadline.cmp(&self.deadline)
@@ -55,6 +61,7 @@ impl Ord for Entry {
 
 static ALARM_LIST: LazyLock<Mutex<BinaryHeap<Entry>>> =
     LazyLock::new(|| Mutex::new(BinaryHeap::new()));
+
 static EVENT_NEW_TIMER: LazyLock<Event> = LazyLock::new(Event::new);
 
 /// The type of interval timer.
@@ -130,7 +137,7 @@ impl ProcessRealTimer {
     /// Replaces the timer and returns its previous interval and remaining time.
     pub fn set(
         &mut self,
-        pid: Pid,
+        identity: &Arc<PidIdentity>,
         interval_ns: usize,
         remaining_ns: usize,
     ) -> (TimeValue, TimeValue) {
@@ -138,7 +145,7 @@ impl ProcessRealTimer {
         self.interval = TimeValue::from_nanos(interval_ns as u64);
         self.deadline = (remaining_ns != 0).then(|| {
             let deadline = wall_time() + TimeValue::from_nanos(remaining_ns as u64);
-            register_alarm_for(deadline, AlarmTarget::Process(pid));
+            register_alarm_for(deadline, AlarmTarget::Process(Arc::downgrade(identity)));
             deadline
         });
         old
@@ -154,7 +161,7 @@ impl ProcessRealTimer {
     }
 
     /// Advances an expired timer and reports whether `SIGALRM` must be emitted.
-    pub fn poll_expired(&mut self, pid: Pid) -> bool {
+    pub fn poll_expired(&mut self, identity: &Arc<PidIdentity>) -> bool {
         let Some(deadline) = self.deadline else {
             return false;
         };
@@ -167,7 +174,7 @@ impl ProcessRealTimer {
         } else {
             let deadline = wall_time() + self.interval;
             self.deadline = Some(deadline);
-            register_alarm_for(deadline, AlarmTarget::Process(pid));
+            register_alarm_for(deadline, AlarmTarget::Process(Arc::downgrade(identity)));
         }
         true
     }
@@ -360,8 +367,10 @@ async fn alarm_task() {
                         poll_timer(&task);
                     }
                 }
-                AlarmTarget::Process(pid) => {
-                    poll_process_timer(pid);
+                AlarmTarget::Process(identity) => {
+                    if let Some(identity) = identity.upgrade() {
+                        poll_process_timer(&identity);
+                    }
                 }
             }
         } else {
