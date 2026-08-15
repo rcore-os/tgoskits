@@ -9,7 +9,22 @@ use rdrive::{
 use crate::{BindingInfo, BindingIrq};
 
 pub fn binding_info_from_fdt(info: &FdtInfo<'_>) -> Result<BindingInfo, OnProbeError> {
-    Ok(BindingInfo::with_binding_irq(resolve_fdt_irq(info)?))
+    let Some(interrupt) = info.interrupts().into_iter().next() else {
+        return Ok(BindingInfo::empty());
+    };
+    let controller = info
+        .phandle_to_device_id(interrupt.interrupt_parent)
+        .ok_or_else(|| {
+            OnProbeError::other(format!(
+                "interrupt-parent {} is not registered",
+                interrupt.interrupt_parent
+            ))
+        })?;
+    Ok(BindingInfo::with_fdt_interrupt(
+        info.device_id(),
+        controller,
+        interrupt.specifier,
+    ))
 }
 
 pub fn binding_irq_from_named_fdt_interrupt(
@@ -63,25 +78,6 @@ pub fn binding_info_from_acpi_route(
     route: Option<rdrive::probe::acpi::AcpiGsiRoute>,
 ) -> Result<BindingInfo, OnProbeError> {
     Ok(BindingInfo::with_binding_irq(route.map(BindingIrq::from)))
-}
-
-fn resolve_fdt_irq(info: &FdtInfo<'_>) -> Result<Option<BindingIrq>, OnProbeError> {
-    let Some(interrupt) = info.interrupts().into_iter().next() else {
-        return Ok(None);
-    };
-    let controller = info
-        .phandle_to_device_id(interrupt.interrupt_parent)
-        .ok_or_else(|| {
-            OnProbeError::other(format!(
-                "interrupt-parent {} is not registered",
-                interrupt.interrupt_parent
-            ))
-        })?;
-
-    Ok(Some(binding_irq_from_fdt_interrupt(
-        controller,
-        interrupt.specifier,
-    )))
 }
 
 fn binding_irq_from_fdt_interrupt(controller: DeviceId, cells: impl Into<Vec<u32>>) -> BindingIrq {

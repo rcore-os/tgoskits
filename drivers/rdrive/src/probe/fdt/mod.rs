@@ -803,6 +803,11 @@ pub fn child_nodes(node: NodeType<'_>) -> Vec<NodeType<'static>> {
 }
 
 impl<'a> FdtInfo<'a> {
+    /// Returns the identity assigned by rdrive to the currently probed FDT node.
+    pub fn device_id(&self) -> DeviceId {
+        self.device_id
+    }
+
     /// Returns the available direct children of the currently probed node.
     ///
     /// Disabled children are intentionally omitted, matching normal FDT probe
