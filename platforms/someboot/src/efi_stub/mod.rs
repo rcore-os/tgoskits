@@ -148,6 +148,10 @@ pub(crate) fn exit_boot_services() {
 }
 
 pub(crate) fn boot_entropy() -> Option<[u8; 32]> {
+    if !is_uefi_available() {
+        return None;
+    }
+
     let handle = boot::get_handle_for_protocol::<Rng>().ok()?;
     let mut rng = boot::open_protocol_exclusive::<Rng>(handle).ok()?;
     let mut seed = [0; 32];
@@ -391,6 +395,11 @@ mod tests {
         ];
 
         assert_eq!(find_fdt_address(&tables), Some(fdt_addr));
+    }
+
+    #[test]
+    fn boot_entropy_is_unavailable_without_uefi_system_table() {
+        assert_eq!(boot_entropy(), None);
     }
 }
 
