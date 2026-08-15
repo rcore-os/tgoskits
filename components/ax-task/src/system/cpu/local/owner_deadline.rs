@@ -44,6 +44,18 @@ enum SchedulerDeadlineRqClockEvent {
     After(core::time::Duration),
 }
 
+impl SchedulerDeadlineRqClockEvent {
+    fn physical_deadline(self, monotonic_now: MonotonicInstant) -> MonotonicDeadline {
+        match self {
+            // Every already-due value has the same physical meaning. Using the
+            // clock origin gives it one stable publication identity while the
+            // runtime still clamps it to the device's minimum delta.
+            Self::Due => MonotonicDeadline::ORIGIN,
+            Self::After(delay) => monotonic_now.deadline_after(delay),
+        }
+    }
+}
+
 enum SchedulerDeadlinePublicationOutcome {
     Unchanged(SchedulerDeadlineUpdate),
     Changed(SchedulerDeadlineUpdate),
@@ -65,6 +77,67 @@ impl SchedulerDeadlinePublicationOutcome {
 }
 
 impl CpuLocal {
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn exercise_due_scheduler_deadline_republication_for_test(
+        mut self: Pin<&mut Self>,
+    ) -> Result<crate::task_test_hooks::DeadlinePublicationEntries, TaskError> {
+        let owner = self.owner;
+        let seed = SchedulerDeadlineRqObservation {
+            clock_event: Some(SchedulerDeadlineRqClockEvent::After(
+                core::time::Duration::from_nanos(1),
+            )),
+            has_periodic_fair_balance_work: false,
+        };
+        let due = SchedulerDeadlineRqObservation {
+            clock_event: Some(SchedulerDeadlineRqClockEvent::Due),
+            has_periodic_fair_balance_work: false,
+        };
+        let first_now = MonotonicInstant::from_nanos(100)
+            .expect("a task-test monotonic sample must be representable");
+        let second_now = MonotonicInstant::from_nanos(200)
+            .expect("a task-test monotonic sample must be representable");
+
+        // Seed the real authoritative base with a distinct future scheduler
+        // publication, then commit one already-due observation. The second
+        // due observation is the transaction under test: it must match the
+        // snapshot without entering the base again even though time advanced.
+        self.as_mut()
+            .next_scheduler_deadline_update_if_changed_from_rq_observation(
+                first_now,
+                seed,
+                SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
+            )?;
+        self.as_mut()
+            .next_scheduler_deadline_update_if_changed_from_rq_observation(
+                first_now,
+                due,
+                SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
+            )?;
+        let owner_index = usize::try_from(owner.as_u32())
+            .expect("a runtime CPU identity must fit the local architecture");
+        crate::task_test_hooks::arm_deadline_publication_probe(owner_index);
+        self.as_mut()
+            .next_scheduler_deadline_update_if_changed_from_rq_observation(
+                second_now,
+                due,
+                SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
+            )?;
+        let entries = crate::task_test_hooks::take_deadline_publication_entries()
+            .ok_or(TaskError::InvalidConfiguration)?;
+
+        // Restore the publication derived from the live runqueue before the
+        // IRQ-disabled owner borrow is released. Intermediate test generations
+        // were never exposed to the runtime clockevent consumer.
+        let monotonic_now = task_runtime::monotonic_now();
+        if let Some(update) = self.as_mut().next_scheduler_deadline_update_if_changed(
+            monotonic_now,
+            SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
+        )? {
+            task_runtime::publish_scheduler_deadline(update);
+        }
+        Ok(entries)
+    }
+
     pub(crate) fn scheduler_work_due(
         self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
@@ -128,19 +201,13 @@ impl CpuLocal {
         rq_observation: SchedulerDeadlineRqObservation,
     ) -> Option<MonotonicDeadline> {
         let this = self.as_ref().get_ref();
-        let scheduler = match rq_observation.clock_event {
-            // Deadline selection is a pure observation. An already-due hard
-            // scheduler timer remains a physical clockevent source and the
-            // runtime clamps it to the device minimum delta. Only the firing
-            // owner may convert it into sticky scheduler work.
-            Some(SchedulerDeadlineRqClockEvent::Due) => {
-                MonotonicDeadline::from_nanos(monotonic_now.as_nanos())
-            }
-            Some(SchedulerDeadlineRqClockEvent::After(delay)) => {
-                Some(monotonic_now.deadline_after(delay))
-            }
-            None => None,
-        };
+        // Deadline selection is a pure observation. An already-due hard
+        // scheduler timer remains a physical clockevent source and the
+        // runtime clamps it to the device minimum delta. Only the firing
+        // owner may convert it into sticky scheduler work.
+        let scheduler = rq_observation
+            .clock_event
+            .map(|event| event.physical_deadline(monotonic_now));
         let fair_balance = rq_observation
             .has_periodic_fair_balance_work
             .then(|| this.dispatch.fair_balance_deadline())

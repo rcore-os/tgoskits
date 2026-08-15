@@ -6,7 +6,7 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
-use crate::{ThreadId, ThreadState};
+use crate::{TaskError, ThreadId, ThreadState};
 
 static TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
 static PI_RELEASE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
@@ -373,6 +373,14 @@ impl IrqOwnerProbe {
 /// Arms one real local deadline publication for lock-entry accounting.
 pub fn arm_deadline_publication_probe(cpu: usize) {
     arm_deadline_publication_probe_at_stage(cpu, STAGE_ARMED);
+}
+
+/// Repeats one already-due scheduler publication on the real current-CPU base.
+pub fn exercise_due_deadline_republication() -> Result<DeadlinePublicationEntries, TaskError> {
+    let mut irq = crate::facade::RuntimeIrqGuard::enter();
+    let mut cpu = crate::facade::runtime_current_cpu_mut(&mut irq)?;
+    cpu.as_mut()
+        .exercise_due_scheduler_deadline_republication_for_test()
 }
 
 /// Arms lock-entry accounting for the next timed-park base transaction.

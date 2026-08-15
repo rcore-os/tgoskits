@@ -185,6 +185,17 @@ pub fn run() -> crate::TestResult {
         Some(0),
         "a continuing dispatch must update rq->curr accounting in place"
     );
+    assert_eq!(
+        task_test_hooks::exercise_due_deadline_republication()
+            .expect("task-yield must exercise the real current-CPU deadline base"),
+        task_test_hooks::DeadlinePublicationEntries {
+            observation: 0,
+            rt_period_observation: 0,
+            registration: 0,
+            publication: 0,
+        },
+        "the same due scheduler event must not re-enter its authoritative base"
+    );
     let mut no_switch_observed = false;
     for _ in 0..32 {
         task_test_hooks::arm_no_switch_thread_lock_probe(current.as_u64());
