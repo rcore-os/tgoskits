@@ -15,25 +15,28 @@ use kbpf_basic::perf::{PerfProbeArgs, PerfProbeConfig};
 use kprobe::ProbeBuilder;
 
 use super::kprobe::{PROBE_CONFIG_ENTRY, PROBE_CONFIG_RETURN, ProbePerfEvent, ProbeTy};
-use crate::{StarryError, StarryResult, kprobe::KprobeAuxiliary, task::UserTaskRef};
+use crate::{
+    StarryError, StarryResult,
+    kprobe::{KprobeAuxiliary, UprobeTargetLease},
+    task::UserTaskRef,
+};
 
 /// Resolve the target ELF's mapped base in the target process and build a
 /// uprobe `ProbeBuilder` for `base + offset`.
 fn perf_probe_arg_to_uprobe_builder(
     args: &PerfProbeArgs,
     target_task: Option<&UserTaskRef>,
-) -> StarryResult<ProbeBuilder<KprobeAuxiliary>> {
+) -> StarryResult<(ProbeBuilder<KprobeAuxiliary>, UprobeTargetLease)> {
     let elf = &args.name;
     let offset = args.offset as usize;
+
     let Some(target_task) = target_task else {
-        // pid == -1 means "all processes" (e.g. a shared-library uprobe). That
-        // needs a global file→address registry we do not maintain.
-        warn!("uprobe: pid == -1 (all-process / shared-lib uprobe) is unsupported");
+        // An all-process shared-library uprobe needs a global file-to-address
+        // registry that Starry does not maintain.
+        warn!("uprobe: all-process / shared-lib target is unsupported");
         return Err(StarryError::Unsupported);
     };
-    let global_tid =
-        i32::try_from(target_task.as_thread().tid()).map_err(|_| StarryError::BadState)?;
-
+    let target = UprobeTargetLease::register(target_task.as_thread().pid_identity())?;
     let aspace = target_task.as_thread().proc_data.aspace();
     let mm = aspace.lock();
 
@@ -49,22 +52,25 @@ fn perf_probe_arg_to_uprobe_builder(
     drop(mm);
 
     let Some(virt_base) = virt_base else {
-        warn!("uprobe: ELF {elf} is not mapped in pid {global_tid}");
+        warn!("uprobe: ELF {elf} is not mapped in target {target:?}");
         return Err(StarryError::NotFound);
     };
 
     let virt_addr = virt_base.as_usize() + offset;
     debug!(
-        "uprobe: pid {global_tid} ELF {elf} base {:#x} + offset {:#x} = {virt_addr:#x}",
+        "uprobe: target {target:?} ELF {elf} base {:#x} + offset {:#x} = {virt_addr:#x}",
         virt_base.as_usize(),
         offset
     );
 
-    Ok(ProbeBuilder::new()
-        .with_symbol(elf.clone())
-        .with_symbol_addr(virt_addr)
-        .with_offset(0)
-        .with_user_mode(global_tid))
+    Ok((
+        ProbeBuilder::new()
+            .with_symbol(elf.clone())
+            .with_symbol_addr(virt_addr)
+            .with_offset(0)
+            .with_user_mode(target.opaque_id()),
+        target,
+    ))
 }
 
 /// Build a uprobe perf event from `perf_event_open` args.
@@ -72,10 +78,13 @@ pub fn perf_event_open_uprobe(
     args: PerfProbeArgs,
     target_task: Option<&UserTaskRef>,
 ) -> StarryResult<ProbePerfEvent> {
-    let probe = match args.config {
+    let (probe, target) = match args.config {
         PerfProbeConfig::Raw(PROBE_CONFIG_ENTRY) => {
-            let builder = perf_probe_arg_to_uprobe_builder(&args, target_task)?;
-            ProbeTy::Uprobe(crate::uprobe::register_uprobe(builder))
+            let (builder, target) = perf_probe_arg_to_uprobe_builder(&args, target_task)?;
+            (
+                ProbeTy::Uprobe(crate::uprobe::register_uprobe(builder)),
+                target,
+            )
         }
         PerfProbeConfig::Raw(PROBE_CONFIG_RETURN) => {
             // uretprobe — not implemented for user space yet.
@@ -87,5 +96,5 @@ pub fn perf_event_open_uprobe(
             return Err(StarryError::Unsupported);
         }
     };
-    Ok(ProbePerfEvent::new(args, probe))
+    Ok(ProbePerfEvent::new_uprobe(args, probe, target))
 }

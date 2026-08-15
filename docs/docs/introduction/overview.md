@@ -201,7 +201,6 @@ StarryOS 建立在 ArceOS 基础设施之上，通过组件化方式实现 Linux
 ```mermaid
 flowchart TD
     subgraph starry_components["StarryOS 领域 crate"]
-        proc["starry-process<br/>进程抽象"]
         sig["starry-signal<br/>信号框架"]
         vm["starry-vm<br/>地址空间"]
     end
@@ -219,12 +218,12 @@ flowchart TD
     kernel --> rootfs["rootfs 用户态"]
 ```
 
-图中的 StarryOS 领域 crate 负责提供进程、信号和地址空间等领域抽象，Kernel 层则组合这些抽象并实现 Linux syscall 语义。它们位于 `os/StarryOS/{process,signal,vm}`，并保留独立发布能力。下表按用户可见能力归纳对应的维护重点。
+图中的 StarryOS 领域 crate 提供信号和地址空间抽象，Kernel 层组合这些抽象并实现 Linux syscall 语义。它们位于 `os/StarryOS/{signal,vm}`，并保留独立发布能力。进程拓扑与 PID namespace 由 `kernel/src/task` 和 `kernel/src/namespace` 统一管理。下表按用户可见能力归纳对应的维护重点。
 
 | 能力域 | 实现要点 |
 |--------|---------|
 | Syscall 兼容 | Linux syscall 语义等价实现（`kernel/src/syscall/`，覆盖进程、文件、内存、信号、网络、IPC） |
-| 进程模型 | 多进程地址空间、进程树、`/proc` 伪文件系统（`starry-process`） |
+| 进程模型 | 稳定 PID identity、进程树、PID namespace 与 `/proc` 伪文件系统（`kernel/src/task`） |
 | 线程与信号 | POSIX 线程、信号传递与处理（`starry-signal`） |
 | 用户态验证 | 基于 Alpine rootfs 的完整用户态执行链路 |
 

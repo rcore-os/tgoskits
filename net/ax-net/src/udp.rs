@@ -660,16 +660,18 @@ fn get_ephemeral_port() -> NetResult<u16> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(axtest, feature = "axtest"))]
 mod tests {
     use core::net::{IpAddr, SocketAddr};
+
+    use axtest::prelude::*;
 
     use super::*;
     use crate::test_support::{
         LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, network_test_guard,
     };
 
-    #[test]
+    #[axtest]
     fn connect_preserves_bound_interface() {
         let _guard = network_test_guard();
         init_split_route_network();
@@ -700,7 +702,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[axtest]
     fn connect_uses_peer_route_when_unbound() {
         let _guard = network_test_guard();
         init_split_route_network();
@@ -728,7 +730,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[axtest]
     fn connect_rejects_unroutable_bound_device() {
         let _guard = network_test_guard();
         init_split_route_network();

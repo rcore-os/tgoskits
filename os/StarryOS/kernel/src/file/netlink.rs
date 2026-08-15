@@ -370,11 +370,12 @@ impl NetlinkSocket {
         match state.addr {
             Some(addr) if addr.nl_pid != 0 => addr.nl_pid,
             _ => {
-                let pid = crate::task::current_user_task()
-                    .as_thread()
-                    .proc_data
-                    .proc
-                    .pid();
+                let task = crate::task::current_user_task();
+                let thread = task.as_thread();
+                let pid = crate::task::current_pid_view()
+                    .visible_number(&thread.proc_data.identity())
+                    .expect("current process is visible in its active PID namespace")
+                    .get();
                 state.addr = Some(sockaddr_nl {
                     nl_family: AF_NETLINK as _,
                     nl_pad: 0,

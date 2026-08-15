@@ -6,7 +6,13 @@ mod sched_filter;
 mod trace;
 mod trace_pipe;
 
-use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
+use alloc::{
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
@@ -27,7 +33,7 @@ use crate::{
     StarryError, StarryResult,
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
     sync::PiMutex,
-    task::{future::IrqNotify, try_current_user_irq_view},
+    task::{PidIdentityId, future::IrqNotify, try_current_user_irq_view},
 };
 
 /// Maximum number of trace records kept in the raw trace pipe ring buffer.
@@ -78,22 +84,41 @@ struct TraceIngressRecord {
     epoch: u64,
     timestamp: u64,
     id: u32,
+    identity_id: u64,
+    pid: u32,
+    comm_len: u8,
+    comm: [u8; TRACE_TASK_COMM_LEN],
     len: u16,
     bytes: [u8; TRACE_RAW_RECORD_BYTES],
 }
 
 impl TraceIngressRecord {
-    fn raw(epoch: u64, timestamp: u64, cpu_id: u32, event: &[u8]) -> Option<Self> {
+    fn raw(
+        epoch: u64,
+        timestamp: u64,
+        cpu_id: u32,
+        identity_id: u64,
+        pid: u32,
+        comm: &[u8],
+        event: &[u8],
+    ) -> Option<Self> {
         if event.len() > TRACE_RAW_RECORD_BYTES {
             return None;
         }
         let mut bytes = [0; TRACE_RAW_RECORD_BYTES];
         bytes[..event.len()].copy_from_slice(event);
+        let comm_len = comm.len().min(TRACE_TASK_COMM_LEN);
+        let mut comm_bytes = [0; TRACE_TASK_COMM_LEN];
+        comm_bytes[..comm_len].copy_from_slice(&comm[..comm_len]);
         Some(Self {
             kind: TraceIngressKind::Raw,
             epoch,
             timestamp,
             id: cpu_id,
+            identity_id,
+            pid,
+            comm_len: comm_len as u8,
+            comm: comm_bytes,
             len: event.len() as u16,
             bytes,
         })
@@ -108,6 +133,10 @@ impl TraceIngressRecord {
             epoch: 0,
             timestamp: 0,
             id: pid,
+            identity_id: 0,
+            pid,
+            comm_len: len as u8,
+            comm: [0; TRACE_TASK_COMM_LEN],
             len: len as u16,
             bytes,
         }
@@ -199,7 +228,7 @@ impl<const CAPACITY: usize> TraceIngressRing<CAPACITY> {
 
 struct TraceState {
     point_map: LazyInit<TracePointMap<KernelTraceAux>>,
-    raw_pipe: PiMutex<TracePipeRaw>,
+    raw_pipe: PiMutex<IdentityTracePipe>,
     raw_epoch: AtomicU64,
     ingress: TraceIngressRing<TRACE_INGRESS_CAPACITY>,
     pipe_event: PollSet,
@@ -214,7 +243,7 @@ impl TraceState {
     const fn new() -> Self {
         Self {
             point_map: LazyInit::new(),
-            raw_pipe: PiMutex::new(TracePipeRaw::new(TRACE_RAW_PIPE_CAPACITY)),
+            raw_pipe: PiMutex::new(IdentityTracePipe::new(TRACE_RAW_PIPE_CAPACITY)),
             raw_epoch: AtomicU64::new(0),
             ingress: TraceIngressRing::new(),
             pipe_event: PollSet::new(),
@@ -234,40 +263,177 @@ static SCHED_TRACE_WORKER_ID: AtomicU64 = AtomicU64::new(0);
 static TRACE_PIPE_NOTIFY_WORKER_ID: AtomicU64 = AtomicU64::new(0);
 static TRACEPOINT_RECLAIM_WORKER_ID: AtomicU64 = AtomicU64::new(0);
 
+/// One trace record with the stable task generation and comm captured at emit time.
+#[derive(Clone)]
+struct IdentityTraceRecord {
+    record: TracePipeRecord,
+    identity_id: Option<PidIdentityId>,
+    pid: u32,
+    comm: String,
+}
+
+impl IdentityTraceRecord {
+    fn new(
+        timestamp: u64,
+        cpu_id: u32,
+        event: Vec<u8>,
+        identity_id: Option<PidIdentityId>,
+        pid: u32,
+        comm: String,
+    ) -> Self {
+        Self {
+            record: TracePipeRecord::new(timestamp, cpu_id, event),
+            identity_id,
+            pid,
+            comm,
+        }
+    }
+}
+
+trait IdentityTraceBuffer {
+    fn peek(&self) -> Option<&IdentityTraceRecord>;
+    fn pop(&mut self) -> Option<IdentityTraceRecord>;
+    fn is_empty(&self) -> bool;
+}
+
+struct IdentityTracePipe {
+    capacity: usize,
+    records: Vec<IdentityTraceRecord>,
+}
+
+impl IdentityTracePipe {
+    const fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            records: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, record: IdentityTraceRecord) {
+        if self.capacity == 0 {
+            return;
+        }
+        if self.records.len() == self.capacity {
+            self.records.remove(0);
+        }
+        self.records.push(record);
+    }
+
+    fn clear(&mut self) {
+        self.records.clear();
+    }
+
+    fn snapshot(&self) -> IdentityTraceSnapshot {
+        IdentityTraceSnapshot(self.records.clone())
+    }
+}
+
+impl IdentityTraceBuffer for IdentityTracePipe {
+    fn peek(&self) -> Option<&IdentityTraceRecord> {
+        self.records.first()
+    }
+
+    fn pop(&mut self) -> Option<IdentityTraceRecord> {
+        (!self.records.is_empty()).then(|| self.records.remove(0))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+}
+
+struct IdentityTraceSnapshot(Vec<IdentityTraceRecord>);
+
+impl IdentityTraceSnapshot {
+    fn default_fmt_str(&self) -> String {
+        let show = "#
+#
+#                                _-----=> irqs-off/BH-disabled
+#                               / _----=> need-resched
+#                              | / _---=> hardirq/softirq
+#                              || / _--=> preempt-depth
+#                              ||| / _-=> migrate-disable
+#                              |||| /     delay
+#           TASK-PID     CPU#  |||||  TIMESTAMP  FUNCTION
+#              | |         |   |||||     |         |
+";
+        format!(
+            "# tracer: nop\n#\n# entries-in-buffer/entries-written: {}/{}   #P:32\n{}",
+            self.0.len(),
+            self.0.len(),
+            show
+        )
+    }
+}
+
+impl IdentityTraceBuffer for IdentityTraceSnapshot {
+    fn peek(&self) -> Option<&IdentityTraceRecord> {
+        self.0.first()
+    }
+
+    fn pop(&mut self) -> Option<IdentityTraceRecord> {
+        (!self.0.is_empty()).then(|| self.0.remove(0))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 pub struct KernelTraceAux;
 
 impl KernelTraceOps for KernelTraceAux {
     fn current_pid() -> u32 {
-        if let Some(pid) = sched::replay_current_pid() {
-            return pid;
-        }
-        try_current_user_irq_view().map_or(0, |task| task.tid())
+        sched::replay_current_pid()
+            .or_else(|| try_current_user_irq_view().map(|task| task.tid()))
+            .unwrap_or(0)
     }
 
     fn trace_pipe_push_raw_record(buf: &[u8]) {
+        let mut comm = [0; TRACE_TASK_COMM_LEN];
+        let (identity_id, pid, comm_len) = if let Some(pid) = sched::replay_current_pid() {
+            let len = sched::replay_comm(pid)
+                .map(|(captured, len)| {
+                    comm = captured;
+                    len
+                })
+                .unwrap_or(0);
+            (0, pid, len)
+        } else if let Some(task) = try_current_user_irq_view() {
+            let len = task.copy_comm(&mut comm).unwrap_or(0);
+            (task.pid_identity_id(), task.tid(), len)
+        } else {
+            (0, 0, 0)
+        };
         let epoch = TRACE_STATE.raw_epoch.load(Ordering::Acquire);
-        let Some(record) =
-            TraceIngressRecord::raw(epoch, monotonic_time_nanos(), this_cpu_id() as _, buf)
-        else {
+        let Some(record) = TraceIngressRecord::raw(
+            epoch,
+            monotonic_time_nanos(),
+            this_cpu_id() as _,
+            identity_id,
+            pid,
+            &comm[..comm_len],
+            buf,
+        ) else {
             TRACE_INGRESS_DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
         };
         publish_trace_ingress(record);
     }
 
-    fn trace_cmdline_push(pid: u32) {
-        if let Some((comm, len)) = sched::replay_comm(pid) {
-            publish_trace_ingress(TraceIngressRecord::cmdline(pid, &comm[..len]));
+    fn trace_cmdline_push(external_pid: u32) {
+        if let Some((comm, len)) = sched::replay_comm(external_pid) {
+            publish_trace_ingress(TraceIngressRecord::cmdline(external_pid, &comm[..len]));
             return;
         }
-        let Some(curr) = try_current_user_irq_view() else {
+        let Some(task) = try_current_user_irq_view() else {
             return;
         };
-        let mut comm = [0; 16];
-        let Some(len) = curr.copy_comm(&mut comm) else {
+        let mut comm = [0; TRACE_TASK_COMM_LEN];
+        let Some(len) = task.copy_comm(&mut comm) else {
             return;
         };
-        publish_trace_ingress(TraceIngressRecord::cmdline(pid, &comm[..len]));
+        publish_trace_ingress(TraceIngressRecord::cmdline(external_pid, &comm[..len]));
     }
 
     fn read_tracepoint_state<R>(id: u32, f: impl FnOnce(&ExtTracePoint<Self>) -> R) -> R {
@@ -339,10 +505,17 @@ fn drain_trace_ingress(limit: usize) -> TraceIngressDrain {
                     continue;
                 }
                 let event = record.bytes[..usize::from(record.len)].to_vec();
-                TRACE_STATE
-                    .raw_pipe
-                    .lock()
-                    .push_record(record.timestamp, record.id, event);
+                let identity_id = PidIdentityId::try_from(record.identity_id).ok();
+                let comm = String::from_utf8_lossy(&record.comm[..usize::from(record.comm_len)])
+                    .into_owned();
+                TRACE_STATE.raw_pipe.lock().push(IdentityTraceRecord::new(
+                    record.timestamp,
+                    record.id,
+                    event,
+                    identity_id,
+                    record.pid,
+                    comm,
+                ));
                 raw_published = true;
             }
             TraceIngressKind::Cmdline => {
@@ -466,7 +639,7 @@ impl TextDrain {
 }
 
 fn common_trace_pipe_read(
-    trace_buf: &mut dyn TracePipeOps,
+    trace_buf: &mut dyn IdentityTraceBuffer,
     drain: &mut TextDrain,
     buf: &mut [u8],
 ) -> usize {
@@ -475,13 +648,17 @@ fn common_trace_pipe_read(
         return copy_len;
     }
 
-    let trace_cmdline_cache = TRACE_STATE.cmdline_cache.lock();
     loop {
         if let Some(record) = trace_buf.peek() {
+            if let Some(identity_id) = record.identity_id {
+                debug_assert_ne!(identity_id.get(), 0);
+            }
+            let mut record_cmdline = TraceCmdLineCache::new(NonZero::new(1).unwrap());
+            record_cmdline.insert(record.pid, &record.comm);
             let record_str = TraceEntryParser::parse::<KernelTraceAux>(
                 &TRACE_STATE.point_map,
-                &trace_cmdline_cache,
-                record,
+                &record_cmdline,
+                &record.record,
             );
             if !drain.copy_record(record_str.as_bytes(), buf, &mut copy_len) {
                 break;
@@ -543,6 +720,43 @@ pub fn tracepoint_init() -> StarryResult<()> {
     // published, so their first schedule-in cannot enter the deferred ring.
     sched::install();
     Ok(())
+}
+
+#[cfg(test)]
+mod identity_trace_tests {
+    use super::*;
+
+    #[test]
+    fn reused_pid_keeps_each_records_emission_generation_and_comm() {
+        let pid = 7;
+        let first_generation = PidIdentityId::try_from(1001).unwrap();
+        let second_generation = PidIdentityId::try_from(1002).unwrap();
+        let mut pipe = IdentityTracePipe::new(2);
+
+        pipe.push(IdentityTraceRecord::new(
+            1,
+            0,
+            Vec::new(),
+            Some(first_generation),
+            pid,
+            "first".to_string(),
+        ));
+        pipe.push(IdentityTraceRecord::new(
+            2,
+            0,
+            Vec::new(),
+            Some(second_generation),
+            pid,
+            "second".to_string(),
+        ));
+
+        let first = pipe.pop().unwrap();
+        let second = pipe.pop().unwrap();
+        assert_eq!(first.identity_id, Some(first_generation));
+        assert_eq!(first.comm, "first");
+        assert_eq!(second.identity_id, Some(second_generation));
+        assert_eq!(second.comm, "second");
+    }
 }
 
 /// Initialize events directory in debugfs
@@ -702,9 +916,15 @@ mod tests {
     #[test]
     fn trace_ingress_is_bounded_fifo_and_preserves_payload() {
         let ring = TraceIngressRing::<2>::new();
-        let first = TraceIngressRecord::raw(1, 10, 0, b"first").unwrap();
-        let second = TraceIngressRecord::raw(1, 20, 1, b"second").unwrap();
-        let overflow = TraceIngressRecord::raw(1, 30, 2, b"overflow").unwrap();
+        let first = TraceIngressRecord::raw(1, 10, 0, 100, 10, b"worker-0", b"first").unwrap();
+        let second = TraceIngressRecord::raw(1, 20, 1, 100, 11, b"worker-1", b"second").unwrap();
+        let overflow =
+            TraceIngressRecord::raw(1, 30, 2, 100, 12, b"worker-2", b"overflow").unwrap();
+
+        assert_eq!(first.identity_id, 100);
+        assert_eq!(first.pid, 10);
+        assert_eq!(&first.comm[..usize::from(first.comm_len)], b"worker-0");
+        assert_eq!(&first.bytes[..usize::from(first.len)], b"first");
 
         assert!(ring.push(first));
         assert!(ring.push(second));
@@ -720,7 +940,7 @@ mod tests {
         let oversized = [0_u8; TRACE_RAW_RECORD_BYTES + 1];
 
         let allocations = audit_allocations(|| {
-            assert!(TraceIngressRecord::raw(1, 10, 0, &oversized).is_none());
+            assert!(TraceIngressRecord::raw(1, 10, 0, 100, 10, b"worker-0", &oversized).is_none());
             assert!(ring.push(TraceIngressRecord::cmdline(7, b"worker")));
         });
 

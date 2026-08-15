@@ -494,7 +494,7 @@ function CapabilitySection() {
     { icon: 'orbit', title: '统一工程编排', desc: 'cargo xtask 提供 ArceOS、StarryOS、Axvisor、镜像、板卡与测试命令的统一入口。', to: '/docs/build/overview' },
     { icon: 'grid', title: '内存基础能力', desc: 'allocator、地址类型、memory set 与多架构页表实现集中在 memory/，供系统按需组合。', to: '/docs/architecture/overview' },
     { icon: 'layers', title: '调度与同步原语', desc: 'axsched、cpumask、ax-sync 与 ax-lazyinit 提供可复用的内核运行时基础。', to: '/docs/architecture/overview' },
-    { icon: 'server', title: '文件与进程组件', desc: 'axfs-ng-vfs、rsext4、starry-process、starry-signal 与 starry-vm 承载明确的领域语义。', to: '/docs/architecture/overview' },
+    { icon: 'server', title: '文件与进程组件', desc: 'axfs-ng-vfs、rsext4、StarryOS kernel task、starry-signal 与 starry-vm 承载明确的领域语义。', to: '/docs/architecture/overview' },
     { icon: 'chip', title: '虚拟化基础对象', desc: 'virtualization/ 提供 VM、vCPU、地址空间、虚拟设备及各架构中断控制器实现。', to: '/docs/architecture/axvisor' },
     { icon: 'plug', title: '设备能力接口', desc: 'dma-api、mmio-api、irq-framework 与 RDIF 接口 crate 将资源访问从具体 OS glue 中分离。', to: '/docs/architecture/overview' },
   ];

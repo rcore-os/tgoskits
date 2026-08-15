@@ -1,6 +1,6 @@
 //! Generation-bearing CPU ownership state for task-bound PMU events.
 
-use super::target::PerfCpuId;
+use super::cpu_id::PerfCpuId;
 
 /// Identity returned by the per-CPU sampling registry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

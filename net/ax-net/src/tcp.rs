@@ -1139,11 +1139,16 @@ fn get_ephemeral_port() -> NetResult<u16> {
     allocate_ephemeral_port(tcp_port_available)
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
+    #[cfg(all(axtest, feature = "axtest"))]
     use core::net::{IpAddr, SocketAddr};
 
+    #[cfg(all(axtest, feature = "axtest"))]
+    use axtest::prelude::*;
+
     use super::*;
+    #[cfg(all(axtest, feature = "axtest"))]
     use crate::{
         options::{Configurable, GetSocketOption, SetSocketOption, TcpState},
         test_support::{
@@ -1194,7 +1199,8 @@ mod tests {
         assert_eq!(total, 4);
     }
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn tcp_info_reports_default_socket_metrics() {
         let _guard = network_test_guard();
         init_split_route_network();
@@ -1217,7 +1223,8 @@ mod tests {
         assert_eq!(info.rcv_wnd, 0);
     }
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn tcp_congestion_control_reports_and_accepts_active_algorithm() {
         let _guard = network_test_guard();
         init_split_route_network();
@@ -1236,7 +1243,8 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn connect_preserves_bound_interface() {
         let _guard = network_test_guard();
         init_split_route_network();
@@ -1271,7 +1279,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn connect_uses_peer_route_when_unbound() {
         let _guard = network_test_guard();
         init_split_route_network();
@@ -1303,7 +1312,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn connect_rejects_unroutable_bound_device() {
         let _guard = network_test_guard();
         init_split_route_network();
@@ -1334,7 +1344,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn reuseport_group_shares_a_port_while_plain_binders_conflict() {
         let _guard = network_test_guard();
 

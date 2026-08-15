@@ -213,7 +213,7 @@ pub fn sys_mmap(
     // side effects (e.g. a perf-event ringbuf allocation) it would leave the
     // fd in a half-initialized state that rejects the later real MAP_SHARED
     // mapping. Probe lazily here, then commit it in the MAP_SHARED arm.
-    let mut device_mmap_top = if matches!(map_type, MmapFlags::SHARED) {
+    let device_mmap_top = if matches!(map_type, MmapFlags::SHARED) {
         file.as_ref()
             .map(|fl| fl.device_mmap(offset as u64, length as u64))
     } else {
@@ -221,16 +221,11 @@ pub fn sys_mmap(
     };
     // A device implementation has committed to this mapping contract once it
     // returns an error. Reject it before MAP_FIXED can tear down an existing
-    // mapping; only the typed `DeviceMmap::None` result selects file fallback.
-    if device_mmap_top.as_ref().is_some_and(Result::is_err) {
-        let Err(error) = device_mmap_top
-            .take()
-            .expect("device mmap result was checked above")
-        else {
-            unreachable!("device mmap result changed after validation")
-        };
-        return Err(error);
-    }
+    // mapping; only `DeviceMmap::None` selects the file-backed fallback.
+    let mut device_mmap_top = match device_mmap_top {
+        Some(Err(error)) => return Err(error),
+        result => result,
+    };
 
     // Validate file_mmap permissions and memfd seals before any destructive
     // MAP_FIXED unmap (Linux `do_mmap` ordering; avoids tearing down the old
@@ -240,9 +235,9 @@ pub fn sys_mmap(
         let needs_file_mmap_checks = match map_type {
             MmapFlags::PRIVATE => true,
             MmapFlags::SHARED => {
-                // `DeviceMmap::None` explicitly means "fall back to
-                // file_mmap" (memfd, regular files). A device implementation's
-                // error is committed and must survive to userspace.
+                // `DeviceMmap::None` means "fall back to file_mmap" (memfd,
+                // regular files). A device implementation's error is already
+                // committed and must survive to userspace.
                 match device_mmap_top
                     .as_ref()
                     .expect("file-backed mmap has cached device_mmap")
@@ -529,7 +524,7 @@ pub fn sys_mmap(
                             }
                         }
                     }
-                    Ok(_) => return Err(crate::StarryError::InvalidInput),
+                    Ok(_) => return Err(StarryError::InvalidInput),
                     Err(error) => return Err(error),
                 }
             } else {

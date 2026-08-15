@@ -5,18 +5,18 @@ use alloc::{
 
 use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use scope_local::Scope;
-use starry_process::{Pid, Process};
 
 use crate::{
-    file::FD_TABLE,
+    file::{FD_TABLE, FileTable},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
+    namespace::NsProxy,
     pseudofs::{self, dev::tty},
-    sync::PiMutex,
+    sync::{PiMutex, RwLock},
     task::{
-        ProcessData, ProcessImage, Thread, add_task_to_table, join_kernel_thread, new_user_task,
-        sleep, spawn_alarm_task, spawn_kernel_thread, spawn_kernel_thread_with_affinity,
-        spawn_user_thread,
+        PidReservation, PidReservationKind, Process, ProcessData, ProcessDataInit, ProcessImage,
+        ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, join_kernel_thread, new_user_task,
+        prepare_user_thread, sleep, spawn_alarm_task, spawn_kernel_thread,
+        spawn_kernel_thread_with_affinity,
     },
     tracepoint::tracepoint_init,
 };
@@ -76,10 +76,23 @@ pub fn init(args: &[String], envs: &[String]) {
     // scheduler id untouched. `Thread::tid` is already decoupled from the
     // scheduler id (see its field doc), so this only requires the table keys to
     // follow the thread tid rather than `task.id()`.
-    const INIT_PID: Pid = 1;
-    let pid = INIT_PID;
-    let proc = Process::new_init(pid);
-    proc.add_thread(pid);
+    const INIT_PID: u32 = 1;
+    let reservation = PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader)
+        .expect("failed to reserve init PID identity");
+    let pid = reservation
+        .number_in(&ROOT_PID_NS)
+        .expect("init PID reservation has no root binding")
+        .get();
+    assert_eq!(pid, INIT_PID);
+    let identity = reservation.identity();
+    let tid_lease = identity
+        .acquire_role::<Tid>()
+        .expect("failed to acquire init TID role");
+    let tgid_lease = identity
+        .acquire_role::<Tgid>()
+        .expect("failed to acquire init TGID role");
+    let proc = Process::new_init(identity.clone());
+    proc.add_thread(TidNumber::try_from(pid).expect("init TID must be non-zero"));
 
     if let Err(error) = tty::bind_console_to(&proc) {
         warn!("Failed to bind console tty: {error:?}");
@@ -87,7 +100,9 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let proc = ProcessData::new(
         proc,
-        crate::task::ProcessDataInit::new(
+        identity.clone(),
+        tgid_lease,
+        ProcessDataInit::new(
             ProcessImage::new(
                 path.to_string(),
                 Arc::new(args.to_vec()),
@@ -98,29 +113,47 @@ pub fn init(args: &[String], envs: &[String]) {
             ),
             Arc::new(PiMutex::new(uspace)),
             Arc::default(),
-            axnsproxy::NsProxy::new_root(),
+            NsProxy::new_root(),
             None,
-            pid,
+            TidNumber::try_from(pid).expect("init TID must be non-zero"),
         ),
     );
     // SAFE-EXPECT: failing to attach init would violate the kernel's process accounting invariant.
-    crate::cgroup::attach_initial_process(pid)
+    crate::cgroup::attach_initial_process(&identity)
         .expect("Failed to attach init process to cgroup root");
 
-    let mut scope = Scope::new();
-    crate::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
-        .expect("Failed to add stdio");
+    let mut scope = scope_local::Scope::new();
+    let mut fd_table = FileTable::new();
+    crate::file::add_stdio(&mut fd_table).expect("Failed to add stdio");
+    *FD_TABLE.scope_mut(&mut scope) = Arc::new(RwLock::new(fd_table));
 
-    let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default(), scope);
-    let task = spawn_user_thread(
-        new_user_task(uctx, 0, 1),
+    let thr = Thread::new(
+        identity.clone(),
+        tid_lease,
+        proc,
+        None,
+        starry_signal::SignalSet::default(),
+        scope,
+    );
+    let prepared_task = prepare_user_thread(
+        new_user_task(
+            uctx,
+            0,
+            TidNumber::try_from(pid).expect("init TID must be non-zero"),
+        ),
         name,
         crate::config::KERNEL_STACK_SIZE,
         thr,
     )
-    .unwrap_or_else(|error| panic!("failed to spawn init task: {error}"));
-    add_task_to_table(&task);
+    .expect("failed to prepare init task");
+    let staged_task = prepared_task.stage().expect("failed to stage init task");
+    let published_identity = reservation
+        .publish()
+        .expect("failed to publish init PID identity");
+    debug_assert!(Arc::ptr_eq(&published_identity, &identity));
+    staged_task.with_task(|task| task.as_thread().attach_pid_task(task));
     tty::arm_console_irq();
+    let task = staged_task.activate();
 
     // TODO: wait for all processes to finish
     let exit_code = task.join();

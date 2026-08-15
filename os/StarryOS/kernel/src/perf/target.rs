@@ -1,21 +1,6 @@
 //! Typed ownership target for `perf_event_open(2)`.
 
-/// Validated logical CPU target for one perf event.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PerfCpuId(usize);
-
-impl PerfCpuId {
-    /// Creates a validated logical CPU id.
-    pub(crate) const fn new(value: usize) -> Self {
-        Self(value)
-    }
-
-    /// Returns the CPU id as an array index.
-    #[cfg(any(target_arch = "aarch64", test))]
-    pub(crate) const fn as_usize(self) -> usize {
-        self.0
-    }
-}
+pub(crate) use super::cpu_id::PerfCpuId;
 
 /// Raw CPU selector retained until the target task has been resolved.
 ///

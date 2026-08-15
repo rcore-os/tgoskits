@@ -43,6 +43,13 @@ int main(void)
         perror("pipe");
         return 1;
     }
+    int blocker[2];
+    if (pipe(blocker) != 0) {
+        perror("blocker pipe");
+        close(ready[0]);
+        close(ready[1]);
+        return 1;
+    }
     (void)unlink(LOCK_PATH);
 
     pid_t child = fork();
@@ -50,6 +57,8 @@ int main(void)
         perror("fork");
         close(ready[0]);
         close(ready[1]);
+        close(blocker[0]);
+        close(blocker[1]);
         return 1;
     }
     if (child == 0) {
@@ -67,12 +76,17 @@ int main(void)
         }
         close(ready[1]);
         (void)lock_fd;
-        for (;;) {
-            pause();
-        }
+        /* Keep our own write end open so the read cannot complete with EOF.
+         * PID namespace shutdown must force-wake this raw blocking wait after
+         * publishing SIGKILL; task.interrupt() alone is insufficient. */
+        char never;
+        (void)read(blocker[0], &never, sizeof(never));
+        _exit(4);
     }
 
     close(ready[1]);
+    close(blocker[0]);
+    close(blocker[1]);
     char token = 0;
     ssize_t received;
     do {

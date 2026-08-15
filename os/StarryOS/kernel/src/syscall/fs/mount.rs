@@ -179,9 +179,7 @@ fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
     if fs_is_mount_busy(mp) {
         return true;
     }
-    let Ok(tasks) = tasks() else {
-        return true;
-    };
+    let tasks = tasks();
     for task in tasks {
         let fd_table = task.as_thread().clone_scope_item(&FD_TABLE);
         let table = fd_table.read();
@@ -690,13 +688,7 @@ pub fn sys_mount(
 
     match fs_type.as_str() {
         "proc" => {
-            let pid_ns = current
-                .as_thread()
-                .proc_data
-                .namespace_snapshot()
-                .pid_ns
-                .clone();
-            let fs = crate::pseudofs::proc::new_procfs(pid_ns);
+            let fs = crate::pseudofs::proc::new_procfs(current.as_thread().active_pid_namespace());
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {

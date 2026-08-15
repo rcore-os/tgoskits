@@ -10,6 +10,7 @@ mod access;
 mod access_policy;
 pub mod bpf;
 mod control;
+mod cpu_id;
 #[cfg(target_arch = "aarch64")]
 mod cpu_worker;
 pub mod hw;

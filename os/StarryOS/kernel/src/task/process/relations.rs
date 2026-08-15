@@ -3,18 +3,15 @@ use alloc::{
     vec::Vec,
 };
 
-#[cfg(feature = "multitask")]
-use ax_runtime::sync::LockdepMutexExt;
+use super::{Process, ProcessGroup};
+use crate::{sync::LockdepMutexExt, task::PidNumber};
 
-use crate::{Pid, Process, ProcessGroup};
+type Pid = PidNumber;
 
-// Relationship transactions run only in task context. Multitask kernels need
-// PI because a transaction may hold several ordered locks while another task
-// blocks on them; single-task builds need only preemption-safe exclusion.
-#[cfg(feature = "multitask")]
-pub(crate) type RelationLock<T> = ax_runtime::sync::PiMutex<T>;
-#[cfg(not(feature = "multitask"))]
-pub(crate) type RelationLock<T> = ax_runtime::sync::SpinLock<T>;
+// Relationship transactions run in task context and may block behind another
+// task holding several ordered relationship locks, so they use one PI-backed
+// lock path in every Starry build.
+pub(crate) type RelationLock<T> = crate::sync::PiMutex<T>;
 
 // Relationship writers use one order:
 // process group binding -> parent child sets (ascending PID) -> child parent
@@ -96,7 +93,7 @@ impl ChildRelations {
         }
     }
 
-    fn has_capacity_for(&self, additional: usize) -> bool {
+    pub(crate) fn has_capacity_for(&self, additional: usize) -> bool {
         self.entries.has_capacity_for(additional)
     }
 
@@ -193,7 +190,7 @@ impl SessionGroups {
         self.entries.len()
     }
 
-    fn has_capacity_for(&self, additional: usize) -> bool {
+    pub(crate) fn has_capacity_for(&self, additional: usize) -> bool {
         self.entries.has_capacity_for(additional)
     }
 
@@ -205,10 +202,11 @@ impl SessionGroups {
         self.entries.insert_reserved(pid, Arc::downgrade(group))
     }
 
-    fn get_live(&self, pid: Pid) -> Option<Arc<ProcessGroup>> {
+    pub(crate) fn get_live(&self, pid: Pid) -> Option<Arc<ProcessGroup>> {
         self.entries.get(pid).and_then(Weak::upgrade)
     }
 
+    #[cfg(test)]
     pub(crate) fn snapshot(&self, output: &mut Vec<Arc<ProcessGroup>>) {
         assert!(
             output.capacity() - output.len() >= self.entries.len(),
@@ -311,24 +309,6 @@ pub(crate) enum GroupMoveScope {
 pub(crate) struct ProcessRelationTxn;
 
 impl ProcessRelationTxn {
-    pub(crate) fn attach_session_group(group: &Arc<ProcessGroup>) -> Arc<ProcessGroup> {
-        loop {
-            ensure_session_capacity(&group.session.process_groups, 1);
-            let mut groups = group.session.process_groups.lock();
-            if !groups.has_capacity_for(1) {
-                drop(groups);
-                continue;
-            }
-            if let Some(existing) = groups.get_live(group.pgid()) {
-                return existing;
-            }
-            let replaced = groups.insert_reserved(group.pgid(), group);
-            drop(groups);
-            drop(replaced);
-            return Arc::clone(group);
-        }
-    }
-
     pub(crate) fn publish(process: &Arc<Process>) -> bool {
         loop {
             let Some(parent) = process.parent() else {
@@ -362,12 +342,14 @@ impl ProcessRelationTxn {
                 drop(group_binding);
                 continue;
             }
-            if children.contains(process.pid()) || members.contains_live(process.pid()) {
+            if children.contains(process.pid().pid_number())
+                || members.contains_live(process.pid().pid_number())
+            {
                 return false;
             }
 
-            children.insert_unique_reserved(process.pid(), process.clone());
-            let replaced_member = members.insert_reserved(process.pid(), process);
+            children.insert_unique_reserved(process.pid().pid_number(), process.clone());
+            let replaced_member = members.insert_reserved(process.pid().pid_number(), process);
             drop(members);
             drop(parent_binding);
             drop(children);
@@ -396,11 +378,11 @@ impl ProcessRelationTxn {
                 continue;
             }
             assert!(
-                !members.contains_live(process.pid())
-                    || members.contains_process(process.pid(), process),
+                !members.contains_live(process.pid().pid_number())
+                    || members.contains_process(process.pid().pid_number(), process),
                 "process group already contains a live process with this PID"
             );
-            let replaced = members.insert_reserved(process.pid(), process);
+            let replaced = members.insert_reserved(process.pid().pid_number(), process);
             drop(members);
             drop(group_binding);
             drop(replaced);
@@ -426,12 +408,12 @@ impl ProcessRelationTxn {
                 return false;
             }
             assert_ne!(
-                source.pgid(),
-                target.pgid(),
+                source.pgid().pid_number(),
+                target.pgid().pid_number(),
                 "distinct process groups must not share a PGID"
             );
 
-            let commit = if source.pgid() < target.pgid() {
+            let commit = if source.pgid().pid_number() < target.pgid().pid_number() {
                 let mut source_members = source.processes.lock_nested(CHILD_RELATION_LOCK_SUBCLASS);
                 let mut target_members =
                     target.processes.lock_nested(PARENT_RELATION_LOCK_SUBCLASS);
@@ -476,10 +458,10 @@ impl ProcessRelationTxn {
         source_members: &mut GroupMembers,
         target_members: &mut GroupMembers,
     ) -> GroupMoveCommit {
-        let published = source_members.contains_process(process.pid(), process);
+        let published = source_members.contains_process(process.pid().pid_number(), process);
         assert!(
-            !target_members.contains_live(process.pid())
-                || target_members.contains_process(process.pid(), process),
+            !target_members.contains_live(process.pid().pid_number())
+                || target_members.contains_process(process.pid().pid_number(), process),
             "destination group already contains a different live process with this PID"
         );
         if published && !target_members.has_capacity_for(1) {
@@ -487,10 +469,10 @@ impl ProcessRelationTxn {
         }
 
         let removed = published
-            .then(|| source_members.remove(process.pid()))
+            .then(|| source_members.remove(process.pid().pid_number()))
             .flatten();
         let replaced = published
-            .then(|| target_members.insert_reserved(process.pid(), process))
+            .then(|| target_members.insert_reserved(process.pid().pid_number(), process))
             .flatten();
         *group_binding = target.clone();
         GroupMoveCommit::Done { removed, replaced }
@@ -505,8 +487,8 @@ impl ProcessRelationTxn {
             "namespace reaper shutdown requires the explicit close transaction"
         );
         assert_ne!(
-            process.pid(),
-            reaper.pid(),
+            process.pid().pid_number(),
+            reaper.pid().pid_number(),
             "distinct process identities must not share a PID"
         );
 
@@ -515,7 +497,7 @@ impl ProcessRelationTxn {
             ensure_child_capacity(&reaper.children, child_count);
             let mut reparented = Vec::with_capacity(child_count);
 
-            let result = if process.pid() < reaper.pid() {
+            let result = if process.pid().pid_number() < reaper.pid().pid_number() {
                 let mut children = process.children.lock();
                 let mut reaper_children = reaper.children.lock_nested(CHILD_RELATION_LOCK_SUBCLASS);
                 Self::reparent_locked(&mut children, &mut reaper_children, reaper, &mut reparented)
@@ -605,12 +587,12 @@ impl ProcessRelationTxn {
                 }
                 let mut members = group.processes.lock_nested(MEMBER_RELATION_LOCK_SUBCLASS);
                 let removed_child = children
-                    .contains_process(process.pid(), process)
-                    .then(|| children.remove(process.pid()))
+                    .contains_process(process.pid().pid_number(), process)
+                    .then(|| children.remove(process.pid().pid_number()))
                     .flatten();
                 let removed_member = members
-                    .contains_process(process.pid(), process)
-                    .then(|| members.remove(process.pid()))
+                    .contains_process(process.pid().pid_number(), process)
+                    .then(|| members.remove(process.pid().pid_number()))
                     .flatten();
                 let old_parent = core::mem::take(&mut *parent_binding);
                 (removed_child, removed_member, old_parent)
@@ -623,8 +605,8 @@ impl ProcessRelationTxn {
                 }
                 let mut members = group.processes.lock_nested(PARENT_RELATION_LOCK_SUBCLASS);
                 let removed_member = members
-                    .contains_process(process.pid(), process)
-                    .then(|| members.remove(process.pid()))
+                    .contains_process(process.pid().pid_number(), process)
+                    .then(|| members.remove(process.pid().pid_number()))
                     .flatten();
                 let old_parent = core::mem::take(&mut *parent_binding);
                 (None, removed_member, old_parent)
@@ -744,14 +726,14 @@ impl<V> RelationMap<V> {
 
 #[cfg(test)]
 mod tests {
-    use super::RelationMap;
+    use super::{Pid, RelationMap};
 
     #[test]
     fn reserved_insert_preserves_storage_capacity() {
         let mut map = RelationMap::with_capacity(2);
         let capacity = map.entries.capacity();
-        assert_eq!(map.insert_reserved(7, 11), None);
-        assert_eq!(map.insert_reserved(3, 13), None);
+        assert_eq!(map.insert_reserved(Pid::try_from(7).unwrap(), 11), None);
+        assert_eq!(map.insert_reserved(Pid::try_from(3).unwrap(), 13), None);
         assert_eq!(map.entries.capacity(), capacity);
         assert_eq!(
             map.values().copied().collect::<alloc::vec::Vec<_>>(),
@@ -762,12 +744,13 @@ mod tests {
     #[test]
     fn capacity_adoption_returns_old_storage_for_deferred_drop() {
         let mut map = RelationMap::with_capacity(1);
-        map.insert_reserved(1, 2);
+        let pid = Pid::try_from(1).unwrap();
+        map.insert_reserved(pid, 2);
         let replacement = alloc::vec::Vec::with_capacity(4);
         let old = map.adopt_capacity(replacement);
 
         assert_eq!(map.entries.capacity(), 4);
-        assert_eq!(map.get(1), Some(&2));
+        assert_eq!(map.get(pid), Some(&2));
         assert!(old.is_empty());
     }
 }

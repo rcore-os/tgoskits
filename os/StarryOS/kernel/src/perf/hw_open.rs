@@ -144,6 +144,10 @@ pub(super) fn perf_event_open_hw(
             freq: validated.is_freq,
             target_freq: validated.target_freq,
             sample_type: attr.sample_type,
+            observer: crate::task::current_user_task()
+                .as_thread()
+                .active_pid_namespace()
+                .id(),
             poll_ready,
             notify,
             poll_alive,
@@ -206,6 +210,10 @@ fn perf_event_open_hw_per_task(
             want_task: attr.task() != 0,
             sample_id_all: attr.sample_id_all() != 0,
             inherit: attr.inherit() != 0,
+            observer: crate::task::current_user_task()
+                .as_thread()
+                .active_pid_namespace()
+                .id(),
         },
     ));
     let family = PerfInheritanceFamily::new(Arc::clone(&per_task_counter), enabled);

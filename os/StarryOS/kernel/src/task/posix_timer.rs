@@ -1,6 +1,8 @@
 //! POSIX per-process interval timers (timer_create, timer_settime, etc.)
 
 use alloc::collections::BTreeMap;
+#[cfg(any(axtest, test))]
+use alloc::sync::Weak;
 use core::{
     mem,
     ops::Bound::{Excluded, Included, Unbounded},
@@ -14,14 +16,20 @@ use linux_raw_sys::general::{
     CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID,
     SIGEV_NONE, SIGEV_SIGNAL,
 };
-use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
 
+#[cfg(any(axtest, test))]
+use super::PidIdentity;
 use super::timer::{AlarmChange, AlarmSlot, AlarmTarget, AlarmToken};
 use crate::{StarryError, StarryResult, sync::PiMutex};
 
 const EXPIRY_SCAN_BATCH_SIZE: usize = 16;
 const MAX_TIMER_NANOS: u64 = i64::MAX as u64;
+
+#[cfg(any(axtest, test))]
+fn test_alarm_target() -> AlarmTarget {
+    AlarmTarget::Process(Weak::<PidIdentity>::new())
+}
 
 #[derive(Clone, Copy)]
 struct TimerClockSnapshot {
@@ -90,8 +98,7 @@ impl ExpiryScanBatch {
         }
     }
 
-    fn apply(self, pid: Pid, emitter: &mut impl FnMut(SignalInfo)) {
-        let target = AlarmTarget::Process(pid);
+    fn apply(self, target: AlarmTarget, emitter: &mut impl FnMut(SignalInfo)) {
         for outcome in self.outcomes {
             outcome.apply(target.clone(), emitter);
         }
@@ -318,7 +325,7 @@ impl PosixTimerTable {
     /// Set (arm/disarm) a timer. Returns the old (interval, remaining) in nanos.
     pub fn settime(
         &self,
-        pid: Pid,
+        target: AlarmTarget,
         id: i32,
         flags: i32,
         spec: TimerSpec,
@@ -390,7 +397,7 @@ impl PosixTimerTable {
 
         // The alarm queue is a sleeping task-context boundary. Never enter it
         // while the per-process timer metadata is locked.
-        alarm_change.apply(AlarmTarget::Process(pid));
+        alarm_change.apply(target);
 
         Ok(old)
     }
@@ -415,28 +422,28 @@ impl PosixTimerTable {
     /// Called from the alarm_task via poll_timer.
     /// `task` is the user task that owns these timers (needed to
     /// re-register alarms for periodic timers).
-    pub fn poll_expired(&self, pid: Pid, mut emitter: impl FnMut(SignalInfo)) {
+    pub fn poll_expired(&self, target: AlarmTarget, mut emitter: impl FnMut(SignalInfo)) {
         if !self.has_armed_timers() {
             return;
         }
-        self.poll_expired_at(pid, None, clock_now_ns, &mut emitter);
+        self.poll_expired_at(target, None, clock_now_ns, &mut emitter);
     }
 
     pub(crate) fn poll_expired_for(
         &self,
-        pid: Pid,
+        target: AlarmTarget,
         token: &AlarmToken,
         mut emitter: impl FnMut(SignalInfo),
     ) {
         if !self.has_armed_timers() {
             return;
         }
-        self.poll_expired_at(pid, Some(token), clock_now_ns, &mut emitter);
+        self.poll_expired_at(target, Some(token), clock_now_ns, &mut emitter);
     }
 
     fn poll_expired_at(
         &self,
-        pid: Pid,
+        target: AlarmTarget,
         trigger: Option<&AlarmToken>,
         now_ns: impl FnMut(u32) -> u64,
         mut emitter: impl FnMut(SignalInfo),
@@ -455,7 +462,7 @@ impl PosixTimerTable {
             let batch = self.collect_expiry_batch(cursor, upper_id, trigger, clocks);
             let complete = batch.complete;
             let next_cursor = batch.last_scanned_id;
-            batch.apply(pid, &mut emitter);
+            batch.apply(target.clone(), &mut emitter);
             if complete {
                 break;
             }
@@ -541,7 +548,7 @@ pub(crate) fn posix_timer_active_gate_rules_hold_for_test() -> bool {
     }
 
     let armed = timers.settime(
-        1,
+        test_alarm_target(),
         id,
         0,
         TimerSpec {
@@ -556,7 +563,7 @@ pub(crate) fn posix_timer_active_gate_rules_hold_for_test() -> bool {
     }
 
     let disarmed = timers.settime(
-        1,
+        test_alarm_target(),
         id,
         0,
         TimerSpec {
@@ -592,7 +599,7 @@ pub(crate) fn posix_timer_clock_sampling_rules_hold_for_test() -> bool {
 
     let sampled_outside_metadata = Cell::new(false);
     table.poll_expired_at(
-        1,
+        test_alarm_target(),
         None,
         |_| {
             sampled_outside_metadata.set(table.timers.try_lock().is_some());
@@ -611,7 +618,7 @@ pub(crate) fn posix_timer_saturating_timespec_rules_hold_for_test() -> bool {
     };
     if table
         .settime(
-            1,
+            test_alarm_target(),
             id,
             1,
             TimerSpec {
@@ -659,7 +666,7 @@ pub(crate) fn posix_timer_expiry_batch_rules_hold_for_test() -> bool {
     let emitted = Cell::new(0);
     let callbacks_outside_metadata = Cell::new(true);
     table.poll_expired_at(
-        1,
+        test_alarm_target(),
         None,
         |_| 2,
         |_| {
@@ -709,7 +716,7 @@ pub(crate) fn posix_timer_stale_expiry_signal_is_suppressed_for_test() -> bool {
     }
     if table
         .settime(
-            1,
+            test_alarm_target(),
             1,
             0,
             TimerSpec {
@@ -725,7 +732,7 @@ pub(crate) fn posix_timer_stale_expiry_signal_is_suppressed_for_test() -> bool {
     }
 
     let emitted = Cell::new(0);
-    batch.apply(1, &mut |_| emitted.set(emitted.get() + 1));
+    batch.apply(test_alarm_target(), &mut |_| emitted.set(emitted.get() + 1));
     emitted.get() == 0
 }
 
@@ -738,7 +745,7 @@ mod tests {
 
     use super::{
         AlarmSlot, EXPIRY_SCAN_BATCH_SIZE, ExpiryOutcome, ExpiryScanBatch, PosixTimer,
-        PosixTimerTable,
+        PosixTimerTable, test_alarm_target,
     };
 
     #[test]
@@ -762,7 +769,7 @@ mod tests {
         let callback_ran = Cell::new(false);
 
         table.poll_expired_at(
-            1,
+            test_alarm_target(),
             None,
             |_| 2,
             |_| {
@@ -827,7 +834,7 @@ mod tests {
         }
 
         table.poll_expired_at(
-            1,
+            test_alarm_target(),
             None,
             |_| {
                 assert!(

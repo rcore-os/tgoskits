@@ -12,7 +12,9 @@ use core::{
 
 use ax_std::os::arceos::task as scheduler;
 
-use super::Thread;
+use super::{PidIdentity, PidSnapshot, Thread};
+#[cfg(target_arch = "aarch64")]
+use super::{PidNamespaceId, TgidNumber, TidNumber};
 use crate::sync::{NoPreemptIrqSave, PiMutex};
 
 const TASK_COMM_LEN: usize = 16;
@@ -50,16 +52,11 @@ impl PreparedUserTask {
     ///
     /// The view is always dropped before this method returns, so callers cannot
     /// accidentally retain an extra scheduler handle that would prevent
-    /// [`Self::publish`] failure or token drop from reaping the prepared record.
+    /// [`Self::stage`] failure or token drop from reaping the prepared record.
     #[cfg(target_arch = "aarch64")]
     pub fn with_task<R>(&self, operation: impl FnOnce(&UserTaskRef) -> R) -> R {
         let task = finish_published_user_thread(self.scheduler.thread_handle());
         operation(&task)
-    }
-
-    /// Makes the fully registered task runnable.
-    pub fn publish(self) -> Result<UserTaskRef, scheduler::TaskError> {
-        Ok(self.stage()?.activate())
     }
 
     /// Completes fallible scheduler placement while keeping user entry gated.
@@ -126,6 +123,15 @@ impl UserTaskRef {
     /// Returns the Starry thread attached through the checked extension.
     pub fn as_thread(&self) -> &Thread {
         self.extension().thread.as_ref()
+    }
+
+    pub(crate) fn transfer_irq_pid_identity(
+        &self,
+        identity: &PidIdentity,
+    ) -> crate::StarryResult<()> {
+        self.extension()
+            .irq_identity
+            .transfer_to_process_identity(identity)
     }
 
     /// Returns a shared snapshot of the diagnostic task name.
@@ -260,10 +266,6 @@ pub struct WeakUserTaskRef {
 }
 
 impl WeakUserTaskRef {
-    pub(crate) fn scheduler_id(self) -> scheduler::ThreadId {
-        self.scheduler_id
-    }
-
     /// Upgrades the reference only while the same slot generation is live.
     pub fn upgrade(self) -> Result<Option<UserTaskRef>, scheduler::TaskError> {
         let Some(handle) =
@@ -313,14 +315,42 @@ pub(crate) struct UserTaskIrqView {
 }
 
 impl UserTaskIrqView {
-    /// Returns the Linux thread ID cached before the task became runnable.
-    pub(crate) fn tid(&self) -> u32 {
-        self.extension().thread.tid()
+    /// Returns the stable PID generation cached before the task became runnable.
+    pub(crate) fn pid_identity_id(&self) -> u64 {
+        self.extension()
+            .irq_identity
+            .thread_identity()
+            .identity_id()
+            .get()
     }
 
-    /// Returns the Linux thread-group ID cached before the task became runnable.
-    pub(crate) fn tgid(&self) -> u32 {
-        self.extension().irq_identity.tgid
+    /// Returns the Linux thread ID cached before the task became runnable.
+    pub(crate) fn tid(&self) -> u32 {
+        self.extension()
+            .irq_identity
+            .thread_identity()
+            .root_number()
+            .get()
+    }
+
+    /// Projects the current thread ID into `observer` without locks.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn visible_tid(&self, observer: PidNamespaceId) -> Option<TidNumber> {
+        self.extension()
+            .irq_identity
+            .thread_identity()
+            .visible_number(observer)
+            .map(TidNumber::from)
+    }
+
+    /// Projects the thread-group ID into `observer` without locks.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn visible_tgid(&self, observer: PidNamespaceId) -> Option<TgidNumber> {
+        self.extension()
+            .irq_identity
+            .process_identity
+            .visible_number(observer)
+            .map(TgidNumber::from)
     }
 
     /// Copies the lock-free Linux command-name snapshot into `output`.
@@ -501,18 +531,21 @@ pub fn might_sleep() {
     );
 }
 
-/// Creates and enqueues a Starry user thread with an owning address-space token.
-pub fn spawn_user_thread<F>(
+/// Prepares a Starry user thread with the scheduler's default policy.
+///
+/// The caller may stage the task, publish Linux-visible identity state while
+/// the runtime start gate remains closed, and activate it as the final step.
+pub fn prepare_user_thread<F>(
     entry: F,
     name: String,
     stack_size: usize,
     thread: Box<Thread>,
-) -> Result<UserTaskRef, scheduler::TaskError>
+) -> Result<PreparedUserTask, scheduler::TaskError>
 where
     F: FnOnce() + Send + 'static,
 {
     let address_space = thread.proc_data.scheduler_address_space()?;
-    spawn_user_thread_inner(
+    prepare_user_thread_inner(
         entry,
         name,
         stack_size,
@@ -608,19 +641,6 @@ impl StarryContextState {
     }
 }
 
-fn spawn_user_thread_inner<F>(
-    entry: F,
-    name: String,
-    stack_size: usize,
-    thread: Box<Thread>,
-    context_state: StarryContextState,
-) -> Result<UserTaskRef, scheduler::TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    prepare_user_thread_inner(entry, name, stack_size, thread, context_state)?.publish()
-}
-
 fn prepare_user_thread_inner<F>(
     entry: F,
     name: String,
@@ -710,7 +730,9 @@ struct StarryUserTaskExtension {
 }
 
 struct IrqTaskIdentity {
-    tgid: u32,
+    thread_identity: PidSnapshot,
+    process_identity: PidSnapshot,
+    uses_process_identity: AtomicBool,
     comm_sequence: AtomicU32,
     comm: [AtomicU8; TASK_COMM_LEN],
 }
@@ -718,12 +740,30 @@ struct IrqTaskIdentity {
 impl IrqTaskIdentity {
     fn new(thread: &Thread, name: &str) -> Self {
         let identity = Self {
-            tgid: thread.proc_data.proc.pid(),
+            thread_identity: thread.pid_identity().snapshot(),
+            process_identity: thread.proc_data.identity().snapshot(),
+            uses_process_identity: AtomicBool::new(false),
             comm_sequence: AtomicU32::new(0),
             comm: core::array::from_fn(|_| AtomicU8::new(0)),
         };
         identity.set_comm(name);
         identity
+    }
+
+    fn thread_identity(&self) -> &PidSnapshot {
+        if self.uses_process_identity.load(Ordering::Acquire) {
+            &self.process_identity
+        } else {
+            &self.thread_identity
+        }
+    }
+
+    fn transfer_to_process_identity(&self, identity: &PidIdentity) -> crate::StarryResult<()> {
+        if self.process_identity.identity_id() != identity.id() {
+            return Err(crate::StarryError::BadState);
+        }
+        self.uses_process_identity.store(true, Ordering::Release);
+        Ok(())
     }
 
     fn set_comm(&self, name: &str) {

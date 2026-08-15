@@ -6,6 +6,7 @@ use core::{
 };
 
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
+use ax_memory_addr::PAGE_SIZE_4K;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference, VfsError};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
@@ -19,7 +20,10 @@ use crate::{
     mm::{VmMutPtr, VmPtr, vm_load, vm_load_path_string},
     pseudofs::{Device, dev::tty},
     sync::SpinRwLock,
-    task::{get_task, resolve_user_pid},
+    task::{
+        TgidNumber, TidNumber, current_pid_view, get_user_process_data_by_number,
+        get_user_task_by_number,
+    },
 };
 
 /// Convert open flags to [`OpenOptions`].
@@ -218,16 +222,24 @@ fn mount_table_namespace(
     };
     let path = file.location().absolute_path().ok()?.to_string();
     let components: Vec<_> = path.trim_start_matches('/').split('/').collect();
-    let pid = match components.as_slice() {
+    let tid = match components.as_slice() {
         ["proc", "mountinfo" | "mounts"] | ["proc", "self", "mountinfo" | "mounts"] => {
-            current.as_thread().proc_data.proc.pid()
+            TidNumber::from(
+                current_pid_view()
+                    .visible_process_number(&current.as_thread().proc_data.identity())?
+                    .pid_number(),
+            )
         }
-        ["proc", pid, "mountinfo" | "mounts"] => pid.parse().ok()?,
-        ["proc", _, "task", tid, "mountinfo" | "mounts"] => tid.parse().ok()?,
+        ["proc", pid, "mountinfo" | "mounts"] => {
+            TidNumber::try_from(pid.parse::<u32>().ok()?).ok()?
+        }
+        ["proc", _, "task", tid, "mountinfo" | "mounts"] => {
+            TidNumber::try_from(tid.parse::<u32>().ok()?).ok()?
+        }
         _ => return None,
     };
 
-    let task = get_task(pid).ok()?;
+    let task = get_user_task_by_number(tid).ok()?;
     let fs_context = task.as_thread().clone_scope_item(&FS_CONTEXT);
     Some(fs_context.lock().mount_namespace().clone())
 }
@@ -311,23 +323,19 @@ fn try_open_nsfd(
         return None;
     }
 
-    let pid = if pid_str == "self" {
-        current.as_thread().proc_data.proc.pid()
+    let tgid = if pid_str == "self" {
+        current_pid_view().visible_process_number(&current.as_thread().proc_data.identity())?
     } else {
-        let local_pid = pid_str.parse().ok()?;
-        match resolve_user_pid(current, local_pid) {
-            Ok(pid) => pid,
-            Err(_) => return Some(Err(crate::StarryError::NotFound)),
-        }
+        TgidNumber::try_from(pid_str.parse::<u32>().ok()?).ok()?
     };
 
-    let proc_data = match crate::task::get_process_data(pid) {
+    let proc_data = match get_user_process_data_by_number(tgid) {
         Ok(p) => p,
         Err(_) => return Some(Err(StarryError::NotFound)),
     };
 
     let mnt_fs_ns = if ns_type_str == "mnt" {
-        let task = match get_task(pid) {
+        let task = match get_user_task_by_number(TidNumber::from(tgid.pid_number())) {
             Ok(task) => task,
             Err(_) => return Some(Err(StarryError::NotFound)),
         };
@@ -346,7 +354,7 @@ fn try_open_nsfd(
             ns: nsproxy.mnt_ns.clone(),
             fs_ns: mnt_fs_ns.unwrap(),
         },
-        "pid" => NsFd::Pid(nsproxy.pid_ns.clone()),
+        "pid" => NsFd::Pid(proc_data.identity().active_namespace()),
         "net" => NsFd::Net(nsproxy.net_ns.clone()),
         "user" => NsFd::User(nsproxy.user_ns.clone()),
         "cgroup" => NsFd::Cgroup(nsproxy.cgroup_ns.clone()),
@@ -486,6 +494,9 @@ pub fn sys_openat2(
     let base_size = size_of::<OpenHow>();
     if size < base_size {
         return Err(StarryError::InvalidInput);
+    }
+    if size > PAGE_SIZE_4K {
+        return Err(StarryError::ArgumentListTooLong);
     }
 
     let how_value = how.vm_read(current)?;
@@ -632,7 +643,7 @@ pub fn sys_close_range(
     // fd — every `dup2()`/`dup3()` that replaces an open fd (shell pipeline
     // setup) hangs. Mirrors the `close_all_fds` / execve CLOEXEC pattern.
     let mut closing = alloc::vec::Vec::new();
-    if let Some(max_index) = fd_table.ids().next_back() {
+    if let Some(max_index) = fd_table.last_id() {
         for fd in first..=last.min(max_index as u32) {
             if cloexec {
                 if let Some(f) = fd_table.get_mut(fd as _) {
@@ -718,6 +729,12 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> StarryResult<isiz
         .cloned()
         .ok_or(StarryError::BadFileDescriptor)?;
     f.cloexec = flags.contains(Dup3Flags::O_CLOEXEC);
+
+    // Linux returns EBUSY when dup2/dup3 races an fd allocation that has
+    // reserved this number but has not installed its file yet.
+    if fd_table.is_reserved(new_fd as _) {
+        return Err(StarryError::ResourceBusy);
+    }
 
     let prev = fd_table.remove(new_fd as _);
     fd_table

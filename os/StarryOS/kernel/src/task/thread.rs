@@ -9,8 +9,9 @@ use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWr
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
 use super::{
-    CpuTimeAccounting, CpuTimeDelta, Cred, ProcessData, RttimeWatchdog, SeccompDecision,
-    SeccompState, SeccompStateStore, SockFilter, TimerState,
+    CpuTimeAccounting, CpuTimeDelta, Cred, PidIdentity, PidNamespaceRef, PidRoleLease, ProcessData,
+    ROOT_PID_NS, RttimeWatchdog, SeccompDecision, SeccompState, SeccompStateStore, SockFilter, Tid,
+    TidNumber, TimerState, UserTaskRef,
     bounded_stack::BoundedStack,
     futex::ThreadWaitState,
     interruption::{InterruptSnapshot, InterruptState},
@@ -24,19 +25,23 @@ const KRETPROBE_STACK_CAPACITY: usize = 16;
 
 /// User-visible and scheduler-visible identities retained by one Linux thread.
 struct ThreadIdentity {
-    user_tid: AtomicU32,
     scheduler: SchedulerIdentity,
     nice: AtomicI32,
 }
 
 impl ThreadIdentity {
-    fn new(tid: u32) -> Self {
+    fn new() -> Self {
         Self {
-            user_tid: AtomicU32::new(tid),
             scheduler: SchedulerIdentity::unbound(),
             nice: AtomicI32::new(0),
         }
     }
+}
+
+/// Stable Linux identity ownership retained independently from scheduler IDs.
+struct ThreadPidOwnership {
+    identity: Arc<PidIdentity>,
+    tid_lease: Option<PidRoleLease<Tid>>,
 }
 
 /// Scope-local resources and their task-context serialization.
@@ -235,6 +240,7 @@ impl NextSignalCheckBlock {
 /// The Starry state attached to one generation-bearing scheduler thread.
 pub struct Thread {
     identity: ThreadIdentity,
+    pid: IrqMutex<ThreadPidOwnership>,
 
     /// The process data shared by all threads in the process.
     pub proc_data: Arc<ProcessData>,
@@ -251,15 +257,24 @@ pub struct Thread {
 impl Thread {
     /// Creates a new thread state object before the scheduler identity is bound.
     pub fn new(
-        tid: u32,
+        identity: Arc<PidIdentity>,
+        tid_lease: PidRoleLease<Tid>,
         proc_data: Arc<ProcessData>,
         parent_cred: Option<Arc<Cred>>,
         signal_mask: SignalSet,
         scope: Scope,
     ) -> Box<Self> {
+        let tid = identity
+            .visible_number(&ROOT_PID_NS)
+            .expect("new thread identity has no root PID binding")
+            .get();
         let process_signal = proc_data.signal.clone();
         Box::new(Self {
-            identity: ThreadIdentity::new(tid),
+            identity: ThreadIdentity::new(),
+            pid: IrqMutex::new(ThreadPidOwnership {
+                identity,
+                tid_lease: Some(tid_lease),
+            }),
             proc_data,
             scope: ThreadScope::new(scope),
             accounting: ThreadAccounting::new(),
@@ -298,15 +313,80 @@ impl Thread {
         self.scope.clone_item(item)
     }
 
-    /// Returns the user-visible TID, which may differ from the scheduler ID
-    /// after a non-leader `execve`.
-    pub fn tid(&self) -> u32 {
-        self.identity.user_tid.load(Ordering::Acquire)
+    /// Returns the root-namespace TID, independent from the scheduler ID.
+    pub fn tid(&self) -> TidNumber {
+        self.tid_number()
     }
 
-    /// Transfers the user-visible leader TID during `de_thread`.
-    pub(crate) fn set_tid(&self, tid: u32) {
-        self.identity.user_tid.store(tid, Ordering::Release);
+    pub(crate) fn tid_number(&self) -> TidNumber {
+        TidNumber::from(
+            self.pid
+                .lock()
+                .identity
+                .visible_number(&ROOT_PID_NS)
+                .expect("live thread lost its root PID binding"),
+        )
+    }
+
+    /// Returns this thread's stable PID generation.
+    pub(crate) fn pid_identity(&self) -> Arc<PidIdentity> {
+        self.pid.lock().identity.clone()
+    }
+
+    /// Returns the active PID namespace derived from the identity itself.
+    pub(crate) fn active_pid_namespace(&self) -> PidNamespaceRef {
+        self.pid.lock().identity.active_namespace()
+    }
+
+    /// Returns the TID as observed from this thread's active namespace.
+    pub(crate) fn user_tid(&self) -> TidNumber {
+        let pid = self.pid.lock();
+        let active = pid.identity.active_namespace();
+        TidNumber::from(
+            pid.identity
+                .visible_number(&active)
+                .expect("thread identity is not visible from its active namespace"),
+        )
+    }
+
+    /// Publishes the runtime link immediately before scheduler activation.
+    pub(crate) fn attach_pid_task(&self, task: &UserTaskRef) {
+        self.pid.lock().identity.attach_task(task);
+    }
+
+    /// Releases the runtime link and TID role after scheduler-visible exit.
+    pub(crate) fn retire_pid(&self) {
+        let (identity, lease) = {
+            let mut pid = self.pid.lock();
+            (pid.identity.clone(), pid.tid_lease.take())
+        };
+        identity.mark_task_exited();
+        drop(lease);
+    }
+
+    /// Atomically transfers the leader identity to this runtime task at exec.
+    pub(crate) fn transfer_pid_identity(
+        &self,
+        task: &UserTaskRef,
+        identity: Arc<PidIdentity>,
+        tid_lease: PidRoleLease<Tid>,
+    ) {
+        let old = {
+            let mut pid = self.pid.lock();
+            let _irq_guard = NoPreemptIrqSave::new();
+            task.transfer_irq_pid_identity(&identity)
+                .expect("exec leader identity differs from the cached process identity");
+            core::mem::replace(
+                &mut *pid,
+                ThreadPidOwnership {
+                    identity: identity.clone(),
+                    tid_lease: Some(tid_lease),
+                },
+            )
+        };
+        old.identity.mark_task_exited();
+        drop(old);
+        identity.transfer_task(task);
     }
 
     /// Returns this Linux task's retained nice value.
@@ -320,6 +400,7 @@ impl Thread {
     }
 
     /// Returns the generation-bearing scheduler identity, if bound.
+    #[cfg(target_arch = "aarch64")]
     pub fn scheduler_id(&self) -> Option<ax_std::os::arceos::task::ThreadId> {
         self.identity.scheduler.get()
     }
@@ -642,7 +723,7 @@ impl Thread {
         let mut tids = self.proc_data.proc.threads();
         tids.sort_unstable();
         for tid in &tids {
-            if let Ok(task) = ops::get_task(*tid) {
+            if let Ok(task) = ops::get_task_by_number(*tid) {
                 task.as_thread().set_cred_single(new_arc.clone());
             }
         }
@@ -659,7 +740,7 @@ impl Thread {
         let mut tids = self.proc_data.proc.threads();
         tids.sort_unstable();
         for tid in &tids {
-            if let Ok(task) = ops::get_task(*tid) {
+            if let Ok(task) = ops::get_task_by_number(*tid) {
                 let thread = task.as_thread();
                 if core::ptr::eq(thread, self) {
                     continue;

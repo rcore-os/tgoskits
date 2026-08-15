@@ -10,35 +10,23 @@ use core::{
 };
 
 use ax_lazyinit::LazyInit;
-#[cfg(feature = "multitask")]
-use ax_runtime::sync::PiMutex as ThreadGroupLock;
-// Thread-group state has the same task-context contract as relationship state:
-// PI in multitask kernels, preemption-safe spinning in single-task builds.
-#[cfg(not(feature = "multitask"))]
-use ax_runtime::sync::SpinLock as ThreadGroupLock;
 
-use crate::{
-    Pid, ProcessGroup, Session,
-    relations::{ChildRelations, GroupMoveScope, ProcessRelationTxn, RelationLock},
+use super::{
+    ChildRelations, GroupMoveScope, ProcessGroup, ProcessRelationTxn, RelationLock, Session,
 };
+use crate::{
+    sync::PiMutex,
+    task::{PidIdentity, TgidNumber, TidNumber},
+};
+
+type ThreadGroupLock<T> = PiMutex<T>;
 
 #[derive(Default)]
 pub(crate) struct ThreadGroup {
-    pub(crate) threads: BTreeSet<Pid>,
+    pub(crate) threads: BTreeSet<TidNumber>,
     pub(crate) exit_code: i32,
     pub(crate) group_exited: bool,
     pub(crate) exited_cpu_time: ProcessCpuTime,
-}
-
-impl ThreadGroup {
-    fn begin_group_exit(&mut self, exit_code: i32) -> bool {
-        if self.group_exited || self.threads.is_empty() {
-            return false;
-        }
-        self.group_exited = true;
-        self.exit_code = exit_code;
-        true
-    }
 }
 
 /// CPU time accumulated by threads that have exited from a process.
@@ -122,87 +110,67 @@ pub enum ThreadExit {
 
 /// A process.
 pub struct Process {
-    pid: Pid,
+    pid: TgidNumber,
+    identity: Weak<PidIdentity>,
     is_child_subreaper: AtomicBool,
     pub(crate) tg: ThreadGroupLock<ThreadGroup>,
 
     pub(crate) children: RelationLock<ChildRelations>,
     pub(crate) parent: RelationLock<Weak<Process>>,
-
     pub(crate) group: RelationLock<Arc<ProcessGroup>>,
 }
 
-/// A forked process whose parent/child and process-group links are not visible.
-///
-/// Clone may allocate address spaces, contexts, and Linux identities while
-/// this token exists. Dropping it has no externally visible effect.
+/// A forked process whose topology is not visible until commit.
 pub struct PreparedFork {
     process: Arc<Process>,
 }
 
 impl PreparedFork {
-    /// Borrows the process while clone prepares its remaining resources.
     pub fn process(&self) -> &Arc<Process> {
         &self.process
     }
 
-    /// Publishes the child into its parent and inherited process group.
-    ///
-    /// Publication fails without changing either collection if the PID was
-    /// reused while clone was preparing resources.
     pub fn publish(self) -> Option<PublishedFork> {
         let process = self.process;
-        if !ProcessRelationTxn::publish(&process) {
-            return None;
-        }
-        Some(PublishedFork {
+        ProcessRelationTxn::publish(&process).then_some(PublishedFork {
             process: Some(process),
         })
     }
 }
 
-/// Rollback token for a fork published before its scheduler thread is runnable.
+/// Rollback token for topology published before task activation.
 pub struct PublishedFork {
     process: Option<Arc<Process>>,
 }
 
-/// Children frozen and reparented by one process-exit relationship transaction.
 pub struct ProcessExitRelations {
     reparented_children: Vec<Arc<Process>>,
 }
 
 impl ProcessExitRelations {
-    /// Consumes the transaction result and returns the exact former children.
     pub fn into_reparented_children(self) -> Vec<Arc<Process>> {
         self.reparented_children
     }
 }
 
-/// Children retained by a PID namespace reaper while its namespace shuts down.
-///
-/// New fork publication is closed by the transaction, while existing
-/// descendants remain attached so the namespace reaper can terminate and reap
-/// them before its own identity becomes externally reapable.
 pub struct ProcessNamespaceShutdownRelations {
     retained_children: Vec<Arc<Process>>,
 }
 
 impl ProcessNamespaceShutdownRelations {
-    /// Consumes the transaction result and returns the exact retained children.
     pub fn into_retained_children(self) -> Vec<Arc<Process>> {
         self.retained_children
     }
 }
 
 impl PublishedFork {
-    /// Borrows the published child.
+    #[cfg(test)]
     pub fn process(&self) -> &Arc<Process> {
         self.process
             .as_ref()
             .expect("published fork token must own its process")
     }
 
-    /// Transfers the child to the normal process exit and reap lifecycle.
     pub fn commit(mut self) -> Arc<Process> {
         self.process
             .take()
@@ -213,24 +181,25 @@ impl PublishedFork {
 impl Drop for PublishedFork {
     fn drop(&mut self) {
         if let Some(process) = self.process.take() {
-            process.rollback_fork_publication();
+            ProcessRelationTxn::detach(&process);
         }
     }
 }
 
 impl Process {
-    /// The [`Process`] ID.
-    pub fn pid(&self) -> Pid {
+    /// The root-namespace thread-group ID of this process.
+    pub const fn pid(&self) -> TgidNumber {
         self.pid
     }
 
-    /// Returns `true` if the [`Process`] is the init process.
-    ///
-    /// This is a convenience method for checking if the [`Process`]
-    /// [`Arc::ptr_eq`]s with the init process, which is cheaper than
-    /// calling [`init_proc`] or testing if [`Process::parent`] is `None`.
-    pub fn is_init(self: &Arc<Self>) -> bool {
-        Arc::ptr_eq(self, INIT_PROC.get().unwrap())
+    pub(crate) const fn pid_number(&self) -> TgidNumber {
+        self.pid
+    }
+
+    pub(crate) fn identity(&self) -> Arc<PidIdentity> {
+        self.identity
+            .upgrade()
+            .expect("process topology outlived its PID identity")
     }
 
     /// Returns `true` if this process acts as a child subreaper.
@@ -259,6 +228,7 @@ impl Process {
     ///
     /// This is an advisory snapshot. A caller that reparents children must use
     /// [`Self::try_begin_exit_relations`] to commit against the same state.
+    #[cfg(test)]
     pub fn accepts_child_publication(&self) -> bool {
         self.children.lock().is_open()
     }
@@ -307,20 +277,19 @@ impl Process {
     /// be a [`ProcessGroup`] leader.
     ///
     /// Checking [`Session`] conflicts is unnecessary.
-    pub fn create_session(
-        self: &Arc<Self>,
-        identity: axnsproxy::JobControlIdRef,
-    ) -> Option<(Arc<Session>, Arc<ProcessGroup>)> {
-        assert_eq!(identity.global_pid(), self.pid as u64);
+    pub fn create_session(self: &Arc<Self>) -> Option<(Arc<Session>, Arc<ProcessGroup>)> {
         {
             let group = self.group.lock();
-            if group.session.sid() == self.pid {
+            if group.session.sid_number().pid_number() == self.pid.pid_number()
+                || group.pgid_number().pid_number() == self.pid.pid_number()
+            {
                 return None;
             }
         }
 
-        let new_session = Session::new(identity.clone());
-        let new_group = ProcessGroup::get_or_create(identity, &new_session);
+        let identity = self.identity();
+        let new_session = Session::new(identity.clone()).ok()?;
+        let new_group = ProcessGroup::get_or_create(identity, &new_session).ok()?;
         self.set_group(&new_group);
 
         Some((new_session, new_group))
@@ -335,20 +304,15 @@ impl Process {
     ///
     /// The caller has to ensure that the new [`ProcessGroup`] does not conflict
     /// with any existing [`ProcessGroup`].
-    pub fn create_group(
-        self: &Arc<Self>,
-        identity: axnsproxy::JobControlIdRef,
-    ) -> Option<Arc<ProcessGroup>> {
-        assert_eq!(identity.global_pid(), self.pid as u64);
+    pub fn create_group(self: &Arc<Self>) -> Option<Arc<ProcessGroup>> {
         let session = {
             let group = self.group.lock();
-            if group.pgid() == self.pid {
+            if group.pgid_number().pid_number() == self.pid.pid_number() {
                 return None;
             }
             group.session.clone()
         };
-
-        let new_group = ProcessGroup::get_or_create(identity, &session);
+        let new_group = ProcessGroup::get_or_create(self.identity(), &session).ok()?;
         self.set_group(&new_group);
 
         Some(new_group)
@@ -369,22 +333,8 @@ impl Process {
 /// Threads
 impl Process {
     /// Adds a thread to this [`Process`] with the given thread ID.
-    pub fn add_thread(self: &Arc<Self>, tid: Pid) {
+    pub fn add_thread(self: &Arc<Self>, tid: TidNumber) {
         self.tg.lock().threads.insert(tid);
-    }
-
-    /// Removes a thread that was registered for a child not yet published.
-    ///
-    /// Unlike [`Self::exit_thread`], this rollback operation does not alter
-    /// process exit state. It must only be used while the child cannot run.
-    #[must_use]
-    pub fn remove_unpublished_thread(self: &Arc<Self>, tid: Pid) -> bool {
-        let mut tg = self.tg.lock();
-        assert!(
-            !tg.group_exited,
-            "cannot roll back a thread after group exit started"
-        );
-        tg.threads.remove(&tid)
     }
 
     /// Removes a thread from this [`Process`], records its final CPU time, and
@@ -396,7 +346,7 @@ impl Process {
     /// its CPU time.
     pub fn exit_thread(
         self: &Arc<Self>,
-        tid: Pid,
+        tid: TidNumber,
         exit_code: i32,
         cpu_time: ProcessCpuTime,
     ) -> ThreadExit {
@@ -421,18 +371,8 @@ impl Process {
     }
 
     /// Get all threads in this [`Process`].
-    pub fn threads(&self) -> Vec<Pid> {
-        loop {
-            let thread_count = self.tg.lock().threads.len();
-            let mut threads = Vec::with_capacity(thread_count);
-            let thread_group = self.tg.lock();
-            if threads.capacity() < thread_group.threads.len() {
-                drop(thread_group);
-                continue;
-            }
-            threads.extend(thread_group.threads.iter().copied());
-            return threads;
-        }
+    pub fn threads(&self) -> Vec<TidNumber> {
+        self.tg.lock().threads.iter().copied().collect()
     }
 
     /// Renames a thread in the thread group.
@@ -442,15 +382,10 @@ impl Process {
     /// `gettid() == getpid()` holds in the new image. We swap `old_tid` for
     /// `new_tid` atomically inside the thread-group lock so there is no
     /// instant in which the caller is unrepresented in the group.
-    pub fn rename_thread(self: &Arc<Self>, old_tid: Pid, new_tid: Pid) {
+    pub fn rename_thread(self: &Arc<Self>, old_tid: TidNumber, new_tid: TidNumber) {
         let mut tg = self.tg.lock();
         tg.threads.remove(&old_tid);
         tg.threads.insert(new_tid);
-    }
-
-    /// Returns `true` if the [`Process`] is group exited.
-    pub fn is_group_exited(&self) -> bool {
-        self.tg.lock().group_exited
     }
 
     /// Starts a process-wide exit if one is not already in progress.
@@ -458,29 +393,14 @@ impl Process {
     /// Returns a snapshot of the thread group at the point where the group-exit
     /// state was first published. Later exiting threads must not overwrite the
     /// recorded process exit code.
-    pub fn start_group_exit(&self, exit_code: i32) -> Option<Vec<Pid>> {
-        loop {
-            let thread_count = self.tg.lock().threads.len();
-            let mut threads = Vec::with_capacity(thread_count);
-            let mut thread_group = self.tg.lock();
-            if thread_group.group_exited {
-                return None;
-            }
-            if threads.capacity() < thread_group.threads.len() {
-                drop(thread_group);
-                continue;
-            }
-            if !thread_group.begin_group_exit(exit_code) {
-                return None;
-            }
-            threads.extend(thread_group.threads.iter().copied());
-            return Some(threads);
+    pub fn start_group_exit(&self, exit_code: i32) -> Option<Vec<TidNumber>> {
+        let mut tg = self.tg.lock();
+        if tg.group_exited {
+            return None;
         }
-    }
-
-    /// Marks the [`Process`] as group exited.
-    pub fn group_exit(&self) {
-        self.tg.lock().group_exited = true;
+        tg.group_exited = true;
+        tg.exit_code = exit_code;
+        Some(tg.threads.iter().copied().collect())
     }
 
     /// The exit code of the [`Process`].
@@ -538,6 +458,7 @@ impl Process {
     /// OS PID-identity registry, not to this relationship-only component. The
     /// selected reaper must be an ancestor of this process; that hierarchy is
     /// also the lock order for their same-class `children` locks.
+    #[cfg(test)]
     pub fn reparent_children_to(self: &Arc<Self>, reaper: &Arc<Process>) {
         drop(self.begin_exit_relations(reaper));
     }
@@ -574,28 +495,32 @@ impl fmt::Debug for Process {
 
 /// Builder
 impl Process {
-    fn allocate(pid: Pid, parent: Option<Arc<Process>>) -> Arc<Process> {
-        let group = parent.as_ref().map_or_else(
+    fn allocate(identity: Arc<PidIdentity>, parent: Option<&Arc<Process>>) -> Arc<Process> {
+        let pid = TgidNumber::from(identity.root_number());
+        let group = parent.map_or_else(
             || {
-                let identity = axnsproxy::JobControlId::new_root(pid as u64);
-                let session = Session::new(identity.clone());
-                ProcessGroup::get_or_create(identity, &session)
+                let session = Session::new(identity.clone())
+                    .expect("init identity must acquire its unique SID role");
+                ProcessGroup::get_or_create(identity.clone(), &session)
+                    .expect("init identity must acquire its unique PGID role")
             },
             |p| p.group(),
         );
 
         Arc::new(Process {
             pid,
+            identity: Arc::downgrade(&identity),
             is_child_subreaper: AtomicBool::new(false),
             tg: ThreadGroupLock::new(ThreadGroup::default()),
             children: RelationLock::new(ChildRelations::new()),
-            parent: RelationLock::new(parent.as_ref().map(Arc::downgrade).unwrap_or_default()),
-            group: RelationLock::new(group.clone()),
+            parent: RelationLock::new(parent.map(Arc::downgrade).unwrap_or_default()),
+            group: RelationLock::new(group),
         })
     }
 
-    fn new(pid: Pid, parent: Option<Arc<Process>>) -> Arc<Process> {
-        let process = Self::allocate(pid, parent.clone());
+    fn new(identity: Arc<PidIdentity>, parent: Option<Arc<Process>>) -> Arc<Process> {
+        let process = Self::allocate(identity, parent.as_ref());
+
         if parent.is_some() {
             assert!(
                 ProcessRelationTxn::publish(&process),
@@ -612,33 +537,29 @@ impl Process {
     ///
     /// This function can be called multiple times, but
     /// [`ProcessBuilder::build`] on the the result must be called only once.
-    pub fn new_init(pid: Pid) -> Arc<Process> {
-        Self::new(pid, None)
+    pub fn new_init(identity: Arc<PidIdentity>) -> Arc<Process> {
+        Self::new(identity, None)
     }
 
     /// Creates a child [`Process`].
-    pub fn fork(self: &Arc<Process>, pid: Pid) -> Arc<Process> {
-        self.prepare_fork(pid)
+    #[cfg(test)]
+    pub fn fork(self: &Arc<Process>, identity: Arc<PidIdentity>) -> Arc<Process> {
+        self.prepare_fork(identity)
             .publish()
             .expect("fork PID must not already be visible")
             .commit()
     }
 
-    /// Allocates a child without publishing it to parent or group observers.
-    pub fn prepare_fork(self: &Arc<Process>, pid: Pid) -> PreparedFork {
+    pub fn prepare_fork(self: &Arc<Process>, identity: Arc<PidIdentity>) -> PreparedFork {
         PreparedFork {
-            process: Self::allocate(pid, Some(self.clone())),
+            process: Self::allocate(identity, Some(self)),
         }
     }
 
-    fn rollback_fork_publication(self: &Arc<Process>) {
-        ProcessRelationTxn::detach(self);
-    }
-
     /// Creates an isolated process for kernel axtests without replacing init.
-    #[cfg(axtest)]
-    pub fn new_for_axtest(pid: Pid) -> Arc<Process> {
-        let process = Self::allocate(pid, None);
+    #[cfg(any(test, axtest))]
+    pub fn new_for_axtest(identity: Arc<PidIdentity>) -> Arc<Process> {
+        let process = Self::allocate(identity, None);
         ProcessRelationTxn::attach_group(&process);
         process
     }
@@ -657,43 +578,71 @@ pub fn init_proc() -> Arc<Process> {
 mod tests {
     extern crate std;
 
-    use alloc::sync::Arc;
+    use alloc::{sync::Arc, vec::Vec};
     use std::{
-        sync::{Arc as StdArc, Barrier, OnceLock},
+        sync::{Arc as StdArc, Barrier},
         thread,
     };
 
-    #[cfg(feature = "multitask")]
     use ax_runtime::sync::LockdepMutexExt;
 
-    use super::{Process, ThreadGroup};
-    use crate::ProcessGroup;
+    use super::{PreparedFork, Process, ProcessGroup};
+    use crate::task::{PidIdentity, PidNamespaceRef, PidRoleLease, Tgid};
 
     const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
     const NESTED_GROUP_MEMBERS_LOCK_SUBCLASS: u32 = 1;
 
-    fn test_init() -> Arc<Process> {
-        static TEST_INIT: OnceLock<Arc<Process>> = OnceLock::new();
-        TEST_INIT.get_or_init(|| Process::new_init(1)).clone()
+    struct TestProcessFixture {
+        namespace: PidNamespaceRef,
+        identities: Vec<(Arc<PidIdentity>, PidRoleLease<Tgid>)>,
     }
 
-    #[cfg(feature = "multitask")]
+    impl TestProcessFixture {
+        fn new() -> Self {
+            Self {
+                namespace: crate::task::new_test_pid_namespace(),
+                identities: Vec::new(),
+            }
+        }
+
+        fn identity(&mut self) -> Arc<PidIdentity> {
+            let (identity, tgid) = crate::task::new_test_process_identity(&self.namespace);
+            self.identities.push((identity.clone(), tgid));
+            identity
+        }
+
+        fn init(&mut self) -> Arc<Process> {
+            let identity = self.identity();
+            Process::new_for_axtest(identity)
+        }
+
+        fn fork(&mut self, parent: &Arc<Process>) -> Arc<Process> {
+            parent.fork(self.identity())
+        }
+
+        fn prepare_fork(&mut self, parent: &Arc<Process>) -> PreparedFork {
+            parent.prepare_fork(self.identity())
+        }
+    }
+
     #[test]
-    fn multitask_thread_group_uses_a_sleepable_pi_lock() {
+    fn thread_group_uses_a_sleepable_pi_lock() {
         fn assert_pi_mutex<T>(_: &ax_runtime::sync::PiMutex<T>) {}
 
-        let process = test_init();
+        let mut fixture = TestProcessFixture::new();
+        let process = fixture.init();
         assert_pi_mutex(&process.tg);
     }
 
     #[test]
     fn orphan_never_becomes_invisible_while_reparenting() {
-        let init = test_init();
-        let reaper = init.fork(2);
+        let mut fixture = TestProcessFixture::new();
+        let init = fixture.init();
+        let reaper = fixture.fork(&init);
         reaper.set_child_subreaper(true);
-        let parent = reaper.fork(3);
-        let child = parent.fork(4);
-        let child_pid = child.pid();
+        let parent = fixture.fork(&reaper);
+        let child = fixture.fork(&parent);
+        let child_pid = child.pid_number();
 
         let reaper_children = reaper.children.lock();
         let start_exit = StdArc::new(Barrier::new(2));
@@ -709,7 +658,7 @@ mod tests {
         let parent_has_child = parent
             .children
             .lock_nested(NESTED_CHILDREN_LOCK_SUBCLASS)
-            .contains(child_pid);
+            .contains(child_pid.pid_number());
 
         drop(reaper_children);
         exit_thread.join().unwrap();
@@ -719,13 +668,14 @@ mod tests {
             "the old parent must retain the orphan while the reaper lock blocks publication"
         );
         assert!(Arc::ptr_eq(&reaper, &child.parent().unwrap()));
-        assert!(reaper.children.lock().contains(child_pid));
+        assert!(reaper.children.lock().contains(child_pid.pid_number()));
     }
 
     #[test]
     fn prepared_fork_is_invisible_until_publication() {
-        let init = test_init();
-        let prepared = init.prepare_fork(12);
+        let mut fixture = TestProcessFixture::new();
+        let init = fixture.init();
+        let prepared = fixture.prepare_fork(&init);
         let child = prepared.process();
 
         assert!(!init.children().iter().any(|proc| Arc::ptr_eq(proc, child)));
@@ -752,8 +702,9 @@ mod tests {
 
     #[test]
     fn dropping_prepared_fork_leaves_parent_and_group_unchanged() {
-        let init = test_init();
-        let prepared = init.prepare_fork(13);
+        let mut fixture = TestProcessFixture::new();
+        let init = fixture.init();
+        let prepared = fixture.prepare_fork(&init);
         let child = prepared.process().clone();
         drop(prepared);
 
@@ -769,10 +720,15 @@ mod tests {
 
     #[test]
     fn published_fork_rollback_repairs_a_partially_removed_identity() {
-        let init = test_init();
-        let published = init.prepare_fork(14).publish().unwrap();
+        let mut fixture = TestProcessFixture::new();
+        let init = fixture.init();
+        let published = fixture.prepare_fork(&init).publish().unwrap();
         let child = published.process().clone();
-        let removed = child.group().processes.lock().remove(child.pid());
+        let removed = child
+            .group()
+            .processes
+            .lock()
+            .remove(child.pid().pid_number());
         drop(removed);
 
         drop(published);
@@ -795,11 +751,11 @@ mod tests {
 
     #[test]
     fn group_move_never_makes_process_temporarily_invisible() {
-        let init = test_init();
-        let process = init.fork(91);
+        let mut fixture = TestProcessFixture::new();
+        let init = fixture.init();
+        let process = fixture.fork(&init);
         let source = process.group();
-        let target =
-            ProcessGroup::get_or_create(axnsproxy::JobControlId::new_root(92), &source.session());
+        let target = ProcessGroup::get_or_create(fixture.identity(), &source.session()).unwrap();
         let source_members = source.processes.lock();
         let start = StdArc::new(Barrier::new(2));
         let move_start = start.clone();
@@ -811,11 +767,11 @@ mod tests {
         });
 
         start.wait();
-        let source_has_process = source_members.get(process.pid()).is_some();
+        let source_has_process = source_members.get(process.pid().pid_number()).is_some();
         let target_has_process = target
             .processes
             .lock_nested(NESTED_GROUP_MEMBERS_LOCK_SUBCLASS)
-            .get(process.pid())
+            .get(process.pid().pid_number())
             .is_some();
 
         drop(source_members);
@@ -825,16 +781,29 @@ mod tests {
             source_has_process && !target_has_process,
             "the source membership must remain published while its lock blocks the move"
         );
-        assert!(source.processes.lock().get(process.pid()).is_none());
-        assert!(target.processes.lock().get(process.pid()).is_some());
+        assert!(
+            source
+                .processes
+                .lock()
+                .get(process.pid().pid_number())
+                .is_none()
+        );
+        assert!(
+            target
+                .processes
+                .lock()
+                .get(process.pid().pid_number())
+                .is_some()
+        );
     }
 
     #[test]
     fn closed_reaper_cannot_accept_new_orphans() {
-        let init = test_init();
-        let closing_reaper = init.fork(101);
-        let parent = closing_reaper.fork(102);
-        let child = parent.fork(103);
+        let mut fixture = TestProcessFixture::new();
+        let init = fixture.init();
+        let closing_reaper = fixture.fork(&init);
+        let parent = fixture.fork(&closing_reaper);
+        let child = fixture.fork(&parent);
 
         closing_reaper.reparent_children_to(&init);
         parent.reparent_children_to(&closing_reaper);
@@ -847,25 +816,15 @@ mod tests {
 
     #[test]
     fn namespace_reaper_shutdown_closes_prepared_child_publication() {
-        let init = test_init();
-        let namespace_reaper = init.fork(104);
-        let prepared = namespace_reaper.prepare_fork(105);
+        let mut fixture = TestProcessFixture::new();
+        let init = fixture.init();
+        let namespace_reaper = fixture.fork(&init);
+        let prepared = fixture.prepare_fork(&namespace_reaper);
 
         let relations = namespace_reaper.begin_namespace_shutdown_relations();
 
         assert!(relations.into_retained_children().is_empty());
         assert!(!namespace_reaper.accepts_child_publication());
         assert!(prepared.publish().is_none());
-    }
-
-    #[test]
-    fn empty_thread_group_cannot_restart_group_exit() {
-        let mut thread_group = ThreadGroup {
-            exit_code: 7,
-            ..ThreadGroup::default()
-        };
-
-        assert!(!thread_group.begin_group_exit(9));
-        assert_eq!(thread_group.exit_code, 7);
     }
 }

@@ -1,8 +1,8 @@
 use core::{future::poll_fn, task::Poll};
 
 use axfs_ng_vfs::{VfsError, VfsResult};
-use ktracepoint::TracePipeOps;
 
+use super::IdentityTraceBuffer;
 use crate::{
     pseudofs::DirectRwFsFileOps,
     sync::PiMutex,

@@ -7,8 +7,9 @@ pub mod future;
 mod interruption;
 mod job_control;
 mod ops;
-mod pid_namespace;
+mod pid;
 pub mod posix_timer;
+mod process;
 mod process_accounting;
 mod process_cgroup;
 mod process_identity;
@@ -25,7 +26,6 @@ mod signal;
 mod signal_publication;
 mod stat;
 mod thread;
-mod tid;
 mod timer;
 #[cfg(target_arch = "loongarch64")]
 mod unaligned;
@@ -37,16 +37,15 @@ use alloc::sync::Arc;
 
 pub(crate) use process_ptrace::PtraceAttachMode;
 pub use process_ptrace::{PtraceStopFpData, SyscallTraceState};
-use starry_process::{Pid, Process};
 use starry_signal::{
     Signo,
     api::{ProcessSignalManager, SignalActions},
 };
 
 pub use self::{
-    cred::*, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable,
+    cred::*, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable, process::*,
     process_image::ProcessImage, process_wait::wait_on_pollset, resources::*, scheduler_task::*,
-    seccomp::*, signal::*, stat::*, thread::Thread, tid::*, timer::*, user::*,
+    seccomp::*, signal::*, stat::*, thread::Thread, timer::*, user::*,
 };
 #[cfg(axtest)]
 pub(crate) use self::{
@@ -56,6 +55,7 @@ pub(crate) use self::{
         queued_waiter_state_allocations_for_test,
     },
     ops::decode_wait_status_rules_hold_for_test,
+    pid::pid_identity_state_machine_rules_hold_for_test,
     posix_timer::{
         posix_timer_active_gate_rules_hold_for_test,
         posix_timer_clock_sampling_rules_hold_for_test,
@@ -82,65 +82,58 @@ use self::{
     process_memory::ProcessMemoryState, process_policy::ProcessPolicyState,
     process_ptrace::ProcessPtraceState, process_wait::ProcessWaitState,
 };
-pub(crate) use self::{
-    pid_namespace::*, process_identity::*, process_memory::scheduler_address_space,
-};
+pub(crate) use self::{pid::*, process_identity::*, process_memory::scheduler_address_space};
 use crate::{
     mm::AddrSpace,
+    namespace::NsProxy,
     sync::{IrqMutex, PiMutex, PiMutexGuard, SpinLock},
 };
 
+/// Resources shared by every thread in one Linux process generation.
 pub struct ProcessData {
-    /// The process.
+    /// Process topology object.
     pub proc: Arc<Process>,
-    /// Stable generation identity shared by the registry and pidfds.
-    identity: Arc<ProcessIdentity>,
+    /// Stable identity shared by PID namespaces, pidfds, and observers.
+    identity: Arc<PidIdentity>,
+    /// TGID role ownership transferred into the zombie at final exit.
+    tgid_lease: IrqMutex<Option<PidRoleLease<Tgid>>>,
     /// Executable metadata independently synchronized for exec and procfs.
     image: ProcessImageState,
     /// Address-space publication and release state.
     memory: ProcessMemoryState,
-    /// The per-process uprobe manager. Each process has its own because user
-    /// code can be modified independently.
+    /// Per-process uprobe manager.
     pub uprobe_manager: crate::kprobe::KprobeManager,
-    /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
+    /// Per-process uprobe point list.
     pub uprobe_point_list: PiMutex<crate::kprobe::KprobePointList>,
-    /// Short raw publication lock for the structurally immutable aggregate.
-    ///
-    /// Namespace objects referenced by the aggregate retain their own locks
-    /// because processes in the same namespace intentionally share them.
-    nsproxy: IrqMutex<Arc<axnsproxy::NsProxy>>,
-    /// Sleepable writer transaction gate for process-wide namespace updates.
+    /// Immutable namespace snapshot published under a short IRQ-safe lock.
+    pub(crate) nsproxy: IrqMutex<Arc<NsProxy>>,
+    /// Sleepable writer transaction gate for namespace replacement.
     namespace_update: PiMutex<()>,
     /// Authoritative cgroup membership and exit serialization.
     cgroup: ProcessCgroupState,
     /// Resource limits and process-wide compatibility policy.
     policy: ProcessPolicyState,
-
     /// Exit metadata, wait channels, and vfork completion.
     wait: ProcessWaitState,
-
-    /// The process signal manager
+    /// Process signal manager.
     pub signal: Arc<ProcessSignalManager>,
-
     /// CPU accounting and process-owned timer tables.
     accounting: ProcessAccountingState,
-
     /// Ptrace stop/resume state and architecture register snapshots.
     ptrace: ProcessPtraceState,
-
     /// Job-control stop state and parent-report delivery.
     job_control: ProcessJobControl,
 }
 
-/// Resources and Linux-visible metadata consumed by process construction.
+/// Fallible resources prepared before publishing one process generation.
 pub struct ProcessDataInit {
     image: ProcessImage,
     aspace: Arc<PiMutex<AddrSpace>>,
     signal_actions: Arc<SpinLock<SignalActions>>,
-    nsproxy: axnsproxy::NsProxy,
+    nsproxy: NsProxy,
     cgroup: Arc<ax_cgroup::CgroupNode>,
     exit_signal: Option<Signo>,
-    wait_parent_tid: Pid,
+    wait_parent_tid: TidNumber,
     shared_memory: Option<process_memory::ProcessMemoryShare>,
 }
 
@@ -150,9 +143,9 @@ impl ProcessDataInit {
         image: ProcessImage,
         aspace: Arc<PiMutex<AddrSpace>>,
         signal_actions: Arc<SpinLock<SignalActions>>,
-        nsproxy: axnsproxy::NsProxy,
+        nsproxy: NsProxy,
         exit_signal: Option<Signo>,
-        wait_parent_tid: Pid,
+        wait_parent_tid: TidNumber,
     ) -> Self {
         Self {
             image,
@@ -180,8 +173,13 @@ impl ProcessDataInit {
 }
 
 impl ProcessData {
-    /// Create a new [`ProcessData`].
-    pub fn new(proc: Arc<Process>, init: ProcessDataInit) -> Arc<Self> {
+    /// Creates one process aggregate around the already-reserved PID identity.
+    pub fn new(
+        proc: Arc<Process>,
+        identity: Arc<PidIdentity>,
+        tgid_lease: PidRoleLease<Tgid>,
+        init: ProcessDataInit,
+    ) -> Arc<Self> {
         let ProcessDataInit {
             image,
             aspace,
@@ -192,83 +190,72 @@ impl ProcessData {
             wait_parent_tid,
             shared_memory,
         } = init;
-        let pid_namespaces: Arc<[axnsproxy::PidNamespaceRef]> =
-            axnsproxy::pid_namespace_lineage(&nsproxy.pid_ns).into();
-        let this = Arc::new_cyclic(|weak| {
-            let wait = ProcessWaitState::new(exit_signal, wait_parent_tid);
-            let identity = ProcessIdentity::new(
-                proc.clone(),
-                wait.exit_event_arc(),
-                weak.clone(),
-                pid_namespaces.clone(),
-            );
-            Self {
-                proc,
-                identity,
-                image: ProcessImageState::new(image),
-                memory: ProcessMemoryState::new(aspace, shared_memory),
-                wait,
-                uprobe_manager: crate::kprobe::KprobeManager::new(),
-                uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),
-
-                policy: ProcessPolicyState::new(),
-                accounting: ProcessAccountingState::new(),
-
-                signal: Arc::new(ProcessSignalManager::new(
-                    signal_actions,
-                    crate::config::SIGNAL_TRAMPOLINE,
-                )),
-                nsproxy: IrqMutex::new(Arc::new(nsproxy)),
-                namespace_update: PiMutex::new(()),
-                cgroup: ProcessCgroupState::new(cgroup),
-
-                ptrace: ProcessPtraceState::new(),
-
-                job_control: ProcessJobControl::new(),
-            }
+        let wait = ProcessWaitState::new(exit_signal, wait_parent_tid);
+        let exit_event = wait.exit_event_arc();
+        let this = Arc::new(Self {
+            proc: proc.clone(),
+            identity: identity.clone(),
+            tgid_lease: IrqMutex::new(Some(tgid_lease)),
+            image: ProcessImageState::new(image),
+            memory: ProcessMemoryState::new(aspace, shared_memory),
+            wait,
+            uprobe_manager: crate::kprobe::KprobeManager::new(),
+            uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),
+            policy: ProcessPolicyState::new(),
+            accounting: ProcessAccountingState::new(),
+            signal: Arc::new(ProcessSignalManager::new(
+                signal_actions,
+                crate::config::SIGNAL_TRAMPOLINE,
+            )),
+            nsproxy: IrqMutex::new(Arc::new(nsproxy)),
+            namespace_update: PiMutex::new(()),
+            cgroup: ProcessCgroupState::new(&identity, cgroup),
+            ptrace: ProcessPtraceState::new(),
+            job_control: ProcessJobControl::new(),
         });
-        // Clone the Arc in a separate statement: a temporary `IrqMutex` guard
-        // from `lock()` lives until the end of the statement, so calling
-        // `attach_process_slot` (which locks `PiMutex<AddrSpace>`) in the same
-        // expression would nest a sleepable lock inside atomic context.
-        let aspace_arc = this.aspace();
-        crate::mm::attach_process_slot(&aspace_arc);
+        identity.bind_process(proc, exit_event, Arc::downgrade(&this));
+        let aspace = this.aspace();
+        crate::mm::attach_process_slot(&aspace);
         this
     }
 
     /// Returns this process generation's stable PID identity.
-    pub(crate) fn identity(&self) -> Arc<ProcessIdentity> {
+    pub(crate) fn identity(&self) -> Arc<PidIdentity> {
         self.identity.clone()
     }
 
-    /// Returns a stable snapshot of this process generation's current or final cgroup node.
+    /// Transfers the process-owned TGID lease into its immutable zombie.
+    pub(crate) fn take_tgid_lease(&self) -> PidRoleLease<Tgid> {
+        self.tgid_lease
+            .lock()
+            .take()
+            .expect("process TGID lease transferred twice")
+    }
+
+    /// Returns the current or final cgroup membership snapshot.
     pub(crate) fn cgroup_node(&self) -> Arc<ax_cgroup::CgroupNode> {
         self.cgroup.current()
     }
 
-    /// Moves this live process under its per-generation PI transaction.
+    /// Moves this live process under its per-generation transaction.
     pub(crate) fn migrate_cgroup(
         &self,
         target: Arc<ax_cgroup::CgroupNode>,
     ) -> ax_cgroup::CgroupResult<()> {
-        self.cgroup.migrate(self.proc.pid(), target)
+        self.cgroup.migrate(target)
     }
 
-    /// Removes this generation from the hierarchy exactly once.
+    /// Removes this process generation from cgroup membership exactly once.
     pub(crate) fn exit_cgroup(&self) {
-        self.cgroup.exit(self.proc.pid());
+        self.cgroup.exit();
     }
 
     /// Returns a stable namespace aggregate without retaining the raw lock.
-    pub(crate) fn namespace_snapshot(&self) -> Arc<axnsproxy::NsProxy> {
+    pub(crate) fn namespace_snapshot(&self) -> Arc<NsProxy> {
         self.nsproxy.lock().clone()
     }
 
     /// Serializes one process-wide namespace mutation or replacement.
-    ///
-    /// This is the outermost task-context lock for namespace changes. A
-    /// transaction may acquire a thread scope or filesystem-context lock, but
-    /// code holding either of those locks must not start a namespace update.
     pub(crate) fn namespace_update(&self) -> ProcessNamespaceUpdate<'_> {
         ProcessNamespaceUpdate {
             publication: &self.nsproxy,
@@ -276,28 +263,7 @@ impl ProcessData {
         }
     }
 
-    /// Takes one consistent namespace snapshot for a new process.
-    ///
-    /// A PID namespace staged by `unshare` or `setns` is consumed from the
-    /// same published snapshot copied for the child. The caller must retain
-    /// the returned namespace in a rollback guard until child publication.
-    pub(crate) fn prepare_child_namespaces(
-        &self,
-    ) -> (axnsproxy::NsProxy, Option<axnsproxy::PidNamespaceRef>) {
-        let update = self.namespace_update();
-        let snapshot = update.snapshot();
-        let child = snapshot.clone_all();
-        let mut replacement = snapshot.clone_for_unshare();
-        match replacement.child_pid_ns.take() {
-            Some(namespace) => {
-                update.publish(replacement);
-                (child, Some(namespace))
-            }
-            None => (child, None),
-        }
-    }
-
-    /// Releases the process-owned cgroup namespace after the final thread exits.
+    /// Releases the process-owned cgroup namespace after final exit.
     pub(crate) fn release_cgroup_namespace(&self) {
         let update = self.namespace_update();
         let mut replacement = update.snapshot().clone_for_unshare();
@@ -312,26 +278,18 @@ impl Drop for ProcessData {
     }
 }
 
-/// A serialized namespace writer whose preparation happens outside the raw
-/// publication lock.
-///
-/// The writer gate remains held while a caller mutates an object reachable
-/// from the current snapshot. This prevents a concurrent replacement from
-/// making that mutation invisible to the process.
+/// Serialized copy-on-write namespace publication.
 pub(crate) struct ProcessNamespaceUpdate<'a> {
-    publication: &'a IrqMutex<Arc<axnsproxy::NsProxy>>,
+    publication: &'a IrqMutex<Arc<NsProxy>>,
     _guard: PiMutexGuard<'a, ()>,
 }
 
 impl ProcessNamespaceUpdate<'_> {
-    /// Returns the namespace snapshot on which this transaction should build.
-    pub(crate) fn snapshot(&self) -> Arc<axnsproxy::NsProxy> {
+    pub(crate) fn snapshot(&self) -> Arc<NsProxy> {
         self.publication.lock().clone()
     }
 
-    /// Publishes a fully prepared namespace set and releases old resources
-    /// after both the raw publication lock and writer gate are released.
-    pub(crate) fn publish(self, replacement: axnsproxy::NsProxy) {
+    pub(crate) fn publish(self, replacement: NsProxy) {
         let replacement = Arc::new(replacement);
         let previous = {
             let mut current = self.publication.lock();
@@ -345,11 +303,11 @@ impl ProcessNamespaceUpdate<'_> {
 #[cfg(test)]
 mod tests {
     use super::ProcessData;
-    use crate::sync::IrqMutex;
+    use crate::{namespace::NsProxy, sync::IrqMutex};
 
     #[test]
     fn namespace_publication_lock_only_contains_a_shared_snapshot() {
-        fn assert_snapshot_lock(_: &IrqMutex<alloc::sync::Arc<axnsproxy::NsProxy>>) {}
+        fn assert_snapshot_lock(_: &IrqMutex<alloc::sync::Arc<NsProxy>>) {}
         fn assert_process_lock_type(process: &ProcessData) {
             assert_snapshot_lock(&process.nsproxy);
         }

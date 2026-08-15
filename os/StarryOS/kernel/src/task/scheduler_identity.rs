@@ -22,6 +22,7 @@ impl SchedulerIdentity {
     }
 
     /// Returns the bound generation-bearing identity.
+    #[cfg(any(test, target_arch = "aarch64"))]
     pub(super) fn get(&self) -> Option<ThreadId> {
         decode(self.id.load(Ordering::Acquire))
     }
@@ -44,6 +45,7 @@ impl SchedulerIdentity {
     }
 }
 
+#[cfg(any(test, target_arch = "aarch64"))]
 const fn decode(raw: u64) -> Option<ThreadId> {
     if raw == 0 {
         None
@@ -73,7 +75,7 @@ mod tests {
 
         let result = identity.bind(ThreadId::from_parts(7, 4));
 
-        assert_eq!(result, Err(crate::StarryError::BadState));
+        assert!(matches!(result, Err(crate::StarryError::BadState)));
         assert_eq!(identity.get(), Some(ThreadId::from_parts(7, 3)));
     }
 }

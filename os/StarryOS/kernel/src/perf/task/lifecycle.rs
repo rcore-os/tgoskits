@@ -28,15 +28,34 @@ pub fn on_exec(thr: &Thread) {
 
 /// Build a side-band write target for `ptc` if it has a mapped ring and requested
 /// any side-band record (`attr.comm`/`mmap2`/`task`); else `None`.
+pub(in crate::perf) fn visible_tgid(
+    ptc: &PerTaskCounter,
+    identity: &PidIdentity,
+) -> Option<TgidNumber> {
+    identity
+        .visible_number_in(ptc.observer)
+        .map(TgidNumber::from)
+}
+
+pub(in crate::perf) fn visible_tid(
+    ptc: &PerTaskCounter,
+    identity: &PidIdentity,
+) -> Option<TidNumber> {
+    identity
+        .visible_number_in(ptc.observer)
+        .map(TidNumber::from)
+}
+
 pub(in crate::perf) fn sideband_target(
     ptc: &PerTaskCounter,
-    pid: u32,
-    tid: u32,
+    thread: &Thread,
 ) -> Option<SidebandTarget> {
     if !(ptc.want_comm || ptc.want_mmap2 || ptc.want_task) {
         return None;
     }
     let ring = ptc.output.lock().effective()?.0;
+    let pid = visible_tgid(ptc, &thread.proc_data.identity())?;
+    let tid = visible_tid(ptc, &thread.pid_identity())?;
     Some(SidebandTarget {
         ring,
         sample_type: ptc.sample_type,
@@ -64,21 +83,23 @@ pub fn on_task_exit(thr: &Thread) {
     if counters.is_empty() {
         return;
     }
-    let pid = thr.proc_data.proc.pid();
-    let tid = thr.tid();
-    let (ppid, ptid) = match thr.proc_data.proc.parent() {
-        // The parent process's tgid; its main-thread tid equals that tgid.
-        Some(p) => {
-            let ppid = p.pid();
-            (ppid, ppid)
-        }
-        None => (0, 0),
-    };
     for ptc in &counters {
         if ptc.want_task
-            && let Some(t) = sideband_target(ptc, pid, tid)
+            && let Some(target) = sideband_target(ptc, thr)
         {
-            sideband::emit_exit(&t, pid, ppid, tid, ptid);
+            let pid = target.pid;
+            let tid = target.tid;
+            let parent = thr.proc_data.proc.parent().and_then(|parent| {
+                let number = parent.identity().visible_number_in(ptc.observer)?;
+                Some((TgidNumber::from(number), TidNumber::from(number)))
+            });
+            sideband::emit_exit(
+                &target,
+                pid,
+                parent.map(|(pid, _)| pid),
+                tid,
+                parent.map(|(_, tid)| tid),
+            );
         }
     }
     release_task_counters(thr, &counters);

@@ -303,85 +303,103 @@ static void run_pid_namespace_test(void)
     CHECK(now == parent_pid, "parent getpid() unchanged after child clone");
 }
 
-static void run_pid_namespace_shutdown_test(void)
+static void run_persistent_pid_namespace_for_children_test(void)
 {
-    pid_t namespace_init = clone3_child(CLONE_NEWPID);
-    CHECK(namespace_init >= 0, "clone namespace init for shutdown test");
+    pid_t verifier = fork();
+    CHECK(verifier >= 0, "fork persistent PID namespace verifier");
 
-    if (namespace_init == 0)
+    if (verifier == 0)
     {
-        int zombie_ready[2];
-        if (pipe(zombie_ready) != 0)
-        {
+        int init_ready[2];
+        int init_release[2];
+        int second_pid_pipe[2];
+        if (pipe(init_ready) != 0 || pipe(init_release) != 0 ||
+            pipe(second_pid_pipe) != 0)
             _exit(2);
-        }
 
-        pid_t holder = fork();
-        if (holder < 0)
-        {
+        if (unshare(CLONE_NEWPID) != 0)
             _exit(3);
-        }
-        if (holder == 0)
-        {
-            close(zombie_ready[0]);
-            pid_t zombie = fork();
-            if (zombie < 0)
-            {
-                _exit(4);
-            }
-            if (zombie == 0)
-            {
-                _exit(0);
-            }
 
-            siginfo_t observation;
-            memset(&observation, 0, sizeof(observation));
-            if (waitid(P_PID, (id_t)zombie, &observation,
-                       WEXITED | WNOWAIT) != 0)
-            {
+        pid_t namespace_init = fork();
+        if (namespace_init < 0)
+            _exit(4);
+        if (namespace_init == 0)
+        {
+            close(init_ready[0]);
+            close(init_release[1]);
+            close(second_pid_pipe[0]);
+            close(second_pid_pipe[1]);
+
+            pid_t visible_pid = getpid();
+            if (write(init_ready[1], &visible_pid, sizeof(visible_pid)) !=
+                (ssize_t)sizeof(visible_pid))
                 _exit(5);
-            }
-            const char ready = 'Z';
-            if (write(zombie_ready[1], &ready, sizeof(ready))
-                != (ssize_t)sizeof(ready))
-            {
-                _exit(7);
-            }
-            for (;;)
-            {
-                pause();
-            }
+            close(init_ready[1]);
+
+            char release;
+            if (read(init_release[0], &release, sizeof(release)) !=
+                (ssize_t)sizeof(release))
+                _exit(6);
+            close(init_release[0]);
+            _exit(visible_pid == 1 ? 0 : 7);
         }
 
-        close(zombie_ready[1]);
-        char ready = 0;
-        read_exact(zombie_ready[0], &ready, sizeof(ready));
-        close(zombie_ready[0]);
-        if (ready != 'Z')
+        close(init_ready[1]);
+        close(init_release[0]);
+        pid_t first_visible_pid = 0;
+        if (read(init_ready[0], &first_visible_pid, sizeof(first_visible_pid)) !=
+            (ssize_t)sizeof(first_visible_pid) ||
+            first_visible_pid != 1)
+            _exit(8);
+        close(init_ready[0]);
+
+        pid_t second = fork();
+        if (second < 0)
+            _exit(9);
+        if (second == 0)
         {
-            _exit(6);
+            close(init_release[1]);
+            close(second_pid_pipe[0]);
+            pid_t visible_pid = getpid();
+            if (write(second_pid_pipe[1], &visible_pid, sizeof(visible_pid)) !=
+                (ssize_t)sizeof(visible_pid))
+                _exit(10);
+            close(second_pid_pipe[1]);
+            _exit(0);
         }
 
-        /*
-         * The namespace init exits while a live parent retains a WNOWAIT
-         * zombie. Shutdown must kill the parent, service the newly reparented
-         * zombie, and only then release PID 1.
-         */
-        _exit(0);
+        close(second_pid_pipe[1]);
+        pid_t second_visible_pid = 0;
+        if (read(second_pid_pipe[0], &second_visible_pid,
+                 sizeof(second_visible_pid)) !=
+            (ssize_t)sizeof(second_visible_pid))
+            _exit(11);
+        close(second_pid_pipe[0]);
+
+        int second_status;
+        if (waitpid(second, &second_status, 0) != second ||
+            !WIFEXITED(second_status) || WEXITSTATUS(second_status) != 0)
+            _exit(12);
+
+        char release = 'R';
+        if (write(init_release[1], &release, sizeof(release)) !=
+            (ssize_t)sizeof(release))
+            _exit(13);
+        close(init_release[1]);
+
+        int init_status;
+        if (waitpid(namespace_init, &init_status, 0) != namespace_init ||
+            !WIFEXITED(init_status) || WEXITSTATUS(init_status) != 0)
+            _exit(14);
+
+        _exit(second_visible_pid == 2 ? 0 : 15);
     }
 
     int status;
-    pid_t waited = waitpid_with_timeout(
-        namespace_init, &status, NAMESPACE_SHUTDOWN_TIMEOUT_MS);
-    CHECK(waited == namespace_init,
-          "wait for PID namespace shutdown");
-    if (waited != namespace_init)
-    {
-        kill(namespace_init, SIGKILL);
-        return;
-    }
+    CHECK(waitpid(verifier, &status, 0) == verifier,
+          "wait persistent PID namespace verifier");
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
-          "PID namespace init exits after zombie shutdown");
+          "pid_ns_for_children persists across multiple forks");
 }
 
 static void run_user_namespace_test(void)
@@ -416,7 +434,7 @@ int main(void)
     run_uts_namespace_test();
     run_pid_namespace_flag_validation_test();
     run_pid_namespace_test();
-    run_pid_namespace_shutdown_test();
+    run_persistent_pid_namespace_for_children_test();
     run_user_namespace_test();
 
     TEST_DONE();

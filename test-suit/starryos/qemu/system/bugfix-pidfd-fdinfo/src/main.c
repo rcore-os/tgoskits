@@ -227,12 +227,12 @@ static int check_thread_pidfd_fdinfo(struct received_pidfd thread_pidfd)
                                   &reported_nspid_inner);
     fclose(stream);
 
-    if (pid_result != 0 || reported_pid <= 0 || nspid_result != 0 ||
-        reported_nspid_outer != reported_pid ||
+    if (pid_result != 0 || nspid_result != 0 ||
+        reported_pid != reported_nspid_outer ||
         reported_nspid_inner != thread_pidfd.tid) {
         fprintf(stderr,
                 "FAIL: PIDFD_THREAD fdinfo Pid=%d NSpid=%d %d "
-                "expected=<outer-tid> <outer-tid> %d\n",
+                "expected=<outer> <outer> %d\n",
                 reported_pid, reported_nspid_outer, reported_nspid_inner,
                 thread_pidfd.tid);
         return -1;

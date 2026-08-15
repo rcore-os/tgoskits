@@ -1,16 +1,16 @@
 //! Behavioral target-selection contract for `perf_event_open(2)`.
 
+#[path = "../src/perf/cpu_id.rs"]
+mod cpu_id;
 #[path = "../src/perf/target.rs"]
 mod target;
 
-use target::{
-    PerfCpuId, PerfOpenFlags, PerfTarget, PerfTargetError, PerfTargetKind, PerfTaskTarget,
-};
+use cpu_id::PerfCpuId;
+use target::{PerfOpenFlags, PerfTarget, PerfTargetError, PerfTargetKind, PerfTaskTarget};
 
 #[test]
 fn linux_perf_target_matrix_distinguishes_task_and_cpu_contexts() {
     assert_ne!(PerfTargetKind::Task, PerfTargetKind::Cpu);
-    assert_eq!(PerfCpuId::new(3).as_usize(), 3);
     let PerfTarget::Task { task, cpu } = PerfTarget::parse(0, -1).unwrap() else {
         panic!("pid 0 must select a task context");
     };

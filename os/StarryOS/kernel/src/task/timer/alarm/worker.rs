@@ -31,8 +31,12 @@ fn alarm_task() {
             }
             AlarmAction::Fire {
                 token,
-                target: AlarmTarget::Process(pid),
-            } => poll_process_timer_for_alarm(pid, &token),
+                target: AlarmTarget::Process(identity),
+            } => {
+                if let Some(identity) = identity.upgrade() {
+                    poll_process_timer_for_alarm(&identity, &token);
+                }
+            }
             AlarmAction::AwaitDeadline(deadline) => {
                 let remaining = deadline.saturating_sub(wall_time());
                 if !remaining.is_zero() {

@@ -1,55 +1,82 @@
-use starry_process::Pid;
-
 use crate::{
-    StarryError,
-    task::{
-        get_process, get_process_data, get_process_group, register_process_group, register_session,
-        resolve_user_pid, visible_user_pid,
-    },
+    StarryError, StarryResult,
+    task::{PgidNumber, PidView, Process, TgidNumber, UserTaskRef},
 };
 
-fn process_pid(current: &crate::task::UserTaskRef, pid: Pid) -> crate::StarryResult<Pid> {
-    if pid == 0 {
-        Ok(current.as_thread().proc_data.proc.pid())
-    } else {
-        resolve_user_pid(current, pid)
+enum JobProcessSelector {
+    Current,
+    Process(TgidNumber),
+}
+
+impl TryFrom<u32> for JobProcessSelector {
+    type Error = StarryError;
+
+    fn try_from(pid: u32) -> Result<Self, Self::Error> {
+        if pid == 0 {
+            Ok(Self::Current)
+        } else {
+            Ok(Self::Process(TgidNumber::try_from(pid)?))
+        }
     }
 }
 
-pub fn sys_getsid(current: &crate::task::UserTaskRef, pid: Pid) -> crate::StarryResult<isize> {
-    let sid = get_process(process_pid(current, pid)?)?
-        .group()
-        .session()
-        .sid();
-    Ok(visible_user_pid(current, sid as u64) as _)
+impl JobProcessSelector {
+    fn resolve(self, current: &UserTaskRef) -> StarryResult<alloc::sync::Arc<Process>> {
+        match self {
+            Self::Current => Ok(current.as_thread().proc_data.proc.clone()),
+            Self::Process(tgid) => Ok(current_view(current).resolve_process(tgid)?.process()),
+        }
+    }
 }
 
-pub fn sys_setsid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
-    let proc_data = &current.as_thread().proc_data;
-    let proc = &proc_data.proc;
-    if get_process_group(proc.pid()).is_ok() {
+fn current_view(current: &UserTaskRef) -> PidView {
+    PidView::new(current.as_thread().active_pid_namespace())
+}
+
+pub fn sys_getsid(current: &UserTaskRef, pid: u32) -> StarryResult<isize> {
+    let session = JobProcessSelector::try_from(pid)?
+        .resolve(current)?
+        .group()
+        .session();
+    let view = current_view(current);
+    let number = view
+        .visible_session_number(&session.identity())
+        .ok_or(StarryError::NoSuchProcess)?;
+    let resolved = view.resolve_session(number)?;
+    debug_assert!(alloc::sync::Arc::ptr_eq(&resolved, &session));
+    Ok(number.get() as _)
+}
+
+pub fn sys_setsid(current: &UserTaskRef) -> StarryResult<isize> {
+    let proc = &current.as_thread().proc_data.proc;
+    if proc.identity().process_group().is_some() {
         return Err(StarryError::OperationNotPermitted);
     }
 
-    let identity = axnsproxy::JobControlId::retain(proc_data.identity().pid_identity())?;
-    if let Some((session, pg)) = proc.create_session(identity) {
-        register_session(&session);
-        register_process_group(&pg);
-        Ok(visible_user_pid(current, session.sid() as u64) as _)
-    } else {
-        Ok(visible_user_pid(current, proc.pid() as u64) as _)
-    }
+    let (session, _group) = proc
+        .create_session()
+        .ok_or(StarryError::OperationNotPermitted)?;
+    Ok(current_view(current)
+        .visible_session_number(&session.identity())
+        .expect("new session is visible to its creator")
+        .get() as _)
 }
 
-pub fn sys_getpgid(current: &crate::task::UserTaskRef, pid: Pid) -> crate::StarryResult<isize> {
-    let pgid = get_process(process_pid(current, pid)?)?.group().pgid();
-    Ok(visible_user_pid(current, pgid as u64) as _)
+pub fn sys_getpgid(current: &UserTaskRef, pid: u32) -> StarryResult<isize> {
+    let group = JobProcessSelector::try_from(pid)?.resolve(current)?.group();
+    Ok(current_view(current)
+        .visible_group_number(&group.identity())
+        .ok_or(StarryError::NoSuchProcess)?
+        .get() as _)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_getpgrp(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
-    let pgid = current.as_thread().proc_data.proc.group().pgid();
-    Ok(visible_user_pid(current, pgid as u64) as _)
+pub fn sys_getpgrp(current: &UserTaskRef) -> StarryResult<isize> {
+    let group = current.as_thread().proc_data.proc.group();
+    Ok(current_view(current)
+        .visible_group_number(&group.identity())
+        .expect("current process group is visible in its active PID namespace")
+        .get() as _)
 }
 
 pub fn sys_setpgid(
@@ -60,36 +87,33 @@ pub fn sys_setpgid(
     if pid < 0 || pgid < 0 {
         return Err(StarryError::InvalidInput);
     }
-    let local_pid = if pid == 0 {
-        visible_user_pid(current, current.as_thread().proc_data.proc.pid() as u64)
-    } else {
-        pid as Pid
-    };
-    let pid = process_pid(current, pid as Pid)?;
-    let local_pgid = if pgid == 0 { local_pid } else { pgid as Pid };
-    let pgid = if local_pgid == local_pid {
-        pid
-    } else {
-        resolve_user_pid(current, local_pgid)
-            .map_err(|_| crate::StarryError::OperationNotPermitted)?
-    };
+    let target = JobProcessSelector::try_from(pid as u32)?;
+    let group = (pgid != 0)
+        .then(|| PgidNumber::try_from(pgid as u32))
+        .transpose()?;
 
-    let proc_data = get_process_data(pid)?;
-    let proc = &proc_data.proc;
+    let proc = target.resolve(current)?;
+    let proc_number = current_view(current)
+        .visible_process_number(&proc.identity())
+        .ok_or(StarryError::NoSuchProcess)?
+        .get();
 
-    if pgid == 0 || pgid == proc.pid() {
-        let identity = axnsproxy::JobControlId::retain(proc_data.identity().pid_identity())?;
-        if let Some(pg) = proc.create_group(identity) {
-            register_process_group(&pg);
-        } else {
-            register_process_group(&proc.group());
+    match group {
+        None => {
+            let _ = proc.create_group();
         }
-    } else {
-        // POSIX: looking up a non-existent target pgid yields EPERM,
-        // not ESRCH (which is reserved for pid lookup failures).
-        let group = get_process_group(pgid).map_err(|_| StarryError::OperationNotPermitted)?;
-        if !proc.move_to_group(&group) {
-            return Err(StarryError::OperationNotPermitted);
+        Some(pgid) if pgid.get() == proc_number => {
+            let _ = proc.create_group();
+        }
+        Some(pgid) => {
+            // POSIX: looking up a non-existent target pgid yields EPERM,
+            // not ESRCH (which is reserved for pid lookup failures).
+            let group = current_view(current)
+                .resolve_group(pgid)
+                .map_err(|_| StarryError::OperationNotPermitted)?;
+            if !proc.move_to_group(&group) {
+                return Err(StarryError::OperationNotPermitted);
+            }
         }
     }
 

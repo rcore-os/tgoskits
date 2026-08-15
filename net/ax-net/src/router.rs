@@ -1591,13 +1591,13 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod l2_counter_tests {
-    use smoltcp::{
-        storage::{PacketBuffer, PacketMetadata},
-        time::Instant,
-        wire::{IpAddress, Ipv4Address},
-    };
+    #[cfg(all(axtest, feature = "axtest"))]
+    use axtest::prelude::*;
+    use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
+    #[cfg(all(axtest, feature = "axtest"))]
+    use smoltcp::{storage::PacketMetadata, wire::Ipv4Address};
 
     use super::*;
 
@@ -1649,10 +1649,12 @@ mod l2_counter_tests {
         DeviceHandle::new(IF0, device, &queues)
     }
 
+    #[cfg(all(axtest, feature = "axtest"))]
     fn test_ip() -> IpAddress {
         IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))
     }
 
+    #[cfg(all(axtest, feature = "axtest"))]
     fn test_packet_buffer() -> PacketBuffer<'static, InterfaceId> {
         PacketBuffer::new(
             vec![PacketMetadata::EMPTY; 1],
@@ -1741,9 +1743,9 @@ mod l2_counter_tests {
 
     // ── frame-length contract: send ────────────────────────────────────
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn send_returns_frame_len_tx_counts_l2_not_ip_payload() {
-        let _runtime = crate::test_runtime::install_default();
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 1514, // L2 frame length (14 eth hdr + 1500 IP payload)
@@ -1768,9 +1770,9 @@ mod l2_counter_tests {
         assert_eq!(snap.tx_packets, 1);
     }
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn send_returns_zero_no_tx_counted() {
-        let _runtime = crate::test_runtime::install_default();
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0, // ARP pending or send failure
@@ -1796,9 +1798,9 @@ mod l2_counter_tests {
 
     // ── frame-length contract: recv ────────────────────────────────────
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn recv_returns_frame_len_rx_counts_it() {
-        let _runtime = crate::test_runtime::install_default();
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
@@ -1823,9 +1825,9 @@ mod l2_counter_tests {
         assert_eq!(snap.rx_packets, 1);
     }
 
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn recv_returns_zero_no_rx_counted() {
-        let _runtime = crate::test_runtime::install_default();
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
@@ -1972,9 +1974,9 @@ mod l2_counter_tests {
     /// Verifies that a single recv+drain cycle correctly aggregates counts
     /// from all three counting paths: recv() return value (IP RX),
     /// drain_deferred_tx() (ARP TX), and drain_deferred_rx() (ARP RX).
-    #[test]
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
     fn rx_worker_three_path_combined_drain() {
-        let _runtime = crate::test_runtime::install_default();
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,

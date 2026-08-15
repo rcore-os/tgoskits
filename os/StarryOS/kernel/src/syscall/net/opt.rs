@@ -333,11 +333,11 @@ mod conv {
     pub struct Ucred;
 
     impl Ucred {
-        pub fn sys_to_rust(val: ucred) -> crate::StarryResult<UnixCredentials> {
+        pub fn sys_to_rust(val: ucred) -> StarryResult<UnixCredentials> {
             Ok(UnixCredentials::from_parts(val.pid, val.uid, val.gid))
         }
 
-        pub fn rust_to_sys(val: UnixCredentials) -> crate::StarryResult<UcredOutput> {
+        pub fn rust_to_sys(val: UnixCredentials) -> StarryResult<UcredOutput> {
             let val = crate::file::Socket::project_unix_credentials(&val);
             Ok(UcredOutput {
                 pid: val.pid,

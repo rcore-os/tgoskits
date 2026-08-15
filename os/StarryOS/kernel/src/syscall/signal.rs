@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use core::{future::poll_fn, task::Poll};
 
 use ax_runtime::hal::cpu::uspace::UserContext;
@@ -5,17 +6,16 @@ use linux_raw_sys::general::{
     MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, SS_DISABLE, SS_FLAG_BITS,
     SS_ONSTACK, kernel_sigaction, siginfo, timespec,
 };
-use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
 
 use crate::{
     Errno, StarryError, StarryResult,
     mm::{UserMemoryProvider, VmMutPtr, VmPtr},
     task::{
-        block_next_signal, check_signals,
+        PgidNumber, PidIdentity, TgidNumber, TidNumber, block_next_signal, check_signals,
+        current_pid_view,
         future::{UserWaitOutcome, block_on_user, block_on_user_timeout},
-        get_process_cred, get_task, processes, resolve_user_pid, send_signal_to_process,
-        send_signal_to_thread, visible_user_pid,
+        get_user_task_by_number, processes, send_signal_to_process_data, send_signal_to_task,
     },
     time::TimeValueLike,
 };
@@ -113,7 +113,10 @@ pub(crate) fn make_siginfo(
     Ok(Some(SignalInfo::new_user(
         signo,
         code,
-        visible_user_pid(current, thread.proc_data.proc.pid() as u64),
+        current_pid_view()
+            .visible_number(&thread.proc_data.identity())
+            .expect("current process is visible in its active PID namespace")
+            .get(),
         thread.cred().uid,
     )))
 }
@@ -129,20 +132,25 @@ pub(crate) fn make_siginfo(
 /// TODO: SIGCONT is allowed to any process in the same session (job control).
 /// Implementing this requires passing the signal number into this function
 /// and checking session membership.
-pub(crate) fn check_kill_permission(
+pub(crate) fn check_kill_permission_identity(
     current: &crate::task::UserTaskRef,
-    target_pid: Pid,
-) -> crate::StarryResult<()> {
+    target: &PidIdentity,
+) -> StarryResult<()> {
     let sender = current.as_thread().cred();
     if sender.euid == 0 {
         return Ok(());
     }
-    let self_pid = current.as_thread().proc_data.proc.pid();
-    if target_pid == self_pid {
+    let self_identity = current.as_thread().proc_data.identity();
+    if core::ptr::eq(target, Arc::as_ref(&self_identity)) {
         return Ok(());
     }
-    let target_cred = get_process_cred(target_pid)?;
-    // Linux checks: {sender.euid, sender.uid} × {target.uid, target.euid, target.suid}
+    let target_cred = if let Some(task) = target.live_task() {
+        task.as_thread().cred()
+    } else {
+        target
+            .zombie_snapshot(|zombie| zombie.cred.clone())
+            .ok_or(StarryError::NoSuchProcess)?
+    };
     if sender.euid == target_cred.uid
         || sender.euid == target_cred.euid
         || sender.euid == target_cred.suid
@@ -156,25 +164,41 @@ pub(crate) fn check_kill_permission(
     }
 }
 
+fn signal_user_process(identity: &PidIdentity, sig: Option<SignalInfo>) -> StarryResult<()> {
+    if let Some(proc_data) = identity.live_data() {
+        send_signal_to_process_data(&proc_data, sig)
+    } else if identity.is_zombie() {
+        Ok(())
+    } else {
+        Err(StarryError::NoSuchProcess)
+    }
+}
+
 /// Send a signal to each member of a process group, checking
 /// per-member permission. EPERM for individual members is swallowed
 /// (matches Linux behavior).
 fn kill_process_group_checked(
     current: &crate::task::UserTaskRef,
-    pgid: Pid,
+    pgid: PgidNumber,
     sig: Option<SignalInfo>,
-) -> crate::StarryResult<()> {
-    let pg = crate::task::get_process_group(pgid)?;
+) -> StarryResult<()> {
+    let view = current_pid_view();
+    let pg = view.resolve_group(pgid)?;
     let mut visible_members = 0;
     let mut permitted_members = 0;
     for proc in pg.processes() {
-        if visible_user_pid(current, proc.pid() as u64) == 0 {
+        let identity = proc.identity();
+        if view.visible_number(&identity).is_none() {
             continue;
         }
         visible_members += 1;
-        if check_kill_permission(current, proc.pid()).is_ok() {
+        if check_kill_permission_identity(current, &identity).is_ok() {
             permitted_members += 1;
-            let _ = send_signal_to_process(proc.pid(), sig);
+            if let Some(sig) = sig.as_ref()
+                && let Some(proc_data) = identity.live_data()
+            {
+                let _ = send_signal_to_process_data(&proc_data, Some(*sig));
+            }
         }
     }
     if visible_members == 0 {
@@ -186,62 +210,81 @@ fn kill_process_group_checked(
     }
 }
 
-pub fn sys_kill(
-    current: &crate::task::UserTaskRef,
-    pid: i32,
-    signo: u32,
-) -> crate::StarryResult<isize> {
+enum KillTarget {
+    Process(TgidNumber),
+    CurrentProcessGroup,
+    AllPermittedProcesses,
+    ProcessGroup(PgidNumber),
+}
+
+impl TryFrom<i32> for KillTarget {
+    type Error = StarryError;
+
+    fn try_from(pid: i32) -> Result<Self, Self::Error> {
+        match pid {
+            1.. => Ok(Self::Process(TgidNumber::try_from(pid as u32)?)),
+            0 => Ok(Self::CurrentProcessGroup),
+            -1 => Ok(Self::AllPermittedProcesses),
+            ..-1 => Ok(Self::ProcessGroup(PgidNumber::try_from(
+                pid.checked_neg().ok_or(StarryError::InvalidInput)? as u32,
+            )?)),
+        }
+    }
+}
+
+pub fn sys_kill(current: &crate::task::UserTaskRef, pid: i32, signo: u32) -> StarryResult<isize> {
     debug!("sys_kill: pid = {pid}, signo = {signo}");
     let sig = make_siginfo(current, signo, SI_USER as _)?;
 
-    match pid {
-        1.. => {
-            let pid = resolve_user_pid(current, pid as _)?;
-            check_kill_permission(current, pid)?;
+    match KillTarget::try_from(pid)? {
+        KillTarget::Process(tgid) => {
+            let identity = current_pid_view().resolve_process(tgid)?;
+            check_kill_permission_identity(current, &identity)?;
             if let Some(sig) = sig {
                 let curr = current;
                 let thread = curr.as_thread();
                 let signo = sig.signo();
-                if pid == thread.proc_data.proc.pid() && !thread.signal().signal_blocked(signo) {
+                if Arc::ptr_eq(&identity, &thread.proc_data.identity())
+                    && !thread.signal().signal_blocked(signo)
+                {
                     // A process-directed signal may be delivered to any
                     // unblocked thread. Prefer the current thread for
                     // self-signals so `kill(getpid(), SIGSTOP)` cannot return
                     // to userspace and race into the next syscall before this
                     // thread observes the stop.
-                    send_signal_to_thread(None, thread.tid() as Pid, Some(sig))?;
+                    send_signal_to_task(curr, None, Some(sig))?;
                 } else {
-                    send_signal_to_process(pid, Some(sig))?;
+                    signal_user_process(&identity, Some(sig))?;
                 }
             } else {
-                send_signal_to_process(pid, None)?;
+                signal_user_process(&identity, None)?;
             }
         }
-        0 => {
-            let pgid = current.as_thread().proc_data.proc.group().pgid();
+        KillTarget::CurrentProcessGroup => {
+            let pgid = current.as_thread().proc_data.proc.group().pgid_number();
             kill_process_group_checked(current, pgid, sig)?;
         }
-        -1 => {
+        KillTarget::AllPermittedProcesses => {
             // Broadcast: send to all processes the caller may signal,
             // except init and self. EPERM is silently swallowed per Linux.
             let curr_pid = current.as_thread().proc_data.proc.pid();
             if let Some(sig) = sig {
                 for proc_data in processes() {
-                    let visible_pid = visible_user_pid(current, proc_data.proc.pid() as u64);
-                    if visible_pid <= 1 || proc_data.proc.pid() == curr_pid {
+                    let Some(visible_pid) =
+                        current_pid_view().visible_number(&proc_data.identity())
+                    else {
+                        continue;
+                    };
+                    if visible_pid.get() <= 1 || proc_data.proc.pid() == curr_pid {
                         continue;
                     }
-                    if check_kill_permission(current, proc_data.proc.pid()).is_ok() {
-                        let _ = send_signal_to_process(proc_data.proc.pid(), Some(sig));
+                    if check_kill_permission_identity(current, &proc_data.identity()).is_ok() {
+                        let _ = send_signal_to_process_data(&proc_data, Some(sig));
                     }
                 }
             }
         }
-        ..-1 => {
-            let local_pgid = pid
-                .checked_neg()
-                .ok_or_else(|| crate::StarryError::from(crate::Errno::ESRCH))?
-                as Pid;
-            let pgid = resolve_user_pid(current, local_pgid)?;
+        KillTarget::ProcessGroup(pgid) => {
             kill_process_group_checked(current, pgid, sig)?;
         }
     }
@@ -256,34 +299,31 @@ pub fn sys_tkill(
     if tid <= 0 {
         return Err(StarryError::InvalidInput);
     }
-    let tid = resolve_user_pid(current, tid as Pid)?;
-    let task = get_task(tid)?;
-    check_kill_permission(current, task.as_thread().proc_data.proc.pid())?;
+    let tid = TidNumber::try_from(tid as u32)?;
+    let task = get_user_task_by_number(tid)?;
+    check_kill_permission_identity(current, &task.as_thread().proc_data.identity())?;
     let sig = make_siginfo(current, signo, SI_TKILL)?;
-    send_signal_to_thread(None, tid, sig)?;
+    send_signal_to_task(&task, None, sig)?;
     Ok(0)
 }
 
 pub fn sys_tgkill(
     current: &crate::task::UserTaskRef,
-    tgid: Pid,
-    tid: Pid,
+    tgid: u32,
+    tid: u32,
     signo: u32,
-) -> crate::StarryResult<isize> {
-    if tgid == 0 || tid == 0 {
-        return Err(crate::StarryError::InvalidInput);
-    }
-    let tgid = resolve_user_pid(current, tgid)?;
-    let tid = resolve_user_pid(current, tid)?;
-    check_kill_permission(current, tgid)?;
+) -> StarryResult<isize> {
+    let process = current_pid_view().resolve_process(TgidNumber::try_from(tgid)?)?;
+    check_kill_permission_identity(current, &process)?;
+    let task = get_user_task_by_number(TidNumber::try_from(tid)?)?;
     let sig = make_siginfo(current, signo, SI_TKILL)?;
-    send_signal_to_thread(Some(tgid), tid, sig)?;
+    send_signal_to_task(&task, Some(process), sig)?;
     Ok(0)
 }
 
 pub(crate) fn make_queue_signal_info(
     current: &crate::task::UserTaskRef,
-    tgid: Pid,
+    tgid: TgidNumber,
     signo: u32,
     sig: *const SignalInfo,
 ) -> StarryResult<Option<SignalInfo>> {
@@ -294,8 +334,10 @@ pub(crate) fn make_queue_signal_info(
     let signo = parse_signo(signo)?;
     let mut sig = unsafe { sig.vm_read_uninit(current)?.assume_init() };
     sig.set_signo(signo);
-    if current.as_thread().proc_data.proc.pid() != tgid
-        && (sig.code() >= 0 || sig.code() == SI_TKILL)
+    if !Arc::ptr_eq(
+        &current.as_thread().proc_data.identity(),
+        &current_pid_view().resolve_process(tgid)?,
+    ) && (sig.code() >= 0 || sig.code() == SI_TKILL)
     {
         return Err(StarryError::OperationNotPermitted);
     }
@@ -304,30 +346,35 @@ pub(crate) fn make_queue_signal_info(
 
 pub fn sys_rt_sigqueueinfo(
     current: &crate::task::UserTaskRef,
-    tgid: Pid,
+    tgid: u32,
     signo: u32,
     sig: *const SignalInfo,
     sigsetsize: usize,
 ) -> StarryResult<isize> {
     check_sigset_size(sigsetsize)?;
 
+    let tgid = TgidNumber::try_from(tgid)?;
     let sig = make_queue_signal_info(current, tgid, signo, sig)?;
-    send_signal_to_process(tgid, sig)?;
+    let process = current_pid_view().resolve_process(tgid)?;
+    signal_user_process(&process, sig)?;
     Ok(0)
 }
 
 pub fn sys_rt_tgsigqueueinfo(
     current: &crate::task::UserTaskRef,
-    tgid: Pid,
-    tid: Pid,
+    tgid: u32,
+    tid: u32,
     signo: u32,
     sig: *const SignalInfo,
     sigsetsize: usize,
 ) -> StarryResult<isize> {
     check_sigset_size(sigsetsize)?;
 
+    let tgid = TgidNumber::try_from(tgid)?;
     let sig = make_queue_signal_info(current, tgid, signo, sig)?;
-    send_signal_to_thread(Some(tgid), tid, sig)?;
+    let process = current_pid_view().resolve_process(tgid)?;
+    let task = get_user_task_by_number(TidNumber::try_from(tid)?)?;
+    send_signal_to_task(&task, Some(process), sig)?;
     Ok(0)
 }
 

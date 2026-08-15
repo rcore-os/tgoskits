@@ -22,6 +22,7 @@ use crate::{
         queues_max, validate_name,
     },
     mm::{VmMutPtr, VmPtr, vm_load, vm_load_string, vm_write_slice},
+    task::current_pid_view,
     time::TimeValueLike,
 };
 
@@ -324,7 +325,10 @@ pub fn sys_mq_notify(
     sevp: *const sigevent,
 ) -> crate::StarryResult<isize> {
     let queue = queue_from_fd(mqdes)?;
-    let pid = current.as_thread().proc_data.proc.pid();
+    let owner = current.as_thread().proc_data.identity();
+    let owner_number = current_pid_view()
+        .visible_number(&owner)
+        .expect("mq_notify owner is visible in its active PID namespace");
 
     let req = if sevp.is_null() {
         NotifyRequest::Unregister
@@ -371,7 +375,7 @@ pub fn sys_mq_notify(
             _ => return Err(Errno::EINVAL.into()),
         }
     };
-    queue.register_notify(req, pid)?;
+    queue.register_notify(req, owner, owner_number)?;
     Ok(0)
 }
 

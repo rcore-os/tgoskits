@@ -4,6 +4,9 @@
 #[cfg(feature = "ax-std")]
 extern crate ax_std as std;
 
+#[cfg(feature = "runtime")]
+use ax_net as _;
+
 #[cfg(all(feature = "ax-std", axtest))]
 #[axtest::tests]
 mod smoke {

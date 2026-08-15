@@ -8,7 +8,6 @@ use ax_mm::MmError;
 use ax_net::NetError;
 use ax_runtime::{RuntimeError, task::TaskError};
 use axfs_ng_vfs::VfsError;
-use axnsproxy::PidError;
 use dma_api::DmaError;
 #[cfg(any(test, axtest))]
 use rdif_block::{BlkError, RequestOp};
@@ -50,8 +49,6 @@ pub enum StarryError {
     Alloc(#[from] AllocError),
     #[error(transparent)]
     Cgroup(#[from] CgroupError),
-    #[error(transparent)]
-    Pid(#[from] PidError),
     #[error(transparent)]
     IoDomain(#[from] IoError),
     #[error(transparent)]
@@ -207,7 +204,6 @@ impl StarryError {
             Self::TlbShootdown(error) => tlb_errno(*error),
             Self::Alloc(error) => alloc_errno(*error),
             Self::Cgroup(error) => cgroup_errno(*error),
-            Self::Pid(error) => pid_errno(*error),
             Self::IoDomain(error) => io_errno(*error),
             Self::Net(error) => io_errno((*error).into()),
             Self::Task(error) => task_errno(*error),
@@ -309,16 +305,6 @@ fn cgroup_errno(error: CgroupError) -> Errno {
         CgroupError::ResourceBusy => Errno::EBUSY,
         CgroupError::NoSuchProcess => Errno::ESRCH,
         CgroupError::DirectoryNotEmpty => Errno::ENOTEMPTY,
-    }
-}
-
-fn pid_errno(error: PidError) -> Errno {
-    match error {
-        PidError::AllocationFailed | PidError::NamespaceUnavailable => Errno::ENOMEM,
-        PidError::AlreadyExists => Errno::EEXIST,
-        PidError::InvalidInput => Errno::EINVAL,
-        PidError::InvalidState => Errno::EFAULT,
-        PidError::NoSuchProcess => Errno::ESRCH,
     }
 }
 

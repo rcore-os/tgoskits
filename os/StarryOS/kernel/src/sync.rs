@@ -5,10 +5,9 @@
 
 pub(crate) use ax_fs_ng::os::sync::Mutex as FsMutex;
 pub(crate) use ax_runtime::sync::{
-    InterruptibleMutexExt, LockdepMutexExt, Mutex, PiMutex, PiMutexGuard,
+    InterruptibleMutexExt, IrqMutex, LockdepMutexExt, Mutex, PiMutex, PiMutexGuard,
     PreemptIrqSaveGuard as NoPreemptIrqSave, RawIrqSaveMutex, SpinLock, SpinLockGuard, SpinRwLock,
 };
-pub(crate) use axnsproxy::IrqMutex;
 
 pub(crate) type NoPreemptMutex<T> = SpinLock<T>;
 pub(crate) type RawSpinNoIrq = RawIrqSaveMutex;

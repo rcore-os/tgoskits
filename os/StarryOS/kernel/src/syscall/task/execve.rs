@@ -16,7 +16,6 @@ use ax_runtime::hal::cpu::uspace::UserContext;
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
-use starry_process::Pid;
 
 use crate::{
     StarryError, StarryResult,
@@ -26,7 +25,7 @@ use crate::{
         copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string, vm_load_until_nul,
     },
     sync::{InterruptibleMutexExt, PiMutex},
-    task::{future::block_on, rebind_task_tid, release_thread_pid, zap_thread},
+    task::{Tid, TidNumber, future::block_on, zap_thread},
 };
 
 fn commit_address_space_handoff<OldAddressSpace>(
@@ -139,8 +138,9 @@ fn do_execve(
     let curr = current;
     let thr = curr.as_thread();
     let proc_data = &thr.proc_data;
-    let my_tid = thr.tid();
-    let tgid = proc_data.proc.pid();
+    let my_tid = thr.tid_number();
+    let former_tid = thr.pid_identity().snapshot();
+    let leader_tid = TidNumber::from(proc_data.proc.pid().pid_number());
 
     // Serialize concurrent execve from sibling threads.
     //
@@ -222,7 +222,7 @@ fn do_execve(
     // that new thread's tid wasn't visible last time around.
     // ----------------------------------------------------------------
     loop {
-        let siblings: Vec<Pid> = proc_data
+        let siblings: Vec<TidNumber> = proc_data
             .proc
             .threads()
             .into_iter()
@@ -384,23 +384,23 @@ fn do_execve(
     // existing handle on the (still-original) PID continues to refer to
     // this thread for `wait`, `kill`, `tgkill`, `/proc/<pid>` etc.
     //
-    // We mirror that here by:
-    //   - renaming our `Thread::tid` from the old non-leader value to
-    //     the leader's TGID,
-    //   - re-keying the global TASK_TABLE entry,
-    //   - re-keying the process-level signal child list,
-    //   - replacing our entry in `proc.tg.threads`.
+    // We mirror that here by transferring the stable leader identity to the
+    // caller, then updating signal and thread-group indexes that use TIDs.
     //
     // The original leader was zapped above (it's a sibling from `curr`'s
     // viewpoint), did its `do_exit(0, false)`, and is no longer in the
     // task table or thread group, so the destination TID is free.
-    if my_tid != tgid {
-        rebind_task_tid(curr, my_tid, tgid)
-            .unwrap_or_else(|error| panic!("de_thread TID transfer invariant failed: {error}"));
+    if my_tid != leader_tid {
+        let leader_identity = proc_data.identity();
+        let leader_tid_lease = leader_identity
+            .acquire_role::<Tid>()
+            .expect("exited exec leader retained its TID role");
+        thr.transfer_pid_identity(curr, leader_identity, leader_tid_lease);
         proc_data.clear_retired_leader_nice();
-        proc_data.signal.rename_child(my_tid, tgid);
-        proc_data.proc.rename_thread(my_tid, tgid);
-        release_thread_pid(&proc_data.identity(), my_tid as u64);
+        proc_data
+            .signal
+            .rename_child(my_tid.get(), leader_tid.get());
+        proc_data.proc.rename_thread(my_tid, leader_tid);
     }
 
     // Reset every user-visible register to a fresh-process state, not
@@ -430,7 +430,7 @@ fn do_execve(
     // only controls whether the stop carries PTRACE_EVENT_EXEC data,
     // not whether the stop itself occurs.
     if proc_data.is_ptrace_traceme() || proc_data.is_ptrace_attached() {
-        proc_data.set_ptrace_exec_stop_pending();
+        proc_data.set_ptrace_exec_stop_pending(former_tid);
     }
 
     // Per-task perf: flip any `enable_on_exec` counter attached to this thread

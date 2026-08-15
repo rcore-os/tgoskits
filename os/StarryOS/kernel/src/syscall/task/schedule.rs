@@ -22,10 +22,9 @@ use crate::{
     mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
     syscall::time::write_timespec,
     task::{
-        Cred, ProcessData, UserTaskRef,
+        Cred, PgidNumber, PidNumber, PidView, ProcessData, Tgid, TidNumber, UserTaskRef,
         future::{UserWaitOutcome, block_on_user_until, block_on_user_until_wall},
-        get_process_data, get_process_group, get_task, get_zombie_nice, processes,
-        resolve_user_pid,
+        get_task_by_number, processes,
     },
     time::{SleepDeadline, TimeValueLike},
 };
@@ -217,7 +216,7 @@ pub fn check_sched_permission(
     pid: i32,
 ) -> crate::StarryResult<()> {
     let caller = current.as_thread().cred();
-    let task = get_task(scheduler_tid(current, pid)?)?;
+    let task = scheduler_task(current, pid)?;
     if task.id() == current.id() {
         return Ok(());
     }
@@ -402,7 +401,7 @@ fn apply_scheduler_update(
     update: ScheduleUpdate,
 ) -> crate::StarryResult<()> {
     check_sched_permission(current, pid)?;
-    let task = get_task(scheduler_tid(current, pid)?)?;
+    let task = scheduler_task(current, pid)?;
     let caller = current.as_thread().cred();
     let (rlimit_rtprio, rlimit_nice) = {
         let limits = task.as_thread().proc_data.rlimits();
@@ -448,7 +447,7 @@ fn scheduler_reset_on_fork(
     current: &crate::task::UserTaskRef,
     pid: i32,
 ) -> crate::StarryResult<bool> {
-    let task = get_task(scheduler_tid(current, pid)?)?;
+    let task = scheduler_task(current, pid)?;
     Ok(task.reset_on_fork())
 }
 
@@ -460,7 +459,7 @@ fn scheduler_stored_nice(
     if let scheduler::SchedulePolicy::Fair { nice, .. } = current_policy {
         return Ok(nice);
     }
-    let task = get_task(scheduler_tid(current, pid)?)?;
+    let task = scheduler_task(current, pid)?;
     let nice = i8::try_from(task.as_thread().nice()).map_err(|_| crate::StarryError::BadState)?;
     scheduler::Nice::new(nice).map_err(map_task_error)
 }
@@ -476,29 +475,26 @@ fn scheduler_thread_id(
     current: &crate::task::UserTaskRef,
     pid: i32,
 ) -> crate::StarryResult<scheduler::ThreadId> {
-    let target = get_task(scheduler_tid(current, pid)?)?;
-    if let Some(id) = target.as_thread().scheduler_id() {
-        return Ok(id);
-    }
-
-    // The first switch-in normally binds the identity through the Starry
-    // extension hook. This fallback covers the boot thread without ever
-    // deriving an identity from its Linux TID.
-    if target.id() == current.id() {
-        let id = scheduler::current_thread_id().map_err(map_task_error)?;
-        target.as_thread().bind_scheduler_id(id)?;
-        return Ok(id);
-    }
-
-    Err(crate::StarryError::BadState)
+    Ok(scheduler_task(current, pid)?.id())
 }
 
-fn scheduler_tid(current: &crate::task::UserTaskRef, pid: i32) -> crate::StarryResult<u32> {
+fn scheduler_tid(current: &crate::task::UserTaskRef, pid: i32) -> crate::StarryResult<TidNumber> {
+    Ok(scheduler_task(current, pid)?.as_thread().tid_number())
+}
+
+fn scheduler_task(
+    current: &crate::task::UserTaskRef,
+    pid: i32,
+) -> crate::StarryResult<UserTaskRef> {
     if pid == 0 {
-        Ok(current.as_thread().tid())
+        Ok(current.clone())
     } else {
-        let local_pid = u32::try_from(pid).map_err(|_| crate::StarryError::InvalidInput)?;
-        resolve_user_pid(current, local_pid)
+        let tid =
+            TidNumber::try_from(u32::try_from(pid).map_err(|_| crate::StarryError::InvalidInput)?)?;
+        PidView::new(current.as_thread().active_pid_namespace())
+            .resolve_thread(tid)?
+            .live_task()
+            .ok_or(crate::StarryError::NoSuchProcess)
     }
 }
 
@@ -601,24 +597,14 @@ pub fn sys_getpriority(
     debug!("sys_getpriority <= which: {which}, who: {who}");
 
     match which {
-        PRIO_PROCESS => match get_task(priority_process_id(current, who)?) {
-            Ok(task) => Ok(raw_priority(task.as_thread().nice())),
-            Err(crate::StarryError::NoSuchProcess) if who != 0 => {
-                let pid = resolve_user_pid(current, who)?;
-                let nice = get_process_data(pid)
-                    .ok()
-                    .and_then(|process| process.retired_leader_nice())
-                    .or_else(|| get_zombie_nice(pid))
-                    .ok_or(crate::StarryError::NoSuchProcess)?;
-                Ok(raw_priority(nice))
-            }
-            Err(err) => Err(err),
-        },
+        PRIO_PROCESS => Ok(raw_priority(priority_process_nice(current, who)?)),
         PRIO_PGRP => {
             let pgid = if who == 0 {
                 current.as_thread().proc_data.proc.group().pgid()
             } else {
-                get_process_group(resolve_user_pid(current, who)?)?.pgid()
+                current_pid_view(current)
+                    .resolve_group(PgidNumber::try_from(who)?)?
+                    .pgid()
             };
             min_priority_for_tasks(tasks_for_processes(
                 processes()
@@ -653,7 +639,7 @@ pub fn sys_setpriority(
     let nice = prio.clamp(-20, 19);
     match which {
         PRIO_PROCESS => {
-            let task = get_task(priority_process_id(current, who)?)?;
+            let task = priority_process_task(current, who)?;
             check_setpriority_permission(current, &task, nice)?;
             set_thread_scheduler_nice(&task, nice)?;
             Ok(0)
@@ -662,7 +648,9 @@ pub fn sys_setpriority(
             let pgid = if who == 0 {
                 current.as_thread().proc_data.proc.group().pgid()
             } else {
-                get_process_group(resolve_user_pid(current, who)?)?.pgid()
+                current_pid_view(current)
+                    .resolve_group(PgidNumber::try_from(who)?)?
+                    .pgid()
             };
             set_priority_for_tasks(
                 current,
@@ -692,12 +680,41 @@ pub fn sys_setpriority(
     }
 }
 
-fn priority_process_id(current: &UserTaskRef, who: u32) -> crate::StarryResult<u32> {
+fn priority_process_task(current: &UserTaskRef, who: u32) -> crate::StarryResult<UserTaskRef> {
     if who == 0 {
-        Ok(current.as_thread().tid())
+        Ok(current.clone())
     } else {
-        resolve_user_pid(current, who)
+        current_pid_view(current)
+            .resolve_thread(TidNumber::try_from(who)?)?
+            .live_task()
+            .ok_or(crate::StarryError::NoSuchProcess)
     }
+}
+
+fn priority_process_nice(current: &UserTaskRef, who: u32) -> crate::StarryResult<i32> {
+    if who == 0 {
+        return Ok(current.as_thread().nice());
+    }
+
+    let identity = current_pid_view(current).resolve_identity(PidNumber::try_from(who)?)?;
+    if let Some(task) = identity.live_task() {
+        return Ok(task.as_thread().nice());
+    }
+    if !identity.has_role::<Tgid>() {
+        return Err(crate::StarryError::NoSuchProcess);
+    }
+    if let Some(proc_data) = identity.live_data() {
+        return proc_data
+            .retired_leader_nice()
+            .ok_or(crate::StarryError::NoSuchProcess);
+    }
+    identity
+        .zombie_snapshot(|zombie| zombie.nice)
+        .ok_or(crate::StarryError::NoSuchProcess)
+}
+
+fn current_pid_view(current: &UserTaskRef) -> PidView {
+    PidView::new(current.as_thread().active_pid_namespace())
 }
 
 fn raw_priority(nice: i32) -> isize {
@@ -719,7 +736,7 @@ fn tasks_for_processes(processes: impl IntoIterator<Item = Arc<ProcessData>>) ->
     processes
         .into_iter()
         .flat_map(|proc| proc.proc.threads())
-        .filter_map(|tid| get_task(tid).ok())
+        .filter_map(|tid| get_task_by_number(tid).ok())
         .collect()
 }
 

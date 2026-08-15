@@ -7,9 +7,9 @@ use ax_runtime::hal::paging::MappingFlags;
 
 use super::{
     sideband::{self, Mmap2Info, SidebandTarget},
-    task::{PERF_TASK_ACTIVE, sideband_target},
+    task::{PERF_TASK_ACTIVE, sideband_target, visible_tgid, visible_tid},
 };
-use crate::task::Thread;
+use crate::task::{PidIdentity, TgidNumber, Thread, TidNumber};
 
 // `PROT_*` / `MAP_*` values in PERF_RECORD_MMAP2.
 const PROT_READ: u32 = 1;
@@ -60,9 +60,6 @@ pub(crate) fn on_exec_sideband(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let pid = thr.proc_data.proc.pid();
-    let tid = thr.tid();
-
     struct WantTarget {
         target: SidebandTarget,
         comm: bool,
@@ -74,7 +71,7 @@ pub(crate) fn on_exec_sideband(thr: &Thread) {
         counters
             .iter()
             .filter_map(|counter| {
-                sideband_target(counter, pid, tid).map(|target| WantTarget {
+                sideband_target(counter, thr).map(|target| WantTarget {
                     target,
                     comm: counter.wants_comm(),
                     mmap2: counter.wants_mmap2(),
@@ -118,14 +115,12 @@ pub(crate) fn on_mmap_sideband(
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let pid = thr.proc_data.proc.pid();
-    let tid = thr.tid();
     let targets: Vec<SidebandTarget> = {
         let counters = thr.perf_context().snapshot();
         counters
             .iter()
             .filter(|counter| counter.wants_mmap2())
-            .filter_map(|counter| sideband_target(counter, pid, tid))
+            .filter_map(|counter| sideband_target(counter, thr))
             .collect()
     };
     if targets.is_empty() {
@@ -148,21 +143,31 @@ pub(crate) fn on_mmap_sideband(
 }
 
 /// Emits a FORK record into every parent event requesting `attr.task`.
-pub(crate) fn on_clone_sideband(parent_thr: &Thread, child_pid: u32, child_tid: u32) {
+pub(crate) fn on_clone_sideband(
+    parent_thr: &Thread,
+    child_process: &PidIdentity,
+    child_thread: &PidIdentity,
+) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let ppid = parent_thr.proc_data.proc.pid();
-    let ptid = parent_thr.tid();
-    let targets: Vec<SidebandTarget> = {
+    let targets: Vec<(SidebandTarget, TgidNumber, TidNumber, TgidNumber, TidNumber)> = {
         let counters = parent_thr.perf_context().snapshot();
         counters
             .iter()
             .filter(|counter| counter.wants_task())
-            .filter_map(|counter| sideband_target(counter, ppid, ptid))
+            .filter_map(|counter| {
+                Some((
+                    sideband_target(counter, parent_thr)?,
+                    visible_tgid(counter, child_process)?,
+                    visible_tid(counter, child_thread)?,
+                    visible_tgid(counter, &parent_thr.proc_data.identity())?,
+                    visible_tid(counter, &parent_thr.pid_identity())?,
+                ))
+            })
             .collect()
     };
-    for target in &targets {
-        sideband::emit_fork(target, child_pid, ppid, child_tid, ptid);
+    for (target, child_pid, child_tid, parent_pid, parent_tid) in &targets {
+        sideband::emit_fork(target, *child_pid, *parent_pid, *child_tid, *parent_tid);
     }
 }

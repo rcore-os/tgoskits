@@ -86,7 +86,7 @@ use super::{
 };
 use crate::{
     sync::IrqMutex,
-    task::{Thread, future::IrqNotify},
+    task::{PidIdentity, PidNamespaceId, TgidNumber, Thread, TidNumber, future::IrqNotify},
 };
 
 mod attachment;
@@ -100,9 +100,9 @@ pub use attachment::attach;
 pub(in crate::perf) use attachment::detach_unpublished;
 use attachment::now_ns;
 pub(crate) use control::{disable_counter, reset_counter};
-pub(in crate::perf) use lifecycle::sideband_target;
 pub(crate) use lifecycle::{free_hw, on_scheduler_task_exit};
 pub use lifecycle::{on_exec, on_task_exit};
+pub(in crate::perf) use lifecycle::{sideband_target, visible_tgid, visible_tid};
 pub(in crate::perf) use model::PerTaskConfig;
 pub use model::PerTaskCounter;
 pub(crate) use model::SamplingAnchors;

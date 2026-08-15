@@ -1,6 +1,7 @@
 use ax_memory_addr::VirtAddr;
-use ax_std::os::arceos::task::current_thread_id;
 use ddebug::{ControlFile, DebugOps};
+
+use crate::task::current_user_task;
 
 pub struct DynamicDebugOps;
 
@@ -15,7 +16,7 @@ impl DebugOps for DynamicDebugOps {
     }
 
     fn thread_id() -> u64 {
-        current_thread_id().map_or(0, |thread| thread.as_u64())
+        current_user_task().as_thread().tid().get() as u64
     }
 }
 

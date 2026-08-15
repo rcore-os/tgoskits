@@ -34,7 +34,7 @@ use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc, get_file_like},
     mm::{VmMutPtr, vm_read_slice, vm_write_slice},
-    task::current_user_task,
+    task::{current_pid_view, current_user_task},
 };
 
 pub(super) const ARPHRD_ETHER: u16 = 1;
@@ -122,25 +122,26 @@ impl Socket {
         let current = current_user_task();
         let thread = current.as_thread();
         let credentials = thread.cred();
-        UnixCredentials::from_parts(
-            thread.proc_data.proc.pid(),
-            credentials.uid,
-            credentials.gid,
-        )
-        .with_identity(thread.proc_data.identity().pid_identity())
+        let process_identity = thread.proc_data.identity();
+        let pid = current_pid_view()
+            .visible_number(&process_identity)
+            .expect("Unix socket owner is visible in its active PID namespace")
+            .get();
+        UnixCredentials::from_parts(pid, credentials.uid, credentials.gid)
+            .with_identity(process_identity)
     }
 
     /// Projects a transport-owned process generation into the caller's active
     /// PID namespace while retaining numeric credentials for generic users.
     pub(crate) fn project_unix_credentials(credentials: &UnixCredentials) -> UnixCredentials {
-        let pid =
-            credentials
-                .identity::<axnsproxy::PidIdentity>()
-                .map_or(credentials.pid, |identity| {
-                    let current = current_user_task();
-                    let namespace = current.as_thread().proc_data.namespace_snapshot();
-                    identity.visible_pid(&namespace.pid_ns).unwrap_or(0)
-                });
+        let pid = credentials.identity::<crate::task::PidIdentity>().map_or(
+            credentials.pid,
+            |identity| {
+                current_pid_view()
+                    .visible_number(identity)
+                    .map_or(0, |number| number.get())
+            },
+        );
         UnixCredentials::from_parts(pid, credentials.uid, credentials.gid)
     }
 

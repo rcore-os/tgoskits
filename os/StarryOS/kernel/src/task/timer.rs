@@ -1,6 +1,10 @@
 //! Time management module.
 
-use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap, sync::Arc};
+use alloc::{
+    borrow::ToOwned,
+    collections::binary_heap::BinaryHeap,
+    sync::{Arc, Weak},
+};
 use core::{
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     time::Duration,
@@ -9,10 +13,10 @@ use core::{
 use ax_lazyinit::LazyLock;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_std::os::arceos::task::{self as scheduler, WaitQueue};
-use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
 
+use super::PidIdentity;
 use crate::{
     sync::{PiMutex, SpinLock, SpinLockGuard},
     task::poll_process_timer_for_alarm,

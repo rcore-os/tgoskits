@@ -146,8 +146,8 @@ macro_rules! define_options {
 
 /// Transport-owned Unix credentials plus an optional OS identity generation.
 ///
-/// `pid`, `uid`, and `gid` are the ABI-compatible fallback values. OS layers
-/// with PID namespaces can attach their generation object opaquely so queued
+/// `pid`, `uid`, and `gid` are ABI-compatible fallback values. OS layers with
+/// PID namespaces can attach their generation object opaquely so queued
 /// messages and peer sockets do not depend on a reusable numeric PID.
 #[derive(Default, Clone)]
 pub struct UnixCredentials {

@@ -571,9 +571,9 @@ mod tests {
 
     #[test]
     fn elapsed_maps_to_linux_timeout_error() {
-        assert_eq!(
+        assert!(matches!(
             crate::StarryError::from(Elapsed),
             crate::StarryError::TimedOut
-        );
+        ));
     }
 }
