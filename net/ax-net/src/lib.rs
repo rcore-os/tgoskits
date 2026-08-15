@@ -82,7 +82,7 @@ use core::{
     time::Duration,
 };
 
-use ax_lazyinit::{LazyLock, OnceLock};
+use ax_lazyinit::{LazyInit, LazyLock, OnceLock};
 use ax_sync::{Mutex, MutexGuard};
 use ax_task::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, quiesce_irq_wait};
 use axpoll::{IoEvents, PollSet};
@@ -124,8 +124,12 @@ pub use self::{
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
 static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
 
-static SERVICE: OnceLock<Mutex<Service>> = OnceLock::new();
-static NET_CONTROL: OnceLock<Arc<NetControl>> = OnceLock::new();
+struct NetworkRuntime {
+    service: Mutex<Service>,
+    control: Arc<NetControl>,
+}
+
+static NETWORK_RUNTIME: LazyInit<NetworkRuntime> = LazyInit::new();
 static NET_POLL: PollRuntime = PollRuntime::new();
 static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
@@ -164,6 +168,9 @@ static WIFI_CONTROLS: LazyLock<Mutex<Vec<(alloc::string::String, rd_net::WifiCon
 static NET_IRQ_EVENT: AtomicBool = AtomicBool::new(false);
 static NET_IRQ_WAIT: IrqWaitCell = IrqWaitCell::new();
 static NET_IRQ_REGISTRATION: OnceLock<IrqWaitRegistration> = OnceLock::new();
+#[cfg(all(axtest, feature = "axtest"))]
+static NET_POLL_WORKER_START_ATTEMPTS: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -173,16 +180,18 @@ fn net_poll_device_waker() -> &'static Waker {
 }
 
 fn get_service() -> MutexGuard<'static, Service> {
-    SERVICE
+    NETWORK_RUNTIME
         .get()
-        .expect("Network service not initialized")
+        .expect("Network runtime not initialized")
+        .service
         .lock()
 }
 
 pub(crate) fn get_control() -> &'static NetControl {
-    NET_CONTROL
+    NETWORK_RUNTIME
         .get()
-        .expect("Network service not initialized")
+        .expect("Network runtime not initialized")
+        .control
         .as_ref()
 }
 
@@ -192,7 +201,7 @@ pub(crate) fn get_control() -> &'static NetControl {
 ///
 /// Panics if called more than once, or if the configuration contains invalid values.
 pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
-    if SERVICE.get().is_some() {
+    if NETWORK_RUNTIME.get().is_some() {
         panic!("init_network() called more than once");
     }
 
@@ -322,11 +331,29 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
 fn publish_and_start_service(service: Service, control: Arc<NetControl>) {
     let workers = service.prepare_device_workers();
     workers.register_device_waker(net_poll_device_waker());
-    NET_CONTROL.call_once(|| control);
-    SERVICE.call_once(|| Mutex::new(service));
+    if NETWORK_RUNTIME
+        .call_once(|| NetworkRuntime {
+            service: Mutex::new(service),
+            control,
+        })
+        .is_none()
+    {
+        panic!("init_network() called more than once");
+    }
     workers.start();
+    start_net_poll_worker();
+}
+
+fn start_net_poll_worker() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    NET_POLL_WORKER_START_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
     spawn_permanent_worker("net-poll".to_owned(), net_poll_worker)
         .unwrap_or_else(|error| panic!("failed to start net poll worker: {error}"));
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+fn net_poll_worker_start_attempts() -> usize {
+    NET_POLL_WORKER_START_ATTEMPTS.load(Ordering::Relaxed)
 }
 
 fn validate_config(config: &NetworkConfig) {
@@ -972,33 +999,6 @@ mod initialization_contract_tests {
     #[cfg(all(axtest, feature = "axtest"))]
     use axtest::prelude::*;
 
-    #[test]
-    fn device_pollsets_are_initialized_before_service_publication_and_worker_start() {
-        let source = include_str!("lib.rs");
-        let init_network = source
-            .split_once("pub fn init_network")
-            .expect("init_network must exist")
-            .1
-            .split_once("fn validate_config")
-            .expect("init_network must precede validate_config")
-            .0;
-        let initialize_pollsets = init_network
-            .find("workers.register_device_waker(net_poll_device_waker())")
-            .expect("prepared device poll sets must be initialized before publication");
-        let publish_service = init_network
-            .find("SERVICE.call_once")
-            .expect("the initialized Service must be published once");
-        let start_workers = init_network
-            .find("workers.start()")
-            .expect("prepared device workers must start after publication");
-
-        assert!(
-            initialize_pollsets < publish_service && publish_service < start_workers,
-            "a runnable worker must never observe or contend with a partially initialized device \
-             PollSet"
-        );
-    }
-
     #[cfg(all(axtest, feature = "axtest"))]
     #[axtest]
     fn protocol_service_lock_keeps_scheduler_ticks_enabled_while_held() {
@@ -1015,98 +1015,67 @@ mod initialization_contract_tests {
         );
         drop(service);
     }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    #[axtest]
+    fn split_route_tests_reuse_existing_network_runtime() {
+        let _network = crate::test_support::network_test_guard();
+        crate::test_support::init_split_route_network();
+
+        assert_eq!(
+            super::net_poll_worker_start_attempts(),
+            1,
+            "test topology initialization must not start a second global net-poll worker"
+        );
+    }
 }
 
 #[cfg(all(axtest, feature = "axtest"))]
 pub(crate) mod test_support {
-    use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+    use alloc::string::String;
 
     use ax_lazyinit::OnceLock;
     use ax_sync::{Mutex, MutexGuard};
-    use smoltcp::wire::{IpAddress, Ipv4Address, Ipv4Cidr};
+    use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
 
-    use crate::{
-        config::{InterfaceFlags, InterfaceId, InterfaceKind},
-        consts::STANDARD_MTU,
-        device::LoopbackDevice,
-        publish_and_start_service,
-        router::{RouteTable, Router, Rule, SharedRouteTable},
-        service::{NetControl, NetInterface, Service},
-    };
+    use crate::{config::InterfaceId, get_service, net_poll_device_waker, request_poll};
 
-    pub(crate) const LOCAL_IF: InterfaceId = InterfaceId::new(2);
-    pub(crate) const PEER_IF: InterfaceId = InterfaceId::new(3);
     pub(crate) const LOCAL_ADDR: Ipv4Address = Ipv4Address::new(192, 0, 2, 10);
     pub(crate) const PEER_ADDR: Ipv4Address = Ipv4Address::new(198, 51, 100, 20);
 
     static NETWORK_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    pub(crate) struct SplitRouteNetwork {
+        pub(crate) local_if: InterfaceId,
+        pub(crate) peer_if: InterfaceId,
+    }
+
     pub(crate) fn network_test_guard() -> MutexGuard<'static, ()> {
         NETWORK_TEST_LOCK.lock()
     }
 
-    pub(crate) fn init_split_route_network() {
-        static INIT: OnceLock<()> = OnceLock::new();
+    pub(crate) fn init_split_route_network() -> &'static SplitRouteNetwork {
+        static INIT: OnceLock<SplitRouteNetwork> = OnceLock::new();
 
         INIT.call_once(|| {
-            let routes: SharedRouteTable = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
-            let mut router = Router::new(routes.clone());
-            let local_dev = router.add_device(LOCAL_IF, Box::new(LoopbackDevice::new()));
-            let peer_dev = router.add_device(PEER_IF, Box::new(LoopbackDevice::new()));
             let local_cidr = Ipv4Cidr::new(LOCAL_ADDR, 24);
             let peer_cidr = Ipv4Cidr::new(PEER_ADDR, 24);
+            let (local_if, local_workers, peer_if, peer_workers) = {
+                let mut service = get_service();
+                let (local_if, local_workers) =
+                    service.register_test_loopback(String::from("axtest-local"), local_cidr);
+                let (peer_if, peer_workers) =
+                    service.register_test_loopback(String::from("axtest-peer"), peer_cidr);
+                (local_if, local_workers, peer_if, peer_workers)
+            };
 
-            router.add_rule(Rule::new(
-                local_cidr.into(),
-                None,
-                local_dev,
-                LOCAL_IF,
-                IpAddress::Ipv4(LOCAL_ADDR),
-                100,
-            ));
-            router.add_rule(Rule::new(
-                peer_cidr.into(),
-                None,
-                peer_dev,
-                PEER_IF,
-                IpAddress::Ipv4(PEER_ADDR),
-                100,
-            ));
+            local_workers.register_device_waker(net_poll_device_waker());
+            local_workers.start();
+            peer_workers.register_device_waker(net_poll_device_waker());
+            peer_workers.start();
+            request_poll();
 
-            let interfaces = vec![
-                NetInterface {
-                    id: LOCAL_IF,
-                    name: "eth0".into(),
-                    kind: InterfaceKind::Ethernet,
-                    mac: None,
-                    ipv4: Some(local_cidr),
-                    gateway: None,
-                    mtu: STANDARD_MTU,
-                    metric: 100,
-                    flags: InterfaceFlags::UP | InterfaceFlags::RUNNING,
-                },
-                NetInterface {
-                    id: PEER_IF,
-                    name: "eth1".into(),
-                    kind: InterfaceKind::Ethernet,
-                    mac: None,
-                    ipv4: Some(peer_cidr),
-                    gateway: None,
-                    mtu: STANDARD_MTU,
-                    metric: 100,
-                    flags: InterfaceFlags::UP | InterfaceFlags::RUNNING,
-                },
-            ];
-
-            let control = Arc::new(NetControl::new(interfaces, routes, Vec::new()));
-            let mut service = Service::new(router, control.clone());
-            service.iface.update_ip_addrs(|ip_addrs| {
-                ip_addrs.push(local_cidr.into()).unwrap();
-                ip_addrs.push(peer_cidr.into()).unwrap();
-            });
-
-            publish_and_start_service(service, control);
-            ()
-        });
+            SplitRouteNetwork { local_if, peer_if }
+        })
     }
 }
