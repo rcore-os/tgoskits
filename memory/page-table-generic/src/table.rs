@@ -363,7 +363,10 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     ///
     /// Unlike [`Self::translate`], this also finds a *not-present* block (e.g. one
     /// left by `mprotect(PROT_NONE)` over a huge area), since `find_occupied_leaf`
-    /// stops at `huge()` before the present check.
+    /// stops at `huge()` before the present check — but only on PTE formats whose
+    /// [`PageTableEntry::huge`] is present-independent. On a nested/second-stage
+    /// format (EPT/NPT) that encodes a not-present block as a bare zero, such a
+    /// block reads as unmapped and this returns `None`.
     pub fn peek_huge_block(&self, vaddr: VirtAddr) -> Option<(PhysAddr, PteConfigOf<T>, usize)> {
         let (pte, level) = self
             .root
@@ -409,6 +412,11 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     /// Convenience: reserve a table and split the huge block covering `vaddr` in one
     /// call (the transparent-huge-page fault path). Errors with `NotMapped` if
     /// `vaddr` is not covered by a block, or `NoMemory` if the reservation fails.
+    ///
+    /// A *present* block splits on any format. Splitting a *not-present* block
+    /// requires a present-independent [`PageTableEntry::huge`] (CPU page tables);
+    /// on a nested/second-stage format (EPT/NPT) that zeroes such an entry the
+    /// block reads as unmapped and this returns `NotMapped`.
     pub fn split_huge_page(&mut self, vaddr: VirtAddr) -> PagingResult<usize> {
         let reserved = Frame::<T, A>::new(self.root.allocator.clone())?;
         self.split_huge_page_with(vaddr, reserved)

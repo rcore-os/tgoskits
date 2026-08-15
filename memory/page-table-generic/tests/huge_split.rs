@@ -262,3 +262,146 @@ fn failed_split_rolls_back_reserved_table_without_flushing() {
         "an uninstalled reserved frame is never live, so no flush: {ops:?}"
     );
 }
+
+// ---- Nested/second-stage (EPT/NPT-style) format: the narrowed `huge()` contract ----
+
+/// A nested-page-table PTE mirroring the EPT/NPT adapters
+/// (`virtualization/axvm/src/arch/*/npt.rs`, `ept.rs`): an entry built with empty
+/// permissions collapses to a bare zero, dropping both the physical address and the
+/// block marker. `huge()` therefore reports a *not-present* block as not-huge — the
+/// format on which the not-present-block split is unsupported and must degrade to
+/// `NotMapped` rather than misbehave.
+#[derive(Clone, Copy, Debug)]
+struct NestedPte(u64);
+
+impl NestedPte {
+    const VALID: u64 = 1 << 0;
+    const BLOCK: u64 = 1 << 1;
+    const TABLE: u64 = 1 << 2;
+    const PADDR: u64 = !0xfff;
+}
+
+impl PageTableEntry for NestedPte {
+    type PteConfig = PteConfig;
+
+    fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        // EPT/NPT: an empty-permission mapping is encoded as all-zero, losing the
+        // physical address and the block marker.
+        if !config.valid {
+            return Self(0);
+        }
+        let mut bits = (paddr.as_usize() as u64 & Self::PADDR) | Self::VALID;
+        if is_huge {
+            bits |= Self::BLOCK;
+        }
+        Self(bits)
+    }
+
+    fn new_table(paddr: PhysAddr) -> Self {
+        Self((paddr.as_usize() as u64 & Self::PADDR) | Self::VALID | Self::TABLE)
+    }
+
+    fn paddr(&self, _is_dir: bool) -> PhysAddr {
+        PhysAddr::from_usize((self.0 & Self::PADDR) as usize)
+    }
+
+    fn config(&self, is_dir: bool) -> Self::PteConfig {
+        PteConfig {
+            paddr: self.paddr(is_dir),
+            valid: self.present(),
+            read: true,
+            writable: true,
+            executable: true,
+            is_dir,
+            huge: self.huge(is_dir),
+            ..Default::default()
+        }
+    }
+
+    fn present(&self) -> bool {
+        self.0 & Self::VALID != 0
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir && (self.0 & Self::BLOCK != 0)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NestedL4;
+
+impl TableMeta for NestedL4 {
+    type P = NestedPte;
+
+    const PAGE_SIZE: usize = 0x1000;
+    const LEVEL_BITS: &[usize] = &[9, 9, 9, 9];
+    const MAX_BLOCK_LEVEL: usize = 3;
+
+    fn flush(_vaddr: Option<VirtAddr>) {}
+}
+
+/// F-001: on a format whose `huge()` is *not* present-independent (the nested
+/// EPT/NPT adapters zero an empty-permission entry), a *present* huge block still
+/// splits, but a *not-present* block degrades to `NotMapped` instead of a
+/// preserved-frame split — with no panic and no page-table-frame leak.
+#[test]
+fn not_present_block_on_a_zeroing_format_degrades_to_not_mapped() {
+    let alloc = TrackedFram4k::default();
+    let mut pt = PageTable::<NestedL4, TrackedFram4k>::new(alloc.clone()).unwrap();
+
+    // A present 2 MiB block splits on this format like any other (its `huge()` bit
+    // is set), so the not-present degradation below is specific to the zeroed entry.
+    let va_present = VirtAddr::from_usize(VA);
+    pt.map(&MapConfig {
+        vaddr: va_present,
+        paddr: PhysAddr::from_usize(0x1000_0000),
+        size: HUGE_2M,
+        pte: PteImpl::kernel_mode_config(),
+        allow_huge: true,
+        flush: false,
+    })
+    .unwrap();
+    assert_eq!(
+        pt.split_huge_page(va_present).unwrap(),
+        HUGE_2M,
+        "a present huge block splits on every format"
+    );
+
+    // A separate block, then `mprotect(PROT_NONE)`: on this format the entry
+    // collapses to a bare zero (no paddr, no block bit), so `huge()` is false.
+    let va_np = VirtAddr::from_usize(VA + 4 * HUGE_2M);
+    pt.map(&MapConfig {
+        vaddr: va_np,
+        paddr: PhysAddr::from_usize(0x3000_0000),
+        size: HUGE_2M,
+        pte: PteImpl::kernel_mode_config(),
+        allow_huge: true,
+        flush: false,
+    })
+    .unwrap();
+    pt.protect_page(va_np, PteConfig::default()).unwrap();
+
+    assert_eq!(
+        pt.peek_huge_block(va_np),
+        None,
+        "a zeroing format reports a not-present block as unmapped"
+    );
+    assert_eq!(
+        pt.split_huge_page(va_np).err(),
+        Some(PagingError::NotMapped),
+        "splitting a not-present block on a zeroing format degrades to NotMapped"
+    );
+
+    // `Drop` deallocates every page-table frame (the split's child table + the
+    // tables above the zeroed block); none may leak.
+    drop(pt);
+    assert!(!alloc.has_leaks(), "no page-table frame may leak");
+}

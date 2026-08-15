@@ -96,10 +96,17 @@ pub trait PageTableEntry: Debug + Sync + Send + Clone + Copy + Sized + 'static {
 
     /// Returns whether this entry is a block mapping at the current level.
     ///
-    /// This MUST be **present-independent** (a structural marker): a not-present
-    /// block — e.g. one left by an `mprotect(PROT_NONE)` over a huge area — must
-    /// still report `true`. The walk (`find_occupied_leaf`), `unmap`, and the huge
-    /// split rely on it to tell a not-present block apart from a table pointer.
+    /// A *present* block must report `true` on every format. Recognizing a
+    /// *not-present* block (e.g. one left by an `mprotect(PROT_NONE)` over a huge
+    /// area, which keeps the physical address but clears the permission bits) is
+    /// **format-dependent**: CPU page tables preserve the block descriptor and
+    /// report `true`, whereas nested/second-stage formats (EPT/NPT) that encode an
+    /// empty-permission entry as a bare zero report `false`. The not-present-block
+    /// operations — `peek_huge_block` and the huge `split_huge_page` — need the
+    /// present-independent form; on a format that drops it they see the entry as
+    /// unmapped and return `NotMapped` (a *present* block still splits on every
+    /// format). `find_occupied_leaf`, `unmap`, and the split use this to tell a
+    /// block apart from a table pointer.
     fn huge(&self, is_dir: bool) -> bool;
 
     /// Returns whether this entry contains no descriptor state at all.
