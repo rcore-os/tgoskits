@@ -516,7 +516,7 @@ fn wait_for_pipe_test_condition(mut condition: impl FnMut() -> bool) -> bool {
 fn raise_pipe() {
     let curr = current();
     send_signal_to_process(
-        curr.as_thread().proc_data.proc.pid(),
+        curr.as_thread().proc_data.proc.pid_number(),
         Some(SignalInfo::new_kernel(Signo::SIGPIPE)),
     )
     .expect("Failed to send SIGPIPE");
