@@ -25,10 +25,10 @@ static OCCUPIER_READY: AtomicBool = AtomicBool::new(false);
 static STOP_OCCUPIER: AtomicBool = AtomicBool::new(false);
 static SLEEPER_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-const WAITER_ENQUEUE_RETRIES: usize = 1024;
 const REMOTE_WAKE_PROGRESS_TIMEOUT: Duration = Duration::from_secs(1);
 const OCCUPIER_MAX_RUNTIME: Duration = Duration::from_secs(2);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
+const WAITER_BLOCK_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct RemoteSleeper {
     worker: Option<thread::JoinHandle<()>>,
@@ -155,7 +155,8 @@ fn pin_current_to_cpu(cpu_id: usize) {
 }
 
 fn wake_sleep_queue_after_waiter_enqueued(sleeper: u64) {
-    for _ in 0..WAITER_ENQUEUE_RETRIES {
+    let started = Instant::now();
+    while started.elapsed() < WAITER_BLOCK_TIMEOUT {
         if task_test_hooks::thread_is_blocked(sleeper) {
             task_test_hooks::arm_wake_irq_owner_probe(sleeper);
             task_test_hooks::arm_wake_entity_read_copy_probe(sleeper);
