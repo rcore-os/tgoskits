@@ -1,0 +1,12 @@
+[package]
+name = "device-relations"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typed physical-device relationship registry for TGOSKits drivers"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
