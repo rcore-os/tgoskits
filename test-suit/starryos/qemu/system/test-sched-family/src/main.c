@@ -186,8 +186,26 @@ int main(void)
         CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, 0, 0xdeadbeef, &sp), EINVAL, "sched_setscheduler with invalid policy returns EINVAL");
 
         // FIFO | RESET_ON_FORK is valid combination
+        cpu_set_t serial_owner_mask, online_mask;
+        CPU_ZERO(&serial_owner_mask);
+        CPU_SET(0, &serial_owner_mask);
+        fill_online_cpu_mask(&online_mask);
+        CHECK_RET(sched_setaffinity(0, sizeof(serial_owner_mask), &serial_owner_mask), 0,
+            "pin RT writer to the serial service CPU");
         sp.sched_priority = 2;
         CHECK_RET(syscall(SYS_SCHED_SETSCHEDULER, 0, policy, &sp), 0, "sched_setscheduler with SCHED_RESET_ON_FORK should succeed");
+
+        // The console's bounded software queue is smaller than this write. A
+        // PREEMPT_RT-style serial service thread must drain it even while the
+        // writer is a FIFO task on the same CPU.
+        char serial_progress[8192];
+        memset(serial_progress, '.', sizeof(serial_progress));
+        serial_progress[sizeof(serial_progress) - 1] = '\n';
+        CHECK_RET(write(STDOUT_FILENO, serial_progress, sizeof(serial_progress)),
+            (ssize_t)sizeof(serial_progress),
+            "FIFO console writer makes progress through serial backpressure");
+        CHECK_RET(sched_setaffinity(0, sizeof(online_mask), &online_mask), 0,
+            "restore RT writer affinity to online CPUs");
 
         // SCHED_OTHER with non-zero priority
         sp.sched_priority = 1;

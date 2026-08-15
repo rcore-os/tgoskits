@@ -29,10 +29,7 @@ use self::{
 use crate::{
     RuntimeError, RuntimeResult,
     sync::PiMutex,
-    task::{
-        CpuId, CpuSet, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, ThreadHandle, ThreadId,
-        WaitQueue, quiesce_irq_wait,
-    },
+    task::{CpuId, CpuSet, IrqWaitCell, IrqWorkerWaiter, ThreadHandle, ThreadId, WaitQueue},
 };
 
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
@@ -62,7 +59,6 @@ struct RuntimeIrqBridge {
     rx_overflow: AtomicBool,
     register_retry: AtomicBool,
     doorbell: IrqWaitCell,
-    park: WaitQueue,
     waiter: OnceLock<SerialWorkerWaiter>,
 }
 
@@ -73,7 +69,6 @@ impl RuntimeIrqBridge {
             rx_overflow: AtomicBool::new(false),
             register_retry: AtomicBool::new(false),
             doorbell: IrqWaitCell::new(),
-            park: WaitQueue::new(),
             waiter: OnceLock::new(),
         }
     }
@@ -99,28 +94,16 @@ impl RuntimeIrqBridge {
             "serial notifications must be consumed by one fixed maintenance thread"
         );
 
-        match self.doorbell.register(&waiter.registration) {
-            IrqRegisterResult::ConsumedPending => {}
-            IrqRegisterResult::Registered(token)
-            | IrqRegisterResult::NotificationInFlight(token) => {
-                // Registration ownership is the single event predicate. The
-                // notifier releases it before the direct scheduler wake, and
-                // an event coalesced before registration releases it
-                // synchronously without leaving a stale self-wake behind.
-                self.park.wait_until(|| !token.is_attached());
-                quiesce_irq_wait(token)
-                    .unwrap_or_else(|error| panic!("serial IRQ waiter could not quiesce: {error}"));
-            }
-            IrqRegisterResult::Occupied => {
-                panic!("serial IRQ waiter was registered concurrently")
-            }
-        }
+        waiter
+            .irq
+            .wait(&self.doorbell)
+            .unwrap_or_else(|error| panic!("serial IRQ waiter could not quiesce: {error}"));
     }
 }
 
 struct SerialWorkerWaiter {
     owner: ThreadId,
-    registration: IrqWaitRegistration,
+    irq: IrqWorkerWaiter,
 }
 
 struct PendingIrqRegistration {
@@ -160,7 +143,7 @@ impl Drop for PendingIrqRegistration {
 fn create_serial_worker_waiter(current: &ThreadHandle) -> SerialWorkerWaiter {
     SerialWorkerWaiter {
         owner: current.id(),
-        registration: IrqWaitRegistration::new(current.wake_handle()),
+        irq: IrqWorkerWaiter::new(current.wake_handle()),
     }
 }
 
@@ -591,7 +574,7 @@ fn build_runtime(
         ));
     }
 
-    crate::task::spawn_raw_with_affinity(
+    crate::task::spawn_irq_service_with_affinity(
         move || worker.run(),
         alloc::format!("serial{index}-maint"),
         crate::task::default_task_stack_size(),

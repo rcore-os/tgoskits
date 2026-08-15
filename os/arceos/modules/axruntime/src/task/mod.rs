@@ -100,9 +100,9 @@ pub(crate) use scheduler_events::{on_clock_event, publish_scheduler_tick};
 #[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
 pub(crate) use scheduler_events::{record_scheduler_ipi_consume, record_scheduler_ipi_send};
 pub use spawn::{
-    prepare_raw, prepare_raw_with_extension_in_address_space_and_policy, spawn_raw,
-    spawn_raw_with_affinity, spawn_raw_with_extension, spawn_raw_with_extension_and_affinity,
-    spawn_raw_with_extension_in_address_space,
+    prepare_raw, prepare_raw_with_extension_in_address_space_and_policy,
+    spawn_irq_service_with_affinity, spawn_raw, spawn_raw_with_affinity, spawn_raw_with_extension,
+    spawn_raw_with_extension_and_affinity, spawn_raw_with_extension_in_address_space,
     spawn_raw_with_extension_in_address_space_and_policy, spawn_raw_with_policy_and_affinity,
 };
 #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
