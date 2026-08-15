@@ -192,6 +192,8 @@ static void test_tgkill_errors(void)
           "tgkill zero tid returns EINVAL");
     CHECK(raw_tgkill_words(1ULL << 32, tid, 0) == -1 && errno == EINVAL,
           "tgkill rejects an upper-word tgid that narrows to zero");
+    CHECK(raw_tgkill_words(getpid(), 1ULL << 32, 0) == -1 && errno == EINVAL,
+          "tgkill rejects an upper-word tid that narrows to zero");
 }
 
 int main(void)

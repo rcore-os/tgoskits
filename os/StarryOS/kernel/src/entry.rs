@@ -5,15 +5,17 @@ use alloc::{
 
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{AxTaskExt, spawn_task_with};
-use flatten_objects::FlattenObjects;
-use starry_process::{Pid, Process};
 
 use crate::{
-    file::FD_TABLE,
+    file::{FD_TABLE, FileTable},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty},
     sync::{Mutex, PreemptIrqSaveGuard, RwLock},
-    task::{ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
+    task::{
+        PidReservation, PidReservationKind, Process, ProcessData, ProcessDataInit, ProcessImage,
+        ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, add_task_to_table, new_user_task,
+        spawn_alarm_task,
+    },
     tracepoint::tracepoint_init,
 };
 
@@ -73,10 +75,25 @@ pub fn init(args: &[String], envs: &[String]) {
     // scheduler id untouched. `Thread::tid` is already decoupled from the
     // scheduler id (see its field doc), so this only requires the table keys to
     // follow the thread tid rather than `task.id()`.
-    const INIT_PID: Pid = 1;
-    let pid = INIT_PID;
-    let proc = Process::new_init(pid);
-    proc.add_thread(pid);
+    const INIT_PID: u32 = 1;
+    let reservation = PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader)
+        .expect("failed to reserve init PID identity");
+    let pid = reservation
+        .number_in(&ROOT_PID_NS)
+        .expect("init PID reservation has no root binding")
+        .get();
+    assert_eq!(pid, INIT_PID);
+    let identity = reservation
+        .publish()
+        .expect("failed to publish init PID identity");
+    let tid_lease = identity
+        .acquire_role::<Tid>()
+        .expect("failed to acquire init TID role");
+    let tgid_lease = identity
+        .acquire_role::<Tgid>()
+        .expect("failed to acquire init TGID role");
+    let proc = Process::new_init(identity.clone());
+    proc.add_thread(TidNumber::try_from(pid).expect("init TID must be non-zero"));
 
     if let Err(err) = tty::bind_console_to(&proc) {
         warn!("Failed to bind console tty: {err:?}");
@@ -84,30 +101,41 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let proc = ProcessData::new(
         proc,
-        ProcessImage::new(
-            path.to_string(),
-            Arc::new(args.to_vec()),
-            Arc::new(envs.to_vec()),
-            auxv,
-            "/".to_string(),
-            "/".to_string(),
-        ),
-        Arc::new(Mutex::new(uspace)),
-        Arc::default(),
-        None,
-        pid,
-        false,
+        identity.clone(),
+        tgid_lease,
+        ProcessDataInit {
+            image: ProcessImage::new(
+                path.to_string(),
+                Arc::new(args.to_vec()),
+                Arc::new(envs.to_vec()),
+                auxv,
+                "/".to_string(),
+                "/".to_string(),
+            ),
+            aspace: Arc::new(Mutex::new(uspace)),
+            signal_actions: Arc::default(),
+            exit_signal: None,
+            wait_parent_tid: TidNumber::try_from(pid).expect("init TID must be non-zero"),
+            vm_aspace_shared: false,
+        },
     );
     // SAFE-EXPECT: failing to attach init would violate the kernel's process accounting invariant.
-    crate::cgroup::attach_initial_process(pid)
+    crate::cgroup::attach_initial_process(&identity)
         .expect("Failed to attach init process to cgroup root");
 
     let mut scope = scope_local::Scope::new();
-    let mut fd_table = FlattenObjects::new();
+    let mut fd_table = FileTable::new();
     crate::file::add_stdio(&mut fd_table).expect("Failed to add stdio");
     *FD_TABLE.scope_mut(&mut scope) = Arc::new(RwLock::new(fd_table));
 
-    let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default(), scope);
+    let thr = Thread::new(
+        identity,
+        tid_lease,
+        proc,
+        None,
+        starry_signal::SignalSet::default(),
+        scope,
+    );
     *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
     let task = {

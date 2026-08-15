@@ -28,8 +28,8 @@ const KRETPROBE_MAX_ACTIVE: u32 = 10;
 use crate::{
     file::FileLike,
     kprobe::{
-        KernelKprobe, KernelKretprobe, KernelRawMutex, KprobeAuxiliary, register_kprobe,
-        register_kretprobe, unregister_kprobe, unregister_kretprobe,
+        KernelKprobe, KernelKretprobe, KernelRawMutex, KprobeAuxiliary, UprobeTargetLease,
+        register_kprobe, register_kretprobe, unregister_kprobe, unregister_kretprobe,
     },
     perf::{PerfEventOps, bpf::OwnedEbpfVm},
     uprobe::{KernelUprobe, unregister_uprobe},
@@ -51,6 +51,7 @@ pub struct ProbePerfEvent {
     _args: PerfProbeArgs,
     probe: ProbeTy,
     callback_list: Vec<u32>,
+    _uprobe_target: Option<UprobeTargetLease>,
 }
 
 impl ProbePerfEvent {
@@ -60,6 +61,17 @@ impl ProbePerfEvent {
             _args: args,
             probe,
             callback_list: Vec::new(),
+            _uprobe_target: None,
+        }
+    }
+
+    /// Build a uprobe event and keep its exact task generation alive as the callback target.
+    pub fn new_uprobe(args: PerfProbeArgs, probe: ProbeTy, target: UprobeTargetLease) -> Self {
+        Self {
+            _args: args,
+            probe,
+            callback_list: Vec::new(),
+            _uprobe_target: Some(target),
         }
     }
 }
