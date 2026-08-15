@@ -14,9 +14,10 @@
  * inherited before mmap remain linked and receive the root output later.
  *
  * After the pre-mmap grandchild exits, C creates another 40 descendants
- * sequentially. SUCCESS therefore requires 42 distinct EXIT tids: C, G, and
- * all 40 later descendants. This exceeds the bounded simultaneously-live
- * family capacity and proves retired children release their relation slots.
+ * sequentially. SUCCESS therefore requires 42 EXIT records: C, G, and all 40
+ * later descendants. This exceeds the bounded simultaneously-live family
+ * capacity and proves retired children release their relation slots. Numeric
+ * tids may be reused after each descendant is reaped.
  * The deliberately large sample period avoids exercising PMU overflow in this
  * lifecycle test; exact ENABLE propagation is covered by deterministic state
  * tests.
@@ -143,7 +144,7 @@ struct perf_event_header {
 #define PERF_MMAP_DATA_PAGES 8u
 #define PERF_MMAP_TOTAL_BYTES ((size_t)(1u + PERF_MMAP_DATA_PAGES) * 4096u)
 #define SEQUENTIAL_DESCENDANTS 40
-#define EXPECTED_EXIT_TIDS (SEQUENTIAL_DESCENDANTS + 2)
+#define EXPECTED_EXIT_RECORDS (SEQUENTIAL_DESCENDANTS + 2)
 #define TEST_TIMEOUT_MS 15000
 #define WAIT_POLL_INTERVAL_US 10000
 
@@ -442,8 +443,8 @@ int main(int argc, char **argv) {
     int rc = 0;
     if (n_exit == 0) {
         rc = fail("no PERF_RECORD_EXIT record");
-    } else if (distinct_exit < EXPECTED_EXIT_TIDS) {
-        rc = fail("retired children exhausted live inheritance capacity");
+    } else if (n_exit < EXPECTED_EXIT_RECORDS) {
+        rc = fail("missing inherited EXIT records after child retirement");
     }
 
     (void)munmap(base, PERF_MMAP_TOTAL_BYTES);
