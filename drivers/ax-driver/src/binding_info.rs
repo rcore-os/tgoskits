@@ -1,14 +1,12 @@
 use alloc::vec::Vec;
 
 use axklib::irq::{legacy_irq_raw, try_legacy_irq};
-use device_relations::DeviceRelationView;
 use irq_framework::{AcpiGsiRoute, IrqId, IrqSource};
 use rdrive::DeviceId;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BindingInfo {
     irqs: Vec<BindingIrqBinding>,
-    relation_view: DeviceRelationView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,10 +44,7 @@ pub enum PciIrqRequirement {
 
 impl BindingInfo {
     pub const fn empty() -> Self {
-        Self {
-            irqs: Vec::new(),
-            relation_view: DeviceRelationView::new(),
-        }
+        Self { irqs: Vec::new() }
     }
 
     pub fn with_irq(irq: Option<usize>) -> Result<Self, irq_framework::IrqError> {
@@ -75,31 +70,7 @@ impl BindingInfo {
                 .into_iter()
                 .map(|(source_id, irq)| BindingIrqBinding { source_id, irq })
                 .collect(),
-            relation_view: DeviceRelationView::new(),
         }
-    }
-
-    pub fn with_fdt_interrupt(
-        device: DeviceId,
-        controller: DeviceId,
-        cells: impl Into<Vec<u32>>,
-    ) -> Self {
-        let cells = cells.into();
-        let mut relation_view = DeviceRelationView::new();
-        relation_view
-            .record_interrupt_parent(device, controller)
-            .expect("new binding relation must not be duplicated");
-        Self {
-            irqs: Vec::from([BindingIrqBinding {
-                source_id: 0,
-                irq: BindingIrq::fdt_interrupt_with_controller(controller, cells),
-            }]),
-            relation_view,
-        }
-    }
-
-    pub fn relation_view(&self) -> &DeviceRelationView {
-        &self.relation_view
     }
 
     pub fn irq(&self) -> Option<&BindingIrq> {

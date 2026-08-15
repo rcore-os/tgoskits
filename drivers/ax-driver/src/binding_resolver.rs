@@ -1,5 +1,6 @@
 use alloc::{format, vec::Vec};
 
+use device_relations::DeviceRelationView;
 use rdrive::{
     DeviceId,
     probe::{OnProbeError, acpi::AcpiInfo},
@@ -20,11 +21,24 @@ pub fn binding_info_from_fdt(info: &FdtInfo<'_>) -> Result<BindingInfo, OnProbeE
                 interrupt.interrupt_parent
             ))
         })?;
-    Ok(BindingInfo::with_fdt_interrupt(
+    let view = DeviceRelationView::from_fdt_interrupt_parent(
         info.device_id(),
-        controller,
-        interrupt.specifier,
-    ))
+        info.interrupt_parent_device_id(),
+    );
+    let controller = view.require_interrupt_parent(controller).map_err(|error| {
+        OnProbeError::other(format!(
+            "FDT interrupt binding for device {:?} does not match rdrive relation: {error:?}",
+            info.device_id()
+        ))
+    })?;
+    rdrive::get::<rdif_intc::Intc>(controller).map_err(|error| {
+        OnProbeError::other(format!(
+            "FDT interrupt parent {controller:?} is not an available interrupt-controller provider: {error:?}"
+        ))
+    })?;
+    Ok(BindingInfo::with_binding_irq(Some(
+        binding_irq_from_fdt_interrupt(controller, interrupt.specifier),
+    )))
 }
 
 pub fn binding_irq_from_named_fdt_interrupt(

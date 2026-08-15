@@ -8,77 +8,59 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
-
 pub use rdrive::DeviceId;
-
-/// A fact derived from an existing device-discovery or binding path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelationKind {
-    /// The source FDT node names the target as its interrupt parent.
-    InterruptParent,
-}
-
-/// A typed relation between two identities allocated by `rdrive`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeviceRelation {
-    pub device: DeviceId,
-    pub provider: DeviceId,
-    pub kind: RelationKind,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelationError {
-    DuplicateRelation,
+    MissingInterruptParent { device: DeviceId },
+    InterruptParentMismatch {
+        device: DeviceId,
+        discovered: DeviceId,
+        requested: DeviceId,
+    },
 }
 
 /// A lightweight view of relations observed during discovery and binding.
 ///
 /// Its validity is bounded by the current rdrive device-instance lifetime. It
 /// deliberately does not claim hotplug, unbind, or invalidation semantics.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceRelationView {
-    relations: Vec<DeviceRelation>,
+    device: DeviceId,
+    interrupt_parent: Option<DeviceId>,
 }
 
 impl DeviceRelationView {
-    pub const fn new() -> Self {
-        Self {
-            relations: Vec::new(),
-        }
-    }
-
-    pub fn record_interrupt_parent(
-        &mut self,
+    /// Builds a view from a device identity and its rdrive-discovered FDT parent.
+    pub const fn from_fdt_interrupt_parent(
         device: DeviceId,
-        provider: DeviceId,
-    ) -> Result<(), RelationError> {
-        let relation = DeviceRelation {
+        interrupt_parent: Option<DeviceId>,
+    ) -> Self {
+        Self {
             device,
-            provider,
-            kind: RelationKind::InterruptParent,
-        };
-        if self.relations.contains(&relation) {
-            return Err(RelationError::DuplicateRelation);
+            interrupt_parent,
         }
-        self.relations.push(relation);
-        Ok(())
     }
 
-    pub fn interrupt_parent(&self, device: DeviceId) -> Option<DeviceId> {
-        self.relations
-            .iter()
-            .find(|relation| {
-                relation.device == device && relation.kind == RelationKind::InterruptParent
-            })
-            .map(|relation| relation.provider)
-    }
-
-    pub fn relations_from(&self, device: DeviceId) -> impl Iterator<Item = DeviceRelation> + '_ {
-        self.relations
-            .iter()
-            .copied()
-            .filter(move |relation| relation.device == device)
+    /// Validates that a binding uses the interrupt controller discovered for
+    /// this device and returns that controller identity on success.
+    pub fn require_interrupt_parent(
+        &self,
+        requested: DeviceId,
+    ) -> Result<DeviceId, RelationError> {
+        let Some(discovered) = self.interrupt_parent else {
+            return Err(RelationError::MissingInterruptParent {
+                device: self.device,
+            });
+        };
+        if discovered != requested {
+            return Err(RelationError::InterruptParentMismatch {
+                device: self.device,
+                discovered,
+                requested,
+            });
+        }
+        Ok(discovered)
     }
 }
 
@@ -87,16 +69,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn records_rdrive_identities_and_rejects_duplicate_facts() {
+    fn validates_a_requested_parent_against_the_discovered_identity() {
         let device = DeviceId::from(7);
         let controller = DeviceId::from(3);
-        let mut view = DeviceRelationView::new();
-        view.record_interrupt_parent(device, controller).unwrap();
-        assert_eq!(view.interrupt_parent(device), Some(controller));
-        assert_eq!(view.relations_from(device).count(), 1);
+        let view = DeviceRelationView::from_fdt_interrupt_parent(device, Some(controller));
+        assert_eq!(view.require_interrupt_parent(controller), Ok(controller));
         assert_eq!(
-            view.record_interrupt_parent(device, controller),
-            Err(RelationError::DuplicateRelation)
+            view.require_interrupt_parent(DeviceId::from(4)),
+            Err(RelationError::InterruptParentMismatch {
+                device,
+                discovered: controller,
+                requested: DeviceId::from(4),
+            })
         );
     }
 }

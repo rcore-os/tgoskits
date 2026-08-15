@@ -808,6 +808,14 @@ impl<'a> FdtInfo<'a> {
         self.device_id
     }
 
+    /// Returns the interrupt-controller identity derived from this node's FDT
+    /// `interrupt-parent` relationship, if rdrive can resolve it.
+    pub fn interrupt_parent_device_id(&self) -> Option<DeviceId> {
+        self.node
+            .interrupt_parent()
+            .and_then(|phandle| self.phandle_2_device_id.get(&phandle).copied())
+    }
+
     /// Returns the available direct children of the currently probed node.
     ///
     /// Disabled children are intentionally omitted, matching normal FDT probe

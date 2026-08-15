@@ -26,8 +26,6 @@ use rdrive::{
 };
 
 static CAPTURED_IRQ: Mutex<Option<Option<BindingIrq>>> = Mutex::new(None);
-static CAPTURED_INTERRUPT_PARENT: Mutex<Option<(rdrive::DeviceId, rdrive::DeviceId, usize)>> =
-    Mutex::new(None);
 static SETUP_SPECIFIER: Mutex<Option<Vec<u32>>> = Mutex::new(None);
 static SETUP_ACPI_ROUTE: Mutex<Option<AcpiGsiRoute>> = Mutex::new(None);
 static RDRIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -167,7 +165,6 @@ fn required_pci_binding_info_reports_unresolved_irq() {
 fn fdt_binding_info_carries_first_irq_specifier_without_setup() {
     let _guard = RDRIVE_TEST_LOCK.lock().unwrap();
     *CAPTURED_IRQ.lock().unwrap() = None;
-    *CAPTURED_INTERRUPT_PARENT.lock().unwrap() = None;
     *SETUP_SPECIFIER.lock().unwrap() = None;
 
     ensure_rdrive_test_intc();
@@ -186,17 +183,6 @@ fn fdt_binding_info_carries_first_irq_specifier_without_setup() {
     assert_eq!(spec.cells, vec![0, 42, 4]);
     let controller = rdrive::fdt_phandle_to_device_id(Phandle::from(1)).unwrap();
     assert_eq!(spec.controller, controller);
-    let (device, relation_parent, relation_count) = CAPTURED_INTERRUPT_PARENT
-        .lock()
-        .unwrap()
-        .expect("relation view captured");
-    assert_eq!(relation_parent, controller);
-    assert_eq!(relation_count, 1);
-    assert_eq!(
-        rdrive::fdt_path_to_device_id("/device@0"),
-        Some(device),
-        "relation source must be the rdrive identity assigned to the FDT node"
-    );
     assert_eq!(*SETUP_SPECIFIER.lock().unwrap(), None);
 }
 
@@ -326,16 +312,7 @@ fn ensure_rdrive_test_intc() {
 
 fn capture_binding_info(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let info = binding_info_from_fdt(probe.info())?;
-    let device = probe.info().device_id();
-    let relation_parent = info.relation_view().interrupt_parent(device);
     *CAPTURED_IRQ.lock().unwrap() = Some(info.irq_cloned());
-    *CAPTURED_INTERRUPT_PARENT.lock().unwrap() = relation_parent.map(|parent| {
-        (
-            device,
-            parent,
-            info.relation_view().relations_from(device).count(),
-        )
-    });
     Ok(())
 }
 
