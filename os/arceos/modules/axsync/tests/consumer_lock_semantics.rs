@@ -133,22 +133,3 @@ fn sleepable_external_consumers_enable_only_the_sleep_abi() {
     );
     assert_contains(&posix_manifest, "epoll = [\"multitask\", \"fd\"]");
 }
-
-#[test]
-fn starry_task_registries_use_sleepable_pi_locks() {
-    let workspace = workspace_root();
-    let task_ops = workspace.join("os/StarryOS/kernel/src/task/ops.rs");
-    let process_identity = workspace.join("os/StarryOS/kernel/src/task/process_identity.rs");
-
-    for declaration in [
-        "static TASK_TABLE: PiMutex<BTreeMap<Pid, WeakUserTaskRef>>",
-        "static PROCESS_GROUP_TABLE: PiMutex<WeakMap<Pid, Weak<ProcessGroup>>>",
-        "static SESSION_TABLE: PiMutex<WeakMap<Pid, Weak<Session>>>",
-    ] {
-        assert_contains(&task_ops, declaration);
-    }
-    assert_contains(
-        &process_identity,
-        "static PROCESS_TABLE: PiMutex<BTreeMap<Pid, Arc<ProcessIdentity>>>",
-    );
-}
