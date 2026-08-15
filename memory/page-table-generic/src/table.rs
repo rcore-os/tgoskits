@@ -339,6 +339,81 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         Ok(page_size)
     }
 
+    /// Reserve a pre-zeroed child table for an upcoming [`Self::split_huge_page_with`].
+    ///
+    /// Reserving the frame up front (before, say, an address-space lock is taken)
+    /// lets the split itself commit infallibly — it never allocates in the
+    /// break-before-make window.
+    pub fn alloc_intermediate_table(&self) -> PagingResult<Frame<T, A>> {
+        Frame::<T, A>::new(self.root.allocator.clone())
+    }
+
+    /// Return a reserved table that a split did not consume (the rollback path).
+    ///
+    /// Freeing an *uninstalled* reserved frame needs no TLB flush: it was never
+    /// reachable by any page-table walk (contrast reclaiming a live table in
+    /// `unmap`, which must flush before freeing).
+    pub fn dealloc_intermediate_table(&self, table: Frame<T, A>) {
+        self.root.allocator.dealloc_frame(table.paddr);
+    }
+
+    /// Peek the huge block (present or not-present) covering `vaddr`: its frame,
+    /// leaf config, and page size — without mutating. Returns `None` if `vaddr` is
+    /// not covered by a block (a plain finest-granule leaf, or unmapped).
+    ///
+    /// Unlike [`Self::translate`], this also finds a *not-present* block (e.g. one
+    /// left by `mprotect(PROT_NONE)` over a huge area), since `find_occupied_leaf`
+    /// stops at `huge()` before the present check.
+    pub fn peek_huge_block(&self, vaddr: VirtAddr) -> Option<(PhysAddr, PteConfigOf<T>, usize)> {
+        let (pte, level) = self
+            .root
+            .find_occupied_leaf(vaddr, Frame::<T, A>::PT_LEVEL)
+            .ok()?;
+        let is_dir = level > 1;
+        if !pte.huge(is_dir) {
+            return None; // a plain finest-granule leaf, not a block
+        }
+        Some((
+            pte.paddr(is_dir),
+            pte.config(is_dir),
+            Frame::<T, A>::level_size(level),
+        ))
+    }
+
+    /// Split the huge block covering `vaddr` into a child table of finer-granule
+    /// entries, using a `reserved` table from [`Self::alloc_intermediate_table`].
+    /// The child inherits the block's frame and flags, so the mapping is unchanged
+    /// at a finer granularity. Frees the reservation on error. Returns the split
+    /// block's size, or `NotMapped` if `vaddr` is not covered by a block.
+    pub fn split_huge_page_with(
+        &mut self,
+        vaddr: VirtAddr,
+        reserved: Frame<T, A>,
+    ) -> PagingResult<usize> {
+        let reserved_paddr = reserved.paddr;
+        match self
+            .root
+            .split_huge_page_recursive(vaddr, Frame::<T, A>::PT_LEVEL, reserved)
+        {
+            Ok(size) => Ok(size),
+            Err(err) => {
+                // Only the block branch installs the reservation; on any error it was
+                // never installed, so roll it back. No flush: an uninstalled frame is
+                // unreachable by any TLB walk.
+                self.root.allocator.dealloc_frame(reserved_paddr);
+                Err(err)
+            }
+        }
+    }
+
+    /// Convenience: reserve a table and split the huge block covering `vaddr` in one
+    /// call (the transparent-huge-page fault path). Errors with `NotMapped` if
+    /// `vaddr` is not covered by a block, or `NoMemory` if the reservation fails.
+    pub fn split_huge_page(&mut self, vaddr: VirtAddr) -> PagingResult<usize> {
+        let reserved = Frame::<T, A>::new(self.root.allocator.clone())?;
+        self.split_huge_page_with(vaddr, reserved)
+    }
+
     /// Changes flags for a region. Unmapped base pages are skipped.
     pub fn protect_region(
         &mut self,

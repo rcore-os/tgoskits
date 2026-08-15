@@ -95,6 +95,11 @@ pub trait PageTableEntry: Debug + Sync + Send + Clone + Copy + Sized + 'static {
     fn present(&self) -> bool;
 
     /// Returns whether this entry is a block mapping at the current level.
+    ///
+    /// This MUST be **present-independent** (a structural marker): a not-present
+    /// block — e.g. one left by an `mprotect(PROT_NONE)` over a huge area — must
+    /// still report `true`. The walk (`find_occupied_leaf`), `unmap`, and the huge
+    /// split rely on it to tell a not-present block apart from a table pointer.
     fn huge(&self, is_dir: bool) -> bool;
 
     /// Returns whether this entry contains no descriptor state at all.

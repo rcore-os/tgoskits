@@ -27,6 +27,7 @@ starry-signal
 starry-vm
 ax-timer-list
 ax-alloc
+page-table-generic
 ax-display
 ax-driver
 rdrive
