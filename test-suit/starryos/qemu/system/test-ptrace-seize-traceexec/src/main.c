@@ -43,6 +43,7 @@
 enum {
     WAIT_TIMEOUT_MS = 3000,
     WAIT_POLL_INTERVAL_MS = 10,
+    TRACEME_REUSE_ITERATIONS = 100,
 };
 
 struct x86_64_user_regs {
@@ -483,8 +484,11 @@ int main(int argc, char **argv)
         kill_tracee(pid);
         return 1;
     }
-    if (run_traceme_traceexec_sequence() != 0) {
-        return 1;
+    for (int iteration = 0; iteration < TRACEME_REUSE_ITERATIONS; iteration++) {
+        if (run_traceme_traceexec_sequence() != 0) {
+            printf("FAIL: traceme PID-reuse iteration=%d\n", iteration);
+            return 1;
+        }
     }
 
     printf("PASS: PTRACE_EVENT_EXEC preserves seized and traceme syscall ABI\n");

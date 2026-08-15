@@ -31,11 +31,66 @@ struct PtraceStopRecord {
     signo: Option<Signo>,
     uctx: UserContext,
     siginfo: Option<SignalInfo>,
-    is_syscall: bool,
-    syscall_no: Option<usize>,
+    kind: PtraceStopKind,
     reported: bool,
     event: u32,
     event_msg: PtraceEventMessage,
+}
+
+#[derive(Clone, Copy)]
+enum PtraceStopKind {
+    Signal,
+    Syscall {
+        #[cfg(target_arch = "x86_64")]
+        number: usize,
+    },
+}
+
+impl PtraceStopKind {
+    fn syscall(number: usize) -> Self {
+        #[cfg(target_arch = "x86_64")]
+        {
+            Self::Syscall { number }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = number;
+            Self::Syscall {}
+        }
+    }
+
+    fn is_syscall(self) -> bool {
+        matches!(self, Self::Syscall { .. })
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn syscall_number(self) -> Option<usize> {
+        match self {
+            Self::Signal => None,
+            Self::Syscall { number } => Some(number),
+        }
+    }
+}
+
+impl PtraceStopRecord {
+    fn new(
+        signo: Signo,
+        uctx: &UserContext,
+        kind: PtraceStopKind,
+        pending_event: Option<PtracePendingEvent>,
+    ) -> Self {
+        Self {
+            signo: Some(signo),
+            uctx: *uctx,
+            siginfo: Some(SignalInfo::new_kernel(signo)),
+            kind,
+            reported: false,
+            event: pending_event.as_ref().map_or(0, |event| event.event),
+            event_msg: pending_event
+                .as_ref()
+                .map_or(PtraceEventMessage::Value(0), |event| event.msg.clone()),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -87,6 +142,13 @@ impl ProcessPtraceState {
             ss_saved_insn: PiMutex::new(BTreeMap::new()),
             stop_fp_data: PiMutex::new(BTreeMap::new()),
         }
+    }
+
+    fn publish_stop(&self, tid: TidNumber, signo: Signo, uctx: &UserContext, kind: PtraceStopKind) {
+        let pending_event = self.pending_event.lock().remove(&tid);
+        let stop = PtraceStopRecord::new(signo, uctx, kind, pending_event);
+        self.stops.lock().insert(tid, stop);
+        self.selected_tid.store(tid.get(), Ordering::Release);
     }
 
     /// Snapshots ptrace work for one syscall boundary.
@@ -187,23 +249,8 @@ impl ProcessData {
 
     /// Record that this tracee is stopped by `signo`.
     pub fn set_ptrace_stop(&self, tid: TidNumber, signo: Signo, uctx: &UserContext) {
-        let pending_event = self.ptrace.pending_event.lock().remove(&tid);
-        self.ptrace.stops.lock().insert(
-            tid,
-            PtraceStopRecord {
-                signo: Some(signo),
-                uctx: *uctx,
-                siginfo: Some(SignalInfo::new_kernel(signo)),
-                is_syscall: false,
-                syscall_no: None,
-                reported: false,
-                event: pending_event.as_ref().map_or(0, |event| event.event),
-                event_msg: pending_event
-                    .as_ref()
-                    .map_or(PtraceEventMessage::Value(0), |event| event.msg.clone()),
-            },
-        );
-        self.ptrace.selected_tid.store(tid.get(), Ordering::Release);
+        self.ptrace
+            .publish_stop(tid, signo, uctx, PtraceStopKind::Signal);
     }
 
     /// Record that this tracee is stopped at a syscall entry or exit boundary.
@@ -214,11 +261,8 @@ impl ProcessData {
         uctx: &UserContext,
         syscall_no: usize,
     ) {
-        self.set_ptrace_stop(tid, signo, uctx);
-        if let Some(stop) = self.ptrace.stops.lock().get_mut(&tid) {
-            stop.is_syscall = true;
-            stop.syscall_no = Some(syscall_no);
-        }
+        self.ptrace
+            .publish_stop(tid, signo, uctx, PtraceStopKind::syscall(syscall_no));
     }
 
     pub fn ptrace_stop_tid(&self) -> Option<TidNumber> {
@@ -268,13 +312,13 @@ impl ProcessData {
             .stops
             .lock()
             .get(&tid)
-            .is_some_and(|stop| stop.is_syscall)
+            .is_some_and(|stop| stop.kind.is_syscall())
     }
 
     /// Returns the original syscall number associated with a syscall stop.
     #[cfg(target_arch = "x86_64")]
     pub fn ptrace_stop_syscall_number_for(&self, tid: TidNumber) -> Option<usize> {
-        self.ptrace.stops.lock().get(&tid)?.syscall_no
+        self.ptrace.stops.lock().get(&tid)?.kind.syscall_number()
     }
 
     pub fn ptrace_unreported_stop(
@@ -331,7 +375,7 @@ impl ProcessData {
             .stops
             .lock()
             .get(&tid)
-            .is_some_and(|stop| stop.is_syscall)
+            .is_some_and(|stop| stop.kind.is_syscall())
     }
 
     pub fn ptrace_stop_siginfo_for(&self, tid: TidNumber) -> Option<SignalInfo> {
@@ -396,11 +440,13 @@ impl ProcessData {
         let Some(stop) = stops.get_mut(&tid) else {
             return false;
         };
-        if !stop.is_syscall {
-            return false;
+        match &mut stop.kind {
+            PtraceStopKind::Signal => false,
+            PtraceStopKind::Syscall { number } => {
+                *number = syscall_no;
+                true
+            }
         }
-        stop.syscall_no = Some(syscall_no);
-        true
     }
 
     pub fn resume_ptrace_stop_with_signal_for(&self, tid: TidNumber, signo: u32) {
@@ -408,7 +454,7 @@ impl ProcessData {
             self.ptrace.resume_signo.lock().insert(tid, signo);
             stop.signo = None;
             stop.siginfo = None;
-            stop.is_syscall = false;
+            stop.kind = PtraceStopKind::Signal;
             stop.reported = false;
             stop.event = 0;
             stop.event_msg = PtraceEventMessage::Value(0);
@@ -796,8 +842,11 @@ impl ProcessData {
 
 #[cfg(test)]
 mod tests {
-    use super::ProcessPtraceState;
-    use crate::sync::PiMutex;
+    use ax_runtime::hal::cpu::uspace::UserContext;
+    use starry_signal::Signo;
+
+    use super::{ProcessPtraceState, PtraceStopKind};
+    use crate::{sync::PiMutex, task::TidNumber};
 
     #[test]
     fn ptrace_heap_registries_use_sleepable_pi_locks() {
@@ -813,5 +862,20 @@ mod tests {
         }
 
         let _ = assert_ptrace_lock_types as fn(&ProcessPtraceState);
+    }
+
+    #[test]
+    fn syscall_stop_is_fully_classified_when_published() {
+        let state = ProcessPtraceState::new();
+        let tid = TidNumber::try_from(1).unwrap();
+        let uctx = UserContext::new(0, 0.into(), 0);
+
+        state.publish_stop(tid, Signo::SIGTRAP, &uctx, PtraceStopKind::syscall(39));
+
+        let stops = state.stops.lock();
+        let stop = stops.get(&tid).unwrap();
+        assert!(stop.kind.is_syscall());
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(stop.kind.syscall_number(), Some(39));
     }
 }
