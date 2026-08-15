@@ -1,0 +1,31 @@
+# Vm base information.
+[base]
+id = 1
+name = "starry-qemu"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [0x00]
+
+# StarryOS is an AArch64 Image and receives the generated guest DTB in x0.
+# The kernel image is loaded from the host rootfs. Guest storage is the
+# QEMU virtio-mmio block device (wired SPI interrupt): passthrough PCI
+# devices cannot deliver MSI/MSI-X interrupts to guests yet, so the NVMe
+# namespace used by Axvisor stays hidden behind the disabled PCIe node and
+# the guest mounts the virtio disk as its only block device instead.
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_load_addr = 0x8020_0000
+kernel_path = "/guest/starry/qemu-aarch64"
+dtb_load_addr = 0x8000_0000
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
+memory_regions = [
+  [0x8000_0000, 0x4000_0000, 0x7, 1], # System RAM 1G MAP_IDENTICAL
+]
+
+# Physical-device selection. Virtual platform devices are machine-owned.
+[devices]
+passthrough = []
+disabled = [{ path = "/pcie@10000000" }]

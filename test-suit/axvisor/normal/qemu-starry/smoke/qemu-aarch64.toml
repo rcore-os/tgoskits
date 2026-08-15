@@ -1,0 +1,35 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-device",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-device",
+  "virtio-blk-device,drive=guestdisk",
+  "-drive",
+  "id=guestdisk,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-m",
+  "8g",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)unhandled page fault",
+  "Failed to initialize guest VM",
+  "failed to initialize AxVM manager",
+]
+# Concurrent console streams may prepend ANSI SGR resets to a completion line.
+success_regex = [
+  "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?starry guest test pass\\s*$",
+]
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "pwd && echo 'starry guest test pass'"
+timeout = 300
+to_bin = true
+uefi = false

@@ -827,6 +827,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-sync",
  "axklib",
+ "bitflags 2.13.1",
  "crab-usb",
  "cv181x-sdhci",
  "dma-api",
