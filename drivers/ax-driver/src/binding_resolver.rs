@@ -33,7 +33,8 @@ pub fn binding_info_from_fdt(info: &FdtInfo<'_>) -> Result<BindingInfo, OnProbeE
     })?;
     rdrive::get::<rdif_intc::Intc>(controller).map_err(|error| {
         OnProbeError::other(format!(
-            "FDT interrupt parent {controller:?} is not an available interrupt-controller provider: {error:?}"
+            "FDT interrupt parent {controller:?} is not an available interrupt-controller \
+             provider: {error:?}"
         ))
     })?;
     Ok(BindingInfo::with_binding_irq(Some(

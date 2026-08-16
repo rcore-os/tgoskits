@@ -22,9 +22,8 @@ static DEVICE_REGISTER: DriverRegister = DriverRegister {
 };
 
 fn validate_binding(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
-    let error = binding_info_from_fdt(probe.info()).expect_err(
-        "binding must reject an interrupt-parent without a registered Intc capability",
-    );
+    let error = binding_info_from_fdt(probe.info())
+        .expect_err("binding must reject an interrupt-parent without a registered Intc capability");
     *CAPTURED_ERROR.lock().unwrap() = Some(error.to_string());
     Ok(())
 }

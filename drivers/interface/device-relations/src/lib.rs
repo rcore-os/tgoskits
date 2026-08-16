@@ -12,7 +12,9 @@ pub use rdrive::DeviceId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelationError {
-    MissingInterruptParent { device: DeviceId },
+    MissingInterruptParent {
+        device: DeviceId,
+    },
     InterruptParentMismatch {
         device: DeviceId,
         discovered: DeviceId,
@@ -44,10 +46,7 @@ impl DeviceRelationView {
 
     /// Validates that a binding uses the interrupt controller discovered for
     /// this device and returns that controller identity on success.
-    pub fn require_interrupt_parent(
-        &self,
-        requested: DeviceId,
-    ) -> Result<DeviceId, RelationError> {
+    pub fn require_interrupt_parent(&self, requested: DeviceId) -> Result<DeviceId, RelationError> {
         let Some(discovered) = self.interrupt_parent else {
             return Err(RelationError::MissingInterruptParent {
                 device: self.device,
