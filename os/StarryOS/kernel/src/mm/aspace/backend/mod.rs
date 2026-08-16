@@ -25,6 +25,12 @@ mod shared;
 pub(crate) use self::cow::{
     cow_file_max_read_len_boundary_rules_hold_for_test, private_mmap_eof_check_for_test,
 };
+/// The transparent-huge-page block size (2 MiB), shared by the split machinery and
+/// the aspace driver/hooks.
+#[cfg(feature = "thp")]
+pub(crate) const HUGE_2M: usize = 0x20_0000;
+#[cfg(feature = "thp")]
+pub(crate) use self::cow::{abort_huge_split_2m, commit_huge_split_2m, prepare_huge_split_2m};
 pub use self::shared::SharedPages;
 pub use super::accounting::RssKind;
 use super::{
@@ -71,7 +77,7 @@ fn pages_in(range: VirtAddrRange, align: usize) -> StarryResult<DynPageIter<Virt
     DynPageIter::new(range.start, range.end, align).ok_or(StarryError::InvalidInput)
 }
 
-type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace)>;
+pub(crate) type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace)>;
 
 #[enum_dispatch]
 pub trait BackendOps {

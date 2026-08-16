@@ -13,6 +13,8 @@ use ax_runtime::hal::{
 };
 #[cfg(feature = "thp")]
 use ax_runtime::hal::paging::ReservedTable;
+#[cfg(feature = "thp")]
+use super::HUGE_2M;
 
 use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
@@ -86,9 +88,6 @@ static FRAME_TABLE: IrqMutex<FrameTableRefCount> = IrqMutex::new(FrameTableRefCo
 
 // ---- Transparent-huge-page 2 MiB -> 4 KiB split (feature `thp`) ----
 
-/// The 2 MiB huge-page size.
-#[cfg(feature = "thp")]
-const HUGE_2M: usize = 0x20_0000;
 /// Number of 4 KiB sub-pages in a 2 MiB block.
 #[cfg(feature = "thp")]
 const HUGE_2M_SUBPAGES: usize = HUGE_2M / PAGE_SIZE_4K; // 512
