@@ -64,6 +64,17 @@ pub struct IpcPerm {
     pub unused1: c_long,
 }
 
+impl IpcPerm {
+    /// Applies the fields that Linux permits userspace to change via IPC_SET.
+    fn update_from_user(&mut self, requested: &Self) {
+        const PERMISSION_BITS: __kernel_mode_t = 0o777;
+
+        self.uid = requested.uid;
+        self.gid = requested.gid;
+        self.mode = (self.mode & !PERMISSION_BITS) | (requested.mode & PERMISSION_BITS);
+    }
+}
+
 // add a helper function to check IPC permissions
 fn has_ipc_permission(perm: &IpcPerm, current_uid: u32, current_gid: u32, is_write: bool) -> bool {
     // root user has all permissions

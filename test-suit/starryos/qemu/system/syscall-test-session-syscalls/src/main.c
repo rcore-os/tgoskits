@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 
@@ -19,6 +20,41 @@ static void wait_child_ready(int pipe_fd)
 {
     char c;
     read(pipe_fd, &c, 1);
+}
+
+struct child_gate {
+    int ready[2];
+    int release[2];
+};
+
+static void child_gate_open(struct child_gate *gate)
+{
+    pipe(gate->ready);
+    pipe(gate->release);
+}
+
+static void child_gate_wait(struct child_gate *gate)
+{
+    close(gate->ready[0]);
+    close(gate->release[1]);
+    sync_child_ready(gate->ready[1]);
+    wait_child_ready(gate->release[0]);
+    close(gate->ready[1]);
+    close(gate->release[0]);
+}
+
+static void child_gate_wait_ready(struct child_gate *gate)
+{
+    close(gate->ready[1]);
+    close(gate->release[0]);
+    wait_child_ready(gate->ready[0]);
+}
+
+static void child_gate_release(struct child_gate *gate)
+{
+    sync_child_ready(gate->release[1]);
+    close(gate->ready[0]);
+    close(gate->release[1]);
 }
 
 static void test_getsid_getpgid_basic(void)
@@ -81,51 +117,52 @@ static void test_setpgid(void)
 
     /* Test setpgid(pid, pid) from parent on a child */
     {
-        int sync_pipe[2];
-        pipe(sync_pipe);
+        struct child_gate gate;
+        child_gate_open(&gate);
         pid_t pid = fork();
         if (pid == 0) {
-            close(sync_pipe[0]);
-            sync_child_ready(sync_pipe[1]);
-            usleep(200000);
+            child_gate_wait(&gate);
             _exit(0);
         }
-        close(sync_pipe[1]);
-        wait_child_ready(sync_pipe[0]);
+        child_gate_wait_ready(&gate);
         CHECK_RET(setpgid(pid, pid), 0, "父进程 setpgid(子pid, 子pid) 成功");
         CHECK(getpgid(pid) == pid, "子进程 pgid == 子进程 pid");
+        child_gate_release(&gate);
         waitpid(pid, NULL, 0);
-        close(sync_pipe[0]);
     }
 
     /* Test setpgid moving child into existing group */
     {
-        int sync1[2], sync2[2];
-        pipe(sync1);
-        pipe(sync2);
+        struct child_gate gate1, gate2;
+        child_gate_open(&gate1);
+        child_gate_open(&gate2);
         pid_t child1 = fork();
         if (child1 == 0) {
-            close(sync1[0]); close(sync2[0]);
-            sync_child_ready(sync1[1]);
-            usleep(200000);
+            close(gate2.ready[0]);
+            close(gate2.ready[1]);
+            close(gate2.release[0]);
+            close(gate2.release[1]);
+            child_gate_wait(&gate1);
             _exit(0);
         }
         pid_t child2 = fork();
         if (child2 == 0) {
-            close(sync1[0]); close(sync2[0]);
-            sync_child_ready(sync2[1]);
-            usleep(200000);
+            close(gate1.ready[0]);
+            close(gate1.ready[1]);
+            close(gate1.release[0]);
+            close(gate1.release[1]);
+            child_gate_wait(&gate2);
             _exit(0);
         }
-        close(sync1[1]); close(sync2[1]);
-        wait_child_ready(sync1[0]);
-        wait_child_ready(sync2[0]);
+        child_gate_wait_ready(&gate1);
+        child_gate_wait_ready(&gate2);
         setpgid(child1, child1);
         CHECK_RET(setpgid(child2, child1), 0, "setpgid 将进程移入已有组成功");
         CHECK(getpgid(child2) == child1, "移入后 pgid == child1 的 pgid");
+        child_gate_release(&gate1);
+        child_gate_release(&gate2);
         waitpid(child1, NULL, 0);
         waitpid(child2, NULL, 0);
-        close(sync1[0]); close(sync2[0]);
     }
 
     CHECK_ERR(setpgid(999999, 0), ESRCH, "setpgid 不存在 PID -> ESRCH");
@@ -211,30 +248,95 @@ static void test_setsid(void)
     }
 }
 
+#define SETSID_RACERS 8
+
+struct setsid_race_result {
+    pthread_barrier_t *start;
+    pid_t result;
+    int error;
+};
+
+static void *setsid_racer(void *opaque)
+{
+    struct setsid_race_result *race = opaque;
+    int barrier_result = pthread_barrier_wait(race->start);
+    if (barrier_result != 0 && barrier_result != PTHREAD_BARRIER_SERIAL_THREAD) {
+        race->result = -1;
+        race->error = barrier_result;
+        return NULL;
+    }
+
+    errno = 0;
+    race->result = setsid();
+    race->error = errno;
+    return NULL;
+}
+
+static void test_concurrent_setsid(void)
+{
+    printf("--- concurrent setsid ---\n");
+
+    pid_t child = fork();
+    CHECK(child >= 0, "fork concurrent setsid worker");
+    if (child < 0)
+        return;
+    if (child == 0) {
+        pthread_barrier_t start;
+        pthread_t threads[SETSID_RACERS];
+        struct setsid_race_result results[SETSID_RACERS] = {0};
+
+        if (pthread_barrier_init(&start, NULL, SETSID_RACERS) != 0)
+            _exit(1);
+        for (size_t i = 0; i < SETSID_RACERS; ++i) {
+            results[i].start = &start;
+            if (pthread_create(&threads[i], NULL, setsid_racer, &results[i]) != 0)
+                _exit(1);
+        }
+        for (size_t i = 0; i < SETSID_RACERS; ++i) {
+            if (pthread_join(threads[i], NULL) != 0)
+                _exit(1);
+        }
+        pthread_barrier_destroy(&start);
+
+        size_t successes = 0;
+        size_t permission_denied = 0;
+        for (size_t i = 0; i < SETSID_RACERS; ++i) {
+            if (results[i].result == getpid())
+                ++successes;
+            else if (results[i].result == -1 && results[i].error == EPERM)
+                ++permission_denied;
+        }
+        _exit(successes == 1 && permission_denied == SETSID_RACERS - 1 ? 0 : 1);
+    }
+
+    int status = 0;
+    pid_t waited = waitpid(child, &status, 0);
+    CHECK(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "并发 setsid 恰好一个成功，其余返回 EPERM");
+}
+
 static void test_cross_session(void)
 {
     printf("--- 跨 session 操作 ---\n");
 
     /* Use pipe sync instead of usleep to avoid race conditions:
-     * child writes after setsid(), parent blocks until child confirms. */
+     * child writes after setsid(), then waits until the parent has checked the
+     * cross-session operation before exiting. */
     {
-        int sync_pipe[2];
-        pipe(sync_pipe);
+        struct child_gate gate;
+        child_gate_open(&gate);
         pid_t pid = fork();
         if (pid == 0) {
-            close(sync_pipe[0]);
             setsid();
-            sync_child_ready(sync_pipe[1]);
-            usleep(200000);
+            child_gate_wait(&gate);
             _exit(0);
         }
-        close(sync_pipe[1]);
-        wait_child_ready(sync_pipe[0]);
+        child_gate_wait_ready(&gate);
         errno = 0;
         int r = setpgid(pid, getpgid(0));
         CHECK(r == -1 && errno == EPERM, "跨 session setpgid -> EPERM");
+        child_gate_release(&gate);
         waitpid(pid, NULL, 0);
-        close(sync_pipe[0]);
     }
 
     CHECK_ERR(getsid(999999), ESRCH, "getsid 不存在 PID -> ESRCH");
@@ -248,6 +350,7 @@ int main(void)
     test_getsid_getpgid_basic();
     test_setpgid();
     test_setsid();
+    test_concurrent_setsid();
     test_cross_session();
 
     TEST_DONE();

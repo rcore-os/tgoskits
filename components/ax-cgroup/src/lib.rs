@@ -11,14 +11,38 @@ mod namespace;
 mod node;
 
 use alloc::sync::Arc;
+use core::{fmt, num::NonZeroU64};
 
 use ax_lazyinit::LazyInit;
 pub use membership::{CgroupForkGuard, CgroupProvider};
 pub use namespace::CgroupNamespace;
 pub use node::{CgroupNode, CgroupPin};
 
-/// Stable process identifier used by cgroup membership.
-pub type ProcessId = u32;
+/// Stable, non-reusable process generation used by cgroup membership.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct ProcessId(NonZeroU64);
+
+impl ProcessId {
+    /// Construct a stable process generation from its non-zero kernel value.
+    pub const fn new(id: u64) -> Option<Self> {
+        match NonZeroU64::new(id) {
+            Some(id) => Some(Self(id)),
+            None => None,
+        }
+    }
+
+    /// Return the stable kernel generation value.
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl fmt::Display for ProcessId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.get().fmt(f)
+    }
+}
 
 /// Cgroup operation failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
