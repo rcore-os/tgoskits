@@ -1479,10 +1479,14 @@ mod tests {
     }
 
     #[test]
-    fn snoop_tcp_packet_drops_every_truncated_ipv4_and_ipv6_header() {
+    fn snoop_tcp_packet_drops_truncated_ip_and_tcp_headers() {
+        const IPV4_HEADER_LEN: usize = 20;
+        const IPV6_HEADER_LEN: usize = 40;
+        const TCP_HEADER_LEN: usize = 20;
+
         let mut sockets = SocketSet::new(vec![]);
 
-        let mut ipv4_tcp = [0u8; 40];
+        let mut ipv4_tcp = [0u8; IPV4_HEADER_LEN + TCP_HEADER_LEN];
         ipv4_tcp[0] = 0x45;
         let ipv4_tcp_len = ipv4_tcp.len() as u16;
         ipv4_tcp[2..4].copy_from_slice(&ipv4_tcp_len.to_be_bytes());
@@ -1491,12 +1495,30 @@ mod tests {
             snoop_tcp_packet(&ipv4_tcp[..len], &mut sockets);
         }
 
-        let mut ipv6_tcp = [0u8; 60];
+        let mut ipv6_tcp = [0u8; IPV6_HEADER_LEN + TCP_HEADER_LEN];
         ipv6_tcp[0] = 0x60;
         ipv6_tcp[4..6].copy_from_slice(&20u16.to_be_bytes());
         ipv6_tcp[6] = IpProtocol::Tcp.into();
         for len in 0..ipv6_tcp.len() {
             snoop_tcp_packet(&ipv6_tcp[..len], &mut sockets);
+        }
+
+        // Keep the IP header complete and its length fields consistent so the
+        // packet reaches the TCP parser. The old unchecked TCP parser then
+        // read ports from these 0-19 byte payloads and panicked.
+        for tcp_len in 0..TCP_HEADER_LEN {
+            let mut ipv4_tcp = vec![0u8; IPV4_HEADER_LEN + tcp_len];
+            ipv4_tcp[0] = 0x45;
+            let ipv4_len = ipv4_tcp.len() as u16;
+            ipv4_tcp[2..4].copy_from_slice(&ipv4_len.to_be_bytes());
+            ipv4_tcp[9] = IpProtocol::Tcp.into();
+            snoop_tcp_packet(&ipv4_tcp, &mut sockets);
+
+            let mut ipv6_tcp = vec![0u8; IPV6_HEADER_LEN + tcp_len];
+            ipv6_tcp[0] = 0x60;
+            ipv6_tcp[4..6].copy_from_slice(&(tcp_len as u16).to_be_bytes());
+            ipv6_tcp[6] = IpProtocol::Tcp.into();
+            snoop_tcp_packet(&ipv6_tcp, &mut sockets);
         }
     }
 
