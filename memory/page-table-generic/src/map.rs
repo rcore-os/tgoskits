@@ -265,6 +265,13 @@ where
                     // freed frame while a stale walk still reads it as page-table
                     // entries, translating to arbitrary physical memory. This
                     // completes break-before-free for the intermediate table.
+                    //
+                    // On SMP this `T::flush` must be a synchronous, system-wide
+                    // shootdown (see the [`TableMeta::flush`] contract): a
+                    // hart-local flush leaves remote cores able to walk the freed
+                    // frame. Callers whose arch flush cannot broadcast+wait must
+                    // pass `flush: false` and reclaim frames externally after their
+                    // own shootdown.
                     if config.flush {
                         T::flush(Some(vaddr));
                     }

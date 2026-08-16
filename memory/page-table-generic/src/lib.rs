@@ -66,7 +66,27 @@ pub trait TableMeta: Sync + Send + Clone + Copy + 'static {
         vaddr
     }
 
-    /// 刷新TLB
+    /// Invalidate the TLB entry for `vaddr` (or the whole TLB when `None`).
+    ///
+    /// # SMP shootdown contract (intermediate-table break-before-free)
+    ///
+    /// [`PageTable::unmap`](crate::PageTable::unmap) reclaims an emptied
+    /// intermediate page-table frame by clearing its parent descriptor, calling
+    /// `flush(Some(vaddr))`, and then returning that frame to the allocator. For
+    /// this to be sound on a multiprocessor, the `flush` at that point MUST be a
+    /// *synchronous, system-wide* invalidation: once it returns, no other CPU
+    /// running this address space may still walk the cleared descriptor or reuse
+    /// a cached translation that reaches the freed frame. Otherwise a remote core
+    /// can table-walk the frame after it has been reallocated and overwritten,
+    /// translating to arbitrary physical memory.
+    ///
+    /// AArch64 `TLBI …; DSB` broadcasts to all PEs and satisfies this natively.
+    /// Architectures whose native invalidation is local to the issuing hart
+    /// (RISC-V `sfence.vma`, x86 `invlpg`) MUST turn this into a remote shootdown
+    /// here — an IPI to every CPU sharing the address space plus a wait for its
+    /// completion — or drive reclaim with `flush: false` and free the reclaimed
+    /// frames externally only after performing that shootdown themselves. A
+    /// hart-local flush alone is NOT a valid break-before-free completion barrier.
     fn flush(vaddr: Option<VirtAddr>);
 }
 
