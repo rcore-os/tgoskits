@@ -373,6 +373,13 @@ jobs:
             cache_key: ""
             container_image: base
             fetch_depth: "1"
+          - name: Test Wayland APK cache paths
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: cd apps/starry/wayland && python3 -m unittest -v test_wayland_apk_paths.py
+            cache_key: ""
+            container_image: base
+            fetch_depth: "1"
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: >-
