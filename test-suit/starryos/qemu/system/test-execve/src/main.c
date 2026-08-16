@@ -323,6 +323,65 @@ static void test_execveat_non_directory_dirfd_enotdir(void)
     close(fd);
 }
 
+/*
+ * Each payload string and the pointer vectors below are individually valid.
+ * Their aggregate is deliberately just over StarryOS's 2 MiB execve budget.
+ * The child uses a shell exit status that differs from the E2BIG sentinel, so
+ * a missing limit cannot accidentally look like a passing test.
+ */
+#define EXECVE_PAYLOAD_BYTES 8192
+#define EXECVE_LIMIT_PAYLOAD_COUNT 257
+
+static int execve_payload_status(size_t argv_payload_count, size_t envp_payload_count)
+{
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        char *payload = malloc(EXECVE_PAYLOAD_BYTES);
+        char **argv = calloc(argv_payload_count + 4, sizeof(*argv));
+        char **envp = calloc(envp_payload_count + 1, sizeof(*envp));
+        if (payload == NULL || argv == NULL || envp == NULL) {
+            _exit(125);
+        }
+
+        memset(payload, 'x', EXECVE_PAYLOAD_BYTES - 1);
+        payload[0] = 'X';
+        payload[1] = '=';
+        payload[EXECVE_PAYLOAD_BYTES - 1] = '\0';
+
+        argv[0] = "/bin/sh";
+        argv[1] = "-c";
+        argv[2] = "exit 42";
+        for (size_t i = 0; i < argv_payload_count; ++i) {
+            argv[i + 3] = payload;
+        }
+        for (size_t i = 0; i < envp_payload_count; ++i) {
+            envp[i] = payload;
+        }
+
+        execve("/bin/sh", argv, envp);
+        _exit(errno == E2BIG ? 0 : 1);
+    }
+
+    int status = 0;
+    return waitpid(pid, &status, 0) == pid && WIFEXITED(status)
+               ? WEXITSTATUS(status)
+               : -1;
+}
+
+static void test_execve_aggregate_argument_budget(void)
+{
+    CHECK(execve_payload_status(EXECVE_LIMIT_PAYLOAD_COUNT, 0) == 0,
+          "execve rejects aggregate argv bytes with E2BIG");
+    CHECK(execve_payload_status(0, EXECVE_LIMIT_PAYLOAD_COUNT) == 0,
+          "execve rejects aggregate envp bytes with E2BIG");
+    CHECK(execve_payload_status(EXECVE_LIMIT_PAYLOAD_COUNT / 2,
+                               EXECVE_LIMIT_PAYLOAD_COUNT / 2) == 0,
+          "execve applies one shared argv/envp byte budget");
+}
+
 int main(void)
 {
     TEST_START("execve/execveat family semantics");
@@ -338,6 +397,7 @@ int main(void)
     test_execveat_memfd_sealed_exec();
     test_execveat_error_returns();
     test_execveat_non_directory_dirfd_enotdir();
+    test_execve_aggregate_argument_budget();
 
     TEST_DONE();
 }
