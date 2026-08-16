@@ -1,5 +1,21 @@
 # Board run config for perf-validate-smp8 — the FULL big.LITTLE enforcement case.
 #
+# DISABLED (`.disabled` suffix ⇒ NOT discovered by `cargo xtask starry test
+# board`; the self-hosted board CI job does NOT run or gate on this case) — for
+# the same reason as the smp1 anchor `../perf-validate/board-orangepi-5-plus.toml.
+# disabled`: the `perf-validate` binary is provisioned out-of-band on the board's
+# persistent ext4, and CI has no controlled step that builds/deploys it from the
+# committed `src/perf_validate.c`, so gating CI on that hand-staged state is not
+# reproducible. It is kept as a MANUAL-only big.LITTLE validation flow.
+#
+# This case ALSO cannot self-provision via the board session-file mechanism the
+# way the smp1 anchor could: its minimal max_cpu_num=8 build DROPS the net driver
+# (see build-aarch64-unknown-none-softfloat.toml — only SoC + SD/block, to dodge
+# the secondary-PE IRQ-storm boot hang), so there is no on-board network to fetch
+# a per-run artifact over. Re-enabling as CI coverage needs a serial/ymodem asset
+# path, then a rename back to `board-orangepi-5-plus.toml` + current-head board
+# evidence.
+#
 # This is the SMP + big.LITTLE gate. Where ../perf-validate is the smp1 anchor
 # (max_cpu_num=1, accepts VERDICT PARTIAL so it stays green even when only the
 # single-core regression is exercised), THIS case builds a MULTI-CORE kernel (its
@@ -9,10 +25,11 @@
 # per-secondary-PE PMU bring-up, sampling on a secondary core — cannot silently
 # SKIP (which yields PARTIAL) and still pass: PARTIAL FAILS this case.
 #
-# It runs the SAME pre-staged /usr/local/bin/perf-validate binary as the anchor,
-# provisioned out-of-band once (see ../perf-validate/README.md + deploy.sh); the
-# `not found` fail_regex fails fast if it is absent. The validator auto-discovers
-# the now-8-core topology (both clusters) and runs every silicon check, printing:
+# It runs the SAME manually pre-staged /usr/local/bin/perf-validate binary as the
+# anchor, provisioned out-of-band once (see ../perf-validate/README.md +
+# deploy.sh); the `not found` fail_regex fails fast if it is absent. The validator
+# auto-discovers the now-8-core topology (both clusters) and runs every silicon
+# check, printing:
 #   BOARD_PERF_SUMMARY ...
 #   BOARD_PERF_VALIDATE_VERDICT <FULL|PARTIAL|FAIL|INVALID>
 #   BOARD_PERF_VALIDATE_DONE     (unique final sentinel)

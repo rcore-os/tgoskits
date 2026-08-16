@@ -7,6 +7,31 @@ topology and runs every applicable check, then prints a verdict. The full
 validation matrix, expected values, and interpretation live in
 `docs/superpowers/perf-board-validation-plan.md`.
 
+## CI status: MANUAL-only (not a CI gate)
+
+Both board cases here — this smp1 anchor and the `../perf-validate-smp8`
+big.LITTLE gate — ship with their run config named `board-orangepi-5-plus.toml
+.disabled`, so `cargo xtask starry test board` does NOT discover them and the
+self-hosted board CI job does NOT run or gate on them. The reason: the
+`perf-validate` binary is provisioned OUT-OF-BAND onto the board's persistent
+ext4, and the CI board runner deploys only the KERNEL — there is no controlled
+CI step that builds/syncs/deploys the binary from the committed
+`src/perf_validate.c`. Gating CI on that hand-staged file is not reproducible (a
+runner swap/clean loses it → `not found`; a stale copy could pass on an
+unreviewed validator), so these cases are kept as a manual RK3588 validation
+procedure, matching `../../board-aka-00-sg2002/usb2-libuvc-init/
+board-aka-00-sg2002.toml.disabled`.
+
+The validator LOGIC still has deterministic CI coverage: the byte-identical
+`test-suit/starryos/qemu/system/perf-validate` case builds from the SAME source
+and runs in CI under QEMU (SELFTEST mode → `SELFTEST-OK`). These board cases add
+only the silicon-only checks. To turn one back into CI coverage, add a controlled
+per-run build+deploy of `src/perf_validate.c` (the smp1 anchor could use the
+board session-file mechanism — see `../native-network-smoke`; the smp8 build
+drops the net driver so it would need a serial/ymodem asset path), then rename
+its config back to `board-orangepi-5-plus.toml` and attach current-head board
+success evidence.
+
 ## Why the board (what QEMU can't prove)
 
 QEMU `virt` is homogeneous (cortex-a53, every core `ClusterId::Other`). Real
@@ -29,9 +54,10 @@ silicon — the QEMU suite could only fake clusters via the parity test-override
 ## Two cases: smp1 anchor + smp8 big.LITTLE gate
 
 This directory (`perf-validate`) is the **single-core anchor**: `max_cpu_num=1`,
-full drivers, always-green. Its `needs-smp8` / `needs-both-clusters` checks SKIP
-and the verdict is **PARTIAL** = "single-core regression passed; big.LITTLE not
-exercised" — a SUCCESSFUL anchor run.
+full drivers. Its `needs-smp8` / `needs-both-clusters` checks SKIP and the verdict
+is **PARTIAL** = "single-core regression passed; big.LITTLE not exercised" — a
+SUCCESSFUL anchor run. (Both cases are `.disabled` = manual-only; see "CI status"
+above.)
 
 The big.LITTLE behavior is enforced by the sibling **`../perf-validate-smp8`**
 case: a minimal `max_cpu_num=8` kernel (drops USB/NPU/PCIe/net, whose
@@ -40,15 +66,15 @@ accepts **ONLY FULL**. PROVEN on real 4×A55+4×A76 silicon (39 pass / 0 fail �
 FULL). Splitting the two keeps the anchor stable while ensuring a skipped SMP
 path can never pass unnoticed.
 
-## Deploy + run (board)
+## Deploy + run (board) — MANUAL procedure
 
-The xtask deploys the KERNEL only. Like every other orangepi board case (e.g.
-npu-yolov8's `/guest/npu_demo`), the userspace binary is provisioned **once,
-out-of-band** onto the board's persistent ext4 — NOT rebuilt/redeployed per CI
-run. The board case just execs the pre-staged `/usr/local/bin/perf-validate`; if
-it is absent, the `not found` fail_regex fails the run fast instead of hanging.
+The xtask deploys the KERNEL only. The userspace binary is provisioned **once,
+out-of-band** onto the board's persistent ext4 — this is why the cases are
+`.disabled` (not CI-gated). The board case just execs the pre-staged
+`/usr/local/bin/perf-validate`; if it is absent, the `not found` fail_regex fails
+the run fast instead of hanging.
 
-Pre-stage it once (and again only when `src/perf_validate.c` changes):
+Pre-stage the binary (and again only when `src/perf_validate.c` changes):
 
 ```sh
 # 1. Cross-compile a static aarch64 binary (host). Uses the container toolchain
@@ -60,16 +86,22 @@ Pre-stage it once (and again only when `src/perf_validate.c` changes):
 #    (override BOARD_USER / BOARD_IP / BOARD_DEST / BOARD_PW as needed)
 #    — or scp it yourself, then `sync` on the board (see the commit=600 note below).
 
-# 3. Power-cycle into StarryOS and run the board test from the ostool-server host
+# 3. Because the run config is `.disabled`, `cargo xtask starry test board` will
+#    NOT discover it. To run the case by hand, temporarily rename its config back:
+mv board-orangepi-5-plus.toml.disabled board-orangepi-5-plus.toml
+
+# 4. Power-cycle into StarryOS and run the board test from the ostool-server host
 #    (board OFF at launch, powered ON at the "waiting for power on" cue):
 cargo xtask starry test board -c perf-validate \
   -b OrangePi-5-Plus --server localhost --port 2999
+
+# 5. Restore the `.disabled` suffix afterwards so CI does not pick it up:
+mv board-orangepi-5-plus.toml board-orangepi-5-plus.toml.disabled
 ```
 
 Success matches `BOARD_PERF_VALIDATE_VERDICT (FULL|PARTIAL)`; the unique final
 line `BOARD_PERF_VALIDATE_DONE` lets a hang time out instead of matching early.
-The self-hosted CI board runner needs this binary pre-staged the same way (a
-one-time step for the runner owner) — the CI job does not build or deploy it.
+This is a manual operator step — the CI job neither builds, deploys, nor runs it.
 
 ### First-run caveats (see board-run-mechanics)
 

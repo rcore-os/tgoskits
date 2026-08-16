@@ -13,10 +13,12 @@
 #   BOARD_USER=orangepi BOARD_IP=192.168.50.2 BOARD_DEST=/root/perf-validate \
 #     ./deploy.sh deploy
 #
-# After deploy, power-cycle the board into StarryOS and run the board test:
-#   (server) cargo xtask starry board -t perf-validate \
-#       --board-config .../perf-validate/board-orangepi-5-plus.toml \
+# After deploy, power-cycle the board into StarryOS and run the board test. The
+# run config is `.disabled` (not CI-gated), so temporarily rename it back first:
+#   mv board-orangepi-5-plus.toml.disabled board-orangepi-5-plus.toml
+#   (server) cargo xtask starry test board -c perf-validate \
 #       -b OrangePi-5-Plus --server localhost --port 2999
+#   mv board-orangepi-5-plus.toml board-orangepi-5-plus.toml.disabled   # restore
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,10 +27,10 @@ OUT="$HERE/perf-validate"
 IMAGE="${TGOS_IMAGE:-ghcr.io/rcore-os/tgoskits-container:latest}"
 REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"
 
-# Board defaults (override via env). The DEST must be the path StarryOS sees as
-# /root/perf-validate on the shared ext4 (board-orangepi-5-plus.toml runs
-# `cd /root && ./perf-validate`). On first run, confirm the StarryOS-visible
-# mount point and adjust BOARD_DEST if /root differs from the Linux path.
+# Board defaults (override via env). The DEST must be the path StarryOS sees on
+# the shared ext4 (board-orangepi-5-plus.toml.disabled execs
+# /usr/local/bin/perf-validate). On first run, confirm the StarryOS-visible
+# mount point and adjust BOARD_DEST if it differs from the Linux path.
 # /usr/local/bin is on the SD ext4 (mmcblk1p2) that StarryOS mounts as / — the
 # same place the perf 6.6 binary lives — so StarryOS runs it by full path. It is
 # root-owned, so we stage to /tmp then sudo-install (board sudo pw: orangepi).

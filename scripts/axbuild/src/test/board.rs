@@ -244,6 +244,34 @@ mod tests {
     }
 
     #[test]
+    fn discovery_excludes_disabled_board_configs() {
+        // A `board-<board>.toml.disabled` config keeps a board case in the tree as a
+        // manual-only flow while removing it from CI discovery (its extension is
+        // `disabled`, not `toml`). This guards the `perf-validate` / `perf-validate-smp8`
+        // gate removal: those out-of-band, hand-staged cases must never be picked up by
+        // `cargo xtask starry test board`.
+        let root = tempfile::tempdir().unwrap();
+        let active_dir = root.path().join("perf-active");
+        fs::create_dir_all(&active_dir).unwrap();
+        fs::write(active_dir.join("board-orangepi-5-plus.toml"), "").unwrap();
+
+        let disabled_dir = root.path().join("perf-validate");
+        fs::create_dir_all(&disabled_dir).unwrap();
+        fs::write(disabled_dir.join("board-orangepi-5-plus.toml.disabled"), "").unwrap();
+
+        let configs = discover_board_runtime_configs(root.path()).unwrap();
+
+        assert_eq!(
+            configs
+                .iter()
+                .map(|config| config.case_dir.clone())
+                .collect::<Vec<_>>(),
+            [active_dir],
+            "disabled board config must not be discovered as a runnable case"
+        );
+    }
+
+    #[test]
     fn filter_selected_board_on_empty_group_reports_empty_group() {
         let err = filter_board_test_groups(
             Vec::<TestBoardGroup>::new(),
