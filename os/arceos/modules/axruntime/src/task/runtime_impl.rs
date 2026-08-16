@@ -125,12 +125,12 @@ impl_task_runtime! {
         }
 
         fn irq_guard_enter() -> IrqGuardToken {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "host-test"))]
             {
-                // SAFETY: test mode models one balanced runtime IRQ token.
+                // SAFETY: host-test mode models one balanced runtime IRQ token.
                 unsafe { IrqGuardToken::from_raw(1) }
             }
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "host-test")))]
             {
                 crate::guard::enter_irq();
                 // SAFETY: enter_irq established the matching live guard state.
@@ -139,17 +139,17 @@ impl_task_runtime! {
         }
 
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "host-test")))]
             crate::guard::exit_irq("task runtime");
         }
 
         fn preempt_guard_enter() -> PreemptGuardToken {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "host-test"))]
             {
-                // SAFETY: test mode models one balanced runtime preemption token.
+                // SAFETY: host-test mode models one balanced runtime preemption token.
                 unsafe { PreemptGuardToken::from_raw(1) }
             }
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "host-test")))]
             {
                 match crate::guard::enter_lock_preempt() {
                     Some(owner) => {
@@ -167,7 +167,7 @@ impl_task_runtime! {
                 !token.is_none(),
                 "inherited owner scope passed to ordinary preemption exit"
             );
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "host-test")))]
             {
                 let owner = unsafe {
                     ax_hal::percpu::PreemptGuardOwner::from_raw(token.into_raw())
@@ -182,7 +182,7 @@ impl_task_runtime! {
                 !token.is_none(),
                 "inherited owner scope passed to IRQ-return preemption exit"
             );
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "host-test")))]
             {
                 let owner = unsafe {
                     ax_hal::percpu::PreemptGuardOwner::from_raw(token.into_raw())
@@ -194,20 +194,24 @@ impl_task_runtime! {
 
         fn hardirq_enter() {
             #[cfg(not(test))]
-            crate::irq_time::enter();
+            if !cfg!(feature = "host-test") {
+                crate::irq_time::enter();
+            }
         }
 
         fn hardirq_exit() {
             #[cfg(not(test))]
-            crate::irq_time::exit();
+            if !cfg!(feature = "host-test") {
+                crate::irq_time::exit();
+            }
         }
 
         fn publish_local_scheduler_work() -> bool {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "host-test"))]
             {
                 false
             }
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "host-test")))]
             {
                 crate::guard::publish_local_scheduler_work()
             }
@@ -235,15 +239,21 @@ impl_task_runtime! {
         }
 
         fn in_hard_irq() -> bool {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "host-test"))]
             {
                 false
             }
-            #[cfg(all(not(test), feature = "irq"))]
+            #[cfg(all(
+                not(any(test, feature = "host-test")),
+                feature = "irq"
+            ))]
             {
                 ax_hal::irq::in_irq_context()
             }
-            #[cfg(all(not(test), not(feature = "irq")))]
+            #[cfg(all(
+                not(any(test, feature = "host-test")),
+                not(feature = "irq")
+            ))]
             {
                 false
             }

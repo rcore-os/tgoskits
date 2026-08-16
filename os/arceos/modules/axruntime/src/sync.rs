@@ -64,12 +64,16 @@ unsafe fn context_irq_restore(state: usize) {
 
 fn context_hardirq_enter() {
     #[cfg(feature = "multitask")]
-    crate::irq_time::enter();
+    if !cfg!(feature = "host-test") {
+        crate::irq_time::enter();
+    }
 }
 
 fn context_hardirq_exit() {
     #[cfg(feature = "multitask")]
-    crate::irq_time::exit();
+    if !cfg!(feature = "host-test") {
+        crate::irq_time::exit();
+    }
 }
 
 static CONTEXT_OPERATIONS: ax_task::sync::bridge::ContextOperations =

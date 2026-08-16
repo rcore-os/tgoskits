@@ -135,7 +135,7 @@ impl RuntimeGuardState {
         self.preempt.claim_scheduler()
     }
 
-    #[cfg(any(feature = "multitask", test))]
+    #[cfg(any(test, all(feature = "multitask", not(feature = "host-test"))))]
     pub(super) const fn local_scheduler_work_is_self_serviced(self, preempt_depth: u32) -> bool {
         !self.irq.is_clear() && (self.irq.outer_irqs_enabled || preempt_depth != 0)
     }

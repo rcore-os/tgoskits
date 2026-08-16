@@ -1,6 +1,8 @@
 //! Wrapper functions for assembly instructions.
 
 use core::arch::asm;
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+use core::cell::Cell;
 #[cfg(feature = "host-test")]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -11,6 +13,7 @@ use ax_memory_addr::{PhysAddr, VirtAddr};
 use x86::msr;
 #[cfg(not(feature = "host-test"))]
 use x86::{controlregs, tlb};
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 use x86_64::instructions::interrupts;
 
 #[cfg(feature = "tls")]
@@ -19,21 +22,35 @@ use crate::KernelTlsBase;
 #[cfg(feature = "host-test")]
 static HOST_PAGE_TABLE_ROOT: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+std::thread_local! {
+    static HOST_IRQS_ENABLED: Cell<bool> = const { Cell::new(true) };
+}
+
 /// Allows the current CPU to respond to interrupts.
 #[inline]
 pub fn enable_irqs() {
-    interrupts::enable()
+    #[cfg(all(feature = "host-test", not(target_os = "none")))]
+    HOST_IRQS_ENABLED.set(true);
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+    interrupts::enable();
 }
 
 /// Makes the current CPU to ignore interrupts.
 #[inline]
 pub fn disable_irqs() {
-    interrupts::disable()
+    #[cfg(all(feature = "host-test", not(target_os = "none")))]
+    HOST_IRQS_ENABLED.set(false);
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+    interrupts::disable();
 }
 
 /// Returns whether the current CPU is allowed to respond to interrupts.
 #[inline]
 pub fn irqs_enabled() -> bool {
+    #[cfg(all(feature = "host-test", not(target_os = "none")))]
+    return HOST_IRQS_ENABLED.get();
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     interrupts::are_enabled()
 }
 
@@ -194,4 +211,30 @@ unsafe extern "C" {
     /// Returns the number of bytes not copied. This means 0 indicates success,
     /// while a value > 0 indicates failure.
     pub fn user_copy(dst: *mut u8, src: *const u8, size: usize) -> usize;
+}
+
+#[cfg(all(test, feature = "host-test"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_irq_mask_is_isolated_per_execution_thread() {
+        assert!(irqs_enabled());
+        disable_irqs();
+        assert!(!irqs_enabled());
+
+        std::thread::spawn(|| {
+            assert!(irqs_enabled());
+            disable_irqs();
+            assert!(!irqs_enabled());
+            enable_irqs();
+            assert!(irqs_enabled());
+        })
+        .join()
+        .unwrap();
+
+        assert!(!irqs_enabled());
+        enable_irqs();
+        assert!(irqs_enabled());
+    }
 }
