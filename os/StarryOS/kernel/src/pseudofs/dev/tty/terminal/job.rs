@@ -3,9 +3,12 @@ use core::task::Context;
 
 use ax_task::current;
 use axpoll::{IoEvents, PollSet, Pollable};
-use starry_process::{ProcessGroup, Session};
 
-use crate::{StarryError, StarryResult, sync::IrqMutex, task::AsThread};
+use crate::{
+    StarryError, StarryResult,
+    sync::IrqMutex,
+    task::{AsThread, ProcessGroup, Session},
+};
 
 pub struct JobControl {
     state: IrqMutex<JobControlState>,

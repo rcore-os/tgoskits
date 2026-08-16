@@ -368,6 +368,14 @@ fn prepare_user_memory(op: &str, start: usize, len: usize, access_flags: Mapping
         .map_err(|_| VmError::AccessDenied)
 }
 
+/// Faults in and validates a userspace output range without modifying it.
+///
+/// Transactions use this before their publication point so copyout is the
+/// only remaining userspace operation after kernel resources are prepared.
+pub(crate) fn prepare_user_write(start: usize, len: usize) -> VmResult {
+    prepare_user_memory("write", start, len, MappingFlags::WRITE)
+}
+
 #[extern_trait]
 unsafe impl VmIo for Vm {
     fn new() -> Self {

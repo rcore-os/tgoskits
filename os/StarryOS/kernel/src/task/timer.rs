@@ -1,6 +1,10 @@
 //! Time management module.
 
-use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap, sync::Arc};
+use alloc::{
+    borrow::ToOwned,
+    collections::binary_heap::BinaryHeap,
+    sync::{Arc, Weak},
+};
 use core::{mem, time::Duration};
 
 use ax_lazyinit::LazyLock;
@@ -10,13 +14,12 @@ use ax_task::{
     future::{block_on, timeout_at_wall},
 };
 use event_listener::{Event, listener};
-use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
 
 use crate::{
     sync::IrqMutex as Mutex,
-    task::{poll_process_timer, poll_timer},
+    task::{PidIdentity, poll_process_timer, poll_timer},
 };
 
 fn time_value_from_nanos(nanos: usize) -> TimeValue {
@@ -28,7 +31,7 @@ fn time_value_from_nanos(nanos: usize) -> TimeValue {
 #[derive(Debug, Clone)]
 pub enum AlarmTarget {
     Thread(WeakAxTaskRef),
-    Process(Pid),
+    Process(Weak<PidIdentity>),
 }
 
 struct Entry {
@@ -306,8 +309,10 @@ async fn alarm_task() {
                         poll_timer(&task);
                     }
                 }
-                AlarmTarget::Process(pid) => {
-                    poll_process_timer(pid);
+                AlarmTarget::Process(identity) => {
+                    if let Some(identity) = identity.upgrade() {
+                        poll_process_timer(&identity);
+                    }
                 }
             }
         } else {

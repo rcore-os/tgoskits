@@ -84,7 +84,7 @@ impl TaskStat {
             TaskState::Blocked => 'S',
             TaskState::Exited => 'Z',
         };
-        let ppid = proc.parent().map_or(0, |p| p.pid());
+        let ppid = proc.parent().map_or(0, |p| p.pid().get());
         let pgrp = proc.group().pgid();
         let session = proc.group().session().sid();
 
@@ -99,12 +99,12 @@ impl TaskStat {
         let mem = ProcessMemStats::collect(&proc_data.aspace().lock());
 
         Ok(Self {
-            pid,
+            pid: pid.get(),
             comm: comm.to_owned(),
             state,
             ppid,
-            pgrp,
-            session,
+            pgrp: pgrp.get(),
+            session: session.get(),
             utime,
             stime,
             cutime,
