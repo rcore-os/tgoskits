@@ -382,11 +382,15 @@ pub fn sys_prctl(
     match option {
         PR_SET_NAME => {
             let mut name = [0u8; 15];
-            VmBytes::new(arg2 as *const u8, name.len()).read_exact(&mut name)?;
-            let len = name
-                .iter()
-                .position(|&byte| byte == 0)
-                .unwrap_or(name.len());
+            let mut user_name = VmBytes::new(arg2 as *const u8, name.len());
+            let mut len = 0;
+            while len < name.len() {
+                user_name.read_exact(&mut name[len..=len])?;
+                if name[len] == 0 {
+                    break;
+                }
+                len += 1;
+            }
             let name = core::str::from_utf8(&name[..len]).map_err(|_| StarryError::IllegalBytes)?;
             current().set_name(name);
         }
