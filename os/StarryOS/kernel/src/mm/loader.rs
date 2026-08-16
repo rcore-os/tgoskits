@@ -126,7 +126,32 @@ fn mapping_flags(flags: xmas_elf::program::Flags) -> MappingFlags {
     mapping_flags
 }
 
-fn app_stack_region(args: &[String], envs: &[String], auxv: &[AuxEntry], sp: usize) -> Vec<u8> {
+/// Fill the 16 bytes that back the ELF `AT_RANDOM` auxv entry.
+///
+/// Linux fills AT_RANDOM with `get_random_bytes()` (v7.2.0-rc3
+/// fs/binfmt_elf.c:226). StarryOS exposes no direct kernel CSPRNG accessor, so
+/// read `/dev/urandom` - the same ChaCha20 source `getrandom(2)` uses. These
+/// bytes seed userspace stack canaries (SSP) and pointer guards; a constant
+/// value makes them predictable and defeats SSP/PIE hardening.
+fn fill_at_random() -> AxResult<[u8; 16]> {
+    let mut buf = [0u8; 16];
+    let file = ax_fs_ng::vfs::current_fs_context()
+        .lock()
+        .resolve("/dev/urandom")?;
+    let n = file.entry().as_file()?.read_at(&mut buf, 0)?;
+    if n != buf.len() {
+        return Err(AxError::Io);
+    }
+    Ok(buf)
+}
+
+fn app_stack_region(
+    args: &[String],
+    envs: &[String],
+    auxv: &[AuxEntry],
+    random: &[u8; 16],
+    sp: usize,
+) -> Vec<u8> {
     let mut data = VecDeque::new();
     let mut push = |src: &[u8]| -> usize {
         data.extend(src.iter().copied());
@@ -134,7 +159,7 @@ fn app_stack_region(args: &[String], envs: &[String], auxv: &[AuxEntry], sp: usi
         sp - data.len()
     };
 
-    let random_str_pos = push(b"0123456789abcdef");
+    let random_str_pos = push(random);
     let envs_slice: Vec<_> = envs
         .iter()
         .map(|env| {
@@ -689,6 +714,14 @@ impl ElfLoader {
         auxv.push(AuxEntry::new(AuxType::GID, 0));
         auxv.push(AuxEntry::new(AuxType::EGID, 0));
         auxv.push(AuxEntry::new(AuxType::SECURE, 0));
+        // Linux create_elf_tables() fills AT_CLKTCK with CLOCKS_PER_SEC (USER_HZ),
+        // which is 100 on all supported arches. glibc/musl read it for
+        // sysconf(_SC_CLK_TCK) and times(2) accounting; without it they fall back
+        // to a wrong default and CPU-time reporting is off. AT_FLAGS is 0 like
+        // Linux for a normal (non-MMAP_PAGE_ZERO) load. Ref: Linux v7.2.0-rc3
+        // fs/binfmt_elf.c:252,259.
+        auxv.push(AuxEntry::new(AuxType::CLKTCK, 100));
+        auxv.push(AuxEntry::new(AuxType::FLAGS, 0));
 
         debug!(
             "loader: entry={:#x} auxv_len={} has_ldso={} auxv_last_type={}",
@@ -796,7 +829,8 @@ pub fn load_user_app(
         Backend::new_alloc(ustack_start, PAGE_SIZE_4K, "[stack]"),
     )?;
 
-    let stack_data = app_stack_region(args, envs, &auxv, ustack_top.into());
+    let random = fill_at_random()?;
+    let stack_data = app_stack_region(args, envs, &auxv, &random, ustack_top.into());
     let user_sp = ustack_top - stack_data.len();
     let user_sp_aligned = user_sp.align_down_4k();
     uspace.populate_area(

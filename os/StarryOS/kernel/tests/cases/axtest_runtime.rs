@@ -27,6 +27,21 @@ fn random_write_mixes_entropy() {
 }
 
 #[axtest]
+fn arch_hw_entropy_probe_is_safe() {
+    ax_assert!(axtest_exports::arch_hw_entropy_probe_is_safe());
+}
+
+#[axtest]
+fn hw_entropy_feature_probe_caches_first_result() {
+    ax_assert!(axtest_exports::hw_entropy_feature_probe_caches_first_result());
+}
+
+#[axtest]
+fn random_seed_is_distributed() {
+    ax_assert!(axtest_exports::random_seed_is_distributed());
+}
+
+#[axtest]
 fn time_value_conversion_rules_hold() {
     ax_assert!(axtest_exports::time_value_conversion_rules_hold());
 }

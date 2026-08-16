@@ -34,6 +34,18 @@ pub fn random_write_mixes_entropy() -> bool {
     super::pseudofs::dev::random_write_mixes_entropy_for_test()
 }
 
+pub fn arch_hw_entropy_probe_is_safe() -> bool {
+    super::pseudofs::dev::arch_hw_entropy_probe_is_safe_for_test()
+}
+
+pub fn hw_entropy_feature_probe_caches_first_result() -> bool {
+    super::pseudofs::dev::feature_probe_caches_first_result_for_test()
+}
+
+pub fn random_seed_is_distributed() -> bool {
+    super::pseudofs::dev::random_seed_is_distributed_for_test()
+}
+
 pub fn pipe_peer_close_with_multiple_readers_is_visible() -> bool {
     super::file::peer_close_with_multiple_readers_is_visible_for_test()
 }

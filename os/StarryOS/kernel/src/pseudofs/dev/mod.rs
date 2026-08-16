@@ -11,6 +11,7 @@ mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
+mod hwrng;
 #[cfg(feature = "sg2002")]
 pub mod ion;
 mod kmsg;
@@ -239,6 +240,11 @@ impl RandomState {
         fold_seed_word(&mut seed, entropy.len() as u64);
         fold_seed_word(&mut seed, self.reseed_count);
         fold_seed_word(&mut seed, time_entropy());
+        // Reseed with a fresh hardware word too, so writing caller entropy also
+        // pulls in unpredictable CPU entropy when available.
+        if let Some(word) = hwrng::arch_hw_entropy() {
+            fold_seed_word(&mut seed, word);
+        }
 
         for (idx, byte) in entropy.iter().copied().enumerate() {
             let seed_idx = idx % seed.len();
@@ -274,12 +280,27 @@ fn random_seed() -> [u8; 32] {
     // not publish state to other threads.
     let counter = RANDOM_SEED_COUNTER.fetch_add(RANDOM_SEED_STEP, Ordering::Relaxed);
     let stack_addr = &counter as *const u64 as usize as u64;
-    let mut state = time_entropy() ^ counter ^ stack_addr.rotate_left(17);
+    // Fold in a hardware entropy word when the CPU exposes one (RDRAND/RDSEED,
+    // RNDR, ...). Without it the seed is only timing/counter/stack derived and
+    // thus predictable; the hardware word makes it unpredictable, which the ELF
+    // `AT_RANDOM` bytes (libc stack canary, pointer guard) depend on. Absent
+    // hardware support this is a no-op and the seed degrades gracefully.
+    let hw = hwrng::arch_hw_entropy().unwrap_or(0);
+    let mut state = time_entropy() ^ counter ^ stack_addr.rotate_left(17) ^ hw;
     let mut seed = [0; 32];
 
     for chunk in seed.as_chunks_mut::<{ core::mem::size_of::<u64>() }>().0 {
         state = splitmix64(state.wrapping_add(RANDOM_SEED_STEP));
         chunk.copy_from_slice(&state.to_le_bytes());
+    }
+
+    // Fold independent hardware words across the seed words so every 64-bit lane
+    // carries hardware entropy, not just the mixed scalar above.
+    for chunk in seed.as_chunks_mut::<{ core::mem::size_of::<u64>() }>().0 {
+        if let Some(word) = hwrng::arch_hw_entropy() {
+            let lane = u64::from_le_bytes(*chunk) ^ word;
+            chunk.copy_from_slice(&lane.to_le_bytes());
+        }
     }
 
     seed
@@ -369,6 +390,28 @@ fn fold_seed_word_xors_into_byte_indices() -> bool {
         .iter()
         .any(|&idx| mutated.get(idx).copied() != snapshot_before.get(idx).copied());
     cancelled && mutated_differs_from_zero && affected_bytes_differ
+}
+
+#[cfg(axtest)]
+pub(crate) fn arch_hw_entropy_probe_is_safe_for_test() -> bool {
+    hwrng::hw_entropy_probe_is_safe_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn feature_probe_caches_first_result_for_test() -> bool {
+    hwrng::feature_probe_caches_first_result_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn random_seed_is_distributed_for_test() -> bool {
+    // Two independent seeds must differ (the counter guarantees this even
+    // without hardware entropy) and neither may be an all-zero or all-ones
+    // block, which would indicate a broken seed path.
+    let first = random_seed();
+    let second = random_seed();
+    let degenerate =
+        |seed: &[u8; 32]| seed.iter().all(|b| *b == 0) || seed.iter().all(|b| *b == 0xff);
+    first != second && !degenerate(&first) && !degenerate(&second)
 }
 
 struct Full;

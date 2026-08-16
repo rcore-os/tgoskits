@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/auxv.h>
 #include <unistd.h>
 
@@ -25,6 +26,18 @@
 
 #ifndef AT_EGID
 #define AT_EGID 14
+#endif
+
+#ifndef AT_RANDOM
+#define AT_RANDOM 25
+#endif
+
+#ifndef AT_CLKTCK
+#define AT_CLKTCK 17
+#endif
+
+#ifndef AT_FLAGS
+#define AT_FLAGS 8
 #endif
 
 extern char **environ;
@@ -111,6 +124,39 @@ int main(void)
     check_getauxval_entry(AT_EUID, (unsigned long)geteuid(), "getauxval(AT_EUID) matches geteuid()");
     check_getauxval_entry(AT_GID, (unsigned long)getgid(), "getauxval(AT_GID) matches getgid()");
     check_getauxval_entry(AT_EGID, (unsigned long)getegid(), "getauxval(AT_EGID) matches getegid()");
+
+    /* AT_CLKTCK: Linux fills CLOCKS_PER_SEC (USER_HZ = 100). glibc/musl read it
+     * for sysconf(_SC_CLK_TCK) and times(2) accounting; absence makes them fall
+     * back to a wrong default. */
+    unsigned long clktck = 0;
+    CHECK(find_auxv_value(AT_CLKTCK, &clktck) == 1, "AT_CLKTCK is present");
+    CHECK(clktck == 100, "AT_CLKTCK == 100 (USER_HZ)");
+    check_getauxval_entry(AT_CLKTCK, 100, "getauxval(AT_CLKTCK) == 100");
+    CHECK(sysconf(_SC_CLK_TCK) == 100, "sysconf(_SC_CLK_TCK) == 100");
+
+    /* AT_FLAGS: 0 for a normal (non-MMAP_PAGE_ZERO) load, like Linux. */
+    unsigned long at_flags = 1;
+    CHECK(find_auxv_value(AT_FLAGS, &at_flags) == 1, "AT_FLAGS is present");
+    CHECK(at_flags == 0, "AT_FLAGS == 0 for a normal load");
+
+    /* AT_RANDOM: 16 CSPRNG bytes that seed the userspace stack canary and
+     * pointer guard. A fixed constant makes the canary predictable and defeats
+     * SSP/PIE hardening, so the bytes must not be the old placeholder or zero. */
+    unsigned long rand_ptr = getauxval(AT_RANDOM);
+    CHECK(rand_ptr != 0, "AT_RANDOM is present and non-NULL");
+    if (rand_ptr != 0) {
+        const unsigned char *rb = (const unsigned char *)rand_ptr;
+        CHECK(memcmp(rb, "0123456789abcdef", 16) != 0,
+              "AT_RANDOM is not the fixed placeholder string");
+        int all_zero = 1;
+        for (int i = 0; i < 16; i++) {
+            if (rb[i] != 0) {
+                all_zero = 0;
+                break;
+            }
+        }
+        CHECK(!all_zero, "AT_RANDOM bytes are not all zero");
+    }
 
     TEST_DONE();
 }
