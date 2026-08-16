@@ -264,6 +264,10 @@ pub fn sys_mq_timedsend(
     }
     let queue = desc.queue();
     let deadline = load_deadline(abs_timeout)?;
+    // Check the queue's fixed limit before copying user-controlled `msg_len`
+    // bytes. Linux's `do_mq_timedsend` likewise returns EMSGSIZE before
+    // `load_msg`, so an oversize message must win over a bad message pointer.
+    queue.check_send_len(msg_len)?;
     let data = vm_load(msg_ptr, msg_len)?;
     queue.send(&data, msg_prio, deadline, desc.is_nonblocking())?;
     Ok(0)
