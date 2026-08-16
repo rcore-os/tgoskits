@@ -11,7 +11,7 @@
 //! The directory listing is built on demand from the live queue registry, so
 //! it always reflects the current set of queues.
 
-use alloc::{borrow::Cow, boxed::Box, format, sync::Arc};
+use alloc::{borrow::Cow, boxed::Box, sync::Arc};
 
 use axfs_ng_vfs::{Filesystem, NodePermission, VfsError, VfsResult};
 
@@ -37,12 +37,7 @@ impl SimpleDirOps for MqueueDir {
         let queue = lookup_by_short_name(name).ok_or(VfsError::NotFound)?;
         let file = {
             let queue = queue.clone();
-            SimpleFile::new_regular(self.fs.clone(), move || {
-                let (qsize, notify, signo, notify_pid) = queue.report();
-                Ok(format!(
-                    "QSIZE:{qsize} NOTIFY:{notify} SIGNO:{signo} NOTIFY_PID:{notify_pid}\n"
-                ))
-            })
+            SimpleFile::new_regular(self.fs.clone(), move || Ok(queue.status_line()))
         };
         // Report the mqueue inode's real metadata (Linux `mqueue_get_inode`
         // stamps `i_mode`/`i_uid`/`i_gid` and the inode times), so `stat` on

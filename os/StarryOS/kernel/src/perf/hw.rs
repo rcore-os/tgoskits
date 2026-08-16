@@ -46,11 +46,11 @@ use kbpf_basic::linux_bpf::perf_event_mmap_page;
 #[cfg(target_arch = "aarch64")]
 use kbpf_basic::linux_bpf::{perf_hw_id, perf_type_id};
 
-use super::PerfEventOps;
 #[cfg(target_arch = "aarch64")]
 use super::PerfReadValues;
 #[cfg(target_arch = "aarch64")]
 use super::sampling::{self, SampleSlot};
+use super::{PerfEventOps, PerfEventTarget};
 use crate::{StarryError, StarryResult};
 
 /// Dynamically-assigned `perf_event_attr.type` for the ARM PMUv3 CPU PMU,
@@ -404,18 +404,28 @@ impl HwPerfEvent {
     ///
     /// No ring buffer — the page only carries the metadata a userspace reader
     /// needs to read this event's hardware counter directly: `cap_user_rdpmc`,
-    /// the 1-based `index` selecting the counter, and its `pmc_width`. `offset`
-    /// stays 0: with no multiplexing the raw counter value *is* the count, so
-    /// `count = rdpmc(index - 1)` masked to `pmc_width` bits. The page is never
-    /// updated after this, so `lock` stays 0 (the userspace seqlock reads once).
+    /// the 1-based `index` selecting the counter, its `pmc_width`, and the count
+    /// already accumulated in `offset`. System-wide metadata is static;
+    /// per-task metadata starts inactive and scheduler hooks update its
+    /// seqlock/index/offset at every slice boundary.
     /// EL0 read access to the counters is enabled globally in
     /// [`ax_cpu::pmu::init_cpu`] via `PMUSERENR_EL0`.
     fn device_mmap_rdpmc(
         &self,
         len: usize,
     ) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
-        if len < ax_memory_addr::PAGE_SIZE_4K {
+        // Exactly one metadata page is allocated below. Accepting a larger VMA
+        // would make the physical mapping continue into unrelated adjacent
+        // memory after that page.
+        if len != ax_memory_addr::PAGE_SIZE_4K {
             return Err(StarryError::InvalidInput);
+        }
+        if self
+            .per_task
+            .as_ref()
+            .is_some_and(|ptc| ptc.rdpmc_page_mapped())
+        {
+            return Err(StarryError::ResourceBusy);
         }
         let mut pages = GlobalPage::alloc_contiguous(1, ax_memory_addr::PAGE_SIZE_4K)
             .map_err(|_| StarryError::NoMemory)?;
@@ -427,9 +437,11 @@ impl HwPerfEvent {
         // is 1-based (0 ⇒ rdpmc unusable); `index - 1` is the ARM counter the
         // reader accesses — `PMEVCNTR(index-1)_EL0`, or `PMCCNTR_EL0` for the
         // dedicated cycle counter (ARM index 31 ⇒ page index 32).
-        let (index, pmc_width): (u32, u16) = match self.counter {
-            Counter::Cycle => (32, 64),
-            Counter::Programmable(n) => (n as u32 + 1, 32),
+        let (index, pmc_width): (u32, u16) = match (&self.per_task, self.counter) {
+            (Some(_), Counter::Programmable(_)) => (0, 32),
+            (None, Counter::Cycle) => (32, 64),
+            (None, Counter::Programmable(n)) => (n as u32 + 1, 32),
+            (Some(_), Counter::Cycle) => return Err(StarryError::Unsupported),
         };
 
         let header = kvirt.as_usize() as *mut perf_event_mmap_page;
@@ -441,12 +453,19 @@ impl HwPerfEvent {
             core::ptr::addr_of_mut!((*header).index).write(index);
             core::ptr::addr_of_mut!((*header).offset).write(0);
             core::ptr::addr_of_mut!((*header).pmc_width).write(pmc_width);
-            // `capabilities` is a union over a bitfield; `cap_user_rdpmc` is bit 2
-            // (after `cap_bit0` and `cap_bit0_is_deprecated`). Write the `u64` arm.
-            core::ptr::addr_of_mut!((*header).__bindgen_anon_1.capabilities).write(1u64 << 2);
+            // `cap_bit0_is_deprecated` (bit 1) tells userspace the capability
+            // bits have their post-3.12 meanings; `cap_user_rdpmc` is bit 2.
+            core::ptr::addr_of_mut!((*header).__bindgen_anon_1.capabilities)
+                .write((1u64 << 1) | (1u64 << 2));
         }
 
-        let anchor: Arc<dyn Any + Send + Sync> = Arc::new(pages);
+        let pages = Arc::new(pages);
+        if let Some(ptc) = &self.per_task
+            && !ptc.install_rdpmc_page(pages.clone())
+        {
+            return Err(StarryError::ResourceBusy);
+        }
+        let anchor: Arc<dyn Any + Send + Sync> = pages;
         Ok((paddr, anchor))
     }
 }
@@ -611,6 +630,7 @@ impl PerfEventOps for HwPerfEvent {
                     period,
                     sample_type,
                     id: self.sample_id,
+                    observer: crate::task::ROOT_PID_NS.id(),
                     notify: notify_ptr,
                     freq,
                     target_freq,
@@ -746,11 +766,15 @@ impl PerfEventOps for HwPerfEvent {
     }
 
     fn device_mmap(&mut self, len: usize) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
-        // Per-task sampling: the ring + notify/poll machinery live on the shared
-        // `PerTaskCounter` (the scheduler hook builds the IRQ slot from there).
-        // Allocate the ring, spawn the notify worker, and hand both to the ptc.
+        // Per-task sampling owns a ring on `PerTaskCounter`; per-task counting
+        // exposes the same one-page rdpmc metadata ABI as system-wide counting.
+        // The reserved programmable slot remains stable for the event lifetime,
+        // while scheduler hooks enable it only on the target task's slices.
         if let Some(ptc) = &self.per_task {
-            return device_mmap_per_task(ptc, len);
+            if ptc.is_sampling() {
+                return device_mmap_per_task(ptc, len);
+            }
+            return self.device_mmap_rdpmc(len);
         }
 
         // A counting event has no ring; it exposes a single-page
@@ -799,7 +823,8 @@ fn device_mmap_per_task(
     ptc: &Arc<super::task::PerTaskCounter>,
     len: usize,
 ) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
-    // Only sampling per-task events have a ring; counting events reject mmap.
+    // Counting events use `HwPerfEvent::device_mmap_rdpmc`; this helper owns
+    // only the sampling ring path.
     if !ptc.is_sampling() {
         return Err(StarryError::Unsupported);
     }
@@ -857,7 +882,10 @@ fn resolve_sampling(raw: u64, is_freq: bool) -> (u32, u32) {
 /// value reset to 0) but left disabled: the attr carries `disabled = 1`, and
 /// the caller drives it with `ioctl(PERF_EVENT_IOC_ENABLE)`.
 #[cfg(target_arch = "aarch64")]
-pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> StarryResult<HwPerfEvent> {
+pub fn perf_event_open_hw(
+    attr: &perf_event_attr,
+    target: PerfEventTarget,
+) -> StarryResult<HwPerfEvent> {
     // No PMUv3 → no hardware events.
     let Some(info) = ax_hal::pmu::info() else {
         return Err(StarryError::Unsupported);
@@ -870,10 +898,17 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> StarryResult<HwPe
     // to set every open: M1 is single-core so `num_counters` is invariant.
     ALLOC.lock().num_counters = info.num_counters;
 
-    // `pid > 0`: attach a per-task counter to that task. `pid <= 0` (0 = self,
-    // -1 = system-wide) keeps the existing M1/M2 behaviour untouched below.
-    if pid > 0 {
-        return perf_event_open_hw_per_task(attr, pid);
+    // Current and explicit TID targets own per-task counters. Only the typed
+    // all-tasks selector reaches the system-wide path below.
+    match target {
+        PerfEventTarget::Current => {
+            return perf_event_open_hw_per_task(attr, ax_task::current().clone());
+        }
+        PerfEventTarget::Thread(tid) => {
+            let task = crate::task::get_user_task_by_number(tid)?;
+            return perf_event_open_hw_per_task(attr, task);
+        }
+        PerfEventTarget::AllTasks => {}
     }
 
     let exclude_user = attr.exclude_user() != 0;
@@ -1018,11 +1053,13 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> StarryResult<HwPe
 /// before enabling). The returned `HwPerfEvent` carries no `sampling` state of
 /// its own — for per-task events the ring/notify live on the `PerTaskCounter`.
 #[cfg(target_arch = "aarch64")]
-fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> StarryResult<HwPerfEvent> {
+fn perf_event_open_hw_per_task(
+    attr: &perf_event_attr,
+    task: ax_task::AxTaskRef,
+) -> StarryResult<HwPerfEvent> {
     use crate::task::AsThread;
 
-    // Resolve the target task and its `Thread` (kernel tasks have none).
-    let task = crate::task::get_task(pid as u32)?;
+    // Resolve the target task's `Thread` (kernel tasks have none).
     let thr = task.try_as_thread().ok_or(StarryError::NoSuchProcess)?;
 
     let exclude_user = attr.exclude_user() != 0;
@@ -1122,6 +1159,7 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> StarryResult
             sample_id_all: attr.sample_id_all() != 0,
             // Follow forked children into the same ring (`perf record` default).
             inherit: attr.inherit() != 0,
+            observer: ax_task::current().as_thread().active_pid_namespace().id(),
         },
     ));
     super::task::attach(thr, ptc.clone());
@@ -1201,6 +1239,9 @@ impl PerfEventOps for HwPerfEvent {
 
 /// Non-aarch64 fallback: no hardware PMU support outside ARM PMUv3.
 #[cfg(not(target_arch = "aarch64"))]
-pub fn perf_event_open_hw(_attr: &perf_event_attr, _pid: i32) -> StarryResult<HwPerfEvent> {
+pub fn perf_event_open_hw(
+    _attr: &perf_event_attr,
+    _target: PerfEventTarget,
+) -> StarryResult<HwPerfEvent> {
     Err(StarryError::Unsupported)
 }

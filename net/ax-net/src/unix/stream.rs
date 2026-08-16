@@ -67,7 +67,7 @@ fn new_uni_channel() -> (HeapProd<u8>, HeapCons<u8>) {
     rb.split()
 }
 fn new_channels(
-    pid: u32,
+    credentials: UnixCredentials,
     first_receive_credentials: Arc<AtomicBool>,
     second_receive_credentials: Arc<AtomicBool>,
 ) -> (Channel, Channel) {
@@ -90,7 +90,7 @@ fn new_channels(
             my_tx_closed: client_tx_closed.clone(),
             peer_tx_closed: server_tx_closed.clone(),
             poll_update: poll_update.clone(),
-            peer_pid: pid,
+            peer_credentials: credentials.clone(),
             peer_receive_credentials: second_receive_credentials,
         },
         Channel {
@@ -103,7 +103,7 @@ fn new_channels(
             my_tx_closed: server_tx_closed,
             peer_tx_closed: client_tx_closed,
             poll_update,
-            peer_pid: pid,
+            peer_credentials: credentials,
             peer_receive_credentials: first_receive_credentials,
         },
     )
@@ -128,7 +128,7 @@ struct Channel {
     /// Set to true by the peer's Drop before it wakes us.
     peer_tx_closed: Arc<AtomicBool>,
     poll_update: Arc<PollSet>,
-    peer_pid: u32,
+    peer_credentials: UnixCredentials,
     /// Peer receiver's `SO_PASSCRED` state.
     peer_receive_credentials: Arc<AtomicBool>,
 }
@@ -139,8 +139,8 @@ pub struct Bind {
     poll_new_conn: Arc<PollSet>,
     /// Shared listener state published by `listen`.
     listening: Arc<AtomicBool>,
-    /// PID of the process that created the listening transport.
-    pid: u32,
+    /// Credentials of the process that created the listening transport.
+    credentials: UnixCredentials,
     /// Receiver passcred state inherited by accepted transports.
     receive_credentials: Arc<AtomicBool>,
 }
@@ -148,7 +148,7 @@ impl Bind {
     fn connect(
         &self,
         local_addr: UnixSocketAddr,
-        pid: u32,
+        credentials: UnixCredentials,
         client_receive_credentials: Arc<AtomicBool>,
     ) -> NetResult<(Channel, Arc<PollSet>)> {
         if !self.listening.load(Ordering::Acquire) {
@@ -158,17 +158,17 @@ impl Bind {
             self.receive_credentials.load(Ordering::Acquire),
         ));
         let (mut client_chan, mut server_chan) = new_channels(
-            0,
+            UnixCredentials::new(0),
             client_receive_credentials,
             server_receive_credentials.clone(),
         );
-        client_chan.peer_pid = self.pid;
-        server_chan.peer_pid = pid;
+        client_chan.peer_credentials = self.credentials.clone();
+        server_chan.peer_credentials = credentials.clone();
         self.conn_tx
             .try_send(ConnRequest {
                 channel: server_chan,
                 addr: local_addr,
-                pid,
+                credentials,
                 receive_credentials: server_receive_credentials,
             })
             .map_err(|_| NetError::ConnectionRefused)?;
@@ -183,8 +183,8 @@ struct ConnRequest {
     channel: Channel,
     /// Client address reported to accept().
     addr: UnixSocketAddr,
-    /// Client pid used for peer credentials.
-    pid: u32,
+    /// Client identity used for peer credentials.
+    credentials: UnixCredentials,
     /// Passcred state owned by the accepted server socket.
     receive_credentials: Arc<AtomicBool>,
 }
@@ -203,8 +203,8 @@ pub struct StreamTransport {
     general: GeneralOptions,
     /// Per-receiver `SO_PASSCRED` state.
     receive_credentials: Arc<AtomicBool>,
-    /// Creator pid used for credentials.
-    pid: u32,
+    /// Creator identity used for credentials.
+    credentials: UnixCredentials,
     /// Public receive-half shutdown flag.
     rx_closed: AtomicBool,
     /// Public transmit-half shutdown flag.
@@ -212,13 +212,13 @@ pub struct StreamTransport {
 }
 impl StreamTransport {
     /// Create a new unconnected stream transport.
-    pub fn new(pid: u32) -> Self {
-        StreamTransport::new_channel(None, pid, Arc::new(AtomicBool::new(false)))
+    pub fn new(credentials: impl Into<UnixCredentials>) -> Self {
+        StreamTransport::new_channel(None, credentials.into(), Arc::new(AtomicBool::new(false)))
     }
 
     fn new_channel(
         channel: Option<Channel>,
-        pid: u32,
+        credentials: UnixCredentials,
         receive_credentials: Arc<AtomicBool>,
     ) -> Self {
         StreamTransport {
@@ -228,19 +228,25 @@ impl StreamTransport {
             poll_state: PollSet::new(),
             general: GeneralOptions::new(1, 1, 0), // SOCK_STREAM
             receive_credentials,
-            pid,
+            credentials,
             rx_closed: AtomicBool::new(false),
             tx_closed: AtomicBool::new(false),
         }
     }
 
     /// Create a connected pair of stream transports.
-    pub fn new_pair(pid: u32) -> (Self, Self) {
+    pub fn new_pair(credentials: impl Into<UnixCredentials>) -> (Self, Self) {
+        let credentials = credentials.into();
         let credentials1 = Arc::new(AtomicBool::new(false));
         let credentials2 = Arc::new(AtomicBool::new(false));
-        let (chan1, chan2) = new_channels(pid, credentials1.clone(), credentials2.clone());
-        let transport1 = StreamTransport::new_channel(Some(chan1), pid, credentials1);
-        let transport2 = StreamTransport::new_channel(Some(chan2), pid, credentials2);
+        let (chan1, chan2) = new_channels(
+            credentials.clone(),
+            credentials1.clone(),
+            credentials2.clone(),
+        );
+        let transport1 =
+            StreamTransport::new_channel(Some(chan1), credentials.clone(), credentials1);
+        let transport2 = StreamTransport::new_channel(Some(chan2), credentials, credentials2);
         (transport1, transport2)
     }
 
@@ -266,12 +272,11 @@ impl Configurable for StreamTransport {
                 **enabled = self.receive_credentials.load(Ordering::Acquire);
             }
             O::PeerCredentials(cred) => {
-                let peer_pid = self
-                    .channel
-                    .lock()
-                    .as_ref()
-                    .map_or(self.pid, |chan| chan.peer_pid);
-                **cred = UnixCredentials::new(peer_pid);
+                let peer_credentials = self.channel.lock().as_ref().map_or_else(
+                    || self.credentials.clone(),
+                    |chan| chan.peer_credentials.clone(),
+                );
+                **cred = peer_credentials;
             }
             _ => return Ok(false),
         }
@@ -311,7 +316,7 @@ impl TransportOps for StreamTransport {
             conn_tx: tx,
             poll_new_conn: poll.clone(),
             listening: self.listening.clone(),
-            pid: self.pid,
+            credentials: self.credentials.clone(),
             receive_credentials: self.receive_credentials.clone(),
         });
         *guard = Some((rx, poll));
@@ -347,7 +352,7 @@ impl TransportOps for StreamTransport {
             let slot = slot.stream.lock();
             slot.as_ref().ok_or(NetError::NotConnected)?.connect(
                 local_addr.clone(),
-                self.pid,
+                self.credentials.clone(),
                 self.receive_credentials.clone(),
             )?
         };
@@ -367,13 +372,13 @@ impl TransportOps for StreamTransport {
         let ConnRequest {
             channel,
             addr: peer_addr,
-            pid,
+            credentials,
             receive_credentials,
         } = rx.recv().await.map_err(|_| NetError::ConnectionReset)?;
         Ok((
             Transport::Stream(StreamTransport::new_channel(
                 Some(channel),
-                pid,
+                credentials,
                 receive_credentials,
             )),
             peer_addr,
@@ -393,12 +398,12 @@ impl TransportOps for StreamTransport {
             Ok(ConnRequest {
                 channel,
                 addr: peer_addr,
-                pid,
+                credentials,
                 receive_credentials,
             }) => Ok((
                 Transport::Stream(StreamTransport::new_channel(
                     Some(channel),
-                    pid,
+                    credentials,
                     receive_credentials,
                 )),
                 peer_addr,

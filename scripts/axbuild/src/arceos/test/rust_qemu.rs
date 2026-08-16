@@ -535,7 +535,7 @@ BT 0 ip=0x1 fp=0x2
                 .windows(2)
                 .any(|args| args == ["-accel", "tcg,thread=single"])
         );
-        assert_eq!(qemu.timeout, Some(5));
+        assert_eq!(qemu.timeout, Some(15));
     }
 
     #[test]

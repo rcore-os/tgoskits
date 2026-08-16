@@ -23,7 +23,7 @@ use crate::{
         queues_max, validate_name,
     },
     mm::vm_load_string,
-    task::AsThread,
+    task::{AsThread, current_pid_view},
     time::TimeValueLike,
 };
 
@@ -264,6 +264,10 @@ pub fn sys_mq_timedsend(
     }
     let queue = desc.queue();
     let deadline = load_deadline(abs_timeout)?;
+    // Check the queue's fixed limit before copying user-controlled `msg_len`
+    // bytes. Linux's `do_mq_timedsend` likewise returns EMSGSIZE before
+    // `load_msg`, so an oversize message must win over a bad message pointer.
+    queue.check_send_len(msg_len)?;
     let data = vm_load(msg_ptr, msg_len)?;
     queue.send(&data, msg_prio, deadline, desc.is_nonblocking())?;
     Ok(0)
@@ -306,7 +310,10 @@ pub fn sys_mq_timedreceive(
 /// that socket on message arrival (ipc/mqueue.c:1287-1351, `netlink_sendskb`).
 pub fn sys_mq_notify(mqdes: i32, sevp: *const sigevent) -> StarryResult<isize> {
     let queue = queue_from_fd(mqdes)?;
-    let pid = ax_task::current().as_thread().proc_data.proc.pid();
+    let owner = ax_task::current().as_thread().proc_data.identity();
+    let owner_number = current_pid_view()
+        .visible_number(&owner)
+        .expect("mq_notify owner is visible in its active PID namespace");
 
     let req = if sevp.is_null() {
         NotifyRequest::Unregister
@@ -353,7 +360,7 @@ pub fn sys_mq_notify(mqdes: i32, sevp: *const sigevent) -> StarryResult<isize> {
             _ => return Err(Errno::EINVAL.into()),
         }
     };
-    queue.register_notify(req, pid)?;
+    queue.register_notify(req, owner, owner_number)?;
     Ok(0)
 }
 

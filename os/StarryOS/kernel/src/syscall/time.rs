@@ -201,7 +201,7 @@ pub fn sys_timer_settime(
         .proc_data
         .posix_timers
         .settime(
-            thr.proc_data.proc.pid(),
+            &thr.proc_data.identity(),
             timerid,
             flags,
             TimerSpec {

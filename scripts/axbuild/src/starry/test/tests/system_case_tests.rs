@@ -1,5 +1,191 @@
 use super::*;
 
+fn assert_system_runner_config(path: &Path) {
+    let content = fs::read_to_string(path).unwrap();
+    let config: toml::Value = toml::from_str(&content).unwrap();
+    let test_commands = config
+        .get("test_commands")
+        .and_then(toml::Value::as_array)
+        .unwrap();
+    assert_eq!(
+        test_commands.len(),
+        1,
+        "{} must invoke the system runner exactly once",
+        path.display()
+    );
+    let command = test_commands[0].as_str().unwrap();
+    assert!(
+        matches!(
+            command,
+            "exec /usr/bin/starry-run-system-tests"
+                | "exec /usr/bin/starry-run-system-tests --capture-failures"
+        ),
+        "{} must delegate grouped execution to the isolated system runner",
+        path.display()
+    );
+
+    let success_regex = config
+        .get("success_regex")
+        .and_then(toml::Value::as_array)
+        .unwrap();
+    assert!(
+        success_regex
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|regex| regex.contains("STARRY_GROUPED_TESTS_PASSED")),
+        "{} must require the system grouped success marker",
+        path.display()
+    );
+    let fail_regex = config
+        .get("fail_regex")
+        .and_then(toml::Value::as_array)
+        .unwrap();
+    assert!(
+        fail_regex
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|regex| regex.contains("STARRY_GROUPED_TEST_FAILED")),
+        "{} must fail when a grouped system test fails",
+        path.display()
+    );
+}
+
+fn assert_system_runner_contract(system_dir: &Path) {
+    let path = system_dir.join("common/starry_system_test_runner.c");
+    let source = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+
+    assert!(
+        source.contains("#define TEST_DIRECTORY \"/usr/bin/starry-test-suit\"")
+            && source.contains("collect_test_names(&names, &name_count)")
+            && source.contains("qsort(names, *count, sizeof(*names), compare_names)"),
+        "{} must scan and sort installed system test binaries",
+        path.display()
+    );
+    for marker in [
+        "STARRY_SYSTEM_TEST_BEGIN:",
+        "STARRY_SYSTEM_TEST_PASSED:",
+        "STARRY_SYSTEM_TEST_FAILED:",
+        "STARRY_SYSTEM_TEST_SUMMARY:",
+        "STARRY_GROUPED_TEST_FAILED:",
+        "STARRY_GROUPED_TESTS_PASSED",
+    ] {
+        assert!(
+            source.contains(marker),
+            "{} must report {marker}",
+            path.display()
+        );
+    }
+    assert_eq!(
+        source.matches("STARRY_SYSTEM_TEST_BEGIN:").count(),
+        1,
+        "{} must identify each test exactly once",
+        path.display()
+    );
+    assert_eq!(
+        source.matches("STARRY_SYSTEM_TEST_PASSED:").count(),
+        1,
+        "{} must report each passing test exactly once",
+        path.display()
+    );
+    assert_eq!(
+        source.matches("STARRY_SYSTEM_TEST_FAILED:").count(),
+        1,
+        "{} must report each failing test exactly once",
+        path.display()
+    );
+
+    let status_position = source
+        .find("int exit_status = run_isolated_case(")
+        .expect("runner must preserve each isolated case status");
+    let result_position = source
+        .find("if (exit_status == 0)")
+        .expect("runner must classify each isolated case status");
+    assert!(
+        status_position < result_position,
+        "{} must save the isolated exit status before updating counters",
+        path.display()
+    );
+    assert!(
+        source.contains("if (total == 0)")
+            && source.contains("if (failed != 0)")
+            && source.contains("return 1;")
+            && source.ends_with("    return 0;\n}\n"),
+        "{} must fail empty or failed suites and succeed only after the pass marker",
+        path.display()
+    );
+}
+
+fn assert_inline_grouped_runner_reports_each_result_once(path: &Path) {
+    let content = fs::read_to_string(path).unwrap();
+    let config: toml::Value = toml::from_str(&content).unwrap();
+    let test_commands = config
+        .get("test_commands")
+        .and_then(toml::Value::as_array)
+        .unwrap();
+    let command = test_commands
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .next()
+        .unwrap_or_default();
+
+    assert!(
+        command.contains("STARRY_SYSTEM_TEST_BEGIN: $bin"),
+        "{} must identify each test before it starts",
+        path.display()
+    );
+    assert!(
+        command.contains("STARRY_SYSTEM_TEST_PASSED: $bin elapsed_s=$elapsed_s"),
+        "{} must report one traceable duration for each passing test",
+        path.display()
+    );
+    assert!(
+        command.contains("$system_fail_marker: $bin status=$exit_status elapsed_s=$elapsed_s"),
+        "{} must report the status and duration of each failing test",
+        path.display()
+    );
+    assert!(
+        command.contains(
+            "STARRY_SYSTEM_TEST_SUMMARY: total=$total passed=$passed failed=$failed \
+             elapsed_s=$suite_elapsed_s"
+        ),
+        "{} must report one compact suite timing summary",
+        path.display()
+    );
+    assert!(
+        !command.contains("STARRY_SYSTEM_TEST_TIMING") && !command.contains("timing_file="),
+        "{} must not duplicate per-test durations in a trailing timing block",
+        path.display()
+    );
+    let failure_branch = command.find("else\n").unwrap_or_else(|| {
+        panic!(
+            "{} must contain a failure branch for grouped subcases",
+            path.display()
+        )
+    });
+    let failure_command = &command[failure_branch..];
+    let exit_status_position = failure_command.find("exit_status=$?").unwrap_or_else(|| {
+        panic!(
+            "{} must preserve grouped subcase exit status",
+            path.display()
+        )
+    });
+    let failed_count_position = failure_command
+        .find("failed=$((failed + 1))")
+        .unwrap_or_else(|| panic!("{} must mark failed grouped subcases", path.display()));
+    assert!(
+        exit_status_position < failed_count_position,
+        "{} must capture `$?` before assigning shell variables in the failure branch",
+        path.display()
+    );
+    assert!(
+        command.contains("STARRY_GROUPED_TESTS_PASSED")
+            && command.contains("STARRY_GROUPED_TEST_FAILED"),
+        "{} must keep existing grouped success/fail markers",
+        path.display()
+    );
+}
+
 #[test]
 fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -13,126 +199,109 @@ fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
 
     for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
         let path = system_dir.join(format!("qemu-{arch}.toml"));
-        let content = fs::read_to_string(&path).unwrap();
-        let config: toml::Value = toml::from_str(&content).unwrap();
-        let test_commands = config
-            .get("test_commands")
-            .and_then(toml::Value::as_array)
-            .unwrap();
-        assert!(
-            test_commands
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .any(|command| command.contains("/usr/bin/starry-test-suit/*")),
-            "{} must scan installed system test binaries",
-            path.display()
-        );
-        let success_regex = config
-            .get("success_regex")
-            .and_then(toml::Value::as_array)
-            .unwrap();
-        assert!(
-            success_regex
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .any(|regex| regex.contains("STARRY_GROUPED_TESTS_PASSED")),
-            "{} must require the system grouped success marker",
-            path.display()
-        );
-        let fail_regex = config
-            .get("fail_regex")
-            .and_then(toml::Value::as_array)
-            .unwrap();
-
-        assert!(
-            fail_regex
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .any(|regex| regex.contains("STARRY_GROUPED_TEST_FAILED")),
-            "{} must fail when a grouped bugfix command fails",
-            path.display()
-        );
+        assert_system_runner_config(&path);
     }
+    assert_system_runner_contract(&system_dir);
 }
 
 #[test]
 fn starry_system_grouped_qemu_configs_report_each_result_once() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
-    let mut paths = ["aarch64", "loongarch64", "riscv64", "x86_64"]
-        .map(|arch| system_dir.join(format!("qemu-{arch}.toml")))
-        .to_vec();
-    paths.push(workspace_root.join("test-suit/starryos/qemu-rga/system/qemu-aarch64.toml"));
-
-    for path in paths {
-        let content = fs::read_to_string(&path).unwrap();
-        let config: toml::Value = toml::from_str(&content).unwrap();
-        let test_commands = config
-            .get("test_commands")
-            .and_then(toml::Value::as_array)
-            .unwrap();
-        let command = test_commands
-            .iter()
-            .filter_map(toml::Value::as_str)
-            .next()
-            .unwrap_or_default();
-
-        assert!(
-            command.contains("STARRY_SYSTEM_TEST_BEGIN: $bin"),
-            "{} must identify each test before it starts",
-            path.display()
-        );
-        assert!(
-            command.contains("STARRY_SYSTEM_TEST_PASSED: $bin elapsed_s=$elapsed_s"),
-            "{} must report one traceable duration for each passing test",
-            path.display()
-        );
-        assert!(
-            command.contains("$system_fail_marker: $bin status=$exit_status elapsed_s=$elapsed_s"),
-            "{} must report the status and duration of each failing test",
-            path.display()
-        );
-        assert!(
-            command.contains(
-                "STARRY_SYSTEM_TEST_SUMMARY: total=$total passed=$passed failed=$failed \
-                 elapsed_s=$suite_elapsed_s"
-            ),
-            "{} must report one compact suite timing summary",
-            path.display()
-        );
-        assert!(
-            !command.contains("STARRY_SYSTEM_TEST_TIMING") && !command.contains("timing_file="),
-            "{} must not duplicate per-test durations in a trailing timing block",
-            path.display()
-        );
-        let failure_branch = command.find("else\n").unwrap_or_else(|| {
-            panic!(
-                "{} must contain a failure branch for grouped subcases",
-                path.display()
-            )
-        });
-        let failure_command = &command[failure_branch..];
-        let exit_status_position = failure_command.find("exit_status=$?").unwrap_or_else(|| {
-            panic!(
-                "{} must preserve grouped subcase exit status",
-                path.display()
-            )
-        });
-        let failed_count_position = failure_command
-            .find("failed=$((failed + 1))")
-            .unwrap_or_else(|| panic!("{} must mark failed grouped subcases", path.display()));
-        assert!(
-            exit_status_position < failed_count_position,
-            "{} must capture `$?` before assigning shell variables in the failure branch",
-            path.display()
-        );
-        assert!(
-            command.contains("STARRY_GROUPED_TESTS_PASSED")
-                && command.contains("STARRY_GROUPED_TEST_FAILED"),
-            "{} must keep existing grouped success/fail markers",
-            path.display()
-        );
+    for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+        assert_system_runner_config(&system_dir.join(format!("qemu-{arch}.toml")));
     }
+    assert_system_runner_contract(&system_dir);
+
+    let rga_path = workspace_root.join("test-suit/starryos/qemu-rga/system/qemu-aarch64.toml");
+    assert_inline_grouped_runner_reports_each_result_once(&rga_path);
+}
+
+#[test]
+fn starry_system_runner_keeps_slow_case_timeouts_explicit() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let source_path =
+        workspace_root.join("test-suit/starryos/qemu/system/common/starry_system_test_runner.c");
+    let source = fs::read_to_string(&source_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
+
+    assert!(
+        source.contains("#define DEFAULT_CASE_TIMEOUT_SECONDS 120")
+            && source.contains("#define EXT4_INODE_UNIQUE_TIMEOUT_SECONDS 240")
+            && source.contains("#define PAGECACHE_CAP_TIMEOUT_SECONDS 240")
+            && source.contains("strcmp(name, \"test-ext4-inode-unique\") == 0")
+            && source.contains("strcmp(name, \"test-pagecache-cap\") == 0"),
+        "{} must keep sync-heavy case exceptions explicit without relaxing the default timeout",
+        source_path.display()
+    );
+    let timeout_log = source
+        .find("STARRY_SYSTEM_TEST_TIMEOUT: %s timeout_s=%u")
+        .expect("runner must report the selected timeout");
+    let timeout_cleanup = source[timeout_log..]
+        .find("kill_and_reap_namespace_init(namespace_init)")
+        .expect("runner must clean up a timed-out namespace");
+    let timeout_branch = &source[timeout_log..timeout_log + timeout_cleanup];
+    assert!(
+        source.contains("unsigned timeout_seconds = case_timeout_seconds(names[index]);")
+            && source
+                .contains("wait_for_namespace_init(namespace_init, &status, timeout_seconds);")
+            && timeout_branch.contains("timeout_seconds"),
+        "{} must select one timeout per binary and carry it through supervision and diagnostics",
+        source_path.display()
+    );
+    assert!(
+        !source.contains("#define CASE_TIMEOUT_SECONDS")
+            && !source.contains("deadline.tv_sec += CASE_TIMEOUT_SECONDS"),
+        "{} must not retain a single global timeout for every system binary",
+        source_path.display()
+    );
+}
+
+#[test]
+fn starry_system_runner_bounds_namespace_cleanup_and_covers_raw_waiters() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let runner_path =
+        workspace_root.join("test-suit/starryos/qemu/system/common/starry_system_test_runner.c");
+    let runner = fs::read_to_string(&runner_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", runner_path.display()));
+    assert!(
+        runner.contains("#define NAMESPACE_CLEANUP_TIMEOUT_SECONDS 30")
+            && runner.contains("wait_for_namespace_init(namespace_init, &status,")
+            && runner.contains("NAMESPACE_CLEANUP_TIMEOUT_SECONDS);")
+            && runner.contains("STARRY_SYSTEM_TEST_CLEANUP_TIMEOUT")
+            && runner.contains("if (exit_status == RUNNER_ERROR_STATUS)"),
+        "{} must bound namespace reap and abort before starting another case after cleanup failure",
+        runner_path.display()
+    );
+
+    let leak_path =
+        workspace_root.join("test-suit/starryos/qemu/system/test-case-task-isolation/src/leak.c");
+    let leak = fs::read_to_string(&leak_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", leak_path.display()));
+    assert!(
+        leak.contains("int blocker[2]")
+            && leak.contains("read(blocker[0], &never, sizeof(never))")
+            && !leak.contains("pause()"),
+        "{} must leave its descendant on a raw blocking wait so namespace shutdown proves forced \
+         wakeup",
+        leak_path.display()
+    );
+}
+
+#[test]
+fn stat_family_fixture_cleanup_does_not_spawn_shell_children() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let source_path =
+        workspace_root.join("test-suit/starryos/qemu/system/syscall-test-stat-family/src/main.c");
+    let source = fs::read_to_string(&source_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
+    assert!(
+        source.contains("static int cleanup_fixture(void)")
+            && source.contains("CHECK(cleanup_fixture() == 0")
+            && !source.contains("system(cmd)"),
+        "{} must clean its known fixture with direct syscalls instead of an unbounded shell wait",
+        source_path.display()
+    );
 }
 
 #[test]
@@ -307,21 +476,9 @@ fn zombie_bugfix_commands_are_in_system_grouped_qemu_case() {
 
     for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
         let system_path = system_dir.join(format!("qemu-{arch}.toml"));
-        let system_content = fs::read_to_string(&system_path).unwrap();
-        let system_config: toml::Value = toml::from_str(&system_content).unwrap();
-        let system_commands = system_config
-            .get("test_commands")
-            .and_then(toml::Value::as_array)
-            .unwrap();
-        assert!(
-            system_commands
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .any(|command| command.contains("/usr/bin/starry-test-suit/*")),
-            "{} must scan installed system test binaries",
-            system_path.display()
-        );
+        assert_system_runner_config(&system_path);
     }
+    assert_system_runner_contract(&system_dir);
 }
 
 #[test]
@@ -347,21 +504,9 @@ fn tty_bugfix_commands_are_in_system_grouped_qemu_case() {
 
     for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
         let system_path = system_dir.join(format!("qemu-{arch}.toml"));
-        let system_content = fs::read_to_string(&system_path).unwrap();
-        let system_config: toml::Value = toml::from_str(&system_content).unwrap();
-        let system_commands = system_config
-            .get("test_commands")
-            .and_then(toml::Value::as_array)
-            .unwrap();
-        assert!(
-            system_commands
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .any(|command| command.contains("/usr/bin/starry-test-suit/*")),
-            "{} must scan installed system test binaries",
-            system_path.display()
-        );
+        assert_system_runner_config(&system_path);
     }
+    assert_system_runner_contract(&system_dir);
 }
 
 #[test]
