@@ -72,7 +72,6 @@ use core::{
 };
 
 use ax_alloc::GlobalPage;
-use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::paging::MappingFlags;
 use ax_task::IrqNotify;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
@@ -82,6 +81,7 @@ use super::{
     sideband::{self, Mmap2Info, SidebandTarget},
 };
 use crate::{
+    StarryError, StarryResult,
     sync::IrqMutex,
     task::{AsThread, PidIdentity, PidNamespaceId, TgidNumber, Thread, TidNumber},
 };
@@ -782,10 +782,10 @@ pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
 pub fn link_group_member(
     leader: &Arc<PerTaskCounter>,
     member: &Arc<PerTaskCounter>,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     // Same monitored thread required (see the memory-safety note above).
     if leader.owner_tid != member.owner_tid {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     // Only a sampling leader consumes members from the overflow handler.
     if !leader.is_sampling {
@@ -800,7 +800,7 @@ pub fn link_group_member(
             "perf group-leader sampling: group exceeds {} members (PMU width); rejecting open",
             sampling::MAX_GROUP_MEMBERS
         );
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     members.push(Arc::downgrade(member));
     Ok(())
@@ -1469,7 +1469,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
                     observer: p.observer,
                     valid_clusters: p.valid_clusters,
                     // The inherited counter monitors the CHILD thread.
-                    owner_tid: child_thr.tid(),
+                    owner_tid: child_thr.tid().into(),
                 },
                 sample_id: p.sample_id.load(Ordering::Relaxed),
                 ring: p.inherit_ring(),

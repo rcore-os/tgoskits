@@ -1396,14 +1396,14 @@ pub fn perf_event_open_hw(
     if cpu >= 0 && is_sampling {
         let target = cpu as usize;
         if target >= ax_hal::cpu_num() {
-            return Err(AxError::NotFound);
+            return Err(StarryError::NotFound);
         }
         // big.LITTLE: reject a cluster event pinned to a foreign-cluster cpu (gate
         // on the TARGET cpu, exactly like the counting fan-out below).
         let valid_clusters =
             cluster_mask_for_type(attr.type_).unwrap_or(super::percpu::ClusterMask::ALL);
         if !valid_clusters.contains(super::percpu::cluster_of_cpu(target)) {
-            return Err(AxError::NotFound);
+            return Err(StarryError::NotFound);
         }
         // Same sampling sample_type / read_format rules as the self path; group
         // sampling stays per-task-only.
@@ -1414,7 +1414,7 @@ pub fn perf_event_open_hw(
                 "perf_event_open: -a sampling sample_type {:#x} unsupported",
                 attr.sample_type
             );
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         }
         if !super::sampling::sample_read_supported(attr.sample_type, attr.read_format)
             || attr.read_format & super::sampling::READ_FORMAT_GROUP != 0
@@ -1423,24 +1423,24 @@ pub fn perf_event_open_hw(
                 "perf_event_open: -a sampling read_format {:#x} unsupported",
                 attr.read_format
             );
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         }
         if !is_freq && raw > u32::MAX as u64 {
             warn!("perf_event_open: -a sample_period {raw} exceeds 32-bit counter");
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         let Some(event) = decode_arm_event(attr.type_, attr.config) else {
             warn!(
                 "perf_event_open: unsupported -a sampling type {:#x} config {:#x}",
                 attr.type_, attr.config
             );
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         };
         // Validated on the opening core (architectural events like CPU_CYCLES are
         // cluster-agnostic); target-PMCEID refinement is a follow-up.
         if !ax_cpu::pmu::event_supported(event) {
             warn!("perf_event_open: -a sampling ARM event {event:#x} not implemented");
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         }
         // Reserve + configure the programmable counter on the TARGET core's pool
         // (leaves it disabled), via the same IPI op the counting fan-out uses. The
@@ -1456,7 +1456,7 @@ pub fn perf_event_open_hw(
         };
         run_sys_cpu_op(target, &mut prog);
         if !prog.ok {
-            return Err(AxError::NoMemory);
+            return Err(StarryError::NoMemory);
         }
         let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
         let poll_ready = Arc::new(PollSet::new());
@@ -1569,7 +1569,7 @@ pub fn perf_event_open_hw(
                  PERF_FORMAT_ID / PERF_FORMAT_GROUP; no time-format sampling)",
                 attr.read_format
             );
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         }
         // Group-leader sampling is per-task only in v1: the system-wide path has no
         // member plumbing (its `SampleSlot` carries no member table), so reading a
@@ -1580,7 +1580,7 @@ pub fn perf_event_open_hw(
                 "perf_event_open: system-wide group-leader sampling (PERF_FORMAT_GROUP) \
                  unsupported; open the leader per-task (pid > 0)"
             );
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         }
         // A fixed period must fit the 32-bit programmable counter (the preload is
         // 32-bit). Frequency mode carries a (small) rate here, not a period.
@@ -1758,7 +1758,7 @@ fn perf_event_open_hw_per_task(
                  / PERF_FORMAT_ID / PERF_FORMAT_GROUP; no time-format sampling)",
                 attr.read_format
             );
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         }
         if !is_freq && raw > u32::MAX as u64 {
             warn!("perf_event_open: per-task sample_period {raw} exceeds 32-bit");
@@ -1830,7 +1830,7 @@ fn perf_event_open_hw_per_task(
             valid_clusters,
             // The monitored thread's tid: group-leader sampling links a member to
             // a leader only when these match (same monitored thread).
-            owner_tid: thr.tid(),
+            owner_tid: thr.tid().into(),
         },
     ));
     super::task::attach(thr, ptc.clone());

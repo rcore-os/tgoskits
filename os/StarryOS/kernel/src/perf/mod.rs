@@ -421,7 +421,11 @@ impl PerfEvent {
     /// buffer — `nr`, then `time_enabled`/`time_running` once (from the leader),
     /// then per event (leader first, then live members) `value` plus `id` /
     /// `lost` when requested. `leader` is the already-read leader snapshot.
-    fn read_group(&self, dst: &mut crate::file::IoDst, leader: &PerfReadValues) -> AxResult<usize> {
+    fn read_group(
+        &self,
+        dst: &mut crate::file::IoDst,
+        leader: &PerfReadValues,
+    ) -> StarryResult<usize> {
         let rf = leader.read_format;
         let live: Vec<Arc<PerfEvent>> = self
             .members
@@ -459,7 +463,7 @@ impl PerfEvent {
 
         let total = out.len() * core::mem::size_of::<u64>();
         if dst.remaining_mut() < total {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         for v in &out {
             dst.write(&v.to_ne_bytes())?;
@@ -728,7 +732,7 @@ pub(crate) fn perf_event_open(
         let leader = get_file_like(group_fd)?
             .into_any_arc()
             .downcast::<PerfEvent>()
-            .map_err(|_| AxError::InvalidInput)?;
+            .map_err(|_| StarryError::InvalidInput)?;
         // Per-task group-leader sampling: when both the leader and this member are
         // per-task hardware counters, link them at the ptc layer too, so a
         // *sampling* leader can read this counting member's live value from the

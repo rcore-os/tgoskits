@@ -43,12 +43,12 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use ax_errno::{AxError, AxResult};
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
 use ax_task::IrqNotify;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 use crate::{
+    StarryError, StarryResult,
     sync::PreemptIrqSaveGuard,
     task::{AsThread, PidNamespaceId, TgidNumber, TidNumber},
 };
@@ -472,14 +472,14 @@ pub fn unregister(n: usize) {
 /// this flag rather than on `REGISTERED`.
 static INSTALLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-pub fn install_pmu_irq_handler() -> AxResult<()> {
+pub fn install_pmu_irq_handler() -> StarryResult<()> {
     loop {
         if INSTALLED.load(Ordering::Acquire) {
             return Ok(());
         }
         let pmu_irq = pmu_irq().map_err(|err| {
             warn!("perf sampling: failed to resolve PMU overflow IRQ: {err:?}");
-            AxError::NotFound
+            StarryError::NotFound
         })?;
         if REGISTERED
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -498,7 +498,7 @@ pub fn install_pmu_irq_handler() -> AxResult<()> {
                 Err(err) => {
                     REGISTERED.store(false, Ordering::Release);
                     warn!("perf sampling: failed to register PMU overflow IRQ: {err:?}");
-                    Err(AxError::Io)
+                    Err(StarryError::Io)
                 }
             };
         }
