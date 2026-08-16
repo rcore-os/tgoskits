@@ -39,3 +39,22 @@ impl DisplayInfo {
         }
     }
 }
+
+/// 3D box region for data transfer operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransferBox {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+    pub w: u32,
+    pub h: u32,
+    pub d: u32,
+}
+
+/// Capset information returned by `gpu3d_capset_info`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapsetInfo {
+    pub capset_id: u32,
+    pub max_version: u32,
+    pub max_size: u32,
+}
