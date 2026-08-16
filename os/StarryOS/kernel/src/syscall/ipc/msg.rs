@@ -4,7 +4,6 @@ use ax_runtime::hal::time::monotonic_time_nanos;
 use ax_task::current;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
-use starry_process::Pid;
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use super::{
@@ -14,7 +13,7 @@ use super::{
 use crate::{
     Errno, StarryError, StarryResult,
     sync::Mutex,
-    task::{AsThread, WaitQueue as MsgWaitQueue},
+    task::{AsThread, PidNamespaceId, PidSnapshot, WaitQueue as MsgWaitQueue},
 };
 
 /// Data structure describing a message queue.
@@ -43,7 +42,7 @@ pub struct msqid_ds {
 }
 
 impl msqid_ds {
-    fn new(key: i32, mode: __kernel_mode_t, pid: __kernel_pid_t, uid: u32, gid: u32) -> Self {
+    fn new(key: i32, mode: __kernel_mode_t, uid: u32, gid: u32) -> Self {
         Self {
             msg_perm: IpcPerm {
                 key,
@@ -63,8 +62,8 @@ impl msqid_ds {
             msg_cbytes: 0,
             msg_qnum: 0,
             msg_qbytes: MSGMNB as __kernel_size_t,
-            msg_lspid: pid,
-            msg_lrpid: pid,
+            msg_lspid: 0,
+            msg_lrpid: 0,
         }
     }
 }
@@ -83,6 +82,8 @@ pub struct Message {
 pub struct MessageQueue {
     /// Message queue data structure
     pub msqid_ds: msqid_ds,
+    last_sender: Option<PidSnapshot>,
+    last_receiver: Option<PidSnapshot>,
     /// Queue of messages
     pub messages: BTreeMap<i64, Vec<Message>>, // mtype -> messages of that type
     /// Total bytes in queue
@@ -102,9 +103,11 @@ pub struct MessageQueue {
 impl MessageQueue {
     /// Creates a new [`MessageQueue`].
     #[allow(clippy::too_many_arguments)]
-    pub fn new(key: i32, mode: __kernel_mode_t, pid: Pid, uid: u32, gid: u32, ns_id: u64) -> Self {
+    pub fn new(key: i32, mode: __kernel_mode_t, uid: u32, gid: u32, ns_id: u64) -> Self {
         MessageQueue {
-            msqid_ds: msqid_ds::new(key, mode, pid as __kernel_pid_t, uid, gid),
+            msqid_ds: msqid_ds::new(key, mode, uid, gid),
+            last_sender: None,
+            last_receiver: None,
             messages: BTreeMap::new(),
             total_bytes: 0,
             next_seq: 0,
@@ -113,6 +116,21 @@ impl MessageQueue {
             mark_removed: false,
             ns_id,
         }
+    }
+
+    fn status(&self, observer: PidNamespaceId) -> msqid_ds {
+        let mut status = self.msqid_ds;
+        status.msg_lspid = self
+            .last_sender
+            .as_ref()
+            .and_then(|sender| sender.visible_number(observer))
+            .map_or(0, |number| number.get() as __kernel_pid_t);
+        status.msg_lrpid = self
+            .last_receiver
+            .as_ref()
+            .and_then(|receiver| receiver.visible_number(observer))
+            .map_or(0, |number| number.get() as __kernel_pid_t);
+        status
     }
 
     /// Add a message to the queue
@@ -396,7 +414,6 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> StarryResult<isize> {
     let cred = thread.cred();
     let current_uid = cred.euid;
     let current_gid = cred.egid;
-    let current_pid = proc_data.proc.pid();
     let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
 
     let mut msg_manager = MSG_MANAGER.lock();
@@ -412,7 +429,6 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> StarryResult<isize> {
         let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
             key,
             (msgflg & 0o777) as _,
-            current_pid,
             current_uid,
             current_gid,
             ns_id,
@@ -462,7 +478,6 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> StarryResult<isize> {
     let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
         key,
         (msgflg & 0o777) as _,
-        current_pid,
         current_uid,
         current_gid,
         ns_id,
@@ -490,7 +505,7 @@ pub fn sys_msgsnd(
     let cred = thread.cred();
     let current_uid = cred.euid;
     let current_gid = cred.egid;
-    let current_pid = proc_data.proc.pid();
+    let sender = proc_data.identity().snapshot();
     let flags = MsgSndFlags::from_bits_truncate(msgflg);
 
     let msg_queue_ref = {
@@ -537,7 +552,7 @@ pub fn sys_msgsnd(
 
         if !queue_would_exceed(&msg_queue, data_len) {
             msg_queue.enqueue_message(mtype, data_vec)?;
-            msg_queue.msqid_ds.msg_lspid = current_pid as _;
+            msg_queue.last_sender = Some(sender);
             msg_queue.msqid_ds.msg_stime = monotonic_time_nanos() as _;
 
             let recv_wait_queue = msg_queue.recv_wait_queue.clone();
@@ -588,7 +603,7 @@ pub fn sys_msgrcv(
     let cred = thread.cred();
     let current_uid = cred.euid;
     let current_gid = cred.egid;
-    let current_pid = proc_data.proc.pid();
+    let receiver = proc_data.identity().snapshot();
 
     // Check validity of flag combinations
     if msg_copy {
@@ -702,11 +717,11 @@ pub fn sys_msgrcv(
 
     // Update queue statistics (normal mode only)
     if should_remove {
-        msg_queue.msqid_ds.msg_lrpid = current_pid as _;
+        msg_queue.last_receiver = Some(receiver.clone());
         msg_queue.msqid_ds.msg_rtime = monotonic_time_nanos() as _;
     } else {
         // MSG_COPY mode: only update last receiver info, do not update queue statistics
-        msg_queue.msqid_ds.msg_lrpid = current_pid as _;
+        msg_queue.last_receiver = Some(receiver);
         msg_queue.msqid_ds.msg_rtime = monotonic_time_nanos() as _;
     }
 
@@ -732,6 +747,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> StarryResult<isize> {
     let current_gid = cred.egid;
     let is_privileged = current_uid == 0; // root user check
     let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+    let pid_observer = thread.active_pid_namespace().id();
 
     // Validate command code
     if cmd != IPC_STAT
@@ -812,8 +828,8 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> StarryResult<isize> {
             msg_cbytes: ns_total_bytes as u64,
             msg_qnum: ns_queues_count as u64,
             msg_qbytes: MSGMNB as u64,
-            msg_lspid: Pid::from(0u32) as _,
-            msg_lrpid: Pid::from(0u32) as _,
+            msg_lspid: 0,
+            msg_lrpid: 0,
         };
 
         let ptr = buf as *mut msqid_ds;
@@ -838,7 +854,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> StarryResult<isize> {
                 }
 
                 let ptr = buf as *mut msqid_ds;
-                ptr.vm_write(guard.msqid_ds)?;
+                ptr.vm_write(guard.status(pid_observer))?;
                 Ok(actual_msqid as isize)
             });
 
@@ -872,7 +888,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> StarryResult<isize> {
 
         // Copy queue status to user space
         let ptr = buf as *mut msqid_ds;
-        ptr.vm_write(msg_queue.msqid_ds)?;
+        ptr.vm_write(msg_queue.status(pid_observer))?;
 
         return Ok(0);
     }
@@ -891,9 +907,10 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> StarryResult<isize> {
         let user_buf = ptr.vm_read()?;
 
         // Update permission information (fields allowed by man-page)
-        msg_queue.msqid_ds.msg_perm.uid = user_buf.msg_perm.uid;
-        msg_queue.msqid_ds.msg_perm.gid = user_buf.msg_perm.gid;
-        msg_queue.msqid_ds.msg_perm.mode = user_buf.msg_perm.mode & 0o777; // Only take permission bits
+        msg_queue
+            .msqid_ds
+            .msg_perm
+            .update_from_user(&user_buf.msg_perm);
 
         // Update queue size limit (requires privilege check)
         let old_qbytes = msg_queue.msqid_ds.msg_qbytes;
