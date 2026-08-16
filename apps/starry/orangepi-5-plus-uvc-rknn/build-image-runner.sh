@@ -4,16 +4,31 @@ set -euo pipefail
 case_dir="$(cd "$(dirname "$0")" && pwd)"
 src_dir="${case_dir}/rknn-yolov8-image"
 build_dir="${src_dir}/build-rk3588-aarch64"
+host_test_build_dir="${src_dir}/build-host-jpeg-selftest"
 install_dir="${src_dir}/install/rk3588_linux_aarch64/rknn_yolov8_image"
 cross_prefix="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 cc="${CC:-${cross_prefix}gcc}"
 cxx="${CXX:-${cross_prefix}g++}"
+host_cc="${HOST_CC:-cc}"
 
 command -v "${cc}" >/dev/null
 command -v "${cxx}" >/dev/null
+command -v "${host_cc}" >/dev/null
+command -v ctest >/dev/null
 
-rm -rf "${build_dir}" "${install_dir}"
-mkdir -p "${build_dir}" "${install_dir}"
+rm -rf "${build_dir}" "${host_test_build_dir}" "${install_dir}"
+mkdir -p "${build_dir}" "${host_test_build_dir}" "${install_dir}"
+
+# The deployed runner is cross-compiled for aarch64 and cannot be executed on
+# the build host. Build the mock-TurboJPEG regression with the host compiler so
+# a loader error-path regression fails this entry point before deployment.
+cmake -S "${src_dir}" -B "${host_test_build_dir}" \
+  -DCMAKE_C_COMPILER="${host_cc}" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DTARGET_SOC=rk3588
+cmake --build "${host_test_build_dir}" --target image_utils_jpeg_selftest -j"$(nproc)"
+ctest --test-dir "${host_test_build_dir}" --output-on-failure \
+  -R '^image_utils_jpeg_selftest$'
 
 cmake -S "${src_dir}" -B "${build_dir}" \
   -DCMAKE_C_COMPILER="${cc}" \
