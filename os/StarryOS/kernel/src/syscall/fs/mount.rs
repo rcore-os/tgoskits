@@ -31,6 +31,22 @@ use crate::{
     task::{AsThread, tasks},
 };
 
+/// Serialises mount-tree mutations across CPUs, like Linux's `namespace_sem`.
+///
+/// The mount tree (and, for `pivot_root`, the cross-`FsContext` root/cwd rewrite)
+/// is a globally shared structure, but each mount syscall only took the per-task
+/// `FsContext` lock — nothing serialised two mount operations running on different
+/// CPUs. That was harmless while task placement kept a process's work on one CPU,
+/// but with SMP round-robin task distribution two processes' mount ops (e.g.
+/// `test-pivot-root`'s children fanned out across cores) interleave and corrupt the
+/// shared tree — a raced setup makes `pivot_root` see a non-distinct new-root and
+/// leaves `/dev`, `/tmp`, `/bin` half-moved for every other process. Hold this
+/// across the whole of each mount-mutating syscall so those mutations are atomic
+/// w.r.t. each other. Acquired before any `FsContext` lock; path resolution never
+/// takes it, so there is no lock-order inversion. Sleepable, so a mount that blocks
+/// on I/O does not stall other CPUs.
+static MOUNT_OP_LOCK: Mutex<()> = Mutex::new(());
+
 const MNT_FORCE: i32 = 1;
 const MNT_DETACH: i32 = 2;
 const MNT_EXPIRE: i32 = 4;
@@ -470,6 +486,12 @@ pub fn sys_move_mount(
     if !source.is_detached_mount_handle() {
         return Err(StarryError::InvalidInput);
     }
+
+    // Serialise mount-tree mutations across CPUs (see `MOUNT_OP_LOCK`): the
+    // target resolution + `attach_detached` is a read-modify-write of the mount
+    // tree that must not race the locked mount/umount/pivot_root paths.
+    let _mount_op = MOUNT_OP_LOCK.lock();
+
     let path = vm_load_string(to_path)?;
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let mount_namespace = fs_context.lock().mount_namespace().clone();
@@ -512,6 +534,11 @@ pub fn sys_mount_setattr(
 
     let attributes = attributes.vm_read()?;
     validate_mount_attributes(&attributes)?;
+
+    // Serialise mount-tree mutations across CPUs (see `MOUNT_OP_LOCK`): the
+    // visibility walk + `apply_mount_attributes` must not race the locked
+    // mount/umount/pivot_root paths.
+    let _mount_op = MOUNT_OP_LOCK.lock();
 
     let directory = Directory::from_fd(dirfd)?;
     if !directory.inner().is_root_of_mount() {
@@ -598,6 +625,9 @@ pub fn sys_mount(
         vm_load_string(fs_type)?
     };
     debug!("sys_mount <= source: {source:?}, target: {target:?}, fs_type: {fs_type:?}");
+
+    // Serialise mount-tree mutations across CPUs (see `MOUNT_OP_LOCK`).
+    let _mount_op = MOUNT_OP_LOCK.lock();
 
     if !current().as_thread().cred().has_cap_sys_admin() {
         return Err(StarryError::OperationNotPermitted);
@@ -790,6 +820,9 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> StarryResult<isize> {
     let target = vm_load_string(target)?;
     debug!("sys_umount2 <= target: {target:?}, flags: {flags:#x}");
 
+    // Serialise mount-tree mutations across CPUs (see `MOUNT_OP_LOCK`).
+    let _mount_op = MOUNT_OP_LOCK.lock();
+
     if (flags & !VALID_UMOUNT_FLAGS) != 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -874,6 +907,11 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> Starry
         "sys_pivot_root <= new_root: {:?}, put_old: {:?}",
         new_root, put_old
     );
+
+    // Serialise mount-tree mutations across CPUs (see `MOUNT_OP_LOCK`). This also
+    // makes the mount-tree change + the cross-`FsContext` root/cwd propagation
+    // atomic w.r.t. any other CPU's concurrent mount op.
+    let _mount_op = MOUNT_OP_LOCK.lock();
 
     if !current().as_thread().cred().has_cap_sys_admin() {
         return Err(StarryError::OperationNotPermitted);

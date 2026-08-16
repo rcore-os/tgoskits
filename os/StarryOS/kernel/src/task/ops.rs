@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use core::ffi::c_long;
+use core::{cell::RefCell, ffi::c_long};
 
 use ax_runtime::hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, current};
@@ -122,8 +122,8 @@ pub fn tick_cpu_time(task: &TaskInner) {
     let Some(thr) = task.try_as_thread() else {
         return;
     };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // Reentrant borrow means the task is mid-state-transition; skip.
+    let Some(mut time) = thr.time.try_lock() else {
+        // Contended by a concurrent CPU or a reentrant IRQ; skip this tick.
         return;
     };
     time.tick();
@@ -134,7 +134,7 @@ pub fn task_cpu_time(task: &TaskInner) -> (TimeValue, TimeValue) {
     let Some(thr) = task.try_as_thread() else {
         return (TimeValue::ZERO, TimeValue::ZERO);
     };
-    let Ok(time) = thr.time.try_borrow() else {
+    let Some(time) = thr.time.try_lock() else {
         return (TimeValue::ZERO, TimeValue::ZERO);
     };
     time.output()
@@ -145,14 +145,20 @@ pub fn poll_timer(task: &TaskInner) {
     let Some(thr) = task.try_as_thread() else {
         return;
     };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // reentrant borrow, likely IRQ
-        return;
-    };
-    let emitter = |signo| {
+    // Hold the IRQ-disabling time lock only for the poll; collect the fired
+    // itimer signals and emit them AFTER releasing it -- signal delivery must
+    // not run under the time lock (and could re-enter it). Skip on contention
+    // (a concurrent CPU or the tick path may hold it).
+    let fired = RefCell::new(Vec::new());
+    {
+        let Some(mut time) = thr.time.try_lock() else {
+            return;
+        };
+        time.poll(|signo| fired.borrow_mut().push(signo));
+    }
+    for signo in fired.into_inner() {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    };
-    time.poll(emitter);
+    }
 }
 
 /// Poll the process-level POSIX timers.
@@ -169,15 +175,21 @@ pub fn set_timer_state(task: &TaskInner, state: TimerState) {
     let Some(thr) = task.try_as_thread() else {
         return;
     };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // reentrant borrow, likely IRQ
-        return;
-    };
-    let emitter = |signo| {
+    // Bill the outgoing state's slice and service ITIMER_VIRTUAL/PROF under
+    // the IRQ-disabling time lock, then flip the state. Collect any fired itimer
+    // signals and emit them AFTER releasing the lock -- signal delivery must not
+    // run under the time lock. Skip on contention (a concurrent CPU or IRQ).
+    let fired = RefCell::new(Vec::new());
+    {
+        let Some(mut time) = thr.time.try_lock() else {
+            return;
+        };
+        time.poll(|signo| fired.borrow_mut().push(signo));
+        time.set_state(state);
+    }
+    for signo in fired.into_inner() {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    };
-    time.poll(emitter);
-    time.set_state(state);
+    }
 }
 
 #[repr(C)]

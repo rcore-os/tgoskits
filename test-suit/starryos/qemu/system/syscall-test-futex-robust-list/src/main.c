@@ -1060,7 +1060,16 @@ static void test_robust_list_bad_chain_does_not_hang(void)
     }
 
     int status = 0;
-    for (int i = 0; i < 2000; i++) {
+    /*
+     * This guard only proves the kernel does NOT infinite-loop on a bad/cyclic
+     * robust list; the exact reap latency is irrelevant. A fixed iteration cap
+     * (~2s) is fragile under slow aarch64-TCG + real SMP concurrency, so bound
+     * the wait by a generous wall-clock deadline instead.
+     */
+    struct timespec start;
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &start) == 0, "clock_gettime start succeeds");
+    const long deadline_ms = 60000;
+    for (;;) {
         pid_t waited = waitpid(pid, &status, WNOHANG);
         if (waited == pid) {
             CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
@@ -1069,6 +1078,11 @@ static void test_robust_list_bad_chain_does_not_hang(void)
         }
         CHECK(waited == 0 || (waited == -1 && errno == EINTR),
               "waitpid bad robust-list child is pending or interrupted");
+        struct timespec now;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) == 0 &&
+            elapsed_ms(&start, &now) > deadline_ms) {
+            break;
+        }
         const struct timespec pause = {
             .tv_sec = 0,
             .tv_nsec = 1000 * 1000,

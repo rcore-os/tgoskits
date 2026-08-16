@@ -315,28 +315,41 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
     might_sleep();
 
     if cpumask.is_empty() {
-        false
-    } else {
-        let curr = current().clone();
-
-        curr.set_cpumask(cpumask);
-        // After setting the affinity, we need to check if current cpu matches
-        // the affinity. If not, we need to migrate the task to the correct CPU.
-        #[cfg(feature = "smp")]
-        if !cpumask.get(ax_hal::percpu::this_cpu_id()) {
-            // Spawn a new migration task for migrating.
-            let migration_task = TaskInner::new(
-                move || crate::run_queue::migrate_entry(curr),
-                "migration-task".into(),
-                default_task_stack_size(),
-            )
-            .into_arc();
-
-            // Migrate the current task to the correct CPU using the migration task.
-            current_run_queue::<PreemptIrqSaveState>().migrate_current(migration_task);
-        }
-        true
+        return false;
     }
+
+    // Reject an affinity update that names no usable (online) CPU, mirroring
+    // Linux `sched_setaffinity`'s `EINVAL`. Without this, the migration below
+    // would ask `select_run_queue_index` for a run queue and get the current
+    // CPU back as its availability fallback — but a failed online sweep means
+    // the current CPU is *excluded* by `cpumask`, so the task would be stranded
+    // on a disallowed CPU with no path back to its requested CPU once that CPU
+    // later comes online. Refusing keeps the task on its previous, valid
+    // affinity instead of silently violating the caller's request.
+    #[cfg(feature = "smp")]
+    if !crate::run_queue::affinity_mask_has_online_cpu(&cpumask) {
+        return false;
+    }
+
+    let curr = current().clone();
+
+    curr.set_cpumask(cpumask);
+    // After setting the affinity, we need to check if current cpu matches
+    // the affinity. If not, we need to migrate the task to the correct CPU.
+    #[cfg(feature = "smp")]
+    if !cpumask.get(ax_hal::percpu::this_cpu_id()) {
+        // Spawn a new migration task for migrating.
+        let migration_task = TaskInner::new(
+            move || crate::run_queue::migrate_entry(curr),
+            "migration-task".into(),
+            default_task_stack_size(),
+        )
+        .into_arc();
+
+        // Migrate the current task to the correct CPU using the migration task.
+        current_run_queue::<PreemptIrqSaveState>().migrate_current(migration_task);
+    }
+    true
 }
 
 /// Current task gives up the CPU time voluntarily, and switches to another
