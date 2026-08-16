@@ -7,15 +7,15 @@ use core::{cell::Cell, slice};
 
 use ax_fs_ng::vfs::FileBackend;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
+#[cfg(feature = "thp")]
+use ax_runtime::hal::paging::ReservedTable;
 use ax_runtime::hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageTable, PagingError},
 };
-#[cfg(feature = "thp")]
-use ax_runtime::hal::paging::ReservedTable;
+
 #[cfg(feature = "thp")]
 use super::HUGE_2M;
-
 use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
     PopulateCallback, RssKind, alloc_frame, dealloc_frame, pages_in,
