@@ -78,7 +78,18 @@ fn owner_from_pid(pid: Pid) -> u32 {
     } else if pid.is_invalid() {
         OWNER_INVALID
     } else {
-        pid.raw() as u32
+        // A tracked pid must round-trip through the 32-bit owner field. A pid that
+        // does not fit in `u32`, or that collides with the reserved `OWNER_FREE` /
+        // `OWNER_INVALID` sentinels, cannot be encoded faithfully: `as u32`
+        // truncation would alias a different pid (`0x1_0000_0001` -> pid 1), and
+        // `OWNER_FREE` would make a held lock read back as free — letting a
+        // concurrent caller acquire it. Degrade such a pid to `OWNER_INVALID`
+        // (held, but untracked) so the lock stays held and never aliases. Real
+        // pids sit far below this boundary; this only guards the soundness edge.
+        match u32::try_from(pid.raw()) {
+            Ok(owner) if owner != OWNER_FREE && owner != OWNER_INVALID => owner,
+            _ => OWNER_INVALID,
+        }
     }
 }
 
@@ -358,6 +369,33 @@ mod tests {
 
     fn new_owner() -> DeviceOwner {
         DeviceOwner::new(Descriptor::new(), Empty)
+    }
+
+    #[test]
+    fn pid_outside_u32_or_reserved_range_degrades_to_untracked() {
+        // A normal pid round-trips through the 32-bit owner field.
+        let normal: Pid = 4242usize.into();
+        assert_eq!(owner_from_pid(normal), 4242);
+
+        // A pid whose low 32 bits equal a reserved sentinel must NOT be encoded as
+        // that sentinel: `OWNER_FREE` would make a held lock read back as free and
+        // let a concurrent caller acquire it. Both reserved encodings degrade to
+        // `OWNER_INVALID` (held, but untracked).
+        let as_free: Pid = (OWNER_FREE as usize).into();
+        assert_ne!(owner_from_pid(as_free), OWNER_FREE);
+        assert_eq!(owner_from_pid(as_free), OWNER_INVALID);
+        let as_invalid: Pid = (OWNER_INVALID as usize).into();
+        assert_eq!(owner_from_pid(as_invalid), OWNER_INVALID);
+
+        // A pid above `u32::MAX` must not truncate and alias a small pid
+        // (`0x1_0000_0001` would otherwise collide with pid 1).
+        #[cfg(target_pointer_width = "64")]
+        {
+            let huge: Pid = 0x1_0000_0001usize.into();
+            let small: Pid = 1usize.into();
+            assert_ne!(owner_from_pid(huge), owner_from_pid(small));
+            assert_eq!(owner_from_pid(huge), OWNER_INVALID);
+        }
     }
 
     #[test]
