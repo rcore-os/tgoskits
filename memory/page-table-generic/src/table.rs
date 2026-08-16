@@ -5,7 +5,7 @@ use ax_memory_addr::MemoryAddr;
 use crate::{
     FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfigOf, TableMeta,
     VirtAddr,
-    frame::Frame,
+    frame::{Frame, SplitFill},
     map::{MapConfig, MapRecursiveConfig, UnmapConfig, UnmapRecursiveConfig},
     walk::{PageTableWalker, WalkConfig},
 };
@@ -415,15 +415,54 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         // so the split installs and (on error) reclaims the whole reservation.
         let reserved = reserved.frame;
         let reserved_paddr = reserved.paddr;
-        match self
-            .root
-            .split_huge_page_recursive(vaddr, Frame::<T, A>::PT_LEVEL, reserved)
-        {
-            Ok(size) => Ok(size),
+        match self.root.split_huge_page_recursive(
+            vaddr,
+            Frame::<T, A>::PT_LEVEL,
+            reserved,
+            SplitFill::Inherit,
+        ) {
+            Ok((_, _, size)) => Ok(size),
             Err(err) => {
                 // Only the block branch installs the reservation; on any error it was
                 // never installed, so roll it back. No flush: an uninstalled frame is
                 // unreachable by any TLB walk.
+                self.root.allocator.dealloc_frame(reserved_paddr);
+                Err(err)
+            }
+        }
+    }
+
+    /// Split the huge block covering `vaddr` into an **empty** (zeroed) child table,
+    /// using a `reserved` table from [`Self::alloc_intermediate_table`], and return
+    /// the old block's `(paddr, config, size)`.
+    ///
+    /// Unlike [`Self::split_huge_page_with`], the child leaves are left unmapped: the
+    /// caller installs them itself (e.g. 512 non-contiguous 4 KiB frames from a
+    /// fragmented COW break) via [`Self::map`], which would otherwise hit
+    /// `MappingConflict` against auto-inherited leaves. The block's VA range reads as
+    /// unmapped between this call and the caller's leaf maps, so callers must hold the
+    /// address-space lock across both. Frees the reservation on error (no flush — it
+    /// was never installed); `NotMapped` if `vaddr` is not covered by a block.
+    ///
+    /// The single-frame `ReservedTable` invariant and the not-present-block handling
+    /// are inherited from [`Self::split_huge_page_with`] (a not-present block splits
+    /// only on a present-independent [`PageTableEntry::huge`]; a zeroing EPT/NPT format
+    /// degrades to `NotMapped`).
+    pub fn split_huge_block_to_empty_table(
+        &mut self,
+        vaddr: VirtAddr,
+        reserved: ReservedTable<T, A>,
+    ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize)> {
+        let reserved = reserved.frame;
+        let reserved_paddr = reserved.paddr;
+        match self.root.split_huge_page_recursive(
+            vaddr,
+            Frame::<T, A>::PT_LEVEL,
+            reserved,
+            SplitFill::Empty,
+        ) {
+            Ok(triple) => Ok(triple),
+            Err(err) => {
                 self.root.allocator.dealloc_frame(reserved_paddr);
                 Err(err)
             }

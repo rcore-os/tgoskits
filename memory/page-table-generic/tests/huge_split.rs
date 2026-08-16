@@ -405,3 +405,145 @@ fn not_present_block_on_a_zeroing_format_degrades_to_not_mapped() {
     drop(pt);
     assert!(!alloc.has_leaks(), "no page-table frame may leak");
 }
+
+// ---- Empty-splice variant: install a zeroed child table, caller maps the leaves ----
+
+/// The empty splice installs the child table but leaves its 512 leaves unmapped, so
+/// the caller can install arbitrary (here non-contiguous) 4 KiB frames — exactly the
+/// `CopiedScattered` COW-break case the auto-populating `split_huge_page` cannot
+/// serve (its inherited leaves would make the caller's `map_page` hit
+/// `MappingConflict`).
+#[test]
+fn empty_splice_leaves_child_table_unmapped_then_accepts_scattered_leaves() {
+    let alloc = TrackedFram4k::default();
+    let mut pt = PageTable::<T4kL4, TrackedFram4k>::new(alloc.clone()).unwrap();
+    let va = VirtAddr::from_usize(VA);
+    let pa = 0x1000_0000;
+
+    map_huge(&mut pt, VA, pa);
+
+    // Empty splice: zeroed child table, NO leaf population; returns the old block.
+    let reserved = pt.alloc_intermediate_table().unwrap();
+    let (old_pa, _cfg, size) = pt.split_huge_block_to_empty_table(va, reserved).unwrap();
+    assert_eq!(size, HUGE_2M);
+    assert_eq!(old_pa.as_usize(), pa, "returns the split block's old paddr");
+
+    // The child table is present, but every leaf is unmapped, and the slot is now a
+    // table pointer rather than a block.
+    for i in 0..(HUGE_2M / PG) {
+        assert_eq!(
+            pt.translate(va + i * PG).err(),
+            Some(PagingError::NotMapped),
+            "leaf {i} must be unmapped after an empty splice"
+        );
+    }
+    assert_eq!(
+        pt.peek_huge_block(va),
+        None,
+        "the block is now a table, not a block"
+    );
+
+    // Install 512 NON-CONTIGUOUS leaves (stride 8 KiB, so no two are adjacent): the
+    // auto-populating split would `MappingConflict` here; the empty table must not.
+    let scattered = |i: usize| 0x5000_0000 + i * 2 * PG;
+    for i in 0..(HUGE_2M / PG) {
+        pt.map_page(
+            va + i * PG,
+            PhysAddr::from_usize(scattered(i)),
+            PG,
+            PteImpl::kernel_mode_config(),
+        )
+        .unwrap();
+    }
+    for i in 0..(HUGE_2M / PG) {
+        let (got, _pte) = pt.translate(va + i * PG).unwrap();
+        assert_eq!(
+            got.as_usize(),
+            scattered(i),
+            "leaf {i} resolves to its own scattered frame"
+        );
+    }
+
+    pt.unmap(va, HUGE_2M).unwrap();
+    drop(pt);
+    assert!(
+        !alloc.has_leaks(),
+        "leaked page-table frame(s) after teardown"
+    );
+}
+
+/// A successful empty splice does a single break-before-make flush and frees nothing
+/// — same ordering as the inheriting split, since the only difference is the skipped
+/// leaf-fill.
+#[test]
+fn empty_splice_emits_one_flush_and_frees_nothing() {
+    let _guard = SERIALIZE.lock().unwrap_or_else(|p| p.into_inner());
+    OPS.lock().unwrap().clear();
+
+    let mut pt = PageTable::<RecordingMeta, RecordingFram4k>::new(RecordingFram4k).unwrap();
+    pt.map(&MapConfig {
+        vaddr: VirtAddr::from_usize(VA),
+        paddr: PhysAddr::from_usize(0x1000_0000),
+        size: HUGE_2M,
+        pte: PteImpl::kernel_mode_config(),
+        allow_huge: true,
+        flush: false,
+    })
+    .unwrap();
+    OPS.lock().unwrap().clear();
+
+    let reserved = pt.alloc_intermediate_table().unwrap();
+    pt.split_huge_block_to_empty_table(VirtAddr::from_usize(VA), reserved)
+        .unwrap();
+
+    let ops = OPS.lock().unwrap().clone();
+    assert_eq!(
+        ops.iter().filter(|o| matches!(o, Op::Dealloc(_))).count(),
+        0,
+        "an empty splice installs a table and frees nothing: {ops:?}"
+    );
+    assert_eq!(
+        ops.iter().filter(|o| matches!(o, Op::Flush)).count(),
+        1,
+        "exactly one break-before-make flush (clear -> flush -> install): {ops:?}"
+    );
+}
+
+/// An empty splice over a plain 4 KiB leaf finds no block: it rolls back the reserved
+/// table exactly once and never flushes (the reservation was never installed).
+#[test]
+fn failed_empty_splice_rolls_back_reserved_table_without_flushing() {
+    let _guard = SERIALIZE.lock().unwrap_or_else(|p| p.into_inner());
+    OPS.lock().unwrap().clear();
+
+    let mut pt = PageTable::<RecordingMeta, RecordingFram4k>::new(RecordingFram4k).unwrap();
+    pt.map(&MapConfig {
+        vaddr: VirtAddr::from_usize(VA),
+        paddr: PhysAddr::from_usize(0x1000_0000),
+        size: PG,
+        pte: PteImpl::kernel_mode_config(),
+        allow_huge: false,
+        flush: false,
+    })
+    .unwrap();
+    OPS.lock().unwrap().clear();
+
+    let reserved = pt.alloc_intermediate_table().unwrap();
+    assert!(
+        pt.split_huge_block_to_empty_table(VirtAddr::from_usize(VA), reserved)
+            .is_err(),
+        "an empty splice over a plain 4 KiB leaf must fail"
+    );
+
+    let ops = OPS.lock().unwrap().clone();
+    assert_eq!(
+        ops.iter().filter(|o| matches!(o, Op::Dealloc(_))).count(),
+        1,
+        "rollback frees the reserved table exactly once: {ops:?}"
+    );
+    assert_eq!(
+        ops.iter().filter(|o| matches!(o, Op::Flush)).count(),
+        0,
+        "an uninstalled reserved frame is never live, so no flush: {ops:?}"
+    );
+}

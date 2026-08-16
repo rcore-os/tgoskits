@@ -20,6 +20,18 @@ impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for Frame<T, A> {
     }
 }
 
+/// How [`Frame::split_huge_page_recursive`] seeds the reserved child table.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SplitFill {
+    /// Inherit the block's frame + flags into all child leaves, so the mapping is
+    /// unchanged at a finer granularity (the transparent `split_huge_page` path).
+    Inherit,
+    /// Leave the reserved frame zeroed for the caller to populate with per-leaf
+    /// (possibly non-contiguous) mappings — the scattered COW-break path, where the
+    /// caller maps 512 arbitrary frames itself.
+    Empty,
+}
+
 impl<T, A> Frame<T, A>
 where
     T: TableMeta,
@@ -233,15 +245,21 @@ where
     /// (present-independent), so both are reached through the same short-circuit as
     /// [`Self::protect_recursive`] — no separate not-present path is needed.
     ///
+    /// `fill` selects whether the child leaves inherit the block's mapping
+    /// ([`SplitFill::Inherit`]) or are left unmapped for the caller to populate
+    /// ([`SplitFill::Empty`]).
+    ///
     /// The `reserved` frame is consumed only on success (installed as the new table).
-    /// On any error it is left untouched for the caller to reclaim. Returns the size
-    /// of the block that was split; `NotMapped` if `vaddr` is not covered by a block.
-    pub fn split_huge_page_recursive(
+    /// On any error it is left untouched for the caller to reclaim. Returns the split
+    /// block's old `(paddr, config, size)`; `NotMapped` if `vaddr` is not covered by a
+    /// block.
+    pub(crate) fn split_huge_page_recursive(
         &mut self,
         vaddr: VirtAddr,
         level: usize,
         mut reserved: Frame<T, A>,
-    ) -> PagingResult<usize> {
+        fill: SplitFill,
+    ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize)> {
         // A child table is one frame; `ReservedTable` enforces this at the type level,
         // and the fill/install below address only the first frame.
         debug_assert_eq!(
@@ -261,19 +279,24 @@ where
         if entry.huge(is_dir) {
             let block_paddr = entry.paddr(is_dir);
             let block_config = entry.config(is_dir);
-            let child_level = level - 1;
-            // A 1 GiB block splits into 2 MiB blocks, which are themselves huge.
-            let child_is_huge = child_level > 1;
-            let child_stride = Self::level_size(child_level);
 
-            // Populate the reserved child table fully BEFORE the commit, so the
-            // instant it is installed its leaves are already live (no transient empty
-            // table window). A block frame is never physical 0, so a not-present
+            // Only a transparent (`Inherit`) split pre-populates the child leaves, so
+            // the mapping is unchanged the instant the table is installed (no live
+            // empty-table window). `Empty` leaves the reserved frame zeroed
+            // (`Frame::new` zeroed it) so the caller can install scattered per-leaf
+            // maps — auto-inherited leaves would make the caller's `map` hit
+            // `MappingConflict`. A block frame is never physical 0, so a not-present
             // block's empty config still yields framed (non-`unused`) leaves.
-            let leaves = reserved.as_slice_mut();
-            for (i, slot) in leaves.iter_mut().enumerate() {
-                let sub = PhysAddr::from_usize(block_paddr.as_usize() + i * child_stride);
-                *slot = T::P::new_page(sub, block_config, child_is_huge);
+            if fill == SplitFill::Inherit {
+                let child_level = level - 1;
+                // A 1 GiB block splits into 2 MiB blocks, which are themselves huge.
+                let child_is_huge = child_level > 1;
+                let child_stride = Self::level_size(child_level);
+                let leaves = reserved.as_slice_mut();
+                for (i, slot) in leaves.iter_mut().enumerate() {
+                    let sub = PhysAddr::from_usize(block_paddr.as_usize() + i * child_stride);
+                    *slot = T::P::new_page(sub, block_config, child_is_huge);
+                }
             }
 
             // Break-before-make, mirroring the reclaim ordering in `unmap`
@@ -283,7 +306,7 @@ where
             self.as_slice_mut()[index].clear();
             T::flush(Some(vaddr));
             self.as_slice_mut()[index] = T::P::new_table(reserved.paddr);
-            return Ok(Self::level_size(level));
+            return Ok((block_paddr, block_config, Self::level_size(level)));
         }
         if level == 1 {
             // A plain finest-granule leaf: nothing to split.
@@ -296,7 +319,7 @@ where
         }
 
         let mut child = Self::from_paddr(entry.paddr(is_dir), self.allocator.clone());
-        child.split_huge_page_recursive(vaddr, level - 1, reserved)
+        child.split_huge_page_recursive(vaddr, level - 1, reserved, fill)
     }
 
     /// 重建完整的虚拟地址
