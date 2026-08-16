@@ -104,6 +104,65 @@ static void fork_cow_split_isolation(void)
     munmap(raw, HUGE + HUGE);
 }
 
+// mremap on a THP-promoted region must keep Linux's 4 KiB ABI. A 4 KiB
+// MREMAP_FIXED move of a promoted block's head to a 4 KiB-aligned (but not
+// 2 MiB-aligned) target must succeed, move only that 4 KiB (preserving its data),
+// and leave the rest of the source block in place. Without the split-on-mremap
+// fix the area's 2 MiB backend page_size forces 2 MiB granularity, so this either
+// EINVALs (target not 2 MiB-aligned) or moves the whole 2 MiB block.
+static void mremap_4k_of_promoted_block_keeps_4k_abi(void)
+{
+    long ps_signed = sysconf(_SC_PAGESIZE);
+    if (ps_signed <= 0) {
+        note_fail("sysconf (mremap)", strerror(errno));
+        return;
+    }
+    size_t ps = (size_t)ps_signed;
+
+    // 2 MiB-aligned, >= 2 MiB writable private-anon region -> THP-promoted body.
+    char *raw = mmap(NULL, HUGE + HUGE, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) {
+        note_fail("mmap (mremap)", strerror(errno));
+        return;
+    }
+    char *base = (char *)(((uintptr_t)raw + HUGE - 1) & ~(HUGE - 1));
+    base[0] = 0x71;  // first-touch the promoted block
+    base[ps] = 0x72; // its second 4 KiB page
+
+    // Reserve a scratch region and pick a 4 KiB-aligned, NON-2 MiB-aligned target.
+    char *scratch = mmap(NULL, HUGE + HUGE, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (scratch == MAP_FAILED) {
+        note_fail("mmap scratch (mremap)", strerror(errno));
+        munmap(raw, HUGE + HUGE);
+        return;
+    }
+    char *target =
+        (char *)((((uintptr_t)scratch + HUGE - 1) & ~(HUGE - 1)) + ps);
+
+    void *ret = mremap(base, ps, ps, MREMAP_MAYMOVE | MREMAP_FIXED, target);
+    if (ret == MAP_FAILED) {
+        note_fail("mremap 4 KiB of promoted block", strerror(errno));
+        munmap(raw, HUGE + HUGE);
+        munmap(scratch, HUGE + HUGE);
+        return;
+    }
+    if (ret != target) {
+        note_fail("mremap 4 KiB target", "returned addr != requested fixed target");
+    } else if (*(unsigned char *)target != 0x71) {
+        note_fail("mremap 4 KiB data", "moved page lost its data");
+    }
+    // Only 4 KiB moved: the block's second page stays mapped and intact (a whole
+    // 2 MiB over-move would unmap it).
+    if (base[ps] != 0x72) {
+        note_fail("mremap 4 KiB over-move", "second page of source block disturbed");
+    }
+
+    munmap(raw, HUGE + HUGE);
+    munmap(scratch, HUGE + HUGE);
+}
+
 int main(void)
 {
     printf("=== thp-split-subpage ===\n");
@@ -176,6 +235,9 @@ int main(void)
     // COW-break split path: fork a shared THP, split it in the child, assert
     // parent/child isolation and refcount-correct data preservation.
     fork_cow_split_isolation();
+
+    // mremap must keep the 4 KiB ABI on a THP-promoted region.
+    mremap_4k_of_promoted_block_keeps_4k_abi();
 
     if (failed == 0) {
         printf("ALL TESTS PASSED\n");

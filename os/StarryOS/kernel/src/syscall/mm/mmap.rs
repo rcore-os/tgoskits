@@ -939,6 +939,34 @@ pub fn sys_mremap(
     let aspace_ref = &curr.as_thread().proc_data.aspace();
     let mut aspace = aspace_ref.lock();
 
+    // THP: Linux `mremap` operates at 4 KiB granularity. A THP-promoted source
+    // area reports a 2 MiB `page_size`, which the logic below would treat as the
+    // ABI granularity — forcing 2 MiB alignment, rounding `old_size`/`new_size`
+    // up to 2 MiB, and moving whole 2 MiB blocks (so a 4 KiB `MREMAP_FIXED` of a
+    // promoted block head would `EINVAL` on a 4 KiB-aligned target or move the
+    // entire block). When the request is not a whole 2 MiB-aligned move, split the
+    // affected THP area back to 4 KiB first — which downgrades its VMA to a 4 KiB
+    // backend — so the code below uses the 4 KiB granularity and moves only the
+    // requested pages. A fully 2 MiB-aligned move keeps the huge mapping.
+    #[cfg(feature = "thp")]
+    if old_size != 0 {
+        let thp_area = aspace.find_area(addr).and_then(|area| {
+            let backend = area.backend();
+            let is_thp = matches!(backend, Backend::Cow(cow) if cow.is_anonymous())
+                && backend.page_size() == PAGE_SIZE_2M;
+            is_thp.then(|| (area.start(), area.size()))
+        });
+        if let Some((area_start, area_size)) = thp_area {
+            let whole_2m_move = addr.is_aligned(PAGE_SIZE_2M)
+                && old_size.is_multiple_of(PAGE_SIZE_2M)
+                && new_size.is_multiple_of(PAGE_SIZE_2M)
+                && (!fixed || new_addr.is_multiple_of(PAGE_SIZE_2M));
+            if !whole_2m_move {
+                aspace.split_huge_pages(area_start, area_size)?;
+            }
+        }
+    }
+
     let (vma_start, vma_end, vma_flags, vma_reported_flags, src_backend, shared_pages, page_size) = {
         let area = aspace.find_area(addr).ok_or(StarryError::BadAddress)?;
         let shared_pages = match area.backend() {
