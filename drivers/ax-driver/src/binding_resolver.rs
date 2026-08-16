@@ -10,36 +10,35 @@ use rdrive::{
 use crate::{BindingInfo, BindingIrq};
 
 pub fn binding_info_from_fdt(info: &FdtInfo<'_>) -> Result<BindingInfo, OnProbeError> {
-    let Some(interrupt) = info.interrupts().into_iter().next() else {
+    let interrupts = info.interrupts();
+    if interrupts.is_empty() {
         return Ok(BindingInfo::empty());
-    };
-    let controller = info
-        .phandle_to_device_id(interrupt.interrupt_parent)
-        .ok_or_else(|| {
+    }
+
+    let mut bindings = Vec::with_capacity(interrupts.len());
+    for (source_id, interrupt) in interrupts.into_iter().enumerate() {
+        let parsed_parent = info
+            .phandle_to_device_id(interrupt.interrupt_parent)
+            .ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "interrupt-parent {} is not registered",
+                    interrupt.interrupt_parent
+                ))
+            })?;
+        let relation = DeviceRelationView::from_fdt_interrupt(info.device_id(), parsed_parent);
+        let controller = relation.interrupt_parent();
+        rdrive::get::<rdif_intc::Intc>(controller).map_err(|error| {
             OnProbeError::other(format!(
-                "interrupt-parent {} is not registered",
-                interrupt.interrupt_parent
+                "FDT interrupt parent {controller:?} is not an available interrupt-controller \
+                 provider: {error:?}"
             ))
         })?;
-    let view = DeviceRelationView::from_fdt_interrupt_parent(
-        info.device_id(),
-        info.interrupt_parent_device_id(),
-    );
-    let controller = view.require_interrupt_parent(controller).map_err(|error| {
-        OnProbeError::other(format!(
-            "FDT interrupt binding for device {:?} does not match rdrive relation: {error:?}",
-            info.device_id()
-        ))
-    })?;
-    rdrive::get::<rdif_intc::Intc>(controller).map_err(|error| {
-        OnProbeError::other(format!(
-            "FDT interrupt parent {controller:?} is not an available interrupt-controller \
-             provider: {error:?}"
-        ))
-    })?;
-    Ok(BindingInfo::with_binding_irq(Some(
-        binding_irq_from_fdt_interrupt(controller, interrupt.specifier),
-    )))
+        bindings.push((
+            source_id,
+            binding_irq_from_fdt_interrupt(controller, interrupt.specifier),
+        ));
+    }
+    Ok(BindingInfo::with_irq_sources(bindings))
 }
 
 pub fn binding_irq_from_named_fdt_interrupt(

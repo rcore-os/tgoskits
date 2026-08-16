@@ -10,18 +10,6 @@ extern crate alloc;
 
 pub use rdrive::DeviceId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelationError {
-    MissingInterruptParent {
-        device: DeviceId,
-    },
-    InterruptParentMismatch {
-        device: DeviceId,
-        discovered: DeviceId,
-        requested: DeviceId,
-    },
-}
-
 /// A lightweight view of relations observed during discovery and binding.
 ///
 /// Its validity is bounded by the current rdrive device-instance lifetime. It
@@ -29,37 +17,25 @@ pub enum RelationError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceRelationView {
     device: DeviceId,
-    interrupt_parent: Option<DeviceId>,
+    interrupt_parent: DeviceId,
 }
 
 impl DeviceRelationView {
-    /// Builds a view from a device identity and its rdrive-discovered FDT parent.
-    pub const fn from_fdt_interrupt_parent(
-        device: DeviceId,
-        interrupt_parent: Option<DeviceId>,
-    ) -> Self {
+    /// Builds a view from an interrupt parent already parsed by rdrive.
+    ///
+    /// The parent may originate from either `interrupt-parent` or an
+    /// `interrupts-extended` specifier; this view deliberately does not
+    /// reinterpret the FDT syntax that produced it.
+    pub const fn from_fdt_interrupt(device: DeviceId, interrupt_parent: DeviceId) -> Self {
         Self {
             device,
             interrupt_parent,
         }
     }
 
-    /// Validates that a binding uses the interrupt controller discovered for
-    /// this device and returns that controller identity on success.
-    pub fn require_interrupt_parent(&self, requested: DeviceId) -> Result<DeviceId, RelationError> {
-        let Some(discovered) = self.interrupt_parent else {
-            return Err(RelationError::MissingInterruptParent {
-                device: self.device,
-            });
-        };
-        if discovered != requested {
-            return Err(RelationError::InterruptParentMismatch {
-                device: self.device,
-                discovered,
-                requested,
-            });
-        }
-        Ok(discovered)
+    /// Returns the parsed controller identity for this interrupt relation.
+    pub const fn interrupt_parent(&self) -> DeviceId {
+        self.interrupt_parent
     }
 }
 
@@ -68,18 +44,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validates_a_requested_parent_against_the_discovered_identity() {
+    fn preserves_the_parsed_interrupt_parent_identity() {
         let device = DeviceId::from(7);
         let controller = DeviceId::from(3);
-        let view = DeviceRelationView::from_fdt_interrupt_parent(device, Some(controller));
-        assert_eq!(view.require_interrupt_parent(controller), Ok(controller));
-        assert_eq!(
-            view.require_interrupt_parent(DeviceId::from(4)),
-            Err(RelationError::InterruptParentMismatch {
-                device,
-                discovered: controller,
-                requested: DeviceId::from(4),
-            })
-        );
+        let view = DeviceRelationView::from_fdt_interrupt(device, controller);
+        assert_eq!(view.interrupt_parent(), controller);
     }
 }
