@@ -642,6 +642,7 @@ impl HwPerfEvent {
                     period,
                     sample_type,
                     id: self.sample_id,
+                    observer: crate::task::ROOT_PID_NS.id(),
                     notify: notify_ptr,
                     freq,
                     target_freq,

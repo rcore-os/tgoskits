@@ -421,10 +421,15 @@ impl PerTaskCounter {
         self.accumulated.store(0, Ordering::Release);
         let active = self.running.load(Ordering::Acquire);
         if active {
-            if self.is_sampling {
-                ax_cpu::pmu::counter::preload(self.n, self.sample_period);
-            } else {
-                ax_cpu::pmu::counter::reset(self.n);
+            // Per-CPU model: the live HW counter is this slice's slot (valid only
+            // while running on the core that armed it). Skip if it holds no slot.
+            let n = self.slot.load(Ordering::Acquire);
+            if n != NO_SLOT {
+                if self.is_sampling {
+                    ax_cpu::pmu::counter::preload(n, self.sample_period);
+                } else {
+                    ax_cpu::pmu::counter::reset(n);
+                }
             }
         }
         if !self.is_sampling {
@@ -471,7 +476,11 @@ impl PerTaskCounter {
 
     fn write_rdpmc_snapshot(&self, page: &GlobalPage, active: bool) {
         let header = page.start_vaddr().as_usize() as *mut perf_event_mmap_page;
-        let index = if active { self.n as u32 + 1 } else { 0 };
+        let index = if active {
+            self.slot.load(Ordering::Acquire) as u32 + 1
+        } else {
+            0
+        };
         let offset = self.accumulated.load(Ordering::Acquire) as i64;
         let time_enabled = self.time_enabled_ns.load(Ordering::Acquire);
         let time_running = self.time_running_ns.load(Ordering::Acquire);
@@ -704,6 +713,7 @@ fn arm_slice(ptc: &PerTaskCounter, n: usize, now: u64) {
                 period: ptc.sample_period,
                 sample_type: ptc.sample_type,
                 id: ptc.sample_id.load(Ordering::Relaxed),
+                observer: ptc.observer,
                 notify: ptc.notify_ptr.load(Ordering::Acquire) as *const (),
                 freq: ptc.freq,
                 target_freq: ptc.freq_target,
