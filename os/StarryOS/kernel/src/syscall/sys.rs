@@ -18,9 +18,7 @@ use crate::mm::UserPtr;
 use crate::{
     Errno, StarryError, StarryResult,
     sync::Mutex,
-    task::{
-        AsThread, SECCOMP_BPF_MAX_INSNS, SockFilter, SockFprog, get_task_by_number, processes,
-    },
+    task::{AsThread, SECCOMP_BPF_MAX_INSNS, SockFilter, SockFprog, get_task_by_number, processes},
 };
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
