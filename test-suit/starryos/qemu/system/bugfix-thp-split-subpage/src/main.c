@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define HUGE (0x200000UL) // 2 MiB
@@ -29,6 +30,78 @@ static void note_fail(const char *what, const char *detail)
 static unsigned char pat(size_t page_index)
 {
     return (unsigned char)((page_index * 7 + 3) & 0xff);
+}
+
+// After fork, a promoted 2 MiB block is COW-shared (refcount 2). A sub-2 MiB op in
+// the child must COW-break it — copy the block into a private frame, drop the shared
+// ref, register 512 fresh 4 KiB refcounts, and re-map — then split to 4 KiB, all
+// without disturbing the parent's still-2 MiB view. This is the path
+// (`prepare_huge_split_2m` CopiedContiguous / CopiedScattered) the same-process
+// split cannot reach; a refcount or isolation bug here surfaces only after fork.
+static void fork_cow_split_isolation(void)
+{
+    long ps_signed = sysconf(_SC_PAGESIZE);
+    if (ps_signed <= 0) {
+        note_fail("sysconf (cow)", strerror(errno));
+        return;
+    }
+    size_t ps = (size_t)ps_signed;
+    size_t npages = HUGE / ps;
+
+    char *raw = mmap(NULL, HUGE + HUGE, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) {
+        note_fail("mmap (cow)", strerror(errno));
+        return;
+    }
+    char *base = (char *)(((uintptr_t)raw + HUGE - 1) & ~(HUGE - 1));
+    for (size_t i = 0; i < npages; i++) {
+        base[i * ps] = pat(i); // first-touch -> one private 2 MiB block
+    }
+
+    pid_t pid = fork(); // now the 2 MiB block is COW-shared between parent + child
+    if (pid < 0) {
+        note_fail("fork", strerror(errno));
+        munmap(raw, HUGE + HUGE);
+        return;
+    }
+    if (pid == 0) {
+        // Child: mprotect a sub-page RO -> splits the SHARED block (COW-break to a
+        // private copy, then 4 KiB leaves). Then write a child-only marker.
+        size_t wp = 50;
+        if (mprotect(base + 8 * ps, ps, PROT_READ) != 0) {
+            _exit(11);
+        }
+        base[wp * ps] = 0x33; // child-private write after the split
+        for (size_t i = 0; i < npages; i++) {
+            if (i == wp) {
+                continue;
+            }
+            if (base[i * ps] != (char)pat(i)) {
+                _exit(12); // data lost across the COW-break split
+            }
+        }
+        _exit(base[wp * ps] == 0x33 ? 0 : 13);
+    }
+
+    int st = 0;
+    waitpid(pid, &st, 0);
+    if (!(WIFEXITED(st) && WEXITSTATUS(st) == 0)) {
+        char d[64];
+        snprintf(d, sizeof(d), "child status=%d", st);
+        note_fail("child COW-break split", d);
+    }
+    // Parent isolation: the child's private COW-break + write must not have touched
+    // the parent's block.
+    for (size_t i = 0; i < npages; i++) {
+        if (base[i * ps] != (char)pat(i)) {
+            char d[64];
+            snprintf(d, sizeof(d), "parent page %zu changed to %d", i, base[i * ps]);
+            note_fail("parent isolation after child COW split", d);
+            break;
+        }
+    }
+    munmap(raw, HUGE + HUGE);
 }
 
 int main(void)
@@ -99,6 +172,10 @@ int main(void)
     }
 
     munmap(raw, len + HUGE);
+
+    // COW-break split path: fork a shared THP, split it in the child, assert
+    // parent/child isolation and refcount-correct data preservation.
+    fork_cow_split_isolation();
 
     if (failed == 0) {
         printf("ALL TESTS PASSED\n");
