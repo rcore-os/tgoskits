@@ -46,7 +46,7 @@ From the repository root:
 
 ```bash
 apps/starry/nixos/build-rootfs.sh --self-test
-cargo xtask starry app qemu -t nixos --arch x86_64
+cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
 ```
 
 After a native Nix/Lix build has published a valid image and manifest, a CI
@@ -55,8 +55,13 @@ the ext4 image, flake-lock hash, closure identity, target, and image hash:
 
 ```bash
 STARRY_NIXOS_REUSE_ROOTFS=1 \
-  cargo xtask starry app qemu -t nixos --arch x86_64
+  cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
 ```
+
+The `Starry Apps` workflow runs this acceptance command for pull requests that
+change this application, on its nightly schedule, and on manual dispatch. Its
+dedicated job uses `docker.io/nixos/nix:2.33.1`. The `requires` manifest keeps
+generic `--all` jobs on hosts without Nix from selecting this app.
 
 Use the repository's pinned Rust toolchain and install the host prerequisites
 listed above. Do not rebuild or switch the host NixOS system. The commands do
@@ -87,10 +92,12 @@ STARRY_NIXOS_PHASE=marker
 STARRY_NIXOS_SYSTEM_PASSED
 ```
 
-A shell prompt, partial sequence, failed unit, panic/fatal record, explicit
-failure marker, timeout, or a guest that remains alive after the terminal
-marker is a failure. See `compatibility.md` for exact run evidence and the
-compatibility ledger. See the
+A shell prompt, partial sequence, acceptance-marker failure, panic/fatal
+record, explicit failure marker, timeout, or a guest that remains alive after
+the terminal marker is a failure. Other unit failures remain diagnostic unless
+they prevent the ordered acceptance sequence; the profile intentionally
+excludes some host-oriented NixOS services. See `compatibility.md` for exact run
+evidence and the compatibility ledger. See the
 [StarryNixOS architecture design](../../../docs/docs/architecture/starryos/nixos-stage2.md)
 for the rootfs ownership, boot, provenance, and acceptance contracts.
 
