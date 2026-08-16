@@ -28,14 +28,16 @@ use linux_raw_sys::general::{
     O_ACCMODE, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, S_IFREG, SIGEV_NONE, SIGEV_SIGNAL,
     SIGEV_THREAD,
 };
-use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
 
 use crate::{
     Errno, StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc, Kstat},
     sync::{IrqMutex, Mutex},
-    task::{AsThread, send_signal_to_process},
+    task::{
+        AsThread, PidIdentity, PidIdentityId, PidNumber, current_pid_view,
+        send_signal_to_process_data,
+    },
 };
 
 /// Hard ceiling for `mq_maxmsg` a privileged (`CAP_SYS_RESOURCE`) caller may
@@ -299,8 +301,10 @@ struct Notification {
     notify: u32,
     /// Signal to deliver for `SIGEV_SIGNAL`.
     signo: u32,
-    /// Process that owns the registration and receives the signal.
-    pid: Pid,
+    /// Stable process generation that owns the registration.
+    owner: Arc<PidIdentity>,
+    /// TGID captured in the registrant's active PID view for mqueuefs output.
+    owner_number: PidNumber,
     /// The `sigev_value` the registrant passed to `mq_notify`, delivered as
     /// `si_value` in the `SI_MESGQ` signal. Linux stores this in
     /// `info->notify.sigev_value` (ipc/mqueue.c) and copies it to `sig_i.si_value`
@@ -664,7 +668,12 @@ impl MessageQueue {
     /// register and return `EBUSY` if the slot is already taken. Registering on
     /// an already non-empty queue is allowed; Linux only fires on the empty →
     /// non-empty edge, so it simply waits for the next such transition.
-    pub fn register_notify(&self, req: NotifyRequest, pid: Pid) -> StarryResult<()> {
+    pub fn register_notify(
+        &self,
+        req: NotifyRequest,
+        owner: Arc<PidIdentity>,
+        owner_number: PidNumber,
+    ) -> StarryResult<()> {
         let mut inner = self.inner.lock();
         match req {
             NotifyRequest::Unregister => {
@@ -674,7 +683,11 @@ impl MessageQueue {
                 // removal bumps atime+ctime (ipc/mqueue.c:1339) and, for a
                 // `SIGEV_THREAD` registration, sends NOTIFY_REMOVED so the libc
                 // helper thread exits (`remove_notification`, ipc/mqueue.c:850).
-                if inner.notify.as_ref().is_some_and(|n| n.pid == pid) {
+                if inner
+                    .notify
+                    .as_ref()
+                    .is_some_and(|notification| Arc::ptr_eq(&notification.owner, &owner))
+                {
                     let removed = inner.notify.take();
                     let now = wall_time();
                     inner.atime = now;
@@ -693,7 +706,8 @@ impl MessageQueue {
                 inner.notify = Some(Notification {
                     notify: SIGEV_SIGNAL,
                     signo,
-                    pid,
+                    owner,
+                    owner_number,
                     sigev_value,
                     thread: None,
                 });
@@ -707,7 +721,8 @@ impl MessageQueue {
                 inner.notify = Some(Notification {
                     notify: SIGEV_NONE,
                     signo: 0,
-                    pid,
+                    owner,
+                    owner_number,
                     sigev_value: 0,
                     thread: None,
                 });
@@ -721,7 +736,8 @@ impl MessageQueue {
                 inner.notify = Some(Notification {
                     notify: SIGEV_THREAD,
                     signo: 0,
-                    pid,
+                    owner,
+                    owner_number,
                     sigev_value: 0,
                     thread: Some(ThreadNotify { sock, cookie }),
                 });
@@ -738,7 +754,8 @@ impl MessageQueue {
         inner.ctime = now;
     }
 
-    /// Drop the `mq_notify` registration if it is owned by `pid`. Linux clears
+    /// Drop the `mq_notify` registration if it is owned by this stable process
+    /// identity generation. Linux clears
     /// it in `mqueue_flush_file` -> `remove_notification` (ipc/mqueue.c:658),
     /// which `filp_flush` runs on *every* fd-closing path: explicit `close`,
     /// `close_range`, `dup2`/`dup3` replacement, exec CLOEXEC and process exit.
@@ -746,9 +763,13 @@ impl MessageQueue {
     /// calls this via the `FileLike::on_close` hook, so the coverage matches.
     /// A `SIGEV_THREAD` registration also gets a `NOTIFY_REMOVED` cookie so its
     /// helper thread exits.
-    pub fn clear_notify_owner(&self, pid: Pid) {
+    pub fn clear_notify_owner(&self, owner: PidIdentityId) {
         let mut inner = self.inner.lock();
-        if inner.notify.as_ref().is_some_and(|n| n.pid == pid) {
+        if inner
+            .notify
+            .as_ref()
+            .is_some_and(|notification| notification.owner.id() == owner)
+        {
             let removed = inner.notify.take();
             drop(inner);
             if let Some(n) = removed {
@@ -771,7 +792,7 @@ impl MessageQueue {
             // other kind reports 0 (ipc/mqueue.c `mqueue_read_file`).
             Some(n) => {
                 let signo = if n.notify == SIGEV_SIGNAL { n.signo } else { 0 };
-                (qsize, n.notify, signo, n.pid)
+                (qsize, n.notify, signo, n.owner_number.get())
             }
             None => (qsize, 0, 0, 0),
         }
@@ -889,12 +910,18 @@ fn deliver_notification(n: &Notification) {
             // si_value to the registrant's `sigev_value`. This runs in the
             // sender's context (`send` drives it on the current task).
             let sender = ax_task::current();
-            let sender_pid = sender.as_thread().proc_data.proc.pid();
+            let sender_identity = sender.as_thread().proc_data.identity();
+            let sender_pid = current_pid_view()
+                .visible_number(&sender_identity)
+                .expect("message sender is visible in its active PID namespace")
+                .get();
             let sender_uid = sender.as_thread().cred().uid;
             let info = SignalInfo::new_mqueue(signo, sender_pid, sender_uid, n.sigev_value);
             // Best-effort: a dead registrant just means no delivery, mirroring
             // Linux which silently drops the notification in that case.
-            let _ = send_signal_to_process(n.pid, Some(info));
+            if let Some(owner) = n.owner.live_data() {
+                let _ = send_signal_to_process_data(&owner, Some(info));
+            }
         }
         SIGEV_THREAD => {
             if let Some(thread) = &n.thread {
@@ -1052,7 +1079,7 @@ impl FileLike for MqDescriptor {
         self.flags.load(Ordering::Acquire)
     }
 
-    fn on_close(&self, owner: Pid) {
+    fn on_close(&self, owner: PidIdentityId) {
         // Linux `mqueue_flush_file` clears the notification owned by the
         // closing task's tgid on every fd-closing path (ipc/mqueue.c:658).
         self.queue.clear_notify_owner(owner);

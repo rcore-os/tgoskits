@@ -34,7 +34,7 @@ use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc, get_file_like},
     syscall::in_root_net_ns,
-    task::AsThread,
+    task::{AsThread, current_pid_view},
 };
 
 pub(super) const ARPHRD_ETHER: u16 = 1;
@@ -76,14 +76,36 @@ impl Socket {
         self.ip_domain
     }
 
-    pub(crate) fn with_current_sender_credentials(mut options: SendOptions) -> SendOptions {
+    /// Captures the current process generation for Unix socket ownership.
+    pub(crate) fn current_unix_credentials() -> UnixCredentials {
         let current = current();
-        let credentials = current.as_thread().cred();
-        options.sender_credentials = Some(UnixCredentials {
-            pid: current.as_thread().proc_data.proc.pid(),
-            uid: credentials.uid,
-            gid: credentials.gid,
-        });
+        let thread = current.as_thread();
+        let credentials = thread.cred();
+        let process_identity = thread.proc_data.identity();
+        let pid = current_pid_view()
+            .visible_number(&process_identity)
+            .expect("Unix socket owner is visible in its active PID namespace")
+            .get();
+        UnixCredentials::from_parts(pid, credentials.uid, credentials.gid)
+            .with_identity(process_identity)
+    }
+
+    /// Projects a transport-owned process generation into the caller's active
+    /// PID namespace while retaining numeric credentials for generic users.
+    pub(crate) fn project_unix_credentials(credentials: &UnixCredentials) -> UnixCredentials {
+        let pid = credentials.identity::<crate::task::PidIdentity>().map_or(
+            credentials.pid,
+            |identity| {
+                current_pid_view()
+                    .visible_number(identity)
+                    .map_or(0, |number| number.get())
+            },
+        );
+        UnixCredentials::from_parts(pid, credentials.uid, credentials.gid)
+    }
+
+    pub(crate) fn with_current_sender_credentials(mut options: SendOptions) -> SendOptions {
+        options.sender_credentials = Some(Self::current_unix_credentials());
         options
     }
 }

@@ -263,7 +263,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
         if let Some(signo) = term.signo_for(ch) {
             if let Some(pg) = self.terminal.job_control.foreground() {
                 let sig = SignalInfo::new_kernel(signo);
-                if let Err(err) = send_signal_to_process_group(pg.pgid(), Some(sig)) {
+                if let Err(err) = send_signal_to_process_group(pg.pgid_number(), Some(sig)) {
                     warn!("Failed to send signal: {err:?}");
                 }
             }
