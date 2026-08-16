@@ -12,7 +12,6 @@ use ax_runtime::{
 };
 use axfs_ng_vfs::{VfsError, VfsResult};
 use rdrive::DeviceId as RDriveDeviceId;
-use starry_process::Process;
 
 use super::{
     Tty,
@@ -22,7 +21,7 @@ use super::{
         termios::{Termios2, TermiosParity},
     },
 };
-use crate::{StarryError, StarryResult, pseudofs::DeviceOps, sync::Mutex};
+use crate::{StarryError, StarryResult, pseudofs::DeviceOps, sync::Mutex, task::Process};
 
 pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 

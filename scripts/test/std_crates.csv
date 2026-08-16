@@ -23,7 +23,6 @@ ax-riscv-plic
 riscv_vplic
 rsext4
 scope-local
-starry-process
 starry-signal
 starry-vm
 ax-timer-list

@@ -26,10 +26,8 @@ use ax_runtime::hal::{
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
-use axnsproxy::PidNamespace;
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
-use starry_process::{Pid, Process};
 use zerocopy::IntoBytes;
 
 use crate::{
@@ -40,15 +38,15 @@ use crate::{
         SimpleDirOps, SimpleFile, SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
-        AsThread, Cred, ProcessData, TaskStat, Thread, get_process_data, get_task, processes,
-        tasks, tick_cpu_time,
+        AsThread, Cred, PidNamespaceRef, PidNumber, PidView, Process, ProcessData, ROOT_PID_NS,
+        TaskStat, TgidNumber, Thread, TidNumber, get_process_data_by_number, processes, tasks,
+        tick_cpu_time,
     },
 };
 
 /// Global IRQ counter incremented on every timer tick.
 /// Module-level so both `/proc/interrupts` and `/proc/stat` can read it.
 static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
-const PROCFS_INIT_PID: Pid = 1;
 
 pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
 
@@ -80,23 +78,8 @@ fn read_kallsyms() -> KallsymsMapped<'static> {
     .expect("Failed to create KallsymsMapped")
 }
 
-fn procfs_visible_pid(proc: &Arc<Process>) -> Pid {
-    if proc.is_init() {
-        PROCFS_INIT_PID
-    } else {
-        proc.pid()
-    }
-}
-
-fn procfs_lookup_process(pid: Pid) -> VfsResult<Arc<ProcessData>> {
-    if pid == PROCFS_INIT_PID {
-        processes()
-            .into_iter()
-            .find(|proc_data| proc_data.proc.is_init())
-            .ok_or(VfsError::NotFound)
-    } else {
-        get_process_data(pid).map_err(|_| VfsError::NotFound)
-    }
+fn procfs_visible_pid(view: &PidView, proc: &Process) -> Option<u32> {
+    view.visible_number(&proc.identity()).map(PidNumber::get)
 }
 
 fn render_meminfo() -> String {
@@ -633,13 +616,15 @@ fn usb_endpoint_type_label(ty: u8) -> &'static str {
         _ => "Unk.",
     }
 }
-pub fn new_procfs() -> Filesystem {
-    SimpleFs::new_with("proc".into(), 0x9fa0, builder)
+pub fn new_procfs(observer: PidNamespaceRef) -> Filesystem {
+    let view = PidView::new(observer);
+    SimpleFs::new_with("proc".into(), 0x9fa0, move |fs| builder(fs, view))
 }
 
 struct ProcessTaskDir {
     fs: Arc<SimpleFs>,
     process: Weak<Process>,
+    view: PidView,
 }
 
 impl SimpleDirOps for ProcessTaskDir {
@@ -647,23 +632,28 @@ impl SimpleDirOps for ProcessTaskDir {
         let Some(process) = self.process.upgrade() else {
             return Box::new(iter::empty());
         };
-        Box::new(
-            process
-                .threads()
-                .into_iter()
-                .map(|tid| tid.to_string().into()),
-        )
+        let view = self.view.clone();
+        Box::new(process.threads().into_iter().filter_map(move |tid| {
+            let identity = ROOT_PID_NS.lookup(tid.into())?;
+            view.visible_number(&identity)
+                .map(|number| number.get().to_string().into())
+        }))
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let process = self.process.upgrade().ok_or(VfsError::NotFound)?;
         let tid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-        let task = get_task(tid).map_err(|_| VfsError::NotFound)?;
+        let identity = self
+            .view
+            .resolve_thread(TidNumber::try_from(tid).map_err(|_| VfsError::NotFound)?)
+            .map_err(|_| VfsError::NotFound)?;
+        let task = identity.live_task().ok_or(VfsError::NotFound)?;
         if task.as_thread().proc_data.proc.pid() != process.pid() {
             return Err(VfsError::NotFound);
         }
 
-        let proc_data = get_process_data(process.pid()).map_err(|_| VfsError::NotFound)?;
+        let proc_data =
+            get_process_data_by_number(process.pid_number()).map_err(|_| VfsError::NotFound)?;
 
         Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
             self.fs.clone(),
@@ -671,8 +661,9 @@ impl SimpleDirOps for ProcessTaskDir {
                 fs: self.fs.clone(),
                 task: Arc::downgrade(&task),
                 proc_data,
-                path_pid: process.pid(),
+                path_pid: process.pid().get(),
                 procfs_pid: None,
+                view: self.view.clone(),
             }),
         )))
     }
@@ -690,8 +681,9 @@ impl SimpleDirOps for ProcessTaskDir {
 fn render_thread_status(
     task: &WeakAxTaskRef,
     proc_data: &Arc<ProcessData>,
-    path_pid: Pid,
-    procfs_pid: Option<Pid>,
+    _path_pid: u32,
+    _procfs_pid: Option<u32>,
+    view: &PidView,
 ) -> VfsResult<String> {
     let task = task.upgrade().ok_or(VfsError::NotFound)?;
     let thread = task.as_thread();
@@ -700,13 +692,23 @@ fn render_thread_status(
     let cred = thread.cred();
     let name = task.name();
     let num_threads = proc_data.proc.threads().len() as u32;
-    let tracer_pid = proc_data.ptrace_tracer_pid().unwrap_or(0);
-    let ppid = proc_data.proc.parent().map_or(0, |parent| parent.pid());
-    let (tgid, pid) = if let Some(pid) = procfs_pid {
-        (pid, pid as u64)
-    } else {
-        (path_pid, thread.tid() as u64)
-    };
+    let tracer_pid = proc_data
+        .ptrace_tracer_identity()
+        .and_then(|identity| view.visible_number(&identity))
+        .map(TidNumber::from);
+    let ppid = proc_data
+        .proc
+        .parent()
+        .and_then(|parent| view.visible_number(&parent.identity()))
+        .map(TgidNumber::from);
+    let tgid = view
+        .visible_number(&proc_data.identity())
+        .map(TgidNumber::from)
+        .ok_or(VfsError::NotFound)?;
+    let pid = view
+        .visible_number(&thread.pid_identity())
+        .map(TidNumber::from)
+        .ok_or(VfsError::NotFound)?;
     Ok(render_task_status(
         TaskStatusBase {
             name: &name,
@@ -735,10 +737,10 @@ fn task_status_state(task: &AxTaskRef) -> &'static str {
 struct TaskStatusBase<'a> {
     name: &'a str,
     state: &'a str,
-    tgid: u32,
-    pid: u64,
-    ppid: u32,
-    tracer_pid: u32,
+    tgid: TgidNumber,
+    pid: TidNumber,
+    ppid: Option<TgidNumber>,
+    tracer_pid: Option<TidNumber>,
     cred: &'a crate::task::Cred,
     num_threads: u32,
 }
@@ -801,10 +803,10 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
         nonvoluntary_ctxt_switches:\t0",
         base.name,
         base.state,
-        base.tgid,
-        base.pid,
-        base.ppid,
-        base.tracer_pid,
+        base.tgid.get(),
+        base.pid.get(),
+        base.ppid.map_or(0, TgidNumber::get),
+        base.tracer_pid.map_or(0, TidNumber::get),
         base.cred.uid, base.cred.euid, base.cred.suid, base.cred.fsuid,
         base.cred.gid, base.cred.egid, base.cred.sgid, base.cred.fsgid,
         base.cred.cap_inheritable,
@@ -958,13 +960,13 @@ impl SimpleDirOps for ThreadFdInfoDir {
             .ok_or(VfsError::NotFound)?
             .inner
             .downcast_ref::<PidFd>()
-            .map(|pidfd| (pidfd.identity(), pidfd.target_pid()));
+            .map(PidFd::identity);
 
         // Linux exposes these fields for pidfds. systemd uses `Pid:` to recover
         // the child PID after pidfd_spawn(), with `NSpid:` as a namespace-aware
         // fallback. Other descriptor kinds still have an fdinfo entry, even
         // though StarryOS does not yet expose their type-specific fields.
-        let Some((identity, target_pid)) = pidfd else {
+        let Some(identity) = pidfd else {
             return Ok(SimpleFile::new_regular(fs, || Ok(Vec::new())).into());
         };
 
@@ -972,14 +974,11 @@ impl SimpleDirOps for ThreadFdInfoDir {
             let pids: Vec<i32> = if identity.is_exited() {
                 vec![-1]
             } else {
-                let observer_pid_ns = task.as_thread().proc_data.nsproxy.lock().pid_ns.clone();
-                PidNamespace::visible_pid_chain(
-                    &observer_pid_ns,
-                    &identity.pid_ns(),
-                    target_pid as u64,
-                )
-                .map(|pids| pids.into_iter().map(|pid| pid as i32).collect())
-                .unwrap_or_else(|| vec![0])
+                let observer_pid_ns = task.as_thread().active_pid_namespace();
+                PidView::new(observer_pid_ns)
+                    .nspid_chain(&identity)
+                    .map(|pids| pids.into_iter().map(|pid| pid.get() as i32).collect())
+                    .unwrap_or_else(|| vec![0])
             };
             let pid = pids[0];
             let nspid = pids
@@ -1041,8 +1040,7 @@ impl SimpleDirOps for NsDir {
                 format!("mnt:[{}]\n", ns_id)
             }
             "pid" => {
-                let nsproxy = proc_data.nsproxy.lock();
-                let ns_id = nsproxy.pid_ns.lock().id;
+                let ns_id = proc_data.identity().active_namespace().id().get();
                 format!("pid:[{}]\n", ns_id)
             }
             "net" => {
@@ -1079,8 +1077,9 @@ struct ThreadDir {
     /// Authoritative process state for memory counters (`path_pid` lookup).
     proc_data: Arc<ProcessData>,
     /// Numeric `/proc/<pid>` component used for live [`ProcessData`] lookup.
-    path_pid: Pid,
-    procfs_pid: Option<Pid>,
+    path_pid: u32,
+    procfs_pid: Option<u32>,
+    view: PidView,
 }
 
 fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
@@ -1179,7 +1178,7 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
 fn render_thread_statm(
     task: &WeakAxTaskRef,
     proc_data: &Arc<ProcessData>,
-    _path_pid: Pid,
+    _path_pid: u32,
 ) -> VfsResult<String> {
     let _task = match task.upgrade() {
         Some(t) => t,
@@ -1193,8 +1192,9 @@ fn render_thread_statm(
 fn render_thread_stat(
     task: &WeakAxTaskRef,
     proc_data: &Arc<ProcessData>,
-    _path_pid: Pid,
-    procfs_pid: Option<Pid>,
+    _path_pid: u32,
+    _procfs_pid: Option<u32>,
+    view: &PidView,
 ) -> VfsResult<Vec<u8>> {
     let task = task.upgrade().ok_or(VfsError::NotFound)?;
     let mut stat = TaskStat::from_thread(&task)?;
@@ -1206,9 +1206,25 @@ fn render_thread_stat(
     stat.end_code = mem.end_code;
     stat.start_stack = mem.start_stack;
     stat.start_brk = proc_data.get_heap_top() as u64;
-    if let Some(pid) = procfs_pid {
-        stat.pid = pid;
-    }
+    let thread = task.as_thread();
+    stat.pid = view
+        .visible_number(&thread.pid_identity())
+        .ok_or(VfsError::NotFound)?
+        .get();
+    stat.ppid = proc_data
+        .proc
+        .parent()
+        .and_then(|parent| view.visible_number(&parent.identity()))
+        .map_or(0, PidNumber::get);
+    let group = proc_data.proc.group();
+    stat.pgrp = view
+        .visible_number(&group.identity())
+        .ok_or(VfsError::NotFound)?
+        .get();
+    stat.session = view
+        .visible_number(&group.session().identity())
+        .ok_or(VfsError::NotFound)?
+        .get();
     Ok(format!("{stat}").into_bytes())
 }
 
@@ -1237,8 +1253,8 @@ impl ProcMemFile {
         let is_tracer = (self.proc_data.is_ptrace_traceme() || self.proc_data.is_ptrace_attached())
             && self
                 .proc_data
-                .ptrace_tracer_pid()
-                .is_some_and(|pid| pid == current_proc.proc.pid())
+                .ptrace_tracer_identity()
+                .is_some_and(|tracer| Arc::ptr_eq(&tracer, &current_proc.identity()))
             && self.proc_data.ptrace_stop_signo().is_some();
         if is_tracer {
             Ok(())
@@ -1332,8 +1348,9 @@ impl SimpleDirOps for ThreadDir {
                 let proc_data = self.proc_data.clone();
                 let path_pid = self.path_pid;
                 let procfs_pid = self.procfs_pid;
+                let view = self.view.clone();
                 SimpleFile::new_regular(fs, move || {
-                    render_thread_stat(&task, &proc_data, path_pid, procfs_pid)
+                    render_thread_stat(&task, &proc_data, path_pid, procfs_pid, &view)
                 })
                 .into()
             }
@@ -1351,8 +1368,9 @@ impl SimpleDirOps for ThreadDir {
                 let proc_data = self.proc_data.clone();
                 let path_pid = self.path_pid;
                 let procfs_pid = self.procfs_pid;
+                let view = self.view.clone();
                 SimpleFile::new_regular(fs, move || {
-                    render_thread_status(&task, &proc_data, path_pid, procfs_pid)
+                    render_thread_status(&task, &proc_data, path_pid, procfs_pid, &view)
                 })
                 .into()
             }
@@ -1381,6 +1399,7 @@ impl SimpleDirOps for ThreadDir {
                 Arc::new(ProcessTaskDir {
                     fs,
                     process: Arc::downgrade(&task.as_thread().proc_data.proc),
+                    view: self.view.clone(),
                 }),
             )
             .into(),
@@ -1678,14 +1697,20 @@ impl SimpleDirOps for ThreadDir {
 }
 
 /// Handles /proc/[pid] & /proc/self
-struct ProcFsHandler(Arc<SimpleFs>);
+struct ProcFsHandler {
+    fs: Arc<SimpleFs>,
+    view: PidView,
+}
 
 impl SimpleDirOps for ProcFsHandler {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
             processes()
                 .into_iter()
-                .map(|proc_data| procfs_visible_pid(&proc_data.proc).to_string().into())
+                .filter_map(|proc_data| {
+                    procfs_visible_pid(&self.view, &proc_data.proc)
+                        .map(|pid| pid.to_string().into())
+                })
                 .chain([Cow::Borrowed("self")]),
         )
     }
@@ -1693,35 +1718,30 @@ impl SimpleDirOps for ProcFsHandler {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let (task, path_pid, procfs_pid, proc_data) = if name == "self" {
             let task = current().clone();
-            let path_pid = task.as_thread().proc_data.proc.pid();
-            let proc_data = procfs_lookup_process(path_pid).map_err(|_| VfsError::NotFound)?;
+            let proc_data = task.as_thread().proc_data.clone();
+            let path_pid =
+                procfs_visible_pid(&self.view, &proc_data.proc).ok_or(VfsError::NotFound)?;
             (task, path_pid, None, proc_data)
         } else {
             let pid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-            let proc_data = procfs_lookup_process(pid).map_err(|_| VfsError::NotFound)?;
-            let task = if let Ok(task) = get_task(pid) {
-                task
-            } else {
-                let tid = proc_data
-                    .proc
-                    .threads()
-                    .into_iter()
-                    .next()
-                    .ok_or(VfsError::NotFound)?;
-                get_task(tid).map_err(|_| VfsError::NotFound)?
-            };
-            let procfs_pid =
-                (procfs_visible_pid(&proc_data.proc) != proc_data.proc.pid()).then_some(pid);
+            let identity = self
+                .view
+                .resolve_process(TgidNumber::try_from(pid).map_err(|_| VfsError::NotFound)?)
+                .map_err(|_| VfsError::NotFound)?;
+            let proc_data = identity.live_data().ok_or(VfsError::NotFound)?;
+            let task = identity.live_task().ok_or(VfsError::NotFound)?;
+            let procfs_pid = Some(pid);
             (task, pid, procfs_pid, proc_data)
         };
         let node = NodeOpsMux::Dir(SimpleDir::new_maker(
-            self.0.clone(),
+            self.fs.clone(),
             Arc::new(ThreadDir {
-                fs: self.0.clone(),
+                fs: self.fs.clone(),
                 task: Arc::downgrade(&task),
                 proc_data,
                 path_pid,
                 procfs_pid,
+                view: self.view.clone(),
             }),
         ));
         Ok(node)
@@ -1794,7 +1814,7 @@ fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc
         }),
     )
 }
-fn builder(fs: Arc<SimpleFs>) -> DirMaker {
+fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
         "mounts",
@@ -2201,13 +2221,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     static ALL_SYMS: LazyInit<String> = LazyInit::new();
 
-    let ksym = read_kallsyms();
-    KALLSYMS.init_once(ksym);
+    KALLSYMS.get_or_init(read_kallsyms);
 
     root.add("kallsyms", {
-        if !ALL_SYMS.is_inited() {
-            ALL_SYMS.init_once(KALLSYMS.dump_all_symbols());
-        }
+        ALL_SYMS.get_or_init(|| KALLSYMS.dump_all_symbols());
         let seq_obj = SeqObject::new(|| Ok(ALL_SYMS.as_str()));
         SpecialFsFile::new_regular_with_perm(
             fs.clone(),
@@ -2216,7 +2233,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         )
     });
 
-    let proc_dir = ProcFsHandler(fs.clone());
+    let proc_dir = ProcFsHandler {
+        fs: fs.clone(),
+        view,
+    };
     SimpleDir::new_maker(fs, Arc::new(proc_dir.chain(root)))
 }
 
@@ -2442,10 +2462,10 @@ fn task_status_fields_match_linux_layout() -> bool {
         base: TaskStatusBase {
             name: "axtest-proc",
             state: "S (sleeping)",
-            tgid: 42,
-            pid: 43,
-            ppid: 41,
-            tracer_pid: 7,
+            tgid: TgidNumber::try_from(42).unwrap(),
+            pid: TidNumber::try_from(43).unwrap(),
+            ppid: Some(TgidNumber::try_from(41).unwrap()),
+            tracer_pid: Some(TidNumber::try_from(7).unwrap()),
             cred: &Cred::root(),
             num_threads: 3,
         },
@@ -2502,7 +2522,11 @@ mod tests {
         format_cpu_presence_list, render_proc_bus_usb_devices_from_snapshots, render_proc_net_dev,
         render_proc_net_snmp, render_task_status_fields,
     };
-    use crate::{mm::ProcessMemStats, pseudofs::usbfs::UsbDeviceSnapshotInfo, task::Cred};
+    use crate::{
+        mm::ProcessMemStats,
+        pseudofs::usbfs::UsbDeviceSnapshotInfo,
+        task::{Cred, TgidNumber, TidNumber},
+    };
 
     fn sample_mem_stats() -> ProcessMemStats {
         ProcessMemStats {
@@ -2520,7 +2544,7 @@ mod tests {
         )
     }
 
-    fn render_task_status_from_cpus(tgid: u32, pid: u64, cpus: &[usize], cpu_num: usize) -> String {
+    fn render_task_status_from_cpus(tgid: u32, pid: u32, cpus: &[usize], cpu_num: usize) -> String {
         let cpu_presence = collect_cpu_presence(cpus.iter().copied(), cpu_num);
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
@@ -2529,10 +2553,10 @@ mod tests {
             base: TaskStatusBase {
                 name: "proc-status-test",
                 state: "R (running)",
-                tgid,
-                pid,
-                ppid: 0,
-                tracer_pid: 0,
+                tgid: TgidNumber::try_from(tgid).unwrap(),
+                pid: TidNumber::try_from(pid).unwrap(),
+                ppid: None,
+                tracer_pid: None,
                 cred: &Cred::root(),
                 num_threads: 1,
             },
@@ -2622,10 +2646,10 @@ mod tests {
             base: TaskStatusBase {
                 name: "proc-status-test",
                 state: "S (sleeping)",
-                tgid: 1,
-                pid: 1,
-                ppid: 0,
-                tracer_pid: 0,
+                tgid: TgidNumber::try_from(1).unwrap(),
+                pid: TidNumber::try_from(1).unwrap(),
+                ppid: None,
+                tracer_pid: None,
                 cred: &Cred::root(),
                 num_threads: 3,
             },
@@ -2649,10 +2673,10 @@ mod tests {
             base: TaskStatusBase {
                 name: "proc-status-test",
                 state: "R (running)",
-                tgid: 10,
-                pid: 11,
-                ppid: 9,
-                tracer_pid: 42,
+                tgid: TgidNumber::try_from(10).unwrap(),
+                pid: TidNumber::try_from(11).unwrap(),
+                ppid: Some(TgidNumber::try_from(9).unwrap()),
+                tracer_pid: Some(TidNumber::try_from(42).unwrap()),
                 cred: &Cred::root(),
                 num_threads: 1,
             },
@@ -2679,10 +2703,10 @@ mod tests {
             base: TaskStatusBase {
                 name: "proc-status-test",
                 state: "R (running)",
-                tgid: 1,
-                pid: 1,
-                ppid: 0,
-                tracer_pid: 0,
+                tgid: TgidNumber::try_from(1).unwrap(),
+                pid: TidNumber::try_from(1).unwrap(),
+                ppid: None,
+                tracer_pid: None,
                 cred: &Cred::root(),
                 num_threads: 1,
             },
