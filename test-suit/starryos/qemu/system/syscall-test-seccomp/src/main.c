@@ -273,6 +273,10 @@ static void check_filter_header_validation_before_permission(void)
         .len = 1,
         .filter = &allow,
     };
+    struct sock_fprog null_filter = {
+        .len = 1,
+        .filter = NULL,
+    };
 
     if (setresuid(1000, 1000, 1000) != 0) {
         note_fail("drop privileges for seccomp error ordering", strerror(errno));
