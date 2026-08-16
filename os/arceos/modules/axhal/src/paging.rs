@@ -44,3 +44,5 @@ impl FrameAllocator for PagingAllocator {
 pub type PageTable = page_table_generic::PageTable<ArchPagingMeta, PagingAllocator>;
 /// A non-owning reference to an architecture-specific page table.
 pub type PageTableRef = page_table_generic::PageTableRef<ArchPagingMeta, PagingAllocator>;
+/// A single reserved child-table frame for a break-before-make huge-page split.
+pub type ReservedTable = page_table_generic::ReservedTable<ArchPagingMeta, PagingAllocator>;

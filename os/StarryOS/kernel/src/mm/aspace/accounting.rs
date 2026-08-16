@@ -147,6 +147,24 @@ impl MemoryAccounting {
         Ok(())
     }
 
+    /// Infallible per-VA charge insert for a freshly-uncharged page. Used by a THP
+    /// 2 MiB -> 4 KiB split to expand one 2 MiB charge into 512 4 KiB charges: the
+    /// sub-page VAs were never charged (only the 2 MiB VA was), so the insert cannot
+    /// collide and must not fail partway through the 512. Debug builds assert the
+    /// freshness invariant.
+    #[cfg(feature = "thp")]
+    pub fn record_charge_fresh(&self, vaddr: VirtAddr, kind: RssKind) {
+        // SAFETY: `AddrSpace` lock held by all callers.
+        let charges = unsafe { &mut *self.charges.get() };
+        debug_assert!(
+            !charges.contains_key(&vaddr),
+            "record_charge_fresh: duplicate charge for {vaddr:?}"
+        );
+        charges.insert(vaddr, kind);
+        self.inc(kind, 1);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Remove charge after PTE unmap. Debug builds assert the entry exists.
     pub fn remove_charge(&self, vaddr: VirtAddr) -> Option<RssKind> {
         // SAFETY: `AddrSpace` lock held by all callers.

@@ -11,6 +11,8 @@ use ax_runtime::hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageTable, PagingError},
 };
+#[cfg(feature = "thp")]
+use ax_runtime::hal::paging::ReservedTable;
 
 use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
@@ -81,6 +83,272 @@ impl FrameTableRefCount {
 }
 
 static FRAME_TABLE: IrqMutex<FrameTableRefCount> = IrqMutex::new(FrameTableRefCount::new());
+
+// ---- Transparent-huge-page 2 MiB -> 4 KiB split (feature `thp`) ----
+
+/// The 2 MiB huge-page size.
+#[cfg(feature = "thp")]
+const HUGE_2M: usize = 0x20_0000;
+/// Number of 4 KiB sub-pages in a 2 MiB block.
+#[cfg(feature = "thp")]
+const HUGE_2M_SUBPAGES: usize = HUGE_2M / PAGE_SIZE_4K; // 512
+
+/// How a prepared 2 MiB block split will be committed. Any allocation needed to
+/// break COW is done up front in [`prepare_huge_split_2m`], so committing is
+/// (buddy metadata + page-table) work that does not allocate a data frame.
+#[cfg(feature = "thp")]
+pub(crate) enum HugeSplitTarget {
+    /// Exclusive frame (refcount 1): explode the same 2 MiB buddy block in place
+    /// and re-map the 512 leaf PTEs to the *same* physical pages (no copy).
+    InPlace,
+    /// COW break into a fresh contiguous 2 MiB frame (already copied): drop the
+    /// shared ref and explode the new block.
+    CopiedContiguous(PhysAddr),
+    /// COW break into 512 independent 4 KiB frames (already copied) under
+    /// fragmentation: drop the shared ref; the frames are already order-0.
+    CopiedScattered(alloc::vec::Vec<PhysAddr>),
+}
+
+/// A resident 2 MiB block ready to be split to 4 KiB, with any COW-break copy
+/// **and** the 4 KiB leaf page table already allocated. Produced by
+/// [`prepare_huge_split_2m`], consumed by [`commit_huge_split_2m`], or released by
+/// [`abort_huge_split_2m`].
+#[cfg(feature = "thp")]
+pub(crate) struct HugeSplitPlan {
+    block_va: VirtAddr,
+    old_paddr: PhysAddr,
+    flags: MappingFlags,
+    target: HugeSplitTarget,
+    /// Pre-reserved, zeroed leaf page table spliced in at commit. Reserving it here
+    /// (not on the first `map` after unmapping the block) is what makes the commit
+    /// allocation-free, hence atomic against a fragmented / OOM heap.
+    table: ReservedTable,
+}
+
+/// Phase 1 (fallible, no page-table / refcount / charge mutation): decide how to
+/// split the resident 2 MiB block at `block_va`, pre-allocate + fill any COW-break
+/// copy, and reserve the 4 KiB leaf page table the commit will splice in. Returns
+/// `Ok(None)` when the block is not a resident 2 MiB block (lazy / already split).
+/// On allocation failure returns `Err` with nothing left allocated, so the caller
+/// can split a whole area atomically: prepare every block first, and only if all
+/// succeed commit them (an infallible, allocation-free phase 2).
+#[cfg(feature = "thp")]
+pub(crate) fn prepare_huge_split_2m(
+    block_va: VirtAddr,
+    pt: &PageTable,
+) -> StarryResult<Option<HugeSplitPlan>> {
+    debug_assert!(block_va.is_aligned(HUGE_2M), "block_va not 2M-aligned");
+
+    // `peek_huge_block` finds a present block AND a not-present one (an
+    // `mprotect(PROT_NONE)` over this THP block, which still owns a frame and must be
+    // split so a partial op can cut through it), returning `None` for a lazy /
+    // already-split / non-block address. Its config is the block's `MappingFlags`,
+    // preserved onto the 512 leaves so COW write-protection survives the split.
+    let (old_paddr, flags, size) = match pt.peek_huge_block(block_va) {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    if size != HUGE_2M {
+        return Ok(None);
+    }
+
+    // Classify the frame as exclusive or COW-shared.
+    let frame_ref = FRAME_TABLE
+        .lock()
+        .get_frame_ref(old_paddr)
+        .ok_or(StarryError::BadAddress)?;
+    let shared = {
+        let cnt = frame_ref.lock();
+        assert!(cnt.count > 0, "splitting unreferenced huge frame");
+        cnt.count > 1
+    };
+
+    let target = if !shared {
+        HugeSplitTarget::InPlace
+    } else if let Ok(new_paddr) = alloc_frame(false, HUGE_2M) {
+        // SAFETY: source and destination are distinct 2 MiB physical frames the
+        // kernel maps linearly; the destination is freshly allocated (exclusive).
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                phys_to_virt(old_paddr).as_ptr(),
+                phys_to_virt(new_paddr).as_mut_ptr(),
+                HUGE_2M,
+            );
+        }
+        HugeSplitTarget::CopiedContiguous(new_paddr)
+    } else {
+        // Scatter fallback: copy into 512 independent 4 KiB frames when no order-9
+        // block is available, so a COW break never fails for lack of a huge frame.
+        let mut frames = alloc::vec::Vec::with_capacity(HUGE_2M_SUBPAGES);
+        for i in 0..HUGE_2M_SUBPAGES {
+            match alloc_frame(false, PAGE_SIZE_4K) {
+                Ok(f) => {
+                    // SAFETY: distinct 4 KiB frames, destination freshly allocated.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            phys_to_virt(old_paddr + i * PAGE_SIZE_4K).as_ptr(),
+                            phys_to_virt(f).as_mut_ptr(),
+                            PAGE_SIZE_4K,
+                        );
+                    }
+                    frames.push(f);
+                }
+                Err(err) => {
+                    // Roll back the partial scatter; the shared 2 MiB frame is
+                    // untouched (ref not dropped) so peers stay safe.
+                    for f in frames {
+                        dealloc_frame(f, PAGE_SIZE_4K);
+                    }
+                    return Err(err);
+                }
+            }
+        }
+        HugeSplitTarget::CopiedScattered(frames)
+    };
+
+    // Reserve the 4 KiB leaf page table now, so the commit is allocation-free and
+    // therefore atomic against OOM. On failure roll back any COW-break copy and leave
+    // nothing allocated.
+    let table = match pt.alloc_intermediate_table() {
+        Ok(t) => t,
+        Err(_) => {
+            dealloc_split_target(target);
+            return Err(StarryError::NoMemory);
+        }
+    };
+
+    Ok(Some(HugeSplitPlan {
+        block_va,
+        old_paddr,
+        flags,
+        target,
+        table,
+    }))
+}
+
+/// Free the data frames a [`HugeSplitTarget`] holds (the pre-allocated COW-break
+/// copy, if any). Shared by the prepare rollback and [`abort_huge_split_2m`].
+#[cfg(feature = "thp")]
+fn dealloc_split_target(target: HugeSplitTarget) {
+    match target {
+        HugeSplitTarget::InPlace => {}
+        HugeSplitTarget::CopiedContiguous(new_paddr) => dealloc_frame(new_paddr, HUGE_2M),
+        HugeSplitTarget::CopiedScattered(frames) => {
+            for f in frames {
+                dealloc_frame(f, PAGE_SIZE_4K);
+            }
+        }
+    }
+}
+
+/// Release a prepared-but-not-committed split (frees the COW-break copy and the
+/// reserved leaf page table). Used to roll back an atomic whole-area split when a
+/// later block fails to prepare.
+#[cfg(feature = "thp")]
+pub(crate) fn abort_huge_split_2m(pt: &PageTable, plan: HugeSplitPlan) {
+    pt.dealloc_intermediate_table(plan.table);
+    dealloc_split_target(plan.target);
+}
+
+/// Phase 2 (commit): apply a prepared split — splice the 2 MiB block PTE into 512
+/// leaf PTEs, convert the [`FRAME_TABLE`] refcount and RSS charge to 4 KiB, and (for
+/// a COW break) drop this address space's reference to the shared frame. Preserves
+/// the block's current PTE permissions on the 512 leaf PTEs, so COW write-protection
+/// (lazy first-write copy) is not broken by the split.
+///
+/// Infallible: both the COW-break copy and the leaf page table were reserved in
+/// [`prepare_huge_split_2m`], so this performs no *recoverable* allocation and cannot
+/// leave a half-split (torn) mapping. Must be called with the owning
+/// [`super::AddrSpace`] locked.
+#[cfg(feature = "thp")]
+pub(crate) fn commit_huge_split_2m(
+    plan: HugeSplitPlan,
+    acct: Option<&MemoryAccounting>,
+    pt: &mut PageTable,
+) {
+    let HugeSplitPlan {
+        block_va,
+        old_paddr,
+        flags,
+        target,
+        table,
+    } = plan;
+
+    // Splice in the pre-reserved (zeroed) leaf page table over the 2 MiB block: the
+    // break-before-make (invalidate the block + flush, then install the empty table)
+    // happens inside `split_huge_block_to_empty_table`, which leaves the 512 leaves
+    // unmapped for the loop below to install. The block stayed a present 2 MiB page
+    // under the address-space lock from prepare to here, so this cannot fail.
+    pt.split_huge_block_to_empty_table(block_va, table)
+        .expect("prepared 2 MiB block is no longer a huge mapping at commit");
+
+    // Establish the 512 target sub-frame physical addresses + buddy state.
+    let sub_paddrs: alloc::vec::Vec<PhysAddr> = match target {
+        HugeSplitTarget::InPlace => {
+            // Retag the same buddy block. Remove the single 2 MiB refcount entry
+            // first; it is re-registered as 512 4 KiB entries below.
+            FRAME_TABLE.lock().remove_frame(old_paddr);
+            super::split_frame(old_paddr);
+            (0..HUGE_2M_SUBPAGES)
+                .map(|i| old_paddr + i * PAGE_SIZE_4K)
+                .collect()
+        }
+        HugeSplitTarget::CopiedContiguous(new_paddr) => {
+            drop_shared_huge_ref(old_paddr);
+            super::split_frame(new_paddr);
+            (0..HUGE_2M_SUBPAGES)
+                .map(|i| new_paddr + i * PAGE_SIZE_4K)
+                .collect()
+        }
+        HugeSplitTarget::CopiedScattered(frames) => {
+            drop_shared_huge_ref(old_paddr);
+            frames
+        }
+    };
+
+    {
+        let mut frame_table = FRAME_TABLE.lock();
+        for &pa in &sub_paddrs {
+            frame_table.init_frame(pa);
+        }
+    }
+
+    // Install the 512 leaf PTEs into the pre-reserved table, preserving the block's
+    // permissions. These cannot allocate (the table already exists) and the slots are
+    // freshly zeroed, so none of these `map`s can fail.
+    for (i, &pa) in sub_paddrs.iter().enumerate() {
+        pt.map_page(block_va + i * PAGE_SIZE_4K, pa, PAGE_SIZE_4K, flags)
+            .expect("leaf map into the pre-reserved split table cannot fail");
+    }
+
+    // Convert the single 2 MiB RSS charge into 512 4 KiB charges so a per-4 KiB
+    // unmap/reclassify finds an entry at each page VA. The sub-page VAs are fresh
+    // (only the 2 MiB VA was charged), so `record_charge_fresh` is infallible.
+    if let Some(acct) = acct {
+        let kind = match acct.charge_kind(block_va) {
+            Some(k) => {
+                acct.remove_charge(block_va);
+                k
+            }
+            None => RssKind::Anon,
+        };
+        for i in 0..HUGE_2M_SUBPAGES {
+            acct.record_charge_fresh(block_va + i * PAGE_SIZE_4K, kind);
+        }
+    }
+}
+
+/// Drop this address space's reference to a COW-shared 2 MiB frame after copying it
+/// privately. Peers keep their intact 2 MiB block view; the frame is freed only when
+/// the last sharer drops it.
+#[cfg(feature = "thp")]
+fn drop_shared_huge_ref(old_paddr: PhysAddr) {
+    let frame_ref = FRAME_TABLE
+        .lock()
+        .get_frame_ref(old_paddr)
+        .expect("shared huge frame vanished before commit");
+    frame_ref.lock().drop_frame(old_paddr, HUGE_2M);
+}
 
 fn cow_file_max_read_len(
     file_len: u64,

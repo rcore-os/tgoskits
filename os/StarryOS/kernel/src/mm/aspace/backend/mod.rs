@@ -58,6 +58,15 @@ pub(crate) fn dealloc_frame(frame: PhysAddr, align: usize) {
     global_allocator().dealloc_pages(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
 }
 
+/// Retag a contiguous order-N buddy block as independent order-0 4 KiB frames, so a
+/// transparent-huge-page 2 MiB block can be split into 512 individually-freeable
+/// pages without copying (the physical-frame half of a huge->4K split).
+#[cfg(feature = "thp")]
+pub(crate) fn split_frame(frame: PhysAddr) {
+    let vaddr = phys_to_virt(frame);
+    global_allocator().split_pages(vaddr.as_usize());
+}
+
 fn pages_in(range: VirtAddrRange, align: usize) -> StarryResult<DynPageIter<VirtAddr>> {
     DynPageIter::new(range.start, range.end, align).ok_or(StarryError::InvalidInput)
 }

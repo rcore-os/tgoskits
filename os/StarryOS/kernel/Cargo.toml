@@ -65,6 +65,10 @@ SMP = "4"
 [features]
 default = ["dynamic_debug"]
 dev-log = []
+# Transparent 2 MiB huge pages ("THP-lite") for private anonymous memory. Opt-in
+# and OFF by default: with this disabled the promotion and huge->4K split code is
+# not compiled, so the page-fault/mmap hot paths are byte-for-byte unchanged.
+thp = []
 ext4 = ["ax-fs-ng/ext4"]
 fat = ["ax-fs-ng/fat"]
 input = ["dep:ax-input", "ax-runtime/input"]
