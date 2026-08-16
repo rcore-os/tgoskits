@@ -365,7 +365,14 @@ fn prepare_user_memory(op: &str, start: usize, len: usize, access_flags: Mapping
 
     aspace
         .populate_area(page_start, page_end - page_start, access_flags)
-        .map_err(|_| VmError::AccessDenied)
+        // Preserve a genuine out-of-frames as ENOMEM instead of collapsing every
+        // fault-in error to AccessDenied/EFAULT: a memory-pressure failure on a
+        // valid user pointer must surface as ENOMEM, not a misleading "Bad address"
+        // (diverges from Linux and masks real exhaustion under high task count).
+        .map_err(|e| match e {
+            StarryError::NoMemory => VmError::NoMemory,
+            _ => VmError::AccessDenied,
+        })
 }
 
 /// Faults in and validates a userspace output range without modifying it.
