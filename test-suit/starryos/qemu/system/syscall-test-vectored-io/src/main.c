@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <limits.h>
+#include <stdint.h>
 #include <signal.h>
 
 /* ---- Minimal test framework (matches test_framework.h conventions) ---- */
@@ -84,6 +85,13 @@ static ssize_t my_pwritev2(int fd, const struct iovec *iov, int iovcnt,
 {
     return syscall(SYS_pwritev2, fd, iov, iovcnt,
                    (unsigned long)offset, (unsigned long)0, flags);
+}
+
+static ssize_t my_pwritev(int fd, const struct iovec *iov, int iovcnt,
+                          off_t offset)
+{
+    return syscall(SYS_pwritev, fd, iov, iovcnt,
+                   (unsigned long)offset, (unsigned long)0);
 }
 
 /* Helper: create and fill a temp file with known content */
@@ -249,6 +257,49 @@ int main(void)
     /* 2.6 pwrite64 on bad fd */
     CHECK_ERR(pwrite(-1, dummy, 4, 0), EBADF, "2.6 pwrite64(-1) => EBADF");
 
+    /* Linux checks the fd write mode before importing user buffers. */
+    const void *bad_buf = (const void *)(uintptr_t)-1;
+    const struct iovec *bad_iov = (const struct iovec *)(uintptr_t)-1;
+
+    /* 2.7 pipe read end + bad scalar buffer => EBADF, not EFAULT */
+    {
+        int pipefd[2];
+        CHECK(pipe(pipefd) == 0, "2.7 create pipe for write access priority");
+        CHECK_ERR(syscall(SYS_write, pipefd[0], bad_buf, 1), EBADF,
+                  "2.7 write pipe read end + bad buffer => EBADF");
+        close(pipefd[0]);
+        close(pipefd[1]);
+    }
+
+    /* 2.8 pipe read end + bad iovec array => EBADF, not EFAULT */
+    {
+        int pipefd[2];
+        CHECK(pipe(pipefd) == 0, "2.8 create pipe for writev access priority");
+        CHECK_ERR(syscall(SYS_writev, pipefd[0], bad_iov, 1), EBADF,
+                  "2.8 writev pipe read end + bad iovec => EBADF");
+        close(pipefd[0]);
+        close(pipefd[1]);
+    }
+
+    /* 2.9 read-only regular file + bad iovec array => EBADF */
+    fd = open(TMPFILE, O_RDONLY);
+    CHECK(fd >= 0, "2.9 open read-only for bad iovec priority");
+    CHECK_ERR(syscall(SYS_writev, fd, bad_iov, 1), EBADF,
+              "2.9 writev O_RDONLY + bad iovec => EBADF");
+    CHECK_ERR(my_pwritev(fd, bad_iov, 1, 0), EBADF,
+              "2.9 pwritev O_RDONLY + bad iovec => EBADF");
+    close(fd);
+
+    /* 2.10 pwritev2 offset=-1 uses stream write access ordering. */
+    {
+        int pipefd[2];
+        CHECK(pipe(pipefd) == 0, "2.10 create pipe for pwritev2 access priority");
+        CHECK_ERR(my_pwritev2(pipefd[0], bad_iov, 1, -1, 0), EBADF,
+                  "2.10 pwritev2 pipe read end + bad iovec => EBADF");
+        close(pipefd[0]);
+        close(pipefd[1]);
+    }
+
     /* ================================================================
      * SECTION 3: Error conditions — EINVAL (iovcnt)
      * ================================================================ */
@@ -355,6 +406,10 @@ int main(void)
         iov[0].iov_base = pdata; iov[0].iov_len = 4;
         n = my_pwritev2(pipefd[1], iov, 1, -1, 0);
         CHECK_RET(n, 4, "5.8 pwritev2 on pipe offset=-1 => writes OK");
+
+        /* 5.9 positioned pwritev2 rejects the pipe before importing iovec. */
+        CHECK_ERR(my_pwritev2(pipefd[1], bad_iov, 1, 0, 0), ESPIPE,
+                  "5.9 pwritev2 pipe + bad iovec => ESPIPE");
 
         close(pipefd[0]);
         close(pipefd[1]);
