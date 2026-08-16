@@ -22,7 +22,6 @@ use ax_task::{
 };
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::timespec;
-use starry_process::Pid;
 use starry_signal::SignalSet;
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -32,7 +31,7 @@ use crate::{
     mm::{AddrSpace, Backend, IoVec},
     sync::{Mutex, RwLock},
     syscall::signal::check_sigset_size,
-    task::{AsThread, with_blocked_signals},
+    task::{AsThread, PidIdentityId, with_blocked_signals},
     time::TimeValueLike,
 };
 
@@ -173,7 +172,7 @@ struct AioContextInner {
 
 struct AioContext {
     id: AioContextId,
-    owner: Pid,
+    owner: PidIdentityId,
     aspace: Arc<Mutex<AddrSpace>>,
     ring_vaddr: VirtAddr,
     ring_size: usize,
@@ -193,7 +192,7 @@ impl AioContext {
     // Build a process-owned AIO context around a mapped user ring.
     fn new(
         id: AioContextId,
-        owner: Pid,
+        owner: PidIdentityId,
         aspace: Arc<Mutex<AddrSpace>>,
         ring_vaddr: VirtAddr,
         ring_size: usize,
@@ -234,8 +233,8 @@ static NEXT_AIO_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 static AIO_CONTEXTS: RwLock<BTreeMap<AioContextId, Arc<AioContext>>> = RwLock::new(BTreeMap::new());
 
 // Return the process id that owns newly created or looked-up contexts.
-fn current_pid() -> Pid {
-    ax_task::current().as_thread().proc_data.proc.pid()
+fn current_process_identity_id() -> PidIdentityId {
+    ax_task::current().as_thread().proc_data.identity().id()
 }
 
 // Use Linux EINVAL for all invalid AIO context handles.
@@ -379,7 +378,7 @@ fn write_event_context(context: &AioContext, index: u32, event: &IoEvent) -> Sta
 
 // Validate a userspace context handle and return its kernel object.
 fn lookup_context(ctx: AioContextId) -> StarryResult<Arc<AioContext>> {
-    let owner = current_pid();
+    let owner = current_process_identity_id();
     let ring = read_ring_user(ctx)?;
     let contexts = AIO_CONTEXTS.read();
     let ctx_id = ring.id as usize;
@@ -1258,7 +1257,7 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> StarryResult<isi
 
     let context = Arc::new(AioContext::new(
         ctx_id,
-        current_pid(),
+        current_process_identity_id(),
         aspace.clone(),
         ring_vaddr,
         ring_size,
@@ -1319,12 +1318,12 @@ fn destroy_context(context: Arc<AioContext>) {
 }
 
 // Destroy all AIO contexts owned by a process during last-thread exit.
-pub fn cleanup_aio_contexts_for_pid(pid: Pid) {
+pub fn cleanup_aio_contexts_for_process(owner: PidIdentityId) {
     let contexts = {
         let mut table = AIO_CONTEXTS.write();
         let ids: Vec<_> = table
             .iter()
-            .filter_map(|(&id, context)| (context.owner == pid).then_some(id))
+            .filter_map(|(&id, context)| (context.owner == owner).then_some(id))
             .collect();
         ids.into_iter()
             .filter_map(|id| table.remove(&id))

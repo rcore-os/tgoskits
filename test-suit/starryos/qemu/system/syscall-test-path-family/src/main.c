@@ -187,6 +187,18 @@ static void test_unlinkat_success_and_failures(void)
     errno = 0;
     CHECK(fstatat(dfd, "workfile", &st, 0) == -1 && errno == ENOENT, "unlinkat: deleted file -> ENOENT");
 
+    fd = openat(dfd, "upper_word_flags", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    CHECK(fd >= 0, "unlinkat: create raw upper-word flags file");
+    if (fd >= 0) {
+        close(fd);
+        errno = 0;
+        long raw_rc = syscall(SYS_unlinkat, dfd, "upper_word_flags", 1ULL << 32);
+        CHECK(raw_rc == 0, "unlinkat: raw upper-word flags truncate to zero");
+        errno = 0;
+        CHECK(fstatat(dfd, "upper_word_flags", &st, 0) == -1 && errno == ENOENT,
+              "unlinkat: raw upper-word flags delete the file");
+    }
+
     mkdirat(dfd, "emptydir", 0755);
     CHECK_RET(unlinkat(dfd, "emptydir", AT_REMOVEDIR), 0, "unlinkat: delete empty dir (AT_REMOVEDIR)");
     errno = 0;
