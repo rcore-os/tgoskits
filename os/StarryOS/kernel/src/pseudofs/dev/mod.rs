@@ -1,54 +1,37 @@
 //! Special devices
 
 mod card0;
-
 #[cfg(feature = "rknpu")]
 mod card1;
 // The real contiguous coherent dma-heap is shared by every accelerator that
 // exchanges buffers (JPU / NPU / RGA).
 #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 mod dmaheap;
-
 mod drm;
-
 #[cfg(feature = "input")]
 pub mod event;
-
 mod fb;
-
 #[cfg(feature = "sg2002")]
 pub mod ion;
-
 mod kmsg;
-
 #[cfg(feature = "k230-kpu")]
 mod kpu;
-
 #[cfg(feature = "dev-log")]
 mod log;
-
 mod r#loop;
-
 #[cfg(feature = "memtrack")]
 mod memtrack;
-
 #[cfg(feature = "jpeg")]
 mod mpp_service;
-
 #[cfg(feature = "sg2002")]
 mod pinmux;
-
 #[cfg(any(feature = "sg2002", feature = "rk3588-pwm"))]
 pub(super) mod pwm;
-
 #[cfg(feature = "rga")]
 pub(crate) mod rga;
-
 mod rtc;
-
 #[cfg(feature = "sg2002")]
 pub mod tpu;
-
 pub mod tty;
 
 #[cfg(feature = "sg2002-cvi-usb-camera")]

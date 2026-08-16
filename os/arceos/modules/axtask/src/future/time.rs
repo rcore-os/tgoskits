@@ -1,7 +1,6 @@
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::collections::BTreeMap;
 use core::{
     pin::Pin,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     task::{Context, Poll, Waker},
     time::Duration,
 };
@@ -9,91 +8,59 @@ use core::{
 use ax_hal::time::{TimeValue, monotonic_time, wall_time};
 use futures_util::{FutureExt, select_biased};
 
-use crate::sync::SpinLock;
-
-static NEXT_TIMER_KEY: AtomicU64 = AtomicU64::new(0);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct TimerKey {
     deadline: TimeValue,
     key: u64,
 }
 
-struct TimerState {
-    owner_cpu: AtomicUsize,
-    waker: SpinLock<Option<Waker>>,
-}
-
-impl TimerState {
-    fn new(owner_cpu: usize) -> Self {
-        Self {
-            owner_cpu: AtomicUsize::new(owner_cpu),
-            waker: SpinLock::new(None),
-        }
-    }
-
-    fn register(&self, owner_cpu: usize, waker: &Waker) {
-        let mut registered = self.waker.lock_irqsave();
-        self.owner_cpu.store(owner_cpu, Ordering::Release);
-        *registered = Some(waker.clone());
-    }
-
-    fn take_waker(&self, owner_cpu: usize) -> Option<Waker> {
-        let mut registered = self.waker.lock_irqsave();
-        if self.owner_cpu.load(Ordering::Acquire) == owner_cpu {
-            registered.take()
-        } else {
-            None
-        }
-    }
-
-    fn cancel(&self) {
-        let _ = self.waker.lock_irqsave().take();
-    }
-}
-
 struct TimerRuntime {
-    wheel: BTreeMap<TimerKey, Arc<TimerState>>,
+    key: u64,
+    wheel: BTreeMap<TimerKey, Waker>,
 }
 
 impl TimerRuntime {
     const fn new() -> Self {
         TimerRuntime {
+            key: 0,
             wheel: BTreeMap::new(),
         }
     }
 
-    fn add(&mut self, deadline: TimeValue, owner_cpu: usize) -> Option<TimerFuture> {
+    fn add(&mut self, deadline: TimeValue) -> Option<TimerKey> {
         if deadline <= monotonic_time() {
             return None;
         }
 
         let key = TimerKey {
             deadline,
-            key: NEXT_TIMER_KEY.fetch_add(1, Ordering::Relaxed),
+            key: self.key,
         };
-        let state = Arc::new(TimerState::new(owner_cpu));
-        self.wheel.insert(key, Arc::clone(&state));
-        Some(TimerFuture { key, state })
+        self.wheel.insert(key, Waker::noop().clone());
+        self.key += 1;
+
+        Some(key)
     }
 
-    fn ensure_registered(&mut self, key: TimerKey, state: &Arc<TimerState>) {
-        self.wheel.entry(key).or_insert_with(|| Arc::clone(state));
+    fn poll(&mut self, key: &TimerKey, cx: &mut Context<'_>) -> Poll<()> {
+        if let Some(w) = self.wheel.get_mut(key) {
+            *w = cx.waker().clone();
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
     }
 
     fn cancel(&mut self, key: &TimerKey) {
-        let _ = self.wheel.remove(key);
+        self.wheel.remove(key);
     }
 
     #[cfg(feature = "irq")]
-    fn next_deadline(&self, owner_cpu: usize) -> Option<TimeValue> {
-        self.wheel
-            .iter()
-            .find(|(_, state)| state.owner_cpu.load(Ordering::Acquire) == owner_cpu)
-            .map(|(key, _)| key.deadline)
+    fn next_deadline(&self) -> Option<TimeValue> {
+        self.wheel.keys().next().map(|key| key.deadline)
     }
 
-    fn wake(&mut self, owner_cpu: usize) {
+    fn wake(&mut self) {
         if self.wheel.is_empty() {
             return;
         }
@@ -106,10 +73,8 @@ impl TimerRuntime {
         });
 
         let expired = core::mem::replace(&mut self.wheel, pending);
-        for (_, state) in expired {
-            if let Some(waker) = state.take_waker(owner_cpu) {
-                waker.wake();
-            }
+        for (_, w) in expired {
+            w.wake();
         }
     }
 }
@@ -120,12 +85,12 @@ percpu_static! {
 
 #[allow(dead_code)]
 pub(crate) fn check_timer_events() {
-    with_current(|runtime| runtime.wake(ax_hal::percpu::this_cpu_id()));
+    with_current(TimerRuntime::wake);
 }
 
 #[cfg(feature = "irq")]
 pub(crate) fn next_timer_deadline() -> Option<TimeValue> {
-    with_current(|runtime| runtime.next_deadline(ax_hal::percpu::this_cpu_id()))
+    with_current(|r| r.next_deadline())
 }
 
 fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
@@ -143,40 +108,20 @@ fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
 }
 
 /// Future returned by `sleep` and `sleep_until`.
-///
-/// A task may resume on a different CPU after any wakeup. Each CPU visited by
-/// the future keeps the same timer key and shared state; stale per-CPU entries
-/// therefore cannot complete the timer or retain the task's waker.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct TimerFuture {
-    key: TimerKey,
-    state: Arc<TimerState>,
-}
+pub struct TimerFuture(TimerKey);
 
 impl Future for TimerFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.key.deadline <= monotonic_time() {
-            self.state.cancel();
-            return Poll::Ready(());
-        }
-
-        with_current(|runtime| {
-            self.state
-                .register(ax_hal::percpu::this_cpu_id(), cx.waker());
-            runtime.ensure_registered(self.key, &self.state);
-        });
-        #[cfg(feature = "irq")]
-        crate::timers::maybe_reprogram_timer(self.key.deadline);
-        Poll::Pending
+        with_current(|r| r.poll(&self.0, cx))
     }
 }
 
 impl Drop for TimerFuture {
     fn drop(&mut self) {
-        self.state.cancel();
-        with_current(|runtime| runtime.cancel(&self.key));
+        with_current(|r| r.cancel(&self.0));
     }
 }
 
@@ -187,9 +132,11 @@ pub async fn sleep(duration: Duration) {
 
 /// Waits until the monotonic `deadline` is reached.
 pub async fn sleep_until(deadline: TimeValue) {
-    let timer = with_current(|runtime| runtime.add(deadline, ax_hal::percpu::this_cpu_id()));
-    if let Some(timer) = timer {
-        timer.await;
+    let key = with_current(|r| r.add(deadline));
+    if let Some(key) = key {
+        #[cfg(feature = "irq")]
+        crate::timers::maybe_reprogram_timer(deadline);
+        TimerFuture(key).await;
     }
 }
 
@@ -242,46 +189,5 @@ fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {
         now_mono
             .checked_add(deadline - now_wall)
             .unwrap_or(TimeValue::MAX)
-    }
-}
-
-#[cfg(all(test, not(target_os = "none")))]
-mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
-    use std::task::Wake;
-
-    use super::*;
-
-    struct WakeCounter(AtomicUsize);
-
-    impl Wake for WakeCounter {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    #[test]
-    fn migrated_timer_ignores_stale_per_cpu_entry() {
-        let key = TimerKey {
-            deadline: TimeValue::ZERO,
-            key: 0,
-        };
-        let state = Arc::new(TimerState::new(0));
-        let wake_counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-        let waker = Waker::from(Arc::clone(&wake_counter));
-        state.register(1, &waker);
-
-        let mut old_runtime = TimerRuntime::new();
-        old_runtime.wheel.insert(key, Arc::clone(&state));
-        let mut current_runtime = TimerRuntime::new();
-        current_runtime.wheel.insert(key, state);
-
-        old_runtime.wake(0);
-        assert!(old_runtime.wheel.is_empty());
-        assert_eq!(wake_counter.0.load(Ordering::Relaxed), 0);
-
-        current_runtime.wake(1);
-        assert!(current_runtime.wheel.is_empty());
-        assert_eq!(wake_counter.0.load(Ordering::Relaxed), 1);
     }
 }

@@ -53,17 +53,11 @@ use crate::{
 /// Maximum number of queued receive messages per socket.  Matches
 /// libudev's default monitor buffer expectation (~32 messages × 4 KiB).
 const MAX_QUEUED: usize = 128;
-
 const NLMSG_ERROR: u16 = 2;
-
 const NLMSG_DONE: u16 = 3;
-
 const NLM_F_MULTI: u16 = 2;
-
 const NLM_F_ROOT: u16 = 0x100;
-
 const NLM_F_MATCH: u16 = 0x200;
-
 const NLM_F_DUMP: u16 = NLM_F_ROOT | NLM_F_MATCH;
 
 /// Generic netlink controller family ID. Linux's
@@ -73,100 +67,64 @@ const NLM_F_DUMP: u16 = NLM_F_ROOT | NLM_F_MATCH;
 const GENL_ID_CTRL: u16 = 0x10;
 
 const CTRL_CMD_NEWFAMILY: u8 = 1;
-
 const CTRL_CMD_GETFAMILY: u8 = 3;
-
 const CTRL_ATTR_FAMILY_ID: u16 = 1;
-
 const CTRL_ATTR_FAMILY_NAME: u16 = 2;
-
 const CTRL_ATTR_VERSION: u16 = 3;
-
 const CTRL_ATTR_HDRSIZE: u16 = 4;
-
 const CTRL_ATTR_MAXATTR: u16 = 5;
 
 /// Linux's max length of a family name, including the NUL terminator.
 const GENL_NAMSIZ: usize = 16;
-
 const CTRL_VERSION: u32 = 2;
-
 const CTRL_MAX_ATTR: u32 = 11;
 
 const RTM_GETLINK: u16 = 18;
-
 const RTM_NEWLINK: u16 = 16;
-
 const RTM_GETADDR: u16 = 22;
-
 const RTM_NEWADDR: u16 = 20;
-
 const RTM_DELADDR: u16 = 21;
-
 const RTM_NEWROUTE: u16 = 24;
-
 const RTM_GETROUTE: u16 = 26;
 
 const AF_UNSPEC: u8 = 0;
-
 const AF_INET: u8 = 2;
 
 const ARPHRD_ETHER: u16 = 1;
-
 const ARPHRD_LOOPBACK: u16 = 772;
 
 const IFF_UP: u32 = 1;
-
 const IFF_BROADCAST: u32 = 2;
-
 const IFF_LOOPBACK: u32 = 8;
-
 const IFF_RUNNING: u32 = 64;
-
 const IFF_MULTICAST: u32 = 4096;
-
 const IFF_LOWER_UP: u32 = 65536;
 
 const IFLA_ADDRESS: u16 = 1;
-
 const IFLA_BROADCAST: u16 = 2;
-
 const IFLA_IFNAME: u16 = 3;
-
 const IFLA_MTU: u16 = 4;
-
 const IFLA_QDISC: u16 = 6;
-
 const IFLA_TXQLEN: u16 = 13;
-
 const IFLA_OPERSTATE: u16 = 16;
 
 const IFA_ADDRESS: u16 = 1;
-
 const IFA_LOCAL: u16 = 2;
-
 const IFA_LABEL: u16 = 3;
-
 const IFA_BROADCAST: u16 = 4;
 
 const RTA_OIF: u16 = 4;
-
 const RTA_GATEWAY: u16 = 5;
-
 const RTA_PRIORITY: u16 = 6;
-
 const RTA_PREFSRC: u16 = 7;
 
 const IF_OPER_UNKNOWN: u8 = 0;
-
 const IF_OPER_UP: u8 = 6;
 
 const RT_SCOPE_UNIVERSE: u8 = 0;
-
 const RT_SCOPE_HOST: u8 = 254;
 
 const RT_TABLE_UNSPEC: u8 = 0;
-
 const RT_TABLE_MAIN: u8 = 254;
 
 const RTPROT_BOOT: u8 = 3;

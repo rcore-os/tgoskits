@@ -11,9 +11,7 @@ use ax_memory_addr::VirtAddr;
 
 #[cfg(feature = "lockdep")]
 pub use crate::lockdep::{HeldLock, HeldLockStack};
-pub(crate) use crate::run_queue::{
-    current_run_queue, select_new_task_run_queue, select_run_queue, select_wake_run_queue,
-};
+pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wake_run_queue};
 use crate::sync::PreemptIrqSaveState;
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "task-ext"))))]
 #[cfg(feature = "task-ext")]
@@ -236,7 +234,6 @@ pub fn spawn_task(task: TaskInner) -> AxTaskRef {
 /// becomes runnable. Use it to publish runtime-specific task metadata that the
 /// task must be able to observe on its first instruction. The callback must not
 /// wait for the new task to run because it has not been registered or queued.
-/// On SMP, initial placement prefers the current CPU when affinity permits it.
 ///
 /// # Panics
 ///
@@ -249,27 +246,6 @@ where
     initialize_task_before_schedule(&task_ref, initialize, |task_ref| {
         register_task(task_ref);
         select_run_queue::<PreemptIrqSaveState>(task_ref).add_task(task_ref.clone());
-    });
-    task_ref
-}
-
-/// Initializes a new task and rotates its initial placement across ready CPUs.
-///
-/// This is intended for workloads that create independent peer tasks. Placement
-/// uses only initialized run queues allowed by the task's CPU affinity.
-///
-/// # Panics
-///
-/// Panics if `initialize` panics or no initialized run queue matches the task's
-/// CPU affinity.
-pub fn spawn_task_with_balanced<F>(task: TaskInner, initialize: F) -> AxTaskRef
-where
-    F: FnOnce(&AxTaskRef),
-{
-    let task_ref = task.into_arc();
-    initialize_task_before_schedule(&task_ref, initialize, |task_ref| {
-        register_task(task_ref);
-        select_new_task_run_queue::<PreemptIrqSaveState>(task_ref).add_task(task_ref.clone());
     });
     task_ref
 }

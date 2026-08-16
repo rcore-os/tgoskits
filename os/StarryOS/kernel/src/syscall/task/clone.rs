@@ -3,7 +3,7 @@ use core::mem::size_of;
 
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_task::{AxTaskExt, current, spawn_task_with, spawn_task_with_balanced};
+use ax_task::{AxTaskExt, current, spawn_task_with};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use scope_local::Scope;
@@ -566,11 +566,7 @@ impl CloneArgs {
         if let Some(guard) = &mut cgroup_guard {
             guard.commit();
         }
-        if flags.contains(CloneFlags::THREAD) {
-            spawn_task_with(new_task, add_task_to_table);
-        } else {
-            spawn_task_with_balanced(new_task, add_task_to_table);
-        }
+        spawn_task_with(new_task, add_task_to_table);
         clone_transaction.commit();
 
         if trace_clone && needs_vfork_block {
