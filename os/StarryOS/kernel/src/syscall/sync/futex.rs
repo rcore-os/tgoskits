@@ -13,7 +13,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     StarryError, StarryResult,
     mm::atomic_update_user_u32,
-    task::{AsThread, FutexKey, FutexKeyMode, futex_table_for, get_task},
+    task::{AsThread, FutexKey, FutexKeyMode, TidNumber, futex_table_for, get_user_task_by_number},
     time::TimeValueLike,
 };
 
@@ -317,7 +317,11 @@ pub fn sys_get_robust_list(
     head: *mut *const robust_list_head,
     size: *mut usize,
 ) -> StarryResult<isize> {
-    let task = get_task(tid)?;
+    let task = if tid == 0 {
+        current().clone()
+    } else {
+        get_user_task_by_number(TidNumber::try_from(tid)?)?
+    };
     head.vm_write(task.as_thread().robust_list_head() as _)?;
     size.vm_write(size_of::<robust_list_head>())?;
 

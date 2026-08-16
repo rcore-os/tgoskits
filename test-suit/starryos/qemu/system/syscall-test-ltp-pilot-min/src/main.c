@@ -108,6 +108,23 @@ static void expect_openat2_padded_e2big(void)
     CHECK(ret == -1 && errno == E2BIG, "openat2 nonzero extension bytes -> E2BIG");
 }
 
+static void expect_openat2_oversized_how_e2big(void)
+{
+    struct open_how how = {
+        .flags = O_RDONLY,
+        .mode = 0,
+        .resolve = 0,
+    };
+
+    errno = 0;
+    long ret = do_openat2(AT_FDCWD, "file", &how, SIZE_MAX);
+    if (ret >= 0) {
+        close((int)ret);
+    }
+    CHECK(ret == -1 && errno == E2BIG,
+          "openat2 oversized how size returns E2BIG before user-memory import");
+}
+
 static void expect_openat2_success(const char *name, int dirfd, const char *path,
                                    uint64_t flags, uint64_t resolve)
 {
@@ -166,6 +183,7 @@ static void test_openat2_min(void)
     expect_openat2_errno("openat2 size small -> EINVAL", AT_FDCWD, "file",
                          (struct open_how){ O_RDWR | O_CREAT, 0700, 0 },
                          sizeof(struct open_how) - 1, EINVAL);
+    expect_openat2_oversized_how_e2big();
     expect_openat2_padded_e2big();
 
     expect_openat2_success("openat2 ordinary path succeeds", dirfd, "basic", O_RDWR, 0);
