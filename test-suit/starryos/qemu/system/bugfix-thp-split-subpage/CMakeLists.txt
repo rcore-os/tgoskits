@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(thp-split-subpage C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(thp-split-subpage src/main.c)
+target_compile_options(thp-split-subpage PRIVATE -Wall -Wextra -Werror)
+install(TARGETS thp-split-subpage RUNTIME DESTINATION usr/bin/starry-test-suit)
