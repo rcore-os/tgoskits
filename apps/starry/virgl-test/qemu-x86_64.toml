@@ -1,0 +1,50 @@
+# StarryOS VirGL 驱动开发 - QEMU 配置
+# 参照 qt-calc 架构
+# 连接图形: spicy --uri="spice+unix:///tmp/starry-virgl-test.sock"
+# timeout=900: VM 最长运行 900 秒后自动退出（超时保护），也可手动用 poweroff 提前关闭
+
+args = [
+    "-machine", "q35,accel=kvm",
+    "-cpu", "host",
+    "-smp", "1",
+    "-m", "2G",
+
+    # ---- 显示 (virgl 3D 加速) ----
+    # 默认 blob=off: 对齐 alpine-virgl-vm,走经典路径(RESOURCE_CREATE_3D +
+    # PRIME 导出 GEM)。Mesa 是否用 blob 取决于 GETPARAM 报告的 RESOURCE_BLOB
+    # (card0 现在按真实协商返回,blob=off 时为 0 → Mesa 自动走经典路径)。
+    "-device", "virtio-vga-gl",
+    "-display", "egl-headless,gl=on",
+    "-spice", "gl=off,unix=on,addr=/tmp/starry-virgl-test.sock,disable-ticketing=on",
+    "-vga", "none",
+
+    # ---- 控制台 ----
+    # `-d guest_errors` 会把每个失败的 virtio-gpu 命令(如 blob 创建失败)
+    # 刷到控制台,淹没正常输出。排查时再临时加回。
+    "-serial", "mon:stdio",
+    "-monitor", "none",
+
+    # ---- 磁盘 ----
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+
+    # ---- 网络 ----
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+
+    # ---- 输入设备 ----
+    "-device", "virtio-tablet-pci",
+    "-device", "virtio-keyboard-pci",
+    "-device", "qemu-xhci",
+    "-device", "usb-tablet",
+
+    "-snapshot",
+]
+
+uefi = true
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/local/bin/virgl-runner.sh"
+success_regex = []
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 900
