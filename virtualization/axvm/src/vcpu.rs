@@ -351,7 +351,9 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// Runs one already-loaded vCPU until a VM exit.
     ///
     /// The caller must keep [`Self::with_backend_bound_current_cpu`] active so
-    /// the architecture backend remains loaded on one non-migrating host CPU.
+    /// the architecture backend remains loaded on one non-migrating host CPU,
+    /// and must keep host IRQs disabled until this method returns. The x86 VMX
+    /// backend uses that interval to switch host-owned syscall MSRs.
     pub(crate) fn run_loaded(&self) -> AxVmResult<A::Exit> {
         self.transition_state(VmVcpuState::Ready, VmVcpuState::Running)?;
         self.with_state_transition(VmVcpuState::Running, VmVcpuState::Ready, || {
