@@ -311,8 +311,7 @@ fn ensure_rdrive_test_intc() {
 }
 
 fn capture_binding_info(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
-    let info = binding_info_from_fdt(probe.info())?;
-    *CAPTURED_IRQ.lock().unwrap() = Some(info.irq_cloned());
+    *CAPTURED_IRQ.lock().unwrap() = Some(binding_info_from_fdt(probe.info())?.irq_cloned());
     Ok(())
 }
 
