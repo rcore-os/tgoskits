@@ -300,6 +300,37 @@ int main(void)
         close(pipefd[1]);
     }
 
+    /* Linux imports an in-range iovec base without faulting its pages. An
+     * empty nonblocking pipe therefore returns EAGAIN before accessing the
+     * segment, while available data makes the same segment fault. */
+    {
+        int pipefd[2];
+        struct iovec bad_segment = {
+            .iov_base = (void *)(uintptr_t)1,
+            .iov_len = 1,
+        };
+        CHECK(pipe2(pipefd, O_NONBLOCK) == 0,
+              "2.11 create nonblocking pipe for deferred iovec access");
+        CHECK_ERR(syscall(SYS_readv, pipefd[0], &bad_segment, 1L), EAGAIN,
+                  "2.11 empty nonblocking pipe precedes bad iovec base");
+
+        CHECK_RET(write(pipefd[1], "R", 1), 1,
+                  "2.11 queue data before bad iovec access");
+        CHECK_ERR(syscall(SYS_readv, pipefd[0], &bad_segment, 1L), EFAULT,
+                  "2.11 readable pipe accesses bad iovec base");
+
+        memset(buf1, 0, sizeof(buf1));
+        struct iovec valid_segment = {
+            .iov_base = buf1,
+            .iov_len = 1,
+        };
+        CHECK_RET(syscall(SYS_readv, pipefd[0], &valid_segment, 1L), 1,
+                  "2.11 EFAULT leaves pipe data readable");
+        CHECK(buf1[0] == 'R', "2.11 EFAULT does not consume pipe data");
+        close(pipefd[0]);
+        close(pipefd[1]);
+    }
+
     /* ================================================================
      * SECTION 3: Error conditions — EINVAL (iovcnt)
      * ================================================================ */
