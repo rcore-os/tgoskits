@@ -24,8 +24,9 @@ use crate::{
     AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
     arch::{ArchOps, CurrentArch, VcpuRunAction},
     ax_err_type,
+    irq::model::{PendingVcpuInterrupt, VirtualInterruptId},
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
-    vm::{PendingInterrupt, VmRuntimeHandle},
+    vm::VmRuntimeHandle,
 };
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
@@ -181,13 +182,34 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
 }
 
 pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
-    queue_pending_interrupt(vm_id, vcpu_id, PendingInterrupt::Normal(vector))
+    let vm = crate::get_vm_by_id(vm_id)
+        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
+        return Err(ax_err_type!(
+            BadState,
+            format!("VM[{vm_id}] is not accepting interrupts")
+        ));
+    }
+    let vector = u32::try_from(vector)
+        .map_err(|_| ax_err_type!(InvalidInput, format!("interrupt vector {vector:#x}")))?;
+    vm.with_runtime(|runtime| {
+        runtime.dispatch_vcpu_interrupt(
+            vcpu_id,
+            PendingVcpuInterrupt {
+                id: VirtualInterruptId(vector),
+                trigger: crate::InterruptTriggerMode::EdgeTriggered,
+            },
+        )
+    })?;
+    Ok(())
 }
 
-pub(crate) fn queue_pending_interrupt(
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn queue_physical_interrupt(
     vm_id: usize,
     vcpu_id: usize,
-    interrupt: PendingInterrupt,
+    vector: usize,
+    physical_irq: usize,
 ) -> AxVmResult {
     let vm = crate::get_vm_by_id(vm_id)
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
@@ -197,13 +219,9 @@ pub(crate) fn queue_pending_interrupt(
             format!("VM[{vm_id}] is not accepting interrupts")
         ));
     }
-
-    let cpu_id = vm.with_runtime(|runtime| runtime.queue_pending_interrupt(vcpu_id, interrupt))?;
     vm.with_runtime(|runtime| {
-        runtime.notify_all();
-        Ok(())
+        runtime.dispatch_physical_vcpu_interrupt(vcpu_id, vector, physical_irq)
     })?;
-    crate::host::task::send_ipi(cpu_id);
     Ok(())
 }
 
@@ -224,26 +242,6 @@ pub(crate) fn notify_vcpu(vm_id: usize, vcpu_id: usize) -> AxVmResult {
     runtime.notify_all();
     crate::host::task::send_ipi(cpu_id);
     Ok(())
-}
-
-pub(crate) fn inject_pending_interrupts<A: ArchOps>(
-    vm_id: usize,
-    vcpu_id: usize,
-    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
-) {
-    let Some(vm) = crate::get_vm_by_id(vm_id) else {
-        warn!("VM[{vm_id}] not found, cannot drain VCpu[{vcpu_id}] interrupts");
-        return;
-    };
-    let Ok(interrupts) = vm.with_runtime(|runtime| Ok(runtime.drain_pending_interrupts(vcpu_id)))
-    else {
-        warn!("VM[{vm_id}] vCPU runtime not found, cannot drain VCpu[{vcpu_id}] interrupts");
-        return;
-    };
-
-    for interrupt in interrupts {
-        A::inject_pending_interrupt(&vm, vcpu, interrupt);
-    }
 }
 
 /// Cleans up VCpu resources for a VM that is being deleted.
@@ -794,6 +792,7 @@ mod tests {
             &runtime,
             &wait_snapshot,
             || true,
+            || false,
             |_| wait_count.set(wait_count.get() + 1),
         );
 
@@ -810,6 +809,23 @@ mod tests {
         }));
         assert_eq!(poll_count.get(), 2);
         notifier.join().unwrap();
+    }
+
+    #[test]
+    fn interrupt_queued_before_wait_snapshot_prevents_sleep() {
+        let runtime = VmRuntimeHandle::new();
+        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        let wait_count = std::cell::Cell::new(0);
+
+        crate::vm::wait_for_vcpu_event_if_idle(
+            &runtime,
+            &wait_snapshot,
+            || true,
+            || true,
+            |_| wait_count.set(wait_count.get() + 1),
+        );
+
+        assert_eq!(wait_count.get(), 0);
     }
 
     #[test]
@@ -832,6 +848,7 @@ mod tests {
             &runtime,
             &wait_snapshot,
             || true,
+            || false,
             |wake_condition| {
                 wait_boundary_reached.wait();
                 request_published.wait();

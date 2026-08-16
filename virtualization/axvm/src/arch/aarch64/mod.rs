@@ -297,6 +297,7 @@ impl ArchOps for Aarch64Arch {
             runtime,
             &wait_snapshot,
             || vm.running(),
+            || runtime.has_pending_interrupt(vcpu.id()),
             |condition| runtime.wait_until(condition),
         );
     }

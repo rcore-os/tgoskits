@@ -1771,6 +1771,10 @@ impl<H: X86HostOps> SvmVcpu<H> {
         Ok(())
     }
 
+    pub fn has_pending_event(&self) -> bool {
+        self.injecting_event.is_some() || !self.pending_events.is_empty()
+    }
+
     pub fn handle_eoi(&mut self) -> Option<u8> {
         self.handle_local_apic_eoi()
     }

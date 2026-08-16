@@ -318,11 +318,8 @@ pub(crate) fn send_ipi(cpu_id: usize) {
     if modules::ax_hal::percpu::this_cpu_id() == cpu_id {
         return;
     }
-    modules::ax_hal::irq::send_ipi(
-        modules::ax_hal::irq::ipi_irq(),
-        modules::ax_hal::irq::IpiTarget::Cpu(modules::ax_hal::irq::CpuId(cpu_id)),
-    )
-    .unwrap_or_else(|err| panic!("failed to deliver AxVM IPI to CPU {cpu_id}: {err:?}"));
+    runtime_task::notify_cpu(cpu_id)
+        .unwrap_or_else(|err| panic!("failed to deliver AxVM IPI to CPU {cpu_id}: {err:?}"));
 }
 
 #[cfg(target_arch = "aarch64")]

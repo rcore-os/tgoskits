@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 // embed the dispatcher as a field and expose it to the vCPU run loop.
 #[allow(unused_imports)]
 pub(crate) use dispatcher::VcpuIrqDispatcher;
+pub(crate) use queue::QueuedVcpuInterrupt;
 
 use crate::{AxVmError, AxVmResult, StopReason, VmStatus, ax_err};
 

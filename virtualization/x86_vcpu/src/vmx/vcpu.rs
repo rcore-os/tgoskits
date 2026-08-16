@@ -1856,6 +1856,10 @@ impl<H: X86HostOps> VmxVcpu<H> {
         Ok(())
     }
 
+    pub fn has_pending_event(&self) -> bool {
+        !self.pending_events.is_empty()
+    }
+
     pub fn handle_eoi(&mut self) -> Option<u8> {
         self.vlapic.handle_eoi()
     }

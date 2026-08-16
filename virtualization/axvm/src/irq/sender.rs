@@ -120,7 +120,7 @@ mod tests {
         AxVmError, InterruptTriggerMode,
         irq::model::VirtualInterruptId,
         lifecycle::{Machine, StopReason},
-        runtime::VcpuIrqDispatcher,
+        runtime::{QueuedVcpuInterrupt, VcpuIrqDispatcher},
         vm::dispatch_vcpu_interrupt_with,
     };
 
@@ -146,10 +146,9 @@ mod tests {
     }
 
     fn runtime(cpu_id: Option<usize>) -> Arc<TestRuntime> {
-        Arc::new(TestRuntime {
-            dispatcher: VcpuIrqDispatcher::new(),
-            cpu_id,
-        })
+        let dispatcher = VcpuIrqDispatcher::new();
+        dispatcher.register(0, 1);
+        Arc::new(TestRuntime { dispatcher, cpu_id })
     }
 
     fn interrupt(id: u32) -> PendingVcpuInterrupt {
@@ -175,9 +174,17 @@ mod tests {
                         let cpu_id = runtime.cpu_id.ok_or_else(|| {
                             ax_err_type!(NotFound, format_args!("vCPU {vcpu_id} task not found"))
                         })?;
-                        runtime.dispatcher.enqueue(vcpu_id, interrupt);
+                        let needs_kick = runtime
+                            .dispatcher
+                            .enqueue(vcpu_id, 1, interrupt)
+                            .ok_or_else(|| {
+                                ax_err_type!(
+                                    NotFound,
+                                    format_args!("vCPU {vcpu_id} task generation changed")
+                                )
+                            })?;
                         events.borrow_mut().push("enqueue");
-                        Ok(cpu_id)
+                        Ok(needs_kick.then_some(cpu_id))
                     },
                     || events.borrow_mut().push("notify"),
                     |_| events.borrow_mut().push("ipi"),
@@ -203,7 +210,10 @@ mod tests {
             send(&sender, 0, interrupt(1), &events).unwrap();
 
             assert_eq!(*events.borrow(), ["enqueue", "notify", "ipi"]);
-            assert_eq!(runtime.dispatcher.drain(0), std::vec![interrupt(1)]);
+            assert_eq!(
+                runtime.dispatcher.drain(0, 1),
+                std::vec![QueuedVcpuInterrupt::Virtual(interrupt(1))]
+            );
         }
     }
 
@@ -286,8 +296,14 @@ mod tests {
         }
         send(&sender, 0, interrupt(2), &events).unwrap();
 
-        assert_eq!(old_runtime.dispatcher.drain(0), std::vec![interrupt(1)]);
-        assert_eq!(new_runtime.dispatcher.drain(0), std::vec![interrupt(2)]);
+        assert_eq!(
+            old_runtime.dispatcher.drain(0, 1),
+            std::vec![QueuedVcpuInterrupt::Virtual(interrupt(1))]
+        );
+        assert_eq!(
+            new_runtime.dispatcher.drain(0, 1),
+            std::vec![QueuedVcpuInterrupt::Virtual(interrupt(2))]
+        );
         assert_eq!(
             *events.borrow(),
             ["enqueue", "notify", "ipi", "enqueue", "notify", "ipi"]

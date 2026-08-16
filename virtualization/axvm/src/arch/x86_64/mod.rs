@@ -86,6 +86,21 @@ impl ArchOps for X86_64Arch {
         vcpu.get_arch_vcpu().complete_pending_port_io_string()
     }
 
+    fn wait_for_vcpu_event(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        runtime: &crate::vm::VmRuntimeHandle,
+    ) {
+        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        crate::vm::wait_for_vcpu_event_if_idle(
+            runtime,
+            &wait_snapshot,
+            || vm.running(),
+            || runtime.has_pending_interrupt(vcpu.id()) || vcpu.get_arch_vcpu().has_pending_event(),
+            |condition| runtime.wait_until(condition),
+        );
+    }
+
     fn after_external_interrupt(
         _vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -464,6 +479,10 @@ impl AxvmX86Vcpu {
             self.1.restore(exit);
         }
         result
+    }
+
+    fn has_pending_event(&self) -> bool {
+        self.0.has_pending_event()
     }
 }
 

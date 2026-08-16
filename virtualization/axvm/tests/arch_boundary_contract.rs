@@ -105,3 +105,13 @@ fn x86_pit_irq0_has_one_host_timer_owner() {
         assert_omits(&source, path, forbidden);
     }
 }
+
+#[test]
+fn vcpu_kicks_use_the_shared_ipi_delivery_edge() {
+    let host = read_source("src/host/arceos.rs");
+
+    assert!(
+        host.contains("runtime_task::notify_cpu(cpu_id)"),
+        "vCPU kicks must use the runtime IPI delivery edge"
+    );
+}

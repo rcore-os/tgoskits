@@ -19,15 +19,17 @@ VMM/控制面）。本文档回答四类实现问题：**状态到底带着什�
   teardown 路径要能丢弃）；进入 `Failed`/`Destroyed` 后随状态一起被丢弃（`Failed(String)`
   只带错误字符串）。
 - **H（runtime 资源，`Arc<VmRuntimeHandle>`）**：只在运行态存活。结构定义于
-  `src/vm/mod.rs:180-186`，字段：
+  `src/vm/mod.rs`，关键字段：
   - `wait_queue`：vCPU park/唤醒队列。**pause 不主动 park vCPU**：vCPU 在下一次 VM-exit
     观察到 `suspending()` 后自行 `wait_for(!suspending)` 入队（vcpus.rs:342-350）；resume 时
-    `notify_all_vcpus` 才唤醒（runtime/mod.rs:106）；
-  - `vcpu_task_list`：`Mutex<BTreeMap<usize, TaskHandle>>`，vCPU task 注册表（中断注入按
-    vCPU id 查表）;
-  - `pending_interrupts`：`Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>`，未注入的中断缓冲
+    runtime 的 `notify_all` 才唤醒；`notification_generation` 同时封住“检查后、入睡前”发布事件的
+    lost-wakeup 窗口；
+  - `vcpu_threads`：`Mutex<VcpuThreadRegistry>`，分开保存 `active` 与 `retired` vCPU thread；后者
+    暂存不能由自身 join 的退出 thread，交给后续 CPU_ON 或 VM 清理路径回收；
+  - `irq_dispatcher`：`VcpuIrqDispatcher`，是 runtime 中唯一的 vCPU 中断缓冲。每个 vCPU 队列绑定
+    当前 thread id 形成的 owner generation，同时持有逻辑 pending 队列与 `kick_pending` 物理
+    doorbell 边；vCPU drain 逻辑队列时即确认该边，entry 前的 IRQ 关闭区负责封住新的发布竞态
     （生命周期见 §3.2）；
-  - `irq_dispatcher`：`VcpuIrqDispatcher`，vCPU task 的中断路由；
   - `running_halting_vcpu_count`：`AtomicUsize`，正在退出的 vCPU 计数（`finish_stop` 依赖它）。
 
 ### 1.1 各状态携带的资源（`src/lifecycle/machine.rs:6-34`）
@@ -150,21 +152,39 @@ lifecycle states"（vm/mod.rs:179）。它随 `start_with` 创建、随 `take_st
 teardown 回收，`Ready`/`Failed`/`Destroyed` 一律不携带。`reset()` 的"旧 runtime teardown"
 即走 `stop_and_join_runtime(Forced)` + `take_stopped_runtime`。
 
-**`pending_interrupts` 随 runtime 生死：** `queue_interrupt`（runtime 层**内部接口**，
-`pub(crate)`，vcpus.rs:86，由 crate 内设备模拟/中断控制器经 manager.rs:79-81 的 `inject_interrupt`
-调用，**非 `AxVM` 公共 API**）只在 VM 处于 `Running`/`Paused` 时接受新中断（vcpus.rs:89，否则
-返回 `BadState`——即 `AxVmError::InvalidState` 的宏关键字，error.rs:360-362；lifecycle.md §5 用
-`InvalidState` 指同一变体），入队后 `notify_all` + host IPI（vcpus.rs:96-102）；vCPU 在每次 run
-前 `drain_pending_interrupts` 并注入 guest（vcpus.rs:134-152）。**并发时序**：准入检查调
-`vm.status()`（vcpus.rs:89）→ **同一把 machine lock**（§4），**不存在独立于 machine lock 的
-原子标志**——若 `request_stop_with` 此刻正持锁转换，`queue_interrupt` 自旋等锁释放后读到
-`Stopping` 而拒绝；时序是"stop 转换持锁 → queue 等锁 → 读到已翻转状态 → 拒绝"，两操作无状态
-翻转竞态（最终以转换完成后的状态为准）。因此：
+**dispatcher 随 runtime 生死：** `queue_interrupt`（runtime 层**内部接口**，`pub(crate)`，由 crate
+内设备模拟/中断控制器调用，**非 `AxVM` 公共 API**）只在 VM 处于 `Running`/`Paused` 时接受新中断，
+否则返回 `BadState`（即 `AxVmError::InvalidState` 的宏关键字；lifecycle.md §5 用 `InvalidState` 指同一
+变体）。`VmInterruptSender` 只保存 `Weak<AxVM>`，每次发送都在同一把 machine lock 下取得当前
+runtime，不缓存可能跨 stop/start/reset 失效的 dispatcher。
+
+每个 vCPU thread 注册时，runtime 先把 `thread.id().as_u64()` 作为 owner generation 注册到
+dispatcher，再将 thread 发布到 `vcpu_threads.active`。中断发送先从 active 表取得
+`(owner, pCPU)`，再用同一个 owner 入队；若 vCPU 已退出并以同一 vCPU id 重建，dispatcher 会拒绝旧
+producer 的过时代次，避免把旧生命周期的中断发布进新队列。退出时对应 owner 的 pending 与 kick
+状态一并清理；自身不能 join 的 thread 先移入 `retired`，由后续 CPU_ON 或 VM-wide cleanup 在其他
+thread 上 join。
+
+发送顺序是 **publish logical pending → notify wait queue → physical IPI doorbell**。队列把同一中断源
+合并为一个逻辑 pending owner，并以 `kick_pending` 合并物理 doorbell：只有 `false → true` 的发送者
+需要发 IPI；同一轮 drain 前的重复发布不会重复敲物理 IPI。vCPU 每次 guest entry 前在自身 thread 上
+drain dispatcher，通过架构注入接口把事件转交给 VGIC/vLAPIC 等 backend，并在 drain 时确认本轮
+`kick_pending`；backend pending 与物理 doorbell 生命周期彼此独立。随后 vCPU 关闭本地 IRQ，再在
+dispatcher 锁下复查队列：复查前发布的事件使本次 entry 重试，复查后发布的事件所触发的 IPI 保持
+pending 并迫使 guest 退出。这与 Linux KVM 的“关闭 IRQ → 发布 in-guest → 复查 request”顺序等价，
+封住“最后一次 drain 后、真正 VM-entry 前”的 lost-kick 窗口。所有跨 CPU doorbell 最终都经
+axruntime/ax-ipi 的共享 DeliveryEdge，逻辑 pending 状态与物理 IPI 不形成第二套计数路径。
+
+**并发时序**：准入检查调用 `vm.status()` → **同一把 machine lock**（§4），**不存在独立于 machine
+lock 的生命周期原子标志**——若 `request_stop_with` 此刻正持锁转换，`queue_interrupt` 等锁释放后
+读到 `Stopping` 而拒绝；时序是“stop 转换持锁 → queue 等锁 → 读到已翻转状态 → 拒绝”，两操作无
+状态翻转竞态（最终以转换完成后的状态为准）。因此：
 - 调用者收到 `BadState` 表示 VM 不再接受中断，应**丢弃**该中断（不重试）。
 - pause 后中断仍被缓冲、resume 后注入。
 - 进入 `Stopping` 后**新中断被拒**，但**已缓冲中断不会在进入时立即丢弃**——`Stopping` 期间
-  runtime 仍为 `Some`（§1.1），缓冲仍在；vCPU 若在退出前再跑一次仍会 drain 剩余中断。真正丢弃
-  发生在 **runtime 被回收时**（`take_stopped_runtime` 或 destroy 清理闭包），而非状态翻转时。
+  runtime 仍为 `Some`（§1.1），dispatcher 仍在；vCPU 若在退出前再跑一次仍会 drain 剩余中断。
+  真正丢弃发生在 vCPU owner 清理或 **runtime 被回收时**（`take_stopped_runtime` 或 destroy 清理
+  闭包），而非状态翻转时。
 - start/reset 重建 runtime → 空缓冲。
 
 ### 3.3 destroy 前置条件：必须已把 runtime 取走

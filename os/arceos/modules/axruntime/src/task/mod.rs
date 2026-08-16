@@ -27,6 +27,28 @@ pub use ax_task::{
     set_thread_affinity_and_wait, set_thread_policy, sleep, sleep_until, thread_affinity,
     thread_handle, thread_policy, thread_runtime, validate_blocking_context, yield_current_cpu,
 };
+
+/// Arms the shared physical IPI delivery edge for one CPU.
+///
+/// Callers must publish their logical pending state before this doorbell. The
+/// shared edge coalesces repeated notifications until the target CPU claims
+/// the physical interrupt; logical owners remain responsible for draining
+/// their own state.
+pub fn notify_cpu(cpu_id: usize) -> Result<(), ax_hal::irq::IrqError> {
+    #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+    {
+        if cpu_id >= ax_hal::cpu_num() {
+            return Err(ax_hal::irq::IrqError::InvalidCpu);
+        }
+        ax_ipi::notify_cpu(ax_hal::irq::CpuId(cpu_id)).map(|_| ())
+    }
+    #[cfg(not(any(feature = "ipi", feature = "wake-ipi")))]
+    {
+        let _ = cpu_id;
+        Err(ax_hal::irq::IrqError::Unsupported)
+    }
+}
+
 use ax_task::{
     CpuLocal, CpuRemote, TaskSystem, TaskSystemConfig, ThreadResources, ThreadSpec,
     impl_trait as impl_task_runtime,
