@@ -662,12 +662,16 @@ pub fn sys_pwritev2(
         let file_like = get_file_like(fd)?;
         let file = positioned_write_file(&file_like)?;
         let source = IoVectorBuf::new(current, iov, iovcnt)?;
-        let data = copy_user_iov_read_buf(source)?;
         if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
             // Route memfd offset writes through the seal-aware path.
+            if source.byte_len() != 0 {
+                memfd.check_write_seal()?;
+            }
+            let data = copy_user_iov_read_buf(source)?;
             Ok(memfd.write_at(data.as_slice(), offset as u64)? as _)
         } else {
-            memfd_checks_before_write_at(&file_like, offset as u64, data.len() as u64)?;
+            memfd_checks_before_write_at(&file_like, offset as u64, source.byte_len() as u64)?;
+            let data = copy_user_iov_read_buf(source)?;
             Ok(file.inner().write_at(data.as_slice(), offset as _)? as _)
         }
     }
